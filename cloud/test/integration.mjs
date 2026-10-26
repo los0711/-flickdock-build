@@ -13,8 +13,12 @@ const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const wrangler=join(root,'node_modules/wrangler/bin/wrangler.js');
 const state=await mkdtemp(join(tmpdir(),'flickdock-cloud-local-'));
 const configuration=JSON.parse(await readFile(join(root,'wrangler.jsonc'),'utf8'));
+const productionChunkSize=Number(configuration.vars.CHUNK_BYTES);assert.equal(productionChunkSize,128*1024);
 configuration.main=join(root,'src/index.ts');configuration.d1_databases[0].migrations_dir=join(root,'migrations');
 configuration.vars.EMAIL_PROVIDER='disabled';
+// Keep the prior large-file protocol fixture at 1 MiB to exercise resumable
+// reservations created before the smaller production CPU safety setting.
+configuration.vars.CHUNK_BYTES=String(1024*1024);
 const configFile=join(state,'wrangler-test.json');await writeFile(configFile,JSON.stringify(configuration));
 const env={...process.env,WRANGLER_SEND_METRICS:'false',CLOUDFLARE_API_TOKEN:'',CLOUDFLARE_API_KEY:'',CLOUDFLARE_EMAIL:'',CLOUDFLARE_ACCOUNT_ID:''};
 const checks=[];let server,output='';
@@ -232,6 +236,25 @@ try{
     assert.equal(sqlRows(`SELECT COUNT(*) n FROM read_leases WHERE upload_id='${reserved.upload_id}'`)[0].n,0);
     await request('DELETE',`/v1/items/${newId}`,{base_version:1},alice.token);
     assert.equal(sqlRows(`SELECT COUNT(*) n FROM uploads WHERE id='${reserved.upload_id}'`)[0].n,0);
+  });
+  await check('production 128 KiB negotiation preserves a 300000-byte original through three real R2 parts',async()=>{
+    await stop();base=await start(['--var','CHUNK_BYTES:'+productionChunkSize]);
+    const data=Buffer.alloc(300000,0x4d);data.write('128 KiB production negotiation retains original bytes');
+    const newId=randomUUID(),reserved=await reserve(alice.token,newId,data);
+    assert.equal(reserved.chunk_size,131072);assert.equal(reserved.part_count,3);
+    for(let index=0;index<reserved.part_count;index++)await part(alice.token,reserved.upload_id,index,data.subarray(index*reserved.chunk_size,(index+1)*reserved.chunk_size));
+    const committed=await request('POST',`/v1/uploads/${reserved.upload_id}/commit`,{},alice.token);assert.equal(committed.record.sha256,hash(data));assert.equal(committed.record.size,data.length);
+    const metadata=await request('GET',`/v1/items/${newId}/content`,undefined,alice.token);assert.equal(metadata.chunk_size,131072);assert.equal(metadata.part_count,3);
+    const downloaded=[];
+    for(let index=0;index<metadata.part_count;index++){
+      const response=await localFetch(base+`/v1/items/${newId}/parts/${index}?version=1`,{headers:{Authorization:'Bearer '+alice.token}});
+      assert.equal(response.status,200);const bytes=Buffer.from(await response.arrayBuffer());assert.equal(hash(bytes),response.headers.get('X-Content-SHA256'));downloaded.push(bytes);
+    }
+    const original=Buffer.concat(downloaded);assert.deepEqual(original,data);assert.equal(hash(original),committed.record.sha256);
+    assert.equal(sqlRows(`SELECT COUNT(*) n FROM read_leases WHERE upload_id='${reserved.upload_id}'`)[0].n,0);
+    await request('DELETE',`/v1/items/${newId}`,{base_version:1},alice.token);
+    assert.equal(sqlRows(`SELECT COUNT(*) n FROM allocations WHERE id='${reserved.upload_id}'`)[0].n,0);
+    await stop();base=await start(); // Subsequent fixtures keep their 1 MiB configuration.
   });
   await check('deleting an item immediately removes actual R2 objects, parts and allocation with exhausted A/B budgets',async()=>{
     const data=Buffer.concat([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==','base64'),Buffer.from('original image metadata/trailing bytes\0\xff')]),newId=randomUUID();

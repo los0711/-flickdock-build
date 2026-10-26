@@ -2,10 +2,12 @@
 
 ## Current verification boundary
 
-The Windows workspace provides shared UI code, macOS native adapters, an app
-bundle build recipe, and temporary-fixture update tests. It does **not** contain
-a verified macOS binary. A real `.app` and `.dmg` must be built and tested on a
-Mac. Running `build_macos.py` on Windows fails before creating build artifacts.
+Both arm64 and x86_64 native builds passed on GitHub's macOS hosts in private
+run 40297249021 (application source commit
+04da69953be17f0f1591be77338395d5b0d0f0e1). The jobs produce real `.app`, update
+ZIP and `.dmg`, run platform and cloud-sync checks from each frozen app, and
+verify cloud deletion releases space. Windows cannot build a usable Mac app;
+`build_macos.py` rejects a non-Mac host before creating artifacts.
 
 The platform tests never register real global shortcuts, modify real login
 items, play media, install an app, or demonstrate on the user's desktop.
@@ -18,9 +20,9 @@ provides manually dispatched standard `macos-15` (arm64) and
 stop-on-budget settings before dispatch. Do not enable paid overages or make
 the source public. The workflow builds both native artifacts, runs frozen
 real-cloud verification offscreen and retains private artifacts for three
-days. It does not publish a public release or update manifest. Connection to
-the user's GitHub account is still required; a prepared workflow is not a
-completed cloud build.
+days. It does not publish a public release or update manifest. Artifact ZIPs
+must be downloaded and checked against the Actions digests, then each inner
+release checked against its native build report before public promotion.
 
 Use a Mac with Python 3.12 and Xcode 16 Command Line Tools or newer. The pinned
 Qt 6.12 runtime targets macOS 14.4 or newer, as listed in
@@ -104,7 +106,12 @@ Windows `.exe` update manifests must never be offered to the Mac build. Publish
 separate verified HTTPS indexes for each supported macOS architecture. Each
 index must name the exact versioned ZIP and its whole-file size/SHA256; publish
 only after the native Mac build report and anonymous ZIP download both pass.
-No working Mac release index is claimed by these source files.
+`release_macos.py` checks the native build and frozen cloud reports, local ZIP,
+bundle identity/version/CPU header and anonymous complete download. It writes
+`updates/macos-arm64.json` or `updates/macos-x86_64.json` only after every check
+passes. Initial publication requires `--initial-release`; existing versions
+cannot acquire different bytes. Mac packages in this release have no Developer
+ID signature or notarization; Gatekeeper distribution acceptance is unverified.
 
 `PrepareMacUpdateJob(zip_path, manifest, current_version=..., installed_app=...)`
 runs hashing and extraction in a Qt worker. Call `start()`, retain the job until

@@ -27,7 +27,8 @@ tests=['test_app_settings.py','test_global_hotkeys.py','test_shelf_content.py',
        'test_settings_startup_v171.py','test_account_panel_v180.py',
        'test_platform_startup.py','test_platform_native.py','test_mac_updates.py','test_mac_build.py',
        'test_update_macos.py','test_update_macos_controller.py',
-       'test_macos_native_entry.py','test_shelf_sync_v180.py','test_sync_review_v180.py','test_account_security_v180.py']
+       'test_macos_native_entry.py','test_shelf_sync_v180.py','test_sync_review_v180.py','test_account_security_v180.py',
+       'test_release_macos_v180.py']
 logs=root/'release-checks-v180';logs.mkdir(exist_ok=True)
 
 def check(name):

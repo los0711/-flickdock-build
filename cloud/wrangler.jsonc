@@ -6,7 +6,7 @@
   "workers_dev": true,
   "d1_databases": [{"binding":"DB","database_name":"flickdock-cloud","database_id":"2f2c1b7e-9206-40fb-bfc5-e399e7fcc6b9","migrations_dir":"migrations"}],
   "r2_buckets": [{"binding":"FILES","bucket_name":"flickdock-private"}],
-  "vars": {"ACCOUNT_QUOTA_BYTES":"8589934592","GLOBAL_QUOTA_BYTES":"8589934592","CHUNK_BYTES":"1048576","REQUESTS_PER_DAY":"5000","R2_CLASS_A_BUDGET":"800000","R2_CLASS_B_BUDGET":"8000000","EMAIL_PROVIDER":"disabled"},
+  "vars": {"ACCOUNT_QUOTA_BYTES":"8589934592","GLOBAL_QUOTA_BYTES":"8589934592","CHUNK_BYTES":"131072","REQUESTS_PER_DAY":"5000","R2_CLASS_A_BUDGET":"800000","R2_CLASS_B_BUDGET":"8000000","EMAIL_PROVIDER":"disabled"},
   "triggers": {"crons":["* * * * *"]},
   "observability": {"enabled":false}
 }
