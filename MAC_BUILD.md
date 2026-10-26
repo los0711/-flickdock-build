@@ -1,0 +1,134 @@
+# FlickDock macOS build and platform boundary
+
+## Current verification boundary
+
+The Windows workspace provides shared UI code, macOS native adapters, an app
+bundle build recipe, and temporary-fixture update tests. It does **not** contain
+a verified macOS binary. A real `.app` and `.dmg` must be built and tested on a
+Mac. Running `build_macos.py` on Windows fails before creating build artifacts.
+
+The platform tests never register real global shortcuts, modify real login
+items, play media, install an app, or demonstrate on the user's desktop.
+
+## One-command native build
+
+For an authorized private GitHub mirror, `.github/workflows/macos-build.yml`
+provides manually dispatched standard `macos-15` (arm64) and
+`macos-15-intel` jobs. Check the account's remaining free Actions minutes and
+stop-on-budget settings before dispatch. Do not enable paid overages or make
+the source public. The workflow builds both native artifacts, runs frozen
+real-cloud verification offscreen and retains private artifacts for three
+days. It does not publish a public release or update manifest. Connection to
+the user's GitHub account is still required; a prepared workflow is not a
+completed cloud build.
+
+Use a Mac with Python 3.12 and Xcode 16 Command Line Tools or newer. The pinned
+Qt 6.12 runtime targets macOS 14.4 or newer, as listed in
+[Qt's supported platforms](https://doc.qt.io/qt-6/supported-platforms.html).
+In this source folder:
+
+```sh
+python3 build_macos.py
+```
+
+The script creates `build/macos-venv`, installs native PySide6, PyInstaller and
+PyObjC Quartz dependencies, renders the original SVG icon offscreen, runs the
+platform tests, builds `dist/FlickDock.app`, and runs a frozen offscreen import,
+font and native media-backend smoke check using a disposable profile. It then
+creates a versioned update ZIP, drag-to-Applications DMG and SHA256 report under
+`../outputs/`. No artifact is installed or launched as a normal desktop app.
+An existing versioned ZIP/DMG is never overwritten.
+
+Build arm64 on Apple Silicon and x86_64 on Intel Macs. `--target-arch universal2`
+requires a universal2 Python interpreter and universal2 versions of **all**
+binary dependencies; PyInstaller must reject incompatible inputs. Do not label
+a single-architecture binary universal2. Never import this workspace's Windows
+`py/` dependencies on a Mac.
+
+Optional Developer ID signing and notarization use local Keychain credentials:
+
+```sh
+python3 build_macos.py \
+  --sign-identity 'Developer ID Application: Your Organization (TEAMID)' \
+  --notary-profile 'flickdock-notary'
+```
+
+Use `--entitlements /absolute/path/entitlements.plist` only when the selected
+Python/PyObjC distribution needs specific hardened-runtime entitlements. The
+script does not embed signing credentials. Without signing/notarization, the
+result is a local build; Gatekeeper distribution acceptance remains unverified.
+
+## Shared UI integration
+
+- `platform_native.data_directory()` selects
+  `~/Library/Application Support/FlickDock` on macOS and retains APPDATA on Windows.
+- `InstanceGuard` uses `QLocalServer` and is shared between platforms.
+- `native_input_available()`, `mouse_buttons_mask()` and `window_move_active()`
+  replace Windows-only polling. Quartz reads global button state and window
+  geometry in logical screen points. It does not capture screenshots or move
+  the pointer. The real MIME gate must still accept a content drag before a
+  shake may reveal the shelf; a window whose bounds move stays blocked until
+  mouse release.
+- `MacHotkeyBackend` implements the existing register/unregister interface with
+  Carbon app hotkeys, which do not use global keyboard event monitoring. Connect
+  its activation callback to the hotkey manager's dispatch function and call
+  `close()` on shutdown. Qt `Ctrl` represents Command on macOS; Qt `Meta`
+  represents the physical Control key. Alt represents Option. Test actual
+  keyboard layouts, Spaces and reserved system combinations on a Mac.
+- Native Save As, drag payloads, dock-edge geometry and screen bounds remain Qt
+  operations. macOS Retina/multiple-screen placement and cross-app drag delivery
+  require Mac verification; Windows offscreen tests cannot establish them.
+- `runtime_macos.py` selects Qt's AVFoundation (`darwin`) media plugin. The
+  Windows runtime hook must not run in the macOS bundle. Playback codecs depend
+  on the native macOS backend and still need silent-first-frame/source-release
+  verification on the target Mac.
+
+## Login startup
+
+`StartupManager` writes one current-user Run value on Windows, or one
+`~/Library/LaunchAgents/com.flickdock.app.plist` on macOS. macOS uses the current
+bundle executable with `RunAtLoad`, Aqua session scope and no KeepAlive; changing
+the setting does not unload or terminate the running app. Moving the app to a
+new install folder updates its own entry the next time saved-enabled settings
+are reconciled. Run the installed app after placing it in Applications.
+
+Preferences must be saved against the actual `StartupStatus`. An unchanged
+checked checkbox still calls `reconcile(True, explicit=True)` to repair a missing
+entry. Windows Task Manager's disabled startup record is preserved during
+background reconciliation and cleared only for an explicit user enable. No
+fallback task scheduler or second Startup-folder shortcut is added.
+
+## macOS online updates
+
+Windows `.exe` update manifests must never be offered to the Mac build. Publish
+separate verified HTTPS indexes for each supported macOS architecture. Each
+index must name the exact versioned ZIP and its whole-file size/SHA256; publish
+only after the native Mac build report and anonymous ZIP download both pass.
+No working Mac release index is claimed by these source files.
+
+`PrepareMacUpdateJob(zip_path, manifest, current_version=..., installed_app=...)`
+runs hashing and extraction in a Qt worker. Call `start()`, retain the job until
+`finished(prepared)`/`failed(message)`/`cancelled()`, and use `cancel()` on shutdown.
+The installed app and its parent directory must be user-writable. Preparation
+does not change the installed app. A protected system Applications directory
+fails clearly instead of silently requesting elevation.
+
+After an explicit Install action, call
+`launch_update_helper(prepared, quit_callback=manager.quit)`. Only successful
+helper process creation requests quit. `mac_entry.py` handles the helper flag
+before constructing a GUI. The helper waits for the original PID to exit,
+rechecks the app identity/version and complete staged tree hash, atomically
+renames the old bundle to a unique backup, and replaces it with the new one. A
+replacement or relaunch-command failure restores the old bundle. It never
+updates a live app in place. Failure diagnostics remain in the job's own stage.
+
+ZIP validation rejects absolute/traversing/duplicate/case-colliding paths,
+special files, encrypted entries, oversized payloads and links outside the app.
+Normal internal framework symlinks are preserved and checked after extraction.
+The app's Info.plist identity/version, executable permissions and Mach-O header
+must agree with the expected release. Helpers reject stale or modified staging.
+Tests use only byte fixtures and injected launch callbacks; they do not prove
+real macOS launchd, Carbon, Gatekeeper, AVFoundation or update installation.
+
+Reference: [Apple launchd configuration](https://github.com/apple-oss-distributions/launchd/blob/main/man/launchd.plist.5)
+and [Apple event-source state documentation](https://developer.apple.com/documentation/coregraphics/cgeventsourcestateid).

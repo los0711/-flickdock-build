@@ -1,0 +1,25 @@
+{
+  "family": "HarmonyOS Sans SC",
+  "copyright": "Copyright 2021 Huawei Device Co., Ltd.",
+  "source_repository": "https://github.com/openharmony/resources",
+  "license_source": "https://github.com/openharmony/resources/blob/master/LICENSE_Fonts",
+  "license_file": "licenses/HarmonyOS-Sans-LICENSE.txt",
+  "prominent_notice": "本软件使用 HarmonyOS Sans 字体。",
+  "distribution": "Unmodified font copies may be bundled with application software; retain license and copyright; no standalone font distribution.",
+  "fonts": [
+    {
+      "file": "fonts/HarmonyOS_Sans_SC_Regular.ttf",
+      "bytes": 8261060,
+      "sha256": "2deabf97eaf17958dc24746b922779d9913008526daf1c853903547505a8f9ca",
+      "source": "https://raw.githubusercontent.com/openharmony/resources/master/fonts/HarmonyOS_Sans_SC_Regular.ttf"
+    }
+  ],
+  "offscreen_validation": {
+    "family": "HarmonyOS Sans SC",
+    "styles": [
+      "Regular"
+    ],
+    "sample_glyphs_supported": true
+  },
+  "weight_rendering": "Qt synthesizes medium/bold display weights from the bundled unmodified Regular font."
+}

@@ -1,0 +1,62 @@
+name: Private macOS build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [cloud-build]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flickdock-macos-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # Private source must never be published merely to obtain free runners.
+    if: github.event.repository.private == true
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+            python_arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+            python_arch: x64
+    runs-on: ${{ matrix.runner }}
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+          architecture: ${{ matrix.python_arch }}
+      - name: Build and verify native application, ZIP and DMG
+        run: |
+          python ci_assets.py
+          python build_macos.py --target-arch '${{ matrix.arch }}'
+      - name: Test real cloud sync from frozen macOS client
+        run: |
+          profile="$(mktemp -d)"
+          HOME="$profile" APPDATA="$profile" dist/FlickDock.app/Contents/MacOS/FlickDock --verify-cloud --verify-output "../outputs/mac-cloud-${{ matrix.arch }}.json"
+          python -c "import json; from pathlib import Path; p=Path('../outputs/mac-cloud-${{ matrix.arch }}.json'); data=json.loads(p.read_text()); assert data['ok'] and data['frozen'],data"
+      - name: Retain private build artifacts for verification
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: FlickDock-macOS-${{ matrix.arch }}-${{ github.sha }}
+          path: |
+            ../outputs/FlickDock-*-macOS-${{ matrix.arch }}.zip
+            ../outputs/FlickDock-*-macOS-${{ matrix.arch }}.dmg
+            ../outputs/mac-build-*-${{ matrix.arch }}.json
+            ../outputs/mac-cloud-${{ matrix.arch }}.json
+          if-no-files-found: error
+          retention-days: 3
