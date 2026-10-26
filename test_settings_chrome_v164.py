@@ -53,7 +53,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-settings-chrome-v164-') as te
      patch.object(subject, '_write_startup_value') as write_registry, \
      patch.object(subject, '_startup_runtime_allowed', return_value=False):
     store = subject.SettingsStore(Path(temporary)/'profile')
-    store.update(dock_length=90)
+    store.update(dock_length=90,keep_empty_handle=False)
     dialog = subject.SettingsDialog(store)
     previews = []
     dialog.preview_changed.connect(previews.append)

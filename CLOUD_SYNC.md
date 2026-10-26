@@ -35,3 +35,13 @@ record={id,version,deleted,kind,name,mime_type,size,sha256,updated_at,expires_at
 用户选择不绑定邮箱，EMAIL_PROVIDER=disabled，界面不显示绑定入口。R2 公共开发 URL 与自定义公开域名均关闭，只有认证 API 能取文件。
 
 验证：cloud 中 npm ci / npm run typecheck / npm test；客户端 python test_cloud_client_v180.py 启动独立 workerd/D1/R2，测试实际 Qt 网络、后台密码派生、两设备、文件和文字、空文件、越权拒绝及撤销。所有自动 UI 测试 offscreen，不操作用户桌面。
+# 1.8.1 传输与账号更新
+
+`GET /v1/sync/changes` 附带 `transfers` 上传中元数据，另有 `GET /v1/transfers`。未提交的对象不能下载；其他设备以格式图标和进度占位，下载完整原文件并通过 SHA256 后替换。手动取消保留账号隔离的 7 天终止记录，阻止在途请求及发送端自动重建上传；未完成的 R2 数据在写入租约结束后清理。自然过期的断点仍可重建。
+
+设置支持设备改名和修改密码（原密码、新密码、确认新密码）。客户端后台执行固定 scrypt 参数，密码不直接发送，服务端以一次性挑战和条件事务验证并撤销其他设备会话。当前设备保持登录。不绑定邮箱时不提供无需原密码的密码找回。
+
+实际私有桶 `flickdock-private` 已启用 R2 Local Uploads；仍为标准存储、私有访问和原免费保护配置。此开关没有启用费，普通上传请求仍计入 Class A。参见 https://developers.cloudflare.com/r2/buckets/local-uploads/ 。配额统计仅覆盖此服务管理的分配与请求，不是整个 Cloudflare 账号的账单硬上限。
+
+局域网互传走设备间 TLS 连接，不经过 R2。双方核对 TLS 会话绑定的确认码后接收原文件；支持当前会话内断点续传，取消清理未完成接收。云端严格整体 SHA 状态使同一文件分块仍按序上传；下载以最多四个分块并发，所有文件最终核对原始 SHA256。
+

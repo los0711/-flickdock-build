@@ -60,7 +60,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-settings-v163-') as temporary
      patch.object(subject, '_startup_runtime_allowed', return_value=False):
     root = Path(temporary)
     store = subject.SettingsStore(root/'profile')
-    assert store.capture_mode == 'reference' and not store.keep_empty_handle
+    assert store.capture_mode == 'reference' and store.keep_empty_handle
     assert store.trigger_view == 'compact' and store.shake_sensitivity == 50
     assert store.autostart and not store.path.exists()
     assert not store.reconcile_startup()
@@ -86,7 +86,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-settings-v163-') as temporary
         'trigger_view': 'other', 'shake_sensitivity': True}), encoding='utf8')
     old = subject.SettingsStore(legacy)
     assert not old.autostart
-    assert (old.capture_mode, old.keep_empty_handle, old.trigger_view, old.shake_sensitivity) == ('reference', False, 'compact', 50)
+    assert (old.capture_mode, old.keep_empty_handle, old.trigger_view, old.shake_sensitivity) == ('reference', True, 'compact', 50)
     old.update(shake_sensitivity=22)
     assert not subject.SettingsStore(legacy).autostart
     print('PASS old profiles keep explicit autostart=False; invalid new fields fall back independently')

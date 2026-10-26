@@ -13,6 +13,14 @@ class ShelfAdapter:
 
     def title(self,ref): return self.manager.shelf.content.title(ref)
 
+    def cancel_pending(self):
+        shelf=self.manager.shelf
+        shelf._copy_epoch+=1
+        for job in tuple(shelf.copy_jobs):job.cancel()
+        shelf.content.pending.clear();shelf.content.transfers.clear()
+
+    def remove_owned(self,ref):self.manager.shelf._delete_owned(ref)
+
     def restore(self,view):
         shelf = self.manager.shelf
         refs = list(view.get('permanent',[]))
@@ -22,8 +30,6 @@ class ShelfAdapter:
         # In-flight file copies/archives must not deliver another account's
         # contents after a profile switch. This does not touch original files.
         if old != refs:
-            shelf._copy_epoch += 1
-            for job in tuple(shelf.copy_jobs): job.cancel()
             if shelf.archive_job:
                 shelf._archive_epoch += 1; shelf.archive_job.cancel()
         if shelf.popup:

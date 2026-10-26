@@ -7,12 +7,15 @@ import shutil
 import stat
 import tempfile
 import threading
+import time
+import re
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal, Slot
 from selection_archive import _source_reader
 
 
-CHUNK_SIZE = 256 * 1024
+CHUNK_SIZE = 1024 * 1024
+_progress_context = threading.local()
 
 
 class CopyCancelled(Exception):
@@ -30,6 +33,7 @@ def _is_link(path):
 
 def _copy_file(source, target, cancel_event):
     _check(cancel_event)
+    report = getattr(_progress_context, 'report', None)
     with _source_reader(source) as incoming, target.open('xb') as outgoing:
         while True:
             _check(cancel_event)
@@ -37,6 +41,7 @@ def _copy_file(source, target, cancel_event):
             if not block:
                 break
             outgoing.write(block)
+            if report: report(len(block))
         _check(cancel_event)
 
 
@@ -59,7 +64,7 @@ def _copy_tree(source, target, cancel_event):
             raise ValueError(f'无法复制此类型的项目：{incoming.name}')
 
 
-def copy_files(paths, directory, cancel_event=None):
+def copy_files(paths, directory, cancel_event=None, progress=None):
     """Copy in order into one uniquely owned imports directory, or clean it up.
 
     This function performs disk I/O and is called only by a worker in the UI.
@@ -88,6 +93,15 @@ def copy_files(paths, directory, cancel_event=None):
         for source in sources:
             _check(cancel_event)
             directory_source = source.is_dir()
+            total = 0 if directory_source else source.stat().st_size
+            copied, last = 0, 0.0
+            def report(amount):
+                nonlocal copied, last
+                copied += amount
+                now = time.monotonic()
+                if progress and (now-last >= .05 or copied == total):
+                    last = now; progress(dict(source=str(source),received=copied,total=total))
+            if progress: progress(dict(source=str(source),received=0,total=total))
             name = source.name or 'folder'
             original = Path(name)
             stem, suffix = (name, '') if directory_source else (original.stem, original.suffix)
@@ -97,7 +111,10 @@ def copy_files(paths, directory, cancel_event=None):
                 name = f'{stem} ({number}){suffix}'
             names.add(name.casefold())
             target = owned / name
-            _copy_tree(source, target, cancel_event)
+            _progress_context.report = report
+            try: _copy_tree(source, target, cancel_event)
+            finally: _progress_context.report = None
+            if progress: progress(dict(source=str(source),received=copied,total=total or copied,complete=True))
             result.append(str(target))
         _check(cancel_event)
         return result
@@ -107,6 +124,7 @@ def copy_files(paths, directory, cancel_event=None):
 
 
 class _Signals(QObject):
+    progress = Signal(object)
     finished = Signal(list)
     failed = Signal(str)
     cancelled = Signal()
@@ -121,7 +139,7 @@ class _CopyWorker(QRunnable):
 
     def run(self):
         try:
-            result = copy_files(self.paths, self.directory, self.cancel_event)
+            result = copy_files(self.paths, self.directory, self.cancel_event, self.signals.progress.emit)
         except CopyCancelled:
             self.signals.cancelled.emit()
         except Exception as error:
@@ -141,6 +159,7 @@ class CopyFilesJob(QObject):
     finished = Signal(list)
     failed = Signal(str)
     cancelled = Signal()
+    progress = Signal(object)
 
     def __init__(self, paths, directory, parent=None, *, pool=None):
         super().__init__(parent)
@@ -163,6 +182,7 @@ class CopyFilesJob(QObject):
         self._worker.signals.finished.connect(self._on_finished, Qt.ConnectionType.QueuedConnection)
         self._worker.signals.failed.connect(self._on_failed, Qt.ConnectionType.QueuedConnection)
         self._worker.signals.cancelled.connect(self._on_cancelled, Qt.ConnectionType.QueuedConnection)
+        self._worker.signals.progress.connect(self.progress.emit, Qt.ConnectionType.QueuedConnection)
         self._pool.start(self._worker)
         return True
 

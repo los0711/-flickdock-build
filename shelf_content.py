@@ -39,6 +39,8 @@ def _unique_image_path(directory: Path) -> Path:
 class ContentRepository:
     def __init__(self, texts: dict[str, str] | None = None, metadata: dict | None = None):
         self.thumbnail_provider = None
+        self.pending = {}
+        self.transfers = {}
         self.metadata = {str(ref): dict(value) for ref, value in (metadata or {}).items()
                          if isinstance(ref, str) and isinstance(value, dict)} if isinstance(metadata, dict) else {}
         self.texts: dict[str, str] = {}
@@ -52,12 +54,18 @@ class ContentRepository:
     def is_text(ref: str) -> bool:
         return isinstance(ref, str) and ref.startswith(TEXT_PREFIX)
 
+    @staticmethod
+    def is_pending(ref):
+        return isinstance(ref,str) and ref.startswith('flickdock:transfer:')
+
     def exists(self, ref: str) -> bool:
+        if self.is_pending(ref): return ref in self.pending
         if self.is_text(ref):
             return ref in self.texts
         return isinstance(ref, str) and bool(ref) and Path(ref).exists()
 
     def title(self, ref: str) -> str:
+        if self.is_pending(ref): return str(self.pending.get(ref,{}).get('name','正在接收'))[:160]
         title = self.metadata.get(ref, {}).get('title')
         if isinstance(title, str) and title.strip():
             return title.strip().splitlines()[0][:160]
@@ -94,6 +102,10 @@ class ContentRepository:
         self.metadata = {ref: data for ref, data in self.metadata.items() if ref in keep}
 
     def category(self, ref: str) -> str:
+        if self.is_pending(ref):
+            kind=self.pending.get(ref,{}).get('kind')
+            if kind in ('text','url'):return 'text' if kind=='text' else 'links'
+            ref = self.title(ref)
         if self.is_text(ref):
             text = (self.text(ref) or '').strip()
             return 'links' if re.fullmatch(r'https?://\S+', text, re.IGNORECASE) else 'text'
@@ -121,6 +133,7 @@ class ContentRepository:
         paths = []
         text = []
         for ref in refs:
+            if self.is_pending(ref): continue
             if self.is_text(ref):
                 content = self.text(ref)
                 if content is not None:
@@ -157,6 +170,9 @@ class ContentRepository:
 
     def item_pixmap(self, ref: str, size: int = 90, stack: int = 1, dpr=None) -> QPixmap:
         from async_images import RASTER_SUFFIXES
+        if self.is_pending(ref):
+            name=self.title(ref)
+            return document_pixmap(Path(name).suffix or ('TEXT' if self.pending.get(ref,{}).get('kind') in ('text','url') else 'FILE'),size,stack,dpr=dpr)
         provider = self.thumbnail_provider
         if self.is_text(ref):
             cover = self.metadata.get(ref, {}).get('preview_image')

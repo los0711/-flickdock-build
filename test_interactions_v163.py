@@ -89,6 +89,9 @@ with tempfile.TemporaryDirectory(prefix='flickdock-interactions-v163-') as tmp:
         shelf.hide_immediately();manager.auto_shown=None;manager.settings.update(trigger_view='compact')
         manager._content_drag_validated(QPoint(300,300));assert not shelf.expanded
         shelf.remove_all('permanent');shelf.hide_immediately()
+        manager.update_handles()
+        assert manager.settings.keep_empty_handle and manager.edge.isVisible()
+        manager.settings.update(keep_empty_handle=False);assert not manager.edge.isVisible()
         manager.settings.update(keep_empty_handle=True)
         assert manager.edge.isVisible()
         manager.settings.update(keep_empty_handle=False);assert not manager.edge.isVisible()

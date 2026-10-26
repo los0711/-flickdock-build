@@ -139,7 +139,9 @@ def launch_installer(verified, *, installed_exe, quit_callback, popen=None,
     if (_identity(path.stat()) != verified.identity
             or _identity(os.fstat(verified.reader.fileno())) != verified.identity):
         raise ValueError('安装包在校验后已变化，请重新下载。')
-    arguments = [str(path), '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-',
+    # Keep the native installer's real progress visible after the application
+    # exits. /SILENT skips setup choices while preserving its progress window.
+    arguments = [str(path), '/SILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-',
                  '/CLOSEAPPLICATIONS', '/DIR=' + str(executable.parent),
                  '/FDOnlineUpdate=1', '/FDParentPid=' + str(os.getpid() if parent_pid is None else int(parent_pid)),
                  '/LOG=' + str(path.parent / 'install.log')]

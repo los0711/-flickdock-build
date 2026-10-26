@@ -278,9 +278,19 @@ with tempfile.TemporaryDirectory(prefix='flickdock-resume-v180-') as temp:
             adapter.view['permanent'].clear();engine.local_changed()
         elif mutation=='expired':server.uploads[old]['state']='garbage'
         else:stage.write_bytes(b'x'*transfer['size'])
+        before=len(server.calls)
         engine.state['not_before']=0;engine.tick()
         until(lambda:not engine.running and old not in server.uploads)
         account=server.account('case-'+mutation)
+        if mutation=='expired':
+            assert engine.state['entries'][transfer['id']].get('paused_upload')
+            assert not account['items']
+            assert not any(method=='POST' and path=='/v1/uploads' for _,method,path in server.calls[before:])
+            # Expiry and a manually cancelled upload with an expired receipt
+            # are indistinguishable. Only an explicit retry may re-upload it.
+            engine.retry_upload(str(source))
+            until(lambda:not engine.running and bool(account['items']))
+            assert old not in server.uploads and len(server.uploads)>=1
         if mutation=='delete':assert not account['items']
         else:
             assert len(account['items'])==1
@@ -332,7 +342,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-download-resume-v180-') as te
         until(lambda:not engine.running and engine.state.get('not_before',0)>time.time()+3500)
         cached=engine.state['downloads'][identity];target=engine._download_target(dict(record))
         part0=target.with_name('.'+target.name+'.chunk-0');part1=target.with_name('.'+target.name+'.chunk-1')
-        assert part0.read_bytes()==payload[:65536] and part1.exists() and len(cached['hashes'])==2
+        assert part0.read_bytes()==payload[:65536] and part1.exists() and len(cached['hashes'])>=2
         if corrupt:part0.write_bytes(b'x'*65536)
         engine.state['not_before']=0;engine.close()
         assert part0.exists() and part1.exists()

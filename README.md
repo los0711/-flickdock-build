@@ -1,8 +1,10 @@
 # FlickDock
 
-适用于 Windows 10/11 x64 和 macOS 14.4 以上（Apple 芯片、Intel）的文件、图片和文字搁架。当前版本 **1.8.0**。
+适用于 Windows 10/11 x64 和 macOS 14.4 以上（Apple 芯片、Intel）的文件、图片和文字搁架。当前版本 **1.8.1**。
 
 单个永久搁架，支持内容拖放、快速甩动呼出、可配置快捷键、屏幕贴边、图片与视频预览、文字直接拖出、多选拖出和 ZIP 打包。设置支持明暗主题、复制或原位置引用、保存位置、自启动、触发区域和甩动灵敏度。
+
+复制与上传提供暗色图标、加载环、可取消的实际进度和跨设备占位。账号面板支持设备改名、修改密码并退出其他设备。新增带接收确认的局域网加密直传；设置控件不会被滚轮误改，更新安装可见进度。性能与免费服务边界见 [FEATURE_V181.md](FEATURE_V181.md)。
 
 新增设置内账号注册/登录、多设备列表和撤销、离线队列及跨 Windows/Mac 的文件与文字同步；圆角设置窗、行内更新和启动项自动修复。本版不绑定邮箱。Mac 两种原生架构均通过云端构建与冻结程序同步验证；见 [MAC_BUILD.md](MAC_BUILD.md)。云同步协议/免费额度见 [CLOUD_SYNC.md](CLOUD_SYNC.md)。
 
@@ -35,6 +37,7 @@ python release_dpr_v165.py
 
 ```powershell
 FlickDock.exe --verify-media C:/test/video.mp4 --verify-output media-result.json
+FlickDock.exe --verify-transfers --verify-output transfers-result.json
 FlickDock.exe --verify-update --verify-current 1.6.5 --verify-output update-result.json
 ```
 

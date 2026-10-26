@@ -93,7 +93,8 @@ def main(arguments=None):
         env['FLICKDOCK_ENTITLEMENTS'] = str(options.entitlements.resolve())
     run([python, '-m', 'unittest', 'test_platform_startup', 'test_platform_native', 'test_mac_updates',
          'test_macos_native_entry', 'test_update_macos_controller', 'test_mac_build',
-         'test_shelf_sync_v180', 'test_sync_review_v180', 'test_account_security_v180', '-v'], env=env)
+         'test_shelf_sync_v180', 'test_sync_review_v180', 'test_account_security_v180',
+         'test_lan_transfer_v181', 'test_shelf_transfers_v181', '-v'], env=env)
     run([python, ROOT / 'test_update_macos.py'], env=env)
     run([python, ROOT / 'build_macos.py', '--icon-only', build / 'FlickDock.icns'], env=env)
     run([python, '-m', 'PyInstaller', '--noconfirm', '--clean', ROOT / 'FlickDock-mac.spec'], env=env)
@@ -109,10 +110,16 @@ def main(arguments=None):
     report.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='flickdock-mac-verify-') as profile:
         smoke = Path(profile) / 'platform.json'
-        run([binary, '--verify-platform', smoke], env=dict(env, HOME=profile, APPDATA=profile))
+        run([binary, '--verify-platform', smoke], env=dict(env, XDG_CONFIG_HOME=profile, APPDATA=profile))
         frozen = json.loads(smoke.read_text(encoding='utf-8'))
         if not frozen.get('ok') or frozen.get('version') != APP_VERSION:
             raise RuntimeError('Frozen macOS platform verification failed')
+        transfers_path = Path(profile) / 'transfers.json'
+        run([binary, '--verify-transfers', '--verify-output', transfers_path], env=dict(env, XDG_CONFIG_HOME=profile, APPDATA=profile))
+        transfers = json.loads(transfers_path.read_text(encoding='utf-8'))
+        if not transfers.get('ok') or not transfers.get('frozen') or transfers.get('version') != APP_VERSION:
+            raise RuntimeError('Frozen macOS original-file/TLS/cancellation verification failed')
+        frozen['lan_transfers'] = transfers
     if options.sign_identity:
         run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)])
     name = f'FlickDock-{APP_VERSION}-macOS-{options.target_arch}'

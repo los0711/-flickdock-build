@@ -4,6 +4,7 @@ from PySide6.QtCore import QRectF, Qt, QVariantAnimation, QEasingCurve, QAbstrac
 from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap
 from flickdock_icons import content_color, device_pixel_ratio, document_pixmap
 from flickdock_motion import ContentTile
+from transfer_visuals import draw_ring
 
 
 def stack_refs(refs):
@@ -23,7 +24,8 @@ def stack_pixmap(repository, refs, size=110, *, dpr=None, preview_cache=None, ar
     colors=[]
     for ref in selected:
         kind=repository.category(ref)
-        value=('link' if kind=='links' else 'TEXT') if repository.is_text(ref) else Path(ref).suffix or ('folder' if Path(ref).is_dir() else 'generic')
+        name=repository.title(ref) if getattr(repository,'is_pending',lambda r:False)(ref) else ref
+        value=('link' if kind=='links' else 'TEXT') if repository.is_text(ref) else Path(name).suffix or ('folder' if Path(ref).is_dir() else 'generic')
         variant=0;color=content_color(value)
         while color in colors:
             variant+=1;color=content_color(value,variant)
@@ -56,7 +58,8 @@ def stack_pixmap(repository, refs, size=110, *, dpr=None, preview_cache=None, ar
                 p.drawPixmap(QRectF(available.center().x()-width/2,available.center().y()-height/2,width,height),image,QRectF(image.rect()))
                 p.setClipping(False)
             else:
-                value=('link' if kind=='links' else 'TEXT') if repository.is_text(ref) else Path(ref).suffix or 'generic'
+                name=repository.title(ref) if getattr(repository,'is_pending',lambda r:False)(ref) else ref
+                value=('link' if kind=='links' else 'TEXT') if repository.is_text(ref) else Path(name).suffix or 'generic'
                 art=front_art if front_art is not None else document_pixmap(value,100,dpr=ratio)
                 # Match the family artwork's 13,5,43,51 box to this front card.
                 destination=QRectF(card.x()-13*card.width()/43,card.y()-5*card.height()/51,
@@ -133,4 +136,15 @@ class StackTile(ContentTile):
                     self._stack_cache=stack_pixmap(self.repository,self.refs,128,dpr=ratio,preview_cache=self.preview_cache)
                     self._stack_dpr=ratio
                 self._pixmap=self._stack_cache
+        state=getattr(self.repository,'transfers',{}).get(self.refs[-1]) if self.refs else None
+        if state and not self._pixmap.isNull():
+            original=self._pixmap
+            dim=QPixmap(original.size());dim.setDevicePixelRatio(original.devicePixelRatioF());dim.fill(Qt.GlobalColor.transparent)
+            painter=QPainter(dim);painter.setOpacity(.38);painter.drawPixmap(0,0,original);painter.end()
+            self._pixmap=dim
         super().paintEvent(event)
+        if state:
+            self._pixmap=original
+            painter=QPainter(self)
+            side=min(82,self.width()*.55,self.height()*.7)
+            draw_ring(painter,QRectF((self.width()-side)/2,(self.height()-side)/2,side,side),state)

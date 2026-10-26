@@ -21,6 +21,8 @@ AUTH_KDF = {'name':'scrypt','N':16384,'r':8,'p':5,'dkLen':32}
 
 def _wipe(value):
     if isinstance(value,bytearray):value[:]=b'\0'*len(value)
+    elif isinstance(value,dict):
+        for child in value.values():_wipe(child)
 
 
 def validate_auth_challenge(value):
@@ -76,12 +78,34 @@ class _AuthWorker(QRunnable):
         self.signals.finished.emit(self.epoch,self.proof,error)
 
 
+class _PasswordWorker(_AuthWorker):
+    """Both password derivations stay off the GUI thread and share cancellation."""
+    def __init__(self,epoch,password,salt,new_password,new_salt):
+        super().__init__(epoch,password,salt)
+        self.new_password,self.new_salt=new_password,new_salt
+
+    def run(self):
+        error='';self.proof={}
+        try:
+            if not self.cancelled.is_set():self.proof['old']=derive_auth_key(self.password,self.salt)
+            if not self.cancelled.is_set():self.proof['new']=derive_auth_key(self.new_password,self.new_salt)
+            if self.cancelled.is_set():_wipe(self.proof);self.proof=None
+        except Exception:
+            _wipe(self.proof);self.proof=None
+            error='本机无法完成密码验证，请稍后重试。'
+        finally:
+            _wipe(self.password);_wipe(self.new_password)
+            self.password=self.new_password=None
+        self.signals.finished.emit(self.epoch,self.proof,error)
+
+
 class AccountService(QObject):
     account_changed = Signal(object)
     status_changed = Signal(str)
     busy_changed = Signal(bool)
     devices_changed = Signal(list)
     email_challenge = Signal(str, str)
+    password_changed = Signal()
 
     def __init__(self, base, parent=None, *, origin=DEFAULT_CLOUD_URL, api=None, store=None):
         super().__init__(parent)
@@ -117,6 +141,30 @@ class AccountService(QObject):
     def register(self, username, password): return self._auth('register', username, password)
     def login(self, username, password): return self._auth('login', username, password)
 
+    def change_password(self, old_password, new_password, confirm_password=None):
+        if self._closed or not self.signed_in or self.busy:return False
+        if not isinstance(old_password,str) or not old_password:
+            self.status_changed.emit('请输入原密码。');return False
+        if not isinstance(new_password,str) or not 10<=len(new_password)<=128 or len(old_password)>128:
+            self.status_changed.emit('新密码需要 10–128 个字符。');return False
+        if confirm_password is not None and new_password!=confirm_password:
+            self.status_changed.emit('两次输入的新密码不一致。');return False
+        if old_password==new_password:
+            self.status_changed.emit('新密码不能与原密码相同。');return False
+        old_secret=None
+        try:old_secret,new_secret=bytearray(old_password.encode('utf8')),bytearray(new_password.encode('utf8'))
+        except UnicodeError:
+            _wipe(old_secret)
+            self.status_changed.emit('密码格式无效，请重新输入。');return False
+        self.epoch+=1;epoch=self.epoch
+        self._auth_state=dict(epoch=epoch,action='password',password=old_secret,new_password=new_secret)
+        self._busy(True);self.status_changed.emit('正在修改密码…')
+        try:
+            self._auth_request_key=self.api.request('POST','/v1/auth/password/challenge',
+                lambda result,error:self._challenge_done(epoch,result,error),data={})
+        except Exception:self._auth_error(epoch,'账号服务暂时无法连接，请稍后重试。')
+        return True
+
     def _auth(self, action, username, password):
         if self._closed or self.busy: return False
         if not isinstance(username,str) or not username.strip() or not isinstance(password,str) or not password:
@@ -150,6 +198,8 @@ class AccountService(QObject):
         # Server error text must never echo a password, proof, or provider data.
         return {'INVALID_CREDENTIALS':'账号或密码不正确。','USERNAME_TAKEN':'这个账号已被使用。',
                 'INVALID_CHALLENGE':'登录验证已过期，请重试。','AUTH_NOT_CONFIGURED':'账号服务暂未开放，请稍后重试。',
+                'INVALID_OLD_PASSWORD':'原密码不正确，请重新输入。',
+                'PASSWORD_CHANGED':'密码已在其他设备更改，请重新验证原密码。',
                 'DEVICE_LIMIT':'账号已登录 20 台设备，请先移除其他设备后再登录。',
                 'EMAIL_UNAVAILABLE':'邮箱验证服务暂未开放，请稍后重试。',
                 'INVALID_EMAIL':'邮箱地址格式无效，请重新输入。',
@@ -164,7 +214,12 @@ class AccountService(QObject):
         try:challenge,salt,expires=validate_auth_challenge(result)
         except ValueError as problem:self._auth_error(epoch,str(problem));return
         state=self._auth_state;state.update(challenge_id=challenge,expires=expires)
-        job=_AuthWorker(epoch,state.pop('password'),salt)
+        if state['action']=='password':
+            new_salt=result.get('new_salt')
+            if not isinstance(new_salt,str) or not re.fullmatch(r'[0-9a-f]{32}',new_salt) or new_salt==result['salt']:
+                self._auth_error(epoch,'密码验证参数无效，请稍后重试。');return
+            job=_PasswordWorker(epoch,state.pop('password'),salt,state.pop('new_password'),bytes.fromhex(new_salt))
+        else:job=_AuthWorker(epoch,state.pop('password'),salt)
         self._auth_jobs[epoch]=job
         job.signals.finished.connect(self._auth_derived,Qt.ConnectionType.QueuedConnection)
         QThreadPool.globalInstance().start(job)
@@ -173,6 +228,16 @@ class AccountService(QObject):
         job=self._auth_jobs.pop(epoch,None)
         try:
             if not self._auth_live(epoch):return
+            state=self._auth_state
+            if state['action']=='password':
+                if error or not isinstance(proof,dict) or any(not isinstance(proof.get(k),bytearray) or len(proof[k])!=32 for k in ('old','new')):
+                    self._auth_error(epoch,error or '本机未能完成密码验证，请重试。');return
+                if state['expires']<=datetime.now(timezone.utc):
+                    self._auth_error(epoch,'密码验证已过期，请重试。');return
+                self._auth_request_key=self.api.request('POST','/v1/auth/password',
+                    lambda result,problem:self._auth_done(epoch,result,problem),
+                    data={'challenge_id':state['challenge_id'],'old_auth_key':proof['old'].hex(),'new_auth_key':proof['new'].hex()})
+                return
             if error or not isinstance(proof,bytearray) or len(proof)!=32:
                 self._auth_error(epoch,error or '本机未能完成账号验证，请重试。');return
             state=self._auth_state
@@ -191,6 +256,12 @@ class AccountService(QObject):
         if not self._auth_live(epoch):return
         self._auth_request_key=None
         if error:self._auth_error(epoch,self._auth_message(error));return
+        if self._auth_state['action']=='password':
+            if not isinstance(result,dict) or result.get('changed') is not True:
+                self._auth_error(epoch,'账号服务未能确认密码已修改，请重试。');return
+            self._drop_auth_state();self._busy(False)
+            self.password_changed.emit();self.status_changed.emit('密码已修改，其他设备需要重新登录。');self.list_devices()
+            return
         account=result.get('account') if isinstance(result,dict) else None
         if (not isinstance(account,dict) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',str(account.get('id','')))
                 or not isinstance(result.get('token'),str) or not result['token']):
@@ -209,7 +280,7 @@ class AccountService(QObject):
     def _drop_auth_state(self):
         state,self._auth_state=self._auth_state,None
         self._auth_request_key=None
-        if state is not None:_wipe(state.pop('password',None));state.clear()
+        if state is not None:_wipe(state.pop('password',None));_wipe(state.pop('new_password',None));state.clear()
 
     def cancel_auth(self):
         active=self._auth_state is not None
@@ -254,6 +325,25 @@ class AccountService(QObject):
             if device_id == self.device_id: self._clear('此设备已退出登录。')
             else: self.status_changed.emit('已移除该设备的登录。'); self.list_devices()
         self.api.request('DELETE','/v1/devices/'+quote(device_id,safe=''),done)
+
+    def rename_device(self, device_id, name):
+        if not self.signed_in or self.busy:return False
+        if not isinstance(name,str):self.status_changed.emit('请输入设备名称。');return False
+        name=name.strip()
+        try:valid=bool(name) and len(name.encode('utf-16-le'))<=160 and not re.search(r'[\x00-\x1f\x7f]',name)
+        except UnicodeError:valid=False
+        if not valid:self.status_changed.emit('设备名称需要 1–80 个字符，且不能包含控制字符。');return False
+        self._busy(True);epoch=self.epoch
+        def done(result,error):
+            if self._closed or epoch!=self.epoch:return
+            self._busy(False)
+            if error:self.status_changed.emit(self._auth_message(error));return
+            if device_id==self.device_id:self.device_name=name
+            self.status_changed.emit('设备名称已更新。');self.list_devices()
+        try:self.api.request('PATCH','/v1/devices/'+quote(device_id,safe=''),done,data={'name':name})
+        except Exception:
+            self._busy(False);self.status_changed.emit('账号服务暂时无法连接，请稍后重试。');return False
+        return True
 
     def request_email_code(self, email):
         if not self.signed_in or self.busy: return

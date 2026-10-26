@@ -4,10 +4,11 @@ import hashlib
 import json
 import os
 import re
+import time
 from pathlib import Path
 from uuid import uuid4
 
-from PySide6.QtCore import QObject, QTimer, QUrl, Signal
+from PySide6.QtCore import QObject, QTimer, QUrl, Qt, Signal
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 from app_version import APP_VERSION
 
@@ -27,6 +28,7 @@ class CloudApi(QObject):
         self.network = network or QNetworkAccessManager(self)
         self.token = ''
         self._requests = {}
+        self._deferred = {}
         self._closed = False
         self._allow_test_http = allow_test_http
 
@@ -43,8 +45,13 @@ class CloudApi(QObject):
         return QUrl(self.origin + path)
 
     def request(self, method, path, callback, *, data=None, raw=None, headers=None,
-                authenticated=True, destination=None, expected=None, timeout_ms=45000):
-        """callback(result, error); result is JSON or a verified download Path."""
+                authenticated=True, destination=None, expected=None, timeout_ms=45000,
+                progress=None):
+        """callback(result,error); optional progress(sent,total) reports raw upload.
+
+        Upload progress counts bytes handed to the network, not committed R2
+        content. Only the successful protocol response confirms acceptance.
+        """
         key = uuid4().hex
         try:
             if self._closed: raise CloudError('同步服务已关闭。')
@@ -66,16 +73,47 @@ class CloudApi(QObject):
             state = {'reply':reply,'callback':callback,'timer':timer,'body':bytearray(),
                      'received':0,'expected':expected,'destination':Path(destination) if destination else None,
                      'part':None,'file':None,'hash':hashlib.sha256(),
+                     'progress':progress if callable(progress) and raw is not None else None,
+                     'upload_total':len(payload),'upload_sent':-1,'progress_at':0.,
                      'auth_token':self.token if authenticated else None}
             self._requests[key] = state
             timer.timeout.connect(lambda: self._finish(key, error=CloudError('同步请求超时，请检查网络。')))
             reply.readyRead.connect(lambda: self._drain(key))
             reply.finished.connect(lambda: self._finish(key))
+            if state['progress'] is not None:
+                # Delivery is queued onto this object's GUI event loop. State
+                # lookup then discards signals already queued before cancel.
+                signal=getattr(reply,'uploadProgress',None)
+                if signal is not None:
+                    report=lambda sent,total:self._upload_progress(key,sent,total)
+                    try:signal.connect(report,Qt.ConnectionType.QueuedConnection)
+                    except TypeError:signal.connect(report)  # Minimal injected test transports.
             timer.start(max(timeout_ms, 300000) if destination else timeout_ms)
         except Exception as error:
             problem = error if isinstance(error, CloudError) else CloudError('无法连接云同步服务。')
-            QTimer.singleShot(0, lambda e=problem: callback(None, e) if not self._closed else None)
+            if not self._closed:
+                self._deferred[key]=(callback,problem)
+                QTimer.singleShot(0,lambda:self._validation_error(key))
         return key
+
+    def _validation_error(self,key):
+        pending=self._deferred.pop(key,None)
+        if pending is not None and not self._closed:pending[0](None,pending[1])
+
+    def _upload_progress(self,key,sent,total):
+        state=self._requests.get(key)
+        if (self._closed or state is None or state['progress'] is None
+                or state['auth_token'] is not None and state['auth_token']!=self.token):return
+        try:sent=int(sent)
+        except (TypeError,ValueError,OverflowError):return
+        if sent<0:return
+        total=state['upload_total'];sent=min(sent,total)
+        if sent<=state['upload_sent']:return
+        now=time.monotonic()
+        if state['upload_sent']>=0 and sent<total and now-state['progress_at']<.06:return
+        state['upload_sent'],state['progress_at']=sent,now
+        try:state['progress'](sent,total)
+        except Exception:pass  # A stale/deleted view must not abort a transfer.
 
     def _drain(self, key):
         state = self._requests.get(key)
@@ -155,10 +193,14 @@ class CloudApi(QObject):
         if not self._closed: state['callback'](result,error)
 
     def cancel(self, key):
+        pending=self._deferred.pop(key,None)
+        if pending is not None:
+            if not self._closed:pending[0](None,CloudError('同步操作已取消。',code='cancelled'))
+            return
         self._finish(key, CloudError('同步操作已取消。',code='cancelled'))
 
     def cancel_all(self):
-        for key in tuple(self._requests): self.cancel(key)
+        for key in (*self._requests,*self._deferred): self.cancel(key)
 
     def close(self):
         self._closed = True

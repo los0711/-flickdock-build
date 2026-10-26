@@ -88,7 +88,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-intake-v164-') as temporary:
     # The controlled worker only delays its completion signal; it does not
     # fake the public intake path or rely on desktop input/registry/hotkeys.
     class ControlledCopy(QObject):
-        finished=Signal(list);failed=Signal(str);cancelled=Signal()
+        finished=Signal(list);failed=Signal(str);cancelled=Signal();progress=Signal(object)
         jobs=[]
         def __init__(self,paths,destination,parent=None):
             super().__init__(parent);self.paths=paths;self.destination=Path(destination)

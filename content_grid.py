@@ -10,6 +10,7 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPen, QTextLayout, QTextOptio
 from PySide6.QtWidgets import QMenu, QWidget
 
 from flickdock_motion import FeedbackButton, Spring
+from transfer_visuals import draw_ring
 
 try:
     from ui_theme import color
@@ -198,7 +199,12 @@ class IconItem(QWidget):
             painter.setPen(QPen(QColor('#6aa8ee'), 1))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRoundedRect(QRectF(self.rect()).adjusted(2, 2, -2, -2), 11, 11)
-        painter.drawPixmap(QRectF((self.width()-64)/2,13,64,64),self.icon,QRectF(self.icon.rect()))
+        state=getattr(self.popup.shelf.content,'transfers',{}).get(self.ref)
+        if state:painter.setOpacity(.38)
+        icon_rect=QRectF((self.width()-64)/2,13,64,64)
+        painter.drawPixmap(icon_rect,self.icon,QRectF(self.icon.rect()))
+        painter.setOpacity(1)
+        draw_ring(painter,icon_rect,state)
         painter.setPen(QColor(color('text')))
         self._draw_title(painter, QRectF(6, 85, self.width() - 12, 38), self.title)
         painter.end()

@@ -11,11 +11,30 @@ from uuid import uuid4
 import zipfile
 
 from PySide6.QtCore import QObject, QRunnable, Signal
-from selection_archive import _source_reader, _write_file, _is_link
+from selection_archive import _source_reader, _is_link
 
 # Overall service space is bounded; no separate 64 MB intake restriction.
 MAX_FILE_BYTES = 8 * 1024 * 1024 * 1024
 DIRECTORY_MIME = 'application/x-flickdock-directory+zip'
+# Avoid burning CPU recompressing media/container formats. Text, code and other
+# compressible data use fast deflate to reduce cloud requests and transfer bytes.
+_STORED_EXTENSIONS=frozenset(('jpg','jpeg','png','gif','webp','avif','heic','heif','jxl',
+    'mp4','m4v','mov','mkv','webm','avi','mp3','m4a','aac','ogg','opus','flac',
+    'zip','7z','rar','gz','bz2','xz','zst','br','dmg','iso','epub','docx','xlsx','pptx'))
+
+
+def _write_sync_file(archive, source, name, cancel):
+    info=zipfile.ZipInfo.from_file(source,name,strict_timestamps=False)
+    info.compress_type=zipfile.ZIP_STORED if source.suffix.lower().lstrip('.') in _STORED_EXTENSIONS else zipfile.ZIP_DEFLATED
+    # ZipInfo has a public compress_level property on newer Python versions.
+    # The bundled 3.12 runtime uses the supported ZipFile default for this field.
+    if hasattr(info,'compress_level'):info.compress_level=1
+    else:info._compresslevel=1
+    with _source_reader(source) as incoming, archive.open(info,'w',force_zip64=True) as outgoing:
+        while data:=incoming.read(1024*1024):
+            if cancel.is_set():raise InterruptedError()
+            outgoing.write(data)
+        if cancel.is_set():raise InterruptedError()
 
 
 def safe_name(name):
@@ -41,15 +60,18 @@ def stage_item(ref, text, name, directory, cancel, limit=MAX_FILE_BYTES):
     directory = Path(directory); directory.mkdir(parents=True, exist_ok=True)
     target = directory / (uuid4().hex + '.blob')
     try:
+        if cancel.is_set():raise InterruptedError()
         mime = mimetypes.guess_type(name)[0] or 'application/octet-stream'
+        digest,size=hashlib.sha256(),0
         if text is not None:
             data = text.encode('utf8')
             if len(data) > limit: raise ValueError('这段文字超过云同步大小限制。')
             target.write_bytes(data); mime = 'text/plain'
+            digest.update(data);size=len(data)
         elif Path(ref).is_dir():
             mime = DIRECTORY_MIME
             count, total = 0, 0
-            with zipfile.ZipFile(target,'w',zipfile.ZIP_DEFLATED) as archive:
+            with zipfile.ZipFile(target,'w',zipfile.ZIP_DEFLATED,compresslevel=1) as archive:
                 for folder, directories, files in os.walk(ref, followlinks=False):
                     if any(_is_link(Path(folder,d)) for d in directories):
                         raise ValueError('文件夹含有链接，请移除链接后同步。')
@@ -63,8 +85,15 @@ def stage_item(ref, text, name, directory, cancel, limit=MAX_FILE_BYTES):
                         if _is_link(source): raise ValueError('文件夹含有链接，请移除链接后同步。')
                         total += source.stat().st_size; count += 1
                         if total > limit or count > 10000: raise ValueError('文件夹超过云同步大小或数量限制。')
-                        _write_file(archive,source,source.relative_to(ref).as_posix(),cancel)
+                        _write_sync_file(archive,source,source.relative_to(ref).as_posix(),cancel)
                         if target.stat().st_size > limit: raise ValueError('文件夹压缩包超过云同步限制。')
+            # ZIP writers patch local headers on seekable files. Hash only the
+            # finished archive, preserving its actual bytes and empty folders.
+            with target.open('rb') as stream:
+                while chunk:=stream.read(1024*1024):
+                    if cancel.is_set():raise InterruptedError()
+                    digest.update(chunk);size+=len(chunk)
+                    if size>limit:raise ValueError('此项超过云同步大小限制。')
         else:
             total = 0
             with _source_reader(Path(ref)) as original, target.open('xb') as copy:
@@ -72,13 +101,8 @@ def stage_item(ref, text, name, directory, cancel, limit=MAX_FILE_BYTES):
                     if cancel.is_set(): raise InterruptedError()
                     total += len(chunk)
                     if total > limit: raise ValueError('此项超过当前云空间容量；原文件仍保留在本机。')
-                    copy.write(chunk)
-        digest = hashlib.sha256(); size = 0
-        with target.open('rb') as stream:
-            while chunk := stream.read(1024*1024):
-                if cancel.is_set(): raise InterruptedError()
-                digest.update(chunk); size += len(chunk)
-                if size > limit: raise ValueError('此项超过云同步大小限制。')
+                    copy.write(chunk);digest.update(chunk);size=total
+        if cancel.is_set():raise InterruptedError()
         return {'path':str(target),'size':size,'sha256':digest.hexdigest(),'mime_type':mime}
     except BaseException:
         target.unlink(missing_ok=True)

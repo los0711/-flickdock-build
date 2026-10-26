@@ -103,6 +103,78 @@ try{
     assert.equal(JSON.parse(sql('SELECT COUNT(*) n FROM email_challenges'))[0].results[0].n,0);
     await request('POST','/v1/uploads',{unexpected:1},alice.token,400);
   });
+  await check('active devices can be renamed without crossing account boundaries',async()=>{
+    const reply=await request('PATCH','/v1/devices/'+mac.device_id,{name:'  工作 Mac  '},alice.token);
+    assert.equal(reply.name,'工作 Mac');
+    assert.equal((await request('GET','/v1/devices',undefined,mac.token)).devices.find(d=>d.current).name,'工作 Mac');
+    await request('PATCH','/v1/devices/'+mac.device_id,{name:'foreign'},bob.token,404);
+    for(const name of ['', '   ', 'a'.repeat(81), 'bad\u0000name'])await request('PATCH','/v1/devices/'+mac.device_id,{name},alice.token,400);
+  });
+  await check('password change requires old proof, fresh single-use device challenge and revokes other sessions',async()=>{
+    const original=credentials('password-change-fixture'),nextPassword='next private testing password';
+    const current=await request('POST','/v1/auth/register',original,undefined,201);
+    const other=await request('POST','/v1/auth/login',{...original,platform:'macos'});
+    const oldLogin=await request('POST','/v1/auth/challenge',{username:original.username,purpose:'login'});
+    const stale=await request('POST','/v1/auth/password/challenge',{},current.token);
+    const make=(challenge,password=original.password,newPassword=nextPassword)=>({challenge_id:challenge.challenge_id,
+      old_auth_key:scryptSync(password,Buffer.from(challenge.salt,'hex'),32,{N:16384,r:8,p:5,maxmem:32*1024*1024}).toString('hex'),
+      new_auth_key:scryptSync(newPassword,Buffer.from(challenge.new_salt,'hex'),32,{N:16384,r:8,p:5,maxmem:32*1024*1024}).toString('hex')});
+    assert.notEqual(stale.new_salt,stale.salt);assert.deepEqual(stale.kdf,{name:'scrypt',N:16384,r:8,p:5,dkLen:32});
+    await request('POST','/v1/auth/password',make(stale),other.token,400);
+    const wrong=await request('POST','/v1/auth/password/challenge',{},current.token);
+    await request('POST','/v1/auth/password',make(wrong,'wrong testing password'),current.token,403);
+    await request('POST','/v1/auth/password',make(wrong),current.token,400);
+    const fresh=await request('POST','/v1/auth/password/challenge',{},current.token),proof=make(fresh);
+    const changed=await request('POST','/v1/auth/password',proof,current.token);assert.equal(changed.other_devices_revoked,true);
+    await request('GET','/v1/me',undefined,current.token);
+    await request('GET','/v1/me',undefined,other.token,401);
+    await request('POST','/v1/auth/password',proof,current.token,400);
+    await request('POST','/v1/auth/password',make(stale,original.password,'another private password'),current.token,409);
+    await request('POST','/v1/auth/login',authBody(original,oldLogin),undefined,401);
+    await request('POST','/v1/auth/login',original,undefined,401);
+    const logged=await request('POST','/v1/auth/login',{...original,password:nextPassword});assert.equal(logged.account.id,current.account.id);
+    const devices=(await request('GET','/v1/devices',undefined,current.token)).devices;
+    assert.ok(devices.find(d=>d.id===other.device_id).revoked_at);assert.equal(devices.find(d=>d.id===current.device_id).revoked_at,null);
+    const stored=sql(`SELECT auth_verifier FROM accounts WHERE id='${current.account.id}'`);assert.ok(!stored.includes(proof.new_auth_key));assert.ok(!stored.includes(nextPassword));
+  });
+  await check('other devices see pending progress without partial content; cancel, commit and expiry remove it',async()=>{
+    const peer=await request('POST','/v1/auth/login',{...credentials('init-retry-fixture'),device_name:'Transfer peer',platform:'macos'});
+    const data=Buffer.alloc(1024*1024+7,17),newId=randomUUID(),reserved=await reserve(initOwner.token,newId,data);
+    const listed=await request('GET','/v1/transfers',undefined,peer.token),pending=listed.transfers.find(t=>t.upload_id===reserved.upload_id);
+    assert.equal(pending.received_bytes,0);assert.equal(pending.device_id,initOwner.device_id);assert.equal(pending.device_name,'Windows test');assert.equal(pending.state,'pending');
+    assert.ok(!(await request('GET','/v1/transfers',undefined,bob.token)).transfers.some(t=>t.upload_id===reserved.upload_id));
+    await request('GET',`/v1/items/${newId}/content`,undefined,peer.token,404);
+    await part(initOwner.token,reserved.upload_id,0,data.subarray(0,1024*1024));
+    const progress=(await request('GET','/v1/sync/changes',undefined,peer.token)).transfers.find(t=>t.upload_id===reserved.upload_id);
+    assert.equal(progress.received_bytes,1024*1024);assert.equal(progress.next_part,1);
+    const key=sqlRows(`SELECT key FROM parts WHERE upload_id='${reserved.upload_id}'`)[0].key;
+    await request('DELETE',`/v1/uploads/${reserved.upload_id}`,undefined,peer.token);
+    assert.ok(!(await request('GET','/v1/transfers',undefined,peer.token)).transfers.some(t=>t.upload_id===reserved.upload_id));
+    await localObject(key,null);assert.equal(sqlRows(`SELECT COUNT(*) n FROM allocations WHERE id='${reserved.upload_id}'`)[0].n,0);
+    for(const [method,path,payload] of [
+      ['GET',`/v1/uploads/${reserved.upload_id}`],
+      ['POST',`/v1/uploads/${reserved.upload_id}/commit`,{}],
+      ['POST','/v1/uploads',{upload_id:reserved.upload_id,item_id:newId,base_version:0,kind:'file',name:'文件.bin',mime_type:'application/octet-stream',size:data.length,sha256:hash(data)}],
+    ])assert.equal((await request(method,path,payload,initOwner.token,410)).error.code,'UPLOAD_CANCELLED');
+    await part(initOwner.token,reserved.upload_id,1,data.subarray(1024*1024),410);
+    await request('DELETE',`/v1/uploads/${reserved.upload_id}`,undefined,initOwner.token);
+    const delayedId=randomUUID();await request('DELETE',`/v1/uploads/${delayedId}`,undefined,initOwner.token);
+    const lateData=Buffer.from('late init'),lateSpec={upload_id:delayedId,item_id:randomUUID(),base_version:0,kind:'file',name:'late.bin',mime_type:'application/octet-stream',size:lateData.length,sha256:hash(lateData)};
+    assert.equal((await request('POST','/v1/uploads',lateSpec,initOwner.token,410)).error.code,'UPLOAD_CANCELLED');
+    // The same random identifier cancelled in another account grants no access
+    // and cannot deny that other account a new independent upload.
+    const separate=await request('POST','/v1/uploads',lateSpec,bob.token,201);assert.equal(separate.upload_id,delayedId);
+    const ownReceipt=await request('GET',`/v1/uploads/${delayedId}`,undefined,initOwner.token,410);assert.equal(ownReceipt.error.item_id,null);
+    await request('DELETE',`/v1/uploads/${delayedId}`,undefined,bob.token);
+    const finished=await reserve(initOwner.token,newId,Buffer.from('complete'));
+    await part(initOwner.token,finished.upload_id,0,Buffer.from('complete'));const committed=await request('POST',`/v1/uploads/${finished.upload_id}/commit`,{},initOwner.token);
+    assert.ok(!(await request('GET','/v1/transfers',undefined,peer.token)).transfers.some(t=>t.upload_id===finished.upload_id));
+    await request('DELETE',`/v1/items/${newId}`,{base_version:committed.record.version},initOwner.token);
+    const expired=await reserve(initOwner.token,randomUUID(),Buffer.from('expires'));
+    sql(`UPDATE uploads SET expires_at=1 WHERE id='${expired.upload_id}'`);
+    assert.ok(!(await request('GET','/v1/transfers',undefined,peer.token)).transfers.some(t=>t.upload_id===expired.upload_id));
+    await request('DELETE',`/v1/uploads/${expired.upload_id}`,undefined,initOwner.token);
+  });
   await check('persisted upload UUID recovers a lost initialization reply without duplicate reservation',async()=>{
     const owner=initOwner;
     const data=Buffer.from('unchanged original bytes after an initialization reply is lost'),newId=randomUUID(),clientId=randomUUID();
@@ -197,7 +269,7 @@ try{
         localFetch(base+`/v1/uploads/${reserved.upload_id}/commit`,{method:'POST',headers:{Authorization:'Bearer '+alice.token,'Content-Type':'application/json'},body:'{}'}),
         localFetch(base+`/v1/uploads/${reserved.upload_id}`,{method:'DELETE',headers:{Authorization:'Bearer '+alice.token}}),
       ]);
-      assert.ok(result.every(r=>[200,404,409,423].includes(r.status)));
+      assert.ok(result.every(r=>[200,404,409,410,423].includes(r.status)));
       assert.ok(!result.every(r=>r.status===200),'Both cancellation and commitment cannot succeed');
     }
     const result=JSON.parse(sql("SELECT COUNT(*) n FROM items i JOIN uploads u ON u.id=i.active_upload WHERE i.deleted=0 AND u.state<>'committed'"));assert.equal(result[0].results[0].n,0);
@@ -407,7 +479,7 @@ try{
     sql(`UPDATE uploads SET garbage_after=1 WHERE id='${reserved.upload_id}'`);
     const response=await localFetch(base+'/__scheduled?cron=17+*+*+*+*');assert.equal(response.status,200);
     let count=1;for(let i=0;i<20;i++){count=JSON.parse(sql(`SELECT COUNT(*) n FROM allocations WHERE id='${reserved.upload_id}'`))[0].results[0].n;if(!count)break;await sleep(200);}assert.equal(count,0);
-    await request('POST',`/v1/uploads/${reserved.upload_id}/commit`,{},alice.token,404);
+    await request('POST',`/v1/uploads/${reserved.upload_id}/commit`,{},alice.token,410);
   });
   await check('GC respects an existing reader and prevents late reader resurrection',async()=>{
     const data=Buffer.from('leased'),reserved=await reserve(alice.token,randomUUID(),data);await part(alice.token,reserved.upload_id,0,data);

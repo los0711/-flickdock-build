@@ -14,14 +14,15 @@ from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from fractions import Fraction
+from uuid import uuid4
 
 from PySide6.QtCore import (QEasingCurve, QPoint, QRect, QRectF, QSize, QEvent, Qt, QMimeData,
-                             QPropertyAnimation, QTimer, QUrl)
+                             QPropertyAnimation, QTimer, QUrl, QThreadPool)
 from PySide6.QtGui import (QColor, QCursor, QDrag, QFont, QFontDatabase, QGuiApplication,
                            QIcon, QLinearGradient, QPainter, QPainterPath, QPalette, QPen, QPixmap, QTransform)
 from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame,
                                 QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton,
-                                QScrollArea, QSystemTrayIcon, QVBoxLayout, QWidget, QPlainTextEdit, QStackedWidget, QGridLayout, QSizePolicy, QButtonGroup)
+                                QScrollArea, QSystemTrayIcon, QVBoxLayout, QWidget, QPlainTextEdit, QStackedWidget, QGridLayout, QSizePolicy, QButtonGroup, QProgressBar)
 
 from flickdock_icons import app_icon, tray_icon, glyph_icon, glyph_pixmap, file_pixmap, document_pixmap
 from flickdock_motion import Spring, MotionShadow, ContentTile, FeedbackButton
@@ -45,6 +46,9 @@ from drag_artwork import drag_pixmap
 from async_images import ImageCache
 from widget_retirement import WidgetRetirementQueue
 from capture_files import CopyFilesJob
+from owned_files import owned_copy_spec, delete_owned_copy
+from sync_files import DiskWork
+from transfer_visuals import TransferIconLabel, TransferOverlay
 from drop_routing import OverviewDropRouter
 from app_version import APP_NAME, APP_VERSION
 from update_controller import UpdateController
@@ -53,6 +57,8 @@ from account_service import AccountService
 from account_panel import AccountPanel
 from shelf_sync import ShelfSync
 from sync_adapter import ShelfAdapter
+from lan_transfer import LanTransferService
+from lan_panel import LanPanel
 import ui_theme
 
 IDLE_SECONDS = 3.0
@@ -230,7 +236,7 @@ class DropZone(QFrame):
 
     @property
     def paths(self):
-        return self.shelf.files[self.mode]
+        return self.shelf.display_refs()
 
     def _apply_style(self):
         active = bool(self.shelf.popup and self.shelf.popup.isVisible() and self.shelf.popup.mode == self.mode)
@@ -378,6 +384,16 @@ class PreviewPane(QFrame):
         self.copy_button.clicked.connect(self.copy_current)
         header.addLayout(labels,1); header.addWidget(self.copy_button,0,Qt.AlignmentFlag.AlignTop)
         layout.addLayout(header)
+        self.transfer_row=QWidget(self)
+        transfer_layout=QHBoxLayout(self.transfer_row);transfer_layout.setContentsMargins(0,0,0,0)
+        self.transfer_progress=QProgressBar(self.transfer_row);self.transfer_progress.setTextVisible(False)
+        self.transfer_progress.setFixedHeight(5)
+        set_ui_style(self.transfer_progress,"QProgressBar {border:0;background:#e1e7ef;border-radius:2px;} QProgressBar::chunk {background:#3989ef;border-radius:2px;}")
+        self.cancel_transfer=QPushButton('取消上传',self.transfer_row)
+        self.cancel_transfer.clicked.connect(lambda:self.shelf.cancel_transfer(self.current_path))
+        set_ui_style(self.cancel_transfer,"QPushButton {border:0;background:transparent;color:#1876db;padding:5px;font:12px 'HarmonyOS Sans SC';}")
+        transfer_layout.addWidget(self.transfer_progress,1);transfer_layout.addWidget(self.cancel_transfer)
+        layout.addWidget(self.transfer_row);self.transfer_row.hide()
         self.stack=QStackedWidget(self)
         set_ui_style(self.stack, "background:transparent;border:0;")
         self.icon=ContentTile(self,motion=self.shelf.manager.motion)
@@ -392,6 +408,7 @@ class PreviewPane(QFrame):
         self.media.playing_changed.connect(self._playing_changed)
         for widget in (self.icon,self.text,self.image,self.media): self.stack.addWidget(widget)
         layout.addWidget(self.stack,1)
+        self.transfer_overlay=TransferOverlay(self.stack,lambda:self.shelf.content.transfers.get(self.current_path))
 
     def _playing_changed(self, playing):
         self.shelf.preview_playing=bool(playing)
@@ -432,6 +449,13 @@ class PreviewPane(QFrame):
         self.current_path=ref
         self.copy_button.set_glyph("copy")
         self.name.setText(self.shelf.content.title(ref))
+        self.update_transfer_status()
+        if self.shelf.content.is_pending(ref):
+            self.icon.set_content('file',pixmap=self.shelf.item_pixmap(ref,128,dpr=self.devicePixelRatioF()))
+            self.stack.setCurrentWidget(self.icon);self.copy_button.setEnabled(False)
+            self._pending_preview=False
+            return
+        self.copy_button.setEnabled(True)
         # Decode images and construct native media only after the surface has
         # landed. The endpoint snapshot needs just a lightweight format card.
         category=self.shelf.content.category(ref)
@@ -477,10 +501,29 @@ class PreviewPane(QFrame):
             self.info.setText(kind(ref)+" · "+(f"{size/1024:.1f} KB" if size<1024*1024 else f"{size/(1024*1024):.1f} MB"))
         self.copy_button.setToolTip("复制文字内容" if self.stack.currentWidget() is self.text else "复制文件")
 
+    def update_transfer_status(self):
+        if getattr(self,'_group_refs',()):
+            self.transfer_row.hide();self.transfer_overlay.hide();return
+        state=self.shelf.content.transfers.get(self.current_path)
+        self.transfer_row.setVisible(bool(state))
+        self.transfer_overlay.setGeometry(self.stack.rect());self.transfer_overlay.setVisible(bool(state))
+        if state:self.transfer_overlay.raise_();self.transfer_overlay.update()
+        if not state:return
+        total,received=state.get('total',0),state.get('received',0)
+        self.transfer_progress.setRange(0,1000 if total else 0)
+        if total:self.transfer_progress.setValue(round(1000*min(1,received/total)))
+        copying=state.get('phase')=='copying'
+        self.cancel_transfer.setText('取消复制' if copying else '取消下载' if state.get('phase')=='downloading' else '取消上传')
+        self.cancel_transfer.setEnabled(True)
+        if self.shelf.content.is_pending(self.current_path):
+            self.info.setText(('正在复制' if copying else '正在下载原文件' if state.get('phase')=='downloading' else '另一台设备正在上传' if state.get('remote') else '正在上传')+
+                (f' · {round(received/total*100)}%' if total else '…'))
+
     def show_group(self,refs):
         refs=tuple(refs)
         if getattr(self,'_group_refs',())==refs: return
         self.media.stop();self._pending_preview=False;self._group_refs=refs;self.current_path=refs[-1]
+        self.copy_button.setEnabled(True);self.transfer_row.hide();self.transfer_overlay.hide()
         self.name.setText(f'{len(refs)} 项已选');self.info.setText('可一起拖出或打包 ZIP')
         self.icon.set_content('file',pixmap=stack_pixmap(self.shelf.content,refs,128,dpr=self.devicePixelRatioF(),preview_cache=self.shelf.preview_cache))
         self.stack.setCurrentWidget(self.icon);self.copy_button.setToolTip('复制所选内容')
@@ -526,7 +569,7 @@ class FileRow(QFrame):
         row = QHBoxLayout(self)
         row.setContentsMargins(7, 5, 4, 5)
         row.setSpacing(7)
-        icon = QLabel(self)
+        icon = TransferIconLabel(popup.shelf.content,path,self)
         icon.setFixedSize(28, 28)
         self.icon_label = icon
         icon.setPixmap(popup.shelf.item_pixmap(path,28,dpr=self.devicePixelRatioF()))
@@ -623,7 +666,7 @@ class FileRow(QFrame):
 
 
 class ContentsPopup(QFrame):
-    CATEGORIES=(("all","全部"),("images","图片"),("video","视频"),("audio","音频"),("text","文字"),("files","文件"),("links","网页"))
+    CATEGORIES=(("all","全部"),("images","图片"),("video","视频"),("audio","音频"),("text","文字"),("files","文件"),("links","网页"),("uploading","正在上传"))
     def __init__(self,shelf,mode="permanent"):
         super().__init__(shelf.card)
         self.shelf,self.mode=shelf,"permanent"
@@ -664,6 +707,14 @@ class ContentsPopup(QFrame):
             button.clicked.connect(lambda checked=False,key=key:self.set_category(key))
             filters.addWidget(button)
         filters.addStretch(); root.addLayout(filters)
+        self.transfer_summary=QWidget(self)
+        summary_layout=QHBoxLayout(self.transfer_summary);summary_layout.setContentsMargins(0,0,0,0)
+        self.transfer_count=QLabel(self.transfer_summary)
+        set_ui_style(self.transfer_count,"color:#738091;font:12px 'HarmonyOS Sans SC';")
+        self.transfer_bar=QProgressBar(self.transfer_summary);self.transfer_bar.setTextVisible(False);self.transfer_bar.setFixedHeight(4)
+        set_ui_style(self.transfer_bar,"QProgressBar {border:0;background:#e1e7ef;border-radius:2px;} QProgressBar::chunk {background:#3989ef;border-radius:2px;}")
+        summary_layout.addWidget(self.transfer_count);summary_layout.addWidget(self.transfer_bar,1)
+        root.addWidget(self.transfer_summary);self.transfer_summary.hide()
         body=QHBoxLayout(); body.setSpacing(16)
         self.scroll=QScrollArea(self); self.scroll.setFixedWidth(246); self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.Shape.NoFrame); self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -675,7 +726,21 @@ class ContentsPopup(QFrame):
         self.drop_router=OverviewDropRouter(self)
 
     def visible_refs(self):
-        return [ref for ref in reversed(self.shelf.files['permanent']) if self.category=='all' or self.shelf.content.category(ref)==self.category]
+        return [ref for ref in reversed(self.shelf.display_refs()) if self.category=='all' or
+            (self.category=='uploading' and ref in self.shelf.content.transfers) or self.shelf.content.category(ref)==self.category]
+
+    def update_transfer_status(self):
+        states=list(self.shelf.content.transfers.values())
+        count=len(states);self.category_buttons['uploading'].setText(f'正在上传 {count}' if count else '正在上传')
+        self.transfer_summary.setVisible(bool(count))
+        if count:
+            received=sum(v.get('received',0) for v in states);total=sum(v.get('total',0) for v in states)
+            copying=sum(v.get('phase')=='copying' for v in states)
+            self.transfer_count.setText(f'正在复制 {copying} 项 · 正在上传 {count-copying} 项' if copying else f'正在上传 · {count} 项')
+            self.transfer_bar.setRange(0,1000 if total else 0)
+            if total:self.transfer_bar.setValue(round(1000*min(1,received/total)))
+        self.preview.update_transfer_status()
+        if tuple(self.visible_refs()) != tuple(getattr(self,'_build_refs',())):self.rebuild()
 
     def set_mode(self,mode="permanent"): self.rebuild()
 
@@ -758,12 +823,12 @@ class ContentsPopup(QFrame):
         return [ref for ref in self.shelf.files['permanent'] if ref in self.selected]
 
     def update_selection_actions(self):
-        count=len(self.selected);busy=self.shelf.archive_job is not None
+        count=len(self.chosen_refs());busy=self.shelf.archive_job is not None
         choosing=self.shelf._archive_choosing
         self.zip_button.setVisible(True)
         self.zip_button.setText('打包中…' if busy else '选择位置…' if choosing else '打包所选')
         self.zip_button.setEnabled(bool(count) and not busy and not choosing)
-        self.zip_all_button.setEnabled(self.shelf.has_files() and not busy and not choosing)
+        self.zip_all_button.setEnabled(bool(self.shelf.files['permanent']) and not busy and not choosing)
         self.zip_button.setToolTip(f'将选中的 {count} 项打包为 ZIP')
 
     def select_item(self,ref,toggle=False,extend=False):
@@ -803,6 +868,16 @@ class ContentsPopup(QFrame):
         if ref not in self.selected:self.select_item(ref)
         refs=self.chosen_refs() or [ref]
         menu=AnimatedMenu(self);style_menu(menu)
+        if hasattr(self.shelf.manager,'sync') and self.shelf.manager.sync.is_upload_paused(ref):
+            menu.addAction('重新上传到云端',lambda:self.shelf.manager.sync.retry_upload(ref))
+        if ref in self.shelf.content.transfers:
+            phase=self.shelf.content.transfers[ref].get('phase')
+            menu.addAction('取消复制' if phase=='copying' else '取消下载' if phase=='downloading' else '取消上传',lambda:self.shelf.cancel_transfer(ref))
+        if self.shelf.content.is_pending(ref):
+            self.shelf._menu_open=True
+            try:menu.exec(position)
+            finally:self.shelf._menu_open=False;menu.deleteLater();self.shelf.touch()
+            return
         if not self.shelf.content.is_text(ref):
             menu.addAction('打开文件',lambda:self.shelf.open_path(ref))
             menu.addAction('在文件夹中显示',lambda:self.shelf.reveal_ref(ref))
@@ -861,6 +936,9 @@ class ShelfWindow(QWidget):
         self._archive_refs=()
         self._archive_epoch=0
         self.copy_jobs=set()
+        self._copy_pending={};self._delete_jobs=set()
+        self._transfer_timer=QTimer(self);self._transfer_timer.setInterval(80)
+        self._transfer_timer.timeout.connect(self._repaint_transfers)
         self._copy_epoch=0
         self.active_mode = "permanent"
         self._rename_mode = "permanent"
@@ -1176,13 +1254,54 @@ class ShelfWindow(QWidget):
         self.last_activity = time.monotonic()
 
     def has_files(self) -> bool:
-        return any(self.files[m] for m in MODES)
+        return bool(self.display_refs())
+
+    def display_refs(self):
+        return list(self.files['permanent'])+list(self.content.pending)
+
+    def _repaint_transfers(self):
+        if not self.content.transfers:self._transfer_timer.stop()
+        if not self.isVisible() or self.content_transition_active():return
+        for zone in self.zones.values():zone.icon.update()
+        if self.popup and self.popup.isVisible():
+            for item in self.popup.rows_body.findChildren(QWidget):
+                if isinstance(item,(IconItem,TransferIconLabel)):item.update()
+            self.popup.preview.update_transfer_status()
+
+    def transfers_updated(self):
+        if self.content.transfers and not self._transfer_timer.isActive():self._transfer_timer.start()
+        self.expand_button.setEnabled(bool(self.display_refs()))
+        self.zones['permanent'].refresh()
+        if self.popup and self.popup.isVisible() and not self.content_transition_active():self.popup.update_transfer_status()
+        self.manager.update_handles()
+
+    def cancel_transfer(self,ref):
+        job=self._copy_pending.get(ref)
+        if job:job.cancel();return
+        state=self.content.transfers.get(ref,{})
+        if state.get('phase')=='downloading':
+            self.manager.sync.cancel_download(state.get('id'));return
+        if hasattr(self.manager,'sync'):self.manager.sync.cancel_upload(state.get('id') or ref)
+
+    def _delete_owned(self,ref):
+        spec=owned_copy_spec(ref,self.content.metadata.get(ref,{}),self.manager.settings.capture_dir)
+        if spec is None:return
+        if self.popup:
+            if self.popup.preview.media.path==ref:self.popup.preview.media.release_source()
+            if self.popup.preview.current_path==ref:
+                self.popup.preview.image.clear_source();self.popup.preview.current_path=None
+        self.image_cache.forget(ref)
+        job=DiskWork(delete_owned_copy,spec);self._delete_jobs.add(job)
+        def done(result,error):
+            self._delete_jobs.discard(job)
+            if error and not self.manager._quitting:self.status_label.setText('本地副本未能删除，请检查文件是否被其他程序占用。')
+        job.signals.done.connect(done);QThreadPool.globalInstance().start(job)
 
     def refresh(self):
         for mode in MODES:
             self.files[mode] = [p for p in self.files[mode] if self.content.exists(p)]
             self.zones[mode].refresh()
-        count = sum(len(self.files[m]) for m in MODES)
+        count = len(self.display_refs())
         self.status_label.setText('正在复制内容…' if self.copy_jobs else '')
         self.expand_button.setEnabled(count > 0)
         if self.popup and self.popup.isVisible():
@@ -1221,19 +1340,37 @@ class ShelfWindow(QWidget):
         job=CopyFilesJob(external,directory,parent=self)
         epoch=self._copy_epoch
         self.copy_jobs.add(job)
+        placeholders={}
+        for source in external:
+            ref='flickdock:transfer:'+uuid4().hex
+            placeholders[source]=ref;self._copy_pending[ref]=job
+            self.content.pending[ref]=dict(name=Path(source).name,kind='file')
+            self.content.transfers[ref]=dict(phase='copying',received=0,total=0)
+        def progress(value):
+            ref=placeholders.get(value.get('source'))
+            if ref in self.content.transfers:self.content.transfers[ref].update(received=value['received'],total=value['total'])
+            if self.popup and self.popup.isVisible():self.popup.update_transfer_status()
+        job.progress.connect(progress)
+        self.transfers_updated();self.refresh()
         def done(paths=None,error=''):
             self.copy_jobs.discard(job)
+            for ref in placeholders.values():
+                self._copy_pending.pop(ref,None);self.content.pending.pop(ref,None);self.content.transfers.pop(ref,None)
             if paths and epoch==self._copy_epoch and not self.manager._quitting:
                 replacement=dict(zip(external,paths))
                 for old,new in replacement.items():
-                    self.content.metadata[new]={'capture_mode':'copy','original_name':Path(old).name}
+                    self.content.metadata[new]={'capture_mode':'copy','original_name':Path(old).name,'owned_root':str(Path(directory).absolute())}
                 self.add_paths(mode,[replacement.get(ref,ref) for ref in refs])
                 if on_committed:on_committed()
                 else:self.zones[mode].pulse('drop')
-            elif on_failed and epoch==self._copy_epoch:on_failed()
+            else:
+                for path in paths or []:
+                    self.content.metadata[path]={'capture_mode':'copy','owned_root':str(Path(directory).absolute())}
+                    self._delete_owned(path);self.content.metadata.pop(path,None)
+                if on_failed and epoch==self._copy_epoch:on_failed()
             if error and self.popup:self.popup.preview.info.setText('复制失败：'+error)
             self.status_label.setText('复制失败：'+error if error else '' if not self.copy_jobs else '正在复制内容…')
-            job.deleteLater();self.touch();self.manager.update_handles()
+            job.deleteLater();self.touch();self.transfers_updated();self.refresh();self.manager.update_handles()
         job.finished.connect(lambda paths:done(paths))
         job.failed.connect(lambda error:done(error=error))
         job.cancelled.connect(done)
@@ -1241,6 +1378,13 @@ class ShelfWindow(QWidget):
         job.start();self.touch()
 
     def remove_path(self, mode: str, path: str):
+        transfer_state=self.content.transfers.get(path,{})
+        downloading=transfer_state.get('phase')=='downloading'
+        if downloading:self.manager.sync.cancel_download(transfer_state.get('id'),remove=True)
+        if self.content.is_pending(path):
+            if not downloading:self.cancel_transfer(path)
+            return
+        if not downloading and hasattr(self.manager,'sync'):self.manager.sync.cancel_upload(path,remove=True)
         if self.popup and self.popup.preview.media.path==path:
             self.popup.preview.media.release_source()
             self.popup.preview.current_path=None
@@ -1263,6 +1407,7 @@ class ShelfWindow(QWidget):
         self.resolver.cancel(path)
         if path in self.files[mode]:
             self.files[mode].remove(path)
+        self._delete_owned(path)
         self.refresh()
         self.touch()
         self.manager.save()
@@ -1284,6 +1429,13 @@ class ShelfWindow(QWidget):
         self._archive_epoch+=1
         if self.archive_job:self.archive_job.cancel()
         self.resolver.cancel_all()
+        for ref in tuple(self.files[mode]):
+            if hasattr(self.manager,'sync'):self.manager.sync.cancel_upload(ref,remove=True)
+            self._delete_owned(ref)
+        for ref,state in tuple(self.content.transfers.items()):
+            if state.get('remote') and hasattr(self.manager,'sync'):
+                if state.get('phase')=='downloading':self.manager.sync.cancel_download(state.get('id'),remove=True)
+                else:self.manager.sync.cancel_upload(state.get('id'))
         self.files[mode].clear()
         self.refresh()
         self.touch()
@@ -1431,6 +1583,8 @@ class ShelfWindow(QWidget):
         if not self.pinned: self.hide_animated(explicit=True)
 
     def drag_files(self, mode, paths):
+        paths=[ref for ref in paths if not self.content.is_pending(ref)]
+        if not paths:return Qt.DropAction.IgnoreAction
         paths = [p for p in paths if self.content.exists(p)]
         if not paths:
             return Qt.DropAction.IgnoreAction
@@ -1641,6 +1795,8 @@ class ShelfWindow(QWidget):
         self.receive_mime(mode,QApplication.clipboard().mimeData())
 
     def copy_items(self, refs):
+        refs=[ref for ref in refs if not self.content.is_pending(ref)]
+        if not refs:return
         if not refs:
             return
         QApplication.clipboard().setMimeData(self.content.mime_for(refs))
@@ -1681,6 +1837,7 @@ class ShelfWindow(QWidget):
         menu.addAction("清空搁架…", self.confirm_clear_all)
 
     def open_path(self, ref):
+        if self.content.is_pending(ref):return
         if self.content.is_text(ref):
             if self.content.category(ref)=='links':
                 from PySide6.QtGui import QDesktopServices
@@ -1729,7 +1886,7 @@ class ShelfWindow(QWidget):
         finally:dialog.deleteLater()
 
     def compress_refs(self,refs):
-        refs=[ref for ref in refs if self.content.exists(ref)]
+        refs=[ref for ref in refs if not self.content.is_pending(ref) and self.content.exists(ref)]
         if not refs or self.archive_job is not None or self._archive_choosing:return False
         self.geometry_morph.complete()
         self._archive_choosing=True
@@ -2016,6 +2173,13 @@ class ShelfManager:
         self.update_handles()
         self.account = AccountService(BASE)
         self.sync = ShelfSync(BASE,self.account,ShelfAdapter(self))
+        self._sync_transfer_refs=set()
+        self.sync.transfers_changed.connect(self._transfers_changed)
+        self.lan=LanTransferService(self.app,device_name=self.account.device_name)
+        self.lan.offer_received.connect(self._lan_offer)
+        self.account.account_changed.connect(self._lan_identity)
+        self.account.devices_changed.connect(self._lan_devices)
+        if self.app.platformName() not in ('offscreen','minimal'):self.lan.start()
         self._sync_status = ''
         self.sync.status_changed.connect(self._sync_status_changed)
         self.hotkeys = HotkeyManager(app, self.show_shortcut, self.show_overview)
@@ -2052,6 +2216,41 @@ class ShelfManager:
         self._sync_status = text
         if self.settings_dialog and hasattr(self,'account_panel'):
             self.account_panel.set_sync_status(text)
+
+    def _transfers_changed(self,transfers):
+        content=self.shelf.content
+        for ref in self._sync_transfer_refs:
+            content.transfers.pop(ref,None)
+            content.pending.pop(ref,None)
+        self._sync_transfer_refs=set()
+        real=set(self.shelf.files['permanent'])
+        for state in transfers:
+            state=dict(state)
+            ref=state.get('ref')
+            if not ref or ref not in real:
+                ref='flickdock:transfer:'+state['id']
+                content.pending[ref]=dict(name=state.get('name','正在上传'),kind=state.get('kind','file'))
+            content.transfers[ref]=state;self._sync_transfer_refs.add(ref)
+        self.shelf.transfers_updated()
+
+    def _lan_identity(self,account):
+        name=self.account.device_name
+        self.lan.device_name=(str(account.get('username',''))+' · '+name)[:80] if account else name
+
+    def _lan_devices(self,devices):
+        current=next((d for d in devices if d.get('id')==self.account.device_id),None)
+        if current:
+            self.account.device_name=current['name'];self._lan_identity(self.account.account)
+
+    def _lan_offer(self,offer):
+        self.show_settings()
+        self.lan_panel.show_offer(offer)
+        for scroll in self.settings_dialog.findChildren(QScrollArea):
+            QTimer.singleShot(0,lambda scroll=scroll:scroll.ensureWidgetVisible(self.lan_panel))
+
+    def _lan_selected(self):
+        refs=self.shelf.popup.chosen_refs() if self.shelf.popup else []
+        return [ref for ref in refs if not self.shelf.content.is_text(ref) and Path(ref).exists()]
 
     def _create_shelf(self, data):
         shelf = ShelfWindow(self, 1, data)
@@ -2095,6 +2294,10 @@ class ShelfManager:
             self.updates.state_changed.connect(lambda state,payload:self.settings_dialog.set_update_state(state,**payload))
             self.account_panel = AccountPanel(self.account,self.settings_dialog,theme=self.settings.theme,email_binding=False)
             self.settings_dialog.set_account_panel(self.account_panel)
+            self.lan_panel=LanPanel(self.lan,self.settings_dialog,theme=self.settings.theme)
+            self.lan_panel.set_paths_provider(self._lan_selected)
+            self.lan_panel.received_paths.connect(lambda paths:self.shelf.add_paths('permanent',paths))
+            self.settings_dialog.set_lan_panel(self.lan_panel)
             self.settings_dialog.preview_changed.connect(self.preview_dock)
             self.settings_dialog.gesture_preview_changed.connect(self.preview_shake)
             self.settings_dialog.shortcut_validator = lambda values: self.hotkeys.validate(values["shelf_shortcut"], values["overview_shortcut"])
@@ -2269,6 +2472,8 @@ class ShelfManager:
         return bool(self.auto_shown and self.auto_shown.receive_mime("permanent", mime))
 
     def poll(self):
+        if hasattr(self,'sync'):
+            self.sync.set_interactive(self.shelf.isVisible() or bool(self.settings_dialog and self.settings_dialog.isVisible()))
         now=time.monotonic(); pos=QCursor.pos()
         native=native_input_available()
         mask=mouse_buttons_mask()
@@ -2314,6 +2519,7 @@ class ShelfManager:
         self.was_down=down
 
     def quit(self):
+        if hasattr(self,'lan'):self.lan.close()
         self._quitting=True
         self.timer.stop()
         self.update_timer.stop()
@@ -2344,6 +2550,9 @@ class ShelfManager:
         self.app.quit()
 
 def main():
+    if '--verify-transfers' in sys.argv:
+        from verify_transfers import run
+        return run(sys.argv,load_font)
     if "--verify-cloud" in sys.argv:
         from verify_cloud import run
         return run(sys.argv,load_font)

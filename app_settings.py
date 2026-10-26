@@ -12,8 +12,8 @@ from pathlib import Path
 import sys
 from uuid import uuid4
 
-from PySide6.QtCore import QByteArray, QEvent, QObject, QRectF, Qt, Signal
-from PySide6.QtGui import QKeySequence, QColor, QFont, QPainter, QPen, QGuiApplication, QIcon, QPixmap
+from PySide6.QtCore import QByteArray, QCoreApplication, QElapsedTimer, QEvent, QObject, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QKeySequence, QColor, QFont, QPainter, QPen, QGuiApplication, QIcon, QPixmap, QWheelEvent
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
                                QHBoxLayout, QLabel, QLineEdit, QPushButton,
                                QVBoxLayout, QKeySequenceEdit, QScrollArea, QWidget,
@@ -99,11 +99,31 @@ def _startup_registration(enabled):
     return startup_command(), 1
 
 
+def _scroll_settings_instead(widget, event):
+    ancestor = widget.parentWidget()
+    while ancestor is not None:
+        if isinstance(ancestor, QScrollArea):
+            viewport = ancestor.viewport()
+            forwarded = QWheelEvent(QPointF(viewport.mapFromGlobal(event.globalPosition().toPoint())),
+                event.globalPosition(), event.pixelDelta(), event.angleDelta(), event.buttons(),
+                event.modifiers(), event.phase(), event.inverted())
+            QCoreApplication.sendEvent(viewport, forwarded)
+            event.accept()
+            return
+        ancestor = ancestor.parentWidget()
+    event.ignore()
+
+
 class SettingsComboBox(QComboBox):
     """A readable theme-aware arrow while retaining native combo semantics."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.dark = False
+
+    def wheelEvent(self, event):
+        # Scrolling the settings page must never silently change a preference,
+        # including when this control already has keyboard focus.
+        _scroll_settings_instead(self, event)
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -123,6 +143,9 @@ class SettingsSpinBox(QSpinBox):
         super().__init__(parent)
         self.dark = False
 
+    def wheelEvent(self, event):
+        _scroll_settings_instead(self, event)
+
     def paintEvent(self, event):
         super().paintEvent(event)
         p = QPainter(self)
@@ -136,6 +159,64 @@ class SettingsSpinBox(QSpinBox):
         p.drawLine(x, upper - 2, x + 3, upper + 1)
         p.drawLine(x - 3, lower - 1, x, lower + 2)
         p.drawLine(x, lower + 2, x + 3, lower - 1)
+
+
+class SettingsSlider(QSlider):
+    def wheelEvent(self, event):
+        _scroll_settings_instead(self, event)
+
+
+class UpdateActivityBar(QWidget):
+    """Inline transfer progress, or an honest indeterminate preparation pulse."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(4)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAccessibleName("更新进度")
+        self.active = False
+        self.fraction = None
+        self.dark = False
+        self._clock = QElapsedTimer()
+        self._timer = QTimer(self)
+        self._timer.setInterval(16)
+        self._timer.timeout.connect(self.update)
+        self.hide()
+
+    def set_activity(self, state, received=0, total=0):
+        self.active = state in ("checking", "downloading", "verifying", "installing", "cancelling")
+        self.fraction = min(1., max(0., received / total)) if state == "downloading" and total > 0 else None
+        self.setAccessibleDescription("正在安装更新" if state == "installing" else "正在处理更新")
+        self.setVisible(self.active)
+        if self.active and self.fraction is None:
+            if not self._clock.isValid(): self._clock.start()
+            if self.isVisible(): self._timer.start()
+        else:
+            self._timer.stop()
+        self.update()
+
+    def showEvent(self, event):
+        if self.active and self.fraction is None:
+            if not self._clock.isValid(): self._clock.start()
+            self._timer.start()
+        super().showEvent(event)
+
+    def hideEvent(self, event):
+        self._timer.stop()
+        super().hideEvent(event)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#3c4554" if self.dark else "#e4ebf5"))
+        painter.drawRoundedRect(QRectF(self.rect()), 2, 2)
+        painter.setBrush(QColor("#64a9fa" if self.dark else "#2584ed"))
+        if self.fraction is not None:
+            painter.drawRoundedRect(QRectF(0, 0, self.width() * self.fraction, self.height()), 2, 2)
+        else:
+            phase = (self._clock.elapsed() % 1400) / 1400 if self._clock.isValid() else 0
+            width = self.width() * .25
+            painter.drawRoundedRect(QRectF((self.width() + width) * phase - width, 0, width, self.height()), 2, 2)
 
 
 class SettingsCheckBox(QCheckBox):
@@ -242,7 +323,7 @@ class SettingsStore(QObject):
         self.base = Path(base).resolve()
         self.path = self.base / "settings.json"
         self._data = {"theme": "light", "capture_dir": str(self.base / "saved"), "autostart": True,
-                      "capture_mode": "reference", "keep_empty_handle": False,
+                      "capture_mode": "reference", "keep_empty_handle": True,
                       "trigger_view": "compact", "shake_sensitivity": DEFAULT_SHAKE_SENSITIVITY,
                       "view_mode": "list", "shelf_shortcut": SHELF_SHORTCUT,
                       "overview_shortcut": OVERVIEW_SHORTCUT, "dock_edge": "right",
@@ -692,6 +773,7 @@ class SettingsDialog(QDialog):
         self._loading_values = True
         self._preview_active = False
         self._account_panel = None
+        self._lan_panel = None
         self._update_state = "idle"
         self._draft_color = store.dock_color
         self.setObjectName("flickdockSettings")
@@ -739,6 +821,8 @@ class SettingsDialog(QDialog):
         self.close_button.clicked.connect(self.reject)
         header.addWidget(self.close_button)
         root.addWidget(self.title_bar)
+        self.update_activity = UpdateActivityBar(self.surface)
+        root.addWidget(self.update_activity)
 
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
@@ -923,6 +1007,26 @@ class SettingsDialog(QDialog):
         self.update_button.setText(action)
         self.update_button.setAccessibleName(action)
         self.update_button.setEnabled(state not in ("checking", "downloading", "verifying", "installing", "cancelling"))
+        self.update_activity.set_activity(state, received, total)
+
+    def set_lan_panel(self, widget):
+        """Mount the local transfer view directly after the account card."""
+        previous = self._lan_panel
+        if previous is widget:
+            return previous
+        if previous is not None:
+            self.body_layout.removeWidget(previous)
+            previous.hide()
+            previous.setParent(None)
+        self._lan_panel = widget
+        if widget is not None:
+            self.body_layout.insertWidget(1 if self._account_panel is not None else 0, widget)
+            widget.show()
+            for child in [widget, *widget.findChildren(QWidget)]:
+                child.installEventFilter(self)
+            if hasattr(widget, "apply_theme"):
+                widget.apply_theme(self.theme_combo.currentData())
+        return previous
 
     def eventFilter(self, watched, event):
         # QKeySequenceEdit consumes Esc while recording a shortcut. Closing
@@ -971,7 +1075,7 @@ class SettingsDialog(QDialog):
         position_row = QHBoxLayout()
         position_row.setSpacing(12)
         position_row.addWidget(QLabel("边缘位置", card))
-        self.dock_position_slider = QSlider(Qt.Orientation.Horizontal, card)
+        self.dock_position_slider = SettingsSlider(Qt.Orientation.Horizontal, card)
         self.dock_position_slider.setRange(0, 100)
         self.dock_position_slider.setAccessibleName("边缘位置")
         position_row.addWidget(self.dock_position_slider, 1)
@@ -1004,7 +1108,7 @@ class SettingsDialog(QDialog):
         opacity_row = QHBoxLayout()
         opacity_row.setSpacing(12)
         opacity_row.addWidget(QLabel("不透明度", card))
-        self.dock_opacity_slider = QSlider(Qt.Orientation.Horizontal, card)
+        self.dock_opacity_slider = SettingsSlider(Qt.Orientation.Horizontal, card)
         self.dock_opacity_slider.setRange(0, 100)
         self.dock_opacity_slider.setAccessibleName("触发区域不透明度")
         opacity_row.addWidget(self.dock_opacity_slider, 1)
@@ -1047,7 +1151,7 @@ class SettingsDialog(QDialog):
         sensitivity = QHBoxLayout()
         sensitivity.setSpacing(10)
         sensitivity.addWidget(QLabel("摇动灵敏度", card))
-        self.shake_sensitivity_slider = QSlider(Qt.Orientation.Horizontal, card)
+        self.shake_sensitivity_slider = SettingsSlider(Qt.Orientation.Horizontal, card)
         self.shake_sensitivity_slider.setRange(1, 100)
         self.shake_sensitivity_slider.setAccessibleName("摇动灵敏度")
         sensitivity.addWidget(self.shake_sensitivity_slider, 1)
@@ -1233,6 +1337,8 @@ class SettingsDialog(QDialog):
         self.shake_sensitivity_reset_button.update()
         self.close_button.dark = dark
         self.close_button.update()
+        self.update_activity.dark = dark
+        self.update_activity.update()
         bg = "#1d2027" if dark else "#f7f9fc"
         card = "#272c35" if dark else "#ffffff"
         ink = "#edf2fa" if dark else "#253246"
@@ -1293,3 +1399,5 @@ class SettingsDialog(QDialog):
             self.author_dialog.apply_theme(theme)
         if self._account_panel is not None and hasattr(self._account_panel, "apply_theme"):
             self._account_panel.apply_theme(theme)
+        if self._lan_panel is not None and hasattr(self._lan_panel, "apply_theme"):
+            self._lan_panel.apply_theme(theme)

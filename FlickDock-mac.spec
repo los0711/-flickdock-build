@@ -26,6 +26,7 @@ if not icon.is_file():
 analysis = Analysis([str(root / 'mac_entry.py')], pathex=[str(root)], binaries=[],
     datas=[(str(path), destination) for path, destination in assets],
     hiddenimports=['Quartz', 'Quartz.CoreGraphics', 'Foundation', 'objc', '_hashlib',
+                   'ssl', '_ssl', 'ctypes', 'ctypes.util', 'verify_transfers',
                    'keyring.backends.macOS', 'keyring.backends.macOS.api',
                    'PySide6.QtSvg', 'PySide6.QtMultimedia'],
     runtime_hooks=[str(root / 'runtime_macos.py')],
@@ -45,4 +46,5 @@ app = BUNDLE(collection, name='FlickDock.app', icon=str(icon), bundle_identifier
                    CFBundleShortVersionString=APP_VERSION, CFBundleVersion=APP_VERSION,
                    CFBundlePackageType='APPL', CFBundleExecutable='FlickDock',
                    LSUIElement=True, NSHighResolutionCapable=True,
+                   NSLocalNetworkUsageDescription='FlickDock 用于发现同一局域网的设备，并在你确认后加密传输文件。',
                    LSMinimumSystemVersion='14.4', NSPrincipalClass='NSApplication'))

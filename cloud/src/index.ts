@@ -67,10 +67,13 @@ async function session(env:Env,owner:Row,name:string,platform:string){
   await query(env,'UPDATE devices SET revoked_at=? WHERE account_id=? AND revoked_at IS NULL AND NOT EXISTS(SELECT 1 FROM sessions s WHERE s.device_id=devices.id AND s.expires_at>?)',now,owner.id,now).run();
   const active=await first(env,'SELECT COUNT(*) n FROM devices WHERE account_id=? AND revoked_at IS NULL',owner.id);
   if(active!.n>=20)fail(409,'DEVICE_LIMIT','Revoke an existing device before signing in again');
-  await env.DB.batch([
-    query(env,'INSERT INTO devices(id,account_id,name,platform,created_at,last_seen_at) VALUES(?,?,?,?,?,?)',id,owner.id,name,platform,now,now),
-    query(env,'INSERT INTO sessions(token_hash,account_id,device_id,expires_at) VALUES(?,?,?,?)',sha(token),owner.id,id,expires),
+  const created=await env.DB.batch([
+    // A password change may finish after a login read the previous verifier.
+    // Check it again inside the same transaction that creates this session.
+    query(env,'INSERT INTO devices(id,account_id,name,platform,created_at,last_seen_at) SELECT ?,id,?,?,?,? FROM accounts WHERE id=? AND auth_verifier=? AND auth_salt=?',id,name,platform,now,now,owner.id,owner.auth_verifier,owner.auth_salt),
+    query(env,'INSERT INTO sessions(token_hash,account_id,device_id,expires_at) SELECT ?,account_id,id,? FROM devices WHERE id=?',sha(token),expires,id),
   ]);
+  if(!created[0].meta.changes)fail(401,'INVALID_CREDENTIALS','Account password changed; sign in again');
   return {token,expires_at:iso(expires),device_id:id,account:account(owner)};
 }
 async function auth(request:Request,env:Env){
@@ -82,7 +85,17 @@ async function auth(request:Request,env:Env){
 }
 async function item(env:Env,accountId:string,id:string){return first(env,'SELECT * FROM items WHERE account_id=? AND id=?',accountId,id);}
 function record(row:Row){return {id:row.id,version:row.version,deleted:!!row.deleted,kind:row.kind,name:row.name,mime_type:row.mime_type,size:row.size,sha256:row.sha256,updated_at:iso(row.updated_at),expires_at:row.expires_at?iso(row.expires_at):null};}
-async function upload(env:Env,owner:Row,id:string){const row=await first(env,'SELECT * FROM uploads WHERE account_id=? AND id=?',owner.id,id);if(!row)fail(404,'NOT_FOUND','Upload not found');return row!;}
+async function transfers(env:Env,accountId:string){
+  const values=await rows(env,"SELECT u.*,d.name device_name FROM uploads u LEFT JOIN devices d ON d.id=u.device_id WHERE u.account_id=? AND u.state IN ('pending','verifying') AND u.expires_at>? ORDER BY u.rowid DESC LIMIT 10",accountId,Date.now());
+  return values.map(value=>({upload_id:value.id,item_id:value.item_id,base_version:value.base_version,kind:value.kind,name:value.name,mime_type:value.mime_type,size:value.size,sha256:value.sha256,received_bytes:value.verified_size,next_part:value.next_part,chunk_size:value.chunk_size,part_count:value.part_count,state:value.state,expires_at:iso(value.expires_at),device_id:value.device_id??null,device_name:value.device_name??null}));
+}
+async function findUpload(env:Env,owner:Row,id:string){
+  const row=await first(env,'SELECT u.*,EXISTS(SELECT 1 FROM cancelled_uploads c WHERE c.account_id=? AND c.id=u.id AND c.expires_at>?) cancelled FROM uploads u WHERE u.id=?',owner.id,Date.now(),id);
+  if(row?.cancelled||(!row&&await first(env,'SELECT id FROM cancelled_uploads WHERE account_id=? AND id=? AND expires_at>?',owner.id,id,Date.now())))fail(410,'UPLOAD_CANCELLED','Upload was cancelled; choose the item again to start a new transfer',{upload_id:id,item_id:row&&row.account_id===owner.id?row.item_id:null});
+  if(row&&row.account_id!==owner.id)fail(404,'NOT_FOUND','Upload not found');
+  return row;
+}
+async function upload(env:Env,owner:Row,id:string){const row=await findUpload(env,owner,id);if(!row)fail(404,'NOT_FOUND','Upload not found');return row!;}
 async function conflict(env:Env,owner:Row,id:string):Promise<never>{const current=await item(env,owner.id,id);return fail(409,'VERSION_CONFLICT','Item changed on another device',{current_record:current?record(current):null});}
 function emailAddress(value:unknown){const email=text(value,'email',3,254).trim().toLowerCase();if(!/^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.[a-z]{2,63}$/.test(email))fail(400,'INVALID_EMAIL','Invalid email address');return email;}
 function mailConfigured(env:Env){
@@ -135,7 +148,8 @@ async function cleanup(env:Env){
   await env.DB.batch([
     query(env,'UPDATE devices SET revoked_at=? WHERE revoked_at IS NULL AND NOT EXISTS(SELECT 1 FROM sessions s WHERE s.device_id=devices.id AND s.expires_at>?)',now,now),
     query(env,'DELETE FROM rates WHERE expires_at<?',now),query(env,'DELETE FROM email_challenges WHERE expires_at<?',now),query(env,'DELETE FROM sessions WHERE expires_at<?',now),
-    query(env,'DELETE FROM auth_challenges WHERE expires_at<?',now),query(env,'DELETE FROM read_leases WHERE expires_at<?',now),
+    query(env,'DELETE FROM auth_challenges WHERE expires_at<?',now),query(env,'DELETE FROM password_challenges WHERE expires_at<?',now),query(env,'DELETE FROM read_leases WHERE expires_at<?',now),
+    query(env,'DELETE FROM cancelled_uploads WHERE (account_id,id) IN (SELECT account_id,id FROM cancelled_uploads WHERE expires_at<? LIMIT 100)',now),
   ]);
 }
 
@@ -149,7 +163,7 @@ async function route(request:Request,env:Env):Promise<Response>{
   if(method==='POST'&&path==='/v1/auth/challenge'){
     authSecret(env);const input=await body(request,['username','purpose']),name=username(input.username),purpose=text(input.purpose,'purpose',5,8);
     if(!['register','login'].includes(purpose))fail(400,'INVALID_REQUEST','Unknown authentication purpose');
-    const ip=sha(request.headers.get('CF-Connecting-IP')||'local');await rate(env,'auth-ip:'+ip,purpose==='register'?8:40,3600000);await rate(env,'auth-user:'+name.norm,30,900000);
+    const ip=sha(request.headers.get('CF-Connecting-IP')||'local');await rate(env,'auth-ip:'+purpose+':'+ip,purpose==='register'?8:40,3600000);await rate(env,'auth-user:'+name.norm,30,900000);
     const owner=await first(env,'SELECT * FROM accounts WHERE username_norm=?',name.norm);
     if(purpose==='register'&&owner)fail(409,'USERNAME_TAKEN','Username already registered');
     const id=crypto.randomUUID(),salt=owner?.auth_salt||hex(crypto.getRandomValues(new Uint8Array(16))),accountId=owner?.id||crypto.randomUUID(),expires=Date.now()+300000;
@@ -185,8 +199,40 @@ async function route(request:Request,env:Env):Promise<Response>{
     return json({devices:devices.map(d=>({id:d.id,name:d.name,platform:d.platform,created_at:iso(d.created_at),last_seen_at:iso(d.last_seen_at),revoked_at:d.revoked_at?iso(d.revoked_at):null,current:d.id===owner.device_id}))});
   }
   let match=path.match(/^\/v1\/devices\/([^/]+)$/);
+  if(method==='PATCH'&&match){
+    const id=uuid(match[1]),input=await body(request,['name']),name=text(input.name,'name',1,80).trim();
+    if(!name)fail(400,'INVALID_REQUEST','Device name cannot be blank');
+    const result=await query(env,'UPDATE devices SET name=? WHERE id=? AND account_id=? AND revoked_at IS NULL',name,id,owner.id).run();
+    if(!result.meta.changes)fail(404,'NOT_FOUND','Active device not found');
+    return json({device_id:id,name});
+  }
   if(method==='DELETE'&&match){const id=uuid(match[1]);const result=await query(env,'UPDATE devices SET revoked_at=? WHERE id=? AND account_id=?',Date.now(),id,owner.id).run();if(!result.meta.changes)fail(404,'NOT_FOUND','Device not found');return json({revoked:true});}
   if(method==='POST'&&path==='/v1/auth/logout'){await query(env,'UPDATE devices SET revoked_at=? WHERE id=? AND account_id=?',Date.now(),owner.device_id,owner.id).run();return json({revoked:true});}
+  if(method==='POST'&&path==='/v1/auth/password/challenge'){
+    await body(request,[]);await rate(env,'password-change:'+owner.id,10,3600000);
+    const id=crypto.randomUUID(),salt=hex(crypto.getRandomValues(new Uint8Array(16))),expires=Date.now()+300000;
+    await query(env,'INSERT INTO password_challenges(id,account_id,device_id,previous_salt,previous_verifier,new_salt,expires_at) VALUES(?,?,?,?,?,?,?)',id,owner.id,owner.device_id,owner.auth_salt,owner.auth_verifier,salt,expires).run();
+    return json({challenge_id:id,salt:owner.auth_salt,new_salt:salt,kdf:{name:'scrypt',N:16384,r:8,p:5,dkLen:32},expires_at:iso(expires)});
+  }
+  if(method==='POST'&&path==='/v1/auth/password'){
+    const input=await body(request,['challenge_id','old_auth_key','new_auth_key']),id=uuid(input.challenge_id),oldKey=digest(input.old_auth_key),newKey=digest(input.new_auth_key),now=Date.now();
+    const challenge=await first(env,'UPDATE password_challenges SET consumed=1 WHERE id=? AND account_id=? AND device_id=? AND consumed=0 AND expires_at>? RETURNING *',id,owner.id,owner.device_id,now);
+    if(!challenge)return fail(400,'INVALID_CHALLENGE','Password challenge expired, was used or belongs to another device');
+    const oldProof=verifier(env,owner.id,challenge.previous_salt,oldKey);
+    if(!timingSafeEqual(Buffer.from(challenge.previous_verifier,'hex'),Buffer.from(oldProof,'hex')))fail(403,'INVALID_OLD_PASSWORD','Incorrect current password');
+    const newProof=verifier(env,owner.id,challenge.new_salt,newKey);
+    const changed=await env.DB.batch([
+      query(env,'UPDATE accounts SET auth_salt=?,auth_verifier=? WHERE id=? AND auth_salt=? AND auth_verifier=? AND EXISTS(SELECT 1 FROM sessions s JOIN devices d ON d.id=s.device_id WHERE s.token_hash=? AND s.expires_at>? AND d.revoked_at IS NULL)',challenge.new_salt,newProof,owner.id,challenge.previous_salt,challenge.previous_verifier,owner.token_hash,now),
+      query(env,'UPDATE devices SET revoked_at=? WHERE account_id=? AND id<>? AND revoked_at IS NULL AND EXISTS(SELECT 1 FROM accounts WHERE id=? AND auth_salt=? AND auth_verifier=?)',now,owner.id,owner.device_id,owner.id,challenge.new_salt,newProof),
+      query(env,'DELETE FROM sessions WHERE account_id=? AND device_id<>? AND EXISTS(SELECT 1 FROM accounts WHERE id=? AND auth_salt=? AND auth_verifier=?)',owner.id,owner.device_id,owner.id,challenge.new_salt,newProof),
+    ]);
+    if(!changed[0].meta.changes)fail(409,'PASSWORD_CHANGED','Password or session changed; request a new challenge');
+    return json({changed:true,other_devices_revoked:true});
+  }
+  if(method==='GET'&&path==='/v1/transfers'){
+    if([...url.searchParams.keys()].length)fail(400,'INVALID_REQUEST','Unknown query parameter');
+    return json({transfers:await transfers(env,owner.id),server_time:iso(Date.now())});
+  }
   if(method==='POST'&&path==='/v1/email/code'){
     const input=await body(request,['email']),email=emailAddress(input.email);mailConfigured(env);
     await rate(env,'email-account:'+owner.id,3,3600000);await rate(env,'email-address:'+sha(email),5,3600000);
@@ -210,7 +256,7 @@ async function route(request:Request,env:Env):Promise<Response>{
     const cursor=url.searchParams.get('cursor')||'0',limit=Number(url.searchParams.get('limit')||'100');
     if(!/^(0|[1-9][0-9]*)$/.test(cursor)||!Number.isSafeInteger(Number(cursor)))fail(400,'INVALID_CURSOR','Invalid cursor');integer(limit,'limit',1,200);
     const all=await rows(env,'SELECT seq,record FROM changes WHERE account_id=? AND seq>? ORDER BY seq LIMIT ?',owner.id,Number(cursor),limit+1),page=all.slice(0,limit);
-    return json({changes:page.map(c=>({cursor:String(c.seq),record:JSON.parse(c.record)})),cursor:page.length?String(page.at(-1)!.seq):cursor,has_more:all.length>limit});
+    return json({changes:page.map(c=>({cursor:String(c.seq),record:JSON.parse(c.record)})),cursor:page.length?String(page.at(-1)!.seq):cursor,has_more:all.length>limit,transfers:await transfers(env,owner.id)});
   }
   if(method==='POST'&&path==='/v1/uploads'){
     const required=['item_id','base_version','kind','name','mime_type','size','sha256'];
@@ -221,7 +267,7 @@ async function route(request:Request,env:Env):Promise<Response>{
     // initialization reply without reserving the entire file size twice.
     const suppliedId=input.upload_id!==undefined,uploadId=suppliedId?uuid(input.upload_id,'upload_id'):crypto.randomUUID();
     const reuse=async()=>{
-      const previous=await first(env,'SELECT * FROM uploads WHERE id=?',uploadId);
+      const previous=await findUpload(env,owner,uploadId);
       if(!previous)return null;
       if(previous.account_id!==owner.id)fail(404,'NOT_FOUND','Upload not found');
       const spec={item_id:id,base_version:base,kind,name,mime_type:mime,size,sha256:hash};
@@ -238,7 +284,7 @@ async function route(request:Request,env:Env):Promise<Response>{
       await env.DB.batch([
         query(env,'UPDATE limits SET bytes_limit=? WHERE id=1',config(env.GLOBAL_QUOTA_BYTES,8*1024**3)),
         query(env,'INSERT INTO allocations(id,account_id,size) VALUES(?,?,?)',uploadId,owner.id,size),
-        query(env,'INSERT INTO uploads(id,account_id,item_id,base_version,kind,name,mime_type,size,sha256,chunk_size,part_count,state,expires_at,computed_sha256) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',uploadId,owner.id,id,base,kind,name,mime,size,hash,chunk,partCount,'pending',expires,size===0?sha(new Uint8Array()):null),
+        query(env,'INSERT INTO uploads(id,account_id,item_id,base_version,kind,name,mime_type,size,sha256,chunk_size,part_count,state,expires_at,computed_sha256,device_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',uploadId,owner.id,id,base,kind,name,mime,size,hash,chunk,partCount,'pending',expires,size===0?sha(new Uint8Array()):null,owner.device_id),
       ]);
       return json({upload_id:uploadId,chunk_size:chunk,part_count:partCount,expires_at:iso(expires)},201);
     }catch(error){
@@ -256,25 +302,40 @@ async function route(request:Request,env:Env):Promise<Response>{
     const expected=Math.min(value.chunk_size,value.size-partIndex*value.chunk_size),data=await bytes(request,expected),hash=sha(data);
     if(data.byteLength!==expected||digest(request.headers.get('X-Content-SHA256'))!==hash)fail(400,'PART_MISMATCH','Part size or SHA256 differs');
     const key=`v1/${owner.id}/${id}/${partIndex}-${hash}`;
-    await query(env,'INSERT OR IGNORE INTO parts(upload_id,idx,key,size,sha256) VALUES(?,?,?,?,?)',id,partIndex,key,expected,hash).run();
-    const part=await first(env,'SELECT * FROM parts WHERE upload_id=? AND idx=?',id,partIndex);
+    // RETURNING avoids a separate lookup on the ordinary first-send path.
+    const inserted=await first(env,"INSERT OR IGNORE INTO parts(upload_id,idx,key,size,sha256) SELECT id,?,?,?,? FROM uploads WHERE id=? AND account_id=? AND state='pending' AND expires_at>? RETURNING *",partIndex,key,expected,hash,id,owner.id,Date.now());
+    const part=inserted??await first(env,'SELECT * FROM parts WHERE upload_id=? AND idx=?',id,partIndex);
+    if(!part){await findUpload(env,owner,id);return fail(409,'UPLOAD_NOT_PENDING','Upload changed while receiving the part');}
     if(part!.sha256!==hash)fail(409,'PART_CONFLICT','This part number already contains other bytes');
     if(!part!.ready){
       if(partIndex!==value.next_part)fail(409,'PART_OUT_OF_ORDER','Upload parts in increasing order',{next_part:value.next_part});
       // Recheck state after receiving a possibly slow body, before any R2 write.
       const writeLease=crypto.randomUUID();
       const locked=await query(env,"UPDATE uploads SET lease=?,lease_until=? WHERE id=? AND account_id=? AND state='pending' AND next_part=? AND expires_at>? AND lease_until<?",writeLease,Date.now()+600000,id,owner.id,partIndex,Date.now(),Date.now()).run();
-      if(!locked.meta.changes)fail(423,'UPLOAD_BUSY','Upload changed or another part write is running');
+      if(!locked.meta.changes){await findUpload(env,owner,id);fail(423,'UPLOAD_BUSY','Upload changed or another part write is running');}
+      let released=false;
       try{
         const full=PersistentSHA256.load(value.hash_state);full.update(data);
         const last=partIndex===value.part_count-1,state=last?null:full.save(),computed=last?hex(full.digest()):null;
         await budget(env,'A',1);await env.FILES.put(key,data);
         const result=await env.DB.batch([
-          query(env,"UPDATE uploads SET hash_state=?,computed_sha256=?,verified_size=verified_size+?,next_part=next_part+1,expires_at=? WHERE id=? AND state='pending' AND next_part=?",state,computed,data.length,Date.now()+3*DAY,id,partIndex),
+          query(env,"UPDATE uploads SET hash_state=?,computed_sha256=?,verified_size=verified_size+?,next_part=next_part+1,expires_at=?,lease=NULL,lease_until=0 WHERE id=? AND state='pending' AND next_part=? AND lease=?",state,computed,data.length,Date.now()+3*DAY,id,partIndex,writeLease),
           query(env,'UPDATE parts SET ready=1 WHERE upload_id=? AND idx=? AND EXISTS(SELECT 1 FROM uploads WHERE id=? AND next_part>?)',id,partIndex,id,partIndex),
         ]);
-        if(!result[0].meta.changes){const latest=await first(env,'SELECT ready FROM parts WHERE upload_id=? AND idx=?',id,partIndex);if(!latest?.ready)fail(409,'UPLOAD_NOT_PENDING','Upload changed while writing the part');}
-      }finally{await query(env,'UPDATE uploads SET lease=NULL,lease_until=0 WHERE id=? AND lease=?',id,writeLease).run();}
+        released=!!result[0].meta.changes;
+        if(!released){const latest=await first(env,'SELECT ready FROM parts WHERE upload_id=? AND idx=?',id,partIndex);if(!latest?.ready){await findUpload(env,owner,id);fail(409,'UPLOAD_NOT_PENDING','Upload changed while writing the part');}}
+      }catch(error){
+        // A storage/network error racing a manual cancel is still terminal for
+        // this UUID. Do not tell a client to retry or resurrect that upload.
+        await findUpload(env,owner,id);throw error;
+      }finally{
+        if(!released){
+          await query(env,'UPDATE uploads SET lease=NULL,lease_until=0 WHERE id=? AND lease=?',id,writeLease).run();
+          // A cancel can arrive while FILES.put is in flight. Once that writer
+          // releases its lease, reclaim the now-unreferenced bytes immediately.
+          await purgeUpload(env,id);
+        }
+      }
     }
     return json({part_index:partIndex,size:expected,sha256:hash});
   }
@@ -288,12 +349,12 @@ async function route(request:Request,env:Env):Promise<Response>{
     const previous=await item(env,owner.id,value.item_id);
     const lease=crypto.randomUUID(),now=Date.now();
     const locked=await query(env,"UPDATE uploads SET state='verifying',lease=?,lease_until=? WHERE id=? AND (state='pending' OR (state='verifying' AND lease_until<?))",lease,now+300000,id,now).run();
-    if(!locked.meta.changes)fail(423,'UPLOAD_BUSY','Upload verification is already running');
+    if(!locked.meta.changes){await findUpload(env,owner,id);fail(423,'UPLOAD_BUSY','Upload verification is already running');}
     try{
       if(value.verified_size!==value.size||value.computed_sha256!==value.sha256)fail(400,'CONTENT_MISMATCH','Full content size or SHA256 differs');
       const result=await query(env,"UPDATE uploads SET state='committed',lease=NULL,lease_until=0 WHERE id=? AND state='verifying' AND lease=?",id,lease).run();
       if(!result.meta.changes)fail(409,'UPLOAD_NOT_PENDING','Upload changed while verifying');
-    }catch(error){await query(env,"UPDATE uploads SET state='pending',lease=NULL,lease_until=0 WHERE id=? AND state='verifying' AND lease=?",id,lease).run();if(String(error).includes('VERSION_CONFLICT'))await conflict(env,owner,value.item_id);throw error;}
+    }catch(error){await query(env,"UPDATE uploads SET state='pending',lease=NULL,lease_until=0 WHERE id=? AND state='verifying' AND lease=?",id,lease).run();await findUpload(env,owner,id);if(String(error).includes('VERSION_CONFLICT'))await conflict(env,owner,value.item_id);throw error;}
     // Retire replaced bytes promptly; a reader holds a lease until it finishes.
     if(previous?.active_upload&&previous.active_upload!==id)await purgeUpload(env,previous.active_upload);
     return json({record:record((await item(env,owner.id,value.item_id))!)});
@@ -306,9 +367,19 @@ async function route(request:Request,env:Env):Promise<Response>{
   }
   if(method==='DELETE'&&match){
     const id=uuid(match[1]);
-    const result=await query(env,"UPDATE uploads SET state='garbage',garbage_after=? WHERE id=? AND account_id=? AND state IN ('pending','verifying','garbage')",Date.now(),id,owner.id).run();
-    if(!result.meta.changes){
-      const value=await upload(env,owner,id),current=await item(env,owner.id,value.item_id);
+    const existing=await first(env,'SELECT account_id,item_id,state FROM uploads WHERE id=?',id);
+    if(existing&&existing.account_id!==owner.id)fail(404,'NOT_FOUND','Upload not found');
+    const now=Date.now();
+    // Register a terminal receipt even for an unknown UUID: a delayed POST may
+    // still be in flight. The insert trigger guards that opposite race too.
+    const result=await env.DB.batch([
+      query(env,"INSERT INTO cancelled_uploads(account_id,id,item_id,expires_at) SELECT ?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM uploads WHERE id=? AND (state='committed' OR account_id<>?)) ON CONFLICT(account_id,id) DO UPDATE SET expires_at=MAX(cancelled_uploads.expires_at,excluded.expires_at),item_id=COALESCE(cancelled_uploads.item_id,excluded.item_id)",owner.id,id,existing?.item_id??null,now+7*DAY,id,owner.id),
+      query(env,"UPDATE uploads SET state='garbage',garbage_after=? WHERE id=? AND account_id=? AND state IN ('pending','verifying','garbage')",now,id,owner.id),
+    ]);
+    if(!result[0].meta.changes){
+      const value=await first(env,'SELECT account_id,item_id FROM uploads WHERE id=?',id);
+      if(!value||value.account_id!==owner.id)fail(404,'NOT_FOUND','Upload not found');
+      const current=await item(env,owner.id,value!.item_id);
       fail(409,'ALREADY_COMMITTED','Delete the item using its version',{current_record:current?record(current):null});
     }
     await purgeUpload(env,id);return json({cancelled:true});
@@ -388,6 +459,7 @@ export default {
       const message=String(error);if(message.includes('CONTENT_RETIRED'))return json({error:{code:'VERSION_CONFLICT',message:'This content version is being retired; refresh metadata'}},409);
       if(message.includes('ACCOUNT_QUOTA')||message.includes('GLOBAL_QUOTA'))return json({error:{code:message.includes('ACCOUNT_QUOTA')?'ACCOUNT_QUOTA':'GLOBAL_QUOTA',message:'Storage quota exceeded; pending uploads also reserve space'}},413);
       if(message.includes('DEVICE_LIMIT')||message.includes('UPLOAD_LIMIT'))return json({error:{code:message.includes('DEVICE_LIMIT')?'DEVICE_LIMIT':'UPLOAD_LIMIT',message:'Too many active devices or pending uploads'}},409);
+      if(message.includes('UPLOAD_CANCELLED'))return json({error:{code:'UPLOAD_CANCELLED',message:'Upload was cancelled; choose the item again to start a new transfer'}},410);
       // Do not echo SQL, provider responses, tokens, emails or credentials.
       return json({error:{code:'SERVICE_UNAVAILABLE',message:'Service operation failed; retry later'}},503);
     }

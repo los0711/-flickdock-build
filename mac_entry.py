@@ -20,6 +20,8 @@ def verify_platform(report_path):
     from mac_updates import bundle_metadata
     from platform_native import app_bundle, native_input_available
     from platform_startup import startup_runtime_allowed
+    from lan_transfer import _ephemeral_certificate
+    import ssl
     application = QApplication.instance() or QApplication(['FlickDock-platform-verification'])
     flickdock.load_font(application)
     bundle = app_bundle()
@@ -31,10 +33,14 @@ def verify_platform(report_path):
     derived = hashlib.scrypt(b'build-fixture', salt=b'FlickDock-build-fixture', n=2, r=1, p=1, dklen=16)
     if len(derived) != 16 or Keyring is None:
         raise ValueError('账号加密运行时或系统凭据后端缺失。')
+    certificate, private_key, fingerprint = _ephemeral_certificate()
+    if not certificate.startswith(b'-----BEGIN CERTIFICATE-----') or b'PRIVATE KEY' not in private_key.partition(b'\n')[0] or len(fingerprint) != 64:
+        raise ValueError('局域网 TLS 加密运行时缺失。')
     report = dict(ok=True, version=APP_VERSION, platform=sys.platform,
                   qt_platform=application.platformName(), bundle_id=data['CFBundleIdentifier'],
                   native_hooks=False, startup_mutation=False, quartz_imported=True,
                   scrypt_available=True, keychain_backend_imported=True, keychain_accessed=False,
+                  lan_tls_certificate_generated=True, lan_openssl_runtime=ssl.OPENSSL_VERSION,
                   media_backend=os.getenv('QT_MEDIA_BACKEND', ''), bundle=str(bundle))
     if native_input_available() or startup_runtime_allowed():
         raise ValueError('离屏验证意外启用了本机输入或登录启动写入。')
