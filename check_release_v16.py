@@ -31,7 +31,7 @@ tests=['test_app_settings.py','test_global_hotkeys.py','test_shelf_content.py',
        'test_release_macos_v180.py','test_account_actions_v181.py','test_account_settings_v181.py',
        'test_transfer_ui_v181.py','test_lan_transfer_v181.py','test_lan_dialog_v183.py','test_shelf_transfers_v181.py',
        'test_sync_staging_v181.py','test_cloud_progress_v181.py']
-logs=root/'release-checks-v185';logs.mkdir(exist_ok=True)
+logs=root/'release-checks-v186';logs.mkdir(exist_ok=True)
 
 def check(name):
     with tempfile.TemporaryDirectory(prefix='flickdock-release-') as profile:

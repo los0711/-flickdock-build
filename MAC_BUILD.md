@@ -109,7 +109,7 @@ fallback task scheduler or second Startup-folder shortcut is added.
 
 Windows `.exe` update manifests must never be offered to the Mac build. Publish
 separate verified HTTPS indexes for each supported macOS architecture. Each
-index for 1.8.5 and later names the exact versioned DMG and its whole-file size/SHA256; publish
+index for 1.8.6 and later names the exact versioned DMG and its whole-file size/SHA256; publish
 only after the native Mac build report and anonymous DMG download both pass.
 `release_macos.py` checks the native build and frozen cloud reports, local DMG,
 bundle identity/version/CPU header and anonymous complete download. It writes
@@ -118,7 +118,7 @@ passes. Initial publication requires `--initial-release`; existing versions
 cannot acquire different bytes. Mac packages in this release have no Developer
 ID signature or notarization; Gatekeeper distribution acceptance is unverified.
 
-For 1.8.5 and later the in-app updater downloads and verifies the versioned
+For 1.8.6 and later the in-app updater downloads and verifies the versioned
 DMG, then opens it for the user to drag FlickDock into Applications. The
 application remains running until the user completes that native step.
 Legacy ZIP manifests continue to use

@@ -725,7 +725,7 @@ class ContentsPopup(QFrame):
         self.rows_body=QWidget(); self.rows_layout=QVBoxLayout(self.rows_body)
         self.rows_layout.setContentsMargins(0,0,3,0); self.rows_layout.setSpacing(3); self.scroll.setWidget(self.rows_body)
         self.preview=PreviewPane(self); body.addWidget(self.scroll); body.addWidget(self.preview,1)
-        root.addLayout(body,1); self.rebuild()
+        root.addLayout(body,1); self.rebuild(); self.update_transfer_status()
         self.drop_router=OverviewDropRouter(self)
 
     def visible_refs(self):
@@ -760,7 +760,7 @@ class ContentsPopup(QFrame):
         self.transfer_summary.setVisible(bool(self.shelf.content.transfers) and key=='uploading')
         self.selected.intersection_update(self.visible_refs())
         if self.primary_selection not in self.selected: self.primary_selection=None
-        self.rebuild(); self.shelf.touch()
+        self.rebuild(); self.update_transfer_status(); self.shelf.touch()
 
     def _clear_layout(self,layout):
         while layout.count():

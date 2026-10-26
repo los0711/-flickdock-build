@@ -200,7 +200,7 @@ class TransferUITests(unittest.TestCase):
         path=self.file();self.settings.update(capture_mode='reference');self.shelf.add_paths('permanent',[str(path)])
         pending=self.pending('云端图片.svg',remote=True,received=20,total=100)
         self.shelf.content.transfers[str(path)]={'id':'local-upload','phase':'uploading','received':40,'total':100}
-        self.shelf.transfers_updated();popup=self.overview();popup.update_transfer_status();popup.set_category('uploading');flush()
+        self.shelf.transfers_updated();popup=self.overview();popup.set_category('uploading');flush()
         self.assertEqual(set(popup.visible_refs()),{str(path),pending})
         self.assertTrue(self.shelf.upload_count.isVisible());self.assertEqual(self.shelf.upload_count.count,2)
         self.assertIn('2',popup.category_buttons['uploading'].text());self.assertIn('2',popup.transfer_count.text())
