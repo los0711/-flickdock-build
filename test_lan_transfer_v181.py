@@ -36,6 +36,13 @@ def wait_for(predicate, timeout=12):
 
 
 class ManifestTests(unittest.TestCase):
+    def test_mac_loader_never_probes_apple_system_crypto_stub(self):
+        with patch.object(lan.sys, 'platform', 'darwin'), patch.object(Path, 'glob', return_value=[]), \
+             patch.object(lan.ctypes, 'CDLL', side_effect=OSError('No test library')), \
+             patch.object(lan.ctypes.util, 'find_library') as generic_lookup:
+            with self.assertRaises(RuntimeError): lan._crypto_library()
+            generic_lookup.assert_not_called()
+
     def test_no_traversal_absolute_duplicate_or_file_parent(self):
         cases = [
             [{'path': '../evil', 'kind': 'file', 'size': 1}],

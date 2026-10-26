@@ -2,6 +2,7 @@
 from pathlib import Path
 import json
 import sys
+import ssl
 
 root=Path(SPECPATH)
 sys.path.insert(0,str(root))
@@ -14,6 +15,11 @@ license_names=['HarmonyOS-Sans-LICENSE.txt','Python-LICENSE.txt',
 asset_files=[(root/'fonts'/name,'fonts') for name in font_names]
 asset_files += [(root/'licenses'/name,'licenses') for name in license_names]
 asset_files += [(root/'THIRD_PARTY_NOTICES.md','.'),(root/'font_manifest.json','.')]
+# This build runtime's SSLContext loads an auxiliary public CA policy file
+# beside ssl.py. Preserve that policy in the frozen layout as well.
+ssl_policy=Path(ssl.__file__).with_name('codex-rejected-cas.pem')
+if ssl_policy.is_file():
+    asset_files.append((ssl_policy,'.'))
 for source,_ in asset_files:
     if not source.is_file():
         raise FileNotFoundError(f'Required distribution asset is missing: {source}')

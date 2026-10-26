@@ -26,6 +26,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 from uuid import uuid4
 
 from PySide6.QtCore import QObject, Signal
@@ -43,21 +44,47 @@ PROTOCOL = 'flickdock-lan-1'
 def _crypto_library():
     """Use the OpenSSL dependency already shipped for Python ssl/scrypt."""
     import _ssl
-    roots = [Path(_ssl.__file__).parent, Path(sys.executable).parent]
+    roots = [Path(_ssl.__file__).parent, Path(sys.executable).parent,
+             Path(sys.base_prefix), Path(sys.prefix)]
     if getattr(sys, '_MEIPASS', None): roots.insert(0, Path(sys._MEIPASS))
-    candidates = []
+    candidates = []; seen = set()
     for root in roots:
         for location in (root, root / 'lib', root.parent / 'lib'):
-            candidates.extend(location.glob('libcrypto*.dll'))
-            candidates.extend(location.glob('libcrypto*.dylib'))
-            candidates.extend(location.glob('libcrypto*.so*'))
-    found = ctypes.util.find_library('crypto')
-    if found: candidates.append(found)
+            patterns = ('libcrypto*.dylib',) if sys.platform == 'darwin' else ('libcrypto*.dll', 'libcrypto*.so*')
+            for pattern in patterns:
+                for value in location.glob(pattern):
+                    path = value.resolve()
+                    # Apple's libcrypto compatibility stub intentionally aborts
+                    # the process on dlopen; it cannot be caught as an OSError.
+                    if sys.platform == 'darwin' and str(path).startswith('/usr/lib/'): continue
+                    if str(path) not in seen: candidates.append(path); seen.add(str(path))
+    if sys.platform != 'darwin':
+        found = ctypes.util.find_library('crypto')
+        if found: candidates.append(found)
     for candidate in candidates:
         try:
             library = ctypes.CDLL(str(candidate))
             if hasattr(library, 'EVP_PKEY_Q_keygen'): return library
         except OSError: pass
+    if sys.platform == 'darwin':
+        # Homebrew/Python framework layouts differ. Resolve a symbol through
+        # Python's already loaded _ssl dependency, then ask dyld for its actual
+        # library path. Never guess a system libcrypto name on macOS.
+        try:
+            bridge = ctypes.CDLL(str(_ssl.__file__))
+            symbol = getattr(bridge, 'EVP_PKEY_Q_keygen')
+            class DlInfo(ctypes.Structure):
+                _fields_ = [('filename', ctypes.c_char_p), ('base', ctypes.c_void_p),
+                            ('symbol', ctypes.c_char_p), ('address', ctypes.c_void_p)]
+            dladdr = ctypes.CDLL(None).dladdr
+            dladdr.argtypes = [ctypes.c_void_p, ctypes.POINTER(DlInfo)]; dladdr.restype = ctypes.c_int
+            information = DlInfo()
+            if dladdr(ctypes.cast(symbol, ctypes.c_void_p), ctypes.byref(information)) and information.filename:
+                path = Path(os.fsdecode(information.filename)).resolve()
+                if path.is_absolute() and not str(path).startswith('/usr/lib/'):
+                    library = ctypes.CDLL(str(path))
+                    if hasattr(library, 'EVP_PKEY_Q_keygen'): return library
+        except (OSError, AttributeError, ValueError): pass
     raise RuntimeError('无法加载局域网加密组件，请重新安装 FlickDock。')
 
 
@@ -260,6 +287,7 @@ class LanTransferService(QObject):
         self._peers = {}; self._transfers = {}; self._threads = []
         self._listener = None; self._discovery_socket = None; self._certificate_dir = None
         self._slots = threading.BoundedSemaphore(4); self._context = None; self._starting = False
+        self.startup_diagnostic = {}
 
     def _thread(self, function, *args):
         thread = threading.Thread(target=function, args=args, daemon=True, name='FlickDock-LAN')
@@ -272,8 +300,10 @@ class LanTransferService(QObject):
         self._starting = True; self._stopped.clear(); self._thread(self._start)
 
     def _start(self):
+        phase = 'generate_certificate'; certificate = None; private = None
         try:
             cert, key, self.fingerprint = _ephemeral_certificate()
+            phase = 'stage_certificate'
             folder = tempfile.TemporaryDirectory(prefix='flickdock-lan-tls-'); self._certificate_dir = folder
             certificate = Path(folder.name, 'session.pem'); private = Path(folder.name, 'session-key.pem')
             certificate.write_bytes(cert)
@@ -281,9 +311,11 @@ class LanTransferService(QObject):
             with os.fdopen(descriptor, 'wb') as output: output.write(key)
             self._context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             self._context.minimum_version = ssl.TLSVersion.TLSv1_2
+            phase = 'load_certificate'
             self._context.load_cert_chain(str(certificate), str(private))
             # OpenSSL has copied the key into memory; do not retain it on disk.
             folder.cleanup(); self._certificate_dir = None
+            phase = 'listen'
             listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             listener.bind((self.bind_host, 0)); listener.listen(8); listener.settimeout(.5)
@@ -301,6 +333,9 @@ class LanTransferService(QObject):
                     stream.close(); continue
                 self._thread(self._incoming, stream, address[0])
         except Exception as error:
+            self.startup_diagnostic = dict(phase=phase, error=type(error).__name__, errno=getattr(error, 'errno', None),
+                certificate_exists=bool(certificate and certificate.exists()), private_key_exists=bool(private and private.exists()),
+                certificate_path=str(certificate) if certificate else '', traceback=traceback.format_exc())
             if not self._stopped.is_set(): self.status_changed.emit(str(error))
         finally:
             self._starting = False

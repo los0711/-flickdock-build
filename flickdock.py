@@ -666,7 +666,7 @@ class FileRow(QFrame):
 
 
 class ContentsPopup(QFrame):
-    CATEGORIES=(("all","全部"),("images","图片"),("video","视频"),("audio","音频"),("text","文字"),("files","文件"),("links","网页"),("uploading","正在上传"))
+    CATEGORIES=(("all","全部"),("images","图片"),("video","视频"),("audio","音频"),("text","文字"),("files","文件"),("links","网页"),("uploading","传输中"))
     def __init__(self,shelf,mode="permanent"):
         super().__init__(shelf.card)
         self.shelf,self.mode=shelf,"permanent"
@@ -698,12 +698,12 @@ class ContentsPopup(QFrame):
         self.clear_button.clicked.connect(self.shelf.confirm_clear_all)
         set_ui_style(self.clear_button,"QPushButton {color:#626c79;background:transparent;border:0;border-radius:7px;padding:6px 10px;font:13px 'HarmonyOS Sans SC';} QPushButton:hover {background:#eef1f6;color:#b9404c;} QPushButton:pressed {background:#e1e7ef;} QPushButton:disabled {color:#8490a0;}")
         header.addWidget(self.clear_button); root.addLayout(header)
-        filters=QHBoxLayout(); filters.setSpacing(5)
+        filters=QHBoxLayout(); filters.setSpacing(4)
         self.category_group=QButtonGroup(self); self.category_group.setExclusive(True); self.category_buttons={}
         for key,label in self.CATEGORIES:
             button=QPushButton(label,self); button.setCheckable(True); button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.setMinimumHeight(30); self.category_group.addButton(button); self.category_buttons[key]=button
-            set_ui_style(button,"QPushButton {background:transparent;color:#626c79;border:0;border-radius:7px;padding:5px 12px;font:13px 'HarmonyOS Sans SC';} QPushButton:hover {background:#eef1f6;} QPushButton:checked {background:#e7ebf1;color:#28313d;font-weight:600;}")
+            set_ui_style(button,"QPushButton {background:transparent;color:#626c79;border:0;border-radius:7px;padding:5px 8px;font:13px 'HarmonyOS Sans SC';} QPushButton:hover {background:#eef1f6;} QPushButton:checked {background:#e7ebf1;color:#28313d;font-weight:600;}")
             button.clicked.connect(lambda checked=False,key=key:self.set_category(key))
             filters.addWidget(button)
         filters.addStretch(); root.addLayout(filters)
@@ -731,14 +731,19 @@ class ContentsPopup(QFrame):
 
     def update_transfer_status(self):
         states=list(self.shelf.content.transfers.values())
-        count=len(states);self.category_buttons['uploading'].setText(f'正在上传 {count}' if count else '正在上传')
+        count=len(states);self.category_buttons['uploading'].setText(f'传输中 {count}' if count else '传输中')
+        self.category_buttons['uploading'].setAccessibleName(f'传输中的项目，共 {count} 项')
         self.transfer_summary.setVisible(bool(count))
         if count:
             received=sum(v.get('received',0) for v in states);total=sum(v.get('total',0) for v in states)
             copying=sum(v.get('phase')=='copying' for v in states)
-            self.transfer_count.setText(f'正在复制 {copying} 项 · 正在上传 {count-copying} 项' if copying else f'正在上传 · {count} 项')
+            downloading=sum(v.get('phase')=='downloading' for v in states)
+            uploading=count-copying-downloading
+            self.transfer_count.setText(' · '.join(f'{label} {amount} 项' for label,amount in
+                (('正在复制',copying),('正在上传',uploading),('正在下载',downloading)) if amount))
             self.transfer_bar.setRange(0,1000 if total else 0)
             if total:self.transfer_bar.setValue(round(1000*min(1,received/total)))
+        else:self.transfer_count.clear()
         self.preview.update_transfer_status()
         if tuple(self.visible_refs()) != tuple(getattr(self,'_build_refs',())):self.rebuild()
 
@@ -1220,7 +1225,7 @@ class ShelfWindow(QWidget):
         self.refresh(); self.manager.save(); self.manager.update_handles()
 
     def confirm_clear_all(self):
-        count=len(self.files['permanent'])
+        count=len(self.display_refs())
         if not count or confirmation_active(self): return False
         self.geometry_morph.complete()
         dialog=ClearConfirmOverlay(self.card,count,font_family=FONT_FAMILY,theme=self.manager.settings.theme)

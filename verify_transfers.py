@@ -32,13 +32,18 @@ def run(argv, load_font):
     report = dict(ok=False, version=APP_VERSION, frozen=bool(getattr(sys, 'frozen', False)),
                   platform=sys.platform, qt_platform=app.platformName(),
                   discovery_broadcast=False, external_network=False, os_credentials_written=False,
-                  startup_mutation=False, installer_executed=False, native_hooks=False)
+                  startup_mutation=False, installer_executed=False, native_hooks=False,
+                  phase='initializing', tls_status=[])
     services = []; streams = []
     def wait(predicate, timeout=15):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             app.processEvents()
             if predicate(): return
+            if report['phase'] == 'starting_tls':
+                for service in services:
+                    if not service._starting and not service.port:
+                        raise RuntimeError('LAN TLS startup failed: ' + '; '.join(report['tls_status']))
             time.sleep(.003)
         raise TimeoutError('Frozen LAN verification timed out')
     try:
@@ -59,13 +64,17 @@ def run(argv, load_font):
             source.write_bytes(payload); expected = hashlib.sha256(payload).hexdigest()
             a = LanTransferService(device_name='QA sender', bind_host='127.0.0.1', discovery=False)
             b = LanTransferService(device_name='QA receiver', bind_host='127.0.0.1', discovery=False)
+            a.status_changed.connect(lambda message: report['tls_status'].append('sender: ' + str(message)))
+            b.status_changed.connect(lambda message: report['tls_status'].append('receiver: ' + str(message)))
             services.extend((a, b)); offers = []; sent = []; received = []; a_states = []; b_states = []
             a.progress.connect(a_states.append); b.progress.connect(b_states.append)
             a.completed.connect(sent.append); b.completed.connect(received.append); b.offer_received.connect(offers.append)
+            report['phase'] = 'starting_tls'
             a.start(); b.start(); wait(lambda: a.port and b.port)
             if not a.fingerprint or a.fingerprint == b.fingerprint:
                 raise AssertionError('Ephemeral TLS certificates must be unique')
             report['ephemeral_tls_certificate_generated'] = True
+            report['phase'] = 'original_transfer'
             a.remember_peer(b.own_peer()); identifier = a.send(b.device_id, [source])
             wait(lambda: offers and any(row['state'] == 'waiting' for row in a_states))
             if list(destination.iterdir()): raise AssertionError('Incoming bytes appeared before receiver consent')
@@ -82,6 +91,7 @@ def run(argv, load_font):
             source.unlink(); report['original_handle_released'] = True
             # Exercise the actual frozen TLS server with an interrupted prefix;
             # then cancel and ensure only the incomplete transfer is removed.
+            report['phase'] = 'cancel_partial'
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             context.check_hostname = False; context.verify_mode = ssl.CERT_NONE
             raw = socket.create_connection(('127.0.0.1', b.port), timeout=5)
@@ -103,10 +113,11 @@ def run(argv, load_font):
             if not target.exists() or hashlib.sha256(target.read_bytes()).hexdigest() != expected:
                 raise AssertionError('Cancelling a transfer changed another completed file')
             report.update(cancel_cleans_partial_file=True, completed_file_preserved=True,
-                          progress_reported=any(row['state'] == 'transferring' for row in b_states), ok=True)
+                          progress_reported=any(row['state'] == 'transferring' for row in b_states), phase='complete', ok=True)
     except Exception as error:
         report['error'] = str(error)
     finally:
+        report['startup_diagnostics'] = [service.startup_diagnostic for service in services if service.startup_diagnostic]
         for stream in streams:
             try: stream.close()
             except OSError: pass

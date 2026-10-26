@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "product": "FlickDock",
-  "version": "1.8.1",
+  "version": "1.8.2",
   "files": [
     {
       "path": ".gitattributes",
@@ -40,8 +40,8 @@
     },
     {
       "path": "FEATURE_V181.md",
-      "size": 1901,
-      "sha256": "a76c092b6eabd64a4ff85e4fb4f6c5e4ed59fb9e96eaa5e9420679d62fc3c4d9"
+      "size": 1908,
+      "sha256": "917701ae2bd9508f2c41ee7cfba69f8d7f3b47b835f8ae24943ef861be390027"
     },
     {
       "path": "FlickDock-mac.spec",
@@ -51,12 +51,12 @@
     {
       "path": "FlickDock.iss",
       "size": 3529,
-      "sha256": "5b16e18712166ff4b215b77779c3e5671fee97281a838222b33e84650ce70fa9"
+      "sha256": "577cfee97da9801abde22ca81ebfe492285f366193861a3ae5e8f780a17bac5d"
     },
     {
       "path": "FlickDock.spec",
-      "size": 3000,
-      "sha256": "936fa35e44dbfafc36cb6f22b39762dc28874d8905e5bdb3cf564b421eda1182"
+      "size": 3286,
+      "sha256": "d3b961abff3af0e57117f0b3c6b9ffa952011071705d1a125321234e226010ec"
     },
     {
       "path": "MAC_BUILD.md",
@@ -101,7 +101,7 @@
     {
       "path": "README.md",
       "size": 4100,
-      "sha256": "f190972f1d73f8cdf7a88f888b07d60318a29bd6281445e0f0e2634516c550bd"
+      "sha256": "e297168452048fc48de06d76cbc7a2fa0fd6cc73c3642b056a1dc5087c82d08a"
     },
     {
       "path": "THIRD_PARTY_NOTICES.md",
@@ -131,7 +131,7 @@
     {
       "path": "app_version.py",
       "size": 111,
-      "sha256": "6f80e81bde2a2f8a2ae0fdc6e298d260d9d2f0223170e355e37caf9ee85f1003"
+      "sha256": "b38537c17d9521b1bc8e202705e1a8b091c7b59ff6fba6ab4181b990890a5c8b"
     },
     {
       "path": "assets/icons/content-archive.svg",
@@ -491,7 +491,7 @@
     {
       "path": "check_release_v16.py",
       "size": 3469,
-      "sha256": "f3c583e1d851c9e8b01de2b0ff5fe4eff1ce9948026912219073a5fc242179e2"
+      "sha256": "c0f50dc6f859ba0361d1ceab01666df42ca204f05817bc68149d8f62f34bf473"
     },
     {
       "path": "ci_assets.py",
@@ -660,8 +660,8 @@
     },
     {
       "path": "flickdock.py",
-      "size": 133716,
-      "sha256": "4ab13fd8a1fdeda93cbb6346076b82884c4eabe787fc989ab61ab544abed06b0"
+      "size": 134026,
+      "sha256": "bcb21bb3bb2b34eaff649131528cdb79e63c7cd801ebc4d8301f52dcf7d25dcc"
     },
     {
       "path": "flickdock_icons.py",
@@ -705,8 +705,8 @@
     },
     {
       "path": "lan_transfer.py",
-      "size": 39670,
-      "sha256": "35b8abfe11d4daaba020058c3350b425839568e9dff56cc828ce0017f3e9bb98"
+      "size": 42024,
+      "sha256": "da534b3dd26ac36be48734dcefe363b8a06cc8830381a70db1dc1147af251171"
     },
     {
       "path": "licenses/Cloud-Client-LICENSES.txt",
@@ -1000,8 +1000,8 @@
     },
     {
       "path": "test_lan_transfer_v181.py",
-      "size": 16583,
-      "sha256": "f87bf4b0e808ab039ff916c4cf4e3f6aae29e72a5f54668c93fa30b0d9bf66a0"
+      "size": 17044,
+      "sha256": "c70128cfa79b4facd2a467af0f2a94801c89628b3412f5cd4388238653b507c3"
     },
     {
       "path": "test_mac_build.py",
@@ -1145,8 +1145,8 @@
     },
     {
       "path": "test_transfer_ui_v181.py",
-      "size": 17218,
-      "sha256": "5db264fff7ee456fc8ce1f1e3346fc29a64343345178fc5d1a81399d0b2fd61a"
+      "size": 20355,
+      "sha256": "920e42483f251051b14d0e8a94dddf790c67746fcf38c890fb859b3c9f00bede"
     },
     {
       "path": "test_update_client_v170.py",
@@ -1215,13 +1215,13 @@
     },
     {
       "path": "verify_transfers.py",
-      "size": 7460,
-      "sha256": "949632fea7e1d34f48e468b0997be233608e232a149badbdc9b4a989582caf81"
+      "size": 8281,
+      "sha256": "5f7ce22a7f51597efef947f16b5856a1fb6e52b57bf9a7666ce5d6bcd18dfd9f"
     },
     {
       "path": "version_info.txt",
       "size": 619,
-      "sha256": "3a0e2e2db95e81873e0fe747ce613f43f70f332e960c25862b4728ab356f6005"
+      "sha256": "8ababdd849c97dde91220ed80fc6f402e59cbbc42473087ba25fde62b407e97b"
     },
     {
       "path": "widget_retirement.py",

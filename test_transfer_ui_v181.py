@@ -211,7 +211,7 @@ class TransferUITests(unittest.TestCase):
         self.shelf.content.transfers.pop(str(path));self.shelf.content.pending.pop(pending);self.shelf.content.transfers.pop(pending)
         self.shelf.transfers_updated();flush()
         self.assertEqual(popup.visible_refs(),[]);self.assertFalse(popup.transfer_summary.isVisible())
-        self.assertEqual(popup.category_buttons['uploading'].text(),'正在上传')
+        self.assertEqual(popup.category_buttons['uploading'].text(),'传输中')
     def test_manager_projects_remote_pending_enables_expand_and_routes_cancel_to_sync(self):
         self.manager._sync_transfer_refs=set()
         calls=[]
@@ -248,6 +248,50 @@ class TransferUITests(unittest.TestCase):
         self.shelf.content.transfers[paths[1]]={'id':'selected-upload','phase':'uploading','received':10,'total':100}
         self.shelf.transfers_updated();self.shelf._repaint_transfers();flush()
         self.assertFalse(popup.preview.transfer_row.isVisible(),'a repaint must not restore individual progress over a selected group')
+    def test_transfers_filter_tabs_fit_narrow_overview_with_four_digit_count(self):
+        for index in range(1024):
+            ref='flickdock:transfer:layout-'+str(index)
+            self.shelf.content.pending[ref]={'name':f'项目{index}.bin','kind':'file'}
+            self.shelf.content.transfers[ref]={'id':str(index),'phase':'queued','received':0,'total':100}
+        self.shelf.refresh();popup=self.overview();popup.update_transfer_status()
+        native_geometry=self.shelf.geometry()
+        for width in (480,500):
+            popup.setFixedWidth(width);popup.layout().activate();flush()
+            for selected in ('all','uploading'):
+                popup.set_category(selected);popup.layout().activate();flush()
+                for button in popup.category_buttons.values():
+                    self.assertLessEqual(button.geometry().right(),popup.rect().right(),
+                                         f'{button.text()} extends beyond the {width}px overview')
+                    text_width=button.fontMetrics().horizontalAdvance(button.text())
+                    self.assertGreaterEqual(button.width()-16,text_width,
+                                            f'{button.text()} is clipped in the {width}px overview')
+        self.assertEqual(self.shelf.geometry(),native_geometry,'filter layout must not resize the native animation host')
+    def test_transfer_summary_reports_copy_upload_download_without_mislabeling(self):
+        for index,phase in enumerate(('copying','uploading','downloading','queued','remote')):
+            ref=self.pending(f'项目{index}.bin',remote=phase in ('remote','downloading'))
+            self.shelf.content.transfers[ref]['phase']=phase
+        popup=self.overview();popup.update_transfer_status()
+        self.assertEqual(popup.category_buttons['uploading'].text(),'传输中 5')
+        self.assertEqual(popup.transfer_count.text(),'正在复制 1 项 · 正在上传 3 项 · 正在下载 1 项')
+        self.shelf.content.transfers={ref:state for ref,state in self.shelf.content.transfers.items() if state['phase']=='downloading'}
+        popup.update_transfer_status()
+        self.assertEqual(popup.transfer_count.text(),'正在下载 1 项')
+        self.assertNotIn('上传',popup.transfer_count.text())
+    def test_pending_only_clear_all_opens_confirmation_and_respects_cancel(self):
+        self.pending('尚未接收完成.mp4',remote=True)
+        self.assertEqual(self.shelf.files['permanent'],[])
+        counts=[]
+        for accepted in (False,True):
+            def decide(dialog):
+                counts.append(dialog.count)
+                self.assertEqual(dialog.count,1)
+                return accepted
+            with patch.object(subject.ClearConfirmOverlay,'exec',decide),patch.object(self.shelf,'remove_all') as remove:
+                self.assertEqual(self.shelf.confirm_clear_all(),accepted)
+                if accepted:remove.assert_called_once_with('permanent')
+                else:remove.assert_not_called()
+            flush()
+        self.assertEqual(counts,[1,1],'pending-only contents require the same second confirmation as completed files')
 
 
 if __name__=='__main__':unittest.main(verbosity=2)
