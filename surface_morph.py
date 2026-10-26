@@ -10,6 +10,8 @@ def paint_surface_shadow(painter,rect,cache,blur=28.0,offset=None,color=None):
     """Paint the same fixed-width shadow for live and animated surfaces."""
     offset=QPoint(0,7) if offset is None else offset
     color=QColor(18,31,53,40) if color is None else QColor(color)
+    if color.alpha() == 0:
+        return
     dpr=painter.device().devicePixelRatioF()
     radius=min(26.0,min(rect.width(),rect.height())*.10)
     spread=blur*.65

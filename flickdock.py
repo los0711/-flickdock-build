@@ -244,11 +244,11 @@ class DropZone(QFrame):
         if self.drop_highlight:
             border, background = "#75b8ff", "#edf6ff"
         elif active:
-            border, background = "#bfdbfa", "#f4f8fd"
+            border, background = "#d8e6f7", "#f4f8fd"
         elif hasattr(self, 'feedback') and self.feedback.values["hover"] > .3:
-            border, background = "#d9dfe8", "#f5f7fa"
+            border, background = "transparent", "#f5f7fa"
         else:
-            border, background = "#e5e8ed", "#f8f9fb"
+            border, background = "transparent", "#f8f9fb"
         set_ui_style(self, f"QFrame#dropZone {{background:{background};border:1px solid {border};border-radius:18px;}}")
 
     def refresh(self):
@@ -988,8 +988,8 @@ class ShelfWindow(QWidget):
         self.card = QFrame(self)
         self.card.setObjectName("shelfCard")
         self.card.setGeometry(14, 7, CARD_W, CARD_H)
-        set_ui_style(self.card, "QFrame#shelfCard {background:#ffffff;border:1px solid #e1e5ec;border-radius:24px;}")
-        self.surface_effect = MotionShadow(self.card, alpha=40)
+        set_ui_style(self.card, "QFrame#shelfCard {background:#ffffff;border:0;border-radius:24px;}")
+        self.surface_effect = MotionShadow(self.card, alpha=0)
         self.card.setGraphicsEffect(self.surface_effect)
         self.presentation = Spring(self, {"sx": 1, "sy": 1, "alpha": 1, "dx": 0, "dy": 0}, self._apply_presentation, motion=self.manager.motion)
         self._morph_host_active=False
