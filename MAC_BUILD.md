@@ -108,20 +108,23 @@ fallback task scheduler or second Startup-folder shortcut is added.
 ## macOS online updates
 
 Windows `.exe` update manifests must never be offered to the Mac build. Publish
-separate verified HTTPS indexes for each supported macOS architecture. Each
-index for 1.8.6 and later names the exact versioned DMG and its whole-file size/SHA256; publish
-only after the native Mac build report and anonymous DMG download both pass.
-`release_macos.py` checks the native build and frozen cloud reports, local DMG,
+separate verified HTTPS indexes for each supported macOS architecture. The 1.8.4
+client accepts ZIP updates only. Version 1.8.7 is a ZIP bridge so those clients
+can upgrade; it also publishes DMG and PKG installers separately. A later update
+channel can use DMG after supported clients have the DMG-aware updater. Each
+index names the exact versioned update package and its whole-file size/SHA256;
+publish only after the native Mac build report and anonymous full download pass.
+`release_macos.py` checks the native build and frozen cloud reports, local package,
 bundle identity/version/CPU header and anonymous complete download. It writes
 `updates/macos-arm64.json` or `updates/macos-x86_64.json` only after every check
 passes. Initial publication requires `--initial-release`; existing versions
 cannot acquire different bytes. Mac packages in this release have no Developer
 ID signature or notarization; Gatekeeper distribution acceptance is unverified.
 
-For 1.8.6 and later the in-app updater downloads and verifies the versioned
-DMG, then opens it for the user to drag FlickDock into Applications. The
-application remains running until the user completes that native step.
-Legacy ZIP manifests continue to use
+For DMG manifests, the 1.8.6 and later in-app updater downloads and verifies
+the versioned DMG, then opens it for the user to drag FlickDock into Applications.
+The application remains running until the user completes that native step.
+ZIP manifests continue to use
 `PrepareMacUpdateJob(zip_path, manifest, current_version=..., installed_app=...)`
 runs hashing and extraction in a Qt worker. Call `start()`, retain the job until
 `finished(prepared)`/`failed(message)`/`cancelled()`, and use `cancel()` on shutdown.
