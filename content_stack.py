@@ -4,7 +4,7 @@ from PySide6.QtCore import QRectF, Qt, QVariantAnimation, QEasingCurve, QAbstrac
 from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap
 from flickdock_icons import content_color, device_pixel_ratio, document_pixmap
 from flickdock_motion import ContentTile
-from transfer_visuals import draw_ring
+from transfer_visuals import draw_progress_badge
 
 
 def stack_refs(refs):
@@ -136,15 +136,9 @@ class StackTile(ContentTile):
                     self._stack_cache=stack_pixmap(self.repository,self.refs,128,dpr=ratio,preview_cache=self.preview_cache)
                     self._stack_dpr=ratio
                 self._pixmap=self._stack_cache
-        state=getattr(self.repository,'transfers',{}).get(self.refs[-1]) if self.refs else None
-        if state and not self._pixmap.isNull():
-            original=self._pixmap
-            dim=QPixmap(original.size());dim.setDevicePixelRatio(original.devicePixelRatioF());dim.fill(Qt.GlobalColor.transparent)
-            painter=QPainter(dim);painter.setOpacity(.38);painter.drawPixmap(0,0,original);painter.end()
-            self._pixmap=dim
+        states=getattr(self.repository,'transfers',{})
+        state=next((states[ref] for ref in reversed(self.refs) if ref in states),None)
         super().paintEvent(event)
         if state:
-            self._pixmap=original
             painter=QPainter(self)
-            side=min(82,self.width()*.55,self.height()*.7)
-            draw_ring(painter,QRectF((self.width()-side)/2,(self.height()-side)/2,side,side),state)
+            draw_progress_badge(painter,QRectF(self.width()-41,self.height()-39,24,24),state)

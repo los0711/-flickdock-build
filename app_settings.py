@@ -1005,7 +1005,8 @@ class SettingsDialog(QDialog):
             "available": ("有新版本", "立即更新"),
             "downloading": (f"正在下载 {min(100, round(received*100/total))}%" if total else "正在下载…", "更新中…"),
             "verifying": ("正在校验…", "更新中…"), "ready": ("更新已准备好", "立即更新"),
-            "installing": ("正在安装…", "更新中…"), "cancelling": ("正在取消…", "更新中…"),
+            "installing": ("正在安装…", "更新中…"), "handoff": ("请将 FlickDock 拖到“应用程序”", "检查更新"),
+            "cancelling": ("正在取消…", "更新中…"),
             "cancelled": ("更新已取消", "继续更新" if version else "检查更新"),
             "error": ("更新失败" if version else "检查失败", "重试更新" if version else "重试检查"),
         }

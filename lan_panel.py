@@ -6,12 +6,16 @@ import json
 import os
 import time
 
-from PySide6.QtCore import QByteArray, QRectF, Qt, Signal
+from PySide6.QtCore import QByteArray, QPoint, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QGuiApplication, QPainter, QPen
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QFrame, QGraphicsDropShadowEffect,
                                QHBoxLayout, QLabel, QLineEdit, QProgressBar, QPushButton,
-                               QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
+                               QListView, QScrollArea, QSizePolicy, QStyle, QStyledItemDelegate,
+                               QVBoxLayout, QWidget)
+
+from flickdock_icons import draw_glyph
+from platform_native import remove_host_window_shadow
 
 
 def _label(value='', parent=None, *, muted=False):
@@ -38,17 +42,50 @@ class _DevicesCombo(QComboBox):
     def wheelEvent(self, event): event.ignore()
 
 
+class _DeviceDelegate(QStyledItemDelegate):
+    def __init__(self, parent=None):
+        super().__init__(parent); self.dark = False
+
+    def sizeHint(self, option, index):
+        return QSize(max(230, option.rect.width()), 56)
+
+    def paint(self, painter, option, index):
+        painter.save(); painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        background = '#344357' if self.dark else '#eaf2fe'
+        if selected:
+            painter.setPen(Qt.PenStyle.NoPen); painter.setBrush(QColor(background))
+            painter.drawRoundedRect(QRectF(option.rect.adjusted(5, 3, -5, -3)), 9, 9)
+        icon_color = '#8fbbff' if self.dark else '#3178d9'
+        draw_glyph(painter, 'nearby', QRectF(option.rect.left()+16, option.rect.top()+17, 22, 22), icon_color)
+        name = str(index.data(Qt.ItemDataRole.DisplayRole) or '')
+        host = str(index.data(Qt.ItemDataRole.ToolTipRole) or '')
+        primary = '#edf2fa' if self.dark else '#172537'
+        secondary = '#a4b3c7' if self.dark else '#74849a'
+        width = max(20, option.rect.width()-68)
+        painter.setFont(option.font)
+        painter.setPen(QColor(primary))
+        painter.drawText(QRectF(option.rect.left()+49,option.rect.top()+8,width,20),
+                         Qt.AlignmentFlag.AlignVCenter,
+                         painter.fontMetrics().elidedText(name,Qt.TextElideMode.ElideRight,width))
+        painter.setPen(QColor(secondary))
+        painter.drawText(QRectF(option.rect.left()+49,option.rect.top()+29,width,18),
+                         Qt.AlignmentFlag.AlignVCenter,
+                         painter.fontMetrics().elidedText(host,Qt.TextElideMode.ElideRight,width))
+        painter.restore()
+
+
 class _DropIllustration(QWidget):
     def __init__(self, parent=None):
-        super().__init__(parent);self.setFixedSize(36,31)
+        super().__init__(parent);self.setFixedSize(60,60)
 
     def paintEvent(self, event):
         painter=QPainter(self);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QPen(QColor('#3688ed'),1.8))
-        painter.drawRoundedRect(QRectF(5,9,26,18),4,4)
-        painter.drawLine(9,9,14,9);painter.drawLine(9,6,14,6)
-        painter.drawLine(18,3,18,18)
-        painter.drawLine(13,13,18,18);painter.drawLine(23,13,18,18)
+        active=bool(self.parent().property('dragActive'))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor('#dcecff' if active else '#eaf3ff'))
+        painter.drawRoundedRect(QRectF(3,3,54,54),16,16)
+        draw_glyph(painter,'receive',QRectF(15,15,30,30),'#216dd2',1.7)
 
 
 class _DropZone(QFrame):
@@ -57,10 +94,11 @@ class _DropZone(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName('lanDropZone'); self.setAcceptDrops(True)
-        self.setMinimumHeight(146)
+        self.setMinimumHeight(158)
         self._active = False
-        layout = QVBoxLayout(self); layout.setContentsMargins(18, 16, 18, 14); layout.setSpacing(5)
+        layout = QVBoxLayout(self); layout.setContentsMargins(18, 17, 18, 14); layout.setSpacing(7)
         illustration = _DropIllustration(self)
+        self.illustration = illustration
         layout.addWidget(illustration, 0, Qt.AlignmentFlag.AlignHCenter)
         self.title = _label('拖入文件或文件夹', self); self.title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.title.setObjectName('lanDropTitle'); layout.addWidget(self.title)
@@ -80,6 +118,7 @@ class _DropZone(QFrame):
     def dragEnterEvent(self, event):
         if self._paths(event):
             self._active = True; self.setProperty('dragActive', True); self.style().unpolish(self); self.style().polish(self)
+            self.illustration.update()
             event.setDropAction(Qt.DropAction.CopyAction); event.accept()
         else: event.ignore()
 
@@ -89,6 +128,7 @@ class _DropZone(QFrame):
 
     def dragLeaveEvent(self, event):
         self._active = False; self.setProperty('dragActive', False); self.style().unpolish(self); self.style().polish(self)
+        self.illustration.update()
         event.accept()
 
     def dropEvent(self, event):
@@ -154,6 +194,11 @@ class LanPanel(QFrame):
         self.devices = _DevicesCombo(self); self.devices.setMinimumHeight(36); self.devices.setMinimumWidth(0)
         self.devices.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.devices.setMinimumContentsLength(10); self.devices.setMaxVisibleItems(8)
+        self.devices_view = QListView(self.devices)
+        self.devices_view.setSpacing(2)
+        self.device_delegate = _DeviceDelegate(self.devices_view)
+        self.devices_view.setItemDelegate(self.device_delegate)
+        self.devices.setView(self.devices_view)
         actions.addWidget(self.devices, 1)
         self.send_button = _button('发送', self); self.send_button.setObjectName('lanPrimary')
         self.send_button.clicked.connect(self._send)
@@ -254,6 +299,7 @@ class LanPanel(QFrame):
 
     def apply_theme(self, theme):
         self._dark = theme == 'dark'
+        self.device_delegate.dark = self._dark
         color = '#edf2fa' if self._dark else '#172537'
         muted = '#a4b3c7' if self._dark else '#697b93'
         background = '#272e38' if self._dark else '#f8fafd'
@@ -274,8 +320,9 @@ class LanPanel(QFrame):
             QFrame#lanPanel QPushButton:hover {{ border-color:{accent}; }}
             QFrame#lanPanel QPushButton:pressed {{ background:{border}; }}
             QFrame#lanPanel QPushButton:disabled {{ color:{muted}; }}
-            QFrame#lanPanel QComboBox {{ color:{color}; background:{field}; border:1px solid {border}; border-radius:9px; padding:4px 10px; }}
-            QFrame#lanPanel QComboBox QAbstractItemView {{ background:{field}; color:{color}; selection-background-color:#286dd0; selection-color:white; }}
+            QFrame#lanPanel QComboBox {{ color:{color}; background:{field}; border:1px solid {border}; border-radius:9px; padding:4px 12px; }}
+            QFrame#lanPanel QComboBox::drop-down {{ border:0;width:30px; }}
+            QFrame#lanPanel QAbstractItemView {{ background:{field}; color:{color}; border:1px solid {border}; border-radius:12px; padding:5px; outline:0; }}
             QFrame#lanPanel QLineEdit {{ color:{color}; background:{field}; border:1px solid {border}; border-radius:8px; padding:5px 9px; }}
             QFrame#lanPanel QScrollArea {{ background:transparent; border:0; }}
             QFrame#lanPanel QScrollBar:vertical {{width:5px;background:transparent;}}
@@ -289,7 +336,9 @@ class LanPanel(QFrame):
 
     def _peers_changed(self, peers):
         selected = self.devices.currentData(); self.devices.clear()
-        for peer in peers: self.devices.addItem(f"{peer['name']} · {peer['host']}", peer['id'])
+        for peer in peers:
+            self.devices.addItem(str(peer.get('name') or '未命名设备'), peer['id'])
+            self.devices.setItemData(self.devices.count()-1,str(peer.get('host') or '局域网设备'),Qt.ItemDataRole.ToolTipRole)
         if selected is not None:
             index = self.devices.findData(selected)
             if index >= 0: self.devices.setCurrentIndex(index)
@@ -410,11 +459,33 @@ class LanPanel(QFrame):
         if result.get('direction') == 'receive': self.received_paths.emit(list(result.get('paths') or []))
 
 
+class _DialogTitleBar(QWidget):
+    def __init__(self, dialog):
+        super().__init__(dialog); self.dialog = dialog; self._grab = None
+        self.setFixedHeight(38); self.setCursor(Qt.CursorShape.OpenHandCursor)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._grab = event.globalPosition().toPoint() - self.dialog.pos()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor); event.accept(); return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._grab is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            self.dialog.move(event.globalPosition().toPoint() - self._grab)
+            event.accept(); return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._grab = None; self.setCursor(Qt.CursorShape.OpenHandCursor)
+        super().mouseReleaseEvent(event)
+
+
 class LanDialog(QDialog):
     """A dedicated layered transfer window opened from the overview."""
 
     def __init__(self, service, settings, parent=None):
-        super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setObjectName('lanDialog'); self.setWindowTitle('FlickDock · 局域网互传')
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setModal(False); self.resize(628, 640); self.setMinimumSize(500, 600)
@@ -424,13 +495,15 @@ class LanDialog(QDialog):
         shadow.setBlurRadius(32); shadow.setOffset(0, 9); shadow.setColor(QColor(0, 0, 0, 90))
         self.card.setGraphicsEffect(shadow); root.addWidget(self.card)
         content = QVBoxLayout(self.card); content.setContentsMargins(24, 18, 24, 22); content.setSpacing(16)
-        title_row = QHBoxLayout()
-        title = _label('局域网互传', self.card); title.setObjectName('lanDialogTitle')
+        self.title_bar = _DialogTitleBar(self)
+        title_row = QHBoxLayout(self.title_bar); title_row.setContentsMargins(0,0,0,0)
+        title = _label('局域网互传', self.title_bar); title.setObjectName('lanDialogTitle')
+        title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         title_row.addWidget(title, 1)
-        close = _button('×', self.card); close.setObjectName('lanDialogClose')
+        close = _button('×', self.title_bar); close.setObjectName('lanDialogClose')
         close.setFixedSize(30, 30); close.setAccessibleName('关闭局域网传输窗口')
         close.clicked.connect(self.close); title_row.addWidget(close)
-        content.addLayout(title_row)
+        content.addWidget(self.title_bar)
         self.panel = LanPanel(service, self.card, theme=settings.theme, settings=settings)
         self.body_scroll=QScrollArea(self.card);self.body_scroll.setWidgetResizable(True)
         self.body_scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -445,6 +518,10 @@ class LanDialog(QDialog):
         self.body_scroll.setWidget(self.panel);content.addWidget(self.body_scroll, 1)
         self.panel.transfer_started.connect(self._fit_active)
         self.apply_theme(settings.theme)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        remove_host_window_shadow(self)
 
     def _fit_active(self):
         screen=QGuiApplication.screenAt(self.frameGeometry().center()) or QGuiApplication.primaryScreen()

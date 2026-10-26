@@ -48,7 +48,7 @@ from widget_retirement import WidgetRetirementQueue
 from capture_files import CopyFilesJob
 from owned_files import owned_copy_spec, delete_owned_copy
 from sync_files import DiskWork
-from transfer_visuals import TransferIconLabel, TransferOverlay
+from transfer_visuals import TransferIconLabel, TransferOverlay, UploadCountBadge
 from drop_routing import OverviewDropRouter
 from app_version import APP_NAME, APP_VERSION
 from update_controller import UpdateController
@@ -571,7 +571,7 @@ class FileRow(QFrame):
         row.setContentsMargins(7, 5, 4, 5)
         row.setSpacing(7)
         icon = TransferIconLabel(popup.shelf.content,path,self)
-        icon.setFixedSize(28, 28)
+        icon.setFixedSize(38, 28)
         self.icon_label = icon
         icon.setPixmap(popup.shelf.item_pixmap(path,28,dpr=self.devicePixelRatioF()))
         icon.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -693,12 +693,6 @@ class ContentsPopup(QFrame):
         self.zip_all_button.clicked.connect(lambda:self.shelf.compress_refs(list(self.shelf.files['permanent'])))
         set_ui_style(self.zip_all_button,"QPushButton {color:#1876db;background:#e9f3ff;border:0;border-radius:7px;padding:6px 10px;font:13px 'HarmonyOS Sans SC';} QPushButton:hover {background:#d9eaff;} QPushButton:disabled {color:#8490a0;}")
         header.addWidget(self.zip_all_button)
-        self.lan_button=QPushButton('局域网互传',self)
-        self.lan_button.setAccessibleName('打开局域网传输')
-        self.lan_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.lan_button.clicked.connect(lambda:self.shelf.manager.show_lan_dialog())
-        set_ui_style(self.lan_button,"QPushButton {color:#1876db;background:#e9f3ff;border:0;border-radius:7px;padding:6px 10px;font:13px 'HarmonyOS Sans SC';} QPushButton:hover {background:#d9eaff;} QPushButton:pressed {background:#c9dfff;}")
-        header.addWidget(self.lan_button)
         self.clear_button=QPushButton("清空全部",self)
         self.clear_button.setAccessibleName("清空全部内容")
         self.clear_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -710,7 +704,9 @@ class ContentsPopup(QFrame):
         for key,label in self.CATEGORIES:
             button=QPushButton(label,self); button.setCheckable(True); button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.setMinimumHeight(30); self.category_group.addButton(button); self.category_buttons[key]=button
-            set_ui_style(button,"QPushButton {background:transparent;color:#626c79;border:0;border-radius:7px;padding:5px 8px;font:13px 'HarmonyOS Sans SC';} QPushButton:hover {background:#eef1f6;} QPushButton:checked {background:#e7ebf1;color:#28313d;font-weight:600;}")
+            style=("QPushButton {background:#e8f2ff;color:#176bc2;border:0;border-radius:7px;padding:5px 8px;font:600 13px 'HarmonyOS Sans SC';} QPushButton:hover {background:#d7eaff;} QPushButton:checked {background:#237ee4;color:white;}" if key=='uploading' else
+                   "QPushButton {background:transparent;color:#626c79;border:0;border-radius:7px;padding:5px 8px;font:13px 'HarmonyOS Sans SC';} QPushButton:hover {background:#eef1f6;} QPushButton:checked {background:#e7ebf1;color:#28313d;font-weight:600;}")
+            set_ui_style(button,style)
             button.clicked.connect(lambda checked=False,key=key:self.set_category(key))
             filters.addWidget(button)
         filters.addStretch(); root.addLayout(filters)
@@ -733,14 +729,16 @@ class ContentsPopup(QFrame):
         self.drop_router=OverviewDropRouter(self)
 
     def visible_refs(self):
-        return [ref for ref in reversed(self.shelf.display_refs()) if self.category=='all' or
-            (self.category=='uploading' and ref in self.shelf.content.transfers) or self.shelf.content.category(ref)==self.category]
+        transfers=self.shelf.content.transfers
+        return [ref for ref in reversed(self.shelf.display_refs()) if
+            (ref in transfers if self.category=='uploading' else
+             ref not in transfers and (self.category=='all' or self.shelf.content.category(ref)==self.category))]
 
     def update_transfer_status(self):
         states=list(self.shelf.content.transfers.values())
         count=len(states);self.category_buttons['uploading'].setText(f'传输中 {count}' if count else '传输中')
         self.category_buttons['uploading'].setAccessibleName(f'传输中的项目，共 {count} 项')
-        self.transfer_summary.setVisible(bool(count))
+        self.transfer_summary.setVisible(bool(count) and self.category=='uploading')
         if count:
             received=sum(v.get('received',0) for v in states);total=sum(v.get('total',0) for v in states)
             copying=sum(v.get('phase')=='copying' for v in states)
@@ -759,6 +757,7 @@ class ContentsPopup(QFrame):
     def set_category(self,key):
         if key not in self.category_buttons: return
         self.category=key; self.hovered_ref=None
+        self.transfer_summary.setVisible(bool(self.shelf.content.transfers) and key=='uploading')
         self.selected.intersection_update(self.visible_refs())
         if self.primary_selection not in self.selected: self.primary_selection=None
         self.rebuild(); self.shelf.touch()
@@ -1000,9 +999,10 @@ class ShelfWindow(QWidget):
         logo.setPixmap(app_icon().pixmap(QSize(32,32),self.devicePixelRatioF()))
         logo.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         title = QLabel(APP_NAME, self.card)
-        title.setGeometry(56, 20, 144, 26)
+        title.setGeometry(56, 20, 96, 26)
         set_ui_style(title, "color:#282d35;font:600 15px 'HarmonyOS Sans SC';background:transparent;")
         title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.upload_count=UploadCountBadge(self.card)
         self.shelf_label = QLabel("", self.card)
         self.shelf_label.setGeometry(56, 34, 144, 16)
         set_ui_style(self.shelf_label, "color:#7c8796;font:11px 'HarmonyOS Sans SC';background:transparent;")
@@ -1019,6 +1019,10 @@ class ShelfWindow(QWidget):
         self.pin_button.clicked.connect(self.toggle_pin)
         self.pin_button.setToolTip("取消钉住" if self.pinned else "钉住搁架")
         self.pin_button.setAccessibleName(self.pin_button.toolTip())
+        self.lan_button = FeedbackButton('nearby', self.card, motion=self.manager.motion)
+        self.lan_button.setToolTip('局域网互传')
+        self.lan_button.setAccessibleName('打开局域网传输')
+        self.lan_button.clicked.connect(lambda: self.manager.show_lan_dialog())
         self.expand_button = FeedbackButton("expand", self.card, motion=self.manager.motion)
         self.expand_button.setToolTip("展开内容")
         self.expand_button.clicked.connect(self.toggle_contents)
@@ -1033,17 +1037,18 @@ class ShelfWindow(QWidget):
         self.rename_edit.returnPressed.connect(self.commit_rename)
         self.rename_edit.editingFinished.connect(self.commit_rename)
         self.rename_edit.hide()
-        for button in (self.pin_button,self.expand_button,self.menu_button,self.close_button):
+        for button in (self.lan_button,self.pin_button,self.expand_button,self.menu_button,self.close_button):
             button.setParent(self)
         self._layout_header(CARD_W)
 
     def _layout_header(self,width):
+        self.upload_count.move(width-235,19)
         center=QRectF(self.card.geometry()).center()
         effect=self.surface_effect
         transform=QTransform()
         transform.translate(center.x()+effect.dx,center.y()+effect.dy)
         transform.scale(effect.sx,effect.sy);transform.translate(-center.x(),-center.y())
-        for button,x in ((self.pin_button,width-176),(self.expand_button,width-132),(self.menu_button,width-88),(self.close_button,width-44)):
+        for button,x in ((self.lan_button,width-208),(self.pin_button,width-168),(self.expand_button,width-128),(self.menu_button,width-88),(self.close_button,width-48)):
             point=transform.map(QRectF(self.card.x()+x,self.card.y()+14,36,36).center())
             button.setFixedSize(36,36);button.move(round(point.x()-18),round(point.y()-18))
             button.set_presentation_scale(effect.sx,effect.sy)
@@ -1092,7 +1097,7 @@ class ShelfWindow(QWidget):
         snapshot=getattr(self,'_surface_snapshot',None)
         if snapshot is None:
             snapshot=self._surface_snapshot=SurfaceSnapshot(self)
-        controls=(self.pin_button,self.expand_button,self.menu_button,self.close_button)
+        controls=(self.lan_button,self.pin_button,self.expand_button,self.menu_button,self.close_button)
         source=getattr(self,'_morph_from_image',None)
         if source is None: source=snapshot.capture_current(self.card,controls)
         self._morph_from_image=None
@@ -1167,7 +1172,7 @@ class ShelfWindow(QWidget):
 
     def _place_morph_controls(self,snapshot,rect):
         transform=snapshot.presentation_transform(rect)
-        for button,offset in ((self.pin_button,176),(self.expand_button,132),(self.menu_button,88),(self.close_button,44)):
+        for button,offset in ((self.lan_button,208),(self.pin_button,168),(self.expand_button,128),(self.menu_button,88),(self.close_button,48)):
             center=transform.map(QRectF(rect.x()+rect.width()-14-offset-self.x(),rect.y()+21-self.y(),36,36).center())
             button.move(round(center.x()-18),round(center.y()-18))
             button.set_presentation_scale(self.surface_effect.sx,self.surface_effect.sy)
@@ -1177,7 +1182,7 @@ class ShelfWindow(QWidget):
         if not self.geometry_morph.motion: return
         snapshot=getattr(self,'_surface_snapshot',None)
         if snapshot is None: snapshot=self._surface_snapshot=SurfaceSnapshot(self)
-        self._morph_from_image=snapshot.capture_current(self.card,(self.pin_button,self.expand_button,self.menu_button,self.close_button))
+        self._morph_from_image=snapshot.capture_current(self.card,(self.lan_button,self.pin_button,self.expand_button,self.menu_button,self.close_button))
 
     def visual_geometry(self): return QRect(self.geometry_morph.current)
 
@@ -1282,6 +1287,8 @@ class ShelfWindow(QWidget):
 
     def transfers_updated(self):
         if self.content.transfers and not self._transfer_timer.isActive():self._transfer_timer.start()
+        self.upload_count.set_count(sum(state.get('phase') not in ('copying','downloading')
+                                        for state in self.content.transfers.values()))
         self.expand_button.setEnabled(True)
         self.zones['permanent'].refresh()
         if self.popup and self.popup.isVisible() and not self.content_transition_active():self.popup.update_transfer_status()
@@ -1745,7 +1752,14 @@ class ShelfWindow(QWidget):
         rect=self.visual_geometry()
         # Spring motion moves the visual bounds under a stationary pointer.
         # Keep the edge-to-shelf hover bridge tied to the settled target.
-        if self.presentation_kind=='dock': rect=dock_hover_rect(self._dock_target_rect(),self.manager.edge.geometry(),self.manager.settings.dock_edge)
+        if self.presentation_kind=='dock':
+            trigger=self.manager.edge.geometry()
+            # The expanded card can be anchored differently from its compact
+            # edge target (notably at the macOS menu-bar edge). Include both
+            # envelopes so neither a native enter/leave event nor a morph
+            # frame can turn one stationary pointer into an outside pointer.
+            rect=dock_hover_rect(rect.united(self._dock_target_rect()).adjusted(-6,-6,6,6),
+                                 trigger,self.manager.settings.dock_edge)
         return rect.contains(point)
 
     def show_contents(self, mode="permanent", target=None):
@@ -2476,7 +2490,7 @@ class ShelfManager:
     def update_handles(self):
         if self._dock_preview_values is not None:
             self.edge.hide();return
-        if (self.settings.keep_empty_handle or any(s.has_files() for s in self.shelves)) and not any(s.isVisible() and s.visible_state != "hiding" for s in self.shelves):
+        if (self.settings.keep_empty_handle or any(s.has_files() for s in self.shelves)) and not any(s.isVisible() for s in self.shelves):
             self.edge.show_handle()
         else:
             self.edge.hide()

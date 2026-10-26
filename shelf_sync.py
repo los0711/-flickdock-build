@@ -69,7 +69,7 @@ class ShelfSync(QObject):
     status_changed = Signal(str)
     transfers_changed = Signal(list)
 
-    def __init__(self, base, service, adapter, parent=None, *, poll_ms=60000):
+    def __init__(self, base, service, adapter, parent=None, *, poll_ms=300000):
         super().__init__(parent)
         self.root = Path(base)/'cloud-shelves'; self.root.mkdir(parents=True,exist_ok=True)
         self.service, self.api, self.adapter = service, service.api, adapter
@@ -197,7 +197,9 @@ class ShelfSync(QObject):
         value=bool(value)
         if value==self._interactive:return
         self._interactive=value
-        self.timer.setInterval(min(self._base_poll_ms,10000) if value else self._base_poll_ms)
+        # WebSocket hints wake the journal immediately. Opening an interactive
+        # window needs one reconciliation, not another GET every ten seconds.
+        self.timer.setInterval(self._base_poll_ms)
         if value and self.service.signed_in:self.debounce.start(1)
 
     def request_refresh(self):
@@ -334,13 +336,19 @@ class ShelfSync(QObject):
                    'GLOBAL_QUOTA':'共享云空间已满，内容会先保留在本机。',
                    'RATE_LIMITED':'同步请求暂时达到限额，稍后会自动重试。',
                    'STORAGE_REQUEST_BUDGET':'本月云存储请求已达限额，内容会先保留在本机。',
+                   'PLATFORM_QUOTA':'今日云同步免费额度已用完，内容会先保留在本机。',
                    'UPLOAD_LIMIT':'正在清理中断的上传，稍后会自动重试。',
                    'SERVICE_UNAVAILABLE':'云服务暂时不可用，稍后会自动重试。'}.get(getattr(error,'code',''))
         self.status_changed.emit(message or (str(error) if not getattr(error,'code','') else '云同步暂时中断，稍后会自动重试。'))
         delay = self._retry_delay(error)
         self.state['not_before'] = time.time()+delay
+        if self._quota_error(error): self.state['quota_not_before'] = self.state['not_before']
         self._persist()
         self.debounce.start(min(2147483647,int(delay*1000)+1))
+
+    @staticmethod
+    def _quota_error(error):
+        return getattr(error,'code','') in ('STORAGE_REQUEST_BUDGET','PLATFORM_QUOTA') or getattr(error,'status',0)==1027
 
     @staticmethod
     def _retry_delay(error):
@@ -351,6 +359,8 @@ class ShelfSync(QObject):
             retry = problem.get('retry_after') if isinstance(problem,dict) else None
             if isinstance(retry,(int,float)) and 0 < retry <= 31*86400:
                 delay = max(delay,retry)
+        if getattr(error,'code','') == 'PLATFORM_QUOTA' and delay == 30:
+            delay = max(30, 86400-time.time()%86400+5)
         return delay
 
     def _paused(self, key):
@@ -359,12 +369,16 @@ class ShelfSync(QObject):
 
     def tick(self):
         if self.closed or self.running or not self.account_id or not self.service.signed_in: return
+        if self._paused('quota_not_before'):
+            self.status_changed.emit('云同步额度用完，内容已保留在本机，额度恢复后继续。')
+            return
+        self.state.pop('quota_not_before',None)
         self.cleanup_attempts = {}
         self.running = True; self.status_changed.emit('正在同步…')
         self._retire_uploads()
 
     def _after_cleanup(self):
-        if self._paused('not_before'):
+        if self._paused('not_before') or self._paused('quota_not_before'):
             self.running = False; self.transfer = None
             self.status_changed.emit('同步请求暂时达到限额，稍后会自动续传。'); return
         self.state.pop('not_before',None)
@@ -374,6 +388,7 @@ class ShelfSync(QObject):
         if getattr(error,'code','') == 'cancelled': self.running=False; return
         delay = self._retry_delay(error)
         self.state['cleanup_not_before'] = time.time()+delay
+        if self._quota_error(error): self.state['quota_not_before'] = self.state['cleanup_not_before']
         self._persist()
         self.debounce.start(min(2147483647,int(delay*1000)+1))
         self.status_changed.emit('云端清理暂时中断，删除操作已保留并会自动重试。')

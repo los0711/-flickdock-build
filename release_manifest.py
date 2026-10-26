@@ -62,7 +62,7 @@ MAINTAINED_TESTS=(
     'test_release_manifest_v170.py','test_update_client_v170.py',
     'test_update_dialog_v170.py','test_update_inline_v171.py','test_settings_startup_v171.py',
     'test_platform_startup.py','test_platform_native.py','test_mac_updates.py','test_mac_build.py',
-    'test_update_macos.py','test_update_macos_controller.py','test_macos_native_entry.py','test_release_macos_v180.py',
+    'test_update_macos.py','test_update_macos_controller.py','test_update_dmg_v185.py','test_macos_native_entry.py','test_release_macos_v180.py',
     'test_account_panel_v180.py','test_account_security_v180.py','test_shelf_sync_v180.py','test_sync_review_v180.py','test_cloud_client_v180.py',
     'test_account_actions_v181.py','test_account_settings_v181.py','test_transfer_ui_v181.py',
     'test_lan_transfer_v181.py','test_lan_dialog_v183.py','test_shelf_transfers_v181.py','test_sync_staging_v181.py','test_cloud_progress_v181.py',

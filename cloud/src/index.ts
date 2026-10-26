@@ -5,7 +5,7 @@ import {DurableObject} from 'cloudflare:workers';
 
 interface Env {
   DB:D1Database; FILES:R2Bucket; EVENTS:DurableObjectNamespace<AccountEvents>;
-  ACCOUNT_QUOTA_BYTES?:string; GLOBAL_QUOTA_BYTES?:string; CHUNK_BYTES?:string; REQUESTS_PER_DAY?:string; AUTH_PEPPER?:string;
+  ACCOUNT_QUOTA_BYTES?:string; GLOBAL_QUOTA_BYTES?:string; CHUNK_BYTES?:string; AUTH_PEPPER?:string;
   R2_CLASS_A_BUDGET?:string; R2_CLASS_B_BUDGET?:string;
   EMAIL_PROVIDER?:string; EMAIL_FROM?:string; EMAIL_CODE_SECRET?:string; RESEND_API_KEY?:string;
   EMAIL?:{send(message:{from:string;to:string;subject:string;text:string}):Promise<{messageId:string}>};
@@ -84,9 +84,9 @@ async function rate(env:Env,key:string,limit:number,window:number){
 }
 async function budget(env:Env,kind:'A'|'B',count:number){
   if(count<=0)return;
-  const cap=config(kind==='A'?env.R2_CLASS_A_BUDGET:env.R2_CLASS_B_BUDGET,kind==='A'?800000:8000000);
+  const cap=config(kind==='A'?env.R2_CLASS_A_BUDGET:env.R2_CLASS_B_BUDGET,kind==='A'?1000000:10000000);
   const row=await first(env,'INSERT INTO budgets(period,kind,n) VALUES(?,?,?) ON CONFLICT(period,kind) DO UPDATE SET n=n+excluded.n RETURNING n',new Date().toISOString().slice(0,7),kind,count);
-  if(row!.n>cap)fail(503,'STORAGE_REQUEST_BUDGET','Storage request budget exhausted');
+  if(row!.n>cap){const now=new Date();const next=Date.UTC(now.getUTCFullYear(),now.getUTCMonth()+1,1);fail(503,'STORAGE_REQUEST_BUDGET','Storage request budget exhausted',{retry_after:Math.ceil((next-now.getTime())/1000)});}
 }
 function username(value:unknown){
   if(typeof value!=='string')fail(400,'INVALID_USERNAME','Username must be text');
@@ -164,9 +164,9 @@ async function purgeUpload(env:Env,id:string){
   ]);
   return true;
 }
-async function expireItems(env:Env,accountId?:string){
+async function expireItems(env:Env,accountId?:string,limit=1){
   const now=Date.now();
-  const expired=await rows(env,'SELECT account_id,id,version,active_upload FROM items WHERE deleted=0 AND expires_at<=?'+(accountId?' AND account_id=?':'')+' LIMIT 1',now,...(accountId?[accountId]:[]));
+  const expired=await rows(env,'SELECT account_id,id,version,active_upload FROM items WHERE deleted=0 AND expires_at<=?'+(accountId?' AND account_id=?':'')+' LIMIT ?',now,...(accountId?[accountId]:[]),limit);
   for(const value of expired){
     await query(env,'UPDATE items SET deleted=1,version=version+1,active_upload=NULL,size=0,sha256=NULL,expires_at=NULL,updated_at=? WHERE account_id=? AND id=? AND version=? AND deleted=0 AND expires_at<=?',now,value.account_id,value.id,value.version,now).run();
     if(value.active_upload)await purgeUpload(env,value.active_upload);
@@ -174,8 +174,8 @@ async function expireItems(env:Env,accountId?:string){
 }
 async function cleanup(env:Env){
   const now=Date.now();
-  await expireItems(env);
-  const stale=await rows(env,"SELECT * FROM uploads WHERE lease_until<? AND NOT EXISTS(SELECT 1 FROM read_leases r WHERE r.upload_id=uploads.id AND r.expires_at>?) AND ((state IN ('pending','verifying') AND expires_at<?) OR (state='garbage' AND garbage_after<=?)) LIMIT 1",now,now,now-600000,now);
+  await expireItems(env,undefined,32);
+  const stale=await rows(env,"SELECT * FROM uploads WHERE lease_until<? AND NOT EXISTS(SELECT 1 FROM read_leases r WHERE r.upload_id=uploads.id AND r.expires_at>?) AND ((state IN ('pending','verifying') AND expires_at<?) OR (state='garbage' AND garbage_after<=?)) LIMIT 32",now,now,now-600000,now);
   for(const value of stale){
     // Atomically exclude a reader that began after the candidate query.
     const claimed=await query(env,"UPDATE uploads SET state='garbage',garbage_after=?,lease_until=0 WHERE id=? AND lease_until<? AND NOT EXISTS(SELECT 1 FROM read_leases r WHERE r.upload_id=uploads.id AND r.expires_at>?)",now,value.id,now,now).run();
@@ -194,17 +194,8 @@ async function cleanup(env:Env){
 async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Response>{
   const url=new URL(request.url),path=url.pathname,method=request.method;
   if(method==='GET'&&path==='/v1/health')return json({service:'flickdock-cloud'});
-  const deleting=method==='DELETE'&&/^\/v1\/(items|uploads)\/[^/]+$/.test(path);
-  const authenticating=path.startsWith('/v1/auth/');
-  const control=path==='/v1/me'||path==='/v1/events'||path==='/v1/sync/changes'
-    ||path==='/v1/devices'||path.startsWith('/v1/devices/')
-    ||method==='GET'&&/^\/v1\/items\/[^/]+\/content$/.test(path);
-  // Bounded traffic classes keep ordinary file transfers from locking users
-  // out of sign-in, device management and changefeed when their daily pool is
-  // exhausted. The sum remains below the Workers Free daily request ceiling.
-  const pool=deleting?'service-deletions':authenticating?'service-auth':control?'service-control':'service-requests';
-  const cap=deleting?10000:authenticating?2000:control?20000:config(env.REQUESTS_PER_DAY,10000,80000);
-  await rate(env,pool,cap,DAY);
+  // Cloudflare enforces its account-wide free limits. Keep per-identity
+  // authentication abuse controls below, but do not reject normal sync early.
   if(method==='POST'&&path==='/v1/auth/challenge'){
     authSecret(env);const input=await body(request,['username','purpose']),name=username(input.username),purpose=text(input.purpose,'purpose',5,8);
     if(!['register','login'].includes(purpose))fail(400,'INVALID_REQUEST','Unknown authentication purpose');
@@ -427,7 +418,10 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
           query(env,'UPDATE parts SET ready=1 WHERE upload_id=? AND idx=? AND EXISTS(SELECT 1 FROM uploads WHERE id=? AND next_part>?)',id,partIndex,id,partIndex),
         ]);
         released=!!result[0].meta.changes;
-        if(released)announce(env,ctx,owner,'content');
+        // The receiver already saw the upload reservation. A hint on every
+        // 1 MiB part caused one changefeed GET per part on each other device.
+        // Coarse milestones keep remote progress live without that fan-out.
+        if(released&&!last&&(partIndex+1)%32===0)announce(env,ctx,owner,'content');
         if(!released){const latest=await first(env,'SELECT ready FROM parts WHERE upload_id=? AND idx=?',id,partIndex);if(!latest?.ready){await findUpload(env,owner,id);fail(409,'UPLOAD_NOT_PENDING','Upload changed while writing the part');}}
       }catch(error){
         // A storage/network error racing a manual cancel is still terminal for
@@ -565,6 +559,9 @@ export default {
       if(message.includes('ACCOUNT_QUOTA')||message.includes('GLOBAL_QUOTA'))return json({error:{code:message.includes('ACCOUNT_QUOTA')?'ACCOUNT_QUOTA':'GLOBAL_QUOTA',message:'Storage quota exceeded; pending uploads also reserve space'}},413);
       if(message.includes('DEVICE_LIMIT')||message.includes('UPLOAD_LIMIT'))return json({error:{code:message.includes('DEVICE_LIMIT')?'DEVICE_LIMIT':'UPLOAD_LIMIT',message:'Too many active devices or pending uploads'}},409);
       if(message.includes('UPLOAD_CANCELLED'))return json({error:{code:'UPLOAD_CANCELLED',message:'Upload was cancelled; choose the item again to start a new transfer'}},410);
+      if(message.includes("exceeded D1's free tier daily row")){
+        const now=Date.now();return json({error:{code:'PLATFORM_QUOTA',message:'Cloud database daily free limit reached',retry_after:Math.ceil(((Math.floor(now/DAY)+1)*DAY-now)/1000)}},503);
+      }
       // Do not echo SQL, provider responses, tokens, emails or credentials.
       return json({error:{code:'SERVICE_UNAVAILABLE',message:'Service operation failed; retry later'}},503);
     }

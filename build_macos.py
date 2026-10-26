@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import plistlib
 import shutil
 import subprocess
 import sys
@@ -146,6 +147,20 @@ def main(arguments=None):
     if options.notary_profile:
         run(['/usr/bin/xcrun', 'notarytool', 'submit', dmg, '--keychain-profile', options.notary_profile, '--wait'])
         run(['/usr/bin/xcrun', 'stapler', 'staple', dmg])
+    run(['/usr/bin/hdiutil', 'verify', dmg])
+    with tempfile.TemporaryDirectory(prefix='flickdock-dmg-verify-') as folder:
+        mount = Path(folder) / 'mounted'; mount.mkdir()
+        run(['/usr/bin/hdiutil', 'attach', '-readonly', '-nobrowse', '-mountpoint', mount, dmg])
+        try:
+            mounted_app = mount / 'FlickDock.app'
+            metadata = plistlib.loads((mounted_app / 'Contents/Info.plist').read_bytes())
+            if (metadata.get('CFBundleIdentifier') != 'com.flickdock.app'
+                    or metadata.get('CFBundleShortVersionString') != APP_VERSION
+                    or not (mounted_app / 'Contents/MacOS/FlickDock').is_file()
+                    or (mount / 'Applications').resolve() != Path('/Applications')):
+                raise RuntimeError('DMG payload identity, version or install destination is invalid')
+        finally:
+            run(['/usr/bin/hdiutil', 'detach', mount])
     installer = report.parent / (name + '.pkg')
     if installer.exists():
         raise FileExistsError('Refusing to overwrite an existing versioned macOS installer')
@@ -161,7 +176,7 @@ def main(arguments=None):
     artifacts = [dict(name=item.name, bytes=item.stat().st_size, sha256=_checksum(item))
                  for item in (archive, dmg, installer)]
     report.write_text(json.dumps(dict(ok=True, host=platform.platform(), version=APP_VERSION,
-          architecture=options.target_arch, signed=bool(options.sign_identity),
+          architecture=options.target_arch, signed=bool(options.sign_identity), dmg_verified=True,
           notarized=bool(options.notary_profile), frozen=frozen, artifacts=artifacts),
           ensure_ascii=False, indent=2), encoding='utf-8')
     print(report)

@@ -6,9 +6,10 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from PySide6.QtCore import QObject,QMimeData,QPointF,Qt,QUrl,Signal
-from PySide6.QtGui import QDragEnterEvent,QDropEvent
+from PySide6.QtCore import QEvent,QObject,QMimeData,QPointF,Qt,QUrl,Signal
+from PySide6.QtGui import QDragEnterEvent,QDropEvent,QMouseEvent
 from PySide6.QtWidgets import QApplication
+from unittest.mock import patch
 
 from app_settings import SettingsStore
 from lan_panel import LanDialog
@@ -71,5 +72,26 @@ class LanDialogTests(unittest.TestCase):
             Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier)
         self.dialog.panel.drop_zone.dragEnterEvent(enter)
         self.assertFalse(enter.isAccepted())
+
+    def test_title_drag_moves_dialog_and_native_host_shadow_is_disabled(self):
+        self.assertTrue(self.dialog.windowFlags() & Qt.WindowType.FramelessWindowHint)
+        self.assertTrue(self.dialog.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
+        bar=self.dialog.title_bar
+        start=self.dialog.pos(); point=QPointF(18,18)
+        global_start=QPointF(bar.mapToGlobal(point.toPoint()))
+        press=QMouseEvent(QEvent.Type.MouseButtonPress,point,global_start,
+            Qt.MouseButton.LeftButton,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier)
+        bar.mousePressEvent(press)
+        travel=QPointF(global_start.x()+65,global_start.y()+38)
+        move=QMouseEvent(QEvent.Type.MouseMove,point,travel,
+            Qt.MouseButton.NoButton,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier)
+        bar.mouseMoveEvent(move)
+        self.assertEqual(self.dialog.pos(),start+travel.toPoint()-global_start.toPoint())
+        release=QMouseEvent(QEvent.Type.MouseButtonRelease,point,travel,
+            Qt.MouseButton.LeftButton,Qt.MouseButton.NoButton,Qt.KeyboardModifier.NoModifier)
+        bar.mouseReleaseEvent(release)
+        with patch('lan_panel.remove_host_window_shadow') as native:
+            self.dialog.hide();self.dialog.show();APP.processEvents()
+            native.assert_called_with(self.dialog)
 
 if __name__=='__main__':unittest.main()

@@ -84,7 +84,7 @@ class TransferUITests(unittest.TestCase):
         self.shelf.content.pending[ref]=dict(name=name,kind='file')
         self.shelf.content.transfers[ref]=dict(id='fixture-item',phase='uploading',remote=remote,received=received,total=total)
         self.shelf.refresh();self.shelf.transfers_updated();flush();return ref
-    def test_held_copy_displays_dim_file_card_ring_and_can_cancel_partial(self):
+    def test_held_copy_keeps_file_artwork_and_shows_small_progress_badge(self):
         path=self.file('原始图片.png',3*1024*1024)
         original_reader=capture_files._source_reader;entered,release=threading.Event(),threading.Event()
         self.barriers.append(release)
@@ -112,12 +112,13 @@ class TransferUITests(unittest.TestCase):
             compact=self.shelf.zones['permanent'].icon
             active_compact=opaque_artwork(compact)
             removed=self.shelf.content.transfers.pop(ref);normal_compact=opaque_artwork(compact);self.shelf.content.transfers[ref]=removed
-            self.assertNotEqual(active_compact,normal_compact,'compact shelf also needs a dim card and circular progress')
-            popup=self.overview();popup.preview.show_path(ref,force=True);flush()
+            self.assertNotEqual(active_compact,normal_compact,'compact shelf needs a small progress badge')
+            popup=self.overview();self.assertNotIn(ref,popup.visible_refs())
+            popup.set_category('uploading');popup.preview.show_path(ref,force=True);flush()
             item=next(item for item in popup.rows_body.findChildren(IconItem) if item.ref==ref)
             active=opaque_artwork(item)
             removed=self.shelf.content.transfers.pop(ref);normal=opaque_artwork(item);self.shelf.content.transfers[ref]=removed
-            self.assertNotEqual(active,normal,'transfer tile must visibly dim artwork and draw its ring')
+            self.assertNotEqual(active,normal,'transfer tile needs a small progress badge')
             candidates=[]
             ratio=normal.devicePixelRatio()
             for y in range(round(32*ratio),round(57*ratio)):
@@ -125,11 +126,10 @@ class TransferUITests(unittest.TestCase):
                     color=normal.pixelColor(x,y);sat=max(color.red(),color.green(),color.blue())-min(color.red(),color.green(),color.blue())
                     candidates.append((sat,x,y))
             saturation,x,y=max(candidates);self.assertGreater(saturation,40)
-            dim=active.pixelColor(x,y);dim_saturation=max(dim.red(),dim.green(),dim.blue())-min(dim.red(),dim.green(),dim.blue())
-            self.assertLess(dim_saturation,saturation*.65)
-            blue=sum(1 for y in range(round(13*ratio),round(77*ratio)) for x in range(round(24*ratio),round(88*ratio))
+            self.assertEqual(active.pixelColor(x,y),normal.pixelColor(x,y),'upload must preserve icon colors')
+            blue=sum(1 for y in range(active.height()) for x in range(active.width())
                      if (lambda c:c.blue()>180 and c.blue()-c.red()>85 and c.blue()-c.green()>25)(active.pixelColor(x,y)))
-            self.assertGreater(blue,20,'circular upload arc must remain visible over dim artwork')
+            self.assertGreater(blue,20,'small upload arc must remain visible beside artwork')
             self.assertEqual(popup.preview.cancel_transfer.text(),'取消复制')
             self.assertFalse(popup.preview.copy_button.isEnabled())
             QTest.mouseClick(popup.preview.cancel_transfer,Qt.MouseButton.LeftButton)
@@ -178,7 +178,8 @@ class TransferUITests(unittest.TestCase):
         with patch.object(subject.MediaPreview,'set_source',side_effect=AssertionError('Pending content cannot play')),\
              patch.object(QDesktopServices,'openUrl',side_effect=AssertionError('Pending content cannot open')),\
              patch.object(subject.QMessageBox,'warning',side_effect=AssertionError('Pending content cannot open modal errors')):
-            popup=self.overview();popup.preview.show_path(ref,force=True)
+            popup=self.overview();self.assertNotIn(ref,popup.visible_refs())
+            popup.set_category('uploading');popup.preview.show_path(ref,force=True)
             self.assertIs(popup.preview.stack.currentWidget(),popup.preview.icon)
             self.assertFalse(popup.preview.copy_button.isEnabled())
             self.assertIn('另一台设备',popup.preview.info.text())
@@ -186,7 +187,7 @@ class TransferUITests(unittest.TestCase):
             preview_active=opaque_artwork(popup.preview.stack)
             state=self.shelf.content.transfers.pop(ref);preview_normal=opaque_artwork(popup.preview.stack)
             self.shelf.content.transfers[ref]=state
-            self.assertNotEqual(preview_active,preview_normal,'right preview also needs dim artwork and transfer feedback')
+            self.assertNotEqual(preview_active,preview_normal,'right preview needs small transfer feedback')
             self.shelf.open_path(ref)
         payload=self.shelf.content.mime_for([ref]);self.assertFalse(payload.hasUrls());self.assertFalse(payload.hasText())
         with patch.object(subject,'QDrag',side_effect=AssertionError('Pending content cannot drag')),\
@@ -201,6 +202,7 @@ class TransferUITests(unittest.TestCase):
         self.shelf.content.transfers[str(path)]={'id':'local-upload','phase':'uploading','received':40,'total':100}
         self.shelf.transfers_updated();popup=self.overview();popup.update_transfer_status();popup.set_category('uploading');flush()
         self.assertEqual(set(popup.visible_refs()),{str(path),pending})
+        self.assertTrue(self.shelf.upload_count.isVisible());self.assertEqual(self.shelf.upload_count.count,2)
         self.assertIn('2',popup.category_buttons['uploading'].text());self.assertIn('2',popup.transfer_count.text())
         self.assertTrue(popup.transfer_summary.isVisible());self.assertEqual(popup.transfer_bar.value(),300)
         epoch=popup._build_epoch
@@ -212,6 +214,9 @@ class TransferUITests(unittest.TestCase):
         self.shelf.transfers_updated();flush()
         self.assertEqual(popup.visible_refs(),[]);self.assertFalse(popup.transfer_summary.isVisible())
         self.assertEqual(popup.category_buttons['uploading'].text(),'传输中')
+        self.assertTrue(self.shelf.upload_count.complete)
+        self.assertTrue(self.shelf.upload_count.isVisible())
+        wait(lambda:not self.shelf.upload_count.isVisible(),timeout=3)
     def test_manager_projects_remote_pending_enables_expand_and_routes_cancel_to_sync(self):
         self.manager._sync_transfer_refs=set()
         calls=[]

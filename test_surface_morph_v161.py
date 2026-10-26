@@ -55,7 +55,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-morph-test-') as tmp:
             assert shelf.card.size()==size,'descendant layout resized on a frame'
             assert visual.x()+visual.width()==right,'right edge drifted'
             assert snapshot.capture_count==captures,'live tree captured on a frame'
-            for button,offset in ((shelf.pin_button,176),(shelf.expand_button,132),(shelf.menu_button,88),(shelf.close_button,44)):
+            for button,offset in ((shelf.lan_button,208),(shelf.pin_button,168),(shelf.expand_button,128),(shelf.menu_button,88),(shelf.close_button,48)):
                 assert button.parentWidget() is shelf and button.isVisible()
                 assert button.mapToGlobal(QPoint()).x()==right-14-offset
         shelf.grab().save(str(Path(__file__).parent/'morph-v161-mid-125.png'))

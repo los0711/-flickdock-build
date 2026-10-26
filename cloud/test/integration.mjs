@@ -369,7 +369,7 @@ try{
     await localObject(key,data);
     const period=new Date().toISOString().slice(0,7),saved=sqlRows(`SELECT kind,n FROM budgets WHERE period='${period}'`);
     const before=sqlRows(`SELECT allocated_bytes n FROM accounts WHERE id='${alice.account.id}'`)[0].n;
-    sql(`INSERT INTO budgets(period,kind,n) VALUES('${period}','A',800001) ON CONFLICT(period,kind) DO UPDATE SET n=excluded.n;INSERT INTO budgets(period,kind,n) VALUES('${period}','B',8000001) ON CONFLICT(period,kind) DO UPDATE SET n=excluded.n;`);
+    sql(`INSERT INTO budgets(period,kind,n) VALUES('${period}','A',1000001) ON CONFLICT(period,kind) DO UPDATE SET n=excluded.n;INSERT INTO budgets(period,kind,n) VALUES('${period}','B',10000001) ON CONFLICT(period,kind) DO UPDATE SET n=excluded.n;`);
     try{
       await request('GET',`/v1/items/${newId}/parts/0?version=1`,undefined,alice.token,503);
       assert.equal(sqlRows(`SELECT COUNT(*) n FROM read_leases WHERE upload_id='${reserved.upload_id}'`)[0].n,0,'A budget-denied download must release its reader lease');
@@ -438,7 +438,7 @@ try{
     const status=await request('GET','/v1/me',undefined,alice.token);assert.equal(status.storage.used_bytes,before-data.length);
     assert.equal(sqlRows(`SELECT deleted FROM items WHERE account_id='${alice.account.id}' AND id='${newId}'`)[0].deleted,1);
   });
-  await check('exhausted transfer budget preserves authentication, sync control and storage cleanup',async()=>{
+  await check('legacy app request counters no longer cap sync or storage cleanup',async()=>{
     const data=Buffer.from('delete despite the normal request budget'),newId=randomUUID();
     const committed=await reserve(alice.token,newId,data);await part(alice.token,committed.upload_id,0,data);await request('POST',`/v1/uploads/${committed.upload_id}/commit`,{},alice.token);
     const abandonedData=Buffer.concat([data,Buffer.from(' pending')]);
@@ -452,13 +452,14 @@ try{
       await request('GET','/v1/me',undefined,alice.token);
       await request('GET','/v1/sync/changes?cursor=0&limit=1',undefined,alice.token);
       await request('POST','/v1/auth/challenge',{username:'alice',purpose:'login'});
-      await request('POST','/v1/uploads',{},alice.token,429);
+      const fresh=await reserve(alice.token,randomUUID(),Buffer.from('new upload remains permitted'));
+      assert.equal((await request('DELETE',`/v1/uploads/${fresh.upload_id}`,undefined,alice.token)).cancelled,true);
       const committedReply=await request('DELETE',`/v1/uploads/${committed.upload_id}`,undefined,alice.token,409);
       assert.equal(committedReply.error.code,'ALREADY_COMMITTED');assert.equal(committedReply.error.current_record.id,newId);assert.equal(committedReply.error.current_record.version,1);
       const deleted=await request('DELETE',`/v1/items/${newId}`,{base_version:committedReply.error.current_record.version},alice.token);assert.equal(deleted.record.deleted,true);
       assert.equal((await request('DELETE',`/v1/uploads/${abandoned.upload_id}`,undefined,alice.token)).cancelled,true);
-      assert.equal(sqlRows(`SELECT n FROM rates WHERE key='${key}'`)[0].n,10001,'Control and cleanup calls must not consume the exhausted transfer budget');
-      assert.equal(sqlRows(`SELECT n FROM rates WHERE key='${deleteKey}'`)[0].n,previousDeletions+3,'Cleanup calls have their own bounded daily budget');
+      assert.equal(sqlRows(`SELECT n FROM rates WHERE key='${key}'`)[0].n,10000,'Legacy service cap must not consume requests');
+      assert.equal(sqlRows(`SELECT n FROM rates WHERE key='${deleteKey}'`)[0]?.n||0,previousDeletions,'Legacy cleanup cap must not consume requests');
       for(const fixture of fixtures){
         assert.equal(sqlRows(`SELECT COUNT(*) n FROM uploads WHERE id='${fixture.id}'`)[0].n,0);
         assert.equal(sqlRows(`SELECT COUNT(*) n FROM allocations WHERE id='${fixture.id}'`)[0].n,0);

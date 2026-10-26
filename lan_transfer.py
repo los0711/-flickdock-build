@@ -35,6 +35,7 @@ from sync_files import safe_name
 
 DISCOVERY_PORT = 45875
 BLOCK_BYTES = 1024 * 1024
+SOCKET_BUFFER_BYTES = 4 * 1024 * 1024
 MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 MAX_ENTRIES = 100000
 MAX_TOTAL_BYTES = (1 << 63) - 1
@@ -152,6 +153,14 @@ def _send_json(stream, data):
     payload = json.dumps(data, ensure_ascii=False, separators=(',', ':')).encode('utf8')
     if len(payload) > MAX_MANIFEST_BYTES: raise ValueError('传输清单过大。')
     stream.sendall(struct.pack('!I', len(payload)) + payload)
+
+
+def _tune_stream_socket(stream):
+    """Give high-latency Wi-Fi links enough TCP window without assuming OS caps."""
+    stream.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    for option in (socket.SO_SNDBUF, socket.SO_RCVBUF):
+        try: stream.setsockopt(socket.SOL_SOCKET, option, SOCKET_BUFFER_BYTES)
+        except OSError: pass  # macOS and managed Windows hosts can cap buffers.
 
 
 def _read_exact(stream, size, cancel, *, timeout=45):
@@ -496,7 +505,7 @@ class LanTransferService(QObject):
                 if transfer.cancel.is_set(): raise InterruptedError('已取消传输。')
                 try:
                     raw = socket.create_connection((peer['host'], peer['port']), timeout=8)
-                    raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                    _tune_stream_socket(raw)
                     context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
                     context.check_hostname = False; context.verify_mode = ssl.CERT_NONE
                     context.minimum_version = ssl.TLSVersion.TLSv1_2
@@ -567,7 +576,7 @@ class LanTransferService(QObject):
     def _incoming(self, raw, host):
         stream = None; transfer = None; acquired = False; terminal = None
         try:
-            raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            _tune_stream_socket(raw)
             raw.settimeout(8); stream = self._context.wrap_socket(raw, server_side=True)
             stream.settimeout(1); request = _read_json(stream, self._stopped, timeout=10)
             identifier, token = request.get('id'), request.get('token')

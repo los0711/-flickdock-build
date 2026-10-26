@@ -102,6 +102,18 @@ class MacReleaseTests(unittest.TestCase):
         self.assertEqual(self.publish()['architecture'], 'x86_64')
         self.assertFalse((self.output.parent / 'macos-arm64.json').exists())
 
+    def test_verified_dmg_can_be_published_only_after_native_mount_check(self):
+        self.archive=self.archive.with_suffix('.dmg')
+        self.archive.write_bytes(b'FlickDock image'+bytes(2048)+b'koly'+bytes(508))
+        self.url='https://releases.example.org/'+self.archive.name
+        self.write_reports()
+        self.server=Server(self.url,self.archive.read_bytes())
+        self.blocked()
+        self.build['dmg_verified']=True;self.save_reports()
+        manifest=self.publish()
+        self.assertTrue(manifest['installer']['filename'].endswith('.dmg'))
+        self.assertEqual(json.loads(self.output.read_text()),manifest)
+
     def test_reports_require_real_native_frozen_mac_and_exact_zip_bytes(self):
         original_build, original_cloud = copy.deepcopy(self.build), copy.deepcopy(self.cloud)
         changes = [('build', 'ok', False), ('build', 'version', '1.7.0'), ('build', 'architecture', 'x86_64'),

@@ -1,4 +1,4 @@
-"""Produce a macOS update index after native QA and anonymous ZIP verification.
+"""Produce a macOS update index after native QA and anonymous package verification.
 
 This operator tool never uploads source, launches an app, or installs an update.
 The existing Windows PE release producer remains separate.
@@ -79,7 +79,9 @@ def validate_reports(build_report: Path, cloud_report: Path, archive: Path,
     selected = [row for row in artifacts if isinstance(row, dict) and row.get('name') == archive.name] if isinstance(artifacts, list) else []
     if (len(selected) != 1 or type(selected[0].get('bytes')) is not int or selected[0]['bytes'] != size
             or str(selected[0].get('sha256', '')).lower() != digest):
-        raise ReleaseError('Native build artifact list does not attest these exact Mac ZIP bytes')
+        raise ReleaseError('Native build artifact list does not attest these exact Mac package bytes')
+    if archive.suffix.lower() == '.dmg' and build.get('dmg_verified') is not True:
+        raise ReleaseError('Native Mac build must verify the mounted DMG payload')
     if (not isinstance(cloud, dict) or cloud.get('ok') is not True or cloud.get('version') != version
             or cloud.get('frozen') is not True or cloud.get('mac_application_tested') is not True):
         raise ReleaseError('A passing actual frozen macOS cloud-sync report is required')
@@ -111,6 +113,31 @@ def verify_public_zip(url: str, digest: str, size: int, allowed_hosts: set[str],
     return dict(url=url, final_url=final_url, size=received, sha256=checksum.hexdigest())
 
 
+def verify_public_dmg(url: str, digest: str, size: int, allowed_hosts: set[str], *, opener=None) -> dict:
+    response, final_url = _public_response(url, allowed_hosts, opener)
+    checksum = hashlib.sha256(); received = 0; trailer = b''
+    try:
+        content_type = response.headers.get('Content-Type', '').lower().split(';', 1)[0]
+        if content_type.startswith('text/') or content_type in ('application/json', 'application/xhtml+xml'):
+            raise ReleaseError('Public Mac DMG download is an HTML/login/text response')
+        declared = response.headers.get('Content-Length')
+        if declared is not None and (not declared.isdecimal() or int(declared) != size):
+            raise ReleaseError('Public Mac DMG Content-Length differs from the verified artifact')
+        while chunk := response.read(1024 * 1024):
+            received += len(chunk)
+            if received > size:
+                raise ReleaseError('Public Mac DMG is larger than the verified artifact')
+            checksum.update(chunk)
+            trailer = (trailer + chunk)[-512:]
+    finally:
+        response.close()
+    if len(trailer) != 512 or trailer[:4] != b'koly':
+        raise ReleaseError('Public Mac download does not have a DMG trailer')
+    if received != size or checksum.hexdigest() != digest:
+        raise ReleaseError('Public Mac DMG size/SHA256 differs from the verified local artifact')
+    return dict(url=url, final_url=final_url, size=received, sha256=checksum.hexdigest())
+
+
 def _baseline(value, architecture, approved):
     try:
         validate_manifest(value, approved, platform='darwin', machine=architecture)
@@ -129,10 +156,11 @@ def create_mac_release(*, archive: Path, build_report: Path, cloud_report: Path,
     version_tuple(version)
     if architecture not in ARCHITECTURES:
         raise ReleaseError('Choose a native arm64 or x86_64 release channel')
-    archive = _regular(archive, 'Mac ZIP'); build_report = _regular(build_report, 'Mac build report')
+    archive = _regular(archive, 'Mac package'); build_report = _regular(build_report, 'Mac build report')
     cloud_report = _regular(cloud_report, 'Mac cloud report'); output = Path(output)
-    if archive.name != f'FlickDock-{version}-macOS-{architecture}.zip':
-        raise ReleaseError('Mac ZIP filename must identify this exact release and architecture')
+    if archive.name not in (f'FlickDock-{version}-macOS-{architecture}.zip',
+                            f'FlickDock-{version}-macOS-{architecture}.dmg'):
+        raise ReleaseError('Mac package filename must identify this exact release and architecture')
     if output.name != f'macos-{architecture}.json' or output.is_symlink():
         raise ReleaseError('Output must be the matching macos-architecture.json channel index')
     if not isinstance(notes, str) or not notes.strip() or len(notes) > 32768:
@@ -152,7 +180,13 @@ def create_mac_release(*, archive: Path, build_report: Path, cloud_report: Path,
     size = archive.stat().st_size; digest = sha256_file(archive)
     report_hashes = (sha256_file(build_report), sha256_file(cloud_report))
     validate_reports(build_report, cloud_report, archive, version, architecture, size, digest)
-    _validate_bundle(archive, version, architecture)
+    if archive.suffix.lower() == '.zip':
+        _validate_bundle(archive, version, architecture)
+    else:
+        with archive.open('rb') as image:
+            image.seek(-512, 2)
+            if image.read(4) != b'koly':
+                raise ReleaseError('Mac DMG trailer is invalid')
     manifest = dict(schema_version=1, version=version, platform='darwin', architecture=architecture,
                     published_at=datetime.now(timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z'),
                     notes=notes.strip(), installer=dict(filename=archive.name, url=download_url, size=size, sha256=digest))
@@ -167,7 +201,8 @@ def create_mac_release(*, archive: Path, build_report: Path, cloud_report: Path,
                 or baseline['notes'] != manifest['notes']):
             raise ReleaseError('An existing Mac version cannot be repackaged or moved; publish a newer version')
         manifest = baseline
-    verify_public_zip(download_url, digest, size, approved, opener=opener)
+    (verify_public_dmg if archive.suffix.lower() == '.dmg' else verify_public_zip)(
+        download_url, digest, size, approved, opener=opener)
     if archive.stat().st_size != size or sha256_file(archive) != digest:
         raise ReleaseError('Local Mac ZIP changed during anonymous verification')
     if (sha256_file(build_report), sha256_file(cloud_report)) != report_hashes:

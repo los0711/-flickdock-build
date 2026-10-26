@@ -174,6 +174,11 @@ class CloudApi(QObject):
                 os.replace(state['part'], state['destination']); state['part'] = None
                 result = state['destination']
             else:
+                response_body = bytes(state['body'])
+                if status in (429, 503, 1027) and b'1027' in response_body and b'cloudflare' in response_body.lower():
+                    now = time.time()
+                    raise CloudError('云同步免费请求额度今日已用完。', status, 'PLATFORM_QUOTA',
+                                     {'error': {'retry_after': int(86400 - now % 86400) + 1}})
                 try: parsed = json.loads(state['body'].decode('utf8')) if state['body'] else {}
                 except (UnicodeError,ValueError): raise CloudError('云同步服务返回了无效响应。',status)
                 if status not in (200,201,202,204):

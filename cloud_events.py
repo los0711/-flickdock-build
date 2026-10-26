@@ -56,9 +56,13 @@ class CloudEvents(QObject):
         self.socket.open(request)
 
     def _connected(self):
+        recovered = self._attempt > 0
         self._attempt = 0
-        self.content_debounce.start(50)
-        self.devices_debounce.start(50)
+        # Login already fetches shelf changes and devices. Reconcile only
+        # after a dropped socket, when hints may have been missed.
+        if recovered:
+            self.content_debounce.start(50)
+            self.devices_debounce.start(50)
 
     def _disconnected(self, *_args):
         if self.closed or not self.enabled or not self._identity or not self.account.signed_in or self.retry.isActive():

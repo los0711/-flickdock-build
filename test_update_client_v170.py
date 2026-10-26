@@ -145,6 +145,26 @@ class UpdateTests(unittest.TestCase):
         self.assertFalse(list(Path(self.folder.name).rglob('*.part')))
         self.assertFalse(any('Authorization' in headers for _,headers in self.requests))
 
+    def test_real_https_mac_dmg_download_checks_trailer_and_hash(self):
+        payload=b'FlickDock image'+bytes(65536)+b'koly'+bytes(508)
+        candidate=dict(schema_version=1,version='1.8.5',published_at='2026-10-26T00:00:00Z',
+            notes='Mac DMG',platform='darwin',architecture='arm64',
+            installer=dict(url=self.origin+'/update.dmg',size=len(payload),
+                sha256=hashlib.sha256(payload).hexdigest(),filename='FlickDock-1.8.5-macOS-arm64.dmg'))
+        self.routes['/update.dmg']=dict(body=payload)
+        network=self.Network()
+        client=subject.UpdateClient('1.8.4',Path(self.folder.name)/'mac-updates',
+            allowed_hosts={'127.0.0.1'},network=network,platform='darwin',machine='arm64')
+        client._test_network=network;self.clients.append(client)
+        verified=[];failed=[]
+        client.verified_file.connect(lambda *args:verified.append(args))
+        client.failed.connect(lambda *args:failed.append(args))
+        self.assertTrue(client.download(candidate))
+        wait_until(lambda:verified or failed)
+        self.assertFalse(failed,failed)
+        self.assertEqual(Path(verified[0][0]),Path(self.folder.name)/'mac-updates/1.8.5/update.dmg')
+        self.assertEqual(Path(verified[0][0]).read_bytes(),payload)
+
     def test_no_update_and_failure_preserve_manual_intent(self):
         client,state=self.client(current='1.10.0');client.check(manual=False)
         wait_until(lambda:state['up_to_date'] or state['failed']);self.assertEqual(state['up_to_date'],[(False,)])

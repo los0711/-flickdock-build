@@ -48,6 +48,8 @@ _GLYPHS = {
     'dock':'<path d="M20 4v16M3.5 12h12m-5-5 5 5-5 5"/>',
     'check':'<path d="m5 12 5 5L19 7"/>',
     'folder':'<path d="M3 8V6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8z"/>',
+    'nearby':'<rect x="3" y="5" width="12" height="10" rx="2"/><path d="M2 18h14M18 8h3v11h-4V8h1zm-9 2 3 2-3 2"/>',
+    'receive':'<rect x="3" y="11" width="18" height="9" rx="2.5"/><path d="M12 3v11m-4-4 4 4 4-4M7 16h2"/>',
     'file':'<path d="M7 3h7l5 5v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V5a2 2 0 0 1 2-2zm7 0v5h5"/>',
     'text':'<path d="M7 3h7l5 5v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V5a2 2 0 0 1 2-2zm7 0v5h5M8 11h7.5M8 14h7.5M8 17h4"/>',
     'image':'<rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="8" cy="9" r="1.5"/><path d="m4 18 5-5 3 3 4-5 5 6"/>',

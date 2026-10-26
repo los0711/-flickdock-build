@@ -94,7 +94,7 @@ def validate_manifest(value, allowed_hosts=DEFAULT_ALLOWED_HOSTS, *, platform=No
     if not isinstance(digest, str) or not re.fullmatch(r'[0-9a-f]{64}', digest):
         raise ValueError('安装包 SHA256 校验值无效。')
     filename = installer.get('filename')
-    extension = 'zip' if platform == 'darwin' else 'exe'
+    extension = '(?:dmg|zip)' if platform == 'darwin' else 'exe'
     if filename is not None and (not isinstance(filename, str) or len(filename) > 128
             or not re.fullmatch(r'[^<>:"/\\|?*\x00-\x1f]+\.' + extension, filename, re.IGNORECASE)
             or filename.endswith((' ', '.'))):
@@ -106,8 +106,10 @@ def validate_manifest(value, allowed_hosts=DEFAULT_ALLOWED_HOSTS, *, platform=No
     if platform == 'darwin':
         architecture = value.get('architecture')
         if (value.get('platform') != 'darwin' or architecture not in (update_architecture(machine), 'universal2')
-                or not QUrl(url).path().lower().endswith('.zip')):
-            raise ValueError('更新清单必须是匹配此 Mac 架构的 macOS ZIP 应用包。')
+                or not QUrl(url).path().lower().endswith(('.dmg', '.zip'))):
+            raise ValueError('更新清单必须是匹配此 Mac 架构的 macOS 安装包。')
+        if filename is not None and not filename.lower().endswith(QUrl(url).path().lower()[-4:]):
+            raise ValueError('Mac 安装包文件名与下载格式不一致。')
         result.update(platform='darwin', architecture=architecture)
     elif value.get('platform') not in (None, 'win32'):
         raise ValueError('更新清单不是 Windows 安装包。')
@@ -208,7 +210,8 @@ class UpdateClient(QObject):
             directory = self.updates_dir / candidate['version']
             directory.mkdir(parents=True, exist_ok=True)
             self._part = directory / (('update-' if self.platform == 'darwin' else 'setup-') + uuid4().hex + '.part')
-            self._final = directory / ('update.zip' if self.platform == 'darwin' else 'setup.exe')
+            mac_dmg = self.platform == 'darwin' and candidate['installer']['url'].lower().split('?', 1)[0].endswith('.dmg')
+            self._final = directory / ('update.dmg' if mac_dmg else 'update.zip' if self.platform == 'darwin' else 'setup.exe')
             self._file = self._part.open('xb')
             self._hash = hashlib.sha256()
             self.progress.emit(0, candidate['installer']['size'])
@@ -367,11 +370,20 @@ class UpdateClient(QObject):
                 installer = candidate['installer']
                 if self._received != installer['size'] or self._hash.hexdigest() != installer['sha256']:
                     raise ValueError('安装包大小或 SHA256 校验失败，已删除下载文件。')
-                magic = b'PK\x03\x04' if self.platform == 'darwin' else b'MZ'
-                if not bytes(self._prefix).startswith(magic):
-                    raise ValueError('下载内容不是 macOS ZIP 应用包。' if self.platform == 'darwin' else '下载内容不是 Windows 安装程序。')
                 self._file.flush()
                 os.fsync(self._file.fileno())
+                if self.platform == 'darwin' and self._final.suffix == '.dmg':
+                    if self._received < 512:
+                        raise ValueError('下载内容不是 macOS DMG 安装镜像。')
+                    with self._part.open('rb') as image:
+                        image.seek(-512, os.SEEK_END)
+                        signature = image.read(4)
+                    if signature != b'koly':
+                        raise ValueError('下载内容不是 macOS DMG 安装镜像。')
+                else:
+                    magic = b'PK\x03\x04' if self.platform == 'darwin' else b'MZ'
+                    if not bytes(self._prefix).startswith(magic):
+                        raise ValueError('下载内容不是 macOS ZIP 应用包。' if self.platform == 'darwin' else '下载内容不是 Windows 安装程序。')
                 self._file.close()
                 self._file = None
                 final = self._final

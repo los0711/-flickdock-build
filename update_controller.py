@@ -43,6 +43,48 @@ def _installer_path(path, updates_dir, version):
     return canonical
 
 
+def verify_mac_dmg(path, manifest, *, current_version, updates_dir,
+                   allowed_hosts=DEFAULT_ALLOWED_HOSTS, machine=None, cancelled=None):
+    """Validate a downloaded image before handing it to macOS DiskImageMounter."""
+    candidate = validate_manifest(manifest, allowed_hosts, platform='darwin', machine=machine)
+    if not candidate['installer']['url'].lower().split('?', 1)[0].endswith('.dmg'):
+        raise ValueError('Mac 更新需要 DMG 安装镜像。')
+    if compare_versions(candidate['version'], current_version) <= 0:
+        raise ValueError('更新版本必须高于当前版本。')
+    root = Path(updates_dir).absolute()
+    image = Path(path).absolute()
+    expected = root / candidate['version'] / 'update.dmg'
+    if image != expected or image.resolve(strict=True) != root.resolve(strict=True) / candidate['version'] / 'update.dmg':
+        raise ValueError('Mac 更新包必须位于本程序 updates/版本号/update.dmg。')
+    for item in (expected.parent, expected):
+        info = item.lstat()
+        if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+            raise ValueError('Mac 更新路径不能使用链接。')
+    digest = hashlib.sha256(); size = 0; trailer = b''
+    with image.open('rb') as reader:
+        before = os.fstat(reader.fileno())
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError('Mac 更新包不是普通文件。')
+        while chunk := reader.read(1024 * 1024):
+            if cancelled is not None and cancelled.is_set():
+                raise InterruptedError('安装校验已取消。')
+            size += len(chunk); digest.update(chunk)
+            trailer = (trailer + chunk)[-512:]
+        if _identity(before) != _identity(os.fstat(reader.fileno())):
+            raise ValueError('Mac 安装镜像在校验时发生变化。')
+    if (size != candidate['installer']['size'] or digest.hexdigest() != candidate['installer']['sha256']
+            or len(trailer) != 512 or trailer[:4] != b'koly'):
+        raise ValueError('Mac 安装镜像校验失败，请重新下载。')
+    if cancelled is not None and cancelled.is_set():
+        raise InterruptedError('安装校验已取消。')
+    if sys.platform == 'darwin':
+        checked = subprocess.run(['/usr/bin/hdiutil', 'verify', str(image)],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=120, check=False)
+        if checked.returncode:
+            raise ValueError('macOS 无法验证安装镜像。')
+    return image
+
+
 def _locked_reader(path):
     """On Windows keep the verified file immutable until the child opens it."""
     if os.name != 'nt':
@@ -187,6 +229,18 @@ class _Verification(QRunnable):
         try:
             result = verify_installer(self.path, self.manifest, cancelled=self.cancelled, **self.options)
         except (OSError, ValueError, TypeError) as problem:
+            error = str(problem)
+        self.signals.finished.emit(self.generation, result, error)
+
+
+class _MacDmgVerification(_Verification):
+    def run(self):
+        result, error = None, ''
+        try:
+            result = verify_mac_dmg(self.path, self.manifest, cancelled=self.cancelled, **self.options)
+        except InterruptedError:
+            error = '安装校验已取消。'
+        except (OSError, ValueError, TypeError, subprocess.TimeoutExpired) as problem:
             error = str(problem)
         self.signals.finished.emit(self.generation, result, error)
 
@@ -432,6 +486,15 @@ class UpdateController(QObject):
         try:
             manifest = validate_manifest(self._manifest, self.allowed_hosts,
                                           platform='darwin', machine=self.machine)
+            if manifest['installer']['url'].lower().split('?', 1)[0].endswith('.dmg'):
+                job = _MacDmgVerification(generation, self._verified_path, copy.deepcopy(manifest),
+                    dict(current_version=self.app_version, updates_dir=self.updates_dir,
+                         allowed_hosts=self.allowed_hosts, machine=self.machine))
+                self._jobs[generation] = job
+                job.signals.finished.connect(self._mac_dmg_verified, Qt.ConnectionType.QueuedConnection)
+                self._set_state('verifying')
+                QThreadPool.globalInstance().start(job)
+                return True
             path = Path(self._verified_path).absolute()
             root = self.updates_dir.resolve(strict=True)
             expected = self.updates_dir / manifest['version'] / 'update.zip'
@@ -457,6 +520,38 @@ class UpdateController(QObject):
         except (OSError, ValueError, TypeError) as error:
             self._mac_verified(generation, None, str(error))
             return False
+
+    def _mac_dmg_verified(self, generation, image, error):
+        self._jobs.pop(generation, None)
+        if self._closed or generation != self._generation or not self._authorized:
+            return
+        self._installing = False
+        if error:
+            self._authorized = False
+            self._verified_path = ''
+            self._retry_operation = 'download'
+            self._set_state('error', error=error)
+            self.installation_failed.emit(error)
+            return
+        try:
+            self._set_state('installing')
+            if self._closed or generation != self._generation or not self._authorized:
+                return
+            if self._popen is None or self._popen is subprocess.Popen:
+                if sys.platform != 'darwin' or not getattr(sys, 'frozen', False):
+                    raise ValueError('仅已安装的 Mac 正式版可以打开在线安装镜像。')
+                launcher = subprocess.Popen
+            else:
+                launcher = self._popen
+            launcher(['/usr/bin/open', str(image)], shell=False)
+            self._authorized = False
+            self._set_state('handoff')
+            self.installation_started.emit(str(image))
+        except (OSError, ValueError, TypeError) as problem:
+            self._authorized = False
+            self._retry_operation = 'install'
+            self._set_state('error', error=str(problem))
+            self.installation_failed.emit(str(problem))
 
     def _mac_cancelled(self, generation):
         job = self._jobs.pop(generation, None)

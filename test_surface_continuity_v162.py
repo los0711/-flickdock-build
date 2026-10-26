@@ -51,7 +51,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-continuity-') as tmp:
     shadow_delta=max(abs(a-b) for a,b in zip(before,after) if a<80 and b<80)
     assert edge_delta<=1 and shadow_delta<=5,(edge_delta,shadow_delta,before,after)
     rect=shelf.visual_geometry();transform=snapshot.presentation_transform(rect)
-    for button,offset in ((shelf.pin_button,176),(shelf.expand_button,132),(shelf.menu_button,88),(shelf.close_button,44)):
+    for button,offset in ((shelf.lan_button,208),(shelf.pin_button,168),(shelf.expand_button,128),(shelf.menu_button,88),(shelf.close_button,48)):
         center=transform.map(QRectF(rect.x()+rect.width()-14-offset-shelf.x(),rect.y()+21-shelf.y(),36,36).center())
         assert abs(button.x()+18-center.x())<=.51 and abs(button.y()+18-center.y())<=.51
         assert button._presentation_scale==(.96,.93)
