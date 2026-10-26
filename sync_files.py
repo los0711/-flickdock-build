@@ -95,6 +95,7 @@ def read_part(path, index, chunk_size, cancel):
 def assemble_parts(parts, target, expected, cancel):
     target = Path(target); staged = target.with_name('.'+uuid4().hex+'.part')
     digest = hashlib.sha256(); size = 0
+    completed = False; corrupt = False
     try:
         with staged.open('xb') as output:
             for part in parts:
@@ -102,16 +103,22 @@ def assemble_parts(parts, target, expected, cancel):
                     while data := incoming.read(1024*1024):
                         if cancel.is_set(): raise InterruptedError()
                         size += len(data)
-                        if size > expected['size']: raise ValueError('同步文件大小与记录不符。')
+                        if size > expected['size']:
+                            corrupt = True; raise ValueError('同步文件大小与记录不符。')
                         digest.update(data); output.write(data)
             output.flush(); os.fsync(output.fileno())
         if size != expected['size'] or digest.hexdigest() != expected['sha256']:
+            corrupt = True
             raise ValueError('同步文件校验失败。')
         os.replace(staged,target)
+        completed = True
         return target
     finally:
         staged.unlink(missing_ok=True)
-        for part in parts: Path(part).unlink(missing_ok=True)
+        # Cancellation, disk-full and transient IO keep verified cached parts
+        # so the account journal can resume without downloading them again.
+        if completed or corrupt:
+            for part in parts: Path(part).unlink(missing_ok=True)
 
 
 def read_utf8(path,cancel):

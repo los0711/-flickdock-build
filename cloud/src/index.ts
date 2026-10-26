@@ -334,15 +334,44 @@ async function route(request:Request,env:Env):Promise<Response>{
     if(url.searchParams.has('version')){const version=Number(url.searchParams.get('version'));integer(version,'version',1);if(version!==value!.version)await conflict(env,owner,id);}
     const part=await first(env,'SELECT * FROM parts WHERE upload_id=? AND idx=? AND ready=1',value!.active_upload,index);if(!part)fail(404,'NOT_FOUND','Content part not found');
     const lease=crypto.randomUUID();await query(env,'INSERT INTO read_leases(upload_id,id,expires_at) VALUES(?,?,?)',value!.active_upload,lease,Date.now()+1800000).run();
-    const release=async()=>{
+    let releasing:Promise<void>|undefined;
+    const release=()=>releasing??=(async()=>{
       await query(env,'DELETE FROM read_leases WHERE upload_id=? AND id=?',value!.active_upload,lease).run();
       try{await purgeUpload(env,value!.active_upload);}catch{/* Allocation stays reserved until the next cleanup. */}
-    };
+    })();
     let object:R2ObjectBody|null;
     try{await budget(env,'B',1);object=await env.FILES.get(part!.key);if(!object)fail(503,'STORAGE_MISSING','Content part is unavailable');}
     catch(error){await release();throw error;}
     const reader=object!.body.getReader();
-    const stream=new ReadableStream<Uint8Array>({async pull(controller){try{const next=await reader.read();if(next.done){controller.close();await release();}else controller.enqueue(next.value);}catch(e){controller.error(e);await release();}},async cancel(){await reader.cancel();await release();}});
+    let emitted=0,cancelled=false,finished=false;
+    const stream=new ReadableStream<Uint8Array>({
+      async pull(controller){
+        if(cancelled||finished)return;
+        try{
+          const next=await reader.read();if(cancelled)return;
+          if(next.done){
+            if(emitted!==part!.size)throw new Error('Content part ended before its declared size');
+            await release();if(cancelled)return;
+            finished=true;controller.close();return;
+          }
+          emitted+=next.value.byteLength;
+          if(emitted>part!.size)throw new Error('Content part exceeds its declared size');
+          if(emitted===part!.size){
+            // Content-Length may make the runtime stop pulling immediately
+            // after this chunk. Finish cleanup before publishing those final
+            // bytes, without relying on a later EOF pull or post-close work.
+            await reader.cancel();await release();if(cancelled)return;
+            finished=true;controller.enqueue(next.value);controller.close();
+          }else controller.enqueue(next.value);
+        }catch(error){
+          finished=true;
+          try{await reader.cancel(error);}catch{}
+          try{await release();}catch{/* A failed D1 cleanup remains protected by its expiry. */}
+          if(!cancelled)controller.error(error);
+        }
+      },
+      async cancel(reason){cancelled=true;try{await reader.cancel(reason);}finally{await release();}},
+    });
     return new Response(stream,{headers:{'Content-Type':'application/octet-stream','Content-Length':String(part!.size),'X-Content-SHA256':part!.sha256,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
   }
   return fail(404,'NOT_FOUND','API route not found');

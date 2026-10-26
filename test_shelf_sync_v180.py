@@ -50,7 +50,7 @@ class Server:
                     record=account['items'].get(upload['spec']['item_id'],{}).get('record')
                     raise CloudError('Already committed',409,'ALREADY_COMMITTED',{'error':{'current_record':record}})
                 del self.uploads[parts[1]];return {}
-            if upload['state'] not in ('pending','committed'): raise CloudError('Expired',409,'UPLOAD_EXPIRED')
+            if upload['state'] not in ('pending','verifying','committed'): raise CloudError('Expired',409,'UPLOAD_EXPIRED')
             spec=upload['spec']
             return dict(upload_id=parts[1],state=upload['state'],next_part=len(upload['chunks']),chunk_size=65536,
                         part_count=(spec['size']+65535)//65536,expires_at='2099-01-01T00:00:00Z',
@@ -71,7 +71,8 @@ class Server:
             return dict(record=copy.deepcopy(record))
         if parts[0]=='items' and method=='DELETE':
             item=account['items'][parts[1]]
-            if data['base_version']!=item['record']['version']: raise CloudError('Conflict',409,'VERSION_CONFLICT')
+            if data['base_version']!=item['record']['version']:
+                raise CloudError('Conflict',409,'VERSION_CONFLICT',{'error':{'current_record':copy.deepcopy(item['record'])}})
             item['record'].update(version=item['record']['version']+1,deleted=True,size=0,sha256=None)
             account['changes'].append(dict(cursor=str(len(account['changes'])+1),record=copy.deepcopy(item['record'])))
             return dict(record=copy.deepcopy(item['record']))
@@ -184,7 +185,7 @@ print('SHELF_SYNC_V180_OK')
 class FaultServer(Server):
     def __init__(self):
         super().__init__();self.calls=[];self.fail_index=None;self.fail_after_accept=False;self.rate_limit=False;self.fail_commit=False;self.fail_download=None
-        self.block_reads=False;self.fail_cleanup=False;self.fail_initialize=False
+        self.block_reads=False;self.fail_cleanup=False;self.fail_initialize=False;self.churn_deletes=0;self.fail_verifying=False
     def dispatch(self,token,method,path,data,raw):
         self.calls.append((token,method,path))
         parts=path.split('?')[0].split('/')[2:]
@@ -193,9 +194,16 @@ class FaultServer(Server):
         if method=='DELETE' and self.fail_cleanup:
             self.fail_cleanup=False
             raise CloudError('Cleanup budget',429,'RATE_LIMITED',{'error':{'retry_after':600}})
+        if method=='DELETE' and parts[0]=='items' and self.churn_deletes:
+            self.churn_deletes-=1
+            item=self.account(token)['items'][parts[1]];item['record']['version']+=1
+            changes=self.account(token)['changes'];changes.append(dict(cursor=str(len(changes)+1),record=copy.deepcopy(item['record'])))
         if method=='POST' and parts==['uploads'] and self.fail_initialize:
             self.fail_initialize=False;super().dispatch(token,method,path,data,raw)
             raise CloudError('Upload initialization reply lost')
+        if method=='POST' and parts[-1]=='commit' and self.fail_verifying:
+            self.fail_verifying=False;self.uploads[parts[1]]['state']='verifying'
+            raise CloudError('Commit worker interrupted',423,'UPLOAD_BUSY')
         if method=='GET' and len(parts)==4 and parts[0]=='items' and self.fail_download is not None and int(parts[3])==self.fail_download:
             self.fail_download=None
             raise CloudError('Daily download budget',429,'RATE_LIMITED',{'schema_version':1,'error':{'retry_after':3600}})
@@ -396,12 +404,8 @@ with tempfile.TemporaryDirectory(prefix='flickdock-priority-delete-v180-') as te
             until(lambda:not engine.running and server.account(scenario)['items'][identity]['record']['deleted'])
             assert engine.state['not_before']==transfer_deadline
         else:
-            assert engine.state['entries'][identity]['cleanup_conflict_version']==1
-            attempts=len(server.calls)
-            for _ in range(5):engine.tick();app.processEvents()
-            assert len(server.calls)==attempts
-            engine.state['not_before']=0;server.block_reads=False;engine.tick()
-            until(lambda:not engine.running and server.account(scenario)['items'][identity]['record']['deleted'])
+            assert server.account(scenario)['items'][identity]['record']['deleted']
+            assert sum(m=='DELETE' for _,m,_ in server.calls[calls:])==2
         engine.close();print('PASS priority cloud delete '+scenario+' independent of transfer backoff')
 
     for scenario in ('partial-upload','lost-commit'):
@@ -432,3 +436,91 @@ with tempfile.TemporaryDirectory(prefix='flickdock-priority-delete-v180-') as te
     assert not stage.exists();engine.close()
     print('PASS lost initialization reply reuses pre-journaled UUID without orphan reservation')
 print('SHELF_PRIORITY_DELETE_V180_OK')
+
+
+with tempfile.TemporaryDirectory(prefix='flickdock-recovery-v180-') as temp:
+    root=Path(temp);source=root/'original.png';payload=bytes(range(256))*600;source.write_bytes(payload)
+    server=FaultServer();service=Service(server);adapter=Adapter();adapter.add(str(source))
+    engine=ShelfSync(root/'churn',service,adapter,poll_ms=600000);service.signin('churn')
+    until(lambda:not engine.running and bool(server.account('churn')['items']))
+    identity=next(iter(server.account('churn')['items']));server.block_reads=True
+    engine.state['not_before']=time.time()+3600;deadline=engine.state['not_before']
+    server.churn_deletes=2;start=len(server.calls);adapter.view['permanent'].clear();engine.local_changed()
+    until(lambda:not engine.running and engine.state.get('cleanup_not_before',0)>time.time()+20)
+    assert sum(m=='DELETE' for _,m,_ in server.calls[start:])==2
+    assert all(m=='DELETE' for _,m,_ in server.calls[start:])
+    assert engine.state['entries'][identity]['version']==3 and engine.state['not_before']==deadline
+    calls=len(server.calls)
+    for _ in range(5):engine.tick();app.processEvents()
+    assert len(server.calls)==calls
+    engine.state['cleanup_not_before']=0;engine.tick()
+    until(lambda:not engine.running and server.account('churn')['items'][identity]['record']['deleted'])
+    assert all(m=='DELETE' for _,m,_ in server.calls[start:]);engine.close()
+    print('PASS repeated delete CAS conflicts consume owner versions with bounded independent cleanup retry')
+
+    server=FaultServer();service=Service(server);adapter=Adapter();adapter.add(str(source))
+    engine=ShelfSync(root/'verifying',service,adapter,poll_ms=600000);server.fail_verifying=True;service.signin('verifying')
+    until(lambda:not engine.running and any(u['state']=='verifying' for u in server.uploads.values()))
+    transfer=next(iter(engine.state['resumable_uploads'].values()));uid=transfer['upload_id']
+    engine.state['not_before']=0;engine.tick()
+    until(lambda:not engine.running and bool(server.account('verifying')['items']))
+    assert server.uploads[uid]['state']=='committed' and next(iter(server.account('verifying')['items'].values()))['data']==payload
+    assert sum(m=='POST' and p=='/v1/uploads' for _,m,p in server.calls)==1
+    engine.close();print('PASS interrupted verifying commit resumes finalization without reupload')
+
+    import shelf_sync as sync_module
+    import sync_files as file_module
+    import threading
+    real_assemble=sync_module.assemble_parts;real_path=file_module.Path
+    for interruption in ('io-error','close','account-switch'):
+        server=FaultServer();service=Service(server);adapter=Adapter();account='recover-'+interruption
+        identity=uuid4().hex
+        record=dict(id=identity,version=1,deleted=False,kind='file',name='original.png',mime_type='image/png',
+                    size=len(payload),sha256=hashlib.sha256(payload).hexdigest())
+        server.account(account)['items'][identity]=dict(record=copy.deepcopy(record),data=payload)
+        server.account(account)['changes'].append(dict(cursor='1',record=record))
+        engine=ShelfSync(root/interruption,service,adapter,poll_ms=600000)
+        entered=threading.Event()
+        if interruption=='io-error':
+            class BrokenPath(type(Path())):
+                def open(self,*args,**kwargs):
+                    if self.name.endswith('chunk-1'):raise OSError('Simulated transient disk error')
+                    return super().open(*args,**kwargs)
+            file_module.Path=BrokenPath
+        else:
+            def paused_assemble(parts,target,expected,cancel):
+                entered.set()
+                while not cancel.is_set():time.sleep(.001)
+                return real_assemble(parts,target,expected,cancel)
+            sync_module.assemble_parts=paused_assemble
+        try:
+            service.signin(account)
+            if interruption=='io-error':until(lambda:not engine.running and engine.state.get('not_before',0)>time.time())
+            else:until(entered.is_set)
+            target=engine._download_target(record);count=(len(payload)+65535)//65536
+            paths=[target.with_name('.'+target.name+f'.chunk-{i}') for i in range(count)]
+            assert all(p.exists() for p in paths)
+            assert len(engine.state['downloads'][identity]['hashes'])==count
+            if interruption=='close':engine.close()
+            elif interruption=='account-switch':
+                service.signin('another-account');until(lambda:not engine.running and engine.pool.activeThreadCount()==0)
+            assert all(p.exists() for p in paths)
+        finally:
+            sync_module.assemble_parts=real_assemble;file_module.Path=real_path
+        if interruption=='close':
+            engine=ShelfSync(root/interruption,service,adapter,poll_ms=600000);service.signin(account)
+        elif interruption=='account-switch':service.signin(account)
+        else:engine.state['not_before']=0;engine.tick()
+        until(lambda:not engine.running and bool(adapter.view['permanent']))
+        assert Path(adapter.view['permanent'][0]).read_bytes()==payload
+        assert sum(token==account and m=='GET' and '/parts/' in p for token,m,p in server.calls)==count
+        assert not engine.state['downloads'] and not any(p.exists() for p in paths)
+        engine.close();print('PASS download assembly '+interruption+' retains verified chunks and journal')
+
+    bad=root/'corrupt-part';bad.write_bytes(b'bad')
+    try:real_assemble([bad],root/'should-not-exist',{'size':3,'sha256':hashlib.sha256(b'abc').hexdigest()},threading.Event())
+    except ValueError:pass
+    else:raise AssertionError('Corrupt full-file SHA was accepted')
+    assert not bad.exists() and not (root/'should-not-exist').exists()
+    print('PASS explicit full-file SHA mismatch discards corrupt cached parts')
+print('SHELF_RECOVERY_V180_OK')

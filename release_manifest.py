@@ -61,13 +61,13 @@ MAINTAINED_TESTS=(
     'test_release_manifest_v170.py','test_update_client_v170.py',
     'test_update_dialog_v170.py','test_update_inline_v171.py','test_settings_startup_v171.py',
     'test_platform_startup.py','test_platform_native.py','test_mac_updates.py','test_mac_build.py',
-    'test_update_macos.py','test_update_macos_controller.py','test_macos_native_entry.py',
+    'test_update_macos.py','test_update_macos_controller.py','test_macos_native_entry.py','test_release_macos_v180.py',
     'test_account_panel_v180.py','test_account_security_v180.py','test_shelf_sync_v180.py','test_sync_review_v180.py','test_cloud_client_v180.py',
 )
 SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'FlickDock.spec','FlickDock.iss','version_info.txt','ChineseSimplified.isl',
     'flickdock.ico','THIRD_PARTY_NOTICES.md','font_manifest.json','bundle_policy.py',
-    'release_manifest.py','package_source.py','PUBLISHING.md','README.md','AGENTS.md','.gitignore','.gitattributes',
+    'release_manifest.py','release_macos.py','package_source.py','PUBLISHING.md','README.md','AGENTS.md','.gitignore','.gitattributes',
     'check_release_v16.py','release_dpr_v165.py','PACKAGE_AUDIT.md',
     'MOTION_V161.md','MOTION_V162.md','MOTION_V163.md','MOTION_V164.md','MOTION_V165.md',
     'bench_morph_v161.py','bench_cold_expand_v162.py','bench_clear_confirm_v161.py',
@@ -79,6 +79,8 @@ SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'cloud_remote_probe.py','cloud/package.json','cloud/package-lock.json','cloud/tsconfig.json',
     'cloud/wrangler.jsonc','cloud/README.md','cloud/.gitignore',
     'cloud/migrations/0001_schema.sql','cloud/migrations/0002_retention.sql','cloud/src/index.ts','cloud/src/hash-state.ts',
+    'cloud/src/wasm.d.ts','cloud/src/vendor/hash-wasm-sha256-4.12.0.wasm',
+    'cloud/src/vendor/hash-wasm-sha256-4.12.0.json','cloud/src/vendor/hash-wasm-4.12.0-LICENSE.txt',
     'cloud/test/integration.mjs','cloud/test/hash-state.mjs',
     '.github/workflows/macos-build.yml','ci_assets.py',
 )

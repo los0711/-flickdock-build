@@ -47,6 +47,17 @@ def run(argv,load_font):
         adapters=[Adapter(),Adapter()];adapters[0].view={'permanent':[str(source),'flickdock:text:qa'],
             'texts':{'flickdock:text:qa':'同步文字仍可直接拖入输入框'},'metadata':{}}
         services=[AccountService(root/str(i),origin=DEFAULT_CLOUD_URL,store=Store()) for i in range(2)]
+        report['request_results']=[]
+        for index,service in enumerate(services):
+            transport=service.api.request
+            def traced(method,path,callback,transport=transport,index=index,**kwargs):
+                def completed(result,error):
+                    route='/'.join('id' if len(part)>=32 else part for part in path.split('/'))
+                    report['request_results'].append(dict(peer=index,method=method,route=route,
+                        status=getattr(error,'status',200),code=getattr(error,'code','')))
+                    callback(result,error)
+                return transport(method,path,completed,**kwargs)
+            service.api.request=traced
         engines=[ShelfSync(root/str(i),services[i],adapters[i],poll_ms=600000) for i in range(2)]
         finished=False;phase='register'
         def finish(error=''):

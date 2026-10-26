@@ -2373,4 +2373,4 @@ def main():
     sys.exit(result)
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

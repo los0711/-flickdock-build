@@ -75,6 +75,7 @@ class ShelfSync(QObject):
         self.applying = False; self.requests = set(); self.jobs = set()
         self.pool = QThreadPool(self); self.pool.setMaxThreadCount(2)
         self.retry_ms = 15000; self.transfer = None
+        self.cleanup_attempts = {}
         self.timer = QTimer(self); self.timer.setInterval(poll_ms); self.timer.timeout.connect(self.tick)
         self.debounce = QTimer(self); self.debounce.setSingleShot(True); self.debounce.timeout.connect(self.tick)
         service.account_changed.connect(self.select_account)
@@ -216,6 +217,7 @@ class ShelfSync(QObject):
 
     def tick(self):
         if self.closed or self.running or not self.account_id or not self.service.signed_in: return
+        self.cleanup_attempts = {}
         self.running = True; self.status_changed.emit('正在同步…')
         self._retire_uploads()
 
@@ -287,13 +289,28 @@ class ShelfSync(QObject):
         removal = self._pending_removal()
         if removal:
             identity, version = removal['id'],removal['version']
+            self.cleanup_attempts[identity] = self.cleanup_attempts.get(identity,0)+1
             def removed(result,error):
                 current = self.state['entries'].get(identity)
                 if error and getattr(error,'status',0) not in (404,409):
                     self._cleanup_error(error); return
                 if error and getattr(error,'status',0)==409:
                     if current and current.get('version') == version:
-                        current['cleanup_conflict_version'] = version
+                        details = getattr(error,'details',{})
+                        problem = details.get('error',details) if isinstance(details,dict) else {}
+                        record = problem.get('current_record') if isinstance(problem,dict) else None
+                        if (isinstance(record,dict) and record.get('id') == identity
+                                and isinstance(record.get('version'),int) and version <= record['version'] <= 9007199254740991):
+                            if record.get('deleted'): self.state['entries'].pop(identity,None)
+                            else:
+                                current['version'] = record['version']; current.pop('cleanup_conflict_version',None)
+                                if self.cleanup_attempts[identity]>=2:
+                                    # Another device is actively changing this
+                                    # item. Keep its latest version and retry
+                                    # cleanup independently after a short pause.
+                                    self.state['cleanup_not_before'] = time.time()+30
+                                    self._persist(); self.debounce.start(30001); self._after_cleanup(); return
+                        else: current['cleanup_conflict_version'] = version
                 elif current and current.get('deleted'):
                     self.state['entries'].pop(identity,None); self._forget_download(identity)
                 self._persist(); self._retire_uploads()
@@ -472,7 +489,8 @@ class ShelfSync(QObject):
             self._persist()
             parts = []
             def assembled(path,error):
-                downloads.pop(record['id'],None); self._persist(); callback(path,error)
+                if error is None or isinstance(error,ValueError): downloads.pop(record['id'],None)
+                self._persist(); callback(path,error)
             def part(index=0):
                 if self._pending_removal() is not None:
                     self.running = False; self.tick(); return
@@ -627,7 +645,9 @@ class ShelfSync(QObject):
                 self._error(ValueError('云同步断点与文件不符。')); return
             if result.get('state') == 'committed': self._pull(); return
             index = result.get('next_part')
-            if result.get('state') != 'pending' or not isinstance(index,int) or not 0 <= index <= transfer['part_count']:
+            if (result.get('state') not in ('pending','verifying') or not isinstance(index,int)
+                    or not 0 <= index <= transfer['part_count']
+                    or (result.get('state') == 'verifying' and index != transfer['part_count'])):
                 self._error(ValueError('云同步断点信息无效。')); return
             transfer['next_part'] = index; self._persist(); self._send_part(transfer,index)
         self._request('GET','/v1/uploads/'+quote(transfer['upload_id'],safe=''),status)
