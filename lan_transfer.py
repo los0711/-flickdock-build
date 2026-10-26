@@ -167,6 +167,19 @@ def _read_exact(stream, size, cancel, *, timeout=45):
     return bytes(output)
 
 
+def _read_into(stream, target, cancel, *, timeout=45):
+    """Fill a reusable file buffer without copying each TLS record twice."""
+    position=0; last_data=time.monotonic()
+    while position<len(target):
+        if cancel.is_set(): raise InterruptedError('已取消传输。')
+        try: count=stream.recv_into(target[position:])
+        except socket.timeout:
+            if time.monotonic()-last_data>timeout: raise TimeoutError('局域网连接超时。')
+            continue
+        if not count: raise ConnectionError('局域网连接已中断。')
+        position+=count;last_data=time.monotonic()
+
+
 def _read_json(stream, cancel, *, timeout=45):
     size = struct.unpack('!I', _read_exact(stream, 4, cancel, timeout=timeout))[0]
     if size > MAX_MANIFEST_BYTES: raise ValueError('传输清单过大。')
@@ -602,6 +615,7 @@ class LanTransferService(QObject):
             files = [row for row in entries if row['kind'] == 'file']
             _send_json(stream, {'state': 'ready', 'next_file': transfer.next_file, 'offset': transfer.offset})
             last_emit = 0
+            buffer=bytearray(BLOCK_BYTES);view=memoryview(buffer)
             for number in range(transfer.next_file, len(files)):
                 row = files[number]; target = transfer.stage.joinpath(*PurePosixPath(row['path']).parts)
                 offset = transfer.offset if number == transfer.next_file else 0
@@ -617,7 +631,8 @@ class LanTransferService(QObject):
                 with target.open('r+b' if offset else 'xb') as output:
                     output.seek(offset)
                     while offset < row['size']:
-                        data = _read_exact(stream, min(BLOCK_BYTES, row['size'] - offset), transfer.cancel)
+                        data = view[:min(BLOCK_BYTES, row['size'] - offset)]
+                        _read_into(stream,data,transfer.cancel)
                         output.write(data); digest.update(data); offset += len(data)
                         transfer.offset = offset; transfer.done += len(data)
                         if time.monotonic() - last_emit >= .08:
@@ -629,11 +644,34 @@ class LanTransferService(QObject):
                 transfer.next_file = number + 1; transfer.offset = 0
                 _send_json(stream, {'state': 'verified'})
             if transfer.cancel.is_set(): raise InterruptedError('已取消传输。')
-            folder = transfer.destination / ('FlickDock ' + time.strftime('%Y-%m-%d %H-%M-%S') + '-' + identifier[:6])
-            # Never replace an existing user path or expose unverified partial data.
-            if folder.exists(): raise ValueError('接收目标已存在，请重试。')
-            os.rename(transfer.stage, folder); transfer.stage = None; transfer.finished = True
-            result_paths = [str(folder / e['path']) for e in entries if '/' not in e['path']]
+            # Promote verified top-level files and directories directly into the
+            # chosen destination. The stage is only an internal partial-file area.
+            # A pre-existing user name is preserved and gets a numbered sibling.
+            roots = [e['path'] for e in entries if '/' not in e['path']]
+            placements = []
+            reserved = {p.name.casefold() for p in transfer.destination.iterdir()
+                        if p != transfer.stage}
+            for name in roots:
+                source = transfer.stage / name
+                stem, suffix = (source.stem, source.suffix) if source.is_file() else (name, '')
+                candidate = name; number = 2
+                while candidate.casefold() in reserved or (transfer.destination / candidate).exists():
+                    candidate = f'{stem} ({number}){suffix}'; number += 1
+                reserved.add(candidate.casefold())
+                placements.append((source, transfer.destination / candidate))
+            moved = []
+            try:
+                for source, target in placements:
+                    # Same-volume rename keeps the verified bytes intact and
+                    # never creates a public partially downloaded file.
+                    if target.exists(): raise FileExistsError(str(target))
+                    os.rename(source, target); moved.append((source, target))
+            except OSError:
+                for source, target in reversed(moved):
+                    if target.exists() and not source.exists(): os.rename(target, source)
+                raise
+            transfer.stage.rmdir(); transfer.stage = None; transfer.finished = True
+            result_paths = [str(target) for _, target in placements]
             transfer.result_paths = result_paths
             self._notify(transfer, 'complete')
             self.completed.emit({'id': identifier, 'direction': 'receive', 'peer': transfer.peer,

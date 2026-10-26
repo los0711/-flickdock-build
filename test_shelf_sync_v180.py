@@ -534,3 +534,32 @@ with tempfile.TemporaryDirectory(prefix='flickdock-recovery-v180-') as temp:
     assert not bad.exists() and not (root/'should-not-exist').exists()
     print('PASS explicit full-file SHA mismatch discards corrupt cached parts')
 print('SHELF_RECOVERY_V180_OK')
+
+
+class InstantServer(Server):
+    def dispatch(self,token,method,path,data,raw):
+        if method=='POST' and path=='/v1/uploads':
+            account=self.account(token)
+            source=next((value for value in account['items'].values()
+                         if not value['record']['deleted'] and value['record']['sha256']==data['sha256']
+                         and value['record']['size']==data['size']),None)
+            if source is not None:
+                record=dict(id=data['item_id'],version=data['base_version']+1,deleted=False,
+                            **{key:data[key] for key in ('kind','name','mime_type','size','sha256')})
+                account['items'][record['id']]=dict(record=record,data=source['data'])
+                account['changes'].append(dict(cursor=str(len(account['changes'])+1),record=copy.deepcopy(record)))
+                return dict(instant=True,record=record)
+        return super().dispatch(token,method,path,data,raw)
+
+
+with tempfile.TemporaryDirectory(prefix='flickdock-instant-sync-') as folder:
+    root=Path(folder);payload=b'original duplicate bytes'+bytes(range(256))*4096
+    first=root/'first.bin';second=root/'second.bin';first.write_bytes(payload);second.write_bytes(payload)
+    server=InstantServer();service=Service(server);adapter=Adapter();adapter.add(str(first));adapter.add(str(second))
+    engine=ShelfSync(root/'profile',service,adapter,poll_ms=600000);service.signin('instant-account')
+    until(lambda:not engine.running and len(server.account('instant-account')['items'])==2)
+    assert len(server.uploads)==1,'Identical content was uploaded twice'
+    assert not engine.state['resumable_uploads'] and not engine.state['pending_uploads']
+    assert all(not value['dirty'] for value in engine.state['entries'].values())
+    assert len(list((root/'profile'/'instant-account'/'outbox').glob('*.blob')))==0
+    engine.close();print('PASS instant cloud reuse avoids a second upload and clears staged bytes')

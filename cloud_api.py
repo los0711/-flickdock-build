@@ -163,7 +163,10 @@ class CloudApi(QObject):
                 expected = state['expected']
                 digest = expected.get('sha256') or bytes(reply.rawHeader('X-Content-SHA256')).decode('ascii','replace')
                 if (not re.fullmatch(r'[0-9a-f]{64}',digest) or state['received'] != expected['size'] or state['hash'].hexdigest() != digest):
-                    raise CloudError('同步文件校验失败，将自动重试。')
+                    raise CloudError('同步文件校验失败，将自动重试。', details={
+                        'received_size':state['received'], 'expected_size':expected['size'],
+                        'hash_matches':state['hash'].hexdigest() == digest,
+                        'network_error':int(reply.error())})
                 if state['file'] is None:
                     state['part'] = state['destination'].with_name('.' + key + '.part')
                     state['file'] = state['part'].open('xb')
@@ -182,7 +185,9 @@ class CloudApi(QObject):
                     raise CloudError('云同步服务版本不匹配。',status)
                 result = parsed
         except Exception as problem:
-            error = problem if isinstance(problem,CloudError) else CloudError('云同步失败，请稍后重试。',status)
+            error = problem if isinstance(problem,CloudError) else CloudError(
+                '云同步失败，请稍后重试。',status,
+                details={'cause':type(problem).__name__,'detail':str(problem)[:160]})
         finally:
             if not reply.isFinished(): reply.abort()
             reply.deleteLater()

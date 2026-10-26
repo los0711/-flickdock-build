@@ -46,7 +46,14 @@ def run(argv,load_font):
         username='frozen-qa-'+uuid4().hex;password=secrets.token_urlsafe(32)
         adapters=[Adapter(),Adapter()];adapters[0].view={'permanent':[str(source),'flickdock:text:qa'],
             'texts':{'flickdock:text:qa':'同步文字仍可直接拖入输入框'},'metadata':{}}
-        services=[AccountService(root/str(i),origin=DEFAULT_CLOUD_URL,store=Store()) for i in range(2)]
+        origin=os.environ.get('FLICKDOCK_QA_CLOUD_ORIGIN',DEFAULT_CLOUD_URL)
+        local_origin=origin.startswith('http://127.0.0.1:')
+        if origin!=DEFAULT_CLOUD_URL and not local_origin:
+            raise ValueError('QA cloud override must be a loopback HTTP origin')
+        if local_origin:
+            from cloud_api import CloudApi
+        services=[AccountService(root/str(i),origin=origin,store=Store(),
+                  api=CloudApi(origin,allow_test_http=True) if local_origin else None) for i in range(2)]
         report['request_results']=[]
         for index,service in enumerate(services):
             transport=service.api.request
@@ -54,7 +61,8 @@ def run(argv,load_font):
                 def completed(result,error):
                     route='/'.join('id' if len(part)>=32 else part for part in path.split('/'))
                     report['request_results'].append(dict(peer=index,method=method,route=route,
-                        status=getattr(error,'status',200),code=getattr(error,'code','')))
+                        status=getattr(error,'status',200),code=getattr(error,'code',''),
+                        details=getattr(error,'details',None)))
                     callback(result,error)
                 return transport(method,path,completed,**kwargs)
             service.api.request=traced

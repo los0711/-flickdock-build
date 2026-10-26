@@ -1,9 +1,10 @@
 import {createHash, createHmac, timingSafeEqual} from 'node:crypto';
 import {caseFold} from 'unicode-case-folding';
 import {PersistentSHA256} from './hash-state';
+import {DurableObject} from 'cloudflare:workers';
 
 interface Env {
-  DB:D1Database; FILES:R2Bucket;
+  DB:D1Database; FILES:R2Bucket; EVENTS:DurableObjectNamespace<AccountEvents>;
   ACCOUNT_QUOTA_BYTES?:string; GLOBAL_QUOTA_BYTES?:string; CHUNK_BYTES?:string; REQUESTS_PER_DAY?:string; AUTH_PEPPER?:string;
   R2_CLASS_A_BUDGET?:string; R2_CLASS_B_BUDGET?:string;
   EMAIL_PROVIDER?:string; EMAIL_FROM?:string; EMAIL_CODE_SECRET?:string; RESEND_API_KEY?:string;
@@ -11,12 +12,48 @@ interface Env {
 }
 type Row=Record<string,any>;
 const DAY=86400000;
-function chunkSize(env:Env){const size=config(env.CHUNK_BYTES,1024*1024,1024*1024);if(size%64||size<65536)fail(503,'CONFIGURATION','Chunk size must be 64-byte aligned and at least 64 KiB');return size;}
+function chunkSize(env:Env,fileSize:number){
+  const size=config(env.CHUNK_BYTES,1024*1024,4*1024*1024);
+  if(size%64||size<65536)fail(503,'CONFIGURATION','Chunk size must be 64-byte aligned and at least 64 KiB');
+  // A small file fits in one R2-verified request. Keep multi-part uploads
+  // within the Workers Free CPU budget while accumulating the full SHA.
+  return fileSize>4*1024*1024?Math.min(size,1024*1024):size;
+}
 class APIError extends Error {constructor(public status:number,public code:string,message:string,public details:Row={}){super(message);}}
 const fail=(status:number,code:string,message:string,details:Row={}):never=>{throw new APIError(status,code,message,details);};
 const json=(data:Row,status=200)=>Response.json({schema_version:1,...data},{status,headers:{'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
 const hex=(data:Uint8Array)=>Buffer.from(data).toString('hex');
 const sha=(data:string|Uint8Array)=>createHash('sha256').update(data).digest('hex');
+
+export class AccountEvents extends DurableObject<Env> {
+  async fetch(request:Request):Promise<Response>{
+    const url=new URL(request.url);
+    if(url.pathname==='/connect'&&request.headers.get('Upgrade')?.toLowerCase()==='websocket'){
+      const pair=new WebSocketPair();const [client,server]=Object.values(pair);
+      this.ctx.acceptWebSocket(server);
+      server.serializeAttachment({device:request.headers.get('X-Device-Id')||''});
+      return new Response(null,{status:101,webSocket:client});
+    }
+    if(url.pathname==='/publish'&&request.method==='POST'){
+      const data=await request.json() as {type?:string;device?:string};
+      if(data.type!=='content'&&data.type!=='devices')return new Response(null,{status:400});
+      const message=JSON.stringify({schema_version:1,type:data.type});
+      for(const socket of this.ctx.getWebSockets()){
+        if(socket.deserializeAttachment()?.device===data.device)continue;
+        try{socket.send(message);}catch{try{socket.close();}catch{}}
+      }
+      return new Response(null,{status:204});
+    }
+    return new Response(null,{status:404});
+  }
+}
+
+function announce(env:Env,ctx:ExecutionContext,owner:Row,type:'content'|'devices'){
+  if(!env.EVENTS)return;
+  const stub=env.EVENTS.get(env.EVENTS.idFromName(owner.id));
+  ctx.waitUntil(stub.fetch('https://internal/publish',{method:'POST',
+    body:JSON.stringify({type,device:owner.device_id||''})}).catch(()=>undefined));
+}
 const iso=(value:number)=>new Date(value).toISOString();
 function config(value:string|undefined,fallback:number,max=Number.MAX_SAFE_INTEGER){const n=value===undefined?fallback:Number(value);if(!Number.isSafeInteger(n)||n<1||n>max)fail(503,'CONFIGURATION','Service configuration is invalid');return n;}
 function text(value:unknown,name:string,min=1,max=255):string {if(typeof value!=='string'||value.length<min||value.length>max||/[\x00-\x1f\x7f]/.test(value))fail(400,'INVALID_REQUEST',`Invalid ${name}`);return value as string;}
@@ -150,10 +187,11 @@ async function cleanup(env:Env){
     query(env,'DELETE FROM rates WHERE expires_at<?',now),query(env,'DELETE FROM email_challenges WHERE expires_at<?',now),query(env,'DELETE FROM sessions WHERE expires_at<?',now),
     query(env,'DELETE FROM auth_challenges WHERE expires_at<?',now),query(env,'DELETE FROM password_challenges WHERE expires_at<?',now),query(env,'DELETE FROM read_leases WHERE expires_at<?',now),
     query(env,'DELETE FROM cancelled_uploads WHERE (account_id,id) IN (SELECT account_id,id FROM cancelled_uploads WHERE expires_at<? LIMIT 100)',now),
+    query(env,'DELETE FROM instant_receipts WHERE expires_at<?',now),
   ]);
 }
 
-async function route(request:Request,env:Env):Promise<Response>{
+async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Response>{
   const url=new URL(request.url),path=url.pathname,method=request.method;
   if(method==='GET'&&path==='/v1/health')return json({service:'flickdock-cloud'});
   const deleting=method==='DELETE'&&/^\/v1\/(items|uploads)\/[^/]+$/.test(path);
@@ -186,9 +224,16 @@ async function route(request:Request,env:Env):Promise<Response>{
       catch(e){if(String(e).includes('UNIQUE'))fail(409,'USERNAME_TAKEN','Username already registered');throw e;}
       owner=await first(env,'SELECT * FROM accounts WHERE id=?',id);
     }else if(!owner||owner.id!==challenge!.account_id||!timingSafeEqual(Buffer.from(owner.auth_verifier,'hex'),Buffer.from(proof,'hex')))fail(401,'INVALID_CREDENTIALS','Incorrect username or password');
-    return json(await session(env,owner!,device,platform),register?201:200);
+    const signedIn=await session(env,owner!,device,platform);
+    announce(env,ctx,{id:owner!.id,device_id:signedIn.device_id},'devices');
+    return json(signedIn,register?201:200);
   }
   const owner=await auth(request,env);
+  if(method==='GET'&&path==='/v1/events'){
+    if(request.headers.get('Upgrade')?.toLowerCase()!=='websocket')fail(426,'UPGRADE_REQUIRED','WebSocket required');
+    return env.EVENTS.get(env.EVENTS.idFromName(owner.id)).fetch(new Request('https://internal/connect',
+      {headers:{Upgrade:'websocket','X-Device-Id':owner.device_id}}));
+  }
   if(method==='GET'&&(path==='/v1/me'||path==='/v1/sync/changes'||path.startsWith('/v1/items/')))await expireItems(env,owner.id);
   if(method==='GET'&&path==='/v1/me'){
     const storage=(await first(env,'SELECT allocated_bytes,quota_bytes FROM accounts WHERE id=?',owner.id))!;
@@ -204,10 +249,11 @@ async function route(request:Request,env:Env):Promise<Response>{
     if(!name)fail(400,'INVALID_REQUEST','Device name cannot be blank');
     const result=await query(env,'UPDATE devices SET name=? WHERE id=? AND account_id=? AND revoked_at IS NULL',name,id,owner.id).run();
     if(!result.meta.changes)fail(404,'NOT_FOUND','Active device not found');
+    announce(env,ctx,owner,'devices');
     return json({device_id:id,name});
   }
-  if(method==='DELETE'&&match){const id=uuid(match[1]);const result=await query(env,'UPDATE devices SET revoked_at=? WHERE id=? AND account_id=?',Date.now(),id,owner.id).run();if(!result.meta.changes)fail(404,'NOT_FOUND','Device not found');return json({revoked:true});}
-  if(method==='POST'&&path==='/v1/auth/logout'){await query(env,'UPDATE devices SET revoked_at=? WHERE id=? AND account_id=?',Date.now(),owner.device_id,owner.id).run();return json({revoked:true});}
+  if(method==='DELETE'&&match){const id=uuid(match[1]);const result=await query(env,'UPDATE devices SET revoked_at=? WHERE id=? AND account_id=?',Date.now(),id,owner.id).run();if(!result.meta.changes)fail(404,'NOT_FOUND','Device not found');announce(env,ctx,owner,'devices');return json({revoked:true});}
+  if(method==='POST'&&path==='/v1/auth/logout'){await query(env,'UPDATE devices SET revoked_at=? WHERE id=? AND account_id=?',Date.now(),owner.device_id,owner.id).run();announce(env,ctx,owner,'devices');return json({revoked:true});}
   if(method==='POST'&&path==='/v1/auth/password/challenge'){
     await body(request,[]);await rate(env,'password-change:'+owner.id,10,3600000);
     const id=crypto.randomUUID(),salt=hex(crypto.getRandomValues(new Uint8Array(16))),expires=Date.now()+300000;
@@ -227,6 +273,7 @@ async function route(request:Request,env:Env):Promise<Response>{
       query(env,'DELETE FROM sessions WHERE account_id=? AND device_id<>? AND EXISTS(SELECT 1 FROM accounts WHERE id=? AND auth_salt=? AND auth_verifier=?)',owner.id,owner.device_id,owner.id,challenge.new_salt,newProof),
     ]);
     if(!changed[0].meta.changes)fail(409,'PASSWORD_CHANGED','Password or session changed; request a new challenge');
+    announce(env,ctx,owner,'devices');
     return json({changed:true,other_devices_revoked:true});
   }
   if(method==='GET'&&path==='/v1/transfers'){
@@ -268,24 +315,57 @@ async function route(request:Request,env:Env):Promise<Response>{
     const suppliedId=input.upload_id!==undefined,uploadId=suppliedId?uuid(input.upload_id,'upload_id'):crypto.randomUUID();
     const reuse=async()=>{
       const previous=await findUpload(env,owner,uploadId);
-      if(!previous)return null;
-      if(previous.account_id!==owner.id)fail(404,'NOT_FOUND','Upload not found');
       const spec={item_id:id,base_version:base,kind,name,mime_type:mime,size,sha256:hash};
-      if(Object.entries(spec).some(([key,value])=>previous[key]!==value))fail(409,'UPLOAD_CONFLICT','Upload identifier already belongs to different content');
-      if(previous.state==='garbage'||(previous.state!=='committed'&&previous.expires_at<Date.now()))fail(409,'UPLOAD_EXPIRED','Upload was cancelled or expired');
-      return json({upload_id:uploadId,chunk_size:previous.chunk_size,part_count:previous.part_count,expires_at:iso(previous.expires_at)},201);
+      if(previous){
+        if(previous.account_id!==owner.id)fail(404,'NOT_FOUND','Upload not found');
+        if(Object.entries(spec).some(([key,value])=>previous[key]!==value))fail(409,'UPLOAD_CONFLICT','Upload identifier already belongs to different content');
+        if(previous.state==='garbage'||(previous.state!=='committed'&&previous.expires_at<Date.now()))fail(409,'UPLOAD_EXPIRED','Upload was cancelled or expired');
+        return json({upload_id:uploadId,chunk_size:previous.chunk_size,part_count:previous.part_count,expires_at:iso(previous.expires_at)},201);
+      }
+      const receipt=await first(env,'SELECT * FROM instant_receipts WHERE upload_id=?',uploadId);
+      if(!receipt)return null;
+      if(receipt.account_id!==owner.id)fail(404,'NOT_FOUND','Upload not found');
+      if(Object.entries(spec).some(([key,value])=>receipt[key]!==value))fail(409,'UPLOAD_CONFLICT','Upload identifier already belongs to different content');
+      const current=await item(env,owner.id,id);
+      if(current&&!current.deleted&&current.version===receipt.result_version&&current.active_upload===receipt.source_upload
+          &&current.sha256===hash&&current.size===size&&current.kind===kind&&current.name===name&&current.mime_type===mime)
+        return json({instant:true,record:record(current)},201);
+      await conflict(env,owner,id);
     };
     if(suppliedId){const response=await reuse();if(response)return response;}
     try{
       if((await item(env,owner.id,id))?.version!==base&&base!==0)await conflict(env,owner,id);
       if(base===0&&await item(env,owner.id,id))await conflict(env,owner,id);
+      // Reuse only content already committed and still referenced by a live
+      // item in this account. A checksum alone never crosses account bounds.
+      const source=await first(env,"SELECT u.id FROM uploads u JOIN items i ON i.active_upload=u.id WHERE u.account_id=? AND i.account_id=? AND i.deleted=0 AND u.state='committed' AND u.sha256=? AND u.size=? LIMIT 1",owner.id,owner.id,hash,size);
+      if(source){
+        const now=Date.now();
+        const previous=await item(env,owner.id,id);
+        const result=await env.DB.batch([
+          query(env,"INSERT OR IGNORE INTO instant_receipts(upload_id,account_id,item_id,base_version,kind,name,mime_type,size,sha256,source_upload,result_version,expires_at) SELECT ?,?,?,?,?,?,?,?,?,u.id,?,? FROM uploads u WHERE u.id=? AND u.account_id=? AND u.state='committed' AND u.sha256=? AND u.size=? AND EXISTS(SELECT 1 FROM items i WHERE i.account_id=? AND i.active_upload=u.id AND i.deleted=0) AND COALESCE((SELECT version FROM items WHERE account_id=? AND id=?),0)=? AND NOT EXISTS(SELECT 1 FROM uploads WHERE id=?)",uploadId,owner.id,id,base,kind,name,mime,size,hash,base+1,now+7*DAY,source.id,owner.id,hash,size,owner.id,owner.id,id,base,uploadId),
+          query(env,"INSERT INTO items(account_id,id,version,active_upload,kind,name,mime_type,size,sha256,updated_at,expires_at) SELECT r.account_id,r.item_id,r.result_version,r.source_upload,r.kind,r.name,r.mime_type,r.size,r.sha256,?,CASE WHEN r.size>524288000 THEN ? ELSE NULL END FROM instant_receipts r WHERE r.upload_id=? AND r.account_id=? ON CONFLICT(account_id,id) DO UPDATE SET version=excluded.version,deleted=0,active_upload=excluded.active_upload,kind=excluded.kind,name=excluded.name,mime_type=excluded.mime_type,size=excluded.size,sha256=excluded.sha256,updated_at=excluded.updated_at,expires_at=excluded.expires_at WHERE items.version=excluded.version-1",now,now+DAY,uploadId,owner.id),
+        ]);
+        if(result[0].meta.changes){
+          if(!result[1].meta.changes)fail(409,'VERSION_CONFLICT','Item changed before instant reuse');
+          const current=(await item(env,owner.id,id))!;
+          announce(env,ctx,owner,'content');
+          if(previous?.active_upload&&previous.active_upload!==source.id)
+            ctx.waitUntil(purgeUpload(env,previous.active_upload).catch(()=>undefined));
+          return json({instant:true,record:record(current)},201);
+        }
+        if(suppliedId){const response=await reuse();if(response)return response;}
+        const current=await item(env,owner.id,id);
+        if((current?.version??0)!==base)await conflict(env,owner,id);
+      }
       const count=await first(env,"SELECT COUNT(*) n FROM uploads WHERE account_id=? AND state IN ('pending','verifying')",owner.id);if(count!.n>=10)fail(429,'UPLOAD_LIMIT','Too many pending uploads');
-      const expires=Date.now()+3*DAY,chunk=chunkSize(env),partCount=Math.ceil(size/chunk);
+      const expires=Date.now()+3*DAY,chunk=chunkSize(env,size),partCount=Math.ceil(size/chunk);
       await env.DB.batch([
         query(env,'UPDATE limits SET bytes_limit=? WHERE id=1',config(env.GLOBAL_QUOTA_BYTES,8*1024**3)),
         query(env,'INSERT INTO allocations(id,account_id,size) VALUES(?,?,?)',uploadId,owner.id,size),
         query(env,'INSERT INTO uploads(id,account_id,item_id,base_version,kind,name,mime_type,size,sha256,chunk_size,part_count,state,expires_at,computed_sha256,device_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',uploadId,owner.id,id,base,kind,name,mime,size,hash,chunk,partCount,'pending',expires,size===0?sha(new Uint8Array()):null,owner.device_id),
       ]);
+      announce(env,ctx,owner,'content');
       return json({upload_id:uploadId,chunk_size:chunk,part_count:partCount,expires_at:iso(expires)},201);
     }catch(error){
       // A concurrent retry may have won after the initial existence check.
@@ -299,8 +379,8 @@ async function route(request:Request,env:Env):Promise<Response>{
     const id=uuid(match[1]),partIndex=integer(Number(match[2]),'part_index'),value=await upload(env,owner,id);
     if(value.state!=='pending'||value.expires_at<Date.now())fail(409,'UPLOAD_NOT_PENDING','Upload is not writable');
     if(partIndex>=value.part_count)fail(400,'INVALID_PART','Part index out of range');
-    const expected=Math.min(value.chunk_size,value.size-partIndex*value.chunk_size),data=await bytes(request,expected),hash=sha(data);
-    if(data.byteLength!==expected||digest(request.headers.get('X-Content-SHA256'))!==hash)fail(400,'PART_MISMATCH','Part size or SHA256 differs');
+    const expected=Math.min(value.chunk_size,value.size-partIndex*value.chunk_size),data=await bytes(request,expected),hash=digest(request.headers.get('X-Content-SHA256'));
+    if(data.byteLength!==expected)fail(400,'PART_MISMATCH','Part size or SHA256 differs');
     const key=`v1/${owner.id}/${id}/${partIndex}-${hash}`;
     // RETURNING avoids a separate lookup on the ordinary first-send path.
     const inserted=await first(env,"INSERT OR IGNORE INTO parts(upload_id,idx,key,size,sha256) SELECT id,?,?,?,? FROM uploads WHERE id=? AND account_id=? AND state='pending' AND expires_at>? RETURNING *",partIndex,key,expected,hash,id,owner.id,Date.now());
@@ -315,14 +395,32 @@ async function route(request:Request,env:Env):Promise<Response>{
       if(!locked.meta.changes){await findUpload(env,owner,id);fail(423,'UPLOAD_BUSY','Upload changed or another part write is running');}
       let released=false;
       try{
-        const full=PersistentSHA256.load(value.hash_state);full.update(data);
-        const last=partIndex===value.part_count-1,state=last?null:full.save(),computed=last?hex(full.digest()):null;
-        await budget(env,'A',1);await env.FILES.put(key,data);
+        const single=value.part_count===1;
+        const full=single?null:PersistentSHA256.load(value.hash_state);
+        if(full)full.update(data);
+        const last=partIndex===value.part_count-1,state=last?null:full!.save(),computed=single?hash:last?hex(full!.digest()):null;
+        await budget(env,'A',1);
+        try {
+          // R2 validates this checksum in its storage service, saving one
+          // whole-part SHA pass from the Workers Free CPU budget.
+          const stored=await env.FILES.put(key,data,{sha256:hash});
+          if(!stored?.checksums.sha256||hex(new Uint8Array(stored.checksums.sha256))!==hash)
+            fail(503,'STORAGE_CHECKSUM','Storage did not confirm the part checksum');
+        }catch(error){
+          // Rehash only on failed storage writes so malformed client content
+          // still receives the protocol's precise 400 response.
+          if(sha(data)!==hash){
+            await query(env,'DELETE FROM parts WHERE upload_id=? AND idx=? AND key=? AND ready=0',id,partIndex,key).run();
+            fail(400,'PART_MISMATCH','Part size or SHA256 differs');
+          }
+          throw error;
+        }
         const result=await env.DB.batch([
           query(env,"UPDATE uploads SET hash_state=?,computed_sha256=?,verified_size=verified_size+?,next_part=next_part+1,expires_at=?,lease=NULL,lease_until=0 WHERE id=? AND state='pending' AND next_part=? AND lease=?",state,computed,data.length,Date.now()+3*DAY,id,partIndex,writeLease),
           query(env,'UPDATE parts SET ready=1 WHERE upload_id=? AND idx=? AND EXISTS(SELECT 1 FROM uploads WHERE id=? AND next_part>?)',id,partIndex,id,partIndex),
         ]);
         released=!!result[0].meta.changes;
+        if(released)announce(env,ctx,owner,'content');
         if(!released){const latest=await first(env,'SELECT ready FROM parts WHERE upload_id=? AND idx=?',id,partIndex);if(!latest?.ready){await findUpload(env,owner,id);fail(409,'UPLOAD_NOT_PENDING','Upload changed while writing the part');}}
       }catch(error){
         // A storage/network error racing a manual cancel is still terminal for
@@ -357,6 +455,7 @@ async function route(request:Request,env:Env):Promise<Response>{
     }catch(error){await query(env,"UPDATE uploads SET state='pending',lease=NULL,lease_until=0 WHERE id=? AND state='verifying' AND lease=?",id,lease).run();await findUpload(env,owner,id);if(String(error).includes('VERSION_CONFLICT'))await conflict(env,owner,value.item_id);throw error;}
     // Retire replaced bytes promptly; a reader holds a lease until it finishes.
     if(previous?.active_upload&&previous.active_upload!==id)await purgeUpload(env,previous.active_upload);
+    announce(env,ctx,owner,'content');
     return json({record:record((await item(env,owner.id,value.item_id))!)});
   }
   match=path.match(/^\/v1\/uploads\/([^/]+)$/);
@@ -382,7 +481,7 @@ async function route(request:Request,env:Env):Promise<Response>{
       const current=await item(env,owner.id,value!.item_id);
       fail(409,'ALREADY_COMMITTED','Delete the item using its version',{current_record:current?record(current):null});
     }
-    await purgeUpload(env,id);return json({cancelled:true});
+    await purgeUpload(env,id);announce(env,ctx,owner,'content');return json({cancelled:true});
   }
   match=path.match(/^\/v1\/items\/([^/]+)$/);
   if(method==='DELETE'&&match){
@@ -391,6 +490,7 @@ async function route(request:Request,env:Env):Promise<Response>{
     const result=await query(env,'UPDATE items SET deleted=1,version=version+1,active_upload=NULL,size=0,sha256=NULL,expires_at=NULL,updated_at=? WHERE account_id=? AND id=? AND version=? AND deleted=0',Date.now(),owner.id,id,base).run();
     if(!result.meta.changes)await conflict(env,owner,id);
     if(current?.active_upload)await purgeUpload(env,current.active_upload);
+    announce(env,ctx,owner,'content');
     return json({record:record((await item(env,owner.id,id))!)});
   }
   match=path.match(/^\/v1\/items\/([^/]+)\/content$/);
@@ -422,22 +522,20 @@ async function route(request:Request,env:Env):Promise<Response>{
           const next=await reader.read();if(cancelled)return;
           if(next.done){
             if(emitted!==part!.size)throw new Error('Content part ended before its declared size');
-            await release();if(cancelled)return;
-            finished=true;controller.close();return;
+            finished=true;controller.close();ctx.waitUntil(release().catch(()=>undefined));return;
           }
           emitted+=next.value.byteLength;
           if(emitted>part!.size)throw new Error('Content part exceeds its declared size');
           if(emitted===part!.size){
-            // Content-Length may make the runtime stop pulling immediately
-            // after this chunk. Finish cleanup before publishing those final
-            // bytes, without relying on a later EOF pull or post-close work.
-            await reader.cancel();await release();if(cancelled)return;
+            // Publish the final verified bytes before releasing the R2 reader.
+            // Cancelling the reader first could truncate a valid response.
             finished=true;controller.enqueue(next.value);controller.close();
+            ctx.waitUntil((async()=>{try{await reader.cancel();}finally{await release();}})().catch(()=>undefined));
           }else controller.enqueue(next.value);
         }catch(error){
           finished=true;
           try{await reader.cancel(error);}catch{}
-          try{await release();}catch{/* A failed D1 cleanup remains protected by its expiry. */}
+          ctx.waitUntil(release().catch(()=>undefined));
           if(!cancelled)controller.error(error);
         }
       },
@@ -449,11 +547,11 @@ async function route(request:Request,env:Env):Promise<Response>{
 }
 
 export default {
-  async fetch(request:Request,env:Env):Promise<Response>{
+  async fetch(request:Request,env:Env,ctx:ExecutionContext):Promise<Response>{
     try{
       const url=new URL(request.url);
       if(url.protocol!=='https:'&&!['127.0.0.1','localhost','[::1]'].includes(url.hostname))fail(426,'HTTPS_REQUIRED','HTTPS is required');
-      return await route(request,env);
+      return await route(request,env,ctx);
     }catch(error){
       if(error instanceof APIError)return json({error:{code:error.code,message:error.message,...error.details}},error.status);
       const message=String(error);if(message.includes('CONTENT_RETIRED'))return json({error:{code:'VERSION_CONFLICT',message:'This content version is being retired; refresh metadata'}},409);

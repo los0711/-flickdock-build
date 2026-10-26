@@ -12,6 +12,7 @@ registerHooks({resolve(specifier,context,next){
   if(specifier==='./hash-state')specifier+='.ts';
   return next(specifier,context);
 },load(url,context,next){
+  if(url==='cloudflare:workers')return {format:'module',shortCircuit:true,source:'export class DurableObject { constructor(ctx,env){this.ctx=ctx;this.env=env} }'};
   if(url.endsWith('.wasm'))return {format:'module',shortCircuit:true,source:`export default new WebAssembly.Module(Uint8Array.from(${JSON.stringify([...readFileSync(new URL(url))])}));`};
   if(url.endsWith('.ts'))return {format:'module',shortCircuit:true,source:transformSync(readFileSync(new URL(url),'utf8'),{loader:'ts',format:'esm',target:'es2022'}).code};
   return next(url,context);

@@ -33,7 +33,7 @@ a=Analysis(
     datas=[(str(source),destination) for source,destination in asset_files],
     # scrypt for cloud accounts needs _hashlib/libcrypto. Keep the native
     # dependency closure; the network transport still uses Qt/Schannel.
-    hiddenimports=['PySide6.QtSvg','PySide6.QtMultimedia',
+    hiddenimports=['PySide6.QtSvg','PySide6.QtMultimedia','PySide6.QtWebSockets',
                    '_md5','_sha1','_sha2','_sha3','_blake2','_hashlib',
                    'keyring.backends.Windows'],
     hookspath=[],hooksconfig={},runtime_hooks=[str(root/'runtime_media.py')],

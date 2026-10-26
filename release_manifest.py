@@ -40,7 +40,7 @@ RUNTIME_SOURCES=(
     'surface_morph.py','ui_theme.py','widget_retirement.py','app_version.py',
     'update_client.py','update_dialog.py','update_controller.py',
     'platform_startup.py','platform_native.py','mac_updates.py','mac_entry.py','runtime_macos.py',
-    'account_store.py','cloud_api.py','cloud_config.py','account_service.py','account_panel.py',
+    'account_store.py','cloud_api.py','cloud_config.py','cloud_events.py','account_service.py','account_panel.py',
     'shelf_sync.py','sync_files.py','sync_adapter.py','verify_cloud.py',
     'lan_transfer.py','lan_panel.py','transfer_visuals.py','owned_files.py','verify_transfers.py',
 )
@@ -65,7 +65,8 @@ MAINTAINED_TESTS=(
     'test_update_macos.py','test_update_macos_controller.py','test_macos_native_entry.py','test_release_macos_v180.py',
     'test_account_panel_v180.py','test_account_security_v180.py','test_shelf_sync_v180.py','test_sync_review_v180.py','test_cloud_client_v180.py',
     'test_account_actions_v181.py','test_account_settings_v181.py','test_transfer_ui_v181.py',
-    'test_lan_transfer_v181.py','test_shelf_transfers_v181.py','test_sync_staging_v181.py','test_cloud_progress_v181.py',
+    'test_lan_transfer_v181.py','test_lan_dialog_v183.py','test_shelf_transfers_v181.py','test_sync_staging_v181.py','test_cloud_progress_v181.py',
+    'test_cloud_api_stream_v183.py',
 )
 SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'FlickDock.spec','FlickDock.iss','version_info.txt','ChineseSimplified.isl',
@@ -74,17 +75,19 @@ SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'check_release_v16.py','release_dpr_v165.py','PACKAGE_AUDIT.md',
     'MOTION_V161.md','MOTION_V162.md','MOTION_V163.md','MOTION_V164.md','MOTION_V165.md',
     'bench_morph_v161.py','bench_cold_expand_v162.py','bench_clear_confirm_v161.py',
+    'bench_cloud_latency_v183.py','bench_cloud_events_v183.py','bench_lan_throughput_v183.py',
     'fonts/HarmonyOS_Sans_SC_Regular.ttf',
     'licenses/HarmonyOS-Sans-LICENSE.txt','licenses/Python-LICENSE.txt',
     'licenses/LGPL-3.0.txt','licenses/GPL-3.0.txt','licenses/PyInstaller-COPYING.txt',
     'licenses/OpenSSL-LICENSE.txt','licenses/Cloud-Client-LICENSES.txt',
-    'FlickDock-mac.spec','build_macos.py','MAC_BUILD.md','CLOUD_SYNC.md','FEATURE_V180.md','FEATURE_V181.md',
+    'FlickDock-mac.spec','build_macos.py','MAC_BUILD.md','CLOUD_SYNC.md','FEATURE_V180.md','FEATURE_V181.md','FEATURE_V183.md',
     'cloud_remote_probe.py','cloud_feature_probe.py','cloud/package.json','cloud/package-lock.json','cloud/tsconfig.json',
     'cloud/wrangler.jsonc','cloud/README.md','cloud/.gitignore',
-    'cloud/migrations/0001_schema.sql','cloud/migrations/0002_retention.sql','cloud/migrations/0003_transfers_password.sql','cloud/src/index.ts','cloud/src/hash-state.ts',
+    'cloud/migrations/0001_schema.sql','cloud/migrations/0002_retention.sql','cloud/migrations/0003_transfers_password.sql',
+    'cloud/migrations/0004_instant_uploads.sql','cloud/src/index.ts','cloud/src/hash-state.ts',
     'cloud/src/wasm.d.ts','cloud/src/vendor/hash-wasm-sha256-4.12.0.wasm',
     'cloud/src/vendor/hash-wasm-sha256-4.12.0.json','cloud/src/vendor/hash-wasm-4.12.0-LICENSE.txt',
-    'cloud/test/integration.mjs','cloud/test/hash-state.mjs','cloud/test/upload-cancel.mjs',
+    'cloud/test/integration.mjs','cloud/test/hash-state.mjs','cloud/test/upload-cancel.mjs','cloud/test/qa-server.mjs',
     '.github/workflows/macos-build.yml','ci_assets.py',
 )
 OPTIONAL_SOURCE_FILES=(

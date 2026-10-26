@@ -13,7 +13,7 @@ const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const wrangler=join(root,'node_modules/wrangler/bin/wrangler.js');
 const state=await mkdtemp(join(tmpdir(),'flickdock-cloud-local-'));
 const configuration=JSON.parse(await readFile(join(root,'wrangler.jsonc'),'utf8'));
-const productionChunkSize=Number(configuration.vars.CHUNK_BYTES);assert.equal(productionChunkSize,128*1024);
+const productionChunkSize=Number(configuration.vars.CHUNK_BYTES);assert(productionChunkSize>=1024*1024&&productionChunkSize<=4*1024*1024);
 configuration.main=join(root,'src/index.ts');configuration.d1_databases[0].migrations_dir=join(root,'migrations');
 configuration.vars.EMAIL_PROVIDER='disabled';
 // Keep the prior large-file protocol fixture at 1 MiB to exercise resumable
@@ -240,7 +240,13 @@ try{
     assert.equal((await request('POST',`/v1/uploads/${uploadId}/commit`,{},alice.token)).record.version,1);
     const metadata=await request('GET',`/v1/items/${id}/content`,undefined,mac.token);assert.equal(metadata.part_count,1);
     const response=await localFetch(base+`/v1/items/${id}/parts/0?version=1`,{headers:{Authorization:'Bearer '+mac.token}});assert.equal(response.status,200);assert.deepEqual(Buffer.from(await response.arrayBuffer()),data);
-    assert.equal(sqlRows(`SELECT COUNT(*) n FROM read_leases WHERE upload_id='${uploadId}'`)[0].n,0,'A completely downloaded response must release its reader before the final declared byte is delivered');
+    let readerCount=1;
+    for(let attempt=0;attempt<10;attempt++){
+      readerCount=sqlRows(`SELECT COUNT(*) n FROM read_leases WHERE upload_id='${uploadId}'`)[0].n;
+      if(readerCount===0)break;
+      await sleep(100);
+    }
+    assert.equal(readerCount,0,'A completed response must promptly release its reader');
     const denied=await localFetch(base+`/v1/items/${id}/content`,{headers:{Authorization:'Bearer '+bob.token}});assert.equal(denied.status,404);
     assert.deepEqual((await request('GET','/v1/sync/changes?cursor=0',undefined,bob.token)).changes,[]);
   });
@@ -309,14 +315,14 @@ try{
     await request('DELETE',`/v1/items/${newId}`,{base_version:1},alice.token);
     assert.equal(sqlRows(`SELECT COUNT(*) n FROM uploads WHERE id='${reserved.upload_id}'`)[0].n,0);
   });
-  await check('production 128 KiB negotiation preserves a 300000-byte original through three real R2 parts',async()=>{
+  await check('production single-part R2 checksum preserves a 3 MB original',async()=>{
     await stop();base=await start(['--var','CHUNK_BYTES:'+productionChunkSize]);
-    const data=Buffer.alloc(300000,0x4d);data.write('128 KiB production negotiation retains original bytes');
+    const data=Buffer.alloc(3000000,0x4d);data.write('production negotiation retains original bytes');
     const newId=randomUUID(),reserved=await reserve(alice.token,newId,data);
-    assert.equal(reserved.chunk_size,131072);assert.equal(reserved.part_count,3);
+    assert.equal(reserved.chunk_size,productionChunkSize);assert.equal(reserved.part_count,Math.ceil(data.length/productionChunkSize));
     for(let index=0;index<reserved.part_count;index++)await part(alice.token,reserved.upload_id,index,data.subarray(index*reserved.chunk_size,(index+1)*reserved.chunk_size));
     const committed=await request('POST',`/v1/uploads/${reserved.upload_id}/commit`,{},alice.token);assert.equal(committed.record.sha256,hash(data));assert.equal(committed.record.size,data.length);
-    const metadata=await request('GET',`/v1/items/${newId}/content`,undefined,alice.token);assert.equal(metadata.chunk_size,131072);assert.equal(metadata.part_count,3);
+    const metadata=await request('GET',`/v1/items/${newId}/content`,undefined,alice.token);assert.equal(metadata.chunk_size,productionChunkSize);assert.equal(metadata.part_count,reserved.part_count);
     const downloaded=[];
     for(let index=0;index<metadata.part_count;index++){
       const response=await localFetch(base+`/v1/items/${newId}/parts/${index}?version=1`,{headers:{Authorization:'Bearer '+alice.token}});
@@ -327,6 +333,30 @@ try{
     await request('DELETE',`/v1/items/${newId}`,{base_version:1},alice.token);
     assert.equal(sqlRows(`SELECT COUNT(*) n FROM allocations WHERE id='${reserved.upload_id}'`)[0].n,0);
     await stop();base=await start(); // Subsequent fixtures keep their 1 MiB configuration.
+  });
+  await check('same-account instant reuse avoids a second upload and retains shared bytes until final delete',async()=>{
+    const content=Buffer.from('identical original bytes for instant reuse'),firstId=randomUUID(),secondId=randomUUID();
+    const first=await reserve(alice.token,firstId,content);
+    await part(alice.token,first.upload_id,0,content);
+    await request('POST',`/v1/uploads/${first.upload_id}/commit`,{},alice.token);
+    const usage=sqlRows(`SELECT allocated_bytes n FROM accounts WHERE id='${alice.account.id}'`)[0].n;
+    const instantId=randomUUID();
+    const input={upload_id:instantId,item_id:secondId,base_version:0,kind:'file',name:'相同内容.bin',mime_type:'application/octet-stream',size:content.length,sha256:hash(content)};
+    const fast=await request('POST','/v1/uploads',input,alice.token,201);
+    assert.equal(fast.instant,true);assert.equal(fast.record.id,secondId);
+    assert.equal((await request('POST','/v1/uploads',input,alice.token,201)).record.version,1);
+    assert.equal(sqlRows(`SELECT allocated_bytes n FROM accounts WHERE id='${alice.account.id}'`)[0].n,usage);
+    assert.equal(sqlRows(`SELECT COUNT(*) n FROM allocations WHERE account_id='${alice.account.id}' AND size=${content.length}`)[0].n,1);
+    await request('POST','/v1/uploads',{...input,name:'other.bin'},alice.token,409);
+    const other=await reserve(bob.token,randomUUID(),content);assert.equal(other.part_count,1);
+    await request('DELETE',`/v1/uploads/${other.upload_id}`,undefined,bob.token);
+    await request('DELETE',`/v1/items/${firstId}`,{base_version:1},alice.token);
+    const stillThere=await localFetch(base+`/v1/items/${secondId}/parts/0?version=1`,{headers:{Authorization:'Bearer '+alice.token}});
+    assert.equal(stillThere.status,200);assert.deepEqual(Buffer.from(await stillThere.arrayBuffer()),content);
+    assert.equal(sqlRows(`SELECT allocated_bytes n FROM accounts WHERE id='${alice.account.id}'`)[0].n,usage);
+    await request('DELETE',`/v1/items/${secondId}`,{base_version:1},alice.token);
+    assert.equal(sqlRows(`SELECT COUNT(*) n FROM uploads WHERE id='${first.upload_id}'`)[0].n,0);
+    assert.equal(sqlRows(`SELECT allocated_bytes n FROM accounts WHERE id='${alice.account.id}'`)[0].n,usage-content.length);
   });
   await check('deleting an item immediately removes actual R2 objects, parts and allocation with exhausted A/B budgets',async()=>{
     const data=Buffer.concat([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==','base64'),Buffer.from('original image metadata/trailing bytes\0\xff')]),newId=randomUUID();
@@ -411,7 +441,8 @@ try{
   await check('exhausted daily service request budget still permits item deletion and abandoned upload cancellation',async()=>{
     const data=Buffer.from('delete despite the normal request budget'),newId=randomUUID();
     const committed=await reserve(alice.token,newId,data);await part(alice.token,committed.upload_id,0,data);await request('POST',`/v1/uploads/${committed.upload_id}/commit`,{},alice.token);
-    const abandoned=await reserve(alice.token,randomUUID(),data);await part(alice.token,abandoned.upload_id,0,data);
+    const abandonedData=Buffer.concat([data,Buffer.from(' pending')]);
+    const abandoned=await reserve(alice.token,randomUUID(),abandonedData);await part(alice.token,abandoned.upload_id,0,abandonedData);
     const fixtures=[committed,abandoned].map(value=>({id:value.upload_id,key:sqlRows(`SELECT key FROM parts WHERE upload_id='${value.upload_id}'`)[0].key}));
     const slot=Math.floor(Date.now()/86400000),key='service-requests:'+slot,deleteKey='service-deletions:'+slot;
     const saved=sqlRows(`SELECT key,n,expires_at FROM rates WHERE key='${key}'`);

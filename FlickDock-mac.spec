@@ -28,7 +28,7 @@ analysis = Analysis([str(root / 'mac_entry.py')], pathex=[str(root)], binaries=[
     hiddenimports=['Quartz', 'Quartz.CoreGraphics', 'Foundation', 'objc', '_hashlib',
                    'ssl', '_ssl', 'ctypes', 'ctypes.util', 'verify_transfers',
                    'keyring.backends.macOS', 'keyring.backends.macOS.api',
-                   'PySide6.QtSvg', 'PySide6.QtMultimedia'],
+                   'PySide6.QtSvg', 'PySide6.QtMultimedia', 'PySide6.QtWebSockets'],
     runtime_hooks=[str(root / 'runtime_macos.py')],
     excludes=['winreg', 'pefile', 'PySide6.QtWebEngineCore', 'PySide6.QtWebEngineWidgets',
               'PySide6.QtWebEngineQuick', 'PySide6.QtQml', 'PySide6.QtQuick',

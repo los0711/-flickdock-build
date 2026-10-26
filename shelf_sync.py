@@ -87,6 +87,7 @@ class ShelfSync(QObject):
         self._base_poll_ms=poll_ms
         self._progress_persisted=0.0
         self._part_cache={}
+        self._refresh_again=False
         self.timer = QTimer(self); self.timer.setInterval(poll_ms); self.timer.timeout.connect(self.tick)
         self.debounce = QTimer(self); self.debounce.setSingleShot(True); self.debounce.timeout.connect(self.tick)
         service.account_changed.connect(self.select_account)
@@ -132,6 +133,7 @@ class ShelfSync(QObject):
             return
         self.epoch += 1; self.timer.stop(); self.debounce.stop()
         self.running = False; self.transfer = None
+        self._refresh_again=False
         self.remote_transfers=[]; self.transfers_changed.emit([])
         self.download_transfers.clear()
         self._part_cache.clear();self._progress_persisted=0.0
@@ -197,6 +199,11 @@ class ShelfSync(QObject):
         self._interactive=value
         self.timer.setInterval(min(self._base_poll_ms,10000) if value else self._base_poll_ms)
         if value and self.service.signed_in:self.debounce.start(1)
+
+    def request_refresh(self):
+        if self.closed or not self.account_id or not self.service.signed_in:return
+        if self.running:self._refresh_again=True
+        else:self.debounce.start(1)
 
     def _notify_transfers(self):
         if self.state is None:return
@@ -756,7 +763,10 @@ class ShelfSync(QObject):
             self.running = False; self.transfer = None
             self._notify_transfers()
             blocked = sum(bool(e.get('dirty')) for e in self.state['entries'].values())
-            self.status_changed.emit(f'可同步内容已同步；{blocked} 项暂留本机，请检查文件大小或位置。' if blocked else '搁架已同步。'); return
+            self.status_changed.emit(f'可同步内容已同步；{blocked} 项暂留本机，请检查文件大小或位置。' if blocked else '搁架已同步。')
+            if self._refresh_again:
+                self._refresh_again=False;self.debounce.start(1)
+            return
         identity = pending['id']
         if pending.get('deleted'):
             self.state['entries'].pop(identity,None); self._persist(); self._push_next(); return
@@ -812,6 +822,9 @@ class ShelfSync(QObject):
                     self._forget_resume(identity); self._persist(); self.running=False; self.tick()
                 else: self._error(error)
                 return
+            if result.get('instant') is True:
+                self._upload_committed(snapshot,result.get('record'),instant=True)
+                return
             chunk, count, upload_id = result.get('chunk_size'),result.get('part_count'),result.get('upload_id')
             if (not isinstance(chunk,int) or not 65536 <= chunk <= 4*1024*1024
                     or count != (snapshot['size']+chunk-1)//chunk
@@ -852,6 +865,25 @@ class ShelfSync(QObject):
             transfer['next_part'] = index; self._persist(); self._send_part(transfer,index)
         self._request('GET','/v1/uploads/'+quote(transfer['upload_id'],safe=''),status)
 
+    def _upload_committed(self,transfer,record,*,instant=False):
+        if (not isinstance(record,dict) or record.get('id')!=transfer['id']
+                or not isinstance(record.get('version'),int)
+                or record['version']!=transfer.get('version',0)+1
+                or record.get('sha256')!=transfer['sha256']):
+            self._error(ValueError('云同步提交信息无效。')); return
+        entry = self.state['entries'].get(transfer['id'])
+        pending_uploads = self.state.setdefault('pending_uploads',[])
+        if transfer['upload_id'] in pending_uploads: pending_uploads.remove(transfer['upload_id'])
+        if entry:
+            entry.update(version=record['version'],sha256=record['sha256'])
+            if entry.get('seq')==transfer['seq']:
+                entry.update(dirty=False,fingerprint=transfer['fingerprint'])
+            entry.pop('pending_hash',None); entry.pop('pending_seq',None)
+        self._forget_resume(transfer['id'],completed=True)
+        self._persist(); self._notify_transfers()
+        if instant:self.status_changed.emit('云端已有相同内容，已秒传。')
+        self._push_next()
+
     def _send_part(self,transfer,index):
         self._part_cache={key:value for key,value in self._part_cache.items() if key[0]==transfer.get('upload_id') and key[1]>=index}
         if not self._resume_matches(transfer):
@@ -864,16 +896,7 @@ class ShelfSync(QObject):
                         self._forget_resume(transfer['id']); self._persist(); self.running=False; self.tick()
                     else: self._error(error)
                     return
-                record = result['record']; entry = self.state['entries'].get(transfer['id'])
-                pending_uploads = self.state.setdefault('pending_uploads',[])
-                if transfer['upload_id'] in pending_uploads: pending_uploads.remove(transfer['upload_id'])
-                if entry:
-                    entry.update(version=record['version'],sha256=record['sha256'])
-                    if entry.get('seq')==transfer['seq']:
-                        entry.update(dirty=False,fingerprint=transfer['fingerprint'])
-                    entry.pop('pending_hash',None); entry.pop('pending_seq',None)
-                self._forget_resume(transfer['id'],completed=True)
-                self._persist(); self._notify_transfers(); self._push_next()
+                self._upload_committed(transfer,result.get('record'))
             self._request('POST','/v1/uploads/'+transfer['upload_id']+'/commit',committed,data={}); return
         def read(result,error):
             if error: self._error(error); return

@@ -216,7 +216,7 @@ class TransferUITests(unittest.TestCase):
         self.manager._sync_transfer_refs=set()
         calls=[]
         self.manager.sync=SimpleNamespace(cancel_upload=lambda value,**options:calls.append((value,options)))
-        self.assertFalse(self.shelf.expand_button.isEnabled())
+        self.assertTrue(self.shelf.expand_button.isEnabled(),'empty shelf should still open the overview')
         state=dict(id='remote-item',ref=None,name='另一台设备的文档.pdf',kind='file',remote=True,
                    phase='remote',received=300,total=1000,upload_id='remote-upload')
         subject.ShelfManager._transfers_changed(self.manager,[state]);flush()
@@ -232,7 +232,7 @@ class TransferUITests(unittest.TestCase):
         QTest.mouseClick(popup.preview.cancel_transfer,Qt.MouseButton.LeftButton);flush()
         self.assertEqual(calls,[('remote-item',{})])
         subject.ShelfManager._transfers_changed(self.manager,[]);flush()
-        self.assertEqual(self.shelf.display_refs(),[]);self.assertFalse(self.shelf.expand_button.isEnabled())
+        self.assertEqual(self.shelf.display_refs(),[]);self.assertTrue(self.shelf.expand_button.isEnabled())
         self.assertFalse(self.shelf.content.transfers)
     def test_hovering_pending_then_restoring_completed_selection_clears_stale_progress(self):
         paths=[str(self.file('所选一.bin')),str(self.file('所选二.bin'))]

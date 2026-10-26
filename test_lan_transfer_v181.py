@@ -135,6 +135,20 @@ class TransferTests(unittest.TestCase):
         self.assertFalse(any(p.name.startswith('.flickdock-receiving-') for p in self.destination.iterdir()))
         (source / 'photo.png').unlink()  # No retained original file handle.
 
+    def test_received_file_lands_directly_in_selected_directory_without_replacing_existing(self):
+        source=self.root/'source';source.mkdir()
+        original=source/'report.txt';original.write_bytes(b'new original bytes')
+        existing=self.destination/'report.txt';existing.write_bytes(b'existing user bytes')
+        identifier=self.a.send(self.b.device_id,[original])
+        wait_for(lambda:self.offers);self.b.accept(identifier,self.destination)
+        wait_for(lambda:self.received and self.sent,timeout=15)
+        result=Path(self.received[0]['paths'][0])
+        self.assertEqual(result.parent,self.destination)
+        self.assertEqual(result.name,'report (2).txt')
+        self.assertEqual(result.read_bytes(),original.read_bytes())
+        self.assertEqual(existing.read_bytes(),b'existing user bytes')
+        self.assertFalse(any(p.name.startswith('FlickDock ') for p in self.destination.iterdir()))
+
     def test_reject_has_no_filesystem_effect(self):
         source = self.root / 'sample'; source.write_bytes(b'private')
         identifier = self.a.send(self.b.device_id, [source]); wait_for(lambda: self.offers)

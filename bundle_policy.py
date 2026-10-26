@@ -30,7 +30,7 @@ FONT_KEEP = {'harmonyos_sans_sc_regular.ttf'}
 SYSTEM_ONLY = {'icuuc.dll'}
 RUNTIME_ROOTS = {'python3.dll', 'python312.dll'}
 REQUIRED_DYNAMIC_ROOTS = {
-    'qt6core.dll','qt6gui.dll','qt6widgets.dll','qt6network.dll','qt6svg.dll','qt6multimedia.dll',
+    'qt6core.dll','qt6gui.dll','qt6widgets.dll','qt6network.dll','qt6websockets.dll','qt6svg.dll','qt6multimedia.dll',
     'qwindows.dll','qoffscreen.dll','qsvgicon.dll','windowsmediaplugin.dll',
     'qcertonlybackend.dll','qschannelbackend.dll','qnetworklistmanager.dll',
     'qgif.dll','qico.dll','qjpeg.dll','qsvg.dll','qtiff.dll','qwebp.dll',

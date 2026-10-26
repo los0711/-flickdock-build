@@ -329,7 +329,8 @@ class SettingsStore(QObject):
                       "overview_shortcut": OVERVIEW_SHORTCUT, "dock_edge": "right",
                       "dock_position": 8, "dock_length": 76, "dock_thickness": 8,
                       "trigger_visible": True, "dock_color": "#567daf", "dock_opacity": 100,
-                      "startup_initialized": False}
+                      "startup_initialized": False,
+                      "lan_receive_dir": str(Path.home() / "Downloads")}
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
             if isinstance(data, dict):
@@ -340,6 +341,11 @@ class SettingsStore(QObject):
                     candidate = Path(os.path.expandvars(directory)).expanduser()
                     if candidate.is_absolute():
                         self._data["capture_dir"] = str(candidate)
+                lan_directory = data.get("lan_receive_dir")
+                if isinstance(lan_directory, str) and lan_directory.strip():
+                    candidate = Path(os.path.expandvars(lan_directory)).expanduser()
+                    if candidate.is_absolute():
+                        self._data["lan_receive_dir"] = str(candidate)
                 if isinstance(data.get("autostart"), bool):
                     self._data["autostart"] = data["autostart"]
                 if data.get("capture_mode") in CAPTURE_MODES:
@@ -383,6 +389,16 @@ class SettingsStore(QObject):
     @property
     def capture_dir(self) -> Path:
         return Path(self._data["capture_dir"])
+
+    @property
+    def lan_receive_dir(self) -> Path:
+        return Path(self._data["lan_receive_dir"])
+
+    def set_lan_receive_dir(self, directory):
+        candidate = dict(self._data)
+        candidate["lan_receive_dir"] = str(self._validate_directory(directory))
+        if candidate != self._data:
+            self._commit(candidate)
 
     @property
     def capture_mode(self) -> str:

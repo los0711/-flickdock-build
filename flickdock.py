@@ -54,11 +54,12 @@ from app_version import APP_NAME, APP_VERSION
 from update_controller import UpdateController
 from platform_native import data_directory, native_input_available, mouse_buttons_mask
 from account_service import AccountService
+from cloud_events import CloudEvents
 from account_panel import AccountPanel
 from shelf_sync import ShelfSync
 from sync_adapter import ShelfAdapter
 from lan_transfer import LanTransferService
-from lan_panel import LanPanel
+from lan_panel import LanDialog
 import ui_theme
 
 IDLE_SECONDS = 3.0
@@ -692,6 +693,12 @@ class ContentsPopup(QFrame):
         self.zip_all_button.clicked.connect(lambda:self.shelf.compress_refs(list(self.shelf.files['permanent'])))
         set_ui_style(self.zip_all_button,"QPushButton {color:#1876db;background:#e9f3ff;border:0;border-radius:7px;padding:6px 10px;font:13px 'HarmonyOS Sans SC';} QPushButton:hover {background:#d9eaff;} QPushButton:disabled {color:#8490a0;}")
         header.addWidget(self.zip_all_button)
+        self.lan_button=QPushButton('局域网互传',self)
+        self.lan_button.setAccessibleName('打开局域网传输')
+        self.lan_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.lan_button.clicked.connect(lambda:self.shelf.manager.show_lan_dialog())
+        set_ui_style(self.lan_button,"QPushButton {color:#1876db;background:#e9f3ff;border:0;border-radius:7px;padding:6px 10px;font:13px 'HarmonyOS Sans SC';} QPushButton:hover {background:#d9eaff;} QPushButton:pressed {background:#c9dfff;}")
+        header.addWidget(self.lan_button)
         self.clear_button=QPushButton("清空全部",self)
         self.clear_button.setAccessibleName("清空全部内容")
         self.clear_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1275,7 +1282,7 @@ class ShelfWindow(QWidget):
 
     def transfers_updated(self):
         if self.content.transfers and not self._transfer_timer.isActive():self._transfer_timer.start()
-        self.expand_button.setEnabled(bool(self.display_refs()))
+        self.expand_button.setEnabled(True)
         self.zones['permanent'].refresh()
         if self.popup and self.popup.isVisible() and not self.content_transition_active():self.popup.update_transfer_status()
         self.manager.update_handles()
@@ -1308,7 +1315,7 @@ class ShelfWindow(QWidget):
             self.zones[mode].refresh()
         count = len(self.display_refs())
         self.status_label.setText('正在复制内容…' if self.copy_jobs else '')
-        self.expand_button.setEnabled(count > 0)
+        self.expand_button.setEnabled(True)
         if self.popup and self.popup.isVisible():
             if not self.content_transition_active():self.popup.rebuild()
         self.update()
@@ -2132,6 +2139,7 @@ class ShelfManager:
         ui_theme.set_theme(self.settings.theme)
         ui_theme.apply_application(app, FONT_FAMILY)
         self.settings_dialog = None
+        self.lan_dialog = None
         self.updates = UpdateController(APP_VERSION, BASE, settings=self.settings,
                                         quit_callback=self.quit, is_busy=self._update_busy)
         self._dock_preview_values=None
@@ -2178,6 +2186,10 @@ class ShelfManager:
         self.update_handles()
         self.account = AccountService(BASE)
         self.sync = ShelfSync(BASE,self.account,ShelfAdapter(self))
+        self.events = CloudEvents(self.account,self.app,
+            enabled=self.app.platformName() not in ('offscreen','minimal'))
+        self.events.content_changed.connect(self.sync.request_refresh)
+        self.events.devices_changed.connect(self.account.list_devices)
         self._sync_transfer_refs=set()
         self.sync.transfers_changed.connect(self._transfers_changed)
         self.lan=LanTransferService(self.app,device_name=self.account.device_name)
@@ -2248,10 +2260,8 @@ class ShelfManager:
             self.account.device_name=current['name'];self._lan_identity(self.account.account)
 
     def _lan_offer(self,offer):
-        self.show_settings()
-        self.lan_panel.show_offer(offer)
-        for scroll in self.settings_dialog.findChildren(QScrollArea):
-            QTimer.singleShot(0,lambda scroll=scroll:scroll.ensureWidgetVisible(self.lan_panel))
+        self.show_lan_dialog()
+        self.lan_dialog.panel.show_offer(offer)
 
     def _lan_selected(self):
         refs=self.shelf.popup.chosen_refs() if self.shelf.popup else []
@@ -2299,10 +2309,6 @@ class ShelfManager:
             self.updates.state_changed.connect(lambda state,payload:self.settings_dialog.set_update_state(state,**payload))
             self.account_panel = AccountPanel(self.account,self.settings_dialog,theme=self.settings.theme,email_binding=False)
             self.settings_dialog.set_account_panel(self.account_panel)
-            self.lan_panel=LanPanel(self.lan,self.settings_dialog,theme=self.settings.theme)
-            self.lan_panel.set_paths_provider(self._lan_selected)
-            self.lan_panel.received_paths.connect(lambda paths:self.shelf.add_paths('permanent',paths))
-            self.settings_dialog.set_lan_panel(self.lan_panel)
             self.settings_dialog.preview_changed.connect(self.preview_dock)
             self.settings_dialog.gesture_preview_changed.connect(self.preview_shake)
             self.settings_dialog.shortcut_validator = lambda values: self.hotkeys.validate(values["shelf_shortcut"], values["overview_shortcut"])
@@ -2316,6 +2322,19 @@ class ShelfManager:
             self.settings_dialog.error_label.show()
         self.settings_dialog.raise_()
         self.settings_dialog.activateWindow()
+
+    def show_lan_dialog(self):
+        if self.lan_dialog is None:
+            self.lan_dialog = LanDialog(self.lan,self.settings,self.shelf)
+            self.lan_dialog.panel.set_paths_provider(self._lan_selected)
+            self.lan_dialog.panel.received_paths.connect(lambda paths:self.shelf.add_paths('permanent',paths))
+        if not self.lan_dialog.isVisible():
+            anchor = self.shelf.frameGeometry()
+            area = (QGuiApplication.screenAt(anchor.center()) or QGuiApplication.primaryScreen()).availableGeometry()
+            x = max(area.left()+8,min(anchor.center().x()-self.lan_dialog.width()//2,area.right()-self.lan_dialog.width()-8))
+            y = max(area.top()+8,min(anchor.center().y()-self.lan_dialog.height()//2,area.bottom()-self.lan_dialog.height()-8))
+            self.lan_dialog.move(x,y)
+        self.lan_dialog.show(); self.lan_dialog.raise_(); self.lan_dialog.activateWindow()
 
     def dock_values(self):
         if self._dock_preview_values is not None: return self._dock_preview_values
@@ -2342,6 +2361,7 @@ class ShelfManager:
         if self.settings_dialog:
             self.settings_dialog.apply_theme(self.settings.theme)
             self.account_panel.apply_theme(self.settings.theme)
+        if self.lan_dialog:self.lan_dialog.apply_theme(self.settings.theme)
         self.updates.apply_theme(self.settings.theme)
         self.shortcut_error = self.hotkeys.apply(self.settings.shelf_shortcut, self.settings.overview_shortcut)
 
@@ -2478,7 +2498,8 @@ class ShelfManager:
 
     def poll(self):
         if hasattr(self,'sync'):
-            self.sync.set_interactive(self.shelf.isVisible() or bool(self.settings_dialog and self.settings_dialog.isVisible()))
+            self.sync.set_interactive(self.shelf.isVisible() or bool(self.settings_dialog and self.settings_dialog.isVisible())
+                or bool(self.lan_dialog and self.lan_dialog.isVisible()))
         now=time.monotonic(); pos=QCursor.pos()
         native=native_input_available()
         mask=mouse_buttons_mask()
@@ -2491,6 +2512,7 @@ class ShelfManager:
             blocked=shelf._menu_open or shelf.rename_edit.isVisible() or modal is not None or popup is not None or confirmation_active(shelf)
             press_blocked=modal is not None or shelf.rename_edit.isVisible() or (popup is not None and popup.frameGeometry().contains(pos)) or confirmation_active(shelf)
             in_settings=self.settings_dialog is not None and self.settings_dialog.isVisible() and self.settings_dialog.frameGeometry().contains(pos)
+            in_settings=in_settings or bool(self.lan_dialog and self.lan_dialog.isVisible() and self.lan_dialog.frameGeometry().contains(pos))
             inside=shelf.hover_region_contains(pos)
             if new_press and not inside and not in_settings and not press_blocked and not shelf.pinned and not self.outgoing_drag:
                 shelf.hide_animated(explicit=True); continue
@@ -2530,10 +2552,12 @@ class ShelfManager:
         self.update_timer.stop()
         self.updates.close()
         self.sync.close()
+        self.events.close()
         self.account.close()
         self.hotkeys.close()
         if self.settings_dialog:
             self.settings_dialog.close()
+        if self.lan_dialog:self.lan_dialog.close()
         self.drag_gate.close()
         if self.outgoing_drag:
             QDrag.cancel()
@@ -2555,6 +2579,9 @@ class ShelfManager:
         self.app.quit()
 
 def main():
+    if '--verify-cloud-stream' in sys.argv:
+        from test_cloud_api_stream_v183 import main as verify_cloud_stream
+        return verify_cloud_stream()
     if '--verify-transfers' in sys.argv:
         from verify_transfers import run
         return run(sys.argv,load_font)
