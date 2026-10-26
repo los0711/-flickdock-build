@@ -6,16 +6,18 @@ import hashlib
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import struct
 import tempfile
 import threading
 import time
 import unittest
 from unittest.mock import patch
+import zlib
 
 from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication
 from cloud_api import CloudApi
-from sync_files import stage_item, unpack_directory
+from sync_files import assemble_parts, read_part, stage_item, unpack_directory
 import sync_files
 
 APP = QApplication.instance() or QApplication([])
@@ -31,6 +33,61 @@ def spin(predicate, seconds=2):
 
 
 class SyncReviewTests(unittest.TestCase):
+    @staticmethod
+    def original_png():
+        """A real PNG with metadata and trailing bytes an image encoder loses."""
+        def chunk(kind, payload):
+            return (struct.pack('!I', len(payload)) + kind + payload
+                    + struct.pack('!I', zlib.crc32(kind + payload)))
+        return (b'\x89PNG\r\n\x1a\n'
+                + chunk(b'IHDR', struct.pack('!2I5B', 1, 1, 8, 6, 0, 0, 0))
+                + chunk(b'tEXt', b'Author\0Roger; original metadata')
+                + chunk(b'IDAT', zlib.compress(b'\x00\xff\x80\x00\xff'))
+                + chunk(b'IEND', b'')
+                + b'FlickDock original trailing payload\0\xff\x80')
+
+    def test_image_metadata_and_trailing_bytes_survive_multipart_round_trip(self):
+        original = self.original_png()
+        with tempfile.TemporaryDirectory(prefix='flickdock-original-png-review-') as directory:
+            root = Path(directory); source = root / 'original.png'
+            source.write_bytes(original)
+            staged = stage_item(str(source), None, source.name, root / 'outbox', threading.Event())
+            self.assertEqual(staged['mime_type'], 'image/png')
+            self.assertEqual(staged['size'], len(original))
+            self.assertEqual(staged['sha256'], hashlib.sha256(original).hexdigest())
+            self.assertEqual(Path(staged['path']).read_bytes(), original)
+            parts = []
+            for index in range((len(original) + 63) // 64):
+                data, digest = read_part(staged['path'], index, 64, threading.Event())
+                self.assertEqual(digest, hashlib.sha256(data).hexdigest())
+                part = root / f'part-{index}'; part.write_bytes(data); parts.append(part)
+            restored = assemble_parts(parts, root / 'restored.png', staged, threading.Event())
+            self.assertEqual(restored.read_bytes(), original)
+            self.assertEqual(source.read_bytes(), original)
+
+    def test_original_file_larger_than_64_mib_is_staged_without_a_size_override(self):
+        # Use default production intake. A former 64 MiB guard fails this test;
+        # compare file streams too so transcoding or truncation cannot pass.
+        expected_size = 65 * 1024 * 1024 + 127
+        block = bytes(range(256)) * 4096
+        digest = hashlib.sha256()
+        with tempfile.TemporaryDirectory(prefix='flickdock-original-large-review-') as directory:
+            root = Path(directory); source = root / 'large-original.png'
+            with source.open('wb') as output:
+                header = self.original_png(); output.write(header); digest.update(header)
+                remaining = expected_size - len(header)
+                while remaining:
+                    data = block[:min(remaining, len(block))]
+                    output.write(data); digest.update(data); remaining -= len(data)
+            staged = stage_item(str(source), None, source.name, root / 'outbox', threading.Event())
+            self.assertEqual(staged['size'], expected_size)
+            self.assertEqual(staged['sha256'], digest.hexdigest())
+            with source.open('rb') as original, Path(staged['path']).open('rb') as copy:
+                while data := original.read(1024 * 1024):
+                    self.assertEqual(copy.read(len(data)), data)
+                self.assertEqual(copy.read(1), b'')
+            self.assertEqual(source.stat().st_size, expected_size)
+
     def test_real_cloud_chunk_header_download_succeeds(self):
         payload = b'chunk-data-fixture'
         digest = hashlib.sha256(payload).hexdigest()
