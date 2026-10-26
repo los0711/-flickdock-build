@@ -5,10 +5,12 @@ work runs outside the GUI thread. Every callback belongs to an account epoch.
 """
 from __future__ import annotations
 import copy
+import hashlib
 import json
 from pathlib import Path
 import re
 import shutil
+import time
 from urllib.parse import quote
 from uuid import uuid4
 
@@ -16,6 +18,47 @@ from PySide6.QtCore import QObject, QThreadPool, QTimer, Signal
 from account_store import atomic_json
 from sync_files import (DiskWork, DIRECTORY_MIME, assemble_parts, fingerprint, read_part, read_utf8, safe_name,
                         stage_item, unpack_directory,MAX_FILE_BYTES)
+
+
+def _verify_staged(transfer, cancel):
+    """Recheck a durable snapshot after a restart before trusting its journal."""
+    digest = hashlib.sha256(); size = 0
+    with Path(transfer['path']).open('rb') as stream:
+        while chunk := stream.read(1024*1024):
+            if cancel.is_set(): raise InterruptedError()
+            size += len(chunk)
+            if size > transfer['size']: raise ValueError('待同步文件已改变。')
+            digest.update(chunk)
+    if size != transfer['size'] or digest.hexdigest() != transfer['sha256']:
+        raise ValueError('待同步文件校验失败，将重新读取原文件。')
+    return transfer
+
+
+def _checked_download_part(path, size, expected, cancel):
+    """Hash at most one negotiated chunk outside the GUI thread."""
+    path = Path(path)
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size != size: return None
+        digest = hashlib.sha256(); total = 0
+        with path.open('rb') as stream:
+            while chunk := stream.read(min(1024*1024,size+1)):
+                if cancel.is_set(): raise InterruptedError()
+                total += len(chunk)
+                if total > size: return None
+                digest.update(chunk)
+        actual = digest.hexdigest()
+        return actual if total == size and (expected is None or actual == expected) else None
+    except OSError: return None
+
+
+def _remove_download_parts(target, count, cancel):
+    target = Path(target)
+    for index in range(count):
+        if cancel.is_set(): return
+        part = target.with_name('.'+target.name+f'.chunk-{index}')
+        if not part.is_symlink():
+            try: part.unlink(missing_ok=True)
+            except OSError: pass
 
 
 class ShelfSync(QObject):
@@ -112,11 +155,13 @@ class ShelfSync(QObject):
                 entry.update(fingerprint=fp,name=name,dirty=True,deleted=False,
                              kind='url' if text is not None and re.fullmatch(r'https?://\S+',text.strip()) else 'text' if text is not None else 'file',
                              seq=entry.get('seq',0)+1)
+        removed = False
         for entry in entries.values():
             if entry.get('ref') not in refs and not entry.get('deleted'):
                 entry.update(deleted=True,dirty=True,seq=entry.get('seq',0)+1)
+                removed = True
         self._persist()
-        self.debounce.start(400)
+        self.debounce.start(1 if removed else 400)
 
     def _request(self, method, path, callback, **kwargs):
         epoch = self.epoch; holder = []
@@ -133,16 +178,13 @@ class ShelfSync(QObject):
         def done(result,error):
             self.jobs.discard(job)
             if self.closed or epoch != self.epoch:
-                if isinstance(result,dict) and result.get('path'): Path(result['path']).unlink(missing_ok=True)
+                if function is stage_item and isinstance(result,dict) and result.get('path'):
+                    Path(result['path']).unlink(missing_ok=True)
                 return
             callback(result,error)
         job.signals.done.connect(done); self.pool.start(job)
 
     def _error(self,error):
-        transfer = self.transfer
-        if transfer and transfer.get('path'):
-            try: Path(transfer['path']).unlink(missing_ok=True)
-            except OSError: pass
         self.running = False; self.transfer = None
         if getattr(error,'code','') == 'cancelled': return
         message = {'ACCOUNT_QUOTA':'云空间已满，请清理内容后重试。',
@@ -152,20 +194,128 @@ class ShelfSync(QObject):
                    'UPLOAD_LIMIT':'正在清理中断的上传，稍后会自动重试。',
                    'SERVICE_UNAVAILABLE':'云服务暂时不可用，稍后会自动重试。'}.get(getattr(error,'code',''))
         self.status_changed.emit(message or (str(error) if not getattr(error,'code','') else '云同步暂时中断，稍后会自动重试。'))
-        self.debounce.start(30000)
+        delay = self._retry_delay(error)
+        self.state['not_before'] = time.time()+delay
+        self._persist()
+        self.debounce.start(min(2147483647,int(delay*1000)+1))
+
+    @staticmethod
+    def _retry_delay(error):
+        delay = 30
+        details = getattr(error,'details',None)
+        if isinstance(details,dict):
+            problem = details.get('error',details)
+            retry = problem.get('retry_after') if isinstance(problem,dict) else None
+            if isinstance(retry,(int,float)) and 0 < retry <= 31*86400:
+                delay = max(delay,retry)
+        return delay
+
+    def _paused(self, key):
+        value = self.state.get(key,0)
+        return isinstance(value,(int,float)) and time.time() < value
 
     def tick(self):
         if self.closed or self.running or not self.account_id or not self.service.signed_in: return
         self.running = True; self.status_changed.emit('正在同步…')
         self._retire_uploads()
 
+    def _after_cleanup(self):
+        if self._paused('not_before'):
+            self.running = False; self.transfer = None
+            self.status_changed.emit('同步请求暂时达到限额，稍后会自动续传。'); return
+        self.state.pop('not_before',None)
+        self._pull()
+
+    def _cleanup_error(self, error):
+        if getattr(error,'code','') == 'cancelled': self.running=False; return
+        delay = self._retry_delay(error)
+        self.state['cleanup_not_before'] = time.time()+delay
+        self._persist()
+        self.debounce.start(min(2147483647,int(delay*1000)+1))
+        self.status_changed.emit('云端清理暂时中断，删除操作已保留并会自动重试。')
+        self._after_cleanup()
+
+    def _pending_removal(self):
+        if self._paused('cleanup_not_before'): return None
+        return next((e for e in self.state['entries'].values() if e.get('dirty') and e.get('deleted')
+                     and e.get('version',0)>0 and e.get('cleanup_conflict_version') != e.get('version')),None)
+
+    def _owned_stage(self, transfer):
+        try:
+            path = Path(transfer['path'])
+            directory = self.root/self.account_id/'outbox'
+            return (not directory.is_symlink() and not directory.parent.is_symlink()
+                    and not path.is_symlink() and re.fullmatch(r'[0-9a-f]{32}\.blob',path.name) is not None
+                    and path.resolve().parent == directory.resolve())
+        except (KeyError,TypeError,ValueError,OSError): return False
+
+    def _resume_matches(self, transfer):
+        entry = self.state['entries'].get(transfer.get('id'))
+        if not entry or entry.get('deleted') or not entry.get('dirty'): return False
+        if any(entry.get(key) != transfer.get(key) for key in ('id','ref','seq','fingerprint','name','kind','version')):
+            return False
+        if (transfer.get('upload_id') and (entry.get('pending_hash') != transfer.get('sha256')
+                or entry.get('pending_seq') != transfer.get('seq'))): return False
+        try:
+            return (self._owned_stage(transfer) and Path(transfer['path']).is_file()
+                    and Path(transfer['path']).stat().st_size == transfer['size']
+                    and isinstance(transfer['size'],int) and 0 <= transfer['size'] <= MAX_FILE_BYTES
+                    and re.fullmatch(r'[0-9a-f]{64}',str(transfer['sha256'])) is not None)
+        except (KeyError,TypeError,OSError): return False
+
+    def _forget_resume(self, identity, *, completed=False):
+        transfer = self.state.setdefault('resumable_uploads',{}).pop(identity,None)
+        if not isinstance(transfer,dict): return
+        if self._owned_stage(transfer):
+            try: Path(transfer['path']).unlink(missing_ok=True)
+            except OSError: pass
+        upload_id = transfer.get('upload_id')
+        pending = self.state.setdefault('pending_uploads',[])
+        if completed and upload_id in pending: pending.remove(upload_id)
+        entry = self.state['entries'].get(identity)
+        if entry and entry.get('pending_seq') == transfer.get('seq'):
+            entry.pop('pending_hash',None); entry.pop('pending_seq',None)
+
     def _retire_uploads(self):
+        resumes = self.state.setdefault('resumable_uploads',{})
+        for identity,transfer in tuple(resumes.items()):
+            if not isinstance(transfer,dict) or not self._resume_matches(transfer):
+                self._forget_resume(identity)
+        self._persist()
+        if self._paused('cleanup_not_before'): self._after_cleanup(); return
+        self.state.pop('cleanup_not_before',None)
+        removal = self._pending_removal()
+        if removal:
+            identity, version = removal['id'],removal['version']
+            def removed(result,error):
+                current = self.state['entries'].get(identity)
+                if error and getattr(error,'status',0) not in (404,409):
+                    self._cleanup_error(error); return
+                if error and getattr(error,'status',0)==409:
+                    if current and current.get('version') == version:
+                        current['cleanup_conflict_version'] = version
+                elif current and current.get('deleted'):
+                    self.state['entries'].pop(identity,None); self._forget_download(identity)
+                self._persist(); self._retire_uploads()
+            self._request('DELETE','/v1/items/'+quote(identity,safe=''),removed,data={'base_version':version}); return
         abandoned = self.state.setdefault('pending_uploads',[])
-        if not abandoned: self._pull(); return
-        identity = abandoned[0]
+        active = {x.get('upload_id') for x in resumes.values()}
+        identity = next((x for x in abandoned if x not in active),None)
+        if identity is None: self._persist(); self._after_cleanup(); return
         def done(result,error):
-            if error and getattr(error,'status',0) not in (404,409): self._error(error); return
-            abandoned.pop(0); self._persist(); self._retire_uploads()
+            if error and getattr(error,'status',0) not in (404,409): self._cleanup_error(error); return
+            if error and getattr(error,'code','') == 'ALREADY_COMMITTED':
+                details = getattr(error,'details',{})
+                problem = details.get('error',details) if isinstance(details,dict) else {}
+                record = problem.get('current_record') if isinstance(problem,dict) else None
+                if isinstance(record,dict):
+                    current = self.state['entries'].get(record.get('id'))
+                    if (current and current.get('deleted') and current.get('dirty')
+                            and isinstance(record.get('version'),int) and record['version']>0):
+                        current['version'] = record['version']
+                        if record.get('deleted'): self.state['entries'].pop(current['id'],None)
+            if identity in abandoned: abandoned.remove(identity)
+            self._persist(); self._retire_uploads()
         self._request('DELETE','/v1/uploads/'+quote(identity,safe=''),done)
 
     def _pull(self):
@@ -201,6 +351,8 @@ class ShelfSync(QObject):
     def _receive(self, record, callback):
         identity = str(record.get('id',''))
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',identity): self._error(ValueError('同步项目标识无效。')); return
+        if not isinstance(record.get('version'),int) or not 1 <= record['version'] <= 9007199254740991:
+            self._error(ValueError('同步项目版本无效。')); return
         entries = self.state['entries']; entry = entries.get(identity)
         if entry and record['version'] <= entry.get('version',0): callback(); return
         # A pending removal stays queued when another device updates that item.
@@ -209,6 +361,7 @@ class ShelfSync(QObject):
             if record.get('deleted'): entries.pop(identity,None)
             self._persist(); callback(); return
         if record.get('deleted'):
+            self._forget_download(identity)
             if entry:
                 if entry.get('dirty'): self._fork(entry)
                 else: self._remove_ref(entry['ref'])
@@ -221,6 +374,7 @@ class ShelfSync(QObject):
         if (entry and entry.get('dirty') and entry.get('pending_hash') == record['sha256']
                 and entry.get('pending_seq') == entry.get('seq') and entry.get('name') == record['name']):
             entry.update(version=record['version'],sha256=record['sha256'],dirty=False)
+            self._forget_resume(identity,completed=True)
             entry.pop('pending_hash',None); entry.pop('pending_seq',None)
             self._persist(); callback(); return
         if entry and not entry.get('dirty') and entry.get('sha256') == record['sha256']:
@@ -258,33 +412,104 @@ class ShelfSync(QObject):
                     else: apply_ref(ref)
                 self._work(unpack_directory,(path,destination),unpacked)
             else: apply_ref(str(path))
-        self._download_record(record,target,downloaded)
+        self._download_record(record,target,downloaded,
+                              changed=lambda current:self._receive(current,callback) if current else callback())
 
-    def _download_record(self, record, target, callback):
+    def _download_target(self, record):
+        identity, version = record.get('id'),record.get('version')
+        if (not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',str(identity))
+                or not isinstance(version,int) or not 1 <= version <= 9007199254740991): return None
+        target = self.root/self.account_id/'files'/identity/str(version)/safe_name(record.get('name',''))
+        # A journal stores only metadata, never an arbitrary deletion/read path.
+        if target.is_symlink() or any(p.is_symlink() for p in tuple(target.parents)[:4]): return None
+        return target
+
+    def _forget_download(self, identity, finished=None):
+        cached = self.state.setdefault('downloads',{}).pop(identity,None)
+        target = self._download_target(dict(cached,id=identity)) if isinstance(cached,dict) else None
+        count = cached.get('part_count') if isinstance(cached,dict) else None
+        if target is not None and isinstance(count,int) and 0 <= count <= MAX_FILE_BYTES//65536:
+            self._work(_remove_download_parts,(target,count),lambda result,error:finished() if finished else None)
+        elif finished:
+            epoch = self.epoch
+            QTimer.singleShot(0,lambda:finished() if not self.closed and epoch == self.epoch else None)
+
+    def _download_record(self, record, target, callback, *, changed=None):
         identity = quote(record['id'],safe='')
+        expected_target = self._download_target(record)
+        if expected_target is None or Path(target).absolute() != expected_target.absolute():
+            callback(None,ValueError('同步文件缓存位置无效。')); return
         def metadata(result,error):
-            if error: callback(None,error); return
+            if error:
+                if getattr(error,'status',0)==404 and changed:
+                    self._forget_download(record['id']); self._persist(); changed(None)
+                else: callback(None,error)
+                return
             current = result.get('record',{})
             if current.get('version') != record['version'] or current.get('sha256') != record['sha256']:
-                self.running = False; self.tick(); return
+                if (changed and current.get('id') == record['id'] and isinstance(current.get('version'),int)
+                        and current['version'] > record['version']):
+                    cached = self.state.setdefault('downloads',{}).get(record['id'],{})
+                    if cached.get('version') != current['version']: self._forget_download(record['id'])
+                    self._persist(); changed(current)
+                else: callback(None,ValueError('云端文件版本已改变，请稍后重试。'))
+                return
             chunk_size, count = result.get('chunk_size'), result.get('part_count')
             if (not isinstance(chunk_size,int) or not 65536<=chunk_size<=4*1024*1024 or not isinstance(count,int)
                     or count != (record['size']+chunk_size-1)//chunk_size):
                 callback(None,ValueError('同步分块信息无效。')); return
             target.parent.mkdir(parents=True,exist_ok=True)
+            downloads = self.state.setdefault('downloads',{})
+            spec = dict(version=record['version'],name=record['name'],sha256=record['sha256'],
+                        size=record['size'],chunk_size=chunk_size,part_count=count)
+            cached = downloads.get(record['id'])
+            waiting_cleanup = False
+            if not isinstance(cached,dict) or any(cached.get(k) != v for k,v in spec.items()):
+                waiting_cleanup = cached is not None
+                self._forget_download(record['id'],(lambda:part()) if waiting_cleanup else None)
+                cached = dict(spec,hashes={}); downloads[record['id']] = cached
+            if not isinstance(cached.get('hashes'),dict): cached['hashes'] = {}
+            self._persist()
             parts = []
+            def assembled(path,error):
+                downloads.pop(record['id'],None); self._persist(); callback(path,error)
             def part(index=0):
+                if self._pending_removal() is not None:
+                    self.running = False; self.tick(); return
                 if index >= count:
-                    self._work(assemble_parts,(parts,target,record),callback); return
+                    self._work(assemble_parts,(parts,target,record),assembled); return
                 path = target.with_name('.'+target.name+f'.chunk-{index}')
+                size = min(chunk_size,record['size']-index*chunk_size)
+                def request_part():
+                    cached['hashes'].pop(str(index),None); self._persist()
+                    try:
+                        if self._download_target(record) is None or path.is_symlink():
+                            raise ValueError('同步文件缓存位置无效。')
+                        path.unlink(missing_ok=True)
+                    except (OSError,ValueError) as error: callback(None,error); return
+                    self._request('GET',f'/v1/items/{identity}/parts/{index}?version={record["version"]}',received,
+                        destination=path,expected={'size':size},timeout_ms=120000)
+                def recorded(digest,error):
+                    if error or digest is None:
+                        callback(None,error or ValueError('同步分块校验失败。')); return
+                    cached['hashes'][str(index)] = digest; self._persist()
+                    parts.append(path); part(index+1)
                 def received(result,error):
                     if error:
-                        for previous in parts: previous.unlink(missing_ok=True)
-                        callback(None,error); return
-                    parts.append(result); part(index+1)
-                self._request('GET',f'/v1/items/{identity}/parts/{index}?version={record["version"]}',received,
-                    destination=path,expected={'size':min(chunk_size,record['size']-index*chunk_size)},timeout_ms=120000)
-            part()
+                        if getattr(error,'status',0) in (404,409) and changed:
+                            self._request('GET','/v1/items/'+identity+'/content',metadata)
+                        else: callback(None,error)
+                        return
+                    self._work(_checked_download_part,(path,size,None),recorded)
+                expected = cached['hashes'].get(str(index))
+                if re.fullmatch(r'[0-9a-f]{64}',str(expected)):
+                    def checked(digest,error):
+                        if error: callback(None,error)
+                        elif digest is None: request_part()
+                        else: parts.append(path); part(index+1)
+                    self._work(_checked_download_part,(path,size,expected),checked)
+                else: request_part()
+            if not waiting_cleanup: part()
         self._request('GET','/v1/items/'+identity+'/content',metadata)
 
     def _change_view(self, operation):
@@ -312,27 +537,33 @@ class ShelfSync(QObject):
         self._change_view(change)
 
     def _push_next(self):
+        resumes = self.state.setdefault('resumable_uploads',{})
+        for identity,transfer in tuple(resumes.items()):
+            if not isinstance(transfer,dict) or not self._resume_matches(transfer):
+                self._forget_resume(identity)
+        active = {x.get('upload_id') for x in resumes.values()}
+        if (self._pending_removal() is not None or (not self._paused('cleanup_not_before') and
+                any(x not in active for x in self.state.setdefault('pending_uploads',[])))):
+            self._retire_uploads(); return
         pending = next((e for e in self.state['entries'].values() if e.get('dirty') and
-                        (e.get('deleted') or e.get('blocked_fingerprint') != e.get('fingerprint'))),None)
+                        ((e.get('deleted') and e.get('version',0)==0 and not self.state.get('pending_uploads')) or (not e.get('deleted') and
+                        e.get('blocked_fingerprint') != e.get('fingerprint')))),None)
         if pending is None:
             self.running = False; self.transfer = None
             blocked = sum(bool(e.get('dirty')) for e in self.state['entries'].values())
             self.status_changed.emit(f'可同步内容已同步；{blocked} 项暂留本机，请检查文件大小或位置。' if blocked else '搁架已同步。'); return
         identity = pending['id']
         if pending.get('deleted'):
-            if pending.get('version',0) == 0:
-                self.state['entries'].pop(identity,None); self._persist(); self._push_next(); return
-            def removed(result,error):
-                if error:
-                    if getattr(error,'status',0)==409:
-                        self.running = False; self.tick()
-                    else: self._error(error)
-                    return
-                current = self.state['entries'].get(identity)
-                if current and current.get('deleted'): self.state['entries'].pop(identity,None)
-                self._persist(); self._push_next()
-            self._request('DELETE','/v1/items/'+identity,removed,data={'base_version':pending['version']}); return
+            self.state['entries'].pop(identity,None); self._persist(); self._push_next(); return
         text = self.adapter.snapshot().get('texts',{}).get(pending['ref'])
+        resume = resumes.get(identity)
+        if resume:
+            self.transfer = resume
+            def verified(result,error):
+                if error:
+                    self._forget_resume(identity); self._persist(); self._retire_uploads(); return
+                self._resume_upload(result)
+            self._work(_verify_staged,(resume,),verified); return
         snapshot = dict(pending); self.transfer = snapshot
         def staged(result,error):
             if error:
@@ -341,29 +572,74 @@ class ShelfSync(QObject):
                     entry.update(blocked_fingerprint=snapshot['fingerprint'],last_error=str(error))
                 self._persist(); self.status_changed.emit(str(error)); self._push_next(); return
             snapshot.update(result)
-            def initialized(result,error):
-                if error:
-                    Path(snapshot['path']).unlink(missing_ok=True)
-                    if getattr(error,'status',0)==409: self.running=False; self.tick()
-                    else: self._error(error)
-                    return
-                snapshot.update(upload_id=result['upload_id'],chunk_size=result['chunk_size'],part_count=result['part_count'])
-                self.state.setdefault('pending_uploads',[]).append(result['upload_id'])
-                current = self.state['entries'].get(identity)
-                if current: current.update(pending_hash=snapshot['sha256'],pending_seq=snapshot['seq'])
-                self._persist()
-                self._send_part(snapshot,0)
-            self._request('POST','/v1/uploads',initialized,data={
-                'item_id':identity,'base_version':snapshot.get('version',0),'kind':snapshot['kind'],
-                'name':snapshot['name'],'mime_type':result['mime_type'],'size':result['size'],'sha256':result['sha256']})
+            if not self._resume_matches(snapshot):
+                Path(snapshot['path']).unlink(missing_ok=True); self._push_next(); return
+            self.state.setdefault('resumable_uploads',{})[identity] = snapshot
+            self._persist(); self._initialize_upload(snapshot)
         self._work(stage_item,(pending['ref'],text,pending['name'],self.root/self.account_id/'outbox'),staged)
 
+    def _initialize_upload(self, snapshot):
+        identity = snapshot['id']
+        if not self._resume_matches(snapshot):
+            self._forget_resume(identity); self._persist(); self._retire_uploads(); return
+        if not snapshot.get('upload_id'):
+            snapshot['upload_id'] = str(uuid4())
+        pending = self.state.setdefault('pending_uploads',[])
+        if snapshot['upload_id'] not in pending: pending.append(snapshot['upload_id'])
+        current = self.state['entries'].get(identity)
+        if current: current.update(pending_hash=snapshot['sha256'],pending_seq=snapshot['seq'])
+        # Write the id before making the request. A timeout after server-side
+        # creation must reuse the same reservation, including across restarts.
+        self._persist()
+        def initialized(result,error):
+            if error:
+                if getattr(error,'status',0)==409:
+                    self._forget_resume(identity); self._persist(); self.running=False; self.tick()
+                else: self._error(error)
+                return
+            chunk, count, upload_id = result.get('chunk_size'),result.get('part_count'),result.get('upload_id')
+            if (not isinstance(chunk,int) or not 65536 <= chunk <= 4*1024*1024
+                    or count != (snapshot['size']+chunk-1)//chunk
+                    or upload_id != snapshot['upload_id']):
+                self._error(ValueError('云同步上传信息无效。')); return
+            snapshot.update(upload_id=upload_id,chunk_size=chunk,part_count=count,next_part=0)
+            self._persist(); self._send_part(snapshot,0)
+        self._request('POST','/v1/uploads',initialized,data={
+            'upload_id':snapshot['upload_id'],
+            'item_id':identity,'base_version':snapshot.get('version',0),'kind':snapshot['kind'],
+            'name':snapshot['name'],'mime_type':snapshot['mime_type'],'size':snapshot['size'],'sha256':snapshot['sha256']})
+
+    def _resume_upload(self, transfer):
+        if not self._resume_matches(transfer):
+            self._forget_resume(transfer['id']); self._persist(); self._retire_uploads(); return
+        if not transfer.get('upload_id') or 'chunk_size' not in transfer:
+            self._initialize_upload(transfer); return
+        def status(result,error):
+            if error:
+                if getattr(error,'status',0)==404: self._initialize_upload(transfer)
+                elif getattr(error,'status',0)==409:
+                    self._forget_resume(transfer['id']); self._persist(); self._retire_uploads()
+                else: self._error(error)
+                return
+            if any(result.get(remote) != transfer.get(local) for remote,local in (
+                    ('upload_id','upload_id'),('item_id','id'),('base_version','version'),
+                    ('size','size'),('sha256','sha256'),('chunk_size','chunk_size'),('part_count','part_count'))):
+                self._error(ValueError('云同步断点与文件不符。')); return
+            if result.get('state') == 'committed': self._pull(); return
+            index = result.get('next_part')
+            if result.get('state') != 'pending' or not isinstance(index,int) or not 0 <= index <= transfer['part_count']:
+                self._error(ValueError('云同步断点信息无效。')); return
+            transfer['next_part'] = index; self._persist(); self._send_part(transfer,index)
+        self._request('GET','/v1/uploads/'+quote(transfer['upload_id'],safe=''),status)
+
     def _send_part(self,transfer,index):
+        if not self._resume_matches(transfer):
+            self._forget_resume(transfer['id']); self._persist(); self._retire_uploads(); return
         if index >= transfer['part_count']:
             def committed(result,error):
-                Path(transfer['path']).unlink(missing_ok=True)
                 if error:
-                    if getattr(error,'status',0)==409: self.running=False; self.tick()
+                    if getattr(error,'status',0)==409:
+                        self._forget_resume(transfer['id']); self._persist(); self.running=False; self.tick()
                     else: self._error(error)
                     return
                 record = result['record']; entry = self.state['entries'].get(transfer['id'])
@@ -374,6 +650,7 @@ class ShelfSync(QObject):
                     if entry.get('seq')==transfer['seq']:
                         entry.update(dirty=False,fingerprint=transfer['fingerprint'])
                     entry.pop('pending_hash',None); entry.pop('pending_seq',None)
+                self._forget_resume(transfer['id'],completed=True)
                 self._persist(); self._push_next()
             self._request('POST','/v1/uploads/'+transfer['upload_id']+'/commit',committed,data={}); return
         def read(result,error):
@@ -381,7 +658,10 @@ class ShelfSync(QObject):
             data,digest = result
             def sent(result,error):
                 if error:
-                    Path(transfer['path']).unlink(missing_ok=True); self._error(error); return
+                    # The server may have accepted this part before the reply
+                    # was lost. Resume with its next_part, never guess/replay.
+                    self._error(error); return
+                transfer['next_part'] = index+1; self._persist()
                 self.status_changed.emit(f'正在上传 {transfer["name"]} · {index+1}/{transfer["part_count"]}')
                 self._send_part(transfer,index+1)
             self._request('PUT',f'/v1/uploads/{transfer["upload_id"]}/parts/{index}',sent,
@@ -397,6 +677,3 @@ class ShelfSync(QObject):
         for key in tuple(self.requests): self.api.cancel(key)
         for job in tuple(self.jobs): job.cancel.set()
         self.pool.waitForDone(3000)
-        if self.transfer and self.transfer.get('path'):
-            try: Path(self.transfer['path']).unlink(missing_ok=True)
-            except OSError: pass

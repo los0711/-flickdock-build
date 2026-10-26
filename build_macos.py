@@ -92,7 +92,8 @@ def main(arguments=None):
     if options.entitlements:
         env['FLICKDOCK_ENTITLEMENTS'] = str(options.entitlements.resolve())
     run([python, '-m', 'unittest', 'test_platform_startup', 'test_platform_native', 'test_mac_updates',
-         'test_macos_native_entry', 'test_update_macos_controller', 'test_mac_build', '-v'], env=env)
+         'test_macos_native_entry', 'test_update_macos_controller', 'test_mac_build',
+         'test_shelf_sync_v180', 'test_sync_review_v180', 'test_account_security_v180', '-v'], env=env)
     run([python, ROOT / 'test_update_macos.py'], env=env)
     run([python, ROOT / 'build_macos.py', '--icon-only', build / 'FlickDock.icns'], env=env)
     run([python, '-m', 'PyInstaller', '--noconfirm', '--clean', ROOT / 'FlickDock-mac.spec'], env=env)

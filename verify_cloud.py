@@ -21,7 +21,7 @@ def run(argv,load_font):
     app=QApplication([argv[0]]);app.setQuitOnLastWindowClosed(False);load_font(app)
     output=Path(argv[argv.index('--verify-output')+1]).resolve()
     report={'ok':False,'version':APP_VERSION,'frozen':bool(getattr(sys,'frozen',False)),
-            'os_credentials_written':False,'installer_executed':False,'mac_application_tested':False}
+            'os_credentials_written':False,'installer_executed':False,'mac_application_tested':sys.platform=='darwin'}
     # This catches accidental _hashlib trimming in the distributed executable.
     key=derive_auth_key(bytearray(b'frozen-qa-known-password'),b'\x01'*16)
     assert bytes(key).hex() == '61a958177a02aa9f93c69ce6fbf35b66442e1bf16c556bd6405b89b86dd4a6fa'
@@ -67,6 +67,8 @@ def run(argv,load_font):
             if phase=='upload' and status=='搁架已同步。':
                 phase='login';services[1].platform='macos';services[1].device_name='Frozen macOS protocol verification'
                 services[1].login(username,password)
+            elif phase=='cleanup' and status=='搁架已同步。':
+                phase='verify-delete';engines[1].tick()
         def second_sync(status):
             nonlocal phase
             if phase=='login' and status=='搁架已同步。':
@@ -76,8 +78,20 @@ def run(argv,load_font):
                     assert target.read_bytes()==payload
                     assert list(adapters[1].view['texts'].values())==['同步文字仍可直接拖入输入框']
                     report.update(verified_bytes=len(payload),verified_sha256=hashlib.sha256(payload).hexdigest(),text_native=True)
-                    phase='logout';services[1].logout();services[0].logout()
+                    phase='cleanup'
+                    adapters[0].view={'permanent':[],'texts':{},'metadata':{}}
+                    engines[0].local_changed()
                 except Exception:finish('冻结版内容校验失败。')
+            elif phase=='verify-delete' and status=='搁架已同步。':
+                try:assert not adapters[1].view['permanent']
+                except AssertionError:finish('跨设备删除未同步。');return
+                def usage(result,error):
+                    nonlocal phase
+                    if error or result.get('storage',{}).get('used_bytes')!=0:
+                        finish('云端删除后空间未释放。');return
+                    report.update(cloud_objects_deleted=True,deletion_synced=True)
+                    phase='logout';services[1].logout();services[0].logout()
+                phase='verify-storage';services[0].api.request('GET','/v1/me',usage)
         def logged_out(account):
             if phase=='logout' and not any(s.signed_in for s in services):finish()
         services[0].account_changed.connect(first_account)

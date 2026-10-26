@@ -4,7 +4,7 @@ import {PersistentSHA256} from './hash-state';
 
 interface Env {
   DB:D1Database; FILES:R2Bucket;
-  ACCOUNT_QUOTA_BYTES?:string; GLOBAL_QUOTA_BYTES?:string; MAX_FILE_BYTES?:string; CHUNK_BYTES?:string; REQUESTS_PER_DAY?:string; AUTH_PEPPER?:string;
+  ACCOUNT_QUOTA_BYTES?:string; GLOBAL_QUOTA_BYTES?:string; CHUNK_BYTES?:string; REQUESTS_PER_DAY?:string; AUTH_PEPPER?:string;
   R2_CLASS_A_BUDGET?:string; R2_CLASS_B_BUDGET?:string;
   EMAIL_PROVIDER?:string; EMAIL_FROM?:string; EMAIL_CODE_SECRET?:string; RESEND_API_KEY?:string;
   EMAIL?:{send(message:{from:string;to:string;subject:string;text:string}):Promise<{messageId:string}>};
@@ -142,7 +142,10 @@ async function cleanup(env:Env){
 async function route(request:Request,env:Env):Promise<Response>{
   const url=new URL(request.url),path=url.pathname,method=request.method;
   if(method==='GET'&&path==='/v1/health')return json({service:'flickdock-cloud'});
-  await rate(env,'service-requests',config(env.REQUESTS_PER_DAY,5000,90000),DAY);
+  const deleting=method==='DELETE'&&/^\/v1\/(items|uploads)\/[^/]+$/.test(path);
+  // Reclaiming storage must remain possible after transfer traffic reaches its
+  // own daily budget. Cleanup still has a bounded, separate request allowance.
+  await rate(env,deleting?'service-deletions':'service-requests',deleting?10000:config(env.REQUESTS_PER_DAY,5000,80000),DAY);
   if(method==='POST'&&path==='/v1/auth/challenge'){
     authSecret(env);const input=await body(request,['username','purpose']),name=username(input.username),purpose=text(input.purpose,'purpose',5,8);
     if(!['register','login'].includes(purpose))fail(400,'INVALID_REQUEST','Unknown authentication purpose');
@@ -174,7 +177,8 @@ async function route(request:Request,env:Env):Promise<Response>{
   const owner=await auth(request,env);
   if(method==='GET'&&(path==='/v1/me'||path==='/v1/sync/changes'||path.startsWith('/v1/items/')))await expireItems(env,owner.id);
   if(method==='GET'&&path==='/v1/me'){
-    return json({account:account(owner),device_id:owner.device_id,storage:{used_bytes:owner.allocated_bytes,quota_bytes:owner.quota_bytes,max_file_bytes:owner.quota_bytes}});
+    const storage=(await first(env,'SELECT allocated_bytes,quota_bytes FROM accounts WHERE id=?',owner.id))!;
+    return json({account:account(owner),device_id:owner.device_id,storage:{used_bytes:storage.allocated_bytes,quota_bytes:storage.quota_bytes,max_file_bytes:storage.quota_bytes}});
   }
   if(method==='GET'&&path==='/v1/devices'){
     const devices=await rows(env,'SELECT * FROM devices WHERE account_id=? ORDER BY created_at DESC LIMIT 100',owner.id);
@@ -209,19 +213,40 @@ async function route(request:Request,env:Env):Promise<Response>{
     return json({changes:page.map(c=>({cursor:String(c.seq),record:JSON.parse(c.record)})),cursor:page.length?String(page.at(-1)!.seq):cursor,has_more:all.length>limit});
   }
   if(method==='POST'&&path==='/v1/uploads'){
-    const input=await body(request,['item_id','base_version','kind','name','mime_type','size','sha256']);
+    const required=['item_id','base_version','kind','name','mime_type','size','sha256'];
+    const input=await body(request,[...required,'upload_id'],required);
     const id=uuid(input.item_id,'item_id'),base=integer(input.base_version,'base_version'),kind=text(input.kind,'kind',1,8),name=text(input.name,'name',1,255),mime=text(input.mime_type,'mime_type',1,127),size=integer(input.size,'size'),hash=digest(input.sha256);
     if(!['file','text','url'].includes(kind)||!/^[a-zA-Z0-9!#$&^_.+-]+\/[a-zA-Z0-9!#$&^_.+-]+$/.test(mime))fail(400,'INVALID_REQUEST','Unknown kind or MIME type');
-    if((await item(env,owner.id,id))?.version!==base&&base!==0)await conflict(env,owner,id);
-    if(base===0&&await item(env,owner.id,id))await conflict(env,owner,id);
-    const count=await first(env,"SELECT COUNT(*) n FROM uploads WHERE account_id=? AND state IN ('pending','verifying')",owner.id);if(count!.n>=10)fail(429,'UPLOAD_LIMIT','Too many pending uploads');
-    const uploadId=crypto.randomUUID(),expires=Date.now()+DAY,chunk=chunkSize(env),partCount=Math.ceil(size/chunk);
-    await env.DB.batch([
-      query(env,'UPDATE limits SET bytes_limit=? WHERE id=1',config(env.GLOBAL_QUOTA_BYTES,8*1024**3)),
-      query(env,'INSERT INTO allocations(id,account_id,size) VALUES(?,?,?)',uploadId,owner.id,size),
-      query(env,'INSERT INTO uploads(id,account_id,item_id,base_version,kind,name,mime_type,size,sha256,chunk_size,part_count,state,expires_at,computed_sha256) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',uploadId,owner.id,id,base,kind,name,mime,size,hash,chunk,partCount,'pending',expires,size===0?sha(new Uint8Array()):null),
-    ]);
-    return json({upload_id:uploadId,chunk_size:chunk,part_count:partCount,expires_at:iso(expires)},201);
+    // Persisting this optional UUID before POST lets a client recover a lost
+    // initialization reply without reserving the entire file size twice.
+    const suppliedId=input.upload_id!==undefined,uploadId=suppliedId?uuid(input.upload_id,'upload_id'):crypto.randomUUID();
+    const reuse=async()=>{
+      const previous=await first(env,'SELECT * FROM uploads WHERE id=?',uploadId);
+      if(!previous)return null;
+      if(previous.account_id!==owner.id)fail(404,'NOT_FOUND','Upload not found');
+      const spec={item_id:id,base_version:base,kind,name,mime_type:mime,size,sha256:hash};
+      if(Object.entries(spec).some(([key,value])=>previous[key]!==value))fail(409,'UPLOAD_CONFLICT','Upload identifier already belongs to different content');
+      if(previous.state==='garbage'||(previous.state!=='committed'&&previous.expires_at<Date.now()))fail(409,'UPLOAD_EXPIRED','Upload was cancelled or expired');
+      return json({upload_id:uploadId,chunk_size:previous.chunk_size,part_count:previous.part_count,expires_at:iso(previous.expires_at)},201);
+    };
+    if(suppliedId){const response=await reuse();if(response)return response;}
+    try{
+      if((await item(env,owner.id,id))?.version!==base&&base!==0)await conflict(env,owner,id);
+      if(base===0&&await item(env,owner.id,id))await conflict(env,owner,id);
+      const count=await first(env,"SELECT COUNT(*) n FROM uploads WHERE account_id=? AND state IN ('pending','verifying')",owner.id);if(count!.n>=10)fail(429,'UPLOAD_LIMIT','Too many pending uploads');
+      const expires=Date.now()+3*DAY,chunk=chunkSize(env),partCount=Math.ceil(size/chunk);
+      await env.DB.batch([
+        query(env,'UPDATE limits SET bytes_limit=? WHERE id=1',config(env.GLOBAL_QUOTA_BYTES,8*1024**3)),
+        query(env,'INSERT INTO allocations(id,account_id,size) VALUES(?,?,?)',uploadId,owner.id,size),
+        query(env,'INSERT INTO uploads(id,account_id,item_id,base_version,kind,name,mime_type,size,sha256,chunk_size,part_count,state,expires_at,computed_sha256) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',uploadId,owner.id,id,base,kind,name,mime,size,hash,chunk,partCount,'pending',expires,size===0?sha(new Uint8Array()):null),
+      ]);
+      return json({upload_id:uploadId,chunk_size:chunk,part_count:partCount,expires_at:iso(expires)},201);
+    }catch(error){
+      // A concurrent retry may have won after the initial existence check.
+      // D1 batch rollback keeps its allocation atomic with the upload row.
+      if(suppliedId){const response=await reuse();if(response)return response;}
+      throw error;
+    }
   }
   match=path.match(/^\/v1\/uploads\/([^/]+)\/parts\/(\d+)$/);
   if(method==='PUT'&&match){
@@ -245,7 +270,7 @@ async function route(request:Request,env:Env):Promise<Response>{
         const last=partIndex===value.part_count-1,state=last?null:full.save(),computed=last?hex(full.digest()):null;
         await budget(env,'A',1);await env.FILES.put(key,data);
         const result=await env.DB.batch([
-          query(env,"UPDATE uploads SET hash_state=?,computed_sha256=?,verified_size=verified_size+?,next_part=next_part+1 WHERE id=? AND state='pending' AND next_part=?",state,computed,data.length,id,partIndex),
+          query(env,"UPDATE uploads SET hash_state=?,computed_sha256=?,verified_size=verified_size+?,next_part=next_part+1,expires_at=? WHERE id=? AND state='pending' AND next_part=?",state,computed,data.length,Date.now()+3*DAY,id,partIndex),
           query(env,'UPDATE parts SET ready=1 WHERE upload_id=? AND idx=? AND EXISTS(SELECT 1 FROM uploads WHERE id=? AND next_part>?)',id,partIndex,id,partIndex),
         ]);
         if(!result[0].meta.changes){const latest=await first(env,'SELECT ready FROM parts WHERE upload_id=? AND idx=?',id,partIndex);if(!latest?.ready)fail(409,'UPLOAD_NOT_PENDING','Upload changed while writing the part');}
@@ -258,8 +283,9 @@ async function route(request:Request,env:Env):Promise<Response>{
     await body(request,[]);const id=uuid(match[1]),value=await upload(env,owner,id);
     if(value.state==='committed'){const current=await item(env,owner.id,value.item_id);if(current?.active_upload===id)return json({record:record(current)});await conflict(env,owner,value.item_id);}
     if(value.state==='garbage'||value.expires_at<Date.now())fail(409,'UPLOAD_EXPIRED','Upload was cancelled or expired');
-    const parts=await rows(env,'SELECT * FROM parts WHERE upload_id=? ORDER BY idx',id);
-    if(parts.length!==value.part_count||parts.some(p=>!p.ready)||value.next_part!==value.part_count)fail(409,'UPLOAD_INCOMPLETE','All parts must be uploaded before commit');
+    const summary=(await first(env,'SELECT COUNT(*) n,COALESCE(SUM(ready),0) ready FROM parts WHERE upload_id=?',id))!;
+    if(summary.n!==value.part_count||summary.ready!==value.part_count||value.next_part!==value.part_count)fail(409,'UPLOAD_INCOMPLETE','All parts must be uploaded before commit');
+    const previous=await item(env,owner.id,value.item_id);
     const lease=crypto.randomUUID(),now=Date.now();
     const locked=await query(env,"UPDATE uploads SET state='verifying',lease=?,lease_until=? WHERE id=? AND (state='pending' OR (state='verifying' AND lease_until<?))",lease,now+300000,id,now).run();
     if(!locked.meta.changes)fail(423,'UPLOAD_BUSY','Upload verification is already running');
@@ -268,20 +294,30 @@ async function route(request:Request,env:Env):Promise<Response>{
       const result=await query(env,"UPDATE uploads SET state='committed',lease=NULL,lease_until=0 WHERE id=? AND state='verifying' AND lease=?",id,lease).run();
       if(!result.meta.changes)fail(409,'UPLOAD_NOT_PENDING','Upload changed while verifying');
     }catch(error){await query(env,"UPDATE uploads SET state='pending',lease=NULL,lease_until=0 WHERE id=? AND state='verifying' AND lease=?",id,lease).run();if(String(error).includes('VERSION_CONFLICT'))await conflict(env,owner,value.item_id);throw error;}
+    // Retire replaced bytes promptly; a reader holds a lease until it finishes.
+    if(previous?.active_upload&&previous.active_upload!==id)await purgeUpload(env,previous.active_upload);
     return json({record:record((await item(env,owner.id,value.item_id))!)});
   }
   match=path.match(/^\/v1\/uploads\/([^/]+)$/);
+  if(method==='GET'&&match){
+    const id=uuid(match[1]),value=await upload(env,owner,id);
+    if(value.state==='garbage'||(value.state!=='committed'&&value.expires_at<Date.now()))fail(409,'UPLOAD_EXPIRED','Upload was cancelled or expired');
+    return json({upload_id:id,item_id:value.item_id,base_version:value.base_version,state:value.state,next_part:value.next_part,chunk_size:value.chunk_size,part_count:value.part_count,size:value.size,sha256:value.sha256,expires_at:iso(value.expires_at)});
+  }
   if(method==='DELETE'&&match){
     const id=uuid(match[1]);
     const result=await query(env,"UPDATE uploads SET state='garbage',garbage_after=? WHERE id=? AND account_id=? AND state IN ('pending','verifying','garbage')",Date.now(),id,owner.id).run();
-    if(!result.meta.changes){await upload(env,owner,id);fail(409,'ALREADY_COMMITTED','Delete the item using its version');}
+    if(!result.meta.changes){
+      const value=await upload(env,owner,id),current=await item(env,owner.id,value.item_id);
+      fail(409,'ALREADY_COMMITTED','Delete the item using its version',{current_record:current?record(current):null});
+    }
     await purgeUpload(env,id);return json({cancelled:true});
   }
   match=path.match(/^\/v1\/items\/([^/]+)$/);
   if(method==='DELETE'&&match){
     const input=await body(request,['base_version']),id=uuid(match[1]),base=integer(input.base_version,'base_version',1);
     const current=await item(env,owner.id,id);if(current?.deleted&&current.version===base+1)return json({record:record(current)});
-    const result=await query(env,'UPDATE items SET deleted=1,version=version+1,active_upload=NULL,size=0,sha256=NULL,updated_at=? WHERE account_id=? AND id=? AND version=? AND deleted=0',Date.now(),owner.id,id,base).run();
+    const result=await query(env,'UPDATE items SET deleted=1,version=version+1,active_upload=NULL,size=0,sha256=NULL,expires_at=NULL,updated_at=? WHERE account_id=? AND id=? AND version=? AND deleted=0',Date.now(),owner.id,id,base).run();
     if(!result.meta.changes)await conflict(env,owner,id);
     if(current?.active_upload)await purgeUpload(env,current.active_upload);
     return json({record:record((await item(env,owner.id,id))!)});
@@ -298,12 +334,14 @@ async function route(request:Request,env:Env):Promise<Response>{
     if(url.searchParams.has('version')){const version=Number(url.searchParams.get('version'));integer(version,'version',1);if(version!==value!.version)await conflict(env,owner,id);}
     const part=await first(env,'SELECT * FROM parts WHERE upload_id=? AND idx=? AND ready=1',value!.active_upload,index);if(!part)fail(404,'NOT_FOUND','Content part not found');
     const lease=crypto.randomUUID();await query(env,'INSERT INTO read_leases(upload_id,id,expires_at) VALUES(?,?,?)',value!.active_upload,lease,Date.now()+1800000).run();
-    await budget(env,'B',1);const object=await env.FILES.get(part!.key);if(!object)fail(503,'STORAGE_MISSING','Content part is unavailable');
-    const reader=object!.body.getReader();
     const release=async()=>{
       await query(env,'DELETE FROM read_leases WHERE upload_id=? AND id=?',value!.active_upload,lease).run();
       try{await purgeUpload(env,value!.active_upload);}catch{/* Allocation stays reserved until the next cleanup. */}
     };
+    let object:R2ObjectBody|null;
+    try{await budget(env,'B',1);object=await env.FILES.get(part!.key);if(!object)fail(503,'STORAGE_MISSING','Content part is unavailable');}
+    catch(error){await release();throw error;}
+    const reader=object!.body.getReader();
     const stream=new ReadableStream<Uint8Array>({async pull(controller){try{const next=await reader.read();if(next.done){controller.close();await release();}else controller.enqueue(next.value);}catch(e){controller.error(e);await release();}},async cancel(){await reader.cancel();await release();}});
     return new Response(stream,{headers:{'Content-Type':'application/octet-stream','Content-Length':String(part!.size),'X-Content-SHA256':part!.sha256,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
   }

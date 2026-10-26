@@ -49,14 +49,23 @@ jobs:
           profile="$(mktemp -d)"
           HOME="$profile" APPDATA="$profile" dist/FlickDock.app/Contents/MacOS/FlickDock --verify-cloud --verify-output "../outputs/mac-cloud-${{ matrix.arch }}.json"
           python -c "import json; from pathlib import Path; p=Path('../outputs/mac-cloud-${{ matrix.arch }}.json'); data=json.loads(p.read_text()); assert data['ok'] and data['frozen'],data"
+      - name: Gather verified release artifacts
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+          source, target = Path('../outputs'), Path('ci-output')
+          target.mkdir()
+          for pattern in ('FlickDock-*-macOS-${{ matrix.arch }}.zip', 'FlickDock-*-macOS-${{ matrix.arch }}.dmg', 'mac-build-*-${{ matrix.arch }}.json', 'mac-cloud-${{ matrix.arch }}.json'):
+              files = list(source.glob(pattern))
+              assert len(files) == 1, (pattern, files)
+              for path in files:
+                  shutil.copy2(path, target / path.name)
+          PY
       - name: Retain private build artifacts for verification
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: FlickDock-macOS-${{ matrix.arch }}-${{ github.sha }}
-          path: |
-            ../outputs/FlickDock-*-macOS-${{ matrix.arch }}.zip
-            ../outputs/FlickDock-*-macOS-${{ matrix.arch }}.dmg
-            ../outputs/mac-build-*-${{ matrix.arch }}.json
-            ../outputs/mac-cloud-${{ matrix.arch }}.json
+          path: ci-output/*
           if-no-files-found: error
           retention-days: 3
