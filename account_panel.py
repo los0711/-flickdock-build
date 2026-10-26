@@ -97,7 +97,6 @@ class AccountPanel(QFrame):
         layout.addLayout(heading)
 
         self.auth_page=QWidget(self);auth=QVBoxLayout(self.auth_page);auth.setContentsMargins(0,0,0,0);auth.setSpacing(9)
-        auth.addWidget(_label('让你的搁架随设备同行',self.auth_page))
         auth.addWidget(_label('使用同一账号，Windows 和 Mac 会自动同步内容。',self.auth_page,muted=True))
         tabs=QHBoxLayout();tabs.setSpacing(6)
         self.login_tab=_button('登录',self.auth_page,name='accountTab')
@@ -116,7 +115,6 @@ class AccountPanel(QFrame):
         auth.addWidget(self.password_edit)
         self.submit_button=_button('登录',self.auth_page,name='accountPrimary')
         self.submit_button.clicked.connect(self._submit_auth);auth.addWidget(self.submit_button)
-        auth.addWidget(_label('注册无需邮箱验证。',self.auth_page,muted=True))
         layout.addWidget(self.auth_page)
 
         self.signed_in_page=QWidget(self);signed=QVBoxLayout(self.signed_in_page)

@@ -119,8 +119,7 @@ class LanPanel(QFrame):
 
     ``set_paths_provider(callback)`` optionally supplies selected shelf paths.
     If none are selected, the send button uses Windows/macOS native file picker.
-    No received file is imported into the shelf automatically by this component;
-    the owner can connect ``received_paths`` to the shelf's normal intake path.
+    Received files stay in the chosen destination and never enter the shelf.
     """
     received_paths = Signal(list)
     transfer_started = Signal()
@@ -141,7 +140,7 @@ class LanPanel(QFrame):
         self.peer_count = _label('0 台设备', self, muted=True)
         self.peer_count.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         heading.addWidget(self.peer_count); layout.addLayout(heading)
-        self.description = _label('同一网络内加密直传原文件。接收前请核对两端的确认码。', self, muted=True)
+        self.description = _label('局域网直传 · 接收前核对确认码', self, muted=True)
         layout.addWidget(self.description)
         self.drop_zone = _DropZone(self); self.drop_zone.dropped.connect(self.queue_paths)
         layout.addWidget(self.drop_zone)
@@ -233,7 +232,7 @@ class LanPanel(QFrame):
         count = len(self._queued_paths)
         self.drop_zone.title.setText(f'已选择 {count} 项' if count else '拖入文件或文件夹')
         self.drop_zone.hint.setText('、'.join(Path(p).name for p in self._queued_paths[:3])[:80]
-            + ('…' if count > 3 else '') if count else '保留原文件和目录结构 · 发送前可核对设备')
+            + ('…' if count > 3 else '') if count else '')
         self.clear_queue.setVisible(bool(count))
         self.send_button.setText(f'发送 {count} 项' if count else '发送文件')
 
@@ -405,7 +404,7 @@ class LanPanel(QFrame):
                 self._history = self._history[:12]; self._render_history()
                 try:self._save_history()
                 except OSError:pass
-        self.status_label.setText('局域网加密直传，不占用云空间。')
+        self.status_label.clear()
 
     def _completed(self, result):
         if result.get('direction') == 'receive': self.received_paths.emit(list(result.get('paths') or []))

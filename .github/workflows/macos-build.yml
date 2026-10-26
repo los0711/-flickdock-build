@@ -40,7 +40,7 @@ jobs:
         with:
           python-version: '3.12'
           architecture: ${{ matrix.python_arch }}
-      - name: Build and verify native application, ZIP and DMG
+      - name: Build and verify native application, ZIP, DMG and installer
         run: |
           python ci_assets.py
           python build_macos.py --target-arch '${{ matrix.arch }}'
@@ -56,7 +56,7 @@ jobs:
           import shutil
           source, target = Path('../outputs'), Path('ci-output')
           target.mkdir()
-          for pattern in ('FlickDock-*-macOS-${{ matrix.arch }}.zip', 'FlickDock-*-macOS-${{ matrix.arch }}.dmg', 'mac-build-*-${{ matrix.arch }}.json', 'mac-cloud-${{ matrix.arch }}.json'):
+          for pattern in ('FlickDock-*-macOS-${{ matrix.arch }}.zip', 'FlickDock-*-macOS-${{ matrix.arch }}.dmg', 'FlickDock-*-macOS-${{ matrix.arch }}.pkg', 'mac-build-*-${{ matrix.arch }}.json', 'mac-cloud-${{ matrix.arch }}.json'):
               files = list(source.glob(pattern))
               assert len(files) == 1, (pattern, files)
               for path in files:

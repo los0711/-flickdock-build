@@ -438,7 +438,7 @@ try{
     const status=await request('GET','/v1/me',undefined,alice.token);assert.equal(status.storage.used_bytes,before-data.length);
     assert.equal(sqlRows(`SELECT deleted FROM items WHERE account_id='${alice.account.id}' AND id='${newId}'`)[0].deleted,1);
   });
-  await check('exhausted daily service request budget still permits item deletion and abandoned upload cancellation',async()=>{
+  await check('exhausted transfer budget preserves authentication, sync control and storage cleanup',async()=>{
     const data=Buffer.from('delete despite the normal request budget'),newId=randomUUID();
     const committed=await reserve(alice.token,newId,data);await part(alice.token,committed.upload_id,0,data);await request('POST',`/v1/uploads/${committed.upload_id}/commit`,{},alice.token);
     const abandonedData=Buffer.concat([data,Buffer.from(' pending')]);
@@ -447,14 +447,17 @@ try{
     const slot=Math.floor(Date.now()/86400000),key='service-requests:'+slot,deleteKey='service-deletions:'+slot;
     const saved=sqlRows(`SELECT key,n,expires_at FROM rates WHERE key='${key}'`);
     const previousDeletions=sqlRows(`SELECT n FROM rates WHERE key='${deleteKey}'`)[0]?.n||0;
-    sql(`INSERT INTO rates(key,n,expires_at) VALUES('${key}',5000,${(slot+1)*86400000}) ON CONFLICT(key) DO UPDATE SET n=5000;`);
+    sql(`INSERT INTO rates(key,n,expires_at) VALUES('${key}',10000,${(slot+1)*86400000}) ON CONFLICT(key) DO UPDATE SET n=10000;`);
     try{
-      await request('GET','/v1/me',undefined,alice.token,429);
+      await request('GET','/v1/me',undefined,alice.token);
+      await request('GET','/v1/sync/changes?cursor=0&limit=1',undefined,alice.token);
+      await request('POST','/v1/auth/challenge',{username:'alice',purpose:'login'});
+      await request('POST','/v1/uploads',{},alice.token,429);
       const committedReply=await request('DELETE',`/v1/uploads/${committed.upload_id}`,undefined,alice.token,409);
       assert.equal(committedReply.error.code,'ALREADY_COMMITTED');assert.equal(committedReply.error.current_record.id,newId);assert.equal(committedReply.error.current_record.version,1);
       const deleted=await request('DELETE',`/v1/items/${newId}`,{base_version:committedReply.error.current_record.version},alice.token);assert.equal(deleted.record.deleted,true);
       assert.equal((await request('DELETE',`/v1/uploads/${abandoned.upload_id}`,undefined,alice.token)).cancelled,true);
-      assert.equal(sqlRows(`SELECT n FROM rates WHERE key='${key}'`)[0].n,5001,'Cleanup calls must not consume the exhausted normal request budget');
+      assert.equal(sqlRows(`SELECT n FROM rates WHERE key='${key}'`)[0].n,10001,'Control and cleanup calls must not consume the exhausted transfer budget');
       assert.equal(sqlRows(`SELECT n FROM rates WHERE key='${deleteKey}'`)[0].n,previousDeletions+3,'Cleanup calls have their own bounded daily budget');
       for(const fixture of fixtures){
         assert.equal(sqlRows(`SELECT COUNT(*) n FROM uploads WHERE id='${fixture.id}'`)[0].n,0);

@@ -217,13 +217,12 @@ with tempfile.TemporaryDirectory(prefix="flickdock-settings-") as temporary:
     author_dialog = dialog.author_dialog
     assert author_dialog.isVisible() and not author_dialog.isModal()
     assert author_dialog.author_label.text() == "Author @Roger"
-    assert author_dialog.font_notice.parent() is author_dialog and author_dialog.license_dialog is None
+    assert not hasattr(author_dialog, 'font_notice') and author_dialog.license_dialog is None
     author_dialog.licenses_button.click()
     license_dialog = author_dialog.license_dialog
     app.processEvents()
     assert license_dialog.isVisible() and not license_dialog.isModal()
-    assert license_dialog.font_notice.parent() is license_dialog
-    assert "HarmonyOS Sans" in license_dialog.font_notice.text()
+    assert not hasattr(license_dialog, 'font_notice')
     for index in range(license_dialog.document_combo.count()):
         license_dialog.document_combo.setCurrentIndex(index)
         assert len(license_dialog.license_text.toPlainText()) > 150

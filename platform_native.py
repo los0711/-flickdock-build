@@ -38,6 +38,23 @@ def native_input_available(*, platform=None, qt_platform=None):
             or (platform == 'darwin' and str(qt_platform).lower() == 'cocoa'))
 
 
+def remove_host_window_shadow(widget):
+    """Keep the translucent shelf host from casting a rectangular Cocoa shadow.
+
+    The rounded card paints its own shadow; its larger native host is only a
+    transparent animation canvas. Cocoa otherwise shadows that entire canvas.
+    """
+    if sys.platform != 'darwin' or not native_input_available():
+        return False
+    import objc
+    view = objc.objc_object(c_void_p=ctypes.c_void_p(int(widget.winId())))
+    window = view.window()
+    if window is None:
+        return False
+    window.setHasShadow_(False)
+    return True
+
+
 def _qt_mask():
     buttons = QGuiApplication.mouseButtons()
     return sum(bit for bit, flag in ((1, Qt.MouseButton.LeftButton), (2, Qt.MouseButton.RightButton),

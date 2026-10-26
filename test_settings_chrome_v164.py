@@ -62,6 +62,9 @@ with tempfile.TemporaryDirectory(prefix='flickdock-settings-chrome-v164-') as te
     assert not flags & Qt.WindowType.WindowCloseButtonHint
     assert not flags & Qt.WindowType.WindowTitleHint
     assert flags & Qt.WindowType.Tool
+    assert flags & Qt.WindowType.WindowStaysOnTopHint
+    assert dialog.theme_combo.view().sizeHintForRow(0) >= 38
+    assert not dialog.close_button.testAttribute(Qt.WidgetAttribute.WA_MacShowFocusRect)
     assert dialog.windowTitle() == 'FlickDock 设置' and not dialog.isModal()
     assert dialog.close_button.accessibleName() == '关闭设置'
     assert not dialog.close_button.autoDefault() and not dialog.close_button.isDefault()

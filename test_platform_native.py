@@ -3,6 +3,8 @@ import os
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 
 from pathlib import Path
+from types import SimpleNamespace
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -66,6 +68,20 @@ class NativeTests(unittest.TestCase):
             path = Path(directory) / 'FlickDock.app/Contents/MacOS/FlickDock'
             self.assertEqual(native.app_bundle(path), path.parent.parent.parent.resolve())
             self.assertIsNone(native.app_bundle(Path(directory) / 'python'))
+
+    def test_cocoa_host_shadow_is_disabled_only_on_native_mac(self):
+        widget = SimpleNamespace(winId=lambda: 123)
+        with patch.object(native.sys, 'platform', 'win32'):
+            self.assertFalse(native.remove_host_window_shadow(widget))
+        window = SimpleNamespace(setHasShadow_=lambda value: calls.append(value))
+        view = SimpleNamespace(window=lambda: window)
+        fake_objc = SimpleNamespace(objc_object=lambda **kwargs: view)
+        calls = []
+        with patch.object(native.sys, 'platform', 'darwin'), \
+             patch.object(native, 'native_input_available', return_value=True), \
+             patch.dict(sys.modules, {'objc': fake_objc}):
+            self.assertTrue(native.remove_host_window_shadow(widget))
+        self.assertEqual(calls, [False])
 
     def test_quartz_external_buttons_and_window_move_until_release(self):
         quartz = Quartz()

@@ -224,6 +224,7 @@ class FeedbackButton(QPushButton):
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_MacShowFocusRect, False)
         self.setToolTip(self._NAMES.get(glyph, glyph))
         self.setAccessibleName(self._NAMES.get(glyph, glyph))
         self.spring = Spring(self, {"scale": 1, "hover": 0, "down": 0},

@@ -8,7 +8,7 @@
   "r2_buckets": [{"binding":"FILES","bucket_name":"flickdock-private"}],
   "durable_objects": {"bindings":[{"name":"EVENTS","class_name":"AccountEvents"}]},
   "exports": {"AccountEvents":{"type":"durable-object","storage":"sqlite"}},
-  "vars": {"ACCOUNT_QUOTA_BYTES":"8589934592","GLOBAL_QUOTA_BYTES":"8589934592","CHUNK_BYTES":"4194304","REQUESTS_PER_DAY":"5000","R2_CLASS_A_BUDGET":"800000","R2_CLASS_B_BUDGET":"8000000","EMAIL_PROVIDER":"disabled"},
+  "vars": {"ACCOUNT_QUOTA_BYTES":"8589934592","GLOBAL_QUOTA_BYTES":"8589934592","CHUNK_BYTES":"4194304","REQUESTS_PER_DAY":"10000","R2_CLASS_A_BUDGET":"800000","R2_CLASS_B_BUDGET":"8000000","EMAIL_PROVIDER":"disabled"},
   "triggers": {"crons":["* * * * *"]},
   "observability": {"enabled":false}
 }

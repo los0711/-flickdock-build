@@ -45,6 +45,6 @@ app = BUNDLE(collection, name='FlickDock.app', icon=str(icon), bundle_identifier
     info_plist=dict(CFBundleDisplayName='FlickDock', CFBundleName='FlickDock',
                    CFBundleShortVersionString=APP_VERSION, CFBundleVersion=APP_VERSION,
                    CFBundlePackageType='APPL', CFBundleExecutable='FlickDock',
-                   LSUIElement=True, NSHighResolutionCapable=True,
+                   LSUIElement=False, NSHighResolutionCapable=True,
                    NSLocalNetworkUsageDescription='FlickDock 用于发现同一局域网的设备，并在你确认后加密传输文件。',
                    LSMinimumSystemVersion='14.4', NSPrincipalClass='NSApplication'))

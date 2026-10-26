@@ -195,9 +195,16 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
   const url=new URL(request.url),path=url.pathname,method=request.method;
   if(method==='GET'&&path==='/v1/health')return json({service:'flickdock-cloud'});
   const deleting=method==='DELETE'&&/^\/v1\/(items|uploads)\/[^/]+$/.test(path);
-  // Reclaiming storage must remain possible after transfer traffic reaches its
-  // own daily budget. Cleanup still has a bounded, separate request allowance.
-  await rate(env,deleting?'service-deletions':'service-requests',deleting?10000:config(env.REQUESTS_PER_DAY,5000,80000),DAY);
+  const authenticating=path.startsWith('/v1/auth/');
+  const control=path==='/v1/me'||path==='/v1/events'||path==='/v1/sync/changes'
+    ||path==='/v1/devices'||path.startsWith('/v1/devices/')
+    ||method==='GET'&&/^\/v1\/items\/[^/]+\/content$/.test(path);
+  // Bounded traffic classes keep ordinary file transfers from locking users
+  // out of sign-in, device management and changefeed when their daily pool is
+  // exhausted. The sum remains below the Workers Free daily request ceiling.
+  const pool=deleting?'service-deletions':authenticating?'service-auth':control?'service-control':'service-requests';
+  const cap=deleting?10000:authenticating?2000:control?20000:config(env.REQUESTS_PER_DAY,10000,80000);
+  await rate(env,pool,cap,DAY);
   if(method==='POST'&&path==='/v1/auth/challenge'){
     authSecret(env);const input=await body(request,['username','purpose']),name=username(input.username),purpose=text(input.purpose,'purpose',5,8);
     if(!['register','login'].includes(purpose))fail(400,'INVALID_REQUEST','Unknown authentication purpose');

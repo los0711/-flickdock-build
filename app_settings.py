@@ -12,12 +12,12 @@ from pathlib import Path
 import sys
 from uuid import uuid4
 
-from PySide6.QtCore import QByteArray, QCoreApplication, QElapsedTimer, QEvent, QObject, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QByteArray, QCoreApplication, QElapsedTimer, QEvent, QObject, QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QColor, QFont, QPainter, QPen, QGuiApplication, QIcon, QPixmap, QWheelEvent
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
                                QHBoxLayout, QLabel, QLineEdit, QPushButton,
                                QVBoxLayout, QKeySequenceEdit, QScrollArea, QWidget,
-                               QAbstractSpinBox, QPlainTextEdit, QSlider, QSpinBox, QColorDialog)
+                               QAbstractSpinBox, QPlainTextEdit, QSlider, QSpinBox, QColorDialog, QStyledItemDelegate)
 from PySide6.QtWidgets import QStyle, QStyleOptionButton
 from PySide6.QtSvg import QSvgRenderer
 
@@ -114,11 +114,19 @@ def _scroll_settings_instead(widget, event):
     event.ignore()
 
 
+class SettingsOptionDelegate(QStyledItemDelegate):
+    def sizeHint(self, option, index):
+        size = super().sizeHint(option, index)
+        return QSize(size.width(), max(38, size.height() + 10))
+
+
 class SettingsComboBox(QComboBox):
     """A readable theme-aware arrow while retaining native combo semantics."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.dark = False
+        self.setItemDelegate(SettingsOptionDelegate(self))
+        self.setAttribute(Qt.WidgetAttribute.WA_MacShowFocusRect, False)
 
     def wheelEvent(self, event):
         # Scrolling the settings page must never silently change a preference,
@@ -266,6 +274,7 @@ class SettingsCloseButton(QPushButton):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setAutoDefault(False)
         self.setDefault(False)
+        self.setAttribute(Qt.WidgetAttribute.WA_MacShowFocusRect, False)
 
     @property
     def glyph_rect(self):
@@ -624,10 +633,6 @@ class ThirdPartyDialog(QDialog):
         title = QLabel("第三方许可", self)
         title.setObjectName("licenseTitle")
         root.addWidget(title)
-        self.font_notice = QLabel("本软件使用 HarmonyOS Sans 字体", self)
-        self.font_notice.setObjectName("licenseAttribution")
-        self.font_notice.setWordWrap(True)
-        root.addWidget(self.font_notice)
         self.document_combo = SettingsComboBox(self)
         self.document_combo.setAccessibleName("许可文档")
         resource_root = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
@@ -678,7 +683,6 @@ class ThirdPartyDialog(QDialog):
             QDialog#flickdockLicenses {{background:{background};color:{ink};}}
             QDialog#flickdockLicenses QLabel {{color:{ink};background:transparent;font-size:14px;}}
             QDialog#flickdockLicenses QLabel#licenseTitle {{font-size:22px;font-weight:600;}}
-            QDialog#flickdockLicenses QLabel#licenseAttribution {{font-size:16px;font-weight:600;}}
             QDialog#flickdockLicenses QPlainTextEdit {{background:{surface};color:{ink};border:1px solid {edge};border-radius:10px;padding:12px;font-size:13px;selection-background-color:#2584ed;selection-color:white;}}
             QDialog#flickdockLicenses QComboBox, QDialog#flickdockLicenses QPushButton {{background:{surface};color:{ink};border:1px solid {edge};border-radius:8px;padding:7px 10px;font-size:13px;}}
             QDialog#flickdockLicenses QComboBox QAbstractItemView {{background:{surface};color:{ink};selection-background-color:{hover};selection-color:{ink};}}
@@ -708,13 +712,6 @@ class AuthorDialog(QDialog):
         self.author_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         root.addWidget(self.author_label)
         root.addStretch()
-        self.font_notice = QLabel("本软件使用 HarmonyOS Sans 字体", self)
-        self.font_notice.setObjectName("authorAttribution")
-        self.font_notice.setWordWrap(True)
-        root.addWidget(self.font_notice)
-        copyright = QLabel("Copyright 2021 Huawei Device Co., Ltd.", self)
-        copyright.setObjectName("authorCopyright")
-        root.addWidget(copyright)
         footer = QHBoxLayout()
         self.licenses_button = QPushButton("第三方许可", self)
         self.licenses_button.setMinimumHeight(36)
@@ -751,8 +748,6 @@ class AuthorDialog(QDialog):
             QDialog#flickdockAuthor QLabel {{background:transparent;color:{ink};font-size:14px;}}
             QDialog#flickdockAuthor QLabel#authorTitle {{font-size:25px;font-weight:600;}}
             QDialog#flickdockAuthor QLabel#authorName {{font-size:18px;font-weight:600;}}
-            QDialog#flickdockAuthor QLabel#authorAttribution {{font-size:14px;}}
-            QDialog#flickdockAuthor QLabel#authorCopyright {{color:{secondary};font-size:12px;}}
             QDialog#flickdockAuthor QPushButton {{background:{surface};color:{ink};border:1px solid {edge};border-radius:8px;padding:6px 12px;font-size:13px;}}
             QDialog#flickdockAuthor QPushButton:hover {{background:{hover};}}
         """)
@@ -781,7 +776,8 @@ class SettingsDialog(QDialog):
     update_requested = Signal()
 
     def __init__(self, store: SettingsStore, parent=None):
-        super().__init__(parent, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
+        super().__init__(parent, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint |
+                         Qt.WindowType.WindowStaysOnTopHint)
         self.store = store
         self.shortcut_validator = None
         self.license_dialog = None
@@ -909,7 +905,7 @@ class SettingsDialog(QDialog):
         path_row.addWidget(self.folder_edit, 1)
         path_row.addWidget(browse)
         storage_layout.addLayout(path_row)
-        detail = QLabel("快捷方式保留原文件位置；复制会将文件保存到这里。新接收的图片等内容也保存到这里，文字保存在搁架数据中。", storage)
+        detail = QLabel("快捷方式保留原文件；复制保存到所选位置。", storage)
         detail.setObjectName("settingsDetail")
         detail.setWordWrap(True)
         storage_layout.addWidget(detail)
@@ -1134,10 +1130,6 @@ class SettingsDialog(QDialog):
         self.dock_opacity_slider.valueChanged.connect(self.dock_opacity_spin.setValue)
         self.dock_opacity_spin.valueChanged.connect(self.dock_opacity_slider.setValue)
         layout.addLayout(opacity_row)
-        detail = QLabel("鼠标移入触发区即可展开搁架。尺寸跟随 Windows 显示缩放。", card)
-        detail.setObjectName("settingsDetail")
-        detail.setWordWrap(True)
-        layout.addWidget(detail)
         self.dock_edge_combo.currentIndexChanged.connect(self._update_dock_hint)
         self.dock_edge_combo.currentIndexChanged.connect(self._emit_preview)
         for control in (self.dock_position_spin, self.dock_length_spin, self.dock_thickness_spin, self.dock_opacity_spin):
@@ -1185,10 +1177,6 @@ class SettingsDialog(QDialog):
         self.shake_effort_label=QLabel(card)
         self.shake_effort_label.setObjectName('settingsDetail')
         layout.addWidget(self.shake_effort_label)
-        detail = QLabel("拖住内容快速来回甩动。调节立即生效，取消后恢复原值。", card)
-        detail.setObjectName("settingsDetail")
-        detail.setWordWrap(True)
-        layout.addWidget(detail)
         return card
 
     def _update_dock_hint(self):
@@ -1392,7 +1380,7 @@ class SettingsDialog(QDialog):
             QDialog#flickdockSettings QComboBox::drop-down {{border:0;width:28px;background:transparent;}}
             QDialog#flickdockSettings QComboBox::down-arrow {{image:none;}}
             QDialog#flickdockSettings QPushButton {{background:{card};color:{ink};border:1px solid {edge};border-radius:8px;padding:5px 12px;font-size:13px;}}
-            QDialog#flickdockSettings QPushButton:hover {{background:{hover};border-color:#75a4dc;}}
+            QDialog#flickdockSettings QPushButton:hover {{background:{hover};border-color:{edge};}}
             QDialog#flickdockSettings QPushButton:pressed {{background:#d0e4ff;color:#19395e;}}
             QDialog#flickdockSettings QPushButton:disabled {{color:{secondary};background:{field};border-color:{edge};}}
             QDialog#flickdockSettings QPushButton#settingsSave {{background:#2584ed;color:white;border-color:#2584ed;}}
@@ -1403,12 +1391,14 @@ class SettingsDialog(QDialog):
             QDialog#flickdockSettings QPushButton#settingsClose {{background:transparent;border:0;border-radius:10px;padding:0;}}
             QDialog#flickdockSettings QPushButton#settingsClose:hover {{background:{hover};}}
             QDialog#flickdockSettings QPushButton#settingsClose:pressed {{background:{edge};}}
-            QDialog#flickdockSettings QPushButton#settingsClose:focus {{border:1px solid #5d9eeb;}}
+            QDialog#flickdockSettings QPushButton#settingsClose:focus {{border:0;}}
             QDialog#flickdockSettings QCheckBox {{spacing:10px;}}
             QDialog#flickdockSettings QCheckBox::indicator {{width:17px;height:17px;border:1px solid {edge};border-radius:5px;background:{field};}}
             QDialog#flickdockSettings QCheckBox::indicator:checked {{background:#2584ed;border-color:#2584ed;}}
             QDialog#flickdockSettings QLabel#settingsError {{color:{'#ff9b9b' if dark else '#b9404c'};font-size:12px;}}
         """)
+        for button in self.findChildren(QPushButton):
+            button.setAttribute(Qt.WidgetAttribute.WA_MacShowFocusRect, False)
         if self.license_dialog is not None:
             self.license_dialog.apply_theme(theme)
         if self.author_dialog is not None:

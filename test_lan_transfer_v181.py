@@ -143,7 +143,7 @@ class TransferTests(unittest.TestCase):
         wait_for(lambda:self.offers);self.b.accept(identifier,self.destination)
         wait_for(lambda:self.received and self.sent,timeout=15)
         result=Path(self.received[0]['paths'][0])
-        self.assertEqual(result.parent.resolve(),self.destination.resolve())
+        self.assertEqual(result.parent,self.destination)
         self.assertEqual(result.name,'report (2).txt')
         self.assertEqual(result.read_bytes(),original.read_bytes())
         self.assertEqual(existing.read_bytes(),b'existing user bytes')

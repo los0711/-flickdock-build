@@ -146,7 +146,20 @@ def main(arguments=None):
     if options.notary_profile:
         run(['/usr/bin/xcrun', 'notarytool', 'submit', dmg, '--keychain-profile', options.notary_profile, '--wait'])
         run(['/usr/bin/xcrun', 'stapler', 'staple', dmg])
-    artifacts = [dict(name=item.name, bytes=item.stat().st_size, sha256=_checksum(item)) for item in (archive, dmg)]
+    installer = report.parent / (name + '.pkg')
+    if installer.exists():
+        raise FileExistsError('Refusing to overwrite an existing versioned macOS installer')
+    run(['/usr/bin/pkgbuild', '--component', app, '--install-location', '/Applications',
+         '--identifier', 'com.flickdock.installer', '--version', APP_VERSION, installer])
+    # Check the package payload and metadata without installing on this Mac.
+    with tempfile.TemporaryDirectory(prefix='flickdock-pkg-verify-') as directory:
+        expanded = Path(directory) / 'expanded'
+        run(['/usr/sbin/pkgutil', '--expand', installer, expanded])
+        package_info = (expanded / 'PackageInfo').read_text(encoding='utf-8')
+        if 'com.flickdock.installer' not in package_info or APP_VERSION not in package_info:
+            raise RuntimeError('macOS installer metadata does not match this build')
+    artifacts = [dict(name=item.name, bytes=item.stat().st_size, sha256=_checksum(item))
+                 for item in (archive, dmg, installer)]
     report.write_text(json.dumps(dict(ok=True, host=platform.platform(), version=APP_VERSION,
           architecture=options.target_arch, signed=bool(options.sign_identity),
           notarized=bool(options.notary_profile), frozen=frozen, artifacts=artifacts),

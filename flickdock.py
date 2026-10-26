@@ -52,7 +52,7 @@ from transfer_visuals import TransferIconLabel, TransferOverlay
 from drop_routing import OverviewDropRouter
 from app_version import APP_NAME, APP_VERSION
 from update_controller import UpdateController
-from platform_native import data_directory, native_input_available, mouse_buttons_mask
+from platform_native import data_directory, native_input_available, mouse_buttons_mask, remove_host_window_shadow
 from account_service import AccountService
 from cloud_events import CloudEvents
 from account_panel import AccountPanel
@@ -1664,6 +1664,7 @@ class ShelfWindow(QWidget):
         else:
             self._layout_header(self.card.width())
         self.show()
+        remove_host_window_shadow(self)
         self.raise_()
         self.touch()
         self.presentation.animate({"sx": 1, "sy": 1, "alpha": 1, "dx": 0, "dy": 0}, response=.24, damping=.72)
@@ -1686,11 +1687,14 @@ class ShelfWindow(QWidget):
             # with a small elastic impulse, rather than a generic fade alone.
             self.presentation.kick({'sx':.55,'sy':-.7})
 
-    def reveal_from_dock(self):
-        if self.manager.edge_suppressed: return
+    def _dock_target_rect(self):
         area=self.manager.edge.screen_area()
         size=QSize(*(getattr(self,'_expanded_size',(EXPANDED_W,EXPANDED_H)) if self.expanded else (CARD_W,CARD_H)))+QSize(28,27)
-        rect=reveal_rect(area,self.manager.edge.geometry(),size,self.manager.settings.dock_edge)
+        return reveal_rect(area,self.manager.edge.geometry(),size,self.manager.settings.dock_edge)
+
+    def reveal_from_dock(self):
+        if self.manager.edge_suppressed: return
+        rect=self._dock_target_rect()
         offsets={'right':QPoint(30,0),'left':QPoint(-30,0),'top':QPoint(0,-24),'bottom':QPoint(0,24)}
         self._show_at(rect.topLeft(),'dock',offsets[self.manager.settings.dock_edge])
 
@@ -1739,7 +1743,9 @@ class ShelfWindow(QWidget):
     def hover_region_contains(self,point):
         if not self.isVisible(): return False
         rect=self.visual_geometry()
-        if self.presentation_kind=='dock': rect=dock_hover_rect(rect,self.manager.edge.geometry(),self.manager.settings.dock_edge)
+        # Spring motion moves the visual bounds under a stationary pointer.
+        # Keep the edge-to-shelf hover bridge tied to the settled target.
+        if self.presentation_kind=='dock': rect=dock_hover_rect(self._dock_target_rect(),self.manager.edge.geometry(),self.manager.settings.dock_edge)
         return rect.contains(point)
 
     def show_contents(self, mode="permanent", target=None):
@@ -2327,7 +2333,6 @@ class ShelfManager:
         if self.lan_dialog is None:
             self.lan_dialog = LanDialog(self.lan,self.settings,self.shelf)
             self.lan_dialog.panel.set_paths_provider(self._lan_selected)
-            self.lan_dialog.panel.received_paths.connect(lambda paths:self.shelf.add_paths('permanent',paths))
         if not self.lan_dialog.isVisible():
             anchor = self.shelf.frameGeometry()
             area = (QGuiApplication.screenAt(anchor.center()) or QGuiApplication.primaryScreen()).availableGeometry()
@@ -2597,6 +2602,7 @@ def main():
         from offscreen_verify import run
         return run(sys.argv, load_font)
     app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
     load_font(app)

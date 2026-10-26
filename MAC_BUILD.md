@@ -5,7 +5,7 @@
 Both arm64 and x86_64 native builds passed on GitHub's macOS hosts in private
 run 40297249021 (application source commit
 04da69953be17f0f1591be77338395d5b0d0f0e1). The jobs produce real `.app`, update
-ZIP and `.dmg`, run platform and cloud-sync checks from each frozen app, and
+ZIP, `.dmg` and a native `.pkg` installer, run platform and cloud-sync checks from each frozen app, and
 verify cloud deletion releases space. Windows cannot build a usable Mac app;
 `build_macos.py` rejects a non-Mac host before creating artifacts.
 
@@ -37,9 +37,12 @@ The script creates `build/macos-venv`, installs native PySide6, PyInstaller and
 PyObjC Quartz dependencies, renders the original SVG icon offscreen, runs the
 platform tests, builds `dist/FlickDock.app`, and runs a frozen offscreen import,
 font and native media-backend smoke check using a disposable profile. It then
-creates a versioned update ZIP, drag-to-Applications DMG and SHA256 report under
-`../outputs/`. No artifact is installed or launched as a normal desktop app.
-An existing versioned ZIP/DMG is never overwritten.
+creates a versioned update ZIP, drag-to-Applications DMG, macOS Installer `.pkg`
+for `/Applications`, and SHA256 report under `../outputs/`. It expands the
+package to verify identity and version without installing it. No artifact is
+installed or launched as a normal desktop app. Existing versioned artifacts
+are never overwritten. The app appears in the Dock so it can be reopened after
+hiding the shelf.
 
 Build arm64 on Apple Silicon and x86_64 on Intel Macs. `--target-arch universal2`
 requires a universal2 Python interpreter and universal2 versions of **all**
@@ -59,6 +62,8 @@ Use `--entitlements /absolute/path/entitlements.plist` only when the selected
 Python/PyObjC distribution needs specific hardened-runtime entitlements. The
 script does not embed signing credentials. Without signing/notarization, the
 result is a local build; Gatekeeper distribution acceptance remains unverified.
+The `.pkg` needs a separate Developer ID Installer identity for signed public
+distribution; the current automated package is unsigned.
 
 ## Shared UI integration
 

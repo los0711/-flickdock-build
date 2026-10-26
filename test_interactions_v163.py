@@ -5,7 +5,7 @@ import tempfile
 import time
 from unittest.mock import patch
 os.environ['QT_QPA_PLATFORM']='offscreen'
-from PySide6.QtCore import QPoint,Qt,QEvent,QPointF
+from PySide6.QtCore import QPoint,QRect,Qt,QEvent,QPointF
 from PySide6.QtGui import QContextMenuEvent,QMouseEvent,QEnterEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication,QSystemTrayIcon
@@ -88,6 +88,15 @@ with tempfile.TemporaryDirectory(prefix='flickdock-interactions-v163-') as tmp:
         assert all(button.isHidden() for button in (shelf.pin_button,shelf.expand_button,shelf.menu_button,shelf.close_button))
         shelf.hide_immediately();manager.auto_shown=None;manager.settings.update(trigger_view='compact')
         manager._content_drag_validated(QPoint(300,300));assert not shelf.expanded
+        shelf.hide_immediately();shelf.reveal_from_dock()
+        settled=shelf._dock_target_rect()
+        with patch.object(shelf,'visual_geometry',return_value=QRect(-500,-500,1,1)):
+            assert shelf.hover_region_contains(settled.center())
+        shelf.hide_immediately()
+        with patch.object(shelf,'add_paths') as imported:
+            manager.show_lan_dialog()
+            manager.lan_dialog.panel.received_paths.emit([refs[0]])
+            imported.assert_not_called()
         shelf.remove_all('permanent');shelf.hide_immediately()
         manager.update_handles()
         assert manager.settings.keep_empty_handle and manager.edge.isVisible()
