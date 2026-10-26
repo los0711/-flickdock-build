@@ -71,7 +71,7 @@ class StartupTests(unittest.TestCase):
         self.registry.values[(RUN_KEY, 'FlickDock')] = ('"' + str(old) + '"', 1)
         self.assertFalse(self.manager.status().enabled)
         self.assertTrue(self.manager.reconcile(True).enabled)
-        self.assertEqual(self.manager.status().command, '"' + str(self.exe) + '"')
+        self.assertEqual(self.manager.status().command, '"' + str(self.exe.resolve()) + '"')
         foreign = ('"' + str(self.base / 'foreign.exe') + '"', 1)
         self.registry.values[(RUN_KEY, 'FlickDock')] = foreign
         self.assertFalse(self.manager.reconcile(True, explicit=True).enabled)
@@ -129,7 +129,7 @@ class StartupTests(unittest.TestCase):
         manager = StartupManager(exe, platform='darwin', frozen=True, runtime_allowed=True, backend=backend)
         self.assertTrue(manager.reconcile(True, explicit=True).enabled)
         data = plistlib.loads(backend.path.read_bytes())
-        self.assertEqual(data['ProgramArguments'], [str(exe)])
+        self.assertEqual(data['ProgramArguments'], [str(exe.resolve())])
         self.assertTrue(data['RunAtLoad'])
         self.assertFalse(data['KeepAlive'])
         self.assertEqual(data['Label'], 'com.flickdock.app')

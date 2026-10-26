@@ -64,7 +64,7 @@ class NativeTests(unittest.TestCase):
             self.assertFalse(native.window_move_active())
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'FlickDock.app/Contents/MacOS/FlickDock'
-            self.assertEqual(native.app_bundle(path), path.parent.parent.parent)
+            self.assertEqual(native.app_bundle(path), path.parent.parent.parent.resolve())
             self.assertIsNone(native.app_bundle(Path(directory) / 'python'))
 
     def test_quartz_external_buttons_and_window_move_until_release(self):
