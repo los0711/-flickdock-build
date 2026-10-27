@@ -65,7 +65,7 @@ class LanDialogTests(unittest.TestCase):
             'name':'report.pdf','state':'complete'})
         self.dialog.close();self.dialog.deleteLater();APP.processEvents()
         self.dialog=LanDialog(self.service,SettingsStore(self.root/'profile'))
-        self.assertEqual(self.dialog.panel.receive_path.text(),str(destination))
+        self.assertEqual(Path(self.dialog.panel.receive_path.text()).resolve(),destination.resolve())
         self.assertEqual(len(self.dialog.panel.history_rows),1)
         record=self.dialog.panel.history_rows[0]
         self.assertIn('report.pdf',record.detail.accessibleName())

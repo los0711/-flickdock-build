@@ -53,11 +53,11 @@ class IntakeFirstFrameTests(unittest.TestCase):
                     with patch.object(manager.sync, 'local_changed', side_effect=lambda: events.append(('cloud', 'journal'))), \
                          patch.object(tile, 'pulse', side_effect=pulse):
                         self.assertTrue(shelf.receive_mime('permanent', mime))
-                        self.assertIn(str(payload), shelf.display_refs())
+                        self.assertIn(payload.resolve(), [Path(ref).resolve() for ref in shelf.display_refs()])
                         self.assertEqual(events, [('pulse', 'drop')])
                         self.assertTrue(flickdock.STATE_FILE.exists())
                         self.assertTrue(shelf.receive_mime('permanent', second_mime))
-                        self.assertIn(str(second), shelf.display_refs())
+                        self.assertIn(second.resolve(), [Path(ref).resolve() for ref in shelf.display_refs()])
                         self.assertEqual(events, [('pulse', 'drop'), ('pulse', 'drop')])
 
                         loop = QEventLoop()
