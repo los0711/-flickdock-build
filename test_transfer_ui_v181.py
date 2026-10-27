@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from PySide6.QtCore import QCoreApplication,QEvent,QMimeData,QPoint,QTimer,Qt,QUrl
+from PySide6.QtCore import QCoreApplication,QEvent,QMimeData,QPoint,QRect,QTimer,Qt,QUrl
 from PySide6.QtGui import QColor,QDesktopServices,QImage,QPainter
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication,QWidget
@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QApplication,QWidget
 import app_settings
 import capture_files
 import flickdock as subject
+import ui_theme
 from content_grid import IconItem
 from transfer_visuals import TransferIconLabel,TransferRateTracker,transfer_phase_label
 
@@ -235,7 +236,6 @@ class TransferUITests(unittest.TestCase):
         self.shelf.content.transfers[str(path)]={'id':'local-upload','phase':'uploading','received':40,'total':100}
         self.shelf.transfers_updated();popup=self.overview();popup.set_category('uploading');flush()
         self.assertEqual(set(popup.visible_refs()),{str(path),pending})
-        self.assertTrue(self.shelf.upload_count.isVisible());self.assertEqual(self.shelf.upload_count.count,2)
         self.assertIn('2',popup.category_buttons['uploading'].text());self.assertIn('2',popup.transfer_count.text())
         self.assertTrue(popup.transfer_summary.isVisible());self.assertEqual(popup.transfer_bar.value(),300)
         epoch=popup._build_epoch
@@ -247,9 +247,26 @@ class TransferUITests(unittest.TestCase):
         self.shelf.transfers_updated();flush()
         self.assertEqual(popup.visible_refs(),[]);self.assertFalse(popup.transfer_summary.isVisible())
         self.assertEqual(popup.category_buttons['uploading'].text(),'传输中')
-        self.assertTrue(self.shelf.upload_count.complete)
-        self.assertTrue(self.shelf.upload_count.isVisible())
-        wait(lambda:not self.shelf.upload_count.isVisible(),timeout=3)
+        popup.set_category('all');self.assertFalse(popup.transfer_strip.isVisible())
+
+    def test_upload_count_lives_in_transfer_tab_and_footer_not_cloud_header(self):
+        original_theme=ui_theme.current_theme()
+        try:
+            for theme in ('light','dark'):
+                ui_theme.set_theme(theme);ui_theme.apply_application(APP,subject.FONT_FAMILY)
+                for count in (1,123):
+                    self.shelf.content.pending={f'flickdock:transfer:fixture-{index}':
+                        dict(name=f'文件{index}.bin',kind='file') for index in range(count)}
+                    self.shelf.content.transfers={ref:dict(id=ref,phase='uploading',received=0,total=100)
+                                                  for ref in self.shelf.content.pending}
+                    self.shelf.refresh();self.shelf.transfers_updated();popup=self.overview()
+                    popup.set_category('all');flush()
+                    self.assertFalse(hasattr(self.shelf,'upload_count'))
+                    self.assertEqual(popup.category_buttons['uploading'].text(),f'传输中 {count}')
+                    self.assertEqual(popup.strip_title.text(),f'传输中 · {count} 项')
+                    self.assertTrue(popup.transfer_strip.isVisible())
+        finally:
+            ui_theme.set_theme(original_theme);ui_theme.apply_application(APP,subject.FONT_FAMILY)
 
     def test_overview_footer_shows_two_transfers_and_opens_the_full_list(self):
         refs=[self.pending(f'传输文件{index}.bin',received=index*10,total=100)
@@ -295,6 +312,23 @@ class TransferUITests(unittest.TestCase):
         self.assertIn('25% · 剩余约 3 秒',popup.preview.transfer_meta.text())
         popup.set_category('all')
         self.assertIn('25% · 剩余约 3 秒',popup.strip_rows[0][2].text())
+
+    def test_local_item_is_available_in_all_while_its_cloud_upload_runs(self):
+        path=str(self.file('刚拖进来的原文件.mp4'))
+        self.shelf.add_paths('permanent',[path])
+        self.shelf.content.transfers[path]=dict(id='local-cloud-upload',phase='uploading',
+                                                received=0,total=256*1024)
+        self.shelf.transfers_updated()
+        popup=self.overview()
+        self.assertEqual(popup.category,'all')
+        self.assertIn(path,popup.visible_refs())
+        self.assertIn(path,popup._build_refs)
+        popup.set_category('video');self.assertIn(path,popup.visible_refs())
+        popup.set_category('uploading');self.assertIn(path,popup.visible_refs())
+        pending=self.pending('远端尚未上传完的文件.mp4',remote=True)
+        popup.set_category('all');self.assertIn(path,popup.visible_refs())
+        self.assertNotIn(pending,popup.visible_refs())
+        popup.set_category('uploading');self.assertIn(pending,popup.visible_refs())
     def test_manager_projects_remote_pending_enables_expand_and_routes_cancel_to_sync(self):
         self.manager._sync_transfer_refs=set()
         calls=[]

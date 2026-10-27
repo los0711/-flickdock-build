@@ -81,6 +81,7 @@ class ShelfSync(QObject):
         self.pool = QThreadPool(self); self.pool.setMaxThreadCount(2)
         self.retry_ms = 15000; self.transfer = None
         self.cleanup_attempts = {}
+        self._cleanup_inflight = set()
         self.remote_transfers=[]
         self.download_transfers={}
         self._interactive=False
@@ -166,6 +167,7 @@ class ShelfSync(QObject):
         self.remote_transfers=[]; self.transfers_changed.emit([])
         self.download_transfers.clear()
         self._part_cache.clear();self._progress_persisted=0.0
+        self._cleanup_inflight.clear()
         for job in tuple(self.jobs): job.cancel.set()
         for key in tuple(self.requests): self.api.cancel(key)
         self.requests.clear()
@@ -275,6 +277,7 @@ class ShelfSync(QObject):
         self.epoch+=1
         self.running=False;self.transfer=None
         self._part_cache.clear()
+        self._cleanup_inflight.clear()
         for key in tuple(self.requests):self.api.cancel(key)
         self.requests.clear()
         for job in tuple(self.jobs):job.cancel.set()
@@ -553,23 +556,35 @@ class ShelfSync(QObject):
             self._request('DELETE','/v1/items/'+quote(identity,safe=''),removed,data={'base_version':version}); return
         abandoned = self.state.setdefault('pending_uploads',[])
         active = {x.get('upload_id') for x in resumes.values()}
-        identity = next((x for x in abandoned if x not in active),None)
-        if identity is None: self._persist(); self._after_cleanup(); return
-        def done(result,error):
-            if error and getattr(error,'status',0) not in (404,409): self._cleanup_error(error); return
-            if error and getattr(error,'code','') == 'ALREADY_COMMITTED':
-                details = getattr(error,'details',{})
-                problem = details.get('error',details) if isinstance(details,dict) else {}
-                record = problem.get('current_record') if isinstance(problem,dict) else None
-                if isinstance(record,dict):
-                    current = self.state['entries'].get(record.get('id'))
-                    if (current and current.get('deleted') and current.get('dirty')
-                            and isinstance(record.get('version'),int) and record['version']>0):
-                        current['version'] = record['version']
-                        if record.get('deleted'): self.state['entries'].pop(current['id'],None)
-            if identity in abandoned: abandoned.remove(identity)
-            self._persist(); self._retire_uploads()
-        self._request('DELETE','/v1/uploads/'+quote(identity,safe=''),done)
+        identity = next((x for x in abandoned if x not in active and x not in self._cleanup_inflight),None)
+        if identity is not None:
+            # A slow R2 purge must not keep a new file queued. The cancellation
+            # receipt is independent of the active content-sync cycle.
+            self._cleanup_inflight.add(identity)
+            def done(result,error):
+                self._cleanup_inflight.discard(identity)
+                if error and getattr(error,'status',0) not in (404,409):
+                    delay = self._retry_delay(error)
+                    self.state['cleanup_not_before'] = time.time()+delay
+                    if self._quota_error(error): self.state['quota_not_before']=self.state['cleanup_not_before']
+                    self._persist();self.debounce.start(min(2147483647,int(delay*1000)+1))
+                    self.status_changed.emit('云端清理暂时中断，删除操作已保留并会自动重试。')
+                    return
+                if error and getattr(error,'code','') == 'ALREADY_COMMITTED':
+                    details = getattr(error,'details',{})
+                    problem = details.get('error',details) if isinstance(details,dict) else {}
+                    record = problem.get('current_record') if isinstance(problem,dict) else None
+                    if isinstance(record,dict):
+                        current = self.state['entries'].get(record.get('id'))
+                        if (current and current.get('deleted') and current.get('dirty')
+                                and isinstance(record.get('version'),int) and record['version']>0):
+                            current['version'] = record['version']
+                            if record.get('deleted'): self.state['entries'].pop(current['id'],None)
+                if identity in abandoned: abandoned.remove(identity)
+                self._persist()
+                if not self.running: self.debounce.start(1)
+            self._request('DELETE','/v1/uploads/'+quote(identity,safe=''),done)
+        self._persist();self._after_cleanup()
 
     def _pull(self):
         if not self.receive_enabled:
@@ -754,9 +769,11 @@ class ShelfSync(QObject):
                 else: callback(None,ValueError('云端文件版本已改变，请稍后重试。'))
                 return
             chunk_size, count = result.get('chunk_size'), result.get('part_count')
+            large_parts=(isinstance(chunk_size,int) and chunk_size>4*1024*1024 and isinstance(count,int) and count>1)
             if (not isinstance(chunk_size,int) or not 65536<=chunk_size<=90*1024*1024 or not isinstance(count,int)
                     or count != (record['size']+chunk_size-1)//chunk_size
-                    or (chunk_size>4*1024*1024 and (count!=1 or chunk_size!=record['size']))):
+                    or (chunk_size>4*1024*1024 and not (count==1 and chunk_size==record['size'])
+                        and not (large_parts and record['size']>90*1024*1024 and chunk_size%(1024*1024)==0))):
                 callback(None,ValueError('同步分块信息无效。')); return
             target.parent.mkdir(parents=True,exist_ok=True)
             downloads = self.state.setdefault('downloads',{})
@@ -813,7 +830,7 @@ class ShelfSync(QObject):
                         path.unlink(missing_ok=True)
                     except (OSError,ValueError) as error: failed(error,index); return
                     request_keys.add(self._request('GET',f'/v1/items/{identity}/parts/{index}?version={record["version"]}',received,
-                        destination=path,expected={'size':size},timeout_ms=120000,
+                        destination=path,expected={'size':size,'with_digest':True},timeout_ms=120000,
                         headers={'X-FlickDock-Fast-Content':'1'}))
                 def recorded(digest,error):
                     if halted:return
@@ -833,7 +850,15 @@ class ShelfSync(QObject):
                                           headers={'X-FlickDock-Fast-Content':'1'})
                         else: failed(error,index)
                         return
-                    self._work(_checked_download_part,(path,size,None),recorded)
+                    # CloudApi already checked the server's SHA-256 as it
+                    # streamed the bytes to a fsynced file. A second read
+                    # here doubles disk traffic before assembly. Retain the
+                    # disk check for injected/older transports that return a
+                    # bare Path and for resumed cached parts below.
+                    if (isinstance(result,dict) and result.get('path')==path
+                            and re.fullmatch(r'[0-9a-f]{64}',str(result.get('sha256','')))):
+                        recorded(result['sha256'],None)
+                    else:self._work(_checked_download_part,(path,size,None),recorded)
                 expected = cached['hashes'].get(str(index))
                 if re.fullmatch(r'[0-9a-f]{64}',str(expected)):
                     def checked(digest,error):
@@ -897,7 +922,8 @@ class ShelfSync(QObject):
                 self._forget_resume(identity)
         active = {x.get('upload_id') for x in resumes.values()}
         if (self._pending_removal() is not None or (not self._paused('cleanup_not_before') and
-                any(x not in active for x in self.state.setdefault('pending_uploads',[])))):
+                any(x not in active and x not in self._cleanup_inflight
+                    for x in self.state.setdefault('pending_uploads',[])))):
             self._retire_uploads(); return
         pending = next((e for e in self.state['entries'].values() if e.get('dirty') and not e.get('paused_upload') and
                         ((e.get('deleted') and e.get('version',0)==0 and not self.state.get('pending_uploads')) or (not e.get('deleted') and
@@ -971,9 +997,11 @@ class ShelfSync(QObject):
                 self._upload_committed(snapshot,result.get('record'),instant=True)
                 return
             chunk, count, upload_id = result.get('chunk_size'),result.get('part_count'),result.get('upload_id')
+            large_parts=(isinstance(chunk,int) and chunk>4*1024*1024 and isinstance(count,int) and count>1)
             if (not isinstance(chunk,int) or not 65536 <= chunk <= 90*1024*1024
                     or count != (snapshot['size']+chunk-1)//chunk
-                    or (chunk>4*1024*1024 and (count!=1 or chunk!=snapshot['size']))
+                    or (chunk>4*1024*1024 and not (count==1 and chunk==snapshot['size'])
+                        and not (large_parts and snapshot['size']>90*1024*1024 and chunk%(1024*1024)==0))
                     or upload_id != snapshot['upload_id']):
                 self._error(ValueError('云同步上传信息无效。')); return
             snapshot.update(upload_id=upload_id,chunk_size=chunk,part_count=count,next_part=0)
@@ -982,7 +1010,7 @@ class ShelfSync(QObject):
             'upload_id':snapshot['upload_id'],
             'item_id':identity,'base_version':snapshot.get('version',0),'kind':snapshot['kind'],
             'name':snapshot['name'],'mime_type':snapshot['mime_type'],'size':snapshot['size'],'sha256':snapshot['sha256'],
-            'fast_upload':True})
+            'fast_upload':True,'fast_multipart':True})
 
     def _resume_upload(self, transfer):
         if not self._resume_matches(transfer):
@@ -1055,22 +1083,31 @@ class ShelfSync(QObject):
                     return
                 self._upload_committed(transfer,result.get('record'))
             self._request('POST','/v1/uploads/'+transfer['upload_id']+'/commit',committed,data={}); return
+        transfer['_sent_bytes']=0
+        def progress(sent,total):
+            if not self._resume_matches(transfer):return
+            transfer['_sent_bytes']=sent;self._notify_transfers()
+        def sent(result,error):
+            if error:
+                # The server may have accepted this part before the reply
+                # was lost. Resume with its next_part, never guess/replay.
+                self._error(error); return
+            transfer['next_part'] = index+1;transfer.pop('_sent_bytes',None); self._persist_progress()
+            self._notify_transfers()
+            self.status_changed.emit(f'正在上传 {transfer["name"]} · {index+1}/{transfer["part_count"]}')
+            self._send_part(transfer,index+1)
+        if (index==0 and transfer['part_count']==1 and transfer['size']>4*1024*1024
+                and getattr(self.api,'supports_file_upload',False)):
+            # For a single large part the staged original SHA is already the
+            # required R2 checksum. Let Qt stream its QFile directly: avoid
+            # another Python read plus an 80 MiB QByteArray copy before the
+            # first byte can leave the machine.
+            self._request('PUT',f'/v1/uploads/{transfer["upload_id"]}/parts/0',sent,
+                          source=transfer['path'],headers={'X-Content-SHA256':transfer['sha256']},progress=progress)
+            return
         def read(result,error):
             if error: self._error(error); return
             data,digest = result
-            transfer['_sent_bytes']=0
-            def progress(sent,total):
-                if not self._resume_matches(transfer):return
-                transfer['_sent_bytes']=sent;self._notify_transfers()
-            def sent(result,error):
-                if error:
-                    # The server may have accepted this part before the reply
-                    # was lost. Resume with its next_part, never guess/replay.
-                    self._error(error); return
-                transfer['next_part'] = index+1;transfer.pop('_sent_bytes',None); self._persist_progress()
-                self._notify_transfers()
-                self.status_changed.emit(f'正在上传 {transfer["name"]} · {index+1}/{transfer["part_count"]}')
-                self._send_part(transfer,index+1)
             self._request('PUT',f'/v1/uploads/{transfer["upload_id"]}/parts/{index}',sent,
                           raw=data,headers={'X-Content-SHA256':digest},progress=progress)
             next_key=(transfer['upload_id'],index+1)

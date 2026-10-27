@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
-from PySide6.QtCore import QObject, QTimer, QUrl, Qt, Signal
+from PySide6.QtCore import QObject, QTimer, QUrl, Qt, Signal, QFile, QIODevice
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 from app_version import APP_VERSION
 
@@ -21,6 +21,7 @@ class CloudError(Exception):
 
 class CloudApi(QObject):
     unauthorized = Signal()
+    supports_file_upload = True
 
     def __init__(self, origin, parent=None, *, network=None, allow_test_http=False):
         super().__init__(parent)
@@ -44,7 +45,7 @@ class CloudApi(QObject):
             raise CloudError('同步请求无效。')
         return QUrl(self.origin + path)
 
-    def request(self, method, path, callback, *, data=None, raw=None, headers=None,
+    def request(self, method, path, callback, *, data=None, raw=None, source=None, headers=None,
                 authenticated=True, destination=None, expected=None, timeout_ms=45000,
                 progress=None):
         """callback(result,error); optional progress(sent,total) reports raw upload.
@@ -53,6 +54,7 @@ class CloudApi(QObject):
         content. Only the successful protocol response confirms acceptance.
         """
         key = uuid4().hex
+        source_file = None
         try:
             if self._closed: raise CloudError('同步服务已关闭。')
             request = QNetworkRequest(self._url(path))
@@ -64,23 +66,38 @@ class CloudApi(QObject):
             if authenticated:
                 if not self.token: raise CloudError('请先登录账号。', 401, 'unauthorized')
                 request.setRawHeader(b'Authorization', ('Bearer ' + self.token).encode('ascii'))
+            if source is not None and (raw is not None or data is not None):
+                raise CloudError('同步请求不能重复提供文件内容。')
             payload = raw if raw is not None else json.dumps(data, ensure_ascii=False).encode('utf8') if data is not None else b''
+            upload_size = len(payload)
+            if source is not None:
+                path_to_send = Path(source)
+                if path_to_send.is_symlink() or not path_to_send.is_file():
+                    raise CloudError('待上传文件已改变。')
+                upload_size = path_to_send.stat().st_size
+                source_file = QFile(str(path_to_send))
+                if not source_file.open(QIODevice.OpenModeFlag.ReadOnly):
+                    raise CloudError('无法读取待上传文件。')
+                # Qt otherwise may buffer the complete 80 MiB payload before
+                # sending it. QFile remains open until this reply finishes.
+                request.setAttribute(QNetworkRequest.Attribute.DoNotBufferUploadDataAttribute, True)
+                request.setRawHeader(b'Content-Length', str(upload_size).encode('ascii'))
             # A large streamed R2 PUT is one network request rather than many
             # small requests. Keep Qt's idle timeout, while allowing the total
             # upload time to scale with bytes on a slower uplink.
             total_timeout = (max(timeout_ms, min(15 * 60 * 1000,
-                60000 + (len(payload) * 1000 // (256 * 1024))))
-                if raw is not None and len(payload) > 4 * 1024 * 1024 else timeout_ms)
+                60000 + (upload_size * 1000 // (256 * 1024))))
+                if (raw is not None or source is not None) and upload_size > 4 * 1024 * 1024 else timeout_ms)
             request.setTransferTimeout(timeout_ms)
-            request.setRawHeader(b'Content-Type', b'application/octet-stream' if raw is not None else b'application/json')
+            request.setRawHeader(b'Content-Type', b'application/octet-stream' if raw is not None or source is not None else b'application/json')
             for name, value in (headers or {}).items(): request.setRawHeader(name.encode('ascii'), str(value).encode('ascii'))
-            reply = self.network.sendCustomRequest(request, method.encode('ascii'), payload)
+            reply = self.network.sendCustomRequest(request, method.encode('ascii'), source_file or payload)
             timer = QTimer(self); timer.setSingleShot(True)
             state = {'reply':reply,'callback':callback,'timer':timer,'body':bytearray(),
                      'received':0,'expected':expected,'destination':Path(destination) if destination else None,
-                     'part':None,'file':None,'hash':hashlib.sha256(),
-                     'progress':progress if callable(progress) and raw is not None else None,
-                     'upload_total':len(payload),'upload_sent':-1,'progress_at':0.,
+                     'part':None,'file':None,'hash':hashlib.sha256(),'source_file':source_file,
+                     'progress':progress if callable(progress) and (raw is not None or source is not None) else None,
+                     'upload_total':upload_size,'upload_sent':-1,'progress_at':0.,
                      'auth_token':self.token if authenticated else None}
             self._requests[key] = state
             timer.timeout.connect(lambda: self._finish(key, error=CloudError('同步请求超时，请检查网络。')))
@@ -96,6 +113,9 @@ class CloudApi(QObject):
                     except TypeError:signal.connect(report)  # Minimal injected test transports.
             timer.start(max(total_timeout, 300000) if destination else total_timeout)
         except Exception as error:
+            if source_file is not None and key not in self._requests:
+                source_file.close()
+                source_file.deleteLater()
             problem = error if isinstance(error, CloudError) else CloudError('无法连接云同步服务。')
             if not self._closed:
                 self._deferred[key]=(callback,problem)
@@ -178,7 +198,12 @@ class CloudApi(QObject):
                     state['file'] = state['part'].open('xb')
                 state['file'].flush(); os.fsync(state['file'].fileno()); state['file'].close(); state['file'] = None
                 os.replace(state['part'], state['destination']); state['part'] = None
-                result = state['destination']
+                # The bytes were hashed while streaming to this fsynced file.
+                # Callers that opt in can avoid rereading a large part before
+                # the final whole-file verification. Keep the legacy Path
+                # result for clients and injected transports using this API.
+                result = ({'path':state['destination'],'sha256':digest}
+                          if expected.get('with_digest') else state['destination'])
             else:
                 response_body = bytes(state['body'])
                 if status in (429, 503, 1027) and b'1027' in response_body and b'cloudflare' in response_body.lower():
@@ -202,6 +227,9 @@ class CloudApi(QObject):
         finally:
             if not reply.isFinished(): reply.abort()
             reply.deleteLater()
+            if state['source_file'] is not None:
+                state['source_file'].close()
+                state['source_file'].deleteLater()
             if state['file'] is not None: state['file'].close()
             if state['part'] is not None: state['part'].unlink(missing_ok=True)
         if status == 401 and state['auth_token'] and state['auth_token'] == self.token and not self._closed:

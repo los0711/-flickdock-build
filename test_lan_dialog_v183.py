@@ -109,7 +109,7 @@ class LanDialogTests(unittest.TestCase):
 
     def test_title_drag_moves_dialog_and_native_host_shadow_is_disabled(self):
         self.assertTrue(self.dialog.windowFlags() & Qt.WindowType.FramelessWindowHint)
-        self.assertTrue(self.dialog.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
+        self.assertFalse(self.dialog.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
         bar=self.dialog.title_bar
         start=self.dialog.pos(); point=QPointF(18,18)
         global_start=QPointF(bar.mapToGlobal(point.toPoint()))

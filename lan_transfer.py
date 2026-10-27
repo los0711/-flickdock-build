@@ -525,6 +525,8 @@ class LanTransferService(QObject):
                     if index == len(files) and offset: raise ValueError('接收方的续传位置无效。')
                     transfer.done = sum(row['size'] for row in files[:index]) + offset
                     last_emit = 0
+                    file_buffer = bytearray(BLOCK_BYTES)
+                    file_view = memoryview(file_buffer)
                     for number in range(index, len(files)):
                         row = files[number]; source, size, modified = sources[row['path']]
                         info = source.stat()
@@ -536,16 +538,17 @@ class LanTransferService(QObject):
                             prefix = resume
                             while prefix:
                                 if transfer.cancel.is_set(): raise InterruptedError('已取消传输。')
-                                data = incoming.read(min(BLOCK_BYTES, prefix))
-                                if not data: raise ValueError('原文件已改变，请重新发起传输。')
-                                digest.update(data); prefix -= len(data)
+                                count = incoming.readinto(file_view[:min(BLOCK_BYTES, prefix)])
+                                if not count: raise ValueError('原文件已改变，请重新发起传输。')
+                                digest.update(file_view[:count]); prefix -= count
                             remaining = size - resume
                             while remaining:
                                 if transfer.cancel.is_set(): raise InterruptedError('已取消传输。')
-                                data = incoming.read(min(BLOCK_BYTES, remaining))
-                                if not data: raise ValueError('原文件已改变，请重新发起传输。')
+                                count = incoming.readinto(file_view[:min(BLOCK_BYTES, remaining)])
+                                if not count: raise ValueError('原文件已改变，请重新发起传输。')
+                                data = file_view[:count]
                                 stream.sendall(data); digest.update(data)
-                                transfer.done += len(data); remaining -= len(data)
+                                transfer.done += count; remaining -= count
                                 if time.monotonic() - last_emit >= .08:
                                     self._notify(transfer, 'transferring', name=row['path'], code=code); last_emit = time.monotonic()
                             if incoming.read(1): raise ValueError('原文件已改变，请重新发起传输。')

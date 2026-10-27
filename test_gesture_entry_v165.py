@@ -89,16 +89,17 @@ with tempfile.TemporaryDirectory(prefix='flickdock-gesture-entry-v165-') as temp
                 now=time.perf_counter()
                 if begin[0] is None:begin[0]=now;state['begin']=now
                 elapsed=now-begin[0]
-                pointer['pos']=QPoint(round(600+190*math.sin(2*math.pi*2.5*elapsed)),350)
+                motion_elapsed=min(elapsed,1.4) if mode=='late_after_stop' else elapsed
+                pointer['pos']=QPoint(round(600+190*math.sin(2*math.pi*2.5*motion_elapsed)),350)
                 pointer['down']=True;state['polls'].append(elapsed)
                 manager.poll()
                 if shelf.isVisible():state.setdefault('shown',time.perf_counter()-state['begin'])
             manager.timer.timeout.connect(tick)
             with patch.object(app,'platformName',return_value='windows'):
-                if mode=='late':
+                if mode in ('late','late_after_stop'):
                     delayed=QTimer();delayed.setSingleShot(True)
                     delayed.timeout.connect(lambda:manager.drag_gate._content_entered(QPoint(pointer['pos'])) if manager.drag_gate._accepts(mime) else None)
-                    delayed.start(1300)
+                    delayed.start(2200 if mode=='late_after_stop' else 1300)
                 manager.timer.start(20)
                 try:spin_until(lambda:'shown' in state)
                 except AssertionError:
@@ -118,7 +119,13 @@ with tempfile.TemporaryDirectory(prefix='flickdock-gesture-entry-v165-') as temp
         low,high=run(1,'immediate'),run(100,'immediate')
         assert low['shown']>high['shown']+.4,(low,high)
         delayed_low,delayed_high=run(1,'late'),run(100,'late')
-        assert delayed_low['shown']>delayed_high['shown']+.4,(delayed_low,delayed_high)
+        # Recording can delay the OLE MIME callback until after a complete
+        # shake. The already-observed gesture must reveal immediately once
+        # real content is validated, without requiring a second shake.
+        assert 0<=delayed_low['shown']-delayed_low['type_ready']<.24,delayed_low
+        assert 0<=delayed_high['shown']-delayed_high['type_ready']<.24,delayed_high
+        delayed_after_stop=run(1,'late_after_stop')
+        assert 0<=delayed_after_stop['shown']-delayed_after_stop['type_ready']<.24,delayed_after_stop
 
         # A coarse wall/idle clock must no longer quantise gesture derivatives.
         original_monotonic=time.monotonic

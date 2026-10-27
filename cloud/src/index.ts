@@ -25,6 +25,15 @@ function chunkSize(env:Env,fileSize:number,fastUpload=false){
   // within the Workers Free CPU budget while accumulating the full SHA.
   return fileSize>4*1024*1024?Math.min(size,1024*1024):size;
 }
+// Keep each request well below the Workers inbound-body ceiling while cutting
+// round trips for large originals in half compared with 32 MiB parts.
+const FAST_MULTIPART_BYTES=64*1024*1024;
+function uploadChunkSize(env:Env,fileSize:number,fastUpload=false,fastMultipart=false){
+  // The newer capability is separate from fast_upload so 1.8.8 clients can
+  // still upload >90 MiB using the protocol they already understand.
+  const singleLimit=integer(Number(env.SINGLE_PUT_LIMIT_BYTES??90*1024*1024),'single_put_limit',0,90*1024*1024);
+  return fastMultipart&&fileSize>singleLimit?FAST_MULTIPART_BYTES:chunkSize(env,fileSize,fastUpload);
+}
 class APIError extends Error {constructor(public status:number,public code:string,message:string,public details:Row={}){super(message);}}
 const fail=(status:number,code:string,message:string,details:Row={}):never=>{throw new APIError(status,code,message,details);};
 const json=(data:Row,status=200)=>Response.json({schema_version:1,...data},{status,headers:{'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
@@ -311,12 +320,13 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
   }
   if(method==='POST'&&path==='/v1/uploads'){
     const required=['item_id','base_version','kind','name','mime_type','size','sha256'];
-    const input=await body(request,[...required,'upload_id','fast_upload'],required);
+    const input=await body(request,[...required,'upload_id','fast_upload','fast_multipart'],required);
     const id=uuid(input.item_id,'item_id'),base=integer(input.base_version,'base_version'),kind=text(input.kind,'kind',1,8),name=text(input.name,'name',1,255),mime=text(input.mime_type,'mime_type',1,127),size=integer(input.size,'size'),hash=digest(input.sha256);
     if(!['file','text','url'].includes(kind)||!/^[a-zA-Z0-9!#$&^_.+-]+\/[a-zA-Z0-9!#$&^_.+-]+$/.test(mime))fail(400,'INVALID_REQUEST','Unknown kind or MIME type');
     // Persisting this optional UUID before POST lets a client recover a lost
     // initialization reply without reserving the entire file size twice.
     if(input.fast_upload!==undefined&&typeof input.fast_upload!=='boolean')fail(400,'INVALID_REQUEST','fast_upload must be boolean');
+    if(input.fast_multipart!==undefined&&typeof input.fast_multipart!=='boolean')fail(400,'INVALID_REQUEST','fast_multipart must be boolean');
     const suppliedId=input.upload_id!==undefined,uploadId=suppliedId?uuid(input.upload_id,'upload_id'):crypto.randomUUID();
     const reuse=async()=>{
       const previous=await findUpload(env,owner,uploadId);
@@ -343,12 +353,12 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
       if(base===0&&await item(env,owner.id,id))await conflict(env,owner,id);
       // Reuse only content already committed and still referenced by a live
       // item in this account. A checksum alone never crosses account bounds.
-      const source=await first(env,"SELECT u.id FROM uploads u JOIN items i ON i.active_upload=u.id WHERE u.account_id=? AND i.account_id=? AND i.deleted=0 AND u.state='committed' AND u.sha256=? AND u.size=? LIMIT 1",owner.id,owner.id,hash,size);
+      const source=await first(env,"SELECT u.id FROM uploads u JOIN items i ON i.active_upload=u.id WHERE u.account_id=? AND i.account_id=? AND i.deleted=0 AND u.state='committed' AND u.computed_sha256=u.sha256 AND u.sha256=? AND u.size=? LIMIT 1",owner.id,owner.id,hash,size);
       if(source){
         const now=Date.now();
         const previous=await item(env,owner.id,id);
         const result=await env.DB.batch([
-          query(env,"INSERT OR IGNORE INTO instant_receipts(upload_id,account_id,item_id,base_version,kind,name,mime_type,size,sha256,source_upload,result_version,expires_at) SELECT ?,?,?,?,?,?,?,?,?,u.id,?,? FROM uploads u WHERE u.id=? AND u.account_id=? AND u.state='committed' AND u.sha256=? AND u.size=? AND EXISTS(SELECT 1 FROM items i WHERE i.account_id=? AND i.active_upload=u.id AND i.deleted=0) AND COALESCE((SELECT version FROM items WHERE account_id=? AND id=?),0)=? AND NOT EXISTS(SELECT 1 FROM uploads WHERE id=?)",uploadId,owner.id,id,base,kind,name,mime,size,hash,base+1,now+7*DAY,source.id,owner.id,hash,size,owner.id,owner.id,id,base,uploadId),
+          query(env,"INSERT OR IGNORE INTO instant_receipts(upload_id,account_id,item_id,base_version,kind,name,mime_type,size,sha256,source_upload,result_version,expires_at) SELECT ?,?,?,?,?,?,?,?,?,u.id,?,? FROM uploads u WHERE u.id=? AND u.account_id=? AND u.state='committed' AND u.computed_sha256=u.sha256 AND u.sha256=? AND u.size=? AND EXISTS(SELECT 1 FROM items i WHERE i.account_id=? AND i.active_upload=u.id AND i.deleted=0) AND COALESCE((SELECT version FROM items WHERE account_id=? AND id=?),0)=? AND NOT EXISTS(SELECT 1 FROM uploads WHERE id=?)",uploadId,owner.id,id,base,kind,name,mime,size,hash,base+1,now+7*DAY,source.id,owner.id,hash,size,owner.id,owner.id,id,base,uploadId),
           query(env,"INSERT INTO items(account_id,id,version,active_upload,kind,name,mime_type,size,sha256,updated_at,expires_at) SELECT r.account_id,r.item_id,r.result_version,r.source_upload,r.kind,r.name,r.mime_type,r.size,r.sha256,?,CASE WHEN r.size>524288000 THEN ? ELSE NULL END FROM instant_receipts r WHERE r.upload_id=? AND r.account_id=? ON CONFLICT(account_id,id) DO UPDATE SET version=excluded.version,deleted=0,active_upload=excluded.active_upload,kind=excluded.kind,name=excluded.name,mime_type=excluded.mime_type,size=excluded.size,sha256=excluded.sha256,updated_at=excluded.updated_at,expires_at=excluded.expires_at WHERE items.version=excluded.version-1",now,now+DAY,uploadId,owner.id),
         ]);
         if(result[0].meta.changes){
@@ -364,7 +374,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
         if((current?.version??0)!==base)await conflict(env,owner,id);
       }
       const count=await first(env,"SELECT COUNT(*) n FROM uploads WHERE account_id=? AND state IN ('pending','verifying')",owner.id);if(count!.n>=10)fail(429,'UPLOAD_LIMIT','Too many pending uploads');
-      const expires=Date.now()+3*DAY,chunk=chunkSize(env,size,input.fast_upload===true),partCount=Math.ceil(size/chunk);
+      const expires=Date.now()+3*DAY,chunk=uploadChunkSize(env,size,input.fast_upload===true,input.fast_multipart===true),partCount=Math.ceil(size/chunk);
       await env.DB.batch([
         query(env,'UPDATE limits SET bytes_limit=? WHERE id=1',config(env.GLOBAL_QUOTA_BYTES,8*1024**3)),
         query(env,'INSERT INTO allocations(id,account_id,size) VALUES(?,?,?)',uploadId,owner.id,size),
@@ -385,12 +395,13 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
     if(value.state!=='pending'||value.expires_at<Date.now())fail(409,'UPLOAD_NOT_PENDING','Upload is not writable');
     if(partIndex>=value.part_count)fail(400,'INVALID_PART','Part index out of range');
     const expected=Math.min(value.chunk_size,value.size-partIndex*value.chunk_size),hash=digest(request.headers.get('X-Content-SHA256'));
-    const streamed=value.part_count===1&&expected>4*1024*1024;
+    const streamed=value.chunk_size>4*1024*1024&&expected>4*1024*1024;
     let data:Uint8Array|null=null;
     if(streamed){
       const declared=request.headers.get('Content-Length');
       if(declared!==null&&(!/^\d+$/.test(declared)||Number(declared)!==expected))fail(400,'PART_MISMATCH','Part size or SHA256 differs');
-      if(hash!==value.sha256||!request.body)fail(400,'PART_MISMATCH','Part size or SHA256 differs');
+      if((value.part_count===1&&hash!==value.sha256)||!request.body)
+        fail(400,'PART_MISMATCH','Part size or SHA256 differs');
     }else{
       data=await bytes(request,expected);
       if(data.byteLength!==expected)fail(400,'PART_MISMATCH','Part size or SHA256 differs');
@@ -409,10 +420,11 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
       if(!locked.meta.changes){await findUpload(env,owner,id);fail(423,'UPLOAD_BUSY','Upload changed or another part write is running');}
       let released=false;
       try{
-        const single=value.part_count===1;
-        const full=single?null:PersistentSHA256.load(value.hash_state);
+        const storageVerified=value.chunk_size>4*1024*1024;
+        const full=storageVerified?null:PersistentSHA256.load(value.hash_state);
         if(full)full.update(data!);
-        const last=partIndex===value.part_count-1,state=last?null:full!.save(),computed=single?hash:last?hex(full!.digest()):null;
+        const last=partIndex===value.part_count-1,state=storageVerified||last?null:full!.save(),
+          computed=storageVerified?(value.part_count===1?hash:null):last?hex(full!.digest()):null;
         await budget(env,'A',1);
         try {
           // R2 validates this checksum in its storage service, saving one
@@ -465,17 +477,23 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
     if(summary.n!==value.part_count||summary.ready!==value.part_count||value.next_part!==value.part_count)fail(409,'UPLOAD_INCOMPLETE','All parts must be uploaded before commit');
     const previous=await item(env,owner.id,value.item_id);
     const lease=crypto.randomUUID(),now=Date.now();
+    const clientVerifiedFullHash=value.part_count>1&&value.chunk_size>4*1024*1024;
     const locked=await query(env,"UPDATE uploads SET state='verifying',lease=?,lease_until=? WHERE id=? AND (state='pending' OR (state='verifying' AND lease_until<?))",lease,now+300000,id,now).run();
     if(!locked.meta.changes){await findUpload(env,owner,id);fail(423,'UPLOAD_BUSY','Upload verification is already running');}
     try{
-      if(value.verified_size!==value.size||value.computed_sha256!==value.sha256)fail(400,'CONTENT_MISMATCH','Full content size or SHA256 differs');
+      // R2 has validated each streamed part SHA. A Free Worker has only 10 ms
+      // CPU/request, so it cannot hash a >90 MiB concatenation at commit. The
+      // sender hashes the original while staging; receivers verify the full
+      // original SHA before exposing it. Such uploads cannot seed instant reuse.
+      if(value.verified_size!==value.size||(!clientVerifiedFullHash&&value.computed_sha256!==value.sha256))
+        fail(400,'CONTENT_MISMATCH','Full content size or SHA256 differs');
       const result=await query(env,"UPDATE uploads SET state='committed',lease=NULL,lease_until=0 WHERE id=? AND state='verifying' AND lease=?",id,lease).run();
       if(!result.meta.changes)fail(409,'UPLOAD_NOT_PENDING','Upload changed while verifying');
     }catch(error){await query(env,"UPDATE uploads SET state='pending',lease=NULL,lease_until=0 WHERE id=? AND state='verifying' AND lease=?",id,lease).run();await findUpload(env,owner,id);if(String(error).includes('VERSION_CONFLICT'))await conflict(env,owner,value.item_id);throw error;}
     // Retire replaced bytes promptly; a reader holds a lease until it finishes.
     if(previous?.active_upload&&previous.active_upload!==id)await purgeUpload(env,previous.active_upload);
     announce(env,ctx,owner,'content');
-    return json({record:record((await item(env,owner.id,value.item_id))!)});
+    return json({record:record((await item(env,owner.id,value.item_id))!),server_full_sha256_verified:!clientVerifiedFullHash});
   }
   match=path.match(/^\/v1\/uploads\/([^/]+)$/);
   if(method==='GET'&&match){
@@ -531,7 +549,10 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
     const legacy=upload!.chunk_size>4*1024*1024&&request.headers.get('X-FlickDock-Fast-Content')!=='1';
     const virtualSize=1024*1024,expected=legacy?Math.min(virtualSize,value!.size-index*virtualSize):0;
     if(legacy&&(!Number.isSafeInteger(index)||index>=Math.ceil(value!.size/virtualSize)))fail(404,'NOT_FOUND','Content part not found');
-    const part=await first(env,'SELECT * FROM parts WHERE upload_id=? AND idx=? AND ready=1',value!.active_upload,legacy?0:index);if(!part)fail(404,'NOT_FOUND','Content part not found');
+    const physicalIndex=legacy?Math.floor(index*virtualSize/upload!.chunk_size):index;
+    const physicalOffset=legacy?index*virtualSize-physicalIndex*upload!.chunk_size:0;
+    const part=await first(env,'SELECT * FROM parts WHERE upload_id=? AND idx=? AND ready=1',value!.active_upload,physicalIndex);if(!part)fail(404,'NOT_FOUND','Content part not found');
+    if(legacy&&physicalOffset+expected>part!.size)fail(503,'STORAGE_MISSING','Content range crosses an invalid part boundary');
     const lease=crypto.randomUUID();await query(env,'INSERT INTO read_leases(upload_id,id,expires_at) VALUES(?,?,?)',value!.active_upload,lease,Date.now()+1800000).run();
     let releasing:Promise<void>|undefined;
     const release=()=>releasing??=(async()=>{
@@ -539,7 +560,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
       try{await purgeUpload(env,value!.active_upload);}catch{/* Allocation stays reserved until the next cleanup. */}
     })();
     let object:R2ObjectBody|null;
-    try{await budget(env,'B',1);object=await env.FILES.get(part!.key,legacy?{range:{offset:index*virtualSize,length:expected}}:undefined);if(!object)fail(503,'STORAGE_MISSING','Content part is unavailable');}
+    try{await budget(env,'B',1);object=await env.FILES.get(part!.key,legacy?{range:{offset:physicalOffset,length:expected}}:undefined);if(!object)fail(503,'STORAGE_MISSING','Content part is unavailable');}
     catch(error){await release();throw error;}
     if(legacy){
       try{

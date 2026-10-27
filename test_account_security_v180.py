@@ -9,6 +9,7 @@ from unittest.mock import patch
 from PySide6.QtCore import QTimer
 import account_service
 from account_service import AccountService,derive_auth_key
+from account_panel import AccountPanel
 from account_store import SessionStore
 from test_account_panel_v180 import APP,Api,MemorySessions,PASSWORD,challenge,flush,wait
 
@@ -73,6 +74,78 @@ class SecurityTests(unittest.TestCase):
         with patch('account_store.atomic_json',side_effect=OSError('fixture write failure')):
             with self.assertRaises(OSError):store.save(dict(session,token='replacement'))
         self.assertEqual(backend.value,previous);store.clear();self.assertIsNone(backend.value);self.assertFalse(store.path.exists())
+
+    def test_macos_keychain_wait_never_blocks_login_ui_or_resurrects_logout(self):
+        class WaitingSessions(MemorySessions):
+            def __init__(self):
+                super().__init__();self.started=threading.Event();self.release=threading.Event()
+                self.cleared=threading.Event()
+            def save(self,value):
+                self.started.set();self.release.wait(2)
+                super().save(value)
+            def invalidate(self):self.value=None
+            def clear(self):
+                super().clear();self.cleared.set()
+
+        self.service.platform='macos'
+        sessions=WaitingSessions();self.service.store=sessions
+        panel=AccountPanel(self.service);panel.show();flush()
+        heartbeat=QTimer();heartbeat.setInterval(5);beats=[]
+        heartbeat.timeout.connect(lambda:beats.append(1));heartbeat.start()
+        release_guard=threading.Timer(1,sessions.release.set)
+        try:
+            panel.username_edit.setText('mac-fixture');panel.password_edit.setText(PASSWORD)
+            panel._submit_auth()
+            self.assertTrue(panel.auth_status_label.isVisible())
+            self.assertIn('正在登录',panel.auth_status_label.text())
+            self.api.finish(self.api.last('/v1/auth/challenge'),challenge())
+            self.assertTrue(wait(lambda:any(r['path']=='/v1/auth/login' for r in self.api.requests)))
+            release_guard.start()
+            self.api.finish(self.api.last('/v1/auth/login'),dict(
+                account={'id':'mac-account','username':'mac-fixture'},token='mac-token',device_id='mac-device'))
+            self.assertTrue(wait(sessions.started.is_set))
+            self.assertFalse(sessions.release.is_set(),'Credential storage blocked the login callback')
+            self.assertTrue(panel.signed_in_page.isVisible())
+            self.assertFalse(panel.auth_page.isVisible())
+            self.assertTrue(wait(lambda:len(beats)>5 and not sessions.release.is_set(),.5))
+            self.service.logout();self.api.finish(self.api.last('/v1/auth/logout'),dict())
+            self.assertTrue(panel.auth_page.isVisible())
+            sessions.release.set();self.assertTrue(wait(sessions.cleared.is_set))
+            self.assertIsNone(sessions.value)
+        finally:
+            sessions.release.set();release_guard.cancel();heartbeat.stop();panel.close();panel.deleteLater();flush()
+
+    def test_logout_generation_fence_blocks_late_keychain_save_on_restart(self):
+        class PausingBackend:
+            def __init__(self):
+                self.value=None;self.save_entered=threading.Event();self.save_release=threading.Event()
+                self.clear_entered=threading.Event();self.clear_release=threading.Event()
+            def get_password(self,*_):return self.value
+            def set_password(self,service,key,value):
+                self.value=value;self.save_entered.set();self.save_release.wait(2)
+            def delete_password(self,*_):
+                self.clear_entered.set();self.clear_release.wait(2);self.value=None
+        backend=PausingBackend()
+        store=SessionStore(self.temp.name,'https://fixture.invalid',backend=backend)
+        self.service.store=store;self.service.platform='macos'
+        try:
+            self.service.login('mac-fixture',PASSWORD)
+            self.api.finish(self.api.last('/v1/auth/challenge'),challenge())
+            self.assertTrue(wait(lambda:any(r['path']=='/v1/auth/login' for r in self.api.requests)))
+            self.api.finish(self.api.last('/v1/auth/login'),dict(
+                account={'id':'mac-account','username':'mac-fixture'},token='mac-token',device_id='mac-device'))
+            self.assertTrue(wait(backend.save_entered.is_set))
+            self.service.logout();self.api.finish(self.api.last('/v1/auth/logout'),dict())
+            self.assertFalse(store.path.exists())
+            backend.save_release.set();self.assertTrue(wait(backend.clear_entered.is_set))
+            # The old writer has returned, but Keychain deletion is still
+            # blocked. A restart must never restore the logged-out session.
+            self.assertFalse(store.path.exists())
+            reopened=SessionStore(self.temp.name,'https://fixture.invalid',backend=backend)
+            self.assertIsNone(reopened.load())
+        finally:
+            backend.save_release.set();backend.clear_release.set()
+            self.assertTrue(wait(lambda:backend.value is None))
 
 
 if __name__=='__main__':unittest.main(verbosity=2)

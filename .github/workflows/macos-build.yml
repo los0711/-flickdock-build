@@ -49,6 +49,9 @@ jobs:
           profile="$(mktemp -d)"
           APPDATA="$profile" XDG_CONFIG_HOME="$profile" dist/FlickDock.app/Contents/MacOS/FlickDock --verify-cloud --verify-output "../outputs/mac-cloud-${{ matrix.arch }}.json" || true
           python -c "import json; from pathlib import Path; p=Path('../outputs/mac-cloud-${{ matrix.arch }}.json'); data=json.loads(p.read_text()); print(data); assert data['ok'] and data['frozen'],data"
+      - name: Measure verified local LAN loopback transfer
+        run: |
+          python bench_lan_throughput_v183.py --size-mib 128 --output "../outputs/mac-lan-${{ matrix.arch }}.json"
       - name: Gather verified release artifacts
         run: |
           python - <<'PY'
@@ -56,7 +59,7 @@ jobs:
           import shutil
           source, target = Path('../outputs'), Path('ci-output')
           target.mkdir()
-          for pattern in ('FlickDock-*-macOS-${{ matrix.arch }}.zip', 'FlickDock-*-macOS-${{ matrix.arch }}.dmg', 'FlickDock-*-macOS-${{ matrix.arch }}.pkg', 'mac-build-*-${{ matrix.arch }}.json', 'mac-cloud-${{ matrix.arch }}.json'):
+          for pattern in ('FlickDock-*-macOS-${{ matrix.arch }}.zip', 'FlickDock-*-macOS-${{ matrix.arch }}.dmg', 'FlickDock-*-macOS-${{ matrix.arch }}.pkg', 'mac-build-*-${{ matrix.arch }}.json', 'mac-cloud-${{ matrix.arch }}.json', 'mac-lan-${{ matrix.arch }}.json'):
               files = list(source.glob(pattern))
               assert len(files) == 1, (pattern, files)
               for path in files:

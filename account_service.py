@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import hashlib
 import platform
+from queue import Queue
 import re
 import sys
 import threading
@@ -99,6 +100,10 @@ class _PasswordWorker(_AuthWorker):
         self.signals.finished.emit(self.epoch,self.proof,error)
 
 
+class _SessionSignals(QObject):
+    finished=Signal(int,str,bool)
+
+
 class AccountService(QObject):
     account_changed = Signal(object)
     status_changed = Signal(str)
@@ -117,6 +122,11 @@ class AccountService(QObject):
         self.busy, self.epoch = False, 0
         self._closed=False
         self._auth_state=None;self._auth_request_key=None;self._auth_jobs={}
+        # A serial daemon handles Keychain authorization without holding up the
+        # UI or preventing app exit if the system credential sheet never returns.
+        self._session_queue=Queue();self._session_thread=None
+        self._session_signals=_SessionSignals(self)
+        self._session_signals.finished.connect(self._session_done,Qt.ConnectionType.QueuedConnection)
         self.platform = {'win32':'windows','darwin':'macos'}.get(sys.platform,'linux')
         self.device_name = platform.node()[:80] or ('Mac' if self.platform=='macos' else 'Windows PC')
         self._restored = self.store.load() if native or store is not None else None
@@ -272,10 +282,47 @@ class AccountService(QObject):
         self.api.token=result['token'];self.account=account;self.device_id=result.get('device_id','')
         self._drop_auth_state();self._busy(False)
         if self._closed or epoch!=self.epoch:return
-        notice='登录成功，正在同步搁架。'
-        try:self.store.save(session)
-        except Exception:notice='已登录，本机无法安全保存凭据，重启后需重新登录。'
-        self.account_changed.emit(dict(account));self.status_changed.emit(notice);self.list_devices()
+        if self.platform=='macos':
+            # Schedule before UI signals, which can themselves trigger logout.
+            # A following clear is then guaranteed to run after this save.
+            self._queue_session('save',session,epoch)
+        self.account_changed.emit(dict(account))
+        self.status_changed.emit('登录成功，正在同步搁架。')
+        self.list_devices()
+        if self.platform!='macos':
+            try:self.store.save(session)
+            except Exception:self.status_changed.emit('已登录，本机无法安全保存凭据，重启后需重新登录。')
+
+    def _queue_session(self,operation,session=None,epoch=None):
+        if self._session_thread is None:
+            self._session_thread=threading.Thread(target=self._session_loop,name='FlickDock Keychain',daemon=True)
+            self._session_thread.start()
+        generation=self.store.generation() if operation=='save' and hasattr(self.store,'generation') else None
+        self._session_queue.put((self.epoch if epoch is None else epoch,operation,session,generation))
+
+    def _session_loop(self):
+        while True:
+            item=self._session_queue.get()
+            if item is None:return
+            epoch,operation,session,generation=item
+            failed=False
+            try:
+                if operation=='save':
+                    if generation is None:self.store.save(session)
+                    else:self.store.save(session,generation=generation)
+                elif hasattr(self.store,'clear_credentials'):self.store.clear_credentials()
+                else:self.store.clear()
+            except Exception:failed=True
+            finally:
+                session=None
+                if not self._closed:self._session_signals.finished.emit(epoch,operation,failed)
+
+    def _session_done(self,epoch,operation,failed):
+        if self._closed or epoch!=self.epoch:return
+        if failed and operation=='save' and self.signed_in:
+            self.status_changed.emit('已登录，本机无法安全保存凭据，重启后需重新登录。')
+        elif failed and operation=='clear' and not self.signed_in:
+            self.status_changed.emit('已退出登录，但系统凭据暂时无法清除。')
 
     def _drop_auth_state(self):
         state,self._auth_state=self._auth_state,None
@@ -383,11 +430,19 @@ class AccountService(QObject):
         self.cancel_auth()
         self.api.token = ''; self.account = None; self.device_id = ''
         self.api.cancel_all()
-        try:self.store.clear()
-        except OSError:pass
+        if self.platform=='macos':
+            # Invalidate the local metadata immediately. A queued save cannot
+            # resurrect a session after logout; the serial clear runs last.
+            try:self.store.invalidate()
+            except (AttributeError,OSError):pass
+            self._queue_session('clear')
+        else:
+            try:self.store.clear()
+            except OSError:pass
         self._busy(False)
         self.account_changed.emit(None); self.devices_changed.emit([]); self.status_changed.emit(message)
 
     def close(self):
         if self._closed:return
         self._closed=True;self.cancel_auth();self.api.close()
+        if self._session_thread is not None:self._session_queue.put(None)

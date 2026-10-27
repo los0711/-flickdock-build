@@ -552,7 +552,7 @@ class LanDialog(QDialog):
     """A dedicated layered transfer window opened from the overview."""
 
     def __init__(self, service, settings, parent=None):
-        super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+        super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
         self.setObjectName('lanDialog'); self.setWindowTitle('FlickDock · 局域网互传')
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setModal(False); self.resize(930, 625); self.setMinimumSize(780, 625)

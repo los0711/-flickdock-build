@@ -115,6 +115,9 @@ class AccountPanel(QFrame):
         auth.addWidget(self.password_edit)
         self.submit_button=_button('登录',self.auth_page,name='accountPrimary')
         self.submit_button.clicked.connect(self._submit_auth);auth.addWidget(self.submit_button)
+        self.auth_status_label=_label('',self.auth_page,muted=True)
+        self.auth_status_label.setAccessibleName('账号登录状态')
+        auth.addWidget(self.auth_status_label)
         layout.addWidget(self.auth_page)
 
         self.signed_in_page=QWidget(self);signed=QVBoxLayout(self.signed_in_page)
@@ -221,7 +224,7 @@ class AccountPanel(QFrame):
         self.login_tab.setChecked(mode=='login');self.register_tab.setChecked(mode=='register')
         self.submit_button.setText('注册' if mode=='register' else '登录')
         self.password_edit.setPlaceholderText('设置 10–128 位密码' if mode=='register' else '请输入密码')
-        self.password_edit.clear();self.status_label.clear()
+        self.password_edit.clear();self.status_label.clear();self.auth_status_label.clear()
 
     def _submit_auth(self):
         if self._busy or self.service.signed_in:return
@@ -240,13 +243,14 @@ class AccountPanel(QFrame):
         identity=str(account.get('id','')) if signed else ''
         if identity!=self._account_id or not signed:
             self._account_id=identity
-            self.password_edit.clear();self.username_edit.clear();self.status_label.clear()
+            self.password_edit.clear();self.username_edit.clear();self.status_label.clear();self.auth_status_label.clear()
             self.username_label.clear();self.email_status_label.clear();self.sync_status_label.clear()
             self._reset_password()
             self._reset_email();self.email_form.hide();self._refreshing=False;self._revoke_pending=''
             self._devices_changed([])
             if signed:self.sync_status_label.setText('正在准备同步…')
         self.auth_page.setVisible(not signed);self.signed_in_page.setVisible(signed)
+        self.status_label.setVisible(signed)
         if signed:
             self.password_edit.clear()
             self.username_label.setText(str(account.get('username','')))
@@ -267,6 +271,7 @@ class AccountPanel(QFrame):
             secret=edit.text()
             if secret:message=message.replace(secret,'…')
         self.status_label.setText(message[:240])
+        self.auth_status_label.setText(message[:240])
         self._refreshing=False;self._revoke_pending='';self._cancel_remove();self._update_enabled()
 
     def _busy_changed(self,busy):

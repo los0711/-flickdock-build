@@ -146,7 +146,7 @@ class ContentDragGate:
     def __init__(self, on_validated: Callable[[QPoint], None],
                  on_drop: Callable | None = None,
                  is_internal_drag: Callable[[], bool] | None = None,
-                 *, probe_timeout_ms: int = 1200):
+                 *, probe_timeout_ms: int = 1800):
         if QApplication.instance() is None:
             raise RuntimeError("ContentDragGate requires a QApplication")
         self.on_validated = on_validated
@@ -227,13 +227,33 @@ class ContentDragGate:
         self._raise_native_target()
         return True
 
+    def sustain_for_shake(self, position: QPoint) -> bool:
+        """Keep MIME inspection alive only while strong shake turns continue.
+
+        A low-sensitivity gesture can legitimately outlast the initial probe.
+        The full gesture and a delayed OLE DragEnter get a short grace period,
+        while an ordinary drag with one turn still expires at its original time.
+        """
+        if not self._active:
+            return self.arm(position)
+        if self._validated:
+            return False
+        self.track_position(position)
+        if self._timeout.remainingTime() < 1400:
+            self._timeout.start(1400)
+        return True
+
     def _follow_pointer(self):
         if not native_input_available() or not self._active:
             return
         if self.is_internal_drag() or native_window_move_active():
             self._finish_probe()
             return
-        self.track_position(QCursor.pos())
+        if not self.track_position(QCursor.pos()):
+            # Capture software may repeatedly raise a non-interactive cursor
+            # overlay above this OLE target without moving the pointer out of
+            # its safe area. Restore ordering without activating the shelf.
+            self._raise_native_target()
 
     def _accepts(self, mime) -> bool:
         return self._active and not self.is_internal_drag() and is_content_mime(mime)

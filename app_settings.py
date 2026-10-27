@@ -640,7 +640,7 @@ class SettingsStore(QObject):
 class ThirdPartyDialog(QDialog):
     """An offline, selectable reader for the application's bundled licenses."""
     def __init__(self, parent=None, theme="light"):
-        super().__init__(parent, Qt.WindowType.Tool | Qt.WindowType.WindowTitleHint | Qt.WindowType.WindowCloseButtonHint)
+        super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.WindowTitleHint | Qt.WindowType.WindowCloseButtonHint)
         self.setObjectName("flickdockLicenses")
         self.setWindowTitle("FlickDock · 第三方许可")
         self.setModal(False)
@@ -713,7 +713,7 @@ class ThirdPartyDialog(QDialog):
 
 class AuthorDialog(QDialog):
     def __init__(self, parent=None, theme="light"):
-        super().__init__(parent, Qt.WindowType.Tool | Qt.WindowType.WindowTitleHint | Qt.WindowType.WindowCloseButtonHint)
+        super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.WindowTitleHint | Qt.WindowType.WindowCloseButtonHint)
         self.setObjectName("flickdockAuthor")
         self.setWindowTitle("FlickDock · Author @Roger")
         self.setModal(False)
@@ -795,8 +795,7 @@ class SettingsDialog(QDialog):
     update_requested = Signal()
 
     def __init__(self, store: SettingsStore, parent=None):
-        super().__init__(parent, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint |
-                         Qt.WindowType.WindowStaysOnTopHint)
+        super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
         self.store = store
         self.shortcut_validator = None
         self.license_dialog = None

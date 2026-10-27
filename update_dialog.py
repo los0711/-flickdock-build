@@ -39,7 +39,7 @@ class UpdateDialog(QDialog):
                         "downloading", "ready", "cancelling", "cancelled"))
 
     def __init__(self, current_version: str, parent=None, *, theme="light"):
-        super().__init__(parent, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
+        super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
         self.setObjectName("flickdockUpdate")
         self.setWindowTitle("FlickDock · 软件更新")
         self.setFont(QFont("HarmonyOS Sans SC", 11))

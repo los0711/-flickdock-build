@@ -52,13 +52,18 @@ class Api(QObject):
             elif path.endswith('/content'):
                 identity = path.split('/')[3]
                 data = self.blobs[identity]
-                chunk = len(data) if len(data)>4*1024*1024 else 65536
+                chunk = (32*1024*1024 if len(data)>90*1024*1024 else
+                         len(data) if len(data)>4*1024*1024 else 65536)
                 result = {'record':copy.deepcopy(next(x['record'] for x in self.records
                                                        if x['record']['id']==identity)),
                           'chunk_size':chunk, 'part_count':(len(data)+chunk-1)//chunk}
             elif '/parts/' in path:
                 identity = path.split('/')[3]
-                result = self.blobs[identity]
+                blob = self.blobs[identity]
+                chunk = (32*1024*1024 if len(blob)>90*1024*1024 else
+                         len(blob) if len(blob)>4*1024*1024 else 65536)
+                index = int(path.split('/parts/')[1].split('?')[0])
+                result = blob[index*chunk:(index+1)*chunk]
                 if len(result)>4*1024*1024 and self.fail_large_once:
                     self.fail_large_once=False
                     callback(None,CloudError('Temporary download error'))
@@ -167,7 +172,27 @@ def test_revisions_and_tombstone_of_same_item_keep_order():
         finally:engine.close()
 
 
+def test_fast_multi_part_101_mib_arrives_only_after_full_original_sha_check():
+    identity=uuid4().hex
+    original=b'\xa5'*(101*1024*1024)
+    changes=[{'cursor':'1','record':file_record(identity,'original-101MiB.bin',original)}]
+    with tempfile.TemporaryDirectory(prefix='flickdock-fast-multipart-receive-') as root:
+        service=Service(changes,{identity:original})
+        adapter=Adapter();engine=ShelfSync(root,service,adapter,poll_ms=600000)
+        try:
+            service.account_changed.emit({'id':'fast-multipart-account'})
+            assert spin(lambda:len(service.api.held)==4,seconds=8)
+            assert adapter.view['permanent']==[], 'No partial file may be exposed before all parts verify'
+            service.api.release_large()
+            assert spin(lambda:engine.state['cursor']=='1' and not engine.running,seconds=25)
+            assert len(adapter.view['permanent'])==1
+            path=Path(adapter.view['permanent'][0]);assert path.stat().st_size==len(original)
+            assert hashlib.sha256(path.read_bytes()).hexdigest()==hashlib.sha256(original).hexdigest()
+        finally:engine.close()
+
+
 if __name__=='__main__':
     test_later_small_item_arrives_before_held_large_download()
     test_revisions_and_tombstone_of_same_item_keep_order()
-    print('PASS priority receive, stable newest-first order, same-item tombstone, durable cursor')
+    test_fast_multi_part_101_mib_arrives_only_after_full_original_sha_check()
+    print('PASS priority receive, stable newest-first order, 101 MiB multi-part original SHA, durable cursor')

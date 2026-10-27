@@ -16,9 +16,9 @@ assert.equal(config.workers_dev, true);
 
 const downloads = [...html.matchAll(/href="(https:\/\/gitee\.com\/rooogerluo\/[^\"]+\.(?:exe|dmg))"/g)].map(match => match[1]);
 assert.equal(downloads.length, 3, 'home page has three direct installer links');
-assert(downloads.some(url => url.endsWith('/FlickDock-Setup-1.8.8.exe')));
-assert(downloads.some(url => url.endsWith('/FlickDock-1.8.8-macOS-arm64.dmg')));
-assert(downloads.some(url => url.endsWith('/FlickDock-1.8.8-macOS-x86_64.dmg')));
+assert(downloads.some(url => url.endsWith('/FlickDock-Setup-1.8.9.exe')));
+assert(downloads.some(url => url.endsWith('/FlickDock-1.8.9-macOS-arm64.dmg')));
+assert(downloads.some(url => url.endsWith('/FlickDock-1.8.9-macOS-x86_64.dmg')));
 assert(downloads.every(url => url.startsWith('https://gitee.com/rooogerluo/')));
 
 for (const [, path] of html.matchAll(/(?:src|href)="(\/(?:assets\/[^\"]+|styles\.css|site\.js))"/g)) {

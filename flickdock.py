@@ -48,13 +48,14 @@ from widget_retirement import WidgetRetirementQueue
 from capture_files import CopyFilesJob
 from owned_files import owned_copy_spec, delete_owned_copy
 from sync_files import DiskWork
-from transfer_visuals import (TransferIconLabel, TransferOverlay, UploadCountBadge,
+from transfer_visuals import (TransferIconLabel, TransferOverlay,
                               TransferRateTracker, transfer_fraction, transfer_phase_label)
 from drop_routing import OverviewDropRouter
 from app_version import APP_NAME, APP_VERSION
 from update_controller import UpdateController
 from platform_native import (data_directory, native_input_available, mouse_buttons_mask,
-                             remove_host_window_shadow, keep_tool_visible_when_inactive)
+                             remove_host_window_shadow, keep_tool_visible_when_inactive,
+                             shelf_window_flags)
 from account_service import AccountService
 from cloud_events import CloudEvents
 from account_panel import AccountPanel
@@ -712,7 +713,7 @@ class ContentsPopup(QFrame):
         for key,label in self.CATEGORIES:
             button=QPushButton(label,self); button.setCheckable(True); button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.setMinimumHeight(30); self.category_group.addButton(button); self.category_buttons[key]=button
-            style=("QPushButton {background:#e8f2ff;color:#176bc2;border:0;border-radius:7px;padding:5px 8px;font:600 13px 'HarmonyOS Sans SC';} QPushButton:hover {background:#d7eaff;} QPushButton:checked {background:#237ee4;color:white;}" if key=='uploading' else
+            style=("QPushButton {background:transparent;color:#626c79;border:1px solid #d6e0ec;border-radius:7px;padding:4px 8px;font:600 13px 'HarmonyOS Sans SC';} QPushButton:hover {background:#eef1f6;} QPushButton:checked {background:#e7ebf1;color:#28313d;border-color:#b9c8d9;}" if key=='uploading' else
                    "QPushButton {background:transparent;color:#626c79;border:0;border-radius:7px;padding:5px 8px;font:13px 'HarmonyOS Sans SC';} QPushButton:hover {background:#eef1f6;} QPushButton:checked {background:#e7ebf1;color:#28313d;font-weight:600;}")
             set_ui_style(button,style)
             button.clicked.connect(lambda checked=False,key=key:self.set_category(key))
@@ -775,7 +776,8 @@ class ContentsPopup(QFrame):
         transfers=self.shelf.content.transfers
         return [ref for ref in reversed(self.shelf.display_refs()) if
             (ref in transfers if self.category=='uploading' else
-             ref not in transfers and (self.category=='all' or self.shelf.content.category(ref)==self.category))]
+             not self.shelf.content.is_pending(ref) and
+             (self.category=='all' or self.shelf.content.category(ref)==self.category))]
 
     def update_transfer_status(self):
         self.shelf.transfer_rates.observe(self.shelf.content.transfers)
@@ -1040,9 +1042,7 @@ class ShelfWindow(QWidget):
         self._copy_epoch=0
         self.active_mode = "permanent"
         self._rename_mode = "permanent"
-        self.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint |
-                            Qt.WindowType.WindowStaysOnTopHint)
-        keep_tool_visible_when_inactive(self)
+        self.setWindowFlags(shelf_window_flags())
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAcceptDrops(True)
@@ -1090,7 +1090,6 @@ class ShelfWindow(QWidget):
         title.setGeometry(56, 20, 96, 26)
         set_ui_style(title, "color:#282d35;font:600 15px 'HarmonyOS Sans SC';background:transparent;")
         title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.upload_count=UploadCountBadge(self.card)
         self.shelf_label = QLabel("", self.card)
         self.shelf_label.setGeometry(56, 34, 144, 16)
         set_ui_style(self.shelf_label, "color:#7c8796;font:11px 'HarmonyOS Sans SC';background:transparent;")
@@ -1133,8 +1132,6 @@ class ShelfWindow(QWidget):
         self._layout_header(CARD_W)
 
     def _layout_header(self,width):
-        # Keep the transfer badge below the cloud control, clear of the LAN icon.
-        self.upload_count.move(self.card.x()+width-247,self.card.y()+38)
         center=QRectF(self.card.geometry()).center()
         effect=self.surface_effect
         transform=QTransform()
@@ -1417,8 +1414,6 @@ class ShelfWindow(QWidget):
     def transfers_updated(self):
         self.transfer_rates.observe(self.content.transfers)
         if self.content.transfers and not self._transfer_timer.isActive():self._transfer_timer.start()
-        self.upload_count.set_count(sum(state.get('phase') not in ('copying','downloading')
-                                        for state in self.content.transfers.values()))
         self.expand_button.setEnabled(True)
         self.zones['permanent'].refresh()
         if self.popup and self.popup.isVisible() and not self.content_transition_active():self.popup.update_transfer_status()
@@ -1614,6 +1609,12 @@ class ShelfWindow(QWidget):
         epoch=self._intake_epoch
         self.incoming_drop = True
         self.manager.just_dropped = time.monotonic()
+        if self.visible_state=='hiding' or not self.isVisible():
+            # On some native drags the mouse-up poll precedes OLE DropEvent.
+            # That poll starts the transient shelf's hide animation. Retarget
+            # it as soon as this real content drop is accepted, before a copy
+            # job can leave its landing hidden for hundreds of milliseconds.
+            self._show_at(self._dock_target,self.presentation_kind,QPoint())
         self.import_paths(mode,paths,
             on_committed=lambda:self._committed_intake(mode,epoch),
             on_failed=lambda:self._abort_intake(epoch))
@@ -2041,7 +2042,6 @@ class ShelfWindow(QWidget):
         # Use Windows' own Save As dialog (Desktop/Quick access, full path,
         # localized system buttons and standard file selection feedback).
         dialog.setOption(QFileDialog.Option.DontConfirmOverwrite,True)
-        dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint,True)
         dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
         dialog.setNameFilter('ZIP 文件 (*.zip)');dialog.setDefaultSuffix('zip')
         dialog.setWindowModality(Qt.WindowModality.WindowModal)
@@ -2309,6 +2309,7 @@ class ShelfManager:
         self.shake_detector=ShakeDetector(config_for_sensitivity(self.settings.shake_sensitivity))
         self._drag_probe_detector=ShakeDetector(replace(config_for_sensitivity(100),reversals=1))
         self._drag_content_ready=False
+        self._content_gesture_at=None
         self.shake_anchor_x = 0
         self.shake_direction = 0
         self.shake_reversals = 0
@@ -2521,6 +2522,7 @@ class ShelfManager:
 
     def reset_drag_gesture(self):
         self._drag_content_ready=False
+        self._content_gesture_at=None
         self.drag_gate.reset_session()
         self.shake_detector.reset()
         self._drag_probe_detector.reset()
@@ -2633,6 +2635,7 @@ class ShelfManager:
     def _content_drag_validated(self, position):
         if self.outgoing_drag or self.auto_shown is not None or self.shelf.isVisible():
             return
+        self._content_gesture_at=None
         shelf = self.active_shelf or self.shelves[0]
         shelf.show_transient(position,reason='drag',velocity=self.shake_detector.trigger_velocity)
         if self.settings.trigger_view=='expanded':shelf.show_contents()
@@ -2640,11 +2643,16 @@ class ShelfManager:
 
     def _content_type_ready(self,position):
         if self.outgoing_drag or self.shelf.isVisible() or not self.was_down:return
-        # OLE confirmation is a separate, potentially delayed operation. Count
-        # the user's configured gesture after it, rather than letting delayed
-        # MIME delivery make both sensitivity endpoints pop at the same time.
+        # Recording overlays can delay OLE DragEnter until after the user has
+        # completed the configured shake. Retain that bounded gesture, but
+        # never reveal before this real file/image/text MIME confirmation.
         self._drag_content_ready=True
-        self.shake_detector.reset()
+        self._drag_probe_detector.reset()
+        recent=(self._content_gesture_at is not None and
+                time.perf_counter()-self._content_gesture_at<=self.drag_gate.probe_timeout_ms/1000+.05)
+        if (recent and self._pointer_dragging() and not self.drag_started_inside
+                and not native_window_move_active()):
+            self._content_drag_validated(position)
 
     def _probe_drop(self, mime, position):
         if self.auto_shown is None:return False
@@ -2687,11 +2695,16 @@ class ShelfManager:
         sample_time=time.perf_counter()
         moving=native_window_move_active()
         blocked=self.outgoing_drag or self.drag_started_inside or self.shelf.isVisible()
-        detector=self.shake_detector if self._drag_content_ready else self._drag_probe_detector
-        shaken=detector.update(pos.x(),pos.y(),sample_time,button_down=down,window_moving=moving,blocked=blocked)
-        if shaken and self.auto_shown is None and not self.shelf.isVisible() and now-self.just_dropped>.4:
+        full_shake=self.shake_detector.update(pos.x(),pos.y(),sample_time,
+                                               button_down=down,window_moving=moving,blocked=blocked)
+        probe_shake=(not self._drag_content_ready and self._drag_probe_detector.update(
+            pos.x(),pos.y(),sample_time,button_down=down,window_moving=moving,blocked=blocked))
+        if full_shake and self.auto_shown is None and not self.shelf.isVisible() and now-self.just_dropped>.4:
+            self._content_gesture_at=sample_time
             if self._drag_content_ready:self._content_drag_validated(pos)
-            else:self.drag_gate.arm(pos)
+            else:self.drag_gate.sustain_for_shake(pos)
+        if probe_shake and self.auto_shown is None and not self.shelf.isVisible() and now-self.just_dropped>.4:
+            self.drag_gate.sustain_for_shake(pos)
         if self.drag_gate.active: self.drag_gate.track_position(pos)
         if not down and self.was_down:
             self.reset_drag_gesture()

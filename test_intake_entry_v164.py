@@ -296,6 +296,47 @@ with tempfile.TemporaryDirectory(prefix='flickdock-intake-entry-v164-') as tempo
                 tile.spring.values['check'], tile._kind)
         check('cancelled feedback cannot leave a success badge on the empty shelf', cancelled_feedback)
 
+        def released_before_drop(mode):
+            # A native mouse-up sample can beat the OLE DropEvent by one poll.
+            # The shake-opened shelf is still visible but already hiding.
+            reset(mode)
+            show('drag')
+            manager.auto_shown = None
+            shelf.hide_animated(explicit=False)
+            assert shelf.isVisible() and shelf.visible_state=='hiding'
+            original=source('released-before-drop-'+mode)
+            if mode=='copy':
+                release,entered=threading.Event(),threading.Event()
+                copy_file=capture_files._copy_file
+                def held(*args):
+                    entered.set();assert release.wait(4)
+                    return copy_file(*args)
+                with patch.object(capture_files,'_copy_file',side_effect=held):
+                    try:
+                        drop('dock',original)
+                        until(entered.is_set)
+                        run_for(250)
+                        assert shelf.isVisible() and shelf.visible_state=='floating', (
+                            'Accepted drop disappeared while copying',shelf.visible_state)
+                    finally:release.set()
+                    until(lambda:not shelf.copy_jobs)
+            else:drop('dock',original)
+            assert shelf.visible_state=='floating' and shelf.incoming_drop, (
+                'Accepted drop kept the stale hiding animation',shelf.visible_state)
+            tile=shelf.zones['permanent'].icon
+            assert tile._pulse_active and tile.landing.state().name=='Running', (
+                'Accepted drop lost its visible landing',tile._pulse_active,tile.landing.state())
+            frames=[]
+            tile.landing.valueChanged.connect(lambda value:frames.append(float(value)))
+            run_for(80)
+            assert shelf.isVisible() and shelf.windowOpacity()>.1 and any(.01<value<1.2 for value in frames), (
+                'Landing did not produce visible intermediate frames',shelf.windowOpacity(),frames)
+            until(lambda:not shelf.isVisible())
+            assert len(shelf.files['permanent'])==1
+        for mode in ('reference','copy'):
+            check(f'{mode}/drag: mouse-up before OLE drop preserves visible landing',
+                  lambda mode=mode:released_before_drop(mode))
+
         reset()
         manager.quit()
         run_for(20)

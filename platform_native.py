@@ -38,8 +38,20 @@ def native_input_available(*, platform=None, qt_platform=None):
             or (platform == 'darwin' and str(qt_platform).lower() == 'cocoa'))
 
 
+def shelf_window_flags(*, platform=None):
+    """Keep the shelf in the ordinary app layer, without a Windows taskbar entry.
+
+    Qt.Tool is a floating NSPanel on macOS even without the stay-on-top hint,
+    so a normal NSWindow is needed there to let the active app cover the shelf.
+    The separate edge trigger remains a topmost, nonactivating tool window.
+    """
+    platform = sys.platform if platform is None else platform
+    kind = Qt.WindowType.Window if platform == 'darwin' else Qt.WindowType.Tool
+    return kind | Qt.WindowType.FramelessWindowHint
+
+
 def keep_tool_visible_when_inactive(widget, *, platform=None):
-    """Keep a macOS Qt.Tool shelf or edge strip visible behind other apps.
+    """Keep the macOS Qt.Tool edge strip visible when the app deactivates.
 
     Cocoa-backed Qt.Tool windows are NSPanel instances. Qt hides them when the
     application deactivates unless this attribute is set before first show.

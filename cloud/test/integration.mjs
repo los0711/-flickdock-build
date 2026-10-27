@@ -367,6 +367,57 @@ try{
       assert.equal(sqlRows(`SELECT COUNT(*) n FROM allocations WHERE id='${reserved.upload_id}'`)[0].n,0);
       await localObject(`v1/${alice.account.id}/${reserved.upload_id}/0-${digest}`,null);
     });
+    await check('101 MiB streams two verified R2 parts; old clients read virtual boundaries and cancelled bytes vanish',async()=>{
+      const mib=1024*1024,data=Buffer.alloc(101*mib,0x51);
+      for(let n=0;n<101;n++)data.writeUInt32LE(n,n*mib);
+      const digest=hash(data),id=randomUUID(),spec={item_id:id,base_version:0,kind:'file',
+        name:'original-101MiB.bin',mime_type:'application/octet-stream',size:data.length,
+        sha256:digest,fast_upload:true,fast_multipart:true};
+      const abandoned=await request('POST','/v1/uploads',spec,alice.token,201);
+      assert.equal(abandoned.chunk_size,64*mib);assert.equal(abandoned.part_count,2);
+      await part(alice.token,abandoned.upload_id,0,data.subarray(0,64*mib));
+      assert.equal((await request('GET',`/v1/transfers`,undefined,mac.token)).transfers.some(row=>row.item_id===id),true);
+      await request('GET',`/v1/items/${id}/content`,undefined,mac.token,404);
+      await request('DELETE',`/v1/uploads/${abandoned.upload_id}`,undefined,alice.token);
+      assert.equal((await request('GET',`/v1/transfers`,undefined,mac.token)).transfers.some(row=>row.item_id===id),false);
+      await localObject(`v1/${alice.account.id}/${abandoned.upload_id}/0-${hash(data.subarray(0,64*mib))}`,null);
+      const reserved=await request('POST','/v1/uploads',spec,alice.token,201);
+      assert.equal(reserved.chunk_size,64*mib);assert.equal(reserved.part_count,2);
+      for(let index=0;index<2;index++)await part(alice.token,reserved.upload_id,index,
+        data.subarray(index*64*mib,(index+1)*64*mib));
+      const complete=await request('POST',`/v1/uploads/${reserved.upload_id}/commit`,{},alice.token);
+      assert.equal(complete.record.sha256,digest);
+      assert.equal(complete.server_full_sha256_verified,false);
+      assert.equal(sqlRows(`SELECT computed_sha256 FROM uploads WHERE id='${reserved.upload_id}'`)[0].computed_sha256,null);
+      const same=await request('POST','/v1/uploads',{...spec,item_id:randomUUID()},alice.token,201);
+      assert.equal(same.instant,undefined,'A client-claimed full SHA cannot seed instant reuse');
+      await request('DELETE',`/v1/uploads/${same.upload_id}`,undefined,alice.token);
+      const legacy=await request('GET',`/v1/items/${id}/content`,undefined,mac.token);
+      assert.equal(legacy.chunk_size,mib);assert.equal(legacy.part_count,101);
+      for(const index of [0,31,32,63,64,95,96,100]){
+        const response=await localFetch(base+`/v1/items/${id}/parts/${index}?version=1`,
+          {headers:{Authorization:'Bearer '+mac.token}});
+        assert.equal(response.status,200);
+        const bytes=Buffer.from(await response.arrayBuffer());
+        assert.deepEqual(bytes,data.subarray(index*mib,(index+1)*mib));
+        assert.equal(hash(bytes),response.headers.get('X-Content-SHA256'));
+      }
+      const fast=await request('GET',`/v1/items/${id}/content`,undefined,mac.token,200,
+        {'X-FlickDock-Fast-Content':'1'});
+      assert.equal(fast.chunk_size,64*mib);assert.equal(fast.part_count,2);
+      const full=createHash('sha256');let received=0;
+      for(let index=0;index<2;index++){
+        const response=await localFetch(base+`/v1/items/${id}/parts/${index}?version=1`,
+          {headers:{Authorization:'Bearer '+mac.token,'X-FlickDock-Fast-Content':'1'}});
+        assert.equal(response.status,200);
+        const partHash=createHash('sha256');
+        for await(const bytes of response.body){partHash.update(bytes);full.update(bytes);received+=bytes.length;}
+        assert.equal(partHash.digest('hex'),response.headers.get('X-Content-SHA256'));
+      }
+      assert.equal(received,data.length);assert.equal(full.digest('hex'),digest);
+      await request('DELETE',`/v1/items/${id}`,{base_version:1},alice.token);
+      assert.equal(sqlRows(`SELECT COUNT(*) n FROM allocations WHERE id='${reserved.upload_id}'`)[0].n,0);
+    });
     await stop();base=await start(); // Subsequent fixtures keep their 1 MiB configuration.
   });
   await check('same-account instant reuse avoids a second upload and retains shared bytes until final delete',async()=>{

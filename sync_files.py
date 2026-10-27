@@ -111,9 +111,16 @@ def stage_item(ref, text, name, directory, cancel, limit=MAX_FILE_BYTES):
 
 def read_part(path, index, chunk_size, cancel):
     if cancel.is_set(): raise InterruptedError()
+    digest = hashlib.sha256(); data = bytearray()
     with _source_reader(Path(path)) as stream:
-        stream.seek(index*chunk_size); data = stream.read(chunk_size)
-    return data, hashlib.sha256(data).hexdigest()
+        stream.seek(index*chunk_size)
+        while len(data) < chunk_size:
+            if cancel.is_set(): raise InterruptedError()
+            block = stream.read(min(1024*1024,chunk_size-len(data)))
+            if not block: break
+            data.extend(block);digest.update(block)
+    if cancel.is_set(): raise InterruptedError()
+    return bytes(data), digest.hexdigest()
 
 
 def assemble_parts(parts, target, expected, cancel):

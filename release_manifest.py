@@ -67,7 +67,7 @@ MAINTAINED_TESTS=(
     'test_account_actions_v181.py','test_account_settings_v181.py','test_transfer_ui_v181.py',
     'test_lan_transfer_v181.py','test_lan_dialog_v183.py','test_shelf_transfers_v181.py','test_sync_staging_v181.py','test_cloud_progress_v181.py',
     'test_cloud_api_stream_v183.py','test_sync_directions.py','test_sync_timeout_recovery.py',
-    'test_sync_receive_priority.py',
+    'test_sync_receive_priority.py','test_cloud_download_fast_path_v189.py','test_window_layer.py',
 )
 SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'FlickDock.spec','FlickDock.iss','version_info.txt','ChineseSimplified.isl',
@@ -92,7 +92,7 @@ SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'cloud/test/integration.mjs','cloud/test/hash-state.mjs','cloud/test/upload-cancel.mjs','cloud/test/qa-server.mjs',
     '.github/workflows/macos-build.yml','ci_assets.py',
     'website/wrangler.jsonc','website/package.json','website/package-lock.json',
-    'website/README.md','website/test/check-site.mjs',
+    'website/README.md','website/CHINA_DEPLOYMENT.md','website/test/check-site.mjs',
     'website/public/.assetsignore','website/public/index.html',
     'website/public/styles.css','website/public/site.js',
     'website/public/assets/flickdock.svg','website/public/assets/control-nearby.svg',

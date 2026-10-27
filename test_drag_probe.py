@@ -8,6 +8,7 @@ os.environ["APPDATA"] = isolated_state.name
 from PySide6.QtCore import QEventLoop, QMimeData, QPoint, QPointF, QTimer, Qt, QUrl
 from PySide6.QtGui import QDragEnterEvent, QDropEvent, QImage
 from PySide6.QtWidgets import QApplication
+from unittest.mock import patch
 import drag_probe as mod
 
 
@@ -55,6 +56,14 @@ for position in (QPoint(500, 300), QPoint(100, 500), QPoint(1500, 550)):
     assert gate.track_position(position)
     assert gate.probe.geometry().contains(position)
 assert gate._timeout.remainingTime() <= remaining + 5, "tracking cannot extend bounded probe lifetime"
+# A recorder's cursor highlight can continuously put its transparent overlay
+# above the OLE sensor even while the pointer stays within the sensor. The
+# follow tick must reassert the sensor's nonactivating topmost order.
+with patch.object(mod, 'native_input_available', return_value=True), \
+     patch.object(mod.QCursor, 'pos', return_value=gate.probe.geometry().center()), \
+     patch.object(gate, '_raise_native_target') as raise_target:
+    gate._follow_pointer()
+    assert raise_target.call_count == 1
 gate.reset_session()
 
 # An unsupported custom drag never opens the shelf.
@@ -148,7 +157,7 @@ app.processEvents()
 # recognized shake still validates; the old 240ms lifetime would miss it.
 late_calls = []
 late = mod.ContentDragGate(lambda pos: late_calls.append(pos))
-assert late.probe_timeout_ms == 1200
+assert late.probe_timeout_ms == 1800
 assert late.arm(QPoint(300, 300))
 late_wait = QEventLoop()
 def delayed_ole():
@@ -156,11 +165,39 @@ def delayed_ole():
                            Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
     QApplication.sendEvent(late.probe, event)
     assert event.isAccepted()
-QTimer.singleShot(620, delayed_ole)
-QTimer.singleShot(720, late_wait.quit)
+QTimer.singleShot(1350, delayed_ole)
+QTimer.singleShot(1450, late_wait.quit)
 late_wait.exec()
 assert len(late_calls) == 1 and not late.active
 late.close()
+app.processEvents()
+
+# Low sensitivity may need six quick reversals. Continued forceful turns keep
+# the invisible MIME target alive just long enough for a recorder-delayed OLE
+# notification, while a single turn still uses the original bounded timeout.
+extended_calls = []
+extended = mod.ContentDragGate(lambda pos: extended_calls.append(pos))
+assert extended.arm(QPoint(300, 300))
+extended_wait = QEventLoop()
+QTimer.singleShot(850, lambda: extended.sustain_for_shake(QPoint(310, 300)))
+QTimer.singleShot(1450, lambda: extended.sustain_for_shake(QPoint(300, 300)))
+def very_late_ole():
+    assert extended.active
+    assert enter(files, extended).isAccepted()
+QTimer.singleShot(2250, very_late_ole)
+QTimer.singleShot(2380, extended_wait.quit)
+extended_wait.exec()
+assert len(extended_calls) == 1 and not extended.active
+extended.close()
+app.processEvents()
+
+idle = mod.ContentDragGate(lambda pos: None)
+assert idle.arm(QPoint(300, 300))
+idle_wait = QEventLoop()
+QTimer.singleShot(1880, idle_wait.quit)
+idle_wait.exec()
+assert not idle.active, 'one isolated reversal must keep its original short lifetime'
+idle.close()
 app.processEvents()
 mod.ctypes.WinDLL = original_windll
 isolated_state.cleanup()

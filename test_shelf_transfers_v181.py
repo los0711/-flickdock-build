@@ -91,6 +91,7 @@ class Api(QObject):
     def __init__(self, server, device):
         super().__init__(); self.server = server; self.device = device; self.token = ''
         self.pending = {}; self.held = []; self.hold_part = None; self.hold_init = False
+        self.hold_delete = False
         self.hold_download_part = None
         self.hold_commit_response = False; self.lost_commit_responses = []
 
@@ -118,6 +119,7 @@ class Api(QObject):
         blocked = blocked or (self.hold_part is not None and method == 'PUT' and int(path.rsplit('/', 1)[1]) == self.hold_part)
         blocked = blocked or (self.hold_download_part is not None and method == 'GET' and '/parts/' in path
                               and int(path.rsplit('/', 1)[1].split('?')[0]) == self.hold_download_part)
+        blocked = blocked or (self.hold_delete and method == 'DELETE' and path.startswith('/v1/uploads/'))
         if blocked: self.held.append((run, method, path, copy.deepcopy(kwargs)))
         else: QTimer.singleShot(0, run)
         return key
@@ -125,7 +127,7 @@ class Api(QObject):
     def cancel(self, key): self.pending.pop(key, None)
     def release(self):
         held, self.held = self.held, []
-        self.hold_part = None; self.hold_init = False; self.hold_download_part = None
+        self.hold_part = None; self.hold_init = False; self.hold_download_part = None; self.hold_delete = False
         for run, _, _, _ in held: QTimer.singleShot(0, run)
 
 
@@ -231,6 +233,23 @@ class TransferTests(unittest.TestCase):
         self.assertEqual(record['data'], self.payload); self.assertFalse(engine.state['entries'][transfer['id']].get('paused_upload'))
         self.assertEqual(states[-1], []); self.assertFalse(engine.state['resumable_uploads'])
         self.assertEqual(len([row for row in self.server.uploads if row != uid]), 1)
+
+    def test_cancelled_large_upload_cleanup_does_not_block_new_file(self):
+        service, adapter, engine, transfer = self.pending()
+        old_upload = transfer['upload_id']
+        service.api.hold_delete = True
+        self.assertTrue(engine.cancel_upload(str(self.source)))
+        fresh = self.root / 'fresh.txt'; fresh.write_text('new upload must start while old cleanup waits', encoding='utf8')
+        adapter.add(str(fresh)); engine.local_changed()
+        until(lambda: any(method == 'DELETE' and path == '/v1/uploads/' + old_upload
+                          for _, method, path, _ in service.api.held))
+        until(lambda: any(method == 'POST' and path == '/v1/uploads' and
+                          row['spec']['name'] == 'fresh.txt' for _, method, path in self.server.calls
+                          for row in self.server.uploads.values() if row['spec']['name'] == 'fresh.txt'))
+        self.assertIn(old_upload, engine.state['pending_uploads'])
+        service.api.release()
+        until(lambda: not engine.running and old_upload not in engine.state['pending_uploads'])
+        self.assertIn(('account-A', old_upload), self.server.receipts)
 
     def test_delete_active_is_prioritized_before_transfer_backoff(self):
         service, adapter, engine, transfer = self.pending(); uid = transfer['upload_id']

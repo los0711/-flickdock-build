@@ -39,7 +39,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-zip-dialog-') as tmp:
                 assert isinstance(dialog,QFileDialog) and dialog.isVisible()
                 assert not dialog.testOption(QFileDialog.Option.DontUseNativeDialog)
                 assert dialog.parentWidget() is shelf
-                assert dialog.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
+                assert not dialog.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
                 if save:
                     dialog.setDirectory(str(destination.parent))
                     name=dialog.findChild(QLineEdit,'fileNameEdit')

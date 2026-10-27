@@ -1,5 +1,6 @@
 """Original-byte staging, bounded cancellation and adaptive directory transfer."""
 import hashlib
+import io
 from pathlib import Path
 import tempfile
 import threading
@@ -78,6 +79,21 @@ class StagingTests(unittest.TestCase):
         corrupt=self.root/'.corrupt.chunk-0';corrupt.write_bytes(data[:-1])
         with self.assertRaises(ValueError):sync_files.assemble_parts([corrupt],target,expected,self.cancel)
         self.assertFalse(corrupt.exists());self.assertEqual(target.read_bytes(),data)
+
+    def test_large_part_reader_checks_cancel_between_disk_blocks(self):
+        data=b'z'*(5*1024*1024)
+        class InterruptingReader(io.BytesIO):
+            def read(inner,size=-1):
+                value=super().read(size)
+                self.cancel.set()
+                return value
+        with patch.object(sync_files,'_source_reader',lambda _:InterruptingReader(data)):
+            with self.assertRaises(InterruptedError):
+                sync_files.read_part(self.root/'unused',0,len(data),self.cancel)
+        self.cancel.clear()
+        source=self.root/'actual.bin';source.write_bytes(data)
+        actual,digest=sync_files.read_part(source,0,len(data),self.cancel)
+        self.assertEqual(actual,data);self.assertEqual(digest,hashlib.sha256(data).hexdigest())
 
 
 if __name__=='__main__':unittest.main(verbosity=2)

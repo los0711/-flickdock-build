@@ -8,13 +8,14 @@ import sys
 import tempfile
 
 from release_manifest import MAINTAINED_TESTS
+from app_version import APP_VERSION
 
 root=Path(__file__).resolve().parent
 # The source archive's maintained-test inventory is the release regression
 # inventory too. Keep timing-sensitive checks out of the parallel pool.
 timing_tests=('test_morph_clock_v164.py','test_gesture_entry_v165.py')
 tests=[name for name in MAINTAINED_TESTS if name not in timing_tests]
-logs=root/'release-checks-v188';logs.mkdir(exist_ok=True)
+logs=root/('release-checks-v'+APP_VERSION.replace('.',''));logs.mkdir(exist_ok=True)
 
 def check(name):
     with tempfile.TemporaryDirectory(prefix='flickdock-release-') as profile:

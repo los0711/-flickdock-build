@@ -6,6 +6,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import platform
+import socket
 import tempfile
 import time
 
@@ -27,10 +29,22 @@ def run(size_mib=128):
         receiver.offer_received.connect(offers.append)
         receiver.completed.connect(received.append);sender.completed.connect(sent.append)
         receiver.status_changed.connect(errors.append);sender.status_changed.connect(errors.append)
-        def wait(predicate,seconds=120):
+        connection={}
+        def sample_connection(identity):
+            transfer=sender._transfers.get(identity)
+            stream=transfer.socket if transfer else None
+            if not stream or connection:return
+            try:
+                connection.update(tls_version=stream.version(),tls_cipher=stream.cipher()[0],
+                                  send_buffer_bytes=stream.getsockopt(socket.SOL_SOCKET,socket.SO_SNDBUF),
+                                  receive_buffer_bytes=stream.getsockopt(socket.SOL_SOCKET,socket.SO_RCVBUF))
+            except OSError:
+                pass  # A very fast transfer may close before this sample.
+        def wait(predicate,seconds=120,identity=None):
             deadline=time.monotonic()+seconds
             while time.monotonic()<deadline:
                 app.processEvents()
+                if identity:sample_connection(identity)
                 if predicate():return
                 time.sleep(.002)
             raise TimeoutError('Loopback transfer did not finish')
@@ -39,7 +53,7 @@ def run(size_mib=128):
             sender.remember_peer(receiver.own_peer());receiver.remember_peer(sender.own_peer())
             identity=sender.send(receiver.device_id,[source]);wait(lambda:offers,15)
             started=time.perf_counter();receiver.accept(identity,destination)
-            wait(lambda:received and sent,120)
+            wait(lambda:received and sent,120,identity)
             elapsed=time.perf_counter()-started
             actual=Path(received[0]['paths'][0])
             def digest(path):
@@ -51,7 +65,9 @@ def run(size_mib=128):
                 raise AssertionError('Received original bytes differ')
             return {'ok':True,'size_mib':size_mib,'seconds':round(elapsed,3),
                     'mib_per_second':round(size_mib/elapsed,2),'sha256_verified':True,
-                    'path_direct':True,'transport':'TLS over 127.0.0.1'}
+                    'path_direct':True,'transport':'TLS over 127.0.0.1',
+                    'platform':platform.platform(),'python':platform.python_version(),
+                    'socket':connection,'scope':'local cached-disk loopback; not Wi-Fi throughput'}
         finally:
             sender.close();receiver.close()
             for service in (sender,receiver):

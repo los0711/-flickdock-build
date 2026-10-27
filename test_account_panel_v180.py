@@ -153,6 +153,9 @@ class AccountTests(unittest.TestCase):
     def test_auth_errors_inline_redact_password_and_switch_clears_password(self):
         before=len(self.api.requests);self.click(self.panel.submit_button)
         self.assertEqual(len(self.api.requests),before);self.assertIn('账号',self.panel.status_label.text())
+        self.assertTrue(self.panel.auth_status_label.isVisible())
+        self.assertIn('账号',self.panel.auth_status_label.text())
+        self.assertGreater(self.panel.auth_status_label.y(),self.panel.submit_button.y())
         self.panel.username_edit.setText('甲账号');self.panel.password_edit.setText(PASSWORD)
         self.click(self.panel.submit_button)
         self.finish_challenge()
