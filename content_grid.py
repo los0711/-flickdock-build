@@ -19,7 +19,8 @@ except ImportError:
     # Standalone offscreen component tests can run before the app theme loads.
     def color(key: str) -> str:
         return {"text": "#303a48", "secondary": "#7d899a", "hover": "#e6effb",
-                "surface": "#ffffff", "border": "#d8e1ed", "icon": "#43546a"}[key]
+                "surface": "#ffffff", "border": "#d8e1ed", "icon": "#43546a",
+                "accent": "#1876db"}[key]
 
 
 class IconItem(QWidget):
@@ -203,14 +204,14 @@ class IconItem(QWidget):
         fill = QColor(color('hover'))
         fill.setAlphaF(max(0, min(1, mix)))
         painter.setBrush(fill)
-        border = QColor('#6aa8ee')
-        border.setAlphaF(max(0, min(.8, .8 * v['selected'])))
-        painter.setPen(QPen(border, 1))
+        border = QColor(color('accent'))
+        border.setAlphaF(max(0, min(.9, .9 * v['selected'])))
+        painter.setPen(QPen(border, 1.5))
         painter.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 12, 12)
         if self.hasFocus() and not actual:
-            painter.setPen(QPen(QColor('#6aa8ee'), 1))
+            painter.setPen(QPen(QColor(color('accent')), 2))
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRoundedRect(QRectF(self.rect()).adjusted(2, 2, -2, -2), 11, 11)
+            painter.drawRoundedRect(QRectF(self.rect()).adjusted(3, 3, -3, -3), 10, 10)
         state=getattr(self.popup.shelf.content,'transfers',{}).get(self.ref)
         icon_rect=QRectF((self.width()-64)/2,13,64,64)
         painter.drawPixmap(icon_rect,self.icon,QRectF(self.icon.rect()))

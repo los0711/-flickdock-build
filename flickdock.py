@@ -54,6 +54,7 @@ from transfer_visuals import (CLOUD_STATUS_LABELS, CloudStatusBadge, cloud_statu
 from drop_routing import OverviewDropRouter
 from app_version import APP_NAME, APP_VERSION
 from update_controller import UpdateController
+from update_notice import UpdateNotice
 from platform_native import (data_directory, native_input_available, mouse_buttons_mask,
                              remove_host_window_shadow, keep_tool_visible_when_inactive,
                              shelf_window_flags, raise_shelf_for_reveal,
@@ -634,7 +635,7 @@ class FileRow(QFrame):
         highlight = QColor(ui_theme.color("selected"))
         highlight.setAlpha(max(0, min(255, alpha)))
         p.setBrush(highlight)
-        p.drawRoundedRect(self.rect().adjusted(0, 1, -1, -1), 9, 9)
+        p.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 9, 9)
 
     def enterEvent(self, event):
         self.remove_button.show()
@@ -2377,21 +2378,26 @@ class DockHandle(QWidget):
         else: event.ignore()
 
 class ShelfManager:
-    def __init__(self, app):
+    def __init__(self, app, *, cocoa_smoke=False):
         self.app = app
+        self.cocoa_smoke = bool(cocoa_smoke)
         self.motion = motion_enabled()
         self.settings = SettingsStore(BASE)
         self.startup_error = None
-        try:
-            self.settings.reconcile_startup()
-        except OSError:
-            self.startup_error = "自启动位置未能更新。可在设置中关闭后重新开启自启动。"
+        if not self.cocoa_smoke:
+            try:
+                self.settings.reconcile_startup()
+            except OSError:
+                self.startup_error = "自启动位置未能更新。可在设置中关闭后重新开启自启动。"
         ui_theme.set_theme(self.settings.theme)
         ui_theme.apply_application(app, FONT_FAMILY)
         self.settings_dialog = None
         self.lan_dialog = None
         self.updates = UpdateController(APP_VERSION, BASE, settings=self.settings,
                                         quit_callback=self.quit, is_busy=self._update_busy)
+        self.update_notice = None
+        self.updates.notification_shown.connect(self._show_update_notice)
+        self.updates.state_changed.connect(self._update_notice_state_changed)
         self._dock_preview_values=None
         self._shake_preview_value=None
         self._quitting=False
@@ -2429,21 +2435,28 @@ class ShelfManager:
         menu.addAction("退出 FlickDock", self.quit)
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(self.tray_activated)
-        self.tray.show()
+        if not self.cocoa_smoke:
+            self.tray.show()
         self.load()
         if not self.shelves:
             self._create_shelf({})
         if self.active_shelf is None:
             self.active_shelf = next((item for item in self.shelves if item.has_files()), self.shelves[0])
-        self.update_handles()
-        self.account = AccountService(BASE)
+        if not self.cocoa_smoke:
+            self.update_handles()
+        if self.cocoa_smoke:
+            from account_store import SessionStore
+            from cloud_config import DEFAULT_CLOUD_URL
+            self.account = AccountService(BASE, store=SessionStore(BASE, DEFAULT_CLOUD_URL, enabled=False))
+        else:
+            self.account = AccountService(BASE)
         self.sync = ShelfSync(BASE,self.account,ShelfAdapter(self))
         self.sync.set_directions(self.settings.sync_upload_enabled,self.settings.sync_receive_enabled)
         self._intake_sync_timer=QTimer(self.app)
         self._intake_sync_timer.setSingleShot(True)
         self._intake_sync_timer.timeout.connect(self._flush_intake_sync)
         self.events = CloudEvents(self.account,self.app,
-            enabled=self.app.platformName() not in ('offscreen','minimal'))
+            enabled=not self.cocoa_smoke and self.app.platformName() not in ('offscreen','minimal'))
         self.events.content_changed.connect(self.sync.request_refresh)
         self.events.devices_changed.connect(self.account.list_devices)
         # A healthy event socket keeps the quiet five-minute reconciliation.
@@ -2459,26 +2472,45 @@ class ShelfManager:
         self.lan.offer_received.connect(self._lan_offer)
         self.account.account_changed.connect(self._lan_identity)
         self.account.devices_changed.connect(self._lan_devices)
-        if self.app.platformName() not in ('offscreen','minimal'):self.lan.start()
+        if not self.cocoa_smoke and self.app.platformName() not in ('offscreen','minimal'):self.lan.start()
         self._sync_status = ''
         self.sync.status_changed.connect(self._sync_status_changed)
-        self.hotkeys = HotkeyManager(app, self.show_shortcut, self.show_overview)
+        if self.cocoa_smoke:
+            from global_hotkeys import _NoopBackend
+            self.hotkeys = HotkeyManager(app, self.show_shortcut, self.show_overview,
+                                         backend=_NoopBackend())
+        else:
+            self.hotkeys = HotkeyManager(app, self.show_shortcut, self.show_overview)
         self.shortcut_error = self.hotkeys.apply(self.settings.shelf_shortcut, self.settings.overview_shortcut)
         self.settings.changed.connect(self.apply_settings)
         self.timer = QTimer(self.app)
         self.timer.timeout.connect(self.poll)
         self.timer.setTimerType(Qt.TimerType.PreciseTimer)
-        self.timer.start(20)
+        if not self.cocoa_smoke:
+            self.timer.start(20)
         self.app.setQuitOnLastWindowClosed(False)
-        if self.app.platformName() not in ('offscreen','minimal'):
+        if not self.cocoa_smoke and self.app.platformName() not in ('offscreen','minimal'):
             QTimer.singleShot(0,self.account.resume)
         self.update_timer = QTimer(self.app)
         self.update_timer.timeout.connect(self.updates.check_automatically)
         # Development, release verification and offscreen tests never schedule
         # background network traffic or installer execution.
-        if getattr(sys, 'frozen', False) and self.app.platformName() not in ('offscreen', 'minimal'):
+        if (not self.cocoa_smoke and getattr(sys, 'frozen', False)
+                and self.app.platformName() not in ('offscreen', 'minimal')):
             self.update_timer.start(6 * 60 * 60 * 1000)
             QTimer.singleShot(4000, self.updates.check_automatically)
+        if (not self.cocoa_smoke and sys.platform == 'darwin'
+                and getattr(sys, 'frozen', False)):
+            QTimer.singleShot(1000, self._show_previous_mac_update_failure)
+
+    def _show_previous_mac_update_failure(self):
+        if self._quitting:
+            return
+        from mac_updates import consume_update_failure
+        error = consume_update_failure(BASE)
+        if error:
+            self.show_settings()
+            self.updates.open_error(error)
 
     def _update_busy(self):
         return (getattr(self, '_quitting', False) or getattr(self, 'outgoing_drag', False)
@@ -2491,6 +2523,28 @@ class ShelfManager:
     def check_updates(self):
         self.show_settings()
         self.updates.open(manual=True)
+
+    def _show_update_notice(self, version):
+        # Automatic checks defer the signal until drag and modal work ends.
+        # Recheck the current state in case a newer result replaced that offer.
+        if (self._quitting or self.updates.state != 'available'
+                or self.updates.state_payload.get('version') != version):
+            return
+        if self.update_notice is None:
+            self.update_notice = UpdateNotice(theme=self.settings.theme)
+            self.update_notice.update_requested.connect(self._start_notified_update)
+        self.update_notice.show_version(version)
+
+    def _start_notified_update(self):
+        if self.update_notice is not None:
+            self.update_notice.hide()
+        self.show_settings()
+        self.updates.activate()
+
+    def _update_notice_state_changed(self, state, payload):
+        if state in ('latest', 'downloading', 'verifying', 'ready', 'installing', 'handoff'):
+            if self.update_notice is not None:
+                self.update_notice.hide()
 
     def _sync_status_changed(self,text):
         self._sync_status = text
@@ -2565,6 +2619,8 @@ class ShelfManager:
 
 
     def show_settings(self):
+        if self.update_notice is not None:
+            self.update_notice.hide()
         self.reset_drag_gesture()
         self.shelf._release_reveal_level()
         if self.settings_dialog is None:
@@ -2632,6 +2688,8 @@ class ShelfManager:
             self.account_panel.apply_theme(self.settings.theme)
         if self.lan_dialog:self.lan_dialog.apply_theme(self.settings.theme)
         self.updates.apply_theme(self.settings.theme)
+        if self.update_notice is not None:
+            self.update_notice.apply_theme(self.settings.theme)
         self.shortcut_error = self.hotkeys.apply(self.settings.shelf_shortcut, self.settings.overview_shortcut)
 
     def reset_drag_gesture(self):
@@ -2862,6 +2920,8 @@ class ShelfManager:
         self.was_down=down
 
     def quit(self):
+        if self.update_notice is not None:
+            self.update_notice.hide()
         if hasattr(self,'lan'):self.lan.close()
         self._quitting=True
         self._intake_sync_timer.stop()
@@ -2896,6 +2956,11 @@ class ShelfManager:
         self.app.quit()
 
 def main():
+    cocoa_smoke = '--verify-cocoa-startup' in sys.argv
+    if cocoa_smoke and (sys.platform != 'darwin' or not getattr(sys, 'frozen', False)
+                        or os.environ.get('FLICKDOCK_CI_COCOA_SMOKE') != '1'
+                        or os.environ.get('QT_QPA_PLATFORM', '').lower() != 'cocoa'):
+        return 2
     if '--verify-cloud-stream' in sys.argv:
         from test_cloud_api_stream_v183 import main as verify_cloud_stream
         return verify_cloud_stream()
@@ -2922,8 +2987,36 @@ def main():
     if not guard.acquire():
         return
     app.setWindowIcon(app_icon())
-    manager = ShelfManager(app)
+    manager = ShelfManager(app, cocoa_smoke=cocoa_smoke)
     guard.activated.connect(manager.show_first)
+    if cocoa_smoke:
+        index = sys.argv.index('--verify-cocoa-startup')
+        if index + 1 >= len(sys.argv):
+            manager.quit()
+            guard.close()
+            return 2
+        report_path = Path(sys.argv[index + 1])
+        manager.shelf.show()
+        def finish_cocoa_smoke():
+            result = dict(ok=bool(manager.shelf.isVisible()),
+                          qt_platform=app.platformName(), version=APP_VERSION,
+                          shelf_constructed=bool(manager.shelves),
+                          native_hotkeys=False, lan_listener=False,
+                          cloud_session=False, startup_mutation=False)
+            report_path.write_text(json.dumps(result, ensure_ascii=False), encoding='utf-8')
+            manager.quit()
+        QTimer.singleShot(2200, finish_cocoa_smoke)
+    if sys.platform == 'darwin' and getattr(sys, 'frozen', False) and '--post-update-ready' in sys.argv:
+        index = sys.argv.index('--post-update-ready')
+        if index + 2 < len(sys.argv):
+            marker = Path(sys.argv[index + 1])
+            token = sys.argv[index + 2]
+            if (marker.name == 'launch-ready' and marker.parent.name.startswith('.flickdock-update-')
+                    and len(token) == 32 and all(character in '0123456789abcdef' for character in token)):
+                # A successful Finder/open() return does not prove a Qt app
+                # survived startup. The updater retains its rollback until
+                # this callback runs from the live Cocoa event loop.
+                QTimer.singleShot(1600, lambda: marker.write_text(token, encoding='ascii'))
     if "--preview" in sys.argv:
         manager.show_first()
         QTimer.singleShot(650, lambda: (manager.shelves[0].grab().save(str(Path.cwd() / "flickdock-preview.png")), manager.quit()))

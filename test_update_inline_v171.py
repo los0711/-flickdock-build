@@ -119,6 +119,12 @@ class InlineUpdates(unittest.TestCase):
         self.client.available(self.manifest)
         self.assertEqual(self.dialog.update_button.text(),'立即更新')
 
+    def begin_download(self, manifest=None):
+        self.click()
+        self.assertEqual(self.controller.state,'checking')
+        self.client.available(self.manifest if manifest is None else manifest)
+        self.assertEqual(self.controller.state,'downloading')
+
     def test_single_real_button_authorizes_download_hash_install_no_extra_window(self):
         self.offer()
         top={id(w) for w in APP.topLevelWidgets()}
@@ -126,8 +132,8 @@ class InlineUpdates(unittest.TestCase):
         self.assertEqual(self.events,[])
         saved=self.store.path.read_bytes()
         self.dialog.dock_position_spin.setValue(61)
-        self.click()
-        self.assertEqual(self.client.calls,[('check',True),('download','1.8.0',True)])
+        self.begin_download()
+        self.assertEqual(self.client.calls,[('check',True),('check',True),('download','1.8.0',True)])
         self.assertFalse(self.dialog.update_button.isEnabled())
         self.client.progress.emit(len(self.body)//4,len(self.body))
         self.assertIn('25%',self.dialog.update_status_label.text())
@@ -141,6 +147,31 @@ class InlineUpdates(unittest.TestCase):
         self.assertEqual(top,{id(w) for w in APP.topLevelWidgets()})
         self.assertEqual(self.store.path.read_bytes(),saved)
         self.assertEqual(self.dialog.dock_position_spin.value(),61)
+
+    def test_install_click_refreshes_old_offer_and_never_falls_back_to_it(self):
+        self.offer()
+        self.click()
+        self.assertEqual(self.controller.state,'checking')
+        self.assertEqual([call for call in self.client.calls if call[0]=='download'],[])
+        current=copy.deepcopy(self.manifest)
+        current['version']='1.8.1'
+        latest_path=self.store.base/'updates'/'1.8.1'/'setup.exe'
+        latest_path.parent.mkdir(parents=True)
+        latest_path.write_bytes(self.body)
+        self.client.available(current)
+        self.assertEqual(self.client.calls[-1],('download','1.8.1',True))
+        self.client.complete(latest_path,current)
+        self.assertTrue(wait(lambda:len(self.events)==2))
+        self.assertIn('1.8.1',self.events[0][1][0])
+
+    def test_failed_refresh_does_not_download_stale_offer(self):
+        self.offer()
+        self.click()
+        self.client.busy=False
+        self.client.failed.emit('网络暂时不可用',True)
+        self.assertEqual(self.controller.state,'error')
+        self.assertEqual([call for call in self.client.calls if call[0]=='download'],[])
+        self.assertEqual(self.events,[])
 
     def test_automatic_states_only_never_show_or_execute_and_defer_tray_notice(self):
         notices=[];busy=[True]
@@ -162,17 +193,17 @@ class InlineUpdates(unittest.TestCase):
         self.assertEqual(self.controller.state,'error');self.assertFalse(self.dialog.isVisible())
 
     def test_download_cancel_ignores_late_completion_and_requires_new_click(self):
-        self.offer();self.click();self.controller.cancel()
+        self.offer();self.begin_download();self.controller.cancel()
         self.assertEqual(self.controller.state,'cancelled')
         self.client.progress.emit(len(self.body),len(self.body))
         self.client.complete(self.path,self.manifest)
         APP.processEvents()
         self.assertEqual(self.controller.state,'cancelled');self.assertEqual(self.events,[])
-        self.click();self.client.complete(self.path,self.manifest)
+        self.begin_download();self.client.complete(self.path,self.manifest)
         self.assertTrue(wait(lambda:len(self.events)==2))
 
     def test_settings_close_during_hash_reopen_retry_discards_old_success(self):
-        self.offer();self.click()
+        self.offer();self.begin_download()
         entered,release=threading.Event(),threading.Event();real=subject.verify_installer
         def delayed(*args,**kwargs):
             entered.set();release.wait(3);kwargs.pop('cancelled',None)
@@ -187,11 +218,12 @@ class InlineUpdates(unittest.TestCase):
         self.dialog.show();APP.processEvents()
         self.assertTrue(self.dialog.update_button.isEnabled())
         self.assertEqual(self.controller.state,'cancelled')
-        self.click();self.assertTrue(wait(lambda:len(self.events)==2))
-        self.assertEqual(len([c for c in self.client.calls if c[0]=='download']),1)
+        self.begin_download();self.client.complete(self.path,self.manifest)
+        self.assertTrue(wait(lambda:len(self.events)==2))
+        self.assertEqual(len([c for c in self.client.calls if c[0]=='download']),2)
 
     def test_controller_close_during_hash_suppresses_late_handoff_and_releases_lease(self):
-        self.offer();self.click()
+        self.offer();self.begin_download()
         entered,release=threading.Event(),threading.Event();real=subject.verify_installer
         def delayed(*args,**kwargs):
             entered.set();release.wait(3);kwargs.pop('cancelled',None)
@@ -205,22 +237,22 @@ class InlineUpdates(unittest.TestCase):
         self.path.unlink()
 
     def test_download_spawn_and_corrupt_file_failures_retry_in_place(self):
-        self.offer();self.click();self.client.busy=False;self.client.failed.emit('download failed',True)
+        self.offer();self.begin_download();self.client.busy=False;self.client.failed.emit('download failed',True)
         self.assertEqual(self.dialog.update_button.text(),'重试更新')
-        self.click()
+        self.begin_download()
         def denied(*args,**kwargs):raise OSError('spawn denied')
         self.controller._popen=denied;self.client.complete(self.path,self.manifest)
         self.assertTrue(wait(lambda:self.controller.state=='error'))
         self.assertIn('spawn denied',self.controller.state_payload['error'])
         self.assertEqual(self.events,[])
-        self.controller._popen=self.popen;self.click()
+        self.controller._popen=self.popen;self.begin_download();self.client.complete(self.path,self.manifest)
         self.assertTrue(wait(lambda:len(self.events)==2))
 
     def test_tamper_unrequested_callback_and_path_guards(self):
         self.offer()
         self.client.complete(self.path,self.manifest);APP.processEvents()
         self.assertEqual(self.events,[]);self.assertEqual(self.controller.state,'available')
-        self.click();self.path.write_bytes(b'MZ'+b'X'*(len(self.body)-2))
+        self.begin_download();self.path.write_bytes(b'MZ'+b'X'*(len(self.body)-2))
         self.client.complete(self.path,self.manifest)
         self.assertTrue(wait(lambda:self.controller.state=='error'))
         self.assertEqual(self.events,[])

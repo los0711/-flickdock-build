@@ -69,6 +69,9 @@ class _DeviceDelegate(QStyledItemDelegate):
                          Qt.AlignmentFlag.AlignVCenter,
                          painter.fontMetrics().elidedText(name,Qt.TextElideMode.ElideRight,width))
         painter.setPen(QColor(secondary))
+        secondary_font = painter.font()
+        secondary_font.setPointSizeF(max(8, secondary_font.pointSizeF() - 1))
+        painter.setFont(secondary_font)
         painter.drawText(QRectF(option.rect.left()+49,option.rect.top()+29,width,18),
                          Qt.AlignmentFlag.AlignVCenter,
                          painter.fontMetrics().elidedText(host,Qt.TextElideMode.ElideRight,width))
@@ -104,6 +107,7 @@ class _DropZone(QFrame):
         self.title = _label('拖入文件或文件夹', self); self.title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.title.setObjectName('lanDropTitle'); layout.addWidget(self.title)
         self.hint = _label('也可使用下方按钮添加', self, muted=True)
+        self.hint.setObjectName('lanDropHint')
         self.hint.setAlignment(Qt.AlignmentFlag.AlignCenter); layout.addWidget(self.hint)
 
 
@@ -218,7 +222,28 @@ class _OfferIcon(QWidget):
                    '#90bdff' if self.dark else '#2373dd', 1.8)
 
 
+class _HistoryRemoveButton(QPushButton):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.dark = False
+        self.setObjectName('lanHistoryRemove')
+        self.setFixedSize(28, 28)
+        self.setAutoDefault(False)
+        self.setDefault(False)
+        self.setToolTip('删除这条传输记录')
+        self.setAccessibleName('删除这条传输记录')
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        draw_glyph(painter, 'trash', QRectF(6, 6, 16, 16),
+                   '#a7b6c8' if self.dark else '#66778e', 1.7)
+
+
 class _HistoryRow(QFrame):
+    remove_requested = Signal()
+
     def __init__(self, record, parent=None):
         super().__init__(parent)
         self.setObjectName('lanHistoryRow')
@@ -264,6 +289,9 @@ class _HistoryRow(QFrame):
         trailing.addWidget(self.state, 0, Qt.AlignmentFlag.AlignRight)
         trailing.addWidget(self.when)
         layout.addLayout(trailing)
+        self.remove_button = _HistoryRemoveButton(self)
+        self.remove_button.clicked.connect(self.remove_requested.emit)
+        layout.addWidget(self.remove_button, 0, Qt.AlignmentFlag.AlignVCenter)
 
 
 class LanPanel(QFrame):
@@ -284,7 +312,7 @@ class LanPanel(QFrame):
         self._dark = False; self._samples = {}; self._started = False
         self._history_path = settings.base / 'lan_history.json' if settings else None
         self._history = self._load_history()
-        self.setObjectName('lanPanel'); self.setFont(QFont('HarmonyOS Sans SC', 11))
+        self.setObjectName('lanPanel'); self.setFont(QFont('HarmonyOS Sans SC', 10))
         self.setMinimumHeight(505)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout = QVBoxLayout(self); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(15)
@@ -363,7 +391,7 @@ class LanPanel(QFrame):
         activity.addWidget(section)
         self.history_body = QWidget(self.activity_column)
         self.history_layout = QVBoxLayout(self.history_body)
-        self.history_layout.setContentsMargins(0, 0, 0, 0)
+        self.history_layout.setContentsMargins(2, 2, 2, 2)
         self.history_layout.setSpacing(5)
         self.history_label = _label('还没有传输记录', self.history_body, muted=True)
         self.history_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -387,6 +415,7 @@ class LanPanel(QFrame):
         columns.addWidget(self.activity_column, 1)
         layout.addLayout(columns, 1)
         self.status_label = _label('正在发现附近的 FlickDock…', self, muted=True)
+        self.status_label.setObjectName('lanStatus')
         layout.addWidget(self.status_label)
         self.service.peers_changed.connect(self._peers_changed)
         self.service.offer_received.connect(self._offer)
@@ -433,11 +462,26 @@ class LanPanel(QFrame):
             widget.deleteLater()
         self.history_rows.clear()
         self.history_label.setVisible(not self._history)
-        for record in self._history[:3]:
+        for index, record in enumerate(self._history[:3]):
             widget = _HistoryRow(record, self.history_body)
             widget.icon.dark = self._dark
+            widget.remove_button.dark = self._dark
+            widget.remove_requested.connect(lambda i=index: self._delete_history_record(i))
             self.history_layout.addWidget(widget)
             self.history_rows.append(widget)
+
+    def _delete_history_record(self, index):
+        """Forget one completed transfer without touching its files or live transfer."""
+        if not 0 <= index < len(self._history):
+            return
+        record = self._history.pop(index)
+        try:
+            self._save_history()
+        except OSError:
+            self._history.insert(index, record)
+            self.status_label.setText('无法删除传输记录，请检查保存位置。')
+            return
+        self._render_history()
 
     def queue_paths(self, paths, *, replace=False):
         if replace: self._queued_paths = []
@@ -475,7 +519,7 @@ class LanPanel(QFrame):
         self._dark = theme == 'dark'
         self.device_delegate.dark = self._dark
         color = '#edf2fa' if self._dark else '#172537'
-        muted = '#a4b3c7' if self._dark else '#697b93'
+        muted = '#a4b3c7' if self._dark else '#60728a'
         background = '#272e38' if self._dark else '#f8fafd'
         border = '#3a4554' if self._dark else '#e1e7f0'
         field = '#202630' if self._dark else '#ffffff'
@@ -483,9 +527,9 @@ class LanPanel(QFrame):
         self.setStyleSheet(f'''
             QFrame#lanPanel {{ background:transparent; border:0; }}
             QFrame#lanPanel QLabel {{ color:{color}; background:transparent; border:0; }}
-            QFrame#lanPanel QLabel#lanTitle {{ font-size:16px; font-weight:600; }}
             QFrame#lanPanel QLabel#lanSection {{ font-size:13px; font-weight:600; }}
             QFrame#lanPanel QLabel#lanMuted {{ color:{muted}; }}
+            QFrame#lanPanel QLabel#lanStatus {{ color:{muted}; font-size:12px; }}
             QFrame#lanColumn {{ background:{background}; border:1px solid {border}; border-radius:15px; }}
             QFrame#lanHistoryRow {{ background:{field}; border:1px solid {border}; border-radius:10px; }}
             QFrame#lanTransferRow {{ background:transparent; border:0; }}
@@ -496,7 +540,9 @@ class LanPanel(QFrame):
             QFrame#lanPanel QLabel#lanOfferMeta {{ color:{muted}; font-size:11px; }}
             QFrame#lanOfferCode {{ background:{'#2b394b' if self._dark else '#f1f6ff'}; border:1px solid {border}; border-radius:8px; }}
             QFrame#lanPanel QLabel#lanOfferCodeCaption {{ color:{muted}; font-size:10px; }}
-            QFrame#lanPanel QLabel#lanOfferCodeValue {{ color:{color}; font-size:15px; font-weight:700; }}
+            QFrame#lanPanel QLabel#lanOfferCodeValue {{ color:{color}; font-size:14px; font-weight:600; }}
+            QFrame#lanPanel QLabel#lanTransferTitle {{ color:{color}; font-size:13px; font-weight:600; }}
+            QFrame#lanPanel QLabel#lanTransferDetail {{ color:{muted}; font-size:12px; }}
             QFrame#lanPanel QPushButton#lanOfferAccept {{ color:white; background:#2679e9; border-color:#2679e9; font-weight:600; }}
             QFrame#lanPanel QLabel#lanHistoryTitle {{ font-size:13px; font-weight:600; }}
             QFrame#lanPanel QLabel#lanHistoryDetail {{ color:{muted}; font-size:12px; }}
@@ -506,9 +552,13 @@ class LanPanel(QFrame):
             QFrame#lanPanel QLabel#lanHistoryState[statusKind="cancelled"] {{ color:{'#e5bd7e' if self._dark else '#98631a'}; background:{'#494033' if self._dark else '#fff2df'}; }}
             QFrame#lanPanel QLabel#lanHistoryState[statusKind="failed"] {{ color:{'#f3a3a3' if self._dark else '#ad4242'}; background:{'#4b3034' if self._dark else '#fdecec'}; }}
             QFrame#lanPanel QLabel#lanHistoryState[statusKind="other"] {{ color:{muted}; background:{border}; }}
+            QFrame#lanPanel QPushButton#lanHistoryRemove {{ background:transparent; border:1px solid transparent; border-radius:8px; padding:0; }}
+            QFrame#lanPanel QPushButton#lanHistoryRemove:hover,
+            QFrame#lanPanel QPushButton#lanHistoryRemove:focus {{ background:{background}; border-color:{border}; }}
             QFrame#lanDropZone {{ background:{field}; border:1px dashed {border}; border-radius:14px; }}
             QFrame#lanDropZone[dragActive="true"] {{ background:{background}; border:2px solid {accent}; }}
-            QFrame#lanDropZone QLabel#lanDropTitle {{ font-size:17px; font-weight:600; color:{accent}; }}
+            QFrame#lanDropZone QLabel#lanDropTitle {{ font-size:15px; font-weight:600; color:{accent}; }}
+            QFrame#lanDropZone QLabel#lanDropHint {{ font-size:12px; color:{muted}; }}
             QFrame#lanPanel QPushButton {{ color:{color}; background:{field}; border:1px solid {border}; border-radius:9px; padding:5px 12px; }}
             QFrame#lanPanel QPushButton#lanPrimary {{ color:white; background:#2679e9; border-color:#2679e9; font-weight:600; }}
             QFrame#lanPanel QPushButton:hover {{ border-color:{accent}; }}
@@ -529,7 +579,9 @@ class LanPanel(QFrame):
                 row['offer_icon'].dark = self._dark; row['offer_icon'].update()
             if row.get('offer_shadow'):
                 row['offer_shadow'].setColor(QColor(0, 0, 0, 72 if self._dark else 28))
-        for row in self.history_rows: row.icon.dark = self._dark; row.icon.update()
+        for row in self.history_rows:
+            row.icon.dark = self._dark; row.icon.update()
+            row.remove_button.dark = self._dark; row.remove_button.update()
 
     def _peers_changed(self, peers):
         selected = self.devices.currentData(); self.devices.clear()
@@ -572,10 +624,12 @@ class LanPanel(QFrame):
         outer = QVBoxLayout(frame); outer.setContentsMargins(12, 9, 12, 10); outer.setSpacing(6)
         heading_widget = QWidget(frame); heading = QHBoxLayout(heading_widget)
         heading.setContentsMargins(0,0,0,0)
-        title = _label(('发送至 ' if direction == 'send' else '接收自 ') + peer, heading_widget)
+        title = _ElidedLabel(('发送至 ' if direction == 'send' else '接收自 ') + peer, heading_widget)
+        title.setObjectName('lanTransferTitle')
         heading.addWidget(title, 1); cancel = _CancelButton(frame); cancel.dark = self._dark
         cancel.clicked.connect(lambda: self.service.cancel(identifier)); heading.addWidget(cancel); outer.addWidget(heading_widget)
-        detail = _label('', frame, muted=True); outer.addWidget(detail)
+        detail = _label('', frame, muted=True); detail.setObjectName('lanTransferDetail')
+        outer.addWidget(detail)
         bar = QProgressBar(frame); bar.setRange(0, 1000); bar.setTextVisible(False); outer.addWidget(bar)
         self.transfers_layout.insertWidget(0,frame)
         self._row_sequence += 1
@@ -796,7 +850,7 @@ class LanDialog(QDialog):
         hover = '#364254' if dark else '#edf2f8'
         self.card.setStyleSheet(f'''
             QFrame#lanDialogCard {{ background:{surface}; border:0; border-radius:19px; }}
-            QLabel#lanDialogTitle {{ color:{ink}; font:600 20px 'HarmonyOS Sans SC'; background:transparent; }}
+            QLabel#lanDialogTitle {{ color:{ink}; font:600 18px 'HarmonyOS Sans SC'; background:transparent; }}
             QPushButton#lanDialogClose {{ background:transparent; color:{ink}; border:0; border-radius:15px;
                                           font:18px 'HarmonyOS Sans SC'; padding:0; }}
             QPushButton#lanDialogClose:hover {{ background:{hover}; }}

@@ -134,6 +134,17 @@ class SettingsComboBox(QComboBox):
         # including when this control already has keyboard focus.
         _scroll_settings_instead(self, event)
 
+    def showPopup(self):
+        # Qt's private popup container has its own palette. Styling only the
+        # item view leaves bright native strips above and below dark options.
+        popup = self.view().window()
+        popup.setObjectName("flickdockSettingsOptions")
+        surface = "#272c35" if self.dark else "#ffffff"
+        edge = "#3c4554" if self.dark else "#dce3ed"
+        popup.setStyleSheet(f"QFrame#flickdockSettingsOptions {{background:{surface};"
+                            f"border:1px solid {edge};border-radius:10px;}}")
+        super().showPopup()
+
     def paintEvent(self, event):
         super().paintEvent(event)
         p = QPainter(self)
@@ -276,6 +287,7 @@ class SettingsCloseButton(QPushButton):
         self.setAutoDefault(False)
         self.setDefault(False)
         self.setAttribute(Qt.WidgetAttribute.WA_MacShowFocusRect, False)
+        self._keyboard_focus = False
 
     @property
     def glyph_rect(self):
@@ -287,8 +299,31 @@ class SettingsCloseButton(QPushButton):
         ink = "#cbd6e6" if self.dark else "#526174"
         svg = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 18 18"><path d="m1.5 1.5 15 15m0-15-15 15" fill="none" stroke="{ink}" stroke-width="1.6" stroke-linecap="round"/></svg>'
         painter = QPainter(self)
+        if self._keyboard_focus and self.hasFocus():
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(QPen(QColor("#80b8fb" if self.dark else "#2584ed"), 1.5))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(QRectF(self.rect()).adjusted(2, 2, -2, -2), 10, 10)
         if not self.isEnabled(): painter.setOpacity(.45)
         QSvgRenderer(QByteArray(svg.encode("utf8"))).render(painter, self.glyph_rect)
+
+    def focusInEvent(self, event):
+        self._keyboard_focus = event.reason() in (Qt.FocusReason.TabFocusReason,
+                                                  Qt.FocusReason.BacktabFocusReason,
+                                                  Qt.FocusReason.ShortcutFocusReason)
+        super().focusInEvent(event)
+        self.update()
+
+    def focusOutEvent(self, event):
+        self._keyboard_focus = False
+        super().focusOutEvent(event)
+        self.update()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._keyboard_focus = False
+            self.update()
+        super().mousePressEvent(event)
 
 
 class SettingsTitleBar(QWidget):
@@ -871,7 +906,9 @@ class SettingsDialog(QDialog):
         self.body = body
         body_layout = QVBoxLayout(body)
         self.body_layout = body_layout
-        body_layout.setContentsMargins(0, 0, 2, 0)
+        # Keep rounded card strokes clear of the scroll viewport's clip edge.
+        # Equal insets also avoid a one-sided border at fractional display scale.
+        body_layout.setContentsMargins(3, 0, 3, 0)
         body_layout.setSpacing(14)
         scroll.setWidget(body)
         root.addWidget(scroll, 1)
@@ -903,7 +940,9 @@ class SettingsDialog(QDialog):
         cloud_layout = QVBoxLayout(cloud)
         cloud_layout.setContentsMargins(16, 14, 16, 14)
         cloud_layout.setSpacing(11)
-        cloud_layout.addWidget(QLabel("云同步", cloud))
+        cloud_heading = QLabel("云同步", cloud)
+        cloud_heading.setObjectName("settingsSection")
+        cloud_layout.addWidget(cloud_heading)
         self.sync_upload_checkbox = SettingsCheckBox("上传本机搁架到云端", cloud)
         self.sync_receive_checkbox = SettingsCheckBox("接收云端与其他设备内容", cloud)
         self.sync_upload_checkbox.setAccessibleName("上传本机搁架到云端")
@@ -954,6 +993,7 @@ class SettingsDialog(QDialog):
         shortcuts_layout.setContentsMargins(16, 14, 16, 14)
         shortcuts_layout.setSpacing(12)
         shortcut_heading = QLabel("全局快捷键", shortcuts)
+        shortcut_heading.setObjectName("settingsSection")
         shortcuts_layout.addWidget(shortcut_heading)
         for name, label in (("shelf", "打开搁架"), ("overview", "鼠标旁打开总览")):
             row = QHBoxLayout()
@@ -1111,10 +1151,12 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(card)
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(12)
+        dock_heading = QLabel("边缘停靠", card)
+        dock_heading.setObjectName("settingsSection")
+        layout.addWidget(dock_heading)
         self.trigger_visible_checkbox = SettingsCheckBox("显示触发区域", card)
         self.trigger_visible_checkbox.setAccessibleName("显示触发区域")
         layout.addWidget(self.trigger_visible_checkbox)
-        layout.addWidget(QLabel("边缘停靠", card))
         edge_row = QHBoxLayout()
         edge_row.addWidget(QLabel("停靠边缘", card), 1)
         self.dock_edge_combo = SettingsComboBox(card)
@@ -1183,7 +1225,9 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(card)
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(12)
-        layout.addWidget(QLabel("触发与摇动", card))
+        interaction_heading = QLabel("触发与摇动", card)
+        interaction_heading.setObjectName("settingsSection")
+        layout.addWidget(interaction_heading)
         self.keep_empty_handle_checkbox = SettingsCheckBox("空搁架仍显示边缘入口", card)
         self.keep_empty_handle_checkbox.setAccessibleName("空搁架仍显示边缘入口")
         layout.addWidget(self.keep_empty_handle_checkbox)
@@ -1407,8 +1451,9 @@ class SettingsDialog(QDialog):
         bg = "#1d2027" if dark else "#f7f9fc"
         card = "#272c35" if dark else "#ffffff"
         ink = "#edf2fa" if dark else "#253246"
-        secondary = "#a5b1c3" if dark else "#7a8799"
+        secondary = "#b1bed0" if dark else "#58697e"
         edge = "#3c4554" if dark else "#dce3ed"
+        indicator_edge = "#7891af" if dark else "#7690af"
         field = "#20252e" if dark else "#fbfcfe"
         hover = "#39465a" if dark else "#edf4fe"
         self.setStyleSheet(f"""
@@ -1421,6 +1466,7 @@ class SettingsDialog(QDialog):
             QScrollArea#settingsScroll QScrollBar::add-page:vertical, QScrollArea#settingsScroll QScrollBar::sub-page:vertical {{background:transparent;}}
             QDialog#flickdockSettings QLabel, QDialog#flickdockSettings QCheckBox {{color:{ink};font-size:13px;background:transparent;}}
             QDialog#flickdockSettings QLabel#settingsTitle {{font-size:22px;font-weight:600;}}
+            QDialog#flickdockSettings QLabel#settingsSection {{font-size:14px;font-weight:600;}}
             QDialog#flickdockSettings QLabel#settingsVersion {{color:{secondary};font-size:12px;}}
             QDialog#flickdockSettings QLabel#settingsUpdateStatus {{color:{secondary};font-size:12px;}}
             QDialog#flickdockSettings QLabel#settingsDetail {{color:{secondary};font-size:12px;}}
@@ -1428,7 +1474,7 @@ class SettingsDialog(QDialog):
             QDialog#flickdockSettings QLineEdit, QDialog#flickdockSettings QComboBox, QDialog#flickdockSettings QSpinBox {{background:{field};color:{ink};border:1px solid {edge};border-radius:8px;padding:7px 10px;font-size:13px;}}
             QDialog#flickdockSettings QKeySequenceEdit {{background:{field};color:{ink};border:1px solid {edge};border-radius:8px;font-size:13px;}}
             QDialog#flickdockSettings QKeySequenceEdit QLineEdit {{border:0;background:transparent;padding:5px 8px;}}
-            QDialog#flickdockSettings QLineEdit:focus, QDialog#flickdockSettings QComboBox:focus, QDialog#flickdockSettings QSpinBox:focus {{border-color:#5d9eeb;}}
+            QDialog#flickdockSettings QLineEdit:focus, QDialog#flickdockSettings QComboBox:focus, QDialog#flickdockSettings QSpinBox:focus, QDialog#flickdockSettings QKeySequenceEdit:focus {{border-color:#5d9eeb;}}
             QDialog#flickdockSettings QSpinBox QLineEdit {{border:0;background:transparent;padding:0;}}
             QDialog#flickdockSettings QSpinBox::up-button {{subcontrol-origin:border;subcontrol-position:top right;width:22px;border:0;background:transparent;}}
             QDialog#flickdockSettings QSpinBox::down-button {{subcontrol-origin:border;subcontrol-position:bottom right;width:22px;border:0;background:transparent;}}
@@ -1454,7 +1500,7 @@ class SettingsDialog(QDialog):
             QDialog#flickdockSettings QPushButton#settingsClose:pressed {{background:{edge};}}
             QDialog#flickdockSettings QPushButton#settingsClose:focus {{border:0;}}
             QDialog#flickdockSettings QCheckBox {{spacing:10px;}}
-            QDialog#flickdockSettings QCheckBox::indicator {{width:17px;height:17px;border:1px solid {edge};border-radius:5px;background:{field};}}
+            QDialog#flickdockSettings QCheckBox::indicator {{width:17px;height:17px;border:1px solid {indicator_edge};border-radius:5px;background:{field};}}
             QDialog#flickdockSettings QCheckBox::indicator:checked {{background:#2584ed;border-color:#2584ed;}}
             QDialog#flickdockSettings QLabel#settingsError {{color:{'#ff9b9b' if dark else '#b9404c'};font-size:12px;}}
         """)

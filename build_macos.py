@@ -124,6 +124,29 @@ def main(arguments=None):
         if not transfers.get('ok') or not transfers.get('frozen') or transfers.get('version') != APP_VERSION:
             raise RuntimeError('Frozen macOS original-file/TLS/cancellation verification failed')
         frozen['lan_transfers'] = transfers
+    # Run the real Cocoa plugin and construct the shelf on the hosted Mac,
+    # but with a disposable HOME and native/network side effects disabled.
+    # This catches launch exits that an offscreen import check cannot see.
+    with tempfile.TemporaryDirectory(prefix='flickdock-cocoa-smoke-') as profile:
+        smoke_path = Path(profile) / 'cocoa.json'
+        cocoa_env = dict(env, HOME=profile, QT_QPA_PLATFORM='cocoa',
+                         FLICKDOCK_CI_COCOA_SMOKE='1')
+        try:
+            subprocess.run([str(binary), '--verify-cocoa-startup', str(smoke_path)],
+                           cwd=ROOT, env=cocoa_env, check=True, timeout=20)
+            cocoa = json.loads(smoke_path.read_text(encoding='utf-8'))
+            if (not cocoa.get('ok') or cocoa.get('version') != APP_VERSION
+                    or cocoa.get('qt_platform') != 'cocoa'
+                    or not cocoa.get('shelf_constructed')
+                    or any(cocoa.get(name) for name in ('native_hotkeys', 'lan_listener',
+                                                       'cloud_session', 'startup_mutation'))):
+                raise RuntimeError('Frozen macOS Cocoa shelf startup verification failed')
+            frozen['cocoa_startup'] = cocoa
+        except BaseException:
+            startup_log = Path(profile) / 'Library/Logs/FlickDock/startup-last-error.log'
+            if startup_log.is_file():
+                shutil.copy2(startup_log, report.parent / f'mac-startup-error-{options.target_arch}.log')
+            raise
     if options.sign_identity:
         run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)])
     name = f'FlickDock-{APP_VERSION}-macOS-{options.target_arch}'

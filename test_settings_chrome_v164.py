@@ -48,6 +48,14 @@ def assert_centered_cross(button, dark):
     assert 9*ratio <= bottom-top+1 <= 14*ratio+1
 
 
+def keyboard_focus_pixels(button):
+    image = button.grab().toImage()
+    return sum(image.pixelColor(x, y).alpha()>30 and
+               image.pixelColor(x, y).blue()-image.pixelColor(x, y).red()>40 and
+               image.pixelColor(x, y).blue()-image.pixelColor(x, y).green()>20
+               for y in range(image.height()) for x in range(image.width()))
+
+
 with tempfile.TemporaryDirectory(prefix='flickdock-settings-chrome-v164-') as temporary, \
      patch.object(subject, '_read_startup_value') as read_registry, \
      patch.object(subject, '_write_startup_value') as write_registry, \
@@ -84,9 +92,32 @@ with tempfile.TemporaryDirectory(prefix='flickdock-settings-chrome-v164-') as te
             assert dialog.scroll.verticalScrollBar().maximum()>0
             assert dialog.scroll.y() >= dialog.title_bar.geometry().bottom()
             assert_centered_cross(dialog.close_button, theme=='dark')
+            first_card = dialog.body_layout.itemAt(0).widget()
+            assert first_card.geometry().left() >= 3
+            assert first_card.geometry().right() <= dialog.body.width()-4
+            dialog.theme_combo.showPopup(); flush()
+            option_view = dialog.theme_combo.view()
+            assert option_view.isVisible()
+            for row in range(dialog.theme_combo.count()):
+                item_rect = option_view.visualRect(dialog.theme_combo.model().index(row, 0))
+                assert option_view.viewport().rect().contains(item_rect), (theme, row, item_rect)
+            if theme == 'dark':
+                popup_image = option_view.window().grab().toImage()
+                middle = popup_image.width()//2
+                inset = max(3, round(4*popup_image.devicePixelRatio()))
+                for y in (inset, popup_image.height()-inset-1):
+                    pixel = popup_image.pixelColor(middle, y)
+                    assert max(pixel.red(), pixel.green(), pixel.blue()) < 130, (y, pixel)
+            if render_dir and height==680:
+                option_view.window().grab().save(str(Path(render_dir)/f'appearance-options-{theme}-{os.environ["QT_SCALE_FACTOR"]}.png'))
+            dialog.theme_combo.hidePopup(); flush()
             if render_dir and height==680:
                 dialog.grab().save(str(Path(render_dir)/f'settings-chrome-{theme}-{os.environ["QT_SCALE_FACTOR"]}.png'))
             # The target's corner is clickable, independently of the cross ink.
+            unfocused_blue = keyboard_focus_pixels(dialog.close_button)
+            dialog.close_button.setFocus(Qt.FocusReason.TabFocusReason); flush()
+            assert dialog.close_button._keyboard_focus
+            assert keyboard_focus_pixels(dialog.close_button) > unfocused_blue + 12
             dialog.dock_position_spin.setValue(61)
             dialog.capture_mode_combo.setCurrentIndex(dialog.capture_mode_combo.findData('copy'))
             dialog.keep_empty_handle_checkbox.setChecked(True)
@@ -94,6 +125,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-settings-chrome-v164-') as te
             assert previews[-1]['dock_position']==61
             QTest.mouseClick(dialog.close_button, Qt.MouseButton.LeftButton, pos=QPoint(2, 2))
             flush()
+            assert not dialog.close_button._keyboard_focus
             assert not dialog.isVisible() and dialog.result()==dialog.DialogCode.Rejected
             assert previews[-1] is None and store.path.read_bytes()==saved
             dialog.show(); flush()

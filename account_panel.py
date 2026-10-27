@@ -140,7 +140,9 @@ class AccountPanel(QFrame):
         self.logout_button.clicked.connect(lambda:self._invoke(self.service.logout));identity.addWidget(self.logout_button)
         signed.addLayout(identity)
         security_heading=QHBoxLayout();security_heading.setSpacing(8)
-        security_heading.addWidget(_label('账号安全',self.signed_in_page),1)
+        security_title=_label('账号安全',self.signed_in_page)
+        security_title.setObjectName('accountSection')
+        security_heading.addWidget(security_title,1)
         self.password_toggle_button=_button('修改密码',self.signed_in_page,name='accountQuiet')
         self.password_toggle_button.setCheckable(True)
         self.password_toggle_button.clicked.connect(self._toggle_password)
@@ -187,6 +189,7 @@ class AccountPanel(QFrame):
         email.addLayout(code_row);signed.addWidget(self.email_form)
         devices_header=QHBoxLayout()
         self.devices_heading_label=_label('已登录设备',self.signed_in_page)
+        self.devices_heading_label.setObjectName('accountSection')
         devices_header.addWidget(self.devices_heading_label,1)
         self.refresh_button=_button('刷新',self.signed_in_page,name='accountQuiet')
         self.refresh_button.clicked.connect(self.refresh_devices);devices_header.addWidget(self.refresh_button)
@@ -393,7 +396,9 @@ class AccountPanel(QFrame):
                 horizontal=QHBoxLayout();horizontal.setSpacing(9);row_layout.addLayout(horizontal)
                 glyph=AccountGlyph(row,device=True);glyph.dark=self._dark;horizontal.addWidget(glyph)
                 detail=QVBoxLayout();detail.setSpacing(3)
-                detail.addWidget(_label(str(device.get('name') or '未命名设备'),row))
+                device_name=_label(str(device.get('name') or '未命名设备'),row)
+                device_name.setObjectName('accountDeviceName')
+                detail.addWidget(device_name)
                 platform={'windows':'Windows','macos':'Mac','linux':'Linux'}.get(str(device.get('platform','')),'其他设备')
                 current=bool(device.get('current') or key==str(self.service.device_id))
                 timestamp=QDateTime.fromString(str(device.get('last_seen_at') or ''),Qt.DateFormat.ISODate)
@@ -492,16 +497,18 @@ class AccountPanel(QFrame):
 
     def apply_theme(self,theme):
         self._dark=theme=='dark'
-        card,field,ink,secondary,edge,hover=(('#272c35','#20252e','#edf2fa','#a5b1c3','#3c4554','#39465a') if self._dark
-            else ('#ffffff','#fbfcfe','#253246','#7a8799','#dce3ed','#edf4fe'))
+        card,field,ink,secondary,edge,hover=(('#272c35','#20252e','#edf2fa','#b1bed0','#3c4554','#39465a') if self._dark
+            else ('#ffffff','#fbfcfe','#253246','#58697e','#dce3ed','#edf4fe'))
         self.setStyleSheet(f'''
             QFrame#accountPanel {{background:{card};border:1px solid {edge};border-radius:13px;}}
             QFrame#accountPanel QLabel {{background:transparent;color:{ink};font-size:13px;border:0;}}
-            QFrame#accountPanel QLabel#accountTitle {{font-weight:600;}}
+            QFrame#accountPanel QLabel#accountTitle {{font-size:15px;font-weight:600;}}
+            QFrame#accountPanel QLabel#accountSection {{font-size:14px;font-weight:600;}}
+            QFrame#accountPanel QLabel#accountDeviceName {{font-size:14px;font-weight:500;}}
             QFrame#accountPanel QLabel#accountState {{color:{secondary};font-size:12px;background:{field};border-radius:9px;padding:4px 8px;}}
             QFrame#accountPanel QLabel#accountUsername {{font-size:16px;font-weight:600;}}
-            QFrame#accountPanel QLabel#accountMuted {{color:{secondary};font-size:12px;}}
-            QFrame#accountPanel QLineEdit {{background:{field};color:{ink};border:1px solid {edge};border-radius:8px;padding:7px 10px;font-size:13px;}}
+            QFrame#accountPanel QLabel#accountMuted {{color:{secondary};font-size:13px;}}
+            QFrame#accountPanel QLineEdit {{background:{field};color:{ink};border:1px solid {edge};border-radius:8px;padding:7px 10px;font-size:14px;}}
             QFrame#accountPanel QLineEdit:focus {{border-color:#5d9eeb;}}
             QFrame#accountPanel QPushButton {{background:{card};color:{ink};border:1px solid {edge};border-radius:8px;padding:5px 12px;font-size:13px;}}
             QFrame#accountPanel QPushButton:hover {{background:{hover};border-color:#75a4dc;}}

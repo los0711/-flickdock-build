@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import traceback
 
 
 def verify_platform(report_path):
@@ -50,6 +51,22 @@ def verify_platform(report_path):
 
 def main(arguments=None):
     arguments = list(sys.argv[1:] if arguments is None else arguments)
+    if '--elevated-mac-update' in arguments:
+        from mac_updates import run_elevated_update_helper, write_privileged_update_error
+        index = arguments.index('--elevated-mac-update')
+        if index + 1 >= len(arguments):
+            return 2
+        receipt = Path(arguments[index + 1])
+        try:
+            run_elevated_update_helper(receipt)
+            return 0
+        except Exception as error:
+            if receipt.name == 'update-receipt.json' and receipt.parent.name.startswith('.flickdock-update-'):
+                try:
+                    write_privileged_update_error(receipt.parent, error)
+                except OSError:
+                    pass
+            return 1
     if '--apply-mac-update' in arguments:
         from mac_updates import run_update_helper
         index = arguments.index('--apply-mac-update')
@@ -70,10 +87,24 @@ def main(arguments=None):
     if '--verify-platform' in arguments:
         index = arguments.index('--verify-platform')
         return verify_platform(arguments[index + 1]) if index + 1 < len(arguments) else 2
-    from platform_native import configure_media_backend
-    configure_media_backend()
-    from flickdock import main as application_main
-    return application_main()
+    try:
+        from platform_native import configure_media_backend
+        configure_media_backend()
+        from flickdock import main as application_main
+        return application_main()
+    except Exception:
+        # Python startup errors do not necessarily create an Apple .ips crash
+        # report. Keep a private, bounded traceback for diagnosing a launch
+        # that briefly shows its icon and then exits.
+        try:
+            log = Path.home() / 'Library' / 'Logs' / 'FlickDock' / 'startup-last-error.log'
+            log.parent.mkdir(parents=True, exist_ok=True)
+            descriptor = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(descriptor, 'w', encoding='utf-8') as output:
+                output.write(traceback.format_exc()[-32768:])
+        except OSError:
+            pass
+        return 1
 
 
 if __name__ == '__main__':

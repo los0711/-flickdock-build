@@ -81,7 +81,10 @@ class MacControllerTests(unittest.TestCase):
         self.temp.cleanup()
 
     def popen(self, arguments, **options): self.events.append(('popen', arguments, options)); return object()
-    def authorize(self): self.client.offer(self.manifest); self.assertTrue(self.controller.start_update())
+    def authorize(self):
+        self.client.offer(self.manifest)
+        self.assertTrue(self.controller.start_update())
+        self.client.offer(self.manifest)
 
     def test_auto_result_does_not_launch_and_explicit_update_uses_mac_helper(self):
         self.controller.check_automatically()
@@ -90,6 +93,7 @@ class MacControllerTests(unittest.TestCase):
         self.assertEqual(self.events, [])
         self.assertEqual(self.controller.state, 'available')
         self.assertTrue(self.controller.start_update())
+        self.client.offer(self.manifest)
         self.client.complete(self.zip, self.manifest)
         self.assertTrue(spin(lambda:len(self.events)==2))
         self.assertEqual([value[0] for value in self.events], ['popen','quit'])
@@ -106,6 +110,7 @@ class MacControllerTests(unittest.TestCase):
         self.assertEqual(self.events,[])
         self.assertEqual(self.controller.state,'cancelled')
         self.controller.start_update()
+        self.client.offer(self.manifest)
         self.client.complete(self.zip,self.manifest)
         self.assertTrue(spin(lambda:len(self.events)==2))
 
@@ -141,8 +146,10 @@ class MacControllerTests(unittest.TestCase):
         self.assertEqual(self.controller.state,'cancelled')
         self.controller.state_changed.disconnect(cancel)
         self.assertTrue(self.controller.start_update())
+        self.client.offer(self.manifest)
+        self.client.complete(self.zip,self.manifest)
         self.assertTrue(spin(lambda:len(self.events)==2))
-        self.assertEqual(self.client.calls.count('download'),1)
+        self.assertEqual(self.client.calls.count('download'),2)
 
     def test_outside_zip_and_wrong_architecture_never_spawn(self):
         self.authorize()
@@ -152,7 +159,7 @@ class MacControllerTests(unittest.TestCase):
         self.assertEqual(self.events,[])
         wrong=copy.deepcopy(self.manifest);wrong['architecture']='x86_64'
         self.client.offer(wrong)
-        self.controller.start_update();self.client.complete(self.zip,wrong)
+        self.controller.start_update();self.client.offer(wrong);self.client.complete(self.zip,wrong)
         self.assertEqual(self.controller.state,'error')
         self.assertEqual(self.events,[])
 
@@ -165,6 +172,8 @@ class MacControllerTests(unittest.TestCase):
         self.assertIn('helper spawn denied',self.controller.state_payload['error'])
         self.controller._popen=self.popen
         self.assertTrue(self.controller.start_update())
+        self.client.offer(self.manifest)
+        self.client.complete(self.zip,self.manifest)
         self.assertTrue(spin(lambda:len(self.events)==2))
 
 

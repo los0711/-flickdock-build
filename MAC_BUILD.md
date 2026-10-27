@@ -2,7 +2,7 @@
 
 ## Current verification boundary
 
-Both arm64 and x86_64 native builds passed on GitHub's macOS hosts in private
+Both arm64 and x86_64 native builds passed on GitHub's macOS hosts in
 run 40297249021 (application source commit
 04da69953be17f0f1591be77338395d5b0d0f0e1). The jobs produce real `.app`, update
 ZIP, `.dmg` and a native `.pkg` installer, run platform and cloud-sync checks from each frozen app, and
@@ -14,14 +14,13 @@ items, play media, install an app, or demonstrate on the user's desktop.
 
 ## One-command native build
 
-The public GitHub build mirror uses `.github/workflows/macos-build.yml` on
-the `cloud-build` branch with standard `macos-15` (arm64) and
-`macos-15-intel` jobs. A push to that branch starts both jobs; the workflow can
-also be dispatched manually. Public standard runners do not consume paid
-Actions minutes, although an account billing lock can still block all Actions.
-The workflow builds both native artifacts, runs frozen real-cloud verification
-offscreen and retains artifacts for three days. It does not publish a public
-release or update manifest. Artifact ZIPs
+For the authorized GitHub build mirror, `.github/workflows/macos-build.yml`
+provides manually dispatched standard `macos-15` (arm64) and
+`macos-15-intel` jobs. Check the account's remaining free Actions minutes and
+stop-on-budget settings before dispatch. Do not enable paid overages. The
+workflow builds both native artifacts, runs frozen real-cloud verification
+offscreen and retains build artifacts for three
+days. It does not publish a public release or update manifest. Artifact ZIPs
 must be downloaded and checked against the Actions digests, then each inner
 release checked against its native build report before public promotion.
 
@@ -109,29 +108,37 @@ fallback task scheduler or second Startup-folder shortcut is added.
 ## macOS online updates
 
 Windows `.exe` update manifests must never be offered to the Mac build. Publish
-separate verified HTTPS indexes for each supported macOS architecture. The 1.8.4
-client accepts ZIP updates only. Version 1.8.7 is a ZIP bridge so those clients
-can upgrade; it also publishes DMG and PKG installers separately. A later update
-channel can use DMG after supported clients have the DMG-aware updater. Each
-index names the exact versioned update package and its whole-file size/SHA256;
-publish only after the native Mac build report and anonymous full download pass.
+separate verified HTTPS indexes for each supported macOS architecture. Existing
+1.8.12 and older clients read `updates/macos-arm64.json` or
+`updates/macos-x86_64.json`. Keep those legacy indexes at the verified 1.8.13
+DMG bridge so their updater can open the native installer for a manual drag to
+Applications. Version 1.8.13 and later clients read the corresponding
+`updates/macos-arm64-auto.json` or `updates/macos-x86_64-auto.json`; these point
+to verified ZIP application packages for automatic replacement. Both channels
+name the exact versioned package and its whole-file size/SHA256; publish only
+after the native Mac build report and anonymous full download pass. Do not
+change a legacy index to ZIP: older clients would lose their upgrade path.
 `release_macos.py` checks the native build and frozen cloud reports, local package,
 bundle identity/version/CPU header and anonymous complete download. It writes
-`updates/macos-arm64.json` or `updates/macos-x86_64.json` only after every check
-passes. Initial publication requires `--initial-release`; existing versions
+the matching architecture index in the selected `--channel legacy` or
+`--channel auto` only after every check passes. The auto channel accepts ZIP
+only. Initial publication requires `--initial-release`; existing versions
 cannot acquire different bytes. Mac packages in this release have no Developer
 ID signature or notarization; Gatekeeper distribution acceptance is unverified.
 
 For DMG manifests, the 1.8.6 and later in-app updater downloads and verifies
 the versioned DMG, then opens it for the user to drag FlickDock into Applications.
-The application remains running until the user completes that native step.
-ZIP manifests continue to use
-`PrepareMacUpdateJob(zip_path, manifest, current_version=..., installed_app=...)`
-runs hashing and extraction in a Qt worker. Call `start()`, retain the job until
+Opening the image is a handoff, not a completed installation. The application
+remains running until the user completes that native step.
+ZIP manifests use
+`PrepareMacUpdateJob(zip_path, manifest, current_version=..., installed_app=...)`.
+It runs hashing and extraction in a Qt worker. Call `start()`, retain the job until
 `finished(prepared)`/`failed(message)`/`cancelled()`, and use `cancel()` on shutdown.
-The installed app and its parent directory must be user-writable. Preparation
-does not change the installed app. A protected system Applications directory
-fails clearly instead of silently requesting elevation.
+Preparation does not change the installed app. For an app in the protected
+`/Applications` directory, installation requests administrator authorization.
+The privileged helper independently fetches the official update index, checks
+the ZIP hash, and installs from a protected copy; the ordinary app cannot
+substitute different bytes after authorization.
 
 After an explicit Install action, call
 `launch_update_helper(prepared, quit_callback=manager.quit)`. Only successful
@@ -140,7 +147,8 @@ before constructing a GUI. The helper waits for the original PID to exit,
 rechecks the app identity/version and complete staged tree hash, atomically
 renames the old bundle to a unique backup, and replaces it with the new one. A
 replacement or relaunch-command failure restores the old bundle. It never
-updates a live app in place. Failure diagnostics remain in the job's own stage.
+updates a live app in place. Failure details are displayed once when the old
+app reopens. A native Cocoa startup smoke check runs in the cloud Mac build.
 
 ZIP validation rejects absolute/traversing/duplicate/case-colliding paths,
 special files, encrypted entries, oversized payloads and links outside the app.

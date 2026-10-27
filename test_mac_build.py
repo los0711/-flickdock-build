@@ -2,12 +2,14 @@
 import ast
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 import build_macos
 import mac_entry
 import mac_updates
+import flickdock
 
 
 class MacBuildTests(unittest.TestCase):
@@ -41,6 +43,31 @@ class MacBuildTests(unittest.TestCase):
         self.assertIn("'/usr/bin/pkgbuild'", source)
         self.assertIn("'--install-location', '/Applications'", source)
         self.assertIn("'/usr/sbin/pkgutil', '--expand'", source)
+
+    def test_cocoa_smoke_is_opt_in_and_uses_disposable_profile(self):
+        source = Path(build_macos.__file__).read_text(encoding='utf-8')
+        self.assertIn("TemporaryDirectory(prefix='flickdock-cocoa-smoke-')", source)
+        self.assertIn("QT_QPA_PLATFORM='cocoa'", source)
+        self.assertIn("FLICKDOCK_CI_COCOA_SMOKE='1'", source)
+        self.assertIn("'--verify-cocoa-startup'", source)
+
+    def test_python_startup_exception_gets_private_diagnostic(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(mac_entry.Path, 'home', return_value=Path(directory)), \
+                 patch('platform_native.configure_media_backend', side_effect=RuntimeError('smoke startup failure')):
+                self.assertEqual(mac_entry.main([]), 1)
+            log = Path(directory) / 'Library/Logs/FlickDock/startup-last-error.log'
+            self.assertIn('smoke startup failure', log.read_text(encoding='utf-8'))
+
+    def test_previous_update_failure_opens_settings_with_error_once(self):
+        manager = flickdock.ShelfManager.__new__(flickdock.ShelfManager)
+        events = []
+        manager._quitting = False
+        manager.show_settings = lambda: events.append('settings')
+        manager.updates = SimpleNamespace(open_error=lambda error: events.append(error))
+        with patch.object(mac_updates, 'consume_update_failure', return_value='管理员授权已取消'):
+            manager._show_previous_mac_update_failure()
+        self.assertEqual(events, ['settings', '管理员授权已取消'])
 
 
 if __name__ == '__main__': unittest.main(verbosity=2)

@@ -93,6 +93,46 @@ class LanDialogTests(unittest.TestCase):
         self.assertTrue(all(row.geometry().bottom() <= panel.history_body.height()
                             for row in panel.history_rows))
 
+    def test_delete_one_history_record_persists_and_leaves_live_transfer_and_files(self):
+        panel=self.dialog.panel
+        original=self.root/'kept.pdf';original.write_bytes(b'keep original')
+        panel._history=[
+            {'when':'10-27 10:25','name':'newest.pdf','peer':'Mac mini',
+             'state':'完成','direction':'send'},
+            {'when':'10-27 10:24','name':original.name,'peer':'Windows',
+             'state':'已取消','direction':'send'},
+            {'when':'10-27 10:23','name':'older.png','peer':'Mac mini',
+             'state':'失败','direction':'receive'},
+            {'when':'10-27 10:22','name':'oldest.zip','peer':'Windows',
+             'state':'完成','direction':'receive'}]
+        panel._save_history();panel._render_history()
+        panel._progress({'id':'still-active','direction':'send','peer':'Windows',
+            'state':'waiting','code':'123456'})
+        APP.processEvents()
+        self.assertEqual(panel.history_rows[1].remove_button.accessibleName(),
+                         '删除这条传输记录')
+        panel.history_rows[1].remove_button.click();APP.processEvents()
+        self.assertEqual([row.detail.accessibleName() for row in panel.history_rows],
+                         ['newest.pdf','older.png','oldest.zip'])
+        self.assertTrue(original.exists())
+        self.assertIn('still-active',panel._rows)
+        self.assertFalse(panel._rows['still-active'].get('finished',False))
+        self.dialog.close();self.dialog.deleteLater();APP.processEvents()
+        self.dialog=LanDialog(self.service,SettingsStore(self.root/'profile'))
+        self.assertEqual([row['name'] for row in self.dialog.panel._history],
+                         ['newest.pdf','older.png','oldest.zip'])
+
+    def test_history_delete_write_failure_keeps_record_visible(self):
+        panel=self.dialog.panel
+        panel._history=[{'when':'10-27 10:25','name':'report.pdf','peer':'Mac mini',
+                         'state':'完成','direction':'send'}]
+        panel._render_history();APP.processEvents()
+        with patch.object(panel,'_save_history',side_effect=OSError('read only')):
+            panel.history_rows[0].remove_button.click()
+        self.assertEqual(len(panel._history),1)
+        self.assertEqual(len(panel.history_rows),1)
+        self.assertIn('无法删除传输记录',panel.status_label.text())
+
     def test_remote_url_is_not_treated_as_a_local_file(self):
         mime=QMimeData();mime.setUrls([QUrl('https://example.invalid/image.png')])
         enter=QDragEnterEvent(self.dialog.panel.drop_zone.rect().center(),Qt.DropAction.CopyAction,mime,

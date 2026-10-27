@@ -63,7 +63,10 @@ def manifest_endpoint(platform=None, machine=None):
     architecture = update_architecture(machine)
     if architecture not in ('arm64', 'x86_64'):
         raise ValueError('当前 Mac 架构没有对应的更新通道。')
-    return MAC_MANIFEST_BASE + 'macos-' + architecture + '.json'
+    # 1.8.12 and older clients are permanently bridged by the legacy DMG
+    # indices. New builds use the automatic ZIP channel so a future release
+    # cannot strand an older updater on a ZIP it cannot install.
+    return MAC_MANIFEST_BASE + 'macos-' + architecture + '-auto.json'
 
 
 def validate_manifest(value, allowed_hosts=DEFAULT_ALLOWED_HOSTS, *, platform=None, machine=None):

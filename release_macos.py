@@ -152,17 +152,23 @@ def _baseline(value, architecture, approved):
 def create_mac_release(*, archive: Path, build_report: Path, cloud_report: Path, version: str,
                        architecture: str, notes: str, download_url: str, output: Path,
                        previous: dict | None = None, initial_release=False,
-                       allowed_hosts: set[str] | None = None, opener=None) -> dict:
+                       allowed_hosts: set[str] | None = None, opener=None,
+                       channel: str = 'legacy') -> dict:
     version_tuple(version)
     if architecture not in ARCHITECTURES:
         raise ReleaseError('Choose a native arm64 or x86_64 release channel')
+    if channel not in ('legacy', 'auto'):
+        raise ReleaseError('Choose the legacy or auto Mac update channel')
     archive = _regular(archive, 'Mac package'); build_report = _regular(build_report, 'Mac build report')
     cloud_report = _regular(cloud_report, 'Mac cloud report'); output = Path(output)
     if archive.name not in (f'FlickDock-{version}-macOS-{architecture}.zip',
                             f'FlickDock-{version}-macOS-{architecture}.dmg'):
         raise ReleaseError('Mac package filename must identify this exact release and architecture')
-    if output.name != f'macos-{architecture}.json' or output.is_symlink():
-        raise ReleaseError('Output must be the matching macos-architecture.json channel index')
+    index_name = f'macos-{architecture}' + ('-auto' if channel == 'auto' else '') + '.json'
+    if output.name != index_name or output.is_symlink():
+        raise ReleaseError('Output must be the matching Mac architecture and update channel index')
+    if channel == 'auto' and archive.suffix.lower() != '.zip':
+        raise ReleaseError('The automatic Mac update channel requires a ZIP application package')
     if not isinstance(notes, str) or not notes.strip() or len(notes) > 32768:
         raise ReleaseError('Nonempty Mac release notes of at most 32768 characters are required')
     host = validate_url(download_url)
@@ -221,6 +227,7 @@ def main(arguments=None):
     parser.add_argument('--cloud-report', type=Path, required=True)
     parser.add_argument('--version', required=True)
     parser.add_argument('--architecture', choices=ARCHITECTURES, required=True)
+    parser.add_argument('--channel', choices=('legacy', 'auto'), default='legacy')
     parser.add_argument('--notes', required=True)
     parser.add_argument('--download-url', required=True)
     parser.add_argument('--output-dir', type=Path, default=Path('updates'))
@@ -229,12 +236,14 @@ def main(arguments=None):
     parser.add_argument('--allow-host', action='append', default=[])
     options = parser.parse_args(arguments)
     try:
-        output = options.output_dir / f'macos-{options.architecture}.json'
+        output = options.output_dir / (f'macos-{options.architecture}'
+                                       + ('-auto' if options.channel == 'auto' else '') + '.json')
         create_mac_release(archive=options.archive, build_report=options.build_report,
             cloud_report=options.cloud_report, version=options.version, architecture=options.architecture,
             notes=options.notes, download_url=options.download_url, output=output,
             previous=_json(options.previous_manifest) if options.previous_manifest else None,
-            initial_release=options.initial_release, allowed_hosts=set(options.allow_host) or None)
+            initial_release=options.initial_release, allowed_hosts=set(options.allow_host) or None,
+            channel=options.channel)
     except (ReleaseError, OSError) as error:
         print(str(error), file=sys.stderr); return 1
     print(json.dumps(dict(version=options.version, architecture=options.architecture, manifest=str(output))))

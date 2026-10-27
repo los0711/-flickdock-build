@@ -278,6 +278,7 @@ class UpdateController(QObject):
         self._jobs, self._notified = {}, set()
         self._pending_manifest = None
         self._pending_check = False
+        self._refreshing_before_install = False
         self._manifest, self._verified_path = None, ''
         self._operation, self._retry_operation = 'check', 'check'
         self._state = 'idle'
@@ -359,6 +360,7 @@ class UpdateController(QObject):
             return False
         if self.busy:
             return True
+        self._refreshing_before_install = False
         self._pending_manifest, self._pending_check = None, False
         self._timer.stop()
         self._operation = 'check'
@@ -378,7 +380,8 @@ class UpdateController(QObject):
     def _checking(self, manual=False):
         if self._closed:
             return
-        self._authorized = False
+        if not self._refreshing_before_install:
+            self._authorized = False
         self._manifest, self._verified_path = None, ''
         self._operation = self._retry_operation = 'check'
         self._set_state('checking')
@@ -386,10 +389,14 @@ class UpdateController(QObject):
     def _available(self, manifest, manual=False):
         if self._closed:
             return
+        install_requested = self._refreshing_before_install
+        self._refreshing_before_install = False
         self._manifest, self._verified_path = copy.deepcopy(manifest), ''
-        self._authorized = False
+        self._authorized = install_requested
         self._set_state('available')
-        if not manual:
+        if install_requested:
+            self._download_current_manifest()
+        elif not manual:
             self._pending_manifest = copy.deepcopy(manifest)
             self._resume_automatic()
 
@@ -414,6 +421,7 @@ class UpdateController(QObject):
     def _latest(self, manual=False):
         if self._closed:
             return
+        self._refreshing_before_install = False
         self._authorized = False
         self._manifest, self._verified_path = None, ''
         self._set_state('latest')
@@ -421,6 +429,7 @@ class UpdateController(QObject):
     def _failed(self, message, manual=False):
         if self._closed:
             return
+        self._refreshing_before_install = False
         self._authorized = False
         self._retry_operation = self._operation
         self._set_state('error', error=message)
@@ -430,14 +439,27 @@ class UpdateController(QObject):
         self._failed(message, True)
 
     def start_update(self):
-        """One explicit click authorizes this download, verification and handoff."""
+        """Recheck the live index before downloading, even after a recent check."""
         if not self.can_start_update:
             return False
         self._authorized = True
+        self._refreshing_before_install = True
         self._pending_manifest, self._pending_check = None, False
         self._timer.stop()
-        if self._verified_path:
-            return self._start_verification()
+        self._operation = 'check'
+        try:
+            if self.client.check(manual=True) is False:
+                self._failed('正在处理更新，请稍后再试。', True)
+                return False
+        except (OSError, ValueError, RuntimeError) as problem:
+            self._failed(str(problem), True)
+            return False
+        return True
+
+    def _download_current_manifest(self):
+        """Continue the same authorized action with the newly fetched index."""
+        if not self._authorized or self._closed or self._manifest is None:
+            return False
         self._operation = 'download'
         self._set_state('downloading')
         if not self._authorized or self._closed:
@@ -641,6 +663,7 @@ class UpdateController(QObject):
             return False
         active = self.busy or self._authorized
         self._authorized = False
+        self._refreshing_before_install = False
         self._generation += 1
         self._installing = False
         self._timer.stop()

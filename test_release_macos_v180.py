@@ -102,6 +102,25 @@ class MacReleaseTests(unittest.TestCase):
         self.assertEqual(self.publish()['architecture'], 'x86_64')
         self.assertFalse((self.output.parent / 'macos-arm64.json').exists())
 
+    def test_auto_channel_is_separate_and_requires_zip(self):
+        self.output = self.root / 'updates' / 'macos-arm64-auto.json'
+        manifest = self.publish(channel='auto')
+        self.assertEqual(json.loads(self.output.read_text()), manifest)
+        self.assertFalse((self.output.parent / 'macos-arm64.json').exists())
+        with self.assertRaisesRegex(release.ReleaseError, 'channel index'):
+            self.publish(channel='legacy')
+        self.output.unlink()
+        self.archive = self.archive.with_suffix('.dmg')
+        self.archive.write_bytes(b'FlickDock image'+bytes(2048)+b'koly'+bytes(508))
+        self.url = 'https://releases.example.org/' + self.archive.name
+        self.write_reports()
+        self.build['dmg_verified'] = True
+        self.save_reports()
+        self.server = Server(self.url, self.archive.read_bytes())
+        with self.assertRaisesRegex(release.ReleaseError, 'requires a ZIP'):
+            self.publish(channel='auto')
+        self.assertFalse(self.output.exists())
+
     def test_verified_dmg_can_be_published_only_after_native_mount_check(self):
         self.archive=self.archive.with_suffix('.dmg')
         self.archive.write_bytes(b'FlickDock image'+bytes(2048)+b'koly'+bytes(508))
