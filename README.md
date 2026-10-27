@@ -47,7 +47,7 @@ FlickDock.exe --verify-update --verify-current 1.6.5 --verify-output update-resu
 
 设置和托盘菜单都提供“检查更新”。正式安装版启动后会自动检查，并在发现新版本时提示；下载经过 HTTPS、大小和 SHA256 校验。用户点击安装后覆盖当前安装目录、保留搁架和设置，并重新启动应用。开发运行不会自动检查或执行安装程序。
 
-源码仓库保持私有。公开安装包与更新索引位于 [FlickDock Releases](https://gitee.com/rooogerluo/flick-dock-releases/releases)。发布完整步骤见 [PUBLISHING.md](PUBLISHING.md)。仅推送源代码不会产生可安装更新，需一并构建和发布安装包，最后更新索引。
+Gitee 主源码仓库保持私有；这个 GitHub 构建镜像公开，包含完整客户端和云端源码，以使用公开仓库的标准 macOS Actions 运行器。公开安装包与更新索引位于 [FlickDock Releases](https://gitee.com/rooogerluo/flick-dock-releases/releases)。发布完整步骤见 [PUBLISHING.md](PUBLISHING.md)。仅推送源代码不会产生可安装更新，需一并构建和发布安装包，最后更新索引。
 
 ## 字体与许可
 

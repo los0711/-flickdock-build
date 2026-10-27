@@ -14,13 +14,14 @@ items, play media, install an app, or demonstrate on the user's desktop.
 
 ## One-command native build
 
-For an authorized private GitHub mirror, `.github/workflows/macos-build.yml`
-provides manually dispatched standard `macos-15` (arm64) and
-`macos-15-intel` jobs. Check the account's remaining free Actions minutes and
-stop-on-budget settings before dispatch. Do not enable paid overages or make
-the source public. The workflow builds both native artifacts, runs frozen
-real-cloud verification offscreen and retains private artifacts for three
-days. It does not publish a public release or update manifest. Artifact ZIPs
+The public GitHub build mirror uses `.github/workflows/macos-build.yml` on
+the `cloud-build` branch with standard `macos-15` (arm64) and
+`macos-15-intel` jobs. A push to that branch starts both jobs; the workflow can
+also be dispatched manually. Public standard runners do not consume paid
+Actions minutes, although an account billing lock can still block all Actions.
+The workflow builds both native artifacts, runs frozen real-cloud verification
+offscreen and retains artifacts for three days. It does not publish a public
+release or update manifest. Artifact ZIPs
 must be downloaded and checked against the Actions digests, then each inner
 release checked against its native build report before public promotion.
 

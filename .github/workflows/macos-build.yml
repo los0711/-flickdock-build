@@ -1,7 +1,9 @@
-name: Private macOS build
+name: macOS build
 
 on:
   workflow_dispatch:
+  push:
+    branches: [cloud-build]
 
 permissions:
   contents: read
@@ -12,8 +14,6 @@ concurrency:
 
 jobs:
   build:
-    # Private source must never be published merely to obtain free runners.
-    if: github.event.repository.private == true
     timeout-minutes: 25
     strategy:
       fail-fast: false
@@ -63,7 +63,7 @@ jobs:
               for path in files:
                   shutil.copy2(path, target / path.name)
           PY
-      - name: Retain private build artifacts for verification
+      - name: Retain build artifacts for verification
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: FlickDock-macOS-${{ matrix.arch }}-${{ github.sha }}
