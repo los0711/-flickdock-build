@@ -62,6 +62,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-settings-v163-') as temporary
     store = subject.SettingsStore(root/'profile')
     assert store.capture_mode == 'reference' and store.keep_empty_handle
     assert store.trigger_view == 'compact' and store.shake_sensitivity == 50
+    assert store.sync_upload_enabled and store.sync_receive_enabled
     assert store.autostart and not store.path.exists()
     assert not store.reconcile_startup()
     changes = []
@@ -76,6 +77,12 @@ with tempfile.TemporaryDirectory(prefix='flickdock-settings-v163-') as temporary
     for value in ('move', '', False): assert_rejected(store, capture_mode=value)
     for value in ('overview', '', False): assert_rejected(store, trigger_view=value)
     for value in (1, 'false'): assert_rejected(store, keep_empty_handle=value)
+    for value in (0, 'false'): assert_rejected(store, sync_upload_enabled=value)
+    for value in (1, 'true'): assert_rejected(store, sync_receive_enabled=value)
+    assert store.update(sync_upload_enabled=False, sync_receive_enabled=False)
+    disabled = subject.SettingsStore(store.base)
+    assert not disabled.sync_upload_enabled and not disabled.sync_receive_enabled
+    assert store.update(sync_upload_enabled=True, sync_receive_enabled=True)
     assert store.update(shake_sensitivity=1)
     assert store.update(shake_sensitivity=50)
     print('PASS defaults, persistent new settings, strict validation and sensitivity boundaries')

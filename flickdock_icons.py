@@ -48,7 +48,10 @@ _GLYPHS = {
     'dock':'<path d="M20 4v16M3.5 12h12m-5-5 5 5-5 5"/>',
     'check':'<path d="m5 12 5 5L19 7"/>',
     'folder':'<path d="M3 8V6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8z"/>',
-    'nearby':'<rect x="3" y="5" width="12" height="10" rx="2"/><path d="M2 18h14M18 8h3v11h-4V8h1zm-9 2 3 2-3 2"/>',
+    # Lucide monitor-smartphone, file-up and cloud, ISC; see THIRD_PARTY_NOTICES.md.
+    'nearby':'<path d="M18 8V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h8"/><path d="M10 19v-3.96 3.15"/><path d="M7 19h5"/><rect width="6" height="10" x="16" y="12" rx="2"/>',
+    'file-up':'<path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M12 12v6"/><path d="m15 15-3-3-3 3"/>',
+    'cloud':'<path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>',
     'receive':'<rect x="3" y="11" width="18" height="9" rx="2.5"/><path d="M12 3v11m-4-4 4 4 4-4M7 16h2"/>',
     'file':'<path d="M7 3h7l5 5v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V5a2 2 0 0 1 2-2zm7 0v5h5"/>',
     'text':'<path d="M7 3h7l5 5v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V5a2 2 0 0 1 2-2zm7 0v5h5M8 11h7.5M8 14h7.5M8 17h4"/>',
@@ -315,7 +318,8 @@ def export_svg_family(directory: str | Path) -> None:
     """Write the actual original vector sources for design review/source delivery."""
     directory = Path(directory); directory.mkdir(parents=True,exist_ok=True)
     for name in _GLYPHS:
-        (directory/f'control-{name}.svg').write_text(glyph_svg(name),encoding='utf-8')
+        accent = '#1876db' if name in ('nearby','file-up','cloud') else '#6e7078'
+        (directory/f'control-{name}.svg').write_text(glyph_svg(name,accent),encoding='utf-8')
     for name in (*_CATEGORY_SYMBOLS,'folder'):
         (directory/f'content-{name}.svg').write_text(document_svg(name),encoding='utf-8')
     for name in _FORMAT_COLORS:

@@ -20,11 +20,44 @@ import app_settings
 import capture_files
 import flickdock as subject
 from content_grid import IconItem
-from transfer_visuals import TransferIconLabel
+from transfer_visuals import TransferIconLabel,TransferRateTracker,transfer_phase_label
 
 APP=QApplication.instance() or QApplication([])
 APP.setQuitOnLastWindowClosed(False)
 subject.load_font(APP)
+
+
+class TransferRateTests(unittest.TestCase):
+    def test_eta_uses_observed_progress_and_disappears_when_stalled_or_reset(self):
+        clock=[0.0];tracker=TransferRateTracker(clock=lambda:clock[0])
+        state={'phase':'uploading','received':0,'total':16*1024*1024}
+        tracker.observe({'item':state})
+        self.assertEqual(tracker.remaining_text('item',state),'计算中')
+        clock[0]=1.0;state['received']=4*1024*1024;tracker.observe({'item':state})
+        self.assertEqual(tracker.remaining_text('item',state),'剩余约 3 秒')
+        self.assertEqual(tracker.remaining_text('__aggregate__',state),'剩余约 3 秒')
+        clock[0]=8.0;tracker.observe({'item':state})
+        self.assertEqual(tracker.remaining_text('item',state),'等待传输')
+        state['received']=0;tracker.observe({'item':state})
+        self.assertEqual(tracker.remaining_text('item',state),'计算中')
+        state['phase']='queued';self.assertEqual(tracker.remaining_text('item',state),'等待开始')
+        self.assertEqual(transfer_phase_label({'phase':'copying'}),'正在复制')
+        self.assertEqual(transfer_phase_label({'phase':'downloading'}),'正在下载')
+        self.assertEqual(transfer_phase_label({'phase':'uploading'}),'正在上传')
+
+    def test_queue_wait_and_retry_delay_do_not_create_false_eta(self):
+        clock=[0.0];tracker=TransferRateTracker(clock=lambda:clock[0])
+        state={'phase':'queued','received':0,'total':16*1024*1024}
+        tracker.observe({'item':state})
+        clock[0]=20.0;state.update(phase='uploading',received=4*1024*1024)
+        tracker.observe({'item':state})
+        self.assertEqual(tracker.remaining_text('item',state),'计算中')
+        clock[0]=21.0;state['received']=8*1024*1024;tracker.observe({'item':state})
+        self.assertEqual(tracker.remaining_text('item',state),'剩余约 2 秒')
+        clock[0]=30.0;tracker.observe({'item':state})
+        self.assertEqual(tracker.remaining_text('item',state),'等待传输')
+        state['received']=9*1024*1024;tracker.observe({'item':state})
+        self.assertEqual(tracker.remaining_text('item',state),'计算中')
 
 
 def flush():
@@ -217,6 +250,51 @@ class TransferUITests(unittest.TestCase):
         self.assertTrue(self.shelf.upload_count.complete)
         self.assertTrue(self.shelf.upload_count.isVisible())
         wait(lambda:not self.shelf.upload_count.isVisible(),timeout=3)
+
+    def test_overview_footer_shows_two_transfers_and_opens_the_full_list(self):
+        refs=[self.pending(f'传输文件{index}.bin',received=index*10,total=100)
+              for index in range(4)]
+        popup=self.overview()
+        self.assertEqual(popup.category,'all')
+        self.assertEqual(popup.visible_refs(),[],'active transfers stay outside the completed list')
+        self.assertTrue(popup.transfer_strip.isVisible())
+        self.assertEqual(popup._strip_refs,refs[-1:-3:-1])
+        self.assertEqual(sum(row.isVisible() for row,*_ in popup.strip_rows),2)
+        self.assertIn('+2',popup.strip_more.text())
+        self.assertEqual(popup.strip_rows[0][3].value(),300)
+        epoch=popup._build_epoch
+        self.shelf.content.transfers[refs[-1]]['received']=65
+        self.shelf.transfers_updated();flush()
+        self.assertEqual(popup.strip_rows[0][3].value(),650)
+        self.assertEqual(popup._build_epoch,epoch,'progress must not rebuild the overview')
+        QTest.mouseClick(popup.strip_rows[0][1],Qt.MouseButton.LeftButton);flush()
+        self.assertEqual(popup.category,'uploading')
+        self.assertEqual(popup.primary_selection,refs[-1])
+        self.assertFalse(popup.transfer_strip.isVisible(),'the full list does not repeat the footer')
+        self.assertEqual(len(popup.visible_refs()),4)
+        popup.set_category('all')
+        self.shelf.content.transfers.clear();self.shelf.content.pending.clear()
+        self.shelf.transfers_updated();flush()
+        self.assertFalse(popup.transfer_strip.isVisible())
+
+    def test_percent_and_estimated_time_update_in_footer_category_and_preview(self):
+        clock=[0.0]
+        self.shelf.transfer_rates=TransferRateTracker(clock=lambda:clock[0])
+        ref=self.pending('正在上传的大文件.mov',received=0,total=16*1024*1024)
+        popup=self.overview()
+        self.assertIn('0%',popup.strip_rows[0][2].text())
+        self.assertIn('计算中',popup.strip_rows[0][2].text())
+        popup.set_category('uploading');popup.preview.show_path(ref,force=True)
+        self.assertIn('0%',popup.transfer_eta.text())
+        self.assertIn('计算中',popup.preview.transfer_meta.text())
+        epoch=popup._build_epoch
+        clock[0]=1.0;self.shelf.content.transfers[ref]['received']=4*1024*1024
+        self.shelf.transfers_updated();flush()
+        self.assertEqual(popup._build_epoch,epoch)
+        self.assertIn('25% · 剩余约 3 秒',popup.transfer_eta.text())
+        self.assertIn('25% · 剩余约 3 秒',popup.preview.transfer_meta.text())
+        popup.set_category('all')
+        self.assertIn('25% · 剩余约 3 秒',popup.strip_rows[0][2].text())
     def test_manager_projects_remote_pending_enables_expand_and_routes_cancel_to_sync(self):
         self.manager._sync_transfer_refs=set()
         calls=[]

@@ -48,11 +48,13 @@ from widget_retirement import WidgetRetirementQueue
 from capture_files import CopyFilesJob
 from owned_files import owned_copy_spec, delete_owned_copy
 from sync_files import DiskWork
-from transfer_visuals import TransferIconLabel, TransferOverlay, UploadCountBadge
+from transfer_visuals import (TransferIconLabel, TransferOverlay, UploadCountBadge,
+                              TransferRateTracker, transfer_fraction, transfer_phase_label)
 from drop_routing import OverviewDropRouter
 from app_version import APP_NAME, APP_VERSION
 from update_controller import UpdateController
-from platform_native import data_directory, native_input_available, mouse_buttons_mask, remove_host_window_shadow
+from platform_native import (data_directory, native_input_available, mouse_buttons_mask,
+                             remove_host_window_shadow, keep_tool_visible_when_inactive)
 from account_service import AccountService
 from cloud_events import CloudEvents
 from account_panel import AccountPanel
@@ -390,10 +392,12 @@ class PreviewPane(QFrame):
         self.transfer_progress=QProgressBar(self.transfer_row);self.transfer_progress.setTextVisible(False)
         self.transfer_progress.setFixedHeight(5)
         set_ui_style(self.transfer_progress,"QProgressBar {border:0;background:#e1e7ef;border-radius:2px;} QProgressBar::chunk {background:#3989ef;border-radius:2px;}")
+        self.transfer_meta=QLabel(self.transfer_row)
+        set_ui_style(self.transfer_meta,"color:#63758b;font:12px 'HarmonyOS Sans SC';background:transparent;")
         self.cancel_transfer=QPushButton('取消上传',self.transfer_row)
         self.cancel_transfer.clicked.connect(lambda:self.shelf.cancel_transfer(self.current_path))
         set_ui_style(self.cancel_transfer,"QPushButton {border:0;background:transparent;color:#1876db;padding:5px;font:12px 'HarmonyOS Sans SC';}")
-        transfer_layout.addWidget(self.transfer_progress,1);transfer_layout.addWidget(self.cancel_transfer)
+        transfer_layout.addWidget(self.transfer_progress,1);transfer_layout.addWidget(self.transfer_meta);transfer_layout.addWidget(self.cancel_transfer)
         layout.addWidget(self.transfer_row);self.transfer_row.hide()
         self.stack=QStackedWidget(self)
         set_ui_style(self.stack, "background:transparent;border:0;")
@@ -509,16 +513,20 @@ class PreviewPane(QFrame):
         self.transfer_row.setVisible(bool(state))
         self.transfer_overlay.setGeometry(self.stack.rect());self.transfer_overlay.setVisible(bool(state))
         if state:self.transfer_overlay.raise_();self.transfer_overlay.update()
-        if not state:return
+        if not state:self.transfer_meta.clear();return
         total,received=state.get('total',0),state.get('received',0)
         self.transfer_progress.setRange(0,1000 if total else 0)
         if total:self.transfer_progress.setValue(round(1000*min(1,received/total)))
+        fraction=transfer_fraction(state)
+        progress=f'{round(fraction*100)}% · ' if fraction is not None else ''
+        self.transfer_meta.setText(progress+self.shelf.transfer_rates.remaining_text(self.current_path,state))
         copying=state.get('phase')=='copying'
         self.cancel_transfer.setText('取消复制' if copying else '取消下载' if state.get('phase')=='downloading' else '取消上传')
         self.cancel_transfer.setEnabled(True)
         if self.shelf.content.is_pending(self.current_path):
-            self.info.setText(('正在复制' if copying else '正在下载原文件' if state.get('phase')=='downloading' else '另一台设备正在上传' if state.get('remote') else '正在上传')+
-                (f' · {round(received/total*100)}%' if total else '…'))
+            self.info.setText('另一台设备正在上传' if state.get('remote') and state.get('phase')!='downloading'
+                              else '正在下载原文件' if state.get('phase')=='downloading'
+                              else transfer_phase_label(state))
 
     def show_group(self,refs):
         refs=tuple(refs)
@@ -716,7 +724,9 @@ class ContentsPopup(QFrame):
         set_ui_style(self.transfer_count,"color:#738091;font:12px 'HarmonyOS Sans SC';")
         self.transfer_bar=QProgressBar(self.transfer_summary);self.transfer_bar.setTextVisible(False);self.transfer_bar.setFixedHeight(4)
         set_ui_style(self.transfer_bar,"QProgressBar {border:0;background:#e1e7ef;border-radius:2px;} QProgressBar::chunk {background:#3989ef;border-radius:2px;}")
-        summary_layout.addWidget(self.transfer_count);summary_layout.addWidget(self.transfer_bar,1)
+        self.transfer_eta=QLabel(self.transfer_summary)
+        set_ui_style(self.transfer_eta,"color:#63758b;font:12px 'HarmonyOS Sans SC';")
+        summary_layout.addWidget(self.transfer_count);summary_layout.addWidget(self.transfer_bar,1);summary_layout.addWidget(self.transfer_eta)
         root.addWidget(self.transfer_summary);self.transfer_summary.hide()
         body=QHBoxLayout(); body.setSpacing(16)
         self.scroll=QScrollArea(self); self.scroll.setFixedWidth(246); self.scroll.setWidgetResizable(True)
@@ -725,7 +735,40 @@ class ContentsPopup(QFrame):
         self.rows_body=QWidget(); self.rows_layout=QVBoxLayout(self.rows_body)
         self.rows_layout.setContentsMargins(0,0,3,0); self.rows_layout.setSpacing(3); self.scroll.setWidget(self.rows_body)
         self.preview=PreviewPane(self); body.addWidget(self.scroll); body.addWidget(self.preview,1)
-        root.addLayout(body,1); self.rebuild(); self.update_transfer_status()
+        root.addLayout(body,1)
+        self.transfer_strip=QFrame(self)
+        self.transfer_strip.setObjectName('transferStrip')
+        set_ui_style(self.transfer_strip,
+            "QFrame#transferStrip {background:#f4f8fd;border:1px solid #e3eaf4;border-radius:11px;}")
+        strip_layout=QVBoxLayout(self.transfer_strip)
+        strip_layout.setContentsMargins(11,7,11,8);strip_layout.setSpacing(4)
+        strip_header=QHBoxLayout();strip_header.setContentsMargins(0,0,0,0)
+        self.strip_title=QLabel('传输中',self.transfer_strip)
+        set_ui_style(self.strip_title,"color:#324052;font:600 12px 'HarmonyOS Sans SC';background:transparent;")
+        strip_header.addWidget(self.strip_title);strip_header.addStretch()
+        self.strip_more=QPushButton(self.transfer_strip)
+        self.strip_more.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.strip_more.clicked.connect(lambda:self.set_category('uploading'))
+        set_ui_style(self.strip_more,"QPushButton {color:#176bc2;background:transparent;border:0;padding:0 3px;font:600 12px 'HarmonyOS Sans SC';} QPushButton:hover {color:#07559e;}")
+        strip_header.addWidget(self.strip_more);strip_layout.addLayout(strip_header)
+        self.strip_rows=[];self._strip_refs=[]
+        for index in range(2):
+            row=QWidget(self.transfer_strip)
+            row_layout=QVBoxLayout(row);row_layout.setContentsMargins(0,0,0,0);row_layout.setSpacing(2)
+            line=QHBoxLayout();line.setContentsMargins(0,0,0,0)
+            name=QPushButton(row);name.setCursor(Qt.CursorShape.PointingHandCursor)
+            name.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Fixed)
+            name.setStyleSheet("QPushButton {text-align:left;color:#3b4c61;background:transparent;border:0;padding:0;font:12px 'HarmonyOS Sans SC';} QPushButton:hover {color:#176bc2;}")
+            name.clicked.connect(lambda checked=False,index=index:self._open_strip_transfer(index))
+            percent=QLabel(row)
+            set_ui_style(percent,"color:#74849a;font:11px 'HarmonyOS Sans SC';background:transparent;")
+            line.addWidget(name,1);line.addWidget(percent)
+            progress=QProgressBar(row);progress.setTextVisible(False);progress.setFixedHeight(3)
+            set_ui_style(progress,"QProgressBar {border:0;background:#e0e9f5;border-radius:1px;} QProgressBar::chunk {background:#3989ef;border-radius:1px;}")
+            row_layout.addLayout(line);row_layout.addWidget(progress)
+            strip_layout.addWidget(row);self.strip_rows.append((row,name,percent,progress))
+        root.addWidget(self.transfer_strip);self.transfer_strip.hide()
+        self.rebuild(); self.update_transfer_status()
         self.drop_router=OverviewDropRouter(self)
 
     def visible_refs(self):
@@ -735,10 +778,12 @@ class ContentsPopup(QFrame):
              ref not in transfers and (self.category=='all' or self.shelf.content.category(ref)==self.category))]
 
     def update_transfer_status(self):
+        self.shelf.transfer_rates.observe(self.shelf.content.transfers)
         states=list(self.shelf.content.transfers.values())
         count=len(states);self.category_buttons['uploading'].setText(f'传输中 {count}' if count else '传输中')
         self.category_buttons['uploading'].setAccessibleName(f'传输中的项目，共 {count} 项')
         self.transfer_summary.setVisible(bool(count) and self.category=='uploading')
+        self._refresh_transfer_strip()
         if count:
             received=sum(v.get('received',0) for v in states);total=sum(v.get('total',0) for v in states)
             copying=sum(v.get('phase')=='copying' for v in states)
@@ -746,11 +791,51 @@ class ContentsPopup(QFrame):
             uploading=count-copying-downloading
             self.transfer_count.setText(' · '.join(f'{label} {amount} 项' for label,amount in
                 (('正在复制',copying),('正在上传',uploading),('正在下载',downloading)) if amount))
-            self.transfer_bar.setRange(0,1000 if total else 0)
-            if total:self.transfer_bar.setValue(round(1000*min(1,received/total)))
-        else:self.transfer_count.clear()
+            all_known=all(transfer_fraction(state) is not None for state in states)
+            self.transfer_bar.setRange(0,1000 if all_known else 0)
+            if all_known:self.transfer_bar.setValue(round(1000*min(1,received/total)))
+            overall_state=dict(received=received,total=total if all_known else 0,phase='uploading')
+            fraction=transfer_fraction(overall_state)
+            progress=f'{round(fraction*100)}% · ' if fraction is not None else ''
+            self.transfer_eta.setText(progress+self.shelf.transfer_rates.remaining_text('__aggregate__',overall_state))
+        else:self.transfer_count.clear();self.transfer_eta.clear()
         self.preview.update_transfer_status()
         if tuple(self.visible_refs()) != tuple(getattr(self,'_build_refs',())):self.rebuild()
+
+    def _refresh_transfer_strip(self):
+        transfers=self.shelf.content.transfers
+        refs=[ref for ref in reversed(self.shelf.display_refs()) if ref in transfers]
+        self._strip_refs=refs[:2]
+        self.transfer_strip.setVisible(bool(refs) and self.category!='uploading')
+        if not refs or self.category=='uploading':return
+        self.strip_title.setText(f'传输中 · {len(refs)} 项')
+        hidden=max(0,len(refs)-2)
+        self.strip_more.setVisible(bool(hidden))
+        self.strip_more.setText(f'+{hidden}  查看全部')
+        self.strip_more.setAccessibleName(f'还有 {hidden} 项传输，查看全部')
+        for index,(row,name,percent,progress) in enumerate(self.strip_rows):
+            active=index<len(self._strip_refs)
+            row.setVisible(active)
+            if not active:continue
+            ref=self._strip_refs[index];state=transfers[ref]
+            status=transfer_phase_label(state)
+            title=self.shelf.content.title(ref)
+            title_width=min(300,max(95,self.width()-280))
+            display=name.fontMetrics().elidedText(title,Qt.TextElideMode.ElideRight,title_width)
+            name.setText(f'{status} · {display}')
+            name.setAccessibleName(f'{status} {title}，查看传输详情')
+            total=max(0,int(state.get('total') or 0));received=max(0,int(state.get('received') or 0))
+            value=round(1000*min(1,received/total)) if total else 0
+            progress.setRange(0,1000);progress.setValue(value)
+            fraction=transfer_fraction(state)
+            amount=f'{round(fraction*100)}% · ' if fraction is not None else ''
+            percent.setText(amount+self.shelf.transfer_rates.remaining_text(ref,state))
+
+    def _open_strip_transfer(self,index):
+        if index>=len(self._strip_refs):return
+        ref=self._strip_refs[index]
+        self.set_category('uploading')
+        if ref in self.visible_refs():self.select_item(ref)
 
     def set_mode(self,mode="permanent"): self.rebuild()
 
@@ -758,6 +843,7 @@ class ContentsPopup(QFrame):
         if key not in self.category_buttons: return
         self.category=key; self.hovered_ref=None
         self.transfer_summary.setVisible(bool(self.shelf.content.transfers) and key=='uploading')
+        self.transfer_strip.setVisible(bool(self.shelf.content.transfers) and key!='uploading')
         self.selected.intersection_update(self.visible_refs())
         if self.primary_selection not in self.selected: self.primary_selection=None
         self.rebuild(); self.update_transfer_status(); self.shelf.touch()
@@ -923,6 +1009,7 @@ class ShelfWindow(QWidget):
         self.number = number
         data = data or {}
         self.content = ContentRepository(data.get("texts"),data.get("metadata"))
+        self.transfer_rates=TransferRateTracker()
         self.image_cache=ImageCache(self)
         self.content.thumbnail_provider=self.image_cache.pixmap
         self._transition_preparing=False
@@ -955,6 +1042,7 @@ class ShelfWindow(QWidget):
         self._rename_mode = "permanent"
         self.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint |
                             Qt.WindowType.WindowStaysOnTopHint)
+        keep_tool_visible_when_inactive(self)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAcceptDrops(True)
@@ -1023,6 +1111,9 @@ class ShelfWindow(QWidget):
         self.lan_button.setToolTip('局域网互传')
         self.lan_button.setAccessibleName('打开局域网传输')
         self.lan_button.clicked.connect(lambda: self.manager.show_lan_dialog())
+        self.cloud_button = FeedbackButton('cloud', self.card, motion=self.manager.motion)
+        self.cloud_button.clicked.connect(self.show_cloud_menu)
+        self.refresh_cloud_button()
         self.expand_button = FeedbackButton("expand", self.card, motion=self.manager.motion)
         self.expand_button.setToolTip("展开内容")
         self.expand_button.clicked.connect(self.toggle_contents)
@@ -1037,23 +1128,61 @@ class ShelfWindow(QWidget):
         self.rename_edit.returnPressed.connect(self.commit_rename)
         self.rename_edit.editingFinished.connect(self.commit_rename)
         self.rename_edit.hide()
-        for button in (self.lan_button,self.pin_button,self.expand_button,self.menu_button,self.close_button):
+        for button in (self.cloud_button,self.lan_button,self.pin_button,self.expand_button,self.menu_button,self.close_button):
             button.setParent(self)
         self._layout_header(CARD_W)
 
     def _layout_header(self,width):
-        self.upload_count.move(width-235,19)
+        # Keep the transfer badge below the cloud control, clear of the LAN icon.
+        self.upload_count.move(self.card.x()+width-247,self.card.y()+38)
         center=QRectF(self.card.geometry()).center()
         effect=self.surface_effect
         transform=QTransform()
         transform.translate(center.x()+effect.dx,center.y()+effect.dy)
         transform.scale(effect.sx,effect.sy);transform.translate(-center.x(),-center.y())
-        for button,x in ((self.lan_button,width-208),(self.pin_button,width-168),(self.expand_button,width-128),(self.menu_button,width-88),(self.close_button,width-48)):
+        for button,x in ((self.cloud_button,width-248),(self.lan_button,width-208),(self.pin_button,width-168),(self.expand_button,width-128),(self.menu_button,width-88),(self.close_button,width-48)):
             point=transform.map(QRectF(self.card.x()+x,self.card.y()+14,36,36).center())
             button.setFixedSize(36,36);button.move(round(point.x()-18),round(point.y()-18))
             button.set_presentation_scale(effect.sx,effect.sy)
             button.setVisible(self.presentation_kind!='drag')
             button.raise_()
+
+    def refresh_cloud_button(self):
+        enabled = self.manager.settings.sync_upload_enabled and self.manager.settings.sync_receive_enabled
+        self.cloud_button.set_glyph_tint('#229f69' if enabled else '#dc5262')
+        state = '已开启' if enabled else '已关闭部分方向'
+        self.cloud_button.setToolTip(f'云同步：{state}')
+        self.cloud_button.setAccessibleName(f'云同步：{state}，打开设置')
+
+    def show_cloud_menu(self):
+        if confirmation_active(self):
+            return
+        self.touch()
+        menu = AnimatedMenu(self)
+        style_menu(menu)
+        for label, key in (("上传本机搁架到云端", "sync_upload_enabled"),
+                           ("接收云端与其他设备内容", "sync_receive_enabled")):
+            action = menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(getattr(self.manager.settings, key))
+            action.toggled.connect(lambda checked, name=key, item=action:
+                                   self._set_sync_direction(name, checked, item))
+        self._menu_open = True
+        try:
+            menu.exec(self.cloud_button.mapToGlobal(QPoint(0, 39)))
+        finally:
+            self._menu_open = False
+            menu.deleteLater()
+            self.touch()
+
+    def _set_sync_direction(self, name, checked, action):
+        try:
+            self.manager.settings.update(**{name: checked})
+        except (OSError, ValueError) as error:
+            blocked = action.blockSignals(True)
+            action.setChecked(getattr(self.manager.settings, name))
+            action.blockSignals(blocked)
+            self.status_label.setText(str(error) or '云同步设置未能保存')
 
     def toggle_pin(self):
         self.pinned=self.pin_button.isChecked()
@@ -1097,7 +1226,7 @@ class ShelfWindow(QWidget):
         snapshot=getattr(self,'_surface_snapshot',None)
         if snapshot is None:
             snapshot=self._surface_snapshot=SurfaceSnapshot(self)
-        controls=(self.lan_button,self.pin_button,self.expand_button,self.menu_button,self.close_button)
+        controls=(self.cloud_button,self.lan_button,self.pin_button,self.expand_button,self.menu_button,self.close_button)
         source=getattr(self,'_morph_from_image',None)
         if source is None: source=snapshot.capture_current(self.card,controls)
         self._morph_from_image=None
@@ -1172,7 +1301,7 @@ class ShelfWindow(QWidget):
 
     def _place_morph_controls(self,snapshot,rect):
         transform=snapshot.presentation_transform(rect)
-        for button,offset in ((self.lan_button,208),(self.pin_button,168),(self.expand_button,128),(self.menu_button,88),(self.close_button,48)):
+        for button,offset in ((self.cloud_button,248),(self.lan_button,208),(self.pin_button,168),(self.expand_button,128),(self.menu_button,88),(self.close_button,48)):
             center=transform.map(QRectF(rect.x()+rect.width()-14-offset-self.x(),rect.y()+21-self.y(),36,36).center())
             button.move(round(center.x()-18),round(center.y()-18))
             button.set_presentation_scale(self.surface_effect.sx,self.surface_effect.sy)
@@ -1182,7 +1311,7 @@ class ShelfWindow(QWidget):
         if not self.geometry_morph.motion: return
         snapshot=getattr(self,'_surface_snapshot',None)
         if snapshot is None: snapshot=self._surface_snapshot=SurfaceSnapshot(self)
-        self._morph_from_image=snapshot.capture_current(self.card,(self.lan_button,self.pin_button,self.expand_button,self.menu_button,self.close_button))
+        self._morph_from_image=snapshot.capture_current(self.card,(self.cloud_button,self.lan_button,self.pin_button,self.expand_button,self.menu_button,self.close_button))
 
     def visual_geometry(self): return QRect(self.geometry_morph.current)
 
@@ -1286,6 +1415,7 @@ class ShelfWindow(QWidget):
             self.popup.preview.update_transfer_status()
 
     def transfers_updated(self):
+        self.transfer_rates.observe(self.content.transfers)
         if self.content.transfers and not self._transfer_timer.isActive():self._transfer_timer.start()
         self.upload_count.set_count(sum(state.get('phase') not in ('copying','downloading')
                                         for state in self.content.transfers.values()))
@@ -1368,6 +1498,7 @@ class ShelfWindow(QWidget):
         def progress(value):
             ref=placeholders.get(value.get('source'))
             if ref in self.content.transfers:self.content.transfers[ref].update(received=value['received'],total=value['total'])
+            self.transfer_rates.observe(self.content.transfers)
             if self.popup and self.popup.isVisible():self.popup.update_transfer_status()
         job.progress.connect(progress)
         self.transfers_updated();self.refresh()
@@ -2100,6 +2231,7 @@ class DockHandle(QWidget):
         self.manager=manager
         self.setWindowTitle('FlickDock edge')
         self.setWindowFlags(Qt.WindowType.Tool|Qt.WindowType.FramelessWindowHint|Qt.WindowType.WindowStaysOnTopHint|Qt.WindowType.WindowDoesNotAcceptFocus)
+        keep_tool_visible_when_inactive(self)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setAcceptDrops(True); self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -2206,6 +2338,7 @@ class ShelfManager:
         self.update_handles()
         self.account = AccountService(BASE)
         self.sync = ShelfSync(BASE,self.account,ShelfAdapter(self))
+        self.sync.set_directions(self.settings.sync_upload_enabled,self.settings.sync_receive_enabled)
         self.events = CloudEvents(self.account,self.app,
             enabled=self.app.platformName() not in ('offscreen','minimal'))
         self.events.content_changed.connect(self.sync.request_refresh)
@@ -2373,6 +2506,8 @@ class ShelfManager:
         ui_theme.set_theme(self.settings.theme)
         ui_theme.apply_application(self.app, FONT_FAMILY)
         self.shelf.refresh()
+        self.shelf.refresh_cloud_button()
+        self.sync.set_directions(self.settings.sync_upload_enabled,self.settings.sync_receive_enabled)
         self.edge.position_at_edge()
         self._apply_shake_sensitivity()
         self.update_handles()

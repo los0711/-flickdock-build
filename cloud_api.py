@@ -58,7 +58,6 @@ class CloudApi(QObject):
             request = QNetworkRequest(self._url(path))
             request.setAttribute(QNetworkRequest.Attribute.RedirectPolicyAttribute,
                                  QNetworkRequest.RedirectPolicy.ManualRedirectPolicy)
-            request.setTransferTimeout(timeout_ms)
             request.setRawHeader(b'Accept', b'application/json')
             request.setRawHeader(b'User-Agent',('FlickDock/'+APP_VERSION+' (CloudSync)').encode('ascii'))
             request.setRawHeader(b'Cache-Control', b'no-store')
@@ -66,6 +65,13 @@ class CloudApi(QObject):
                 if not self.token: raise CloudError('请先登录账号。', 401, 'unauthorized')
                 request.setRawHeader(b'Authorization', ('Bearer ' + self.token).encode('ascii'))
             payload = raw if raw is not None else json.dumps(data, ensure_ascii=False).encode('utf8') if data is not None else b''
+            # A large streamed R2 PUT is one network request rather than many
+            # small requests. Keep Qt's idle timeout, while allowing the total
+            # upload time to scale with bytes on a slower uplink.
+            total_timeout = (max(timeout_ms, min(15 * 60 * 1000,
+                60000 + (len(payload) * 1000 // (256 * 1024))))
+                if raw is not None and len(payload) > 4 * 1024 * 1024 else timeout_ms)
+            request.setTransferTimeout(timeout_ms)
             request.setRawHeader(b'Content-Type', b'application/octet-stream' if raw is not None else b'application/json')
             for name, value in (headers or {}).items(): request.setRawHeader(name.encode('ascii'), str(value).encode('ascii'))
             reply = self.network.sendCustomRequest(request, method.encode('ascii'), payload)
@@ -88,7 +94,7 @@ class CloudApi(QObject):
                     report=lambda sent,total:self._upload_progress(key,sent,total)
                     try:signal.connect(report,Qt.ConnectionType.QueuedConnection)
                     except TypeError:signal.connect(report)  # Minimal injected test transports.
-            timer.start(max(timeout_ms, 300000) if destination else timeout_ms)
+            timer.start(max(total_timeout, 300000) if destination else total_timeout)
         except Exception as error:
             problem = error if isinstance(error, CloudError) else CloudError('无法连接云同步服务。')
             if not self._closed:

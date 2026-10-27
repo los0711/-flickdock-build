@@ -6,15 +6,21 @@ import {DurableObject} from 'cloudflare:workers';
 interface Env {
   DB:D1Database; FILES:R2Bucket; EVENTS:DurableObjectNamespace<AccountEvents>;
   ACCOUNT_QUOTA_BYTES?:string; GLOBAL_QUOTA_BYTES?:string; CHUNK_BYTES?:string; AUTH_PEPPER?:string;
+  SINGLE_PUT_LIMIT_BYTES?:string;
   R2_CLASS_A_BUDGET?:string; R2_CLASS_B_BUDGET?:string;
   EMAIL_PROVIDER?:string; EMAIL_FROM?:string; EMAIL_CODE_SECRET?:string; RESEND_API_KEY?:string;
   EMAIL?:{send(message:{from:string;to:string;subject:string;text:string}):Promise<{messageId:string}>};
 }
 type Row=Record<string,any>;
 const DAY=86400000;
-function chunkSize(env:Env,fileSize:number){
+function chunkSize(env:Env,fileSize:number,fastUpload=false){
   const size=config(env.CHUNK_BYTES,1024*1024,4*1024*1024);
   if(size%64||size<65536)fail(503,'CONFIGURATION','Chunk size must be 64-byte aligned and at least 64 KiB');
+  // The client opts in so existing releases keep the resumable 1 MiB
+  // protocol. A single streamed PUT lets R2 verify the complete SHA-256
+  // without buffering the file or hashing it in the 10 ms Free CPU window.
+  const singleLimit=integer(Number(env.SINGLE_PUT_LIMIT_BYTES??90*1024*1024),'single_put_limit',0,90*1024*1024);
+  if(fastUpload&&fileSize>size&&fileSize<=singleLimit)return fileSize;
   // A small file fits in one R2-verified request. Keep multi-part uploads
   // within the Workers Free CPU budget while accumulating the full SHA.
   return fileSize>4*1024*1024?Math.min(size,1024*1024):size;
@@ -305,11 +311,12 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
   }
   if(method==='POST'&&path==='/v1/uploads'){
     const required=['item_id','base_version','kind','name','mime_type','size','sha256'];
-    const input=await body(request,[...required,'upload_id'],required);
+    const input=await body(request,[...required,'upload_id','fast_upload'],required);
     const id=uuid(input.item_id,'item_id'),base=integer(input.base_version,'base_version'),kind=text(input.kind,'kind',1,8),name=text(input.name,'name',1,255),mime=text(input.mime_type,'mime_type',1,127),size=integer(input.size,'size'),hash=digest(input.sha256);
     if(!['file','text','url'].includes(kind)||!/^[a-zA-Z0-9!#$&^_.+-]+\/[a-zA-Z0-9!#$&^_.+-]+$/.test(mime))fail(400,'INVALID_REQUEST','Unknown kind or MIME type');
     // Persisting this optional UUID before POST lets a client recover a lost
     // initialization reply without reserving the entire file size twice.
+    if(input.fast_upload!==undefined&&typeof input.fast_upload!=='boolean')fail(400,'INVALID_REQUEST','fast_upload must be boolean');
     const suppliedId=input.upload_id!==undefined,uploadId=suppliedId?uuid(input.upload_id,'upload_id'):crypto.randomUUID();
     const reuse=async()=>{
       const previous=await findUpload(env,owner,uploadId);
@@ -357,7 +364,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
         if((current?.version??0)!==base)await conflict(env,owner,id);
       }
       const count=await first(env,"SELECT COUNT(*) n FROM uploads WHERE account_id=? AND state IN ('pending','verifying')",owner.id);if(count!.n>=10)fail(429,'UPLOAD_LIMIT','Too many pending uploads');
-      const expires=Date.now()+3*DAY,chunk=chunkSize(env,size),partCount=Math.ceil(size/chunk);
+      const expires=Date.now()+3*DAY,chunk=chunkSize(env,size,input.fast_upload===true),partCount=Math.ceil(size/chunk);
       await env.DB.batch([
         query(env,'UPDATE limits SET bytes_limit=? WHERE id=1',config(env.GLOBAL_QUOTA_BYTES,8*1024**3)),
         query(env,'INSERT INTO allocations(id,account_id,size) VALUES(?,?,?)',uploadId,owner.id,size),
@@ -377,8 +384,17 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
     const id=uuid(match[1]),partIndex=integer(Number(match[2]),'part_index'),value=await upload(env,owner,id);
     if(value.state!=='pending'||value.expires_at<Date.now())fail(409,'UPLOAD_NOT_PENDING','Upload is not writable');
     if(partIndex>=value.part_count)fail(400,'INVALID_PART','Part index out of range');
-    const expected=Math.min(value.chunk_size,value.size-partIndex*value.chunk_size),data=await bytes(request,expected),hash=digest(request.headers.get('X-Content-SHA256'));
-    if(data.byteLength!==expected)fail(400,'PART_MISMATCH','Part size or SHA256 differs');
+    const expected=Math.min(value.chunk_size,value.size-partIndex*value.chunk_size),hash=digest(request.headers.get('X-Content-SHA256'));
+    const streamed=value.part_count===1&&expected>4*1024*1024;
+    let data:Uint8Array|null=null;
+    if(streamed){
+      const declared=request.headers.get('Content-Length');
+      if(declared!==null&&(!/^\d+$/.test(declared)||Number(declared)!==expected))fail(400,'PART_MISMATCH','Part size or SHA256 differs');
+      if(hash!==value.sha256||!request.body)fail(400,'PART_MISMATCH','Part size or SHA256 differs');
+    }else{
+      data=await bytes(request,expected);
+      if(data.byteLength!==expected)fail(400,'PART_MISMATCH','Part size or SHA256 differs');
+    }
     const key=`v1/${owner.id}/${id}/${partIndex}-${hash}`;
     // RETURNING avoids a separate lookup on the ordinary first-send path.
     const inserted=await first(env,"INSERT OR IGNORE INTO parts(upload_id,idx,key,size,sha256) SELECT id,?,?,?,? FROM uploads WHERE id=? AND account_id=? AND state='pending' AND expires_at>? RETURNING *",partIndex,key,expected,hash,id,owner.id,Date.now());
@@ -395,26 +411,28 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
       try{
         const single=value.part_count===1;
         const full=single?null:PersistentSHA256.load(value.hash_state);
-        if(full)full.update(data);
+        if(full)full.update(data!);
         const last=partIndex===value.part_count-1,state=last?null:full!.save(),computed=single?hash:last?hex(full!.digest()):null;
         await budget(env,'A',1);
         try {
           // R2 validates this checksum in its storage service, saving one
           // whole-part SHA pass from the Workers Free CPU budget.
-          const stored=await env.FILES.put(key,data,{sha256:hash});
-          if(!stored?.checksums.sha256||hex(new Uint8Array(stored.checksums.sha256))!==hash)
+          const stored=await env.FILES.put(key,streamed?request.body!:data!,{sha256:hash});
+          if(!stored||stored.size!==expected||!stored.checksums.sha256||hex(new Uint8Array(stored.checksums.sha256))!==hash){
+            if(stored)await env.FILES.delete(key);
             fail(503,'STORAGE_CHECKSUM','Storage did not confirm the part checksum');
+          }
         }catch(error){
           // Rehash only on failed storage writes so malformed client content
           // still receives the protocol's precise 400 response.
-          if(sha(data)!==hash){
+          if(data&&sha(data)!==hash){
             await query(env,'DELETE FROM parts WHERE upload_id=? AND idx=? AND key=? AND ready=0',id,partIndex,key).run();
             fail(400,'PART_MISMATCH','Part size or SHA256 differs');
           }
           throw error;
         }
         const result=await env.DB.batch([
-          query(env,"UPDATE uploads SET hash_state=?,computed_sha256=?,verified_size=verified_size+?,next_part=next_part+1,expires_at=?,lease=NULL,lease_until=0 WHERE id=? AND state='pending' AND next_part=? AND lease=?",state,computed,data.length,Date.now()+3*DAY,id,partIndex,writeLease),
+          query(env,"UPDATE uploads SET hash_state=?,computed_sha256=?,verified_size=verified_size+?,next_part=next_part+1,expires_at=?,lease=NULL,lease_until=0 WHERE id=? AND state='pending' AND next_part=? AND lease=?",state,computed,expected,Date.now()+3*DAY,id,partIndex,writeLease),
           query(env,'UPDATE parts SET ready=1 WHERE upload_id=? AND idx=? AND EXISTS(SELECT 1 FROM uploads WHERE id=? AND next_part>?)',id,partIndex,id,partIndex),
         ]);
         released=!!result[0].meta.changes;
@@ -498,13 +516,22 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
   if(method==='GET'&&match){
     const id=uuid(match[1]),value=await item(env,owner.id,id);if(!value||value.deleted)fail(404,'NOT_FOUND','Item not found');
     const upload=await first(env,'SELECT chunk_size,part_count FROM uploads WHERE id=? AND state=?',value!.active_upload,'committed');if(!upload)fail(503,'STORAGE_MISSING','Content metadata is unavailable');
-    return json({record:record(value!),chunk_size:upload!.chunk_size,part_count:upload!.part_count});
+    // Releases predating fast upload accept at most 4 MiB per part. Expose a
+    // 1 MiB virtual range view to those clients without duplicating R2 bytes.
+    const legacy=upload!.chunk_size>4*1024*1024&&request.headers.get('X-FlickDock-Fast-Content')!=='1';
+    const chunk=legacy?1024*1024:upload!.chunk_size;
+    return json({record:record(value!),chunk_size:chunk,part_count:legacy?Math.ceil(value!.size/chunk):upload!.part_count});
   }
   match=path.match(/^\/v1\/items\/([^/]+)\/parts\/(\d+)$/);
   if(method==='GET'&&match){
     const id=uuid(match[1]),index=integer(Number(match[2]),'part_index'),value=await item(env,owner.id,id);if(!value||value.deleted)fail(404,'NOT_FOUND','Item not found');
     if(url.searchParams.has('version')){const version=Number(url.searchParams.get('version'));integer(version,'version',1);if(version!==value!.version)await conflict(env,owner,id);}
-    const part=await first(env,'SELECT * FROM parts WHERE upload_id=? AND idx=? AND ready=1',value!.active_upload,index);if(!part)fail(404,'NOT_FOUND','Content part not found');
+    const upload=await first(env,'SELECT chunk_size,part_count FROM uploads WHERE id=? AND state=?',value!.active_upload,'committed');
+    if(!upload)fail(503,'STORAGE_MISSING','Content metadata is unavailable');
+    const legacy=upload!.chunk_size>4*1024*1024&&request.headers.get('X-FlickDock-Fast-Content')!=='1';
+    const virtualSize=1024*1024,expected=legacy?Math.min(virtualSize,value!.size-index*virtualSize):0;
+    if(legacy&&(!Number.isSafeInteger(index)||index>=Math.ceil(value!.size/virtualSize)))fail(404,'NOT_FOUND','Content part not found');
+    const part=await first(env,'SELECT * FROM parts WHERE upload_id=? AND idx=? AND ready=1',value!.active_upload,legacy?0:index);if(!part)fail(404,'NOT_FOUND','Content part not found');
     const lease=crypto.randomUUID();await query(env,'INSERT INTO read_leases(upload_id,id,expires_at) VALUES(?,?,?)',value!.active_upload,lease,Date.now()+1800000).run();
     let releasing:Promise<void>|undefined;
     const release=()=>releasing??=(async()=>{
@@ -512,8 +539,16 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
       try{await purgeUpload(env,value!.active_upload);}catch{/* Allocation stays reserved until the next cleanup. */}
     })();
     let object:R2ObjectBody|null;
-    try{await budget(env,'B',1);object=await env.FILES.get(part!.key);if(!object)fail(503,'STORAGE_MISSING','Content part is unavailable');}
+    try{await budget(env,'B',1);object=await env.FILES.get(part!.key,legacy?{range:{offset:index*virtualSize,length:expected}}:undefined);if(!object)fail(503,'STORAGE_MISSING','Content part is unavailable');}
     catch(error){await release();throw error;}
+    if(legacy){
+      try{
+        const data=new Uint8Array(await object!.arrayBuffer());
+        if(data.length!==expected)fail(503,'STORAGE_MISSING','Content range is incomplete');
+        return new Response(data,{headers:{'Content-Type':'application/octet-stream','Content-Length':String(expected),
+          'X-Content-SHA256':sha(data),'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
+      }finally{await release();}
+    }
     const reader=object!.body.getReader();
     let emitted=0,cancelled=false,finished=false;
     const stream=new ReadableStream<Uint8Array>({

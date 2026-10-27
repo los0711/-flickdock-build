@@ -306,7 +306,10 @@ try{
     const chunk=Buffer.alloc(1024*1024,0x79),fullHash=createHash('sha256');for(let i=0;i<65;i++)fullHash.update(chunk);
     const expected=fullHash.digest('hex'),newId=randomUUID();
     const reserved=await request('POST','/v1/uploads',{item_id:newId,base_version:0,kind:'file',name:'large-video.mp4',mime_type:'video/mp4',size:65*1024*1024,sha256:expected},alice.token,201);
-    assert.equal(reserved.part_count,65);for(let i=0;i<65;i++)await part(alice.token,reserved.upload_id,i,chunk);
+    assert.equal(reserved.part_count,65);const started=performance.now();
+    for(let i=0;i<65;i++)await part(alice.token,reserved.upload_id,i,chunk);
+    const seconds=(performance.now()-started)/1000;
+    console.log('LOCAL_ONLY serial upload',JSON.stringify({mib:65,seconds:+seconds.toFixed(2),mib_per_sec:+(65/seconds).toFixed(2)}));
     const committed=await request('POST',`/v1/uploads/${reserved.upload_id}/commit`,{},alice.token);assert.equal(committed.record.size,65*1024*1024);assert.equal(committed.record.expires_at,null);
     let size=0;const actual=createHash('sha256');
     for(let i=0;i<65;i++){const response=await localFetch(base+`/v1/items/${newId}/parts/${i}?version=1`,{headers:{Authorization:'Bearer '+alice.token}});assert.equal(response.status,200);const chunkHash=createHash('sha256');for await(const data of response.body){size+=data.length;actual.update(data);chunkHash.update(data);}assert.equal(chunkHash.digest('hex'),response.headers.get('X-Content-SHA256'));}
@@ -332,6 +335,38 @@ try{
     assert.equal(sqlRows(`SELECT COUNT(*) n FROM read_leases WHERE upload_id='${reserved.upload_id}'`)[0].n,0);
     await request('DELETE',`/v1/items/${newId}`,{base_version:1},alice.token);
     assert.equal(sqlRows(`SELECT COUNT(*) n FROM allocations WHERE id='${reserved.upload_id}'`)[0].n,0);
+    await check('80 MiB opt-in stream uses one R2-verified PUT and legacy clients read virtual parts',async()=>{
+      const data=Buffer.alloc(80*1024*1024,0x5a);data.write('original 80 MiB bytes preserved by fast stream');
+      const digest=hash(data),id=randomUUID();
+      const reserved=await request('POST','/v1/uploads',{item_id:id,base_version:0,kind:'file',name:'large-original.mp4',
+        mime_type:'video/mp4',size:data.length,sha256:digest,fast_upload:true},alice.token,201);
+      assert.equal(reserved.chunk_size,data.length);assert.equal(reserved.part_count,1);
+      const started=performance.now();
+      await part(alice.token,reserved.upload_id,0,data);
+      const elapsed=(performance.now()-started)/1000;
+      console.log('LOCAL_ONLY fast upload',JSON.stringify({mib:80,seconds:+elapsed.toFixed(2),mib_per_sec:+(80/elapsed).toFixed(2)}));
+      const committed=await request('POST',`/v1/uploads/${reserved.upload_id}/commit`,{},alice.token);
+      assert.equal(committed.record.sha256,digest);
+      const legacy=await request('GET',`/v1/items/${id}/content`,undefined,alice.token);
+      assert.equal(legacy.chunk_size,1024*1024);assert.equal(legacy.part_count,80);
+      for(const index of [0,39,79]){
+        const response=await localFetch(base+`/v1/items/${id}/parts/${index}?version=1`,{headers:{Authorization:'Bearer '+alice.token}});
+        assert.equal(response.status,200);const bytes=Buffer.from(await response.arrayBuffer());
+        assert.deepEqual(bytes,data.subarray(index*1024*1024,(index+1)*1024*1024));
+        assert.equal(response.headers.get('X-Content-SHA256'),hash(bytes));
+      }
+      const fast=await request('GET',`/v1/items/${id}/content`,undefined,alice.token,200,{'X-FlickDock-Fast-Content':'1'});
+      assert.equal(fast.chunk_size,data.length);assert.equal(fast.part_count,1);
+      const response=await localFetch(base+`/v1/items/${id}/parts/0?version=1`,{
+        headers:{Authorization:'Bearer '+alice.token,'X-FlickDock-Fast-Content':'1'}});
+      assert.equal(response.status,200);
+      const received=createHash('sha256');let size=0;
+      for await(const bytes of response.body){received.update(bytes);size+=bytes.length;}
+      assert.equal(size,data.length);assert.equal(received.digest('hex'),digest);
+      await request('DELETE',`/v1/items/${id}`,{base_version:1},alice.token);
+      assert.equal(sqlRows(`SELECT COUNT(*) n FROM allocations WHERE id='${reserved.upload_id}'`)[0].n,0);
+      await localObject(`v1/${alice.account.id}/${reserved.upload_id}/0-${digest}`,null);
+    });
     await stop();base=await start(); // Subsequent fixtures keep their 1 MiB configuration.
   });
   await check('same-account instant reuse avoids a second upload and retains shared bytes until final delete',async()=>{

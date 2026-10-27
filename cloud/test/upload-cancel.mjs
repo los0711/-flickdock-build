@@ -21,7 +21,7 @@ const worker=(await import('../src/index.ts')).default;
 const sha=value=>createHash('sha256').update(value).digest('hex');
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no});return {promise,resolve,reject};};
 
-async function race(failPut){
+async function race(failPut,fastUpload=false){
   const sqlite=new DatabaseSync(':memory:');
   for(const file of ['0001_schema.sql','0002_retention.sql','0003_transfers_password.sql'])sqlite.exec(readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));
   class Statement{
@@ -38,13 +38,14 @@ async function race(failPut){
   sqlite.prepare('INSERT INTO devices(id,account_id,name,platform,created_at,last_seen_at) VALUES(?,?,?,?,?,?)').run(device,account,'test','windows',now,now);
   sqlite.prepare('INSERT INTO sessions VALUES(?,?,?,?)').run(sha(token),account,device,now+86400000);
   const objects=new Map(),entered=deferred(),finish=deferred();
-  const env={DB,FILES:{async put(key,data){entered.resolve();await finish.promise;if(failPut)throw new Error('simulated storage failure');objects.set(key,Buffer.from(data));},async delete(keys){for(const key of typeof keys==='string'?[keys]:keys)objects.delete(key);}},CHUNK_BYTES:'131072',AUTH_PEPPER:'fixture-secret-that-never-leaves-this-test'};
+  const env={DB,FILES:{async put(key,data){entered.resolve();await finish.promise;if(failPut)throw new Error('simulated storage failure');const bytes=Buffer.from(data instanceof ReadableStream?await new Response(data).arrayBuffer():data);objects.set(key,bytes);return {size:bytes.length,checksums:{sha256:Buffer.from(sha(bytes),'hex')}};},async delete(keys){for(const key of typeof keys==='string'?[keys]:keys)objects.delete(key);}},CHUNK_BYTES:'131072',AUTH_PEPPER:'fixture-secret-that-never-leaves-this-test'};
   async function call(method,path,data,raw=false){
     const headers={Authorization:'Bearer '+token};if(data!==undefined)headers[raw?'X-Content-SHA256':'Content-Type']=raw?sha(data):'application/json';
     return worker.fetch(new Request('http://localhost'+path,{method,headers,body:data===undefined?undefined:raw?data:JSON.stringify(data)}),env);
   }
-  const data=Buffer.alloc(131072,117),item=randomUUID();
-  const reserved=await (await call('POST','/v1/uploads',{item_id:item,base_version:0,kind:'file',name:'original.png',mime_type:'image/png',size:data.length,sha256:sha(data)})).json();
+  const data=Buffer.alloc(fastUpload?5*1024*1024:131072,117),item=randomUUID();
+  const reserved=await (await call('POST','/v1/uploads',{item_id:item,base_version:0,kind:'file',name:'original.png',mime_type:'image/png',size:data.length,sha256:sha(data),fast_upload:fastUpload})).json();
+  assert.equal(reserved.part_count,1);
   const uploading=call('PUT',`/v1/uploads/${reserved.upload_id}/parts/0`,data,true);
   await entered.promise;
   const cancelled=await call('DELETE',`/v1/uploads/${reserved.upload_id}`);assert.equal(cancelled.status,200);
@@ -65,5 +66,5 @@ async function race(failPut){
   assert.equal(late.status,410);assert.equal(sqlite.prepare('SELECT COUNT(*) n FROM allocations').get().n,0,'A delayed init cannot reserve space after cancellation');
   sqlite.close();
 }
-await race(false);await race(true);
-console.log('PASS cancel during successful/failed in-flight R2.put removes bytes, rows and reserved quota');
+await race(false);await race(true);await race(false,true);await race(true,true);
+console.log('PASS cancel during successful/failed buffered and streamed R2.put removes bytes, rows and reserved quota');

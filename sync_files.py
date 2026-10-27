@@ -121,6 +121,26 @@ def assemble_parts(parts, target, expected, cancel):
     digest = hashlib.sha256(); size = 0
     completed = False; corrupt = False
     try:
+        if len(parts) == 1:
+            # CloudApi fsyncs the downloaded part before it reaches this disk
+            # job. Verify the complete original once, then rename it in place
+            # instead of copying and fsyncing an 80 MiB file a second time.
+            source = Path(parts[0])
+            if source.is_symlink():
+                corrupt = True; raise ValueError('同步文件缓存位置无效。')
+            with _source_reader(source) as incoming:
+                while data := incoming.read(1024*1024):
+                    if cancel.is_set(): raise InterruptedError()
+                    size += len(data)
+                    if size > expected['size']:
+                        corrupt = True; raise ValueError('同步文件大小与记录不符。')
+                    digest.update(data)
+            if size != expected['size'] or digest.hexdigest() != expected['sha256']:
+                corrupt = True; raise ValueError('同步文件校验失败。')
+            if cancel.is_set(): raise InterruptedError()
+            os.replace(source,target)
+            completed = True
+            return target
         with staged.open('xb') as output:
             for part in parts:
                 with Path(part).open('rb') as incoming:

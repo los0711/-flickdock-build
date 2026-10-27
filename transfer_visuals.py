@@ -1,9 +1,105 @@
 """Lightweight progress artwork; repainting never rebuilds shelf layouts."""
+import math
 import time
 from PySide6.QtCore import QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QLabel, QWidget
 import ui_theme
+
+
+def transfer_fraction(state):
+    """Return a known progress fraction; unknown sizes never imply a percentage."""
+    try:
+        total=max(0,int(state.get('total') or 0))
+        received=max(0,int(state.get('received') or 0))
+    except (TypeError,ValueError):
+        return None
+    return min(1,received/total) if total else None
+
+
+def transfer_phase_label(state):
+    phase=state.get('phase')
+    return ('正在复制' if phase=='copying' else '正在下载' if phase=='downloading'
+            else '等待上传' if phase=='queued' else '准备上传' if phase=='preparing'
+            else '正在上传')
+
+
+class TransferRateTracker:
+    """Estimate remaining time from observed bytes, with a smoothed rate.
+
+    A transfer or aggregate gets no ETA until its identity, total size and a
+    substantial timed progress sample are known. Stalled work loses its ETA.
+    """
+    SAMPLE_SECONDS=.5
+    SAMPLE_BYTES=64*1024
+    STALE_SECONDS=6.0
+
+    def __init__(self,clock=None):
+        self._samples={}
+        self._aggregate_key=None
+        self._clock=clock or time.monotonic
+
+    @staticmethod
+    def _numbers(state):
+        try:return max(0,int(state.get('received') or 0)),max(0,int(state.get('total') or 0))
+        except (TypeError,ValueError):return 0,0
+
+    def _observe_one(self,key,received,total,now,phase='uploading'):
+        previous=self._samples.get(key)
+        if (total<=0 or previous is None or previous['total']!=total
+                or previous['phase']!=phase or received<previous['received']
+                or (received>previous['received'] and now-previous['last_progress']>self.STALE_SECONDS)):
+            self._samples[key]=dict(received=received,total=total,at=now,rate=None,
+                                    last_progress=now,phase=phase)
+            return
+        delta=received-previous['received'];elapsed=now-previous['at']
+        if delta>0:
+            previous['last_progress']=now
+            if elapsed>=self.SAMPLE_SECONDS and delta>=self.SAMPLE_BYTES:
+                measured=delta/elapsed
+                old=previous['rate']
+                previous['rate']=measured if old is None else old*.65+measured*.35
+                previous['received']=received;previous['at']=now
+
+    def observe(self,transfers,now=None):
+        if now is None:now=self._clock()
+        refs=set(transfers)
+        for key in tuple(self._samples):
+            if key!='__aggregate__' and key not in refs:self._samples.pop(key,None)
+        for ref,state in transfers.items():
+            phase=state.get('phase')
+            if phase in ('queued','preparing'):
+                self._samples.pop(ref,None)
+                continue
+            received,total=self._numbers(state)
+            self._observe_one(ref,received,total,now,phase)
+        aggregate_key=tuple(sorted(refs))
+        if aggregate_key!=self._aggregate_key:
+            self._samples.pop('__aggregate__',None)
+            self._aggregate_key=aggregate_key
+        if (refs and any(state.get('phase') not in ('queued','preparing') for state in transfers.values())
+                and all(self._numbers(state)[1]>0 for state in transfers.values())):
+            received=sum(self._numbers(state)[0] for state in transfers.values())
+            total=sum(self._numbers(state)[1] for state in transfers.values())
+            self._observe_one('__aggregate__',received,total,now)
+        else:self._samples.pop('__aggregate__',None)
+
+    def remaining_text(self,ref,state,now=None):
+        if now is None:now=self._clock()
+        phase=state.get('phase')
+        if phase=='queued':return '等待开始'
+        if phase=='preparing':return '准备中'
+        received,total=self._numbers(state)
+        if total<=0:return '计算中'
+        if received>=total:return '正在完成'
+        sample=self._samples.get(ref)
+        if not sample or not sample['rate']:return '计算中'
+        if now-sample['last_progress']>self.STALE_SECONDS:return '等待传输'
+        seconds=(total-received)/sample['rate']
+        if not math.isfinite(seconds) or seconds<=0:return '计算中'
+        if seconds<60:return f'剩余约 {max(1,math.ceil(seconds))} 秒'
+        if seconds<3600:return f'剩余约 {math.ceil(seconds/60)} 分钟'
+        return f'剩余约 {math.ceil(seconds/3600)} 小时'
 
 
 def draw_ring(painter,rect,state):

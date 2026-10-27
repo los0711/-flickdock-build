@@ -151,5 +151,14 @@ with tempfile.TemporaryDirectory(prefix='flickdock-real-cloud-client-') as tempo
         else:worker.terminate()
         try:worker.wait(8)
         except subprocess.TimeoutExpired:worker.kill();worker.wait(4)
-        time.sleep(.3)
         log.close();app.processEvents()
+        if os.name=='nt':
+            # Windows releases workerd's SQLite handles shortly after the outer
+            # Wrangler process exits. Wait for real deletion, not a fixed delay.
+            deadline=time.monotonic()+8
+            while temp.exists():
+                try:shutil.rmtree(temp)
+                except OSError as error:
+                    if time.monotonic()>=deadline:
+                        raise AssertionError('Local Workers files remained locked after shutdown') from error
+                    time.sleep(.1)

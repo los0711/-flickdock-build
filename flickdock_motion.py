@@ -207,11 +207,13 @@ class FeedbackButton(QPushButton):
               "copy": "复制", "chevron": "展开", "shelf": "文件搁架",
               "expand": "展开详情", "collapse": "收起详情",
               "chevron-up": "收起", "chevron-down": "展开",
-              "dock": "收起到屏幕边缘", "hide-to-edge": "收起到屏幕边缘"}
+              "dock": "收起到屏幕边缘", "hide-to-edge": "收起到屏幕边缘",
+              "nearby": "局域网互传", "cloud": "云同步"}
 
     def __init__(self, glyph: str, parent: QWidget | None = None, motion: bool = True):
         super().__init__(parent)
         self.glyph = glyph
+        self._glyph_tint = None
         self.motion = motion
         self._hovered = False
         self._pressed = False
@@ -234,6 +236,10 @@ class FeedbackButton(QPushButton):
         self.glyph = name
         self.setToolTip(self._NAMES.get(name, name))
         self.setAccessibleName(self._NAMES.get(name, name))
+        self.update()
+
+    def set_glyph_tint(self, color: str | None) -> None:
+        self._glyph_tint = color
         self.update()
 
     def set_presentation_scale(self,sx=1.0,sy=1.0):
@@ -315,9 +321,10 @@ class FeedbackButton(QPushButton):
         glyph_size = min(24, self.width() - 8)*(.82 if self.glyph=='copy' else .875)
         if not self.isEnabled():
             p.setOpacity(.45)
+        glyph_color = (self._glyph_tint or (ui_theme.color("accent") if self.glyph == "nearby"
+                       else ui_theme.color("icon"))) if self.isEnabled() else ui_theme.color("secondary")
         draw_glyph(p, self.glyph, QRectF((self.width()-glyph_size)/2, (self.height()-glyph_size)/2,
-                                       glyph_size, glyph_size),
-                   ui_theme.color("icon") if self.isEnabled() else ui_theme.color("secondary"), 1.8)
+                                       glyph_size, glyph_size), glyph_color, 1.8)
         p.end()
 
 

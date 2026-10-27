@@ -333,6 +333,7 @@ class SettingsStore(QObject):
         self.path = self.base / "settings.json"
         self._data = {"theme": "light", "capture_dir": str(self.base / "saved"), "autostart": True,
                       "capture_mode": "reference", "keep_empty_handle": True,
+                      "sync_upload_enabled": True, "sync_receive_enabled": True,
                       "trigger_view": "compact", "shake_sensitivity": DEFAULT_SHAKE_SENSITIVITY,
                       "view_mode": "list", "shelf_shortcut": SHELF_SHORTCUT,
                       "overview_shortcut": OVERVIEW_SHORTCUT, "dock_edge": "right",
@@ -357,6 +358,9 @@ class SettingsStore(QObject):
                         self._data["lan_receive_dir"] = str(candidate)
                 if isinstance(data.get("autostart"), bool):
                     self._data["autostart"] = data["autostart"]
+                for name in ("sync_upload_enabled", "sync_receive_enabled"):
+                    if isinstance(data.get(name), bool):
+                        self._data[name] = data[name]
                 if data.get("capture_mode") in CAPTURE_MODES:
                     self._data["capture_mode"] = data["capture_mode"]
                 if isinstance(data.get("keep_empty_handle"), bool):
@@ -416,6 +420,14 @@ class SettingsStore(QObject):
     @property
     def keep_empty_handle(self) -> bool:
         return self._data["keep_empty_handle"]
+
+    @property
+    def sync_upload_enabled(self) -> bool:
+        return self._data["sync_upload_enabled"]
+
+    @property
+    def sync_receive_enabled(self) -> bool:
+        return self._data["sync_receive_enabled"]
 
     @property
     def trigger_view(self) -> str:
@@ -512,7 +524,8 @@ class SettingsStore(QObject):
                dock_position=None, dock_length=None, dock_thickness=None,
                trigger_visible=None, dock_color=None, dock_opacity=None,
                capture_mode=None, keep_empty_handle=None, trigger_view=None,
-               shake_sensitivity=None) -> bool:
+               shake_sensitivity=None, sync_upload_enabled=None,
+               sync_receive_enabled=None) -> bool:
         candidate = dict(self._data)
         if theme is not None:
             if theme not in ("light", "dark"):
@@ -528,6 +541,12 @@ class SettingsStore(QObject):
             if not isinstance(keep_empty_handle, bool):
                 raise ValueError("空搁架显示入口需要为开启或关闭。")
             candidate["keep_empty_handle"] = keep_empty_handle
+        for name, value in (("sync_upload_enabled", sync_upload_enabled),
+                            ("sync_receive_enabled", sync_receive_enabled)):
+            if value is not None:
+                if not isinstance(value, bool):
+                    raise ValueError("云同步选项需要为开启或关闭。")
+                candidate[name] = value
         if trigger_view is not None:
             if trigger_view not in TRIGGER_VIEWS:
                 raise ValueError("请选择触发后显示小搁架或内容总览。")
@@ -875,9 +894,23 @@ class SettingsDialog(QDialog):
         self.view_combo.setAccessibleName("展示方式")
         view_row.addWidget(self.view_combo)
         appearance_layout.addLayout(view_row)
+        cloud = self._card()
+        cloud_layout = QVBoxLayout(cloud)
+        cloud_layout.setContentsMargins(16, 14, 16, 14)
+        cloud_layout.setSpacing(11)
+        cloud_layout.addWidget(QLabel("云同步", cloud))
+        self.sync_upload_checkbox = SettingsCheckBox("上传本机搁架到云端", cloud)
+        self.sync_receive_checkbox = SettingsCheckBox("接收云端与其他设备内容", cloud)
+        self.sync_upload_checkbox.setAccessibleName("上传本机搁架到云端")
+        self.sync_receive_checkbox.setAccessibleName("接收云端与其他设备内容")
+        cloud_layout.addWidget(self.sync_upload_checkbox)
+        cloud_layout.addWidget(self.sync_receive_checkbox)
+        self.sync_upload_checkbox.toggled.connect(self._sync_direction_changed)
+        self.sync_receive_checkbox.toggled.connect(self._sync_direction_changed)
         body_layout.addWidget(self._dock_card())
         body_layout.addWidget(self._interaction_card())
         body_layout.addWidget(appearance)
+        body_layout.addWidget(cloud)
 
         storage = self._card()
         storage_layout = QVBoxLayout(storage)
@@ -969,6 +1002,7 @@ class SettingsDialog(QDialog):
         footer.addWidget(self.save_button)
         root.addLayout(footer)
         self.load_values()
+        self.store.changed.connect(self._sync_direction_controls)
         self.set_update_state("idle")
         for widget in self.findChildren(QWidget):
             widget.installEventFilter(self)
@@ -1253,6 +1287,8 @@ class SettingsDialog(QDialog):
 
     def load_values(self):
         self._loading_values = True
+        self.sync_upload_checkbox.setChecked(self.store.sync_upload_enabled)
+        self.sync_receive_checkbox.setChecked(self.store.sync_receive_enabled)
         self.theme_combo.setCurrentIndex(1 if self.store.theme == "dark" else 0)
         self.folder_edit.setText(str(self.store.capture_dir))
         self.capture_mode_combo.setCurrentIndex(self.capture_mode_combo.findData(self.store.capture_mode))
@@ -1280,6 +1316,24 @@ class SettingsDialog(QDialog):
         self._loading_values = False
         self._emit_preview()
         self._emit_gesture_preview()
+
+    def _sync_direction_changed(self, _checked):
+        if self._loading_values:
+            return
+        try:
+            self.store.update(sync_upload_enabled=self.sync_upload_checkbox.isChecked(),
+                              sync_receive_enabled=self.sync_receive_checkbox.isChecked())
+        except (OSError, ValueError) as error:
+            self._sync_direction_controls()
+            self.error_label.setText(str(error) or "云同步设置未能保存。")
+            self.error_label.show()
+
+    def _sync_direction_controls(self):
+        for control, value in ((self.sync_upload_checkbox, self.store.sync_upload_enabled),
+                               (self.sync_receive_checkbox, self.store.sync_receive_enabled)):
+            blocked = control.blockSignals(True)
+            control.setChecked(value)
+            control.blockSignals(blocked)
 
     def showEvent(self, event):
         self.load_values()

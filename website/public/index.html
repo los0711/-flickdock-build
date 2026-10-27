@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f6f8fb">
+    <meta name="description" content="FlickDock 是适用于 Windows 和 macOS 的轻巧文件搁架。拖入文件、图片和文字，随时预览、取用，并在设备间同步。">
+    <title>FlickDock — 顺手放，随时取</title>
+    <link rel="icon" type="image/svg+xml" href="/assets/flickdock.svg">
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/site.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">跳到主要内容</a>
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="FlickDock 首页">
+        <img src="/assets/flickdock.svg" alt="" width="38" height="38">
+        <span>FlickDock</span>
+      </a>
+      <nav class="site-nav" aria-label="页面导航">
+        <a href="#experience">如何使用</a>
+        <a href="#features">功能</a>
+        <a class="nav-download" href="#download">免费下载 <span aria-hidden="true">↗</span></a>
+      </nav>
+    </header>
+
+    <main id="main">
+      <section class="hero page-shell" id="top" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <h1 id="hero-title"><span class="line-mask"><span>顺手放，</span></span><span class="line-mask"><span>随时取。</span></span></h1>
+          <p class="hero-description">FlickDock 是适用于 Windows 和 macOS 的文件搁架。把文件、图片和文字放进去，需要时从屏幕边缘展开，随时取用。</p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="#download">选择安装包 <span aria-hidden="true">↗</span></a>
+            <a class="text-link" href="#experience">看看怎么用 <span aria-hidden="true">↓</span></a>
+          </div>
+          <p class="hero-availability">单一搁架 · 跨设备同步 · 局域网互传</p>
+        </div>
+
+        <div class="demo-stage" aria-label="FlickDock 交互演示">
+          <div class="demo-topline"><span class="demo-status-dot" aria-hidden="true"></span> 交互演示 <span class="demo-topline-note">点击或拖动示例文件</span></div>
+          <div class="demo-sources" id="demo-sources" data-ui aria-label="示例文件">
+            <button class="demo-file" type="button" draggable="true" data-kind="image" aria-label="把图片放进演示搁架">
+              <img src="/assets/content-image.svg" alt="" width="42" height="42"><span><strong>旅行照片.png</strong><small>图片</small></span>
+            </button>
+            <button class="demo-file" type="button" draggable="true" data-kind="video" aria-label="把视频放进演示搁架">
+              <img src="/assets/content-video.svg" alt="" width="42" height="42"><span><strong>周末片段.mp4</strong><small>视频</small></span>
+            </button>
+            <button class="demo-file" type="button" draggable="true" data-kind="pdf" aria-label="把 PDF 放进演示搁架">
+              <img src="/assets/content-pdf.svg" alt="" width="42" height="42"><span><strong>设计提案.pdf</strong><small>文件</small></span>
+            </button>
+            <button class="demo-file" type="button" draggable="true" data-kind="text" aria-label="把文字放进演示搁架">
+              <img src="/assets/content-text.svg" alt="" width="42" height="42"><span><strong>一段灵感</strong><small>文字</small></span>
+            </button>
+          </div>
+          <div class="demo-window" data-ui>
+            <div class="demo-window-head">
+              <span class="window-brand"><img src="/assets/flickdock.svg" alt="" width="28" height="28"> FlickDock</span>
+              <span class="window-action-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+            </div>
+            <div class="demo-dropzone" id="demo-dropzone" aria-label="演示搁架，拖动示例文件至此">
+              <div class="demo-stack" id="demo-stack" aria-hidden="true">
+                <img class="stack-card stack-card-back" src="/assets/content-text.svg" alt="">
+                <img class="stack-card stack-card-mid" src="/assets/content-video.svg" alt="">
+                <img class="stack-card stack-card-front" src="/assets/content-image.svg" alt="">
+              </div>
+              <div class="demo-drop-copy"><strong id="demo-count">3 项</strong><span id="demo-latest">旅行照片.png</span></div>
+            </div>
+            <div class="demo-window-footer">
+              <span>内容已就位</span>
+              <button class="inline-control" id="demo-toggle" type="button" aria-expanded="false" aria-controls="demo-overview">展开总览 <span aria-hidden="true">↗</span></button>
+            </div>
+            <div class="demo-overview" id="demo-overview" hidden>
+              <div class="demo-overview-head"><strong>全部内容</strong><button class="inline-control" id="demo-reset" type="button">重置演示</button></div>
+              <div class="demo-overview-items" id="demo-overview-items"></div>
+            </div>
+          </div>
+          <p class="visually-hidden" id="demo-announcement" aria-live="polite"></p>
+        </div>
+      </section>
+
+      <section class="intro-section page-shell" id="experience" aria-labelledby="experience-title">
+        <div class="section-copy">
+          <h2 id="experience-title">屏幕边缘，<br>随叫随到。</h2>
+          <p>拖动文件时甩动鼠标，或按下你设定的快捷键，搁架就在手边出现。</p>
+          <p>放进去的内容会留下。需要的时候从右上角唤出，预览、复制、拖走，或者在总览里一起处理。</p>
+        </div>
+        <div class="edge-scene" data-ui aria-label="屏幕边缘搁架示意">
+          <div class="edge-desktop"><div class="edge-browser-line"></div><div class="edge-browser-line short"></div><div class="edge-browser-line medium"></div></div>
+          <div class="edge-handle"><span></span><span></span><span></span></div>
+          <div class="edge-dock"><img src="/assets/content-image.svg" alt="" width="56" height="56"><span><strong>旅行照片.png</strong><small>从这里继续</small></span><img class="edge-chevron" src="/assets/control-chevron.svg" alt="" width="18" height="18"></div>
+        </div>
+      </section>
+
+      <section class="feature-section page-shell" id="features" aria-labelledby="features-title">
+        <div class="feature-head"><h2 id="features-title">一个搁架，<br>放下多种内容。</h2></div>
+        <div class="feature-list">
+          <article class="feature-row">
+            <div class="feature-text"><h3>先看，再取。</h3><p>图片、视频、文字和常见文件能在总览中快速辨认。悬停看内容，选中后按自己的节奏处理。</p></div>
+            <div class="feature-fragment preview-fragment" data-ui aria-label="图片与文件预览示意">
+              <div class="fragment-list"><span class="fragment-selected"><img src="/assets/content-image.svg" alt=""> 旅行照片.png</span><span><img src="/assets/content-video.svg" alt=""> 周末片段.mp4</span><span><img src="/assets/content-pdf.svg" alt=""> 设计提案.pdf</span></div>
+              <div class="fragment-preview"><span class="preview-art"><span class="sun"></span><span class="mountain mountain-one"></span><span class="mountain mountain-two"></span></span><strong>旅行照片.png</strong><small>图片预览</small></div>
+            </div>
+          </article>
+          <article class="feature-row">
+            <div class="feature-text"><h3>电脑之间，接着用。</h3><p>登录同一账号，搁架内容可在 Windows 和 Mac 间同步。上传进度清楚可见，不耽误先在本机使用。</p></div>
+            <div class="feature-fragment sync-fragment" data-ui aria-label="Windows 与 Mac 同步示意"><div class="sync-device"><small>Windows</small><img src="/assets/content-pdf.svg" alt="" width="55" height="55"><strong>设计提案.pdf</strong></div><div class="sync-path" aria-hidden="true"><span></span><span></span><span></span></div><div class="sync-device"><small>macOS</small><img src="/assets/content-pdf.svg" alt="" width="55" height="55"><strong>设计提案.pdf</strong></div></div>
+          </article>
+          <article class="feature-row">
+            <div class="feature-text"><h3>在同一个网络里，直接传。</h3><p>从总览打开局域网互传，选择附近设备，把原文件送过去。收件人确认后再接收。</p></div>
+            <div class="feature-fragment nearby-fragment" data-ui aria-label="局域网互传界面示意"><div class="nearby-head"><img src="/assets/control-nearby.svg" alt="" width="24" height="24"><strong>局域网互传</strong></div><div class="nearby-body"><span class="nearby-file"><img src="/assets/content-archive.svg" alt="" width="34" height="34"><span>项目资料.zip<small>原文件传输</small></span></span><span class="nearby-arrow" aria-hidden="true">→</span><span class="nearby-peer">MacBook</span></div><div class="nearby-progress"><span></span></div></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="steps-section page-shell" aria-labelledby="steps-title">
+        <div class="steps-lead"><h2 id="steps-title">拖进去。<br>再拿出来。</h2></div>
+        <div class="steps-copy"><p><strong>放入。</strong>把文件、图片或文字拖到搁架里，或在拖动时甩动鼠标呼出它。</p><p><strong>浏览。</strong>贴边时保持轻巧；需要整理时展开总览，按类型查看和多选。</p><p><strong>取用。</strong>拖出原文件或文字；有需要时打包选中内容，或传给附近设备。</p></div>
+      </section>
+
+      <section class="download-section" id="download" aria-labelledby="download-title">
+        <div class="page-shell">
+          <div class="download-heading"><h2 id="download-title">让文件有个<br>顺手的位置。</h2><p>选择与你的电脑对应的版本。安装文件来自 FlickDock 的公开发行仓库。</p></div>
+          <div class="download-list">
+            <a class="download-card" href="https://gitee.com/rooogerluo/flick-dock-windows-releases/releases/download/v1.8.8/FlickDock-Setup-1.8.8.exe" aria-label="下载 Windows 安装包 1.8.8">
+              <span class="platform-name">Windows <small>10 / 11 · 64 位</small></span><span class="download-meta">安装程序 · 1.8.8</span><span class="download-arrow" aria-hidden="true">↗</span>
+            </a>
+            <a class="download-card" href="https://gitee.com/rooogerluo/flick-dock-macos-releases/releases/download/v1.8.8/FlickDock-1.8.8-macOS-arm64.dmg" aria-label="下载 macOS Apple 芯片版 DMG 1.8.8">
+              <span class="platform-name">macOS <small>Apple 芯片</small></span><span class="download-meta">DMG 安装镜像 · 1.8.8</span><span class="download-arrow" aria-hidden="true">↗</span>
+            </a>
+            <a class="download-card" href="https://gitee.com/rooogerluo/flick-dock-macos-releases/releases/download/v1.8.8/FlickDock-1.8.8-macOS-x86_64.dmg" aria-label="下载 macOS Intel 版 DMG 1.8.8">
+              <span class="platform-name">macOS <small>Intel 芯片</small></span><span class="download-meta">DMG 安装镜像 · 1.8.8</span><span class="download-arrow" aria-hidden="true">↗</span>
+            </a>
+          </div>
+          <p class="install-note">macOS 需要 14.4 或更新版本。当前 Mac 安装包尚未经过 Apple 签名或公证，首次打开时系统可能要求手动允许。</p>
+        </div>
+      </section>
+    </main>
+    <footer class="site-footer page-shell"><a class="brand footer-brand" href="#top"><img src="/assets/flickdock.svg" alt="" width="28" height="28"><span>FlickDock</span></a><p>放在顺手的地方。<br><span>Author @Roger</span></p><a href="#top">回到顶部 ↑</a></footer>
+  </body>
+</html>

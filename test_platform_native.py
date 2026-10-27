@@ -9,8 +9,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from PySide6.QtCore import QPoint
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QPoint, Qt
+from PySide6.QtWidgets import QApplication, QWidget
 import platform_native as native
 
 APP = QApplication.instance() or QApplication([])
@@ -55,6 +55,18 @@ class Carbon:
 
 
 class NativeTests(unittest.TestCase):
+    def test_mac_tool_window_remains_visible_when_app_deactivates(self):
+        widget = QWidget()
+        widget.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.WindowStaysOnTopHint)
+        try:
+            self.assertFalse(native.keep_tool_visible_when_inactive(widget, platform='win32'))
+            self.assertFalse(widget.testAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow))
+            self.assertTrue(native.keep_tool_visible_when_inactive(widget, platform='darwin'))
+            self.assertTrue(widget.testAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow))
+            self.assertTrue(widget.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
+        finally:
+            widget.close()
+
     def test_paths_and_platform_guards(self):
         home = Path('C:/disposable-home')
         self.assertEqual(native.data_directory(platform='win32', home=home, environ={'APPDATA': 'D:/Profile'}), Path('D:/Profile/FlickDock'))

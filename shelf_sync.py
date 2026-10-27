@@ -88,9 +88,38 @@ class ShelfSync(QObject):
         self._progress_persisted=0.0
         self._part_cache={}
         self._refresh_again=False
+        self._cycle_direction='receive'
+        self.upload_enabled=True
+        self.receive_enabled=True
         self.timer = QTimer(self); self.timer.setInterval(poll_ms); self.timer.timeout.connect(self.tick)
         self.debounce = QTimer(self); self.debounce.setSingleShot(True); self.debounce.timeout.connect(self.tick)
         service.account_changed.connect(self.select_account)
+
+    def set_directions(self, upload_enabled, receive_enabled):
+        """Switch cloud directions without losing local edits or transfer journals.
+
+        Settings persistence belongs to the caller. In-flight replies from the
+        old mode are discarded by the account epoch; an interrupted upload is
+        resumed from the server's verified boundary when enabled again.
+        """
+        if self.closed:return False
+        upload_enabled=bool(upload_enabled)
+        receive_enabled=bool(receive_enabled)
+        if (self.upload_enabled,self.receive_enabled)==(upload_enabled,receive_enabled):return False
+        self._interrupt_cycle()
+        self._refresh_again=False
+        self.upload_enabled,self.receive_enabled=upload_enabled,receive_enabled
+        if receive_enabled and self.state is not None:
+            self.state.pop('awaiting_receive',None)
+        if not receive_enabled:
+            self.remote_transfers=[]
+            self.download_transfers.clear()
+        self._persist()
+        self._notify_transfers()
+        if self.account_id and self.service.signed_in and (upload_enabled or receive_enabled):
+            self.debounce.start(1)
+        else:self.debounce.stop()
+        return True
 
     @staticmethod
     def _read(path, fallback):
@@ -144,6 +173,7 @@ class ShelfSync(QObject):
         self.account_id = target
         path = self._profile(target)
         self.state = self._read(path,{'entries':{},'cursor':'0','view':None})
+        if self.receive_enabled:self.state.pop('awaiting_receive',None)
         if self.state.get('view') is None:
             if target and self.owner is None and not self.meta.get('imported_guest'):
                 self.state['view'] = self.adapter.snapshot(); self.meta['imported_guest'] = True
@@ -203,14 +233,14 @@ class ShelfSync(QObject):
         if value and self.service.signed_in:self.debounce.start(1)
 
     def request_refresh(self):
-        if self.closed or not self.account_id or not self.service.signed_in:return
+        if self.closed or not self.account_id or not self.service.signed_in or not self.receive_enabled:return
         if self.running:self._refresh_again=True
         else:self.debounce.start(1)
 
     def _notify_transfers(self):
         if self.state is None:return
         transfers=[];known=set()
-        for identity,entry in self.state.get('entries',{}).items():
+        for identity,entry in (self.state.get('entries',{}).items() if self.upload_enabled else ()):
             if entry.get('deleted') or not entry.get('dirty') or entry.get('paused_upload'):continue
             if entry.get('blocked_fingerprint')==entry.get('fingerprint'):continue
             resume=self.state.get('resumable_uploads',{}).get(identity,{})
@@ -220,7 +250,7 @@ class ShelfSync(QObject):
                 upload_id=resume.get('upload_id'),received=received,total=size,phase=phase,remote=False))
             known.add(identity)
         entries=self.state.get('entries',{})
-        for identity,record in self.download_transfers.items():
+        for identity,record in (self.download_transfers.items() if self.receive_enabled else ()):
             if identity in known:continue
             cached=self.state.get('downloads',{}).get(identity,{})
             hashes=cached.get('hashes',{})
@@ -229,7 +259,7 @@ class ShelfSync(QObject):
             transfers.append(dict(id=identity,ref=entries.get(identity,{}).get('ref'),name=record.get('name',''),
                 kind=record.get('kind','file'),received=received,total=size,phase='downloading',remote=True))
             known.add(identity)
-        for remote in self.remote_transfers:
+        for remote in (self.remote_transfers if self.receive_enabled else ()):
             identity=remote.get('item_id')
             if identity in known:continue
             # A cancelled local fingerprint is deliberately local-only.
@@ -342,6 +372,7 @@ class ShelfSync(QObject):
         self.status_changed.emit(message or (str(error) if not getattr(error,'code','') else '云同步暂时中断，稍后会自动重试。'))
         delay = self._retry_delay(error)
         self.state['not_before'] = time.time()+delay
+        self.state['retry_direction'] = self._cycle_direction
         if self._quota_error(error): self.state['quota_not_before'] = self.state['not_before']
         self._persist()
         self.debounce.start(min(2147483647,int(delay*1000)+1))
@@ -349,6 +380,13 @@ class ShelfSync(QObject):
     @staticmethod
     def _quota_error(error):
         return getattr(error,'code','') in ('STORAGE_REQUEST_BUDGET','PLATFORM_QUOTA') or getattr(error,'status',0)==1027
+
+    def _needs_remote_version(self):
+        """Stop retrying a conflicting upload while inbound sync is off."""
+        self.state['awaiting_receive']=True
+        self.running=False;self.transfer=None
+        self._persist();self._notify_transfers()
+        self.status_changed.emit('云端版本有变化；开启接收后才能继续上传该项。')
 
     @staticmethod
     def _retry_delay(error):
@@ -367,9 +405,39 @@ class ShelfSync(QObject):
         value = self.state.get(key,0)
         return isinstance(value,(int,float)) and time.time() < value
 
+    def _retry_paused(self):
+        direction=self.state.get('retry_direction')
+        if direction=='upload' and not self.upload_enabled:return False
+        if direction=='receive' and not self.receive_enabled:return False
+        return self._paused('not_before')
+
+    def _schedule_after_pause(self, *keys):
+        """Keep the absolute retry deadline after an early change hint.
+
+        A hint and the retry share ``debounce``. Starting it for the hint
+        replaces the pending retry, so every paused exit must rearm it.
+        """
+        now = time.time()
+        deadlines = [self.state.get(key,0) for key in keys]
+        remaining = max((value-now for value in deadlines
+                         if isinstance(value,(int,float)) and value>now),default=0)
+        if remaining > 0:
+            wait = min(2147483647,max(1,int(remaining*1000)+1))
+            # Cleanup and content uploads have independent cooldowns. Keep a
+            # pending earlier wake-up when both need another attempt.
+            if self.debounce.isActive():
+                wait = min(wait,max(1,self.debounce.remainingTime()))
+            self.debounce.start(wait)
+            return True
+        return False
+
     def tick(self):
         if self.closed or self.running or not self.account_id or not self.service.signed_in: return
+        if not self.upload_enabled and not self.receive_enabled:
+            self.status_changed.emit('云同步已暂停；内容保留在本机。')
+            return
         if self._paused('quota_not_before'):
+            self._schedule_after_pause('quota_not_before')
             self.status_changed.emit('云同步额度用完，内容已保留在本机，额度恢复后继续。')
             return
         self.state.pop('quota_not_before',None)
@@ -378,9 +446,13 @@ class ShelfSync(QObject):
         self._retire_uploads()
 
     def _after_cleanup(self):
-        if self._paused('not_before') or self._paused('quota_not_before'):
+        if self._retry_paused() or self._paused('quota_not_before'):
             self.running = False; self.transfer = None
-            self.status_changed.emit('同步请求暂时达到限额，稍后会自动续传。'); return
+            self._schedule_after_pause(*(('not_before',) if self._retry_paused() else ()),
+                                       'quota_not_before')
+            self.status_changed.emit('云同步额度暂时用完，稍后自动续传。' if self._paused('quota_not_before')
+                                     else '云同步暂时中断，稍后自动续传。')
+            return
         self.state.pop('not_before',None)
         self._pull()
 
@@ -436,12 +508,19 @@ class ShelfSync(QObject):
             entry.pop('pending_hash',None); entry.pop('pending_seq',None)
 
     def _retire_uploads(self):
+        if not self.upload_enabled:
+            self._after_cleanup()
+            return
+        self._cycle_direction='upload'
         resumes = self.state.setdefault('resumable_uploads',{})
         for identity,transfer in tuple(resumes.items()):
             if not isinstance(transfer,dict) or not self._resume_matches(transfer):
                 self._forget_resume(identity)
         self._persist()
-        if self._paused('cleanup_not_before'): self._after_cleanup(); return
+        if self._paused('cleanup_not_before'):
+            self._after_cleanup()
+            self._schedule_after_pause('cleanup_not_before')
+            return
         self.state.pop('cleanup_not_before',None)
         removal = self._pending_removal()
         if removal:
@@ -493,6 +572,11 @@ class ShelfSync(QObject):
         self._request('DELETE','/v1/uploads/'+quote(identity,safe=''),done)
 
     def _pull(self):
+        if not self.receive_enabled:
+            self.remote_transfers=[]
+            self._push_next()
+            return
+        self._cycle_direction='receive'
         cursor = str(self.state.get('cursor','0'))
         if not cursor.isdecimal(): cursor = '0'
         def done(result,error):
@@ -503,14 +587,35 @@ class ShelfSync(QObject):
                 self.remote_transfers=[r for r in remote if isinstance(r,dict) and isinstance(r.get('size'),int)
                     and r.get('size',-1)>=0 and isinstance(r.get('item_id'),str) and isinstance(r.get('upload_id'),str)]
             if not isinstance(changes,list) or len(changes)>100: self._error(ValueError('云同步记录无效。')); return
-            def next_record(index=0):
-                if index >= len(changes):
-                    self.state['cursor'] = str(result['cursor']); self._persist()
+            pending = list(enumerate(changes))
+            def next_record():
+                if not pending:
+                    self.state['cursor'] = str(result['cursor'])
+                    self.state.pop('awaiting_receive',None)
+                    self._persist()
                     self._notify_transfers()
                     if result.get('has_more'): self._pull()
                     else: self._push_next()
                     return
-                self._receive(changes[index]['record'],lambda:next_record(index+1))
+                # A 90 MiB item must not keep a later independent text or
+                # small file out of the shelf until its download finishes.
+                # Only the first queued revision of each item may move ahead;
+                # updates and tombstones for that item retain server order.
+                seen = set()
+                chosen = 0
+                for position, (_, change) in enumerate(pending):
+                    record = change.get('record',{}) if isinstance(change,dict) else {}
+                    identity = str(record.get('id')) if isinstance(record,dict) else ''
+                    if identity in seen: continue
+                    seen.add(identity)
+                    size = record.get('size') if isinstance(record,dict) else None
+                    if record.get('deleted') or isinstance(size,int) and size <= 4*1024*1024:
+                        chosen = position
+                        break
+                _, change = pending.pop(chosen)
+                cursor = change.get('cursor')
+                order = int(cursor) if isinstance(cursor,str) and cursor.isdecimal() and 0 < int(cursor) <= 9007199254740991 else None
+                self._receive(change['record'],next_record,remote_order=order)
             next_record()
         self._request('GET','/v1/sync/changes?cursor='+cursor+'&limit=100',done)
 
@@ -527,7 +632,7 @@ class ShelfSync(QObject):
         self.state['entries'][fork['id']] = fork
         return fork
 
-    def _receive(self, record, callback):
+    def _receive(self, record, callback, *, remote_order=None):
         identity = str(record.get('id',''))
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',identity): self._error(ValueError('同步项目标识无效。')); return
         if not isinstance(record.get('version'),int) or not 1 <= record['version'] <= 9007199254740991:
@@ -587,10 +692,11 @@ class ShelfSync(QObject):
             def apply_ref(ref,text=None):
                 if current: self._remove_ref(current['ref'])
                 if text is not None: ref = 'flickdock:text:'+identity
-                self._add_ref(ref,text,record['name'])
+                self._add_ref(ref,text,record['name'],remote_order=remote_order)
                 entries[identity] = {'id':identity,'ref':ref,'version':record['version'],
                     'sha256':record['sha256'],'name':record['name'],'kind':record['kind'],
-                    'fingerprint':fingerprint(ref,text,record['name']),'dirty':False,'deleted':False,'seq':0}
+                    'fingerprint':fingerprint(ref,text,record['name']),'dirty':False,'deleted':False,'seq':0,
+                    **({'remote_order':remote_order} if remote_order is not None else {})}
                 self.download_transfers.pop(identity,None)
                 self._persist(); self._notify_transfers();callback()
             if record['kind'] in ('text','url'):
@@ -606,7 +712,7 @@ class ShelfSync(QObject):
                 self._work(unpack_directory,(path,destination),unpacked)
             else: apply_ref(str(path))
         self._download_record(record,target,downloaded,
-                              changed=lambda current:self._receive(current,callback) if current else callback())
+                               changed=lambda current:self._receive(current,callback,remote_order=remote_order) if current else callback())
 
     def _download_target(self, record):
         identity, version = record.get('id'),record.get('version')
@@ -648,8 +754,9 @@ class ShelfSync(QObject):
                 else: callback(None,ValueError('云端文件版本已改变，请稍后重试。'))
                 return
             chunk_size, count = result.get('chunk_size'), result.get('part_count')
-            if (not isinstance(chunk_size,int) or not 65536<=chunk_size<=4*1024*1024 or not isinstance(count,int)
-                    or count != (record['size']+chunk_size-1)//chunk_size):
+            if (not isinstance(chunk_size,int) or not 65536<=chunk_size<=90*1024*1024 or not isinstance(count,int)
+                    or count != (record['size']+chunk_size-1)//chunk_size
+                    or (chunk_size>4*1024*1024 and (count!=1 or chunk_size!=record['size']))):
                 callback(None,ValueError('同步分块信息无效。')); return
             target.parent.mkdir(parents=True,exist_ok=True)
             downloads = self.state.setdefault('downloads',{})
@@ -706,7 +813,8 @@ class ShelfSync(QObject):
                         path.unlink(missing_ok=True)
                     except (OSError,ValueError) as error: failed(error,index); return
                     request_keys.add(self._request('GET',f'/v1/items/{identity}/parts/{index}?version={record["version"]}',received,
-                        destination=path,expected={'size':size},timeout_ms=120000))
+                        destination=path,expected={'size':size},timeout_ms=120000,
+                        headers={'X-FlickDock-Fast-Content':'1'}))
                 def recorded(digest,error):
                     if halted:return
                     if error or digest is None:
@@ -721,7 +829,8 @@ class ShelfSync(QObject):
                         if getattr(error,'status',0) in (404,409) and changed:
                             halted=True
                             for key in tuple(request_keys):self.api.cancel(key)
-                            self._request('GET','/v1/items/'+identity+'/content',metadata)
+                            self._request('GET','/v1/items/'+identity+'/content',metadata,
+                                          headers={'X-FlickDock-Fast-Content':'1'})
                         else: failed(error,index)
                         return
                     self._work(_checked_download_part,(path,size,None),recorded)
@@ -735,7 +844,8 @@ class ShelfSync(QObject):
                     self._work(_checked_download_part,(path,size,expected),checked)
                 else: request_part()
             if not waiting_cleanup: part()
-        self._request('GET','/v1/items/'+identity+'/content',metadata)
+        self._request('GET','/v1/items/'+identity+'/content',metadata,
+                      headers={'X-FlickDock-Fast-Content':'1'})
 
     def _change_view(self, operation):
         self.applying = True
@@ -755,14 +865,32 @@ class ShelfSync(QObject):
     def _set_title(self,ref,name):
         self._change_view(lambda view:view.setdefault('metadata',{}).setdefault(ref,{}).update(title=name))
 
-    def _add_ref(self,ref,text,name):
+    def _add_ref(self,ref,text,name,*,remote_order=None):
         def change(view):
-            if ref not in view['permanent']: view['permanent'].append(ref)
+            if ref not in view['permanent']:
+                position=len(view['permanent'])
+                if remote_order is not None:
+                    orders={entry.get('ref'):entry.get('remote_order') for entry in self.state['entries'].values()
+                            if not entry.get('deleted')}
+                    position=next((index for index,existing in enumerate(view['permanent'])
+                                   if isinstance(orders.get(existing),int) and orders[existing]>remote_order),position)
+                view['permanent'].insert(position,ref)
             if text is not None: view.setdefault('texts',{})[ref] = text
             view.setdefault('metadata',{}).setdefault(ref,{})['title'] = name
         self._change_view(change)
 
     def _push_next(self):
+        if not self.upload_enabled or (not self.receive_enabled and self.state.get('awaiting_receive')):
+            self.running=False;self.transfer=None
+            self._notify_transfers()
+            if self.state.get('awaiting_receive') and not self.receive_enabled:
+                self.status_changed.emit('云端版本有变化；开启接收后才能继续上传该项。')
+            elif not self.upload_enabled:self.status_changed.emit('云端内容已接收；本机更改等待上传。')
+            else:self.status_changed.emit('搁架已同步。')
+            if self._refresh_again and self.receive_enabled:
+                self._refresh_again=False;self.debounce.start(1)
+            return
+        self._cycle_direction='upload'
         resumes = self.state.setdefault('resumable_uploads',{})
         for identity,transfer in tuple(resumes.items()):
             if not isinstance(transfer,dict) or not self._resume_matches(transfer):
@@ -834,15 +962,18 @@ class ShelfSync(QObject):
             if error:
                 if getattr(error,'code','')=='UPLOAD_EXPIRED':self._error(error)
                 elif getattr(error,'status',0)==409:
-                    self._forget_resume(identity); self._persist(); self.running=False; self.tick()
+                    self._forget_resume(identity); self._persist()
+                    if self.receive_enabled:self.running=False; self.tick()
+                    else:self._needs_remote_version()
                 else: self._error(error)
                 return
             if result.get('instant') is True:
                 self._upload_committed(snapshot,result.get('record'),instant=True)
                 return
             chunk, count, upload_id = result.get('chunk_size'),result.get('part_count'),result.get('upload_id')
-            if (not isinstance(chunk,int) or not 65536 <= chunk <= 4*1024*1024
+            if (not isinstance(chunk,int) or not 65536 <= chunk <= 90*1024*1024
                     or count != (snapshot['size']+chunk-1)//chunk
+                    or (chunk>4*1024*1024 and (count!=1 or chunk!=snapshot['size']))
                     or upload_id != snapshot['upload_id']):
                 self._error(ValueError('云同步上传信息无效。')); return
             snapshot.update(upload_id=upload_id,chunk_size=chunk,part_count=count,next_part=0)
@@ -850,7 +981,8 @@ class ShelfSync(QObject):
         self._request('POST','/v1/uploads',initialized,data={
             'upload_id':snapshot['upload_id'],
             'item_id':identity,'base_version':snapshot.get('version',0),'kind':snapshot['kind'],
-            'name':snapshot['name'],'mime_type':snapshot['mime_type'],'size':snapshot['size'],'sha256':snapshot['sha256']})
+            'name':snapshot['name'],'mime_type':snapshot['mime_type'],'size':snapshot['size'],'sha256':snapshot['sha256'],
+            'fast_upload':True})
 
     def _resume_upload(self, transfer):
         if not self._resume_matches(transfer):
@@ -864,14 +996,22 @@ class ShelfSync(QObject):
                     from cloud_api import CloudError
                     self._error(CloudError('上传已中止，右键可重新上传。',410,'UPLOAD_CANCELLED'))
                 elif getattr(error,'status',0)==409:
-                    self._forget_resume(transfer['id']); self._persist(); self._retire_uploads()
+                    self._forget_resume(transfer['id']); self._persist()
+                    if self.receive_enabled:self._retire_uploads()
+                    else:self._needs_remote_version()
                 else: self._error(error)
                 return
             if any(result.get(remote) != transfer.get(local) for remote,local in (
                     ('upload_id','upload_id'),('item_id','id'),('base_version','version'),
                     ('size','size'),('sha256','sha256'),('chunk_size','chunk_size'),('part_count','part_count'))):
                 self._error(ValueError('云同步断点与文件不符。')); return
-            if result.get('state') == 'committed': self._pull(); return
+            if result.get('state') == 'committed':
+                # Repeating commit returns its existing record. Receive can
+                # be disabled, so a changefeed pull cannot be the sole way to
+                # settle a commit reply lost just before switching modes.
+                if self.receive_enabled:self._pull()
+                else:self._send_part(transfer,transfer['part_count'])
+                return
             index = result.get('next_part')
             if (result.get('state') not in ('pending','verifying') or not isinstance(index,int)
                     or not 0 <= index <= transfer['part_count']
@@ -908,7 +1048,9 @@ class ShelfSync(QObject):
                 if error:
                     if getattr(error,'code','')=='UPLOAD_EXPIRED':self._error(error)
                     elif getattr(error,'status',0)==409:
-                        self._forget_resume(transfer['id']); self._persist(); self.running=False; self.tick()
+                        self._forget_resume(transfer['id']); self._persist()
+                        if self.receive_enabled:self.running=False; self.tick()
+                        else:self._needs_remote_version()
                     else: self._error(error)
                     return
                 self._upload_committed(transfer,result.get('record'))

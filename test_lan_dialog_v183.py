@@ -6,12 +6,14 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from PySide6.QtCore import QEvent,QObject,QMimeData,QPointF,Qt,QUrl,Signal
+from PySide6.QtCore import QByteArray,QEvent,QObject,QMimeData,QPointF,Qt,QUrl,Signal
 from PySide6.QtGui import QDragEnterEvent,QDropEvent,QMouseEvent
-from PySide6.QtWidgets import QApplication
+from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtWidgets import QApplication,QScrollArea
 from unittest.mock import patch
 
 from app_settings import SettingsStore
+from flickdock_icons import glyph_svg
 from lan_panel import LanDialog
 
 APP=QApplication.instance() or QApplication([])
@@ -72,6 +74,38 @@ class LanDialogTests(unittest.TestCase):
             Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier)
         self.dialog.panel.drop_zone.dragEnterEvent(enter)
         self.assertFalse(enter.isAccepted())
+
+    def test_two_columns_keep_send_and_transfer_visible_without_window_scroll(self):
+        panel=self.dialog.panel
+        self.assertLess(panel.send_column.geometry().right(),panel.activity_column.geometry().left())
+        self.assertFalse(self.dialog.findChildren(QScrollArea))
+        self.assertTrue(panel.drop_zone.isVisible())
+        self.assertTrue(panel.receive_path.isVisible())
+        self.assertTrue(panel.history_label.isVisible())
+        self.assertTrue(QSvgRenderer(QByteArray(glyph_svg('nearby','#1876db').encode())).isValid())
+        self.assertTrue(QSvgRenderer(QByteArray(glyph_svg('file-up','#1876db').encode())).isValid())
+        self.assertTrue(QSvgRenderer(QByteArray(glyph_svg('cloud','#1876db').encode())).isValid())
+
+    def test_multiple_transfers_are_reachable_with_buttons_including_incoming_offer(self):
+        panel=self.dialog.panel
+        for number in range(4):
+            panel._progress({'id':f'send-{number}','direction':'send','peer':'测试设备',
+                'state':'waiting','code':'123456'})
+        APP.processEvents()
+        self.assertEqual(panel.transfer_count.text(),'4 项进行中')
+        self.assertEqual(panel.page_label.text(),'1 / 2')
+        self.assertGreaterEqual(panel.page_label.width(),40)
+        self.assertLess(panel.previous_page.geometry().right(),panel.page_label.geometry().left())
+        self.assertLess(panel.page_label.geometry().right(),panel.next_page.geometry().left())
+        self.assertEqual(sum(row['frame'].isVisible() for row in panel._rows.values()),2)
+        panel.next_page.click();APP.processEvents()
+        self.assertEqual(panel.page_label.text(),'2 / 2')
+        self.assertEqual(sum(row['frame'].isVisible() for row in panel._rows.values()),2)
+        panel.show_offer({'id':'receive-1','peer':'另一台设备','count':1,
+            'names':['report.pdf'],'total':512,'code':'909090'})
+        APP.processEvents()
+        self.assertEqual(panel.page_label.text(),'1 / 3')
+        self.assertTrue(panel._rows['receive-1']['frame'].isVisible())
 
     def test_title_drag_moves_dialog_and_native_host_shadow_is_disabled(self):
         self.assertTrue(self.dialog.windowFlags() & Qt.WindowType.FramelessWindowHint)

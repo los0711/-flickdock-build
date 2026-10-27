@@ -11,7 +11,7 @@ from bundle_policy import filter_bundle
 font_names=['HarmonyOS_Sans_SC_Regular.ttf']
 license_names=['HarmonyOS-Sans-LICENSE.txt','Python-LICENSE.txt',
                'LGPL-3.0.txt','GPL-3.0.txt','PyInstaller-COPYING.txt',
-               'OpenSSL-LICENSE.txt','Cloud-Client-LICENSES.txt']
+               'OpenSSL-LICENSE.txt','Cloud-Client-LICENSES.txt','Lucide-LICENSE.txt']
 asset_files=[(root/'fonts'/name,'fonts') for name in font_names]
 asset_files += [(root/'licenses'/name,'licenses') for name in license_names]
 asset_files += [(root/'THIRD_PARTY_NOTICES.md','.'),(root/'font_manifest.json','.')]

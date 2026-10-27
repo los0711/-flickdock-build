@@ -113,6 +113,24 @@ with tempfile.TemporaryDirectory(prefix='flickdock-interactions-v163-') as tmp:
         assert manager.shake_detector.config.minimum_peak_speed<750
         manager.settings.update(shake_sensitivity=1)
         assert manager.shake_detector.config.minimum_peak_speed>750
+        assert shelf.cloud_button._glyph_tint == '#229f69'
+        with patch.object(subject.AnimatedMenu,'exec',lambda menu,*args:menu.actions()[0].trigger()):
+            shelf.show_cloud_menu()
+        assert not manager.settings.sync_upload_enabled and manager.settings.sync_receive_enabled
+        assert not manager.sync.upload_enabled and manager.sync.receive_enabled
+        assert shelf.cloud_button._glyph_tint == '#dc5262'
+        manager.show_settings()
+        dialog=manager.settings_dialog
+        assert not dialog.sync_upload_checkbox.isChecked() and dialog.sync_receive_checkbox.isChecked()
+        dialog.sync_receive_checkbox.setChecked(False)
+        assert not manager.settings.sync_receive_enabled and not manager.sync.receive_enabled
+        dialog.sync_upload_checkbox.setChecked(True)
+        dialog.sync_receive_checkbox.setChecked(True)
+        assert manager.sync.upload_enabled and manager.sync.receive_enabled
+        assert shelf.cloud_button._glyph_tint == '#229f69'
+        reloaded=app_settings.SettingsStore(manager.settings.base)
+        assert reloaded.sync_upload_enabled and reloaded.sync_receive_enabled
+        dialog.hide()
         reg_read.assert_not_called();reg_write.assert_not_called()
         manager.quit();app.processEvents()
         print('INTERACTIONS_V163_OK')

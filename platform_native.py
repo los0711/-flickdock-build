@@ -38,6 +38,19 @@ def native_input_available(*, platform=None, qt_platform=None):
             or (platform == 'darwin' and str(qt_platform).lower() == 'cocoa'))
 
 
+def keep_tool_visible_when_inactive(widget, *, platform=None):
+    """Keep a macOS Qt.Tool shelf or edge strip visible behind other apps.
+
+    Cocoa-backed Qt.Tool windows are NSPanel instances. Qt hides them when the
+    application deactivates unless this attribute is set before first show.
+    """
+    platform = sys.platform if platform is None else platform
+    if platform != 'darwin':
+        return False
+    widget.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow, True)
+    return True
+
+
 def remove_host_window_shadow(widget):
     """Keep the translucent shelf host from casting a rectangular Cocoa shadow.
 

@@ -12,7 +12,8 @@ from app_version import APP_VERSION
 assets = [(root / 'fonts' / 'HarmonyOS_Sans_SC_Regular.ttf', 'fonts')]
 assets += [(root / 'licenses' / name, 'licenses') for name in (
     'HarmonyOS-Sans-LICENSE.txt', 'Python-LICENSE.txt', 'LGPL-3.0.txt',
-    'GPL-3.0.txt', 'PyInstaller-COPYING.txt','OpenSSL-LICENSE.txt','Cloud-Client-LICENSES.txt')]
+    'GPL-3.0.txt', 'PyInstaller-COPYING.txt','OpenSSL-LICENSE.txt','Cloud-Client-LICENSES.txt',
+    'Lucide-LICENSE.txt')]
 assets += [(root / 'THIRD_PARTY_NOTICES.md', '.'), (root / 'font_manifest.json', '.')]
 for path, destination in assets:
     if not path.is_file():

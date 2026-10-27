@@ -6,12 +6,12 @@ import json
 import os
 import time
 
-from PySide6.QtCore import QByteArray, QPoint, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QGuiApplication, QPainter, QPen
+from PySide6.QtCore import QByteArray, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QPainter
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QFrame, QGraphicsDropShadowEffect,
                                QHBoxLayout, QLabel, QLineEdit, QProgressBar, QPushButton,
-                               QListView, QScrollArea, QSizePolicy, QStyle, QStyledItemDelegate,
+                               QListView, QSizePolicy, QStyle, QStyledItemDelegate,
                                QVBoxLayout, QWidget)
 
 from flickdock_icons import draw_glyph
@@ -77,15 +77,16 @@ class _DeviceDelegate(QStyledItemDelegate):
 
 class _DropIllustration(QWidget):
     def __init__(self, parent=None):
-        super().__init__(parent);self.setFixedSize(60,60)
+        super().__init__(parent);self.setFixedSize(70,70)
 
     def paintEvent(self, event):
         painter=QPainter(self);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         active=bool(self.parent().property('dragActive'))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor('#dcecff' if active else '#eaf3ff'))
-        painter.drawRoundedRect(QRectF(3,3,54,54),16,16)
-        draw_glyph(painter,'receive',QRectF(15,15,30,30),'#216dd2',1.7)
+        painter.drawRoundedRect(QRectF(3,3,64,64),18,18)
+        # Lucide's file-up SVG is rendered as a vector, including on high-DPI displays.
+        draw_glyph(painter,'file-up',QRectF(20,20,30,30),'#216dd2',1.8)
 
 
 class _DropZone(QFrame):
@@ -94,15 +95,15 @@ class _DropZone(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName('lanDropZone'); self.setAcceptDrops(True)
-        self.setMinimumHeight(158)
+        self.setMinimumHeight(220)
         self._active = False
-        layout = QVBoxLayout(self); layout.setContentsMargins(18, 17, 18, 14); layout.setSpacing(7)
+        layout = QVBoxLayout(self); layout.setContentsMargins(18, 22, 18, 18); layout.setSpacing(9)
         illustration = _DropIllustration(self)
         self.illustration = illustration
         layout.addWidget(illustration, 0, Qt.AlignmentFlag.AlignHCenter)
         self.title = _label('拖入文件或文件夹', self); self.title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.title.setObjectName('lanDropTitle'); layout.addWidget(self.title)
-        self.hint = _label('保留原文件和目录结构 · 发送前可核对设备', self, muted=True)
+        self.hint = _label('也可使用下方按钮添加', self, muted=True)
         self.hint.setAlignment(Qt.AlignmentFlag.AlignCenter); layout.addWidget(self.hint)
 
 
@@ -167,29 +168,35 @@ class LanPanel(QFrame):
     def __init__(self, service, parent=None, *, theme='light', settings=None):
         super().__init__(parent)
         self.service = service; self.settings = settings; self._paths_provider = None
-        self._rows = {}; self._offers = {}; self._queued_paths = []
+        self._rows = {}; self._offers = {}; self._queued_paths = []; self._row_sequence = 0
         self._dark = False; self._samples = {}; self._started = False
         self._history_path = settings.base / 'lan_history.json' if settings else None
         self._history = self._load_history()
         self.setObjectName('lanPanel'); self.setFont(QFont('HarmonyOS Sans SC', 11))
-        self.setMinimumHeight(500)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.setMinimumHeight(505)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout = QVBoxLayout(self); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(15)
-        heading = QHBoxLayout(); title = _label('发送到附近设备', self); title.setObjectName('lanTitle')
-        heading.addWidget(title, 1)
-        self.peer_count = _label('0 台设备', self, muted=True)
-        self.peer_count.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
-        heading.addWidget(self.peer_count); layout.addLayout(heading)
-        self.description = _label('局域网直传 · 接收前核对确认码', self, muted=True)
-        layout.addWidget(self.description)
+        columns = QHBoxLayout(); columns.setSpacing(18)
+        self.send_column = QFrame(self); self.send_column.setObjectName('lanColumn')
+        send = QVBoxLayout(self.send_column); send.setContentsMargins(18,18,18,18); send.setSpacing(13)
+        send_heading = _label('发送文件', self.send_column); send_heading.setObjectName('lanSection')
+        send.addWidget(send_heading)
         self.drop_zone = _DropZone(self); self.drop_zone.dropped.connect(self.queue_paths)
-        layout.addWidget(self.drop_zone)
+        send.addWidget(self.drop_zone, 1)
         pickers = QHBoxLayout(); pickers.setSpacing(8)
         self.pick_files = _button('添加文件', self); self.pick_files.clicked.connect(self._pick_files)
         self.pick_folder = _button('添加文件夹', self); self.pick_folder.clicked.connect(self._pick_folder)
-        self.clear_queue = _button('清除待发送', self); self.clear_queue.clicked.connect(lambda:self.queue_paths([],replace=True))
+        self.clear_queue = _button('清除', self); self.clear_queue.setToolTip('清除待发送列表')
+        self.clear_queue.clicked.connect(lambda:self.queue_paths([],replace=True))
         pickers.addWidget(self.pick_files); pickers.addWidget(self.pick_folder); pickers.addStretch(1)
-        pickers.addWidget(self.clear_queue); layout.addLayout(pickers)
+        pickers.addWidget(self.clear_queue); send.addLayout(pickers)
+        target = QHBoxLayout()
+        target_label = _label('发送到', self.send_column); target_label.setObjectName('lanSection')
+        target.addWidget(target_label, 1)
+        self.peer_count = _label('0 台设备', self.send_column, muted=True)
+        self.peer_count.setSizePolicy(QSizePolicy.Policy.Preferred,QSizePolicy.Policy.Preferred)
+        target.addWidget(self.peer_count)
+        send.addLayout(target)
         actions = QHBoxLayout(); actions.setSpacing(8)
         self.devices = _DevicesCombo(self); self.devices.setMinimumHeight(36); self.devices.setMinimumWidth(0)
         self.devices.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
@@ -202,7 +209,50 @@ class LanPanel(QFrame):
         actions.addWidget(self.devices, 1)
         self.send_button = _button('发送', self); self.send_button.setObjectName('lanPrimary')
         self.send_button.clicked.connect(self._send)
-        actions.addWidget(self.send_button); layout.addLayout(actions)
+        actions.addWidget(self.send_button); send.addLayout(actions)
+        columns.addWidget(self.send_column, 1)
+
+        self.activity_column = QFrame(self); self.activity_column.setObjectName('lanColumn')
+        activity = QVBoxLayout(self.activity_column); activity.setContentsMargins(18,18,18,18); activity.setSpacing(11)
+        transfer_heading = QHBoxLayout(); transfer_heading.setSpacing(8)
+        section = _label('传输', self.activity_column); section.setObjectName('lanSection')
+        transfer_heading.addWidget(section, 1)
+        self.transfer_count = _label('0 项', self.activity_column, muted=True)
+        self.transfer_count.setSizePolicy(QSizePolicy.Policy.Preferred,QSizePolicy.Policy.Preferred)
+        transfer_heading.addWidget(self.transfer_count)
+        activity.addLayout(transfer_heading)
+        self.transfers_body = QWidget(self.activity_column)
+        self.transfers_layout = QVBoxLayout(self.transfers_body)
+        self.transfers_layout.setContentsMargins(0,0,0,0); self.transfers_layout.setSpacing(8)
+        self.transfers_layout.addStretch(1)
+        self.transfers_body.setMinimumHeight(247)
+        activity.addWidget(self.transfers_body, 1)
+        self.transfers_empty = _label('目前没有正在进行的传输', self.transfers_body, muted=True)
+        self.transfers_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.transfers_empty.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Expanding)
+        self.transfers_layout.insertWidget(0,self.transfers_empty)
+        self._row_page = 0
+        pages = QHBoxLayout(); pages.setSpacing(8)
+        self.previous_page = _button('‹', self.activity_column)
+        self.previous_page.setAccessibleName('上一页传输')
+        self.previous_page.clicked.connect(lambda:self._change_page(-1))
+        self.next_page = _button('›', self.activity_column)
+        self.next_page.setAccessibleName('下一页传输')
+        self.next_page.clicked.connect(lambda:self._change_page(1))
+        self.page_label = _label('', self.activity_column, muted=True)
+        self.page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.page_label.setFixedWidth(48)
+        self.page_label.setSizePolicy(QSizePolicy.Policy.Fixed,QSizePolicy.Policy.Preferred)
+        pages.addStretch(1); pages.addWidget(self.previous_page)
+        pages.addWidget(self.page_label); pages.addWidget(self.next_page)
+        activity.addLayout(pages)
+        self.previous_page.hide(); self.next_page.hide(); self.page_label.hide()
+        section = _label('最近传输', self.activity_column); section.setObjectName('lanSection')
+        activity.addWidget(section)
+        self.history_label = _label('', self.activity_column, muted=True)
+        self.history_label.setMinimumHeight(70)
+        activity.addWidget(self.history_label)
+        self._render_history()
         destination = QHBoxLayout(); destination.setSpacing(8)
         destination_label=_label('接收位置', self)
         destination_label.setSizePolicy(QSizePolicy.Policy.Fixed,QSizePolicy.Policy.Preferred)
@@ -211,22 +261,12 @@ class LanPanel(QFrame):
         self.receive_path = QLineEdit(self); self.receive_path.setReadOnly(True)
         self.receive_path.setAccessibleName('局域网接收位置')
         self.receive_path.setText(str(settings.lan_receive_dir if settings else Path.home()/'Downloads'))
+        self.receive_path.setToolTip(self.receive_path.text())
         destination.addWidget(self.receive_path, 1)
         self.choose_destination = _button('更改…', self); self.choose_destination.clicked.connect(self._choose_destination)
-        destination.addWidget(self.choose_destination); layout.addLayout(destination)
-        section = _label('最近传输', self); section.setObjectName('lanSection'); layout.addWidget(section)
-        self.history_label = _label('', self, muted=True); layout.addWidget(self.history_label)
-        self._render_history()
-        self.transfers_scroll = QScrollArea(self); self.transfers_scroll.setWidgetResizable(True)
-        self.transfers_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self.transfers_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.transfers_scroll.setMinimumHeight(104)
-        self.transfers_body = QWidget(self); self.transfers_layout = QVBoxLayout(self.transfers_body)
-        self.transfers_layout.setContentsMargins(0, 0, 0, 0); self.transfers_layout.setSpacing(8)
-        self.transfers_layout.addStretch(1); self.transfers_scroll.setWidget(self.transfers_body)
-        self.transfers_body.setStyleSheet('background:transparent;')
-        self.transfers_scroll.viewport().setAutoFillBackground(False)
-        layout.addWidget(self.transfers_scroll, 1); self.transfers_scroll.hide()
+        destination.addWidget(self.choose_destination); activity.addLayout(destination)
+        columns.addWidget(self.activity_column, 1)
+        layout.addLayout(columns, 1)
         self.status_label = _label('正在发现附近的 FlickDock…', self, muted=True)
         layout.addWidget(self.status_label)
         self.service.peers_changed.connect(self._peers_changed)
@@ -264,7 +304,7 @@ class LanPanel(QFrame):
         if not self._history:
             self.history_label.setText('还没有传输记录')
             return
-        rows = self._history[:4]
+        rows = self._history[:3]
         self.history_label.setText('\n'.join(
             f"{row['when']}   {row['name'][:35]}   {'已发送' if row['direction']=='send' else '已接收'}"
             + ('' if row['state']=='完成' else ' · '+row['state']) for row in rows))
@@ -277,7 +317,7 @@ class LanPanel(QFrame):
         count = len(self._queued_paths)
         self.drop_zone.title.setText(f'已选择 {count} 项' if count else '拖入文件或文件夹')
         self.drop_zone.hint.setText('、'.join(Path(p).name for p in self._queued_paths[:3])[:80]
-            + ('…' if count > 3 else '') if count else '')
+            + ('…' if count > 3 else '') if count else '也可使用下方按钮添加')
         self.clear_queue.setVisible(bool(count))
         self.send_button.setText(f'发送 {count} 项' if count else '发送文件')
 
@@ -295,6 +335,7 @@ class LanPanel(QFrame):
         try:
             if self.settings: self.settings.set_lan_receive_dir(path)
             self.receive_path.setText(path)
+            self.receive_path.setToolTip(path)
         except (ValueError, OSError) as error: self.status_label.setText(str(error))
 
     def apply_theme(self, theme):
@@ -309,9 +350,10 @@ class LanPanel(QFrame):
         self.setStyleSheet(f'''
             QFrame#lanPanel {{ background:transparent; border:0; }}
             QFrame#lanPanel QLabel {{ color:{color}; background:transparent; border:0; }}
-            QFrame#lanPanel QLabel#lanTitle {{ font-size:17px; font-weight:600; }}
+            QFrame#lanPanel QLabel#lanTitle {{ font-size:16px; font-weight:600; }}
             QFrame#lanPanel QLabel#lanSection {{ font-size:13px; font-weight:600; }}
             QFrame#lanPanel QLabel#lanMuted {{ color:{muted}; }}
+            QFrame#lanColumn {{ background:{background}; border:1px solid {border}; border-radius:15px; }}
             QFrame#lanDropZone {{ background:{field}; border:1px dashed {border}; border-radius:14px; }}
             QFrame#lanDropZone[dragActive="true"] {{ background:{background}; border:2px solid {accent}; }}
             QFrame#lanDropZone QLabel#lanDropTitle {{ font-size:17px; font-weight:600; color:{accent}; }}
@@ -324,11 +366,8 @@ class LanPanel(QFrame):
             QFrame#lanPanel QComboBox::drop-down {{ border:0;width:30px; }}
             QFrame#lanPanel QAbstractItemView {{ background:{field}; color:{color}; border:1px solid {border}; border-radius:12px; padding:5px; outline:0; }}
             QFrame#lanPanel QLineEdit {{ color:{color}; background:{field}; border:1px solid {border}; border-radius:8px; padding:5px 9px; }}
-            QFrame#lanPanel QScrollArea {{ background:transparent; border:0; }}
-            QFrame#lanPanel QScrollBar:vertical {{width:5px;background:transparent;}}
-            QFrame#lanPanel QScrollBar::handle:vertical {{background:{border};border-radius:2px;min-height:20px;}}
-            QFrame#lanPanel QScrollBar::add-line:vertical,QFrame#lanPanel QScrollBar::sub-line:vertical {{height:0;}}
-            QFrame#lanPanel QScrollBar::add-page:vertical,QFrame#lanPanel QScrollBar::sub-page:vertical {{background:transparent;}}
+            QFrame#lanPanel QPushButton[accessibleName="上一页传输"],
+            QFrame#lanPanel QPushButton[accessibleName="下一页传输"] {{ min-width:26px; max-width:26px; padding:0; }}
             QFrame#lanPanel QProgressBar {{ border:0; background:{border}; height:5px; max-height:5px; border-radius:2px; }}
             QFrame#lanPanel QProgressBar::chunk {{ background:#3387f5; border-radius:2px; }}
         ''')
@@ -366,23 +405,49 @@ class LanPanel(QFrame):
 
     def _row(self, identifier, peer='', direction='send'):
         if identifier in self._rows: return self._rows[identifier]
-        self.setMinimumHeight(580); self.transfer_started.emit()
+        self.transfer_started.emit()
         frame = QWidget(self.transfers_body); outer = QVBoxLayout(frame); outer.setContentsMargins(0, 5, 0, 5); outer.setSpacing(5)
-        self.transfers_scroll.show()
         heading = QHBoxLayout(); title = _label(('发送至 ' if direction == 'send' else '接收自 ') + peer, frame)
         heading.addWidget(title, 1); cancel = _CancelButton(frame); cancel.dark = self._dark
         cancel.clicked.connect(lambda: self.service.cancel(identifier)); heading.addWidget(cancel); outer.addLayout(heading)
         detail = _label('', frame, muted=True); outer.addWidget(detail)
         bar = QProgressBar(frame); bar.setRange(0, 1000); bar.setTextVisible(False); outer.addWidget(bar)
         self.transfers_layout.insertWidget(0,frame)
-        row = {'frame': frame, 'title': title, 'detail': detail, 'bar': bar, 'cancel': cancel, 'extra': None}
+        self._row_sequence += 1
+        row = {'frame': frame, 'title': title, 'detail': detail, 'bar': bar, 'cancel': cancel,
+               'extra': None, 'sequence': self._row_sequence}
         self._rows[identifier] = row
         # Keep completed history small without removing active/cancellable rows.
         if len(self._rows) > 12:
             for old_id, old in list(self._rows.items()):
                 if old_id != identifier and old.get('finished'):
                     old['frame'].deleteLater(); del self._rows[old_id]; break
+        self._row_page = 0
+        self._refresh_transfer_pages()
         return row
+
+    def _change_page(self, delta):
+        self._row_page += delta
+        self._refresh_transfer_pages()
+
+    def _refresh_transfer_pages(self):
+        # Active requests remain ahead of finished rows, including consent dialogs.
+        rows = sorted(self._rows.values(), key=lambda row:(bool(row.get('finished')), -row['sequence']))
+        for row in reversed(rows):
+            self.transfers_layout.insertWidget(0,row['frame'])
+        pages = max(1, (len(rows) + 1) // 2)
+        self._row_page = min(max(0, self._row_page), pages - 1)
+        first = self._row_page * 2
+        visible = rows[first:first+2]
+        for row in rows: row['frame'].setVisible(row in visible)
+        self.transfers_empty.setVisible(not rows)
+        self.transfer_count.setText(f"{sum(not row.get('finished') for row in rows)} 项进行中")
+        self.previous_page.setVisible(pages > 1)
+        self.next_page.setVisible(pages > 1)
+        self.page_label.setVisible(pages > 1)
+        self.page_label.setText(f'{self._row_page+1} / {pages}')
+        self.previous_page.setEnabled(self._row_page > 0)
+        self.next_page.setEnabled(self._row_page < pages - 1)
 
     def _offer(self, offer):
         self.show_offer(offer)
@@ -418,6 +483,7 @@ class LanPanel(QFrame):
         row = self._rows[identifier]
         if row.get('extra'): row['extra'].hide()
         row['detail'].setText('已拒绝接收'); row['finished'] = True
+        self._refresh_transfer_pages()
 
     def _progress(self, data):
         identifier = data['id']; row = self._row(identifier, data.get('peer', ''), data['direction'])
@@ -453,6 +519,7 @@ class LanPanel(QFrame):
                 self._history = self._history[:12]; self._render_history()
                 try:self._save_history()
                 except OSError:pass
+            self._refresh_transfer_pages()
         self.status_label.clear()
 
     def _completed(self, result):
@@ -488,7 +555,7 @@ class LanDialog(QDialog):
         super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setObjectName('lanDialog'); self.setWindowTitle('FlickDock · 局域网互传')
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setModal(False); self.resize(628, 640); self.setMinimumSize(500, 600)
+        self.setModal(False); self.resize(930, 625); self.setMinimumSize(780, 625)
         root = QVBoxLayout(self); root.setContentsMargins(22, 22, 22, 22)
         self.card = QFrame(self); self.card.setObjectName('lanDialogCard')
         shadow = QGraphicsDropShadowEffect(self.card)
@@ -505,32 +572,12 @@ class LanDialog(QDialog):
         close.clicked.connect(self.close); title_row.addWidget(close)
         content.addWidget(self.title_bar)
         self.panel = LanPanel(service, self.card, theme=settings.theme, settings=settings)
-        self.body_scroll=QScrollArea(self.card);self.body_scroll.setWidgetResizable(True)
-        self.body_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self.body_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.body_scroll.setStyleSheet('''QScrollArea {background:transparent;border:0;}
-            QScrollArea > QWidget > QWidget {background:transparent;}
-            QScrollBar:vertical {width:5px;background:transparent;}
-            QScrollBar::handle:vertical {background:#aab8cb;border-radius:2px;min-height:20px;}
-            QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical {height:0;}
-            QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical {background:transparent;}''')
-        self.body_scroll.viewport().setAutoFillBackground(False)
-        self.body_scroll.setWidget(self.panel);content.addWidget(self.body_scroll, 1)
-        self.panel.transfer_started.connect(self._fit_active)
+        content.addWidget(self.panel, 1)
         self.apply_theme(settings.theme)
 
     def showEvent(self, event):
         super().showEvent(event)
         remove_host_window_shadow(self)
-
-    def _fit_active(self):
-        screen=QGuiApplication.screenAt(self.frameGeometry().center()) or QGuiApplication.primaryScreen()
-        available=screen.availableGeometry() if screen else None
-        height=min(700,available.height()-20) if available else 700
-        if height>self.height():
-            self.resize(self.width(),height)
-            if available and self.frameGeometry().bottom()>available.bottom()-8:
-                self.move(self.x(),available.bottom()-self.height()-8)
 
     def apply_theme(self, theme):
         dark = theme == 'dark'
