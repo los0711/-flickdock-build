@@ -4,10 +4,10 @@ VSVersionInfo(
   kids=[StringFileInfo([StringTable('040904B0', [
     StringStruct('CompanyName', 'FlickDock'),
     StringStruct('FileDescription', 'FlickDock Content Shelf'),
-    StringStruct('FileVersion', '1.8.9'),
+    StringStruct('FileVersion', '1.8.10'),
     StringStruct('InternalName', 'FlickDock'),
     StringStruct('OriginalFilename', 'FlickDock.exe'),
     StringStruct('ProductName', 'FlickDock'),
-    StringStruct('ProductVersion', '1.8.9')
+    StringStruct('ProductVersion', '1.8.10')
   ])]), VarFileInfo([VarStruct('Translation', [1033, 1200])])]
 )

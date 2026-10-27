@@ -170,7 +170,9 @@ with tempfile.TemporaryDirectory(prefix="flickdock-v16-") as temporary:
             flush(app)
             assert len(popup.rows_body.findChildren(IconItem)) == len(shelf.files["permanent"])
             assert popup.primary_selection == native and popup.preview.current_path == native
-            assert all(item.toolTip() == "" for item in popup.rows_body.findChildren(IconItem))
+            from transfer_visuals import CLOUD_STATUS_LABELS
+            assert all(item.toolTip() in CLOUD_STATUS_LABELS.values()
+                       for item in popup.rows_body.findChildren(IconItem))
         check("categories, hover preview restoration and list/icons preserve primary selection", category_and_selection)
 
         def media_categories():

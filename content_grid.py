@@ -10,7 +10,8 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPen, QTextLayout, QTextOptio
 from PySide6.QtWidgets import QMenu, QWidget
 
 from flickdock_motion import FeedbackButton, Spring
-from transfer_visuals import draw_progress_badge
+from transfer_visuals import (CLOUD_STATUS_LABELS, cloud_status_for_ref,
+                              draw_cloud_status_badge, draw_progress_badge)
 
 try:
     from ui_theme import color
@@ -41,7 +42,8 @@ class IconItem(QWidget):
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self.setAccessibleName(popup.shelf.content.title(ref))
         self.setAccessibleDescription("文字内容" if popup.shelf.content.is_text(ref) else "文件内容")
-        self.setToolTip("")
+        self.cloud_status = 'local'
+        self.refresh_cloud_status()
         self.motion = Spring(self, {"hover": 0, "down": 0, "selected": float(self._selected)},
                              lambda _: self.update(), motion=popup.shelf.manager.motion)
         provider = getattr(popup.shelf, 'item_pixmap', popup.shelf.content.item_pixmap)
@@ -55,6 +57,16 @@ class IconItem(QWidget):
         self.remove_button.setAccessibleName("从搁架移除 " + self.title)
         self.remove_button.clicked.connect(lambda: self.popup.remove_path(self.ref))
         self.remove_button.hide()
+
+    def refresh_cloud_status(self):
+        lookup = getattr(self.popup, 'cloud_status', None)
+        status = lookup(self.ref) if callable(lookup) else cloud_status_for_ref(self.popup.shelf, self.ref)
+        if status == self.cloud_status and self.toolTip(): return
+        self.cloud_status = status
+        self.setToolTip(CLOUD_STATUS_LABELS.get(status, CLOUD_STATUS_LABELS['local']))
+        kind='文字内容' if self.popup.shelf.content.is_text(self.ref) else '文件内容'
+        self.setAccessibleDescription(f'{kind}；{self.toolTip()}')
+        self.update()
 
     def set_selected(self, value: bool):
         self._selected = bool(value)
@@ -202,7 +214,11 @@ class IconItem(QWidget):
         state=getattr(self.popup.shelf.content,'transfers',{}).get(self.ref)
         icon_rect=QRectF((self.width()-64)/2,13,64,64)
         painter.drawPixmap(icon_rect,self.icon,QRectF(self.icon.rect()))
-        draw_progress_badge(painter,QRectF(icon_rect.right()-5,icon_rect.bottom()-17,18,18),state)
+        status_rect=QRectF(icon_rect.right()-12,icon_rect.bottom()-17,20,20)
+        draw_cloud_status_badge(painter,status_rect,self.cloud_status,
+                                None if state and state.get('phase') in ('copying','downloading') else state)
+        if state and state.get('phase') in ('copying','downloading'):
+            draw_progress_badge(painter,QRectF(icon_rect.left()-5,icon_rect.bottom()-17,18,18),state)
         painter.setPen(QColor(color('text')))
         self._draw_title(painter, QRectF(6, 85, self.width() - 12, 38), self.title)
         painter.end()

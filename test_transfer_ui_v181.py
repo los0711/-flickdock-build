@@ -45,6 +45,15 @@ class TransferRateTests(unittest.TestCase):
         self.assertEqual(transfer_phase_label({'phase':'copying'}),'正在复制')
         self.assertEqual(transfer_phase_label({'phase':'downloading'}),'正在下载')
         self.assertEqual(transfer_phase_label({'phase':'uploading'}),'正在上传')
+        state['phase']='verifying'
+        self.assertEqual(transfer_phase_label(state),'等待云端确认')
+        self.assertEqual(tracker.remaining_text('item',state),'等待云端确认')
+        state['phase']='retrying'
+        self.assertEqual(transfer_phase_label(state),'等待重试')
+        self.assertEqual(tracker.remaining_text('item',state),'等待重试')
+        state['phase']='validating'
+        self.assertEqual(transfer_phase_label(state),'校验原文件')
+        self.assertEqual(tracker.remaining_text('item',state),'校验原文件')
 
     def test_queue_wait_and_retry_delay_do_not_create_false_eta(self):
         clock=[0.0];tracker=TransferRateTracker(clock=lambda:clock[0])
@@ -294,6 +303,28 @@ class TransferUITests(unittest.TestCase):
         self.shelf.transfers_updated();flush()
         self.assertFalse(popup.transfer_strip.isVisible())
 
+    def test_transfer_arriving_during_expand_appears_in_all_footer_at_settle(self):
+        popup=self.overview()
+        self.assertEqual(popup.category,'all')
+        self.assertFalse(popup.transfer_strip.isVisible())
+        self.shelf._transition_preparing=True
+        self.shelf._morph_host_active=True
+        refs=[]
+        for index in range(3):
+            ref='flickdock:transfer:during-expand-'+str(index)
+            refs.append(ref)
+            self.shelf.content.pending[ref]=dict(name=f'传输中-{index}.bin',kind='file')
+            self.shelf.content.transfers[ref]=dict(id=str(index),phase='uploading',received=0,total=100)
+        self.shelf.transfers_updated();flush()
+        self.assertFalse(popup.transfer_strip.isVisible(),
+                         'the hidden transition tree should not be laid out mid-frame')
+        self.shelf._settle_morph(self.shelf.visual_geometry());flush()
+        self.assertTrue(popup.transfer_strip.isVisible(),
+                        'the All footer must reconcile at transition completion')
+        self.assertEqual(popup._strip_refs,refs[-1:-3:-1])
+        self.assertIn('+1',popup.strip_more.text())
+        self.assertEqual(sum(row.isVisible() for row,*_ in popup.strip_rows),2)
+
     def test_percent_and_estimated_time_update_in_footer_category_and_preview(self):
         clock=[0.0]
         self.shelf.transfer_rates=TransferRateTracker(clock=lambda:clock[0])
@@ -329,6 +360,25 @@ class TransferUITests(unittest.TestCase):
         popup.set_category('all');self.assertIn(path,popup.visible_refs())
         self.assertNotIn(pending,popup.visible_refs())
         popup.set_category('uploading');self.assertIn(pending,popup.visible_refs())
+
+    def test_selected_preview_uses_same_cloud_state_mark_as_file_artwork(self):
+        path=str(self.file('状态预览.txt'))
+        self.shelf.add_paths('permanent',[path])
+        state={'value':'pending'}
+        self.manager.sync=SimpleNamespace(
+            sync_status_for_ref=lambda ref:state['value'],
+            sync_statuses_for_refs=lambda refs:{ref:state['value'] for ref in refs})
+        popup=self.overview()
+        self.assertEqual(popup.preview.current_path,path)
+        self.assertEqual(popup.preview.cloud_badge.status,'pending')
+        self.assertTrue(popup.preview.cloud_badge.isVisible())
+        self.assertLess(popup.preview.cloud_badge.geometry().right(),
+                        popup.preview.copy_button.geometry().left())
+        state['value']='synced'
+        popup.refresh_cloud_status();flush()
+        self.assertEqual(popup.preview.cloud_badge.status,'synced')
+        popup.preview.show_group((path,path))
+        self.assertFalse(popup.preview.cloud_badge.isVisible())
     def test_manager_projects_remote_pending_enables_expand_and_routes_cancel_to_sync(self):
         self.manager._sync_transfer_refs=set()
         calls=[]
@@ -384,12 +434,13 @@ class TransferUITests(unittest.TestCase):
                                             f'{button.text()} is clipped in the {width}px overview')
         self.assertEqual(self.shelf.geometry(),native_geometry,'filter layout must not resize the native animation host')
     def test_transfer_summary_reports_copy_upload_download_without_mislabeling(self):
-        for index,phase in enumerate(('copying','uploading','downloading','queued','remote')):
+        for index,phase in enumerate(('copying','uploading','downloading','queued','remote','verifying','retrying','validating')):
             ref=self.pending(f'项目{index}.bin',remote=phase in ('remote','downloading'))
             self.shelf.content.transfers[ref]['phase']=phase
         popup=self.overview();popup.update_transfer_status()
-        self.assertEqual(popup.category_buttons['uploading'].text(),'传输中 5')
-        self.assertEqual(popup.transfer_count.text(),'正在复制 1 项 · 正在上传 3 项 · 正在下载 1 项')
+        self.assertEqual(popup.category_buttons['uploading'].text(),'传输中 8')
+        self.assertEqual(popup.transfer_count.text(),
+                         '正在复制 1 项 · 正在上传 3 项 · 等待确认 1 项 · 正在下载 1 项 · 校验中 1 项 · 等待重试 1 项')
         self.shelf.content.transfers={ref:state for ref,state in self.shelf.content.transfers.items() if state['phase']=='downloading'}
         popup.update_transfer_status()
         self.assertEqual(popup.transfer_count.text(),'正在下载 1 项')

@@ -68,6 +68,10 @@ MAINTAINED_TESTS=(
     'test_lan_transfer_v181.py','test_lan_dialog_v183.py','test_shelf_transfers_v181.py','test_sync_staging_v181.py','test_cloud_progress_v181.py',
     'test_cloud_api_stream_v183.py','test_sync_directions.py','test_sync_timeout_recovery.py',
     'test_sync_receive_priority.py','test_cloud_download_fast_path_v189.py','test_window_layer.py',
+    'test_mac_window_order_v1810.py','test_win_window_order_v1810.py',
+    'test_shelf_raise_v1810.py','test_intake_first_frame_v1810.py',
+    'test_sync_remote_commit_wakeup.py','test_cloud_file_status_v1810.py',
+    'test_trigger_reliability_v1810.py','test_event_stream_wiring_v1810.py',
 )
 SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'FlickDock.spec','FlickDock.iss','version_info.txt','ChineseSimplified.isl',

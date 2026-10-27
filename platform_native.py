@@ -63,6 +63,44 @@ def keep_tool_visible_when_inactive(widget, *, platform=None):
     return True
 
 
+def raise_shelf_for_reveal(widget, *, platform=None):
+    """Order a revealed shelf above ordinary app windows without activation.
+
+    Qt's raise_() only orders reliably within our application. A shelf
+    revealed while another drag source is active must be ordered above that
+    application's normal windows without cancelling the drag. It remains a
+    normal-level native window, so a later app activation can cover it.
+    """
+    platform = sys.platform if platform is None else platform
+    if platform not in ('win32', 'darwin') or not native_input_available():
+        return False
+    if platform == 'win32':
+        try:
+            from ctypes import wintypes
+
+            user32 = ctypes.WinDLL('user32', use_last_error=True)
+            set_window_pos = user32.SetWindowPos
+            set_window_pos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int,
+                                       ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+            set_window_pos.restype = wintypes.BOOL
+            # HWND_TOP, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE |
+            # SWP_NOOWNERZORDER. Do not set a persistent TOPMOST style or
+            # change the reserved animation host's native geometry.
+            return bool(set_window_pos(int(widget.winId()), None, 0, 0, 0, 0, 0x0213))
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            return False
+    try:
+        import objc
+        view = objc.objc_object(c_void_p=ctypes.c_void_p(int(widget.winId())))
+        window = view.window()
+        if window is None:
+            return False
+        window.orderFrontRegardless()
+    except (ImportError, AttributeError, OSError, RuntimeError, TypeError, ValueError):
+        return False
+    return True
+
+
 def remove_host_window_shadow(widget):
     """Keep the translucent shelf host from casting a rectangular Cocoa shadow.
 

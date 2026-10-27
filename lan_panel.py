@@ -155,6 +155,99 @@ class _CancelButton(QPushButton):
         QSvgRenderer(QByteArray(svg.encode())).render(painter, QRectF(8, 8, 16, 16))
 
 
+class _ElidedLabel(QLabel):
+    """Keep a full accessible record while fitting names into one compact row."""
+
+    def __init__(self, value='', parent=None):
+        super().__init__(parent)
+        self._full_text = ''
+        self.setTextFormat(Qt.TextFormat.PlainText)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.setText(value)
+
+    def setText(self, value):
+        self._full_text = str(value)
+        self.setAccessibleName(self._full_text)
+        self.setToolTip(self._full_text)
+        self._update_elision()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_elision()
+
+    def _update_elision(self):
+        width = max(1, self.contentsRect().width())
+        super().setText(self.fontMetrics().elidedText(
+            self._full_text, Qt.TextElideMode.ElideRight, width))
+
+
+class _HistoryIcon(QWidget):
+    def __init__(self, direction, parent=None):
+        super().__init__(parent)
+        self.direction = direction
+        self.dark = False
+        self.setFixedSize(26, 26)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        color = '#89b9ff' if self.dark else '#2576dc'
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor('#33465e' if self.dark else '#eaf3ff'))
+        painter.drawRoundedRect(QRectF(0, 0, 26, 26), 8, 8)
+        draw_glyph(painter, 'file-up' if self.direction == 'send' else 'receive',
+                   QRectF(6, 6, 14, 14), color, 1.7)
+
+
+class _HistoryRow(QFrame):
+    def __init__(self, record, parent=None):
+        super().__init__(parent)
+        self.setObjectName('lanHistoryRow')
+        self.setMinimumHeight(48)
+        direction = record['direction']
+        state = record['state']
+        peer = record['peer'].strip() or '未知设备'
+        title = ('发送至 ' if direction == 'send' else '接收自 ') + peer
+        name = record['name'].strip()
+        if (not name or name == title or (not record['peer'].strip() and name.startswith('发送至 '))
+                or ('想发送 ' in name and '个文件' in name)):
+            name = '文件传输'
+        count = record.get('count')
+        if isinstance(count, int) and count > 0:
+            name = f'{name} · {count} 项'
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(9, 6, 9, 6)
+        layout.setSpacing(8)
+        self.icon = _HistoryIcon(direction, self)
+        layout.addWidget(self.icon, 0, Qt.AlignmentFlag.AlignVCenter)
+        lines = QVBoxLayout()
+        lines.setSpacing(1)
+        self.title = _ElidedLabel(title, self)
+        self.title.setObjectName('lanHistoryTitle')
+        self.detail = _ElidedLabel(name, self)
+        self.detail.setObjectName('lanHistoryDetail')
+        lines.addWidget(self.title)
+        lines.addWidget(self.detail)
+        layout.addLayout(lines, 1)
+        trailing = QVBoxLayout()
+        trailing.setSpacing(1)
+        self.state = QLabel('已完成' if state == '完成' else state, self)
+        self.state.setTextFormat(Qt.TextFormat.PlainText)
+        self.state.setObjectName('lanHistoryState')
+        self.state.setProperty('statusKind', {'完成': 'complete', '已取消': 'cancelled',
+                                              '失败': 'failed'}.get(state, 'other'))
+        self.state.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.state.setFixedWidth(52)
+        self.when = QLabel(record['when'], self)
+        self.when.setTextFormat(Qt.TextFormat.PlainText)
+        self.when.setObjectName('lanHistoryWhen')
+        self.when.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        trailing.addWidget(self.state, 0, Qt.AlignmentFlag.AlignRight)
+        trailing.addWidget(self.when)
+        layout.addLayout(trailing)
+
+
 class LanPanel(QFrame):
     """Overview's transfer surface. start() remains the owner's explicit decision.
 
@@ -169,6 +262,7 @@ class LanPanel(QFrame):
         super().__init__(parent)
         self.service = service; self.settings = settings; self._paths_provider = None
         self._rows = {}; self._offers = {}; self._queued_paths = []; self._row_sequence = 0
+        self._history_context = {}
         self._dark = False; self._samples = {}; self._started = False
         self._history_path = settings.base / 'lan_history.json' if settings else None
         self._history = self._load_history()
@@ -225,7 +319,7 @@ class LanPanel(QFrame):
         self.transfers_layout = QVBoxLayout(self.transfers_body)
         self.transfers_layout.setContentsMargins(0,0,0,0); self.transfers_layout.setSpacing(8)
         self.transfers_layout.addStretch(1)
-        self.transfers_body.setMinimumHeight(247)
+        self.transfers_body.setMinimumHeight(170)
         activity.addWidget(self.transfers_body, 1)
         self.transfers_empty = _label('目前没有正在进行的传输', self.transfers_body, muted=True)
         self.transfers_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -249,9 +343,16 @@ class LanPanel(QFrame):
         self.previous_page.hide(); self.next_page.hide(); self.page_label.hide()
         section = _label('最近传输', self.activity_column); section.setObjectName('lanSection')
         activity.addWidget(section)
-        self.history_label = _label('', self.activity_column, muted=True)
-        self.history_label.setMinimumHeight(70)
-        activity.addWidget(self.history_label)
+        self.history_body = QWidget(self.activity_column)
+        self.history_layout = QVBoxLayout(self.history_body)
+        self.history_layout.setContentsMargins(0, 0, 0, 0)
+        self.history_layout.setSpacing(5)
+        self.history_label = _label('还没有传输记录', self.history_body, muted=True)
+        self.history_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.history_label.setMinimumHeight(48)
+        self.history_layout.addWidget(self.history_label)
+        self.history_rows = []
+        activity.addWidget(self.history_body)
         self._render_history()
         destination = QHBoxLayout(); destination.setSpacing(8)
         destination_label=_label('接收位置', self)
@@ -288,6 +389,14 @@ class LanPanel(QFrame):
         except (OSError, ValueError, UnicodeError): pass
         return []
 
+    def _set_history_context(self, identifier, paths):
+        context = {'history_name': Path(paths[0]).name if paths else '',
+                   'history_count': len(paths)}
+        if identifier in self._rows:
+            self._rows[identifier].update(context)
+        else:
+            self._history_context[identifier] = context
+
     def _save_history(self):
         if not self._history_path: return
         self._history_path.parent.mkdir(parents=True, exist_ok=True)
@@ -301,13 +410,16 @@ class LanPanel(QFrame):
             if temporary.exists(): temporary.unlink()
 
     def _render_history(self):
-        if not self._history:
-            self.history_label.setText('还没有传输记录')
-            return
-        rows = self._history[:3]
-        self.history_label.setText('\n'.join(
-            f"{row['when']}   {row['name'][:35]}   {'已发送' if row['direction']=='send' else '已接收'}"
-            + ('' if row['state']=='完成' else ' · '+row['state']) for row in rows))
+        for widget in self.history_rows:
+            self.history_layout.removeWidget(widget)
+            widget.deleteLater()
+        self.history_rows.clear()
+        self.history_label.setVisible(not self._history)
+        for record in self._history[:3]:
+            widget = _HistoryRow(record, self.history_body)
+            widget.icon.dark = self._dark
+            self.history_layout.addWidget(widget)
+            self.history_rows.append(widget)
 
     def queue_paths(self, paths, *, replace=False):
         if replace: self._queued_paths = []
@@ -354,6 +466,15 @@ class LanPanel(QFrame):
             QFrame#lanPanel QLabel#lanSection {{ font-size:13px; font-weight:600; }}
             QFrame#lanPanel QLabel#lanMuted {{ color:{muted}; }}
             QFrame#lanColumn {{ background:{background}; border:1px solid {border}; border-radius:15px; }}
+            QFrame#lanHistoryRow {{ background:{field}; border:1px solid {border}; border-radius:10px; }}
+            QFrame#lanPanel QLabel#lanHistoryTitle {{ font-size:13px; font-weight:600; }}
+            QFrame#lanPanel QLabel#lanHistoryDetail {{ color:{muted}; font-size:12px; }}
+            QFrame#lanPanel QLabel#lanHistoryWhen {{ color:{muted}; font-size:11px; }}
+            QFrame#lanPanel QLabel#lanHistoryState {{ border:0; border-radius:7px; font-size:11px; font-weight:600; padding:2px 0; }}
+            QFrame#lanPanel QLabel#lanHistoryState[statusKind="complete"] {{ color:{'#72d9b5' if self._dark else '#117756'}; background:{'#1d443c' if self._dark else '#e4f5ed'}; }}
+            QFrame#lanPanel QLabel#lanHistoryState[statusKind="cancelled"] {{ color:{'#e5bd7e' if self._dark else '#98631a'}; background:{'#494033' if self._dark else '#fff2df'}; }}
+            QFrame#lanPanel QLabel#lanHistoryState[statusKind="failed"] {{ color:{'#f3a3a3' if self._dark else '#ad4242'}; background:{'#4b3034' if self._dark else '#fdecec'}; }}
+            QFrame#lanPanel QLabel#lanHistoryState[statusKind="other"] {{ color:{muted}; background:{border}; }}
             QFrame#lanDropZone {{ background:{field}; border:1px dashed {border}; border-radius:14px; }}
             QFrame#lanDropZone[dragActive="true"] {{ background:{background}; border:2px solid {accent}; }}
             QFrame#lanDropZone QLabel#lanDropTitle {{ font-size:17px; font-weight:600; color:{accent}; }}
@@ -372,6 +493,7 @@ class LanPanel(QFrame):
             QFrame#lanPanel QProgressBar::chunk {{ background:#3387f5; border-radius:2px; }}
         ''')
         for row in self._rows.values(): row['cancel'].dark = self._dark; row['cancel'].update()
+        for row in self.history_rows: row.icon.dark = self._dark; row.icon.update()
 
     def _peers_changed(self, peers):
         selected = self.devices.currentData(); self.devices.clear()
@@ -394,13 +516,17 @@ class LanPanel(QFrame):
             paths, _ = QFileDialog.getOpenFileNames(self, '选择要发送的文件')
         if not paths: return
         try:
-            self.service.send(peer, paths)
+            identifier = self.service.send(peer, paths)
+            self._set_history_context(identifier, paths)
             self.queue_paths([],replace=True)
         except (ValueError, OSError) as error: self.status_label.setText(str(error))
 
     def send_paths(self, peer_id, paths):
         """Overview/context-menu entry can send selected files and folders."""
-        try: return self.service.send(peer_id, paths)
+        try:
+            identifier = self.service.send(peer_id, paths)
+            self._set_history_context(identifier, paths)
+            return identifier
         except (ValueError, OSError) as error: self.status_label.setText(str(error)); return ''
 
     def _row(self, identifier, peer='', direction='send'):
@@ -416,6 +542,7 @@ class LanPanel(QFrame):
         self._row_sequence += 1
         row = {'frame': frame, 'title': title, 'detail': detail, 'bar': bar, 'cancel': cancel,
                'extra': None, 'sequence': self._row_sequence}
+        row.update(self._history_context.pop(identifier, {}))
         self._rows[identifier] = row
         # Keep completed history small without removing active/cancellable rows.
         if len(self._rows) > 12:
@@ -457,6 +584,8 @@ class LanPanel(QFrame):
         identifier = offer['id']; self._offers[identifier] = offer
         if identifier in self._rows:return
         row = self._row(identifier, offer['peer'], 'receive')
+        row['history_name'] = str((offer.get('names') or [''])[0])
+        row['history_count'] = int(offer['count'])
         row['title'].setText(f"{offer['peer']} 想发送 {offer['count']} 个文件")
         names = '、'.join(offer.get('names', [])[:3]); names = names[:90] + ('…' if len(names) > 90 else '')
         row['detail'].setText(f"{names}\n{_size(offer['total'])} · 确认码 {offer['code']}，请与发送方核对")
@@ -495,7 +624,10 @@ class LanPanel(QFrame):
             self._samples[identifier] = (now, received)
             fraction = min(1000, int(received * 1000 / total)) if total else 0
             row['bar'].setRange(0, 1000); row['bar'].setValue(fraction)
-            name = str(data.get('name') or ''); name = name[:48] + ('…' if len(name) > 48 else '')
+            name = str(data.get('name') or '')
+            if name and not row.get('history_name'):
+                row['history_name'] = Path(name).name
+            name = name[:48] + ('…' if len(name) > 48 else '')
             row['detail'].setText(f'{name} · {_size(received)} / {_size(total)}' + (f' · {_size(speed)}/s' if speed else ''))
         elif state == 'waiting':
             row['bar'].setRange(0, 0)
@@ -512,8 +644,9 @@ class LanPanel(QFrame):
             if not row.get('recorded'):
                 row['recorded'] = True
                 self._history.insert(0, {'when':time.strftime('%m-%d %H:%M'),
-                    'name':str(data.get('name') or row['title'].text())[:100],
+                    'name':str(row.get('history_name') or data.get('name') or row['title'].text())[:100],
                     'peer':str(data.get('peer') or '')[:80],
+                    'count':row.get('history_count'),
                     'state':{'complete':'完成','cancelled':'已取消','error':'失败'}[state],
                     'direction':str(data.get('direction') or 'send')})
                 self._history = self._history[:12]; self._render_history()

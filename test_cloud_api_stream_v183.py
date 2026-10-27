@@ -31,6 +31,7 @@ def main():
             self.end_headers()
             for index in range(0, len(payload), 65536):
                 self.wfile.write(payload[index:index+65536])
+                if self.path.endswith('/slow-download'): time.sleep(.005)
 
         def do_PUT(self):
             size = int(self.headers['Content-Length'])
@@ -82,16 +83,21 @@ def main():
             raise AssertionError(f'{error}; status={error.status}; details={error.details}')
         assert path == destination and destination.read_bytes() == payload
         verified = []
+        verified_progress = []
         verified_destination = Path(temp) / 'verified-content.bin'
-        client.request('GET', '/v1/items/test/parts/0',
+        client.request('GET', '/v1/items/test/parts/0/slow-download',
                        lambda value, error: (verified.append((value, error)), app.quit()),
                        destination=verified_destination,
-                       expected={'size':len(payload), 'with_digest':True})
+                       expected={'size':len(payload), 'with_digest':True},
+                       receive_progress=lambda received,total:verified_progress.append((received,total)))
         QTimer.singleShot(15000, app.quit)
         app.exec()
         assert verified and verified[0][1] is None
         assert verified[0][0] == {'path':verified_destination, 'sha256':digest}
         assert verified_destination.read_bytes() == payload
+        assert verified_progress and verified_progress[-1] == (len(payload),len(payload))
+        assert any(0 < received < total for received,total in verified_progress), verified_progress
+        assert [received for received,_ in verified_progress] == sorted({received for received,_ in verified_progress})
         staged = Path(temp) / 'staged-original.bin'
         staged.write_bytes(payload * 5)
         staged_digest = hashlib.sha256(payload * 5).hexdigest()

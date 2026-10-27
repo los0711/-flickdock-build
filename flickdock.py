@@ -48,14 +48,15 @@ from widget_retirement import WidgetRetirementQueue
 from capture_files import CopyFilesJob
 from owned_files import owned_copy_spec, delete_owned_copy
 from sync_files import DiskWork
-from transfer_visuals import (TransferIconLabel, TransferOverlay,
-                              TransferRateTracker, transfer_fraction, transfer_phase_label)
+from transfer_visuals import (CLOUD_STATUS_LABELS, CloudStatusBadge, cloud_status_for_ref,
+                              TransferIconLabel, TransferOverlay, TransferRateTracker,
+                              transfer_fraction, transfer_phase_label)
 from drop_routing import OverviewDropRouter
 from app_version import APP_NAME, APP_VERSION
 from update_controller import UpdateController
 from platform_native import (data_directory, native_input_available, mouse_buttons_mask,
                              remove_host_window_shadow, keep_tool_visible_when_inactive,
-                             shelf_window_flags)
+                             shelf_window_flags, raise_shelf_for_reveal)
 from account_service import AccountService
 from cloud_events import CloudEvents
 from account_panel import AccountPanel
@@ -150,7 +151,8 @@ def text_snippet(path: str, limit: int = 240) -> str | None:
     if source.suffix.lower() not in TEXT_SUFFIXES or not source.is_file():
         return None
     try:
-        data = source.open("rb").read(4096)
+        with source.open("rb") as stream:
+            data = stream.read(4096)
         try:
             content = data.decode("utf-8-sig")
         except UnicodeDecodeError:
@@ -386,7 +388,10 @@ class PreviewPane(QFrame):
         self.copy_button = FeedbackButton("copy", self, motion=self.shelf.manager.motion)
         self.copy_button.setFixedSize(32,32)
         self.copy_button.clicked.connect(self.copy_current)
-        header.addLayout(labels,1); header.addWidget(self.copy_button,0,Qt.AlignmentFlag.AlignTop)
+        self.cloud_badge = CloudStatusBadge(self)
+        header.addLayout(labels,1)
+        header.addWidget(self.cloud_badge,0,Qt.AlignmentFlag.AlignTop)
+        header.addWidget(self.copy_button,0,Qt.AlignmentFlag.AlignTop)
         layout.addLayout(header)
         self.transfer_row=QWidget(self)
         transfer_layout=QHBoxLayout(self.transfer_row);transfer_layout.setContentsMargins(0,0,0,0)
@@ -419,6 +424,14 @@ class PreviewPane(QFrame):
     def _playing_changed(self, playing):
         self.shelf.preview_playing=bool(playing)
         self.shelf.touch()
+
+    def refresh_cloud_status(self):
+        visible = bool(self.current_path) and not getattr(self, '_group_refs', ())
+        self.cloud_badge.setVisible(visible)
+        if visible:
+            lookup=getattr(getattr(self,'popup',None),'cloud_status',None)
+            status=lookup(self.current_path) if callable(lookup) else cloud_status_for_ref(self.shelf,self.current_path)
+            self.cloud_badge.set_status(status,self.shelf.content.transfers.get(self.current_path))
 
     def _poster_ready(self, path, image):
         if not image.isNull():
@@ -453,6 +466,7 @@ class PreviewPane(QFrame):
         self._group_refs=()
         self.media.stop()
         self.current_path=ref
+        self.refresh_cloud_status()
         self.copy_button.set_glyph("copy")
         self.name.setText(self.shelf.content.title(ref))
         self.update_transfer_status()
@@ -525,7 +539,8 @@ class PreviewPane(QFrame):
         self.cancel_transfer.setText('取消复制' if copying else '取消下载' if state.get('phase')=='downloading' else '取消上传')
         self.cancel_transfer.setEnabled(True)
         if self.shelf.content.is_pending(self.current_path):
-            self.info.setText('另一台设备正在上传' if state.get('remote') and state.get('phase')!='downloading'
+            self.info.setText(transfer_phase_label(state) if state.get('phase') in ('verifying','retrying','validating')
+                              else '另一台设备正在上传' if state.get('remote') and state.get('phase')!='downloading'
                               else '正在下载原文件' if state.get('phase')=='downloading'
                               else transfer_phase_label(state))
 
@@ -533,6 +548,7 @@ class PreviewPane(QFrame):
         refs=tuple(refs)
         if getattr(self,'_group_refs',())==refs: return
         self.media.stop();self._pending_preview=False;self._group_refs=refs;self.current_path=refs[-1]
+        self.refresh_cloud_status()
         self.copy_button.setEnabled(True);self.transfer_row.hide();self.transfer_overlay.hide()
         self.name.setText(f'{len(refs)} 项已选');self.info.setText('可一起拖出或打包 ZIP')
         self.icon.set_content('file',pixmap=stack_pixmap(self.shelf.content,refs,128,dpr=self.devicePixelRatioF(),preview_cache=self.shelf.preview_cache))
@@ -595,10 +611,18 @@ class FileRow(QFrame):
         policy=remove.sizePolicy();policy.setRetainSizeWhenHidden(True);remove.setSizePolicy(policy)
         remove.setToolTip("移出搁架")
         remove.clicked.connect(lambda: popup.remove_path(path))
+        self.refresh_cloud_status()
         row.addWidget(icon)
         row.addWidget(name, 1)
         row.addWidget(remove)
         remove.hide()
+
+    def refresh_cloud_status(self):
+        lookup=getattr(self.popup,'cloud_status',None)
+        status=lookup(self.path) if callable(lookup) else cloud_status_for_ref(self.popup.shelf,self.path)
+        self.icon_label.set_cloud_status(status)
+        self.setToolTip(CLOUD_STATUS_LABELS.get(status,CLOUD_STATUS_LABELS['local']))
+        self.setAccessibleDescription(CLOUD_STATUS_LABELS.get(status,CLOUD_STATUS_LABELS['local']))
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -681,6 +705,7 @@ class ContentsPopup(QFrame):
         super().__init__(shelf.card)
         self.shelf,self.mode=shelf,"permanent"
         self.selected=set(); self.primary_selection=None; self.hovered_ref=None; self.category="all"
+        self._cloud_statuses={}
         self.retirement=WidgetRetirementQueue(self)
         self._build_timer=QTimer(self);self._build_timer.setSingleShot(True)
         self._build_timer.timeout.connect(self._append_batch)
@@ -790,9 +815,13 @@ class ContentsPopup(QFrame):
             received=sum(v.get('received',0) for v in states);total=sum(v.get('total',0) for v in states)
             copying=sum(v.get('phase')=='copying' for v in states)
             downloading=sum(v.get('phase')=='downloading' for v in states)
-            uploading=count-copying-downloading
+            verifying=sum(v.get('phase')=='verifying' for v in states)
+            retrying=sum(v.get('phase')=='retrying' for v in states)
+            validating=sum(v.get('phase')=='validating' for v in states)
+            uploading=count-copying-downloading-verifying-retrying-validating
             self.transfer_count.setText(' · '.join(f'{label} {amount} 项' for label,amount in
-                (('正在复制',copying),('正在上传',uploading),('正在下载',downloading)) if amount))
+                (('正在复制',copying),('正在上传',uploading),('等待确认',verifying),
+                 ('正在下载',downloading),('校验中',validating),('等待重试',retrying)) if amount))
             all_known=all(transfer_fraction(state) is not None for state in states)
             self.transfer_bar.setRange(0,1000 if all_known else 0)
             if all_known:self.transfer_bar.setValue(round(1000*min(1,received/total)))
@@ -864,6 +893,7 @@ class ContentsPopup(QFrame):
                    tuple((ref,repr(self.shelf.content.metadata.get(ref,{}))) for ref in refs))
         if getattr(self,'_render_signature',None)==signature:
             return
+        self._read_cloud_statuses(refs)
         self._render_signature=signature
         self._build_timer.stop()
         self._build_epoch=getattr(self,'_build_epoch',0)+1
@@ -998,6 +1028,25 @@ class ContentsPopup(QFrame):
             if getattr(item,'path',None)!=ref: continue
             if isinstance(item,IconItem): item.icon=self.shelf.item_pixmap(ref,64,dpr=item.devicePixelRatioF()); item.update()
             elif isinstance(item,FileRow): item.icon_label.setPixmap(self.shelf.item_pixmap(ref,28,dpr=item.devicePixelRatioF()))
+
+    def _read_cloud_statuses(self,refs):
+        sync=getattr(self.shelf.manager,'sync',None)
+        batch=getattr(sync,'sync_statuses_for_refs',None)
+        self._cloud_statuses=(batch(refs) if callable(batch) else
+                              {ref:cloud_status_for_ref(self.shelf,ref) for ref in refs})
+
+    def cloud_status(self,ref):
+        if ref in self._cloud_statuses:return self._cloud_statuses[ref]
+        return cloud_status_for_ref(self.shelf,ref)
+
+    def refresh_cloud_status(self):
+        previous=self._cloud_statuses
+        self._read_cloud_statuses(self.visible_refs())
+        if previous!=self._cloud_statuses:
+            for item in self.rows_body.findChildren(QWidget):
+                if isinstance(item,(IconItem,FileRow)):
+                    item.refresh_cloud_status()
+        self.preview.refresh_cloud_status()
 
     def remove_path(self,ref): self.shelf.remove_path('permanent',ref)
 
@@ -1257,6 +1306,11 @@ class ShelfWindow(QWidget):
             # Remote metadata or a new drop may have completed while the live
             # tree was hidden behind its transition image.
             self.popup.rebuild()
+            # Transfer notifications arriving during the morph intentionally
+            # skip layout work. Reconcile the bottom strip at the settled frame
+            # so the All view does not require a category round trip.
+            self.popup.update_transfer_status()
+            self.popup.refresh_cloud_status()
         self.card.show()
         if self.expanded and self.popup:
             QTimer.singleShot(16,self.popup.resume_content)
@@ -1416,7 +1470,9 @@ class ShelfWindow(QWidget):
         if self.content.transfers and not self._transfer_timer.isActive():self._transfer_timer.start()
         self.expand_button.setEnabled(True)
         self.zones['permanent'].refresh()
-        if self.popup and self.popup.isVisible() and not self.content_transition_active():self.popup.update_transfer_status()
+        if self.popup and self.popup.isVisible() and not self.content_transition_active():
+            self.popup.update_transfer_status()
+            self.popup.refresh_cloud_status()
         self.manager.update_handles()
 
     def cancel_transfer(self,ref):
@@ -1452,7 +1508,7 @@ class ShelfWindow(QWidget):
             if not self.content_transition_active():self.popup.rebuild()
         self.update()
 
-    def add_paths(self, mode, refs):
+    def add_paths(self, mode, refs, *, defer_cloud=False):
         for ref in refs:
             value = ref if self.content.is_text(ref) else str(Path(ref).resolve())
             if self.content.exists(value):
@@ -1460,14 +1516,17 @@ class ShelfWindow(QWidget):
                 self.files[mode].append(value)
         self.refresh()
         self.touch()
-        self.manager.save()
+        if defer_cloud and hasattr(self.manager, 'save_after_intake'):
+            self.manager.save_after_intake()
+        else:
+            self.manager.save()
         self.manager.update_handles()
 
     def import_paths(self,mode,refs,on_committed=None,on_failed=None):
         """Apply the intake policy only to external file imports, never ZIPs."""
         refs=list(refs)
         if self.manager.settings.capture_mode!='copy':
-            self.add_paths(mode,refs)
+            self.add_paths(mode,refs,defer_cloud=on_committed is not None)
             if on_committed:on_committed()
             return
         directory=self.manager.settings.capture_dir
@@ -1478,7 +1537,7 @@ class ShelfWindow(QWidget):
             key=os.path.normcase(os.path.abspath(ref))
             if key!=owned and not key.startswith(owned+os.sep):external.append(ref)
         if not external:
-            self.add_paths(mode,refs)
+            self.add_paths(mode,refs,defer_cloud=on_committed is not None)
             if on_committed:on_committed()
             return
         job=CopyFilesJob(external,directory,parent=self)
@@ -1505,7 +1564,8 @@ class ShelfWindow(QWidget):
                 replacement=dict(zip(external,paths))
                 for old,new in replacement.items():
                     self.content.metadata[new]={'capture_mode':'copy','original_name':Path(old).name,'owned_root':str(Path(directory).absolute())}
-                self.add_paths(mode,[replacement.get(ref,ref) for ref in refs])
+                self.add_paths(mode,[replacement.get(ref,ref) for ref in refs],
+                               defer_cloud=on_committed is not None)
                 if on_committed:on_committed()
                 else:self.zones[mode].pulse('drop')
             else:
@@ -1804,10 +1864,19 @@ class ShelfWindow(QWidget):
             self._layout_header(self.card.width())
         self.show()
         remove_host_window_shadow(self)
-        self.raise_()
+        self._raise_for_reveal()
         self.touch()
         self.presentation.animate({"sx": 1, "sy": 1, "alpha": 1, "dx": 0, "dy": 0}, response=.24, damping=.72)
         self.manager.update_handles()
+
+    def _raise_for_reveal(self):
+        """Order a summoned shelf in front once, without a persistent topmost level.
+
+        Native drag sources must remain active, so this operation never steals
+        keyboard focus. Another application's later activation can cover us.
+        """
+        self.raise_()
+        raise_shelf_for_reveal(self)
 
     def show_transient(self, cursor=None, reason="manual", velocity=None, reserve=None):
         cursor = cursor or QCursor.pos()
@@ -1897,6 +1966,8 @@ class ShelfWindow(QWidget):
     def show_contents(self, mode="permanent", target=None):
         with self._surface_transaction():
             self._show_contents(mode,target)
+        if self.isVisible():
+            self._raise_for_reveal()
 
     def _show_contents(self,mode,target):
         if self.property('flickdockConfirmationActive'): return
@@ -2340,10 +2411,20 @@ class ShelfManager:
         self.account = AccountService(BASE)
         self.sync = ShelfSync(BASE,self.account,ShelfAdapter(self))
         self.sync.set_directions(self.settings.sync_upload_enabled,self.settings.sync_receive_enabled)
+        self._intake_sync_timer=QTimer(self.app)
+        self._intake_sync_timer.setSingleShot(True)
+        self._intake_sync_timer.timeout.connect(self._flush_intake_sync)
         self.events = CloudEvents(self.account,self.app,
             enabled=self.app.platformName() not in ('offscreen','minimal'))
         self.events.content_changed.connect(self.sync.request_refresh)
         self.events.devices_changed.connect(self.account.list_devices)
+        # A healthy event socket keeps the quiet five-minute reconciliation.
+        # While disconnected, ShelfSync uses a bounded fallback so a missed
+        # upload completion or cancellation cannot leave another device stale.
+        self.sync.set_event_stream_online(False)
+        self.events.socket.connected.connect(lambda:self.sync.set_event_stream_online(True))
+        self.events.socket.disconnected.connect(lambda:self.sync.set_event_stream_online(False))
+        self.events.socket.errorOccurred.connect(lambda _error:self.sync.set_event_stream_online(False))
         self._sync_transfer_refs=set()
         self.sync.transfers_changed.connect(self._transfers_changed)
         self.lan=LanTransferService(self.app,device_name=self.account.device_name)
@@ -2428,8 +2509,9 @@ class ShelfManager:
         self.shelves = [shelf]
 
     def activate_shelf(self, shelf):
-        self.active_shelf = self.shelf
-        self.edge.hide()
+        # Keep the edge target visible until the shelf has actually been
+        # shown and raised. _show_at calls update_handles after that handoff.
+        self.active_shelf = shelf
 
     def tray_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
@@ -2550,6 +2632,7 @@ class ShelfManager:
             self.shelf.presentation_kind='shortcut'
             self.shelf.visible_state='floating'
             self.shelf.collapse_contents(target=QRect(x,y,CARD_W+28,CARD_H+27))
+            self.shelf._raise_for_reveal()
         else:self.shelf.show_transient(QCursor.pos(), reason="shortcut")
         if not self._pointer_dragging():
             self.shelf.activateWindow()
@@ -2607,7 +2690,14 @@ class ShelfManager:
         except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError, ValueError):
             pass
 
-    def save(self):
+    def _flush_intake_sync(self):
+        if not self._quitting and hasattr(self,'sync'):
+            self.sync.local_changed()
+
+    def save_after_intake(self):
+        self.save(defer_sync=True)
+
+    def save(self, *, defer_sync=False):
         BASE.mkdir(parents=True, exist_ok=True)
         if self._legacy_source is not None and self._legacy_source.exists():
             backup = BASE / "shelves-before-v6.json"
@@ -2622,7 +2712,16 @@ class ShelfManager:
         temp = STATE_FILE.with_suffix(".tmp")
         temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         temp.replace(STATE_FILE)
-        if hasattr(self,'sync'): self.sync.local_changed()
+        if hasattr(self,'sync'):
+            if defer_sync:
+                # Let Qt paint the accepted item and start its landing before
+                # scanning/journaling cloud changes on the GUI thread. The
+                # local shelf file is already durable at this point.
+                if not self._intake_sync_timer.isActive():
+                    self._intake_sync_timer.start(48)
+            else:
+                self._intake_sync_timer.stop()
+                self.sync.local_changed()
 
     def update_handles(self):
         if self._dock_preview_values is not None:
@@ -2643,14 +2742,13 @@ class ShelfManager:
 
     def _content_type_ready(self,position):
         if self.outgoing_drag or self.shelf.isVisible() or not self.was_down:return
-        # Recording overlays can delay OLE DragEnter until after the user has
-        # completed the configured shake. Retain that bounded gesture, but
-        # never reveal before this real file/image/text MIME confirmation.
+        # OLE DragEnter can arrive well after the configured shake when a
+        # recording overlay delays or repeatedly reorders its native target.
+        # The MIME probe and completed gesture both belong to this held press;
+        # reset_drag_gesture clears the timestamp when the press ends.
         self._drag_content_ready=True
         self._drag_probe_detector.reset()
-        recent=(self._content_gesture_at is not None and
-                time.perf_counter()-self._content_gesture_at<=self.drag_gate.probe_timeout_ms/1000+.05)
-        if (recent and self._pointer_dragging() and not self.drag_started_inside
+        if (self._content_gesture_at is not None and self._pointer_dragging() and not self.drag_started_inside
                 and not native_window_move_active()):
             self._content_drag_validated(position)
 
@@ -2715,6 +2813,7 @@ class ShelfManager:
     def quit(self):
         if hasattr(self,'lan'):self.lan.close()
         self._quitting=True
+        self._intake_sync_timer.stop()
         self.timer.stop()
         self.update_timer.stop()
         self.updates.close()

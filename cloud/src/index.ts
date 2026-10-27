@@ -490,9 +490,12 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
       const result=await query(env,"UPDATE uploads SET state='committed',lease=NULL,lease_until=0 WHERE id=? AND state='verifying' AND lease=?",id,lease).run();
       if(!result.meta.changes)fail(409,'UPLOAD_NOT_PENDING','Upload changed while verifying');
     }catch(error){await query(env,"UPDATE uploads SET state='pending',lease=NULL,lease_until=0 WHERE id=? AND state='verifying' AND lease=?",id,lease).run();await findUpload(env,owner,id);if(String(error).includes('VERSION_CONFLICT'))await conflict(env,owner,value.item_id);throw error;}
-    // Retire replaced bytes promptly; a reader holds a lease until it finishes.
-    if(previous?.active_upload&&previous.active_upload!==id)await purgeUpload(env,previous.active_upload);
     announce(env,ctx,owner,'content');
+    // A replacement is already committed and visible. Reclaim its old R2
+    // bytes after replying so a slow purge cannot delay the sender's receipt
+    // or the other device's change hint. Readers hold leases during cleanup.
+    if(previous?.active_upload&&previous.active_upload!==id)
+      ctx.waitUntil(purgeUpload(env,previous.active_upload).catch(()=>undefined));
     return json({record:record((await item(env,owner.id,value.item_id))!),server_full_sha256_verified:!clientVerifiedFullHash});
   }
   match=path.match(/^\/v1\/uploads\/([^/]+)$/);
@@ -518,7 +521,9 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
       const current=await item(env,owner.id,value!.item_id);
       fail(409,'ALREADY_COMMITTED','Delete the item using its version',{current_record:current?record(current):null});
     }
-    await purgeUpload(env,id);announce(env,ctx,owner,'content');return json({cancelled:true});
+    // The upload is already hidden by its garbage state. Let peers remove
+    // their pending placeholder while R2 deletion completes.
+    announce(env,ctx,owner,'content');await purgeUpload(env,id);return json({cancelled:true});
   }
   match=path.match(/^\/v1\/items\/([^/]+)$/);
   if(method==='DELETE'&&match){
@@ -526,8 +531,8 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
     const current=await item(env,owner.id,id);if(current?.deleted&&current.version===base+1)return json({record:record(current)});
     const result=await query(env,'UPDATE items SET deleted=1,version=version+1,active_upload=NULL,size=0,sha256=NULL,expires_at=NULL,updated_at=? WHERE account_id=? AND id=? AND version=? AND deleted=0',Date.now(),owner.id,id,base).run();
     if(!result.meta.changes)await conflict(env,owner,id);
-    if(current?.active_upload)await purgeUpload(env,current.active_upload);
     announce(env,ctx,owner,'content');
+    if(current?.active_upload)await purgeUpload(env,current.active_upload);
     return json({record:record((await item(env,owner.id,id))!)});
   }
   match=path.match(/^\/v1\/items\/([^/]+)\/content$/);

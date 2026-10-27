@@ -47,8 +47,8 @@ class CloudApi(QObject):
 
     def request(self, method, path, callback, *, data=None, raw=None, source=None, headers=None,
                 authenticated=True, destination=None, expected=None, timeout_ms=45000,
-                progress=None):
-        """callback(result,error); optional progress(sent,total) reports raw upload.
+                progress=None, receive_progress=None):
+        """callback(result,error); optional progress callbacks report network bytes.
 
         Upload progress counts bytes handed to the network, not committed R2
         content. Only the successful protocol response confirms acceptance.
@@ -98,6 +98,8 @@ class CloudApi(QObject):
                      'part':None,'file':None,'hash':hashlib.sha256(),'source_file':source_file,
                      'progress':progress if callable(progress) and (raw is not None or source is not None) else None,
                      'upload_total':upload_size,'upload_sent':-1,'progress_at':0.,
+                     'receive_progress':receive_progress if callable(receive_progress) and destination else None,
+                     'download_reported':-1,'download_at':0.,
                      'auth_token':self.token if authenticated else None}
             self._requests[key] = state
             timer.timeout.connect(lambda: self._finish(key, error=CloudError('同步请求超时，请检查网络。')))
@@ -141,6 +143,20 @@ class CloudApi(QObject):
         try:state['progress'](sent,total)
         except Exception:pass  # A stale/deleted view must not abort a transfer.
 
+    def _download_progress(self,state):
+        report=state['receive_progress']
+        if report is None or state['auth_token'] is not None and state['auth_token']!=self.token:
+            return
+        expected=state['expected'] or {}
+        total=expected.get('size',0)
+        received=min(state['received'],total)
+        if received<=state['download_reported']:return
+        now=time.monotonic()
+        if state['download_reported']>=0 and received<total and now-state['download_at']<.06:return
+        state['download_reported'],state['download_at']=received,now
+        try:report(received,total)
+        except Exception:pass
+
     def _drain(self, key):
         state = self._requests.get(key)
         if state is None: return
@@ -160,6 +176,7 @@ class CloudApi(QObject):
                         part = target.with_name('.' + target.name + '-' + key + '.part')
                         state['part'], state['file'] = part, part.open('xb')
                     state['file'].write(chunk); state['hash'].update(chunk)
+                    self._download_progress(state)
                 else:
                     if len(state['body']) + len(chunk) > 2 * 1024 * 1024: raise CloudError('云服务响应超过限制。')
                     state['body'].extend(chunk)

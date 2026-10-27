@@ -1,10 +1,106 @@
 """Lightweight progress artwork; repainting never rebuilds shelf layouts."""
 import math
 import time
-from PySide6.QtCore import QRectF, Qt, QTimer
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QLabel, QWidget
 import ui_theme
+
+
+CLOUD_STATUS_LABELS = {
+    'synced': '已同步到云端',
+    'uploading': '正在上传到云端',
+    'pending': '等待上传到云端',
+    'local': '仅保存在本机',
+    'paused': '云端上传已暂停',
+    'error': '云端上传失败',
+}
+_CLOUD_STATUS_COLORS = {
+    'synced': '#25966c', 'uploading': '#287fe2', 'pending': '#5684bd',
+    'local': '#8391a3', 'paused': '#bd822e', 'error': '#d04c59',
+}
+_CLOUD_STATUS_DARK_COLORS = {
+    'synced': '#67d7a4', 'uploading': '#75b7ff', 'pending': '#9dc5f7',
+    'local': '#b6c5d8', 'paused': '#efbb70', 'error': '#ff8d97',
+}
+
+
+def cloud_status_for_ref(shelf, ref):
+    sync = getattr(getattr(shelf, 'manager', None), 'sync', None)
+    lookup = getattr(sync, 'sync_status_for_ref', None)
+    return lookup(ref) if callable(lookup) and ref else 'local'
+
+
+def draw_cloud_status_badge(painter, rect, status, transfer=None):
+    """Circular state glyph, placed at the lower-right of file artwork."""
+    status = status if status in CLOUD_STATUS_LABELS else 'local'
+    rect = QRectF(rect)
+    ink_hex = (_CLOUD_STATUS_DARK_COLORS if ui_theme.current_theme() == 'dark'
+               else _CLOUD_STATUS_COLORS)[status]
+    ink = QColor(ink_hex)
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.translate(rect.left(),rect.top())
+    painter.scale(rect.width()/20,rect.height()/20)
+    painter.setBrush(QColor(ui_theme.color('surface')))
+    outline = QPen(ink,1.2)
+    painter.setPen(outline)
+    painter.drawEllipse(QRectF(1.2,1.2,17.6,17.6))
+    fraction=transfer_fraction(transfer) if transfer else None
+    if fraction is not None and fraction>0:
+        arc=QPen(ink,2.2)
+        arc.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(arc)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawArc(QRectF(1.2,1.2,17.6,17.6),90*16,-round(max(.025,fraction)*360*16))
+    pen = QPen(ink, 1.8)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    painter.setPen(pen)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    if status == 'synced':
+        painter.drawLine(QPointF(5.5,10),QPointF(8.5,13))
+        painter.drawLine(QPointF(8.5,13),QPointF(14.5,6.8))
+    elif status == 'uploading':
+        painter.drawLine(QPointF(10,14.2),QPointF(10,6.2))
+        painter.drawLine(QPointF(6.7,9.4),QPointF(10,6.2))
+        painter.drawLine(QPointF(10,6.2),QPointF(13.3,9.4))
+    elif status == 'pending':
+        painter.drawEllipse(QRectF(5.6,5.6,8.8,8.8))
+        painter.drawLine(QPointF(10,7.4),QPointF(10,10.2))
+        painter.drawLine(QPointF(10,10.2),QPointF(12,11.5))
+    elif status == 'local':
+        painter.drawLine(QPointF(6,10),QPointF(14,10))
+    elif status == 'paused':
+        painter.drawLine(QPointF(7.5,6.5),QPointF(7.5,13.5))
+        painter.drawLine(QPointF(12.5,6.5),QPointF(12.5,13.5))
+    elif status == 'error':
+        painter.drawLine(QPointF(10,6),QPointF(10,11.3))
+        painter.drawPoint(QPointF(10,14))
+    painter.restore()
+
+
+class CloudStatusBadge(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.status = 'local'
+        self.transfer = None
+        self.setFixedSize(20, 20)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+        self.set_status('local')
+
+    def set_status(self, status, transfer=None):
+        status = status if status in CLOUD_STATUS_LABELS else 'local'
+        if status == self.status and transfer == self.transfer and self.toolTip(): return
+        self.status = status
+        self.transfer = dict(transfer) if transfer else None
+        self.setAccessibleName(CLOUD_STATUS_LABELS[status])
+        self.setToolTip(CLOUD_STATUS_LABELS[status])
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        draw_cloud_status_badge(painter, self.rect(), self.status, self.transfer)
 
 
 def transfer_fraction(state):
@@ -20,6 +116,9 @@ def transfer_fraction(state):
 def transfer_phase_label(state):
     phase=state.get('phase')
     return ('正在复制' if phase=='copying' else '正在下载' if phase=='downloading'
+            else '等待云端确认' if phase=='verifying'
+            else '等待重试' if phase=='retrying'
+            else '校验原文件' if phase=='validating'
             else '等待上传' if phase=='queued' else '准备上传' if phase=='preparing'
             else '正在上传')
 
@@ -89,6 +188,9 @@ class TransferRateTracker:
         phase=state.get('phase')
         if phase=='queued':return '等待开始'
         if phase=='preparing':return '准备中'
+        if phase=='verifying':return '等待云端确认'
+        if phase=='retrying':return '等待重试'
+        if phase=='validating':return '校验原文件'
         received,total=self._numbers(state)
         if total<=0:return '计算中'
         if received>=total:return '正在完成'
@@ -133,6 +235,13 @@ def draw_progress_badge(painter,rect,state):
 class TransferIconLabel(QLabel):
     def __init__(self,repository,ref,parent=None):
         super().__init__(parent);self.repository,self.ref=repository,ref
+        self.cloud_status='local'
+
+    def set_cloud_status(self,status):
+        status=status if status in CLOUD_STATUS_LABELS else 'local'
+        if status!=self.cloud_status:
+            self.cloud_status=status
+            self.update()
 
     def paintEvent(self,event):
         state=self.repository.transfers.get(self.ref)
@@ -140,7 +249,8 @@ class TransferIconLabel(QLabel):
         pixmap=self.pixmap()
         if pixmap and not pixmap.isNull():
             painter.drawPixmap(0,0,28,28,pixmap)
-        if state:draw_progress_badge(painter,QRectF(self.width()-15,self.height()-15,14,14),state)
+        draw_cloud_status_badge(painter,QRectF(self.width()-18,self.height()-18,18,18),
+                                self.cloud_status,state)
 
 
 class TransferOverlay(QWidget):

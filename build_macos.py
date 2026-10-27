@@ -92,10 +92,13 @@ def main(arguments=None):
         env['FLICKDOCK_CODESIGN_IDENTITY'] = options.sign_identity
     if options.entitlements:
         env['FLICKDOCK_ENTITLEMENTS'] = str(options.entitlements.resolve())
-    run([python, '-m', 'unittest', 'test_platform_startup', 'test_platform_native', 'test_mac_updates',
+    run([python, '-m', 'unittest', 'test_platform_startup', 'test_platform_native', 'test_mac_window_order_v1810', 'test_mac_updates',
          'test_macos_native_entry', 'test_update_macos_controller', 'test_mac_build',
          'test_shelf_sync_v180', 'test_sync_review_v180', 'test_account_security_v180',
-         'test_lan_transfer_v181', 'test_shelf_transfers_v181', '-v'], env=env)
+         'test_lan_transfer_v181', 'test_lan_dialog_v183', 'test_shelf_transfers_v181',
+         'test_shelf_raise_v1810', 'test_intake_first_frame_v1810',
+         'test_sync_remote_commit_wakeup', 'test_cloud_file_status_v1810',
+         'test_trigger_reliability_v1810', 'test_event_stream_wiring_v1810', '-v'], env=env)
     run([python, ROOT / 'test_update_macos.py'], env=env)
     run([python, ROOT / 'build_macos.py', '--icon-only', build / 'FlickDock.icns'], env=env)
     run([python, '-m', 'PyInstaller', '--noconfirm', '--clean', ROOT / 'FlickDock-mac.spec'], env=env)

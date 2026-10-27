@@ -66,7 +66,32 @@ class LanDialogTests(unittest.TestCase):
         self.dialog.close();self.dialog.deleteLater();APP.processEvents()
         self.dialog=LanDialog(self.service,SettingsStore(self.root/'profile'))
         self.assertEqual(self.dialog.panel.receive_path.text(),str(destination))
-        self.assertIn('report.pdf',self.dialog.panel.history_label.text())
+        self.assertEqual(len(self.dialog.panel.history_rows),1)
+        record=self.dialog.panel.history_rows[0]
+        self.assertIn('report.pdf',record.detail.accessibleName())
+        self.assertEqual(record.state.text(),'已完成')
+        self.assertIn('测试设备',record.title.accessibleName())
+
+    def test_recent_records_keep_status_time_and_long_names_in_separate_rows(self):
+        panel=self.dialog.panel
+        panel._history=[
+            {'when':'10-27 10:25','name':'很长的文档名称-'*12+'.pdf','peer':'Roger · DESKTOP-01',
+             'state':'完成','direction':'send','count':3},
+            {'when':'10-27 10:24','name':'photo.png','peer':'Mac mini',
+             'state':'已取消','direction':'send'},
+            {'when':'10-27 08:26','name':'movie.mp4','peer':'工作电脑',
+             'state':'失败','direction':'receive'}]
+        panel._render_history();APP.processEvents()
+        self.assertEqual(len(panel.history_rows),3)
+        self.assertFalse(panel.history_label.isVisible())
+        self.assertEqual([row.state.text() for row in panel.history_rows],
+                         ['已完成','已取消','失败'])
+        self.assertEqual([row.when.text() for row in panel.history_rows],
+                         ['10-27 10:25','10-27 10:24','10-27 08:26'])
+        self.assertIn('3 项',panel.history_rows[0].detail.accessibleName())
+        self.assertIn('…',panel.history_rows[0].detail.text())
+        self.assertTrue(all(row.geometry().bottom() <= panel.history_body.height()
+                            for row in panel.history_rows))
 
     def test_remote_url_is_not_treated_as_a_local_file(self):
         mime=QMimeData();mime.setUrls([QUrl('https://example.invalid/image.png')])
