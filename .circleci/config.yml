@@ -1,0 +1,118 @@
+version: 2.1
+
+# A push never spends macOS credits. In CircleCI, trigger a pipeline on
+# cloud-build with build_macos=true after checking the Free-plan balance.
+parameters:
+  build_macos:
+    type: boolean
+    default: false
+
+jobs:
+  build-macos:
+    parameters:
+      target_arch:
+        type: enum
+        enum: [arm64, x86_64]
+    macos:
+      xcode: "16.4.0"
+    resource_class: m4pro.medium
+    working_directory: ~/flickdock
+    environment:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PIP_NO_INPUT: "1"
+    steps:
+      - checkout
+      - run:
+          name: Install verified Python 3.12 and check interpreter architecture
+          no_output_timeout: 10m
+          command: |
+            set -euo pipefail
+            pkg="${TMPDIR:-/tmp}/python-3.12.10-macos11.pkg"
+            curl --fail --location --silent --show-error --retry 3 \
+              'https://www.python.org/ftp/python/3.12.10/python-3.12.10-macos11.pkg' \
+              --output "$pkg"
+            echo "8373e58da4ea146b3eb1c1f9834f19a319440b6b679b06050b1f9ee3237aa8e4  $pkg" | shasum -a 256 -c -
+            sudo installer -pkg "$pkg" -target /
+
+            if [ '<< parameters.target_arch >>' = x86_64 ]; then
+              python='/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12-intel64'
+              test -x "$python"
+              if ! "$python" -c "import platform; assert platform.machine() == 'x86_64'" >/dev/null 2>&1; then
+                sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license
+              fi
+            else
+              python='/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12'
+            fi
+            test -x "$python"
+            "$python" -m venv --copies build/macos-venv
+            build/macos-venv/bin/python -c "import platform; actual=platform.machine(); expected='<< parameters.target_arch >>'; print(f'Python architecture: {actual}'); assert actual == expected, (actual, expected)"
+            build/macos-venv/bin/python -m pip install \
+              'PySide6==6.12.0' 'PyInstaller==6.22.3' \
+              'pyobjc-framework-Quartz>=11,<13' 'keyring==25.7.0' 'cryptography>=42'
+      - run:
+          name: Build and verify native app, update ZIP, DMG and installer
+          no_output_timeout: 20m
+          command: |
+            set -euo pipefail
+            build/macos-venv/bin/python ci_assets.py
+            build/macos-venv/bin/python build_macos.py \
+              --target-arch '<< parameters.target_arch >>' --use-current-python
+            actual="$(/usr/bin/lipo -archs dist/FlickDock.app/Contents/MacOS/FlickDock)"
+            test "$actual" = '<< parameters.target_arch >>'
+      - run:
+          name: Verify real cloud sync from frozen client and measure LAN loopback
+          no_output_timeout: 10m
+          command: |
+            set -euo pipefail
+            profile="$(mktemp -d)"
+            trap 'rm -rf "$profile"' EXIT
+            APPDATA="$profile" XDG_CONFIG_HOME="$profile" \
+              dist/FlickDock.app/Contents/MacOS/FlickDock --verify-cloud \
+              --verify-output '../outputs/mac-cloud-<< parameters.target_arch >>.json'
+            build/macos-venv/bin/python -c "import json; from pathlib import Path; from app_version import APP_VERSION; p=Path('../outputs/mac-cloud-<< parameters.target_arch >>.json'); d=json.loads(p.read_text()); print(d); assert d['ok'] and d['frozen'] and d['version']==APP_VERSION, d"
+            build/macos-venv/bin/python bench_lan_throughput_v183.py \
+              --size-mib 128 --output '../outputs/mac-lan-<< parameters.target_arch >>.json'
+      - run:
+          name: Stage exact verified release artifacts
+          command: |
+            set -euo pipefail
+            build/macos-venv/bin/python - \<<'PY'
+            from pathlib import Path
+            import json
+            import shutil
+            from app_version import APP_VERSION
+
+            arch = '<< parameters.target_arch >>'
+            source, target = Path('../outputs'), Path('ci-output')
+            report = source / f'mac-build-{APP_VERSION}-{arch}.json'
+            result = json.loads(report.read_text(encoding='utf-8'))
+            assert result['ok'] and result['version'] == APP_VERSION and result['architecture'] == arch
+            target.mkdir(exist_ok=True)
+            for pattern in (
+                f'FlickDock-{APP_VERSION}-macOS-{arch}.zip',
+                f'FlickDock-{APP_VERSION}-macOS-{arch}.dmg',
+                f'FlickDock-{APP_VERSION}-macOS-{arch}.pkg',
+                f'mac-build-{APP_VERSION}-{arch}.json',
+                f'mac-cloud-{arch}.json',
+                f'mac-lan-{arch}.json',
+            ):
+                path = source / pattern
+                assert path.is_file(), path
+                shutil.copy2(path, target / path.name)
+            PY
+      - store_artifacts:
+          path: ci-output
+          destination: FlickDock-macOS-<< parameters.target_arch >>
+
+workflows:
+  private-macos-release:
+    when: << pipeline.parameters.build_macos >>
+    jobs:
+      - build-macos:
+          name: build-arm64
+          target_arch: arm64
+      - build-macos:
+          name: build-x86_64
+          target_arch: x86_64
