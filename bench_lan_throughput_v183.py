@@ -20,6 +20,8 @@ def run(size_mib=128):
     app=QApplication.instance() or QApplication([])
     with tempfile.TemporaryDirectory(prefix='flickdock-lan-throughput-') as folder:
         root=Path(folder);source=root/'original.bin';destination=root/'received';destination.mkdir()
+        # macOS exposes /var through /private/var; compare canonical paths.
+        destination=destination.resolve()
         block=os.urandom(1024*1024)
         with source.open('wb') as output:
             for _ in range(size_mib):output.write(block)
