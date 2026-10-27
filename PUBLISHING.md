@@ -41,7 +41,7 @@ Gitee 的附件 CDN 会在匿名重定向中生成名为 `token` 的临时下载
 
 成功时，私有目录中生成：
 
-- `FlickDock-版本-source.zip`：显式白名单源码、构建文件、46 个维护测试及其依赖基准入口、发布检查脚本、说明、字体许可和图标。
+- `FlickDock-版本-source.zip`：显式白名单源码、构建文件、维护测试及其依赖基准入口、发布检查脚本、说明、字体许可和图标。
 - `FlickDock-版本-source-manifest.json`：每个入包文件的相对路径、大小、SHA256；ZIP 内也有同一份清单。
 - `FlickDock-版本-SHA256SUMS.txt`：安装包与私有源码 ZIP 的校验值。
 - `FlickDock-版本-release-record.json`：构建验证记录的哈希和本次匿名下载核验结果。

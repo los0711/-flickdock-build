@@ -167,6 +167,9 @@ h2 { font-size: clamp(45px, 4.9vw, 76px); font-weight: 750; line-height: 1.12; l
 .download-card:hover { background: #3b4c60; transform: translateY(-5px); }
 .download-card:active { transform: translateY(-1px); }
 .platform-name { display: grid; gap: 5px; font-size: 28px; font-weight: 750; letter-spacing: -.04em; }.platform-name small { font-size: 14px; font-weight: 550; letter-spacing: 0; color: #cad8e8; }.download-meta { font-size: 13px; color: #c1cfdf; }.download-arrow { position: absolute; right: 27px; bottom: 27px; font-size: 25px; line-height: 1; color: #9ac8ff; }
+.download-help { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin-top: 25px; color: #c1cfdf; font-size: 14px; }
+.download-help a { color: #a9d1ff; text-decoration: underline; text-underline-offset: 4px; transition: color 150ms ease; }
+.download-help a:hover { color: #fff; }
 .install-note { color: #b5c4d5; font-size: 13px; line-height: 1.65; max-width: 83ch; margin: 25px 0 0; }
 .site-footer { min-height: 210px; display: flex; align-items: center; justify-content: space-between; gap: 30px; font-size: 14px; }.footer-brand { font-size: 17px; }.site-footer p { color: var(--muted); line-height: 1.7; margin: 0; }.site-footer p span { font-size: 12px; }.site-footer > a:last-child { color: var(--blue-deep); font-weight: 650; }
 .reveal.is-visible { animation: content-arrive 650ms cubic-bezier(.18,.8,.24,1) both; }

@@ -4,6 +4,16 @@ TypeScript Workers + D1 + private R2. Runtime/API/security details: ../CLOUD_SYN
 
 Local: npm ci; npm run typecheck; npm test. Tests use isolated actual local workerd/D1/R2, no cloud credentials or emails. Integration covers auth challenges, Unicode uniqueness, R2-verified 3 MB single-part transfers, persisted static-WASM whole-file SHA256 for multipart, 65 MiB original-byte transfers, same-account instant reuse and last-reference deletion, commit/cancel races, device expiry, quotas and read leases.
 
+For migration 0005, privately export D1 before applying migrations, then deploy the matching Worker. The first authentication challenge atomically indexes existing account names with the same Unicode library as new registrations; users do not need to retry through partial batches. Check `complete=1`, `pending_keys=0` and `pending_aliases=0` using the count-only query below. Existing sessions/content remain intact. Colliding old accounts receive stable aliases only; their original identity columns are not rewritten. New registrations cannot use the reserved alias namespace. Do not run SQL `lower()` over old usernames or merge duplicate rows.
+
+```sql
+SELECT (SELECT COUNT(*) FROM accounts) account_count,
+ (SELECT COUNT(*) FROM accounts WHERE username_key IS NULL) pending_keys,
+ (SELECT COUNT(*) FROM (SELECT username_key FROM accounts WHERE username_key IS NOT NULL GROUP BY username_key HAVING COUNT(*)>1)) collision_groups,
+ (SELECT COUNT(*) FROM accounts WHERE login_alias IS NULL AND username_key IN (SELECT username_key FROM accounts GROUP BY username_key HAVING COUNT(*)>1)) pending_aliases,
+ (SELECT complete FROM account_name_migration WHERE id=1) complete;
+```
+
 Deployment is restricted to the authorized FlickDock account. wrangler.jsonc contains the dedicated non-secret D1 database ID and private bucket name. No source contains provider credentials. Provision AUTH_PEPPER (random >=32 chars) using wrangler secret put with stdin, apply migrations to the dedicated DB, then deploy. Never rotate AUTH_PEPPER after users exist without a deliberate account migration. This service does not enable Workers Paid or R2 public access. No separate 64 MiB/file cap; 8 GiB globally shared storage cap, provider quotas and monthly R2 API budgets remain. An exhausted provider quota suspends cloud requests until its reset while local shelf use continues. Committed files >500 MiB expire after 24 hours; local originals are kept. The final live reference deletion reclaims R2 objects and reserved space, with reader leases and scheduled retries. Existing clients retain 4 MiB single parts and 1 MiB multipart on Workers Free; updated clients opt in to the streamed fast path described below.
 
 EMAIL_PROVIDER remains disabled. The production UI hides email binding at the user’s request. For a future free optional email binding, configure a verified sender domain via Resend, EMAIL_FROM, RESEND_API_KEY and random EMAIL_CODE_SECRET. For Cloudflare arbitrary-recipient Email Sending, the operator must first authorize/onboard the paid capability and sender domain; then add the EMAIL binding. No fake email success, test-recipient mail or registration verification.

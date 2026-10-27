@@ -103,15 +103,55 @@ async function budget(env:Env,kind:'A'|'B',count:number){
   const row=await first(env,'INSERT INTO budgets(period,kind,n) VALUES(?,?,?) ON CONFLICT(period,kind) DO UPDATE SET n=n+excluded.n RETURNING n',new Date().toISOString().slice(0,7),kind,count);
   if(row!.n>cap){const now=new Date();const next=Date.UTC(now.getUTCFullYear(),now.getUTCMonth()+1,1);fail(503,'STORAGE_REQUEST_BUDGET','Storage request budget exhausted',{retry_after:Math.ceil((next-now.getTime())/1000)});}
 }
+const usernameKey=(value:string)=>caseFold(value.normalize('NFKC').trim());
+const reservedLoginAlias=(value:string)=>/^id:+[a-f0-9-]{36}$/i.test(value);
 function username(value:unknown){
   if(typeof value!=='string')fail(400,'INVALID_USERNAME','Username must be text');
   const display=(value as string).normalize('NFKC').trim(),length=[...display].length;
-  if(length<1||length>64||/[\p{Cc}\p{Cf}\p{Cs}]/u.test(display))fail(400,'INVALID_USERNAME','Use 1–64 characters without control characters');
-  return {display,norm:caseFold(display)};
+  if(length<1||length>(reservedLoginAlias(display)?128:64)||/[\p{Cc}\p{Cf}\p{Cs}]/u.test(display))fail(400,'INVALID_USERNAME','Use 1–64 characters without control characters');
+  return {display,norm:usernameKey(display),legacy:display.toLowerCase()};
+}
+async function migrateAccountNames(env:Env){
+  // Index the existing identities atomically on first use. A 50-row migration
+  // window must not turn ordinary authentication into a maintenance response.
+  // The bulk JSON update uses one SQL parameter and two transactional statements,
+  // rather than one D1 request per account. Original identity/verifier data stays.
+  if((await first(env,'SELECT complete FROM account_name_migration WHERE id=1'))?.complete)return;
+  const identities=await rows(env,'SELECT id,username,username_key,login_alias FROM accounts ORDER BY created_at,id');
+  const counts=new Map<string,number>(),occupied=new Set<string>();
+  for(const row of identities){
+    row.key=row.username_key??usernameKey(row.username);
+    counts.set(row.key,(counts.get(row.key)||0)+1);occupied.add(row.key);
+    if(row.login_alias)occupied.add(usernameKey(row.login_alias));
+  }
+  const changes:Row[]=[];
+  for(const row of identities){
+    let alias=row.login_alias??null;
+    if(!alias&&(counts.get(row.key)||0)>1){
+      alias='id:'+row.id;
+      // Include every old literal name, even those beyond the former first
+      // batch, so a generated id: alias cannot hijack an existing identity.
+      while(occupied.has(usernameKey(alias)))alias='id:'+alias.slice(2);
+      occupied.add(usernameKey(alias));
+    }
+    if(row.username_key===null||row.login_alias!==alias)changes.push({id:row.id,key:row.key,alias});
+  }
+  await env.DB.batch([
+    query(env,`WITH updates AS (SELECT json_extract(value,'$.id') id,json_extract(value,'$.key') name_key,json_extract(value,'$.alias') alias FROM json_each(?))
+      UPDATE accounts SET username_key=COALESCE(username_key,(SELECT name_key FROM updates WHERE updates.id=accounts.id)),
+      login_alias=COALESCE(login_alias,(SELECT alias FROM updates WHERE updates.id=accounts.id)) WHERE id IN (SELECT id FROM updates)`,JSON.stringify(changes)),
+    query(env,'UPDATE account_name_migration SET complete=1 WHERE id=1'),
+  ]);
+}
+async function loginOwner(env:Env,name:ReturnType<typeof username>){
+  const owner=await first(env,'SELECT * FROM accounts WHERE username_key=? OR username_norm IN (?,?) ORDER BY CASE WHEN username=? THEN 0 WHEN username_norm=? THEN 1 WHEN username_norm=? THEN 2 ELSE 3 END,created_at,id LIMIT 1',name.norm,name.legacy,name.norm,name.display,name.legacy,name.norm);
+  // Aliases are persisted, not parsed as arbitrary account IDs. Looking up a
+  // literal name first also protects names registered before this namespace.
+  return owner||await first(env,'SELECT * FROM accounts WHERE login_alias=?',name.norm);
 }
 function authSecret(env:Env){if(!env.AUTH_PEPPER||env.AUTH_PEPPER.length<32)fail(503,'AUTH_NOT_CONFIGURED','Account authentication secret is not configured');return env.AUTH_PEPPER!;}
 function verifier(env:Env,id:string,salt:string,key:string){return createHmac('sha256',authSecret(env)).update(id+'\0'+salt+'\0'+key).digest('hex');}
-function account(row:Row){return {id:row.id,username:row.username,email:row.email??null,email_verified_at:row.email_verified_at?iso(row.email_verified_at):null};}
+function account(row:Row){return {id:row.id,username:row.username,email:row.email??null,email_verified_at:row.email_verified_at?iso(row.email_verified_at):null,login_alias:row.login_alias??null};}
 async function session(env:Env,owner:Row,name:string,platform:string){
   const id=crypto.randomUUID(),token=hex(crypto.getRandomValues(new Uint8Array(32))),now=Date.now(),expires=now+30*DAY;
   // The device/session pair is inserted in one batch below. Retiring devices
@@ -215,7 +255,9 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
     authSecret(env);const input=await body(request,['username','purpose']),name=username(input.username),purpose=text(input.purpose,'purpose',5,8);
     if(!['register','login'].includes(purpose))fail(400,'INVALID_REQUEST','Unknown authentication purpose');
     const ip=sha(request.headers.get('CF-Connecting-IP')||'local');await rate(env,'auth-ip:'+purpose+':'+ip,purpose==='register'?8:40,3600000);await rate(env,'auth-user:'+name.norm,30,900000);
-    const owner=await first(env,'SELECT * FROM accounts WHERE username_norm=?',name.norm);
+    await migrateAccountNames(env);
+    if(purpose==='register'&&reservedLoginAlias(name.display))fail(400,'INVALID_USERNAME','This username is reserved for legacy account sign-in');
+    const owner=await loginOwner(env,name);
     if(purpose==='register'&&owner)fail(409,'USERNAME_TAKEN','Username already registered');
     const id=crypto.randomUUID(),salt=owner?.auth_salt||hex(crypto.getRandomValues(new Uint8Array(16))),accountId=owner?.id||crypto.randomUUID(),expires=Date.now()+300000;
     await query(env,'INSERT INTO auth_challenges(id,username_norm,purpose,salt,account_id,expires_at) VALUES(?,?,?,?,?,?)',id,name.norm,purpose,salt,accountId,expires).run();
@@ -229,12 +271,13 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
     const challenge=await first(env,'UPDATE auth_challenges SET consumed=1 WHERE id=? AND username_norm=? AND purpose=? AND consumed=0 AND expires_at>? RETURNING *',challengeId,name.norm,register?'register':'login',Date.now());
     if(!challenge)fail(401,'INVALID_CHALLENGE','Authentication challenge expired, was used or does not match');
     const proof=verifier(env,challenge!.account_id,challenge!.salt,key);
-    let owner=await first(env,'SELECT * FROM accounts WHERE username_norm=?',name.norm);
+    let owner=await first(env,'SELECT * FROM accounts WHERE id=?',challenge!.account_id);
     if(register){
-      if(owner)fail(409,'USERNAME_TAKEN','Username already registered');
+      if(await first(env,'SELECT id FROM accounts WHERE username_key=? OR username_norm=?',name.norm,name.norm))fail(409,'USERNAME_TAKEN','Username already registered');
+      if(reservedLoginAlias(name.display))fail(400,'INVALID_USERNAME','This username is reserved for legacy account sign-in');
       const id=challenge!.account_id;
-      try{await query(env,'INSERT INTO accounts(id,username,username_norm,auth_verifier,auth_salt,created_at,quota_bytes) VALUES(?,?,?,?,?,?,?)',id,name.display,name.norm,proof,challenge!.salt,Date.now(),config(env.ACCOUNT_QUOTA_BYTES,8*1024**3)).run();}
-      catch(e){if(String(e).includes('UNIQUE'))fail(409,'USERNAME_TAKEN','Username already registered');throw e;}
+      try{await query(env,'INSERT INTO accounts(id,username,username_norm,username_key,auth_verifier,auth_salt,created_at,quota_bytes) VALUES(?,?,?,?,?,?,?,?)',id,name.display,name.norm,name.norm,proof,challenge!.salt,Date.now(),config(env.ACCOUNT_QUOTA_BYTES,8*1024**3)).run();}
+      catch(e){if(String(e).includes('USERNAME_MIGRATION_REQUIRED'))fail(503,'USERNAME_MIGRATION_REQUIRED','Account name index is updating; retry shortly');if(String(e).includes('UNIQUE')||String(e).includes('USERNAME_TAKEN'))fail(409,'USERNAME_TAKEN','Username already registered');throw e;}
       owner=await first(env,'SELECT * FROM accounts WHERE id=?',id);
     }else if(!owner||owner.id!==challenge!.account_id||!timingSafeEqual(Buffer.from(owner.auth_verifier,'hex'),Buffer.from(proof,'hex')))fail(401,'INVALID_CREDENTIALS','Incorrect username or password');
     const signedIn=await session(env,owner!,device,platform);

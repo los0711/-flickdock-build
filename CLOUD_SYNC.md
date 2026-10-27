@@ -4,7 +4,7 @@
 
 ## 账号
 
-用户界面只要求唯一账号与 10–128 字符密码，不要求邮箱/注册验证。服务端对用户名做 NFKC、trim、Unicode casefold，数据库 UNIQUE 防并发重名。客户端先 POST `/v1/auth/challenge` `{username,purpose:register|login}`，得到 UUID challenge_id、32 位 hex 随机盐、固定 `kdf={name:scrypt,N:16384,r:8,p:5,dkLen:32}` 和 5 分钟 expires_at。客户端后台运行 scrypt（32 MiB maxmem）；严格拒绝任意其他参数。POST `/v1/auth/register|login` 发送 `{username,challenge_id,auth_key:64hex,device_name,platform}`，不发送原密码。挑战绑定规范化账号和用途、单次消费。服务端用独立 AUTH_PEPPER 保存 HMAC-SHA256(accountId+salt+auth_key) 验证值。
+用户界面只要求唯一账号与至少 6 字符、不含空白的新密码，不限制字符类别，不要求邮箱/注册验证。登录和验证原密码保留旧规则兼容，不会改写或修剪密码。服务端对用户名做 NFKC、trim、Unicode casefold，新注册由数据库触发器防止并发重名。0005 迁移保留原账号 ID、用户名、验证值、会话和内容，新增独立规范化索引；历史规范化碰撞不合并，旧名称按精确名称及原 lower 索引确定性登录，碰撞账号另有可复制的稳定登录 ID。字面名称优先于登录 ID，避免劫持历史 `id:<UUID>` 用户名。客户端先 POST `/v1/auth/challenge` `{username,purpose:register|login}`，得到 UUID challenge_id、32 位 hex 随机盐、固定 `kdf={name:scrypt,N:16384,r:8,p:5,dkLen:32}` 和 5 分钟 expires_at。客户端后台运行 scrypt（32 MiB maxmem）；严格拒绝任意其他参数。POST `/v1/auth/register|login` 发送 `{username,challenge_id,auth_key:64hex,device_name,platform}`，不发送原密码。挑战绑定规范化账号、具体账号 ID 和用途、单次消费。服务端用独立 AUTH_PEPPER 保存 HMAC-SHA256(accountId+salt+auth_key) 验证值。后端只接收固定长度派生密钥，无法从中读取原密码长度或空白；新密码规则由客户端服务层与界面共同校验。
 
 这属于 TLS 上的客户端密码预哈希，auth_key 等价于密码，必须只在临时内存和 HTTPS 认证请求中出现，不能存盘或记录。服务端不存 auth_key 本身。AUTH_PEPPER 缺失时停止认证。并非 PAKE，不声称派生值泄露后仍不可重放。
 

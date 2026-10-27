@@ -56,7 +56,8 @@ from app_version import APP_NAME, APP_VERSION
 from update_controller import UpdateController
 from platform_native import (data_directory, native_input_available, mouse_buttons_mask,
                              remove_host_window_shadow, keep_tool_visible_when_inactive,
-                             shelf_window_flags, raise_shelf_for_reveal)
+                             shelf_window_flags, raise_shelf_for_reveal,
+                             lower_shelf_after_reveal, raise_edge_target)
 from account_service import AccountService
 from cloud_events import CloudEvents
 from account_panel import AccountPanel
@@ -536,7 +537,8 @@ class PreviewPane(QFrame):
         progress=f'{round(fraction*100)}% · ' if fraction is not None else ''
         self.transfer_meta.setText(progress+self.shelf.transfer_rates.remaining_text(self.current_path,state))
         copying=state.get('phase')=='copying'
-        self.cancel_transfer.setText('取消复制' if copying else '取消下载' if state.get('phase')=='downloading' else '取消上传')
+        receiving=self.shelf._receiving_transfer(state)
+        self.cancel_transfer.setText('取消复制' if copying else '取消下载' if receiving else '取消上传')
         self.cancel_transfer.setEnabled(True)
         if self.shelf.content.is_pending(self.current_path):
             self.info.setText(transfer_phase_label(state) if state.get('phase') in ('verifying','retrying','validating')
@@ -1125,12 +1127,17 @@ class ShelfWindow(QWidget):
         self.card.setObjectName("shelfCard")
         self.card.setGeometry(14, 7, CARD_W, CARD_H)
         set_ui_style(self.card, "QFrame#shelfCard {background:#ffffff;border:0;border-radius:24px;}")
-        self.surface_effect = MotionShadow(self.card, alpha=0)
+        # The native host remains transparent; this is the card's rounded
+        # shadow, confined to the reserved animation surface margins.
+        self.surface_effect = MotionShadow(self.card, alpha=42)
+        self.surface_effect.setBlurRadius(13)
+        self.surface_effect.setOffset(0, 4)
         self.card.setGraphicsEffect(self.surface_effect)
         self.presentation = Spring(self, {"sx": 1, "sy": 1, "alpha": 1, "dx": 0, "dy": 0}, self._apply_presentation, motion=self.manager.motion)
         self._morph_host_active=False
         self.geometry_morph=SurfaceMorph(self,self.geometry(),self._apply_geometry,motion=self.manager.motion,prepare=self._prepare_morph,settle=self._settle_morph)
         self._explicit_hiding = False
+        self._native_revealed = False
         logo = QLabel(self.card)
         logo.setGeometry(17, 16, 32, 32)
         logo.setPixmap(app_icon().pixmap(QSize(32,32),self.devicePixelRatioF()))
@@ -1479,9 +1486,15 @@ class ShelfWindow(QWidget):
         job=self._copy_pending.get(ref)
         if job:job.cancel();return
         state=self.content.transfers.get(ref,{})
-        if state.get('phase')=='downloading':
+        if self._receiving_transfer(state):
             self.manager.sync.cancel_download(state.get('id'));return
         if hasattr(self.manager,'sync'):self.manager.sync.cancel_upload(state.get('id') or ref)
+
+    def _receiving_transfer(self,state):
+        """Identify an owned receive job regardless of its current UI phase."""
+        sync=getattr(self.manager,'sync',None)
+        return bool(sync and state.get('remote') and
+                    state.get('id') in getattr(sync,'download_transfers',{}))
 
     def _delete_owned(self,ref):
         spec=owned_copy_spec(ref,self.content.metadata.get(ref,{}),self.manager.settings.capture_dir)
@@ -1584,7 +1597,7 @@ class ShelfWindow(QWidget):
 
     def remove_path(self, mode: str, path: str):
         transfer_state=self.content.transfers.get(path,{})
-        downloading=transfer_state.get('phase')=='downloading'
+        downloading=self._receiving_transfer(transfer_state)
         if downloading:self.manager.sync.cancel_download(transfer_state.get('id'),remove=True)
         if self.content.is_pending(path):
             if not downloading:self.cancel_transfer(path)
@@ -1634,12 +1647,19 @@ class ShelfWindow(QWidget):
         self._archive_epoch+=1
         if self.archive_job:self.archive_job.cancel()
         self.resolver.cancel_all()
+        cancelled_downloads=set()
         for ref in tuple(self.files[mode]):
-            if hasattr(self.manager,'sync'):self.manager.sync.cancel_upload(ref,remove=True)
+            if hasattr(self.manager,'sync'):
+                state=self.content.transfers.get(ref,{})
+                if self._receiving_transfer(state):
+                    self.manager.sync.cancel_download(state['id'],remove=True)
+                    cancelled_downloads.add(state['id'])
+                else:self.manager.sync.cancel_upload(ref,remove=True)
             self._delete_owned(ref)
         for ref,state in tuple(self.content.transfers.items()):
-            if state.get('remote') and hasattr(self.manager,'sync'):
-                if state.get('phase')=='downloading':self.manager.sync.cancel_download(state.get('id'),remove=True)
+            if (state.get('remote') and hasattr(self.manager,'sync')
+                    and state.get('id') not in cancelled_downloads):
+                if self._receiving_transfer(state):self.manager.sync.cancel_download(state.get('id'),remove=True)
                 else:self.manager.sync.cancel_upload(state.get('id'))
         self.files[mode].clear()
         self.refresh()
@@ -1870,13 +1890,17 @@ class ShelfWindow(QWidget):
         self.manager.update_handles()
 
     def _raise_for_reveal(self):
-        """Order a summoned shelf in front once, without a persistent topmost level.
+        """Order a summoned shelf over the drag source without activation.
 
-        Native drag sources must remain active, so this operation never steals
-        keyboard focus. Another application's later activation can cover us.
+        The native level is released on hide or when a secondary panel takes
+        focus, so another application's later activation can come forward.
         """
         self.raise_()
-        raise_shelf_for_reveal(self)
+        self._native_revealed = raise_shelf_for_reveal(self) or self._native_revealed
+
+    def _release_reveal_level(self):
+        if self._native_revealed:
+            self._native_revealed = not lower_shelf_after_reveal(self)
 
     def show_transient(self, cursor=None, reason="manual", velocity=None, reserve=None):
         cursor = cursor or QCursor.pos()
@@ -1909,6 +1933,7 @@ class ShelfWindow(QWidget):
     def hide_animated(self, explicit=True):
         if not self.isVisible() or self.visible_state == "hiding" or (self.pinned and not explicit):
             return
+        self._release_reveal_level()
         self._cancel_intake()
         self._explicit_hiding = explicit
         if explicit:
@@ -1933,6 +1958,7 @@ class ShelfWindow(QWidget):
                                   finish, response=.17, damping=.84)
 
     def hide_immediately(self):
+        self._release_reveal_level()
         self._cancel_intake()
         self.presentation.stop()
         self.geometry_morph.stop()
@@ -2320,6 +2346,7 @@ class DockHandle(QWidget):
         if not self.isVisible():
             self.appearance.jump({'alpha':0}); self.show(); self.raise_(); self.repaint()
             self.appearance.animate({'alpha':1},response=.18,damping=1)
+        raise_edge_target(self)
 
     def paintEvent(self,event):
         painter=QPainter(self)
@@ -2377,6 +2404,7 @@ class ShelfManager:
         self.just_dropped = 0.0
         self.was_down = False
         self._button_mask=0
+        self._app_was_active = app.applicationState() == Qt.ApplicationState.ApplicationActive
         self.shake_detector=ShakeDetector(config_for_sensitivity(self.settings.shake_sensitivity))
         self._drag_probe_detector=ShakeDetector(replace(config_for_sensitivity(100),reversals=1))
         self._drag_content_ready=False
@@ -2538,6 +2566,7 @@ class ShelfManager:
 
     def show_settings(self):
         self.reset_drag_gesture()
+        self.shelf._release_reveal_level()
         if self.settings_dialog is None:
             self.settings_dialog = SettingsDialog(self.settings)
             self.settings_dialog.update_requested.connect(self.updates.activate)
@@ -2560,8 +2589,11 @@ class ShelfManager:
         self.settings_dialog.activateWindow()
 
     def show_lan_dialog(self):
+        self.shelf._release_reveal_level()
         if self.lan_dialog is None:
-            self.lan_dialog = LanDialog(self.lan,self.settings,self.shelf)
+            # A native owner inherits its topmost level on Windows. Keep the
+            # modeless transfer panel independent of the transient shelf level.
+            self.lan_dialog = LanDialog(self.lan,self.settings)
             self.lan_dialog.panel.set_paths_provider(self._lan_selected)
         if not self.lan_dialog.isVisible():
             anchor = self.shelf.frameGeometry()
@@ -2732,7 +2764,8 @@ class ShelfManager:
             self.edge.hide()
 
     def _content_drag_validated(self, position):
-        if self.outgoing_drag or self.auto_shown is not None or self.shelf.isVisible():
+        if (self.outgoing_drag or self.auto_shown is not None or
+                self.shelf.isVisible() and self.shelf.visible_state != 'hiding'):
             return
         self._content_gesture_at=None
         shelf = self.active_shelf or self.shelves[0]
@@ -2741,7 +2774,8 @@ class ShelfManager:
         self.auto_shown = shelf
 
     def _content_type_ready(self,position):
-        if self.outgoing_drag or self.shelf.isVisible() or not self.was_down:return
+        if (self.outgoing_drag or self.shelf.isVisible() and self.shelf.visible_state != 'hiding'
+                or not self.was_down):return
         # OLE DragEnter can arrive well after the configured shake when a
         # recording overlay delays or repeatedly reorders its native target.
         # The MIME probe and completed gesture both belong to this held press;
@@ -2761,21 +2795,37 @@ class ShelfManager:
             self.sync.set_interactive(self.shelf.isVisible() or bool(self.settings_dialog and self.settings_dialog.isVisible())
                 or bool(self.lan_dialog and self.lan_dialog.isVisible()))
         now=time.monotonic(); pos=QCursor.pos()
+        app_active=self.app.applicationState() == Qt.ApplicationState.ApplicationActive
+        app_deactivated=self._app_was_active and not app_active
+        self._app_was_active=app_active
         native=native_input_available()
         mask=mouse_buttons_mask()
         down=bool(mask&1); new_press=bool(mask&~self._button_mask); self._button_mask=mask
         if self.edge_suppressed and not self.edge.geometry().contains(pos): self.edge_suppressed=False
+        if app_deactivated:
+            retired=False
+            for shelf in self.shelves:
+                if (shelf.isVisible() and not shelf.pinned and not shelf.dragging
+                        and not shelf.incoming_drop and not shelf._archive_choosing
+                        and not confirmation_active(shelf) and not self.outgoing_drag):
+                    # Qt-visible windows can already be behind a full-screen
+                    # browser. Retire them before the edge handoff this tick.
+                    shelf.hide_immediately();retired=True
+            if retired:self.update_handles()
         if self.edge.isVisible() and self.edge.geometry().contains(pos) and not self.edge_suppressed and not self.shelf.isVisible(): self.show_docked()
         for shelf in self.shelves:
             if not shelf.isVisible(): continue
             modal=QApplication.activeModalWidget(); popup=QApplication.activePopupWidget()
             blocked=shelf._menu_open or shelf.rename_edit.isVisible() or modal is not None or popup is not None or confirmation_active(shelf)
             press_blocked=modal is not None or shelf.rename_edit.isVisible() or (popup is not None and popup.frameGeometry().contains(pos)) or confirmation_active(shelf)
-            in_settings=self.settings_dialog is not None and self.settings_dialog.isVisible() and self.settings_dialog.frameGeometry().contains(pos)
-            in_settings=in_settings or bool(self.lan_dialog and self.lan_dialog.isVisible() and self.lan_dialog.frameGeometry().contains(pos))
+            in_settings=app_active and self.settings_dialog is not None and self.settings_dialog.isVisible() and self.settings_dialog.frameGeometry().contains(pos)
+            in_settings=in_settings or bool(app_active and self.lan_dialog and self.lan_dialog.isVisible() and self.lan_dialog.frameGeometry().contains(pos))
             inside=shelf.hover_region_contains(pos)
+            if new_press and in_settings:shelf._release_reveal_level()
             if new_press and not inside and not in_settings and not press_blocked and not shelf.pinned and not self.outgoing_drag:
-                shelf.hide_animated(explicit=True); continue
+                if app_active:shelf.hide_animated(explicit=True)
+                else:shelf.hide_immediately();self.update_handles()
+                continue
             if shelf.dragging or shelf.incoming_drop or shelf.pinned: continue
             if shelf.presentation_kind=='dock' and not blocked and not self.outgoing_drag:
                 if not inside and shelf.visible_state!='hiding': shelf.hide_animated(explicit=False)
@@ -2792,7 +2842,8 @@ class ShelfManager:
         # QPC timestamps avoid quantised dt corrupting velocity/acceleration.
         sample_time=time.perf_counter()
         moving=native_window_move_active()
-        blocked=self.outgoing_drag or self.drag_started_inside or self.shelf.isVisible()
+        blocked=(self.outgoing_drag or self.drag_started_inside or
+                 self.shelf.isVisible() and self.shelf.visible_state != 'hiding')
         full_shake=self.shake_detector.update(pos.x(),pos.y(),sample_time,
                                                button_down=down,window_moving=moving,blocked=blocked)
         probe_shake=(not self._drag_content_ready and self._drag_probe_detector.update(

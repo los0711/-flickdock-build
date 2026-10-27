@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QApplication, QFrame, QVBoxLayout, QWidget
 
 from content_grid import IconItem
 from flickdock import ContentsPopup, FileRow, PreviewPane
+from flickdock_motion import FeedbackButton
 from shelf_content import ContentRepository
 from transfer_visuals import CLOUD_STATUS_LABELS, CloudStatusBadge
 
@@ -50,6 +51,10 @@ app.processEvents()
 
 images = []
 badge = CloudStatusBadge()
+copy_button = FeedbackButton('copy', motion=False)
+copy_button.setFixedSize(32, 32)
+assert badge.size() == copy_button.size(), 'status and copy actions share one header baseline'
+assert badge.grab().toImage().pixelColor(0, 16).alpha() == 0, 'status art stays centered inside its hit cell'
 for status in ('pending', 'uploading', 'synced', 'local', 'paused', 'error'):
     sync.state = status
     icon.refresh_cloud_status()

@@ -90,7 +90,7 @@ class AccountTests(unittest.TestCase):
         self.service.device_name='Offscreen fixture'
         self.dialog=app_settings.SettingsDialog(self.settings)
         self.panel=AccountPanel(self.service)
-        self.dialog.set_account_panel(self.panel);self.dialog.show();self.dialog.resize(540,520);flush()
+        self.dialog.set_account_panel(self.panel);self.dialog.show();self.dialog.resize(572,552);flush()
 
     def tearDown(self):
         self.service.close();self.assertTrue(wait(lambda:not self.service._auth_jobs))
@@ -244,12 +244,13 @@ class AccountTests(unittest.TestCase):
         self.api.finish(self.api.last(),dict(challenge_id='challenge-for-first'))
         self.assertEqual(self.panel._challenge,'');self.assertFalse(self.panel.bind_button.isEnabled())
 
-    def test_light_dark_540_layout_optional_fields_devices_and_footer(self):
+    def test_light_dark_572_outer_layout_preserves_540_content_width(self):
         for signed in (False,True):
             if signed:self.sign_in(self.account(name='用户名'*20,email='long-mailbox@example.invalid'));self.click(self.panel.email_toggle_button)
             for theme in ('light','dark'):
                 self.dialog.apply_theme(theme);flush()
-                self.assertEqual(self.dialog.width(),540)
+                self.assertEqual(self.dialog.width(),572)
+                self.assertEqual(self.dialog.surface.width(),540)
                 self.assertEqual(self.dialog.body_layout.itemAt(0).widget(),self.panel)
                 for widget in self.panel.findChildren(QWidget):
                     if isinstance(widget,(QLineEdit,QPushButton)) and widget.isVisible():

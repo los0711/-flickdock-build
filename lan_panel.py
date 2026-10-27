@@ -200,6 +200,24 @@ class _HistoryIcon(QWidget):
                    QRectF(6, 6, 14, 14), color, 1.7)
 
 
+class _OfferIcon(QWidget):
+    """Vector illustration for an incoming request, independent of display DPI."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.dark = False
+        self.setFixedSize(38, 38)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor('#304761' if self.dark else '#e5f0ff'))
+        painter.drawRoundedRect(QRectF(0, 0, 38, 38), 11, 11)
+        draw_glyph(painter, 'receive', QRectF(9, 9, 20, 20),
+                   '#90bdff' if self.dark else '#2373dd', 1.8)
+
+
 class _HistoryRow(QFrame):
     def __init__(self, record, parent=None):
         super().__init__(parent)
@@ -317,7 +335,7 @@ class LanPanel(QFrame):
         activity.addLayout(transfer_heading)
         self.transfers_body = QWidget(self.activity_column)
         self.transfers_layout = QVBoxLayout(self.transfers_body)
-        self.transfers_layout.setContentsMargins(0,0,0,0); self.transfers_layout.setSpacing(8)
+        self.transfers_layout.setContentsMargins(5,5,5,5); self.transfers_layout.setSpacing(10)
         self.transfers_layout.addStretch(1)
         self.transfers_body.setMinimumHeight(170)
         activity.addWidget(self.transfers_body, 1)
@@ -448,6 +466,9 @@ class LanPanel(QFrame):
             if self.settings: self.settings.set_lan_receive_dir(path)
             self.receive_path.setText(path)
             self.receive_path.setToolTip(path)
+            for row in self._rows.values():
+                if row.get('offer_destination'):
+                    row['offer_destination'].setText('保存到 ' + path)
         except (ValueError, OSError) as error: self.status_label.setText(str(error))
 
     def apply_theme(self, theme):
@@ -467,6 +488,16 @@ class LanPanel(QFrame):
             QFrame#lanPanel QLabel#lanMuted {{ color:{muted}; }}
             QFrame#lanColumn {{ background:{background}; border:1px solid {border}; border-radius:15px; }}
             QFrame#lanHistoryRow {{ background:{field}; border:1px solid {border}; border-radius:10px; }}
+            QFrame#lanTransferRow {{ background:transparent; border:0; }}
+            QFrame#lanOfferCard {{ background:{field}; border:1px solid {'#43628c' if self._dark else '#cbdff8'}; border-radius:13px; }}
+            QFrame#lanPanel QLabel#lanOfferKicker {{ color:{accent}; font-size:11px; font-weight:600; }}
+            QFrame#lanPanel QLabel#lanOfferPeer {{ color:{color}; font-size:13px; font-weight:600; }}
+            QFrame#lanPanel QLabel#lanOfferFile {{ color:{color}; font-size:13px; font-weight:600; }}
+            QFrame#lanPanel QLabel#lanOfferMeta {{ color:{muted}; font-size:11px; }}
+            QFrame#lanOfferCode {{ background:{'#2b394b' if self._dark else '#f1f6ff'}; border:1px solid {border}; border-radius:8px; }}
+            QFrame#lanPanel QLabel#lanOfferCodeCaption {{ color:{muted}; font-size:10px; }}
+            QFrame#lanPanel QLabel#lanOfferCodeValue {{ color:{color}; font-size:15px; font-weight:700; }}
+            QFrame#lanPanel QPushButton#lanOfferAccept {{ color:white; background:#2679e9; border-color:#2679e9; font-weight:600; }}
             QFrame#lanPanel QLabel#lanHistoryTitle {{ font-size:13px; font-weight:600; }}
             QFrame#lanPanel QLabel#lanHistoryDetail {{ color:{muted}; font-size:12px; }}
             QFrame#lanPanel QLabel#lanHistoryWhen {{ color:{muted}; font-size:11px; }}
@@ -492,7 +523,12 @@ class LanPanel(QFrame):
             QFrame#lanPanel QProgressBar {{ border:0; background:{border}; height:5px; max-height:5px; border-radius:2px; }}
             QFrame#lanPanel QProgressBar::chunk {{ background:#3387f5; border-radius:2px; }}
         ''')
-        for row in self._rows.values(): row['cancel'].dark = self._dark; row['cancel'].update()
+        for row in self._rows.values():
+            row['cancel'].dark = self._dark; row['cancel'].update()
+            if row.get('offer_icon'):
+                row['offer_icon'].dark = self._dark; row['offer_icon'].update()
+            if row.get('offer_shadow'):
+                row['offer_shadow'].setColor(QColor(0, 0, 0, 72 if self._dark else 28))
         for row in self.history_rows: row.icon.dark = self._dark; row.icon.update()
 
     def _peers_changed(self, peers):
@@ -532,15 +568,18 @@ class LanPanel(QFrame):
     def _row(self, identifier, peer='', direction='send'):
         if identifier in self._rows: return self._rows[identifier]
         self.transfer_started.emit()
-        frame = QWidget(self.transfers_body); outer = QVBoxLayout(frame); outer.setContentsMargins(0, 5, 0, 5); outer.setSpacing(5)
-        heading = QHBoxLayout(); title = _label(('发送至 ' if direction == 'send' else '接收自 ') + peer, frame)
+        frame = QFrame(self.transfers_body); frame.setObjectName('lanTransferRow')
+        outer = QVBoxLayout(frame); outer.setContentsMargins(12, 9, 12, 10); outer.setSpacing(6)
+        heading_widget = QWidget(frame); heading = QHBoxLayout(heading_widget)
+        heading.setContentsMargins(0,0,0,0)
+        title = _label(('发送至 ' if direction == 'send' else '接收自 ') + peer, heading_widget)
         heading.addWidget(title, 1); cancel = _CancelButton(frame); cancel.dark = self._dark
-        cancel.clicked.connect(lambda: self.service.cancel(identifier)); heading.addWidget(cancel); outer.addLayout(heading)
+        cancel.clicked.connect(lambda: self.service.cancel(identifier)); heading.addWidget(cancel); outer.addWidget(heading_widget)
         detail = _label('', frame, muted=True); outer.addWidget(detail)
         bar = QProgressBar(frame); bar.setRange(0, 1000); bar.setTextVisible(False); outer.addWidget(bar)
         self.transfers_layout.insertWidget(0,frame)
         self._row_sequence += 1
-        row = {'frame': frame, 'title': title, 'detail': detail, 'bar': bar, 'cancel': cancel,
+        row = {'frame': frame, 'heading': heading_widget, 'title': title, 'detail': detail, 'bar': bar, 'cancel': cancel,
                'extra': None, 'sequence': self._row_sequence}
         row.update(self._history_context.pop(identifier, {}))
         self._rows[identifier] = row
@@ -586,15 +625,51 @@ class LanPanel(QFrame):
         row = self._row(identifier, offer['peer'], 'receive')
         row['history_name'] = str((offer.get('names') or [''])[0])
         row['history_count'] = int(offer['count'])
-        row['title'].setText(f"{offer['peer']} 想发送 {offer['count']} 个文件")
-        names = '、'.join(offer.get('names', [])[:3]); names = names[:90] + ('…' if len(names) > 90 else '')
-        row['detail'].setText(f"{names}\n{_size(offer['total'])} · 确认码 {offer['code']}，请与发送方核对")
-        row['bar'].hide(); row['cancel'].hide()
-        actions = QWidget(row['frame']); line = QHBoxLayout(actions); line.setContentsMargins(0, 0, 0, 0)
-        refuse = _button('拒绝', actions); accept = _button('接收…', actions)
-        line.addStretch(1); line.addWidget(refuse); line.addWidget(accept)
+        names = '、'.join(str(name) for name in offer.get('names', [])[:3])
+        if len(offer.get('names', [])) > 3: names += ' 等'
+        row['detail'].setText(f"{names} · {_size(offer['total'])} · 确认码 {offer['code']}")
+        row['heading'].hide(); row['detail'].hide(); row['bar'].hide()
+
+        card = QFrame(row['frame']); card.setObjectName('lanOfferCard')
+        contents = QVBoxLayout(card); contents.setContentsMargins(12, 10, 12, 10); contents.setSpacing(7)
+        header = QHBoxLayout(); header.setSpacing(9)
+        icon = _OfferIcon(card); icon.dark = self._dark; header.addWidget(icon)
+        identity = QVBoxLayout(); identity.setSpacing(1)
+        kicker = _label('接收文件请求', card); kicker.setObjectName('lanOfferKicker')
+        peer_label = _ElidedLabel(str(offer['peer']), card); peer_label.setObjectName('lanOfferPeer')
+        identity.addWidget(kicker); identity.addWidget(peer_label)
+        header.addLayout(identity, 1)
+        meta = _label(f"{offer['count']} 项 · {_size(offer['total'])}", card)
+        meta.setObjectName('lanOfferMeta'); meta.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        meta.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        header.addWidget(meta)
+        contents.addLayout(header)
+        file_label = _ElidedLabel(names or '文件', card); file_label.setObjectName('lanOfferFile')
+        contents.addWidget(file_label)
+        destination = _ElidedLabel('保存到 ' + self.receive_path.text(), card)
+        destination.setObjectName('lanOfferMeta'); contents.addWidget(destination)
+
+        footer = QHBoxLayout(); footer.setSpacing(7)
+        code = QFrame(card); code.setObjectName('lanOfferCode'); code.setMinimumWidth(132)
+        code_layout = QHBoxLayout(code); code_layout.setContentsMargins(9, 4, 9, 4); code_layout.setSpacing(8)
+        caption = _label('核对码', code); caption.setObjectName('lanOfferCodeCaption')
+        code_value = _label(str(offer['code']), code); code_value.setObjectName('lanOfferCodeValue')
+        caption.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        code_value.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        code_value.setAccessibleName('与发送方核对六位数字 ' + str(offer['code']))
+        code_layout.addWidget(caption); code_layout.addWidget(code_value)
+        footer.addWidget(code); footer.addStretch(1)
+        refuse = _button('拒绝', card); refuse.setObjectName('lanOfferReject')
+        accept = _button('接收文件', card); accept.setObjectName('lanOfferAccept')
+        footer.addWidget(refuse); footer.addWidget(accept)
+        contents.addLayout(footer)
+        shadow = QGraphicsDropShadowEffect(card)
+        shadow.setBlurRadius(16); shadow.setOffset(0, 3)
+        shadow.setColor(QColor(0, 0, 0, 72 if self._dark else 28))
+        card.setGraphicsEffect(shadow)
         refuse.clicked.connect(lambda: self._reject(identifier)); accept.clicked.connect(lambda: self._accept(identifier))
-        row['frame'].layout().addWidget(actions); row['extra'] = actions
+        row['frame'].layout().addWidget(card)
+        row.update(extra=card, offer_icon=icon, offer_shadow=shadow, offer_destination=destination)
         self.status_label.setText('有新的接收请求。')
 
     def _accept(self, identifier):
@@ -603,7 +678,7 @@ class LanPanel(QFrame):
             self.status_label.setText('接收位置不可用，请先选择一个有效文件夹。'); return
         try:
             if self.service.accept(identifier, folder):
-                row = self._rows[identifier]; row['extra'].hide(); row['bar'].show(); row['cancel'].show()
+                row = self._rows[identifier]; row['extra'].hide(); row['heading'].show(); row['detail'].show(); row['bar'].show()
                 row['detail'].setText('已确认接收，正在建立直连…')
         except (ValueError, OSError) as error: self.status_label.setText(str(error))
 
@@ -611,6 +686,7 @@ class LanPanel(QFrame):
         self.service.reject(identifier)
         row = self._rows[identifier]
         if row.get('extra'): row['extra'].hide()
+        row['heading'].show(); row['detail'].show(); row['cancel'].hide()
         row['detail'].setText('已拒绝接收'); row['finished'] = True
         self._refresh_transfer_pages()
 
@@ -638,7 +714,8 @@ class LanPanel(QFrame):
             row['detail'].setText('连接中断，等待发送方续传…'); row['bar'].setRange(0, 0)
         elif state in ('cancelled', 'error', 'complete'):
             row['finished'] = True; row['cancel'].hide()
-            if row.get('extra'): row['extra'].hide()
+            if row.get('extra'):
+                row['extra'].hide(); row['heading'].show(); row['detail'].show()
             row['bar'].setRange(0, 1000); row['bar'].setValue(1000 if state == 'complete' else 0)
             row['detail'].setText('传输完成 · 原文件已校验' if state == 'complete' else ('已取消传输' if state == 'cancelled' else data.get('message', '传输失败')))
             if not row.get('recorded'):

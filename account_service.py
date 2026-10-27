@@ -53,6 +53,11 @@ def derive_auth_key(password,salt):
     return bytearray(hashlib.scrypt(password,salt=salt,n=16384,r=8,p=5,dklen=32,maxmem=32*1024*1024))
 
 
+def valid_new_password(value):
+    """New credentials have no character-class requirements or trimming."""
+    return isinstance(value,str) and len(value)>=6 and not any(char.isspace() for char in value)
+
+
 class _AuthSignals(QObject):
     finished=Signal(int,object,str)
 
@@ -155,8 +160,8 @@ class AccountService(QObject):
         if self._closed or not self.signed_in or self.busy:return False
         if not isinstance(old_password,str) or not old_password:
             self.status_changed.emit('请输入原密码。');return False
-        if not isinstance(new_password,str) or not 10<=len(new_password)<=128 or len(old_password)>128:
-            self.status_changed.emit('新密码需要 10–128 个字符。');return False
+        if not valid_new_password(new_password):
+            self.status_changed.emit('新密码至少需要 6 个字符，不能包含空白。');return False
         if confirm_password is not None and new_password!=confirm_password:
             self.status_changed.emit('两次输入的新密码不一致。');return False
         if old_password==new_password:
@@ -179,8 +184,10 @@ class AccountService(QObject):
         if self._closed or self.busy: return False
         if not isinstance(username,str) or not username.strip() or not isinstance(password,str) or not password:
             self.status_changed.emit('请输入账号和密码。'); return False
-        if not 10<=len(password)<=128:
-            self._busy(False);self.status_changed.emit('密码需要 10–128 个字符。');return False
+        # Existing accounts may use an older password policy. Only creating or
+        # changing a password applies the current policy; never trim a secret.
+        if action=='register' and not valid_new_password(password):
+            self.status_changed.emit('密码至少需要 6 个字符，不能包含空白。');return False
         try:secret=bytearray(password.encode('utf8'))
         except UnicodeError:
             self._busy(False);self.status_changed.emit('密码格式无效，请重新输入。');return False
@@ -208,6 +215,7 @@ class AccountService(QObject):
         # Server error text must never echo a password, proof, or provider data.
         return {'INVALID_CREDENTIALS':'账号或密码不正确。','USERNAME_TAKEN':'这个账号已被使用。',
                 'INVALID_CHALLENGE':'登录验证已过期，请重试。','AUTH_NOT_CONFIGURED':'账号服务暂未开放，请稍后重试。',
+                'USERNAME_MIGRATION_REQUIRED':'账号索引正在更新，请稍后重试。',
                 'INVALID_OLD_PASSWORD':'原密码不正确，请重新输入。',
                 'PASSWORD_CHANGED':'密码已在其他设备更改，请重新验证原密码。',
                 'DEVICE_LIMIT':'账号已登录 20 台设备，请先移除其他设备后再登录。',
@@ -276,7 +284,7 @@ class AccountService(QObject):
         if (not isinstance(account,dict) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',str(account.get('id','')))
                 or not isinstance(result.get('token'),str) or not result['token']):
             self._auth_error(epoch,'账号服务返回了无效登录状态。');return
-        account={key:account.get(key) for key in ('id','username','email','email_verified_at')}
+        account={key:account.get(key) for key in ('id','username','email','email_verified_at','login_alias')}
         session={key:result[key] for key in ('token','device_id','expires_at') if key in result}
         session['account']=account
         self.api.token=result['token'];self.account=account;self.device_id=result.get('device_id','')

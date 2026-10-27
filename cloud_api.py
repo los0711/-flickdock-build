@@ -198,11 +198,15 @@ class CloudApi(QObject):
         reply = state['reply']
         status = int(reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute) or 0)
         result = None
+        phase = 'response'
         try:
             if error is not None: raise error
-            if status == 200 and reply.error() != QNetworkReply.NetworkError.NoError:
-                raise CloudError('同步网络连接已中断。',status)
+            # A proxy can close an HTTP response after delivering every byte
+            # of the original. For downloads, the expected length and SHA-256
+            # below decide whether the file is complete; Qt's socket error
+            # alone must not turn verified content into a retry.
             if status == 200 and state['destination'] is not None:
+                phase = 'download_verify'
                 expected = state['expected']
                 digest = expected.get('sha256') or bytes(reply.rawHeader('X-Content-SHA256')).decode('ascii','replace')
                 if (not re.fullmatch(r'[0-9a-f]{64}',digest) or state['received'] != expected['size'] or state['hash'].hexdigest() != digest):
@@ -213,6 +217,7 @@ class CloudApi(QObject):
                 if state['file'] is None:
                     state['part'] = state['destination'].with_name('.' + key + '.part')
                     state['file'] = state['part'].open('xb')
+                phase = 'download_save'
                 state['file'].flush(); os.fsync(state['file'].fileno()); state['file'].close(); state['file'] = None
                 os.replace(state['part'], state['destination']); state['part'] = None
                 # The bytes were hashed while streaming to this fsynced file.
@@ -232,23 +237,40 @@ class CloudApi(QObject):
                 if status not in (200,201,202,204):
                     problem = parsed.get('error', {}) if isinstance(parsed,dict) else {}
                     if isinstance(problem,str): problem = {'message':problem}
+                    if not isinstance(problem,dict): problem = {}
                     raise CloudError(problem.get('message') or '云同步请求失败，请稍后重试。',status,problem.get('code',''),parsed)
-                if reply.error() != QNetworkReply.NetworkError.NoError: raise CloudError('同步网络连接已中断。',status)
                 if not isinstance(parsed,dict) or parsed.get('schema_version') != 1:
                     raise CloudError('云同步服务版本不匹配。',status)
+                # A fully decoded protocol response is useful even if a
+                # proxy closes the socket before Qt sees normal EOF. Invalid
+                # or incomplete JSON still fails above and is retried.
                 result = parsed
         except Exception as problem:
-            error = problem if isinstance(problem,CloudError) else CloudError(
-                '云同步失败，请稍后重试。',status,
-                details={'cause':type(problem).__name__,'detail':str(problem)[:160]})
+            if isinstance(problem,CloudError):
+                error = problem
+            else:
+                # OS exception strings can include a private local path. Keep
+                # diagnostics useful without carrying paths or credentials.
+                details = {'phase':phase,'cause':type(problem).__name__}
+                if isinstance(problem,OSError) and isinstance(problem.errno,int):
+                    details['errno'] = problem.errno
+                error = (CloudError('无法保存云端文件，请检查保存位置或文件占用。',status,
+                                    'DOWNLOAD_SAVE_FAILED',details)
+                         if isinstance(problem,OSError) and state['destination'] is not None else
+                         CloudError('云同步处理失败，稍后会自动重试。',status,
+                                    'CLIENT_PROCESSING_ERROR',details))
         finally:
             if not reply.isFinished(): reply.abort()
             reply.deleteLater()
             if state['source_file'] is not None:
                 state['source_file'].close()
                 state['source_file'].deleteLater()
-            if state['file'] is not None: state['file'].close()
-            if state['part'] is not None: state['part'].unlink(missing_ok=True)
+            if state['file'] is not None:
+                try: state['file'].close()
+                except OSError: pass  # Preserve the transfer error and finish its callback.
+            if state['part'] is not None:
+                try: state['part'].unlink(missing_ok=True)
+                except OSError: pass  # A locked partial file must not stall the receive queue.
         if status == 401 and state['auth_token'] and state['auth_token'] == self.token and not self._closed:
             self.unauthorized.emit()
         if not self._closed: state['callback'](result,error)

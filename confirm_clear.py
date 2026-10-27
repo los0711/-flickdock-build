@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QEventLoop, QPoint, QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter
-from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel,
+from PySide6.QtWidgets import (QApplication, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel,
                                QPushButton, QSizePolicy, QVBoxLayout, QWidget)
 from shiboken6 import isValid
 
@@ -104,6 +104,11 @@ class ClearConfirmOverlay(QWidget):
 
         self.panel = QFrame(self)
         self.panel.setObjectName("clearConfirmPanel")
+        shadow = QGraphicsDropShadowEffect(self.panel)
+        shadow.setBlurRadius(20)
+        shadow.setOffset(0, 6)
+        shadow.setColor(QColor(10, 23, 42, 82))
+        self.panel.setGraphicsEffect(shadow)
         layout = QVBoxLayout(self.panel)
         layout.setContentsMargins(28, 25, 28, 24)
         layout.setSpacing(14)

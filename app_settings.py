@@ -15,7 +15,7 @@ from uuid import uuid4
 from PySide6.QtCore import QByteArray, QCoreApplication, QElapsedTimer, QEvent, QObject, QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QColor, QFont, QPainter, QPen, QGuiApplication, QIcon, QPixmap, QWheelEvent
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
-                               QHBoxLayout, QLabel, QLineEdit, QPushButton,
+                               QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QLineEdit, QPushButton,
                                QVBoxLayout, QKeySequenceEdit, QScrollArea, QWidget,
                                QAbstractSpinBox, QPlainTextEdit, QSlider, QSpinBox, QColorDialog, QStyledItemDelegate)
 from PySide6.QtWidgets import QStyle, QStyleOptionButton
@@ -27,6 +27,7 @@ from platform_startup import (StartupManager, CallbackBackend,
                               startup_command as _platform_startup_command,
                               read_startup_value as _platform_read_startup,
                               write_startup_value as _platform_write_startup)
+from platform_native import remove_host_window_shadow
 
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -811,11 +812,16 @@ class SettingsDialog(QDialog):
         self.setFont(QFont("HarmonyOS Sans SC", 11))
         self.setModal(False)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setMinimumSize(540, 520)
-        self.resize(560, 680)
+        self.setMinimumSize(572, 552)
+        self.resize(592, 712)
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setContentsMargins(16, 16, 16, 16)
         self.surface = SettingsSurface(self)
+        shadow = QGraphicsDropShadowEffect(self.surface)
+        shadow.setBlurRadius(24)
+        shadow.setOffset(0, 6)
+        shadow.setColor(QColor(15, 28, 48, 78))
+        self.surface.setGraphicsEffect(shadow)
         outer.addWidget(self.surface)
         root = QVBoxLayout(self.surface)
         root.setContentsMargins(24, 16, 24, 20)
@@ -1337,6 +1343,7 @@ class SettingsDialog(QDialog):
     def showEvent(self, event):
         self.load_values()
         super().showEvent(event)
+        remove_host_window_shadow(self)
         if not self._preview_active:
             self._emit_preview()
 

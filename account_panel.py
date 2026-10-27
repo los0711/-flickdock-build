@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from functools import partial
 import re
+from account_service import valid_new_password
 
 from PySide6.QtCore import QByteArray, QDateTime, QEvent, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QPainter
@@ -111,7 +112,7 @@ class AccountPanel(QFrame):
         auth.addWidget(self.username_edit)
         auth.addWidget(_label('密码',self.auth_page))
         self.password_edit=QLineEdit(self.auth_page);self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.password_edit.setAccessibleName('密码');self.password_edit.setMaxLength(256)
+        self.password_edit.setAccessibleName('密码')
         auth.addWidget(self.password_edit)
         self.submit_button=_button('登录',self.auth_page,name='accountPrimary')
         self.submit_button.clicked.connect(self._submit_auth);auth.addWidget(self.submit_button)
@@ -128,6 +129,10 @@ class AccountPanel(QFrame):
         identity_text=QVBoxLayout();identity_text.setSpacing(3)
         self.username_label=_label('',self.signed_in_page);self.username_label.setObjectName('accountUsername')
         identity_text.addWidget(self.username_label)
+        self.login_alias_edit=QLineEdit(self.signed_in_page)
+        self.login_alias_edit.setReadOnly(True);self.login_alias_edit.setMaxLength(128)
+        self.login_alias_edit.setAccessibleName('重名账号登录 ID')
+        self.login_alias_edit.hide();identity_text.addWidget(self.login_alias_edit)
         self.sync_status_label=_label('',self.signed_in_page,muted=True)
         self.sync_status_label.setAccessibleName('云同步状态');identity_text.addWidget(self.sync_status_label)
         identity.addLayout(identity_text,1)
@@ -144,11 +149,11 @@ class AccountPanel(QFrame):
         password_layout=QVBoxLayout(self.password_form);password_layout.setContentsMargins(12,12,12,12);password_layout.setSpacing(8)
         for attribute,label,placeholder in (
                 ('old_password_edit','原密码','输入当前密码'),
-                ('new_password_edit','新密码','设置 10–128 位密码'),
+                ('new_password_edit','新密码','至少 6 个字符，不含空白'),
                 ('confirm_password_edit','确认新密码','再次输入新密码')):
             password_layout.addWidget(_label(label,self.password_form))
             edit=QLineEdit(self.password_form);edit.setEchoMode(QLineEdit.EchoMode.Password)
-            edit.setAccessibleName(label);edit.setPlaceholderText(placeholder);edit.setMaxLength(256)
+            edit.setAccessibleName(label);edit.setPlaceholderText(placeholder)
             setattr(self,attribute,edit);password_layout.addWidget(edit)
         password_layout.addWidget(_label('修改后，其他设备需要重新登录。',self.password_form,muted=True))
         password_actions=QHBoxLayout();password_actions.addStretch()
@@ -223,7 +228,7 @@ class AccountPanel(QFrame):
         self._mode=mode
         self.login_tab.setChecked(mode=='login');self.register_tab.setChecked(mode=='register')
         self.submit_button.setText('注册' if mode=='register' else '登录')
-        self.password_edit.setPlaceholderText('设置 10–128 位密码' if mode=='register' else '请输入密码')
+        self.password_edit.setPlaceholderText('至少 6 个字符，不含空白' if mode=='register' else '请输入密码')
         self.password_edit.clear();self.status_label.clear();self.auth_status_label.clear()
 
     def _submit_auth(self):
@@ -244,7 +249,8 @@ class AccountPanel(QFrame):
         if identity!=self._account_id or not signed:
             self._account_id=identity
             self.password_edit.clear();self.username_edit.clear();self.status_label.clear();self.auth_status_label.clear()
-            self.username_label.clear();self.email_status_label.clear();self.sync_status_label.clear()
+            self.username_label.clear();self.login_alias_edit.clear();self.login_alias_edit.hide()
+            self.email_status_label.clear();self.sync_status_label.clear()
             self._reset_password()
             self._reset_email();self.email_form.hide();self._refreshing=False;self._revoke_pending=''
             self._devices_changed([])
@@ -254,6 +260,9 @@ class AccountPanel(QFrame):
         if signed:
             self.password_edit.clear()
             self.username_label.setText(str(account.get('username','')))
+            alias=account.get('login_alias')
+            self.login_alias_edit.setText(alias if isinstance(alias,str) else '')
+            self.login_alias_edit.setVisible(bool(isinstance(alias,str) and alias))
             address=account.get('email')
             verified=bool(address and account.get('email_verified_at'))
             self.email_status_label.setText(('邮箱：'+str(address)+('' if verified else '（待验证）')) if address else '邮箱未绑定（可选）')
@@ -315,8 +324,8 @@ class AccountPanel(QFrame):
         old,new,confirm=self.old_password_edit.text(),self.new_password_edit.text(),self.confirm_password_edit.text()
         if not old:
             self._status_changed('请输入原密码。');self.old_password_edit.setFocus();return
-        if not 10<=len(new)<=128:
-            self._status_changed('新密码需要 10–128 个字符。');self.new_password_edit.setFocus();return
+        if not valid_new_password(new):
+            self._status_changed('新密码至少需要 6 个字符，不能包含空白。');self.new_password_edit.setFocus();return
         if old==new:
             self._status_changed('新密码需要与原密码不同。');self.new_password_edit.setFocus();return
         if new!=confirm:

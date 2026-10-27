@@ -85,7 +85,9 @@ class CloudStatusBadge(QWidget):
         super().__init__(parent)
         self.status = 'local'
         self.transfer = None
-        self.setFixedSize(20, 20)
+        # Share the copy button's 32px header cell; the state ring remains a
+        # restrained 20px glyph centered on exactly the same vertical axis.
+        self.setFixedSize(32, 32)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
         self.set_status('local')
 
@@ -100,7 +102,7 @@ class CloudStatusBadge(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        draw_cloud_status_badge(painter, self.rect(), self.status, self.transfer)
+        draw_cloud_status_badge(painter, QRectF(6, 6, 20, 20), self.status, self.transfer)
 
 
 def transfer_fraction(state):

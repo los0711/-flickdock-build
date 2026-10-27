@@ -39,6 +39,8 @@ class Api(QObject):
         self.held = {}
         self.download_started = []
         self.fail_large_once = False
+        self.fail_after_complete_once = None
+        self.missing_content = set()
 
     def request(self, method, path, callback, **kwargs):
         key = uuid4().hex
@@ -51,6 +53,9 @@ class Api(QObject):
                           'has_more':False, 'transfers':[]}
             elif path.endswith('/content'):
                 identity = path.split('/')[3]
+                if identity in self.missing_content:
+                    callback(None,CloudError('Item was removed',404))
+                    return
                 data = self.blobs[identity]
                 chunk = (32*1024*1024 if len(data)>90*1024*1024 else
                          len(data) if len(data)>4*1024*1024 else 65536)
@@ -72,6 +77,12 @@ class Api(QObject):
                 destination = Path(kwargs['destination'])
                 destination.parent.mkdir(parents=True,exist_ok=True)
                 destination.write_bytes(result)
+                if self.fail_after_complete_once == identity:
+                    self.fail_after_complete_once = None
+                    if kwargs.get('receive_progress'):
+                        kwargs['receive_progress'](len(result), len(result))
+                    callback(None,CloudError('Completed body but interrupted response'))
+                    return
                 result = destination
             else: raise AssertionError(path)
             callback(result,None)
@@ -172,6 +183,55 @@ def test_revisions_and_tombstone_of_same_item_keep_order():
         finally:engine.close()
 
 
+def test_cancel_retrying_complete_download_unblocks_next_item():
+    first_id,second_id=uuid4().hex,uuid4().hex
+    first_blob=b'complete first item bytes'
+    second_blob=b'second item must not wait for the first retry'
+    changes=[{'cursor':'1','record':file_record(first_id,'first.bin',first_blob)},
+             {'cursor':'2','record':file_record(second_id,'second.bin',second_blob)}]
+    with tempfile.TemporaryDirectory(prefix='flickdock-retry-cancel-next-') as root:
+        service=Service(changes,{first_id:first_blob,second_id:second_blob})
+        service.api.fail_after_complete_once=first_id
+        adapter=Adapter();engine=ShelfSync(root,service,adapter,poll_ms=600000)
+        seen=[]
+        engine.transfers_changed.connect(lambda rows:seen.append(rows))
+        try:
+            service.account_changed.emit({'id':'retry-cancel-account'})
+            assert spin(lambda:not engine.running and engine.state.get('not_before',0)>time.time())
+            assert service.api.download_started==[first_id]
+            assert adapter.view['permanent']==[]
+            assert any(row.get('id')==first_id and row.get('phase')=='downloading'
+                       and row.get('received')==len(first_blob) for rows in seen for row in rows)
+            assert any(row.get('id')==first_id and row.get('phase')=='retrying'
+                       for rows in seen for row in rows)
+            assert engine.cancel_download(first_id)
+            assert spin(lambda:engine.state.get('cursor')=='2' and not engine.running), (
+                engine.state.get('not_before'),service.api.download_started)
+            assert engine.state.get('ignored_versions',{}).get(first_id)==1
+            assert [Path(ref).name for ref in adapter.view['permanent']]==['second.bin']
+            assert Path(adapter.view['permanent'][0]).read_bytes()==second_blob
+            assert not engine.download_transfers
+        finally:engine.close()
+
+
+def test_removed_between_change_page_and_metadata_clears_transfer():
+    identity=uuid4().hex
+    blob=b'vanished before content metadata'
+    changes=[{'cursor':'1','record':file_record(identity,'vanished.bin',blob)}]
+    with tempfile.TemporaryDirectory(prefix='flickdock-removed-before-download-') as root:
+        service=Service(changes,{identity:blob})
+        service.api.missing_content.add(identity)
+        adapter=Adapter();engine=ShelfSync(root,service,adapter,poll_ms=600000)
+        seen=[];engine.transfers_changed.connect(lambda rows:seen.append(rows))
+        try:
+            service.account_changed.emit({'id':'removed-before-download-account'})
+            assert spin(lambda:engine.state.get('cursor')=='1' and not engine.running)
+            assert not engine.download_transfers
+            assert seen and not any(row.get('id')==identity for row in seen[-1])
+            assert adapter.view['permanent']==[]
+        finally:engine.close()
+
+
 def test_fast_multi_part_101_mib_arrives_only_after_full_original_sha_check():
     identity=uuid4().hex
     original=b'\xa5'*(101*1024*1024)
@@ -194,5 +254,7 @@ def test_fast_multi_part_101_mib_arrives_only_after_full_original_sha_check():
 if __name__=='__main__':
     test_later_small_item_arrives_before_held_large_download()
     test_revisions_and_tombstone_of_same_item_keep_order()
+    test_cancel_retrying_complete_download_unblocks_next_item()
+    test_removed_between_change_page_and_metadata_clears_transfer()
     test_fast_multi_part_101_mib_arrives_only_after_full_original_sha_check()
-    print('PASS priority receive, stable newest-first order, 101 MiB multi-part original SHA, durable cursor')
+    print('PASS priority receive, retry cancellation unblocks next item, stable order, 101 MiB SHA, durable cursor')

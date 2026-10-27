@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "check": "node test/check-site.mjs"
+    "check": "node test/check-site.mjs",
+    "build:retiehe": "node scripts/build-retiehe.mjs"
   },
   "devDependencies": {
     "wrangler": "4.153.0"

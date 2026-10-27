@@ -239,7 +239,7 @@ class InlineUpdates(unittest.TestCase):
         finally:lease.close()
 
     def test_rounded_surface_small_close_account_slot_and_all_inline_states(self):
-        saved=self.store.path.read_bytes();self.dialog.show();self.dialog.resize(540,520);APP.processEvents()
+        saved=self.store.path.read_bytes();self.dialog.show();self.dialog.resize(572,552);APP.processEvents()
         for theme in ('light','dark'):
             self.dialog.apply_theme(theme)
             for state in ('idle','checking','latest','available','downloading','verifying','ready','error','cancelled','installing'):
@@ -254,9 +254,17 @@ class InlineUpdates(unittest.TestCase):
             self.assertEqual(button.size().width(),40);self.assertEqual(button.glyph_rect.width(),14)
             self.assertEqual(button.glyph_rect.center(),QRectF(button.rect()).center())
             rendered=self.dialog.grab().toImage()
-            self.assertEqual(rendered.pixelColor(0,0).alpha(),0)
-            self.assertGreater(rendered.pixelColor(rendered.width()//2,3).alpha(),200)
-            self.assertTrue(any(0<rendered.pixelColor(x,y).alpha()<255 for x in range(25) for y in range(25)))
+            dpr=rendered.devicePixelRatio()
+            pixel=lambda x,y:rendered.pixelColor(round(x*dpr),round(y*dpr)).alpha()
+            middle=self.dialog.width()//2
+            self.assertEqual(self.dialog.surface.size().width(),540)
+            self.assertEqual(self.dialog.surface.size().height(),520)
+            self.assertEqual(pixel(0,0),0)
+            self.assertLess(pixel(middle,3),32,'the outer shadow gutter stays transparent')
+            self.assertGreater(pixel(12,30),0,'the card casts a visible rounded shadow')
+            self.assertLess(pixel(12,30),100,'the shadow does not become a second glass frame')
+            self.assertEqual(pixel(middle,20),255,'the card interior remains opaque')
+            self.assertEqual(pixel(20,30),255,'the rounded card is fully painted past its corner')
             render_dir=os.getenv('FLICKDOCK_INLINE_RENDER_DIR')
             if render_dir:
                 target=Path(render_dir);target.mkdir(parents=True,exist_ok=True)

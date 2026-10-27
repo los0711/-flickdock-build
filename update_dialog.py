@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont
-from PySide6.QtWidgets import (QDialog, QFrame, QHBoxLayout, QLabel, QPlainTextEdit,
+from PySide6.QtGui import QColor, QFont
+from PySide6.QtWidgets import (QDialog, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QPlainTextEdit,
                                QProgressBar, QPushButton, QVBoxLayout)
 
 from app_settings import SettingsCloseButton, SettingsTitleBar
+from platform_native import remove_host_window_shadow
 
 
 def _plain(value, fallback=""):
@@ -44,8 +45,9 @@ class UpdateDialog(QDialog):
         self.setWindowTitle("FlickDock · 软件更新")
         self.setFont(QFont("HarmonyOS Sans SC", 11))
         self.setModal(False)
-        self.setMinimumSize(460, 380)
-        self.resize(500, 480)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setMinimumSize(492, 412)
+        self.resize(532, 512)
         self._current_version = _plain(current_version, "—")
         self._latest_version = ""
         self._notes = ""
@@ -61,7 +63,17 @@ class UpdateDialog(QDialog):
         self._client = None
         self._bindings = []
 
-        root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(16, 16, 16, 16)
+        self.surface = QFrame(self)
+        self.surface.setObjectName('updateSurface')
+        shadow = QGraphicsDropShadowEffect(self.surface)
+        shadow.setBlurRadius(24)
+        shadow.setOffset(0, 6)
+        shadow.setColor(QColor(15, 28, 48, 78))
+        self.surface.setGraphicsEffect(shadow)
+        outer.addWidget(self.surface)
+        root = QVBoxLayout(self.surface)
         root.setContentsMargins(24, 16, 24, 22)
         root.setSpacing(16)
         self.title_bar = SettingsTitleBar(self)
@@ -299,6 +311,7 @@ class UpdateDialog(QDialog):
     def showEvent(self, event):
         self._dismissed = False
         super().showEvent(event)
+        remove_host_window_shadow(self)
 
     def done(self, result):
         if self._state in ("checking", "downloading"): self._cancel()
@@ -359,7 +372,8 @@ class UpdateDialog(QDialog):
         ink, secondary = ("#edf2fa", "#a5b1c3") if dark else ("#253246", "#637186")
         edge, hover = ("#3c4554", "#39465a") if dark else ("#dce3ed", "#edf4fe")
         self.setStyleSheet(f"""
-            QDialog#flickdockUpdate {{background:{bg};color:{ink};}}
+            QDialog#flickdockUpdate {{background:transparent;color:{ink};}}
+            QFrame#updateSurface {{background:{bg};border:1px solid {edge};border-radius:18px;}}
             QDialog#flickdockUpdate QLabel {{background:transparent;color:{ink};font-size:13px;}}
             QDialog#flickdockUpdate QLabel#updateTitle {{font-size:21px;font-weight:600;}}
             QDialog#flickdockUpdate QLabel#updateCaption {{color:{secondary};font-size:12px;}}

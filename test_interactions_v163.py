@@ -90,7 +90,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-interactions-v163-') as tmp:
         manager._content_drag_validated(QPoint(300,300));assert not shelf.expanded
         shelf.hide_immediately();shelf.reveal_from_dock()
         settled=shelf._dock_target_rect()
-        assert shelf.surface_effect.color().alpha()==0
+        assert shelf.surface_effect.color().alpha()>0
         app.processEvents()
         image=shelf.grab().toImage()
         outside=shelf.card.geometry().topLeft()-QPoint(5,0)

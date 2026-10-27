@@ -18,7 +18,7 @@ from uuid import uuid4
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QWheelEvent
 from PySide6.QtCore import QPoint, QPointF
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton
 
 import lan_transfer as lan
 from lan_panel import LanPanel
@@ -297,6 +297,41 @@ class TransferTests(unittest.TestCase):
         self.assertEqual(panel.devices.currentIndex(), selected)
         panel._progress({'id': uuid4().hex, 'direction': 'send', 'peer': '电脑', 'state': 'waiting', 'code': '123456'})
         self.assertIn('确认码 123456', list(panel._rows.values())[0]['detail'].text())
+        panel.close(); panel.deleteLater(); APP.processEvents()
+
+    def test_incoming_offer_has_legible_code_file_destination_and_independent_actions(self):
+        panel = LanPanel(self.b, theme='light')
+        panel.resize(930, 625); panel.show()
+        identifier = uuid4().hex
+        panel.show_offer({'id': identifier, 'peer': 'Roger · DESKTOP-BI1JRA1',
+                          'count': 1, 'total': 5 * 1024**3, 'code': '964191',
+                          'names': ['Ps2025.7z']})
+        APP.processEvents()
+        row = panel._rows[identifier]
+        card = row['extra']
+        self.assertEqual(card.objectName(), 'lanOfferCard')
+        self.assertTrue(card.isVisible())
+        self.assertIsNotNone(card.graphicsEffect())
+        self.assertFalse(row['heading'].isVisible())
+        self.assertEqual(card.findChild(QLabel, 'lanOfferFile').text(), 'Ps2025.7z')
+        self.assertEqual(card.findChild(QLabel, 'lanOfferCodeValue').text(), '964191')
+        self.assertIn(str(Path.home()), row['offer_destination']._full_text)
+        self.assertEqual(card.findChild(QPushButton, 'lanOfferReject').text(), '拒绝')
+        self.assertEqual(card.findChild(QPushButton, 'lanOfferAccept').text(), '接收文件')
+        with patch.object(self.b, 'accept', return_value=True) as accept:
+            panel._accept(identifier)
+        accept.assert_called_once()
+        self.assertFalse(card.isVisible())
+        self.assertTrue(row['detail'].isVisible())
+        cancelled_id = uuid4().hex
+        panel.show_offer({'id': cancelled_id, 'peer': '另一台设备', 'count': 1,
+                          'total': 12, 'code': '123456', 'names': ['cancel.bin']})
+        panel._progress({'id': cancelled_id, 'direction': 'receive', 'peer': '另一台设备',
+                         'state': 'cancelled', 'received': 0, 'total': 12})
+        cancelled = panel._rows[cancelled_id]
+        self.assertFalse(cancelled['extra'].isVisible())
+        self.assertTrue(cancelled['detail'].isVisible())
+        self.assertEqual(cancelled['detail'].text(), '已取消传输')
         panel.close(); panel.deleteLater(); APP.processEvents()
 
 

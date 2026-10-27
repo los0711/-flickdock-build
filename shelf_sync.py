@@ -414,6 +414,12 @@ class ShelfSync(QObject):
         record=self.download_transfers.get(identity)
         if not record or not self.state:return False
         self._interrupt_cycle();self.download_transfers.pop(identity,None)
+        # This was the sole record being received when the retry deadline was
+        # set. Once the user skips/deletes it, that deadline must not hold up
+        # unrelated files later in the same remote change page.
+        if self.state.get('retry_direction')=='receive':
+            self.state.pop('not_before',None)
+            self.state.pop('retry_direction',None)
         if remove:
             entry=self.state.setdefault('entries',{}).setdefault(identity,dict(id=identity,ref='flickdock:transfer:'+identity,seq=0))
             entry.update(version=record['version'],deleted=True,dirty=True,seq=entry.get('seq',0)+1)
@@ -462,7 +468,9 @@ class ShelfSync(QObject):
                    'STORAGE_REQUEST_BUDGET':'本月云存储请求已达限额，内容会先保留在本机。',
                    'PLATFORM_QUOTA':'今日云同步免费额度已用完，内容会先保留在本机。',
                    'UPLOAD_LIMIT':'正在清理中断的上传，稍后会自动重试。',
-                   'SERVICE_UNAVAILABLE':'云服务暂时不可用，稍后会自动重试。'}.get(getattr(error,'code',''))
+                    'SERVICE_UNAVAILABLE':'云服务暂时不可用，稍后会自动重试。',
+                    'DOWNLOAD_SAVE_FAILED':'无法保存云端文件，请检查保存位置或文件占用。',
+                    'CLIENT_PROCESSING_ERROR':'云同步处理失败，稍后会自动重试。'}.get(getattr(error,'code',''))
         self.status_changed.emit(message or (str(error) if not getattr(error,'code','') else '云同步暂时中断，稍后会自动重试。'))
         delay = self._retry_delay(error)
         self.state['not_before'] = time.time()+delay
@@ -849,7 +857,9 @@ class ShelfSync(QObject):
         def metadata(result,error):
             if error:
                 if getattr(error,'status',0)==404 and changed:
-                    self._forget_download(record['id']); self._persist(); changed(None)
+                    self._forget_download(record['id'])
+                    self.download_transfers.pop(record['id'],None)
+                    self._persist(); self._notify_transfers(); changed(None)
                 else: callback(None,error)
                 return
             current = result.get('record',{})

@@ -64,12 +64,11 @@ def keep_tool_visible_when_inactive(widget, *, platform=None):
 
 
 def raise_shelf_for_reveal(widget, *, platform=None):
-    """Order a revealed shelf above ordinary app windows without activation.
+    """Temporarily order a summoned shelf over a full-screen drag source.
 
-    Qt's raise_() only orders reliably within our application. A shelf
-    revealed while another drag source is active must be ordered above that
-    application's normal windows without cancelling the drag. It remains a
-    normal-level native window, so a later app activation can cover it.
+    Qt's raise_() only orders reliably within our application. The temporary
+    native level is removed when the shelf hides or another FlickDock panel
+    takes focus; the shelf's Qt window flags remain ordinary and nonactivating.
     """
     platform = sys.platform if platform is None else platform
     if platform not in ('win32', 'darwin') or not native_input_available():
@@ -83,18 +82,97 @@ def raise_shelf_for_reveal(widget, *, platform=None):
             set_window_pos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int,
                                        ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
             set_window_pos.restype = wintypes.BOOL
-            # HWND_TOP, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE |
-            # SWP_NOOWNERZORDER. Do not set a persistent TOPMOST style or
-            # change the reserved animation host's native geometry.
-            return bool(set_window_pos(int(widget.winId()), None, 0, 0, 0, 0, 0x0213))
+            # HWND_TOPMOST, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE |
+            # SWP_NOOWNERZORDER. A normal HWND_TOP can stay underneath a
+            # full-screen browser, making the edge strip vanish on hover.
+            return bool(set_window_pos(int(widget.winId()), -1, 0, 0, 0, 0, 0x0213))
         except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
             return False
+    try:
+        import AppKit
+        import objc
+        view = objc.objc_object(c_void_p=ctypes.c_void_p(int(widget.winId())))
+        window = view.window()
+        if window is None:
+            return False
+        if getattr(widget, '_flickdock_native_order', None) is None:
+            widget._flickdock_native_order = (window.level(), window.collectionBehavior())
+        behavior = (window.collectionBehavior()
+                    | AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces
+                    | AppKit.NSWindowCollectionBehaviorFullScreenAuxiliary
+                    | getattr(AppKit, 'NSWindowCollectionBehaviorCanJoinAllApplications', 0))
+        window.setCollectionBehavior_(behavior)
+        window.setLevel_(AppKit.NSFloatingWindowLevel)
+        window.orderFrontRegardless()
+    except (ImportError, AttributeError, OSError, RuntimeError, TypeError, ValueError):
+        return False
+    return True
+
+
+def lower_shelf_after_reveal(widget, *, platform=None):
+    """Restore ordinary window ordering as soon as the reveal ends."""
+    platform = sys.platform if platform is None else platform
+    if platform not in ('win32', 'darwin') or not native_input_available():
+        return False
+    if platform == 'win32':
+        try:
+            from ctypes import wintypes
+
+            user32 = ctypes.WinDLL('user32', use_last_error=True)
+            set_window_pos = user32.SetWindowPos
+            set_window_pos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int,
+                                       ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+            set_window_pos.restype = wintypes.BOOL
+            return bool(set_window_pos(int(widget.winId()), -2, 0, 0, 0, 0, 0x0213))
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            return False
+    original = getattr(widget, '_flickdock_native_order', None)
+    if original is None:
+        return False
     try:
         import objc
         view = objc.objc_object(c_void_p=ctypes.c_void_p(int(widget.winId())))
         window = view.window()
         if window is None:
             return False
+        window.setLevel_(original[0])
+        window.setCollectionBehavior_(original[1])
+    except (ImportError, AttributeError, OSError, RuntimeError, TypeError, ValueError):
+        return False
+    widget._flickdock_native_order = None
+    return True
+
+
+def raise_edge_target(widget, *, platform=None):
+    """Keep the nonactivating edge sensor reachable in full-screen spaces."""
+    platform = sys.platform if platform is None else platform
+    if platform not in ('win32', 'darwin') or not native_input_available():
+        return False
+    if platform == 'win32':
+        try:
+            from ctypes import wintypes
+
+            user32 = ctypes.WinDLL('user32', use_last_error=True)
+            set_window_pos = user32.SetWindowPos
+            set_window_pos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int,
+                                       ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+            set_window_pos.restype = wintypes.BOOL
+            return bool(set_window_pos(int(widget.winId()), -1, 0, 0, 0, 0, 0x0213))
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            return False
+    try:
+        import AppKit
+        import objc
+        view = objc.objc_object(c_void_p=ctypes.c_void_p(int(widget.winId())))
+        window = view.window()
+        if window is None:
+            return False
+        behavior = (window.collectionBehavior()
+                    | AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces
+                    | AppKit.NSWindowCollectionBehaviorFullScreenAuxiliary
+                    | getattr(AppKit, 'NSWindowCollectionBehaviorCanJoinAllApplications', 0))
+        window.setCollectionBehavior_(behavior)
+        window.setLevel_(AppKit.NSFloatingWindowLevel)
         window.orderFrontRegardless()
     except (ImportError, AttributeError, OSError, RuntimeError, TypeError, ValueError):
         return False
