@@ -16,10 +16,12 @@ assert.equal(config.workers_dev, true);
 
 const downloads = [...html.matchAll(/href="(https:\/\/gitee\.com\/rooogerluo\/[^\"]+\.(?:exe|dmg))"/g)].map(match => match[1]);
 assert.equal(downloads.length, 3, 'home page has three direct installer links');
-assert(downloads.some(url => url.endsWith('/FlickDock-Setup-1.8.11.exe')));
-assert(downloads.some(url => url.endsWith('/FlickDock-1.8.11-macOS-arm64.dmg')));
-assert(downloads.some(url => url.endsWith('/FlickDock-1.8.11-macOS-x86_64.dmg')));
-assert.equal(downloads.filter(url => url.includes('/flick-dock-macos-releases-2/releases/download/v1.8.11/')).length, 2);
+assert(downloads.includes('https://gitee.com/rooogerluo/flick-dock-windows-releases/releases/download/v1.8.12/FlickDock-Setup-1.8.12.exe'));
+assert(downloads.some(url => url.endsWith('/FlickDock-1.8.12-macOS-arm64.dmg')));
+assert(downloads.some(url => url.endsWith('/FlickDock-1.8.12-macOS-x86_64.dmg')));
+assert.equal(downloads.filter(url => url.includes('/flick-dock-macos-releases-2/releases/download/v1.8.12/')).length, 2);
+assert(html.includes('aria-label="下载 Windows 安装包 1.8.12"'));
+assert(html.includes('安装程序 · 1.8.12'));
 assert(downloads.every(url => url.startsWith('https://gitee.com/rooogerluo/')));
 assert(html.includes('href="https://gitee.com/rooogerluo/flick-dock-releases"'), 'domestic fallback links to the public release page');
 

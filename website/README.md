@@ -23,7 +23,7 @@ npm run deploy
 
 默认地址由 Cloudflare 返回，通常为 `https://flickdock-site.<subdomain>.workers.dev/`。若要绑定正式域名，请在 Cloudflare 控制台为这个 Worker 单独设置自定义域名，不要将云同步 Worker 的路由改到官网。发布新客户端时，先核对公开安装包的实际 URL，再更新 `public/index.html` 中的三个链接和版本号。
 
-当前链接：Windows 1.8.11 Setup、macOS 1.8.11 Apple 芯片 DMG、macOS 1.8.11 Intel DMG。Mac 安装包未签名或公证，页面如实提示。安装包发布并完成匿名校验后才部署新版页面。
+当前源码链接：Windows 1.8.12 Setup、macOS 1.8.12 Apple 芯片 DMG、macOS 1.8.12 Intel DMG。Mac 安装包未签名或公证，页面如实提示。安装包发布并完成匿名校验后才部署新版页面。
 
 ## 热铁盒三文件静态包
 
