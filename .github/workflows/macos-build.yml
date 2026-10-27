@@ -51,7 +51,7 @@ jobs:
           python -c "import json; from pathlib import Path; p=Path('../outputs/mac-cloud-${{ matrix.arch }}.json'); data=json.loads(p.read_text()); print(data); assert data['ok'] and data['frozen'],data"
       - name: Measure verified local LAN loopback transfer
         run: |
-          python bench_lan_throughput_v183.py --size-mib 128 --output "../outputs/mac-lan-${{ matrix.arch }}.json"
+          build/macos-venv/bin/python bench_lan_throughput_v183.py --size-mib 128 --output "../outputs/mac-lan-${{ matrix.arch }}.json"
       - name: Gather verified release artifacts
         run: |
           python - <<'PY'
