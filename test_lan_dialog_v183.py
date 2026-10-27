@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 from app_settings import SettingsStore
 from flickdock_icons import glyph_svg
-from lan_panel import LanDialog
+from lan_panel import LanDialog,_motion_allowed
 
 APP=QApplication.instance() or QApplication([])
 
@@ -83,6 +83,8 @@ class LanDialogTests(unittest.TestCase):
              'state':'失败','direction':'receive'}]
         panel._render_history();APP.processEvents()
         self.assertEqual(len(panel.history_rows),3)
+        self.assertEqual(len(panel.history_separators),2)
+        self.assertEqual(panel.history_body.objectName(),'lanHistoryGroup')
         self.assertFalse(panel.history_label.isVisible())
         self.assertEqual([row.state.text() for row in panel.history_rows],
                          ['已完成','已取消','失败'])
@@ -145,11 +147,49 @@ class LanDialogTests(unittest.TestCase):
         self.assertLess(panel.send_column.geometry().right(),panel.activity_column.geometry().left())
         self.assertFalse(self.dialog.findChildren(QScrollArea))
         self.assertTrue(panel.drop_zone.isVisible())
+        self.assertIs(panel.pick_files.parent(),panel.drop_zone)
+        self.assertIs(panel.pick_folder.parent(),panel.drop_zone)
         self.assertTrue(panel.receive_path.isVisible())
         self.assertTrue(panel.history_label.isVisible())
         self.assertTrue(QSvgRenderer(QByteArray(glyph_svg('nearby','#1876db').encode())).isValid())
         self.assertTrue(QSvgRenderer(QByteArray(glyph_svg('file-up','#1876db').encode())).isValid())
         self.assertTrue(QSvgRenderer(QByteArray(glyph_svg('cloud','#1876db').encode())).isValid())
+
+    def test_no_device_state_disables_destination_and_send_until_discovery(self):
+        panel=self.dialog.panel
+        panel._peers_changed([]);APP.processEvents()
+        self.assertFalse(panel.devices.isEnabled())
+        self.assertFalse(panel.send_button.isEnabled())
+        self.assertEqual(panel.devices.currentText(),'附近暂无设备')
+        self.assertIn('正在搜索',panel.peer_count.text())
+        self.assertEqual(panel.scan_indicator.width(),16)
+        panel._peers_changed(self.service.peers());APP.processEvents()
+        self.assertTrue(panel.devices.isEnabled())
+        self.assertTrue(panel.send_button.isEnabled())
+
+    def test_scanner_animates_only_while_visible_and_respects_reduced_motion(self):
+        panel=self.dialog.panel
+        with patch('lan_panel._motion_allowed',return_value=True):
+            panel._peers_changed([]);APP.processEvents()
+            self.assertTrue(panel.scan_indicator._timer.isActive())
+            before=panel.scan_indicator.geometry()
+            panel.scan_indicator._advance();APP.processEvents()
+            self.assertEqual(panel.scan_indicator.geometry(),before)
+            panel._peers_changed(self.service.peers());APP.processEvents()
+            self.assertFalse(panel.scan_indicator._timer.isActive())
+            panel._peers_changed([]);APP.processEvents()
+            self.dialog.hide();APP.processEvents()
+            self.assertFalse(panel.scan_indicator._timer.isActive())
+            self.dialog.show();APP.processEvents()
+            self.assertTrue(panel.scan_indicator._timer.isActive())
+        with patch('lan_panel._motion_allowed',return_value=False):
+            panel.scan_indicator._refresh_timer()
+            self.assertFalse(panel.scan_indicator._timer.isActive())
+            self.assertTrue(panel.scan_indicator._scanning)
+        with patch.dict(os.environ,{'FLICKDOCK_REDUCE_MOTION':'1'}):
+            self.assertFalse(_motion_allowed())
+        with patch.dict(os.environ,{'FLICKDOCK_LOW_PERFORMANCE':'true'}):
+            self.assertFalse(_motion_allowed())
 
     def test_multiple_transfers_are_reachable_with_buttons_including_incoming_offer(self):
         panel=self.dialog.panel

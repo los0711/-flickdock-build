@@ -140,7 +140,18 @@ with tempfile.TemporaryDirectory(prefix='flickdock-settings-v163-') as temporary
         assert dialog.shake_sensitivity_reset_button.dark == (theme == 'dark')
         for checkbox in dialog.findChildren(QCheckBox):
             assert isinstance(checkbox, subject.SettingsCheckBox)
-            assert_tick_visible(checkbox)
+            if isinstance(checkbox, subject.SettingsToggleSwitch):
+                checkbox.setChecked(True)
+                image=checkbox.grab().toImage();ratio=image.devicePixelRatio()
+                left=image.pixelColor(round((checkbox.width()-40)*ratio),round(checkbox.height()*ratio/2))
+                knob=image.pixelColor(round((checkbox.width()-17)*ratio),round(checkbox.height()*ratio/2))
+                assert left.blue()>170 and left.red()<100 and min(knob.red(),knob.green(),knob.blue())>245
+                before=checkbox.isChecked()
+                QTest.mouseClick(checkbox,Qt.MouseButton.LeftButton,
+                                 pos=QPoint(checkbox.width()-18,checkbox.height()//2))
+                assert checkbox.isChecked()!=before
+            else:
+                assert_tick_visible(checkbox)
             checkbox.setChecked(True)
         dialog.scroll.ensureWidgetVisible(dialog.shake_sensitivity_reset_button)
         flush()

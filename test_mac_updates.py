@@ -163,6 +163,35 @@ class MacUpdateTests(unittest.TestCase):
         self.assertEqual((self.target / 'Contents/MacOS/FlickDock').read_bytes(),
                          b'\xcf\xfa\xed\xfeNEW-FIXTURE')
 
+    def test_privileged_real_install_waits_for_original_gui_not_its_own_pid(self):
+        prepared = update.prepare_update(self.zip, self.manifest, current_version='1.7.0',
+                    installed_app=self.target, staging_parent=self.zip.parent)
+        self.prepared.append(prepared)
+        # The original GUI has exited; the elevated helper is still alive.
+        prepared.owner_pid = 2147483647
+        update.launch_update_helper(prepared,
+                    executable=self.target / 'Contents/MacOS/FlickDock',
+                    popen=lambda *args, **kwargs: object(), quit_callback=lambda: None)
+        original_install = update.install_prepared
+        installed_owner_pids = []
+        def install_with_real_guard(fresh, **kwargs):
+            installed_owner_pids.append(fresh.owner_pid)
+            return original_install(fresh, **kwargs)
+        with (patch.object(update.sys, 'platform', 'darwin'),
+              patch.object(update.sys, 'frozen', True, create=True),
+              patch.object(update.os, 'geteuid', return_value=0, create=True),
+              patch.object(update, '_privileged_receipt', return_value=self.target),
+              patch.object(update, '_trusted_manifest_for', return_value=self.manifest),
+              patch.object(update, '_pid_alive', side_effect=lambda pid: pid == os.getpid()),
+              patch.object(update, '_write_privileged_marker'),
+              patch.object(update, '_wait_for_ready'),
+              patch.object(update, 'install_prepared', side_effect=install_with_real_guard)):
+            result = update.run_elevated_update_helper(prepared.stage / 'update-receipt.json',
+                         pid_alive=lambda pid: False)
+        self.assertEqual(result, self.target)
+        self.assertEqual(installed_owner_pids, [prepared.owner_pid])
+        self.assertEqual(update.bundle_metadata(self.target)['CFBundleShortVersionString'], '1.7.1')
+
     def test_privileged_helper_rejects_archive_changed_after_user_preparation(self):
         prepared = update.prepare_update(self.zip, self.manifest, current_version='1.7.0',
                     installed_app=self.target, staging_parent=self.zip.parent)

@@ -120,6 +120,30 @@ class TransferUITests(unittest.TestCase):
         self.shelf.show_contents();flush()
         self.shelf.popup.resume_content();flush()
         return self.shelf.popup
+    def test_empty_overview_has_full_width_drop_target_and_disabled_bulk_actions(self):
+        popup=self.overview()
+        self.assertTrue(popup.empty_state.isVisible())
+        self.assertFalse(popup.scroll.isVisible())
+        self.assertEqual(popup.empty_title.text(),'搁架是空的')
+        self.assertFalse(popup.zip_button.isEnabled())
+        self.assertFalse(popup.zip_all_button.isEnabled())
+        self.assertFalse(popup.clear_button.isEnabled())
+        self.assertIs(popup.category_buttons['all'].parent(),popup.category_segments)
+        self.assertGreater(popup.empty_state.width(),popup.scroll.width())
+        self.assertTrue(all(button.property('flatToolbar') for button in
+            (self.shelf.cloud_button,self.shelf.lan_button,self.shelf.pin_button,
+             self.shelf.expand_button,self.shelf.menu_button,self.shelf.close_button)))
+
+    def test_mini_count_pill_hover_is_delayed_and_cancellable(self):
+        zone=self.shelf.zones['permanent']
+        with patch.object(self.shelf,'show_contents') as expand:
+            zone._track_pill_hover(zone.caption.geometry().center())
+            zone._track_pill_hover(QPoint(4,4))
+            QTest.qWait(310);flush()
+            expand.assert_not_called()
+            zone._track_pill_hover(zone.caption.geometry().center())
+            QTest.qWait(310);flush()
+            expand.assert_called_once_with('permanent')
     def file(self,name='original.bin',size=256*1024):
         path=self.source/name;path.write_bytes((bytes(range(256))*(size//256+1))[:size]);return path
     def pending(self,name='正在传输.mp4',*,remote=False,received=25,total=100):
@@ -245,7 +269,8 @@ class TransferUITests(unittest.TestCase):
         self.shelf.content.transfers[str(path)]={'id':'local-upload','phase':'uploading','received':40,'total':100}
         self.shelf.transfers_updated();popup=self.overview();popup.set_category('uploading');flush()
         self.assertEqual(set(popup.visible_refs()),{str(path),pending})
-        self.assertIn('2',popup.category_buttons['uploading'].text());self.assertIn('2',popup.transfer_count.text())
+        self.assertEqual(popup.transfer_badge.text(),'2');self.assertTrue(popup.transfer_badge.isVisible())
+        self.assertIn('2',popup.transfer_count.text())
         self.assertTrue(popup.transfer_summary.isVisible());self.assertEqual(popup.transfer_bar.value(),300)
         epoch=popup._build_epoch
         self.shelf.content.transfers[str(path)]['received']=80
@@ -256,6 +281,7 @@ class TransferUITests(unittest.TestCase):
         self.shelf.transfers_updated();flush()
         self.assertEqual(popup.visible_refs(),[]);self.assertFalse(popup.transfer_summary.isVisible())
         self.assertEqual(popup.category_buttons['uploading'].text(),'传输中')
+        self.assertFalse(popup.transfer_badge.isVisible())
         popup.set_category('all');self.assertFalse(popup.transfer_strip.isVisible())
 
     def test_upload_count_lives_in_transfer_tab_and_footer_not_cloud_header(self):
@@ -271,7 +297,8 @@ class TransferUITests(unittest.TestCase):
                     self.shelf.refresh();self.shelf.transfers_updated();popup=self.overview()
                     popup.set_category('all');flush()
                     self.assertFalse(hasattr(self.shelf,'upload_count'))
-                    self.assertEqual(popup.category_buttons['uploading'].text(),f'传输中 {count}')
+                    self.assertEqual(popup.transfer_badge.text(),'99+' if count>99 else str(count))
+                    self.assertEqual(popup.category_buttons['uploading'].accessibleName(),f'传输中的项目，共 {count} 项')
                     self.assertEqual(popup.strip_title.text(),f'传输中 · {count} 项')
                     self.assertTrue(popup.transfer_strip.isVisible())
         finally:
@@ -422,13 +449,16 @@ class TransferUITests(unittest.TestCase):
             self.shelf.content.transfers[ref]={'id':str(index),'phase':'queued','received':0,'total':100}
         self.shelf.refresh();popup=self.overview();popup.update_transfer_status()
         native_geometry=self.shelf.geometry()
-        for width in (480,500):
+        for width in (330,480,500):
             popup.setFixedWidth(width);popup.layout().activate();flush()
+            self.assertEqual(popup._segment_columns,4 if width<448 else 8)
             for selected in ('all','uploading'):
                 popup.set_category(selected);popup.layout().activate();flush()
                 for button in popup.category_buttons.values():
                     self.assertLessEqual(button.geometry().right(),popup.rect().right(),
                                          f'{button.text()} extends beyond the {width}px overview')
+                    self.assertLessEqual(button.mapTo(popup,QPoint(button.width(),0)).x(),popup.width(),
+                                         f'{button.text()} is cut off at {width}px')
                     text_width=button.fontMetrics().horizontalAdvance(button.text())
                     self.assertGreaterEqual(button.width()-16,text_width,
                                             f'{button.text()} is clipped in the {width}px overview')
@@ -438,7 +468,7 @@ class TransferUITests(unittest.TestCase):
             ref=self.pending(f'项目{index}.bin',remote=phase in ('remote','downloading'))
             self.shelf.content.transfers[ref]['phase']=phase
         popup=self.overview();popup.update_transfer_status()
-        self.assertEqual(popup.category_buttons['uploading'].text(),'传输中 8')
+        self.assertEqual(popup.transfer_badge.text(),'8')
         self.assertEqual(popup.transfer_count.text(),
                          '正在复制 1 项 · 正在上传 3 项 · 等待确认 1 项 · 正在下载 1 项 · 校验中 1 项 · 等待重试 1 项')
         self.shelf.content.transfers={ref:state for ref,state in self.shelf.content.transfers.items() if state['phase']=='downloading'}

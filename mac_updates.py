@@ -688,6 +688,10 @@ def run_elevated_update_helper(receipt_path, *, timeout=30, test_only=False,
         fresh = prepare_update(sealed_zip, manifest, current_version=prepared.current_version,
                     installed_app=target, staging_parent=target.parent)
         try:
+            # The sealed extraction happens inside this privileged helper.
+            # Preserve the original GUI PID for install_prepared's exit guard;
+            # using fresh.owner_pid would reject the still-running helper itself.
+            fresh.owner_pid = prepared.owner_pid
             signal_replacement = (lambda: _update_marker(prepared, 'replacement-ready').write_text(
                     prepared.ready_token, encoding='ascii')) if test_only else (
                     lambda: _write_privileged_marker(prepared, 'replacement-ready'))

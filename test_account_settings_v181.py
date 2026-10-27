@@ -107,6 +107,28 @@ class SettingsAccountTests(unittest.TestCase):
         self.assertTrue(self.store.keep_empty_handle)
         self.store.update(keep_empty_handle=False)
         self.assertFalse(app_settings.SettingsStore(self.store.base).keep_empty_handle)
+    def test_trigger_switch_clicks_at_both_ends_and_preserves_cancel(self):
+        switch=self.dialog.trigger_visible_checkbox
+        self.assertIsInstance(switch,app_settings.SettingsToggleSwitch)
+        self.dialog.scroll.ensureWidgetVisible(switch);APP.processEvents()
+        before=switch.isChecked()
+        for x in (switch.width()-12,12):
+            QTest.mouseClick(switch,Qt.MouseButton.LeftButton,pos=QPoint(x,switch.height()//2))
+            APP.processEvents()
+            before=not before
+            self.assertEqual(switch.isChecked(),before)
+        switch.setFocus(Qt.FocusReason.TabFocusReason);APP.processEvents()
+        self.assertTrue(switch.hasFocus())
+        self.dialog.reject();APP.processEvents()
+        self.assertEqual(self.store.trigger_visible,before)
+        self.dialog.show();APP.processEvents()
+        self.assertEqual(switch.isChecked(),before)
+        self.dialog.scroll.ensureWidgetVisible(self.dialog.startup_checkbox)
+        APP.processEvents()
+        startup_bottom=self.dialog.startup_checkbox.mapTo(
+            self.dialog,QPoint(0,self.dialog.startup_checkbox.height())).y()
+        footer_top=self.dialog.save_button.mapTo(self.dialog,QPoint()).y()
+        self.assertLess(startup_bottom,footer_top)
     def test_inline_update_animation_and_real_download_progress(self):
         self.dialog.set_update_state('installing',version='1.8.1');APP.processEvents()
         bar=self.dialog.update_activity
@@ -133,6 +155,10 @@ class SettingsAccountTests(unittest.TestCase):
         for theme in ('light','dark'):
             self.dialog.apply_theme(theme);APP.processEvents()
             self.assertEqual(self.dialog.scroll.horizontalScrollBar().maximum(),0)
+            self.assertEqual(self.panel.devices_body.objectName(),'accountDevices')
+            self.assertEqual(len(self.panel.devices_body.findChildren(QWidget,'accountDeviceSeparator')),1)
+            for row in self.panel._rows_by_id.values():
+                self.assertTrue(self.panel.devices_body.rect().contains(row.geometry()))
             for widget in self.panel.findChildren(QWidget):
                 if widget.isVisible():
                     point=widget.mapTo(self.panel,QPoint())

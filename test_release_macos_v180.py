@@ -151,6 +151,28 @@ class MacReleaseTests(unittest.TestCase):
             self.build['artifacts'][0][key] = value; self.save_reports(); self.blocked()
         self.assertFalse(self.server.requests)
 
+    def test_1813_requires_a_real_cocoa_startup_without_native_side_effects(self):
+        self.build['version'] = self.cloud['version'] = self.build['frozen']['version'] = '1.8.13'
+        self.save_reports()
+        with self.assertRaisesRegex(release.ReleaseError, 'Cocoa shelf startup'):
+            release.validate_reports(self.build_report, self.cloud_report, self.archive,
+                                     '1.8.13', self.arch, self.archive.stat().st_size,
+                                     release.sha256_file(self.archive))
+        self.build['frozen']['cocoa_startup'] = dict(
+            ok=True, version='1.8.13', qt_platform='cocoa', shelf_constructed=True,
+            native_hotkeys=False, lan_listener=False, cloud_session=False,
+            startup_mutation=False)
+        self.save_reports()
+        release.validate_reports(self.build_report, self.cloud_report, self.archive,
+                                 '1.8.13', self.arch, self.archive.stat().st_size,
+                                 release.sha256_file(self.archive))
+        self.build['frozen']['cocoa_startup']['lan_listener'] = True
+        self.save_reports()
+        with self.assertRaisesRegex(release.ReleaseError, 'Cocoa shelf startup'):
+            release.validate_reports(self.build_report, self.cloud_report, self.archive,
+                                     '1.8.13', self.arch, self.archive.stat().st_size,
+                                     release.sha256_file(self.archive))
+
     def test_embedded_bundle_version_and_native_architecture_must_match(self):
         for options in [dict(version='1.7.0'), dict(architecture='x86_64')]:
             with self.subTest(options=options):

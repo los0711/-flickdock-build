@@ -136,7 +136,7 @@ class AccountTests(unittest.TestCase):
         original=self.settings.path.read_bytes()
         self.click(self.panel.register_tab)
         self.assertEqual(set(self.panel.auth_page.findChildren(QLineEdit)),{self.panel.username_edit,self.panel.password_edit})
-        self.assertFalse(self.panel.email_form.isVisible())
+        self.assertFalse(any('邮箱' in w.accessibleName() for w in self.panel.findChildren(QLineEdit)))
         self.panel.username_edit.setText('新账户');self.panel.password_edit.setText(PASSWORD)
         QTest.keyClick(self.panel.password_edit,Qt.Key.Key_Return);flush()
         request=self.finish_challenge('register')
@@ -167,29 +167,19 @@ class AccountTests(unittest.TestCase):
         self.panel.password_edit.setText(PASSWORD);self.dialog.hide();flush()
         self.assertEqual(self.panel.password_edit.text(),'')
 
-    def test_optional_email_code_bind_flow_and_plain_account_name(self):
-        account=self.sign_in(self.account(name='<b>用户名</b>'))
+    def test_existing_email_metadata_stays_private_and_sync_status_works(self):
+        account=self.sign_in(self.account(name='<b>用户名</b>',email='saved@example.invalid'))
         self.assertEqual(self.panel.username_label.text(),account['username'])
         self.assertEqual(self.panel.username_label.textFormat(),Qt.TextFormat.PlainText)
-        self.assertIn('未绑定',self.panel.email_status_label.text())
+        self.assertEqual(self.service.account['email'],'saved@example.invalid')
+        visible=' '.join(label.text() for label in self.panel.findChildren(QLabel))
+        visible+=' '+' '.join(button.text() for button in self.panel.findChildren(QPushButton))
+        self.assertNotIn('邮箱',visible);self.assertNotIn('验证码',visible)
+        self.assertNotIn('saved@example.invalid',visible)
+        self.assertFalse(any('邮箱' in edit.accessibleName() for edit in self.panel.findChildren(QLineEdit)))
+        before=len(self.api.requests)
         self.panel.set_sync_status('已同步');self.assertEqual(self.panel.sync_status_label.text(),'已同步')
-        self.click(self.panel.email_toggle_button)
-        self.assertFalse(self.panel.bind_button.isEnabled())
-        self.panel.email_edit.setText('fixture@example.invalid');self.click(self.panel.send_code_button)
-        self.assertFalse(self.panel.send_code_button.isEnabled())
-        self.assertEqual(self.api.last()['options']['data'],{'email':'fixture@example.invalid'})
-        self.api.finish(self.api.last(),dict(challenge_id='challenge-fixture'))
-        self.assertTrue(self.panel.bind_button.isEnabled())
-        before=len(self.api.requests);self.panel.code_edit.setText('12345')
-        QTest.keyClick(self.panel.code_edit,Qt.Key.Key_Return);flush()
         self.assertEqual(len(self.api.requests),before)
-        self.panel.code_edit.setText('123456');self.click(self.panel.bind_button)
-        self.assertEqual(self.api.last()['options']['data'],{'challenge_id':'challenge-fixture','code':'123456'})
-        self.api.finish(self.api.last(),dict(account=dict(account,email='fixture@example.invalid')))
-        self.api.finish(self.api.last('/v1/me'),dict(account=dict(account,email='fixture@example.invalid',email_verified_at='2026-10-26T00:00:00Z')))
-        self.assertIn('fixture@example.invalid',self.panel.email_status_label.text())
-        self.assertEqual(self.panel.code_edit.text(),'');self.assertEqual(self.panel._challenge,'')
-        self.assertFalse(self.panel.email_form.isVisible());self.assertEqual(self.panel.sync_status_label.text(),'已同步')
 
     def test_device_current_tag_revoked_filter_inline_confirm_cancel_and_retry(self):
         self.sign_in()
@@ -213,17 +203,13 @@ class AccountTests(unittest.TestCase):
         before=len(self.api.requests);self.panel._ask_remove(CURRENT);self.panel._confirm_remove()
         self.assertEqual(len(self.api.requests),before)
 
-    def test_logout_and_account_switch_clear_identity_email_devices_and_stale_results(self):
+    def test_logout_and_account_switch_clear_identity_devices_and_stale_results(self):
         self.sign_in(self.account(email='account-a@example.invalid'))
         self.panel.set_sync_status('账号甲文件正在同步')
-        self.click(self.panel.email_toggle_button);self.panel.email_edit.setText('new-a@example.invalid')
-        self.click(self.panel.send_code_button);self.api.finish(self.api.last(),dict(challenge_id='old-a-challenge'))
-        self.panel.code_edit.setText('123456')
         self.panel.refresh_devices();old_devices=self.api.last('/v1/devices')
         self.click(self.panel.logout_button);self.api.finish(self.api.last('/v1/auth/logout'),dict())
         self.assertTrue(self.panel.auth_page.isVisible());self.assertFalse(self.panel.signed_in_page.isVisible())
-        self.assertEqual(self.panel.username_label.text(),'');self.assertEqual(self.panel.email_edit.text(),'')
-        self.assertEqual(self.panel._challenge,'');self.assertEqual(self.panel.code_edit.text(),'')
+        self.assertEqual(self.panel.username_label.text(),'')
         self.assertEqual(self.panel.sync_status_label.text(),'');self.assertEqual(self.panel.device_buttons,{})
         self.panel.set_sync_status('stale A sync');self.assertEqual(self.panel.sync_status_label.text(),'')
         self.sign_in(self.account(name='乙账户',key='account-b'))
@@ -232,21 +218,25 @@ class AccountTests(unittest.TestCase):
         text=' '.join(label.text() for label in self.panel.findChildren(QLabel))
         self.assertNotIn('account-a@example.invalid',text);self.assertNotIn('账号甲',text)
         self.assertNotIn('stale A',text);self.assertEqual(self.panel.username_label.text(),'乙账户')
-        self.assertEqual(self.panel._challenge,'');self.assertNotIn('account-a',str(self.sessions.value))
+        self.assertNotIn('account-a',str(self.sessions.value))
 
-    def test_email_failure_and_edited_address_do_not_reuse_old_challenge(self):
-        self.sign_in();self.click(self.panel.email_toggle_button)
-        self.panel.email_edit.setText('first@example.invalid');self.click(self.panel.send_code_button)
-        self.api.finish(self.api.last(),error=CloudError('sender unavailable',503,'EMAIL_UNAVAILABLE'))
-        self.assertIn('暂未开放',self.panel.status_label.text());self.assertFalse(self.panel.bind_button.isEnabled())
-        self.click(self.panel.send_code_button)
-        self.panel.email_edit.setText('second@example.invalid')
-        self.api.finish(self.api.last(),dict(challenge_id='challenge-for-first'))
-        self.assertEqual(self.panel._challenge,'');self.assertFalse(self.panel.bind_button.isEnabled())
+    def test_legacy_email_binding_option_does_not_recreate_ui(self):
+        other=AccountPanel(self.service,email_binding=True)
+        labels=' '.join(label.text() for label in other.findChildren(QLabel))
+        self.assertNotIn('邮箱',labels)
+        self.assertNotIn('验证码',labels)
+        self.assertFalse(any('邮箱' in edit.accessibleName() for edit in other.findChildren(QLineEdit)))
+        other.deleteLater();flush()
 
     def test_light_dark_572_outer_layout_preserves_540_content_width(self):
         for signed in (False,True):
-            if signed:self.sign_in(self.account(name='用户名'*20,email='long-mailbox@example.invalid'));self.click(self.panel.email_toggle_button)
+            if signed:
+                long_name='用户名'*20
+                self.sign_in(self.account(name=long_name,email='long-mailbox@example.invalid'))
+                self.assertEqual(self.panel.username_label.text(),long_name)
+                self.assertEqual(self.panel.username_label.accessibleName(),long_name)
+                self.assertTrue(QLabel.text(self.panel.username_label).endswith('…'))
+                self.assertEqual(self.panel.username_label.height(),26)
             for theme in ('light','dark'):
                 self.dialog.apply_theme(theme);flush()
                 self.assertEqual(self.dialog.width(),572)

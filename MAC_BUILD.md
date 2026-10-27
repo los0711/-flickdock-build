@@ -119,7 +119,8 @@ name the exact versioned package and its whole-file size/SHA256; publish only
 after the native Mac build report and anonymous full download pass. Do not
 change a legacy index to ZIP: older clients would lose their upgrade path.
 `release_macos.py` checks the native build and frozen cloud reports, local package,
-bundle identity/version/CPU header and anonymous complete download. It writes
+bundle identity/version/CPU header, a successful native Cocoa shelf startup
+without hotkeys or network side effects, and anonymous complete download. It writes
 the matching architecture index in the selected `--channel legacy` or
 `--channel auto` only after every check passes. The auto channel accepts ZIP
 only. Initial publication requires `--initial-release`; existing versions

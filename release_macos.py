@@ -75,6 +75,14 @@ def validate_reports(build_report: Path, cloud_report: Path, archive: Path,
             or frozen.get('platform') != 'darwin' or frozen.get('bundle_id') != BUNDLE_ID
             or frozen.get('qt_platform') != 'offscreen'):
         raise ReleaseError('Native Mac build report must include the passing packaged application check')
+    if version_tuple(version) >= (1, 8, 13):
+        cocoa = frozen.get('cocoa_startup')
+        if (not isinstance(cocoa, dict) or cocoa.get('ok') is not True
+                or cocoa.get('version') != version or cocoa.get('qt_platform') != 'cocoa'
+                or cocoa.get('shelf_constructed') is not True
+                or any(cocoa.get(name) is not False for name in
+                       ('native_hotkeys', 'lan_listener', 'cloud_session', 'startup_mutation'))):
+            raise ReleaseError('Native Mac build must prove a safe Cocoa shelf startup')
     artifacts = build.get('artifacts')
     selected = [row for row in artifacts if isinstance(row, dict) and row.get('name') == archive.name] if isinstance(artifacts, list) else []
     if (len(selected) != 1 or type(selected[0].get('bytes')) is not int or selected[0]['bytes'] != size

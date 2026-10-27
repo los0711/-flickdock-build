@@ -1,6 +1,6 @@
 # FlickDock
 
-适用于 Windows 10/11 x64 和 macOS 14.4 以上（Apple 芯片、Intel）的文件、图片和文字搁架。当前源码版本 **1.8.12**。
+适用于 Windows 10/11 x64 和 macOS 14.4 以上（Apple 芯片、Intel）的文件、图片和文字搁架。当前源码版本 **1.8.13**。
 
 单个永久搁架，支持内容拖放、快速甩动呼出、可配置快捷键、屏幕贴边、图片与视频预览、文字直接拖出、多选拖出和 ZIP 打包。设置支持明暗主题、复制或原位置引用、保存位置、自启动、触发区域和甩动灵敏度。
 
@@ -47,7 +47,7 @@ FlickDock.exe --verify-update --verify-current 1.6.5 --verify-output update-resu
 
 设置和托盘菜单都提供“检查更新”。正式安装版启动后会自动检查，并在发现新版本时提示；下载经过 HTTPS、大小和 SHA256 校验。用户点击安装后覆盖当前安装目录、保留搁架和设置，并重新启动应用。开发运行不会自动检查或执行安装程序。
 
-Gitee 主源码仓库保持私有；这个 GitHub 构建镜像公开，包含完整客户端和云端源码，以使用公开仓库的标准 macOS Actions 运行器。公开安装包与更新索引位于 [FlickDock Releases](https://gitee.com/rooogerluo/flick-dock-releases/releases)。发布完整步骤见 [PUBLISHING.md](PUBLISHING.md)。仅推送源代码不会产生可安装更新，需一并构建和发布安装包，最后更新索引。
+源码仓库保持私有。公开安装包与更新索引位于 [FlickDock Releases](https://gitee.com/rooogerluo/flick-dock-releases/releases)。发布完整步骤见 [PUBLISHING.md](PUBLISHING.md)。仅推送源代码不会产生可安装更新，需一并构建和发布安装包，最后更新索引。
 
 ## 字体与许可
 

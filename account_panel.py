@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 from functools import partial
-import re
+import sys
 from account_service import valid_new_password
 
 from PySide6.QtCore import QByteArray, QDateTime, QEvent, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QPainter
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit,
                                QPushButton, QSizePolicy, QVBoxLayout, QWidget)
@@ -19,6 +19,37 @@ def _label(text='', parent=None, *, muted=False):
     label.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Preferred)
     if muted:label.setObjectName('accountMuted')
     return label
+
+
+class AccountNameLabel(QLabel):
+    """Keep the full account name for assistive tech and elide its one-line view."""
+    def __init__(self, parent=None):
+        super().__init__('', parent)
+        self._full_text=''
+        self.setTextFormat(Qt.TextFormat.PlainText)
+        self.setWordWrap(False)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Fixed)
+        self.setMinimumWidth(0)
+        self.setFixedHeight(26)
+
+    def text(self):
+        return self._full_text
+
+    def setText(self, value):
+        self._full_text=str(value)
+        self.setAccessibleName(self._full_text)
+        self._refresh_display()
+
+    def clear(self):
+        self.setText('')
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._refresh_display()
+
+    def _refresh_display(self):
+        width=max(1,self.contentsRect().width())
+        super().setText(self.fontMetrics().elidedText(self._full_text,Qt.TextElideMode.ElideRight,width))
 
 
 def _button(text, parent=None, *, name=''):
@@ -52,9 +83,9 @@ class RemoveDeviceButton(QPushButton):
 
 class AccountGlyph(QWidget):
     """A single vector family for the account and device identity markers."""
-    def __init__(self,parent=None,*,device=False):
+    def __init__(self,parent=None,*,device=False,platform=''):
         super().__init__(parent)
-        self.device=device;self.dark=False
+        self.device=device;self.platform=platform;self.dark=False
         self.setFixedSize(34 if device else 44,34 if device else 44)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
@@ -63,8 +94,12 @@ class AccountGlyph(QWidget):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor('#344459' if self.dark else '#eaf2fd'))
         painter.drawRoundedRect(QRectF(self.rect()),10,10)
-        path=('M4 4h16v11H4zM9 20h6M12 15v5' if self.device
-              else 'M8 8a4 4 0 1 0 8 0 4 4 0 0 0-8 0M5 21v-2a7 7 0 0 1 14 0v2')
+        if self.device and self.platform=='windows':
+            path='M4 5l7-1v7H4zM13 3.7L20 3v8h-7zM4 13h7v7l-7-1zM13 13h7v8l-7-1z'
+        elif self.device:
+            path='M4 4h16v11H4zM9 20h6M12 15v5'
+        else:
+            path='M8 8a4 4 0 1 0 8 0 4 4 0 0 0-8 0M5 21v-2a7 7 0 0 1 14 0v2'
         svg=f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="{path}" fill="none" stroke="{"#8dc0ff" if self.dark else "#377cc7"}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>'
         size=19 if self.device else 23
         QSvgRenderer(QByteArray(svg.encode())).render(painter,QRectF((self.width()-size)/2,(self.height()-size)/2,size,size))
@@ -72,16 +107,17 @@ class AccountGlyph(QWidget):
 
 class AccountPanel(QFrame):
     """AccountService presentation, embedded in SettingsDialog's account slot."""
-    def __init__(self,service,parent=None,*,theme='light',email_binding=True):
+    def __init__(self,service,parent=None,*,theme='light',email_binding=False):
         super().__init__(parent)
         self.service=service
-        self.email_binding=bool(email_binding)
+        # Keep the argument for older app builds; the email controls are gone.
+        self.email_binding=False
         self.setObjectName('accountPanel')
-        self.setFont(QFont('HarmonyOS Sans SC',11))
+        self.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont)
+                     if sys.platform=='darwin' else QFont('HarmonyOS Sans SC',11))
         self.setMinimumWidth(0)
         self.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Preferred)
         self._mode='login';self._account_id='';self._busy=bool(service.busy)
-        self._challenge='';self._challenge_email='';self._requested_email=''
         self._devices={};self.device_buttons={};self._device_rows=[];self._rows_by_id={}
         self.device_rename_buttons={};self.device_name_edits={};self._rename_forms={}
         self._rename_save_buttons={};self._editing_device=''
@@ -98,7 +134,6 @@ class AccountPanel(QFrame):
         layout.addLayout(heading)
 
         self.auth_page=QWidget(self);auth=QVBoxLayout(self.auth_page);auth.setContentsMargins(0,0,0,0);auth.setSpacing(9)
-        auth.addWidget(_label('使用同一账号，Windows 和 Mac 会自动同步内容。',self.auth_page,muted=True))
         tabs=QHBoxLayout();tabs.setSpacing(6)
         self.login_tab=_button('登录',self.auth_page,name='accountTab')
         self.register_tab=_button('注册',self.auth_page,name='accountTab')
@@ -123,30 +158,44 @@ class AccountPanel(QFrame):
 
         self.signed_in_page=QWidget(self);signed=QVBoxLayout(self.signed_in_page)
         signed.setContentsMargins(0,0,0,0);signed.setSpacing(12)
-        identity=QHBoxLayout();identity.setSpacing(10)
+        self.profile_frame=QFrame(self.signed_in_page)
+        self.profile_frame.setObjectName('accountProfile')
+        identity=QHBoxLayout(self.profile_frame)
+        identity.setContentsMargins(12,12,12,12);identity.setSpacing(10)
         self.account_glyph=AccountGlyph(self.signed_in_page)
         identity.addWidget(self.account_glyph)
         identity_text=QVBoxLayout();identity_text.setSpacing(3)
-        self.username_label=_label('',self.signed_in_page);self.username_label.setObjectName('accountUsername')
+        self.username_label=AccountNameLabel(self.signed_in_page)
+        self.username_label.setObjectName('accountUsername')
         identity_text.addWidget(self.username_label)
         self.login_alias_edit=QLineEdit(self.signed_in_page)
         self.login_alias_edit.setReadOnly(True);self.login_alias_edit.setMaxLength(128)
         self.login_alias_edit.setAccessibleName('重名账号登录 ID')
         self.login_alias_edit.hide();identity_text.addWidget(self.login_alias_edit)
         self.sync_status_label=_label('',self.signed_in_page,muted=True)
-        self.sync_status_label.setAccessibleName('云同步状态');identity_text.addWidget(self.sync_status_label)
+        self.sync_status_label.setAccessibleName('云同步状态')
         identity.addLayout(identity_text,1)
         self.logout_button=_button('退出登录',self.signed_in_page,name='accountQuiet')
         self.logout_button.clicked.connect(lambda:self._invoke(self.service.logout));identity.addWidget(self.logout_button)
-        signed.addLayout(identity)
-        security_heading=QHBoxLayout();security_heading.setSpacing(8)
+        signed.addWidget(self.profile_frame)
+        signed.addWidget(self.sync_status_label)
+        # The live sync result belongs with the identity, while account actions
+        # stay in a compact inset group below it.
+        self.sync_status_label.setObjectName('accountSyncStatus')
+        security_group=QFrame(self.signed_in_page);security_group.setObjectName('accountActions')
+        security_group_layout=QVBoxLayout(security_group)
+        security_group_layout.setContentsMargins(0,0,0,0);security_group_layout.setSpacing(0)
+        security_row=QWidget(security_group)
+        security_heading=QHBoxLayout(security_row)
+        security_heading.setContentsMargins(12,3,12,3);security_heading.setSpacing(8)
         security_title=_label('账号安全',self.signed_in_page)
         security_title.setObjectName('accountSection')
         security_heading.addWidget(security_title,1)
         self.password_toggle_button=_button('修改密码',self.signed_in_page,name='accountQuiet')
         self.password_toggle_button.setCheckable(True)
         self.password_toggle_button.clicked.connect(self._toggle_password)
-        security_heading.addWidget(self.password_toggle_button);signed.addLayout(security_heading)
+        security_heading.addWidget(self.password_toggle_button)
+        security_group_layout.addWidget(security_row)
         self.password_form=QFrame(self.signed_in_page);self.password_form.setObjectName('accountSecurity')
         password_layout=QVBoxLayout(self.password_form);password_layout.setContentsMargins(12,12,12,12);password_layout.setSpacing(8)
         for attribute,label,placeholder in (
@@ -164,29 +213,9 @@ class AccountPanel(QFrame):
         self.password_cancel_button.clicked.connect(self._reset_password)
         self.password_change_button.clicked.connect(self._change_password)
         password_actions.addWidget(self.password_cancel_button);password_actions.addWidget(self.password_change_button)
-        password_layout.addLayout(password_actions);signed.addWidget(self.password_form);self.password_form.hide()
-        email_row=QHBoxLayout();email_row.setSpacing(8)
-        self.email_status_label=_label('',self.signed_in_page,muted=True);email_row.addWidget(self.email_status_label,1)
-        self.email_toggle_button=_button('绑定邮箱',self.signed_in_page,name='accountQuiet')
-        self.email_toggle_button.clicked.connect(self._toggle_email);email_row.addWidget(self.email_toggle_button)
-        signed.addLayout(email_row)
-        self.email_form=QWidget(self.signed_in_page);email=QVBoxLayout(self.email_form)
-        email.setContentsMargins(0,0,0,0);email.setSpacing(8)
-        email.addWidget(_label('邮箱绑定是可选的，不影响登录和同步。',self.email_form,muted=True))
-        email_input=QHBoxLayout();email_input.setSpacing(8)
-        self.email_edit=QLineEdit(self.email_form);self.email_edit.setPlaceholderText('邮箱地址')
-        self.email_edit.setAccessibleName('绑定邮箱地址');self.email_edit.setMaxLength(254)
-        self.email_edit.textChanged.connect(self._email_changed);email_input.addWidget(self.email_edit,1)
-        self.send_code_button=_button('发送验证码',self.email_form)
-        self.send_code_button.clicked.connect(self._send_email_code);email_input.addWidget(self.send_code_button)
-        email.addLayout(email_input)
-        code_row=QHBoxLayout();code_row.setSpacing(8)
-        self.code_edit=QLineEdit(self.email_form);self.code_edit.setPlaceholderText('6 位邮箱验证码')
-        self.code_edit.setAccessibleName('邮箱验证码');self.code_edit.setMaxLength(6)
-        code_row.addWidget(self.code_edit,1)
-        self.bind_button=_button('绑定邮箱',self.email_form,name='accountPrimary')
-        self.bind_button.clicked.connect(self._bind_email);code_row.addWidget(self.bind_button)
-        email.addLayout(code_row);signed.addWidget(self.email_form)
+        password_layout.addLayout(password_actions);self.password_form.hide()
+        signed.addWidget(security_group)
+        signed.addWidget(self.password_form)
         devices_header=QHBoxLayout()
         self.devices_heading_label=_label('已登录设备',self.signed_in_page)
         self.devices_heading_label.setObjectName('accountSection')
@@ -194,8 +223,10 @@ class AccountPanel(QFrame):
         self.refresh_button=_button('刷新',self.signed_in_page,name='accountQuiet')
         self.refresh_button.clicked.connect(self.refresh_devices);devices_header.addWidget(self.refresh_button)
         signed.addLayout(devices_header)
-        self.devices_body=QWidget(self.signed_in_page);self.devices_layout=QVBoxLayout(self.devices_body)
-        self.devices_layout.setContentsMargins(0,0,0,0);self.devices_layout.setSpacing(7)
+        self.devices_body=QFrame(self.signed_in_page)
+        self.devices_body.setObjectName('accountDevices')
+        self.devices_layout=QVBoxLayout(self.devices_body)
+        self.devices_layout.setContentsMargins(4,4,4,4);self.devices_layout.setSpacing(0)
         signed.addWidget(self.devices_body)
         self.confirm_frame=QFrame(self.signed_in_page);self.confirm_frame.setObjectName('accountConfirm')
         confirmation=QVBoxLayout(self.confirm_frame);confirmation.setContentsMargins(12,10,12,10);confirmation.setSpacing(8)
@@ -217,13 +248,9 @@ class AccountPanel(QFrame):
         service.status_changed.connect(self._status_changed)
         service.busy_changed.connect(self._busy_changed)
         service.devices_changed.connect(self._devices_changed)
-        service.email_challenge.connect(self._email_challenge)
         if hasattr(service,'password_changed'):service.password_changed.connect(self._password_changed)
         self.set_auth_mode('login');self.apply_theme(theme)
         self._account_changed(service.account)
-        self.email_status_label.setVisible(self.email_binding)
-        self.email_toggle_button.setVisible(self.email_binding)
-        if not self.email_binding:self.email_form.hide()
         if service.signed_in:self.refresh_devices()
 
     def set_auth_mode(self,mode):
@@ -253,9 +280,9 @@ class AccountPanel(QFrame):
             self._account_id=identity
             self.password_edit.clear();self.username_edit.clear();self.status_label.clear();self.auth_status_label.clear()
             self.username_label.clear();self.login_alias_edit.clear();self.login_alias_edit.hide()
-            self.email_status_label.clear();self.sync_status_label.clear()
+            self.sync_status_label.clear()
             self._reset_password()
-            self._reset_email();self.email_form.hide();self._refreshing=False;self._revoke_pending=''
+            self._refreshing=False;self._revoke_pending=''
             self._devices_changed([])
             if signed:self.sync_status_label.setText('正在准备同步…')
         self.auth_page.setVisible(not signed);self.signed_in_page.setVisible(signed)
@@ -266,12 +293,6 @@ class AccountPanel(QFrame):
             alias=account.get('login_alias')
             self.login_alias_edit.setText(alias if isinstance(alias,str) else '')
             self.login_alias_edit.setVisible(bool(isinstance(alias,str) and alias))
-            address=account.get('email')
-            verified=bool(address and account.get('email_verified_at'))
-            self.email_status_label.setText(('邮箱：'+str(address)+('' if verified else '（待验证）')) if address else '邮箱未绑定（可选）')
-            self.email_toggle_button.setText('更换邮箱' if address else '绑定邮箱')
-            if verified and str(address).casefold()==self._challenge_email.casefold():
-                self._reset_email();self.email_form.hide()
         self._update_enabled()
 
     def set_sync_status(self,text):
@@ -294,16 +315,17 @@ class AccountPanel(QFrame):
     def _update_enabled(self):
         signed=bool(self.service.signed_in)
         self.account_state_label.setText('处理中…' if self._busy else '已登录' if signed else '未登录')
+        online=signed and not self._busy
+        if self.account_state_label.property('online')!=online:
+            self.account_state_label.setProperty('online',online)
+            self.account_state_label.style().unpolish(self.account_state_label)
+            self.account_state_label.style().polish(self.account_state_label)
         for widget in (self.username_edit,self.password_edit,self.submit_button,self.login_tab,self.register_tab):
             widget.setEnabled(not self._busy)
-        for widget in (self.logout_button,self.email_toggle_button,self.email_edit,self.send_code_button):
-            widget.setEnabled(signed and not self._busy)
+        self.logout_button.setEnabled(signed and not self._busy)
         for widget in (self.password_toggle_button,self.old_password_edit,self.new_password_edit,
                        self.confirm_password_edit,self.password_change_button,self.password_cancel_button):
             widget.setEnabled(signed and not self._busy)
-        valid=bool(self._challenge and self.email_edit.text().strip().casefold()==self._challenge_email.casefold())
-        self.code_edit.setEnabled(signed and not self._busy and valid)
-        self.bind_button.setEnabled(signed and not self._busy and valid)
         self.refresh_button.setEnabled(signed and not self._busy and not self._refreshing)
         for button in self.device_buttons.values():button.setEnabled(signed and not self._busy and not self._revoke_pending)
         for button in self.device_rename_buttons.values():button.setEnabled(signed and not self._busy and not self._revoke_pending)
@@ -339,39 +361,6 @@ class AccountPanel(QFrame):
         self._reset_password()
         self._status_changed('密码已更新，其他设备需要重新登录。')
 
-    def _toggle_email(self):
-        self.email_form.setVisible(not self.email_form.isVisible())
-        if self.email_form.isVisible():self.email_edit.setFocus()
-
-    def _reset_email(self):
-        self._challenge=self._challenge_email=self._requested_email=''
-        self.email_edit.clear();self.code_edit.clear()
-
-    def _email_changed(self,*_):
-        self._challenge=self._challenge_email=self._requested_email='';self.code_edit.clear()
-        self._update_enabled()
-
-    def _send_email_code(self):
-        if not self.service.signed_in or self._busy:return
-        email=self.email_edit.text().strip()
-        if not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+',email):
-            self._status_changed('请输入有效的邮箱地址。');return
-        self._challenge=self._challenge_email='';self.code_edit.clear();self._requested_email=email
-        self._update_enabled();self._invoke(self.service.request_email_code,email)
-
-    def _email_challenge(self,challenge,email):
-        if (not self.service.signed_in or not challenge or not self._requested_email
-                or email.casefold()!=self._requested_email.casefold()
-                or email.casefold()!=self.email_edit.text().strip().casefold()):return
-        self._challenge,self._challenge_email=str(challenge),str(email)
-        self._update_enabled();self.code_edit.setFocus()
-
-    def _bind_email(self):
-        if self._busy or not self.bind_button.isEnabled():return
-        if not re.fullmatch(r'[0-9]{6}',self.code_edit.text().strip()):
-            self._status_changed('请输入 6 位邮箱验证码。');return
-        self._invoke(self.service.bind_email,self._challenge,self.code_edit.text().strip())
-
     def refresh_devices(self):
         if not self.service.signed_in or self._busy or self._refreshing:return
         self._refreshing=True;self._cancel_remove();self._update_enabled()
@@ -391,10 +380,16 @@ class AccountPanel(QFrame):
             for device in devices:
                 if not isinstance(device,dict) or not device.get('id') or device.get('revoked_at'):continue
                 key=str(device['id']);self._devices[key]=dict(device)
+                if self._device_rows:
+                    separator=QFrame(self.devices_body)
+                    separator.setObjectName('accountDeviceSeparator')
+                    separator.setFixedHeight(1)
+                    self.devices_layout.addWidget(separator);self._device_rows.append(separator)
                 row=QFrame(self.devices_body);row.setObjectName('accountDevice')
-                row_layout=QVBoxLayout(row);row_layout.setContentsMargins(10,10,8,10);row_layout.setSpacing(8)
+                row_layout=QVBoxLayout(row);row_layout.setContentsMargins(8,7,8,7);row_layout.setSpacing(8)
                 horizontal=QHBoxLayout();horizontal.setSpacing(9);row_layout.addLayout(horizontal)
-                glyph=AccountGlyph(row,device=True);glyph.dark=self._dark;horizontal.addWidget(glyph)
+                glyph=AccountGlyph(row,device=True,platform=str(device.get('platform','')))
+                glyph.dark=self._dark;horizontal.addWidget(glyph)
                 detail=QVBoxLayout();detail.setSpacing(3)
                 device_name=_label(str(device.get('name') or '未命名设备'),row)
                 device_name.setObjectName('accountDeviceName')
@@ -477,8 +472,6 @@ class AccountPanel(QFrame):
         if event.type()==QEvent.Type.KeyPress and event.key() in (Qt.Key.Key_Return,Qt.Key.Key_Enter):
             if watched is self.username_edit:self.password_edit.setFocus()
             elif watched is self.password_edit:self._submit_auth()
-            elif watched is self.email_edit:self._send_email_code()
-            elif watched is self.code_edit:self._bind_email()
             elif watched is self.old_password_edit:self.new_password_edit.setFocus()
             elif watched is self.new_password_edit:self.confirm_password_edit.setFocus()
             elif watched is self.confirm_password_edit:self._change_password()
@@ -491,7 +484,7 @@ class AccountPanel(QFrame):
         return super().eventFilter(watched,event)
 
     def hideEvent(self,event):
-        self.password_edit.clear();self.code_edit.clear()
+        self.password_edit.clear()
         self._reset_password();self._cancel_rename()
         super().hideEvent(event)
 
@@ -499,15 +492,25 @@ class AccountPanel(QFrame):
         self._dark=theme=='dark'
         card,field,ink,secondary,edge,hover=(('#272c35','#20252e','#edf2fa','#b1bed0','#3c4554','#39465a') if self._dark
             else ('#ffffff','#fbfcfe','#253246','#58697e','#dce3ed','#edf4fe'))
+        inset='#20252e' if self._dark else '#f7f9fc'
+        if sys.platform=='darwin':
+            card='rgba(39,44,53,246)' if self._dark else 'rgba(255,255,255,248)'
+            inset='rgba(32,37,46,230)' if self._dark else 'rgba(247,249,252,230)'
+        success='#7dd6a8' if self._dark else '#14784a'
         self.setStyleSheet(f'''
             QFrame#accountPanel {{background:{card};border:1px solid {edge};border-radius:13px;}}
             QFrame#accountPanel QLabel {{background:transparent;color:{ink};font-size:13px;border:0;}}
             QFrame#accountPanel QLabel#accountTitle {{font-size:15px;font-weight:600;}}
             QFrame#accountPanel QLabel#accountSection {{font-size:14px;font-weight:600;}}
             QFrame#accountPanel QLabel#accountDeviceName {{font-size:14px;font-weight:500;}}
-            QFrame#accountPanel QLabel#accountState {{color:{secondary};font-size:12px;background:{field};border-radius:9px;padding:4px 8px;}}
+            QFrame#accountPanel QLabel#accountState {{color:{secondary};font-size:12px;background:{inset};border-radius:9px;padding:4px 9px;}}
+            QFrame#accountPanel QLabel#accountState[online="true"] {{color:{success};background:{'#263c35' if self._dark else '#eaf7ef'};}}
             QFrame#accountPanel QLabel#accountUsername {{font-size:16px;font-weight:600;}}
             QFrame#accountPanel QLabel#accountMuted {{color:{secondary};font-size:13px;}}
+            QFrame#accountPanel QLabel#accountSyncStatus {{color:{secondary};font-size:12px;padding:1px 2px;}}
+            QFrame#accountProfile {{background:{inset};border:1px solid {edge};border-radius:11px;}}
+            QFrame#accountActions, QFrame#accountDevices {{background:{inset};border:1px solid {edge};border-radius:10px;}}
+            QFrame#accountActionSeparator, QFrame#accountDeviceSeparator {{background:{edge};border:0;}}
             QFrame#accountPanel QLineEdit {{background:{field};color:{ink};border:1px solid {edge};border-radius:8px;padding:7px 10px;font-size:14px;}}
             QFrame#accountPanel QLineEdit:focus {{border-color:#5d9eeb;}}
             QFrame#accountPanel QPushButton {{background:{card};color:{ink};border:1px solid {edge};border-radius:8px;padding:5px 12px;font-size:13px;}}
@@ -518,11 +521,12 @@ class AccountPanel(QFrame):
             QFrame#accountPanel QPushButton#accountPrimary {{background:#2584ed;color:white;border-color:#2584ed;}}
             QFrame#accountPanel QPushButton#accountPrimary:hover {{background:#3694fa;}}
             QFrame#accountPanel QPushButton#accountPrimary:disabled {{background:{edge};color:{secondary};border-color:{edge};}}
-            QFrame#accountPanel QPushButton#accountQuiet {{background:transparent;color:{secondary};border:0;padding:5px 0;}}
-            QFrame#accountPanel QPushButton#accountQuiet:hover {{color:{ink};}}
+            QFrame#accountPanel QPushButton#accountQuiet {{background:transparent;color:{secondary};border:0;padding:5px 4px;}}
+            QFrame#accountPanel QPushButton#accountQuiet:hover {{background:{hover};color:{ink};}}
             QFrame#accountPanel QPushButton#accountTab {{padding:5px 18px;}}
             QFrame#accountPanel QPushButton#accountTab:checked {{color:{ink};background:{hover};border-color:#75a4dc;}}
-            QFrame#accountDevice {{background:{field};border:1px solid {edge};border-radius:9px;}}
+            QFrame#accountDevice {{background:transparent;border:0;}}
+            QFrame#accountDevice:hover {{background:{hover};}}
             QFrame#accountPanel QPushButton#accountRemoveDevice {{background:transparent;border:0;padding:0;}}
             QFrame#accountPanel QPushButton#accountRemoveDevice:hover {{background:{hover};}}
             QFrame#accountConfirm {{background:{field};border:1px solid {edge};border-radius:9px;}}

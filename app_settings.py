@@ -13,10 +13,10 @@ import sys
 from uuid import uuid4
 
 from PySide6.QtCore import QByteArray, QCoreApplication, QElapsedTimer, QEvent, QObject, QPointF, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QKeySequence, QColor, QFont, QPainter, QPen, QGuiApplication, QIcon, QPixmap, QWheelEvent
+from PySide6.QtGui import QKeySequence, QColor, QFont, QFontDatabase, QPainter, QPen, QGuiApplication, QIcon, QPixmap, QWheelEvent
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
                                QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-                               QVBoxLayout, QKeySequenceEdit, QScrollArea, QWidget,
+                               QVBoxLayout, QKeySequenceEdit, QScrollArea, QWidget, QSizePolicy,
                                QAbstractSpinBox, QPlainTextEdit, QSlider, QSpinBox, QColorDialog, QStyledItemDelegate)
 from PySide6.QtWidgets import QStyle, QStyleOptionButton
 from PySide6.QtSvg import QSvgRenderer
@@ -253,6 +253,49 @@ class SettingsCheckBox(QCheckBox):
             if not self.isEnabled(): painter.setOpacity(.65)
             svg = b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m5 12 5 5L19 7" fill="none" stroke="#ffffff" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/></svg>'
             QSvgRenderer(QByteArray(svg)).render(painter, QRectF(self.indicator_rect()))
+
+
+class SettingsToggleSwitch(SettingsCheckBox):
+    """Compact native-style switch with a full-row click target and visible focus."""
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.dark = False
+        self.setObjectName("settingsToggle")
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setMinimumHeight(38)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def sizeHint(self):
+        base = super().sizeHint()
+        return QSize(max(190, base.width() + 38), max(38, base.height()))
+
+    def hitButton(self, position):
+        return self.rect().contains(position)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if not self.isEnabled():
+            painter.setOpacity(.46)
+        painter.setPen(QColor("#edf2fa" if self.dark else "#253246"))
+        painter.setFont(self.font())
+        painter.drawText(QRectF(0, 0, max(0, self.width()-54), self.height()),
+                         Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                         self.text())
+        # Keep the switch and its keyboard outline inside the widget's paint
+        # bounds so neither edge disappears at fractional display scale.
+        track = QRectF(self.width()-44, (self.height()-22)/2, 38, 22)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#2584ed" if self.isChecked() else
+                                "#5b6878" if self.dark else "#c7d0dc"))
+        painter.drawRoundedRect(track, 11, 11)
+        knob_x = track.right()-20 if self.isChecked() else track.left()+2
+        painter.setBrush(QColor("#ffffff"))
+        painter.drawEllipse(QRectF(knob_x, track.top()+2, 18, 18))
+        if self.hasFocus():
+            painter.setPen(QPen(QColor("#80b8fb" if self.dark else "#2584ed"), 1.5))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(track.adjusted(-2, -2, 2, 2), 13, 13)
 
 
 class SettingsResetButton(QPushButton):
@@ -821,7 +864,10 @@ class SettingsSurface(QFrame):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(QPen(QColor("#3c4554" if self.dark else "#dce3ed"), 1))
-        painter.setBrush(QColor("#1d2027" if self.dark else "#f7f9fc"))
+        background = QColor("#1d2027" if self.dark else "#f7f9fc")
+        if sys.platform == "darwin":
+            background.setAlpha(248)
+        painter.setBrush(background)
         painter.drawRoundedRect(QRectF(self.rect()).adjusted(.5, .5, -.5, -.5), 18, 18)
 
 
@@ -844,7 +890,10 @@ class SettingsDialog(QDialog):
         self._draft_color = store.dock_color
         self.setObjectName("flickdockSettings")
         self.setWindowTitle("FlickDock 设置")
-        self.setFont(QFont("HarmonyOS Sans SC", 11))
+        font = (QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont)
+                if sys.platform == "darwin" else QFont("HarmonyOS Sans SC", 11))
+        font.setPointSize(11)
+        self.setFont(font)
         self.setModal(False)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setMinimumSize(572, 552)
@@ -908,7 +957,7 @@ class SettingsDialog(QDialog):
         self.body_layout = body_layout
         # Keep rounded card strokes clear of the scroll viewport's clip edge.
         # Equal insets also avoid a one-sided border at fractional display scale.
-        body_layout.setContentsMargins(3, 0, 3, 0)
+        body_layout.setContentsMargins(4, 2, 4, 8)
         body_layout.setSpacing(14)
         scroll.setWidget(body)
         root.addWidget(scroll, 1)
@@ -1154,7 +1203,7 @@ class SettingsDialog(QDialog):
         dock_heading = QLabel("边缘停靠", card)
         dock_heading.setObjectName("settingsSection")
         layout.addWidget(dock_heading)
-        self.trigger_visible_checkbox = SettingsCheckBox("显示触发区域", card)
+        self.trigger_visible_checkbox = SettingsToggleSwitch("显示触发区域", card)
         self.trigger_visible_checkbox.setAccessibleName("显示触发区域")
         layout.addWidget(self.trigger_visible_checkbox)
         edge_row = QHBoxLayout()
@@ -1446,10 +1495,12 @@ class SettingsDialog(QDialog):
         self.shake_sensitivity_reset_button.update()
         self.close_button.dark = dark
         self.close_button.update()
+        self.trigger_visible_checkbox.dark = dark
+        self.trigger_visible_checkbox.update()
         self.update_activity.dark = dark
         self.update_activity.update()
         bg = "#1d2027" if dark else "#f7f9fc"
-        card = "#272c35" if dark else "#ffffff"
+        card = ("rgba(39,44,53,246)" if dark else "rgba(255,255,255,248)") if sys.platform == "darwin" else ("#272c35" if dark else "#ffffff")
         ink = "#edf2fa" if dark else "#253246"
         secondary = "#b1bed0" if dark else "#58697e"
         edge = "#3c4554" if dark else "#dce3ed"
@@ -1488,7 +1539,8 @@ class SettingsDialog(QDialog):
             QDialog#flickdockSettings QComboBox::down-arrow {{image:none;}}
             QDialog#flickdockSettings QPushButton {{background:{card};color:{ink};border:1px solid {edge};border-radius:8px;padding:5px 12px;font-size:13px;}}
             QDialog#flickdockSettings QPushButton:hover {{background:{hover};border-color:{edge};}}
-            QDialog#flickdockSettings QPushButton:pressed {{background:#d0e4ff;color:#19395e;}}
+            QDialog#flickdockSettings QPushButton:pressed {{background:{hover};color:{ink};}}
+            QDialog#flickdockSettings QPushButton:focus {{border-color:#5d9eeb;}}
             QDialog#flickdockSettings QPushButton:disabled {{color:{secondary};background:{field};border-color:{edge};}}
             QDialog#flickdockSettings QPushButton#settingsSave {{background:#2584ed;color:white;border-color:#2584ed;}}
             QDialog#flickdockSettings QPushButton#settingsSave:hover {{background:#3694fa;}}

@@ -307,17 +307,24 @@ class FeedbackButton(QPushButton):
         p.translate(c.x(), c.y())
         p.scale(v["scale"]*self._presentation_scale[0], v["scale"]*self._presentation_scale[1])
         p.translate(-c.x(), -c.y())
-        bg = QColor(ui_theme.color("button"))
-        bg.setAlphaF(min(1, .72 + .20 * v["hover"] + .08 * v["down"]))
+        flat_toolbar = bool(self.property('flatToolbar'))
+        bg = QColor(ui_theme.color("hover" if flat_toolbar else "button"))
+        bg.setAlphaF(min(1, (.70 * v["hover"] + .45 * v["down"]
+                            + (.56 if self.isChecked() else 0)) if flat_toolbar
+                         else (.72 + .20 * v["hover"] + .08 * v["down"])))
         p.setBrush(bg)
         p.setPen(Qt.PenStyle.NoPen)
-        p.drawRoundedRect(QRectF(self.rect()).adjusted(.8, .8, -.8, -.8), self.height() / 2, self.height() / 2)
+        background_rect = QRectF(self.rect()).adjusted(1.5, 1.5, -1.5, -1.5)
+        p.drawRoundedRect(background_rect, 9 if flat_toolbar else self.height() / 2,
+                          9 if flat_toolbar else self.height() / 2)
         if self.hasFocus() and self._keyboard_focus:
             focus = QColor(ui_theme.color("accent"))
             focus.setAlpha(180)
             p.setPen(QPen(focus, 1.5))
             p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawRoundedRect(QRectF(self.rect()).adjusted(1.6, 1.6, -1.6, -1.6), self.height() / 2, self.height() / 2)
+            p.drawRoundedRect(QRectF(self.rect()).adjusted(2, 2, -2, -2),
+                              8 if flat_toolbar else self.height() / 2,
+                              8 if flat_toolbar else self.height() / 2)
         glyph_size = min(24, self.width() - 8)*(.82 if self.glyph=='copy' else .875)
         if not self.isEnabled():
             p.setOpacity(.45)

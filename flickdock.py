@@ -80,6 +80,14 @@ MODES = ("permanent",)
 
 def load_font(app):
     global FONT_FAMILY
+    if sys.platform == 'darwin':
+        # AppKit's system font supplies San Francisco with PingFang fallback.
+        # Use the installed system face rather than bundling Apple font files.
+        font = QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont)
+        FONT_FAMILY = font.family()
+        font.setPointSize(11)
+        app.setFont(font)
+        return
     font_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).parent)) / "fonts"
     families = []
     for weight in ("Regular",):
@@ -233,12 +241,16 @@ class DropZone(QFrame):
         self.caption.setGeometry(136, 132, 90, 27)
         self.caption.setWordWrap(False)
         self.caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        set_ui_style(self.caption, "color:#626c79;font:13px 'HarmonyOS Sans SC';background:#e7ebf1;border-radius:13px;padding-right:12px;")
+        self._style_caption(False)
         self.caption.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.count_arrow=QLabel(self)
         self.count_arrow.setGeometry(204,138,14,14)
         self.count_arrow.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.title.hide();self.symbol.hide()
+        self._pill_hovered = False
+        self._pill_timer = QTimer(self)
+        self._pill_timer.setSingleShot(True)
+        self._pill_timer.timeout.connect(self._open_from_pill_hover)
         self.feedback = Spring(self, {"hover": 0.0}, lambda _: self._apply_style(), motion=shelf.manager.motion)
         self._apply_style()
 
@@ -246,17 +258,41 @@ class DropZone(QFrame):
     def paths(self):
         return self.shelf.display_refs()
 
+    def _style_caption(self, hovered):
+        fill='#e9f3ff' if hovered else '#ffffff'
+        set_ui_style(self.caption,
+            f"color:#28313d;font:600 13px 'HarmonyOS Sans SC';background:{fill};"
+            "border:1px solid #e1e5ec;border-radius:13px;padding-right:12px;")
+
     def _apply_style(self):
         active = bool(self.shelf.popup and self.shelf.popup.isVisible() and self.shelf.popup.mode == self.mode)
         if self.drop_highlight:
             border, background = "#75b8ff", "#edf6ff"
         elif active:
-            border, background = "#d8e6f7", "#f4f8fd"
+            border, background = "#dce3ed", "#f4f8fd"
         elif hasattr(self, 'feedback') and self.feedback.values["hover"] > .3:
-            border, background = "transparent", "#f5f7fa"
+            border, background = "#dce3ed", "#f5f7fa"
         else:
-            border, background = "transparent", "#f8f9fb"
-        set_ui_style(self, f"QFrame#dropZone {{background:{background};border:1px solid {border};border-radius:18px;}}")
+            border, background = "#e5e8ed", "#f8f9fb"
+        set_ui_style(self, f"QFrame#dropZone {{background:{background};border:1px dashed {border};border-radius:18px;}}")
+
+    def _open_from_pill_hover(self):
+        if (self._pill_hovered and self.isVisible() and self.shelf.isVisible()
+                and not self.drop_highlight and not self.shelf.dragging
+                and not self.shelf.expanded):
+            self.shelf.show_contents(self.mode)
+
+    def _track_pill_hover(self, position, buttons=Qt.MouseButton.NoButton):
+        hovering = (self.caption.geometry().adjusted(-4, -4, 4, 4).contains(position)
+                    and not buttons and not self.drop_highlight)
+        if hovering == self._pill_hovered:
+            return
+        self._pill_hovered = hovering
+        self._style_caption(hovering)
+        if hovering:
+            self._pill_timer.start(280)
+        else:
+            self._pill_timer.stop()
 
     def refresh(self):
         self._apply_style()
@@ -273,6 +309,9 @@ class DropZone(QFrame):
 
     def dragEnterEvent(self, event):
         if self.shelf.accepts_content_drop(event):
+            self._pill_hovered = False
+            self._pill_timer.stop()
+            self._style_caption(False)
             self.shelf.active_mode = self.mode
             self.drop_highlight = True
             self.icon.set_hover(True)
@@ -313,9 +352,18 @@ class DropZone(QFrame):
         super().enterEvent(event)
 
     def leaveEvent(self, event):
+        self._pill_hovered = False
+        self._pill_timer.stop()
+        self._style_caption(False)
         self.feedback.animate({"hover": 0.0}, response=.14, damping=1.0)
         self.icon.set_hover(False)
         super().leaveEvent(event)
+
+    def hideEvent(self, event):
+        self._pill_hovered = False
+        self._pill_timer.stop()
+        self._style_caption(False)
+        super().hideEvent(event)
 
     def mousePressEvent(self, event):
         self.shelf.touch()
@@ -328,6 +376,7 @@ class DropZone(QFrame):
 
     def mouseMoveEvent(self, event):
         self.shelf.touch()
+        self._track_pill_hover(event.position().toPoint(), event.buttons())
         if event.buttons() & Qt.MouseButton.LeftButton and self.paths and not self.did_drag and (event.position().toPoint() - self.origin).manhattanLength() > 8:
             self.did_drag = True
             self.icon.set_pressed(False)
@@ -736,17 +785,37 @@ class ContentsPopup(QFrame):
         self.clear_button.clicked.connect(self.shelf.confirm_clear_all)
         set_ui_style(self.clear_button,"QPushButton {color:#626c79;background:transparent;border:0;border-radius:7px;padding:6px 10px;font:13px 'HarmonyOS Sans SC';} QPushButton:hover {background:#eef1f6;color:#b9404c;} QPushButton:pressed {background:#e1e7ef;} QPushButton:disabled {color:#8490a0;}")
         header.addWidget(self.clear_button); root.addLayout(header)
-        filters=QHBoxLayout(); filters.setSpacing(4)
+        filters=QHBoxLayout(); filters.setSpacing(0)
+        self.category_segments=QFrame(self)
+        self.category_segments.setObjectName('categorySegments')
+        set_ui_style(self.category_segments,
+            "QFrame#categorySegments {background:#eef1f6;border:1px solid #e1e5ec;border-radius:10px;}")
+        segments=QGridLayout(self.category_segments)
+        segments.setContentsMargins(3,3,3,3);segments.setHorizontalSpacing(1)
+        segments.setVerticalSpacing(1)
+        self._segment_columns=8
         self.category_group=QButtonGroup(self); self.category_group.setExclusive(True); self.category_buttons={}
         for key,label in self.CATEGORIES:
             button=QPushButton(label,self); button.setCheckable(True); button.setCursor(Qt.CursorShape.PointingHandCursor)
-            button.setMinimumHeight(30); self.category_group.addButton(button); self.category_buttons[key]=button
-            style=("QPushButton {background:transparent;color:#626c79;border:1px solid #d6e0ec;border-radius:7px;padding:4px 8px;font:600 13px 'HarmonyOS Sans SC';} QPushButton:hover {background:#eef1f6;} QPushButton:checked {background:#e7ebf1;color:#28313d;border-color:#b9c8d9;}" if key=='uploading' else
-                   "QPushButton {background:transparent;color:#626c79;border:0;border-radius:7px;padding:5px 8px;font:13px 'HarmonyOS Sans SC';} QPushButton:hover {background:#eef1f6;} QPushButton:checked {background:#e7ebf1;color:#28313d;font-weight:600;}")
-            set_ui_style(button,style)
+            button.setFixedSize(86 if key=='uploading' else 49,28)
+            self.category_group.addButton(button); self.category_buttons[key]=button
+            set_ui_style(button,
+                "QPushButton {background:transparent;color:#626c79;border:0;border-radius:7px;"
+                "padding:3px 6px;font:13px 'HarmonyOS Sans SC';}"
+                "QPushButton:hover {background:#e1e7ef;}"
+                "QPushButton:checked {background:#ffffff;color:#28313d;font-weight:600;}"
+                "QPushButton:focus {outline:0;}")
             button.clicked.connect(lambda checked=False,key=key:self.set_category(key))
-            filters.addWidget(button)
-        filters.addStretch(); root.addLayout(filters)
+            segments.addWidget(button,0,len(self.category_buttons)-1)
+        uploading=self.category_buttons['uploading']
+        self.transfer_badge=QLabel(uploading)
+        self.transfer_badge.setGeometry(62,6,18,16)
+        self.transfer_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.transfer_badge.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        set_ui_style(self.transfer_badge,
+            "color:#f7faff;background:#1876db;border-radius:8px;font:600 10px 'HarmonyOS Sans SC';")
+        self.transfer_badge.hide()
+        filters.addWidget(self.category_segments);filters.addStretch();root.addLayout(filters)
         self.transfer_summary=QWidget(self)
         summary_layout=QHBoxLayout(self.transfer_summary);summary_layout.setContentsMargins(0,0,0,0)
         self.transfer_count=QLabel(self.transfer_summary)
@@ -764,6 +833,28 @@ class ContentsPopup(QFrame):
         self.rows_body=QWidget(); self.rows_layout=QVBoxLayout(self.rows_body)
         self.rows_layout.setContentsMargins(0,0,3,0); self.rows_layout.setSpacing(3); self.scroll.setWidget(self.rows_body)
         self.preview=PreviewPane(self); body.addWidget(self.scroll); body.addWidget(self.preview,1)
+        self.empty_state=QFrame(self)
+        self.empty_state.setObjectName('emptyOverview')
+        set_ui_style(self.empty_state,
+            "QFrame#emptyOverview {background:#f8f9fb;border:1px dashed #e5e8ed;border-radius:16px;}")
+        empty_layout=QVBoxLayout(self.empty_state)
+        empty_layout.setContentsMargins(24,24,24,24);empty_layout.setSpacing(8)
+        empty_layout.addStretch()
+        self.empty_symbol=QLabel(self.empty_state)
+        self.empty_symbol.setPixmap(glyph_pixmap('shelf',42,ui_theme.color('secondary'),dpr=self.devicePixelRatioF()))
+        self.empty_symbol.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_layout.addWidget(self.empty_symbol,0,Qt.AlignmentFlag.AlignHCenter)
+        self.empty_title=QLabel('搁架是空的',self.empty_state)
+        self.empty_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        set_ui_style(self.empty_title,"color:#28313d;font:600 15px 'HarmonyOS Sans SC';background:transparent;")
+        empty_layout.addWidget(self.empty_title)
+        self.empty_hint=QLabel('拖入文件、图片或文字',self.empty_state)
+        self.empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        set_ui_style(self.empty_hint,"color:#738091;font:12px 'HarmonyOS Sans SC';background:transparent;")
+        empty_layout.addWidget(self.empty_hint)
+        empty_layout.addStretch()
+        body.addWidget(self.empty_state,1)
+        self.empty_state.hide()
         root.addLayout(body,1)
         self.transfer_strip=QFrame(self)
         self.transfer_strip.setObjectName('transferStrip')
@@ -800,6 +891,21 @@ class ContentsPopup(QFrame):
         self.rebuild(); self.update_transfer_status()
         self.drop_router=OverviewDropRouter(self)
 
+    def resizeEvent(self,event):
+        super().resizeEvent(event)
+        if not hasattr(self,'category_segments'):
+            return
+        columns=4 if event.size().width()<448 else 8
+        if columns==self._segment_columns:
+            return
+        grid=self.category_segments.layout()
+        for index,(key,_) in enumerate(self.CATEGORIES):
+            button=self.category_buttons[key]
+            grid.removeWidget(button)
+            grid.addWidget(button,index//columns,index%columns)
+        self._segment_columns=columns
+        grid.invalidate()
+
     def visible_refs(self):
         transfers=self.shelf.content.transfers
         return [ref for ref in reversed(self.shelf.display_refs()) if
@@ -810,7 +916,10 @@ class ContentsPopup(QFrame):
     def update_transfer_status(self):
         self.shelf.transfer_rates.observe(self.shelf.content.transfers)
         states=list(self.shelf.content.transfers.values())
-        count=len(states);self.category_buttons['uploading'].setText(f'传输中 {count}' if count else '传输中')
+        count=len(states)
+        self.transfer_badge.setText('99+' if count>99 else str(count))
+        self.transfer_badge.setGeometry(58 if count>99 else 62,6,24 if count>99 else 18,16)
+        self.transfer_badge.setVisible(bool(count))
         self.category_buttons['uploading'].setAccessibleName(f'传输中的项目，共 {count} 项')
         self.transfer_summary.setVisible(bool(count) and self.category=='uploading')
         self._refresh_transfer_strip()
@@ -922,15 +1031,17 @@ class ContentsPopup(QFrame):
         # widgets wait until the transition ends, with a small per-tick budget.
         self._append_batch(initial=True)
         if refs:
+            self.empty_state.hide();self.scroll.show()
             current=self.primary_selection or (self.preview.current_path if self.preview.current_path in refs else refs[0])
             previous_metadata=dict(previous_signature[4]) if previous_signature else {}
             self.preview.show_path(current,force=previous_metadata.get(current)!=repr(self.shelf.content.metadata.get(current,{}))); self.preview.show()
             self.restore_selected_preview()
         else:
-            self.preview.media.stop(); self.preview.hide()
-            empty=QLabel("还没有收集内容" if not self.shelf.has_files() else "没有这类内容",self.rows_body)
-            set_ui_style(empty,"color:#738091;font:13px 'HarmonyOS Sans SC';padding:18px 8px;")
-            self.rows_layout.insertWidget(0,empty)
+            self.preview.media.stop();self.preview.hide();self.scroll.hide()
+            self.empty_title.setText('搁架是空的' if not self.shelf.has_files() else '没有这类内容')
+            self.empty_hint.setVisible(not self.shelf.has_files())
+            self.empty_symbol.setPixmap(glyph_pixmap('shelf',42,ui_theme.color('secondary'),dpr=self.devicePixelRatioF()))
+            self.empty_state.show()
         self.scroll.verticalScrollBar().setValue(position)
         self.update_selection_actions()
 
@@ -1140,12 +1251,12 @@ class ShelfWindow(QWidget):
         self._explicit_hiding = False
         self._native_revealed = False
         logo = QLabel(self.card)
-        logo.setGeometry(17, 16, 32, 32)
-        logo.setPixmap(app_icon().pixmap(QSize(32,32),self.devicePixelRatioF()))
+        logo.setGeometry(18, 17, 28, 28)
+        logo.setPixmap(app_icon().pixmap(QSize(28,28),self.devicePixelRatioF()))
         logo.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         title = QLabel(APP_NAME, self.card)
-        title.setGeometry(56, 20, 96, 26)
-        set_ui_style(title, "color:#282d35;font:600 15px 'HarmonyOS Sans SC';background:transparent;")
+        title.setGeometry(53, 20, 90, 26)
+        set_ui_style(title, "color:#282d35;font:600 14px 'HarmonyOS Sans SC';background:transparent;")
         title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.shelf_label = QLabel("", self.card)
         self.shelf_label.setGeometry(56, 34, 144, 16)
@@ -1185,6 +1296,7 @@ class ShelfWindow(QWidget):
         self.rename_edit.editingFinished.connect(self.commit_rename)
         self.rename_edit.hide()
         for button in (self.cloud_button,self.lan_button,self.pin_button,self.expand_button,self.menu_button,self.close_button):
+            button.setProperty('flatToolbar',True)
             button.setParent(self)
         self._layout_header(CARD_W)
 
@@ -1194,9 +1306,12 @@ class ShelfWindow(QWidget):
         transform=QTransform()
         transform.translate(center.x()+effect.dx,center.y()+effect.dy)
         transform.scale(effect.sx,effect.sy);transform.translate(-center.x(),-center.y())
-        for button,x in ((self.cloud_button,width-248),(self.lan_button,width-208),(self.pin_button,width-168),(self.expand_button,width-128),(self.menu_button,width-88),(self.close_button,width-48)):
-            point=transform.map(QRectF(self.card.x()+x,self.card.y()+14,36,36).center())
-            button.setFixedSize(36,36);button.move(round(point.x()-18),round(point.y()-18))
+        buttons=(self.cloud_button,self.lan_button,self.pin_button,
+                 self.expand_button,self.menu_button,self.close_button)
+        for index,button in enumerate(buttons):
+            x=width-233+index*37
+            point=transform.map(QRectF(self.card.x()+x,self.card.y()+15,32,32).center())
+            button.setFixedSize(32,32);button.move(round(point.x()-16),round(point.y()-16))
             button.set_presentation_scale(effect.sx,effect.sy)
             button.setVisible(self.presentation_kind!='drag')
             button.raise_()
@@ -1360,9 +1475,12 @@ class ShelfWindow(QWidget):
 
     def _place_morph_controls(self,snapshot,rect):
         transform=snapshot.presentation_transform(rect)
-        for button,offset in ((self.cloud_button,248),(self.lan_button,208),(self.pin_button,168),(self.expand_button,128),(self.menu_button,88),(self.close_button,48)):
-            center=transform.map(QRectF(rect.x()+rect.width()-14-offset-self.x(),rect.y()+21-self.y(),36,36).center())
-            button.move(round(center.x()-18),round(center.y()-18))
+        buttons=(self.cloud_button,self.lan_button,self.pin_button,
+                 self.expand_button,self.menu_button,self.close_button)
+        for index,button in enumerate(buttons):
+            center=transform.map(QRectF(rect.x()+rect.width()-247+index*37-self.x(),
+                                        rect.y()+22-self.y(),32,32).center())
+            button.move(round(center.x()-16),round(center.y()-16))
             button.set_presentation_scale(self.surface_effect.sx,self.surface_effect.sy)
             button.raise_()
 

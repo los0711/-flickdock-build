@@ -55,9 +55,13 @@ with tempfile.TemporaryDirectory(prefix='flickdock-morph-test-') as tmp:
             assert shelf.card.size()==size,'descendant layout resized on a frame'
             assert visual.x()+visual.width()==right,'right edge drifted'
             assert snapshot.capture_count==captures,'live tree captured on a frame'
-            for button,offset in ((shelf.lan_button,208),(shelf.pin_button,168),(shelf.expand_button,128),(shelf.menu_button,88),(shelf.close_button,48)):
+            # The compact HIG toolbar uses six evenly spaced controls, with
+            # the cloud action occupying the first slot.
+            for index,button in enumerate((shelf.cloud_button,shelf.lan_button,
+                                           shelf.pin_button,shelf.expand_button,
+                                           shelf.menu_button,shelf.close_button)):
                 assert button.parentWidget() is shelf and button.isVisible()
-                assert button.mapToGlobal(QPoint()).x()==right-14-offset
+                assert abs(button.mapToGlobal(QPoint()).x()-(right-247+index*37))<=1
         shelf.grab().save(str(Path(__file__).parent/'morph-v161-mid-125.png'))
         shelf.geometry_morph.complete();flush(app)
         wait_until(app,lambda:len(popup.rows_body.findChildren(mod.IconItem))==125)
