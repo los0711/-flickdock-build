@@ -659,7 +659,7 @@ class AccountPanel(QFrame):
         devices=max(0,self.devices_layout.minimumSize().height()+2)
         self.devices_body.setFixedHeight(devices)
         parts=[profile,devices]
-        if not self.login_alias_edit.isHidden():parts.append(self.login_alias_edit.sizeHint().height())
+        if not self.login_alias_edit.isHidden():parts.append(max(self.login_alias_edit.minimumHeight(),self.login_alias_edit.sizeHint().height()))
         height=sum(parts)+self.signed_in_page.layout().spacing()*(len(parts)-1)
         self.signed_in_page.setFixedHeight(height)
         self.layout().invalidate();self.updateGeometry()

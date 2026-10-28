@@ -958,7 +958,8 @@ class ShelfSync(QObject):
                         self._notify_transfers()
                         self._work(assemble_parts,(parts,target,record),assembled)
                     return
-                while len(active)<4:
+                parallel=6 if record['size']>90*1024*1024 and chunk_size<=1024*1024 else 4
+                while len(active)<parallel:
                     index=next(queue,None)
                     if index is None:break
                     active.add(index);start_part(index)

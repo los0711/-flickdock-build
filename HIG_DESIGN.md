@@ -97,6 +97,7 @@ ui-ux-pro-max 的通用候选中采纳了文件工具的清晰分类、克制层
 - LAN 传输卡仅在标题显示文件名，副行显示大小与最近约 2 秒的平均速度，每 500ms 更新一次速度；历史记录紧凑排列。这些时间与间距是本产品为稳定反馈选择的参数。
 - Mac 被动显示遵循不激活当前应用的路径。Qt Cocoa 的 raise() 默认调用 activateIgnoringOtherApps；关闭此隐式行为，使用 orderFrontRegardless()，在窗口隐藏后恢复 Spaces 状态，保留原生动画宿主尺寸。
 - 文件夹大小为后台遍历的文件字节总和，避免显示目录条目的 4KB。接收解压可重复执行；已完整接收的文件先校验复用；失败项目使用独立重试记录，避免阻塞后续文件。大于 90MiB 的内容采用服务端已有的小范围分块视图，较小内容在大响应不完整时自动降级；每块和完整文件仍核对 SHA256，不把部分数据标记为完成。
+- 大文件的小范围接收最多 6 路并发，以填满 Qt 默认主机连接池；其他传输维持 4 路。此参数根据同一路径 148MiB 端到端校验测试选择，不代表所有网络上的速度承诺。
 
 Qt 行为证据：[QCocoaWindow::raise 和窗口显示实现](https://github.com/qt/qtbase/blob/6.12/src/plugins/platforms/cocoa/qcocoawindow.mm)。跨平台反馈与聚焦设计参考 [Apple HIG Accessibility](https://developer.apple.com/design/human-interface-guidelines/accessibility)；具体布局、命中区域与队列处理为 FlickDock 的实现建议。
 

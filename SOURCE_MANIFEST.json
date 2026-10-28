@@ -65,8 +65,8 @@
     },
     {
       "path": "HIG_DESIGN.md",
-      "size": 12470,
-      "sha256": "5def0826a4cbf4b6b685490cea190926f52e66befe9bb6a34597b0c4e6d573f6"
+      "size": 12692,
+      "sha256": "58b420bb09501de907f1899150dca2cbb70c2e4309f42318ce364b83643d401f"
     },
     {
       "path": "MAC_BUILD.md",
@@ -125,8 +125,8 @@
     },
     {
       "path": "account_panel.py",
-      "size": 56272,
-      "sha256": "ae65b55da9beb2c61472ba65e67539ed25d895bbe7d38ff022e3ba648b92f6d3"
+      "size": 56315,
+      "sha256": "07226459f487f18df0a66ea0c90ef2533539c161bb79f7a89659c431b93dcf43"
     },
     {
       "path": "account_service.py",
@@ -950,8 +950,8 @@
     },
     {
       "path": "shelf_sync.py",
-      "size": 77368,
-      "sha256": "9e72b409d64f1755a2c8365d2567bd843ee052c5bdc0d97d9a9ad50a24f997af"
+      "size": 77466,
+      "sha256": "ff5b997983a14c2816caf742c002fe332b74d9e29c4d8e3a9783a24217e50507"
     },
     {
       "path": "surface_morph.py",
