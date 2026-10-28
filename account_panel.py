@@ -662,6 +662,8 @@ class AccountPanel(QFrame):
         if not self.login_alias_edit.isHidden():parts.append(max(self.login_alias_edit.minimumHeight(),self.login_alias_edit.sizeHint().height()))
         height=sum(parts)+self.signed_in_page.layout().spacing()*(len(parts)-1)
         self.signed_in_page.setFixedHeight(height)
+        self.signed_in_page.layout().invalidate()
+        self.signed_in_page.layout().activate()
         self.layout().invalidate();self.updateGeometry()
         self.height_changed.emit()
 
