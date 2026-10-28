@@ -371,6 +371,12 @@ class AccountPanel(QFrame):
         self.auth_dialog.body_layout.addWidget(self.auth_page)
         self.auth_dialog.rejected.connect(self.close_auth)
         self.auth_page.show();self.signed_in_page.show();self.status_label.hide()
+        # These three growing blocks are placed atomically. Cocoa's cached
+        # nested height-for-width result can otherwise keep the alias at its
+        # previous position for a frame after the profile subtitle wraps.
+        signed.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
+        signed.setEnabled(False)
+        self.signed_in_page.setMinimumSize(0,0)
 
     @staticmethod
     def _modal_field(edit,label,placeholder,parent):
@@ -461,6 +467,7 @@ class AccountPanel(QFrame):
             self.login_alias_edit.setText(alias if isinstance(alias,str) else '')
             self.login_alias_edit.setVisible(bool(isinstance(alias,str) and alias))
         self._update_enabled()
+        self._queue_fit()
 
     def set_sync_status(self,text):
         if self.service.signed_in:
@@ -478,6 +485,7 @@ class AccountPanel(QFrame):
         for dialog in (self.auth_dialog,self.password_dialog):
             if dialog.isVisible():QTimer.singleShot(0,dialog.adjustSize)
         self._refreshing=False;self._revoke_pending='';self._cancel_remove();self._update_enabled()
+        self._queue_fit()
 
     def _busy_changed(self,busy):
         self._busy=bool(busy)
@@ -658,12 +666,13 @@ class AccountPanel(QFrame):
         self.profile_frame.setFixedHeight(profile)
         devices=max(0,self.devices_layout.minimumSize().height()+2)
         self.devices_body.setFixedHeight(devices)
-        parts=[profile,devices]
-        if not self.login_alias_edit.isHidden():parts.append(max(self.login_alias_edit.minimumHeight(),self.login_alias_edit.sizeHint().height()))
-        height=sum(parts)+self.signed_in_page.layout().spacing()*(len(parts)-1)
-        self.signed_in_page.setFixedHeight(height)
-        self.signed_in_page.layout().invalidate()
-        self.signed_in_page.layout().activate()
+        self.profile_frame.setGeometry(0,0,width,profile)
+        y=profile+12
+        if not self.login_alias_edit.isHidden():
+            alias=max(self.login_alias_edit.minimumHeight(),self.login_alias_edit.sizeHint().height())
+            self.login_alias_edit.setGeometry(0,y,width,alias);y+=alias+12
+        self.devices_body.setGeometry(0,y,width,devices)
+        self.signed_in_page.setFixedHeight(y+devices)
         self.layout().invalidate();self.updateGeometry()
         self.height_changed.emit()
 
