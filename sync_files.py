@@ -24,6 +24,7 @@ _STORED_EXTENSIONS=frozenset(('jpg','jpeg','png','gif','webp','avif','heic','hei
 
 
 def _write_sync_file(archive, source, name, cancel):
+    before=source.stat();written=0
     info=zipfile.ZipInfo.from_file(source,name,strict_timestamps=False)
     info.compress_type=zipfile.ZIP_STORED if source.suffix.lower().lstrip('.') in _STORED_EXTENSIONS else zipfile.ZIP_DEFLATED
     # ZipInfo has a public compress_level property on newer Python versions.
@@ -34,13 +35,32 @@ def _write_sync_file(archive, source, name, cancel):
         while data:=incoming.read(1024*1024):
             if cancel.is_set():raise InterruptedError()
             outgoing.write(data)
+            written+=len(data)
         if cancel.is_set():raise InterruptedError()
+    after=source.stat()
+    if written!=before.st_size or (before.st_size,before.st_mtime_ns)!=(after.st_size,after.st_mtime_ns):
+        raise OSError('文件在准备同步时发生变化，请重新上传。')
 
 
-def safe_name(name):
+def directory_size(ref,cancel):
+    """Logical file bytes, never the filesystem's 4 KB directory entry."""
+    total=count=0
+    def failed(error):raise error
+    for folder,dirs,files in os.walk(ref,followlinks=False,onerror=failed):
+        if cancel.is_set():raise InterruptedError()
+        dirs[:]=[name for name in dirs if not _is_link(Path(folder,name))]
+        for name in files:
+            if cancel.is_set():raise InterruptedError()
+            path=Path(folder,name)
+            if _is_link(path):continue
+            total+=path.stat().st_size;count+=1
+    return dict(logical_size=total,file_count=count)
+
+
+def safe_name(name,limit=160):
     # Same portable basename on Windows/macOS; never interpret a remote path.
     cleaned = ''.join('_' if c in '<>:"/\\|?*' or ord(c) < 32 else c for c in str(name))
-    cleaned = cleaned.rstrip(' .')[:160] or '未命名'
+    cleaned = cleaned.rstrip(' .')[:limit] or '未命名'
     if cleaned.split('.')[0].upper() in {'CON','PRN','AUX','NUL', *('COM'+str(i) for i in range(1,10)), *('LPT'+str(i) for i in range(1,10))}:
         cleaned = '_' + cleaned
     return cleaned
@@ -72,7 +92,8 @@ def stage_item(ref, text, name, directory, cancel, limit=MAX_FILE_BYTES):
             mime = DIRECTORY_MIME
             count, total = 0, 0
             with zipfile.ZipFile(target,'w',zipfile.ZIP_DEFLATED,compresslevel=1) as archive:
-                for folder, directories, files in os.walk(ref, followlinks=False):
+                def walk_error(error):raise error
+                for folder, directories, files in os.walk(ref, followlinks=False,onerror=walk_error):
                     if any(_is_link(Path(folder,d)) for d in directories):
                         raise ValueError('文件夹含有链接，请移除链接后同步。')
                     directories[:] = sorted(directories)
@@ -190,7 +211,7 @@ def unpack_directory(source, destination, cancel, limit=MAX_FILE_BYTES):
             for item in entries:
                 name = item.filename; relative = PurePosixPath(name)
                 if (not name or '\\' in name or relative.is_absolute() or any(p in ('..','') for p in relative.parts)
-                        or any(safe_name(p) != p for p in relative.parts) or stat.S_ISLNK(item.external_attr >> 16)):
+                        or any(safe_name(p,255) != p for p in relative.parts) or stat.S_ISLNK(item.external_attr >> 16)):
                     raise ValueError('同步压缩包包含不安全的路径。')
                 key = name.rstrip('/').casefold()
                 if key in seen: raise ValueError('同步压缩包包含重复路径。')
@@ -206,7 +227,30 @@ def unpack_directory(source, destination, cancel, limit=MAX_FILE_BYTES):
                         total += len(data)
                         if total > item.file_size: raise ValueError('同步压缩包大小无效。')
                         output.write(data)
-        if destination.exists(): raise ValueError('同步目标已存在。')
+        if destination.exists():
+            # A previous receive can finish extraction before its journal save
+            # is interrupted. Reconcile verified bytes instead of entering an
+            # endless "destination exists" retry on the next download.
+            same=destination.is_dir() and not destination.is_symlink()
+            if same:
+                expected={p.relative_to(stage).as_posix():p for p in stage.rglob('*')}
+                actual={p.relative_to(destination).as_posix():p for p in destination.rglob('*')}
+                same=expected.keys()==actual.keys()
+                for key,path in expected.items() if same else ():
+                    other=actual[key]
+                    if cancel.is_set():raise InterruptedError()
+                    if other.is_symlink() or path.is_dir()!=other.is_dir():same=False;break
+                    if path.is_file():
+                        if path.stat().st_size!=other.stat().st_size:same=False;break
+                        with path.open('rb') as left,other.open('rb') as right:
+                            while block:=left.read(1024*1024):
+                                if cancel.is_set():raise InterruptedError()
+                                if block!=right.read(len(block)):same=False;break
+                        if not same:break
+            if same:return str(destination)
+            # Preserve an edited local folder rather than overwrite it or hold
+            # every later cloud item behind the conflict.
+            destination=destination.with_name(destination.name+'-'+uuid4().hex[:10])
         os.replace(stage,destination)
         return str(destination)
     finally:

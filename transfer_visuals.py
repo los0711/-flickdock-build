@@ -58,28 +58,8 @@ def draw_cloud_status_badge(painter, rect, status, transfer=None):
     pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
     painter.setPen(pen)
     painter.setBrush(Qt.BrushStyle.NoBrush)
-    if status == 'synced':
-        painter.drawLine(QPointF(5.5,10),QPointF(8.5,13))
-        painter.drawLine(QPointF(8.5,13),QPointF(14.5,6.8))
-    elif status == 'uploading':
-        painter.drawLine(QPointF(10,14.2),QPointF(10,6.2))
-        painter.drawLine(QPointF(6.7,9.4),QPointF(10,6.2))
-        painter.drawLine(QPointF(10,6.2),QPointF(13.3,9.4))
-    elif status == 'pending':
-        painter.drawEllipse(QRectF(5.6,5.6,8.8,8.8))
-        painter.drawLine(QPointF(10,7.4),QPointF(10,10.2))
-        painter.drawLine(QPointF(10,10.2),QPointF(12,11.5))
-    elif status == 'local':
-        # A small local-screen glyph reads as "on this device"; a minus sign
-        # looked indistinguishable from the remove affordance on file cards.
-        painter.drawRoundedRect(QRectF(5.5,6.4,9,6.5),1.2,1.2)
-        painter.drawLine(QPointF(8,14.2),QPointF(12,14.2))
-    elif status == 'paused':
-        painter.drawLine(QPointF(7.5,6.5),QPointF(7.5,13.5))
-        painter.drawLine(QPointF(12.5,6.5),QPointF(12.5,13.5))
-    elif status == 'error':
-        painter.drawLine(QPointF(10,6),QPointF(10,11.3))
-        painter.drawPoint(QPointF(10,14))
+    painter.setPen(Qt.PenStyle.NoPen);painter.setBrush(ink)
+    painter.drawEllipse(QRectF(5.8,5.8,8.4,8.4))
     painter.restore()
 
 

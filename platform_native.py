@@ -351,6 +351,9 @@ def configure_media_backend(*, platform=None):
         os.environ['QT_MEDIA_BACKEND'] = 'windows'
     elif platform == 'darwin':
         os.environ['QT_MEDIA_BACKEND'] = 'darwin'
+        # QCocoaWindow::raise defaults to activateIgnoringOtherApps:YES.
+        # Passive shelf/edge reveals must leave the frontmost app selected.
+        os.environ['QT_MAC_SET_RAISE_PROCESS'] = '0'
 
 
 class _EventType(ctypes.Structure):

@@ -43,6 +43,16 @@ def run(argv,load_font):
         def title(self,ref): return '文字片段' if ref.startswith('flickdock:') else Path(ref).name
     with tempfile.TemporaryDirectory(prefix='flickdock-frozen-cloud-') as directory:
         root=Path(directory);payload=bytes(range(256))*10000;source=root/'同步验证.bin';source.write_bytes(payload)
+        folder_mode='--verify-folder' in argv
+        folder_hashes={}
+        if folder_mode:
+            source=root/'148MB 文件夹';(source/'empty'/'nested').mkdir(parents=True)
+            chunk=os.urandom(1024*1024)
+            for name,size in (('视频素材.mp4',98),('设计原稿.7z',50)):
+                digest=hashlib.sha256()
+                with (source/name).open('wb') as stream:
+                    for _ in range(size):stream.write(chunk);digest.update(chunk)
+                folder_hashes[name]=dict(size=size*1024*1024,sha256=digest.hexdigest())
         username='frozen-qa-'+uuid4().hex;password=secrets.token_urlsafe(32)
         adapters=[Adapter(),Adapter()];adapters[0].view={'permanent':[str(source),'flickdock:text:qa'],
             'texts':{'flickdock:text:qa':'同步文字仍可直接拖入输入框'},'metadata':{}}
@@ -94,9 +104,16 @@ def run(argv,load_font):
                 try:
                     refs=adapters[1].view['permanent'];assert len(refs)==2
                     target=next(Path(ref) for ref in refs if not ref.startswith('flickdock:'))
-                    assert target.read_bytes()==payload
+                    if folder_mode:
+                        assert (target/'empty'/'nested').is_dir()
+                        for name,expected in folder_hashes.items():
+                            path=target/name;assert path.stat().st_size==expected['size']
+                            with path.open('rb') as stream:assert hashlib.file_digest(stream,'sha256').hexdigest()==expected['sha256']
+                        report.update(folder_logical_bytes=148*1024*1024,folder_files=folder_hashes,empty_folders_preserved=True)
+                    else:assert target.read_bytes()==payload
                     assert list(adapters[1].view['texts'].values())==['同步文字仍可直接拖入输入框']
-                    report.update(verified_bytes=len(payload),verified_sha256=hashlib.sha256(payload).hexdigest(),text_native=True)
+                    report.update(verified_bytes=148*1024*1024 if folder_mode else len(payload),
+                        verified_sha256=hashlib.sha256(json.dumps(folder_hashes,sort_keys=True).encode()).hexdigest() if folder_mode else hashlib.sha256(payload).hexdigest(),text_native=True)
                     phase='cleanup'
                     adapters[0].view={'permanent':[],'texts':{},'metadata':{}}
                     engines[0].local_changed()
@@ -121,5 +138,5 @@ def run(argv,load_font):
         for service in services:service.status_changed.connect(problem)
         for engine in engines:engine.status_changed.connect(problem)
         QTimer.singleShot(0,lambda:services[0].register(username,password))
-        QTimer.singleShot(150000,lambda:finish('云端联调超时。'))
+        QTimer.singleShot(900000 if folder_mode else 150000,lambda:finish('云端联调超时。'))
         return app.exec()

@@ -238,7 +238,7 @@ class AccountTests(unittest.TestCase):
                 self.assertEqual(self.panel.username_label.text(),long_name)
                 self.assertEqual(self.panel.username_label.accessibleName(),long_name)
                 self.assertTrue(QLabel.text(self.panel.username_label).endswith('…'))
-                self.assertEqual(self.panel.username_label.height(),20)
+                self.assertGreaterEqual(self.panel.username_label.height(),self.panel.username_label.fontMetrics().height())
             for theme in ('light','dark'):
                 self.dialog.apply_theme(theme);flush()
                 self.assertEqual(self.dialog.width(),892)

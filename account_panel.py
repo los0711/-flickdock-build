@@ -8,11 +8,11 @@ import sys
 from account_service import valid_new_password
 from native_ui_common import reference_font, icon as ui_icon, colors as ui_colors
 
-from PySide6.QtCore import QByteArray, QDateTime, QEvent, QRectF, Qt
+from PySide6.QtCore import QByteArray, QDateTime, QEvent, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter, QLinearGradient
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMenu,
-                               QPushButton, QSizePolicy, QVBoxLayout, QWidget)
+                               QPushButton, QSizePolicy, QVBoxLayout, QWidget, QLayout)
 
 
 def _label(text='', parent=None, *, muted=False):
@@ -281,11 +281,13 @@ class AccountPanel(QFrame):
         root.addWidget(self.unsigned_profile_button);root.addWidget(self.signed_in_page);root.addWidget(self.status_label)
         signed=self.signed_in_page.layout();self._empty_layout(signed);signed.setSpacing(12);signed.setAlignment(Qt.AlignmentFlag.AlignTop)
         root.setAlignment(Qt.AlignmentFlag.AlignTop)
+        root.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+        signed.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         identity=self.profile_frame.layout();self._empty_layout(identity);identity.setContentsMargins(0,0,0,0);identity.setSpacing(12)
         self.profile_frame.setMinimumHeight(40);self.profile_frame.setMaximumHeight(16777215)
         self.account_glyph.setFixedSize(40,40);identity.addWidget(self.account_glyph);self.account_glyph.show()
         text=QVBoxLayout();text.setSpacing(2);name=QHBoxLayout();name.setSpacing(8)
-        self.username_label.setFixedHeight(20);self.account_state_label.setFixedHeight(20)
+        self.username_label.setFixedHeight(26);self.account_state_label.setFixedHeight(24)
         self.username_label.setSizePolicy(QSizePolicy.Policy.Preferred,QSizePolicy.Policy.Fixed)
         name.addWidget(self.username_label);name.addWidget(self.account_state_label);name.addStretch();text.addLayout(name)
         identity.addLayout(text,1)
@@ -307,7 +309,8 @@ class AccountPanel(QFrame):
             from shiboken6 import delete
             delete(old)
         self.devices_layout=QGridLayout(self.devices_body);self.devices_layout.setContentsMargins(0,10,0,0);self.devices_layout.setSpacing(10)
-        self.devices_layout.setColumnStretch(0,1);self.devices_layout.setColumnStretch(1,1)
+        self.devices_layout.setColumnStretch(0,1)
+        self.devices_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         self.devices_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.devices_body.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Maximum)
         signed.addWidget(self.devices_body);self.devices_body.show()
@@ -350,14 +353,14 @@ class AccountPanel(QFrame):
     @staticmethod
     def _modal_field(edit,label,placeholder,parent):
         group=QWidget(parent);layout=QVBoxLayout(group);layout.setContentsMargins(0,0,0,0);layout.setSpacing(4)
-        caption=_label(label,group,muted=True);caption.setFixedHeight(16);layout.addWidget(caption)
-        edit.setPlaceholderText(placeholder);edit.setFixedHeight(34);layout.addWidget(edit);edit.show()
+        caption=_label(label,group,muted=True);caption.setMinimumHeight(20);layout.addWidget(caption)
+        edit.setPlaceholderText(placeholder);edit.setFixedHeight(38);layout.addWidget(edit);edit.show()
         return group
 
     @staticmethod
     def _modal_actions(cancel,submit,parent):
         group=QWidget(parent);layout=QHBoxLayout(group);layout.setContentsMargins(0,8,0,0);layout.setSpacing(8);layout.addStretch()
-        for button in (cancel,submit):button.setMinimumHeight(28);button.setMaximumHeight(28);layout.addWidget(button);button.show()
+        for button in (cancel,submit):button.setMinimumHeight(36);button.setMaximumHeight(36);layout.addWidget(button);button.show()
         return group
 
     @staticmethod
@@ -448,6 +451,8 @@ class AccountPanel(QFrame):
         self.status_label.setText(message[:240]);self.status_label.setVisible(bool(message) and self.service.signed_in)
         self.auth_status_label.setText(message[:240]);self.auth_status_label.setVisible(bool(message) and not self.service.signed_in)
         self.password_status_label.setText(message[:240]);self.password_status_label.setVisible(bool(message) and self.password_dialog.isVisible())
+        for dialog in (self.auth_dialog,self.password_dialog):
+            if dialog.isVisible():QTimer.singleShot(0,dialog.adjustSize)
         self._refreshing=False;self._revoke_pending='';self._cancel_remove();self._update_enabled()
 
     def _busy_changed(self,busy):
@@ -535,7 +540,7 @@ class AccountPanel(QFrame):
                 if not isinstance(device,dict) or not device.get('id') or device.get('revoked_at'):continue
                 key=str(device['id']);self._devices[key]=dict(device)
                 row=QFrame(self.devices_body);row.setObjectName('accountDevice')
-                row.setMinimumHeight(56)
+                row.setMinimumHeight(66)
                 row_layout=QVBoxLayout(row);row_layout.setContentsMargins(12,8,12,8);row_layout.setSpacing(8)
                 horizontal=QHBoxLayout();horizontal.setSpacing(5);row_layout.addLayout(horizontal)
                 glyph=AccountGlyph(row,device=True,platform=str(device.get('platform','')))
@@ -544,7 +549,7 @@ class AccountPanel(QFrame):
                 detail=QVBoxLayout();detail.setSpacing(2)
                 device_name=AccountNameLabel(row)
                 device_name.setText(str(device.get('name') or '未命名设备'))
-                device_name.setFixedHeight(18)
+                device_name.setFixedHeight(24)
                 device_name.setObjectName('accountDeviceName')
                 detail.addWidget(device_name)
                 platform={'windows':'Windows','macos':'Mac','linux':'Linux'}.get(str(device.get('platform','')),'其他设备')
@@ -553,19 +558,19 @@ class AccountPanel(QFrame):
                 suffix='此设备' if current else '最近在线 '+timestamp.toLocalTime().toString('MM-dd HH:mm') if timestamp.isValid() else ''
                 device_name.setToolTip(platform+(' · '+suffix if suffix else ''))
                 subtitle=AccountNameLabel(row);subtitle.setObjectName('accountCurrentDevice' if current else 'accountDeviceMeta')
-                subtitle.setFixedHeight(16)
+                subtitle.setFixedHeight(20)
                 subtitle.setText(platform+(' · (本机)' if current else ' · '+suffix if suffix else ''))
                 detail.addWidget(subtitle)
                 horizontal.addLayout(detail,1)
                 rename=RemoveDeviceButton(row,rename=True);rename.dark=self._dark
-                rename.setText('改名');rename.setObjectName('accountDeviceRename');rename.setFixedSize(30,20)
+                rename.setText('改名');rename.setObjectName('accountDeviceRename');rename.setFixedSize(44,32)
                 rename.setAccessibleName('修改设备名称 '+str(device.get('name') or '未命名设备'))
                 rename.clicked.connect(partial(self._edit_device_name,key));rename.installEventFilter(self)
                 self.device_rename_buttons[key]=rename;horizontal.addWidget(rename)
                 if not current:
                     rename.hide()
                     button=RemoveDeviceButton(row);button.dark=self._dark
-                    button.setText('移除登录');button.setObjectName('accountDeviceRevoke');button.setFixedSize(52,20)
+                    button.setText('移除登录');button.setObjectName('accountDeviceRevoke');button.setFixedSize(72,32)
                     button.setAccessibleName('移除设备 '+str(device.get('name') or '未命名设备'))
                     button.clicked.connect(partial(self._ask_remove,key));button.installEventFilter(self)
                     self.device_buttons[key]=button;horizontal.addWidget(button)
@@ -588,12 +593,13 @@ class AccountPanel(QFrame):
                 self.device_name_edits[key]=edit;self._rename_forms[key]=rename_form
                 self._rename_save_buttons[key]=save
                 for child in rename_form.findChildren(QWidget):child.installEventFilter(self)
-                index=len(self._device_rows);self.devices_layout.addWidget(row,index//2,index%2);self._device_rows.append(row)
+                index=len(self._device_rows);self.devices_layout.addWidget(row,index,0);self._device_rows.append(row)
                 self._rows_by_id[key]=row
         if not self._device_rows:
             empty=_label('正在读取设备…' if self.service.signed_in else '',self.devices_body,muted=True)
             self.devices_layout.addWidget(empty,0,0,1,2);self._device_rows.append(empty)
         self.devices_heading_label.setText('已登录设备'+(' · '+str(len(self._devices)) if self._devices else ''))
+        self.devices_body.updateGeometry();self.signed_in_page.updateGeometry();self.updateGeometry()
         self._update_enabled()
 
     def _edit_device_name(self,key,*_):
@@ -620,7 +626,7 @@ class AccountPanel(QFrame):
         self._confirm_device=key
         self._cancel_rename()
         self.confirm_label.setText('移除“'+str(device.get('name') or '未命名设备')+'”的登录？此设备之后需要重新登录。')
-        self.devices_layout.addWidget(self.confirm_frame,(len(self._devices)+1)//2,0,1,2)
+        self.devices_layout.addWidget(self.confirm_frame,len(self._devices),0)
         self.confirm_frame.show()
 
     def _cancel_remove(self):
@@ -757,4 +763,6 @@ class AccountPanel(QFrame):
             QFrame#accountPanel QPushButton:disabled,QDialog#accountModal QPushButton:disabled {{color:{semantic['muted']};background:{semantic['control']};}}
         ''')
         for button in [*self.device_buttons.values(),*self.device_rename_buttons.values()]:button.dark=self._dark;button.update()
+        from native_ui_common import readable_qss
+        self.setStyleSheet(readable_qss(self.styleSheet()))
         for glyph in self.findChildren(AccountGlyph):glyph.dark=self._dark;glyph.update()

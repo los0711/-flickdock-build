@@ -10,13 +10,21 @@ import sys
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QEasingCurve, QEvent, QObject, QPointF, QRectF, QSize, Qt, QVariantAnimation
+from PySide6.QtCore import QByteArray, QEasingCurve, QEvent, QObject, QPointF, QRectF, QSize, Qt, QVariantAnimation, QTranslator
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QIconEngine, QPainter, QPen, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QApplication, QAbstractButton, QHBoxLayout, QLabel, QPushButton, QWidget
 
 
-WINDOWS_FONT_STACK=('HarmonyOS Sans SC','Noto Sans SC','Source Han Sans SC','Segoe UI Variable','Segoe UI')
+WINDOWS_FONT_STACK=('Segoe UI Variable Text','Segoe UI','Noto Sans SC','Source Han Sans SC','HarmonyOS Sans SC')
+
+def readable_qss(source):
+    """One size step on Windows, applied once before installing a stylesheet."""
+    if sys.platform != 'win32' or 'flickdock-readable-type' in source:return source
+    import re
+    source=re.sub(r'(font-size\s*:\s*)(\d+)(px)',lambda m:m[1]+str(int(m[2])+2)+m[3],source)
+    source=re.sub(r'(font\s*:\s*(?:[1-9]00\s+)?)(\d+)(px)',lambda m:m[1]+str(int(m[2])+2)+m[3],source)
+    return source+'\n/* flickdock-readable-type */'
 
 
 def reduced_motion():
@@ -79,6 +87,15 @@ def configure_reference_font(app):
     installed fonts used by the reference so isolated screenshots resolve the
     same families and real weights as Chromium on this computer.
     """
+    # Our fully styled controls use the same layout metrics on both backends.
+    # Native file dialogs still come from the platform dialog helper.
+    app.setStyle('Fusion')
+    root=Path(getattr(sys,'_MEIPASS',Path(__file__).parent))
+    translation=root/'assets/ui/qtbase_zh_CN.qm'
+    if not getattr(app,'_flickdock_translation',None) and translation.is_file():
+        translator=QTranslator(app)
+        if translator.load(str(translation)):
+            app.installTranslator(translator);app._flickdock_translation=translator
     if sys.platform=='darwin':
         font=QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont)
     else:
@@ -86,7 +103,7 @@ def configure_reference_font(app):
             import winreg
             faces={'HarmonyOS Sans SC','HarmonyOS Sans SC Medium','HarmonyOS Sans SC Bold',
                    'Noto Sans SC','Source Han Sans SC',
-                   'Segoe UI Variable','Segoe UI','Segoe UI Semibold','Segoe UI Bold'}
+                   'Segoe UI Variable Text','Segoe UI Variable','Segoe UI','Segoe UI Semibold','Segoe UI Bold'}
             for hive in (winreg.HKEY_CURRENT_USER,winreg.HKEY_LOCAL_MACHINE):
                 try:
                     with winreg.OpenKey(hive,r'SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts') as key:
@@ -103,7 +120,9 @@ def configure_reference_font(app):
         font=QFont(family) if family else QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont)
     # Preserve fractional horizontal advances, as Chromium does; full glyph
     # hinting rounds every character and makes the same 13px title ~10px wider.
-    font.setHintingPreference(QFont.HintingPreference.PreferVerticalHinting)
+    font.setStyleHint(QFont.StyleHint.SansSerif)
+    font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias|QFont.StyleStrategy.PreferQuality)
+    font.setHintingPreference(QFont.HintingPreference.PreferFullHinting if sys.platform=='win32' else QFont.HintingPreference.PreferVerticalHinting)
     font.setPointSize(11);app.setFont(font)
     if not getattr(app, '_flickdock_focus_visibility', None):
         app._flickdock_focus_visibility = _KeyboardFocusVisibility(app)
@@ -158,6 +177,8 @@ def colors(theme='dark', platform=None):
 
 # Paths copied verbatim from the source document's toolbar and category SVGs.
 _SVG_BODY = {
+    # Simple Icons CC0 apple.svg, identifying a discovered Mac.
+    'apple': '<path fill="currentColor" stroke="none" d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/>',
     'cloud': '<path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>',
     'pin': '<path d="M16 3l5 5-4 1-4 4 1 5-8-8 5 1 4-4 1-4z"/><path d="M9 15l-6 6"/>',
     'expand': '<path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>',
@@ -269,7 +290,7 @@ class UiLabel(QLabel):
         palette = colors(*_context(self))
         value = palette.get(self._ui_color, self._ui_color)
         font = self.font()
-        font.setPixelSize(int(self._ui_size))
+        font.setPixelSize(int(self._ui_size)+(2 if sys.platform=='win32' else 0))
         font.setWeight(QFont.Weight(max(100, min(900, int(self._ui_weight)))))
         self.setFont(font)
         self.setStyleSheet(f'color:{value}; background:transparent; border:none;')
@@ -301,14 +322,14 @@ class UiButton(QPushButton):
         border = 'rgba(255,69,58,77)' if danger else 'transparent' if plain or primary else c['glass_border']
         hover = c['action_hover'] if primary else 'rgba(255,69,58,64)' if danger else c['hover']
         padding = '0px' if self.variant == 'toolbar' else '0px 12px'
-        self.setStyleSheet(f'''QPushButton {{ background:{background}; color:{foreground};
+        self.setStyleSheet(readable_qss(f'''QPushButton {{ background:{background}; color:{foreground};
             border:1px solid {border}; border-radius:8px; padding:{padding};
             font-size:12px; font-weight:500; }}
             QPushButton:hover {{ background:{hover}; }}
             QPushButton:pressed {{ background:{c['selected'] if plain else hover}; }}
             QPushButton:checked {{ background:{c['selected']}; color:{c['link']}; }}
             QPushButton:disabled {{ color:{c['muted']}; background:{c['control']}; border-color:transparent; }}
-            QPushButton[keyboardFocus="true"] {{border:1px solid {c['link']};}}''')
+            QPushButton[keyboardFocus="true"] {{border:1px solid {c['link']};}}'''))
         if self._ui_icon_name:
             self.setIcon(icon(self._ui_icon_name, foreground))
 

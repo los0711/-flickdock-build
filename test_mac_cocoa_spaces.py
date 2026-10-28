@@ -28,8 +28,9 @@ def main() -> int:
 
     # Import the checkout under test rather than an installed FlickDock copy.
     sys.path.insert(0, str(Path.cwd()))
-    from platform_native import (lower_shelf_after_reveal, raise_edge_target,
+    from platform_native import (configure_media_backend, lower_shelf_after_reveal, raise_edge_target,
                                  raise_shelf_for_reveal, shelf_window_flags)
+    configure_media_backend(platform='darwin')
 
     application = QApplication(['FlickDock-Cocoa-Spaces-probe'])
     can_join = int(AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces)
@@ -46,6 +47,7 @@ def main() -> int:
     for name, flags, raise_window in cases:
         widget = QWidget()
         widget.setWindowFlags(flags)
+        widget.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         if name == 'edge':
             widget.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow, True)
             widget.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
@@ -63,6 +65,7 @@ def main() -> int:
             window.setCollectionBehavior_(staged)
             if not int(window.collectionBehavior()) & move:
                 raise AssertionError(f'{name}: failed to stage MoveToActiveSpace')
+            active_before=bool(AppKit.NSApplication.sharedApplication().isActive())
             if not raise_window(widget, platform='darwin'):
                 raise AssertionError(f'{name}: native reveal did not complete')
             active = int(window.collectionBehavior())
@@ -73,6 +76,9 @@ def main() -> int:
             repeated = int(window.collectionBehavior())
             if repeated != active:
                 raise AssertionError(f'{name}: repeated reveal changed behavior: {repeated:#x}')
+            application.processEvents()
+            active_after=bool(AppKit.NSApplication.sharedApplication().isActive())
+            if not active_before and active_after:raise AssertionError(f'{name}: passive reveal activated the application')
             if name == 'shelf':
                 if not lower_shelf_after_reveal(widget, platform='darwin'):
                     raise AssertionError('shelf: native level did not restore')
@@ -80,7 +86,9 @@ def main() -> int:
                 if restored != staged:
                     raise AssertionError(f'shelf: original behavior not restored: {restored:#x}')
             results.append({'window': name, 'staged_behavior': staged,
-                            'reveal_completed': True, 'final_behavior': active})
+                            'reveal_completed': True, 'final_behavior': active,
+                            'active_before':active_before,'active_after':active_after,
+                            'qt_raise_process':os.environ.get('QT_MAC_SET_RAISE_PROCESS')})
         finally:
             widget.close()
     application.quit()

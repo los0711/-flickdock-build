@@ -189,6 +189,10 @@ class ShelfSync(QObject):
         self.account_id = target
         path = self._profile(target)
         self.state = self._read(path,{'entries':{},'cursor':'0','view':None})
+        for identity,deferred in self.state.get('deferred_downloads',{}).items():
+            record=deferred.get('record',{}) if isinstance(deferred,dict) else {}
+            if record.get('id')==identity and re.fullmatch(r'[A-Za-z0-9_-]{1,128}',identity):
+                self.download_transfers[identity]=dict(record)
         if self.receive_enabled:self.state.pop('awaiting_receive',None)
         if self.state.get('view') is None:
             if target and self.owner is None and not self.meta.get('imported_guest'):
@@ -314,7 +318,8 @@ class ShelfSync(QObject):
                           for index,value in in_flight.items()
                           if str(index).isdecimal() and str(index) not in hashes)
             received=min(size,received)
-            phase=('validating' if record.get('_assembling') else
+            phase=('retrying' if self.state.get('deferred_downloads',{}).get(identity,{}).get('retry_at',0)>time.time() else
+                   'validating' if record.get('_assembling') else
                    'retrying' if not self.running and self._paused('not_before') else 'downloading')
             transfers.append(dict(id=identity,ref=entries.get(identity,{}).get('ref'),name=record.get('name',''),
                 kind=record.get('kind','file'),received=received,total=size,
@@ -414,6 +419,7 @@ class ShelfSync(QObject):
         record=self.download_transfers.get(identity)
         if not record or not self.state:return False
         self._interrupt_cycle();self.download_transfers.pop(identity,None)
+        self.state.get('deferred_downloads',{}).pop(identity,None)
         # This was the sole record being received when the retry deadline was
         # set. Once the user skips/deletes it, that deadline must not hold up
         # unrelated files later in the same remote change page.
@@ -704,6 +710,10 @@ class ShelfSync(QObject):
                 self._schedule_remote_poll()
             if not isinstance(changes,list) or len(changes)>100: self._error(ValueError('云同步记录无效。')); return
             pending = list(enumerate(changes))
+            incoming={change.get('record',{}).get('id') for change in changes if isinstance(change,dict)}
+            for identity,deferred in list(self.state.get('deferred_downloads',{}).items()):
+                if identity not in incoming and deferred.get('retry_at',0)<=time.time():
+                    pending.append((len(pending),{'cursor':str(deferred.get('remote_order') or ''),'record':deferred['record']}))
             def next_record():
                 if not pending:
                     self.state['cursor'] = str(result['cursor'])
@@ -753,6 +763,11 @@ class ShelfSync(QObject):
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',identity): self._error(ValueError('同步项目标识无效。')); return
         if not isinstance(record.get('version'),int) or not 1 <= record['version'] <= 9007199254740991:
             self._error(ValueError('同步项目版本无效。')); return
+        deferred=self.state.setdefault('deferred_downloads',{}).get(identity)
+        if deferred:
+            if record['version']==deferred['record'].get('version') and deferred.get('retry_at',0)>time.time():
+                callback();return
+            if record['version']>deferred['record'].get('version',0):self.state['deferred_downloads'].pop(identity,None)
         entries = self.state['entries']; entry = entries.get(identity)
         ignored=self.state.get('ignored_versions',{}).get(identity,0)
         if not record.get('deleted') and isinstance(ignored,int) and record['version']<=ignored:
@@ -764,6 +779,7 @@ class ShelfSync(QObject):
             if record.get('deleted'): entries.pop(identity,None)
             self._persist(); callback(); return
         if record.get('deleted'):
+            self.state.get('deferred_downloads',{}).pop(identity,None)
             self.download_transfers.pop(identity,None)
             self._forget_download(identity)
             if entry:
@@ -799,8 +815,22 @@ class ShelfSync(QObject):
             self.status_changed.emit('另一台设备也修改了此项，已保留两个版本。')
         target = self.root/self.account_id/'files'/identity/str(record['version'])/safe_name(record['name'])
         self.download_transfers[identity]=dict(record);self._notify_transfers()
+        def receive_failed(error):
+            # Authentication/quota errors affect the account. One damaged file,
+            # local save failure or interrupted body affects only this item.
+            if getattr(error,'status',0) in (401,403,429) or self._quota_error(error):
+                self._error(error);return
+            pending=self.state.setdefault('deferred_downloads',{})
+            attempts=pending.get(identity,{}).get('attempts',0)+1
+            message=re.sub(r'https?://\S+','[连接]',str(error))[:180]
+            pending[identity]=dict(record=dict(record),remote_order=remote_order,attempts=attempts,
+                retry_at=time.time()+min(60,2**min(attempts,6)),last_error=message)
+            self.download_transfers[identity].pop('_assembling',None)
+            self._persist();self._notify_transfers()
+            self.status_changed.emit('“'+str(record['name'])[:60]+'”同步未完成：'+message+'。其他文件继续同步。')
+            callback()
         def downloaded(path,error):
-            if error: self._error(error); return
+            if error: receive_failed(error); return
             # Edits made while downloading must be preserved too.
             current = entries.get(identity)
             if current and current.get('dirty'):
@@ -814,16 +844,17 @@ class ShelfSync(QObject):
                     'fingerprint':fingerprint(ref,text,record['name']),'dirty':False,'deleted':False,'seq':0,
                     **({'remote_order':remote_order} if remote_order is not None else {})}
                 self.download_transfers.pop(identity,None)
+                self.state.get('deferred_downloads',{}).pop(identity,None)
                 self._persist(); self._notify_transfers();callback()
             if record['kind'] in ('text','url'):
                 def decoded(text,error):
-                    if error: self._error(error)
+                    if error: receive_failed(error)
                     else: apply_ref('',text)
                 self._work(read_utf8,(path,),decoded)
             elif record.get('mime_type') == DIRECTORY_MIME:
                 destination = target.with_name(target.name+'-folder')
                 def unpacked(ref,error):
-                    if error: self._error(error)
+                    if error: receive_failed(error)
                     else: apply_ref(ref)
                 self._work(unpack_directory,(path,destination),unpacked)
             else: apply_ref(str(path))
@@ -965,6 +996,14 @@ class ShelfSync(QObject):
                             for key in tuple(request_keys):self.api.cancel(key)
                             self._request('GET','/v1/items/'+identity+'/content',metadata,
                                           headers={'X-FlickDock-Fast-Content':'1'})
+                        elif count==1:
+                            # A complete body with a lost HTTP completion must
+                            # not become an endless 100% retry. Only accept it
+                            # after matching the whole committed SHA-256.
+                            def recovered(digest,problem):
+                                if digest and not problem:recorded(digest,None)
+                                else:failed(error,index)
+                            self._work(_checked_download_part,(path,size,record['sha256']),recovered)
                         else: failed(error,index)
                         return
                     # CloudApi already checked the server's SHA-256 as it
@@ -986,8 +1025,15 @@ class ShelfSync(QObject):
                     self._work(_checked_download_part,(path,size,expected),checked)
                 else: request_part()
             if not waiting_cleanup: part()
-        self._request('GET','/v1/items/'+identity+'/content',metadata,
-                      headers={'X-FlickDock-Fast-Content':'1'})
+        def request_metadata():
+            self._request('GET','/v1/items/'+identity+'/content',metadata,
+                          headers={'X-FlickDock-Fast-Content':'1'})
+        if Path(target).is_file() and not Path(target).is_symlink():
+            def existing(digest,error):
+                if digest and not error:callback(Path(target),None)
+                else:request_metadata()
+            self._work(_checked_download_part,(target,record['size'],record['sha256']),existing)
+        else:request_metadata()
 
     def _change_view(self, operation):
         self.applying = True
@@ -1049,9 +1095,13 @@ class ShelfSync(QObject):
             self.running = False; self.transfer = None
             self._notify_transfers()
             blocked = sum(bool(e.get('dirty')) for e in self.state['entries'].values())
-            self.status_changed.emit(f'可同步内容已同步；{blocked} 项暂留本机，请检查文件大小或位置。' if blocked else '搁架已同步。')
+            retrying=len(self.state.get('deferred_downloads',{}))
+            self.status_changed.emit(f'{retrying} 项等待重试，其他内容已同步。' if retrying else f'可同步内容已同步；{blocked} 项暂留本机，请检查文件大小或位置。' if blocked else '搁架已同步。')
             if self._refresh_again:
                 self._refresh_again=False;self.debounce.start(1)
+            elif self.state.get('deferred_downloads'):
+                due=min(item.get('retry_at',time.time()) for item in self.state['deferred_downloads'].values())
+                self.debounce.start(max(1,min(60000,round((due-time.time())*1000))))
             return
         identity = pending['id']
         if pending.get('deleted'):

@@ -505,7 +505,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-recovery-v180-') as temp:
             sync_module.assemble_parts=paused_assemble
         try:
             service.signin(account)
-            if interruption=='io-error':until(lambda:not engine.running and engine.state.get('not_before',0)>time.time())
+            if interruption=='io-error':until(lambda:not engine.running and identity in engine.state.get('deferred_downloads',{}))
             else:until(entered.is_set)
             target=engine._download_target(record);count=(len(payload)+65535)//65536
             paths=[target.with_name('.'+target.name+f'.chunk-{i}') for i in range(count)]
@@ -520,7 +520,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-recovery-v180-') as temp:
         if interruption=='close':
             engine=ShelfSync(root/interruption,service,adapter,poll_ms=600000);service.signin(account)
         elif interruption=='account-switch':service.signin(account)
-        else:engine.state['not_before']=0;engine.tick()
+        else:engine.state['deferred_downloads'][identity]['retry_at']=0;engine.tick()
         until(lambda:not engine.running and bool(adapter.view['permanent']))
         assert Path(adapter.view['permanent'][0]).read_bytes()==payload
         assert sum(token==account and m=='GET' and '/parts/' in p for token,m,p in server.calls)==count

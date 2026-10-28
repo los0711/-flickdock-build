@@ -18,7 +18,7 @@ from PySide6.QtGui import QKeySequence, QColor, QFont, QFontDatabase, QPainter, 
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
                                QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QLineEdit, QPushButton,
                                QVBoxLayout, QGridLayout, QKeySequenceEdit, QScrollArea, QWidget, QSizePolicy,
-                               QAbstractSpinBox, QPlainTextEdit, QSlider, QSpinBox, QColorDialog, QStyledItemDelegate)
+                               QAbstractSpinBox, QPlainTextEdit, QSlider, QSpinBox, QColorDialog, QStyledItemDelegate, QLayout)
 from PySide6.QtWidgets import QStyle, QStyleOptionButton
 from PySide6.QtSvg import QSvgRenderer
 
@@ -190,6 +190,12 @@ class SettingsSpinBox(QSpinBox):
 
 
 class SettingsSlider(QSlider):
+    def __init__(self,*args,**kwargs):
+        super().__init__(*args,**kwargs)
+        # The 18px handle extends outside the 4px groove. macOS' compressed
+        # native size hint must not become the widget's clipping rectangle.
+        self.setMinimumHeight(28)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Fixed)
     def wheelEvent(self, event):
         _scroll_settings_instead(self, event)
 
@@ -211,15 +217,17 @@ class UpdateActivityBar(QWidget):
         self.hide()
 
     def set_activity(self, state, received=0, total=0):
+        previous_active = self.active
         self.active = state in ("checking", "downloading", "verifying", "installing", "cancelling")
         self.fraction = min(1., max(0., received / total)) if state == "downloading" and total > 0 else None
         self.setAccessibleDescription("正在安装更新" if state == "installing" else "正在处理更新")
         self.setVisible(self.active)
         if self.active and self.fraction is None:
-            if not self._clock.isValid(): self._clock.start()
+            if not previous_active or not self._clock.isValid(): self._clock.start()
             if self.isVisible(): self._timer.start()
         else:
             self._timer.stop()
+            if not self.active:self._clock.invalidate()
         self.update()
 
     def showEvent(self, event):
@@ -233,6 +241,7 @@ class UpdateActivityBar(QWidget):
         super().hideEvent(event)
 
     def paintEvent(self, event):
+        if not self.active:return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(Qt.PenStyle.NoPen)
@@ -817,6 +826,8 @@ class ReferenceModalDialog(QDialog):
         self.surface.setAutoFillBackground(False);self.surface.setFixedWidth(surface_width)
         outer.addWidget(self.surface)
         self.body_layout=QVBoxLayout(self.surface)
+        self.body_layout.setSizeConstraints(QLayout.SizeConstraint.SetNoConstraint,QLayout.SizeConstraint.SetMinimumSize)
+        outer.setSizeConstraints(QLayout.SizeConstraint.SetNoConstraint,QLayout.SizeConstraint.SetMinimumSize)
         self.body_layout.setContentsMargins(20,20,20,20);self.body_layout.setSpacing(16)
         if parent is not None:self.setFont(parent.font())
 
@@ -1257,7 +1268,7 @@ class SettingsDialog(QDialog):
         root.addWidget(self.scroll,1)
         # Qt reserves six pixels for its scroll bar; the source's overlay
         # scrollbar occupies that space inside the right-hand 20px inset.
-        self.body_layout.setContentsMargins(21,20,15,20);self.body_layout.setSpacing(16)
+        self.body_layout.setContentsMargins(21,20,15,12);self.body_layout.setSpacing(16)
         self._empty_layout(self.body_layout)
         top=QWidget(self.body);top_grid=QGridLayout(top);top_grid.setContentsMargins(0,0,0,0);top_grid.setSpacing(16)
         for col in range(12):top_grid.setColumnStretch(col,1)
@@ -1282,9 +1293,13 @@ class SettingsDialog(QDialog):
         self._empty_layout(self.interaction_card.layout());self.interaction_card.hide()
         dl.setContentsMargins(16,16,16,16);dl.setSpacing(16)
         section=QLabel('边缘停靠与触发',dock);section.setObjectName('settingsSection');dl.addWidget(section)
-        dr=QGridLayout();dr.setHorizontalSpacing(24)
+        dr=QGridLayout();dr.setHorizontalSpacing(12)
         trigger=self._reference_toggle(self.trigger_visible_checkbox,'显示触发区域',dock)
         empty=self._reference_toggle(self.keep_empty_handle_checkbox,'空搁架仍显示边缘入口',dock)
+        # Each label and its switch form one bounded option, at both widths.
+        for option in (trigger,empty):
+            option.setObjectName('settingsToggleOption')
+            option.layout().setContentsMargins(12,8,12,8)
         dr.addWidget(trigger,0,0);dr.addWidget(empty,0,1);dl.addLayout(dr)
         selectors=QGridLayout();selectors.setSpacing(12)
         selector_panels=[]
@@ -1335,7 +1350,9 @@ class SettingsDialog(QDialog):
         cl.addWidget(self._reference_segment(self.capture_mode_combo,('快捷方式','复制到保存位置')))
         path=QHBoxLayout();path.setSpacing(8);self.folder_edit.setMinimumHeight(28);self.folder_edit.setMaximumHeight(28);path.addWidget(self.folder_edit,1)
         browse=QPushButton('浏览…',cloud);browse.setMinimumHeight(28);browse.setObjectName('settingsBrowse');browse.setAutoDefault(False);browse.clicked.connect(self.choose_directory);path.addWidget(browse);cl.addLayout(path)
-        lower_grid.addWidget(shortcuts,1);lower_grid.addWidget(cloud,1);self.body_layout.addWidget(lower);self.body_layout.addStretch()
+        lower_grid.addWidget(shortcuts,1);lower_grid.addWidget(cloud,1);self.body_layout.addWidget(lower)
+        self.body_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.body_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         self._settings_adaptive=(dr,trigger,empty,selectors,selector_panels,lower_grid)
         self.body.installEventFilter(self)
         self.scroll.viewport().installEventFilter(self)
@@ -1349,6 +1366,7 @@ class SettingsDialog(QDialog):
         self.cancel_button.setMinimumSize(0,28);self.cancel_button.setMaximumHeight(28);self.save_button.setMinimumSize(0,28);self.save_button.setMaximumHeight(28)
         footer.addWidget(self.cancel_button);footer.addWidget(self.save_button);root.addWidget(footer_frame)
         self._show_layout(root);self._show_layout(self.body_layout)
+        self.update_activity.setVisible(self.update_activity.active)
 
     @property
     def update_state(self):
@@ -1896,7 +1914,10 @@ class SettingsDialog(QDialog):
             QDialog#flickdockSettings QPushButton#settingsUpdate,QDialog#flickdockSettings QPushButton#settingsSave {{background:{semantic['action']};color:{semantic['on_action']};}}
             QDialog#flickdockSettings QPushButton#settingsUpdate:hover,QDialog#flickdockSettings QPushButton#settingsSave:hover,QDialog#flickdockSettings QPushButton#settingsSave:pressed {{background:{semantic['action_hover']};color:{semantic['on_action']};}}
             QDialog#flickdockSettings QPushButton#settingsLink {{color:{semantic['link']};}}
+            QWidget#settingsToggleOption {{background:{semantic['card']};border:1px solid {semantic['border']};border-radius:8px;}}
         ''')
+        from native_ui_common import readable_qss
+        self.setStyleSheet(readable_qss(self.styleSheet()))
         if self.license_dialog is not None:
             self.license_dialog.apply_theme(theme)
         if self.author_dialog is not None:

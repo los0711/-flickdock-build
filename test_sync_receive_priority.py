@@ -40,6 +40,7 @@ class Api(QObject):
         self.download_started = []
         self.fail_large_once = False
         self.fail_after_complete_once = None
+        self.corrupt_completed_body = False
         self.missing_content = set()
 
     def request(self, method, path, callback, **kwargs):
@@ -81,6 +82,7 @@ class Api(QObject):
                     self.fail_after_complete_once = None
                     if kwargs.get('receive_progress'):
                         kwargs['receive_progress'](len(result), len(result))
+                    if self.corrupt_completed_body:destination.write_bytes(b'bad'+result[3:])
                     callback(None,CloudError('Completed body but interrupted response'))
                     return
                 result = destination
@@ -147,10 +149,10 @@ def test_later_small_item_arrives_before_held_large_download():
             assert service.api.download_started == [small_id,large_id]
             service.api.fail_large_once=True
             service.api.release_large()
-            assert spin(lambda:not engine.running and engine.state.get('not_before',0)>time.time())
-            assert engine.state['cursor']=='0'
+            assert spin(lambda:not engine.running and large_id in engine.state.get('deferred_downloads',{}))
+            assert engine.state['cursor']=='2', 'failed item is durable in its own retry journal'
             assert [Path(ref).name for ref in adapter.view['permanent']]==['newer-small.bin']
-            engine.state['not_before']=0
+            engine.state['deferred_downloads'][large_id]['retry_at']=0
             engine.tick()
             assert spin(lambda:bool(service.api.held))
             service.api.release_large()
@@ -192,14 +194,15 @@ def test_cancel_retrying_complete_download_unblocks_next_item():
     with tempfile.TemporaryDirectory(prefix='flickdock-retry-cancel-next-') as root:
         service=Service(changes,{first_id:first_blob,second_id:second_blob})
         service.api.fail_after_complete_once=first_id
+        service.api.corrupt_completed_body=True
         adapter=Adapter();engine=ShelfSync(root,service,adapter,poll_ms=600000)
         seen=[]
         engine.transfers_changed.connect(lambda rows:seen.append(rows))
         try:
             service.account_changed.emit({'id':'retry-cancel-account'})
-            assert spin(lambda:not engine.running and engine.state.get('not_before',0)>time.time())
-            assert service.api.download_started==[first_id]
-            assert adapter.view['permanent']==[]
+            assert spin(lambda:not engine.running and first_id in engine.state.get('deferred_downloads',{}))
+            assert service.api.download_started==[first_id,second_id]
+            assert [Path(ref).name for ref in adapter.view['permanent']]==['second.bin']
             assert any(row.get('id')==first_id and row.get('phase')=='downloading'
                        and row.get('received')==len(first_blob) for rows in seen for row in rows)
             assert any(row.get('id')==first_id and row.get('phase')=='retrying'

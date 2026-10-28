@@ -189,6 +189,12 @@ class SurfaceSnapshot(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         painter.setClipPath(surface_clip(rect))
+        # Both endpoints have opaque materials. Scaled rounded snapshot corners
+        # must not punch transparent holes into the moving surface, and Qt's
+        # live drawSource can clear uncovered child regions during crossfade.
+        # One stationary-radius backing owns opacity for the entire transition.
+        import ui_theme
+        painter.fillRect(rect,QColor(ui_theme.color('surface')))
         if self.mix<=0 and not self.source.isNull():
             painter.drawPixmap(rect,self.source,QRectF(self.source.rect()))
         elif self.mix<1 and not self.source.isNull():

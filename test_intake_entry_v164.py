@@ -193,6 +193,15 @@ with tempfile.TemporaryDirectory(prefix='flickdock-intake-entry-v164-') as tempo
                         assert shelf.popup.primary_selection == selected_before
                         assert shelf.popup.preview.current_path == selected_before
                         assert shelf.popup.selected == {selected_before}
+                elif entry=='dock':
+                    until(lambda:not shelf.incoming_drop)
+                    assert shelf.isVisible() and not hides, 'edge preview stays while pointer is inside'
+                    with patch.object(subject.QCursor,'pos',return_value=QPoint(10,10)):
+                        manager.poll()
+                        # Keep the pointer outside through the tuck. Returning
+                        # inside mid-animation correctly reverses an edge hide.
+                        until(lambda:not shelf.isVisible())
+                    assert hides and all(jobs==0 for jobs,_ in hides)
                 else:
                     until(lambda: not shelf.isVisible())
                     assert hides and all(jobs==0 for jobs, _ in hides)

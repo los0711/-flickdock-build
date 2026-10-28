@@ -7,7 +7,7 @@ import os
 import sys
 import time
 
-from PySide6.QtCore import QByteArray, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QByteArray, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QFrame, QGraphicsDropShadowEffect,
@@ -164,10 +164,13 @@ class _DevicesCombo(QComboBox):
 
 
 class _CloseButton(QPushButton):
+    def hitButton(self,position):return self.rect().contains(position)
     def paintEvent(self,event):
         super().paintEvent(event)
         painter=QPainter(self);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        draw_glyph(painter,'close',QRectF(8,8,12,12),'#FFFFFF' if self.underMouse() else '#A1A1AA',1.8)
+        theme='dark' if self.window().property('uiTheme')=='dark' else 'light'
+        ui_icon('close','#FFFFFF' if self.underMouse() else ui_colors(theme)['secondary']).paint(
+            painter,QRect((self.width()-24)//2,(self.height()-24)//2,24,24))
 
 
 class _DeviceDelegate(QStyledItemDelegate):
@@ -185,7 +188,12 @@ class _DeviceDelegate(QStyledItemDelegate):
             painter.setPen(Qt.PenStyle.NoPen); painter.setBrush(QColor(background))
             painter.drawRoundedRect(QRectF(option.rect.adjusted(5, 3, -5, -3)), 9, 9)
         icon_color = '#8fbbff' if self.dark else '#3178d9'
-        draw_glyph(painter, 'nearby', QRectF(option.rect.left()+16, option.rect.top()+17, 22, 22), icon_color)
+        platform=index.data(Qt.ItemDataRole.UserRole+1)
+        if platform=='windows':
+            from flickdock_icons import app_icon
+            art=app_icon()
+        else:art=ui_icon('apple' if platform=='macos' else 'desktop',icon_color)
+        art.paint(painter,QRect(option.rect.left()+16,option.rect.top()+17,22,22))
         name = str(index.data(Qt.ItemDataRole.DisplayRole) or '')
         host = str(index.data(Qt.ItemDataRole.ToolTipRole) or '')
         primary = '#edf2fa' if self.dark else '#172537'
@@ -430,7 +438,7 @@ class _HistoryRow(QFrame):
         self.state.setTextFormat(Qt.TextFormat.PlainText)
         self.state.setObjectName('lanHistoryState')
         self.state.setProperty('statusKind', {'完成': 'complete', '已取消': 'cancelled',
-                                              '失败': 'failed'}.get(state, 'other'))
+                                              '失败': 'failed','已中断':'cancelled'}.get(state, 'other'))
         self.state.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.state.setFixedWidth(52)
         self.when = QLabel(record['when'], self)
@@ -780,7 +788,7 @@ class LanPanel(QFrame):
             QFrame#lanPanel QPushButton#lanHistoryRemove {{ background:transparent; border:0; border-radius:6px; color:{c['muted']}; padding:0; font-size:12px; }}
             QFrame#lanPanel QPushButton#lanHistoryRemove:hover {{ background:{c['hover']}; color:{color}; }}
             QFrame#lanDropZone {{ background:{faint}; border:1px dashed {c['input_border']}; border-radius:12px; }}
-            QFrame#lanDropZone[dragActive="true"] {{ background:rgba(10,132,255,13); border:1px dashed {accent}; }}
+            QFrame#lanDropZone[dragActive="true"], QFrame#lanDropZone:hover {{ background:rgba(10,132,255,13); border:1px dashed {accent}; }}
             QFrame#lanDropZone QLabel#lanDropTitle {{ font-size:12px; font-weight:500; color:{color}; }}
             QFrame#lanDropZone QLabel#lanDropHint {{ font-size:11px; color:{muted}; }}
             QFrame#lanSendCode {{ background:{c['card']}; border:1px solid {border}; border-radius:12px; }}
@@ -823,6 +831,8 @@ class LanPanel(QFrame):
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{height:0;}}
             QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{background:transparent;}}
         ''')
+        from native_ui_common import readable_qss
+        self.setStyleSheet(readable_qss(self.styleSheet()))
         for row in self._rows.values():
             row['cancel'].dark = self._dark; row['cancel'].update()
             if row.get('offer_icon'):
@@ -844,6 +854,7 @@ class LanPanel(QFrame):
             host=str(peer.get('host') or '')
             self.devices.addItem(name + (' ('+host+')' if host else ''), peer['id'])
             self.devices.setItemData(self.devices.count()-1,str(peer.get('host') or '局域网设备'),Qt.ItemDataRole.ToolTipRole)
+            self.devices.setItemData(self.devices.count()-1,peer.get('platform','unknown'),Qt.ItemDataRole.UserRole+1)
         if selected is not None:
             index = self.devices.findData(selected)
             if index >= 0: self.devices.setCurrentIndex(index)
@@ -911,8 +922,10 @@ class LanPanel(QFrame):
         self._refresh_transfer_pages()
 
     def _refresh_transfer_pages(self):
-        # Active requests remain ahead of finished rows, including consent dialogs.
-        rows = sorted(self._rows.values(), key=lambda row:(bool(row.get('finished')), -row['sequence']))
+        # Terminal transfers belong in history; they never reserve active slots.
+        for row in self._rows.values():
+            if row.get('finished'):row['bar'].hide();row['frame'].hide()
+        rows = sorted((row for row in self._rows.values() if not row.get('finished')), key=lambda row:-row['sequence'])
         for row in reversed(rows):
             self.transfers_layout.insertWidget(0,row['frame'])
         pages = max(1, (len(rows) + 1) // 2)
@@ -1025,6 +1038,11 @@ class LanPanel(QFrame):
     def _progress(self, data):
         identifier = data['id']; row = self._row(identifier, data.get('peer', ''), data['direction'])
         state = data['state']; now = time.monotonic(); received = data.get('received', 0); total = data.get('total', 0)
+        if row.get('finished') and state in ('preparing','waiting','transferring','reconnecting'):
+            if row.get('terminal_state')!='interrupted':return
+            previous=row.pop('history_record',None)
+            if previous in self._history:self._history.remove(previous);self._render_history()
+            row.update(finished=False,recorded=False);row['bar'].show();row['cancel'].show();self._refresh_transfer_pages()
         if state == 'transferring':
             previous = self._samples.get(identifier, (now, received))
             elapsed = now - previous[0]
@@ -1046,23 +1064,22 @@ class LanPanel(QFrame):
             row['detail'].setText(f"等待接收方确认 · 确认码 {data.get('code', '')}")
         elif state in ('preparing', 'reconnecting'):
             row['bar'].setRange(0, 0); row['detail'].setText('正在准备传输…' if state == 'preparing' else '连接中断，正在续传…')
-        elif state == 'interrupted':
-            row['detail'].setText('连接中断，等待发送方续传…'); row['bar'].setRange(0, 0)
-        elif state in ('cancelled', 'error', 'complete'):
-            row['finished'] = True; row['cancel'].hide()
+        elif state in ('cancelled', 'error', 'complete','interrupted'):
+            row['finished'] = True;row['terminal_state']=state; row['cancel'].hide()
             if row.get('extra'):
                 row['extra'].hide(); row['heading'].show(); row['detail'].show()
                 self._restore_transfer_surface(row)
-            row['bar'].setRange(0, 1000); row['bar'].setValue(1000 if state == 'complete' else 0)
-            row['detail'].setText('传输完成 · 原文件已校验' if state == 'complete' else ('已取消传输' if state == 'cancelled' else data.get('message', '传输失败')))
+            row['bar'].setRange(0, 1000); row['bar'].setValue(1000 if state == 'complete' else 0);row['bar'].hide()
+            row['detail'].setText('传输完成 · 原文件已校验' if state == 'complete' else '连接中断，可由发送方续传' if state=='interrupted' else ('已取消传输' if state == 'cancelled' else data.get('message', '传输失败')))
             if not row.get('recorded'):
                 row['recorded'] = True
-                self._history.insert(0, {'when':time.strftime('%m-%d %H:%M'),
+                record={'when':time.strftime('%m-%d %H:%M'),
                     'name':str(row.get('history_name') or data.get('name') or row['title'].text())[:100],
                     'peer':str(data.get('peer') or '')[:80],
                     'count':row.get('history_count'),
-                    'state':{'complete':'完成','cancelled':'已取消','error':'失败'}[state],
-                    'direction':str(data.get('direction') or 'send')})
+                    'state':{'complete':'完成','cancelled':'已取消','error':'失败','interrupted':'已中断'}[state],
+                    'direction':str(data.get('direction') or 'send')}
+                row['history_record']=record;self._history.insert(0,record)
                 self._history = self._history[:12]; self._render_history()
                 try:self._save_history()
                 except OSError:pass
@@ -1118,7 +1135,7 @@ class LanDialog(QDialog):
         self.traffic_buttons=[]
         if sys.platform=='darwin':
             controls=QHBoxLayout();controls.setSpacing(8)
-            for value,callback in (('#FF5F56',lambda:self._navigate('overview')),('#FFBD2E',lambda:self._navigate('mini')),('#27C93F',None)):
+            for value,callback in (('#FF5F56',self.close),('#FFBD2E',lambda:self._navigate('mini')),('#27C93F',None)):
                 button=_button('',self.title_bar);button.setFixedSize(12,12)
                 button.setStyleSheet(f'QPushButton{{background:{value};border:0;border-radius:6px;padding:0;min-height:0;}}')
                 if callback:button.clicked.connect(callback)
@@ -1138,8 +1155,9 @@ class LanDialog(QDialog):
         self.dock_button.setToolTip('收起到屏幕边缘');self.dock_button.setIconSize(QSize(16,16))
         self.dock_button.clicked.connect(lambda:self._navigate('dock'));title_row.addWidget(self.dock_button)
         close = _CloseButton('', self.title_bar); close.setObjectName('lanDialogClose')
+        self.close_button=close
         close.setAutoDefault(False);close.setDefault(False);close.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        close.setFixedSize(28, 28); close.setAccessibleName('关闭局域网传输窗口')
+        close.setFixedSize(32, 32); close.setAccessibleName('关闭局域网传输窗口')
         close.clicked.connect(self.close); title_row.addWidget(close)
         content.addWidget(self.title_bar)
         self.panel = LanPanel(service, self.card, theme=settings.theme, settings=settings)
@@ -1176,3 +1194,5 @@ class LanDialog(QDialog):
         shadow.setBlurRadius(56 if not dark else 64);shadow.setOffset(0,12)
         shadow.setColor(QColor(0,0,0,120) if dark else QColor(15,23,42,41))
         self.panel.apply_theme(theme)
+        from native_ui_common import readable_qss
+        self.card.setStyleSheet(readable_qss(self.card.styleSheet()))

@@ -196,6 +196,7 @@ class MotionShadow(QGraphicsDropShadowEffect):
         else:
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             painter.setClipPath(surface_clip(rect))
+            painter.fillRect(rect,QColor(ui_theme.color('surface')))
             draw_live(painter)
         painter.restore()
 
@@ -241,6 +242,11 @@ class FeedbackButton(QPushButton):
     def set_glyph_tint(self, color: str | None) -> None:
         self._glyph_tint = color
         self.update()
+
+    def hitButton(self,position):
+        # Native styles reserve content insets that do not match this painted
+        # toolbar. Feedback and activation use the same complete target.
+        return self.rect().contains(position)
 
     def set_presentation_scale(self,sx=1.0,sy=1.0):
         self._presentation_scale=(sx,sy)

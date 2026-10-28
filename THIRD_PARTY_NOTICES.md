@@ -1,5 +1,7 @@
 # Third-party components
 
+- Simple Icons Apple mark: CC0-1.0, https://github.com/simple-icons/simple-icons/blob/develop/icons/apple.svg and https://github.com/simple-icons/simple-icons/blob/develop/LICENSE.md. Apple is a trademark of Apple Inc.; used only to identify a discovered Mac.
+
 FlickDock uses HarmonyOS Sans Fonts. / 本软件使用 HarmonyOS Sans 字体。
 
 FlickDock uses unmodified Python, Qt for Python (PySide6/Shiboken), Qt and HarmonyOS Sans SC. The application icon and content-category icons are original SVG artwork. The LAN transfer, file import and cloud status glyphs use the Lucide icons noted below.

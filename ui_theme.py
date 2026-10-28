@@ -42,11 +42,12 @@ _DARK = {
 }
 
 def qss(source, font_family):
+    from native_ui_common import readable_qss
     result = source.replace("'PingFang SC'", f"'{font_family}'").replace("'HarmonyOS Sans SC'", f"'{font_family}'")
     if _theme == 'dark':
         result = re.sub(r'#[0-9a-fA-F]{3,8}\b', lambda m: _DARK.get(m.group(0).lower(), m.group(0)), result)
         result = re.sub(r'(?<=background:)white\b', color('surface'), result)
-    return result
+    return readable_qss(result)
 
 def style_widget(widget, source, font_family):
     widget._flickdock_style = source

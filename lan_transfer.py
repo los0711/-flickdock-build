@@ -365,7 +365,8 @@ class LanTransferService(QObject):
     def own_peer(self, host='127.0.0.1'):
         """Useful for explicit address pairing and disposable loopback verification."""
         return {'id': self.device_id, 'name': self.device_name, 'host': host,
-                'port': self.port, 'fingerprint': self.fingerprint, 'protocol': PROTOCOL}
+                'port': self.port, 'fingerprint': self.fingerprint, 'protocol': PROTOCOL,
+                'platform':'macos' if sys.platform=='darwin' else 'windows' if sys.platform=='win32' else 'linux'}
 
     def remember_peer(self, peer):
         peer = _validate_peer(peer)
@@ -766,7 +767,8 @@ def _validate_peer(row):
     if not _local_address(row.get('host', '')) or type(row.get('port')) is not int or not 0 < row['port'] < 65536:
         raise ValueError('设备地址无效。')
     return {'id': row['id'], 'name': str(row.get('name') or '局域网设备')[:64], 'host': row['host'],
-            'port': row['port'], 'fingerprint': row['fingerprint'], 'protocol': PROTOCOL}
+            'port': row['port'], 'fingerprint': row['fingerprint'], 'protocol': PROTOCOL,
+            'platform':row.get('platform') if row.get('platform') in ('windows','macos','linux') else 'unknown'}
 
 
 def _broadcast_addresses():

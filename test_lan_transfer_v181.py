@@ -330,7 +330,8 @@ class TransferTests(unittest.TestCase):
                          'state': 'cancelled', 'received': 0, 'total': 12})
         cancelled = panel._rows[cancelled_id]
         self.assertFalse(cancelled['extra'].isVisible())
-        self.assertTrue(cancelled['detail'].isVisible())
+        self.assertTrue(cancelled['frame'].isHidden())
+        self.assertEqual(panel._history[0]['state'],'已取消')
         self.assertEqual(cancelled['detail'].text(), '已取消传输')
         panel.close(); panel.deleteLater(); APP.processEvents()
 

@@ -137,7 +137,7 @@ class TransferUITests(unittest.TestCase):
             (self.shelf.cloud_button,self.shelf.lan_button,self.shelf.pin_button,
              self.shelf.expand_button,self.shelf.menu_button,self.shelf.close_button)))
 
-    def test_mini_count_pill_hover_is_delayed_and_cancellable(self):
+    def test_mini_count_pill_hover_never_opens_without_a_click(self):
         zone=self.shelf.zones['permanent']
         with patch.object(self.shelf,'show_contents') as expand:
             zone._track_pill_hover(zone.caption.geometry().center())
@@ -146,7 +146,7 @@ class TransferUITests(unittest.TestCase):
             expand.assert_not_called()
             zone._track_pill_hover(zone.caption.geometry().center())
             QTest.qWait(310);flush()
-            expand.assert_called_once_with('permanent')
+            expand.assert_not_called()
     def file(self,name='original.bin',size=256*1024):
         path=self.source/name;path.write_bytes((bytes(range(256))*(size//256+1))[:size]);return path
     def pending(self,name='正在传输.mp4',*,remote=False,received=25,total=100):
@@ -310,21 +310,21 @@ class TransferUITests(unittest.TestCase):
         finally:
             ui_theme.set_theme(original_theme);ui_theme.apply_application(APP,subject.FONT_FAMILY)
 
-    def test_overview_footer_shows_two_transfers_and_opens_the_full_list(self):
+    def test_overview_footer_shows_one_compact_transfer_and_opens_the_full_list(self):
         refs=[self.pending(f'传输文件{index}.bin',received=index*10,total=100)
               for index in range(4)]
         popup=self.overview()
         self.assertEqual(popup.category,'all')
         self.assertEqual(popup.visible_refs(),[],'active transfers stay outside the completed list')
         self.assertTrue(popup.transfer_strip.isVisible())
-        self.assertEqual(popup._strip_refs,refs[-1:-3:-1])
-        self.assertEqual(sum(row.isVisible() for row,*_ in popup.strip_rows),2)
-        self.assertIn('+2',popup.strip_more.text())
+        self.assertEqual(popup._strip_refs,refs[-1:])
+        self.assertEqual(sum(row.isVisible() for row,*_ in popup.strip_rows),1)
+        self.assertIn('+3',popup.strip_more.text())
         self.assertEqual(popup.strip_rows[0][3].value(),300)
         popup.setFixedWidth(330);popup.layout().activate();flush()
         self.assertTrue(popup.transfer_strip.isVisible())
         self.assertLessEqual(popup.transfer_strip.geometry().right(),popup.width())
-        self.assertEqual(sum(row.isVisible() for row,*_ in popup.strip_rows),2)
+        self.assertEqual(sum(row.isVisible() for row,*_ in popup.strip_rows),1)
         epoch=popup._build_epoch
         self.shelf.content.transfers[refs[-1]]['received']=65
         self.shelf.transfers_updated();flush()
@@ -358,9 +358,9 @@ class TransferUITests(unittest.TestCase):
         self.shelf._settle_morph(self.shelf.visual_geometry());flush()
         self.assertTrue(popup.transfer_strip.isVisible(),
                         'the All footer must reconcile at transition completion')
-        self.assertEqual(popup._strip_refs,refs[-1:-3:-1])
-        self.assertIn('+1',popup.strip_more.text())
-        self.assertEqual(sum(row.isVisible() for row,*_ in popup.strip_rows),2)
+        self.assertEqual(popup._strip_refs,refs[-1:])
+        self.assertIn('+2',popup.strip_more.text())
+        self.assertEqual(sum(row.isVisible() for row,*_ in popup.strip_rows),1)
 
     def test_percent_and_estimated_time_update_in_footer_category_and_preview(self):
         clock=[0.0]
@@ -368,7 +368,7 @@ class TransferUITests(unittest.TestCase):
         ref=self.pending('正在上传的大文件.mov',received=0,total=16*1024*1024)
         popup=self.overview()
         self.assertIn('0%',popup.strip_rows[0][2].text())
-        self.assertIn('计算中',popup.strip_rows[0][2].text())
+        self.assertIn('计算中',popup.strip_rows[0][2].toolTip())
         popup.set_category('uploading');popup.preview.show_path(ref,force=True)
         self.assertIn('0%',popup.transfer_eta.text())
         self.assertIn('计算中',popup.preview.transfer_meta.text())
@@ -379,7 +379,8 @@ class TransferUITests(unittest.TestCase):
         self.assertIn('25% · 剩余约 3 秒',popup.transfer_eta.text())
         self.assertIn('25% · 剩余约 3 秒',popup.preview.transfer_meta.text())
         popup.set_category('all')
-        self.assertIn('25% · 剩余约 3 秒',popup.strip_rows[0][2].text())
+        self.assertEqual(popup.strip_rows[0][2].text(),'25%')
+        self.assertIn('剩余约 3 秒',popup.strip_rows[0][2].toolTip())
 
     def test_local_item_is_available_in_all_while_its_cloud_upload_runs(self):
         path=str(self.file('刚拖进来的原文件.mp4'))
