@@ -96,6 +96,7 @@ def main() -> int:
     # the measured operations below still begin hidden and never reactivate.
     warmup=widgets[-1][1]
     warmup.show();warmup.activateWindow()
+    AppKit.NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
     pump_until(lambda:bool(AppKit.NSApplication.sharedApplication().isActive()))
     snapshot('explicit_opening_completed')
     warmup.hide();control_pump(.1)
