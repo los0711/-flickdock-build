@@ -68,6 +68,9 @@ def main() -> int:
     # Qt's didFinishLaunching can activate the process independently of reveal.
     # Observe its completion, then measure from a real external-app baseline.
     pump_until(lambda:any(n['event']=='did_finish_launch' for n in notifications))
+    snapshot('launch_notification')
+    pump_until(lambda:bool(AppKit.NSApplication.sharedApplication().isActive()))
+    control_pump(.1)
     snapshot('launch_completed')
     can_join = int(AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces)
     move = int(AppKit.NSWindowCollectionBehaviorMoveToActiveSpace)
