@@ -882,6 +882,12 @@ class ShelfSync(QObject):
 
     def _download_record(self, record, target, callback, *, changed=None):
         identity = quote(record['id'],safe='')
+        previous=self.state.get('downloads',{}).get(record['id'],{})
+        # Large multipart objects use the service's bounded range view. Some
+        # routes cleanly terminate 64 MiB streams early, without an HTTP error.
+        small_parts=[record['size']>90*1024*1024 or
+            previous.get('version')==record['version'] and 0<previous.get('chunk_size',0)<=4*1024*1024 and record['size']>4*1024*1024]
+        def content_headers():return {} if small_parts[0] else {'X-FlickDock-Fast-Content':'1'}
         expected_target = self._download_target(record)
         if expected_target is None or Path(target).absolute() != expected_target.absolute():
             callback(None,ValueError('同步文件缓存位置无效。')); return
@@ -978,7 +984,7 @@ class ShelfSync(QObject):
                             self._notify_transfers()
                     request_keys.add(self._request('GET',f'/v1/items/{identity}/parts/{index}?version={record["version"]}',received,
                         destination=path,expected={'size':size,'with_digest':True},timeout_ms=120000,
-                        headers={'X-FlickDock-Fast-Content':'1'},receive_progress=receiving))
+                        headers=content_headers(),receive_progress=receiving))
                 def recorded(digest,error):
                     if halted:return
                     if error or digest is None:
@@ -991,11 +997,20 @@ class ShelfSync(QObject):
                     nonlocal halted
                     if halted:return
                     if error:
-                        if getattr(error,'status',0) in (404,409) and changed:
+                        if (chunk_size>4*1024*1024 and not small_parts[0]
+                                and getattr(error,'status',0) not in (401,403,429)
+                                and not self._quota_error(error)):
+                            # A cleanly closed large response may still be
+                            # truncated by a proxy. Request the server's small
+                            # verified range view once, preserving whole SHA.
+                            halted=True;small_parts[0]=True
+                            for key in tuple(request_keys):self.api.cancel(key)
+                            self._request('GET','/v1/items/'+identity+'/content',metadata,headers=content_headers())
+                        elif getattr(error,'status',0) in (404,409) and changed:
                             halted=True
                             for key in tuple(request_keys):self.api.cancel(key)
                             self._request('GET','/v1/items/'+identity+'/content',metadata,
-                                          headers={'X-FlickDock-Fast-Content':'1'})
+                                          headers=content_headers())
                         elif count==1:
                             # A complete body with a lost HTTP completion must
                             # not become an endless 100% retry. Only accept it
@@ -1027,7 +1042,7 @@ class ShelfSync(QObject):
             if not waiting_cleanup: part()
         def request_metadata():
             self._request('GET','/v1/items/'+identity+'/content',metadata,
-                          headers={'X-FlickDock-Fast-Content':'1'})
+                          headers=content_headers())
         if Path(target).is_file() and not Path(target).is_symlink():
             def existing(digest,error):
                 if digest and not error:callback(Path(target),None)

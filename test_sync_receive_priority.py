@@ -149,12 +149,8 @@ def test_later_small_item_arrives_before_held_large_download():
             assert service.api.download_started == [small_id,large_id]
             service.api.fail_large_once=True
             service.api.release_large()
-            assert spin(lambda:not engine.running and large_id in engine.state.get('deferred_downloads',{}))
-            assert engine.state['cursor']=='2', 'failed item is durable in its own retry journal'
+            assert spin(lambda:bool(service.api.held)), 'a damaged large response requests a compatible retry'
             assert [Path(ref).name for ref in adapter.view['permanent']]==['newer-small.bin']
-            engine.state['deferred_downloads'][large_id]['retry_at']=0
-            engine.tick()
-            assert spin(lambda:bool(service.api.held))
             service.api.release_large()
             assert spin(lambda:engine.state['cursor']=='2' and not engine.running)
             assert [Path(ref).name for ref in adapter.view['permanent']]==[

@@ -123,7 +123,11 @@ def run(argv,load_font):
                 except AssertionError:finish('跨设备删除未同步。');return
                 def usage(result,error):
                     nonlocal phase
+                    report['storage_release_checks']=report.get('storage_release_checks',0)+1
+                    if not error and result.get('storage',{}).get('used_bytes')!=0 and report['storage_release_checks']<60:
+                        QTimer.singleShot(1000,lambda:services[0].api.request('GET','/v1/me',usage));return
                     if error or result.get('storage',{}).get('used_bytes')!=0:
+                        report['storage_remaining_bytes']=result.get('storage',{}).get('used_bytes') if result else None
                         finish('云端删除后空间未释放。');return
                     report.update(cloud_objects_deleted=True,deletion_synced=True)
                     phase='logout';services[1].logout();services[0].logout()

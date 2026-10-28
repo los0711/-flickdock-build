@@ -49,8 +49,9 @@ class AccountProfileLayoutTests(unittest.TestCase):
                 profile_bottom=panel.profile_frame.mapTo(panel.signed_in_page,panel.profile_frame.rect().bottomRight()).y()
                 sync_top=panel.sync_status_label.mapTo(panel.signed_in_page,QPoint(0,0)).y()
                 alias_top=panel.login_alias_edit.mapTo(panel.signed_in_page,QPoint(0,0)).y()
-                self.assertGreater(sync_top,profile_bottom)
-                self.assertGreater(alias_top,sync_top+panel.sync_status_label.height()-1)
+                username_bottom=panel.username_label.mapTo(panel.signed_in_page,panel.username_label.rect().bottomRight()).y()
+                self.assertGreater(sync_top,username_bottom)
+                self.assertGreater(alias_top,profile_bottom)
                 self.assertGreaterEqual(panel.sync_status_label.height(),panel.sync_status_label.heightForWidth(panel.sync_status_label.width()))
                 self.assertEqual(panel.login_alias_edit.text(),'id:legacy-account-identity')
 
@@ -58,9 +59,9 @@ class AccountProfileLayoutTests(unittest.TestCase):
         self.settle()
         for key,platform in (('current','Windows'),('other','Mac')):
             row=self.panel._rows_by_id[key]
-            self.assertGreaterEqual(row.height(),56)
+            self.assertGreaterEqual(row.height(),44)
             visible_labels=[label for label in row.findChildren(QLabel) if label.isVisible()]
-            self.assertTrue(any(platform in label.text() for label in visible_labels))
+            self.assertIn(platform,row.accessibleName())
             self.assertTrue(any(self.panel._devices[key]['name'] in label.text() for label in visible_labels))
             for label in visible_labels:
                 self.assertTrue(row.rect().contains(label.mapTo(row,label.rect().bottomRight())))

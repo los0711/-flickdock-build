@@ -43,11 +43,15 @@ class FeedbackTests(unittest.TestCase):
             view.change_view_mode(mode);view.resume_content();flush()
             until(lambda:view._build_cursor==len(view.visible_refs()) and view.retirement.is_idle)
             cells=[child for child in view.rows_body.findChildren(QWidget,options=Qt.FindDirectChildrenOnly) if hasattr(child,'path') and child.isVisible()]
-            start=QPoint(3,max(cell.geometry().bottom() for cell in cells)+15)
-            end=QPoint(view.rows_body.width()-3,min(cell.geometry().top() for cell in cells))
+            viewport=view.scroll.viewport()
+            visible=QRect(view.rows_body.mapFrom(viewport,QPoint()),viewport.size())
+            start=QPoint(3,3)
+            end=QPoint(view.rows_body.width()-3,min(visible.bottom()-2,max(cell.geometry().bottom() for cell in cells)+15))
             QTest.mousePress(view.rows_body,Qt.LeftButton,pos=start)
             QTest.mouseMove(view.rows_body,end);QTest.mouseRelease(view.rows_body,Qt.LeftButton,pos=end);flush()
-            self.assertEqual(view.selected,set(view.visible_refs()),mode)
+            rectangle=QRect(start,end).normalized().intersected(visible)
+            expected={cell.path for cell in cells if rectangle.intersects(cell.geometry())}
+            self.assertTrue(expected);self.assertEqual(view.selected,expected,mode)
             self.assertFalse(view.marquee.band.isVisible())
 
     def test_compact_footer_logo_cloud_and_hover_do_not_open_workspace(self):
@@ -57,9 +61,13 @@ class FeedbackTests(unittest.TestCase):
         self.assertTrue(self.shelf.account_button.isHidden());self.assertTrue(self.shelf.lan_button.isHidden())
         self.assertAlmostEqual(zone.caption.geometry().center().x(),zone.rect().center().x(),delta=1)
         self.assertLess(zone.caption.geometry().bottom(),zone.height()-20)
+        self.assertGreaterEqual(zone.caption.y()-zone.hint.geometry().bottom(),14)
         zone._track_pill_hover(zone.caption.geometry().center());QTest.qWait(330)
         self.assertFalse(self.shelf.expanded)
         for widget in (self.shelf.pin_button,self.shelf.menu_button,self.shelf.expand_button):self.assertTrue(widget.isHidden())
+        self.shelf.presentation_kind='dock';self.shelf._layout_header(self.shelf.card.width());flush()
+        self.assertGreater(zone.caption.x(),zone.width()//2)
+        self.assertEqual(zone.mapTo(self.shelf,zone.caption.geometry().center()).y(),self.shelf.lan_button.geometry().center().y())
 
     def test_foreign_drag_mouse_events_cannot_start_nested_drag_or_open_overview(self):
         zone=self.shelf.zones['permanent']
@@ -91,7 +99,7 @@ class FeedbackTests(unittest.TestCase):
 
     def test_compact_transfer_strip_entire_surface_opens_transfers(self):
         view=self.fixture.overview()
-        for ref in self.fixture.paths:self.shelf.content.transfers[ref]=dict(phase='uploading',total=100,received=64)
+        for ref in self.shelf.display_refs():self.shelf.content.transfers[ref]=dict(phase='uploading',total=100,received=64)
         view.update_transfer_status();flush()
         self.assertEqual(len(view.strip_rows),1);self.assertEqual(view.strip_rows[0][2].text(),'64%')
         self.assertIn('+2',view.strip_more.text())
@@ -103,6 +111,15 @@ class FeedbackTests(unittest.TestCase):
         self.shelf._finish_intake()
         self.assertTrue(self.shelf.isVisible());self.assertFalse(self.shelf.incoming_drop)
         self.assertEqual(self.shelf.visible_state,'floating')
+
+    def test_shake_landing_and_tuck_cannot_be_interrupted_by_opening_overview(self):
+        self.shelf.presentation_kind='drag';zone=self.shelf.zones['permanent']
+        for incoming,state in ((True,'floating'),(False,'hiding')):
+            self.shelf.incoming_drop=incoming;self.shelf.visible_state=state
+            QTest.mouseClick(zone,Qt.LeftButton,pos=zone.caption.geometry().center())
+            self.shelf.show_contents()
+            self.assertFalse(self.shelf.expanded);self.assertFalse(zone._click_armed)
+        self.shelf.incoming_drop=False;self.shelf.visible_state='floating'
 
     def test_rounded_crossfade_keeps_constant_opaque_material(self):
         snapshot=SurfaceSnapshot(self.shelf)
@@ -130,6 +147,14 @@ class SettingsFeedbackTests(unittest.TestCase):
             dialog=LanDialog(FakeLan(),app_settings.SettingsStore(Path(root)));dialog.show();flush();panel=dialog.panel
             panel._progress(dict(id='finished',direction='send',state='transferring',received=25,total=100,peer='Roger',name='设计稿.zip'))
             self.assertTrue(panel._rows['finished']['bar'].isVisible())
+            data=dict(id='speed',direction='send',state='transferring',total=10000,peer='Roger',name='素材.zip')
+            for now,received in ((100,0),(100.6,600)):
+                with patch('lan_panel.time.monotonic',return_value=now):panel._progress(dict(data,received=received))
+            speed=panel._rows['speed']['detail'].text().split(' · ')[-1]
+            with patch('lan_panel.time.monotonic',return_value=100.7):panel._progress(dict(data,received=900))
+            self.assertEqual(panel._rows['speed']['detail'].text().split(' · ')[-1],speed)
+            self.assertNotIn('素材.zip',panel._rows['speed']['detail'].text())
+            panel._progress(dict(data,state='complete',received=10000))
             panel._progress(dict(id='finished',direction='send',state='complete',received=100,total=100,peer='Roger',name='设计稿.zip'));flush()
             self.assertTrue(panel._rows['finished']['bar'].isHidden());self.assertTrue(panel._rows['finished']['frame'].isHidden())
             self.assertTrue(panel.transfers_empty.isVisible());self.assertEqual(panel._history[0]['state'],'完成')
@@ -159,6 +184,18 @@ class SettingsFeedbackTests(unittest.TestCase):
             for row in panel._rows_by_id.values():
                 for ancestor in (panel.devices_body,panel.signed_in_page,panel,dialog.account_slot):
                     self.assertTrue(ancestor.rect().contains(row.mapTo(ancestor,row.rect().bottomRight())),(ancestor.objectName(),row.geometry(),ancestor.size()))
+            self.assertLessEqual(dialog._reference_top.height(),dialog._reference_appearance.sizeHint().height()+4)
+            current=panel._rows_by_id['current']
+            marker=current.findChild(QWidget,'accountCurrentDevice');rename=panel.device_rename_buttons['current']
+            self.assertLess(marker.geometry().right(),rename.geometry().left())
+            original=list(service.devices)
+            service.devices.extend(dict(id='extra'+str(i),name='额外设备 '+str(i),platform='windows') for i in range(8))
+            service.list_devices()
+            for _ in range(10):flush()
+            self.assertGreater(dialog._reference_top.height(),dialog._reference_appearance.sizeHint().height())
+            service.devices=original;service.list_devices()
+            for _ in range(10):flush()
+            self.assertLessEqual(dialog._reference_top.height(),dialog._reference_appearance.sizeHint().height()+4)
             dialog.set_update_state('checking');QTest.qWait(12)
             self.assertTrue(dialog.update_activity.isVisible());dialog.set_update_state('latest');flush()
             self.assertTrue(dialog.update_activity.isHidden());self.assertFalse(dialog.update_activity._clock.isValid())

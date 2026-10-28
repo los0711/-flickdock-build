@@ -8,7 +8,7 @@ import sys
 from account_service import valid_new_password
 from native_ui_common import reference_font, icon as ui_icon, colors as ui_colors
 
-from PySide6.QtCore import QByteArray, QDateTime, QEvent, QRectF, Qt, QTimer
+from PySide6.QtCore import QByteArray, QDateTime, QEvent, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter, QLinearGradient
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMenu,
@@ -105,15 +105,35 @@ class AccountGlyph(QWidget):
             return
         tint=ui_colors('dark' if self.dark else 'light')['secondary']
         size=min(20,max(0,min(self.width(),self.height())-4))
-        ui_icon('laptop' if self.platform=='macos' else 'desktop',tint).paint(
+        glyph='apple' if self.platform=='macos' else 'windows' if self.platform=='windows' else 'desktop'
+        ui_icon(glyph,'#0A84FF' if glyph=='windows' else tint).paint(
             painter,(self.width()-size)//2,(self.height()-size)//2,size,size)
 
 
 class AccountPanel(QFrame):
     """AccountService presentation, embedded in SettingsDialog's account slot."""
+    height_changed=Signal()
+    def hasHeightForWidth(self):return True
+
+    def heightForWidth(self,width):
+        if not hasattr(self,'signed_in_page') or self.signed_in_page.isHidden():
+            return self.layout().totalHeightForWidth(width) if self.layout() else -1
+        margins=self.layout().contentsMargins()
+        height=self.signed_in_page.minimumHeight()+margins.top()+margins.bottom()+2
+        if not self.status_label.isHidden():
+            height+=max(self.status_label.sizeHint().height(),self.status_label.heightForWidth(max(1,width-34)))+self.layout().spacing()
+        return height
+
+    def sizeHint(self):
+        size=super().sizeHint()
+        if hasattr(self,'signed_in_page') and not self.signed_in_page.isHidden():size.setHeight(self.heightForWidth(self.width()))
+        return size
+
     def __init__(self,service,parent=None,*,theme='light',email_binding=False):
         super().__init__(parent)
         self.service=service
+        self._fit_timer=QTimer(self);self._fit_timer.setSingleShot(True)
+        self._fit_timer.timeout.connect(self._fit_signed_content)
         # Keep the argument for older app builds; the email controls are gone.
         self.email_binding=False
         self.setObjectName('accountPanel')
@@ -290,15 +310,15 @@ class AccountPanel(QFrame):
         self.username_label.setFixedHeight(26);self.account_state_label.setFixedHeight(24)
         self.username_label.setSizePolicy(QSizePolicy.Policy.Preferred,QSizePolicy.Policy.Fixed)
         name.addWidget(self.username_label);name.addWidget(self.account_state_label);name.addStretch();text.addLayout(name)
+        text.addWidget(self.sync_status_label)
         identity.addLayout(text,1)
         self.password_toggle_button.setMinimumHeight(28);self.password_toggle_button.setText('修改密码');self.password_toggle_button.show()
         self.logout_button.setMinimumHeight(28);self.logout_button.setObjectName('accountDanger');identity.addWidget(self.password_toggle_button);identity.addWidget(self.logout_button)
         for widget in (self.username_label,self.account_state_label,self.sync_status_label,self.logout_button):widget.show()
         signed.addWidget(self.profile_frame);self.profile_frame.show()
-        # Sync feedback and the legacy login ID can both wrap or grow. They
-        # belong below the 40px identity row instead of competing with its
-        # username and action buttons inside a fixed-height box.
-        signed.addWidget(self.sync_status_label);self.sync_status_label.show()
+        # The subtitle grows with real sync feedback; the profile has no fixed
+        # height, so login results remain fully visible.
+        self.sync_status_label.show()
         signed.addWidget(self.login_alias_edit)
         self.profile_frame.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.profile_frame.customContextMenuRequested.connect(self._profile_menu)
@@ -310,9 +330,11 @@ class AccountPanel(QFrame):
             delete(old)
         self.devices_layout=QGridLayout(self.devices_body);self.devices_layout.setContentsMargins(0,10,0,0);self.devices_layout.setSpacing(10)
         self.devices_layout.setColumnStretch(0,1)
+        self.devices_layout.setColumnStretch(1,1)
         self.devices_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         self.devices_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.devices_body.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Maximum)
+        self.devices_body.installEventFilter(self)
         signed.addWidget(self.devices_body);self.devices_body.show()
         self.devices_heading_label.hide();self.refresh_button.hide()
         from app_settings import ReferenceModalDialog
@@ -441,7 +463,9 @@ class AccountPanel(QFrame):
         self._update_enabled()
 
     def set_sync_status(self,text):
-        if self.service.signed_in:self.sync_status_label.setText(str(text)[:240])
+        if self.service.signed_in:
+            self.sync_status_label.setText(str(text)[:240])
+            self._queue_fit()
 
     def _status_changed(self,text):
         message=str(text)
@@ -540,28 +564,31 @@ class AccountPanel(QFrame):
                 if not isinstance(device,dict) or not device.get('id') or device.get('revoked_at'):continue
                 key=str(device['id']);self._devices[key]=dict(device)
                 row=QFrame(self.devices_body);row.setObjectName('accountDevice')
-                row.setMinimumHeight(66)
-                row_layout=QVBoxLayout(row);row_layout.setContentsMargins(12,8,12,8);row_layout.setSpacing(8)
+                row.setMinimumHeight(44)
+                row_layout=QVBoxLayout(row);row_layout.setContentsMargins(10,5,10,5);row_layout.setSpacing(8)
                 horizontal=QHBoxLayout();horizontal.setSpacing(5);row_layout.addLayout(horizontal)
                 glyph=AccountGlyph(row,device=True,platform=str(device.get('platform','')))
                 glyph.setFixedSize(24,24)
                 glyph.dark=self._dark;horizontal.addWidget(glyph)
-                detail=QVBoxLayout();detail.setSpacing(2)
                 device_name=AccountNameLabel(row)
                 device_name.setText(str(device.get('name') or '未命名设备'))
                 device_name.setFixedHeight(24)
                 device_name.setObjectName('accountDeviceName')
-                detail.addWidget(device_name)
+                horizontal.addWidget(device_name,1)
                 platform={'windows':'Windows','macos':'Mac','linux':'Linux'}.get(str(device.get('platform','')),'其他设备')
                 current=bool(device.get('current') or key==str(self.service.device_id))
                 timestamp=QDateTime.fromString(str(device.get('last_seen_at') or ''),Qt.DateFormat.ISODate)
                 suffix='此设备' if current else '最近在线 '+timestamp.toLocalTime().toString('MM-dd HH:mm') if timestamp.isValid() else ''
                 device_name.setToolTip(platform+(' · '+suffix if suffix else ''))
+                row.setAccessibleName(str(device.get('name') or '未命名设备')+'，'+platform+('，本机' if current else ''))
                 subtitle=AccountNameLabel(row);subtitle.setObjectName('accountCurrentDevice' if current else 'accountDeviceMeta')
                 subtitle.setFixedHeight(20)
-                subtitle.setText(platform+(' · (本机)' if current else ' · '+suffix if suffix else ''))
-                detail.addWidget(subtitle)
-                horizontal.addLayout(detail,1)
+                subtitle.setText('(本机)' if current else platform)
+                if current:
+                    subtitle.setSizePolicy(QSizePolicy.Policy.Fixed,QSizePolicy.Policy.Fixed)
+                    subtitle.setFixedWidth(48)
+                    horizontal.addWidget(subtitle)
+                else:subtitle.hide()
                 rename=RemoveDeviceButton(row,rename=True);rename.dark=self._dark
                 rename.setText('改名');rename.setObjectName('accountDeviceRename');rename.setFixedSize(44,32)
                 rename.setAccessibleName('修改设备名称 '+str(device.get('name') or '未命名设备'))
@@ -593,14 +620,50 @@ class AccountPanel(QFrame):
                 self.device_name_edits[key]=edit;self._rename_forms[key]=rename_form
                 self._rename_save_buttons[key]=save
                 for child in rename_form.findChildren(QWidget):child.installEventFilter(self)
-                index=len(self._device_rows);self.devices_layout.addWidget(row,index,0);self._device_rows.append(row)
+                self._device_rows.append(row)
                 self._rows_by_id[key]=row
         if not self._device_rows:
             empty=_label('正在读取设备…' if self.service.signed_in else '',self.devices_body,muted=True)
             self.devices_layout.addWidget(empty,0,0,1,2);self._device_rows.append(empty)
         self.devices_heading_label.setText('已登录设备'+(' · '+str(len(self._devices)) if self._devices else ''))
+        self._layout_device_rows()
         self.devices_body.updateGeometry();self.signed_in_page.updateGeometry();self.updateGeometry()
+
+    def _layout_device_rows(self):
+        columns=2 if self.devices_body.width()>=472 else 1
+        signature=(columns,tuple(id(row) for row in self._device_rows),self.confirm_frame.isVisible())
+        if getattr(self,'_device_layout_signature',None)==signature:return
+        self._device_layout_signature=signature
+        for index,row in enumerate(self._device_rows):
+            self.devices_layout.removeWidget(row)
+            self.devices_layout.addWidget(row,index//columns,index%columns,1,1 if len(self._rows_by_id) else columns)
+        if self.confirm_frame.isVisible():
+            self.devices_layout.removeWidget(self.confirm_frame)
+            self.devices_layout.addWidget(self.confirm_frame,(len(self._device_rows)+columns-1)//columns,0,1,columns)
+        self.devices_layout.setColumnStretch(1,1 if columns==2 else 0)
+        self.devices_layout.invalidate()
+        self.devices_body.updateGeometry();self.signed_in_page.updateGeometry()
+        self.layout().invalidate();self.updateGeometry()
         self._update_enabled()
+        self._queue_fit()
+
+    def _queue_fit(self):
+        if not self._fit_timer.isActive():self._fit_timer.start(0)
+
+    def _fit_signed_content(self):
+        if self.signed_in_page.isHidden():
+            self.height_changed.emit();return
+        width=max(1,self.signed_in_page.width())
+        profile=max(40,self.profile_frame.layout().totalHeightForWidth(width))
+        self.profile_frame.setFixedHeight(profile)
+        devices=max(0,self.devices_layout.minimumSize().height()+2)
+        self.devices_body.setFixedHeight(devices)
+        parts=[profile,devices]
+        if not self.login_alias_edit.isHidden():parts.append(self.login_alias_edit.sizeHint().height())
+        height=sum(parts)+self.signed_in_page.layout().spacing()*(len(parts)-1)
+        self.signed_in_page.setFixedHeight(height)
+        self.layout().invalidate();self.updateGeometry()
+        self.height_changed.emit()
 
     def _edit_device_name(self,key,*_):
         if self._busy or not self.service.signed_in or key not in self._devices:return
@@ -626,8 +689,8 @@ class AccountPanel(QFrame):
         self._confirm_device=key
         self._cancel_rename()
         self.confirm_label.setText('移除“'+str(device.get('name') or '未命名设备')+'”的登录？此设备之后需要重新登录。')
-        self.devices_layout.addWidget(self.confirm_frame,len(self._devices),0)
         self.confirm_frame.show()
+        self._layout_device_rows()
 
     def _cancel_remove(self):
         self._confirm_device='';self.confirm_label.clear();self.confirm_frame.hide()
@@ -638,6 +701,10 @@ class AccountPanel(QFrame):
         self._revoke_pending=key;self._update_enabled();self._invoke(self.service.revoke_device,key)
 
     def eventFilter(self,watched,event):
+        if watched is self.devices_body and event.type()==QEvent.Type.Resize:
+            self._layout_device_rows()
+        if watched in (self.devices_body,self.profile_frame,self.signed_in_page) and event.type() in (QEvent.Type.LayoutRequest,QEvent.Type.Resize):
+            self._queue_fit()
         # Enter in these embedded forms must not activate Settings' default Save.
         if event.type()==QEvent.Type.KeyPress and event.key() in (Qt.Key.Key_Return,Qt.Key.Key_Enter):
             if watched is self.username_edit:self.password_edit.setFocus()

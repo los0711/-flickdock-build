@@ -314,6 +314,8 @@ class DropZone(QFrame):
         super().hideEvent(event)
 
     def mousePressEvent(self, event):
+        if self.shelf.intake_blocks_overview():
+            self._click_armed=False;event.accept();return
         self.shelf.touch()
         self.shelf.active_mode = self.mode
         if event.button() == Qt.MouseButton.LeftButton:
@@ -326,7 +328,7 @@ class DropZone(QFrame):
     def mouseMoveEvent(self, event):
         self.shelf.touch()
         self._track_pill_hover(event.position().toPoint(), event.buttons())
-        if self._click_armed and event.buttons() & Qt.MouseButton.LeftButton and self.paths and not self.did_drag and (event.position().toPoint() - self.origin).manhattanLength() > 8:
+        if not self.shelf.intake_blocks_overview() and self._click_armed and event.buttons() & Qt.MouseButton.LeftButton and self.paths and not self.did_drag and (event.position().toPoint() - self.origin).manhattanLength() > 8:
             self.did_drag = True
             self.icon.set_pressed(False)
             self.shelf.drag_files(self.mode, list(self.paths))
@@ -1292,7 +1294,7 @@ class ShelfWindow(QWidget):
             item.show();item.raise_()
         self.account_button.hide()
         item=self.lan_button
-        point=transform.map(QRectF(self.card.x()+10,self.card.y()+CARD_H-43,112,32).center())
+        point=transform.map(QRectF(self.card.x()+10,self.card.y()+CARD_H-39,112,32).center())
         item.setFixedSize(112,32);item.move(round(point.x()-56),round(point.y()-16));item.set_presentation_scale(effect.sx,effect.sy)
         item.setVisible(not expanded and self.presentation_kind!='drag');item.raise_()
         for attr in ('account_caption','lan_caption','header_line','footer_line','traffic_controls'):
@@ -1304,8 +1306,10 @@ class ShelfWindow(QWidget):
             self.cloud_button.move(round(center.x()-16),round(center.y()-16));self.cloud_button.show();self.cloud_button.raise_()
         zone=self.zones.get('permanent')
         if zone:
+            x=131 if self.presentation_kind=='drag' else 242
             y=214 if self.presentation_kind=='drag' else 230
-            zone.caption.move(131,y);zone.count_arrow.move(180,y+10)
+            zone.caption.move(x,y);zone.count_arrow.move(x+49,y+10)
+            zone.hint.move(40,180 if self.presentation_kind=='drag' else 188)
 
     def refresh_cloud_button(self):
         enabled = self.manager.settings.sync_upload_enabled and self.manager.settings.sync_receive_enabled
@@ -1495,7 +1499,7 @@ class ShelfWindow(QWidget):
             button.raise_()
         if not self.expanded:
             button=self.lan_button
-            center=transform.map(QRectF(rect.x()+24-self.x(),rect.y()+7+CARD_H-43-self.y(),112,32).center())
+            center=transform.map(QRectF(rect.x()+24-self.x(),rect.y()+7+CARD_H-39-self.y(),112,32).center())
             button.move(round(center.x()-56),round(center.y()-16))
             button.set_presentation_scale(self.surface_effect.sx,self.surface_effect.sy);button.raise_()
 
@@ -2153,7 +2157,11 @@ class ShelfWindow(QWidget):
                                  trigger,self.manager.settings.dock_edge)
         return rect.contains(point)
 
+    def intake_blocks_overview(self):
+        return self.presentation_kind=='drag' and (self.incoming_drop or self.visible_state=='hiding')
+
     def show_contents(self, mode="permanent", target=None):
+        if self.intake_blocks_overview():return
         with self._surface_transaction():
             self._show_contents(mode,target)
         if self.isVisible():

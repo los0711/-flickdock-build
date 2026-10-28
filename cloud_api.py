@@ -213,7 +213,10 @@ class CloudApi(QObject):
                     raise CloudError('同步文件校验失败，将自动重试。', details={
                         'received_size':state['received'], 'expected_size':expected['size'],
                         'hash_matches':state['hash'].hexdigest() == digest,
-                        'network_error':int(reply.error())})
+                        'network_error':reply.error().value,
+                        'reply_finished':reply.isFinished(),
+                        'response_length':bytes(reply.rawHeader('Content-Length')).decode('ascii','replace'),
+                        'header_digest_valid':bool(re.fullmatch(r'[0-9a-f]{64}',digest))})
                 if state['file'] is None:
                     state['part'] = state['destination'].with_name('.' + key + '.part')
                     state['file'] = state['part'].open('xb')
@@ -252,6 +255,9 @@ class CloudApi(QObject):
                 # OS exception strings can include a private local path. Keep
                 # diagnostics useful without carrying paths or credentials.
                 details = {'phase':phase,'cause':type(problem).__name__}
+                import traceback
+                frames=traceback.extract_tb(problem.__traceback__)
+                if frames:details['location']=Path(frames[-1].filename).name+':'+str(frames[-1].lineno)
                 if isinstance(problem,OSError) and isinstance(problem.errno,int):
                     details['errno'] = problem.errno
                 error = (CloudError('无法保存云端文件，请检查保存位置或文件占用。',status,

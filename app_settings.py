@@ -1282,6 +1282,7 @@ class SettingsDialog(QDialog):
         self._settings_top_grid=top_grid
         self.body_layout.addWidget(top)
         al=appearance.layout();self._empty_layout(al);al.setContentsMargins(16,16,16,16);al.setSpacing(12)
+        al.setAlignment(Qt.AlignmentFlag.AlignTop)
         heading=QLabel('外观与视图',appearance);heading.setObjectName('settingsSection');al.addWidget(heading)
         for label,combo,choices in (('主题外观',self.theme_combo,('浅色','暗色')),
                                    ('默认总览布局',self.view_combo,('列表','图标'))):
@@ -1378,6 +1379,7 @@ class SettingsDialog(QDialog):
         if previous is widget:
             return previous
         if previous is not None:
+            if hasattr(previous,'height_changed'):previous.height_changed.disconnect(self._fit_settings_top)
             self.account_slot_layout.removeWidget(previous)
             previous.hide()
             previous.setParent(None)
@@ -1390,8 +1392,10 @@ class SettingsDialog(QDialog):
                 child.installEventFilter(self)
             if hasattr(widget, "apply_theme"):
                 widget.apply_theme(self.theme_combo.currentData())
+            if hasattr(widget,'height_changed'):widget.height_changed.connect(self._fit_settings_top)
         else:
             self.account_placeholder.show()
+        QTimer.singleShot(0,self._fit_settings_top)
         return previous
 
     def set_update_state(self, state, version="", received=0, total=0, error=""):
@@ -1483,6 +1487,17 @@ class SettingsDialog(QDialog):
         for i,panel in enumerate(panels):
             selectors.removeWidget(panel);selectors.addWidget(panel,i if narrow else 0,0 if narrow else i)
         lower.setDirection(QHBoxLayout.Direction.TopToBottom if narrow else QHBoxLayout.Direction.LeftToRight)
+        self._fit_settings_top()
+
+    def _fit_settings_top(self):
+        if not hasattr(self,'_reference_top'):return
+        panel=self._account_panel or self.account_placeholder
+        width=max(1,self.account_slot.width())
+        left=max(panel.minimumSizeHint().height(),panel.heightForWidth(width) if panel.hasHeightForWidth() else panel.sizeHint().height())
+        right=self._reference_appearance.layout().sizeHint().height()+2
+        narrow=self.scroll.viewport().width()-36<700
+        height=left+right+16 if narrow else max(left,right)
+        self._reference_top.setFixedHeight(max(1,height))
 
     def _card(self):
         card = QFrame(self)

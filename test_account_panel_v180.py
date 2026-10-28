@@ -191,7 +191,9 @@ class AccountTests(unittest.TestCase):
         top={id(w) for w in APP.topLevelWidgets()}
         before=len(self.api.requests);self.click(self.panel.device_buttons[OTHER])
         self.assertTrue(self.panel.confirm_frame.isVisible())
-        self.assertEqual(self.panel.devices_layout.indexOf(self.panel.confirm_frame),self.panel.devices_layout.indexOf(self.panel._rows_by_id[OTHER])+1)
+        confirmation_row=self.panel.devices_layout.getItemPosition(self.panel.devices_layout.indexOf(self.panel.confirm_frame))[0]
+        device_row=self.panel.devices_layout.getItemPosition(self.panel.devices_layout.indexOf(self.panel._rows_by_id[OTHER]))[0]
+        self.assertGreater(confirmation_row,device_row)
         self.assertEqual(top,{id(w) for w in APP.topLevelWidgets()})
         self.click(self.panel.cancel_remove_button);self.assertEqual(len(self.api.requests),before)
         self.click(self.panel.device_buttons[OTHER]);self.click(self.panel.confirm_remove_button)

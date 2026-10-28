@@ -473,19 +473,19 @@ def build_overview(view,preview_type):
     view.cloud_selector=CloudSelector(view.shelf,view.header)
     view.cloud_selector.clicked.connect(view.shelf.show_cloud_menu);head.addWidget(view.cloud_selector)
     head.addStretch(1)
-    view.search_edit=QLineEdit(view.header);view.search_edit.setPlaceholderText('搜索...');view.search_edit.setFixedSize(176,30)
+    view.search_edit=QLineEdit(view.header);view.search_edit.setPlaceholderText('搜索...');view.search_edit.setFixedSize(176,32)
     view.search_edit.setClearButtonEnabled(True)
     view.search_edit.setAccessibleName('搜索搁架内容');view.search_edit.textChanged.connect(lambda _:view.rebuild())
     css(view.search_edit,"QLineEdit{background:#28282A;color:#F5F5F7;border:1px solid #3B3B3F;border-radius:8px;padding:4px 10px;font:12px 'HarmonyOS Sans SC';}",
         "QLineEdit{background:#F0F0F2;color:#1D1D1F;border:1px solid #D4D4D8;border-radius:8px;padding:4px 10px;font:12px 'HarmonyOS Sans SC';}")
     head.addWidget(view.search_edit)
-    view.view_segment=QFrame(view.header);view.view_segment.setFixedSize(154,36)
+    view.view_segment=QFrame(view.header);view.view_segment.setFixedSize(154,32)
     css(view.view_segment,'QFrame{background:rgba(255,255,255,10);border:1px solid rgba(255,255,255,18);border-radius:9px;}',
         'QFrame{background:rgba(0,0,0,10);border:1px solid rgba(0,0,0,18);border-radius:9px;}')
     segment=QHBoxLayout(view.view_segment);segment.setContentsMargins(3,3,3,3);segment.setSpacing(0)
     view.view_list=button('列表','list',parent=view.view_segment);view.view_grid=button('图标','grid',parent=view.view_segment)
     for control,key in ((view.view_list,'list'),(view.view_grid,'icons')):
-        control.setFixedHeight(30);control.setCheckable(True)
+        control.setFixedHeight(26);control.setCheckable(True)
         css(control,"QPushButton{background:transparent;border:0;border-radius:6px;color:#A1A1AA;padding:3px 8px;font:12px 'HarmonyOS Sans SC';} QPushButton:checked{background:rgba(255,255,255,31);color:#F5F5F7;font-weight:600;}",
             "QPushButton{background:transparent;border:0;border-radius:6px;color:#515154;padding:3px 8px;font:12px 'HarmonyOS Sans SC';} QPushButton:checked{background:#FFFFFF;color:#1D1D1F;font-weight:600;}")
         control.clicked.connect(lambda checked=False,key=key:view.change_view_mode(key));segment.addWidget(control)

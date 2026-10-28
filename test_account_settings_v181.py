@@ -159,7 +159,8 @@ class SettingsAccountTests(unittest.TestCase):
             self.assertEqual(self.panel.devices_body.objectName(),'accountDevices')
             self.assertEqual(len(self.panel.devices_body.findChildren(QWidget,'accountDeviceSeparator')),0)
             rows=list(self.panel._rows_by_id.values())
-            self.assertLess(rows[0].geometry().bottom(),rows[1].geometry().top())
+            self.assertEqual(rows[0].geometry().top(),rows[1].geometry().top())
+            self.assertLess(rows[0].geometry().right(),rows[1].geometry().left())
             for row in self.panel._rows_by_id.values():
                 self.assertTrue(self.panel.devices_body.rect().contains(row.geometry()))
             for widget in self.panel.findChildren(QWidget):

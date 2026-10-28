@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import time
+from collections import deque
 
 from PySide6.QtCore import QByteArray, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
@@ -190,8 +191,7 @@ class _DeviceDelegate(QStyledItemDelegate):
         icon_color = '#8fbbff' if self.dark else '#3178d9'
         platform=index.data(Qt.ItemDataRole.UserRole+1)
         if platform=='windows':
-            from flickdock_icons import app_icon
-            art=app_icon()
+            art=ui_icon('windows','#0A84FF')
         else:art=ui_icon('apple' if platform=='macos' else 'desktop',icon_color)
         art.paint(painter,QRect(option.rect.left()+16,option.rect.top()+17,22,22))
         name = str(index.data(Qt.ItemDataRole.DisplayRole) or '')
@@ -582,7 +582,8 @@ class LanPanel(QFrame):
         self.history_body.setObjectName('lanHistoryGroup')
         self.history_layout = QVBoxLayout(self.history_body)
         self.history_layout.setContentsMargins(0, 0, 0, 0)
-        self.history_layout.setSpacing(6)
+        self.history_layout.setSpacing(4)
+        self.history_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.history_label = _label('还没有传输记录', self.history_body, muted=True)
         self.history_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.history_label.setMinimumHeight(48)
@@ -1044,10 +1045,16 @@ class LanPanel(QFrame):
             if previous in self._history:self._history.remove(previous);self._render_history()
             row.update(finished=False,recorded=False);row['bar'].show();row['cancel'].show();self._refresh_transfer_pages()
         if state == 'transferring':
-            previous = self._samples.get(identifier, (now, received))
-            elapsed = now - previous[0]
-            speed = (received - previous[1]) / elapsed if elapsed > .01 and received >= previous[1] else 0
-            self._samples[identifier] = (now, received)
+            sample=self._samples.get(identifier)
+            if sample is None or received<sample['points'][-1][1]:
+                sample=dict(points=deque(),speed=0,shown_at=now)
+                self._samples[identifier]=sample
+            points=sample['points'];points.append((now,received))
+            while len(points)>2 and points[1][0]<now-2:points.popleft()
+            elapsed=now-points[0][0]
+            if elapsed>=.35 and now-sample['shown_at']>=.5:
+                sample['speed']=max(0,received-points[0][1])/elapsed;sample['shown_at']=now
+            speed=sample['speed']
             fraction = min(1000, int(received * 1000 / total)) if total else 0
             row['bar'].setRange(0, 1000); row['bar'].setValue(fraction)
             name = str(data.get('name') or '')
@@ -1056,8 +1063,7 @@ class LanPanel(QFrame):
             if name:
                 row['title'].setText(Path(name).name)
                 row['title'].setToolTip(('发送至 ' if data['direction']=='send' else '接收自 ')+str(data.get('peer') or ''))
-            name = name[:48] + ('…' if len(name) > 48 else '')
-            row['detail'].setText(f'{name} · {_size(received)} / {_size(total)}' + (f' · {_size(speed)}/s' if speed else ''))
+            row['detail'].setText(f'{_size(received)} / {_size(total)} · ' + (f'{_size(speed)}/s' if speed else '计算速度…'))
         elif state == 'waiting':
             self.send_code_value.setText(' '.join(str(data.get('code',''))) or '—')
             row['bar'].setRange(0, 0)
@@ -1065,6 +1071,7 @@ class LanPanel(QFrame):
         elif state in ('preparing', 'reconnecting'):
             row['bar'].setRange(0, 0); row['detail'].setText('正在准备传输…' if state == 'preparing' else '连接中断，正在续传…')
         elif state in ('cancelled', 'error', 'complete','interrupted'):
+            self._samples.pop(identifier,None)
             row['finished'] = True;row['terminal_state']=state; row['cancel'].hide()
             if row.get('extra'):
                 row['extra'].hide(); row['heading'].show(); row['detail'].show()
