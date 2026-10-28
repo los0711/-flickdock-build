@@ -3,6 +3,7 @@ import hashlib,json,os,sys,tempfile,threading,time,unittest
 from pathlib import Path
 from uuid import uuid4
 from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QCoreApplication,QEvent
 from wan_transfer import WanTransferService
 from webrtc_stream import WebRTCStream
 
@@ -14,7 +15,10 @@ class WanRecovery(unittest.TestCase):
         self.service=WanTransferService(self.root,enabled=False);self.sent=[]
         self.service._send_signal=lambda value:self.sent.append(dict(value)) or True
         self.identifier=uuid4().hex
-    def tearDown(self):self.service.close();self.temporary.cleanup()
+    def tearDown(self):
+        self.service.close();self.service.deleteLater()
+        QCoreApplication.sendPostedEvents(None,QEvent.Type.DeferredDelete);APP.processEvents()
+        self.temporary.cleanup()
     def state(self,role='send'):
         value=dict(role=role,peer=dict(id='a'*64,name='测试设备'),ready=threading.Event(),generation=1,requested=True,total=0,
             request=dict(type='request',id=self.identifier,token='b'*64,digest='c'*64,total='0',count=0,names=[]))
@@ -23,7 +27,7 @@ class WanRecovery(unittest.TestCase):
     def test_identity_survives_restart_and_requires_no_login(self):
         identity=self.service.device_id;other=WanTransferService(self.root,enabled=False)
         try:self.assertEqual(identity,other.device_id);self.assertEqual(hashlib.sha256((self.root/'wan-device.key').read_bytes()).hexdigest(),identity)
-        finally:other.close()
+        finally:other.close();other.deleteLater()
     def test_request_not_acknowledged_by_local_queue(self):
         state=self.state();state.pop('requested');request=dict(state['request'])
         self.service._handle_command(dict(_connect=True,**request))

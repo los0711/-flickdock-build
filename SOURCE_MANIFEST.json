@@ -555,8 +555,8 @@
     },
     {
       "path": "build_macos.py",
-      "size": 14641,
-      "sha256": "7368d0b7fa6ae004a80ac3e17fdf385faf8b33490289d0c07bdaff3d4fea75d6"
+      "size": 14827,
+      "sha256": "cfd9dcb0141c9ba7b92cb73ecd3be2a42acb8547a1f38900eab47c04af21f26e"
     },
     {
       "path": "bundle_policy.py",
@@ -1480,8 +1480,8 @@
     },
     {
       "path": "test_wan_transfer_v1816.py",
-      "size": 6719,
-      "sha256": "3de9d168b58d6dc0f57005218fc6b9b6f2b4f37c2c438ab46d56c7d1be9d683f"
+      "size": 6929,
+      "sha256": "5373bbe53518f90c6e5f76fbe3ce671e6405756dc903f905cda49547e96b7840"
     },
     {
       "path": "test_widget_retirement_v162.py",
