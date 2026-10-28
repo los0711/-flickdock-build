@@ -95,6 +95,29 @@ class NativeTests(unittest.TestCase):
             self.assertTrue(native.remove_host_window_shadow(widget))
         self.assertEqual(calls, [False])
 
+    def test_cosmetic_cocoa_shadow_failure_does_not_abort_startup(self):
+        class CocoaError(Exception):
+            pass
+
+        widget = SimpleNamespace(winId=lambda: 123)
+        window = SimpleNamespace(setHasShadow_=lambda _value: (_ for _ in ()).throw(CocoaError('native unavailable')))
+        fake_objc = SimpleNamespace(error=CocoaError,
+            objc_object=lambda **_kwargs: SimpleNamespace(window=lambda: window))
+        with patch.object(native.sys, 'platform', 'darwin'), \
+             patch.object(native, 'native_input_available', return_value=True), \
+             patch.dict(sys.modules, {'objc': fake_objc}):
+            self.assertFalse(native.remove_host_window_shadow(widget))
+
+    def test_cosmetic_native_fallback_does_not_hide_implementation_errors(self):
+        widget = SimpleNamespace(winId=lambda: 123)
+        window = SimpleNamespace(setHasShadow_=lambda _value: (_ for _ in ()).throw(KeyError('implementation error')))
+        fake_objc = SimpleNamespace(objc_object=lambda **_kwargs: SimpleNamespace(window=lambda: window))
+        with patch.object(native.sys, 'platform', 'darwin'), \
+             patch.object(native, 'native_input_available', return_value=True), \
+             patch.dict(sys.modules, {'objc': fake_objc}):
+            with self.assertRaises(KeyError):
+                native.remove_host_window_shadow(widget)
+
     def test_quartz_external_buttons_and_window_move_until_release(self):
         quartz = Quartz()
         monitor = native.MacInput(quartz, lambda: QPoint(100, 100))

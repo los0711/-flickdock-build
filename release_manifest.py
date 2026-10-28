@@ -71,6 +71,7 @@ MAINTAINED_TESTS=(
     'test_sync_receive_priority.py','test_cloud_download_fast_path_v189.py','test_window_layer.py',
     'test_mac_window_order_v1810.py','test_mac_cocoa_spaces.py','test_win_window_order_v1810.py',
     'test_html_native_lan.py','test_html_native_dialogs.py','test_html_native_workspace.py',
+    'test_hig_accessibility.py','test_account_profile_layout_v1814.py','test_lan_hig_layout_v1814.py',
     'test_shelf_raise_v1810.py','test_intake_first_frame_v1810.py',
     'test_sync_remote_commit_wakeup.py','test_cloud_file_status_v1810.py',
     'test_trigger_reliability_v1810.py','test_event_stream_wiring_v1810.py',
@@ -79,7 +80,7 @@ MAINTAINED_TESTS=(
 SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'FlickDock.spec','FlickDock.iss','version_info.txt','ChineseSimplified.isl',
     'flickdock.ico','THIRD_PARTY_NOTICES.md','font_manifest.json','bundle_policy.py',
-    'release_manifest.py','release_macos.py','package_source.py','PUBLISHING.md','README.md','AGENTS.md','UI_REFERENCE_IMPLEMENTATION.md','.gitignore','.gitattributes',
+    'release_manifest.py','release_macos.py','package_source.py','PUBLISHING.md','README.md','AGENTS.md','UI_REFERENCE_IMPLEMENTATION.md','HIG_DESIGN.md','.gitignore','.gitattributes',
     'check_release_v16.py','release_dpr_v165.py','PACKAGE_AUDIT.md',
     'MOTION_V161.md','MOTION_V162.md','MOTION_V163.md','MOTION_V164.md','MOTION_V165.md',
     'bench_morph_v161.py','bench_cold_expand_v162.py','bench_clear_confirm_v161.py',

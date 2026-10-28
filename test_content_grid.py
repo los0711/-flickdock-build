@@ -69,8 +69,9 @@ with tempfile.TemporaryDirectory(prefix='flickdock-grid-') as profile:
         grid.addWidget(item, 0, index)
     popup.show()
     wait(30)
-    assert items[0].width() == 148 and items[0].height() == 112
-    assert items[0].remove_button.width() == 20
+    assert items[0].width() >= 112 and items[0].height() == 120
+    assert popup.rows_body.rect().contains(items[0].geometry())
+    assert items[0].remove_button.width() == 32
     assert not items[0].icon.isNull() and not items[1].icon.isNull()
     mouse(items[0], QEvent.Type.MouseButtonPress)
     mouse(items[0], QEvent.Type.MouseButtonRelease, buttons=Qt.MouseButton.NoButton)

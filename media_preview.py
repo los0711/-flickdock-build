@@ -87,7 +87,8 @@ class _MediaButton(QPushButton):
         p.setBrush(background)
         p.setPen(Qt.PenStyle.NoPen)
         p.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 10, 10)
-        if self.hasFocus():
+        from native_ui_common import keyboard_focus_visible
+        if keyboard_focus_visible(self):
             p.setPen(QPen(QColor(ui_theme.color("accent")), 1.4))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(QRectF(self.rect()).adjusted(1.6, 1.6, -1.6, -1.6), 9, 9)

@@ -86,7 +86,8 @@ def load_font(app):
 
 def motion_enabled() -> bool:
     if sys.platform != "win32":
-        return True
+        from native_ui_common import reduced_motion
+        return not reduced_motion()
     value = ctypes.c_int(1)
     try:
         ok = ctypes.windll.user32.SystemParametersInfoW(0x1042, 0, ctypes.byref(value), 0)
@@ -200,11 +201,12 @@ class DropZone(QFrame):
         from reference_widgets import MiniStack,label,css
         self.shelf,self.mode=shelf,mode;self.origin=QPoint();self.did_drag=False;self.drop_highlight=False
         self.setObjectName('dropZone');self.setAcceptDrops(True);self.setMouseTracking(True)
-        self.setCursor(Qt.CursorShape.PointingHandCursor);self.setFixedSize(330,268)
+        self.setCursor(Qt.CursorShape.PointingHandCursor);self.setFixedSize(330,268);self.setFocusPolicy(Qt.StrongFocus)
+        self.setAccessibleName('搁架，拖入内容或打开总览')
         self.symbol=QLabel(self);self.symbol.hide();self.title=QLabel(self);self.title.hide();self.description=QLabel(self);self.description.hide()
         self.icon=MiniStack(shelf,self,motion=shelf.manager.motion);self.icon.setGeometry(45,18,240,170)
         self.hint=label('拖入文件、文字或链接',12,400,'secondary',self);self.hint.setGeometry(40,194,250,18);self.hint.setAlignment(Qt.AlignCenter)
-        self.caption=QLabel(self);self.caption.setGeometry(248,232,68,28);self.caption.setAlignment(Qt.AlignCenter);self.caption.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.caption=QLabel(self);self.caption.setGeometry(248,230,68,32);self.caption.setAlignment(Qt.AlignCenter);self.caption.setAttribute(Qt.WA_TransparentForMouseEvents)
         self.count_arrow=QLabel(self);self.count_arrow.setGeometry(297,240,12,12);self.count_arrow.setAttribute(Qt.WA_TransparentForMouseEvents)
         self._pill_hovered=False;self._pill_timer=QTimer(self);self._pill_timer.setSingleShot(True);self._pill_timer.timeout.connect(self._open_from_pill_hover)
         self.feedback=Spring(self,{'hover':0},lambda _:self._apply_style(),motion=shelf.manager.motion)
@@ -342,6 +344,11 @@ class DropZone(QFrame):
         self.shelf.show_menu(self.mode, event.globalPos())
         event.accept()
 
+    def keyPressEvent(self,event):
+        if event.key() in (Qt.Key_Return,Qt.Key_Enter,Qt.Key_Space):
+            self.shelf.show_contents(self.mode);event.accept();return
+        super().keyPressEvent(event)
+
 
 class ElidedLabel(QLabel):
     def __init__(self, parent=None):
@@ -372,6 +379,8 @@ class PreviewPane(QFrame):
         self.shelf=parent.shelf;self.popup=parent;self.current_path=None
         from reference_widgets import build_preview
         build_preview(self,ElidedLabel,ImagePreview,MediaPreview,ContentTile)
+        self._copy_feedback=QTimer(self);self._copy_feedback.setSingleShot(True)
+        self._copy_feedback.timeout.connect(lambda:self.copy_button.set_glyph('copy'))
 
     def _playing_changed(self, playing):
         self.shelf.preview_playing=bool(playing)
@@ -385,9 +394,10 @@ class PreviewPane(QFrame):
             status=lookup(self.current_path) if callable(lookup) else cloud_status_for_ref(self.shelf,self.current_path)
             self.cloud_badge.set_status(status,self.shelf.content.transfers.get(self.current_path))
             if hasattr(self,'status_value'):
-                from reference_widgets import STATUS_COLORS,css
+                from reference_widgets import css,colors
                 self.status_value.setText(CLOUD_STATUS_LABELS.get(status,'仅保存在本机'))
-                css(self.status_value,f"color:{STATUS_COLORS.get(status,'#A1A1AA')};background:transparent;border:0;font:11px 'HarmonyOS Sans SC';")
+                token={'synced':'green','uploading':'link','pending':'link','local':'secondary','paused':'orange','error':'red'}.get(status,'secondary')
+                css(self.status_value,*[f"color:{colors(theme)[token]};background:transparent;border:0;font:11px 'HarmonyOS Sans SC';" for theme in ('dark','light')])
 
     def _poster_ready(self, path, image):
         if not image.isNull():
@@ -535,7 +545,7 @@ class PreviewPane(QFrame):
         elif self.stack.currentWidget() is self.text: QApplication.clipboard().setText(self.text.toPlainText())
         else: self.shelf.copy_items([self.current_path])
         self.copy_button.set_glyph("check"); self.copy_button.spring.kick({"scale":1.8})
-        QTimer.singleShot(850,lambda:self.copy_button.set_glyph("copy"))
+        self._copy_feedback.start(850)
         self.shelf.touch()
 
     def enterEvent(self,event):
@@ -555,9 +565,10 @@ class FileRow(QFrame):
         from reference_widgets import SelectionCheck
         self.popup,self.path=popup,path;self.setAcceptDrops(True);self.origin=QPoint();self.did_drag=False
         self.setFixedHeight(58);self.setMouseTracking(True);self.setCursor(Qt.OpenHandCursor);self.setFocusPolicy(Qt.StrongFocus)
+        self._keyboard_focus=False
         self.motion=Spring(self,{'highlight':0},lambda _:self.update(),motion=popup.shelf.manager.motion)
         row=QHBoxLayout(self);row.setContentsMargins(12,8,8,8);row.setSpacing(12)
-        self.selection_check=SelectionCheck(self);self.selection_check.setFixedSize(16,16);self.selection_check.setChecked(path in popup.selected)
+        self.selection_check=SelectionCheck(self);self.selection_check.setFixedSize(32,32);self.selection_check.setChecked(path in popup.selected)
         self.selection_check.setAccessibleName('选择 '+popup.shelf.content.title(path))
         self.selection_check.clicked.connect(lambda _:popup.select_item(path,toggle=True))
         from reference_widgets import css
@@ -570,7 +581,7 @@ class FileRow(QFrame):
         css(self.name_label,"color:#F5F5F7;background:transparent;border:0;font:600 13px 'HarmonyOS Sans SC';","color:#1D1D1F;background:transparent;border:0;font:600 13px 'HarmonyOS Sans SC';")
         self.detail_label=label(item_detail(popup.shelf,path),11,400,'secondary',self);self.detail_label.setAttribute(Qt.WA_TransparentForMouseEvents)
         names.addWidget(self.name_label);names.addWidget(self.detail_label);row.addLayout(names,1)
-        self.remove_button=button('✕',parent=self);self.remove_button.setFixedSize(24,24);self.remove_button.setToolTip('从搁架移除');self.remove_button.clicked.connect(lambda:popup.remove_path(path))
+        self.remove_button=ToolbarButton('close',self,motion=popup.shelf.manager.motion);self.remove_button.setFixedSize(32,32);self.remove_button.setToolTip('从搁架移除');self.remove_button.setAccessibleName('从搁架移除 '+popup.shelf.content.title(path));self.remove_button.clicked.connect(lambda:popup.remove_path(path))
         policy=self.remove_button.sizePolicy();policy.setRetainSizeWhenHidden(True);self.remove_button.setSizePolicy(policy)
         row.addWidget(self.remove_button);self.remove_button.hide();self.refresh_cloud_status()
 
@@ -588,7 +599,11 @@ class FileRow(QFrame):
         p=QPainter(self);p.setRenderHint(QPainter.Antialiasing)
         p.setBrush(ink(c['selected'] if chosen else c['card_hover'] if self.motion.values['highlight']>.3 else c['card']))
         p.setPen(QPen(ink(c['selected_border'] if chosen else c['border']),1))
-        p.drawRoundedRect(QRectF(self.rect()).adjusted(.5,.5,-.5,-.5),c['card_radius'],c['card_radius']);p.end()
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(.5,.5,-.5,-.5),c['card_radius'],c['card_radius'])
+        if self.hasFocus() and self._keyboard_focus:
+            p.setBrush(Qt.NoBrush);p.setPen(QPen(QColor(c['blue']),1.5))
+            p.drawRoundedRect(QRectF(self.rect()).adjusted(2,2,-2,-2),c['card_radius']-1,c['card_radius']-1)
+        p.end()
 
     def enterEvent(self, event):
         self.remove_button.show()
@@ -598,12 +613,13 @@ class FileRow(QFrame):
         super().enterEvent(event)
 
     def leaveEvent(self, event):
-        self.remove_button.hide()
+        self.remove_button.setVisible(self.hasFocus() and self._keyboard_focus)
         self.popup.end_hover(self.path)
         self.motion.animate({"highlight": 0.0}, response=.14, damping=1)
         super().leaveEvent(event)
 
     def mousePressEvent(self, event):
+        self._keyboard_focus=False
         self.popup.shelf.touch()
         if event.button() == Qt.MouseButton.LeftButton:
             self.origin = event.position().toPoint()
@@ -648,11 +664,20 @@ class FileRow(QFrame):
         elif event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             self.popup.shelf.open_path(self.path)
             event.accept()
+        elif event.key() == Qt.Key.Key_Space:
+            self.popup.select_item(self.path,toggle=True);event.accept()
         elif event.key() == Qt.Key.Key_Delete:
             self.popup.remove_path(self.path)
             event.accept()
         else:
             super().keyPressEvent(event)
+
+    def focusInEvent(self,event):
+        self._keyboard_focus=event.reason() in (Qt.TabFocusReason,Qt.BacktabFocusReason,Qt.ShortcutFocusReason)
+        self.remove_button.setVisible(self._keyboard_focus);self.update();super().focusInEvent(event)
+
+    def focusOutEvent(self,event):
+        self._keyboard_focus=False;self.remove_button.setVisible(self.underMouse());self.update();super().focusOutEvent(event)
 
 
 class ContentsPopup(QFrame):
@@ -677,20 +702,30 @@ class ContentsPopup(QFrame):
         self._apply_responsive_layout()
 
     def _apply_responsive_layout(self):
-        narrow=self.width()<540
+        narrow=self.width()<780
         previous=self._narrow_layout;self._narrow_layout=narrow
-        self.category_segments.hide();self.category_picker.setVisible(narrow);self.bulk_more.setVisible(narrow)
+        condensed=self.width()<980
+        self.category_segments.hide();self.category_picker.setVisible(narrow);self.bulk_more.setVisible(condensed)
         self.sidebar.setVisible(not narrow)
-        for control in (self.search_edit,self.view_segment,self.zip_all_button,self.clear_button,self.cloud_selector):control.setVisible(not narrow)
+        self.sidebar.setFixedWidth(176 if condensed else 210)
+        self.search_edit.setVisible(self.width()>=620);self.search_edit.setFixedWidth(144 if condensed else 176)
+        self.view_segment.setVisible(not narrow)
+        for control in (self.zip_all_button,self.clear_button):control.setVisible(not condensed)
+        self.cloud_selector.setVisible(self.width()>=900)
+        self._position_nav_counts()
         if narrow:
-            self.body_layout.removeWidget(self.preview);self.middle_layout.insertWidget(3,self.preview,1)
+            if self.body_layout.indexOf(self.preview)>=0:
+                self.body_layout.removeWidget(self.preview);self.middle_layout.insertWidget(3,self.preview,1)
             self.preview.setMinimumWidth(0);self.preview.setMaximumWidth(16777215)
         else:
-            self.middle_layout.removeWidget(self.preview);self.body_layout.addWidget(self.preview)
-            self.preview.setFixedWidth(min(340,max(260,self.width()//3)))
+            if self.middle_layout.indexOf(self.preview)>=0:
+                self.middle_layout.removeWidget(self.preview);self.body_layout.addWidget(self.preview)
+            self.preview.setFixedWidth(280 if condensed else 340)
         self.scroll.setMinimumWidth(0);self.scroll.setMaximumWidth(16777215)
         self._sync_body_visibility();self.update_selection_actions()
-        if previous!=narrow and hasattr(self,'_render_signature'):
+        columns=max(1,min(4,(max(112,self.scroll.viewport().width()-24)+8)//136))
+        grid_changed=self.shelf.manager.settings.view_mode=='icons' and getattr(self,'_grid_columns',None)!=columns
+        if (previous!=narrow or grid_changed) and hasattr(self,'_render_signature'):
             self._render_signature=None;self.rebuild()
 
     def _sync_body_visibility(self,refs=None):
@@ -701,6 +736,13 @@ class ContentsPopup(QFrame):
         self.narrow_view_button.setAccessibleName('返回内容列表' if self._narrow_preview else '查看选中内容的预览')
         self.scroll.setVisible(has_refs and (not self._narrow_layout or not self._narrow_preview))
         self.preview.setVisible(has_refs and (not self._narrow_layout or self._narrow_preview))
+
+    def _position_nav_counts(self):
+        for key,badge in self.nav_counts.items():
+            control=self.category_buttons[key]
+            width=max(24,min(60,badge.fontMetrics().horizontalAdvance(badge.text())+12))
+            badge.setFixedSize(width,20);badge.setAlignment(Qt.AlignCenter)
+            badge.move(max(0,control.width()-width-12),(control.height()-20)//2)
 
     def toggle_narrow_preview(self):
         if not self.visible_refs():return
@@ -713,6 +755,22 @@ class ContentsPopup(QFrame):
         self._sync_body_visibility()
         if self._narrow_preview:self.preview.resume_preview()
         self.shelf.touch()
+
+    def reset_for_open(self):
+        """Reset navigation and selection without rebuilding unchanged items."""
+        self.category='all';self.selected.clear();self.primary_selection=None;self.hovered_ref=None
+        self._narrow_preview=False
+        self.search_edit.blockSignals(True);self.search_edit.clear();self.search_edit.blockSignals(False)
+        self.category_picker.setText('全部')
+        self.scroll.verticalScrollBar().setValue(0);self._build_position=0
+        self.rebuild()
+        for key,control in self.category_buttons.items():control.setChecked(key=='all')
+        for item in self.rows_body.findChildren(QWidget):
+            if hasattr(item,'set_selected'):item.set_selected(False)
+            elif isinstance(item,FileRow):item.update()
+        refs=self.visible_refs()
+        if refs and not self._narrow_layout:self.preview.show_path(refs[0])
+        self._sync_body_visibility(refs);self.update_selection_actions();self.update_transfer_status()
 
     def open_category_menu(self):
         menu=AnimatedMenu(self);style_menu(menu)
@@ -750,7 +808,7 @@ class ContentsPopup(QFrame):
         states=list(self.shelf.content.transfers.values())
         count=len(states)
         self.transfer_badge.setText('99+' if count>99 else str(count))
-        self.transfer_badge.setGeometry(145,5,28,20)
+        self._position_nav_counts()
         self.transfer_badge.setVisible(bool(count))
         self.category_buttons['uploading'].setAccessibleName(f'传输中的项目，共 {count} 项')
         self.transfer_summary.setVisible(bool(count) and self.category=='uploading')
@@ -865,11 +923,15 @@ class ContentsPopup(QFrame):
             button._reference_icon=(glyph,'#FFFFFF' if selected else 'secondary');button.setIcon(icon(glyph,'#FFFFFF' if selected else palette()['secondary']))
             button.setChecked(key==self.category)
         self.clear_button.setEnabled(self.shelf.has_files())
+        self._position_nav_counts()
         self.category_buttons[self.category].setChecked(True)
         if self.shelf.manager.settings.view_mode=='icons':
             grid=QGridLayout(); grid.setContentsMargins(0,0,0,0); grid.setHorizontalSpacing(8); grid.setVerticalSpacing(8)
             self.rows_layout.addLayout(grid)
-            columns=1 if self._narrow_layout else 3
+            available=max(112,self.scroll.viewport().width()-24)
+            columns=max(1,min(4,(available+8)//136))
+            self._grid_columns=columns
+            for column in range(columns):grid.setColumnStretch(column,1)
             def append(index,ref): grid.addWidget(IconItem(self,ref),index//columns,index%columns)
         else:
             def append(index,ref): self.rows_layout.insertWidget(self.rows_layout.count()-1,FileRow(self,ref))
@@ -902,13 +964,13 @@ class ContentsPopup(QFrame):
             self._build_append(index,self._build_refs[index]);self._build_cursor+=1;count+=1
             if count>=(4 if initial else 6) or time.perf_counter()-start>=.003: break
         if self._build_cursor<len(self._build_refs):
-            if not self.shelf.content_transition_active(): self._build_timer.start(12)
+            if not self.shelf.content_transition_active(): self._build_timer.start(1)
         elif self._build_position and not self.scroll.verticalScrollBar().value():
             self.scroll.verticalScrollBar().setValue(self._build_position)
 
     def resume_content(self):
         if self.shelf.content_transition_active() or not self.isVisible(): return
-        if self._build_cursor<len(self._build_refs): self._build_timer.start(12)
+        if self._build_cursor<len(self._build_refs): self._build_timer.start(1)
         self.preview.resume_preview()
 
     def chosen_refs(self):
@@ -917,12 +979,12 @@ class ContentsPopup(QFrame):
     def update_selection_actions(self):
         count=len(self.chosen_refs());busy=self.shelf.archive_job is not None
         choosing=self.shelf._archive_choosing
-        self.zip_button.setVisible(not self._narrow_layout or bool(count) or busy or choosing)
+        self.zip_button.setVisible(self.width()>=980 or bool(count) or busy or choosing)
         self.zip_button.setText('打包中…' if busy else '选择位置…' if choosing else '打包所选')
         self.zip_button.setEnabled(bool(count) and not busy and not choosing)
         self.zip_all_button.setEnabled(bool(self.shelf.files['permanent']) and not busy and not choosing)
         self.zip_button.setToolTip(f'将选中的 {count} 项打包为 ZIP')
-        self.selection_hint.setText(f'已选 {count} 项')
+        self.selection_hint.setText(f'已选 {count} 项' if count else '最新添加在前')
         visible=self.visible_refs()
         self.select_all_button.setText('弃选' if visible and all(ref in self.selected for ref in visible) else '全选')
 
@@ -1187,11 +1249,11 @@ class ShelfWindow(QWidget):
             button.setProperty('flatToolbar',True)
             button.setParent(self)
         from reference_widgets import css,label,button
-        css(self.card,'QFrame#shelfCard{background:rgba(28,28,30,214);border:1px solid rgba(255,255,255,20);border-radius:10px;}',
-            'QFrame#shelfCard{background:rgba(255,255,255,214);border:1px solid rgba(0,0,0,23);border-radius:10px;}')
+        css(self.card,'QFrame#shelfCard{background:#1C1C1E;border:1px solid rgba(255,255,255,20);border-radius:10px;}',
+            'QFrame#shelfCard{background:#FFFFFF;border:1px solid rgba(0,0,0,23);border-radius:10px;}')
         if sys.platform=='darwin':
-            css(self.card,'QFrame#shelfCard{background:rgba(28,28,30,214);border:1px solid rgba(255,255,255,20);border-radius:16px;}',
-                'QFrame#shelfCard{background:rgba(255,255,255,214);border:1px solid rgba(0,0,0,23);border-radius:16px;}')
+            css(self.card,'QFrame#shelfCard{background:#1C1C1E;border:1px solid rgba(255,255,255,20);border-radius:16px;}',
+                'QFrame#shelfCard{background:#FFFFFF;border:1px solid rgba(0,0,0,23);border-radius:16px;}')
         self.header_line=QFrame(self.card);self.header_line.setGeometry(1,48,CARD_W-2,1)
         self.footer_line=QFrame(self.card);self.footer_line.setGeometry(1,269,CARD_W-2,1)
         for line in (self.header_line,self.footer_line):css(line,'background:rgba(255,255,255,15);border:0;','background:rgba(0,0,0,15);border:0;')
@@ -1209,21 +1271,21 @@ class ShelfWindow(QWidget):
         center=QRectF(self.card.geometry()).center();effect=self.surface_effect
         transform=QTransform();transform.translate(center.x()+effect.dx,center.y()+effect.dy)
         transform.scale(effect.sx,effect.sy);transform.translate(-center.x(),-center.y())
-        buttons=(self.pin_button,self.expand_button,self.close_button) if expanded else (self.cloud_button,self.pin_button,self.expand_button,self.menu_button,self.close_button)
-        for item in (self.cloud_button,self.menu_button):item.setVisible(not expanded)
+        buttons=(self.pin_button,self.expand_button,self.menu_button,self.close_button) if expanded else (self.cloud_button,self.pin_button,self.expand_button,self.menu_button,self.close_button)
+        self.cloud_button.setVisible(not expanded)
         for index,item in enumerate(buttons):
-            size=28 if expanded else 32
+            size=32
             x=width-16-len(buttons)*(size+6)+index*(size+6)+6
-            point=transform.map(QRectF(self.card.x()+x,self.card.y()+(12 if expanded else 8),size,size).center())
+            point=transform.map(QRectF(self.card.x()+x,self.card.y()+8,size,size).center())
             item.setFixedSize(size,size);item.move(round(point.x()-size/2),round(point.y()-size/2));item.set_presentation_scale(effect.sx,effect.sy)
             item.show();item.raise_()
         for index,item in enumerate((self.account_button,self.lan_button)):
-            point=transform.map(QRectF(self.card.x()+14+index*76,self.card.y()+CARD_H-39,24,24).center())
-            item.setFixedSize(24,24);item.move(round(point.x()-12),round(point.y()-12));item.set_presentation_scale(effect.sx,effect.sy)
-            item.setVisible(not expanded);item.raise_()
+            point=transform.map(QRectF(self.card.x()+10+index*76,self.card.y()+CARD_H-43,32,32).center())
+            item.setFixedSize(32,32);item.move(round(point.x()-16),round(point.y()-16));item.set_presentation_scale(effect.sx,effect.sy)
+            item.setVisible(not expanded and self.presentation_kind!='drag');item.raise_()
         for attr in ('account_caption','lan_caption','header_line','footer_line','traffic_controls'):
             item=getattr(self,attr,None)
-            if item is not None:item.setVisible(not expanded and (attr!='traffic_controls' or sys.platform=='darwin'))
+            if item is not None:item.setVisible(not expanded and (self.presentation_kind!='drag' or attr=='header_line') and (attr!='traffic_controls' or sys.platform=='darwin'))
         if self.presentation_kind=='drag':
             for item in (self.cloud_button,self.pin_button,self.expand_button,self.menu_button,self.close_button,self.traffic_controls):item.hide()
 
@@ -1400,19 +1462,19 @@ class ShelfWindow(QWidget):
 
     def _place_morph_controls(self,snapshot,rect):
         transform=snapshot.presentation_transform(rect)
-        buttons=(self.pin_button,self.expand_button,self.close_button) if self.expanded else (self.cloud_button,self.pin_button,self.expand_button,self.menu_button,self.close_button)
-        size=28 if self.expanded else 32
+        buttons=(self.pin_button,self.expand_button,self.menu_button,self.close_button) if self.expanded else (self.cloud_button,self.pin_button,self.expand_button,self.menu_button,self.close_button)
+        size=32
         width=rect.width()-28
         for index,button in enumerate(buttons):
             x=width-16-len(buttons)*(size+6)+index*(size+6)+6
-            center=transform.map(QRectF(rect.x()+14+x-self.x(),rect.y()+7+(12 if self.expanded else 8)-self.y(),size,size).center())
+            center=transform.map(QRectF(rect.x()+14+x-self.x(),rect.y()+15-self.y(),size,size).center())
             button.move(round(center.x()-size/2),round(center.y()-size/2))
             button.set_presentation_scale(self.surface_effect.sx,self.surface_effect.sy)
             button.raise_()
         if not self.expanded:
             for index,button in enumerate((self.account_button,self.lan_button)):
-                center=transform.map(QRectF(rect.x()+28+index*76-self.x(),rect.y()+7+CARD_H-39-self.y(),24,24).center())
-                button.move(round(center.x()-12),round(center.y()-12))
+                center=transform.map(QRectF(rect.x()+24+index*76-self.x(),rect.y()+7+CARD_H-43-self.y(),32,32).center())
+                button.move(round(center.x()-16),round(center.y()-16))
                 button.set_presentation_scale(self.surface_effect.sx,self.surface_effect.sy)
                 button.raise_()
 
@@ -1567,7 +1629,7 @@ class ShelfWindow(QWidget):
         account=getattr(self.manager,'account',None)
         if hasattr(self,'account_caption'):
             self.account_caption.setText(str(account.account.get('username',''))[:8] if account and account.signed_in else '未登录')
-            self.account_button.initial=(str(account.account.get('username','R'))[:1].upper() if account and account.signed_in else 'R')
+            self.account_button.initial=(str(account.account.get('username',''))[:1].upper() if account and account.signed_in else '')
         if self.popup:
             self.popup.account_nav.set_profile(str(account.account.get('username','')) if account and account.signed_in else '',bool(account and account.signed_in))
         for mode in MODES:
@@ -2061,10 +2123,7 @@ class ShelfWindow(QWidget):
         self.visible_state = "floating"
         if self.popup is None:
             self.popup = ContentsPopup(self)
-        else:
-            self.popup.category='all'
-            self.popup.category_buttons['all'].setChecked(True)
-            self.popup.rebuild()
+        self.popup.reset_for_open()
         self.popup.hovered_ref=None
         self.popup.restore_selected_preview()
         self.expanded = True
@@ -2542,6 +2601,7 @@ class ShelfManager:
         else:
             self.hotkeys = HotkeyManager(app, self.show_shortcut, self.show_overview)
         self.shortcut_error = self.hotkeys.apply(self.settings.shelf_shortcut, self.settings.overview_shortcut)
+        self._applied_settings = dict(self.settings._data)
         self.settings.changed.connect(self.apply_settings)
         self.timer = QTimer(self.app)
         self.timer.timeout.connect(self.poll)
@@ -2695,10 +2755,12 @@ class ShelfManager:
             self.settings_dialog.preview_changed.connect(self.preview_dock)
             self.settings_dialog.gesture_preview_changed.connect(self.preview_shake)
             self.settings_dialog.shortcut_validator = lambda values: self.hotkeys.validate(values["shelf_shortcut"], values["overview_shortcut"])
-        self.settings_dialog.load_values()
+        if self.settings_dialog.isVisible():self.settings_dialog.load_values()
         self.settings_dialog.set_update_state(self.updates.state,**self.updates.state_payload)
         self.account_panel.set_sync_status(self._sync_status)
         self.settings_dialog.show()
+        self.settings_dialog.scroll.verticalScrollBar().setValue(0)
+        QTimer.singleShot(0,self.settings_dialog,lambda:self.settings_dialog.scroll.verticalScrollBar().setValue(0))
         problem = self.shortcut_error or self.startup_error
         if problem:
             self.settings_dialog.error_label.setText(problem)
@@ -2738,6 +2800,19 @@ class ShelfManager:
             if not self._quitting:self.update_handles()
 
     def apply_settings(self):
+        current=dict(self.settings._data)
+        previous=getattr(self,'_applied_settings',None)
+        self._applied_settings=current
+        changed={key for key in current if previous is None or previous.get(key)!=current[key]}
+        if changed and changed<={'view_mode'}:
+            # A presentation preference cannot reset a drag gesture, repaint
+            # every application panel, re-register hotkeys or touch sync.
+            if self.shelf.popup:
+                popup=self.shelf.popup
+                popup.view_list.setChecked(self.settings.view_mode=='list')
+                popup.view_grid.setChecked(self.settings.view_mode=='icons')
+                popup.rebuild()
+            return
         self.reset_drag_gesture()
         ui_theme.set_theme(self.settings.theme)
         ui_theme.apply_application(self.app, FONT_FAMILY)
@@ -3061,6 +3136,8 @@ def main():
             guard.close()
             return 2
         report_path = Path(sys.argv[index + 1])
+        from mac_entry import verify_cocoa_window_order
+        native_order = verify_cocoa_window_order(manager.edge, manager.shelf)
         manager.edge.show_handle()
         manager.shelf.show_transient()
         def finish_cocoa_smoke():
@@ -3069,7 +3146,8 @@ def main():
                           edge_constructed=bool(manager.edge.isVisible() or manager.shelf.isVisible()),
                           shelf_constructed=bool(manager.shelves),
                           native_hotkeys=False, lan_listener=False,
-                          cloud_session=False, startup_mutation=False)
+                          cloud_session=False, startup_mutation=False,
+                          native_window_order=native_order)
             report_path.write_text(json.dumps(result, ensure_ascii=False), encoding='utf-8')
             manager.quit()
         QTimer.singleShot(2200, finish_cocoa_smoke)

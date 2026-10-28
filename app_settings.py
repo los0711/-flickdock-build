@@ -299,7 +299,8 @@ class SettingsToggleSwitch(SettingsCheckBox):
         knob_x = track.right()-20 if self.isChecked() else track.left()+2
         painter.setBrush(QColor("#ffffff"))
         painter.drawEllipse(QRectF(knob_x, track.top()+2, 18, 18))
-        if self.hasFocus():
+        from native_ui_common import keyboard_focus_visible
+        if keyboard_focus_visible(self):
             painter.setPen(QPen(QColor("#80b8fb" if self.dark else "#2584ed"), 1.5))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRoundedRect(track.adjusted(-2, -2, 2, 2), 13, 13)
@@ -827,7 +828,7 @@ class ReferenceModalDialog(QDialog):
         rect=QRectF(self.surface.geometry())
         color=QColor(0,0,0,107) if self._surface_dark else QColor(18,31,53,41)
         paint_surface_shadow(painter,rect,self._shadow_cache,20,QPoint(0,4),color)
-        fill=QColor('#1C1C1E' if self._surface_dark else '#FFFFFF');fill.setAlpha(214)
+        fill=QColor('#1C1C1E' if self._surface_dark else '#FFFFFF')
         painter.setBrush(fill)
         painter.setPen(QPen(QColor(255,255,255,20) if self._surface_dark else QColor(0,0,0,23),1))
         radius=16 if sys.platform=='darwin' else 10
@@ -934,7 +935,6 @@ class SettingsSurface(QFrame):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(QPen(QColor(255,255,255,20) if self.dark else QColor(0,0,0,23), 1))
         background = QColor("#1c1c1e" if self.dark else "#ffffff")
-        background.setAlpha(214)
         painter.setBrush(background)
         radius=16 if sys.platform=='darwin' else 10
         painter.drawRoundedRect(QRectF(self.rect()).adjusted(.5, .5, -.5, -.5), radius, radius)
@@ -1043,7 +1043,8 @@ class SettingsDialog(QDialog):
         self.theme_combo.addItem("暗色", "dark")
         self.theme_combo.setMinimumWidth(160)
         self.theme_combo.setAccessibleName("外观")
-        self.theme_combo.currentIndexChanged.connect(lambda _: self.apply_theme(self.theme_combo.currentData()))
+        self.theme_combo.currentIndexChanged.connect(lambda _: self.apply_theme(self.theme_combo.currentData())
+                                                     if not self._loading_values else None)
         appearance_row.addWidget(self.theme_combo)
         appearance_layout.addLayout(appearance_row)
         view_row = QHBoxLayout()
@@ -1200,7 +1201,11 @@ class SettingsDialog(QDialog):
         buttons=[]
         for index,label in enumerate(labels):
             button=QPushButton(label,group);button.setObjectName('settingsSegmentButton')
-            button.setCheckable(True);button.setAutoDefault(False);button.setMinimumHeight(28)
+            button.setCheckable(True);button.setAutoDefault(False);button.setMinimumHeight(32)
+            if combo is self.theme_combo:
+                from native_ui_common import icon
+                button.setIcon(icon('sun' if index==0 else 'moon','#68686D'))
+                button.setIconSize(QSize(15,15))
             button.clicked.connect(lambda _checked=False,i=index:combo.setCurrentIndex(i))
             row.addWidget(button,1);buttons.append(button)
         def synchronize(*_):
@@ -1211,7 +1216,10 @@ class SettingsDialog(QDialog):
     def _reference_toggle(self, control, label, parent):
         holder=QWidget(parent);row=QHBoxLayout(holder);row.setContentsMargins(0,0,0,0);row.setSpacing(8)
         text=QLabel(label,holder);row.addWidget(text,1)
-        control.setText('');control.setMinimumSize(44,26);control.setMaximumSize(44,26)
+        text.setWordWrap(True);text.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        text.setBuddy(control);holder._toggle_target=control;holder.installEventFilter(self)
+        control.setAccessibleName(label)
+        control.setText('');control.setMinimumSize(44,32);control.setMaximumSize(44,32)
         control.setParent(holder);row.addWidget(control)
         return holder
 
@@ -1259,10 +1267,11 @@ class SettingsDialog(QDialog):
         self.account_slot_layout.addWidget(self.account_placeholder)
         top_grid.addWidget(self.account_slot,0,0,1,8);top_grid.addWidget(appearance,0,8,1,4)
         self._reference_top=top;self._reference_appearance=appearance;top.installEventFilter(self)
+        self._settings_top_grid=top_grid
         self.body_layout.addWidget(top)
         al=appearance.layout();self._empty_layout(al);al.setContentsMargins(16,16,16,16);al.setSpacing(12)
         heading=QLabel('外观与视图',appearance);heading.setObjectName('settingsSection');al.addWidget(heading)
-        for label,combo,choices in (('主题外观',self.theme_combo,('☀️ 浅色','🌙 暗色')),
+        for label,combo,choices in (('主题外观',self.theme_combo,('浅色','暗色')),
                                    ('默认总览布局',self.view_combo,('列表','图标'))):
             block=QWidget(appearance);block_layout=QVBoxLayout(block);block_layout.setContentsMargins(0,0,0,0);block_layout.setSpacing(6)
             text=QLabel(label,block);text.setObjectName('settingsDetail');block_layout.addWidget(text)
@@ -1271,17 +1280,20 @@ class SettingsDialog(QDialog):
         dock=self.dock_card;dl=dock.layout();self._empty_layout(dl)
         self._empty_layout(self.interaction_card.layout());self.interaction_card.hide()
         dl.setContentsMargins(16,16,16,16);dl.setSpacing(16)
-        dr=QHBoxLayout();section=QLabel('边缘停靠与触发',dock);section.setObjectName('settingsSection');dr.addWidget(section,1)
-        dr.addWidget(self._reference_toggle(self.trigger_visible_checkbox,'显示触发区域',dock))
-        dr.addSpacing(16);dr.addWidget(self._reference_toggle(self.keep_empty_handle_checkbox,'空搁架仍显示边缘入口',dock));dl.addLayout(dr)
+        section=QLabel('边缘停靠与触发',dock);section.setObjectName('settingsSection');dl.addWidget(section)
+        dr=QGridLayout();dr.setHorizontalSpacing(24)
+        trigger=self._reference_toggle(self.trigger_visible_checkbox,'显示触发区域',dock)
+        empty=self._reference_toggle(self.keep_empty_handle_checkbox,'空搁架仍显示边缘入口',dock)
+        dr.addWidget(trigger,0,0);dr.addWidget(empty,0,1);dl.addLayout(dr)
         selectors=QGridLayout();selectors.setSpacing(12)
+        selector_panels=[]
         for i,(label,control) in enumerate((('停靠在',self.dock_edge_combo),('触发后显示',self.trigger_view_combo),('标记颜色',self.dock_color_button))):
             panel=self._reference_subcard(dock);line=QHBoxLayout(panel);line.setContentsMargins(10,10,10,10);line.setSpacing(8)
             text=QLabel(label,panel);text.setObjectName('settingsDetail');line.addWidget(text,1)
             control.setMinimumSize(0,28);control.setMaximumHeight(28)
             if control is self.dock_color_button:control.setFixedWidth(108)
             else:control.setMaximumWidth(128)
-            line.addWidget(control);selectors.addWidget(panel,0,i)
+            line.addWidget(control);selectors.addWidget(panel,0,i);selector_panels.append(panel)
         dl.addLayout(selectors)
         numeric=QGridLayout();numeric.setSpacing(12)
         for i,(label,spin,slider) in enumerate((('边缘位置',self.dock_position_spin,self.dock_position_slider),
@@ -1290,6 +1302,7 @@ class SettingsDialog(QDialog):
             panel=self._reference_subcard(dock);box=QVBoxLayout(panel);box.setContentsMargins(12,12,12,12);box.setSpacing(8)
             row=QHBoxLayout();row.addWidget(QLabel(label,panel),1)
             spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons);spin.setMinimumHeight(26);spin.setMaximumHeight(26);spin.setFixedWidth(88)
+            spin.lineEdit().setMinimumSize(60,18)
             row.addWidget(spin);box.addLayout(row)
             if slider is None:
                 slider=SettingsSlider(Qt.Orientation.Horizontal,panel);slider.setRange(spin.minimum(),spin.maximum());slider.setValue(spin.value())
@@ -1322,6 +1335,9 @@ class SettingsDialog(QDialog):
         path=QHBoxLayout();path.setSpacing(8);self.folder_edit.setMinimumHeight(28);self.folder_edit.setMaximumHeight(28);path.addWidget(self.folder_edit,1)
         browse=QPushButton('浏览…',cloud);browse.setMinimumHeight(28);browse.setObjectName('settingsBrowse');browse.setAutoDefault(False);browse.clicked.connect(self.choose_directory);path.addWidget(browse);cl.addLayout(path)
         lower_grid.addWidget(shortcuts,1);lower_grid.addWidget(cloud,1);self.body_layout.addWidget(lower);self.body_layout.addStretch()
+        self._settings_adaptive=(dr,trigger,empty,selectors,selector_panels,lower_grid)
+        self.body.installEventFilter(self)
+        self.scroll.viewport().installEventFilter(self)
         root.addWidget(self.error_label)
         footer_frame=QFrame(self.surface);footer_frame.setObjectName('settingsFooter');footer_frame.setFixedHeight(52)
         footer=QHBoxLayout(footer_frame);footer.setContentsMargins(24,0,24,0);footer.setSpacing(10)
@@ -1406,13 +1422,16 @@ class SettingsDialog(QDialog):
         return previous
 
     def eventFilter(self, watched, event):
+        if (getattr(watched,'_toggle_target',None) is not None
+                and event.type()==QEvent.Type.MouseButtonRelease and event.button()==Qt.MouseButton.LeftButton):
+            watched._toggle_target.click();event.accept();return True
         if watched is getattr(self,'_reference_top',None) and event.type()==QEvent.Type.Resize:
             # CSS grid's 8/4 spans include the seven/three internal 16px gaps.
             # Qt drops those empty-track gaps, so explicitly retain the same
             # column widths rather than approximating them with a 2:1 layout.
-            left=max(0,(2*watched.width()-16)//3)
-            self.account_slot.setFixedWidth(left)
-            self._reference_appearance.setFixedWidth(max(0,watched.width()-16-left))
+            self._adapt_settings_layout()
+        if (watched is getattr(self,'body',None) or watched is getattr(getattr(self,'scroll',None),'viewport',lambda:None)()) and event.type()==QEvent.Type.Resize:
+            self._adapt_settings_layout()
         # QKeySequenceEdit consumes Esc while recording a shortcut. Closing
         # settings consistently must still use the dialog's reject path.
         if (event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Escape
@@ -1421,6 +1440,30 @@ class SettingsDialog(QDialog):
             event.accept()
             return True
         return super().eventFilter(watched, event)
+
+    def _adapt_settings_layout(self):
+        if not hasattr(self,'_settings_adaptive'):return
+        # A previous fixed child must not dictate the next breakpoint. The
+        # viewport is the available space; the body may still have its old hint.
+        width=self.scroll.viewport().width()-36
+        if getattr(self,'_settings_layout_width',None)==width:return
+        self._settings_layout_width=width
+        narrow=width<700
+        grid=self._settings_top_grid
+        grid.removeWidget(self.account_slot);grid.removeWidget(self._reference_appearance)
+        if narrow:
+            self.account_slot.setMinimumWidth(0);self.account_slot.setMaximumWidth(16777215)
+            self._reference_appearance.setMinimumWidth(0);self._reference_appearance.setMaximumWidth(16777215)
+            grid.addWidget(self.account_slot,0,0,1,12);grid.addWidget(self._reference_appearance,1,0,1,12)
+        else:
+            left=max(0,(2*width-16)//3)
+            self.account_slot.setFixedWidth(left);self._reference_appearance.setFixedWidth(max(0,width-16-left))
+            grid.addWidget(self.account_slot,0,0,1,8);grid.addWidget(self._reference_appearance,0,8,1,4)
+        dr,trigger,empty,selectors,panels,lower=self._settings_adaptive
+        dr.removeWidget(empty);dr.addWidget(empty,1 if narrow else 0,0 if narrow else 1)
+        for i,panel in enumerate(panels):
+            selectors.removeWidget(panel);selectors.addWidget(panel,i if narrow else 0,0 if narrow else i)
+        lower.setDirection(QHBoxLayout.Direction.TopToBottom if narrow else QHBoxLayout.Direction.LeftToRight)
 
     def _card(self):
         card = QFrame(self)
@@ -1726,6 +1769,9 @@ class SettingsDialog(QDialog):
                 **self._dock_values()}
 
     def apply_theme(self, theme):
+        if getattr(self,'_applied_settings_theme',None)==theme:
+            return
+        self._applied_settings_theme=theme
         dark = theme == "dark"
         self.surface.dark = dark
         self.surface.update()
@@ -1835,7 +1881,20 @@ class SettingsDialog(QDialog):
             QFrame#settingsFooter {{border-top:1px solid {ref_edge};background:{'rgba(0,0,0,77)' if dark else 'rgba(240,242,247,191)'};}}
         ''')
         for switch in self.findChildren(SettingsToggleSwitch):switch.dark=dark;switch.update()
-        if sys.platform!='darwin':self.setStyleSheet(self.styleSheet().replace('font-weight:600','font-weight:700'))
+        from native_ui_common import colors
+        semantic=colors(theme)
+        self.setStyleSheet(self.styleSheet()+f'''
+            QDialog#flickdockSettings QLabel,QDialog#flickdockSettings QCheckBox {{font-size:13px;}}
+            QDialog#flickdockSettings QLabel#settingsTitle {{font-size:16px;font-weight:600;}}
+            QDialog#flickdockSettings QLabel#settingsSection {{font-size:13px;font-weight:600;}}
+            QDialog#flickdockSettings QLabel#settingsDetail {{font-size:12px;color:{semantic['secondary']};}}
+            QDialog#flickdockSettings QLabel#settingsVersion {{font-size:12px;}}
+            QDialog#flickdockSettings QPushButton {{border:1px solid transparent;}}
+            QDialog#flickdockSettings QPushButton:focus {{border-color:transparent;}}
+            QDialog#flickdockSettings QPushButton[keyboardFocus="true"] {{border:1px solid {semantic['link']};}}
+            QDialog#flickdockSettings QPushButton#settingsUpdate,QDialog#flickdockSettings QPushButton#settingsSave {{background:{semantic['action']};color:{semantic['on_action']};}}
+            QDialog#flickdockSettings QPushButton#settingsLink {{color:{semantic['link']};}}
+        ''')
         if self.license_dialog is not None:
             self.license_dialog.apply_theme(theme)
         if self.author_dialog is not None:

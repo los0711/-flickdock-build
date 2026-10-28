@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QTextLayout, QTextOption
-from PySide6.QtWidgets import QMenu, QWidget
+from PySide6.QtWidgets import QMenu, QWidget, QSizePolicy
 
 from flickdock_motion import FeedbackButton, Spring
 from transfer_visuals import (CLOUD_STATUS_LABELS, cloud_status_for_ref,
@@ -37,9 +37,9 @@ class IconItem(QWidget):
         self.origin = QPoint()
         self.did_drag = False
         self._selected = ref in popup.selected
-        scroller=getattr(popup,'scroll',None)
-        available=scroller.viewport().width() if hasattr(scroller,'viewport') else 488
-        self.setFixedSize(max(112,(available-44)//3),112)
+        self.setMinimumWidth(112);self.setFixedHeight(120)
+        self.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
+        self._keyboard_focus=False
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
@@ -53,9 +53,10 @@ class IconItem(QWidget):
         try: self.icon = provider(ref, 64, dpr=self.devicePixelRatioF())
         except TypeError: self.icon = provider(ref, 64)
         self.title = popup.shelf.content.title(ref)
-        self.remove_button = FeedbackButton("close", self, motion=popup.shelf.manager.motion)
-        self.remove_button.setFixedSize(20,20)
-        self.remove_button.move(self.width()-28,8)
+        from reference_widgets import ToolbarButton
+        self.remove_button = ToolbarButton("close", self, motion=popup.shelf.manager.motion)
+        self.remove_button.setFixedSize(32,32)
+        self.remove_button.move(self.width()-36,4)
         self.remove_button.setToolTip("从搁架移除")
         self.remove_button.setAccessibleName("从搁架移除 " + self.title)
         self.remove_button.clicked.connect(lambda: self.popup.remove_path(self.ref))
@@ -97,17 +98,18 @@ class IconItem(QWidget):
         super().enterEvent(event)
 
     def leaveEvent(self, event):
-        self.remove_button.hide()
+        self.remove_button.setVisible(self.hasFocus() and self._keyboard_focus)
         if hasattr(self.popup, 'end_hover'): self.popup.end_hover(self.ref)
         self.motion.animate({"hover": 0}, response=.14, damping=1)
         super().leaveEvent(event)
 
     def mousePressEvent(self, event):
+        self._keyboard_focus=False
         self.popup.shelf.touch()
         if event.button() == Qt.MouseButton.LeftButton:
             self.origin = event.position().toPoint()
             self.did_drag = False
-            if QRectF(12,12,16,16).contains(event.position()):
+            if QRectF(4,4,32,32).contains(event.position()):
                 self.popup.select_item(self.ref,toggle=True)
                 self._pending_deselect=False
                 self._refresh_selection();event.accept();return
@@ -160,11 +162,25 @@ class IconItem(QWidget):
         elif event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             self.popup.shelf.open_path(self.ref)
             event.accept()
+        elif event.key() == Qt.Key.Key_Space:
+            if hasattr(self.popup,'select_item'):self.popup.select_item(self.ref,toggle=True)
+            self._refresh_selection();event.accept()
         elif event.key() == Qt.Key.Key_Delete:
             self.popup.remove_path(self.ref)
             event.accept()
         else:
             super().keyPressEvent(event)
+
+    def resizeEvent(self,event):
+        if hasattr(self,'remove_button'):self.remove_button.move(self.width()-36,4)
+        super().resizeEvent(event)
+
+    def focusInEvent(self,event):
+        self._keyboard_focus=event.reason() in (Qt.TabFocusReason,Qt.BacktabFocusReason,Qt.ShortcutFocusReason)
+        self.remove_button.setVisible(self._keyboard_focus);self.update();super().focusInEvent(event)
+
+    def focusOutEvent(self,event):
+        self._keyboard_focus=False;self.remove_button.setVisible(self.underMouse());self.update();super().focusOutEvent(event)
 
     def contextMenuEvent(self, event):
         if hasattr(self.popup,'show_item_menu'):
@@ -210,12 +226,15 @@ class IconItem(QWidget):
         painter.setBrush(ink(c['selected'] if actual else c['card_hover'] if v['hover']>.3 else c['card']))
         painter.setPen(QPen(ink(c['selected_border'] if actual else c['border']),1))
         painter.drawRoundedRect(QRectF(self.rect()).adjusted(.5,.5,-.5,-.5),c['card_radius'],c['card_radius'])
+        if self.hasFocus() and self._keyboard_focus:
+            painter.setBrush(Qt.NoBrush);painter.setPen(QPen(QColor(c['blue']),1.5))
+            painter.drawRoundedRect(QRectF(self.rect()).adjusted(2,2,-2,-2),c['card_radius']-1,c['card_radius']-1)
         painter.setPen(QPen(QColor('#0A84FF') if actual else ink(c['input_border']),1));painter.setBrush(QColor('#0A84FF') if actual else Qt.BrushStyle.NoBrush)
         painter.drawRoundedRect(QRectF(12.5,12.5,14,14),4,4)
         if actual:
             painter.setPen(QPen(QColor('white'),1.5,Qt.SolidLine,Qt.RoundCap,Qt.RoundJoin));painter.drawLine(QPointF(16,19),QPointF(18,22));painter.drawLine(QPointF(18,22),QPointF(23,16))
         art=thumbnail(self.popup.shelf,self.ref,44);x=(self.width()-44)//2
-        painter.drawPixmap(x,13,art);draw_status(painter,QRectF(x+33,46,10,10),self.cloud_status)
+        painter.drawPixmap(x,13,art);draw_status(painter,QRectF(x+30,43,14,14),self.cloud_status)
         state=getattr(self.popup.shelf.content,'transfers',{}).get(self.ref)
         if state:
             draw_progress_badge(painter,QRectF(x+47,40,16,16),state)

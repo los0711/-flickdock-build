@@ -7,14 +7,14 @@ from pathlib import Path
 import sys
 import re
 
-from PySide6.QtCore import QPointF, QRect, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap, QLinearGradient
+from PySide6.QtCore import QPointF, QRect, QRectF, QSize, Qt
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPixmap, QLinearGradient
 from PySide6.QtWidgets import (QLabel, QPushButton, QWidget, QFrame, QHBoxLayout,
     QVBoxLayout, QScrollArea, QLineEdit, QProgressBar, QButtonGroup, QSizePolicy,
     QStackedWidget, QPlainTextEdit, QCheckBox, QApplication, QDialog)
 
 import ui_theme
-from native_ui_common import colors, icon
+from native_ui_common import colors, icon, keyboard_focus_visible
 from content_stack import StackTile
 from flickdock_motion import FeedbackButton
 from transfer_visuals import TransferIconLabel, CLOUD_STATUS_LABELS
@@ -63,14 +63,17 @@ def button(value='',glyph='',variant='quiet',parent=None):
     widget=QPushButton(value,parent)
     widget.setCursor(Qt.PointingHandCursor)
     widget.setFocusPolicy(Qt.StrongFocus)
-    widget.setFixedHeight(28)
+    widget.setFixedHeight(32)
+    widget.setIconSize(QSize(16,16))
     sources=[]
     for theme in ('dark','light'):
         c=colors(theme)
-        background=c['control'] if variant=='secondary' else c['blue'] if variant=='primary' else 'rgba(255,69,58,38)' if variant=='danger' else 'transparent'
+        background=c['control'] if variant=='secondary' else c['action'] if variant=='primary' else 'rgba(255,69,58,38)' if variant=='danger' else 'transparent'
         ink='white' if variant=='primary' else c['red'] if variant=='danger' else c['secondary'] if variant=='quiet' else c['text']
         border='rgba(255,69,58,76)' if variant=='danger' else c['border'] if variant=='secondary' else 'transparent'
-        sources.append(f"QPushButton{{background:{background};color:{ink};border:1px solid {border};border-radius:8px;padding:4px 11px;font:500 12px 'HarmonyOS Sans SC';}} QPushButton:hover{{background:{c['hover']};}} QPushButton:pressed{{background:{c['selected']};}} QPushButton:checked{{background:{c['hover']};color:{c['text']};}} QPushButton:disabled{{color:{c['muted']};background:{c['control']};border-color:transparent;}}")
+        hover=c['action'] if variant=='primary' else c['hover']
+        pressed=c['action'] if variant=='primary' else c['selected']
+        sources.append(f"QPushButton{{background:{background};color:{ink};border:1px solid {border};border-radius:8px;padding:4px 11px;font:500 12px 'HarmonyOS Sans SC';}} QPushButton:hover{{background:{hover};}} QPushButton:pressed{{background:{pressed};}} QPushButton:checked{{background:{c['hover']};color:{c['text']};}} QPushButton:disabled{{color:{c['muted']};background:{c['control']};border-color:transparent;}} QPushButton[keyboardFocus=\"true\"]{{border:1px solid {c['link']};}}")
     css(widget,*sources)
     if glyph:
         widget._reference_icon=(glyph,'secondary')
@@ -85,9 +88,6 @@ class ToolbarButton(FeedbackButton):
         c=palette();v=self.spring.values
         center=QRectF(self.rect()).center()
         p.translate(center);p.scale(v['scale']*self._presentation_scale[0],v['scale']*self._presentation_scale[1]);p.translate(-center)
-        if self.glyph in ('copy','check'):
-            p.setPen(Qt.NoPen);p.setBrush(QColor(c['blue']));p.drawRoundedRect(QRectF(self.rect()).adjusted(0,1,0,-1),8,8)
-            f=p.font();f.setPixelSize(12);f.setWeight(QFont.Medium);p.setFont(f);p.setPen(QColor('white'));p.drawText(self.rect(),Qt.AlignCenter,'复制' if self.glyph=='copy' else '✓');p.end();return
         if self.isChecked() or v['hover']>.01 or v['down']>.01:
             fill=ink(c['selected'] if self.isChecked() else c['hover'])
             if not self.isChecked():fill.setAlphaF(fill.alphaF()*min(1,v['hover']+v['down']))
@@ -98,13 +98,16 @@ class ToolbarButton(FeedbackButton):
         icon(name,c['secondary'] if name=='cloud' else tint).paint(p,QRect((self.width()-16)//2,(self.height()-16)//2,16,16))
         if name=='cloud':
             p.setPen(QPen(ink(c['surface']),2));p.setBrush(QColor(tint));p.drawEllipse(QRectF(self.width()-12,self.height()-12,6,6))
+        if self.hasFocus() and self._keyboard_focus:
+            p.setPen(QPen(QColor(c['blue']),1.5));p.setBrush(Qt.NoBrush)
+            p.drawRoundedRect(QRectF(self.rect()).adjusted(2,2,-2,-2),7,7)
         p.end()
 
 
 class CloudSelector(QPushButton):
     def __init__(self,shelf,parent=None):
         super().__init__(parent);self.shelf=shelf
-        self.setFixedSize(92,28);self.setCursor(Qt.PointingHandCursor)
+        self.setFixedSize(40,32);self.setCursor(Qt.PointingHandCursor)
         self.setAccessibleName('云同步方向控制')
 
     def paintEvent(self,event):
@@ -112,18 +115,24 @@ class CloudSelector(QPushButton):
         enabled=self.shelf.manager.settings.sync_upload_enabled and self.shelf.manager.settings.sync_receive_enabled
         p.setBrush(ink(c['hover'] if self.underMouse() else c['control']));p.setPen(QPen(ink(c['border']),1))
         p.drawRoundedRect(QRectF(self.rect()).adjusted(.5,.5,-.5,-.5),14,14)
-        p.setPen(Qt.NoPen);p.setBrush(QColor(c['green'] if enabled else c['red']));p.drawEllipse(QRectF(11,10,8,8))
-        f=QFont(self.font());f.setPixelSize(11);p.setFont(f);p.setPen(QColor(c['text']))
-        p.drawText(QRectF(24,0,49,28),Qt.AlignVCenter,'云同步' if enabled else '同步受限')
-        icon('chevron',c['secondary']).paint(p,76,9,10,10);p.end()
+        icon('cloud',c['green'] if enabled else c['red']).paint(p,QRect(4,7,18,18))
+        icon('chevron',c['secondary']).paint(p,27,12,8,8)
+        if keyboard_focus_visible(self):
+            p.setPen(QPen(QColor(c['link']),1.5));p.setBrush(Qt.NoBrush);p.drawRoundedRect(QRectF(self.rect()).adjusted(2,2,-2,-2),12,12)
+        p.end()
 
 
 class AvatarButton(ToolbarButton):
     def paintEvent(self,event):
         p=QPainter(self);p.setRenderHint(QPainter.Antialiasing)
-        gradient=QLinearGradient(2,self.height(),self.width()-2,2);gradient.setColorAt(0,QColor('#0A84FF'));gradient.setColorAt(1,QColor('#BF5AF2'))
-        p.setPen(Qt.NoPen);p.setBrush(gradient);p.drawEllipse(QRectF(2,2,self.width()-4,self.height()-4))
-        p.setPen(QColor('white'));f=p.font();f.setPixelSize(10);f.setBold(True);p.setFont(f);p.drawText(self.rect(),Qt.AlignCenter,getattr(self,'initial','R'));p.end()
+        c=palette();initial=getattr(self,'initial','')
+        p.setPen(Qt.NoPen);p.setBrush(QColor(c['blue']) if initial else ink(c['control']));p.drawEllipse(QRectF(4,4,self.width()-8,self.height()-8))
+        if initial:
+            p.setPen(QColor('white'));f=p.font();f.setPixelSize(11);f.setBold(True);p.setFont(f);p.drawText(self.rect(),Qt.AlignCenter,initial)
+        else:icon('user',c['secondary']).paint(p,QRect((self.width()-16)//2,(self.height()-16)//2,16,16))
+        if self.hasFocus() and self._keyboard_focus:
+            p.setPen(QPen(QColor(c['blue']),1.5));p.setBrush(Qt.NoBrush);p.drawRoundedRect(QRectF(self.rect()).adjusted(2,2,-2,-2),7,7)
+        p.end()
 
 
 class ProfileButton(QPushButton):
@@ -133,22 +142,33 @@ class ProfileButton(QPushButton):
 
     def set_profile(self,name,connected=False,status=''):
         self.username=str(name or '未登录');self.connected=bool(connected)
-        self.status=str(status or ('云同步已连接' if connected else '登录以同步搁架'));self.update()
+        self.status=str(status or ('已登录' if connected else '登录以同步搁架'));self.update()
+        self.setAccessibleName(f'账号与设置，{self.username}，{self.status}')
 
     def paintEvent(self,event):
         p=QPainter(self);p.setRenderHint(QPainter.Antialiasing);c=palette()
         p.setPen(QPen(ink(c['divider']),1));p.drawLine(0,0,self.width(),0)
         if self.underMouse():p.setPen(Qt.NoPen);p.setBrush(ink(c['control']));p.drawRoundedRect(self.rect().adjusted(0,2,0,-1),12,12)
-        gradient=QLinearGradient(8,41,36,13);gradient.setColorAt(0,QColor('#0A84FF'));gradient.setColorAt(1,QColor('#BF5AF2'));p.setBrush(gradient);p.setPen(Qt.NoPen);p.drawEllipse(QRectF(8,12,28,28))
-        f=p.font();f.setPixelSize(12);f.setBold(True);p.setFont(f);p.setPen(QColor('white'));p.drawText(QRectF(8,12,28,28),Qt.AlignCenter,self.username[:1].upper())
+        p.setBrush(QColor(c['blue']) if self.connected else ink(c['control']));p.setPen(Qt.NoPen);p.drawEllipse(QRectF(8,12,28,28))
+        f=p.font();f.setPixelSize(12);f.setBold(True);p.setFont(f);p.setPen(QColor('white'))
+        if self.connected:p.drawText(QRectF(8,12,28,28),Qt.AlignCenter,self.username[:1].upper())
+        else:icon('user',c['secondary']).paint(p,QRect(14,18,16,16))
         f.setWeight(QFont.DemiBold);p.setFont(f);p.setPen(QColor(c['text']));p.drawText(QRectF(46,10,self.width()-68,20),Qt.AlignVCenter,p.fontMetrics().elidedText(self.username,Qt.ElideRight,self.width()-68))
         f.setPixelSize(10);f.setBold(False);p.setFont(f);p.setPen(QColor(c['secondary']));p.drawText(QRectF(46,29,self.width()-68,14),Qt.AlignVCenter,p.fontMetrics().elidedText(self.status,Qt.ElideRight,self.width()-68))
-        icon('right',c['muted']).paint(p,QRect(self.width()-20,22,12,12));p.end()
+        icon('right',c['muted']).paint(p,QRect(self.width()-20,22,12,12))
+        if keyboard_focus_visible(self):
+            p.setPen(QPen(QColor(c['link']),1.5));p.setBrush(Qt.NoBrush);p.drawRoundedRect(QRectF(self.rect()).adjusted(2,2,-2,-2),8,8)
+        p.end()
 
 
 class SelectionCheck(QCheckBox):
+    def __init__(self,parent=None):
+        super().__init__(parent)
+        self.setCursor(Qt.PointingHandCursor);self.setAccessibleName('选择此项')
+
     def paintEvent(self,event):
         p=QPainter(self);p.setRenderHint(QPainter.Antialiasing)
+        p.translate((self.width()-15)/2,(self.height()-15)/2)
         p.setBrush(QColor('#0A84FF') if self.isChecked() else Qt.NoBrush)
         p.setPen(QPen(QColor('#0A84FF') if self.isChecked() else ink(palette()['input_border']),1))
         p.drawRoundedRect(QRectF(.5,.5,14,14),4,4)
@@ -171,7 +191,7 @@ class RenameDialog(QDialog):
             f"QFrame#renameSheet{{background:#FFFFFF;border:1px solid rgba(0,0,0,23);border-radius:{c['radius']}px;}}")
         form=QVBoxLayout(self.card);form.setContentsMargins(20,20,20,20);form.setSpacing(16)
         header=QHBoxLayout();header.addWidget(label('重命名文件',14,600,parent=self.card),1)
-        close=ToolbarButton('close',self.card,motion=shelf.manager.motion);close.setFixedSize(24,24);close.clicked.connect(self.reject);header.addWidget(close);form.addLayout(header)
+        close=ToolbarButton('close',self.card,motion=shelf.manager.motion);close.setFixedSize(32,32);close.clicked.connect(self.reject);header.addWidget(close);form.addLayout(header)
         form.addWidget(label('输入新的文件名，扩展名保持不变。',12,400,'secondary',self.card))
         edit=shelf.rename_edit;edit.setParent(self.card);edit.setFixedHeight(34)
         css(edit,"QLineEdit{background:#242426;color:#F5F5F7;border:1px solid #3F3F46;border-radius:8px;padding:7px 10px;font:12px 'HarmonyOS Sans SC';} QLineEdit:focus{border-color:#0A84FF;}",
@@ -210,9 +230,8 @@ STATUS_COLORS={'synced':'#30D158','uploading':'#0A84FF','pending':'#64D2FF','loc
 
 
 def draw_status(p,rect,status):
-    p.setPen(QPen(ink(palette()['surface']),2))
-    p.setBrush(QColor(STATUS_COLORS.get(status,'#A1A1AA')))
-    p.drawEllipse(QRectF(rect))
+    from transfer_visuals import draw_cloud_status_badge
+    draw_cloud_status_badge(p,QRectF(rect),status)
 
 
 def thumbnail(shelf,ref,size=40):
@@ -228,8 +247,14 @@ def thumbnail(shelf,ref,size=40):
     if actual:
         provider=getattr(shelf,'item_pixmap',shelf.content.item_pixmap)
         art=provider(ref,round(size),dpr=2)
+        cache=getattr(shelf,'image_cache',None)
+        decoded=cache.image(ref,128) if cache and category=='images' else cached
+        if decoded is not None and not decoded.isNull():
+            art=QPixmap.fromImage(decoded) if isinstance(decoded,QImage) else decoded
         clip=QPainterPath();clip.addRoundedRect(rect,9,9);p.setClipPath(clip)
-        p.drawPixmap(QRectF(1,1,size-2,size-2),art,QRectF(art.rect()));p.setClipping(False)
+        scale=min((size-2)/max(1,art.width()),(size-2)/max(1,art.height()))
+        width,height=art.width()*scale,art.height()*scale
+        p.drawPixmap(QRectF((size-width)/2,(size-height)/2,width,height),art,QRectF(art.rect()));p.setClipping(False)
     elif category=='text':
         p.setPen(Qt.NoPen)
         for i in range(4):
@@ -261,7 +286,7 @@ class ThumbnailLabel(TransferIconLabel):
         p=QPainter(self);p.setRenderHint(QPainter.Antialiasing)
         art=thumbnail(self.shelf,self.ref,40)
         p.drawPixmap(0,0,art)
-        draw_status(p,QRectF(29,29,10,10),self.cloud_status)
+        draw_status(p,QRectF(26,26,14,14),self.cloud_status)
         p.end()
 
 
@@ -275,7 +300,8 @@ class MiniStack(StackTile):
         if not self.refs:
             r=QRectF((self.width()-176)/2,28,176,128)
             p.setPen(QPen(ink(palette()['border']),1,Qt.DashLine));p.setBrush(ink(palette()['card']));p.drawRoundedRect(r,16,16)
-            p.setPen(QColor(palette()['muted']));f=p.font();f.setPixelSize(24);p.setFont(f);p.drawText(r.adjusted(0,-10,0,-30),Qt.AlignCenter,'+')
+            icon('upload',palette()['secondary']).paint(p,QRect(round(r.center().x()-12),round(r.center().y()-31),24,24))
+            f=p.font()
             f.setPixelSize(11);p.setFont(f);p.drawText(r.adjusted(0,34,0,0),Qt.AlignCenter,'点击选择文件');p.end();return
         c=palette();v=self.spring.values
         center=QPointF(self.width()/2,self.height()/2)
@@ -288,7 +314,7 @@ class MiniStack(StackTile):
             p.setPen(QPen(QColor(255,255,255,38) if ui_theme.current_theme()=='dark' else QColor(0,0,0,26),1))
             p.setBrush(QColor('#242426' if ui_theme.current_theme()=='dark' else '#FFFFFF'));p.drawRoundedRect(QRectF(.5,.5,191,127),16,16)
             p.drawPixmap(14,14,thumbnail(self.shelf,ref,40))
-            draw_status(p,QRectF(43,43,10,10),getattr(self.shelf.manager,'sync',None).sync_status_for_ref(ref) if hasattr(getattr(self.shelf.manager,'sync',None),'sync_status_for_ref') else 'local')
+            draw_status(p,QRectF(40,40,16,16),getattr(self.shelf.manager,'sync',None).sync_status_for_ref(ref) if hasattr(getattr(self.shelf.manager,'sync',None),'sync_status_for_ref') else 'local')
             title=self.shelf.content.title(ref);f=QFont(self.font());f.setPixelSize(12);f.setWeight(QFont.DemiBold);p.setFont(f);p.setPen(QColor(c['text']))
             p.drawText(QRectF(14,77,164,20),Qt.AlignVCenter,p.fontMetrics().elidedText(title,Qt.ElideRight,164))
             f.setPixelSize(10);f.setWeight(QFont.Normal);p.setFont(f);p.setPen(QColor(c['secondary']));p.drawText(QRectF(14,99,164,16),Qt.AlignVCenter,item_detail(self.shelf,ref).split(' · ')[0])
@@ -320,6 +346,7 @@ def build_overview(view,preview_type):
     view.cloud_selector.clicked.connect(view.shelf.show_cloud_menu);head.addWidget(view.cloud_selector)
     head.addStretch(1)
     view.search_edit=QLineEdit(view.header);view.search_edit.setPlaceholderText('搜索...');view.search_edit.setFixedSize(176,30)
+    view.search_edit.setClearButtonEnabled(True)
     view.search_edit.setAccessibleName('搜索搁架内容');view.search_edit.textChanged.connect(lambda _:view.rebuild())
     css(view.search_edit,"QLineEdit{background:#28282A;color:#F5F5F7;border:1px solid #3B3B3F;border-radius:8px;padding:4px 10px;font:12px 'HarmonyOS Sans SC';}",
         "QLineEdit{background:#F0F0F2;color:#1D1D1F;border:1px solid #D4D4D8;border-radius:8px;padding:4px 10px;font:12px 'HarmonyOS Sans SC';}")
@@ -338,9 +365,9 @@ def build_overview(view,preview_type):
     head.addWidget(view.view_segment)
     head.addStretch(1)
     view.zip_button=button('打包所选',variant='secondary',parent=view.header);view.zip_button.clicked.connect(view.compress_selected);head.addWidget(view.zip_button)
-    view.zip_all_button=button('打包全部',variant='primary',parent=view.header);view.zip_all_button.clicked.connect(lambda:view.shelf.compress_refs(list(view.shelf.files['permanent'])));head.addWidget(view.zip_all_button)
+    view.zip_all_button=button('打包全部',variant='secondary',parent=view.header);view.zip_all_button.clicked.connect(lambda:view.shelf.compress_refs(list(view.shelf.files['permanent'])));head.addWidget(view.zip_all_button)
     view.clear_button=button('清空全部',variant='danger',parent=view.header);view.clear_button.clicked.connect(view.shelf.confirm_clear_all);head.addWidget(view.clear_button)
-    head.addSpacing(100)
+    head.addSpacing(156)
     root.addWidget(view.header)
     body=QHBoxLayout();body.setContentsMargins(0,0,0,0);body.setSpacing(0);view.body_layout=body
     view.sidebar=QFrame(view);view.sidebar.setFixedWidth(210)
@@ -350,11 +377,11 @@ def build_overview(view,preview_type):
     view.category_group=QButtonGroup(view);view.category_group.setExclusive(True);view.category_buttons={};view.sidebar_buttons={};view.nav_counts={}
     glyphs={'all':'all','images':'image','video':'video','audio':'audio','text':'text','files':'file','links':'web','uploading':'transferring'}
     for key,title in view.CATEGORIES:
-        control=button(title,glyphs[key],parent=view.sidebar);control.setCheckable(True);control.setFixedHeight(30)
+        control=button(title,glyphs[key],parent=view.sidebar);control.setCheckable(True);control.setFixedHeight(34)
         css(control,"QPushButton{background:transparent;color:#A1A1AA;border:0;border-radius:12px;text-align:left;padding:6px 12px;font:500 12px 'HarmonyOS Sans SC';} QPushButton:hover{background:rgba(255,255,255,15);} QPushButton:checked{background:#0A84FF;color:white;font-weight:600;}",
             "QPushButton{background:transparent;color:#515154;border:0;border-radius:12px;text-align:left;padding:6px 12px;font:500 12px 'HarmonyOS Sans SC';} QPushButton:hover{background:rgba(0,0,0,12);} QPushButton:checked{background:#0A84FF;color:white;font-weight:600;}")
         control.clicked.connect(lambda checked=False,key=key:view.set_category(key));view.category_group.addButton(control);side.addWidget(control)
-        count=label('',11,400,'muted',control);count.setAlignment(Qt.AlignRight|Qt.AlignVCenter);count.setGeometry(145,5,28,20);count.setAttribute(Qt.WA_TransparentForMouseEvents)
+        count=label('',11,400,'muted',control);count.setAlignment(Qt.AlignCenter);count.setGeometry(145,7,28,20);count.setAttribute(Qt.WA_TransparentForMouseEvents)
         view.nav_counts[key]=count;view.category_buttons[key]=control;view.sidebar_buttons[key]=control
     view.transfer_badge=view.nav_counts['uploading']
     side.addStretch(1)
@@ -366,7 +393,7 @@ def build_overview(view,preview_type):
     view.account_nav=ProfileButton(view.sidebar);view.account_nav.clicked.connect(lambda:view.shelf.manager.show_settings());side.addWidget(view.account_nav)
     body.addWidget(view.sidebar)
     view.middle=QWidget(view);mid=QVBoxLayout(view.middle);view.middle_layout=mid;mid.setContentsMargins(0,0,0,0);mid.setSpacing(0)
-    view.selection_bar=QFrame(view.middle);view.selection_bar.setFixedHeight(33)
+    view.selection_bar=QFrame(view.middle);view.selection_bar.setFixedHeight(40)
     css(view.selection_bar,'QFrame{border:0;border-bottom:1px solid rgba(255,255,255,10);background:transparent;}',
         'QFrame{border:0;border-bottom:1px solid rgba(0,0,0,10);background:transparent;}')
     select=QHBoxLayout(view.selection_bar);select.setContentsMargins(16,0,12,0);select.setSpacing(8)
@@ -388,7 +415,7 @@ def build_overview(view,preview_type):
     # transparent palette otherwise clears a hole in transition snapshots.
     view.rows_body.setAutoFillBackground(False);mid.addWidget(view.scroll,1)
     view.empty_state=QWidget(view.middle);empty=QVBoxLayout(view.empty_state);empty.addStretch(1)
-    view.empty_symbol=label('⌑',36,400,'muted',view.empty_state);view.empty_title=label('搁架为空',12,500,'secondary',view.empty_state);view.empty_hint=label('拖入文件、图片、文字或链接',11,400,'muted',view.empty_state)
+    view.empty_symbol=label('',36,400,'muted',view.empty_state);view.empty_title=label('搁架为空',14,600,'text',view.empty_state);view.empty_hint=label('拖入文件、图片、文字或链接',12,400,'secondary',view.empty_state)
     for control in (view.empty_symbol,view.empty_title,view.empty_hint):control.setAlignment(Qt.AlignCenter);empty.addWidget(control)
     empty.addStretch(1);mid.addWidget(view.empty_state,1);view.empty_state.hide()
     view.transfer_strip=QFrame(view.middle)
@@ -411,7 +438,7 @@ def build_overview(view,preview_type):
     # Compatibility members retain original navigation/selection code paths.
     view.category_segments=QWidget(view);view.category_segments.hide()
     view.category_picker=button('全部',parent=view.selection_bar);select.insertWidget(0,view.category_picker);view.category_picker.clicked.connect(view.open_category_menu);view.category_picker.hide()
-    view.bulk_more=button('···',parent=view.header);head.insertWidget(head.count()-1,view.bulk_more);view.bulk_more.hide();view.bulk_more.clicked.connect(view.open_bulk_menu)
+    view.bulk_more=ToolbarButton('more',view.header,motion=view.shelf.manager.motion);view.bulk_more.setFixedSize(32,32);view.bulk_more.setAccessibleName('批量操作');head.insertWidget(head.count()-1,view.bulk_more);view.bulk_more.hide();view.bulk_more.clicked.connect(view.open_bulk_menu)
     view.narrow_view_button=button('预览',parent=view.selection_bar);select.addWidget(view.narrow_view_button);view.narrow_view_button.hide();view.narrow_view_button.clicked.connect(view.toggle_narrow_preview)
     view._narrow_layout=False;view._narrow_preview=False
 
@@ -422,7 +449,7 @@ def build_preview(view,elided_type,image_type,media_type,content_type):
     css(view,'QFrame#referencePreview{background:#121213;border:0;border-left:1px solid rgba(255,255,255,15);}',
         'QFrame#referencePreview{background:#F5F6FA;border:0;border-left:1px solid rgba(0,0,0,15);}')
     root=QVBoxLayout(view);root.setContentsMargins(0,0,0,0);root.setSpacing(0)
-    head=QFrame(view);head.setFixedHeight(62)
+    head=QFrame(view);head.setFixedHeight(68)
     css(head,'QFrame{border:0;border-bottom:1px solid rgba(255,255,255,15);background:transparent;}',
         'QFrame{border:0;border-bottom:1px solid rgba(0,0,0,15);background:transparent;}')
     header=QHBoxLayout(head);header.setContentsMargins(16,10,16,10);header.setSpacing(8)
@@ -432,8 +459,8 @@ def build_preview(view,elided_type,image_type,media_type,content_type):
         css(item,f"color:{colors('dark')[tint]};border:0;background:transparent;font:{weight} {size}px 'HarmonyOS Sans SC';",
             f"color:{colors('light')[tint]};border:0;background:transparent;font:{weight} {size}px 'HarmonyOS Sans SC';")
         names.addWidget(item)
-    header.addLayout(names,1);view.cloud_badge=CloudStatusBadge(view);view.cloud_badge.setFixedSize(24,24)
-    header.addWidget(view.cloud_badge);view.copy_button=ToolbarButton('copy',view,motion=view.shelf.manager.motion);view.copy_button.setFixedSize(44,26);view.copy_button.clicked.connect(view.copy_current);header.addWidget(view.copy_button);root.addWidget(head)
+    header.addLayout(names,1);view.cloud_badge=CloudStatusBadge(view);view.cloud_badge.setFixedSize(32,32)
+    header.addWidget(view.cloud_badge);view.copy_button=ToolbarButton('copy',view,motion=view.shelf.manager.motion);view.copy_button.setFixedSize(32,32);view.copy_button.clicked.connect(view.copy_current);header.addWidget(view.copy_button);root.addWidget(head)
     content=QWidget(view);body=QVBoxLayout(content);body.setContentsMargins(16,16,16,16);body.setSpacing(12)
     view.transfer_row=QWidget(content);transfer=QHBoxLayout(view.transfer_row);transfer.setContentsMargins(0,0,0,0)
     view.transfer_progress=QProgressBar(view.transfer_row);view.transfer_progress.setTextVisible(False);view.transfer_progress.setFixedHeight(5)
@@ -441,17 +468,17 @@ def build_preview(view,elided_type,image_type,media_type,content_type):
         'QProgressBar{background:#E0E0E5;border:0;} QProgressBar::chunk{background:#0A84FF;}')
     view.transfer_meta=label('',10,400,'cyan',view.transfer_row);view.cancel_transfer=button('取消上传',parent=view.transfer_row);view.cancel_transfer.clicked.connect(lambda:view.shelf.cancel_transfer(view.current_path))
     transfer.addWidget(view.transfer_progress,1);transfer.addWidget(view.transfer_meta);transfer.addWidget(view.cancel_transfer);body.addWidget(view.transfer_row);view.transfer_row.hide()
-    view.stack=QStackedWidget(content);view.stack.setFixedHeight(176)
+    view.stack=QStackedWidget(content);view.stack.setMinimumHeight(176);view.stack.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Expanding)
     css(view.stack,'QStackedWidget{background:#242426;border:1px solid #414145;border-radius:12px;}',
         'QStackedWidget{background:#FFFFFF;border:1px solid #DDDEE2;border-radius:12px;}')
     view.icon=content_type(view,motion=view.shelf.manager.motion)
     view.text=QPlainTextEdit(view);view.text.setReadOnly(True);view.text.setAcceptDrops(False);view.text.viewport().setAcceptDrops(False)
-    css(view.text,"QPlainTextEdit{background:rgba(245,158,11,10);color:#FDE68A;border:0;border-radius:12px;padding:14px;font:12px 'HarmonyOS Sans SC';}",
-        "QPlainTextEdit{background:#FFF9E8;color:#5C4821;border:0;border-radius:12px;padding:14px;font:12px 'HarmonyOS Sans SC';}")
+    css(view.text,"QPlainTextEdit{background:#242426;color:#F5F5F7;border:0;border-radius:12px;padding:14px;font:13px 'HarmonyOS Sans SC';}",
+        "QPlainTextEdit{background:#FFFFFF;color:#1D1D1F;border:0;border-radius:12px;padding:14px;font:13px 'HarmonyOS Sans SC';}")
     view.image=image_type(view);view.image.set_loader(view.shelf.image_cache);view.image.source_ready.connect(view._image_source_ready)
     view.media=media_type(view,motion=view.shelf.manager.motion);view.media.frame_ready.connect(view._poster_ready);view.media.playing_changed.connect(view._playing_changed)
     for item in (view.icon,view.text,view.image,view.media):view.stack.addWidget(item)
-    body.addWidget(view.stack)
+    body.addWidget(view.stack,1)
     status=QFrame(content);status.setObjectName('referenceStatus')
     css(status,'QFrame#referenceStatus{background:rgba(255,255,255,7);border:1px solid rgba(255,255,255,15);border-radius:12px;}',
         'QFrame#referenceStatus{background:rgba(255,255,255,184);border:1px solid rgba(0,0,0,15);border-radius:12px;}')
@@ -460,7 +487,7 @@ def build_preview(view,elided_type,image_type,media_type,content_type):
     view.path_label=elided_type(status);view.path_label.setAccessibleName('内容来源路径')
     css(view.path_label,"color:#A1A1AA;background:transparent;border:0;font:10px 'Consolas';",
         "color:#636366;background:transparent;border:0;font:10px 'Consolas';")
-    box.addWidget(view.path_label);body.addWidget(status);body.addStretch(1)
+    box.addWidget(view.path_label);body.addWidget(status)
     actions=QHBoxLayout();actions.setSpacing(8)
     view.open_button=button('打开',variant='secondary',parent=content);view.rename_button=button('重命名文件',variant='secondary',parent=content)
     view.open_button.clicked.connect(lambda:view.current_path and view.shelf.open_path(view.current_path));view.rename_button.clicked.connect(lambda:view.current_path and view.shelf.rename_ref(view.current_path))

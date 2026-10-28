@@ -183,10 +183,9 @@ class SettingsAccountTests(unittest.TestCase):
             image=dialog.grab().toImage()
             self.assertEqual(image.pixelColor(0,0).alpha(),0)
             self.assertGreater(image.pixelColor(10,image.height()//2).alpha(),0)
-            # The source 84% surface and its antialiased corner must not become
-            # an opaque black/white rectangular native backing.
+            # The readable surface is opaque; rounded corners remain transparent.
             self.assertLess(image.pixelColor(20,20).alpha(),100)
-            self.assertTrue(190<image.pixelColor(25,image.height()//2).alpha()<250)
+            self.assertEqual(image.pixelColor(25,image.height()//2).alpha(),255)
         self.click(self.panel.password_toggle_button)
         verify_surface(self.panel.password_dialog,390)
         self.panel._reset_password()

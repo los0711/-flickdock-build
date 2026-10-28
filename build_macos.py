@@ -96,6 +96,7 @@ def main(arguments=None):
          'test_macos_native_entry', 'test_update_macos_controller', 'test_mac_build',
          'test_shelf_sync_v180', 'test_sync_review_v180', 'test_account_security_v180',
          'test_lan_transfer_v181', 'test_lan_dialog_v183', 'test_shelf_transfers_v181',
+         'test_account_profile_layout_v1814', 'test_lan_hig_layout_v1814',
          'test_shelf_raise_v1810', 'test_intake_first_frame_v1810',
          'test_sync_remote_commit_wakeup', 'test_cloud_file_status_v1810',
          'test_trigger_reliability_v1810', 'test_event_stream_wiring_v1810', '-v'], env=env)
@@ -149,6 +150,8 @@ def main(arguments=None):
             if (not cocoa.get('ok') or cocoa.get('version') != APP_VERSION
                     or cocoa.get('qt_platform') != 'cocoa'
                     or not cocoa.get('shelf_constructed')
+                    or not cocoa.get('native_window_order', {}).get('ok')
+                    or {case.get('window') for case in cocoa.get('native_window_order', {}).get('cases', [])} != {'edge', 'shelf'}
                     or any(cocoa.get(name) for name in ('native_hotkeys', 'lan_listener',
                                                        'cloud_session', 'startup_mutation'))):
                 raise RuntimeError('Frozen macOS Cocoa shelf startup verification failed')

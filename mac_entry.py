@@ -8,6 +8,60 @@ import sys
 import traceback
 
 
+def verify_cocoa_window_order(edge, shelf):
+    """Exercise the reported Spaces conflict inside the frozen Cocoa runtime.
+
+    Hosted macOS runners need not choose the same default NSWindow behavior
+    as the affected Mac. Stage MoveToActiveSpace explicitly, then verify both
+    native reveal paths normalize it and the shelf restores its prior state.
+    This entry is restricted to the existing isolated CI startup smoke mode.
+    """
+    if (sys.platform != 'darwin' or not getattr(sys, 'frozen', False)
+            or os.environ.get('FLICKDOCK_CI_COCOA_SMOKE') != '1'
+            or os.environ.get('QT_QPA_PLATFORM', '').lower() != 'cocoa'):
+        raise RuntimeError('Native window-order verification requires frozen Cocoa CI mode.')
+    import ctypes
+    import AppKit
+    import objc
+    from platform_native import (lower_shelf_after_reveal, raise_edge_target,
+                                 raise_shelf_for_reveal)
+
+    move = int(AppKit.NSWindowCollectionBehaviorMoveToActiveSpace)
+    can_join = int(AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces)
+    ignores_cycle = int(AppKit.NSWindowCollectionBehaviorIgnoresCycle)
+    staged = move | ignores_cycle
+    results = []
+    for name, widget, reveal in (('edge', edge, raise_edge_target),
+                                  ('shelf', shelf, raise_shelf_for_reveal)):
+        view = objc.objc_object(c_void_p=ctypes.c_void_p(int(widget.winId())))
+        window = view.window()
+        if window is None:
+            raise AssertionError(f'{name}: frozen Qt did not create an NSWindow')
+        original = (window.level(), window.collectionBehavior())
+        try:
+            window.setCollectionBehavior_(staged)
+            if not int(window.collectionBehavior()) & move:
+                raise AssertionError(f'{name}: failed to stage MoveToActiveSpace')
+            if not reveal(widget, platform='darwin'):
+                raise AssertionError(f'{name}: frozen native reveal failed')
+            active = int(window.collectionBehavior())
+            if not active & can_join or active & move or not active & ignores_cycle:
+                raise AssertionError(f'{name}: frozen Spaces behavior is invalid: {active:#x}')
+            if not reveal(widget, platform='darwin') or int(window.collectionBehavior()) != active:
+                raise AssertionError(f'{name}: repeated frozen native reveal changed behavior')
+            if name == 'shelf':
+                if not lower_shelf_after_reveal(widget, platform='darwin'):
+                    raise AssertionError('shelf: frozen native order did not restore')
+                if int(window.collectionBehavior()) != staged or window.level() != original[0]:
+                    raise AssertionError('shelf: frozen native order restored the wrong state')
+            results.append(dict(window=name, staged_behavior=staged,
+                                reveal_completed=True, active_behavior=active))
+        finally:
+            window.setLevel_(original[0])
+            window.setCollectionBehavior_(original[1])
+    return dict(ok=True, cases=results)
+
+
 def verify_platform(report_path):
     if os.environ.get('QT_QPA_PLATFORM', '').lower() != 'offscreen':
         raise ValueError('平台验证必须显式使用 offscreen。')

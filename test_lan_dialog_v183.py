@@ -9,7 +9,7 @@ import unittest
 from PySide6.QtCore import QByteArray,QEvent,QObject,QMimeData,QPointF,Qt,QUrl,Signal
 from PySide6.QtGui import QDragEnterEvent,QDropEvent,QMouseEvent
 from PySide6.QtSvg import QSvgRenderer
-from PySide6.QtWidgets import QApplication,QScrollArea
+from PySide6.QtWidgets import QApplication,QPushButton,QScrollArea
 from unittest.mock import patch
 
 from app_settings import SettingsStore
@@ -81,7 +81,7 @@ class LanDialogTests(unittest.TestCase):
              'state':'已取消','direction':'send'},
             {'when':'10-27 08:26','name':'movie.mp4','peer':'工作电脑',
              'state':'失败','direction':'receive'}]
-        panel._render_history();APP.processEvents()
+        panel._render_history();APP.processEvents();APP.processEvents()
         self.assertEqual(len(panel.history_rows),3)
         self.assertEqual(len(panel.history_separators),2)
         self.assertEqual(panel.history_body.objectName(),'lanHistoryGroup')
@@ -145,10 +145,18 @@ class LanDialogTests(unittest.TestCase):
     def test_two_columns_keep_send_and_transfer_visible_without_window_scroll(self):
         panel=self.dialog.panel
         self.assertLess(panel.send_column.geometry().right(),panel.activity_column.geometry().left())
-        self.assertFalse(self.dialog.findChildren(QScrollArea))
+        # The window and its two columns remain fixed; only the potentially
+        # long pending-file and recent-history lists scroll independently.
+        self.assertEqual(set(self.dialog.findChildren(QScrollArea)),
+                         {panel.queue_scroll,panel.history_scroll})
+        self.assertIs(panel.queue_scroll.widget(),panel.queue_body)
+        self.assertIs(panel.history_scroll.widget(),panel.history_body)
+        self.assertIs(panel.send_column.parentWidget(),panel)
+        self.assertIs(panel.activity_column.parentWidget(),panel)
         self.assertTrue(panel.drop_zone.isVisible())
-        self.assertIs(panel.pick_files.parent(),panel.drop_zone)
-        self.assertIs(panel.pick_folder.parent(),panel.drop_zone)
+        self.assertFalse(any(button.text() in ('添加文件','添加文件夹')
+                             for button in panel.findChildren(QPushButton)))
+        self.assertEqual(panel.drop_zone.focusPolicy(),Qt.FocusPolicy.StrongFocus)
         self.assertTrue(panel.receive_path.isVisible())
         self.assertTrue(panel.history_label.isVisible())
         self.assertTrue(QSvgRenderer(QByteArray(glyph_svg('nearby','#1876db').encode())).isValid())

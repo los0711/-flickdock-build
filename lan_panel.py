@@ -12,7 +12,7 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QFrame, QGraphicsDropShadowEffect,
                                QHBoxLayout, QLabel, QLineEdit, QProgressBar, QPushButton,
-                               QListView, QSizePolicy, QStyle, QStyledItemDelegate,
+                               QListView, QMenu, QScrollArea, QSizePolicy, QStyle, QStyledItemDelegate,
                                QStyleOptionButton, QStylePainter, QVBoxLayout, QWidget)
 
 from flickdock_icons import draw_glyph
@@ -40,7 +40,7 @@ class _PressButton(QPushButton):
 def _button(text, parent=None):
     button = _PressButton(text, parent); button.setMinimumHeight(28)
     button.setAutoDefault(False); button.setDefault(False)
-    button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+    button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
     button.setCursor(Qt.CursorShape.PointingHandCursor)
     return button
 
@@ -159,7 +159,8 @@ class _DevicesCombo(QComboBox):
     def paintEvent(self, event):
         super().paintEvent(event)
         painter=QPainter(self)
-        ui_icon('chevron','#8E8E93').paint(painter,self.rect().adjusted(self.width()-22,0,-10,0))
+        color = ui_colors('dark' if self.window().property('uiTheme') == 'dark' else 'light')['secondary']
+        ui_icon('chevron', color).paint(painter, self.width()-25, (self.height()-14)//2, 14, 14)
 
 
 class _CloseButton(QPushButton):
@@ -241,9 +242,12 @@ class _DropZone(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName('lanDropZone'); self.setAcceptDrops(True)
-        self.setMinimumHeight(104)
+        self.setFixedHeight(120)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAccessibleName('选择要发送的文件；也可拖入文件或文件夹')
         self._active = False
-        layout = QVBoxLayout(self); layout.setContentsMargins(16, 12, 16, 12); layout.setSpacing(6)
+        layout = QVBoxLayout(self); layout.setContentsMargins(16, 16, 16, 16); layout.setSpacing(10)
+        layout.addStretch(1)
         illustration = _DropIllustration(self)
         self.illustration = illustration
         layout.addWidget(illustration, 0, Qt.AlignmentFlag.AlignHCenter)
@@ -252,7 +256,14 @@ class _DropZone(QFrame):
         self.hint = _label('', self, muted=True)
         self.hint.setObjectName('lanDropHint')
         self.hint.setAlignment(Qt.AlignmentFlag.AlignCenter); layout.addWidget(self.hint)
+        self.hint.hide()
+        layout.addStretch(1)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+            self.clicked.emit(); event.accept(); return
+        super().keyPressEvent(event)
 
     def mousePressEvent(self,event):
         if event.button()==Qt.MouseButton.LeftButton:
@@ -371,7 +382,7 @@ class _HistoryRemoveButton(QPushButton):
         self.setObjectName('lanHistoryRemove')
         self.setFixedSize(34, 24)
         self.setText('删除')
-        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAutoDefault(False)
         self.setDefault(False)
         self.setToolTip('删除这条传输记录')
@@ -387,7 +398,7 @@ class _HistoryRow(QFrame):
     def __init__(self, record, parent=None):
         super().__init__(parent)
         self.setObjectName('lanHistoryRow')
-        self.setMinimumHeight(42)
+        self.setFixedHeight(52)
         direction = record['direction']
         state = record['state']
         peer = record['peer'].strip() or '未知设备'
@@ -460,7 +471,7 @@ class LanPanel(QFrame):
         layout = QVBoxLayout(self); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(0)
         columns = QHBoxLayout(); columns.setContentsMargins(0,0,0,0); columns.setSpacing(0)
         self.send_column = QFrame(self); self.send_column.setObjectName('lanSendColumn')
-        send = QVBoxLayout(self.send_column); send.setContentsMargins(20,20,20,20); send.setSpacing(16)
+        send = QVBoxLayout(self.send_column); send.setContentsMargins(20,16,20,16); send.setSpacing(10)
         send_heading = QHBoxLayout(); send_heading.setContentsMargins(0,0,0,0)
         self.send_heading_label = _label('待发送项目', self.send_column); self.send_heading_label.setObjectName('lanSection')
         send_heading.addWidget(self.send_heading_label,1)
@@ -470,16 +481,20 @@ class LanPanel(QFrame):
         send_heading.addWidget(self.clear_queue); send.addLayout(send_heading)
         self.drop_zone = _DropZone(self.send_column); self.drop_zone.dropped.connect(self.queue_paths)
         self.drop_zone.clicked.connect(self._pick_files)
+        self.drop_zone.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.drop_zone.customContextMenuRequested.connect(self._pick_menu)
         send.addWidget(self.drop_zone)
-        pickers = QHBoxLayout(); pickers.setContentsMargins(0,0,0,0); pickers.setSpacing(12)
-        self.pick_files = _button('添加文件', self.drop_zone); self.pick_files.setObjectName('lanTextButton'); self.pick_files.clicked.connect(self._pick_files)
-        self.pick_folder = _button('添加文件夹', self.drop_zone); self.pick_folder.setObjectName('lanTextButton'); self.pick_folder.clicked.connect(self._pick_folder)
-        pickers.addStretch(1); pickers.addWidget(self.pick_files); pickers.addWidget(self.pick_folder); pickers.addStretch(1)
-        self.drop_zone.layout().addLayout(pickers)
         self.queue_body = QFrame(self.send_column); self.queue_body.setObjectName('lanQueueBody')
         self.queue_layout = QVBoxLayout(self.queue_body); self.queue_layout.setContentsMargins(0,0,0,0); self.queue_layout.setSpacing(6)
         self.queue_rows = []
-        send.addWidget(self.queue_body)
+        self.queue_scroll = QScrollArea(self.send_column)
+        self.queue_scroll.setObjectName('lanQueueScroll')
+        self.queue_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.queue_scroll.setWidgetResizable(True)
+        self.queue_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.queue_scroll.setWidget(self.queue_body)
+        self.queue_scroll.setMaximumHeight(84)
+        send.addWidget(self.queue_scroll)
         target = QHBoxLayout()
         target_label = _label('发送到附近设备', self.send_column); target_label.setObjectName('lanSection')
         self.target_label=target_label
@@ -529,7 +544,7 @@ class LanPanel(QFrame):
         activity.addLayout(transfer_heading)
         self.transfers_body = QWidget(self.activity_column)
         self.transfers_layout = QVBoxLayout(self.transfers_body)
-        self.transfers_layout.setContentsMargins(0,0,0,0); self.transfers_layout.setSpacing(10)
+        self.transfers_layout.setContentsMargins(3,3,3,3); self.transfers_layout.setSpacing(10)
         self.transfers_layout.addStretch(1)
         self.transfers_body.setMinimumHeight(76)
         activity.addWidget(self.transfers_body, 1)
@@ -566,7 +581,15 @@ class LanPanel(QFrame):
         self.history_layout.addWidget(self.history_label)
         self.history_rows = []
         self.history_separators = []
-        activity.addWidget(self.history_body)
+        self.history_scroll = QScrollArea(self.activity_column)
+        self.history_scroll.setObjectName('lanHistoryScroll')
+        self.history_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.history_scroll.setWidgetResizable(True)
+        self.history_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.history_scroll.setMinimumHeight(110)
+        self.history_scroll.setMaximumHeight(188)
+        self.history_scroll.setWidget(self.history_body)
+        activity.addWidget(self.history_scroll)
         self._render_history()
         destination = QHBoxLayout(); destination.setSpacing(8)
         destination_label=_label('接收位置：', self, muted=True)
@@ -635,7 +658,7 @@ class LanPanel(QFrame):
             separator.deleteLater()
         self.history_separators.clear()
         self.history_label.setVisible(not self._history)
-        for index, record in enumerate(self._history[:3]):
+        for index, record in enumerate(self._history[:12]):
             if index:
                 separator = QFrame(self.history_body)
                 separator.setObjectName('lanHistoryDivider')
@@ -676,19 +699,23 @@ class LanPanel(QFrame):
         for widget in self.queue_rows:
             self.queue_layout.removeWidget(widget); widget.deleteLater()
         self.queue_rows.clear()
-        for value in self._queued_paths[:3]:
+        for value in self._queued_paths:
             row=QFrame(self.queue_body);row.setObjectName('lanQueueRow')
+            row.setFixedHeight(36)
             line=QHBoxLayout(row);line.setContentsMargins(12,7,12,7);line.setSpacing(8)
             path=Path(value);name=_ElidedLabel(path.name,row);line.addWidget(name,1)
             try: summary=_size(path.stat().st_size) if path.is_file() else '文件夹'
             except OSError: summary=''
             size=_label(summary,row,muted=True);size.setSizePolicy(QSizePolicy.Policy.Fixed,QSizePolicy.Policy.Preferred)
             line.addWidget(size);self.queue_layout.addWidget(row);self.queue_rows.append(row)
-        if count>3:
-            more=_label(f'另有 {count-3} 项',self.queue_body,muted=True)
-            more.setToolTip('\n'.join(Path(p).name for p in self._queued_paths[3:]))
-            self.queue_layout.addWidget(more);self.queue_rows.append(more)
-        self.queue_body.setVisible(bool(count))
+        self.queue_scroll.setFixedHeight(min(84, count*42+4))
+        self.queue_scroll.setVisible(bool(count))
+
+    def _pick_menu(self, position):
+        menu = QMenu(self.drop_zone)
+        menu.addAction('选择文件…', self._pick_files)
+        menu.addAction('选择文件夹…', self._pick_folder)
+        menu.exec(self.drop_zone.mapToGlobal(position))
 
     def _pick_files(self):
         paths, _ = QFileDialog.getOpenFileNames(self, '选择要发送的文件')
@@ -716,8 +743,8 @@ class LanPanel(QFrame):
         c=ui_colors(theme)
         self.setProperty('uiTheme',theme)
         font=reference_font()
-        font.setPixelSize(12);self.setFont(font)
-        color,muted,border,field,accent=c['text'],c['secondary'],c['border'],c['input'],c['blue']
+        font.setPixelSize(13);self.setFont(font)
+        color,muted,border,field,accent=c['text'],c['secondary'],c['border'],c['input'],c['action']
         faint='rgba(255,255,255,8)' if self._dark else 'rgba(0,0,0,6)'
         self.setStyleSheet(f"""
             QFrame#lanPanel {{ background:transparent; border:0; }}
@@ -776,6 +803,26 @@ class LanPanel(QFrame):
             QFrame#lanPanel QProgressBar {{ border:0; background:{c['control']}; height:6px; max-height:6px; border-radius:3px; }}
             QFrame#lanPanel QProgressBar::chunk {{ background:{c['cyan']}; border-radius:3px; }}
         """)
+        self.setStyleSheet(self.styleSheet()+f'''
+            QFrame#lanPanel QLabel#lanOfferKicker {{background:{c['action']};color:{c['on_action']};}}
+            QFrame#lanPanel QPushButton#lanTextButton:hover {{color:{c['link']};}}
+            QFrame#lanPanel QPushButton[keyboardFocus="true"] {{border:1px solid {c['link']};}}
+            QFrame#lanPanel QPushButton#lanOfferAccept {{background:{c['action']};color:{c['on_action']};}}
+            QFrame#lanPanel QLabel {{font-size:13px;}}
+            QFrame#lanPanel QLabel#lanSection {{font-size:13px;font-weight:600;}}
+            QFrame#lanPanel QLabel#lanDropTitle {{font-size:13px;}}
+            QFrame#lanPanel QLabel#lanHistoryTitle {{font-size:12px;color:{c['secondary']};}}
+            QFrame#lanPanel QLabel#lanHistoryDetail {{font-size:13px;}}
+            QFrame#lanPanel QLabel#lanHistoryState {{font-size:11px;}}
+            QFrame#lanPanel QPushButton, QFrame#lanPanel QComboBox {{font-size:13px;}}
+            QFrame#lanPanel QLineEdit {{font-size:12px;}}
+            QScrollArea#lanQueueScroll, QScrollArea#lanHistoryScroll {{background:transparent;border:0;}}
+            QScrollArea#lanQueueScroll > QWidget > QWidget, QScrollArea#lanHistoryScroll > QWidget > QWidget {{background:transparent;}}
+            QScrollBar:vertical {{background:transparent;width:6px;margin:2px 0;}}
+            QScrollBar::handle:vertical {{background:{c['input_border']};border-radius:3px;min-height:24px;}}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{height:0;}}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{background:transparent;}}
+        ''')
         for row in self._rows.values():
             row['cancel'].dark = self._dark; row['cancel'].update()
             if row.get('offer_icon'):
@@ -1059,7 +1106,7 @@ class LanDialog(QDialog):
         super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
         self.setObjectName('lanDialog'); self.setWindowTitle('FlickDock · 局域网互传')
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setModal(False); self.resize(904, 584); self.setMinimumSize(824, 584)
+        self.setModal(False); self.resize(980, 704); self.setMinimumSize(824, 660)
         root = QVBoxLayout(self); root.setContentsMargins(22, 22, 22, 22)
         self.card = QFrame(self); self.card.setObjectName('lanDialogCard')
         shadow = QGraphicsDropShadowEffect(self.card)
@@ -1091,7 +1138,7 @@ class LanDialog(QDialog):
         self.dock_button.setToolTip('收起到屏幕边缘');self.dock_button.setIconSize(QSize(16,16))
         self.dock_button.clicked.connect(lambda:self._navigate('dock'));title_row.addWidget(self.dock_button)
         close = _CloseButton('', self.title_bar); close.setObjectName('lanDialogClose')
-        close.setAutoDefault(False);close.setDefault(False);close.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        close.setAutoDefault(False);close.setDefault(False);close.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         close.setFixedSize(28, 28); close.setAccessibleName('关闭局域网传输窗口')
         close.clicked.connect(self.close); title_row.addWidget(close)
         content.addWidget(self.title_bar)
@@ -1109,6 +1156,7 @@ class LanDialog(QDialog):
 
     def apply_theme(self, theme):
         dark = theme == 'dark'
+        self.setProperty('uiTheme', theme)
         c=ui_colors(theme)
         font_family=reference_font().family()
         surface,ink,hover=c['surface'],c['text'],c['hover']

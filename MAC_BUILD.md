@@ -24,6 +24,12 @@ days. It does not publish a public release or update manifest. Artifact ZIPs
 must be downloaded and checked against the Actions digests, then each inner
 release checked against its native build report before public promotion.
 
+The existing `los0711/-flickdock-build` GitHub repository is public under the
+user's later explicit authorization. Its workflow is restricted to that exact
+repository; copy only `release_manifest.collect_source_files()` selections.
+The canonical Gitee source repository remains private. Workspace outputs,
+credentials, user files and source ZIPs never belong in the build mirror.
+
 Use a Mac with Python 3.12 and Xcode 16 Command Line Tools or newer. The pinned
 Qt 6.12 runtime targets macOS 14.4 or newer, as listed in
 [Qt's supported platforms](https://doc.qt.io/qt-6/supported-platforms.html).

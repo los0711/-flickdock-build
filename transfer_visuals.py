@@ -104,13 +104,8 @@ class CloudStatusBadge(QWidget):
         self.update()
 
     def paintEvent(self, event):
-        from reference_widgets import draw_status,palette,ink
         painter=QPainter(self);painter.setRenderHint(QPainter.Antialiasing)
-        painter.setPen(Qt.NoPen);painter.setBrush(ink(palette()['control']))
-        extent=min(24,self.width(),self.height())
-        painter.drawEllipse(QRectF((self.width()-extent)/2,(self.height()-extent)/2,extent,extent))
-        draw_status(painter,QRectF((self.width()-10)/2,(self.height()-10)/2,10,10),self.status)
-        if self.transfer:draw_ring(painter,QRectF((self.width()-20)/2,(self.height()-20)/2,20,20),self.transfer)
+        draw_cloud_status_badge(painter,QRectF((self.width()-20)/2,(self.height()-20)/2,20,20),self.status,self.transfer)
 
 
 def transfer_fraction(state):

@@ -10,13 +10,61 @@ import sys
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QEasingCurve, QPointF, QRectF, QSize, Qt, QVariantAnimation
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QIconEngine, QPainter, QPixmap
+from PySide6.QtCore import QByteArray, QEasingCurve, QEvent, QObject, QPointF, QRectF, QSize, Qt, QVariantAnimation
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QIconEngine, QPainter, QPen, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QApplication, QAbstractButton, QHBoxLayout, QLabel, QPushButton, QWidget
 
 
-WINDOWS_FONT_STACK=('HarmonyOS Sans SC','PingFang SC','Microsoft YaHei UI','Segoe UI Variable')
+WINDOWS_FONT_STACK=('HarmonyOS Sans SC','Noto Sans SC','Source Han Sans SC','Segoe UI Variable','Segoe UI')
+
+
+def reduced_motion():
+    """Read the platform preference without starting native hooks or prompts."""
+    if sys.platform == 'darwin':
+        try:
+            from AppKit import NSWorkspace
+            return bool(NSWorkspace.sharedWorkspace().accessibilityDisplayShouldReduceMotion())
+        except Exception:
+            return False
+    if sys.platform == 'win32':
+        try:
+            import ctypes
+            value = ctypes.c_int(1)
+            ok = ctypes.windll.user32.SystemParametersInfoW(0x1042, 0, ctypes.byref(value), 0)
+            return bool(ok and not value.value)
+        except (AttributeError, OSError):
+            return False
+    return False
+
+
+def keyboard_focus_visible(widget):
+    return bool(widget.hasFocus() and widget.property('keyboardFocus'))
+
+
+class _KeyboardFocusVisibility(QObject):
+    """Expose keyboard focus without adding a blue ring after pointer clicks."""
+    def eventFilter(self, watched, event):
+        if not isinstance(watched, QAbstractButton):
+            return False
+        kind = event.type()
+        if kind == QEvent.Type.FocusIn:
+            visible = event.reason() in (Qt.FocusReason.TabFocusReason,
+                Qt.FocusReason.BacktabFocusReason, Qt.FocusReason.ShortcutFocusReason)
+        elif kind == QEvent.Type.FocusOut:
+            visible = False
+        elif kind == QEvent.Type.MouseButtonPress:
+            visible = False
+        elif kind == QEvent.Type.KeyPress:
+            visible = True
+        else:
+            return False
+        if bool(watched.property('keyboardFocus')) != visible:
+            watched.setProperty('keyboardFocus', visible)
+            watched.style().unpolish(watched)
+            watched.style().polish(watched)
+            watched.update()
+        return False
 
 
 def reference_font():
@@ -37,7 +85,7 @@ def configure_reference_font(app):
         if sys.platform=='win32' and app.platformName() in ('offscreen','minimal') and not getattr(app,'_reference_os_fonts_loaded',False):
             import winreg
             faces={'HarmonyOS Sans SC','HarmonyOS Sans SC Medium','HarmonyOS Sans SC Bold',
-                   'Microsoft YaHei UI','Microsoft YaHei','Microsoft YaHei UI Bold','Microsoft YaHei Bold',
+                   'Noto Sans SC','Source Han Sans SC',
                    'Segoe UI Variable','Segoe UI','Segoe UI Semibold','Segoe UI Bold'}
             for hive in (winreg.HKEY_CURRENT_USER,winreg.HKEY_LOCAL_MACHINE):
                 try:
@@ -57,11 +105,14 @@ def configure_reference_font(app):
     # hinting rounds every character and makes the same 13px title ~10px wider.
     font.setHintingPreference(QFont.HintingPreference.PreferVerticalHinting)
     font.setPointSize(11);app.setFont(font)
+    if not getattr(app, '_flickdock_focus_visibility', None):
+        app._flickdock_focus_visibility = _KeyboardFocusVisibility(app)
+        app.installEventFilter(app._flickdock_focus_visibility)
     return font
 
 
 _DARK = {
-    'background': '#161616', 'surface': 'rgba(28,28,30,214)',
+    'background': '#161616', 'surface': '#1C1C1E',
     'sidebar': 'rgba(18,18,20,115)', 'preview': 'rgba(14,14,16,97)',
     'glass_border': 'rgba(255,255,255,20)', 'divider': 'rgba(255,255,255,18)',
     'highlight': 'rgba(255,255,255,36)', 'card': 'rgba(255,255,255,10)',
@@ -70,11 +121,11 @@ _DARK = {
     'selected_border': 'rgba(10,132,255,148)', 'control': 'rgba(255,255,255,15)',
     'hover': 'rgba(255,255,255,28)', 'input': '#242426',
     'input_border': 'rgba(255,255,255,36)', 'text': '#F5F5F7',
-    'secondary': '#A1A1AA', 'muted': '#71717A',
+    'secondary': '#B2B2BA', 'muted': '#A1A1AA',
     'shadow': 'rgba(0,0,0,191)', 'shadow_blur': 64, 'shadow_y': 28,
 }
 _LIGHT = {
-    'background': '#EAEef5', 'surface': 'rgba(255,255,255,214)',
+    'background': '#F0F2F6', 'surface': '#FFFFFF',
     'sidebar': 'rgba(242,244,248,184)', 'preview': 'rgba(245,246,250,173)',
     'glass_border': 'rgba(0,0,0,23)', 'divider': 'rgba(0,0,0,18)',
     'highlight': 'rgba(255,255,255,242)', 'card': 'rgba(255,255,255,184)',
@@ -83,7 +134,7 @@ _LIGHT = {
     'selected_border': 'rgba(0,122,255,140)', 'control': 'rgba(0,0,0,13)',
     'hover': 'rgba(0,0,0,23)', 'input': '#FFFFFF',
     'input_border': 'rgba(0,0,0,36)', 'text': '#1D1D1F',
-    'secondary': '#515154', 'muted': '#86868B',
+    'secondary': '#515154', 'muted': '#68686D',
     'shadow': 'rgba(15,23,42,41)', 'shadow_blur': 56, 'shadow_y': 24,
 }
 _SEMANTIC = {
@@ -95,6 +146,10 @@ _SEMANTIC = {
 def colors(theme='dark', platform=None):
     result = dict(_LIGHT if str(theme).lower() == 'light' else _DARK)
     result.update(_SEMANTIC)
+    result.update(action='#0062CC', on_action='#FFFFFF',
+                  link='#0062CC' if str(theme).lower() == 'light' else '#6DAEFF')
+    if str(theme).lower() == 'light':
+        result.update(green='#167D3D', red='#BD2C25', orange='#9D5800')
     is_mac = str(platform or ('mac' if sys.platform == 'darwin' else 'win')).lower() in ('mac', 'macos', 'darwin')
     result.update(radius=16 if is_mac else 10, card_radius=12 if is_mac else 8)
     result.update(primary=result['text'], accent=result['blue'], danger=result['red'], success=result['green'])
@@ -126,11 +181,22 @@ _SVG_BODY = {
     'transferring': '<path d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"/>',
     'refresh': '<circle opacity="0.25" cx="12" cy="12" r="9" stroke="currentColor" stroke-width="3"/><path opacity="0.90" fill="currentColor" stroke="none" d="M4 12a8 8 0 018-8V1C5.925 1 1 5.925 1 12h3z"/>',
     'play': '<path d="M4 3l9 5-9 5V3z"/>',
+    'check': '<path d="m5 12 4 4L19 6"/>',
+    'close': '<path d="m6 6 12 12M18 6 6 18"/>',
+    'trash': '<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/>',
+    'copy': '<rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h3"/>',
+    'user': '<circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/>',
+    'pause': '<path d="M8 4v16M16 4v16"/>',
+    'desktop': '<rect x="3" y="3" width="18" height="13" rx="2"/><path d="M12 16v5M8 21h8"/>',
+    'laptop': '<rect x="5" y="3" width="14" height="13" rx="2"/><path d="m5 16-3 5h20l-3-5M9 18h6"/>',
+    'sun': '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5 19 19M5 19l1.5-1.5M17.5 6.5 19 5"/>',
+    'moon': '<path d="M20.5 13A9 9 0 0 1 11 3.5 9 9 0 1 0 20.5 13Z"/>',
+    'plus': '<path d="M12 4v16M4 12h16"/>',
+    'shelf': '<path d="m3 13 3-9h12l3 9v7H3v-7Z"/><path d="M3 13h5l2 3h4l2-3h5"/>',
 }
 _ALIASES = {'folder': 'file', 'upload': 'transferring', 'download': 'transferring',
             'wifi': 'nearby', 'lan': 'nearby', 'chevron-down': 'chevron',
             'chevron-right': 'right', 'cloud-upload': 'cloud', 'cloud-off': 'cloud'}
-_SOURCE_GLYPHS = {'check': '✓', 'close': '✕', 'trash': '✕', 'copy': '复制', 'user': 'R', 'pause': '⏸'}
 
 
 class _SourceIconEngine(QIconEngine):
@@ -163,14 +229,6 @@ class _SourceIconEngine(QIconEngine):
         if self.svg:
             renderer = QSvgRenderer(QByteArray(self.svg.encode('utf-8')))
             renderer.render(painter, QRectF(rect))
-        else:
-            glyph = _SOURCE_GLYPHS.get(self.name, '')
-            font = reference_font()
-            font.setPixelSize(max(8, rect.height() - (5 if self.name == 'copy' else 2)))
-            font.setWeight(QFont.Weight.Medium)
-            painter.setFont(font)
-            painter.setPen(self.color)
-            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, glyph)
         painter.restore()
 
     def pixmap(self, size, mode, state):
@@ -224,7 +282,7 @@ class UiButton(QPushButton):
         self._ui_icon_name = icon if isinstance(icon, str) else ''
         self.setProperty('uiVariant', self.variant)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setIconSize(QSize(16, 16))
         self.setFixedHeight(32 if variant == 'toolbar' else 28)
         if variant == 'toolbar':
@@ -238,8 +296,8 @@ class UiButton(QPushButton):
         primary = self.variant in ('primary', 'accent')
         danger = self.variant in ('danger', 'destructive')
         plain = self.variant in ('toolbar', 'ghost', 'text', 'link')
-        foreground = '#FFFFFF' if primary else c['red'] if danger else c['text']
-        background = c['blue'] if primary else 'rgba(255,69,58,38)' if danger else 'transparent' if plain else c['control']
+        foreground = c['on_action'] if primary else c['red'] if danger else c['text']
+        background = c['action'] if primary else 'rgba(255,69,58,38)' if danger else 'transparent' if plain else c['control']
         border = 'rgba(255,69,58,77)' if danger else 'transparent' if plain or primary else c['glass_border']
         hover = 'rgba(10,132,255,230)' if primary else 'rgba(255,69,58,64)' if danger else c['hover']
         padding = '0px' if self.variant == 'toolbar' else '0px 12px'
@@ -249,7 +307,8 @@ class UiButton(QPushButton):
             QPushButton:hover {{ background:{hover}; }}
             QPushButton:pressed {{ background:{c['selected'] if plain else hover}; }}
             QPushButton:checked {{ background:{c['selected']}; color:{c['blue']}; }}
-            QPushButton:disabled {{ color:{c['muted']}; background:{c['control']}; border-color:transparent; }}''')
+            QPushButton:disabled {{ color:{c['muted']}; background:{c['control']}; border-color:transparent; }}
+            QPushButton[keyboardFocus="true"] {{border:1px solid {c['link']};}}''')
         if self._ui_icon_name:
             self.setIcon(icon(self._ui_icon_name, foreground))
 
@@ -259,8 +318,8 @@ class UiSwitch(QAbstractButton):
         super().__init__(parent)
         self.setCheckable(True)
         self.setChecked(bool(checked))
-        self.setFixedSize(38, 22)
-        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setFixedSize(44, 32)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._position = 1.0 if checked else 0.0
         self._motion = QVariantAnimation(self)
@@ -273,6 +332,9 @@ class UiSwitch(QAbstractButton):
 
     def _toggle(self, checked):
         self._motion.stop()
+        if reduced_motion():
+            self._animate(1.0 if checked else 0.0)
+            return
         self._motion.setStartValue(self._position)
         self._motion.setEndValue(1.0 if checked else 0.0)
         self._motion.start()
@@ -291,11 +353,16 @@ class UiSwitch(QAbstractButton):
         if not self.isEnabled():
             painter.setOpacity(0.4)
         painter.setBrush(color)
+        painter.translate(3,5)
         painter.drawRoundedRect(QRectF(0,0,38,22),11,11)
         painter.setBrush(QColor(0,0,0,35))
         painter.drawEllipse(QRectF(2+16*p,3,18,18))
         painter.setBrush(QColor('#FFFFFF'))
         painter.drawEllipse(QRectF(2+16*p,2,18,18))
+        if keyboard_focus_visible(self):
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(QColor(colors(*_context(self))['link']), 1.5))
+            painter.drawRoundedRect(QRectF(-2,-2,42,26),13,13)
 
 
 class _Titlebar(QWidget):

@@ -1,6 +1,8 @@
 """Build and helper guards only. No packaging, GUI launch or installation."""
 import ast
+import os
 from pathlib import Path
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -10,6 +12,7 @@ import build_macos
 import mac_entry
 import mac_updates
 import flickdock
+import platform_native
 
 
 class MacBuildTests(unittest.TestCase):
@@ -50,6 +53,46 @@ class MacBuildTests(unittest.TestCase):
         self.assertIn("QT_QPA_PLATFORM='cocoa'", source)
         self.assertIn("FLICKDOCK_CI_COCOA_SMOKE='1'", source)
         self.assertIn("'--verify-cocoa-startup'", source)
+
+    def test_frozen_native_order_probe_is_not_an_ordinary_startup_path(self):
+        with patch.object(mac_entry.sys, 'platform', 'win32'):
+            with self.assertRaisesRegex(RuntimeError, 'frozen Cocoa CI mode'):
+                mac_entry.verify_cocoa_window_order(None, None)
+
+    def test_frozen_native_order_probe_exercises_conflict_and_restores_windows(self):
+        class Window:
+            def __init__(self):
+                self.behavior, self.native_level, self.orders = 4, 0, 0
+
+            def level(self): return self.native_level
+            def collectionBehavior(self): return self.behavior
+            def setLevel_(self, value): self.native_level = value
+            def setCollectionBehavior_(self, value):
+                if value & 1 and value & 2:
+                    raise RuntimeError('Spaces flags conflict')
+                self.behavior = value
+            def orderFrontRegardless(self): self.orders += 1
+
+        windows = {1: Window(), 2: Window()}
+        edge, shelf = (SimpleNamespace(winId=lambda: 1), SimpleNamespace(winId=lambda: 2))
+        appkit = SimpleNamespace(NSFloatingWindowLevel=3,
+            NSWindowCollectionBehaviorCanJoinAllSpaces=1,
+            NSWindowCollectionBehaviorMoveToActiveSpace=2,
+            NSWindowCollectionBehaviorIgnoresCycle=4,
+            NSWindowCollectionBehaviorFullScreenAuxiliary=1 << 8)
+        objc = SimpleNamespace(objc_object=lambda c_void_p:
+            SimpleNamespace(window=lambda: windows[c_void_p.value]))
+        with patch.object(mac_entry.sys, 'platform', 'darwin'), \
+             patch.object(mac_entry.sys, 'frozen', True, create=True), \
+             patch.dict(os.environ, QT_QPA_PLATFORM='cocoa', FLICKDOCK_CI_COCOA_SMOKE='1'), \
+             patch.dict(sys.modules, {'AppKit': appkit, 'objc': objc}), \
+             patch.object(platform_native, 'native_input_available', return_value=True):
+            report = mac_entry.verify_cocoa_window_order(edge, shelf)
+        self.assertTrue(report['ok'])
+        self.assertEqual({case['window'] for case in report['cases']}, {'edge', 'shelf'})
+        self.assertEqual([window.orders for window in windows.values()], [2, 2])
+        self.assertEqual([(window.level(), window.collectionBehavior()) for window in windows.values()], [(0, 4), (0, 4)])
+        self.assertIsNone(shelf._flickdock_native_order)
 
     def test_python_startup_exception_gets_private_diagnostic(self):
         with tempfile.TemporaryDirectory() as directory:

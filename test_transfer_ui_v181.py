@@ -99,6 +99,9 @@ class TransferUITests(unittest.TestCase):
         self.saved=self.root/'saved';self.saved.mkdir()
         self.patches=ExitStack();self.barriers=[]
         self.patches.enter_context(patch.object(app_settings,'_startup_runtime_allowed',return_value=False))
+        screen=SimpleNamespace(availableGeometry=lambda:QRect(0,0,1920,1080),devicePixelRatio=lambda:1)
+        self.patches.enter_context(patch.object(subject.QGuiApplication,'screenAt',return_value=screen))
+        self.patches.enter_context(patch.object(subject.QGuiApplication,'primaryScreen',return_value=screen))
         self.settings=app_settings.SettingsStore(self.root/'profile')
         self.settings.update(capture_mode='copy',capture_dir=str(self.saved),view_mode='icons')
         self.manager=SimpleNamespace(motion=False,settings=self.settings,save=lambda:None,update_handles=lambda:None,
@@ -188,8 +191,11 @@ class TransferUITests(unittest.TestCase):
             self.assertNotEqual(active,normal,'transfer tile needs a small progress badge')
             candidates=[]
             ratio=normal.devicePixelRatio()
-            for y in range(round(32*ratio),round(57*ratio)):
-                for x in range(round(44*ratio),round(68*ratio)):
+            # The artwork is centered in an adaptive-width cell. Inspect its
+            # actual paint area, rather than the old fixed148px card origin.
+            icon_left=(item.width()-44)//2
+            for y in range(round(24*ratio),round(43*ratio)):
+                for x in range(round((icon_left+8)*ratio),round((icon_left+32)*ratio)):
                     color=normal.pixelColor(x,y);sat=max(color.red(),color.green(),color.blue())-min(color.red(),color.green(),color.blue())
                     candidates.append((sat,x,y))
             saturation,x,y=max(candidates);self.assertGreater(saturation,40)
@@ -453,15 +459,15 @@ class TransferUITests(unittest.TestCase):
             self.shelf.content.transfers[ref]={'id':str(index),'phase':'queued','received':0,'total':100}
         self.shelf.refresh();popup=self.overview();popup.update_transfer_status()
         native_geometry=self.shelf.geometry()
-        for width in (330,480,500,756):
+        for width in (330,480,500,756,800):
             popup.setFixedWidth(width);popup.layout().activate();flush()
-            self.assertEqual(popup._narrow_layout,width<540)
-            self.assertEqual(popup.category_picker.isVisible(),width<540)
-            self.assertEqual(popup.sidebar.isVisible(),width>=540)
+            self.assertEqual(popup._narrow_layout,width<780)
+            self.assertEqual(popup.category_picker.isVisible(),width<780)
+            self.assertEqual(popup.sidebar.isVisible(),width>=780)
             self.assertLessEqual(popup.category_picker.geometry().right(),popup.rect().right())
             for selected in ('all','uploading'):
                 popup.set_category(selected);popup.layout().activate();flush()
-                if width<540 and selected=='uploading':
+                if width<780 and selected=='uploading':
                     self.assertTrue(popup.scroll.isVisible())
                     self.assertFalse(popup.preview.isVisible())
                     popup.toggle_narrow_preview();flush()
@@ -469,7 +475,7 @@ class TransferUITests(unittest.TestCase):
                     self.assertTrue(popup.preview.isVisible())
                     self.assertGreater(popup.preview.width(),width-30)
                     popup.toggle_narrow_preview();flush()
-                if width<540:continue
+                if width<780:continue
                 for button in popup.category_buttons.values():
                     self.assertLessEqual(button.geometry().right(),popup.rect().right(),
                                          f'{button.text()} extends beyond the {width}px overview')

@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import sys
 from account_service import valid_new_password
-from native_ui_common import reference_font
+from native_ui_common import reference_font, icon as ui_icon, colors as ui_colors
 
 from PySide6.QtCore import QByteArray, QDateTime, QEvent, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter, QLinearGradient
@@ -89,14 +89,6 @@ class AccountGlyph(QWidget):
     """A single vector family for the account and device identity markers."""
     def __init__(self,parent=None,*,device=False,platform=''):
         super().__init__(parent)
-        # Offscreen Qt has no system font catalogue. Load the installed OS
-        # emoji face for the exact Unicode symbols used by the reference;
-        # the font remains an OS resource and is never bundled or copied.
-        if os.environ.get('QT_QPA_PLATFORM')=='offscreen' and not getattr(AccountGlyph,'_emoji_checked',False):
-            AccountGlyph._emoji_checked=True
-            for path in (Path(os.environ.get('SystemRoot','C:/Windows'))/'Fonts'/'seguiemj.ttf',
-                         Path('/System/Library/Fonts/Apple Color Emoji.ttc')):
-                if path.is_file():QFontDatabase.addApplicationFont(str(path))
         self.device=device;self.platform=platform;self.dark=False
         self.initial='•'
         self.setFixedSize(34 if device else 44,34 if device else 44)
@@ -111,9 +103,10 @@ class AccountGlyph(QWidget):
             font=self.font();font.setPixelSize(14);font.setWeight(QFont.Weight.Bold);painter.setFont(font)
             painter.setPen(QColor('#FFFFFF'));painter.drawText(self.rect(),Qt.AlignmentFlag.AlignCenter,self.initial)
             return
-        font=QFont();font.setFamilies(['Apple Color Emoji','Segoe UI Emoji'] if sys.platform=='darwin' else ['Segoe UI Emoji'])
-        font.setPixelSize(16);painter.setFont(font);painter.setPen(QColor('#D4D4D8' if self.dark else '#48484A'))
-        painter.drawText(self.rect(),Qt.AlignmentFlag.AlignCenter,'💻' if self.platform=='macos' else '🖥️')
+        tint=ui_colors('dark' if self.dark else 'light')['secondary']
+        size=min(20,max(0,min(self.width(),self.height())-4))
+        ui_icon('laptop' if self.platform=='macos' else 'desktop',tint).paint(
+            painter,(self.width()-size)//2,(self.height()-size)//2,size,size)
 
 
 class AccountPanel(QFrame):
@@ -289,17 +282,22 @@ class AccountPanel(QFrame):
         signed=self.signed_in_page.layout();self._empty_layout(signed);signed.setSpacing(12);signed.setAlignment(Qt.AlignmentFlag.AlignTop)
         root.setAlignment(Qt.AlignmentFlag.AlignTop)
         identity=self.profile_frame.layout();self._empty_layout(identity);identity.setContentsMargins(0,0,0,0);identity.setSpacing(12)
-        self.profile_frame.setFixedHeight(40)
+        self.profile_frame.setMinimumHeight(40);self.profile_frame.setMaximumHeight(16777215)
         self.account_glyph.setFixedSize(40,40);identity.addWidget(self.account_glyph);self.account_glyph.show()
         text=QVBoxLayout();text.setSpacing(2);name=QHBoxLayout();name.setSpacing(8)
         self.username_label.setFixedHeight(20);self.account_state_label.setFixedHeight(20)
         self.username_label.setSizePolicy(QSizePolicy.Policy.Preferred,QSizePolicy.Policy.Fixed)
         name.addWidget(self.username_label);name.addWidget(self.account_state_label);name.addStretch();text.addLayout(name)
-        text.addWidget(self.sync_status_label);text.addWidget(self.login_alias_edit);identity.addLayout(text,1)
+        identity.addLayout(text,1)
         self.password_toggle_button.setMinimumHeight(28);self.password_toggle_button.setText('修改密码');self.password_toggle_button.show()
         self.logout_button.setMinimumHeight(28);self.logout_button.setObjectName('accountDanger');identity.addWidget(self.password_toggle_button);identity.addWidget(self.logout_button)
         for widget in (self.username_label,self.account_state_label,self.sync_status_label,self.logout_button):widget.show()
         signed.addWidget(self.profile_frame);self.profile_frame.show()
+        # Sync feedback and the legacy login ID can both wrap or grow. They
+        # belong below the 40px identity row instead of competing with its
+        # username and action buttons inside a fixed-height box.
+        signed.addWidget(self.sync_status_label);self.sync_status_label.show()
+        signed.addWidget(self.login_alias_edit)
         self.profile_frame.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.profile_frame.customContextMenuRequested.connect(self._profile_menu)
         # Devices follow the same two-column inset layout as the source. A row
@@ -517,6 +515,13 @@ class AccountPanel(QFrame):
 
     def _devices_changed(self,devices):
         self._refreshing=False;self._revoke_pending='';self._cancel_remove()
+        visible_devices=[dict(device) for device in devices
+                         if isinstance(device,dict) and device.get('id') and not device.get('revoked_at')]
+        signature=(bool(self.service.signed_in),str(self.service.device_id),visible_devices)
+        if (getattr(self,'_rendered_devices_signature',None)==signature
+                and not self._editing_device):
+            self._update_enabled();return
+        self._rendered_devices_signature=signature
         self._devices={};self.device_buttons={};self._rows_by_id={}
         self.device_rename_buttons={};self.device_name_edits={};self._rename_forms={}
         self._rename_save_buttons={};self._editing_device=''
@@ -530,12 +535,13 @@ class AccountPanel(QFrame):
                 if not isinstance(device,dict) or not device.get('id') or device.get('revoked_at'):continue
                 key=str(device['id']);self._devices[key]=dict(device)
                 row=QFrame(self.devices_body);row.setObjectName('accountDevice')
+                row.setMinimumHeight(56)
                 row_layout=QVBoxLayout(row);row_layout.setContentsMargins(12,8,12,8);row_layout.setSpacing(8)
                 horizontal=QHBoxLayout();horizontal.setSpacing(5);row_layout.addLayout(horizontal)
                 glyph=AccountGlyph(row,device=True,platform=str(device.get('platform','')))
-                glyph.setFixedSize(18,18)
+                glyph.setFixedSize(24,24)
                 glyph.dark=self._dark;horizontal.addWidget(glyph)
-                detail=QHBoxLayout();detail.setSpacing(4)
+                detail=QVBoxLayout();detail.setSpacing(2)
                 device_name=AccountNameLabel(row)
                 device_name.setText(str(device.get('name') or '未命名设备'))
                 device_name.setFixedHeight(18)
@@ -543,14 +549,13 @@ class AccountPanel(QFrame):
                 detail.addWidget(device_name)
                 platform={'windows':'Windows','macos':'Mac','linux':'Linux'}.get(str(device.get('platform','')),'其他设备')
                 current=bool(device.get('current') or key==str(self.service.device_id))
-                if current:
-                    current_tag=_label('(本机)',row);current_tag.setObjectName('accountCurrentDevice')
-                    current_tag.setWordWrap(False);current_tag.setFixedWidth(32)
-                    current_tag.setSizePolicy(QSizePolicy.Policy.Preferred,QSizePolicy.Policy.Preferred)
-                    detail.addWidget(current_tag)
                 timestamp=QDateTime.fromString(str(device.get('last_seen_at') or ''),Qt.DateFormat.ISODate)
                 suffix='此设备' if current else '最近在线 '+timestamp.toLocalTime().toString('MM-dd HH:mm') if timestamp.isValid() else ''
                 device_name.setToolTip(platform+(' · '+suffix if suffix else ''))
+                subtitle=AccountNameLabel(row);subtitle.setObjectName('accountCurrentDevice' if current else 'accountDeviceMeta')
+                subtitle.setFixedHeight(16)
+                subtitle.setText(platform+(' · (本机)' if current else ' · '+suffix if suffix else ''))
+                detail.addWidget(subtitle)
                 horizontal.addLayout(detail,1)
                 rename=RemoveDeviceButton(row,rename=True);rename.dark=self._dark
                 rename.setText('改名');rename.setObjectName('accountDeviceRename');rename.setFixedSize(30,20)
@@ -736,6 +741,19 @@ class AccountPanel(QFrame):
         ''')
         for dialog in (self.password_dialog,self.auth_dialog):dialog.set_surface_theme(theme)
         for button in (self.password_close,self.auth_close):button.dark=self._dark;button.update()
-        if sys.platform!='darwin':self.setStyleSheet(self.styleSheet().replace('font-weight:600','font-weight:700'))
+        semantic=ui_colors(theme)
+        self.setStyleSheet(self.styleSheet()+f'''
+            QFrame#accountPanel QLabel {{font-size:13px;}}
+            QFrame#accountPanel QLabel#accountUsername {{font-size:16px;font-weight:600;}}
+            QFrame#accountPanel QLabel#accountState[online="true"] {{color:{semantic['green']};}}
+            QFrame#accountPanel QLabel#accountDeviceName {{font-size:13px;font-weight:500;}}
+            QFrame#accountPanel QLabel#accountDeviceMeta {{font-size:11px;color:{semantic['secondary']};}}
+            QFrame#accountPanel QLabel#accountCurrentDevice,QFrame#accountPanel QPushButton#accountDeviceRename {{color:{semantic['link']};}}
+            QFrame#accountPanel QPushButton#accountDeviceRevoke,QFrame#accountPanel QPushButton#accountDanger {{color:{semantic['red']};}}
+            QFrame#accountPanel QPushButton#accountPrimary,QDialog#accountModal QPushButton#accountPrimary {{background:{semantic['action']};color:{semantic['on_action']};}}
+            QFrame#accountPanel QPushButton:focus {{border-color:transparent;}}
+            QFrame#accountPanel QPushButton[keyboardFocus="true"],QDialog#accountModal QPushButton[keyboardFocus="true"] {{border:1px solid {semantic['link']};}}
+            QFrame#accountPanel QPushButton:disabled,QDialog#accountModal QPushButton:disabled {{color:{semantic['muted']};background:{semantic['control']};}}
+        ''')
         for button in [*self.device_buttons.values(),*self.device_rename_buttons.values()]:button.dark=self._dark;button.update()
         for glyph in self.findChildren(AccountGlyph):glyph.dark=self._dark;glyph.update()

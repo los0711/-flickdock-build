@@ -15,14 +15,15 @@ from unittest.mock import patch
 import zipfile
 
 from PySide6.QtCore import QCoreApplication, QEvent, QPoint, QRect, Qt
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QFocusEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QPushButton
 
 import app_settings
 import flickdock as subject
 import ui_theme
-from reference_widgets import ThumbnailLabel
+from reference_widgets import ThumbnailLabel, palette
+from content_grid import IconItem
 
 APP=QApplication.instance() or QApplication([])
 APP.setQuitOnLastWindowClosed(False)
@@ -136,22 +137,133 @@ class WorkspaceTests(unittest.TestCase):
             sync_statuses_for_refs=lambda refs:{ref:state['value'] for ref in refs},is_upload_paused=lambda _:False)
         popup=self.overview();ref=self.paths[1];popup.select_item(ref)
         row=next(row for row in popup.rows_body.findChildren(subject.FileRow) if row.path==ref)
-        expected={'synced':'#30D158','uploading':'#0A84FF','pending':'#64D2FF',
-                  'local':'#A1A1AA','paused':'#FF9F0A','error':'#FF453A'}
-        for status,hex_color in expected.items():
+        renderings=[]
+        for status in ('synced','uploading','pending','local','paused','error'):
             state['value']=status;popup.refresh_cloud_status();flush()
             self.assertEqual(row.icon_label.cloud_status,status)
             self.assertEqual(popup.preview.cloud_badge.status,status)
-            for widget,position in ((row.icon_label,(34,34)),(popup.preview.cloud_badge,(12,12))):
-                image=widget.grab().toImage();ratio=image.devicePixelRatio();actual=image.pixelColor(round(position[0]*ratio),round(position[1]*ratio))
-                expected_color=QColor(hex_color)
-                self.assertLessEqual(max(abs(a-b) for a,b in zip(actual.getRgb()[:3],expected_color.getRgb()[:3])),3,status)
+            image=popup.preview.cloud_badge.grab().toImage()
+            renderings.append(bytes(image.constBits()))
+            self.assertEqual(popup.preview.cloud_badge.accessibleName(),subject.CLOUD_STATUS_LABELS[status])
+            # Real glyph artwork must be present in the circle, not just a
+            # color-only dot; every state is distinguishable without color.
+            self.assertGreater(sum(image.pixelColor(x,y).alpha()>0 for x in range(8,24) for y in range(8,24)),8,status)
+        self.assertEqual(len(set(renderings)),6)
         popup.preview.show_group((self.paths[0],self.paths[1]));self.assertFalse(popup.preview.cloud_badge.isVisible())
-        for enabled,hex_color in ((True,'#30D158'),(False,'#FF453A')):
+        for enabled,hex_color in ((True,palette()['green']),(False,palette()['red'])):
             self.settings.update(sync_upload_enabled=enabled);flush()
             image=popup.cloud_selector.grab().toImage();ratio=image.devicePixelRatio()
-            actual=image.pixelColor(round(15*ratio),round(14*ratio))
-            self.assertEqual(actual.name(),hex_color.lower())
+            target=QColor(hex_color)
+            matching=sum(max(abs(a-b) for a,b in zip(image.pixelColor(x,y).getRgb()[:3],target.getRgb()[:3]))<12
+                for x in range(round(4*ratio),round(22*ratio)) for y in range(round(7*ratio),round(25*ratio)))
+            self.assertGreater(matching,5)
+
+    def test_compact_and_expanded_trailing_controls_keep_identical_offsets_and_full_menu(self):
+        controls=(self.shelf.pin_button,self.shelf.expand_button,self.shelf.menu_button,self.shelf.close_button)
+        def positions():
+            card=self.shelf.card.geometry()
+            return [(card.right()+1-button.x(),button.y()-card.y()) for button in controls]
+        compact=positions();self.overview();expanded=positions()
+        self.assertEqual(compact,expanded)
+        self.assertTrue(self.shelf.menu_button.isVisible())
+        self.assertLess(self.bounds(self.shelf.popup.clear_button,self.shelf.popup).right()+6,
+                        self.bounds(self.shelf.pin_button,self.shelf.popup).left())
+        texts=[]
+        with patch.object(subject.AnimatedMenu,'exec',lambda menu,*_:texts.extend(action.text() for action in menu.actions() if not action.isSeparator())):
+            self.shelf.menu_button.click()
+        for expected in ('添加文件','设置','收起到屏幕边缘'):
+            self.assertTrue(any(expected in value for value in texts),(expected,texts))
+        self.shelf.collapse_contents();self.shelf.presentation_kind='drag';self.shelf._layout_header(subject.CARD_W)
+        for control in (self.shelf.account_button,self.shelf.lan_button,self.shelf.account_caption,self.shelf.lan_caption,self.shelf.footer_line):
+            self.assertFalse(control.isVisible())
+        self.assertTrue(self.shelf.zones['permanent'].caption.isVisible())
+
+    def test_view_mode_only_settings_do_not_apply_global_services(self):
+        popup=self.overview();self.manager._applied_settings=dict(self.settings._data)
+        self.manager.reset_drag_gesture=lambda:(_ for _ in ()).throw(AssertionError('view switch reset drag'))
+        self.settings.update(view_mode='icons')
+        with patch.object(subject.ui_theme,'apply_application') as apply_theme:
+            subject.ShelfManager.apply_settings(self.manager)
+        apply_theme.assert_not_called()
+        self.assertTrue(popup.view_grid.isChecked());self.assertFalse(popup.view_list.isChecked())
+        self.assertEqual(self.settings.view_mode,'icons')
+        until(lambda:popup._build_cursor==len(popup.visible_refs()))
+        self.assertTrue(popup.rows_body.findChildren(IconItem))
+
+    def test_reopen_resets_navigation_selection_search_scroll_and_preview_but_keeps_saved_mode(self):
+        popup=self.overview();popup.change_view_mode('icons');popup.select_item(self.paths[0]);popup.select_item(self.paths[1],toggle=True)
+        popup.search_edit.setText('report');popup.set_category('text');flush()
+        self.shelf.collapse_contents();self.shelf.show_contents();flush()
+        self.assertEqual(popup.category,'all');self.assertFalse(popup.selected)
+        self.assertIsNone(popup.primary_selection);self.assertIsNone(popup.hovered_ref)
+        self.assertEqual(popup.search_edit.text(),'');self.assertEqual(popup.scroll.verticalScrollBar().value(),0)
+        self.assertEqual(popup.preview.current_path,popup.visible_refs()[0])
+        self.assertEqual(self.settings.view_mode,'icons');self.assertTrue(popup.view_grid.isChecked())
+
+    def test_sidebar_count_capsules_center_one_two_and_three_digits(self):
+        popup=self.overview();badge=popup.nav_counts['all'];control=popup.category_buttons['all']
+        for text in ('1','12','128'):
+            badge.setText(text);popup._position_nav_counts();flush()
+            self.assertEqual(badge.alignment(),Qt.AlignCenter)
+            self.assertGreaterEqual(badge.width(),24)
+            self.assertGreaterEqual(badge.width(),badge.fontMetrics().horizontalAdvance(text)+12)
+            self.assertEqual(control.width()-badge.geometry().right()-1,12)
+            image=badge.grab().toImage();white=[]
+            for x in range(image.width()):
+                for y in range(image.height()):
+                    color=image.pixelColor(x,y)
+                    if min(color.red(),color.green(),color.blue())>220 and color.alpha()>180:white.append(x)
+            self.assertTrue(white,text)
+            self.assertLessEqual(abs((min(white)+max(white))/2-(image.width()-1)/2),3,text)
+
+    def test_adaptive_layout_preserves_content_preview_and_bulk_actions(self):
+        popup=self.overview()
+        self.assertGreaterEqual(popup.preview.stack.height(),280)
+        for width,height in ((1040,600),(800,560),(600,520),(420,500)):
+            popup.resize(width,height);flush();popup._apply_responsive_layout();flush()
+            self.assertTrue(popup.rect().contains(self.bounds(popup.header,popup)))
+            self.assertTrue(popup.rect().contains(self.bounds(popup.scroll,popup)))
+            self.assertGreaterEqual(popup.scroll.width(),200)
+            for control in (popup.search_edit,popup.cloud_selector,popup.view_segment,popup.zip_button,popup.zip_all_button,popup.clear_button,popup.bulk_more):
+                if control.isVisible():self.assertTrue(popup.header.rect().contains(self.bounds(control,popup.header)),(width,control.objectName(),getattr(control,'text',lambda:'')()))
+            if width>=780:
+                self.assertTrue(popup.sidebar.isVisible());self.assertTrue(popup.preview.isVisible())
+                self.assertLess(popup.middle.geometry().right(),popup.preview.geometry().left())
+            else:
+                self.assertFalse(popup.sidebar.isVisible());self.assertTrue(popup.category_picker.isVisible())
+                self.assertTrue(popup.bulk_more.isVisible());self.assertFalse(popup.preview.isVisible())
+                popup.toggle_narrow_preview();flush()
+                self.assertTrue(popup.preview.isVisible());self.assertFalse(popup.scroll.isVisible())
+                self.assertTrue(popup.rect().contains(self.bounds(popup.preview.open_button,popup)))
+                popup.toggle_narrow_preview();flush()
+
+    def test_grid_cells_fit_scroll_area_and_keyboard_selection_has_visible_feedback(self):
+        popup=self.overview();popup.change_view_mode('icons');flush();popup.resume_content()
+        until(lambda:popup._build_cursor==len(popup.visible_refs()))
+        for width in (1040,800,600):
+            popup.resize(width,560);flush();popup._apply_responsive_layout();popup.resume_content();flush()
+            until(lambda:popup._build_cursor==len(popup.visible_refs()))
+            for item in popup.rows_body.findChildren(IconItem):
+                if not item.isVisible():continue
+                self.assertTrue(popup.rows_body.rect().contains(item.geometry()),(width,item.geometry()))
+                self.assertTrue(item.rect().contains(item.remove_button.geometry()))
+                self.assertEqual(item.remove_button.size().toTuple(),(32,32))
+        item=next(item for item in popup.rows_body.findChildren(IconItem) if item.isVisible())
+        popup.select_item(item.ref);QTest.keyClick(item,Qt.Key_Space);flush()
+        self.assertNotIn(item.ref,popup.selected)
+        QTest.keyClick(item,Qt.Key_Space);flush();self.assertIn(item.ref,popup.selected)
+        APP.sendEvent(item,QFocusEvent(QEvent.FocusIn,Qt.TabFocusReason));flush()
+        self.assertTrue(item._keyboard_focus);self.assertTrue(item.remove_button.isVisible())
+        APP.sendEvent(item,QFocusEvent(QEvent.FocusOut,Qt.MouseFocusReason));flush()
+        self.assertFalse(item._keyboard_focus)
+
+    def test_empty_state_disabled_actions_and_search_uses_actual_titles(self):
+        popup=self.overview();popup.search_edit.setText('specification');flush()
+        self.assertEqual(popup.visible_refs(),[self.paths[2]])
+        popup.search_edit.clear();flush();self.assertEqual(len(popup.visible_refs()),3)
+        self.shelf.files['permanent'].clear();self.shelf.refresh();popup.rebuild();flush()
+        self.assertTrue(popup.empty_state.isVisible())
+        self.assertFalse(popup.zip_button.isEnabled());self.assertFalse(popup.zip_all_button.isEnabled());self.assertFalse(popup.clear_button.isEnabled())
 
     def test_multiselect_exports_actual_selected_only_zip_and_original_menus_remain_reachable(self):
         popup=self.overview();popup.select_item(self.paths[0]);popup.select_item(self.paths[1],toggle=True);flush()

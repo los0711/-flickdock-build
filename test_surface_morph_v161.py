@@ -57,10 +57,10 @@ with tempfile.TemporaryDirectory(prefix='flickdock-morph-test-') as tmp:
             assert snapshot.capture_count==captures,'live tree captured on a frame'
             # The reference overview keeps three native controls at its
             # right edge. Cloud, settings and LAN remain in its sidebar.
-            for index,button in enumerate((shelf.pin_button,shelf.expand_button,shelf.close_button)):
+            for index,button in enumerate((shelf.pin_button,shelf.expand_button,shelf.menu_button,shelf.close_button)):
                 assert button.parentWidget() is shelf and button.isVisible()
-                assert button.width()==28 and button.height()==28
-                assert abs(button.mapToGlobal(QPoint()).x()-(right-126+index*34))<=1
+                assert button.width()==32 and button.height()==32
+                assert abs(button.mapToGlobal(QPoint()).x()-(right-176+index*38))<=1
         shelf.grab().save(str(Path(__file__).parent/'morph-v161-mid-125.png'))
         shelf.geometry_morph.complete();flush(app)
         wait_until(app,lambda:len(popup.rows_body.findChildren(mod.IconItem))==125)

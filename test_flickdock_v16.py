@@ -10,6 +10,7 @@ import tempfile
 import time
 import traceback
 from unittest.mock import patch
+from types import SimpleNamespace
 
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
@@ -100,7 +101,10 @@ with tempfile.TemporaryDirectory(prefix="flickdock-v16-") as temporary:
     subject.STATE_FILE.write_text(json.dumps(legacy), encoding="utf8")
     app = QApplication([])
     subject.load_font(app)
-    with patch.object(subject, "motion_enabled", return_value=False), \
+    wide_screen=SimpleNamespace(availableGeometry=lambda:QRect(0,0,1920,1080))
+    with patch.object(subject.QGuiApplication,'screenAt',return_value=wide_screen), \
+         patch.object(subject.QGuiApplication,'primaryScreen',return_value=wide_screen), \
+         patch.object(subject, "motion_enabled", return_value=False), \
          patch.object(subject, "ContentResolver", FakeResolver), \
          patch.object(QSystemTrayIcon, "show"), patch.object(QSystemTrayIcon, "hide"), \
          patch.object(subject.MediaPreview, "set_source", autospec=True, side_effect=fake_media_source) as media_source, \

@@ -225,12 +225,19 @@ def remove_host_window_shadow(widget):
     """
     if sys.platform != 'darwin' or not native_input_available():
         return False
-    import objc
-    view = objc.objc_object(c_void_p=ctypes.c_void_p(int(widget.winId())))
-    window = view.window()
-    if window is None:
-        return False
-    window.setHasShadow_(False)
+    try:
+        import objc
+        view = objc.objc_object(c_void_p=ctypes.c_void_p(int(widget.winId())))
+        window = view.window()
+        if window is None:
+            return False
+        window.setHasShadow_(False)
+    except Exception as error:
+        # A cosmetic host shadow must not prevent the application from
+        # launching if AppKit temporarily refuses a native-window operation.
+        if _recoverable_native_window_error(error):
+            return False
+        raise
     return True
 
 

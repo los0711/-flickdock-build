@@ -3,11 +3,12 @@ import os
 from pathlib import Path
 import tempfile
 import time
+from types import SimpleNamespace
 from unittest.mock import patch
 import zipfile
 
 os.environ['QT_QPA_PLATFORM']='offscreen'
-from PySide6.QtCore import QPoint,QTimer,Qt
+from PySide6.QtCore import QPoint,QRect,QTimer,Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication,QDialogButtonBox,QFileDialog,QSystemTrayIcon,QLineEdit
 
@@ -21,7 +22,8 @@ with tempfile.TemporaryDirectory(prefix='flickdock-zip-dialog-') as tmp:
     os.environ['APPDATA']=str(Path(tmp)/'profile')
     import flickdock as subject,app_settings
     app=QApplication([]);subject.load_font(app)
-    with patch.object(subject,'motion_enabled',return_value=False),patch.object(QSystemTrayIcon,'show'),patch.object(QSystemTrayIcon,'hide'),patch.object(app_settings,'_read_startup_value'),patch.object(app_settings,'_write_startup_value'):
+    screen=SimpleNamespace(availableGeometry=lambda:QRect(0,0,1920,1080))
+    with patch.object(subject.QGuiApplication,'screenAt',return_value=screen),patch.object(subject.QGuiApplication,'primaryScreen',return_value=screen),patch.object(subject,'motion_enabled',return_value=False),patch.object(QSystemTrayIcon,'show'),patch.object(QSystemTrayIcon,'hide'),patch.object(app_settings,'_read_startup_value'),patch.object(app_settings,'_write_startup_value'):
         manager=subject.ShelfManager(app);manager.timer.stop();shelf=manager.shelf
         one,two=Path(tmp)/'one.txt',Path(tmp)/'two.txt'
         one.write_text('one',encoding='utf8');two.write_text('two',encoding='utf8')

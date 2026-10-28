@@ -10,11 +10,12 @@ import tempfile
 import time
 import traceback
 from unittest.mock import patch
+from types import SimpleNamespace
 import zipfile
 
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
-from PySide6.QtCore import QCoreApplication, QEvent, QMimeData, QObject, QPoint, QPointF, Qt, QTimer
+from PySide6.QtCore import QCoreApplication, QEvent, QMimeData, QObject, QPoint, QPointF, QRect, Qt, QTimer
 from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QEnterEvent, QImage, QKeyEvent, QMouseEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QColorDialog, QPushButton, QSystemTrayIcon
@@ -78,7 +79,10 @@ with tempfile.TemporaryDirectory(prefix="flickdock-v161-integration-") as tempor
 
     app = QApplication([])
     subject.load_font(app)
-    with patch.object(subject, "motion_enabled", return_value=False), \
+    wide_screen=SimpleNamespace(availableGeometry=lambda:QRect(0,0,1920,1080))
+    with patch.object(subject.QGuiApplication,'screenAt',return_value=wide_screen), \
+         patch.object(subject.QGuiApplication,'primaryScreen',return_value=wide_screen), \
+         patch.object(subject, "motion_enabled", return_value=False), \
          patch.object(subject, "ContentResolver", LocalResolver), \
          patch.object(QSystemTrayIcon, "show"), patch.object(QSystemTrayIcon, "hide"), \
          patch.object(subject.ctypes.windll.user32, "GetAsyncKeyState", return_value=0), \
