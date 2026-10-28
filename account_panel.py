@@ -390,7 +390,7 @@ class AccountPanel(QFrame):
     def _style_menu(self, menu):
         bg='#1C1C1E' if self._dark else '#FFFFFF';ink='#F5F5F7' if self._dark else '#1D1D1F'
         edge='rgba(255,255,255,20)' if self._dark else 'rgba(0,0,0,23)'
-        menu.setStyleSheet(f'QMenu{{background:{bg};color:{ink};border:1px solid {edge};border-radius:10px;padding:6px 0;font-size:12px;min-width:208px;}} QMenu::item{{padding:6px 14px;border:0;}} QMenu::item:selected{{background:#0A84FF;color:white;}}')
+        menu.setStyleSheet(f'QMenu{{background:{bg};color:{ink};border:1px solid {edge};border-radius:10px;padding:6px 0;font-size:12px;min-width:208px;}} QMenu::item{{padding:6px 14px;border:0;}} QMenu::item:selected{{background:#0062CC;color:white;}}')
 
     def set_auth_mode(self,mode):
         if mode not in ('login','register'):raise ValueError('Unknown account form mode')
@@ -751,6 +751,7 @@ class AccountPanel(QFrame):
             QFrame#accountPanel QLabel#accountCurrentDevice,QFrame#accountPanel QPushButton#accountDeviceRename {{color:{semantic['link']};}}
             QFrame#accountPanel QPushButton#accountDeviceRevoke,QFrame#accountPanel QPushButton#accountDanger {{color:{semantic['red']};}}
             QFrame#accountPanel QPushButton#accountPrimary,QDialog#accountModal QPushButton#accountPrimary {{background:{semantic['action']};color:{semantic['on_action']};}}
+            QFrame#accountPanel QPushButton#accountPrimary:hover,QDialog#accountModal QPushButton#accountPrimary:hover {{background:{semantic['action_hover']};color:{semantic['on_action']};}}
             QFrame#accountPanel QPushButton:focus {{border-color:transparent;}}
             QFrame#accountPanel QPushButton[keyboardFocus="true"],QDialog#accountModal QPushButton[keyboardFocus="true"] {{border:1px solid {semantic['link']};}}
             QFrame#accountPanel QPushButton:disabled,QDialog#accountModal QPushButton:disabled {{color:{semantic['muted']};background:{semantic['control']};}}

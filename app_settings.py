@@ -915,7 +915,8 @@ class AuthorDialog(ReferenceModalDialog):
             QDialog#flickdockAuthor QLabel#authorLicenseSummary {{font-size:11px;background:{surface};border:1px solid {edge};border-radius:12px;padding:12px;}}
             QDialog#flickdockAuthor QPushButton {{background:{surface};color:{ink};border:0;border-radius:12px;padding:6px 12px;font-size:12px;}}
             QDialog#flickdockAuthor QPushButton#authorClose {{background:transparent;border-radius:8px;padding:0;}}
-            QDialog#flickdockAuthor QPushButton#authorDone {{background:#0A84FF;color:#FFFFFF;}}
+            QDialog#flickdockAuthor QPushButton#authorDone {{background:#0062CC;color:#FFFFFF;}}
+            QDialog#flickdockAuthor QPushButton#authorDone:hover {{background:#0054B0;}}
             QDialog#flickdockAuthor QPushButton:hover {{background:{hover};}}
         """)
         self.header_close.dark=dark;self.header_close.update()
@@ -1893,6 +1894,7 @@ class SettingsDialog(QDialog):
             QDialog#flickdockSettings QPushButton:focus {{border-color:transparent;}}
             QDialog#flickdockSettings QPushButton[keyboardFocus="true"] {{border:1px solid {semantic['link']};}}
             QDialog#flickdockSettings QPushButton#settingsUpdate,QDialog#flickdockSettings QPushButton#settingsSave {{background:{semantic['action']};color:{semantic['on_action']};}}
+            QDialog#flickdockSettings QPushButton#settingsUpdate:hover,QDialog#flickdockSettings QPushButton#settingsSave:hover,QDialog#flickdockSettings QPushButton#settingsSave:pressed {{background:{semantic['action_hover']};color:{semantic['on_action']};}}
             QDialog#flickdockSettings QPushButton#settingsLink {{color:{semantic['link']};}}
         ''')
         if self.license_dialog is not None:

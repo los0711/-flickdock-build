@@ -91,8 +91,8 @@ class UpdateNotice(QWidget):
                 color:{c['text']}; font-family:'{family}'; font-size:12px; padding:0; }}
             QPushButton:hover {{ background:{c['hover']}; }}
             QPushButton:pressed {{ background:{c['selected']}; }}
-            QPushButton#updateNoticePrimary {{ background:{c['blue']}; color:white; font-weight:700; }}
-            QPushButton#updateNoticePrimary:hover {{ background:rgba(10,132,255,230); }}
+            QPushButton#updateNoticePrimary {{ background:{c['action']}; color:white; font-weight:700; }}
+            QPushButton#updateNoticePrimary:hover {{ background:{c['action_hover']}; }}
             QPushButton#updateNoticeClose {{ border:0; border-radius:8px; background:transparent; color:{c['secondary']}; font-size:18px; }}
             QPushButton#updateNoticeClose:hover {{ background:{c['hover']}; }}
         """)

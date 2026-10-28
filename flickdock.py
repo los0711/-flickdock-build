@@ -184,7 +184,7 @@ def style_menu(menu: QMenu) -> None:
         c=colors(theme)
         sources.append(f"QMenu{{background:{'#242426' if theme=='dark' else '#FFFFFF'};color:{c['text']};border:1px solid {c['border']};border-radius:{c['radius']}px;padding:6px 0;font:12px '{FONT_FAMILY}';}}"
                        f"QMenu::item{{background:transparent;color:{c['text']};padding:6px 14px;min-width:178px;border:0;}}"
-                       "QMenu::item:selected{background:#0A84FF;color:#FFFFFF;}"
+                       f"QMenu::item:selected{{background:{c['action']};color:#FFFFFF;}}"
                        f"QMenu::item:disabled{{color:{c['muted']};}} QMenu::separator{{height:1px;background:{c['divider']};margin:5px 10px;}}")
     css(menu,*sources)
 
@@ -917,8 +917,8 @@ class ContentsPopup(QFrame):
             button.setText(label)
             self.nav_counts[key].setText(str(count) if count else '')
             selected=key==self.category
-            background='rgba(255,255,255,51)' if selected else 'rgba(100,210,255,36)' if key=='uploading' and count else 'transparent'
-            css(self.nav_counts[key],f"background:{background};border:0;border-radius:7px;font:11px '{FONT_FAMILY}';color:"+('white' if selected else palette()['cyan'] if key=='uploading' else palette()['muted'])+';')
+            background='rgba(0,0,0,25)' if selected else 'rgba(100,210,255,36)' if key=='uploading' and count else 'transparent'
+            css(self.nav_counts[key],f"background:{background};border:0;border-radius:7px;font:11px '{FONT_FAMILY}';color:"+('white' if selected else palette()['link'] if key=='uploading' else palette()['muted'])+';')
             glyph=button._reference_icon[0]
             button._reference_icon=(glyph,'#FFFFFF' if selected else 'secondary');button.setIcon(icon(glyph,'#FFFFFF' if selected else palette()['secondary']))
             button.setChecked(key==self.category)

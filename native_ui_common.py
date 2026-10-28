@@ -146,7 +146,7 @@ _SEMANTIC = {
 def colors(theme='dark', platform=None):
     result = dict(_LIGHT if str(theme).lower() == 'light' else _DARK)
     result.update(_SEMANTIC)
-    result.update(action='#0062CC', on_action='#FFFFFF',
+    result.update(action='#0062CC', action_hover='#0054B0', danger_action='#B42318', on_action='#FFFFFF',
                   link='#0062CC' if str(theme).lower() == 'light' else '#6DAEFF')
     if str(theme).lower() == 'light':
         result.update(green='#167D3D', red='#BD2C25', orange='#9D5800')
@@ -299,14 +299,14 @@ class UiButton(QPushButton):
         foreground = c['on_action'] if primary else c['red'] if danger else c['text']
         background = c['action'] if primary else 'rgba(255,69,58,38)' if danger else 'transparent' if plain else c['control']
         border = 'rgba(255,69,58,77)' if danger else 'transparent' if plain or primary else c['glass_border']
-        hover = 'rgba(10,132,255,230)' if primary else 'rgba(255,69,58,64)' if danger else c['hover']
+        hover = c['action_hover'] if primary else 'rgba(255,69,58,64)' if danger else c['hover']
         padding = '0px' if self.variant == 'toolbar' else '0px 12px'
         self.setStyleSheet(f'''QPushButton {{ background:{background}; color:{foreground};
             border:1px solid {border}; border-radius:8px; padding:{padding};
             font-size:12px; font-weight:500; }}
             QPushButton:hover {{ background:{hover}; }}
             QPushButton:pressed {{ background:{c['selected'] if plain else hover}; }}
-            QPushButton:checked {{ background:{c['selected']}; color:{c['blue']}; }}
+            QPushButton:checked {{ background:{c['selected']}; color:{c['link']}; }}
             QPushButton:disabled {{ color:{c['muted']}; background:{c['control']}; border-color:transparent; }}
             QPushButton[keyboardFocus="true"] {{border:1px solid {c['link']};}}''')
         if self._ui_icon_name:
@@ -441,10 +441,10 @@ def apply_theme(widget, theme='dark', platform=None):
         QLabel {{ background:transparent; border:0; }}
         QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{ background:{c['input']};
             color:{c['text']}; border:1px solid {c['input_border']}; border-radius:8px;
-            padding:5px 10px; min-height:18px; selection-background-color:{c['blue']}; }}
+            padding:5px 10px; min-height:18px; selection-background-color:{c['action']}; selection-color:white; }}
         QLineEdit:focus, QComboBox:focus {{ border-color:{c['blue']}; }}
         QComboBox QAbstractItemView {{ background:{c['input']}; color:{c['text']};
-            selection-background-color:{c['blue']}; padding:4px; border:1px solid {c['input_border']}; }}
+            selection-background-color:{c['action']}; selection-color:white; padding:4px; border:1px solid {c['input_border']}; }}
         QComboBox QAbstractItemView::item {{ min-height:30px; padding:4px 10px; }}
         QScrollArea {{ background:transparent; border:0; }}
         QScrollBar:vertical {{ background:transparent; width:6px; margin:0; }}
@@ -455,7 +455,7 @@ def apply_theme(widget, theme='dark', platform=None):
         QMenu {{ background:{c['input']}; color:{c['text']}; border:1px solid {c['glass_border']};
             border-radius:8px; padding:4px 0; }}
         QMenu::item {{ padding:6px 14px; }}
-        QMenu::item:selected {{ background:{c['blue']}; color:white; }}
+        QMenu::item:selected {{ background:{c['action']}; color:white; }}
     ''')
     for child in [widget] + widget.findChildren(QWidget):
         if isinstance(child, (UiButton, UiLabel)):

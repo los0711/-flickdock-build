@@ -15,7 +15,7 @@ from unittest.mock import patch
 import zipfile
 
 from PySide6.QtCore import QCoreApplication, QEvent, QPoint, QRect, Qt
-from PySide6.QtGui import QColor, QFocusEvent
+from PySide6.QtGui import QColor, QFocusEvent, QPalette
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QPushButton
 
@@ -39,6 +39,22 @@ def until(predicate,seconds=5):
     while not predicate() and time.monotonic()<deadline:
         flush();QTest.qWait(5)
     if not predicate():raise AssertionError('Native workspace fixture did not settle')
+
+
+def contrast_colors(first,second):
+    def luminance(color):
+        values=[channel/255 for channel in color.getRgb()[:3]]
+        values=[value/12.92 if value<=.04045 else ((value+.055)/1.055)**2.4 for value in values]
+        return sum(value*weight for value,weight in zip(values,(.2126,.7152,.0722)))
+    low,high=sorted((luminance(first),luminance(second)))
+    return (high+.05)/(low+.05)
+
+
+def brightest_pixel(image,rect):
+    rect=rect.intersected(image.rect())
+    return max((image.pixelColor(x,y) for x in range(rect.left(),rect.right()+1)
+                for y in range(rect.top(),rect.bottom()+1)),
+               key=lambda color:sum(color.getRgb()[:3]))
 
 
 class Screen:
@@ -215,6 +231,49 @@ class WorkspaceTests(unittest.TestCase):
                     if min(color.red(),color.green(),color.blue())>220 and color.alpha()>180:white.append(x)
             self.assertTrue(white,text)
             self.assertLessEqual(abs((min(white)+max(white))/2-(image.width()-1)/2),3,text)
+
+    def test_actual_sidebar_badge_menu_toolbar_and_transfer_text_contrast(self):
+        from reference_widgets import refresh_tree
+        ratios=[];popup=self.overview();ref=self.paths[0]
+        self.shelf.content.transfers[ref]=dict(phase='uploading',received=25,total=100)
+        def check(name,foreground,background):
+            ratio=contrast_colors(foreground,background)
+            ratios.append(dict(theme=ui_theme.current_theme(),component=name,
+                foreground=foreground.name(),background=background.name(),ratio=round(ratio,3)))
+            self.assertGreaterEqual(ratio,4.5,(name,foreground.name(),background.name(),ratio))
+        for theme in ('light','dark'):
+            self.settings.update(theme=theme);ui_theme.set_theme(theme);ui_theme.apply_application(APP,subject.FONT_FAMILY)
+            refresh_tree(self.shelf);popup._render_signature=None;popup.rebuild();popup.set_category('all');flush()
+            selected=popup.category_buttons['all'];image=selected.grab().toImage()
+            check('selected category',brightest_pixel(image,QRect(35,8,45,18)),image.pixelColor(6,selected.height()//2))
+            badge=popup.nav_counts['all'];position=badge.geometry()
+            check('selected count',brightest_pixel(image,position.adjusted(2,3,-2,-3)),
+                  image.pixelColor(position.center().x(),position.top()+3))
+            other=popup.category_buttons['uploading'];other_image=popup.grab().toImage();other_badge=popup.nav_counts['uploading'];position=other_badge.geometry()
+            check('unselected transfer count',other_badge.palette().color(QPalette.WindowText),
+                  other_image.pixelColor(other.mapTo(popup,QPoint(position.center().x(),position.top()+3))))
+            # Exercise real QMenu selection drawing; palette() alone does not
+            # resolve the QSS :selected foreground/background state.
+            menu=subject.AnimatedMenu();subject.style_menu(menu);action=menu.addAction('选择菜单项目')
+            menu.popup(QPoint(0,0));menu.setActiveAction(action);flush();rect=menu.actionGeometry(action);image=menu.grab().toImage()
+            check('selected menu item',brightest_pixel(image,QRect(rect.x()+14,rect.y()+4,85,rect.height()-8)),
+                  image.pixelColor(rect.right()-5,rect.center().y()))
+            menu.close();menu.deleteLater();flush()
+            unselected_mode=popup.view_grid;image=popup.grab().toImage()
+            check('unselected view toggle',unselected_mode.palette().color(QPalette.ButtonText),
+                  image.pixelColor(popup.view_segment.mapTo(popup,QPoint(unselected_mode.geometry().center().x(),3))))
+            popup.update_transfer_status();popup.preview.show_path(ref,force=True);flush()
+            for name,label in (('footer percent',popup.strip_rows[0][2]),('preview percent',popup.preview.transfer_meta)):
+                self.assertTrue(label.isVisible(),name)
+                image=popup.grab().toImage();position=label.mapTo(popup,QPoint())
+                check(name,label.palette().color(QPalette.WindowText),image.pixelColor(position+QPoint(1,1)))
+            popup.set_category('uploading');flush();label=popup.transfer_eta
+            self.assertTrue(label.isVisible());image=popup.grab().toImage();position=label.mapTo(popup,QPoint())
+            check('transfer summary percent',label.palette().color(QPalette.WindowText),image.pixelColor(position+QPoint(1,1)))
+        if os.environ.get('FLICKDOCK_CAPTURE_WORKSPACE'):
+            import json
+            output=Path(__file__).resolve().parents[2]/'outputs/hig-redesign/component-contrast-QA.json'
+            output.write_text(json.dumps(ratios,ensure_ascii=False,indent=2),encoding='utf8')
 
     def test_adaptive_layout_preserves_content_preview_and_bulk_actions(self):
         popup=self.overview()

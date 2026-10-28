@@ -195,8 +195,8 @@ class ClearConfirmOverlay(QWidget):
             f"QPushButton {{background:{c['control']};color:{text};border:1px solid transparent;border-radius:12px;padding:0 12px;}}"
             f"QPushButton:hover {{background:{c['hover']};}} QPushButton:pressed {{background:{c['selected']};}}")
         self.delete_button.setStyleSheet(
-            f"QPushButton {{background:{c['red']};color:#ffffff;border:1px solid transparent;border-radius:12px;padding:0 12px;font-weight:700;}}"
-            "QPushButton:hover {background:rgba(255,69,58,230);} QPushButton:pressed {background:rgba(255,69,58,210);}")
+            f"QPushButton {{background:{c['danger_action']};color:#ffffff;border:1px solid transparent;border-radius:12px;padding:0 12px;font-weight:700;}}"
+            "QPushButton:hover {background:#992117;} QPushButton:pressed {background:#861B13;}")
         self.panel.graphicsEffect().setBlurRadius(32)
         self.panel.graphicsEffect().setColor(QColor(0,0,0,140 if self._theme=='dark' else 41))
         self.update()

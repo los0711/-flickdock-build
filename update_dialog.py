@@ -409,18 +409,18 @@ class UpdateDialog(QDialog):
             QDialog#flickdockUpdate QLabel#updateCaption {{color:{c['secondary']};font-size:11px;}}
             QDialog#flickdockUpdate QLabel#updateNotesHeading {{font-size:12px;font-weight:700;}}
             QDialog#flickdockUpdate QLabel#updateStatus {{font-size:12px;font-weight:700;}}
-            QDialog#flickdockUpdate QLabel#updateProgressLabel {{font-size:11px;color:{c['cyan'] if dark else c['blue']};font-family:monospace;}}
+            QDialog#flickdockUpdate QLabel#updateProgressLabel {{font-size:11px;color:{c['link']};font-family:monospace;}}
             QDialog#flickdockUpdate QLabel#updateMessage {{color:{c['secondary']};font-size:12px;}}
             QDialog#flickdockUpdate QLabel#updateSha {{color:{c['muted']};font-size:11px;font-family:monospace;}}
             QFrame#updateNotesCard {{background:{c['card']};border:1px solid {c['border']};border-radius:12px;}}
-            QPlainTextEdit#updateNotes {{background:transparent;color:{c['secondary']};border:0;padding:0;font-size:12px;selection-background-color:{c['blue']};selection-color:white;}}
+            QPlainTextEdit#updateNotes {{background:transparent;color:{c['secondary']};border:0;padding:0;font-size:12px;selection-background-color:{c['action']};selection-color:white;}}
             QProgressBar#updateProgress {{background:{c['control']};border:0;border-radius:3px;}}
             QProgressBar#updateProgress::chunk {{background:{c['green']};border-radius:3px;}}
             QDialog#flickdockUpdate QPushButton {{background:{c['control']};color:{c['text']};border:1px solid transparent;border-radius:12px;padding:0 12px;font-size:12px;}}
             QDialog#flickdockUpdate QPushButton:hover {{background:{c['hover']};}}
             QDialog#flickdockUpdate QPushButton:pressed {{background:{c['selected']};}}
-            QDialog#flickdockUpdate QPushButton#updatePrimary {{background:{c['blue']};color:white;font-weight:700;}}
-            QDialog#flickdockUpdate QPushButton#updatePrimary:hover {{background:rgba(10,132,255,230);}}
+            QDialog#flickdockUpdate QPushButton#updatePrimary {{background:{c['action']};color:white;font-weight:700;}}
+            QDialog#flickdockUpdate QPushButton#updatePrimary:hover {{background:{c['action_hover']};}}
             QDialog#flickdockUpdate QPushButton:disabled {{background:{c['control']};color:{c['muted']};}}
             QDialog#flickdockUpdate QPushButton#updateSkip {{background:transparent;border:0;color:{c['secondary']};padding:0;}}
             QDialog#flickdockUpdate QPushButton#updateClose {{background:transparent;border:0;border-radius:8px;padding:0;}}

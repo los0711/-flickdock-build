@@ -34,7 +34,8 @@ class HigAccessibilityTests(unittest.TestCase):
             c=colors(theme)
             for role in ('text','secondary','muted','link','green','red'):
                 self.assertGreaterEqual(contrast(c[role],c['surface']),4.5,(theme,role))
-            self.assertGreaterEqual(contrast(c['on_action'],c['action']),4.5)
+            for role in ('action','action_hover','danger_action'):
+                self.assertGreaterEqual(contrast(c['on_action'],c[role]),4.5,(theme,role))
 
     def test_pointer_and_keyboard_focus_have_distinct_feedback(self):
         host=QWidget();layout=QVBoxLayout(host)

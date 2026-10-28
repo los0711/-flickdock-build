@@ -126,7 +126,7 @@ class AvatarButton(ToolbarButton):
     def paintEvent(self,event):
         p=QPainter(self);p.setRenderHint(QPainter.Antialiasing)
         c=palette();initial=getattr(self,'initial','')
-        p.setPen(Qt.NoPen);p.setBrush(QColor(c['blue']) if initial else ink(c['control']));p.drawEllipse(QRectF(4,4,self.width()-8,self.height()-8))
+        p.setPen(Qt.NoPen);p.setBrush(QColor(c['action']) if initial else ink(c['control']));p.drawEllipse(QRectF(4,4,self.width()-8,self.height()-8))
         if initial:
             p.setPen(QColor('white'));f=p.font();f.setPixelSize(11);f.setBold(True);p.setFont(f);p.drawText(self.rect(),Qt.AlignCenter,initial)
         else:icon('user',c['secondary']).paint(p,QRect((self.width()-16)//2,(self.height()-16)//2,16,16))
@@ -149,7 +149,7 @@ class ProfileButton(QPushButton):
         p=QPainter(self);p.setRenderHint(QPainter.Antialiasing);c=palette()
         p.setPen(QPen(ink(c['divider']),1));p.drawLine(0,0,self.width(),0)
         if self.underMouse():p.setPen(Qt.NoPen);p.setBrush(ink(c['control']));p.drawRoundedRect(self.rect().adjusted(0,2,0,-1),12,12)
-        p.setBrush(QColor(c['blue']) if self.connected else ink(c['control']));p.setPen(Qt.NoPen);p.drawEllipse(QRectF(8,12,28,28))
+        p.setBrush(QColor(c['action']) if self.connected else ink(c['control']));p.setPen(Qt.NoPen);p.drawEllipse(QRectF(8,12,28,28))
         f=p.font();f.setPixelSize(12);f.setBold(True);p.setFont(f);p.setPen(QColor('white'))
         if self.connected:p.drawText(QRectF(8,12,28,28),Qt.AlignCenter,self.username[:1].upper())
         else:icon('user',c['secondary']).paint(p,QRect(14,18,16,16))
@@ -270,7 +270,7 @@ def thumbnail(shelf,ref,size=40):
         icon(glyph,'#D8E1F4' if category=='video' else '#64D2FF').paint(p,QRect(round(size*.26),round(size*.26),round(size*.48),round(size*.48)))
     else:
         name=ext.lstrip('.').upper() or ('DIR' if Path(ref).is_dir() else 'FILE')
-        color='#FF4567' if name=='PDF' else '#6A90BC' if name=='ZIP' else '#0A84FF'
+        color='#B52B47' if name=='PDF' else '#466B99' if name=='ZIP' else palette()['action']
         p.setPen(Qt.NoPen);p.setBrush(QColor(color));p.drawRoundedRect(QRectF(size*.12,size*.34,size*.76,size*.33),3,3)
         font=QFont();font.setPixelSize(max(8,round(size*.23)));font.setWeight(QFont.Bold);p.setFont(font);p.setPen(QColor('white'))
         p.drawText(QRectF(size*.1,size*.3,size*.8,size*.4),Qt.AlignCenter,name[:4])
@@ -359,7 +359,7 @@ def build_overview(view,preview_type):
     for control,key in ((view.view_list,'list'),(view.view_grid,'icons')):
         control.setFixedHeight(26);control.setCheckable(True)
         css(control,"QPushButton{background:transparent;border:0;border-radius:6px;color:#A1A1AA;padding:3px 8px;font:12px 'HarmonyOS Sans SC';} QPushButton:checked{background:rgba(255,255,255,31);color:#F5F5F7;font-weight:600;}",
-            "QPushButton{background:transparent;border:0;border-radius:6px;color:#86868B;padding:3px 8px;font:12px 'HarmonyOS Sans SC';} QPushButton:checked{background:#FFFFFF;color:#1D1D1F;font-weight:600;}")
+            "QPushButton{background:transparent;border:0;border-radius:6px;color:#515154;padding:3px 8px;font:12px 'HarmonyOS Sans SC';} QPushButton:checked{background:#FFFFFF;color:#1D1D1F;font-weight:600;}")
         control.clicked.connect(lambda checked=False,key=key:view.change_view_mode(key));segment.addWidget(control)
         control.setChecked(view.shelf.manager.settings.view_mode==key)
     head.addWidget(view.view_segment)
@@ -378,8 +378,8 @@ def build_overview(view,preview_type):
     glyphs={'all':'all','images':'image','video':'video','audio':'audio','text':'text','files':'file','links':'web','uploading':'transferring'}
     for key,title in view.CATEGORIES:
         control=button(title,glyphs[key],parent=view.sidebar);control.setCheckable(True);control.setFixedHeight(34)
-        css(control,"QPushButton{background:transparent;color:#A1A1AA;border:0;border-radius:12px;text-align:left;padding:6px 12px;font:500 12px 'HarmonyOS Sans SC';} QPushButton:hover{background:rgba(255,255,255,15);} QPushButton:checked{background:#0A84FF;color:white;font-weight:600;}",
-            "QPushButton{background:transparent;color:#515154;border:0;border-radius:12px;text-align:left;padding:6px 12px;font:500 12px 'HarmonyOS Sans SC';} QPushButton:hover{background:rgba(0,0,0,12);} QPushButton:checked{background:#0A84FF;color:white;font-weight:600;}")
+        css(control,"QPushButton{background:transparent;color:#A1A1AA;border:0;border-radius:12px;text-align:left;padding:6px 12px;font:500 12px 'HarmonyOS Sans SC';} QPushButton:hover{background:rgba(255,255,255,15);} QPushButton:checked{background:#0062CC;color:white;font-weight:600;}",
+            "QPushButton{background:transparent;color:#515154;border:0;border-radius:12px;text-align:left;padding:6px 12px;font:500 12px 'HarmonyOS Sans SC';} QPushButton:hover{background:rgba(0,0,0,12);} QPushButton:checked{background:#0062CC;color:white;font-weight:600;}")
         control.clicked.connect(lambda checked=False,key=key:view.set_category(key));view.category_group.addButton(control);side.addWidget(control)
         count=label('',11,400,'muted',control);count.setAlignment(Qt.AlignCenter);count.setGeometry(145,7,28,20);count.setAttribute(Qt.WA_TransparentForMouseEvents)
         view.nav_counts[key]=count;view.category_buttons[key]=control;view.sidebar_buttons[key]=control
@@ -402,7 +402,7 @@ def build_overview(view,preview_type):
     view.paste_button=button('粘贴',parent=view.selection_bar);view.paste_button.clicked.connect(lambda:view.shelf.paste_clipboard('permanent'));select.addWidget(view.paste_button)
     mid.addWidget(view.selection_bar)
     view.transfer_summary=QWidget(view.middle);summary=QHBoxLayout(view.transfer_summary);summary.setContentsMargins(16,10,16,10)
-    view.transfer_count=label('',12,600,parent=view.transfer_summary);view.transfer_eta=label('',11,400,'cyan',view.transfer_summary)
+    view.transfer_count=label('',12,600,parent=view.transfer_summary);view.transfer_eta=label('',11,400,'link',view.transfer_summary)
     view.transfer_bar=QProgressBar(view.transfer_summary);view.transfer_bar.setTextVisible(False);view.transfer_bar.setFixedHeight(6)
     css(view.transfer_bar,'QProgressBar{border:0;background:#343438;border-radius:3px;} QProgressBar::chunk{background:#0A84FF;border-radius:3px;}',
         'QProgressBar{border:0;background:#DDE4ED;border-radius:3px;} QProgressBar::chunk{background:#0A84FF;border-radius:3px;}')
@@ -428,7 +428,7 @@ def build_overview(view,preview_type):
     for index in range(2):
         row=QWidget(view.transfer_strip);line=QHBoxLayout(row);line.setContentsMargins(0,0,0,0);line.setSpacing(7)
         name=button('',parent=row);name.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Fixed);name.clicked.connect(lambda checked=False,index=index:view._open_strip_transfer(index))
-        percent=label('',10,400,'cyan',row);progress=QProgressBar(row);progress.setFixedSize(42,3);progress.setTextVisible(False)
+        percent=label('',10,400,'link',row);progress=QProgressBar(row);progress.setFixedSize(42,3);progress.setTextVisible(False)
         css(progress,'QProgressBar{background:#343438;border:0;} QProgressBar::chunk{background:#64D2FF;}',
             'QProgressBar{background:#DDE4ED;border:0;} QProgressBar::chunk{background:#0A84FF;}')
         line.addWidget(name,1);line.addWidget(percent);line.addWidget(progress);strip.addWidget(row);view.strip_rows.append((row,name,percent,progress))
@@ -466,7 +466,7 @@ def build_preview(view,elided_type,image_type,media_type,content_type):
     view.transfer_progress=QProgressBar(view.transfer_row);view.transfer_progress.setTextVisible(False);view.transfer_progress.setFixedHeight(5)
     css(view.transfer_progress,'QProgressBar{background:#333336;border:0;} QProgressBar::chunk{background:#0A84FF;}',
         'QProgressBar{background:#E0E0E5;border:0;} QProgressBar::chunk{background:#0A84FF;}')
-    view.transfer_meta=label('',10,400,'cyan',view.transfer_row);view.cancel_transfer=button('取消上传',parent=view.transfer_row);view.cancel_transfer.clicked.connect(lambda:view.shelf.cancel_transfer(view.current_path))
+    view.transfer_meta=label('',10,400,'link',view.transfer_row);view.cancel_transfer=button('取消上传',parent=view.transfer_row);view.cancel_transfer.clicked.connect(lambda:view.shelf.cancel_transfer(view.current_path))
     transfer.addWidget(view.transfer_progress,1);transfer.addWidget(view.transfer_meta);transfer.addWidget(view.cancel_transfer);body.addWidget(view.transfer_row);view.transfer_row.hide()
     view.stack=QStackedWidget(content);view.stack.setMinimumHeight(176);view.stack.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Expanding)
     css(view.stack,'QStackedWidget{background:#242426;border:1px solid #414145;border-radius:12px;}',
