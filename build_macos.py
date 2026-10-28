@@ -69,10 +69,10 @@ def _bundle_inventory(app):
     return records
 
 
-def _create_zip(app,archive):
-    # Retain ditto's resource-fork, symlink and permission metadata. BZIP2
-    # compresses the bundled native runtime without removing any payload.
-    # Prove compatibility with the same native extractor used by old clients.
+def _create_zip(app,archive,*,python,env):
+    # Retain ditto's symlink and permission metadata. LZMA compresses the
+    # bundled runtime without removing payload. Shipped 1.8.15 clients contain
+    # _lzma and use mac_updates._extract, rather than ditto, for automatic ZIPs.
     with tempfile.TemporaryDirectory(prefix='flickdock-zip-') as directory:
         folder=Path(directory);original=folder/'original.zip'
         run(['/usr/bin/ditto','-c','-k','--keepParent','--zlibCompressionLevel','9',app,original])
@@ -80,17 +80,22 @@ def _create_zip(app,archive):
             target.comment=source.comment
             for member in source.infolist():
                 info=copy.copy(member)
-                compression=zipfile.ZIP_BZIP2 if member.file_size>=4096 else zipfile.ZIP_DEFLATED
+                compression=zipfile.ZIP_LZMA if member.file_size>=4096 else zipfile.ZIP_DEFLATED
                 target.writestr(info,source.read(member),compress_type=compression,compresslevel=9)
         extracted=folder/'extracted'
-        run(['/usr/bin/ditto','-x','-k',archive,extracted])
-        if _bundle_inventory(app)!=_bundle_inventory(extracted/app.name):
-            raise RuntimeError('Native ZIP round trip changed bundle bytes, symlinks or permissions')
+        run([python,'-c',
+             'import sys,zipfile;from pathlib import Path;from mac_updates import _extract;'
+             'from build_macos import _bundle_inventory;'
+             'archive,app,stage=map(Path,sys.argv[1:]);'
+             'z=zipfile.ZipFile(archive);bundle=_extract(z,stage,None);z.close();'
+             'assert _bundle_inventory(app)==_bundle_inventory(bundle),'
+             '"Automatic ZIP round trip changed bundle bytes, symlinks or permissions"',
+             archive,app,extracted],env=env)
 
 
 def _create_dmg(staging,dmg):
     arguments=['/usr/bin/hdiutil','create','-volname','FlickDock','-srcfolder',str(staging),
-               '-ov','-format','UDBZ',str(dmg)]
+               '-ov','-format','ULMO',str(dmg)]
     for attempt in range(3):
         result=subprocess.run(arguments,cwd=ROOT,capture_output=True,text=True,
                               env=dict(os.environ,LC_ALL='C'))
@@ -122,12 +127,6 @@ def main(arguments=None):
         parser.error('--notary-profile requires --sign-identity')
     if options.entitlements and not options.entitlements.is_file():
         parser.error('--entitlements file does not exist')
-    # Fail early if the host's native ZIP implementation cannot read BZIP2.
-    with tempfile.TemporaryDirectory(prefix='flickdock-codec-probe-') as directory:
-        folder=Path(directory);probe=folder/'Probe.app';probe.mkdir()
-        executable=probe/'executable';executable.write_bytes(bytes(range(256))*64);executable.chmod(0o755)
-        (probe/'alias').symlink_to('executable')
-        _create_zip(probe,folder/'probe.zip')
     build = ROOT / 'build' / 'macos'
     build.mkdir(parents=True, exist_ok=True)
     python = Path(sys.executable)
@@ -143,6 +142,13 @@ def main(arguments=None):
     # This workspace may contain Windows wheel files in py/. Never import them
     # into the macOS interpreter or reuse a Windows virtual environment.
     env.pop('PYTHONPATH', None)
+    # Exercise the actual automatic updater before running the longer gates.
+    with tempfile.TemporaryDirectory(prefix='flickdock-codec-probe-') as directory:
+        folder=Path(directory);probe=folder/'FlickDock.app'
+        executable=probe/'Contents/MacOS/FlickDock';executable.parent.mkdir(parents=True)
+        executable.write_bytes(b'\xcf\xfa\xed\xfe'+bytes(range(256))*64);executable.chmod(0o755)
+        (probe/'alias').symlink_to('Contents/MacOS/FlickDock')
+        _create_zip(probe,folder/'probe.zip',python=python,env=env)
     run([python,ROOT/'p2p_assets.py'],env=env)
     if options.sign_identity:
         env['FLICKDOCK_CODESIGN_IDENTITY'] = options.sign_identity
@@ -246,12 +252,12 @@ def main(arguments=None):
     archive = report.parent / (name + '.zip')
     if archive.exists():
         raise FileExistsError('Refusing to overwrite an existing versioned macOS release ZIP')
-    _create_zip(app,archive)
+    _create_zip(app,archive,python=python,env=env)
     if options.notary_profile:
         run(['/usr/bin/xcrun', 'notarytool', 'submit', archive, '--keychain-profile', options.notary_profile, '--wait'])
         run(['/usr/bin/xcrun', 'stapler', 'staple', app])
         archive.unlink()
-        _create_zip(app,archive)
+        _create_zip(app,archive,python=python,env=env)
     dmg = report.parent / (name + '.dmg')
     if dmg.exists():
         raise FileExistsError('Refusing to overwrite an existing versioned macOS DMG')
