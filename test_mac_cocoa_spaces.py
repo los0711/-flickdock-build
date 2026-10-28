@@ -154,10 +154,13 @@ def main() -> int:
         finally:
             widget.close()
     # Prove that the notification/PID assertions detect a real activation.
+    negative=widgets[-1][1]
+    negative.show();negative.activateWindow()
     AppKit.NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
     pump_until(lambda:bool(AppKit.NSApplication.sharedApplication().isActive())
                and sum(n['event']=='did_become_active' for n in notifications)>baseline['activation_notifications'])
     snapshot('deliberate_activation_detected')
+    negative.close()
     external.activateWithOptions_(AppKit.NSApplicationActivateIgnoringOtherApps)
     for observer in observers:center.removeObserver_(observer)
     application.quit()
