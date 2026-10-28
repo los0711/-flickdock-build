@@ -17,7 +17,7 @@ jobs:
     # The user explicitly authorized this existing public GitHub build mirror.
     # The canonical Gitee source repository remains private.
     if: github.repository == 'los0711/-flickdock-build'
-    timeout-minutes: 25
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:

@@ -11,7 +11,7 @@
     {
       "path": ".github/workflows/macos-build.yml",
       "size": 3057,
-      "sha256": "42f59217a53d34bc9affedc7b57e98015ca7327f057dfcaff1220f0f2332ce8a"
+      "sha256": "2fef03de287baec7dbb47d334f5e5406da011ee0ca336ce16d8bfe921a9aefd4"
     },
     {
       "path": ".gitignore",
@@ -555,8 +555,8 @@
     },
     {
       "path": "build_macos.py",
-      "size": 18519,
-      "sha256": "04692dce6012720dfaff5a2b4689ccb5c4cc8f697839a22435f73eed634d372a"
+      "size": 18796,
+      "sha256": "caa921c1d22f8264046d467479f2f330144702609e0589108c4cfe82e77f04be"
     },
     {
       "path": "bundle_policy.py",
@@ -1250,8 +1250,8 @@
     },
     {
       "path": "test_mac_cocoa_spaces.py",
-      "size": 5116,
-      "sha256": "859f00cec4fc29dbc9064c613c47a1e3b3e92c7065da1e36dd7423178365d9a9"
+      "size": 9362,
+      "sha256": "31fb970c9338c45690d10590ae213d5c5ecbdf7de5f995c7fba196e84a524ffd"
     },
     {
       "path": "test_mac_updates.py",

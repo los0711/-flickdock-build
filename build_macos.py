@@ -149,6 +149,9 @@ def main(arguments=None):
         executable.write_bytes(b'\xcf\xfa\xed\xfe'+bytes(range(256))*64);executable.chmod(0o755)
         (probe/'alias').symlink_to('Contents/MacOS/FlickDock')
         _create_zip(probe,folder/'probe.zip',python=python,env=env)
+    with tempfile.TemporaryDirectory(prefix='flickdock-cocoa-preflight-') as directory:
+        run([python,ROOT/'test_mac_cocoa_spaces.py','--output',Path(directory)/'cocoa.json'],
+            env=dict(env,HOME=directory,QT_QPA_PLATFORM='cocoa',FLICKDOCK_CI_COCOA_SMOKE='1'))
     run([python,ROOT/'p2p_assets.py'],env=env)
     if options.sign_identity:
         env['FLICKDOCK_CODESIGN_IDENTITY'] = options.sign_identity
