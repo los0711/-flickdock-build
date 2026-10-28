@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes,serialization
@@ -144,6 +145,31 @@ class UpdateTests(unittest.TestCase):
         self.assertGreater(len(state['progress']),2);self.assertGreater(len(beats),2)
         self.assertFalse(list(Path(self.folder.name).rglob('*.part')))
         self.assertFalse(any('Authorization' in headers for _,headers in self.requests))
+
+    def test_official_check_retries_one_mirror_and_a_new_check_starts_again(self):
+        self.routes['/primary/latest.json']=dict(status=503,body=b'unavailable')
+        self.routes['/mirror/latest.json']=self.routes['/manifest']
+        client,state=self.client('/primary/latest.json')
+        client.allowed_hosts=client.allowed_hosts|{'flickdock-site.roger000416.workers.dev'}
+        with patch.object(subject,'MAC_MANIFEST_BASE',self.origin+'/primary/'),patch.object(subject,'WORKER_MANIFEST_BASE',self.origin+'/mirror/'):
+            client.check();wait_until(lambda:state['update_available'] or state['failed'])
+            self.assertFalse(state['failed'],state['failed']);self.assertTrue(state['update_available'])
+            self.routes['/mirror/latest.json']=dict(status=503,body=b'unavailable')
+            self.requests.clear();client.check();wait_until(lambda:state['failed'])
+            self.assertEqual([path for path,_ in self.requests],['/primary/latest.json','/mirror/latest.json'])
+            self.assertFalse(client.busy)
+
+    def test_invalid_manifest_and_failed_download_do_not_use_mirror(self):
+        self.routes['/primary/latest.json']=dict(type='application/json',body=b'{}')
+        client,state=self.client('/primary/latest.json')
+        client.allowed_hosts=client.allowed_hosts|{'flickdock-site.roger000416.workers.dev'}
+        with patch.object(subject,'MAC_MANIFEST_BASE',self.origin+'/primary/'),patch.object(subject,'WORKER_MANIFEST_BASE',self.origin+'/mirror/'):
+            self.requests.clear();client.check();wait_until(lambda:state['failed'])
+            self.assertEqual([path for path,_ in self.requests],['/primary/latest.json'])
+            self.routes['/setup.exe']=dict(status=503,body=b'unavailable')
+            self.requests.clear();state['failed'].clear();client.download(self.manifest)
+            wait_until(lambda:state['failed'])
+            self.assertEqual([path for path,_ in self.requests],['/setup.exe'])
 
     def test_real_https_mac_dmg_download_checks_trailer_and_hash(self):
         payload=b'FlickDock image'+bytes(65536)+b'koly'+bytes(508)

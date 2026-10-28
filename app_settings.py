@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QFram
                                QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QLineEdit, QPushButton,
                                QVBoxLayout, QGridLayout, QKeySequenceEdit, QScrollArea, QWidget, QSizePolicy,
                                QAbstractSpinBox, QPlainTextEdit, QSlider, QSpinBox, QColorDialog, QStyledItemDelegate, QLayout)
-from PySide6.QtWidgets import QStyle, QStyleOptionButton
+from PySide6.QtWidgets import QStyle, QStyleOptionButton, QProxyStyle, QListView
 from PySide6.QtSvg import QSvgRenderer
 
 from app_version import APP_VERSION
@@ -124,13 +124,22 @@ class SettingsOptionDelegate(QStyledItemDelegate):
         return QSize(size.width(), max(38, size.height() + 10))
 
 
+class _InlineComboStyle(QProxyStyle):
+    def styleHint(self,hint,option=None,widget=None,returnData=None):
+        if hint==QStyle.StyleHint.SH_ComboBox_Popup:return 0
+        return super().styleHint(hint,option,widget,returnData)
+
 class SettingsComboBox(QComboBox):
     """A readable theme-aware arrow while retaining native combo semantics."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.dark = False
-        self.setItemDelegate(SettingsOptionDelegate(self))
         self.setAttribute(Qt.WidgetAttribute.WA_MacShowFocusRect, False)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setView(QListView(self))
+        self.setItemDelegate(SettingsOptionDelegate(self))
+        self._popup_style=_InlineComboStyle('Fusion');self._popup_style.setParent(self)
+        self.setStyle(self._popup_style)
 
     def wheelEvent(self, event):
         # Scrolling the settings page must never silently change a preference,
@@ -144,6 +153,9 @@ class SettingsComboBox(QComboBox):
         popup.setObjectName("flickdockSettingsOptions")
         surface = "#272c35" if self.dark else "#ffffff"
         edge = "#3c4554" if self.dark else "#dce3ed"
+        popup.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground,False)
+        popup.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint,True)
+        popup.setAutoFillBackground(True)
         popup.setStyleSheet(f"QFrame#flickdockSettingsOptions {{background:{surface};"
                             f"border:1px solid {edge};border-radius:10px;}}")
         super().showPopup()
@@ -165,6 +177,15 @@ class SettingsSpinBox(QSpinBox):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.dark = False
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_MacShowFocusRect,False)
+        self.lineEdit().setAttribute(Qt.WidgetAttribute.WA_MacShowFocusRect,False)
+        self.lineEdit().installEventFilter(self)
+
+    def eventFilter(self,watched,event):
+        if watched is self.lineEdit() and event.type()==QEvent.Type.Wheel:
+            _scroll_settings_instead(self,event);return True
+        return super().eventFilter(watched,event)
 
     def wheelEvent(self, event):
         _scroll_settings_instead(self, event)
@@ -221,6 +242,8 @@ class UpdateActivityBar(QWidget):
         self.active = state in ("checking", "downloading", "verifying", "installing", "cancelling")
         self.fraction = min(1., max(0., received / total)) if state == "downloading" and total > 0 else None
         self.setAccessibleDescription("正在安装更新" if state == "installing" else "正在处理更新")
+        old_geometry=self.geometry()
+        self.setFixedHeight(4 if self.active else 0)
         self.setVisible(self.active)
         if self.active and self.fraction is None:
             if not previous_active or not self._clock.isValid(): self._clock.start()
@@ -229,6 +252,13 @@ class UpdateActivityBar(QWidget):
             self._timer.stop()
             if not self.active:self._clock.invalidate()
         self.update()
+        if not self.active:
+            # Invalidate the translucent parent's effect cache as well as the
+            # hidden child, otherwise the last blue stripe can remain on Win.
+            parent=self.parentWidget()
+            if parent:
+                parent.updateGeometry();parent.update(old_geometry)
+                if parent.graphicsEffect():parent.graphicsEffect().update()
 
     def showEvent(self, event):
         if self.active and self.fraction is None:
@@ -1160,6 +1190,12 @@ class SettingsDialog(QDialog):
         self.error_label.setWordWrap(True)
         self.error_label.hide()
         root.addWidget(self.error_label)
+        self.update_error_label=QLabel(self.surface)
+        self.update_error_label.setObjectName('settingsUpdateError')
+        self.update_error_label.setWordWrap(True)
+        self.update_error_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.update_error_label.setContentsMargins(24,8,24,8)
+        self.update_error_label.hide();root.addWidget(self.update_error_label)
         footer = QHBoxLayout()
         self.author_button = QPushButton("Author @Roger", self)
         self.author_button.setObjectName("settingsAuthor")
@@ -1358,6 +1394,7 @@ class SettingsDialog(QDialog):
         self.body.installEventFilter(self)
         self.scroll.viewport().installEventFilter(self)
         root.addWidget(self.error_label)
+        root.addWidget(self.update_error_label)
         footer_frame=QFrame(self.surface);footer_frame.setObjectName('settingsFooter');footer_frame.setFixedHeight(52)
         footer=QHBoxLayout(footer_frame);footer.setContentsMargins(24,0,24,0);footer.setSpacing(10)
         self.author_button.setMinimumHeight(28);footer.addWidget(self.author_button)
@@ -1420,6 +1457,10 @@ class SettingsDialog(QDialog):
         self.update_status_label.setText(status)
         self.update_status_label.setAccessibleName(status + (f"，版本 {version}" if version else ""))
         self.update_status_label.setAccessibleDescription(str(error))
+        self.update_status_label.setToolTip(str(error))
+        if hasattr(self,'update_error_label'):
+            self.update_error_label.setText(str(error)[:800] if state=='error' else '')
+            self.update_error_label.setVisible(state=='error' and bool(error))
         self.update_button.setText(action)
         self.update_button.setAccessibleName(action)
         self.update_button.setEnabled(state not in ("checking", "downloading", "verifying", "installing", "cancelling"))

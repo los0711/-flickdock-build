@@ -104,7 +104,7 @@ def filter_bundle(binaries,datas):
                   'kind':kind}
         if reason:
             removed.append(dict(record,reason=reason))
-        elif Path(source).suffix.lower() in {'.dll','.pyd','.exe'}:
+        elif Path(source).suffix.lower() in {'.dll','.pyd','.exe','.node'}:
             candidates.append((kind,entry,record))
         else:
             non_pe.append((kind,entry,record))
@@ -118,6 +118,8 @@ def filter_bundle(binaries,datas):
             roots.add(index);root_reasons[index]='Python runtime or analysed extension module'
         elif '/plugins/' in '/'+_normal(entry[0]):
             roots.add(index);root_reasons[index]='selected runtime-loaded Qt plugin'
+        elif _normal(entry[0]).startswith('p2p/') and name in ('node.exe','node_datachannel.node'):
+            roots.add(index);root_reasons[index]='native WebRTC data-channel runtime'
     keep,queue,dependencies,unbundled = set(roots),list(roots),{},set()
     while queue:
         index = queue.pop()

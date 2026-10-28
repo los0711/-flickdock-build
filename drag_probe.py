@@ -16,7 +16,7 @@ from typing import Callable
 from PySide6.QtCore import QPoint, Qt, QTimer
 from PySide6.QtGui import QColor, QCursor, QPainter
 from PySide6.QtWidgets import QApplication, QWidget
-from platform_native import native_input_available, window_move_active
+from platform_native import native_input_available, window_move_active, keep_tool_visible_when_inactive, raise_edge_target
 
 
 class _GuiThreadInfo(ctypes.Structure):
@@ -85,6 +85,7 @@ class _DropProbe(QWidget):
         self.setWindowTitle("FlickDock drag sensor")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        keep_tool_visible_when_inactive(self)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setAcceptDrops(True)
@@ -186,7 +187,7 @@ class ContentDragGate:
         self._active = True
         self.probe.move(position - QPoint(self.probe.width() // 2, self.probe.height() // 2))
         self.probe.show()
-        self.probe.raise_()
+        if sys.platform!='darwin':self.probe.raise_()
         # Commit alpha=1 over the complete native rectangle before the next
         # OLE pointer message. Deferred paint could leave a transparent target
         # for the first few events on a busy/capturing compositor.
@@ -200,6 +201,9 @@ class ContentDragGate:
         return True
 
     def _raise_native_target(self):
+        if sys.platform=='darwin':
+            raise_edge_target(self.probe)
+            return
         if _native_windows_enabled():
             user32 = ctypes.WinDLL("user32", use_last_error=True)
             user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND,

@@ -8,7 +8,7 @@ import sys
 from account_service import valid_new_password
 from native_ui_common import reference_font, icon as ui_icon, colors as ui_colors
 
-from PySide6.QtCore import QByteArray, QDateTime, QEvent, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QByteArray, QDateTime, QEvent, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter, QLinearGradient
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMenu,
@@ -37,6 +37,12 @@ class AccountNameLabel(QLabel):
 
     def text(self):
         return self._full_text
+
+    def sizeHint(self):
+        return QSize(self.fontMetrics().horizontalAdvance(self._full_text)+3,self.height())
+
+    def minimumSizeHint(self):
+        return QSize(0,self.height())
 
     def setText(self, value):
         self._full_text=str(value)
@@ -582,7 +588,10 @@ class AccountPanel(QFrame):
                 device_name.setText(str(device.get('name') or '未命名设备'))
                 device_name.setFixedHeight(24)
                 device_name.setObjectName('accountDeviceName')
-                horizontal.addWidget(device_name,1)
+                device_name.setProperty('compactDeviceName',True)
+                device_name.setSizePolicy(QSizePolicy.Policy.Preferred,QSizePolicy.Policy.Fixed)
+                device_name.setMaximumWidth(device_name.fontMetrics().horizontalAdvance(device_name.text())+3)
+                horizontal.addWidget(device_name)
                 platform={'windows':'Windows','macos':'Mac','linux':'Linux'}.get(str(device.get('platform','')),'其他设备')
                 current=bool(device.get('current') or key==str(self.service.device_id))
                 timestamp=QDateTime.fromString(str(device.get('last_seen_at') or ''),Qt.DateFormat.ISODate)
@@ -597,13 +606,13 @@ class AccountPanel(QFrame):
                     subtitle.setFixedWidth(48)
                     horizontal.addWidget(subtitle)
                 else:subtitle.hide()
+                horizontal.addStretch(1)
                 rename=RemoveDeviceButton(row,rename=True);rename.dark=self._dark
                 rename.setText('改名');rename.setObjectName('accountDeviceRename');rename.setFixedSize(44,32)
                 rename.setAccessibleName('修改设备名称 '+str(device.get('name') or '未命名设备'))
                 rename.clicked.connect(partial(self._edit_device_name,key));rename.installEventFilter(self)
                 self.device_rename_buttons[key]=rename;horizontal.addWidget(rename)
                 if not current:
-                    rename.hide()
                     button=RemoveDeviceButton(row);button.dark=self._dark
                     button.setText('移除登录');button.setObjectName('accountDeviceRevoke');button.setFixedSize(72,32)
                     button.setAccessibleName('移除设备 '+str(device.get('name') or '未命名设备'))
@@ -834,6 +843,7 @@ class AccountPanel(QFrame):
             QFrame#accountPanel QLabel#accountDeviceMeta {{font-size:11px;color:{semantic['secondary']};}}
             QFrame#accountPanel QLabel#accountCurrentDevice,QFrame#accountPanel QPushButton#accountDeviceRename {{color:{semantic['link']};}}
             QFrame#accountPanel QPushButton#accountDeviceRevoke,QFrame#accountPanel QPushButton#accountDanger {{color:{semantic['red']};}}
+            QFrame#accountPanel QPushButton#accountDeviceRevoke {{padding:0;text-align:right;}}
             QFrame#accountPanel QPushButton#accountPrimary,QDialog#accountModal QPushButton#accountPrimary {{background:{semantic['action']};color:{semantic['on_action']};}}
             QFrame#accountPanel QPushButton#accountPrimary:hover,QDialog#accountModal QPushButton#accountPrimary:hover {{background:{semantic['action_hover']};color:{semantic['on_action']};}}
             QFrame#accountPanel QPushButton:focus {{border-color:transparent;}}
@@ -843,4 +853,9 @@ class AccountPanel(QFrame):
         for button in [*self.device_buttons.values(),*self.device_rename_buttons.values()]:button.dark=self._dark;button.update()
         from native_ui_common import readable_qss
         self.setStyleSheet(readable_qss(self.styleSheet()))
+        if sys.platform=='win32':
+            self.setStyleSheet(self.styleSheet()+'\nQFrame#accountPanel QLabel#accountState {font-size:12px;}')
+        for row in self._device_rows:
+            for name in row.findChildren(AccountNameLabel):
+                if name.property('compactDeviceName'):name.setMaximumWidth(name.fontMetrics().horizontalAdvance(name.text())+3)
         for glyph in self.findChildren(AccountGlyph):glyph.dark=self._dark;glyph.update()

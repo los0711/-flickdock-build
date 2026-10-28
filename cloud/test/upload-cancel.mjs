@@ -9,7 +9,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {transformSync} from 'esbuild';
 
 registerHooks({resolve(specifier,context,next){
-  if(specifier==='./hash-state')specifier+='.ts';
+  if(['./hash-state','./wan','./relay-budget'].includes(specifier))specifier+='.ts';
   return next(specifier,context);
 },load(url,context,next){
   if(url==='cloudflare:workers')return {format:'module',shortCircuit:true,source:'export class DurableObject { constructor(ctx,env){this.ctx=ctx;this.env=env} }'};

@@ -4,6 +4,8 @@ __pycache__/
 venv/
 py/
 node_modules/
+p2p/runtime/
+p2p/asset-manifest.json
 .wrangler/
 build/
 dist/

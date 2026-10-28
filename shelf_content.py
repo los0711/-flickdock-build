@@ -174,6 +174,10 @@ class ContentRepository:
             name=self.title(ref)
             return document_pixmap(Path(name).suffix or ('TEXT' if self.pending.get(ref,{}).get('kind') in ('text','url') else 'FILE'),size,stack,dpr=dpr)
         provider = self.thumbnail_provider
+        cover=self.metadata.get(ref,{}).get('preview_image')
+        if (not self.is_text(ref) and provider is not None and isinstance(cover,str)
+                and Path(cover).suffix.lower() in RASTER_SUFFIXES and Path(cover).is_file()):
+            return provider(cover,size,dpr=dpr)
         if self.is_text(ref):
             cover = self.metadata.get(ref, {}).get('preview_image')
             if provider is not None and isinstance(cover, str) and Path(cover).suffix.lower() in RASTER_SUFFIXES:

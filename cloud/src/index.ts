@@ -2,8 +2,10 @@ import {createHash, createHmac, timingSafeEqual} from 'node:crypto';
 import {caseFold} from 'unicode-case-folding';
 import {PersistentSHA256} from './hash-state';
 import {DurableObject} from 'cloudflare:workers';
+import {wanRoute,type WanEnv} from './wan';
+export {WanHub} from './wan';
 
-interface Env {
+interface Env extends WanEnv {
   DB:D1Database; FILES:R2Bucket; EVENTS:DurableObjectNamespace<AccountEvents>;
   ACCOUNT_QUOTA_BYTES?:string; GLOBAL_QUOTA_BYTES?:string; CHUNK_BYTES?:string; AUTH_PEPPER?:string;
   SINGLE_PUT_LIMIT_BYTES?:string;
@@ -28,6 +30,9 @@ function chunkSize(env:Env,fileSize:number,fastUpload=false){
 // Keep each request well below the Workers inbound-body ceiling while cutting
 // round trips for large originals in half compared with 32 MiB parts.
 const FAST_MULTIPART_BYTES=64*1024*1024;
+function downloadRange(request:Request,physicalChunk:number){
+  return request.headers.get('X-FlickDock-Range-Bytes')==='4194304'&&physicalChunk%(4*1024*1024)===0?4*1024*1024:1024*1024;
+}
 function uploadChunkSize(env:Env,fileSize:number,fastUpload=false,fastMultipart=false){
   // The newer capability is separate from fast_upload so 1.8.8 clients can
   // still upload >90 MiB using the protocol they already understand.
@@ -248,6 +253,7 @@ async function cleanup(env:Env){
 
 async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Response>{
   const url=new URL(request.url),path=url.pathname,method=request.method;
+  if(path.startsWith('/v1/wan/'))return wanRoute(request,env);
   if(method==='GET'&&path==='/v1/health')return json({service:'flickdock-cloud'});
   // Cloudflare enforces its account-wide free limits. Keep per-identity
   // authentication abuse controls below, but do not reject normal sync early.
@@ -585,7 +591,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
     // Releases predating fast upload accept at most 4 MiB per part. Expose a
     // 1 MiB virtual range view to those clients without duplicating R2 bytes.
     const legacy=upload!.chunk_size>4*1024*1024&&request.headers.get('X-FlickDock-Fast-Content')!=='1';
-    const chunk=legacy?1024*1024:upload!.chunk_size;
+    const chunk=legacy?downloadRange(request,upload!.chunk_size):upload!.chunk_size;
     return json({record:record(value!),chunk_size:chunk,part_count:legacy?Math.ceil(value!.size/chunk):upload!.part_count});
   }
   match=path.match(/^\/v1\/items\/([^/]+)\/parts\/(\d+)$/);
@@ -595,7 +601,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
     const upload=await first(env,'SELECT chunk_size,part_count FROM uploads WHERE id=? AND state=?',value!.active_upload,'committed');
     if(!upload)fail(503,'STORAGE_MISSING','Content metadata is unavailable');
     const legacy=upload!.chunk_size>4*1024*1024&&request.headers.get('X-FlickDock-Fast-Content')!=='1';
-    const virtualSize=1024*1024,expected=legacy?Math.min(virtualSize,value!.size-index*virtualSize):0;
+    const virtualSize=downloadRange(request,upload!.chunk_size),expected=legacy?Math.min(virtualSize,value!.size-index*virtualSize):0;
     if(legacy&&(!Number.isSafeInteger(index)||index>=Math.ceil(value!.size/virtualSize)))fail(404,'NOT_FOUND','Content part not found');
     const physicalIndex=legacy?Math.floor(index*virtualSize/upload!.chunk_size):index;
     const physicalOffset=legacy?index*virtualSize-physicalIndex*upload!.chunk_size:0;

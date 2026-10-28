@@ -16,14 +16,18 @@ from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QApplication, QAbstractButton, QHBoxLayout, QLabel, QPushButton, QWidget
 
 
-WINDOWS_FONT_STACK=('Segoe UI Variable Text','Segoe UI','Noto Sans SC','Source Han Sans SC','HarmonyOS Sans SC')
+WINDOWS_FONT_STACK=('HarmonyOS Sans SC','Segoe UI Variable Text','Segoe UI','Noto Sans SC','Source Han Sans SC')
+
+def readable_size(value):
+    value=int(value)
+    return value+(1 if value>=12 else 2) if sys.platform=='win32' else value
 
 def readable_qss(source):
     """One size step on Windows, applied once before installing a stylesheet."""
     if sys.platform != 'win32' or 'flickdock-readable-type' in source:return source
     import re
-    source=re.sub(r'(font-size\s*:\s*)(\d+)(px)',lambda m:m[1]+str(int(m[2])+2)+m[3],source)
-    source=re.sub(r'(font\s*:\s*(?:[1-9]00\s+)?)(\d+)(px)',lambda m:m[1]+str(int(m[2])+2)+m[3],source)
+    source=re.sub(r'(font-size\s*:\s*)(\d+)(px)',lambda m:m[1]+str(readable_size(m[2]))+m[3],source)
+    source=re.sub(r'(font\s*:\s*(?:[1-9]00\s+)?)(\d+)(px)',lambda m:m[1]+str(readable_size(m[2]))+m[3],source)
     return source+'\n/* flickdock-readable-type */'
 
 
@@ -91,6 +95,9 @@ def configure_reference_font(app):
     # Native file dialogs still come from the platform dialog helper.
     app.setStyle('Fusion')
     root=Path(getattr(sys,'_MEIPASS',Path(__file__).parent))
+    if sys.platform=='win32' and not getattr(app,'_harmony_font_loaded',False):
+        QFontDatabase.addApplicationFont(str(root/'fonts/HarmonyOS_Sans_SC_Regular.ttf'))
+        app._harmony_font_loaded=True
     translation=root/'assets/ui/qtbase_zh_CN.qm'
     if not getattr(app,'_flickdock_translation',None) and translation.is_file():
         translator=QTranslator(app)
@@ -123,7 +130,7 @@ def configure_reference_font(app):
     font.setStyleHint(QFont.StyleHint.SansSerif)
     font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias|QFont.StyleStrategy.PreferQuality)
     font.setHintingPreference(QFont.HintingPreference.PreferFullHinting if sys.platform=='win32' else QFont.HintingPreference.PreferVerticalHinting)
-    font.setPointSize(11);app.setFont(font)
+    font.setPointSize(10 if sys.platform=='win32' else 11);app.setFont(font)
     if not getattr(app, '_flickdock_focus_visibility', None):
         app._flickdock_focus_visibility = _KeyboardFocusVisibility(app)
         app.installEventFilter(app._flickdock_focus_visibility)
@@ -291,7 +298,7 @@ class UiLabel(QLabel):
         palette = colors(*_context(self))
         value = palette.get(self._ui_color, self._ui_color)
         font = self.font()
-        font.setPixelSize(int(self._ui_size)+(2 if sys.platform=='win32' else 0))
+        font.setPixelSize(readable_size(self._ui_size))
         font.setWeight(QFont.Weight(max(100, min(900, int(self._ui_weight)))))
         self.setFont(font)
         self.setStyleSheet(f'color:{value}; background:transparent; border:none;')

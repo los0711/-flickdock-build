@@ -8,13 +8,15 @@ if sys.platform != 'darwin':
 root = Path(SPECPATH)
 sys.path.insert(0, str(root))
 from app_version import APP_VERSION
+from p2p_assets import bundle_assets
+p2p_binaries,p2p_datas=bundle_assets()
 
 assets = [(root / 'fonts' / 'HarmonyOS_Sans_SC_Regular.ttf', 'fonts')]
 assets += [(root / 'assets/ui/qtbase_zh_CN.qm', 'assets/ui')]
 assets += [(root / 'licenses' / name, 'licenses') for name in (
     'HarmonyOS-Sans-LICENSE.txt', 'Python-LICENSE.txt', 'LGPL-3.0.txt',
     'GPL-3.0.txt', 'PyInstaller-COPYING.txt','OpenSSL-LICENSE.txt','Cloud-Client-LICENSES.txt',
-    'Lucide-LICENSE.txt')]
+    'Lucide-LICENSE.txt','WebRTC-LICENSES.txt')]
 assets += [(root / 'THIRD_PARTY_NOTICES.md', '.'), (root / 'font_manifest.json', '.')]
 for path, destination in assets:
     if not path.is_file():
@@ -25,8 +27,8 @@ architecture = os.environ.get('FLICKDOCK_TARGET_ARCH') or None
 icon = root / 'build' / 'macos' / 'FlickDock.icns'
 if not icon.is_file():
     raise FileNotFoundError('Run build_macos.py first to generate the original SVG icon.')
-analysis = Analysis([str(root / 'mac_entry.py')], pathex=[str(root)], binaries=[],
-    datas=[(str(path), destination) for path, destination in assets],
+analysis = Analysis([str(root / 'mac_entry.py')], pathex=[str(root)], binaries=p2p_binaries,
+    datas=[(str(path), destination) for path, destination in assets]+p2p_datas,
     hiddenimports=['Quartz', 'Quartz.CoreGraphics', 'Foundation', 'objc', '_hashlib',
                    'ssl', '_ssl', 'ctypes', 'ctypes.util', 'verify_transfers',
                    'keyring.backends.macOS', 'keyring.backends.macOS.api',

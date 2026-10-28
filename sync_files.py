@@ -130,6 +130,18 @@ def stage_item(ref, text, name, directory, cancel, limit=MAX_FILE_BYTES):
         raise
 
 
+def hash_part(path,index,chunk_size,cancel):
+    offset=index*chunk_size;remaining=min(chunk_size,max(0,Path(path).stat().st_size-offset))
+    checksum=hashlib.sha256()
+    with Path(path).open('rb') as source:
+        source.seek(offset)
+        while remaining:
+            if cancel.is_set():raise InterruptedError()
+            data=source.read(min(1024*1024,remaining))
+            if not data:raise OSError('待上传分块已改变。')
+            checksum.update(data);remaining-=len(data)
+    return checksum.hexdigest()
+
 def read_part(path, index, chunk_size, cancel):
     if cancel.is_set(): raise InterruptedError()
     digest = hashlib.sha256(); data = bytearray()

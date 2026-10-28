@@ -46,3 +46,8 @@ class ShelfAdapter:
         shelf.content.metadata = copy.deepcopy(view.get('metadata',{}))
         shelf.files['permanent'] = refs
         shelf.refresh(); self.manager.save(); self.manager.update_handles()
+        # Local thumbnail paths from another computer are not portable.
+        # Rehydrate web cards on this host without changing the saved payload.
+        application=getattr(self.manager,'app',None)
+        if application is not None and application.platformName() not in ('offscreen','minimal'):
+            shelf.queue_link_previews(refs)

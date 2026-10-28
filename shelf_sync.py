@@ -887,7 +887,7 @@ class ShelfSync(QObject):
         # routes cleanly terminate 64 MiB streams early, without an HTTP error.
         small_parts=[record['size']>90*1024*1024 or
             previous.get('version')==record['version'] and 0<previous.get('chunk_size',0)<=4*1024*1024 and record['size']>4*1024*1024]
-        def content_headers():return {} if small_parts[0] else {'X-FlickDock-Fast-Content':'1'}
+        def content_headers():return {'X-FlickDock-Range-Bytes':'4194304'} if small_parts[0] else {'X-FlickDock-Fast-Content':'1'}
         expected_target = self._download_target(record)
         if expected_target is None or Path(target).absolute() != expected_target.absolute():
             callback(None,ValueError('同步文件缓存位置无效。')); return
@@ -966,8 +966,10 @@ class ShelfSync(QObject):
             def start_part(index):
                 path = target.with_name('.'+target.name+f'.chunk-{index}')
                 size = min(chunk_size,record['size']-index*chunk_size)
+                attempts=[0]
                 def request_part():
                     if halted:return
+                    attempts[0]+=1
                     if failure[0] is not None:failed(failure[0],index);return
                     cached['hashes'].pop(str(index),None)
                     self.download_transfers.get(record['id'],{}).get('_inflight_bytes',{}).pop(str(index),None)
@@ -1020,6 +1022,12 @@ class ShelfSync(QObject):
                                 if digest and not problem:recorded(digest,None)
                                 else:failed(error,index)
                             self._work(_checked_download_part,(path,size,record['sha256']),recovered)
+                        elif (attempts[0]<3 and not self._quota_error(error)
+                                and getattr(error,'status',0) in (0,408,500,502,503,504)
+                                and getattr(error,'code','') not in ('cancelled','DOWNLOAD_SAVE_FAILED','CLIENT_PROCESSING_ERROR')):
+                            # Retry only the failed range; retain every verified
+                            # neighbor rather than delay the entire item cycle.
+                            QTimer.singleShot(250*attempts[0],request_part)
                         else: failed(error,index)
                         return
                     # CloudApi already checked the server's SHA-256 as it
@@ -1279,6 +1287,23 @@ class ShelfSync(QObject):
             self._notify_transfers()
             self.status_changed.emit(f'正在上传 {transfer["name"]} · {index+1}/{transfer["part_count"]}')
             self._send_part(transfer,index+1)
+        if getattr(self.api,'supports_file_slices',False) and transfer['part_count']>1:
+            from sync_files import hash_part
+            def hashed(digest,error):
+                if error:self._error(error);return
+                offset=index*transfer['chunk_size'];size=min(transfer['chunk_size'],transfer['size']-offset)
+                self._request('PUT',f'/v1/uploads/{transfer["upload_id"]}/parts/{index}',sent,
+                    source=transfer['path'],source_offset=offset,source_size=size,
+                    headers={'X-Content-SHA256':digest},progress=progress)
+                if index+1<transfer['part_count']:
+                    key=(transfer['upload_id'],index+1)
+                    self._work(hash_part,(transfer['path'],index+1,transfer['chunk_size']),
+                        lambda result,error:self._part_cache.__setitem__(key,result) if not error and
+                            self._resume_matches(transfer) and transfer.get('next_part',0)<=index+1 else None)
+            cached=self._part_cache.pop((transfer['upload_id'],index),None)
+            if isinstance(cached,str):hashed(cached,None)
+            else:self._work(hash_part,(transfer['path'],index,transfer['chunk_size']),hashed)
+            return
         if (index==0 and transfer['part_count']==1 and transfer['size']>4*1024*1024
                 and getattr(self.api,'supports_file_upload',False)):
             # For a single large part the staged original SHA is already the

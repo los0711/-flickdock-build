@@ -5,6 +5,7 @@ import ctypes
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -471,7 +472,16 @@ class PreviewPane(QFrame):
             self.copy_button.setToolTip("复制链接" if self.shelf.content.category(ref)=='links' else "复制文字")
             return
         source=Path(ref)
-        if self.shelf.content.category(ref)=='images' and self._show_image(ref):
+        from shortcut_preview import shortcut_details
+        shortcut=shortcut_details(source)
+        if shortcut is not None:
+            if shortcut.get('url') and QApplication.instance().platformName() not in ('offscreen','minimal'):
+                self.shelf.queue_link_previews([ref])
+            cover=meta.get('preview_image')
+            if cover and self._show_image(cover):pass
+            else:
+                self.text.setPlainText(shortcut['description']);self.stack.setCurrentWidget(self.text)
+        elif self.shelf.content.category(ref)=='images' and self._show_image(ref):
             self.info.setText("矢量图像" if source.suffix.lower() in ('.svg','.svgz') else kind(ref)+" 图像")
         elif self.shelf.content.category(ref) in ('video','audio') and MediaPreview.can_preview(ref):
             self.stack.setCurrentWidget(self.media)
@@ -1229,9 +1239,9 @@ class ShelfWindow(QWidget):
         self.pin_button.setAccessibleName(self.pin_button.toolTip())
         from reference_widgets import LanButton
         self.lan_button = LanButton('nearby', self.card, motion=self.manager.motion)
-        self.lan_button.setToolTip('局域网互传')
-        self.lan_button.setAccessibleName('打开局域网传输')
-        self.lan_button.clicked.connect(lambda: self.manager.show_lan_dialog())
+        self.lan_button.setToolTip('互传')
+        self.lan_button.setAccessibleName('选择局域网或广域网传输')
+        self.lan_button.clicked.connect(self.show_transfer_menu)
         from reference_widgets import AvatarButton
         self.account_button = AvatarButton('user', self.card, motion=self.manager.motion)
         self.account_button.setToolTip('账号与设置')
@@ -1270,7 +1280,7 @@ class ShelfWindow(QWidget):
         self.footer_line=QFrame(self.card);self.footer_line.setGeometry(1,269,CARD_W-2,1)
         for line in (self.header_line,self.footer_line):css(line,'background:rgba(255,255,255,15);border:0;','background:rgba(0,0,0,15);border:0;')
         self.account_caption=label('未登录',10,500,'secondary',self.card);self.account_caption.setGeometry(40,CARD_H-38,47,22)
-        self.lan_caption=button('局域网互传',parent=self.card);self.lan_caption.setGeometry(113,CARD_H-40,90,26);self.lan_caption.clicked.connect(lambda:self.manager.show_lan_dialog())
+        self.lan_caption=button('互传',parent=self.card);self.lan_caption.setGeometry(113,CARD_H-40,90,26);self.lan_caption.clicked.connect(self.show_transfer_menu)
         self.traffic_controls=QFrame(self.card);self.traffic_controls.setGeometry(16,18,56,12)
         for index,tint in enumerate(('#FF5F56','#FFBD2E','#27C93F')):
             control=QPushButton(self.traffic_controls);control.setGeometry(index*20,0,12,12);control.setStyleSheet(f'background:{tint};border:0;border-radius:6px;')
@@ -1393,6 +1403,12 @@ class ShelfWindow(QWidget):
     def _reserved_surface_rect(self,origin,target=None):
         target=self._expansion_rect(origin) if target is None else target
         bounds=origin.united(target).adjusted(-16,-12,16,12)
+        if sys.platform=='darwin':
+            # AppKit constrains an oversized/above-menu-bar native canvas on
+            # ordering. Reserve within the work area before showing it, so
+            # Cocoa cannot rebase the canvas during a later morph.
+            screen=QGuiApplication.screenAt(origin.center()) or QGuiApplication.primaryScreen()
+            bounds=bounds.intersected(screen.availableGeometry())
         step=Fraction(self.devicePixelRatioF()).limit_denominator(8).denominator
         x=origin.x()+math.floor((bounds.x()-origin.x())/step)*step
         y=origin.y()+math.floor((bounds.y()-origin.y())/step)*step
@@ -1543,6 +1559,15 @@ class ShelfWindow(QWidget):
     def _resolved_content(self,ref,result):
         if ref not in self.files['permanent']: return
         result=dict(result); result['loading']=False
+        metadata=self.content.metadata.get(ref,{})
+        if metadata.get('preview_only'):
+            result['preview_resolved_source']=metadata.get('source_url','')
+        if self.content.is_text(ref) and self.content.metadata.get(ref,{}).get('preview_only'):
+            if result.get('path'):result['preview_image']=result.pop('path')
+        from shortcut_preview import SUFFIXES
+        if Path(ref).suffix.lower() in SUFFIXES and not self.content.is_text(ref):
+            if result.get('path'):result['preview_image']=result.pop('path')
+            result['title']=self.content.title(ref)
         if str(result.get('source_url','')).startswith('data:'):
             original=result.pop('source_url')
             result.pop('final_url',None)
@@ -1560,6 +1585,20 @@ class ShelfWindow(QWidget):
                 if self.popup.primary_selection==ref: self.popup.primary_selection=path
         else: self.content.metadata.setdefault(ref,{}).update(result)
         self.refresh(); self.manager.save(); self.manager.update_handles()
+
+    def queue_link_previews(self,refs=None):
+        from shortcut_preview import shortcut_details
+        for ref in refs or self.files['permanent']:
+            meta=self.content.metadata.setdefault(ref,{})
+            if ref in self.resolver.pending_refs:continue
+            if meta.get('preview_image') and Path(meta['preview_image']).is_file():continue
+            source=self.content.text(ref)
+            if not (isinstance(source,str) and re.fullmatch(r'https?://\S+',source,re.IGNORECASE)):
+                details=shortcut_details(ref);source=(details or {}).get('url')
+            if not source or meta.get('error'):continue
+            if meta.get('preview_resolved_source')==source:continue
+            meta.update(loading=True,source_url=source,preview_only=True)
+            self.resolver.resolve(ref,source)
 
     def confirm_clear_all(self):
         count=len(self.display_refs())
@@ -1651,12 +1690,7 @@ class ShelfWindow(QWidget):
     def refresh(self):
         from reference_widgets import refresh_tree
         refresh_tree(self)
-        account=getattr(self.manager,'account',None)
-        if hasattr(self,'account_caption'):
-            self.account_caption.setText(str(account.account.get('username',''))[:8] if account and account.signed_in else '未登录')
-            self.account_button.initial=(str(account.account.get('username',''))[:1].upper() if account and account.signed_in else '')
-        if self.popup:
-            self.popup.account_nav.set_profile(str(account.account.get('username','')) if account and account.signed_in else '',bool(account and account.signed_in))
+        self.refresh_account_identity()
         for mode in MODES:
             self.files[mode] = [p for p in self.files[mode] if self.content.exists(p)]
             self.zones[mode].refresh()
@@ -1666,6 +1700,14 @@ class ShelfWindow(QWidget):
         if self.popup and self.popup.isVisible():
             if not self.content_transition_active():self.popup.rebuild()
         self.update()
+
+    def refresh_account_identity(self):
+        account=getattr(self.manager,'account',None)
+        if hasattr(self,'account_caption'):
+            self.account_caption.setText(str(account.account.get('username',''))[:8] if account and account.signed_in else '未登录')
+            self.account_button.initial=(str(account.account.get('username',''))[:1].upper() if account and account.signed_in else '')
+        if self.popup:
+            self.popup.account_nav.set_profile(str(account.account.get('username','')) if account and account.signed_in else '',bool(account and account.signed_in))
 
     def request_directory_size(self,ref):
         now=time.monotonic();cached=self._directory_sizes.get(ref)
@@ -2235,6 +2277,13 @@ class ShelfWindow(QWidget):
     def real_paths(self, mode):
         return [ref for ref in self.files[mode] if not self.content.is_text(ref) and self.content.exists(ref)]
 
+    def show_transfer_menu(self):
+        menu=QMenu(self);style_menu(menu)
+        menu.addAction('局域网互传',self.manager.show_lan_dialog)
+        menu.addAction('广域网传输',self.manager.show_wan_dialog)
+        self._transfer_menu=menu
+        menu.popup(self.lan_button.mapToGlobal(QPoint(0,-menu.sizeHint().height())))
+
     def show_menu(self, mode=None, pos=None):
         if confirmation_active(self):return
         self.touch()
@@ -2508,6 +2557,17 @@ class DockHandle(QWidget):
 
     def screen_area(self): return QGuiApplication.primaryScreen().availableGeometry()
 
+    def activation_region(self):
+        region=QRect(self.geometry())
+        if sys.platform=='darwin':
+            screen=QGuiApplication.primaryScreen().geometry()
+            edge=self.manager.settings.dock_edge
+            if edge=='right':region.setRight(screen.right()+1)
+            elif edge=='left':region.setLeft(screen.left()-1)
+            elif edge=='top':region.setTop(screen.top()-1)
+            else:region.setBottom(screen.bottom()+1)
+        return region
+
     def position_at_edge(self):
         values=self.manager.dock_values()
         self.setGeometry(trigger_rect(self.screen_area(),values['dock_edge'],values['dock_position'],values['dock_length'],values['dock_thickness']))
@@ -2565,6 +2625,7 @@ class ShelfManager:
         ui_theme.apply_application(app, FONT_FAMILY)
         self.settings_dialog = None
         self.lan_dialog = None
+        self.wan_dialog = None
         self.updates = UpdateController(APP_VERSION, BASE, settings=self.settings,
                                         quit_callback=self.quit, is_busy=self._update_busy)
         self.update_notice = None
@@ -2642,6 +2703,11 @@ class ShelfManager:
         self.sync.transfers_changed.connect(self._transfers_changed)
         self.lan=LanTransferService(self.app,device_name=self.account.device_name)
         self.lan.offer_received.connect(self._lan_offer)
+        from wan_transfer import WanTransferService
+        self.wan=WanTransferService(BASE,self.app,device_name=self.account.device_name,
+            enabled=not self.cocoa_smoke and self.app.platformName() not in ('offscreen','minimal'))
+        self.wan.offer_received.connect(self._wan_offer)
+        self.wan.start()
         self.account.account_changed.connect(self._lan_identity)
         self.account.devices_changed.connect(self._lan_devices)
         if not self.cocoa_smoke and self.app.platformName() not in ('offscreen','minimal'):self.lan.start()
@@ -2687,6 +2753,7 @@ class ShelfManager:
 
     def _update_busy(self):
         return (getattr(self, '_quitting', False) or getattr(self, 'outgoing_drag', False)
+                or any(transfer.active for service in (getattr(self,'lan',None),getattr(self,'wan',None)) if service for transfer in getattr(service,'_transfers',{}).values())
                 or bool(QApplication.mouseButtons())
                 or QApplication.activeModalWidget() is not None
                 or QApplication.activePopupWidget() is not None
@@ -2743,6 +2810,9 @@ class ShelfManager:
     def _lan_identity(self,account):
         name=self.account.device_name
         self.lan.device_name=(str(account.get('username',''))+' · '+name)[:80] if account else name
+        # Resume on macOS is asynchronous. The overview may already exist;
+        # its profile must follow the account signal independently of files.
+        for shelf in self.shelves:shelf.refresh_account_identity()
 
     def _lan_devices(self,devices):
         current=next((d for d in devices if d.get('id')==self.account.device_id),None)
@@ -2752,6 +2822,9 @@ class ShelfManager:
     def _lan_offer(self,offer):
         self.show_lan_dialog()
         self.lan_dialog.panel.show_offer(offer)
+
+    def _wan_offer(self,offer):
+        self.show_wan_dialog();self.wan_dialog.panel.show_offer(offer)
 
     def _lan_selected(self):
         refs=self.shelf.popup.chosen_refs() if self.shelf.popup else []
@@ -2839,6 +2912,21 @@ class ShelfManager:
             self.lan_dialog.move(x,y)
         self.lan_dialog.show(); self.lan_dialog.raise_(); self.lan_dialog.activateWindow()
 
+    def show_wan_dialog(self):
+        self.shelf._release_reveal_level()
+        if self.wan_dialog is None:
+            self.wan_dialog=LanDialog(self.wan,self.settings)
+            self.wan_dialog.panel.set_paths_provider(self._lan_selected)
+            self.wan_dialog.overview_requested.connect(self.show_overview)
+            self.wan_dialog.mini_requested.connect(self.show_shortcut)
+            self.wan_dialog.dock_requested.connect(lambda:self.shelf.hide_animated(explicit=True))
+        if not self.wan_dialog.isVisible():
+            area=(QGuiApplication.screenAt(self.shelf.frameGeometry().center()) or QGuiApplication.primaryScreen()).availableGeometry()
+            center=self.shelf.frameGeometry().center()
+            self.wan_dialog.move(max(area.left()+8,min(center.x()-self.wan_dialog.width()//2,area.right()-self.wan_dialog.width()-8)),
+                max(area.top()+8,min(center.y()-self.wan_dialog.height()//2,area.bottom()-self.wan_dialog.height()-8)))
+        self.wan_dialog.show();self.wan_dialog.raise_();self.wan_dialog.activateWindow()
+
     def dock_values(self):
         if self._dock_preview_values is not None: return self._dock_preview_values
         return {key:getattr(self.settings,key) for key in ('dock_edge','dock_position','dock_length','dock_thickness','trigger_visible','dock_color','dock_opacity')}
@@ -2880,6 +2968,7 @@ class ShelfManager:
             self.settings_dialog.apply_theme(self.settings.theme)
             self.account_panel.apply_theme(self.settings.theme)
         if self.lan_dialog:self.lan_dialog.apply_theme(self.settings.theme)
+        if self.wan_dialog:self.wan_dialog.apply_theme(self.settings.theme)
         self.updates.apply_theme(self.settings.theme)
         if self.update_notice is not None:
             self.update_notice.apply_theme(self.settings.theme)
@@ -3044,7 +3133,7 @@ class ShelfManager:
     def poll(self):
         if hasattr(self,'sync'):
             self.sync.set_interactive(self.shelf.isVisible() or bool(self.settings_dialog and self.settings_dialog.isVisible())
-                or bool(self.lan_dialog and self.lan_dialog.isVisible()))
+                or bool(self.lan_dialog and self.lan_dialog.isVisible()) or bool(self.wan_dialog and self.wan_dialog.isVisible()))
         now=time.monotonic(); pos=QCursor.pos()
         app_active=self.app.applicationState() == Qt.ApplicationState.ApplicationActive
         app_deactivated=self._app_was_active and not app_active
@@ -3052,7 +3141,7 @@ class ShelfManager:
         native=native_input_available()
         mask=mouse_buttons_mask()
         down=bool(mask&1); new_press=bool(mask&~self._button_mask); self._button_mask=mask
-        if self.edge_suppressed and not self.edge.geometry().contains(pos): self.edge_suppressed=False
+        if self.edge_suppressed and not self.edge.activation_region().contains(pos): self.edge_suppressed=False
         if app_deactivated:
             retired=False
             for shelf in self.shelves:
@@ -3063,7 +3152,7 @@ class ShelfManager:
                     # browser. Retire them before the edge handoff this tick.
                     shelf.hide_immediately();retired=True
             if retired:self.update_handles()
-        if self.edge.isVisible() and self.edge.geometry().contains(pos) and not self.edge_suppressed and not self.shelf.isVisible(): self.show_docked()
+        if self.edge.isVisible() and self.edge.activation_region().contains(pos) and not self.edge_suppressed and not self.shelf.isVisible(): self.show_docked()
         for shelf in self.shelves:
             if not shelf.isVisible(): continue
             modal=QApplication.activeModalWidget(); popup=QApplication.activePopupWidget()
@@ -3071,6 +3160,7 @@ class ShelfManager:
             press_blocked=modal is not None or shelf.rename_edit.isVisible() or (popup is not None and popup.frameGeometry().contains(pos)) or confirmation_active(shelf)
             in_settings=app_active and self.settings_dialog is not None and self.settings_dialog.isVisible() and self.settings_dialog.frameGeometry().contains(pos)
             in_settings=in_settings or bool(app_active and self.lan_dialog and self.lan_dialog.isVisible() and self.lan_dialog.frameGeometry().contains(pos))
+            in_settings=in_settings or bool(app_active and self.wan_dialog and self.wan_dialog.isVisible() and self.wan_dialog.frameGeometry().contains(pos))
             inside=shelf.hover_region_contains(pos)
             if new_press and in_settings:shelf._release_reveal_level()
             if new_press and not inside and not in_settings and not press_blocked and not shelf.pinned and not self.outgoing_drag:
@@ -3116,6 +3206,7 @@ class ShelfManager:
         if self.update_notice is not None:
             self.update_notice.hide()
         if hasattr(self,'lan'):self.lan.close()
+        if hasattr(self,'wan'):self.wan.close()
         self._quitting=True
         self._intake_sync_timer.stop()
         self.timer.stop()
@@ -3128,6 +3219,7 @@ class ShelfManager:
         if self.settings_dialog:
             self.settings_dialog.close()
         if self.lan_dialog:self.lan_dialog.close()
+        if self.wan_dialog:self.wan_dialog.close()
         self.drag_gate.close()
         if self.outgoing_drag:
             QDrag.cancel()
@@ -3157,6 +3249,9 @@ def main():
     if '--verify-cloud-stream' in sys.argv:
         from test_cloud_api_stream_v183 import main as verify_cloud_stream
         return verify_cloud_stream()
+    if '--verify-wan' in sys.argv:
+        from verify_wan import run
+        return run(sys.argv,load_font)
     if '--verify-transfers' in sys.argv:
         from verify_transfers import run
         return run(sys.argv,load_font)
@@ -3189,8 +3284,9 @@ def main():
             guard.close()
             return 2
         report_path = Path(sys.argv[index + 1])
-        from mac_entry import verify_cocoa_window_order
+        from mac_entry import verify_cocoa_window_order,verify_cocoa_interactions
         native_order = verify_cocoa_window_order(manager.edge, manager.shelf)
+        native_order.update(verify_cocoa_interactions(manager.edge, manager.shelf))
         manager.edge.show_handle()
         manager.shelf.show_transient()
         def finish_cocoa_smoke():

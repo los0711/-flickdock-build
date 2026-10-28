@@ -62,6 +62,45 @@ def verify_cocoa_window_order(edge, shelf):
     return dict(ok=True, cases=results)
 
 
+def verify_cocoa_interactions(edge, shelf):
+    if (sys.platform != 'darwin' or not getattr(sys, 'frozen', False)
+            or os.environ.get('FLICKDOCK_CI_COCOA_SMOKE') != '1'
+            or os.environ.get('QT_QPA_PLATFORM', '').lower() != 'cocoa'):
+        raise RuntimeError('Native interaction verification requires frozen Cocoa CI mode.')
+    import ctypes
+    import AppKit
+    import objc
+    from PySide6.QtCore import QPoint,Qt
+    from PySide6.QtWidgets import QApplication
+    from drag_probe import ContentDragGate
+    import time
+    app=QApplication.instance()
+    probe=ContentDragGate(lambda _:None)
+    try:
+        if not probe.probe.testAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow):
+            raise AssertionError('Cocoa drag probe may hide when the source app stays active')
+        probe.arm(QPoint(120,120));app.processEvents()
+        probe_view=objc.objc_object(c_void_p=ctypes.c_void_p(int(probe.probe.winId())))
+        if not probe_view.window().isVisible() or probe_view.window().level()!=AppKit.NSFloatingWindowLevel:
+            raise AssertionError('Cocoa drag probe did not become a passive floating target')
+    finally:probe.close()
+    area=edge.screen_area()
+    shelf._show_at(QPoint(area.right()-359,area.top()+4),'dock',QPoint())
+    app.processEvents()
+    canvas=shelf.geometry()
+    def settle():
+        deadline=time.monotonic()+4
+        while shelf.geometry_morph.active and time.monotonic()<deadline:
+            app.processEvents()
+            if shelf.geometry()!=canvas:raise AssertionError('Cocoa changed the native canvas during a morph')
+            time.sleep(.005)
+        if shelf.geometry_morph.active:raise AssertionError('Cocoa morph did not settle')
+    shelf.show_contents();settle();shelf.collapse_contents();settle()
+    if shelf.geometry()!=canvas:raise AssertionError('Cocoa changed the native origin after collapse')
+    shelf.hide_immediately()
+    return dict(passive_drag_probe=True,stable_native_canvas=True)
+
+
 def verify_platform(report_path):
     if os.environ.get('QT_QPA_PLATFORM', '').lower() != 'offscreen':
         raise ValueError('平台验证必须显式使用 offscreen。')

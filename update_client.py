@@ -19,7 +19,8 @@ from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequ
 # Stable public release URL; Gitee redirects raw files to its public CDN.
 DEFAULT_MANIFEST_URL = 'https://gitee.com/rooogerluo/flick-dock-releases/raw/master/updates/latest.json'
 MAC_MANIFEST_BASE = 'https://gitee.com/rooogerluo/flick-dock-releases/raw/master/updates/'
-DEFAULT_ALLOWED_HOSTS = frozenset({'gitee.com', 'raw.giteeusercontent.com', 'foruda.gitee.com'})
+WORKER_MANIFEST_BASE='https://flickdock-site.roger000416.workers.dev/updates/'
+DEFAULT_ALLOWED_HOSTS = frozenset({'gitee.com', 'raw.giteeusercontent.com', 'foruda.gitee.com','flickdock-site.roger000416.workers.dev'})
 MAX_MANIFEST_BYTES = 128 * 1024
 MAX_INSTALLER_BYTES = 1024 * 1024 * 1024
 MAX_REDIRECTS = 5
@@ -158,7 +159,7 @@ class UpdateClient(QObject):
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.setTimerType(Qt.TimerType.PreciseTimer)
-        self._timer.timeout.connect(lambda: self._fail('检查更新超时。' if self._mode == 'check' else '下载安装包超时。'))
+        self._timer.timeout.connect(lambda: self._fail('检查更新超时。' if self._mode == 'check' else '下载安装包超时。',retry_mirror=True))
         self._closed = False
         self._mode = None
         self._manual = False
@@ -176,6 +177,7 @@ class UpdateClient(QObject):
         self._final = None
         self._hash = None
         self.last_operation = ''
+        self._mirror_attempted=False
 
     @property
     def busy(self):
@@ -194,6 +196,7 @@ class UpdateClient(QObject):
                 return True
             return False
         self._begin('check', manual)
+        self._mirror_attempted=False
         self._manifest = None
         self.checking.emit(self._manual)
         self._timer.start(self.timeout_ms)
@@ -272,7 +275,7 @@ class UpdateClient(QObject):
         if status in (301, 302, 303, 307, 308):
             return
         if status and status != 200:
-            self._fail(f'更新服务器返回 HTTP {status}。')
+            self._fail(f'更新服务器返回 HTTP {status}。',retry_mirror=status in (403,408,429,500,502,503,504))
             return
         content_type = bytes(reply.rawHeader('Content-Type')).lower().split(b';', 1)[0].strip()
         if content_type in (b'text/html', b'application/xhtml+xml'):
@@ -352,9 +355,9 @@ class UpdateClient(QObject):
             return
         if reply.error() != QNetworkReply.NetworkError.NoError or status != 200:
             if reply.error() == QNetworkReply.NetworkError.TimeoutError:
-                self._fail('检查更新超时。' if self._mode == 'check' else '下载安装包超时。')
+                self._fail('检查更新超时。' if self._mode == 'check' else '下载安装包超时。',retry_mirror=True)
                 return
-            self._fail('更新请求失败：' + reply.errorString())
+            self._fail('更新请求失败：' + reply.errorString(),retry_mirror=True)
             return
         try:
             if self._mode == 'check':
@@ -420,9 +423,18 @@ class UpdateClient(QObject):
             self._part.unlink(missing_ok=True)
             self._part = None
 
-    def _fail(self, message):
+    def _fail(self, message, *, retry_mirror=False):
         if not self.busy:
             return
+        if (retry_mirror and self._mode=='check' and not self._mirror_attempted
+                and self.endpoint.startswith(MAC_MANIFEST_BASE)
+                and 'flickdock-site.roger000416.workers.dev' in self.allowed_hosts):
+            filename=self.endpoint[len(MAC_MANIFEST_BASE):]
+            if filename in ('latest.json','macos-arm64-auto.json','macos-x86_64-auto.json','macos-arm64.json','macos-x86_64.json'):
+                self._mirror_attempted=True;self._generation+=1;self._detach_reply()
+                self._body.clear();self._prefix.clear();self._received=0;self._redirects=0;self._redirect_bytes=0
+                self._timer.start(self.timeout_ms);self._request(WORKER_MANIFEST_BASE+filename)
+                return
         manual = self._manual
         self._complete()
         try:

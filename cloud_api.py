@@ -18,10 +18,32 @@ class CloudError(Exception):
         super().__init__(message)
         self.status, self.code, self.details = status, code, details
 
+class UploadSlice(QIODevice):
+    """Seekable, bounded device: Qt reads only this part, never a 64MiB copy."""
+    def __init__(self,path,offset,size,parent=None):
+        super().__init__(parent)
+        self._stream=Path(path).open('rb');self._start=offset;self._length=size
+        self._stream.seek(offset);self.open(QIODevice.OpenModeFlag.ReadOnly|QIODevice.OpenModeFlag.Unbuffered)
+
+    def isSequential(self):return False
+    def size(self):return self._length
+    def bytesAvailable(self):return 0 if self._stream.closed else max(0,self._start+self._length-self._stream.tell())
+    def atEnd(self):return self.bytesAvailable()==0
+    def seek(self,position):
+        if self._stream.closed or not 0<=position<=self._length:return False
+        self._stream.seek(self._start+position)
+        return super().seek(position)
+    def readData(self,maximum):
+        return self._stream.read(min(maximum,self.bytesAvailable()))
+    def close(self):
+        if not self._stream.closed:self._stream.close()
+        super().close()
+
 
 class CloudApi(QObject):
     unauthorized = Signal()
     supports_file_upload = True
+    supports_file_slices = True
 
     def __init__(self, origin, parent=None, *, network=None, allow_test_http=False):
         super().__init__(parent)
@@ -45,7 +67,7 @@ class CloudApi(QObject):
             raise CloudError('同步请求无效。')
         return QUrl(self.origin + path)
 
-    def request(self, method, path, callback, *, data=None, raw=None, source=None, headers=None,
+    def request(self, method, path, callback, *, data=None, raw=None, source=None, source_offset=0, source_size=None, headers=None,
                 authenticated=True, destination=None, expected=None, timeout_ms=45000,
                 progress=None, receive_progress=None):
         """callback(result,error); optional progress callbacks report network bytes.
@@ -74,10 +96,16 @@ class CloudApi(QObject):
                 path_to_send = Path(source)
                 if path_to_send.is_symlink() or not path_to_send.is_file():
                     raise CloudError('待上传文件已改变。')
-                upload_size = path_to_send.stat().st_size
-                source_file = QFile(str(path_to_send))
-                if not source_file.open(QIODevice.OpenModeFlag.ReadOnly):
-                    raise CloudError('无法读取待上传文件。')
+                file_size=path_to_send.stat().st_size
+                upload_size=file_size-source_offset if source_size is None else source_size
+                if (type(source_offset) is not int or type(upload_size) is not int or source_offset<0 or upload_size<0
+                        or source_offset+upload_size>file_size):raise CloudError('上传分块范围无效。')
+                if source_offset or source_size is not None:
+                    source_file=UploadSlice(path_to_send,source_offset,upload_size,self)
+                else:
+                    source_file = QFile(str(path_to_send))
+                    if not source_file.open(QIODevice.OpenModeFlag.ReadOnly):
+                        raise CloudError('无法读取待上传文件。')
                 # Qt otherwise may buffer the complete 80 MiB payload before
                 # sending it. QFile remains open until this reply finishes.
                 request.setAttribute(QNetworkRequest.Attribute.DoNotBufferUploadDataAttribute, True)

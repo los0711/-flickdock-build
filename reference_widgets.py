@@ -154,7 +154,7 @@ class LanButton(ToolbarButton):
             p.setPen(Qt.NoPen);p.setBrush(ink(c['hover']));p.drawRoundedRect(QRectF(self.rect()).adjusted(1,1,-1,-1),8,8)
         icon('nearby',c['link']).paint(p,QRect(7,(self.height()-16)//2,16,16))
         f=self.font();f.setPixelSize(13 if sys.platform=='win32' else 12);p.setFont(f);p.setPen(QColor(c['text']))
-        p.drawText(QRectF(29,0,self.width()-33,self.height()),Qt.AlignLeft|Qt.AlignVCenter,'局域网互传')
+        p.drawText(QRectF(29,0,self.width()-33,self.height()),Qt.AlignLeft|Qt.AlignVCenter,'互传')
         if keyboard_focus_visible(self):
             p.setPen(QPen(QColor(c['link']),1.5));p.setBrush(Qt.NoBrush);p.drawRoundedRect(QRectF(self.rect()).adjusted(2,2,-2,-2),7,7)
         p.end()
@@ -482,7 +482,7 @@ def build_overview(view,preview_type):
     view.view_segment=QFrame(view.header);view.view_segment.setFixedSize(154,32)
     css(view.view_segment,'QFrame{background:rgba(255,255,255,10);border:1px solid rgba(255,255,255,18);border-radius:9px;}',
         'QFrame{background:rgba(0,0,0,10);border:1px solid rgba(0,0,0,18);border-radius:9px;}')
-    segment=QHBoxLayout(view.view_segment);segment.setContentsMargins(3,3,3,3);segment.setSpacing(0)
+    segment=QHBoxLayout(view.view_segment);segment.setContentsMargins(2,2,2,2);segment.setSpacing(0)
     view.view_list=button('列表','list',parent=view.view_segment);view.view_grid=button('图标','grid',parent=view.view_segment)
     for control,key in ((view.view_list,'list'),(view.view_grid,'icons')):
         control.setFixedHeight(26);control.setCheckable(True)
@@ -514,9 +514,10 @@ def build_overview(view,preview_type):
         view.nav_counts[key]=count;view.category_buttons[key]=control;view.sidebar_buttons[key]=control
     view.transfer_badge=view.nav_counts['uploading']
     side.addStretch(1)
+    view.wan_nav=button('广域网传输','web','secondary',view.sidebar);view.wan_nav.setFixedHeight(34);view.wan_nav.clicked.connect(lambda:view.shelf.manager.show_wan_dialog());side.addWidget(view.wan_nav)
     view.lan_nav=button('局域网互传','nearby','secondary',view.sidebar);view.lan_nav.setFixedHeight(34);view.lan_nav.clicked.connect(lambda:view.shelf.manager.show_lan_dialog());side.addWidget(view.lan_nav)
     view.settings_nav=button('设置','settings',parent=view.sidebar);view.settings_nav.setFixedHeight(34);view.settings_nav.clicked.connect(lambda:view.shelf.manager.show_settings());side.addWidget(view.settings_nav)
-    for control in (view.lan_nav,view.settings_nav):
+    for control in (view.wan_nav,view.lan_nav,view.settings_nav):
         control.setProperty('leftAligned',True)
         old=control._reference_style
         css(control,*[s.replace('padding:4px 11px;','padding:4px 12px;text-align:left;') for s in old])

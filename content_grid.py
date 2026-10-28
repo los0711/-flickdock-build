@@ -37,7 +37,7 @@ class IconItem(QWidget):
         self.origin = QPoint()
         self.did_drag = False
         self._selected = ref in popup.selected
-        self.setMinimumWidth(112);self.setFixedHeight(120)
+        self.setMinimumWidth(112);self.setMaximumWidth(176);self.setFixedHeight(120)
         self.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
         self._keyboard_focus=False
         self.setMouseTracking(True)

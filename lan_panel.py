@@ -9,7 +9,7 @@ import time
 from collections import deque
 
 from PySide6.QtCore import QByteArray, QRect, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QFrame, QGraphicsDropShadowEffect,
                                QHBoxLayout, QLabel, QLineEdit, QProgressBar, QPushButton,
@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QFrame, QGraphic
 
 from flickdock_icons import draw_glyph
 from platform_native import remove_host_window_shadow
-from native_ui_common import colors as ui_colors, icon as ui_icon, reference_font
+from native_ui_common import colors as ui_colors, icon as ui_icon, reference_font, reduced_motion
 
 
 def _label(value='', parent=None, *, muted=False):
@@ -155,6 +155,21 @@ class _ScanIndicator(QWidget):
 
 
 class _DevicesCombo(QComboBox):
+    def __init__(self,parent=None):
+        super().__init__(parent)
+        from app_settings import _InlineComboStyle
+        self._popup_style=_InlineComboStyle('Fusion');self._popup_style.setParent(self)
+        self.setStyle(self._popup_style);self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def showPopup(self):
+        popup=self.view().window()
+        popup.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground,False)
+        popup.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint,True)
+        popup.setAutoFillBackground(True)
+        dark=bool(getattr(self.itemDelegate(),'dark',False))
+        popup.setStyleSheet('QFrame{background:'+('#242426' if dark else '#FFFFFF')+';border:1px solid '+('#424248' if dark else '#D4D4D8')+';border-radius:10px;}')
+        super().showPopup()
+
     def wheelEvent(self, event): event.ignore()
 
     def paintEvent(self, event):
@@ -254,6 +269,9 @@ class _DropZone(QFrame):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAccessibleName('选择要发送的文件；也可拖入文件或文件夹')
         self._active = False
+        self._hovered=False
+        self._ants_timer=QTimer(self);self._ants_timer.setInterval(33)
+        self._ants_timer.timeout.connect(self.update)
         layout = QVBoxLayout(self); layout.setContentsMargins(16, 16, 16, 16); layout.setSpacing(10)
         layout.addStretch(1)
         illustration = _DropIllustration(self)
@@ -267,6 +285,34 @@ class _DropZone(QFrame):
         self.hint.hide()
         layout.addStretch(1)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def border_path(self):
+        rect=QRectF(self.rect()).adjusted(1,1,-1,-1)
+        path=QPainterPath();path.addRoundedRect(rect,min(12,rect.width()/2,rect.height()/2),min(12,rect.width()/2,rect.height()/2))
+        return path
+
+    def paintEvent(self,event):
+        painter=QPainter(self);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        dark=self.illustration.dark;active=self._active or self._hovered
+        path=self.border_path()
+        painter.fillPath(path,QColor(10,132,255,13) if active else QColor(255,255,255,7) if dark else QColor(0,0,0,5))
+        width=1.2;pen=QPen(QColor('#0A84FF') if active else QColor(255,255,255,55) if dark else QColor(0,0,0,48),width)
+        # Divide the closed path into whole cycles. The closing corner gets
+        # exactly the same dash/gap as the straight edges, at every width/DPR.
+        length=path.length();cycle=length/max(1,round(length/8))
+        pen.setDashPattern([cycle*.52/width,cycle*.48/width])
+        pen.setCapStyle(Qt.PenCapStyle.FlatCap);pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        if self._active and not reduced_motion():pen.setDashOffset((time.perf_counter()*12/width)%(cycle/width))
+        painter.setPen(pen);painter.setBrush(Qt.BrushStyle.NoBrush);painter.drawPath(path)
+
+    def enterEvent(self,event):
+        self._hovered=True;self.update();super().enterEvent(event)
+
+    def leaveEvent(self,event):
+        self._hovered=False;self.update();super().leaveEvent(event)
+
+    def hideEvent(self,event):
+        self._ants_timer.stop();super().hideEvent(event)
 
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
@@ -292,6 +338,8 @@ class _DropZone(QFrame):
         if self._paths(event):
             self._active = True; self.setProperty('dragActive', True); self.style().unpolish(self); self.style().polish(self)
             self.illustration.update()
+            if not reduced_motion():self._ants_timer.start()
+            self.update()
             event.setDropAction(Qt.DropAction.CopyAction); event.accept()
         else: event.ignore()
 
@@ -302,6 +350,7 @@ class _DropZone(QFrame):
     def dragLeaveEvent(self, event):
         self._active = False; self.setProperty('dragActive', False); self.style().unpolish(self); self.style().polish(self)
         self.illustration.update()
+        self._ants_timer.stop();self.update()
         event.accept()
 
     def dropEvent(self, event):
@@ -429,6 +478,11 @@ class _HistoryRow(QFrame):
         self.title.setObjectName('lanHistoryTitle')
         self.detail = _ElidedLabel(name, self)
         self.detail.setObjectName('lanHistoryDetail')
+        error=str(record.get('error') or '')[:600]
+        if error:
+            self.title.setText(error)
+            self.title.setToolTip(error);self.setAccessibleDescription(error)
+            self.title.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         lines.addWidget(self.detail)
         lines.addWidget(self.title)
         layout.addLayout(lines, 1)
@@ -448,7 +502,7 @@ class _HistoryRow(QFrame):
         trailing.addWidget(self.state, 0, Qt.AlignmentFlag.AlignRight)
         # Keep the timestamp accessible while the second line combines peer/time.
         self.when.hide()
-        self.title.setText(peer + ' · ' + record['when'])
+        self.title.setText(error if error else peer + ' · ' + record['when'])
         layout.addLayout(trailing)
         self.remove_button = _HistoryRemoveButton(self)
         self.remove_button.clicked.connect(self.remove_requested.emit)
@@ -468,10 +522,11 @@ class LanPanel(QFrame):
     def __init__(self, service, parent=None, *, theme='light', settings=None):
         super().__init__(parent)
         self.service = service; self.settings = settings; self._paths_provider = None
+        self._wan=getattr(service,'mode','lan')=='wan'
         self._rows = {}; self._offers = {}; self._queued_paths = []; self._row_sequence = 0
         self._history_context = {}
         self._dark = False; self._samples = {}; self._started = False
-        self._history_path = settings.base / 'lan_history.json' if settings else None
+        self._history_path = settings.base / ('wan_history.json' if self._wan else 'lan_history.json') if settings else None
         self._history = self._load_history()
         self.setObjectName('lanPanel'); self.setFont(QFont(reference_font().family(), 10))
         self.setMinimumHeight(0)
@@ -526,12 +581,18 @@ class LanPanel(QFrame):
         self.devices_view.setItemDelegate(self.device_delegate)
         self.devices.setView(self.devices_view)
         send.addWidget(self.devices)
+        self.peer_code_input=QLineEdit(self.send_column)
+        self.peer_code_input.setPlaceholderText('输入对方接收码，向新设备发送')
+        self.peer_code_input.setAccessibleName('对方的接收码');self.peer_code_input.setMaxLength(8)
+        self.peer_code_input.setMinimumHeight(36);self.peer_code_input.setVisible(self._wan)
+        if self._wan:send.addWidget(self.peer_code_input)
         send.addStretch(1)
         self.send_code = QFrame(self.send_column); self.send_code.setObjectName('lanSendCode')
         send_code_layout=QHBoxLayout(self.send_code);send_code_layout.setContentsMargins(14,8,14,8)
-        send_code_label=_label('确认码',self.send_code,muted=True);send_code_layout.addWidget(send_code_label,1)
+        send_code_label=_label('本机接收码' if self._wan else '确认码',self.send_code,muted=True);send_code_layout.addWidget(send_code_label,1)
         self.send_code_value=_label('—',self.send_code);self.send_code_value.setObjectName('lanSendCodeValue')
         self.send_code_value.setSizePolicy(QSizePolicy.Policy.Preferred,QSizePolicy.Policy.Preferred)
+        if self._wan:self.send_code_value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         send_code_layout.addWidget(self.send_code_value)
         send.addWidget(self.send_code)
         self.send_button = _button('发送', self); self.send_button.setObjectName('lanPrimary')
@@ -788,8 +849,7 @@ class LanPanel(QFrame):
             QFrame#lanPanel QLabel#lanHistoryState[statusKind="other"] {{ color:{muted}; }}
             QFrame#lanPanel QPushButton#lanHistoryRemove {{ background:transparent; border:0; border-radius:6px; color:{c['muted']}; padding:0; font-size:12px; }}
             QFrame#lanPanel QPushButton#lanHistoryRemove:hover {{ background:{c['hover']}; color:{color}; }}
-            QFrame#lanDropZone {{ background:{faint}; border:1px dashed {c['input_border']}; border-radius:12px; }}
-            QFrame#lanDropZone[dragActive="true"], QFrame#lanDropZone:hover {{ background:rgba(10,132,255,13); border:1px dashed {accent}; }}
+            QFrame#lanDropZone {{ background:transparent; border:0; }}
             QFrame#lanDropZone QLabel#lanDropTitle {{ font-size:12px; font-weight:500; color:{color}; }}
             QFrame#lanDropZone QLabel#lanDropHint {{ font-size:11px; color:{muted}; }}
             QFrame#lanSendCode {{ background:{c['card']}; border:1px solid {border}; border-radius:12px; }}
@@ -849,6 +909,19 @@ class LanPanel(QFrame):
         self.scan_indicator.dark=self._dark;self.scan_indicator.update()
 
     def _peers_changed(self, peers):
+        if self._wan:
+            selected=self.devices.currentData();self.devices.clear()
+            self.devices.addItem('选择最近传输过的设备','')
+            for peer in peers:
+                self.devices.addItem(str(peer.get('name') or '未命名设备')+(' · 离线' if not peer.get('online') else ''),peer['id'])
+                index=self.devices.count()-1
+                self.devices.setItemData(index,'在线' if peer.get('online') else '离线',Qt.ItemDataRole.ToolTipRole)
+                self.devices.setItemData(index,peer.get('platform','unknown'),Qt.ItemDataRole.UserRole+1)
+            index=self.devices.findData(selected)
+            if index>=0:self.devices.setCurrentIndex(index)
+            self.target_label.setText('最近传输设备'+(f' ({len(peers)})' if peers else ''))
+            self.peer_count.setText(f'{sum(bool(p.get("online")) for p in peers)} 台在线')
+            self.scan_indicator.set_scanning(False);self.send_button.setEnabled(True);return
         selected = self.devices.currentData(); self.devices.clear()
         for peer in peers:
             name=str(peer.get('name') or '未命名设备')
@@ -867,7 +940,8 @@ class LanPanel(QFrame):
         self.send_button.setEnabled(bool(peers))
 
     def _send(self):
-        peer = self.devices.currentData()
+        peer = self.peer_code_input.text().strip().replace(' ','').upper() if self._wan else ''
+        peer = peer or self.devices.currentData()
         if not peer: return
         paths = list(self._queued_paths)
         if not paths: paths = list(self._paths_provider() or []) if self._paths_provider else []
@@ -1065,9 +1139,11 @@ class LanPanel(QFrame):
                 row['title'].setToolTip(('发送至 ' if data['direction']=='send' else '接收自 ')+str(data.get('peer') or ''))
             row['detail'].setText(f'{_size(received)} / {_size(total)} · ' + (f'{_size(speed)}/s' if speed else '计算速度…'))
         elif state == 'waiting':
-            self.send_code_value.setText(' '.join(str(data.get('code',''))) or '—')
+            if not self._wan:self.send_code_value.setText(' '.join(str(data.get('code',''))) or '—')
             row['bar'].setRange(0, 0)
-            row['detail'].setText(f"等待接收方确认 · 确认码 {data.get('code', '')}")
+            row['detail'].setText('等待接收方确认' if self._wan else f"等待接收方确认 · 确认码 {data.get('code', '')}")
+        elif state=='connecting':
+            row['bar'].setRange(0,0);row['detail'].setText('正在尝试中继连接…' if data.get('route')=='relay' else '正在建立 P2P 直连…')
         elif state in ('preparing', 'reconnecting'):
             row['bar'].setRange(0, 0); row['detail'].setText('正在准备传输…' if state == 'preparing' else '连接中断，正在续传…')
         elif state in ('cancelled', 'error', 'complete','interrupted'):
@@ -1086,12 +1162,14 @@ class LanPanel(QFrame):
                     'count':row.get('history_count'),
                     'state':{'complete':'完成','cancelled':'已取消','error':'失败','interrupted':'已中断'}[state],
                     'direction':str(data.get('direction') or 'send')}
+                if state in ('error','interrupted'):record['error']=str(data.get('message') or '')[:600]
                 row['history_record']=record;self._history.insert(0,record)
                 self._history = self._history[:12]; self._render_history()
                 try:self._save_history()
                 except OSError:pass
             self._refresh_transfer_pages()
-        self.status_label.clear()
+        if state=='error':self.status_label.setText(str(data.get('message') or '传输失败，请重试。')[:600])
+        elif state not in ('interrupted',):self.status_label.clear()
 
     def _completed(self, result):
         if result.get('direction') == 'receive': self.received_paths.emit(list(result.get('paths') or []))
@@ -1128,7 +1206,8 @@ class LanDialog(QDialog):
 
     def __init__(self, service, settings, parent=None):
         super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
-        self.setObjectName('lanDialog'); self.setWindowTitle('FlickDock · 局域网互传')
+        self._wan=getattr(service,'mode','lan')=='wan'
+        self.setObjectName('lanDialog'); self.setWindowTitle('FlickDock · '+('广域网传输' if self._wan else '局域网互传'))
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setModal(False); self.resize(980, 704); self.setMinimumSize(824, 660)
         root = QVBoxLayout(self); root.setContentsMargins(22, 22, 22, 22)
@@ -1152,7 +1231,7 @@ class LanDialog(QDialog):
         self.title_icon=QLabel(self.title_bar);self.title_icon.setFixedSize(16,16)
         self.title_icon.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         title_row.addWidget(self.title_icon)
-        title = _label('局域网互传', self.title_bar); title.setObjectName('lanDialogTitle')
+        title = _label('广域网传输' if self._wan else '局域网互传', self.title_bar); title.setObjectName('lanDialogTitle')
         title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         title_row.addWidget(title, 1)
         self.back_button=_button('返回总览',self.title_bar);self.back_button.setObjectName('lanDialogBack')
@@ -1168,6 +1247,10 @@ class LanDialog(QDialog):
         close.clicked.connect(self.close); title_row.addWidget(close)
         content.addWidget(self.title_bar)
         self.panel = LanPanel(service, self.card, theme=settings.theme, settings=settings)
+        if self._wan:
+            self.close_button.setAccessibleName('关闭广域网传输窗口')
+            service.identity_changed.connect(lambda identity:self.panel.send_code_value.setText(identity.get('code') or '连接中…'))
+            self.panel.send_code_value.setText(service.code or '连接中…')
         content.addWidget(self.panel, 1)
         self.apply_theme(settings.theme)
 
@@ -1185,7 +1268,7 @@ class LanDialog(QDialog):
         c=ui_colors(theme)
         font_family=reference_font().family()
         surface,ink,hover=c['surface'],c['text'],c['hover']
-        self.title_icon.setPixmap(ui_icon('nearby',c['cyan'] if dark else c['blue']).pixmap(16,16))
+        self.title_icon.setPixmap(ui_icon('web' if self._wan else 'nearby',c['cyan'] if dark else c['blue']).pixmap(16,16))
         self.dock_button.setIcon(ui_icon('dock',c['secondary']))
         self.card.setStyleSheet(f'''
             QFrame#lanDialogCard {{ background:{surface}; border:1px solid {c['glass_border']}; border-radius:{c['radius']}px; }}

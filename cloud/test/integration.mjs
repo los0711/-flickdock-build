@@ -349,6 +349,14 @@ try{
       assert.equal(committed.record.sha256,digest);
       const legacy=await request('GET',`/v1/items/${id}/content`,undefined,alice.token);
       assert.equal(legacy.chunk_size,1024*1024);assert.equal(legacy.part_count,80);
+      const ranged=await request('GET',`/v1/items/${id}/content`,undefined,alice.token,200,{'X-FlickDock-Range-Bytes':'4194304'});
+      assert.equal(ranged.chunk_size,4*1024*1024);assert.equal(ranged.part_count,20);
+      for(const index of [0,9,19]){
+        const response=await localFetch(base+`/v1/items/${id}/parts/${index}?version=1`,{headers:{Authorization:'Bearer '+alice.token,'X-FlickDock-Range-Bytes':'4194304'}});
+        assert.equal(response.status,200);const bytes=Buffer.from(await response.arrayBuffer());
+        assert.deepEqual(bytes,data.subarray(index*4*1024*1024,(index+1)*4*1024*1024));
+        assert.equal(response.headers.get('X-Content-SHA256'),hash(bytes));
+      }
       for(const index of [0,39,79]){
         const response=await localFetch(base+`/v1/items/${id}/parts/${index}?version=1`,{headers:{Authorization:'Bearer '+alice.token}});
         assert.equal(response.status,200);const bytes=Buffer.from(await response.arrayBuffer());

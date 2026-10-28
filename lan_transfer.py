@@ -41,6 +41,28 @@ MAX_ENTRIES = 100000
 MAX_TOTAL_BYTES = (1 << 63) - 1
 PROTOCOL = 'flickdock-lan-1'
 
+def _transfer_error(error):
+    if isinstance(error,PermissionError):
+        return '无法读取文件或访问局域网。请检查文件权限'+('，并在系统设置 → 隐私与安全性中允许 FlickDock 访问文件及本地网络。' if sys.platform=='darwin' else '。')
+    if isinstance(error,OSError) and error.errno in (errno.EHOSTUNREACH,errno.ENETUNREACH,errno.EACCES,errno.EPERM):
+        return ('无法连接附近设备。请检查同一网络、VPN，以及系统设置 → 隐私与安全性 → 本地网络中的 FlickDock 权限。'
+                if sys.platform=='darwin' else '无法连接附近设备，请检查同一网络、防火墙与 VPN。')
+    if isinstance(error,OSError) and error.errno==errno.ECONNREFUSED:
+        return '接收设备未开启局域网互传或端口已变化，请在接收设备打开 FlickDock 后重新选择。'
+    return str(error)[:600] or '传输失败，请重新选择文件和接收设备。'
+
+def _rename_noreplace(source,target):
+    if sys.platform=='win32':return os.rename(source,target)
+    library=ctypes.CDLL(None,use_errno=True)
+    if sys.platform=='darwin':
+        rename=library.renamex_np;rename.argtypes=[ctypes.c_char_p,ctypes.c_char_p,ctypes.c_uint];rename.restype=ctypes.c_int
+        result=rename(os.fsencode(source),os.fsencode(target),4)  # RENAME_EXCL
+    else:
+        rename=library.renameat2;rename.argtypes=[ctypes.c_int,ctypes.c_char_p,ctypes.c_int,ctypes.c_char_p,ctypes.c_uint];rename.restype=ctypes.c_int
+        result=rename(-100,os.fsencode(source),-100,os.fsencode(target),1)  # RENAME_NOREPLACE
+    if result:
+        code=ctypes.get_errno();raise OSError(code,os.strerror(code),str(target))
+
 
 def _crypto_library():
     """Use the OpenSSL dependency already shipped for Python ssl/scrypt."""
@@ -200,7 +222,7 @@ def _read_json(stream, cancel, *, timeout=45):
 def _portable_path(value):
     if not isinstance(value, str) or not value or '\\' in value: raise ValueError('文件路径无效。')
     path = PurePosixPath(value)
-    if path.is_absolute() or any(p in ('', '.', '..') or safe_name(p) != p for p in path.parts):
+    if path.is_absolute() or any(p in ('', '.', '..') or safe_name(p,255) != p or len(p.encode('utf8'))>255 for p in path.parts):
         raise ValueError('文件名无法安全地跨设备传输。')
     if str(path) != value or len(value) > 2048: raise ValueError('文件路径无效。')
     return path
@@ -491,12 +513,36 @@ class LanTransferService(QObject):
         self.progress.emit(dict(id=transfer.transfer_id, direction=transfer.direction, peer=transfer.peer,
                                 state=state, received=transfer.done, total=transfer.total, **extra))
 
+    def _connect_peer(self,peer,transfer,entries):
+        raw=socket.create_connection((peer['host'],peer['port']),timeout=8)
+        _tune_stream_socket(raw)
+        context=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.check_hostname=False;context.verify_mode=ssl.CERT_NONE
+        context.minimum_version=ssl.TLSVersion.TLSv1_2
+        try:stream=context.wrap_socket(raw,server_hostname='flickdock-lan')
+        except BaseException:raw.close();raise
+        if not secrets.compare_digest(hashlib.sha256(stream.getpeercert(binary_form=True)).hexdigest(),peer['fingerprint']):
+            stream.close();raise ValueError('设备的加密身份已改变，请重新发现并核对接收设备。')
+        return stream
+
+    def _incoming_stream(self,raw):
+        _tune_stream_socket(raw);raw.settimeout(8)
+        return self._context.wrap_socket(raw,server_side=True)
+
+    def _stream_code(self,stream,identifier):return _authentication_code(stream,identifier)
+
+    def _incoming_offer(self,transfer,host,code):
+        self.offer_received.emit({'id':transfer.transfer_id,'peer':transfer.peer,'host':host,'code':code,
+            'total':transfer.total,'count':sum(e['kind']=='file' for e in transfer.entries),
+            'names':[e['path'] for e in transfer.entries if '/' not in e['path']]})
+
     def _outgoing(self, transfer, peer, paths):
         stream = None
+        phase = 'prepare'
         try:
             self._notify(transfer, 'preparing')
             entries, sources, total = _make_manifest(paths, transfer.cancel)
-            transfer.total = total; token = secrets.token_hex(32)
+            transfer.total = total; token = transfer.token or secrets.token_hex(32)
             transfer.token = token
             code = ''
             offer = dict(protocol=PROTOCOL, id=transfer.transfer_id, token=token,
@@ -505,18 +551,11 @@ class LanTransferService(QObject):
             for attempt in range(3):
                 if transfer.cancel.is_set(): raise InterruptedError('已取消传输。')
                 try:
-                    raw = socket.create_connection((peer['host'], peer['port']), timeout=8)
-                    _tune_stream_socket(raw)
-                    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-                    context.check_hostname = False; context.verify_mode = ssl.CERT_NONE
-                    context.minimum_version = ssl.TLSVersion.TLSv1_2
-                    try: stream = context.wrap_socket(raw, server_hostname='flickdock-lan')
-                    except BaseException:
-                        raw.close(); raise
-                    if not secrets.compare_digest(hashlib.sha256(stream.getpeercert(binary_form=True)).hexdigest(), peer['fingerprint']):
-                        raise ValueError('设备的加密身份已改变，请重新发现并核对接收设备。')
+                    phase = 'connect'
+                    stream=self._connect_peer(peer,transfer,entries)
                     stream.settimeout(1); transfer.socket = stream
-                    code = _authentication_code(stream, transfer.transfer_id)
+                    phase = 'transfer'
+                    code = self._stream_code(stream,transfer.transfer_id)
                     _send_json(stream, offer); self._notify(transfer, 'waiting', code=code)
                     reply = _read_json(stream, transfer.cancel, timeout=180)
                     if reply.get('state') != 'ready': raise ValueError(reply.get('message') or '接收方拒绝了传输。')
@@ -572,7 +611,8 @@ class LanTransferService(QObject):
                     if stream: stream.close(); stream = None
                     transfer.socket = None
         except Exception as error:
-            self._notify(transfer, 'cancelled' if transfer.cancel.is_set() else 'error', message=str(error))
+            self._notify(transfer, 'cancelled' if transfer.cancel.is_set() else 'error', message=_transfer_error(error),
+                         phase=phase)
             if transfer.token and not transfer.cancel.is_set():
                 self._thread(self._cancel_remote, transfer)
         finally: transfer.active = False; transfer.updated = time.monotonic()
@@ -580,8 +620,7 @@ class LanTransferService(QObject):
     def _incoming(self, raw, host):
         stream = None; transfer = None; acquired = False; terminal = None
         try:
-            _tune_stream_socket(raw)
-            raw.settimeout(8); stream = self._context.wrap_socket(raw, server_side=True)
+            stream=self._incoming_stream(raw)
             stream.settimeout(1); request = _read_json(stream, self._stopped, timeout=10)
             identifier, token = request.get('id'), request.get('token')
             if request.get('protocol') != PROTOCOL or not _hex(identifier, 32) or not _hex(token, 64):
@@ -610,10 +649,8 @@ class LanTransferService(QObject):
                     transfer = _Transfer(identifier, 'receive', sender, entries=entries, token=token,
                                          manifest_hash=manifest_hash, total=total)
                     self._transfers[identifier] = transfer
-                    code = _authentication_code(stream, identifier)
-                    self.offer_received.emit({'id': identifier, 'peer': sender, 'host': host, 'code': code,
-                                              'total': total, 'count': sum(e['kind'] == 'file' for e in entries),
-                                              'names': [e['path'] for e in entries if '/' not in e['path']]})
+                    code=self._stream_code(stream,identifier)
+                    self._incoming_offer(transfer,host,code)
                 transfer.active = True; transfer.socket = stream; acquired = True
             deadline = time.monotonic() + 180
             while not transfer.accepted.wait(.2):
@@ -678,7 +715,7 @@ class LanTransferService(QObject):
                     # Same-volume rename keeps the verified bytes intact and
                     # never creates a public partially downloaded file.
                     if target.exists(): raise FileExistsError(str(target))
-                    os.rename(source, target); moved.append((source, target))
+                    _rename_noreplace(source,target);moved.append((source,target))
             except OSError:
                 for source, target in reversed(moved):
                     if target.exists() and not source.exists(): os.rename(target, source)

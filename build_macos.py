@@ -88,6 +88,7 @@ def main(arguments=None):
     # This workspace may contain Windows wheel files in py/. Never import them
     # into the macOS interpreter or reuse a Windows virtual environment.
     env.pop('PYTHONPATH', None)
+    run([python,ROOT/'p2p_assets.py'],env=env)
     if options.sign_identity:
         env['FLICKDOCK_CODESIGN_IDENTITY'] = options.sign_identity
     if options.entitlements:
@@ -97,7 +98,7 @@ def main(arguments=None):
          'test_shelf_sync_v180', 'test_sync_review_v180', 'test_account_security_v180',
          'test_lan_transfer_v181', 'test_lan_dialog_v183', 'test_shelf_transfers_v181',
          'test_account_profile_layout_v1814', 'test_lan_hig_layout_v1814',
-         'test_ui_feedback_v1815', 'test_directory_sync_v1815',
+         'test_ui_feedback_v1815', 'test_directory_sync_v1815', 'test_feedback_v1816', 'test_stream_upload_v1816','test_wan_transfer_v1816',
          'test_shelf_raise_v1810', 'test_intake_first_frame_v1810',
          'test_sync_remote_commit_wakeup', 'test_cloud_file_status_v1810',
          'test_trigger_reliability_v1810', 'test_event_stream_wiring_v1810', '-v'], env=env)
@@ -126,6 +127,22 @@ def main(arguments=None):
         if not transfers.get('ok') or not transfers.get('frozen') or transfers.get('version') != APP_VERSION:
             raise RuntimeError('Frozen macOS original-file/TLS/cancellation verification failed')
         frozen['lan_transfers'] = transfers
+        update_path=Path(profile)/'public-update.json'
+        run([binary,'--verify-update','--verify-current','1.8.14','--verify-output',update_path],env=dict(env,XDG_CONFIG_HOME=profile,APPDATA=profile))
+        update=json.loads(update_path.read_text(encoding='utf8'))
+        if not update.get('ok') or not update.get('frozen') or not update.get('verified_download') or update.get('installer_executed'):
+            raise RuntimeError('Frozen Mac public update check/download failed')
+        frozen['public_updates']=update
+        frozen['wan_transfers']={}
+        for mode in ('direct','relay'):
+            wan_path=Path(profile)/('wan-'+mode+'.json')
+            arguments=[binary,'--verify-wan','--verify-output',wan_path]
+            if mode=='relay':arguments.append('--wan-force-relay')
+            run(arguments,env=dict(env,XDG_CONFIG_HOME=profile,APPDATA=profile))
+            wan=json.loads(wan_path.read_text(encoding='utf8'))
+            if not wan.get('ok') or not wan.get('frozen') or wan.get('route_source')!='native-selected-candidate-pair' or mode=='relay' and wan.get('route')!='relay':
+                raise RuntimeError('Frozen Mac native WAN '+mode+' transfer failed')
+            frozen['wan_transfers'][mode]=wan
     # Run the real Cocoa plugin and construct the shelf on the hosted Mac,
     # but with a disposable HOME and native/network side effects disabled.
     # This catches launch exits that an offscreen import check cannot see.
@@ -152,6 +169,8 @@ def main(arguments=None):
                     or cocoa.get('qt_platform') != 'cocoa'
                     or not cocoa.get('shelf_constructed')
                     or not cocoa.get('native_window_order', {}).get('ok')
+                    or not cocoa.get('native_window_order', {}).get('passive_drag_probe')
+                    or not cocoa.get('native_window_order', {}).get('stable_native_canvas')
                     or {case.get('window') for case in cocoa.get('native_window_order', {}).get('cases', [])} != {'edge', 'shelf'}
                     or any(cocoa.get(name) for name in ('native_hotkeys', 'lan_listener',
                                                        'cloud_session', 'startup_mutation'))):
