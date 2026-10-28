@@ -555,8 +555,8 @@
     },
     {
       "path": "build_macos.py",
-      "size": 14827,
-      "sha256": "cfd9dcb0141c9ba7b92cb73ecd3be2a42acb8547a1f38900eab47c04af21f26e"
+      "size": 14896,
+      "sha256": "95c5e7cc46089f7adf17154af79fb75f996081bac1f9fdbed97caa10bf7e63d0"
     },
     {
       "path": "bundle_policy.py",
@@ -1380,8 +1380,8 @@
     },
     {
       "path": "test_stream_upload_v1816.py",
-      "size": 3615,
-      "sha256": "d4b5e3b6f6cf4a3625a2eb848b61a2a11511bd036ef953464149915202fba79c"
+      "size": 3920,
+      "sha256": "a424fb58b690cab89b07cec898f351238cc03313c620d97134aa57f7974c4a7e"
     },
     {
       "path": "test_surface_continuity_v162.py",

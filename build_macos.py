@@ -83,7 +83,7 @@ def main(arguments=None):
             venv.EnvBuilder(with_pip=True).create(environment)
         run([python, '-m', 'pip', 'install', 'PySide6==6.12.0', 'PyInstaller==6.22.3',
              'pyobjc-framework-Quartz>=11,<13', 'keyring==25.7.0', 'cryptography>=42'])
-    env = dict(os.environ, QT_QPA_PLATFORM='offscreen', QT_MEDIA_BACKEND='darwin',
+    env = dict(os.environ, QT_QPA_PLATFORM='offscreen', QT_MEDIA_BACKEND='darwin',PYTHONFAULTHANDLER='1',
                FLICKDOCK_TARGET_ARCH=options.target_arch)
     # This workspace may contain Windows wheel files in py/. Never import them
     # into the macOS interpreter or reuse a Windows virtual environment.
@@ -98,13 +98,14 @@ def main(arguments=None):
          'test_shelf_sync_v180', 'test_sync_review_v180', 'test_account_security_v180',
          'test_lan_transfer_v181', 'test_lan_dialog_v183', 'test_shelf_transfers_v181',
          'test_account_profile_layout_v1814', 'test_lan_hig_layout_v1814',
-         'test_ui_feedback_v1815', 'test_directory_sync_v1815', 'test_feedback_v1816', 'test_stream_upload_v1816',
+         'test_ui_feedback_v1815', 'test_directory_sync_v1815', 'test_feedback_v1816',
          'test_shelf_raise_v1810', 'test_intake_first_frame_v1810',
          'test_sync_remote_commit_wakeup', 'test_cloud_file_status_v1810',
          'test_trigger_reliability_v1810', 'test_event_stream_wiring_v1810', '-v'], env=env)
     # Native WebRTC and QWebSocket lifetimes are verified in their own Qt
     # process, matching the standalone frozen-client gate below.
     run([python,'-m','unittest','test_wan_transfer_v1816','-v'],env=env)
+    run([python,'-m','unittest','test_stream_upload_v1816','-v'],env=env)
     run([python, ROOT / 'test_update_macos.py'], env=env)
     run([python, ROOT / 'build_macos.py', '--icon-only', build / 'FlickDock.icns'], env=env)
     run([python, '-m', 'PyInstaller', '--noconfirm', '--clean', ROOT / 'FlickDock-mac.spec'], env=env)

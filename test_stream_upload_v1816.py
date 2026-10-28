@@ -5,6 +5,7 @@ import hashlib,json,tempfile,time,tracemalloc,threading,unittest
 from pathlib import Path
 from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler
 from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QCoreApplication,QEvent
 from cloud_api import CloudApi,UploadSlice
 from sync_files import hash_part
 APP=QApplication.instance() or QApplication([])
@@ -19,7 +20,9 @@ class StreamTests(unittest.TestCase):
                 self.assertTrue(device.atEnd());self.assertTrue(device.seek(0))
                 self.assertEqual(bytes(device.read(41)),payload[12345:12386])
                 self.assertFalse(device.seek(1234568))
-            finally:device.close();device.deleteLater()
+            finally:
+                device.close();device.deleteLater()
+                QCoreApplication.sendPostedEvents(None,QEvent.Type.DeferredDelete)
             tracemalloc.start()
             digest=hash_part(path,1,4*1024*1024,threading.Event())
             peak=tracemalloc.get_traced_memory()[1];tracemalloc.stop()
@@ -52,6 +55,9 @@ class StreamTests(unittest.TestCase):
                     self.assertEqual(received[-1][1:],(size,hashlib.sha256(data[offset:offset+size]).hexdigest()))
                 self.assertEqual(path.read_bytes(),data)
                 self.assertFalse(api._requests)
-            finally:api.close();server.shutdown();server.server_close();worker.join(3)
+            finally:
+                api.close();api.deleteLater()
+                QCoreApplication.sendPostedEvents(None,QEvent.Type.DeferredDelete);APP.processEvents()
+                server.shutdown();server.server_close();worker.join(3)
 
 if __name__=='__main__':unittest.main(verbosity=2)
