@@ -453,7 +453,7 @@ with tempfile.TemporaryDirectory(prefix="flickdock-v16-") as temporary:
             refs = list(shelf.files["permanent"])
             def answer(dialog, result):
                 assert dialog.cancel_button.isDefault()
-                assert dialog.cancel_button.text()=='取消' and dialog.delete_button.text()=='删除'
+                assert dialog.cancel_button.text()=='取消' and dialog.delete_button.text()=='清空'
                 assert not dialog.isWindow() and not dialog.description.wordWrap()
                 return result
             with patch.object(subject.ClearConfirmOverlay, "exec", lambda dialog: answer(dialog, False)):
@@ -474,7 +474,7 @@ with tempfile.TemporaryDirectory(prefix="flickdock-v16-") as temporary:
                     assert shelf.presentation_kind == ("shortcut" if role == "shelf" else "overview")
                     manager._content_drag_validated(QPoint(10, 10))
                     assert shelf.presentation_kind != "drag"
-            assert "0 项" in shelf.popup.title.text()
+            assert "0 项" in shelf.popup.count_label.text()
         check("empty shelf supports both global actions on the same shelf and visible shortcuts cannot be retriggered by shake", empty_shortcuts)
 
         def pending_restart():

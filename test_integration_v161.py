@@ -189,7 +189,10 @@ with tempfile.TemporaryDirectory(prefix="flickdock-v161-integration-") as tempor
             until(app, lambda: not shelf.isVisible())
             popup = show()
             assert popup.category == "all" and popup.visible_refs()[0] == newest
-            assert all(button.isVisible() for button in (shelf.pin_button, shelf.expand_button, shelf.menu_button, shelf.close_button))
+            assert all(button.isVisible() for button in (shelf.pin_button, shelf.expand_button, shelf.close_button))
+            # Expanded reference toolbar keeps the essential controls; page
+            # actions remain available through the real context/sidebar menus.
+            assert shelf.popup.lan_nav.isVisible() and shelf.popup.settings_nav.isVisible()
         check("compact uses latest five with newest front/count only; drag header is clear and expanding resets all/newest-first", compact_and_order)
 
         def rows_for(popup):

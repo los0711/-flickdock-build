@@ -27,7 +27,7 @@ def flush():
 
 
 def assert_centered_cross(button, dark):
-    assert button.size().width() == button.size().height() == 40
+    assert button.size().width() == button.size().height() == 28
     assert button.glyph_rect.size().width() == button.glyph_rect.size().height() == 14
     assert button.glyph_rect.center() == QRectF(button.rect()).center()
     image = button.grab().toImage()
@@ -81,11 +81,11 @@ with tempfile.TemporaryDirectory(prefix='flickdock-settings-chrome-v164-') as te
     render_dir = os.getenv('FLICKDOCK_SETTINGS_CHROME_RENDER_DIR')
     if render_dir: Path(render_dir).mkdir(parents=True, exist_ok=True)
     for theme in ('light', 'dark'):
-        for height in (520, 680):
-            dialog.show(); dialog.resize(560, height); flush()
+        for height in (632, 712):
+            dialog.show(); dialog.resize(892, height); flush()
             dialog.theme_combo.setCurrentIndex(dialog.theme_combo.findData(theme))
             dialog.save_button.setFocus(); flush()
-            assert dialog.title_bar.height() == 40
+            assert dialog.title_bar.height() == 52
             assert dialog.title_bar.rect().contains(dialog.close_button.geometry())
             assert dialog.rect().contains(dialog.save_button.geometry())
             assert dialog.rect().contains(dialog.cancel_button.geometry())
@@ -95,11 +95,15 @@ with tempfile.TemporaryDirectory(prefix='flickdock-settings-chrome-v164-') as te
             first_card = dialog.body_layout.itemAt(0).widget()
             assert first_card.geometry().left() >= 3
             assert first_card.geometry().right() <= dialog.body.width()-4
-            dialog.theme_combo.showPopup(); flush()
-            option_view = dialog.theme_combo.view()
+            # Appearance is a source segmented control. Exercise the actual
+            # visible storage-mode dropdown, which retains native option UI.
+            combo=dialog.capture_mode_combo
+            dialog.scroll.ensureWidgetVisible(combo);flush()
+            combo.showPopup(); flush()
+            option_view = combo.view()
             assert option_view.isVisible()
-            for row in range(dialog.theme_combo.count()):
-                item_rect = option_view.visualRect(dialog.theme_combo.model().index(row, 0))
+            for row in range(combo.count()):
+                item_rect = option_view.visualRect(combo.model().index(row, 0))
                 assert option_view.viewport().rect().contains(item_rect), (theme, row, item_rect)
             if theme == 'dark':
                 popup_image = option_view.window().grab().toImage()
@@ -108,10 +112,10 @@ with tempfile.TemporaryDirectory(prefix='flickdock-settings-chrome-v164-') as te
                 for y in (inset, popup_image.height()-inset-1):
                     pixel = popup_image.pixelColor(middle, y)
                     assert max(pixel.red(), pixel.green(), pixel.blue()) < 130, (y, pixel)
-            if render_dir and height==680:
+            if render_dir and height==712:
                 option_view.window().grab().save(str(Path(render_dir)/f'appearance-options-{theme}-{os.environ["QT_SCALE_FACTOR"]}.png'))
-            dialog.theme_combo.hidePopup(); flush()
-            if render_dir and height==680:
+            combo.hidePopup(); flush()
+            if render_dir and height==712:
                 dialog.grab().save(str(Path(render_dir)/f'settings-chrome-{theme}-{os.environ["QT_SCALE_FACTOR"]}.png'))
             # The target's corner is clickable, independently of the cross ink.
             unfocused_blue = keyboard_focus_pixels(dialog.close_button)
@@ -134,7 +138,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-settings-chrome-v164-') as te
             assert not dialog.keep_empty_handle_checkbox.isChecked()
             assert dialog.shake_sensitivity_spin.value()==50
             dialog.reject(); flush()
-    print('PASS light/dark centered 14px SVG in 40px target, frameless flags, scrolling and close rollback at DPI', os.environ['QT_SCALE_FACTOR'])
+    print('PASS light/dark centered 14px SVG in source 28px target, frameless flags, scrolling and close rollback at DPI', os.environ['QT_SCALE_FACTOR'])
 
     dialog.show(); flush()
     before = QPoint(dialog.pos())
@@ -180,12 +184,17 @@ with tempfile.TemporaryDirectory(prefix='flickdock-settings-chrome-v164-') as te
     assert loaded.dock_position==49 and previews[-1] is None
     assert json.loads(store.path.read_text(encoding='utf8'))['dock_position']==49
 
-    for other in (subject.AuthorDialog(dialog), subject.ThirdPartyDialog(dialog)):
-        assert other.windowFlags() & Qt.WindowType.WindowCloseButtonHint
-        assert not other.windowFlags() & Qt.WindowType.FramelessWindowHint
-        other.deleteLater()
+    author=subject.AuthorDialog(dialog)
+    assert author.windowFlags() & Qt.WindowType.FramelessWindowHint
+    assert author.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    assert author.surface.width()==400
+    author.deleteLater()
+    licenses=subject.ThirdPartyDialog(dialog)
+    assert licenses.windowFlags() & Qt.WindowType.WindowCloseButtonHint
+    assert not licenses.windowFlags() & Qt.WindowType.FramelessWindowHint
+    licenses.deleteLater()
     read_registry.assert_not_called(); write_registry.assert_not_called()
     dialog.deleteLater(); flush()
-    print('PASS Save retains all v1.6.3 fields; Author/licenses retain native window chrome; no registry I/O')
+    print('PASS Save retains all v1.6.3 fields; rounded source About and native license reader remain accessible; no registry I/O')
 
 print('SETTINGS_CHROME_V164_OK')

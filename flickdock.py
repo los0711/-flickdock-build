@@ -22,7 +22,7 @@ from PySide6.QtGui import (QColor, QCursor, QDrag, QFont, QFontDatabase, QGuiApp
                            QIcon, QLinearGradient, QPainter, QPainterPath, QPalette, QPen, QPixmap, QTransform)
 from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame,
                                 QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton,
-                                QScrollArea, QSystemTrayIcon, QVBoxLayout, QWidget, QPlainTextEdit, QStackedWidget, QGridLayout, QSizePolicy, QButtonGroup, QProgressBar)
+                                QScrollArea, QSystemTrayIcon, QVBoxLayout, QWidget, QPlainTextEdit, QStackedWidget, QGridLayout, QSizePolicy, QButtonGroup, QProgressBar, QWidgetAction, QDialog)
 
 from flickdock_icons import app_icon, tray_icon, glyph_icon, glyph_pixmap, file_pixmap, document_pixmap
 from flickdock_motion import Spring, MotionShadow, ContentTile, FeedbackButton
@@ -67,14 +67,15 @@ from sync_adapter import ShelfAdapter
 from lan_transfer import LanTransferService
 from lan_panel import LanDialog
 import ui_theme
+from reference_widgets import ToolbarButton
 
 IDLE_SECONDS = 3.0
 BASE = data_directory(APP_NAME)
 STATE_FILE = BASE / "shelves.json"
 OLD_STATE_FILE = Path(os.getenv("APPDATA", str(Path.home()))) / "DoudouShelf" / "shelves.json"
 FONT_FAMILY = "HarmonyOS Sans SC"
-CARD_W, CARD_H = 394, 274
-EXPANDED_W, EXPANDED_H = 788, 550
+CARD_W, CARD_H = 332, 318
+EXPANDED_W, EXPANDED_H = 1040, 600
 MODES = ("permanent",)
 
 
@@ -196,10 +197,15 @@ def style_menu(menu: QMenu) -> None:
     palette.setColor(QPalette.ColorRole.Text, QColor(ui_theme.color("text")))
     palette.setColor(QPalette.ColorRole.WindowText, QColor(ui_theme.color("text")))
     menu.setPalette(palette)
-    set_ui_style(menu, "QMenu {background:#fff;color:#1d1d1f;border:1px solid #e5e5e9;border-radius:12px;padding:6px;}"
-                       "QMenu::item {background:transparent;color:#1d1d1f;padding:8px 24px;min-width:150px;}"
-                       "QMenu::item:selected {background:#e9f3ff;color:#1d1d1f;border-radius:7px;}"
-                       "QMenu::separator {height:1px;background:#ededf0;margin:5px 8px;}")
+    from reference_widgets import css,colors
+    sources=[]
+    for theme in ('dark','light'):
+        c=colors(theme)
+        sources.append(f"QMenu{{background:{'#242426' if theme=='dark' else '#FFFFFF'};color:{c['text']};border:1px solid {c['border']};border-radius:{c['radius']}px;padding:6px 0;font:12px '{FONT_FAMILY}';}}"
+                       f"QMenu::item{{background:transparent;color:{c['text']};padding:6px 14px;min-width:178px;border:0;}}"
+                       "QMenu::item:selected{background:#0A84FF;color:#FFFFFF;}"
+                       f"QMenu::item:disabled{{color:{c['muted']};}} QMenu::separator{{height:1px;background:{c['divider']};margin:5px 10px;}}")
+    css(menu,*sources)
 
 
 def ui_style(text):
@@ -209,72 +215,34 @@ def set_ui_style(widget, source):
     ui_theme.style_widget(widget, source, FONT_FAMILY)
 
 class DropZone(QFrame):
-    def __init__(self, shelf: "ShelfWindow", mode: str):
+    def __init__(self,shelf,mode):
         super().__init__(shelf.card)
-        self.shelf, self.mode = shelf, mode
-        self.setObjectName("dropZone")
-        self.origin = QPoint()
-        self.did_drag = False
-        self.drop_highlight = False
-        self.setAcceptDrops(True)
-        self.setMouseTracking(True)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedSize(362, 166)
-        self.symbol = symbol = QLabel(self)
-        symbol.setGeometry(13, 14, 20, 20)
-        symbol.setPixmap(glyph_pixmap("shelf", 20, ui_theme.color("icon"), 2.0))
-        symbol.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.title = QLabel("已收集", self)
-        self.title.setGeometry(40, 10, 90, 27)
-        set_ui_style(self.title, "color:#25272c;font:600 14px 'HarmonyOS Sans SC';background:transparent;")
-        self.title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.description = QLabel("", self)
-        self.description.hide()
-        self.description.setGeometry(238, 11, 108, 26)
-        self.description.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        set_ui_style(self.description, "color:#7b838f;font:12px 'HarmonyOS Sans SC';background:transparent;")
-        self.description.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.icon = StackTile(self, motion=shelf.manager.motion)
-        self.icon.setGeometry(96, -3, 170, 140)
-        self.icon.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.caption = QLabel(self)
-        self.caption.setGeometry(136, 132, 90, 27)
-        self.caption.setWordWrap(False)
-        self.caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._style_caption(False)
-        self.caption.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.count_arrow=QLabel(self)
-        self.count_arrow.setGeometry(204,138,14,14)
-        self.count_arrow.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.title.hide();self.symbol.hide()
-        self._pill_hovered = False
-        self._pill_timer = QTimer(self)
-        self._pill_timer.setSingleShot(True)
-        self._pill_timer.timeout.connect(self._open_from_pill_hover)
-        self.feedback = Spring(self, {"hover": 0.0}, lambda _: self._apply_style(), motion=shelf.manager.motion)
-        self._apply_style()
+        from reference_widgets import MiniStack,label,css
+        self.shelf,self.mode=shelf,mode;self.origin=QPoint();self.did_drag=False;self.drop_highlight=False
+        self.setObjectName('dropZone');self.setAcceptDrops(True);self.setMouseTracking(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor);self.setFixedSize(330,268)
+        self.symbol=QLabel(self);self.symbol.hide();self.title=QLabel(self);self.title.hide();self.description=QLabel(self);self.description.hide()
+        self.icon=MiniStack(shelf,self,motion=shelf.manager.motion);self.icon.setGeometry(45,18,240,170)
+        self.hint=label('拖入文件、文字或链接',12,400,'secondary',self);self.hint.setGeometry(40,194,250,18);self.hint.setAlignment(Qt.AlignCenter)
+        self.caption=QLabel(self);self.caption.setGeometry(248,232,68,28);self.caption.setAlignment(Qt.AlignCenter);self.caption.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.count_arrow=QLabel(self);self.count_arrow.setGeometry(297,240,12,12);self.count_arrow.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self._pill_hovered=False;self._pill_timer=QTimer(self);self._pill_timer.setSingleShot(True);self._pill_timer.timeout.connect(self._open_from_pill_hover)
+        self.feedback=Spring(self,{'hover':0},lambda _:self._apply_style(),motion=shelf.manager.motion)
+        self._style_caption(False);self._apply_style()
 
     @property
     def paths(self):
         return self.shelf.display_refs()
 
-    def _style_caption(self, hovered):
-        fill='#e9f3ff' if hovered else '#ffffff'
-        set_ui_style(self.caption,
-            f"color:#28313d;font:600 13px 'HarmonyOS Sans SC';background:{fill};"
-            "border:1px solid #e1e5ec;border-radius:13px;padding-right:12px;")
+    def _style_caption(self,hovered):
+        from reference_widgets import css
+        css(self.caption,"color:#F5F5F7;font:600 12px 'HarmonyOS Sans SC';background:rgba(255,255,255,28);border:0;border-radius:8px;padding-right:12px;",
+            "color:#1D1D1F;font:600 12px 'HarmonyOS Sans SC';background:rgba(0,0,0,15);border:0;border-radius:8px;padding-right:12px;")
 
     def _apply_style(self):
-        active = bool(self.shelf.popup and self.shelf.popup.isVisible() and self.shelf.popup.mode == self.mode)
-        if self.drop_highlight:
-            border, background = "#75b8ff", "#edf6ff"
-        elif active:
-            border, background = "#dce3ed", "#f4f8fd"
-        elif hasattr(self, 'feedback') and self.feedback.values["hover"] > .3:
-            border, background = "#dce3ed", "#f5f7fa"
-        else:
-            border, background = "#e5e8ed", "#f8f9fb"
-        set_ui_style(self, f"QFrame#dropZone {{background:{background};border:1px dashed {border};border-radius:18px;}}")
+        from reference_widgets import css
+        border='#0A84FF' if self.drop_highlight else 'transparent'
+        css(self,f'QFrame#dropZone{{background:transparent;border:1px solid {border};border-radius:8px;}}')
 
     def _open_from_pill_hover(self):
         if (self._pill_hovered and self.isVisible() and self.shelf.isVisible()
@@ -419,58 +387,11 @@ class ElidedLabel(QLabel):
 
 
 class PreviewPane(QFrame):
-    def __init__(self, parent=None):
+    def __init__(self,parent=None):
         super().__init__(parent)
-        self.shelf = parent.shelf
-        self.popup = parent
-        self.current_path = None
-        self.setObjectName("previewPane")
-        set_ui_style(self, "QFrame#previewPane {background:#f5f7fa;border:1px solid #e6eaf0;border-radius:16px;}")
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16,14,16,16)
-        layout.setSpacing(12)
-        header = QHBoxLayout()
-        labels = QVBoxLayout(); labels.setSpacing(3)
-        self.name = ElidedLabel(self)
-        set_ui_style(self.name, "color:#28313d;font:600 14px 'HarmonyOS Sans SC';background:transparent;")
-        self.info = ElidedLabel(self)
-        set_ui_style(self.info, "color:#738091;font:12px 'HarmonyOS Sans SC';background:transparent;")
-        labels.addWidget(self.name); labels.addWidget(self.info)
-        self.copy_button = FeedbackButton("copy", self, motion=self.shelf.manager.motion)
-        self.copy_button.setFixedSize(32,32)
-        self.copy_button.clicked.connect(self.copy_current)
-        self.cloud_badge = CloudStatusBadge(self)
-        header.addLayout(labels,1)
-        header.addWidget(self.cloud_badge,0,Qt.AlignmentFlag.AlignTop)
-        header.addWidget(self.copy_button,0,Qt.AlignmentFlag.AlignTop)
-        layout.addLayout(header)
-        self.transfer_row=QWidget(self)
-        transfer_layout=QHBoxLayout(self.transfer_row);transfer_layout.setContentsMargins(0,0,0,0)
-        self.transfer_progress=QProgressBar(self.transfer_row);self.transfer_progress.setTextVisible(False)
-        self.transfer_progress.setFixedHeight(5)
-        set_ui_style(self.transfer_progress,"QProgressBar {border:0;background:#e1e7ef;border-radius:2px;} QProgressBar::chunk {background:#3989ef;border-radius:2px;}")
-        self.transfer_meta=QLabel(self.transfer_row)
-        set_ui_style(self.transfer_meta,"color:#63758b;font:12px 'HarmonyOS Sans SC';background:transparent;")
-        self.cancel_transfer=QPushButton('取消上传',self.transfer_row)
-        self.cancel_transfer.clicked.connect(lambda:self.shelf.cancel_transfer(self.current_path))
-        set_ui_style(self.cancel_transfer,"QPushButton {border:0;background:transparent;color:#1876db;padding:5px;font:12px 'HarmonyOS Sans SC';}")
-        transfer_layout.addWidget(self.transfer_progress,1);transfer_layout.addWidget(self.transfer_meta);transfer_layout.addWidget(self.cancel_transfer)
-        layout.addWidget(self.transfer_row);self.transfer_row.hide()
-        self.stack=QStackedWidget(self)
-        set_ui_style(self.stack, "background:transparent;border:0;")
-        self.icon=ContentTile(self,motion=self.shelf.manager.motion)
-        self.text=QPlainTextEdit(self)
-        self.text.setReadOnly(True); self.text.setAcceptDrops(False); self.text.viewport().setAcceptDrops(False)
-        set_ui_style(self.text,"QPlainTextEdit {background:white;color:#303a48;border:1px solid #e1e7ef;border-radius:10px;padding:13px;font:14px 'HarmonyOS Sans SC';selection-background-color:#d9eaff;selection-color:#213247;} QScrollBar:vertical {width:6px;background:transparent;} QScrollBar::handle:vertical {background:#c2cbd8;border-radius:3px;min-height:24px;} QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical {height:0;}")
-        self.image=ImagePreview(self)
-        self.image.set_loader(self.shelf.image_cache)
-        self.image.source_ready.connect(self._image_source_ready)
-        self.media=MediaPreview(self,motion=self.shelf.manager.motion)
-        self.media.frame_ready.connect(self._poster_ready)
-        self.media.playing_changed.connect(self._playing_changed)
-        for widget in (self.icon,self.text,self.image,self.media): self.stack.addWidget(widget)
-        layout.addWidget(self.stack,1)
-        self.transfer_overlay=TransferOverlay(self.stack,lambda:self.shelf.content.transfers.get(self.current_path))
+        self.shelf=parent.shelf;self.popup=parent;self.current_path=None
+        from reference_widgets import build_preview
+        build_preview(self,ElidedLabel,ImagePreview,MediaPreview,ContentTile)
 
     def _playing_changed(self, playing):
         self.shelf.preview_playing=bool(playing)
@@ -483,6 +404,10 @@ class PreviewPane(QFrame):
             lookup=getattr(getattr(self,'popup',None),'cloud_status',None)
             status=lookup(self.current_path) if callable(lookup) else cloud_status_for_ref(self.shelf,self.current_path)
             self.cloud_badge.set_status(status,self.shelf.content.transfers.get(self.current_path))
+            if hasattr(self,'status_value'):
+                from reference_widgets import STATUS_COLORS,css
+                self.status_value.setText(CLOUD_STATUS_LABELS.get(status,'仅保存在本机'))
+                css(self.status_value,f"color:{STATUS_COLORS.get(status,'#A1A1AA')};background:transparent;border:0;font:11px 'HarmonyOS Sans SC';")
 
     def _poster_ready(self, path, image):
         if not image.isNull():
@@ -515,8 +440,12 @@ class PreviewPane(QFrame):
     def show_path(self, ref, force=False):
         if self.current_path==ref and not force and not getattr(self,'_group_refs',()): return
         self._group_refs=()
+        self.group_view.hide()
         self.media.stop()
         self.current_path=ref
+        self.path_label.setText('原生文字' if self.shelf.content.is_text(ref) else ref)
+        self.open_button.setEnabled(not self.shelf.content.is_pending(ref))
+        self.rename_button.setEnabled(not self.shelf.content.is_pending(ref) and not self.shelf.content.is_text(ref))
         self.refresh_cloud_status()
         self.copy_button.set_glyph("copy")
         self.name.setText(self.shelf.content.title(ref))
@@ -605,6 +534,13 @@ class PreviewPane(QFrame):
         self.name.setText(f'{len(refs)} 项已选');self.info.setText('可一起拖出或打包 ZIP')
         self.icon.set_content('file',pixmap=stack_pixmap(self.shelf.content,refs,128,dpr=self.devicePixelRatioF(),preview_cache=self.shelf.preview_cache))
         self.stack.setCurrentWidget(self.icon);self.copy_button.setToolTip('复制所选内容')
+        self.group_title.setText(f'已选择 {len(refs)} 项')
+        self.group_art.setPixmap(stack_pixmap(self.shelf.content,refs,72,dpr=self.devicePixelRatioF(),preview_cache=self.shelf.preview_cache))
+        self.group_view.setGeometry(self.rect());self.group_view.show();self.group_view.raise_()
+
+    def resizeEvent(self,event):
+        super().resizeEvent(event)
+        self.group_view.setGeometry(self.rect())
 
     def resume_preview(self):
         if (not getattr(self,'_pending_preview',False) or self.shelf.content_transition_active()
@@ -633,41 +569,30 @@ class PreviewPane(QFrame):
         super().hideEvent(event)
 
 class FileRow(QFrame):
-    def __init__(self, popup, path):
+    def __init__(self,popup,path):
         super().__init__(popup.rows_body)
-        self.popup, self.path = popup, path
-        self.setAcceptDrops(True)
-        self.origin = QPoint()
-        self.did_drag = False
-        self.setFixedHeight(52)
-        self.setMouseTracking(True)
-        self.setCursor(Qt.CursorShape.OpenHandCursor)
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.motion = Spring(self, {"highlight": 0.0}, lambda _: self.update(), motion=popup.shelf.manager.motion)
-        row = QHBoxLayout(self)
-        row.setContentsMargins(7, 5, 4, 5)
-        row.setSpacing(7)
-        icon = TransferIconLabel(popup.shelf.content,path,self)
-        icon.setFixedSize(38, 28)
-        self.icon_label = icon
-        icon.setPixmap(popup.shelf.item_pixmap(path,28,dpr=self.devicePixelRatioF()))
-        icon.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        name = ElidedLabel(self)
-        name.setText(popup.shelf.content.title(path))
-        name.setToolTip("")
-        name.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        set_ui_style(name, "color:#354252;background:transparent;font:13px 'HarmonyOS Sans SC';")
-        remove = FeedbackButton("close", self, motion=popup.shelf.manager.motion)
-        self.remove_button=remove
-        remove.setFixedSize(28, 28)
-        policy=remove.sizePolicy();policy.setRetainSizeWhenHidden(True);remove.setSizePolicy(policy)
-        remove.setToolTip("移出搁架")
-        remove.clicked.connect(lambda: popup.remove_path(path))
-        self.refresh_cloud_status()
-        row.addWidget(icon)
-        row.addWidget(name, 1)
-        row.addWidget(remove)
-        remove.hide()
+        from reference_widgets import ThumbnailLabel,label,button,item_detail
+        from reference_widgets import SelectionCheck
+        self.popup,self.path=popup,path;self.setAcceptDrops(True);self.origin=QPoint();self.did_drag=False
+        self.setFixedHeight(58);self.setMouseTracking(True);self.setCursor(Qt.OpenHandCursor);self.setFocusPolicy(Qt.StrongFocus)
+        self.motion=Spring(self,{'highlight':0},lambda _:self.update(),motion=popup.shelf.manager.motion)
+        row=QHBoxLayout(self);row.setContentsMargins(12,8,8,8);row.setSpacing(12)
+        self.selection_check=SelectionCheck(self);self.selection_check.setFixedSize(16,16);self.selection_check.setChecked(path in popup.selected)
+        self.selection_check.setAccessibleName('选择 '+popup.shelf.content.title(path))
+        self.selection_check.clicked.connect(lambda _:popup.select_item(path,toggle=True))
+        from reference_widgets import css
+        css(self.selection_check,'QCheckBox::indicator{width:14px;height:14px;border:1px solid #45454B;border-radius:4px;background:transparent;} QCheckBox::indicator:checked{background:#0A84FF;border-color:#0A84FF;}',
+            'QCheckBox::indicator{width:14px;height:14px;border:1px solid #CACAD0;border-radius:4px;background:transparent;} QCheckBox::indicator:checked{background:#0A84FF;border-color:#0A84FF;}')
+        row.addWidget(self.selection_check)
+        self.icon_label=ThumbnailLabel(popup.shelf,path,self);self.icon_label.setAttribute(Qt.WA_TransparentForMouseEvents);row.addWidget(self.icon_label)
+        names=QVBoxLayout();names.setSpacing(2)
+        self.name_label=ElidedLabel(self);self.name_label.setText(popup.shelf.content.title(path));self.name_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+        css(self.name_label,"color:#F5F5F7;background:transparent;border:0;font:600 13px 'HarmonyOS Sans SC';","color:#1D1D1F;background:transparent;border:0;font:600 13px 'HarmonyOS Sans SC';")
+        self.detail_label=label(item_detail(popup.shelf,path),11,400,'secondary',self);self.detail_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+        names.addWidget(self.name_label);names.addWidget(self.detail_label);row.addLayout(names,1)
+        self.remove_button=button('✕',parent=self);self.remove_button.setFixedSize(24,24);self.remove_button.setToolTip('从搁架移除');self.remove_button.clicked.connect(lambda:popup.remove_path(path))
+        policy=self.remove_button.sizePolicy();policy.setRetainSizeWhenHidden(True);self.remove_button.setSizePolicy(policy)
+        row.addWidget(self.remove_button);self.remove_button.hide();self.refresh_cloud_status()
 
     def refresh_cloud_status(self):
         lookup=getattr(self.popup,'cloud_status',None)
@@ -676,15 +601,14 @@ class FileRow(QFrame):
         self.setToolTip(CLOUD_STATUS_LABELS.get(status,CLOUD_STATUS_LABELS['local']))
         self.setAccessibleDescription(CLOUD_STATUS_LABELS.get(status,CLOUD_STATUS_LABELS['local']))
 
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        alpha = 210 if self.path in self.popup.selected else int(150 * self.motion.values["highlight"])
-        p.setPen(Qt.PenStyle.NoPen)
-        highlight = QColor(ui_theme.color("selected"))
-        highlight.setAlpha(max(0, min(255, alpha)))
-        p.setBrush(highlight)
-        p.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 9, 9)
+    def paintEvent(self,event):
+        from reference_widgets import palette,ink
+        c=palette();chosen=self.path in self.popup.selected
+        self.selection_check.blockSignals(True);self.selection_check.setChecked(chosen);self.selection_check.blockSignals(False)
+        p=QPainter(self);p.setRenderHint(QPainter.Antialiasing)
+        p.setBrush(ink(c['selected'] if chosen else c['card_hover'] if self.motion.values['highlight']>.3 else c['card']))
+        p.setPen(QPen(ink(c['selected_border'] if chosen else c['border']),1))
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(.5,.5,-.5,-.5),c['card_radius'],c['card_radius']);p.end()
 
     def enterEvent(self, event):
         self.remove_button.show()
@@ -756,169 +680,97 @@ class ContentsPopup(QFrame):
     def __init__(self,shelf,mode="permanent"):
         super().__init__(shelf.card)
         self.shelf,self.mode=shelf,"permanent"
-        self.selected=set(); self.primary_selection=None; self.hovered_ref=None; self.category="all"
+        self.selected=set();self.primary_selection=None;self.hovered_ref=None;self.category='all'
         self._cloud_statuses={}
         self.retirement=WidgetRetirementQueue(self)
         self._build_timer=QTimer(self);self._build_timer.setSingleShot(True)
         self._build_timer.timeout.connect(self._append_batch)
-        set_ui_style(self,"background:transparent;")
-        root=QVBoxLayout(self); root.setContentsMargins(0,0,0,0); root.setSpacing(12)
-        header=QHBoxLayout()
-        self.title=QLabel(self)
-        set_ui_style(self.title,"color:#28313d;font:600 14px 'HarmonyOS Sans SC';background:transparent;")
-        header.addWidget(self.title); header.addStretch()
-        self.zip_button=QPushButton('打包所选',self)
-        self.zip_button.setAccessibleName('将所选内容打包为 ZIP')
-        self.zip_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.zip_button.clicked.connect(self.compress_selected)
-        set_ui_style(self.zip_button,"QPushButton {color:#1876db;background:#e9f3ff;border:0;border-radius:7px;padding:6px 10px;font:13px 'HarmonyOS Sans SC';} QPushButton:hover {background:#d9eaff;} QPushButton:disabled {color:#8490a0;}")
-        header.addWidget(self.zip_button)
-        self.zip_all_button=QPushButton('打包全部',self)
-        self.zip_all_button.setAccessibleName('将搁架全部内容打包为 ZIP')
-        self.zip_all_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.zip_all_button.clicked.connect(lambda:self.shelf.compress_refs(list(self.shelf.files['permanent'])))
-        set_ui_style(self.zip_all_button,"QPushButton {color:#1876db;background:#e9f3ff;border:0;border-radius:7px;padding:6px 10px;font:13px 'HarmonyOS Sans SC';} QPushButton:hover {background:#d9eaff;} QPushButton:disabled {color:#8490a0;}")
-        header.addWidget(self.zip_all_button)
-        self.clear_button=QPushButton("清空全部",self)
-        self.clear_button.setAccessibleName("清空全部内容")
-        self.clear_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.clear_button.clicked.connect(self.shelf.confirm_clear_all)
-        set_ui_style(self.clear_button,"QPushButton {color:#626c79;background:transparent;border:0;border-radius:7px;padding:6px 10px;font:13px 'HarmonyOS Sans SC';} QPushButton:hover {background:#eef1f6;color:#b9404c;} QPushButton:pressed {background:#e1e7ef;} QPushButton:disabled {color:#8490a0;}")
-        header.addWidget(self.clear_button); root.addLayout(header)
-        filters=QHBoxLayout(); filters.setSpacing(0)
-        self.category_segments=QFrame(self)
-        self.category_segments.setObjectName('categorySegments')
-        set_ui_style(self.category_segments,
-            "QFrame#categorySegments {background:#eef1f6;border:1px solid #e1e5ec;border-radius:10px;}")
-        segments=QGridLayout(self.category_segments)
-        segments.setContentsMargins(3,3,3,3);segments.setHorizontalSpacing(1)
-        segments.setVerticalSpacing(1)
-        self._segment_columns=8
-        self.category_group=QButtonGroup(self); self.category_group.setExclusive(True); self.category_buttons={}
-        for key,label in self.CATEGORIES:
-            button=QPushButton(label,self); button.setCheckable(True); button.setCursor(Qt.CursorShape.PointingHandCursor)
-            button.setFixedSize(86 if key=='uploading' else 49,28)
-            self.category_group.addButton(button); self.category_buttons[key]=button
-            set_ui_style(button,
-                "QPushButton {background:transparent;color:#626c79;border:0;border-radius:7px;"
-                "padding:3px 6px;font:13px 'HarmonyOS Sans SC';}"
-                "QPushButton:hover {background:#e1e7ef;}"
-                "QPushButton:checked {background:#ffffff;color:#28313d;font-weight:600;}"
-                "QPushButton:focus {outline:0;}")
-            button.clicked.connect(lambda checked=False,key=key:self.set_category(key))
-            segments.addWidget(button,0,len(self.category_buttons)-1)
-        uploading=self.category_buttons['uploading']
-        self.transfer_badge=QLabel(uploading)
-        self.transfer_badge.setGeometry(62,6,18,16)
-        self.transfer_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.transfer_badge.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        set_ui_style(self.transfer_badge,
-            "color:#f7faff;background:#1876db;border-radius:8px;font:600 10px 'HarmonyOS Sans SC';")
-        self.transfer_badge.hide()
-        filters.addWidget(self.category_segments);filters.addStretch();root.addLayout(filters)
-        self.transfer_summary=QWidget(self)
-        summary_layout=QHBoxLayout(self.transfer_summary);summary_layout.setContentsMargins(0,0,0,0)
-        self.transfer_count=QLabel(self.transfer_summary)
-        set_ui_style(self.transfer_count,"color:#738091;font:12px 'HarmonyOS Sans SC';")
-        self.transfer_bar=QProgressBar(self.transfer_summary);self.transfer_bar.setTextVisible(False);self.transfer_bar.setFixedHeight(4)
-        set_ui_style(self.transfer_bar,"QProgressBar {border:0;background:#e1e7ef;border-radius:2px;} QProgressBar::chunk {background:#3989ef;border-radius:2px;}")
-        self.transfer_eta=QLabel(self.transfer_summary)
-        set_ui_style(self.transfer_eta,"color:#63758b;font:12px 'HarmonyOS Sans SC';")
-        summary_layout.addWidget(self.transfer_count);summary_layout.addWidget(self.transfer_bar,1);summary_layout.addWidget(self.transfer_eta)
-        root.addWidget(self.transfer_summary);self.transfer_summary.hide()
-        body=QHBoxLayout(); body.setSpacing(16)
-        self.scroll=QScrollArea(self); self.scroll.setFixedWidth(246); self.scroll.setWidgetResizable(True)
-        self.scroll.setFrameShape(QFrame.Shape.NoFrame); self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        set_ui_style(self.scroll,"QScrollArea {background:transparent;border:0;} QScrollBar:vertical {width:5px;background:transparent;} QScrollBar::handle:vertical {background:#c3ccd9;border-radius:2px;min-height:22px;} QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical {height:0;}")
-        self.rows_body=QWidget(); self.rows_layout=QVBoxLayout(self.rows_body)
-        self.rows_layout.setContentsMargins(0,0,3,0); self.rows_layout.setSpacing(3); self.scroll.setWidget(self.rows_body)
-        self.preview=PreviewPane(self); body.addWidget(self.scroll); body.addWidget(self.preview,1)
-        self.empty_state=QFrame(self)
-        self.empty_state.setObjectName('emptyOverview')
-        set_ui_style(self.empty_state,
-            "QFrame#emptyOverview {background:#f8f9fb;border:1px dashed #e5e8ed;border-radius:16px;}")
-        empty_layout=QVBoxLayout(self.empty_state)
-        empty_layout.setContentsMargins(24,24,24,24);empty_layout.setSpacing(8)
-        empty_layout.addStretch()
-        self.empty_symbol=QLabel(self.empty_state)
-        self.empty_symbol.setPixmap(glyph_pixmap('shelf',42,ui_theme.color('secondary'),dpr=self.devicePixelRatioF()))
-        self.empty_symbol.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        empty_layout.addWidget(self.empty_symbol,0,Qt.AlignmentFlag.AlignHCenter)
-        self.empty_title=QLabel('搁架是空的',self.empty_state)
-        self.empty_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        set_ui_style(self.empty_title,"color:#28313d;font:600 15px 'HarmonyOS Sans SC';background:transparent;")
-        empty_layout.addWidget(self.empty_title)
-        self.empty_hint=QLabel('拖入文件、图片或文字',self.empty_state)
-        self.empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        set_ui_style(self.empty_hint,"color:#738091;font:12px 'HarmonyOS Sans SC';background:transparent;")
-        empty_layout.addWidget(self.empty_hint)
-        empty_layout.addStretch()
-        body.addWidget(self.empty_state,1)
-        self.empty_state.hide()
-        root.addLayout(body,1)
-        self.transfer_strip=QFrame(self)
-        self.transfer_strip.setObjectName('transferStrip')
-        set_ui_style(self.transfer_strip,
-            "QFrame#transferStrip {background:#f4f8fd;border:1px solid #e3eaf4;border-radius:11px;}")
-        strip_layout=QVBoxLayout(self.transfer_strip)
-        strip_layout.setContentsMargins(11,7,11,8);strip_layout.setSpacing(4)
-        strip_header=QHBoxLayout();strip_header.setContentsMargins(0,0,0,0)
-        self.strip_title=QLabel('传输中',self.transfer_strip)
-        set_ui_style(self.strip_title,"color:#324052;font:600 12px 'HarmonyOS Sans SC';background:transparent;")
-        strip_header.addWidget(self.strip_title);strip_header.addStretch()
-        self.strip_more=QPushButton(self.transfer_strip)
-        self.strip_more.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.strip_more.clicked.connect(lambda:self.set_category('uploading'))
-        set_ui_style(self.strip_more,"QPushButton {color:#176bc2;background:transparent;border:0;padding:0 3px;font:600 12px 'HarmonyOS Sans SC';} QPushButton:hover {color:#07559e;}")
-        strip_header.addWidget(self.strip_more);strip_layout.addLayout(strip_header)
-        self.strip_rows=[];self._strip_refs=[]
-        for index in range(2):
-            row=QWidget(self.transfer_strip)
-            row_layout=QVBoxLayout(row);row_layout.setContentsMargins(0,0,0,0);row_layout.setSpacing(2)
-            line=QHBoxLayout();line.setContentsMargins(0,0,0,0)
-            name=QPushButton(row);name.setCursor(Qt.CursorShape.PointingHandCursor)
-            name.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Fixed)
-            name.setStyleSheet("QPushButton {text-align:left;color:#3b4c61;background:transparent;border:0;padding:0;font:12px 'HarmonyOS Sans SC';} QPushButton:hover {color:#176bc2;}")
-            name.clicked.connect(lambda checked=False,index=index:self._open_strip_transfer(index))
-            percent=QLabel(row)
-            set_ui_style(percent,"color:#74849a;font:11px 'HarmonyOS Sans SC';background:transparent;")
-            line.addWidget(name,1);line.addWidget(percent)
-            progress=QProgressBar(row);progress.setTextVisible(False);progress.setFixedHeight(3)
-            set_ui_style(progress,"QProgressBar {border:0;background:#e0e9f5;border-radius:1px;} QProgressBar::chunk {background:#3989ef;border-radius:1px;}")
-            row_layout.addLayout(line);row_layout.addWidget(progress)
-            strip_layout.addWidget(row);self.strip_rows.append((row,name,percent,progress))
-        root.addWidget(self.transfer_strip);self.transfer_strip.hide()
-        self.rebuild(); self.update_transfer_status()
+        from reference_widgets import build_overview
+        build_overview(self,PreviewPane)
+        self.rebuild();self.update_transfer_status()
         self.drop_router=OverviewDropRouter(self)
 
     def resizeEvent(self,event):
         super().resizeEvent(event)
-        if not hasattr(self,'category_segments'):
+        if not hasattr(self,'empty_state') or not hasattr(self,'scroll'):
             return
-        columns=4 if event.size().width()<448 else 8
-        if columns==self._segment_columns:
-            return
-        grid=self.category_segments.layout()
-        for index,(key,_) in enumerate(self.CATEGORIES):
-            button=self.category_buttons[key]
-            grid.removeWidget(button)
-            grid.addWidget(button,index//columns,index%columns)
-        self._segment_columns=columns
-        grid.invalidate()
+        self._apply_responsive_layout()
+
+    def _apply_responsive_layout(self):
+        narrow=self.width()<540
+        previous=self._narrow_layout;self._narrow_layout=narrow
+        self.category_segments.hide();self.category_picker.setVisible(narrow);self.bulk_more.setVisible(narrow)
+        self.sidebar.setVisible(not narrow)
+        for control in (self.search_edit,self.view_segment,self.zip_all_button,self.clear_button,self.cloud_selector):control.setVisible(not narrow)
+        if narrow:
+            self.body_layout.removeWidget(self.preview);self.middle_layout.insertWidget(3,self.preview,1)
+            self.preview.setMinimumWidth(0);self.preview.setMaximumWidth(16777215)
+        else:
+            self.middle_layout.removeWidget(self.preview);self.body_layout.addWidget(self.preview)
+            self.preview.setFixedWidth(min(340,max(260,self.width()//3)))
+        self.scroll.setMinimumWidth(0);self.scroll.setMaximumWidth(16777215)
+        self._sync_body_visibility();self.update_selection_actions()
+        if previous!=narrow and hasattr(self,'_render_signature'):
+            self._render_signature=None;self.rebuild()
+
+    def _sync_body_visibility(self,refs=None):
+        has_refs=bool(self.visible_refs() if refs is None else refs)
+        self.empty_state.setVisible(not has_refs)
+        self.narrow_view_button.setVisible(self._narrow_layout and has_refs)
+        self.narrow_view_button.setText('返回内容' if self._narrow_preview else '预览')
+        self.narrow_view_button.setAccessibleName('返回内容列表' if self._narrow_preview else '查看选中内容的预览')
+        self.scroll.setVisible(has_refs and (not self._narrow_layout or not self._narrow_preview))
+        self.preview.setVisible(has_refs and (not self._narrow_layout or self._narrow_preview))
+
+    def toggle_narrow_preview(self):
+        if not self.visible_refs():return
+        self._narrow_preview=not self._narrow_preview
+        if self._narrow_preview:
+            self.hovered_ref=None
+            chosen=self.chosen_refs()
+            if len(chosen)>1:self.preview.show_group(chosen)
+            else:self.preview.show_path(self.primary_selection or self.visible_refs()[0],force=True)
+        self._sync_body_visibility()
+        if self._narrow_preview:self.preview.resume_preview()
+        self.shelf.touch()
+
+    def open_category_menu(self):
+        menu=AnimatedMenu(self);style_menu(menu)
+        for key,label in self.CATEGORIES:
+            action=menu.addAction(label,lambda key=key:self.set_category(key))
+            action.setCheckable(True);action.setChecked(key==self.category)
+        self.shelf._menu_open=True
+        try:menu.exec(self.category_picker.mapToGlobal(QPoint(0,self.category_picker.height()+4)))
+        finally:self.shelf._menu_open=False;menu.deleteLater();self.shelf.touch()
+
+    def open_bulk_menu(self):
+        menu=AnimatedMenu(self);style_menu(menu)
+        chosen=menu.addAction('打包所选…',self.compress_selected)
+        chosen.setEnabled(self.zip_button.isEnabled())
+        all_action=menu.addAction('打包全部…',lambda:self.shelf.compress_refs(list(self.shelf.files['permanent'])))
+        all_action.setEnabled(self.zip_all_button.isEnabled())
+        menu.addSeparator()
+        clear=menu.addAction('清空全部',self.shelf.confirm_clear_all)
+        clear.setEnabled(self.clear_button.isEnabled())
+        self.shelf._menu_open=True
+        try:menu.exec(self.bulk_more.mapToGlobal(QPoint(0,self.bulk_more.height()+4)))
+        finally:self.shelf._menu_open=False;menu.deleteLater();self.shelf.touch()
 
     def visible_refs(self):
         transfers=self.shelf.content.transfers
+        query=self.search_edit.text().strip().casefold() if hasattr(self,'search_edit') else ''
         return [ref for ref in reversed(self.shelf.display_refs()) if
             (ref in transfers if self.category=='uploading' else
              not self.shelf.content.is_pending(ref) and
-             (self.category=='all' or self.shelf.content.category(ref)==self.category))]
+             (self.category=='all' or self.shelf.content.category(ref)==self.category))
+             and (not query or query in self.shelf.content.title(ref).casefold())]
 
     def update_transfer_status(self):
         self.shelf.transfer_rates.observe(self.shelf.content.transfers)
         states=list(self.shelf.content.transfers.values())
         count=len(states)
         self.transfer_badge.setText('99+' if count>99 else str(count))
-        self.transfer_badge.setGeometry(58 if count>99 else 62,6,24 if count>99 else 18,16)
+        self.transfer_badge.setGeometry(145,5,28,20)
         self.transfer_badge.setVisible(bool(count))
         self.category_buttons['uploading'].setAccessibleName(f'传输中的项目，共 {count} 项')
         self.transfer_summary.setVisible(bool(count) and self.category=='uploading')
@@ -984,7 +836,9 @@ class ContentsPopup(QFrame):
 
     def set_category(self,key):
         if key not in self.category_buttons: return
-        self.category=key; self.hovered_ref=None
+        self.category=key; self.hovered_ref=None;self._narrow_preview=False
+        for name,button in self.sidebar_buttons.items():button.setChecked(name==key)
+        self.category_picker.setText(next(label for item,label in self.CATEGORIES if item==key))
         self.transfer_summary.setVisible(bool(self.shelf.content.transfers) and key=='uploading')
         self.transfer_strip.setVisible(bool(self.shelf.content.transfers) and key!='uploading')
         self.selected.intersection_update(self.visible_refs())
@@ -1015,13 +869,28 @@ class ContentsPopup(QFrame):
         self.hovered_ref=None
         self.selected.intersection_update(refs)
         if self.primary_selection not in self.selected: self.primary_selection=next((r for r in refs if r in self.selected),None)
-        self.title.setText(f"内容总览 · {len(refs)} 项")
+        self.title.setText("内容总览");self.count_label.setText(f"{len(refs)} 项")
+        from reference_widgets import css,icon,palette
+        for key,button in self.sidebar_buttons.items():
+            label=next(name for name_key,name in self.CATEGORIES if name_key==key)
+            if key=='uploading':count=len(self.shelf.content.transfers)
+            elif key=='all':count=sum(not self.shelf.content.is_pending(r) for r in self.shelf.display_refs())
+            else:count=sum(self.shelf.content.category(r)==key for r in self.shelf.display_refs() if not self.shelf.content.is_pending(r))
+            button.setText(label)
+            self.nav_counts[key].setText(str(count) if count else '')
+            selected=key==self.category
+            background='rgba(255,255,255,51)' if selected else 'rgba(100,210,255,36)' if key=='uploading' and count else 'transparent'
+            css(self.nav_counts[key],f"background:{background};border:0;border-radius:7px;font:11px '{FONT_FAMILY}';color:"+('white' if selected else palette()['cyan'] if key=='uploading' else palette()['muted'])+';')
+            glyph=button._reference_icon[0]
+            button._reference_icon=(glyph,'#FFFFFF' if selected else 'secondary');button.setIcon(icon(glyph,'#FFFFFF' if selected else palette()['secondary']))
+            button.setChecked(key==self.category)
         self.clear_button.setEnabled(self.shelf.has_files())
         self.category_buttons[self.category].setChecked(True)
         if self.shelf.manager.settings.view_mode=='icons':
             grid=QGridLayout(); grid.setContentsMargins(0,0,0,0); grid.setHorizontalSpacing(8); grid.setVerticalSpacing(8)
             self.rows_layout.addLayout(grid)
-            def append(index,ref): grid.addWidget(IconItem(self,ref),index//2,index%2)
+            columns=1 if self._narrow_layout else 3
+            def append(index,ref): grid.addWidget(IconItem(self,ref),index//columns,index%columns)
         else:
             def append(index,ref): self.rows_layout.insertWidget(self.rows_layout.count()-1,FileRow(self,ref))
         self.rows_layout.addStretch()
@@ -1031,17 +900,17 @@ class ContentsPopup(QFrame):
         # widgets wait until the transition ends, with a small per-tick budget.
         self._append_batch(initial=True)
         if refs:
-            self.empty_state.hide();self.scroll.show()
             current=self.primary_selection or (self.preview.current_path if self.preview.current_path in refs else refs[0])
             previous_metadata=dict(previous_signature[4]) if previous_signature else {}
-            self.preview.show_path(current,force=previous_metadata.get(current)!=repr(self.shelf.content.metadata.get(current,{}))); self.preview.show()
-            self.restore_selected_preview()
+            if not (self._narrow_layout and not self._narrow_preview):
+                self.preview.show_path(current,force=previous_metadata.get(current)!=repr(self.shelf.content.metadata.get(current,{})))
+                self.restore_selected_preview()
         else:
-            self.preview.media.stop();self.preview.hide();self.scroll.hide()
+            self.preview.media.stop()
             self.empty_title.setText('搁架是空的' if not self.shelf.has_files() else '没有这类内容')
             self.empty_hint.setVisible(not self.shelf.has_files())
             self.empty_symbol.setPixmap(glyph_pixmap('shelf',42,ui_theme.color('secondary'),dpr=self.devicePixelRatioF()))
-            self.empty_state.show()
+        self._sync_body_visibility(refs)
         self.scroll.verticalScrollBar().setValue(position)
         self.update_selection_actions()
 
@@ -1068,11 +937,30 @@ class ContentsPopup(QFrame):
     def update_selection_actions(self):
         count=len(self.chosen_refs());busy=self.shelf.archive_job is not None
         choosing=self.shelf._archive_choosing
-        self.zip_button.setVisible(True)
+        self.zip_button.setVisible(not self._narrow_layout or bool(count) or busy or choosing)
         self.zip_button.setText('打包中…' if busy else '选择位置…' if choosing else '打包所选')
         self.zip_button.setEnabled(bool(count) and not busy and not choosing)
         self.zip_all_button.setEnabled(bool(self.shelf.files['permanent']) and not busy and not choosing)
         self.zip_button.setToolTip(f'将选中的 {count} 项打包为 ZIP')
+        self.selection_hint.setText(f'已选 {count} 项')
+        visible=self.visible_refs()
+        self.select_all_button.setText('弃选' if visible and all(ref in self.selected for ref in visible) else '全选')
+
+    def change_view_mode(self,key):
+        if key not in ('list','icons'):return
+        self.shelf.manager.settings.update(view_mode=key)
+        self.view_list.setChecked(key=='list')
+        self.view_grid.setChecked(key=='icons')
+        self.rebuild()
+
+    def toggle_select_all_visible(self):
+        refs=self.visible_refs()
+        if refs and all(ref in self.selected for ref in refs):self.selected.difference_update(refs)
+        else:self.selected.update(refs)
+        self.primary_selection=next((r for r in refs if r in self.selected),None)
+        for item in self.rows_body.findChildren(FileRow):item.update()
+        self.restore_selected_preview()
+        self.update_selection_actions()
 
     def select_item(self,ref,toggle=False,extend=False):
         refs=self.visible_refs()
@@ -1092,6 +980,7 @@ class ContentsPopup(QFrame):
         self.update_selection_actions()
 
     def hover_item(self,ref):
+        if self._narrow_layout and not self._narrow_preview:return
         self.hovered_ref=ref; self.preview.show_path(ref)
 
     def end_hover(self,ref):
@@ -1099,6 +988,7 @@ class ContentsPopup(QFrame):
         QTimer.singleShot(0,self.restore_selected_preview)
 
     def restore_selected_preview(self):
+        if self._narrow_layout and not self._narrow_preview:return
         if self.hovered_ref is not None:return
         chosen=self.chosen_refs()
         if len(chosen)>1:self.preview.show_group(chosen)
@@ -1254,22 +1144,23 @@ class ShelfWindow(QWidget):
         logo.setGeometry(18, 17, 28, 28)
         logo.setPixmap(app_icon().pixmap(QSize(28,28),self.devicePixelRatioF()))
         logo.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        title = QLabel(APP_NAME, self.card)
-        title.setGeometry(53, 20, 90, 26)
-        set_ui_style(title, "color:#282d35;font:600 14px 'HarmonyOS Sans SC';background:transparent;")
-        title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        logo.hide()
+        self.brand_title = QLabel(APP_NAME, self.card)
+        self.brand_title.setGeometry(16, 12, 96, 24)
+        set_ui_style(self.brand_title, "color:#282d35;font:600 13px 'HarmonyOS Sans SC';background:transparent;")
+        self.brand_title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.shelf_label = QLabel("", self.card)
         self.shelf_label.setGeometry(56, 34, 144, 16)
         set_ui_style(self.shelf_label, "color:#7c8796;font:11px 'HarmonyOS Sans SC';background:transparent;")
         self.shelf_label.hide()
         self.shelf_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.menu_button = FeedbackButton("more", self.card, motion=self.manager.motion)
+        self.menu_button = ToolbarButton("more", self.card, motion=self.manager.motion)
         self.menu_button.setGeometry(CARD_W - 80, 17, 30, 30)
         self.menu_button.clicked.connect(lambda: self.show_menu())
-        self.close_button = FeedbackButton("dock", self.card, motion=self.manager.motion)
+        self.close_button = ToolbarButton("dock", self.card, motion=self.manager.motion)
         self.close_button.setGeometry(CARD_W - 44, 17, 30, 30)
         self.close_button.clicked.connect(lambda: self.hide_animated(explicit=True))
-        self.pin_button=FeedbackButton("pin-filled" if self.pinned else "pin",self.card,motion=self.manager.motion)
+        self.pin_button=ToolbarButton("pin-filled" if self.pinned else "pin",self.card,motion=self.manager.motion)
         self.pin_button.setCheckable(True); self.pin_button.setChecked(self.pinned)
         self.pin_button.clicked.connect(self.toggle_pin)
         self.pin_button.setToolTip("取消钉住" if self.pinned else "钉住搁架")
@@ -1278,16 +1169,21 @@ class ShelfWindow(QWidget):
         self.lan_button.setToolTip('局域网互传')
         self.lan_button.setAccessibleName('打开局域网传输')
         self.lan_button.clicked.connect(lambda: self.manager.show_lan_dialog())
-        self.cloud_button = FeedbackButton('cloud', self.card, motion=self.manager.motion)
+        from reference_widgets import AvatarButton
+        self.account_button = AvatarButton('user', self.card, motion=self.manager.motion)
+        self.account_button.setToolTip('账号与设置')
+        self.account_button.setAccessibleName('打开账号与设置')
+        self.account_button.clicked.connect(lambda:self.manager.show_settings())
+        self.cloud_button = ToolbarButton('cloud', self.card, motion=self.manager.motion)
         self.cloud_button.clicked.connect(self.show_cloud_menu)
         self.refresh_cloud_button()
-        self.expand_button = FeedbackButton("expand", self.card, motion=self.manager.motion)
+        self.expand_button = ToolbarButton("expand", self.card, motion=self.manager.motion)
         self.expand_button.setToolTip("展开内容")
         self.expand_button.clicked.connect(self.toggle_contents)
         self.zones = {mode: DropZone(self, mode) for mode in MODES}
-        self.zones["permanent"].setGeometry(16, 66, 362, 166)
+        self.zones["permanent"].setGeometry(1, 49, 330, 268)
         self.status_label = QLabel(self.card)
-        self.status_label.setGeometry(20, 240, CARD_W - 40, 22)
+        self.status_label.setGeometry(30, 242, CARD_W - 60, 18)
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         set_ui_style(self.status_label, "color:#8490a0;font:11px 'HarmonyOS Sans SC';background:transparent;")
         self.rename_edit = QLineEdit(self.card)
@@ -1295,26 +1191,52 @@ class ShelfWindow(QWidget):
         self.rename_edit.returnPressed.connect(self.commit_rename)
         self.rename_edit.editingFinished.connect(self.commit_rename)
         self.rename_edit.hide()
-        for button in (self.cloud_button,self.lan_button,self.pin_button,self.expand_button,self.menu_button,self.close_button):
+        for button in (self.cloud_button,self.pin_button,self.expand_button,self.menu_button,self.close_button):
             button.setProperty('flatToolbar',True)
             button.setParent(self)
+        for button in (self.lan_button,self.account_button):
+            button.setProperty('flatToolbar',True)
+            button.setParent(self)
+        from reference_widgets import css,label,button
+        css(self.card,'QFrame#shelfCard{background:rgba(28,28,30,214);border:1px solid rgba(255,255,255,20);border-radius:10px;}',
+            'QFrame#shelfCard{background:rgba(255,255,255,214);border:1px solid rgba(0,0,0,23);border-radius:10px;}')
+        if sys.platform=='darwin':
+            css(self.card,'QFrame#shelfCard{background:rgba(28,28,30,214);border:1px solid rgba(255,255,255,20);border-radius:16px;}',
+                'QFrame#shelfCard{background:rgba(255,255,255,214);border:1px solid rgba(0,0,0,23);border-radius:16px;}')
+        self.header_line=QFrame(self.card);self.header_line.setGeometry(1,48,CARD_W-2,1)
+        self.footer_line=QFrame(self.card);self.footer_line.setGeometry(1,269,CARD_W-2,1)
+        for line in (self.header_line,self.footer_line):css(line,'background:rgba(255,255,255,15);border:0;','background:rgba(0,0,0,15);border:0;')
+        self.account_caption=label('未登录',10,500,'secondary',self.card);self.account_caption.setGeometry(40,CARD_H-38,47,22)
+        self.lan_caption=button('局域网互传',parent=self.card);self.lan_caption.setGeometry(113,CARD_H-40,90,26);self.lan_caption.clicked.connect(lambda:self.manager.show_lan_dialog())
+        self.traffic_controls=QFrame(self.card);self.traffic_controls.setGeometry(16,18,56,12)
+        for index,tint in enumerate(('#FF5F56','#FFBD2E','#27C93F')):
+            control=QPushButton(self.traffic_controls);control.setGeometry(index*20,0,12,12);control.setStyleSheet(f'background:{tint};border:0;border-radius:6px;')
+            control.clicked.connect((lambda:self.hide_animated(explicit=True)) if index==0 else self.show_contents if index==1 else self.pin_button.click)
         self._layout_header(CARD_W)
 
     def _layout_header(self,width):
-        center=QRectF(self.card.geometry()).center()
-        effect=self.surface_effect
-        transform=QTransform()
-        transform.translate(center.x()+effect.dx,center.y()+effect.dy)
+        expanded=self.expanded
+        self.brand_title.setVisible(not expanded and sys.platform!='darwin')
+        center=QRectF(self.card.geometry()).center();effect=self.surface_effect
+        transform=QTransform();transform.translate(center.x()+effect.dx,center.y()+effect.dy)
         transform.scale(effect.sx,effect.sy);transform.translate(-center.x(),-center.y())
-        buttons=(self.cloud_button,self.lan_button,self.pin_button,
-                 self.expand_button,self.menu_button,self.close_button)
-        for index,button in enumerate(buttons):
-            x=width-233+index*37
-            point=transform.map(QRectF(self.card.x()+x,self.card.y()+15,32,32).center())
-            button.setFixedSize(32,32);button.move(round(point.x()-16),round(point.y()-16))
-            button.set_presentation_scale(effect.sx,effect.sy)
-            button.setVisible(self.presentation_kind!='drag')
-            button.raise_()
+        buttons=(self.pin_button,self.expand_button,self.close_button) if expanded else (self.cloud_button,self.pin_button,self.expand_button,self.menu_button,self.close_button)
+        for item in (self.cloud_button,self.menu_button):item.setVisible(not expanded)
+        for index,item in enumerate(buttons):
+            size=28 if expanded else 32
+            x=width-16-len(buttons)*(size+6)+index*(size+6)+6
+            point=transform.map(QRectF(self.card.x()+x,self.card.y()+(12 if expanded else 8),size,size).center())
+            item.setFixedSize(size,size);item.move(round(point.x()-size/2),round(point.y()-size/2));item.set_presentation_scale(effect.sx,effect.sy)
+            item.show();item.raise_()
+        for index,item in enumerate((self.account_button,self.lan_button)):
+            point=transform.map(QRectF(self.card.x()+14+index*76,self.card.y()+CARD_H-39,24,24).center())
+            item.setFixedSize(24,24);item.move(round(point.x()-12),round(point.y()-12));item.set_presentation_scale(effect.sx,effect.sy)
+            item.setVisible(not expanded);item.raise_()
+        for attr in ('account_caption','lan_caption','header_line','footer_line','traffic_controls'):
+            item=getattr(self,attr,None)
+            if item is not None:item.setVisible(not expanded and (attr!='traffic_controls' or sys.platform=='darwin'))
+        if self.presentation_kind=='drag':
+            for item in (self.cloud_button,self.pin_button,self.expand_button,self.menu_button,self.close_button,self.traffic_controls):item.hide()
 
     def refresh_cloud_button(self):
         enabled = self.manager.settings.sync_upload_enabled and self.manager.settings.sync_receive_enabled
@@ -1322,6 +1244,7 @@ class ShelfWindow(QWidget):
         state = '已开启' if enabled else '已关闭部分方向'
         self.cloud_button.setToolTip(f'云同步：{state}')
         self.cloud_button.setAccessibleName(f'云同步：{state}，打开设置')
+        if self.popup:self.popup.cloud_selector.update()
 
     def show_cloud_menu(self):
         if confirmation_active(self):
@@ -1329,16 +1252,29 @@ class ShelfWindow(QWidget):
         self.touch()
         menu = AnimatedMenu(self)
         style_menu(menu)
+        from app_settings import SettingsToggleSwitch
+        from reference_widgets import label as source_label,css
+        menu.setFixedWidth(256)
+        css(menu,*[s.replace('padding:6px 0;','padding:46px 14px 14px;') for s in menu._reference_style])
+        title=source_label('云同步方向控制',12,600,parent=menu);title.setGeometry(14,11,206,24)
+        badge=source_label('●',12,400,'green' if self.manager.settings.sync_upload_enabled and self.manager.settings.sync_receive_enabled else 'red',menu)
+        badge.setGeometry(226,11,16,24)
         for label, key in (("上传本机搁架到云端", "sync_upload_enabled"),
                            ("接收云端与其他设备内容", "sync_receive_enabled")):
-            action = menu.addAction(label)
+            action=QWidgetAction(menu);action.setText(label)
             action.setCheckable(True)
             action.setChecked(getattr(self.manager.settings, key))
+            switch=SettingsToggleSwitch(label,menu);switch.dark=ui_theme.current_theme()=='dark'
+            switch.setFixedSize(228,28);switch.setChecked(action.isChecked())
+            css(switch,f"font:12px '{FONT_FAMILY}';background:transparent;border:0;")
+            action.setDefaultWidget(switch);menu.addAction(action)
+            switch.toggled.connect(action.setChecked);action.toggled.connect(switch.setChecked)
             action.toggled.connect(lambda checked, name=key, item=action:
                                    self._set_sync_direction(name, checked, item))
         self._menu_open = True
         try:
-            menu.exec(self.cloud_button.mapToGlobal(QPoint(0, 39)))
+            anchor=self.popup.cloud_selector if self.expanded and self.popup else self.cloud_button
+            menu.exec(anchor.mapToGlobal(QPoint(0, anchor.height()+6)))
         finally:
             self._menu_open = False
             menu.deleteLater()
@@ -1475,14 +1411,21 @@ class ShelfWindow(QWidget):
 
     def _place_morph_controls(self,snapshot,rect):
         transform=snapshot.presentation_transform(rect)
-        buttons=(self.cloud_button,self.lan_button,self.pin_button,
-                 self.expand_button,self.menu_button,self.close_button)
+        buttons=(self.pin_button,self.expand_button,self.close_button) if self.expanded else (self.cloud_button,self.pin_button,self.expand_button,self.menu_button,self.close_button)
+        size=28 if self.expanded else 32
+        width=rect.width()-28
         for index,button in enumerate(buttons):
-            center=transform.map(QRectF(rect.x()+rect.width()-247+index*37-self.x(),
-                                        rect.y()+22-self.y(),32,32).center())
-            button.move(round(center.x()-16),round(center.y()-16))
+            x=width-16-len(buttons)*(size+6)+index*(size+6)+6
+            center=transform.map(QRectF(rect.x()+14+x-self.x(),rect.y()+7+(12 if self.expanded else 8)-self.y(),size,size).center())
+            button.move(round(center.x()-size/2),round(center.y()-size/2))
             button.set_presentation_scale(self.surface_effect.sx,self.surface_effect.sy)
             button.raise_()
+        if not self.expanded:
+            for index,button in enumerate((self.account_button,self.lan_button)):
+                center=transform.map(QRectF(rect.x()+28+index*76-self.x(),rect.y()+7+CARD_H-39-self.y(),24,24).center())
+                button.move(round(center.x()-12),round(center.y()-12))
+                button.set_presentation_scale(self.surface_effect.sx,self.surface_effect.sy)
+                button.raise_()
 
     def _capture_morph_source(self):
         if not self.geometry_morph.motion: return
@@ -1630,6 +1573,14 @@ class ShelfWindow(QWidget):
         job.signals.done.connect(done);QThreadPool.globalInstance().start(job)
 
     def refresh(self):
+        from reference_widgets import refresh_tree
+        refresh_tree(self)
+        account=getattr(self.manager,'account',None)
+        if hasattr(self,'account_caption'):
+            self.account_caption.setText(str(account.account.get('username',''))[:8] if account and account.signed_in else '未登录')
+            self.account_button.initial=(str(account.account.get('username','R'))[:1].upper() if account and account.signed_in else 'R')
+        if self.popup:
+            self.popup.account_nav.set_profile(str(account.account.get('username','')) if account and account.signed_in else '',bool(account and account.signed_in))
         for mode in MODES:
             self.files[mode] = [p for p in self.files[mode] if self.content.exists(p)]
             self.zones[mode].refresh()
@@ -2135,7 +2086,7 @@ class ShelfWindow(QWidget):
         default_target=self._expansion_rect(current)
         width,height=default_target.width()-28,default_target.height()-27
         self._expanded_size = (width, height)
-        self.popup.setGeometry(16, 65, width - 32, height - 81)
+        self.popup.setGeometry(0, 0, width, height)
         self.popup.show()
         destination=default_target if target is None else QRect(target)
         self.geometry_morph.animate(destination)
@@ -2338,13 +2289,15 @@ class ShelfWindow(QWidget):
         self.geometry_morph.complete()
         if self.expanded and self.popup:
             self.popup.select_item(ref)
-            preview=self.popup.preview
-            position=preview.mapTo(self.card,QPoint(16,12))
-            self.rename_edit.setGeometry(position.x(),position.y(),max(140,preview.width()-68),32)
-        else:
-            zone=self.zones['permanent']
-            self.rename_edit.setGeometry(zone.x()+12,zone.y()+128,zone.width()-24,32)
+        if not getattr(self,'_rename_dialog',None):
+            from reference_widgets import RenameDialog
+            self._rename_dialog=RenameDialog(self)
+        dialog=self._rename_dialog
+        from reference_widgets import refresh_tree
+        refresh_tree(dialog)
+        dialog.move(self.visual_geometry().center()-QPoint(dialog.width()//2,dialog.height()//2))
         self.rename_edit.setText(Path(ref).stem)
+        dialog.show();dialog.raise_();dialog.activateWindow()
         self.rename_edit.show()
         self.rename_edit.raise_()
         self.rename_edit.setFocus()
@@ -2743,6 +2696,8 @@ class ShelfManager:
         self.shelf._release_reveal_level()
         if self.settings_dialog is None:
             self.settings_dialog = SettingsDialog(self.settings)
+            self.settings_dialog.dock_requested.connect(lambda:self.shelf.hide_animated(explicit=True))
+            self.settings_dialog.mini_requested.connect(self.show_shortcut)
             self.settings_dialog.update_requested.connect(self.updates.activate)
             self.settings_dialog.rejected.connect(self.updates.cancel)
             self.updates.state_changed.connect(lambda state,payload:self.settings_dialog.set_update_state(state,**payload))
@@ -2769,6 +2724,9 @@ class ShelfManager:
             # modeless transfer panel independent of the transient shelf level.
             self.lan_dialog = LanDialog(self.lan,self.settings)
             self.lan_dialog.panel.set_paths_provider(self._lan_selected)
+            self.lan_dialog.overview_requested.connect(self.show_overview)
+            self.lan_dialog.mini_requested.connect(self.show_shortcut)
+            self.lan_dialog.dock_requested.connect(lambda:self.shelf.hide_animated(explicit=True))
         if not self.lan_dialog.isVisible():
             anchor = self.shelf.frameGeometry()
             area = (QGuiApplication.screenAt(anchor.center()) or QGuiApplication.primaryScreen()).availableGeometry()
@@ -3114,10 +3072,12 @@ def main():
             guard.close()
             return 2
         report_path = Path(sys.argv[index + 1])
-        manager.shelf.show()
+        manager.edge.show_handle()
+        manager.shelf.show_transient()
         def finish_cocoa_smoke():
             result = dict(ok=bool(manager.shelf.isVisible()),
                           qt_platform=app.platformName(), version=APP_VERSION,
+                          edge_constructed=bool(manager.edge.isVisible() or manager.shelf.isVisible()),
                           shelf_constructed=bool(manager.shelves),
                           native_hotkeys=False, lan_listener=False,
                           cloud_session=False, startup_mutation=False)

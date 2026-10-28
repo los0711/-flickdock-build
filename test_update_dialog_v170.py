@@ -93,7 +93,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-update-ui-v170-') as temporar
     assert dialog.state=='checking' and len(client.check_calls)==len(checks)==1
     assert client.check_calls[-1] is True and not dialog.primary_button.isEnabled()
     client.update_available.emit(manifest, True)
-    assert dialog.state=='available' and dialog.primary_button.text()=='下载并更新'
+    assert dialog.state=='available' and dialog.primary_button.text()=='立即下载并更新'
     QTest.mouseClick(dialog.primary_button, Qt.MouseButton.LeftButton)
     assert dialog.state=='downloading' and len(client.download_calls)==len(downloads)==1
     assert client.download_calls[-1]==(manifest, True) and not installed

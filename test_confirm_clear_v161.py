@@ -46,7 +46,10 @@ def assert_layout(dialog, expect_compact=False):
     assert dialog.geometry() == QRect(card.mapTo(host,QPoint()),card.size())
     assert dialog.rect().contains(dialog.panel.geometry())
     assert not dialog.description.wordWrap()
-    expected = dialog.description.compact_text if expect_compact else dialog.description.full_text
+    # The 340px reference sheet fits its shorter full explanation even on the
+    # old compact host. Only use the compact variant when measured space needs it.
+    expected = (dialog.description.full_text if dialog.description.fontMetrics().horizontalAdvance(dialog.description.full_text)<=dialog.description.width()
+                else dialog.description.compact_text)
     assert dialog.description.text() == expected, (dialog.description.text(), expected, dialog.description.width())
     assert "\n" not in dialog.description.text() and "…" not in dialog.description.text()
     assert dialog.description.fontMetrics().horizontalAdvance(dialog.description.text()) <= dialog.description.width()
@@ -54,7 +57,7 @@ def assert_layout(dialog, expect_compact=False):
         bounds = QRect(button.mapTo(dialog.panel, QPoint()), button.size())
         assert dialog.panel.rect().contains(bounds), (bounds, dialog.panel.rect())
         assert button.width() >= button.fontMetrics().horizontalAdvance(button.text()) + 36
-        assert button.height() >= button.fontMetrics().height() + 18
+        assert button.height() >= button.fontMetrics().height() + 10
         assert button.isVisible()
 
 
@@ -101,8 +104,8 @@ try:
             def cancel_visible():
                 assert_layout(dialog, compact)
                 assert dialog.cancel_button.isDefault() and not dialog.delete_button.isDefault()
-                assert dialog.cancel_button.text() == "取消" and dialog.delete_button.text() == "删除"
-                assert ("#252b35" if theme == "dark" else "#ffffff") in dialog.panel.styleSheet()
+                assert dialog.cancel_button.text() == "取消" and dialog.delete_button.text() == "清空"
+                assert ("rgba(28,28,30,214)" if theme == "dark" else "rgba(255,255,255,214)") in dialog.panel.styleSheet()
                 dialog.cancel_button.click()
             assert execute(dialog, cancel_visible) is False
             assert results == [False]

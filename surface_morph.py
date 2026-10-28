@@ -1,8 +1,9 @@
 """Right-anchored elastic geometry with a lightweight frozen presentation."""
 from collections import OrderedDict
 import math
+import sys
 from PySide6.QtCore import QObject, QPoint, QRect, QRectF, Qt, QEasingCurve, QVariantAnimation
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPixmap, QTransform
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPixmap, QTransform, QRegion
 from PySide6.QtWidgets import QWidget
 
 
@@ -13,7 +14,7 @@ def paint_surface_shadow(painter,rect,cache,blur=28.0,offset=None,color=None):
     if color.alpha() == 0:
         return
     dpr=painter.device().devicePixelRatioF()
-    radius=min(26.0,min(rect.width(),rect.height())*.10)
+    radius=16.0 if sys.platform=='darwin' else 10.0
     spread=blur*.65
     margin=round(blur+max(abs(offset.x()),abs(offset.y()))+3)
     inset_x=math.ceil(radius+spread+abs(offset.x())+2)
@@ -55,7 +56,8 @@ def paint_surface_shadow(painter,rect,cache,blur=28.0,offset=None,color=None):
 
 
 def surface_clip(rect):
-    path=QPainterPath(); path.addRoundedRect(rect,24,24)
+    radius=16 if sys.platform=='darwin' else 10
+    path=QPainterPath(); path.addRoundedRect(rect,radius,radius)
     return path
 
 
@@ -76,6 +78,7 @@ class SurfaceSnapshot(QWidget):
         self.rect_global=QRect(); self.transition_bounds=QRect(); self.mix=0
         self._shadows=OrderedDict()
         self.capture_count=0
+        self._blend=QPixmap()
         self.hide()
 
     def capture_live(self,card,controls):
@@ -91,7 +94,11 @@ class SurfaceSnapshot(QWidget):
             dpr=card.devicePixelRatioF()
             image=QPixmap(round(card.width()*dpr),round(card.height()*dpr))
             image.setDevicePixelRatio(dpr); image.fill(Qt.GlobalColor.transparent)
-            painter=QPainter(image); card.render(painter,QPoint()); painter.end()
+            painter=QPainter(image)
+            # Styled translucent windows already paint their background in
+            # DrawChildren. DrawWindowBackground would apply it a second time.
+            card.render(painter,QPoint(),QRegion(),QWidget.RenderFlag.DrawChildren)
+            painter.end()
             self.capture_count+=1
             return image
         finally:
@@ -182,7 +189,29 @@ class SurfaceSnapshot(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         painter.setClipPath(surface_clip(rect))
-        if live_draw is not None:
+        if self.mix<=0 and not self.source.isNull():
+            painter.drawPixmap(rect,self.source,QRectF(self.source.rect()))
+        elif self.mix<1 and not self.source.isNull():
+            # Weighted premultiplied-alpha crossfade. Drawing a translucent
+            # source over the complete target makes frame zero more opaque
+            # than the live source. A reusable transparent layer keeps the
+            # original surface alpha and avoids resizing the native host.
+            logical=target_size if target_size is not None else self.target.deviceIndependentSize()
+            width=max(1,round(logical.width()));height=max(1,round(logical.height()))
+            dpr=self.owner.devicePixelRatioF()
+            physical=(round(width*dpr),round(height*dpr))
+            if self._blend.size().toTuple()!=physical or self._blend.devicePixelRatioF()!=dpr:
+                self._blend=QPixmap(*physical);self._blend.setDevicePixelRatio(dpr)
+            self._blend.fill(Qt.GlobalColor.transparent)
+            layer=QPainter(self._blend);layer.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            layer.setOpacity(self.mix)
+            if live_draw is not None:live_draw(layer)
+            elif not self.target.isNull():layer.drawPixmap(QRectF(0,0,width,height),self.target,QRectF(self.target.rect()))
+            layer.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
+            layer.setOpacity(1-self.mix)
+            layer.drawPixmap(QRectF(0,0,width,height),self.source,QRectF(self.source.rect()));layer.end()
+            painter.drawPixmap(rect,self._blend,QRectF(self._blend.rect()))
+        elif live_draw is not None:
             painter.save()
             painter.translate(rect.x(),rect.y())
             if target_size is not None:
@@ -192,9 +221,6 @@ class SurfaceSnapshot(QWidget):
             painter.restore()
         elif not self.target.isNull():
             painter.drawPixmap(rect,self.target,QRectF(self.target.rect()))
-        if not self.source.isNull() and self.mix<1:
-            painter.setOpacity(1-self.mix)
-            painter.drawPixmap(rect,self.source,QRectF(self.source.rect()))
         painter.restore()
 
     def _paint_content(self,painter,rect):

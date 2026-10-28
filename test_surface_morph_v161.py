@@ -45,7 +45,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-morph-test-') as tmp:
         right=shelf.visual_geometry().x()+shelf.visual_geometry().width()
         shelf.show_contents()
         popup=shelf.popup;snapshot=shelf._surface_snapshot
-        assert len(popup.visible_refs())==125 and '125' in popup.title.text()
+        assert len(popup.visible_refs())==125 and popup.count_label.text()=='125 项'
         assert not shelf.card.isHidden() and snapshot.active and snapshot.isHidden()
         size=shelf.card.size();captures=snapshot.capture_count
         shelf.geometry_morph.animation.pause()
@@ -55,13 +55,12 @@ with tempfile.TemporaryDirectory(prefix='flickdock-morph-test-') as tmp:
             assert shelf.card.size()==size,'descendant layout resized on a frame'
             assert visual.x()+visual.width()==right,'right edge drifted'
             assert snapshot.capture_count==captures,'live tree captured on a frame'
-            # The compact HIG toolbar uses six evenly spaced controls, with
-            # the cloud action occupying the first slot.
-            for index,button in enumerate((shelf.cloud_button,shelf.lan_button,
-                                           shelf.pin_button,shelf.expand_button,
-                                           shelf.menu_button,shelf.close_button)):
+            # The reference overview keeps three native controls at its
+            # right edge. Cloud, settings and LAN remain in its sidebar.
+            for index,button in enumerate((shelf.pin_button,shelf.expand_button,shelf.close_button)):
                 assert button.parentWidget() is shelf and button.isVisible()
-                assert abs(button.mapToGlobal(QPoint()).x()-(right-247+index*37))<=1
+                assert button.width()==28 and button.height()==28
+                assert abs(button.mapToGlobal(QPoint()).x()-(right-126+index*34))<=1
         shelf.grab().save(str(Path(__file__).parent/'morph-v161-mid-125.png'))
         shelf.geometry_morph.complete();flush(app)
         wait_until(app,lambda:len(popup.rows_body.findChildren(mod.IconItem))==125)
@@ -109,7 +108,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-morph-test-') as tmp:
         shelf.show_contents()
         new_ref=shelf.content.add_text('Resolved during the expand transition')
         shelf.add_paths('permanent',[new_ref]);shelf.geometry_morph.complete();flush(app)
-        assert len(popup.visible_refs())==126 and '126' in popup.title.text()
+        assert len(popup.visible_refs())==126 and popup.count_label.text()=='126 项'
         wait_until(app,lambda:len(popup.rows_body.findChildren(mod.IconItem))==126)
         shelf.grab().save(str(Path(__file__).parent/'morph-v161-expanded-125.png'))
 

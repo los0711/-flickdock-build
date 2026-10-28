@@ -151,7 +151,10 @@ with tempfile.TemporaryDirectory(prefix="flickdock-settings-") as temporary:
     app.processEvents()
     assert previews and previews[-1] == dialog._dock_values()
     body = dialog.findChild(subject.QWidget, "settingsBody")
-    assert body.layout().itemAt(0).widget() is dialog.trigger_visible_checkbox.parentWidget()
+    assert body.layout().itemAt(0).widget() is dialog._reference_top
+    assert dialog._reference_top.layout().indexOf(dialog.account_slot) >= 0
+    assert dialog.dock_card.isAncestorOf(dialog.trigger_visible_checkbox)
+    assert dialog.surface.size().width() == 860 and dialog.surface.size().height() == 600
     assert set(previews[-1]) == {"dock_edge", "dock_position", "dock_length", "dock_thickness", "trigger_visible", "dock_color", "dock_opacity"}
     dialog.theme_combo.setCurrentIndex(0)
     dialog.folder_edit.setText(str(invalid))
@@ -162,6 +165,7 @@ with tempfile.TemporaryDirectory(prefix="flickdock-settings-") as temporary:
     assert dialog.view_combo.currentData() == "icons"
     assert dialog.dock_edge_combo.currentData() == "right" and dialog.dock_position_spin.value() == 0
     assert dialog.dock_length_spin.value() == 32 and dialog.dock_thickness_spin.value() == 2
+    app.processEvents()  # Finish the source form's theme/NoButtons layout pass.
     for field in (dialog.dock_position_spin, dialog.dock_length_spin, dialog.dock_thickness_spin, dialog.dock_opacity_spin):
         editor = field.findChild(QLineEdit)
         assert editor.isVisible() and editor.width() >= 60 and editor.height() >= 18

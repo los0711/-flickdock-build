@@ -90,7 +90,8 @@ class AccountTests(unittest.TestCase):
         self.service.device_name='Offscreen fixture'
         self.dialog=app_settings.SettingsDialog(self.settings)
         self.panel=AccountPanel(self.service)
-        self.dialog.set_account_panel(self.panel);self.dialog.show();self.dialog.resize(572,552);flush()
+        self.dialog.set_account_panel(self.panel);self.dialog.show();self.dialog.resize(892,632);flush()
+        self.click(self.panel.unsigned_profile_button)
 
     def tearDown(self):
         self.service.close();self.assertTrue(wait(lambda:not self.service._auth_jobs))
@@ -107,6 +108,7 @@ class AccountTests(unittest.TestCase):
 
     def sign_in(self,account=None,*,devices=True):
         account=account or self.account()
+        if not self.panel.auth_dialog.isVisible():self.click(self.panel.unsigned_profile_button)
         self.panel.username_edit.setText(account['username']);self.panel.password_edit.setText(PASSWORD)
         self.click(self.panel.submit_button)
         self.finish_challenge('login')
@@ -185,7 +187,7 @@ class AccountTests(unittest.TestCase):
         self.sign_in()
         self.assertEqual(set(self.panel.device_buttons),{OTHER})
         visible=' '.join(label.text() for label in self.panel.devices_body.findChildren(QLabel))
-        self.assertIn('此设备',visible);self.assertNotIn('已移除的电脑',visible)
+        self.assertIn('(本机)',visible);self.assertNotIn('已移除的电脑',visible)
         top={id(w) for w in APP.topLevelWidgets()}
         before=len(self.api.requests);self.click(self.panel.device_buttons[OTHER])
         self.assertTrue(self.panel.confirm_frame.isVisible())
@@ -208,7 +210,7 @@ class AccountTests(unittest.TestCase):
         self.panel.set_sync_status('账号甲文件正在同步')
         self.panel.refresh_devices();old_devices=self.api.last('/v1/devices')
         self.click(self.panel.logout_button);self.api.finish(self.api.last('/v1/auth/logout'),dict())
-        self.assertTrue(self.panel.auth_page.isVisible());self.assertFalse(self.panel.signed_in_page.isVisible())
+        self.assertTrue(self.panel.unsigned_profile_button.isVisible());self.assertFalse(self.panel.auth_dialog.isVisible());self.assertFalse(self.panel.signed_in_page.isVisible())
         self.assertEqual(self.panel.username_label.text(),'')
         self.assertEqual(self.panel.sync_status_label.text(),'');self.assertEqual(self.panel.device_buttons,{})
         self.panel.set_sync_status('stale A sync');self.assertEqual(self.panel.sync_status_label.text(),'')
@@ -228,7 +230,7 @@ class AccountTests(unittest.TestCase):
         self.assertFalse(any('邮箱' in edit.accessibleName() for edit in other.findChildren(QLineEdit)))
         other.deleteLater();flush()
 
-    def test_light_dark_572_outer_layout_preserves_540_content_width(self):
+    def test_light_dark_reference_settings_surface_preserves_account_controls(self):
         for signed in (False,True):
             if signed:
                 long_name='用户名'*20
@@ -236,17 +238,19 @@ class AccountTests(unittest.TestCase):
                 self.assertEqual(self.panel.username_label.text(),long_name)
                 self.assertEqual(self.panel.username_label.accessibleName(),long_name)
                 self.assertTrue(QLabel.text(self.panel.username_label).endswith('…'))
-                self.assertEqual(self.panel.username_label.height(),26)
+                self.assertEqual(self.panel.username_label.height(),20)
             for theme in ('light','dark'):
                 self.dialog.apply_theme(theme);flush()
-                self.assertEqual(self.dialog.width(),572)
-                self.assertEqual(self.dialog.surface.width(),540)
-                self.assertEqual(self.dialog.body_layout.itemAt(0).widget(),self.panel)
+                self.assertEqual(self.dialog.width(),892)
+                self.assertEqual(self.dialog.surface.width(),860)
+                self.assertEqual(self.dialog.account_slot_layout.itemAt(1).widget(),self.panel)
+                self.assertLess(self.panel.username_label.geometry().right(),self.panel.account_state_label.geometry().left())
                 for widget in self.panel.findChildren(QWidget):
                     if isinstance(widget,(QLineEdit,QPushButton)) and widget.isVisible():
-                        point=widget.mapTo(self.panel,QPoint())
+                        container=self.panel.auth_dialog if widget.window() is self.panel.auth_dialog else self.panel
+                        point=widget.mapTo(container,QPoint())
                         self.assertGreaterEqual(point.x(),0)
-                        self.assertLessEqual(point.x()+widget.width(),self.panel.width())
+                        self.assertLessEqual(point.x()+widget.width(),container.width())
                 self.assertEqual(self.dialog.scroll.horizontalScrollBar().maximum(),0)
                 self.assertTrue(self.dialog.surface.rect().contains(self.dialog.save_button.geometry()))
                 self.assertTrue(self.dialog.surface.rect().contains(self.dialog.cancel_button.geometry()))

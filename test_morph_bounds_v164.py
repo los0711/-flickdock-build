@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 os.environ['QT_QPA_PLATFORM']='offscreen'
 os.environ['QT_SCALE_FACTOR']=os.environ.get('FLICKDOCK_TEST_DPR','1.25')
-from PySide6.QtCore import QEvent,QPoint,QPointF,QRect,Qt
+from PySide6.QtCore import QEvent,QPoint,QPointF,QRect,QRectF,Qt
 from PySide6.QtGui import QEnterEvent,QPainter
 from PySide6.QtWidgets import QApplication
 
@@ -31,7 +31,18 @@ def legacy_draw(effect,painter):
     painter.translate(center.x()+effect.dx,center.y()+effect.dy)
     painter.scale(effect.sx,effect.sy);painter.translate(-center.x(),-center.y())
     paint_surface_shadow(painter,rect,effect._shadow_cache,effect.blurRadius(),effect.offset(),effect.color())
-    if active:snapshot.paint_frame(painter,rect,live_draw=effect.drawSource,target_size=bounds.size())
+    if active:
+        # Freeze the historical direct-draw composition as well. Calling
+        # today's alpha-layer compositor here would repair the legacy path
+        # being deliberately exercised by this negative control.
+        painter.save();painter.setClipPath(surface_clip(rect))
+        painter.save();painter.translate(rect.x(),rect.y())
+        painter.scale(rect.width()/max(1,bounds.width()),rect.height()/max(1,bounds.height()))
+        effect.drawSource(painter);painter.restore()
+        if not snapshot.source.isNull() and snapshot.mix<1:
+            painter.setOpacity(1-snapshot.mix)
+            painter.drawPixmap(rect,snapshot.source,QRectF(snapshot.source.rect()))
+        painter.restore()
     else:effect.drawSource(painter)
     painter.restore()
 
@@ -60,7 +71,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-bounds-v164-') as profile:
     import flickdock as subject
     from app_settings import SettingsStore
     from flickdock_motion import MotionShadow
-    from surface_morph import paint_surface_shadow
+    from surface_morph import paint_surface_shadow,surface_clip
     app=QApplication([]);subject.load_font(app)
     assert app.platformName()=='offscreen'
     manager=SimpleNamespace(motion=True,settings=SettingsStore(Path(profile)),save=lambda:None,

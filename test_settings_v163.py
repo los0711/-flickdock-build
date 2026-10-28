@@ -145,7 +145,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-settings-v163-') as temporary
                 image=checkbox.grab().toImage();ratio=image.devicePixelRatio()
                 left=image.pixelColor(round((checkbox.width()-40)*ratio),round(checkbox.height()*ratio/2))
                 knob=image.pixelColor(round((checkbox.width()-17)*ratio),round(checkbox.height()*ratio/2))
-                assert left.blue()>170 and left.red()<100 and min(knob.red(),knob.green(),knob.blue())>245
+                assert left.green()>180 and left.red()<100 and left.blue()<130 and min(knob.red(),knob.green(),knob.blue())>245
                 before=checkbox.isChecked()
                 QTest.mouseClick(checkbox,Qt.MouseButton.LeftButton,
                                  pos=QPoint(checkbox.width()-18,checkbox.height()//2))

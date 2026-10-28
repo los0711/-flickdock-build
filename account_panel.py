@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 from functools import partial
+import os
+from pathlib import Path
 import sys
 from account_service import valid_new_password
 
 from PySide6.QtCore import QByteArray, QDateTime, QEvent, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter, QLinearGradient
 from PySide6.QtSvg import QSvgRenderer
-from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit,
+from PySide6.QtWidgets import (QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMenu,
                                QPushButton, QSizePolicy, QVBoxLayout, QWidget)
 
 
@@ -72,6 +74,7 @@ class RemoveDeviceButton(QPushButton):
 
     def paintEvent(self,event):
         super().paintEvent(event)
+        if self.text():return
         color='#c2cddd' if self.dark else '#68788f'
         path=('m11.5 3.5 3 3M3 15l3.4-.7L15 5.7a1.1 1.1 0 0 0 0-1.5l-1.2-1.3a1.1 1.1 0 0 0-1.6 0L3.7 11.5 3 15' if self.rename
               else 'M3 5h12M7 2.5h4l1 2.5M5 5l.6 10.5h6.8L13 5M7.5 7.5v5.5M10.5 7.5v5.5')
@@ -85,24 +88,31 @@ class AccountGlyph(QWidget):
     """A single vector family for the account and device identity markers."""
     def __init__(self,parent=None,*,device=False,platform=''):
         super().__init__(parent)
+        # Offscreen Qt has no system font catalogue. Load the installed OS
+        # emoji face for the exact Unicode symbols used by the reference;
+        # the font remains an OS resource and is never bundled or copied.
+        if os.environ.get('QT_QPA_PLATFORM')=='offscreen' and not getattr(AccountGlyph,'_emoji_checked',False):
+            AccountGlyph._emoji_checked=True
+            for path in (Path(os.environ.get('SystemRoot','C:/Windows'))/'Fonts'/'seguiemj.ttf',
+                         Path('/System/Library/Fonts/Apple Color Emoji.ttc')):
+                if path.is_file():QFontDatabase.addApplicationFont(str(path))
         self.device=device;self.platform=platform;self.dark=False
+        self.initial='•'
         self.setFixedSize(34 if device else 44,34 if device else 44)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
     def paintEvent(self,event):
         painter=QPainter(self);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor('#344459' if self.dark else '#eaf2fd'))
-        painter.drawRoundedRect(QRectF(self.rect()),10,10)
-        if self.device and self.platform=='windows':
-            path='M4 5l7-1v7H4zM13 3.7L20 3v8h-7zM4 13h7v7l-7-1zM13 13h7v8l-7-1z'
-        elif self.device:
-            path='M4 4h16v11H4zM9 20h6M12 15v5'
-        else:
-            path='M8 8a4 4 0 1 0 8 0 4 4 0 0 0-8 0M5 21v-2a7 7 0 0 1 14 0v2'
-        svg=f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="{path}" fill="none" stroke="{"#8dc0ff" if self.dark else "#377cc7"}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>'
-        size=19 if self.device else 23
-        QSvgRenderer(QByteArray(svg.encode())).render(painter,QRectF((self.width()-size)/2,(self.height()-size)/2,size,size))
+        if not self.device:
+            gradient=QLinearGradient(0,self.height(),self.width(),0)
+            gradient.setColorAt(0,QColor('#0A84FF'));gradient.setColorAt(1,QColor('#BF5AF2'))
+            painter.setPen(Qt.PenStyle.NoPen);painter.setBrush(gradient);painter.drawEllipse(QRectF(self.rect()))
+            font=self.font();font.setPixelSize(14);font.setWeight(QFont.Weight.Bold);painter.setFont(font)
+            painter.setPen(QColor('#FFFFFF'));painter.drawText(self.rect(),Qt.AlignmentFlag.AlignCenter,self.initial)
+            return
+        font=QFont();font.setFamilies(['Apple Color Emoji','Segoe UI Emoji'] if sys.platform=='darwin' else ['Segoe UI Emoji'])
+        font.setPixelSize(16);painter.setFont(font);painter.setPen(QColor('#D4D4D8' if self.dark else '#48484A'))
+        painter.drawText(self.rect(),Qt.AlignmentFlag.AlignCenter,'💻' if self.platform=='macos' else '🖥️')
 
 
 class AccountPanel(QFrame):
@@ -241,6 +251,7 @@ class AccountPanel(QFrame):
         layout.addWidget(self.signed_in_page)
         self.status_label=_label('',self,muted=True);self.status_label.setAccessibleName('账号操作状态')
         layout.addWidget(self.status_label)
+        self._build_reference_layout()
         for field in self.findChildren(QLineEdit):
             field.setMinimumWidth(0);field.setMinimumHeight(34)
         for widget in self.findChildren(QWidget):widget.installEventFilter(self)
@@ -253,13 +264,143 @@ class AccountPanel(QFrame):
         self._account_changed(service.account)
         if service.signed_in:self.refresh_devices()
 
+    @staticmethod
+    def _empty_layout(layout):
+        while layout.count():
+            item=layout.takeAt(0)
+            if item.widget():item.widget().hide()
+            if item.layout():
+                AccountPanel._empty_layout(item.layout());item.layout().deleteLater()
+
+    def _build_reference_layout(self):
+        """Use the reference account card while keeping every service binding."""
+        root=self.layout();self._empty_layout(root);root.setContentsMargins(16,16,16,16);root.setSpacing(12)
+        self.unsigned_profile_button=_button('',self,name='accountUnsignedProfile')
+        self.unsigned_profile_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        unsigned=QHBoxLayout(self.unsigned_profile_button);unsigned.setContentsMargins(0,0,0,0);unsigned.setSpacing(12)
+        self.unsigned_glyph=AccountGlyph(self.unsigned_profile_button);self.unsigned_glyph.setFixedSize(40,40)
+        unsigned.addWidget(self.unsigned_glyph)
+        unsigned_text=QVBoxLayout();unsigned_text.setSpacing(2)
+        unsigned_name=_label('登录账号',self.unsigned_profile_button);unsigned_name.setObjectName('accountUnsignedTitle')
+        unsigned_text.addWidget(unsigned_name);unsigned_text.addWidget(_label('在设备之间同步搁架',self.unsigned_profile_button,muted=True))
+        unsigned.addLayout(unsigned_text,1);unsigned.addWidget(_label('›',self.unsigned_profile_button,muted=True))
+        self.unsigned_profile_button.clicked.connect(self.show_auth)
+        root.addWidget(self.unsigned_profile_button);root.addWidget(self.signed_in_page);root.addWidget(self.status_label)
+        signed=self.signed_in_page.layout();self._empty_layout(signed);signed.setSpacing(12);signed.setAlignment(Qt.AlignmentFlag.AlignTop)
+        root.setAlignment(Qt.AlignmentFlag.AlignTop)
+        identity=self.profile_frame.layout();self._empty_layout(identity);identity.setContentsMargins(0,0,0,0);identity.setSpacing(12)
+        self.profile_frame.setFixedHeight(40)
+        self.account_glyph.setFixedSize(40,40);identity.addWidget(self.account_glyph);self.account_glyph.show()
+        text=QVBoxLayout();text.setSpacing(2);name=QHBoxLayout();name.setSpacing(8)
+        self.username_label.setFixedHeight(20);self.account_state_label.setFixedHeight(20)
+        self.username_label.setSizePolicy(QSizePolicy.Policy.Preferred,QSizePolicy.Policy.Fixed)
+        name.addWidget(self.username_label);name.addWidget(self.account_state_label);name.addStretch();text.addLayout(name)
+        text.addWidget(self.sync_status_label);text.addWidget(self.login_alias_edit);identity.addLayout(text,1)
+        self.password_toggle_button.setMinimumHeight(28);self.password_toggle_button.setText('修改密码');self.password_toggle_button.show()
+        self.logout_button.setMinimumHeight(28);self.logout_button.setObjectName('accountDanger');identity.addWidget(self.password_toggle_button);identity.addWidget(self.logout_button)
+        for widget in (self.username_label,self.account_state_label,self.sync_status_label,self.logout_button):widget.show()
+        signed.addWidget(self.profile_frame);self.profile_frame.show()
+        self.profile_frame.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.profile_frame.customContextMenuRequested.connect(self._profile_menu)
+        # Devices follow the same two-column inset layout as the source. A row
+        # still owns its original rename form and remove-confirmation workflow.
+        old=self.devices_body.layout()
+        if old is not None:
+            from shiboken6 import delete
+            delete(old)
+        self.devices_layout=QGridLayout(self.devices_body);self.devices_layout.setContentsMargins(0,10,0,0);self.devices_layout.setSpacing(10)
+        self.devices_layout.setColumnStretch(0,1);self.devices_layout.setColumnStretch(1,1)
+        self.devices_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.devices_body.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Maximum)
+        signed.addWidget(self.devices_body);self.devices_body.show()
+        self.devices_heading_label.hide();self.refresh_button.hide()
+        from app_settings import ReferenceModalDialog
+        self.password_dialog=ReferenceModalDialog(self,surface_width=390,modal=True)
+        self.password_dialog.setObjectName('accountModal');self.password_dialog.setWindowTitle('修改密码')
+        self.password_close=self._modal_header(self.password_dialog,'修改密码',self._reset_password)
+        self.password_dialog.body_layout.addWidget(self.password_form)
+        password=self.password_form.layout();self._empty_layout(password)
+        password.setContentsMargins(0,0,0,0);password.setSpacing(12)
+        for edit,label,placeholder in ((self.old_password_edit,'原密码','输入原密码'),
+                (self.new_password_edit,'新密码 (至少 6 字符且不含空白)','输入新密码'),
+                (self.confirm_password_edit,'确认新密码','再次输入新密码')):
+            password.addWidget(self._modal_field(edit,label,placeholder,self.password_form))
+        self.password_change_button.setText('确认修改')
+        password.addWidget(self._modal_actions(self.password_cancel_button,self.password_change_button,self.password_form))
+        self.password_status_label=_label('',self.password_form,muted=True);password.addWidget(self.password_status_label);self.password_status_label.hide()
+        self.password_dialog.rejected.connect(self._reset_password)
+        auth=self.auth_page.layout();self._empty_layout(auth);auth.setSpacing(12)
+        tabs_frame=QFrame(self.auth_page);tabs_frame.setObjectName('accountAuthTabs')
+        tabs=QHBoxLayout(tabs_frame);tabs.setContentsMargins(4,4,4,4);tabs.setSpacing(4)
+        self.register_tab.setText('注册新账号')
+        for button in (self.login_tab,self.register_tab):
+            button.setFixedHeight(24);tabs.addWidget(button,1);button.show()
+        auth.addWidget(tabs_frame)
+        auth.addWidget(self._modal_field(self.username_edit,'账号用户名','请输入账号',self.auth_page))
+        auth.addWidget(self._modal_field(self.password_edit,'密码','请输入密码',self.auth_page))
+        self.auth_cancel_button=_button('取消',self.auth_page)
+        self.auth_cancel_button.clicked.connect(self.close_auth)
+        auth.addWidget(self._modal_actions(self.auth_cancel_button,self.submit_button,self.auth_page))
+        auth.addWidget(self.auth_status_label);self.auth_status_label.hide()
+        self.auth_dialog=ReferenceModalDialog(self,surface_width=390,modal=True)
+        self.auth_dialog.setObjectName('accountModal');self.auth_dialog.setWindowTitle('账号管理与登录')
+        self.auth_close=self._modal_header(self.auth_dialog,'账号管理与登录',self.close_auth)
+        self.auth_dialog.body_layout.addWidget(self.auth_page)
+        self.auth_dialog.rejected.connect(self.close_auth)
+        self.auth_page.show();self.signed_in_page.show();self.status_label.hide()
+
+    @staticmethod
+    def _modal_field(edit,label,placeholder,parent):
+        group=QWidget(parent);layout=QVBoxLayout(group);layout.setContentsMargins(0,0,0,0);layout.setSpacing(4)
+        caption=_label(label,group,muted=True);caption.setFixedHeight(16);layout.addWidget(caption)
+        edit.setPlaceholderText(placeholder);edit.setFixedHeight(34);layout.addWidget(edit);edit.show()
+        return group
+
+    @staticmethod
+    def _modal_actions(cancel,submit,parent):
+        group=QWidget(parent);layout=QHBoxLayout(group);layout.setContentsMargins(0,8,0,0);layout.setSpacing(8);layout.addStretch()
+        for button in (cancel,submit):button.setMinimumHeight(28);button.setMaximumHeight(28);layout.addWidget(button);button.show()
+        return group
+
+    @staticmethod
+    def _modal_header(dialog,text,callback):
+        from app_settings import SettingsCloseButton
+        frame=QFrame(dialog.surface);frame.setObjectName('accountModalHeader')
+        header=QHBoxLayout(frame);header.setContentsMargins(0,0,0,12);header.setSpacing(12)
+        title=_label(text,frame);title.setObjectName('accountModalTitle');header.addWidget(title,1)
+        close=SettingsCloseButton(frame,glyph_size=14);close.setObjectName('accountModalClose')
+        close.setFixedSize(24,24);close.clicked.connect(callback);header.addWidget(close)
+        dialog.body_layout.addWidget(frame)
+        return close
+
+    def show_auth(self,mode='login'):
+        if self.service.signed_in:return
+        self.set_auth_mode(mode if mode in ('login','register') else 'login')
+        self.auth_page.show();self.auth_dialog.adjustSize();self.auth_dialog.show()
+        self.auth_dialog.raise_();self.auth_dialog.activateWindow();self.username_edit.setFocus()
+
+    def close_auth(self):
+        self.password_edit.clear();self.auth_dialog.hide()
+
+    def _profile_menu(self, point):
+        menu=QMenu(self.profile_frame)
+        self._style_menu(menu)
+        refresh=menu.addAction('刷新已登录设备',self.refresh_devices)
+        refresh.setEnabled(self.service.signed_in and not self._busy)
+        menu.exec(self.profile_frame.mapToGlobal(point))
+
+    def _style_menu(self, menu):
+        bg='#1C1C1E' if self._dark else '#FFFFFF';ink='#F5F5F7' if self._dark else '#1D1D1F'
+        edge='rgba(255,255,255,20)' if self._dark else 'rgba(0,0,0,23)'
+        menu.setStyleSheet(f'QMenu{{background:{bg};color:{ink};border:1px solid {edge};border-radius:10px;padding:6px 0;font-size:12px;min-width:208px;}} QMenu::item{{padding:6px 14px;border:0;}} QMenu::item:selected{{background:#0A84FF;color:white;}}')
+
     def set_auth_mode(self,mode):
         if mode not in ('login','register'):raise ValueError('Unknown account form mode')
         self._mode=mode
         self.login_tab.setChecked(mode=='login');self.register_tab.setChecked(mode=='register')
-        self.submit_button.setText('注册' if mode=='register' else '登录')
+        self.submit_button.setText('注册并登录' if mode=='register' else '登录账号')
         self.password_edit.setPlaceholderText('至少 6 个字符，不含空白' if mode=='register' else '请输入密码')
-        self.password_edit.clear();self.status_label.clear();self.auth_status_label.clear()
+        self.password_edit.clear();self.status_label.clear();self.auth_status_label.clear();self.auth_status_label.hide()
 
     def _submit_auth(self):
         if self._busy or self.service.signed_in:return
@@ -285,11 +426,14 @@ class AccountPanel(QFrame):
             self._refreshing=False;self._revoke_pending=''
             self._devices_changed([])
             if signed:self.sync_status_label.setText('正在准备同步…')
-        self.auth_page.setVisible(not signed);self.signed_in_page.setVisible(signed)
-        self.status_label.setVisible(signed)
+        self.unsigned_profile_button.setVisible(not signed);self.signed_in_page.setVisible(signed)
+        self.status_label.setVisible(signed and bool(self.status_label.text()))
         if signed:
+            self.close_auth()
             self.password_edit.clear()
             self.username_label.setText(str(account.get('username','')))
+            self.username_label.setFixedWidth(min(150,max(28,self.username_label.fontMetrics().horizontalAdvance(self.username_label.text())+3)))
+            self.account_glyph.initial=str(account.get('username','•'))[:1].upper();self.account_glyph.update()
             alias=account.get('login_alias')
             self.login_alias_edit.setText(alias if isinstance(alias,str) else '')
             self.login_alias_edit.setVisible(bool(isinstance(alias,str) and alias))
@@ -303,8 +447,9 @@ class AccountPanel(QFrame):
         for edit in (self.password_edit,self.old_password_edit,self.new_password_edit,self.confirm_password_edit):
             secret=edit.text()
             if secret:message=message.replace(secret,'…')
-        self.status_label.setText(message[:240])
-        self.auth_status_label.setText(message[:240])
+        self.status_label.setText(message[:240]);self.status_label.setVisible(bool(message) and self.service.signed_in)
+        self.auth_status_label.setText(message[:240]);self.auth_status_label.setVisible(bool(message) and not self.service.signed_in)
+        self.password_status_label.setText(message[:240]);self.password_status_label.setVisible(bool(message) and self.password_dialog.isVisible())
         self._refreshing=False;self._revoke_pending='';self._cancel_remove();self._update_enabled()
 
     def _busy_changed(self,busy):
@@ -314,6 +459,7 @@ class AccountPanel(QFrame):
 
     def _update_enabled(self):
         signed=bool(self.service.signed_in)
+        self.unsigned_profile_button.setEnabled(not signed and not self._busy)
         self.account_state_label.setText('处理中…' if self._busy else '已登录' if signed else '未登录')
         online=signed and not self._busy
         if self.account_state_label.property('online')!=online:
@@ -337,12 +483,15 @@ class AccountPanel(QFrame):
     def _toggle_password(self,checked=False):
         if not self.service.signed_in or self._busy:return
         self.password_form.setVisible(bool(checked))
-        if checked:self.old_password_edit.setFocus()
+        if checked:
+            self.password_dialog.adjustSize();self.password_dialog.show();self.password_dialog.raise_();self.password_dialog.activateWindow();self.old_password_edit.setFocus()
         else:self._reset_password()
 
     def _reset_password(self):
         for edit in (self.old_password_edit,self.new_password_edit,self.confirm_password_edit):edit.clear()
         self.password_toggle_button.setChecked(False);self.password_form.hide()
+        self.password_dialog.hide()
+        if hasattr(self,'password_status_label'):self.password_status_label.clear();self.password_status_label.hide()
 
     def _change_password(self):
         if self._busy or not self.service.signed_in:return
@@ -380,35 +529,42 @@ class AccountPanel(QFrame):
             for device in devices:
                 if not isinstance(device,dict) or not device.get('id') or device.get('revoked_at'):continue
                 key=str(device['id']);self._devices[key]=dict(device)
-                if self._device_rows:
-                    separator=QFrame(self.devices_body)
-                    separator.setObjectName('accountDeviceSeparator')
-                    separator.setFixedHeight(1)
-                    self.devices_layout.addWidget(separator);self._device_rows.append(separator)
                 row=QFrame(self.devices_body);row.setObjectName('accountDevice')
-                row_layout=QVBoxLayout(row);row_layout.setContentsMargins(8,7,8,7);row_layout.setSpacing(8)
-                horizontal=QHBoxLayout();horizontal.setSpacing(9);row_layout.addLayout(horizontal)
+                row_layout=QVBoxLayout(row);row_layout.setContentsMargins(12,8,12,8);row_layout.setSpacing(8)
+                horizontal=QHBoxLayout();horizontal.setSpacing(5);row_layout.addLayout(horizontal)
                 glyph=AccountGlyph(row,device=True,platform=str(device.get('platform','')))
+                glyph.setFixedSize(18,18)
                 glyph.dark=self._dark;horizontal.addWidget(glyph)
-                detail=QVBoxLayout();detail.setSpacing(3)
+                detail=QHBoxLayout();detail.setSpacing(4)
                 device_name=_label(str(device.get('name') or '未命名设备'),row)
                 device_name.setObjectName('accountDeviceName')
                 detail.addWidget(device_name)
                 platform={'windows':'Windows','macos':'Mac','linux':'Linux'}.get(str(device.get('platform','')),'其他设备')
                 current=bool(device.get('current') or key==str(self.service.device_id))
+                if current:
+                    current_tag=_label('(本机)',row);current_tag.setObjectName('accountCurrentDevice')
+                    current_tag.setSizePolicy(QSizePolicy.Policy.Preferred,QSizePolicy.Policy.Preferred)
+                    detail.addWidget(current_tag)
                 timestamp=QDateTime.fromString(str(device.get('last_seen_at') or ''),Qt.DateFormat.ISODate)
                 suffix='此设备' if current else '最近在线 '+timestamp.toLocalTime().toString('MM-dd HH:mm') if timestamp.isValid() else ''
-                detail.addWidget(_label(platform+(' · '+suffix if suffix else ''),row,muted=True))
+                device_name.setToolTip(platform+(' · '+suffix if suffix else ''))
                 horizontal.addLayout(detail,1)
                 rename=RemoveDeviceButton(row,rename=True);rename.dark=self._dark
+                rename.setText('改名');rename.setObjectName('accountDeviceRename');rename.setFixedSize(30,20)
                 rename.setAccessibleName('修改设备名称 '+str(device.get('name') or '未命名设备'))
                 rename.clicked.connect(partial(self._edit_device_name,key));rename.installEventFilter(self)
                 self.device_rename_buttons[key]=rename;horizontal.addWidget(rename)
                 if not current:
+                    rename.hide()
                     button=RemoveDeviceButton(row);button.dark=self._dark
+                    button.setText('移除登录');button.setObjectName('accountDeviceRevoke');button.setFixedSize(52,20)
                     button.setAccessibleName('移除设备 '+str(device.get('name') or '未命名设备'))
                     button.clicked.connect(partial(self._ask_remove,key));button.installEventFilter(self)
                     self.device_buttons[key]=button;horizontal.addWidget(button)
+                    row.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+                    def show_device_menu(point,key=key,row=row):
+                        menu=QMenu(row);self._style_menu(menu);menu.addAction('修改设备名称',partial(self._edit_device_name,key));menu.exec(row.mapToGlobal(point))
+                    row.customContextMenuRequested.connect(show_device_menu)
                 rename_form=QWidget(row);rename_layout=QHBoxLayout(rename_form)
                 rename_layout.setContentsMargins(0,0,0,0);rename_layout.setSpacing(6)
                 edit=QLineEdit(rename_form);edit.setText(str(device.get('name') or ''))
@@ -424,11 +580,11 @@ class AccountPanel(QFrame):
                 self.device_name_edits[key]=edit;self._rename_forms[key]=rename_form
                 self._rename_save_buttons[key]=save
                 for child in rename_form.findChildren(QWidget):child.installEventFilter(self)
-                self.devices_layout.addWidget(row);self._device_rows.append(row)
+                index=len(self._device_rows);self.devices_layout.addWidget(row,index//2,index%2);self._device_rows.append(row)
                 self._rows_by_id[key]=row
         if not self._device_rows:
             empty=_label('正在读取设备…' if self.service.signed_in else '',self.devices_body,muted=True)
-            self.devices_layout.addWidget(empty);self._device_rows.append(empty)
+            self.devices_layout.addWidget(empty,0,0,1,2);self._device_rows.append(empty)
         self.devices_heading_label.setText('已登录设备'+(' · '+str(len(self._devices)) if self._devices else ''))
         self._update_enabled()
 
@@ -456,7 +612,7 @@ class AccountPanel(QFrame):
         self._confirm_device=key
         self._cancel_rename()
         self.confirm_label.setText('移除“'+str(device.get('name') or '未命名设备')+'”的登录？此设备之后需要重新登录。')
-        self.devices_layout.insertWidget(self.devices_layout.indexOf(self._rows_by_id[key])+1,self.confirm_frame)
+        self.devices_layout.addWidget(self.confirm_frame,(len(self._devices)+1)//2,0,1,2)
         self.confirm_frame.show()
 
     def _cancel_remove(self):
@@ -485,14 +641,15 @@ class AccountPanel(QFrame):
 
     def hideEvent(self,event):
         self.password_edit.clear()
+        self.close_auth()
         self._reset_password();self._cancel_rename()
         super().hideEvent(event)
 
     def apply_theme(self,theme):
         self._dark=theme=='dark'
-        card,field,ink,secondary,edge,hover=(('#272c35','#20252e','#edf2fa','#b1bed0','#3c4554','#39465a') if self._dark
-            else ('#ffffff','#fbfcfe','#253246','#58697e','#dce3ed','#edf4fe'))
-        inset='#20252e' if self._dark else '#f7f9fc'
+        card,field,ink,secondary,edge,hover=(('#242426','#1c1c1e','#f5f5f7','#a1a1aa','#3a3a3c','#303034') if self._dark
+            else ('#ffffff','#f8f9fb','#1d1d1f','#515154','#dfe2e8','#e8f2ff'))
+        inset='#1c1c1e' if self._dark else '#f0f2f6'
         if sys.platform=='darwin':
             card='rgba(39,44,53,246)' if self._dark else 'rgba(255,255,255,248)'
             inset='rgba(32,37,46,230)' if self._dark else 'rgba(247,249,252,230)'
@@ -533,5 +690,49 @@ class AccountPanel(QFrame):
             QFrame#accountSecurity {{background:{field};border:1px solid {edge};border-radius:9px;}}
             QFrame#accountPanel QPushButton#accountDanger {{color:{'#ffb1b5' if self._dark else '#b9404c'};}}
         ''')
+        card='rgba(255,255,255,10)' if self._dark else 'rgba(255,255,255,184)'
+        edge='rgba(255,255,255,18)' if self._dark else 'rgba(0,0,0,18)'
+        control='rgba(255,255,255,26)' if self._dark else 'rgba(0,0,0,14)'
+        radius=12 if sys.platform=='darwin' else 8
+        self.setStyleSheet(self.styleSheet()+f'''
+            QFrame#accountPanel {{background:{card};border:1px solid {edge};border-radius:16px;}}
+            QFrame#accountPanel QLabel {{font-size:12px;}}
+            QFrame#accountPanel QLabel#accountUsername {{font-size:14px;font-weight:600;}}
+            QFrame#accountPanel QLabel#accountState {{font-size:11px;padding:2px 8px;border-radius:10px;}}
+            QFrame#accountPanel QLabel#accountState[online="true"] {{color:#30D158;background:rgba(48,209,88,51);}}
+            QFrame#accountPanel QLabel#accountDeviceName {{font-size:12px;font-weight:500;}}
+            QFrame#accountPanel QLabel#accountCurrentDevice {{font-size:11px;color:#0A84FF;}}
+            QFrame#accountPanel QLabel#accountSyncStatus {{font-size:12px;color:{secondary};padding:0;}}
+            QFrame#accountProfile,QFrame#accountDevices {{background:transparent;border:0;}}
+            QFrame#accountDevices {{border-top:1px solid {edge};}}
+            QFrame#accountDevice {{background:{'rgba(255,255,255,8)' if self._dark else 'rgba(0,0,0,6)'};border:1px solid {edge};border-radius:12px;}}
+            QFrame#accountPanel QPushButton {{background:{control};color:{ink};border:0;padding:5px 12px;font-size:12px;}}
+            QFrame#accountPanel QPushButton#accountDanger {{background:rgba(255,69,58,38);color:#FF453A;}}
+            QFrame#accountPanel QPushButton#accountQuiet {{background:{control};color:{ink};border:0;padding:5px 12px;}}
+            QFrame#accountPanel QPushButton#accountUnsignedProfile {{background:transparent;border:0;padding:0;text-align:left;}}
+            QFrame#accountPanel QPushButton#accountUnsignedProfile:hover {{background:transparent;}}
+            QFrame#accountPanel QLabel#accountUnsignedTitle {{font-size:14px;font-weight:600;}}
+            QFrame#accountPanel QPushButton#accountDeviceRename {{background:transparent;border:0;padding:0;color:#0A84FF;font-size:12px;}}
+            QFrame#accountPanel QPushButton#accountDeviceRevoke {{background:transparent;border:0;padding:0;color:#FF453A;font-size:12px;}}
+            QFrame#accountPanel QPushButton#accountPrimary {{background:#0A84FF;color:#FFFFFF;border:0;}}
+            QFrame#accountAuthTabs {{background:{'rgba(0,0,0,64)' if self._dark else 'rgba(240,242,247,191)'};border:1px solid {edge};border-radius:12px;}}
+            QFrame#accountPanel QPushButton#accountTab {{background:transparent;border:0;padding:4px 6px;border-radius:8px;}}
+            QFrame#accountPanel QPushButton#accountTab:checked {{background:{'rgba(255,255,255,38)' if self._dark else '#FFFFFF'};color:{ink};}}
+            QFrame#accountPanel QLineEdit {{background:{'#242426' if self._dark else '#FFFFFF'};font-size:12px;padding:8px 12px;border:1px solid {edge};border-radius:12px;}}
+            QDialog#accountModal,QDialog#accountModal QFrame#referenceModalSurface {{background:transparent;border:0;}}
+            QDialog#accountModal QFrame#accountModalHeader {{background:transparent;border:0;border-bottom:1px solid {edge};}}
+            QDialog#accountModal QLabel {{color:{ink};font-size:12px;background:transparent;}}
+            QDialog#accountModal QLabel#accountModalTitle {{font-size:14px;font-weight:600;}}
+            QDialog#accountModal QLineEdit {{background:{'#242426' if self._dark else '#FFFFFF'};color:{ink};border:1px solid {edge};border-radius:12px;padding:8px 12px;font-size:12px;}}
+            QDialog#accountModal QPushButton {{background:{control};color:{ink};border:0;border-radius:12px;padding:6px 16px;font-size:12px;}}
+            QDialog#accountModal QPushButton#accountPrimary {{background:#0A84FF;color:#FFFFFF;}}
+            QDialog#accountModal QPushButton#accountModalClose {{background:transparent;padding:0;border-radius:8px;}}
+            QDialog#accountModal QPushButton#accountTab {{background:transparent;border:0;padding:4px 6px;border-radius:8px;}}
+            QDialog#accountModal QPushButton#accountTab:checked {{background:{'rgba(255,255,255,38)' if self._dark else '#FFFFFF'};color:{ink};}}
+            QFrame#accountSecurity {{background:transparent;border:0;}}
+        ''')
+        for dialog in (self.password_dialog,self.auth_dialog):dialog.set_surface_theme(theme)
+        for button in (self.password_close,self.auth_close):button.dark=self._dark;button.update()
+        if sys.platform!='darwin':self.setStyleSheet(self.styleSheet().replace('font-weight:600','font-weight:700'))
         for button in [*self.device_buttons.values(),*self.device_rename_buttons.values()]:button.dark=self._dark;button.update()
         for glyph in self.findChildren(AccountGlyph):glyph.dark=self._dark;glyph.update()

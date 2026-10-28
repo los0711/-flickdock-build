@@ -271,7 +271,7 @@ class InlineUpdates(unittest.TestCase):
         finally:lease.close()
 
     def test_rounded_surface_small_close_account_slot_and_all_inline_states(self):
-        saved=self.store.path.read_bytes();self.dialog.show();self.dialog.resize(572,552);APP.processEvents()
+        saved=self.store.path.read_bytes();self.dialog.show();self.dialog.resize(892,632);APP.processEvents()
         for theme in ('light','dark'):
             self.dialog.apply_theme(theme)
             for state in ('idle','checking','latest','available','downloading','verifying','ready','error','cancelled','installing'):
@@ -283,20 +283,20 @@ class InlineUpdates(unittest.TestCase):
                 self.assertTrue(self.dialog.surface.rect().contains(self.dialog.save_button.geometry()))
                 self.assertTrue(self.dialog.surface.rect().contains(self.dialog.cancel_button.geometry()))
             button=self.dialog.close_button
-            self.assertEqual(button.size().width(),40);self.assertEqual(button.glyph_rect.width(),14)
+            self.assertEqual(button.size().width(),28);self.assertEqual(button.glyph_rect.width(),14)
             self.assertEqual(button.glyph_rect.center(),QRectF(button.rect()).center())
             rendered=self.dialog.grab().toImage()
             dpr=rendered.devicePixelRatio()
             pixel=lambda x,y:rendered.pixelColor(round(x*dpr),round(y*dpr)).alpha()
             middle=self.dialog.width()//2
-            self.assertEqual(self.dialog.surface.size().width(),540)
-            self.assertEqual(self.dialog.surface.size().height(),520)
+            self.assertEqual(self.dialog.surface.size().width(),860)
+            self.assertEqual(self.dialog.surface.size().height(),600)
             self.assertEqual(pixel(0,0),0)
             self.assertLess(pixel(middle,3),32,'the outer shadow gutter stays transparent')
             self.assertGreater(pixel(12,30),0,'the card casts a visible rounded shadow')
             self.assertLess(pixel(12,30),100,'the shadow does not become a second glass frame')
-            self.assertEqual(pixel(middle,20),255,'the card interior remains opaque')
-            self.assertEqual(pixel(20,30),255,'the rounded card is fully painted past its corner')
+            self.assertGreaterEqual(pixel(middle,20),214,'the source material retains its 84% surface alpha')
+            self.assertGreaterEqual(pixel(20,30),214,'the rounded material is fully painted past its corner')
             render_dir=os.getenv('FLICKDOCK_INLINE_RENDER_DIR')
             if render_dir:
                 target=Path(render_dir);target.mkdir(parents=True,exist_ok=True)
@@ -304,8 +304,8 @@ class InlineUpdates(unittest.TestCase):
                 self.dialog.grab().save(str(target/f'inline-settings-{theme}-{os.getenv("QT_SCALE_FACTOR","1")}.png'))
         card=QFrame();layout=QVBoxLayout(card);layout.addWidget(QLabel('Account fixture'));editor=QLineEdit(card);layout.addWidget(editor)
         original=self.dialog.body_layout.itemAt(0).widget()
-        self.dialog.set_account_panel(card);self.assertIs(self.dialog.body_layout.itemAt(0).widget(),card)
-        self.assertIs(self.dialog.body_layout.itemAt(1).widget(),original)
+        self.dialog.set_account_panel(card);self.assertIs(self.dialog.account_slot_layout.itemAt(1).widget(),card)
+        self.assertIs(self.dialog.body_layout.itemAt(0).widget(),original)
         self.assertIs(self.dialog.set_account_panel(None),card);self.assertFalse(card.isVisible());card.deleteLater()
         self.assertIs(self.dialog.body_layout.itemAt(0).widget(),original)
         self.dialog.dock_position_spin.setValue(71)

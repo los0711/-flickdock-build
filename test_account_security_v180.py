@@ -90,6 +90,8 @@ class SecurityTests(unittest.TestCase):
         self.service.platform='macos'
         sessions=WaitingSessions();self.service.store=sessions
         panel=AccountPanel(self.service);panel.show();flush()
+        panel.unsigned_profile_button.click();flush()
+        self.assertTrue(panel.auth_dialog.isVisible())
         heartbeat=QTimer();heartbeat.setInterval(5);beats=[]
         heartbeat.timeout.connect(lambda:beats.append(1));heartbeat.start()
         release_guard=threading.Timer(1,sessions.release.set)
@@ -109,7 +111,8 @@ class SecurityTests(unittest.TestCase):
             self.assertFalse(panel.auth_page.isVisible())
             self.assertTrue(wait(lambda:len(beats)>5 and not sessions.release.is_set(),.5))
             self.service.logout();self.api.finish(self.api.last('/v1/auth/logout'),dict())
-            self.assertTrue(panel.auth_page.isVisible())
+            self.assertTrue(panel.unsigned_profile_button.isVisible())
+            self.assertFalse(panel.auth_dialog.isVisible())
             sessions.release.set();self.assertTrue(wait(sessions.cleared.is_set))
             self.assertIsNone(sessions.value)
         finally:

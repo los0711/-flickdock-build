@@ -11,7 +11,7 @@ from unittest.mock import patch
 from PySide6.QtCore import QObject,QPoint,QPointF,Qt,Signal
 from PySide6.QtGui import QFont,QFontDatabase,QWheelEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication,QComboBox,QLabel,QSlider,QSpinBox,QWidget
+from PySide6.QtWidgets import QApplication,QComboBox,QLabel,QLineEdit,QSlider,QSpinBox,QWidget
 
 import app_settings
 from account_panel import AccountPanel
@@ -43,7 +43,7 @@ class SettingsAccountTests(unittest.TestCase):
         self.store=app_settings.SettingsStore(Path(self.temp.name))
         self.dialog=app_settings.SettingsDialog(self.store)
         self.service=Service();self.panel=AccountPanel(self.service,email_binding=False)
-        self.dialog.set_account_panel(self.panel);self.dialog.resize(540,680);self.dialog.show();APP.processEvents()
+        self.dialog.set_account_panel(self.panel);self.dialog.resize(892,632);self.dialog.show();APP.processEvents()
     def tearDown(self):
         self.dialog.close();self.dialog.deleteLater();APP.processEvents()
         self.runtime.stop();self.temp.cleanup()
@@ -145,29 +145,65 @@ class SettingsAccountTests(unittest.TestCase):
         class Lan(QWidget):
             def apply_theme(self,theme):self.theme=theme
         lan=Lan();self.dialog.set_lan_panel(lan)
-        self.assertIs(self.dialog.body_layout.itemAt(0).widget(),self.panel)
+        self.assertIs(self.dialog.account_slot_layout.itemAt(1).widget(),self.panel)
+        self.assertIs(self.dialog.body_layout.itemAt(0).widget(),self.dialog._reference_top)
         self.assertIs(self.dialog.body_layout.itemAt(1).widget(),lan)
         self.dialog.apply_theme('dark');self.assertEqual(lan.theme,'dark')
         self.assertIs(self.dialog.set_lan_panel(None),lan);self.assertIsNone(lan.parent())
         lan.deleteLater()
-    def test_password_and_rename_layouts_fit_light_dark_540(self):
+    def test_password_and_rename_layouts_fit_reference_light_dark_860(self):
         self.fill_password();self.click(self.panel.device_rename_buttons['other'])
         for theme in ('light','dark'):
             self.dialog.apply_theme(theme);APP.processEvents()
             self.assertEqual(self.dialog.scroll.horizontalScrollBar().maximum(),0)
             self.assertEqual(self.panel.devices_body.objectName(),'accountDevices')
-            self.assertEqual(len(self.panel.devices_body.findChildren(QWidget,'accountDeviceSeparator')),1)
+            self.assertEqual(len(self.panel.devices_body.findChildren(QWidget,'accountDeviceSeparator')),0)
+            rows=list(self.panel._rows_by_id.values())
+            self.assertLess(rows[0].geometry().right(),rows[1].geometry().left())
             for row in self.panel._rows_by_id.values():
                 self.assertTrue(self.panel.devices_body.rect().contains(row.geometry()))
             for widget in self.panel.findChildren(QWidget):
                 if widget.isVisible():
-                    point=widget.mapTo(self.panel,QPoint())
+                    container=self.panel.password_dialog if widget.window() is self.panel.password_dialog else self.panel
+                    point=widget.mapTo(container,QPoint())
                     self.assertGreaterEqual(point.x(),0)
-                    self.assertLessEqual(point.x()+widget.width(),self.panel.width())
+                    self.assertLessEqual(point.x()+widget.width(),container.width())
             render=os.environ.get('FLICKDOCK_ACCOUNT_RENDER_DIR')
             if render:
                 target=Path(render);target.mkdir(parents=True,exist_ok=True)
                 self.panel.grab().save(str(target/f'account-v181-{theme}.png'))
+
+    def test_reference_secondary_surfaces_alpha_owner_and_real_auth_entry(self):
+        def verify_surface(dialog,width):
+            APP.processEvents()
+            self.assertEqual(dialog.surface.width(),width)
+            self.assertTrue(dialog.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground))
+            self.assertFalse(dialog.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
+            self.assertIs(dialog.windowHandle().transientParent(),self.dialog.windowHandle())
+            image=dialog.grab().toImage()
+            self.assertEqual(image.pixelColor(0,0).alpha(),0)
+            self.assertGreater(image.pixelColor(10,image.height()//2).alpha(),0)
+            # The source 84% surface and its antialiased corner must not become
+            # an opaque black/white rectangular native backing.
+            self.assertLess(image.pixelColor(20,20).alpha(),100)
+            self.assertTrue(190<image.pixelColor(25,image.height()//2).alpha()<250)
+        self.click(self.panel.password_toggle_button)
+        verify_surface(self.panel.password_dialog,390)
+        self.panel._reset_password()
+        self.dialog.show_author();APP.processEvents()
+        verify_surface(self.dialog.author_dialog,400)
+        self.dialog.author_dialog.close()
+        self.service.logout();APP.processEvents()
+        self.assertTrue(self.panel.unsigned_profile_button.isVisible())
+        self.assertFalse(self.panel.auth_dialog.isVisible())
+        self.click(self.panel.unsigned_profile_button)
+        verify_surface(self.panel.auth_dialog,390)
+        self.assertTrue(self.panel.auth_page.isVisible())
+        self.assertEqual(set(self.panel.auth_page.findChildren(QLineEdit)),{self.panel.username_edit,self.panel.password_edit})
+        self.panel.password_edit.setText('temporary-secret')
+        self.click(self.panel.auth_cancel_button)
+        self.assertFalse(self.panel.auth_dialog.isVisible());self.assertEqual(self.panel.password_edit.text(),'')
+        self.assertFalse(self.store.path.exists())
 
 
 if __name__=='__main__':unittest.main(verbosity=2)

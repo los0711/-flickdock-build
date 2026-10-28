@@ -24,7 +24,7 @@ except ImportError:
 
 
 class IconItem(QWidget):
-    """112 × 116 icon cell; ``popup.selected`` is the selection authority.
+    """Reference grid cell; ``popup.selected`` is the selection authority.
 
     Root may call ``set_selected(bool)`` after selection changes elsewhere.
     The method updates presentation only and never changes the stored set.
@@ -37,7 +37,9 @@ class IconItem(QWidget):
         self.origin = QPoint()
         self.did_drag = False
         self._selected = ref in popup.selected
-        self.setFixedSize(112, 116)
+        scroller=getattr(popup,'scroll',None)
+        available=scroller.viewport().width() if hasattr(scroller,'viewport') else 488
+        self.setFixedSize(max(112,(available-44)//3),112)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
@@ -52,8 +54,8 @@ class IconItem(QWidget):
         except TypeError: self.icon = provider(ref, 64)
         self.title = popup.shelf.content.title(ref)
         self.remove_button = FeedbackButton("close", self, motion=popup.shelf.manager.motion)
-        self.remove_button.setFixedSize(28, 28)
-        self.remove_button.move(82, 2)
+        self.remove_button.setFixedSize(20,20)
+        self.remove_button.move(self.width()-28,8)
         self.remove_button.setToolTip("从搁架移除")
         self.remove_button.setAccessibleName("从搁架移除 " + self.title)
         self.remove_button.clicked.connect(lambda: self.popup.remove_path(self.ref))
@@ -105,6 +107,10 @@ class IconItem(QWidget):
         if event.button() == Qt.MouseButton.LeftButton:
             self.origin = event.position().toPoint()
             self.did_drag = False
+            if QRectF(12,12,16,16).contains(event.position()):
+                self.popup.select_item(self.ref,toggle=True)
+                self._pending_deselect=False
+                self._refresh_selection();event.accept();return
             self._pending_deselect=(self.ref in self.popup.selected and not event.modifiers() &
                 (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier))
             if hasattr(self.popup, 'select_item') and not self._pending_deselect:
@@ -189,37 +195,32 @@ class IconItem(QWidget):
         painter.drawText(QPointF(rect.center().x()-metrics.horizontalAdvance(chunk)/2, rect.top()+metrics.ascent()), chunk)
 
     def paintEvent(self, event):
+        from reference_widgets import palette,ink,thumbnail,draw_status,item_detail
         actual = self.ref in self.popup.selected
         if actual != self._selected:
             self.set_selected(actual)
         painter = QPainter(self)
         painter.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.SmoothPixmapTransform)
-        v = self.motion.values
-        scale = 1 - .025 * max(0, min(1, v['down']))
+        v=self.motion.values;c=palette()
+        scale=1-.025*max(0,min(1,v['down']))
         center = self.rect().center()
         painter.translate(center.x(), center.y())
         painter.scale(scale, scale)
         painter.translate(-center.x(), -center.y())
-        mix = max(.86 * v['selected'], .56 * v['hover'])
-        fill = QColor(color('hover'))
-        fill.setAlphaF(max(0, min(1, mix)))
-        painter.setBrush(fill)
-        border = QColor(color('accent'))
-        border.setAlphaF(max(0, min(.9, .9 * v['selected'])))
-        painter.setPen(QPen(border, 1.5))
-        painter.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 12, 12)
-        if self.hasFocus() and not actual:
-            painter.setPen(QPen(QColor(color('accent')), 2))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRoundedRect(QRectF(self.rect()).adjusted(3, 3, -3, -3), 10, 10)
+        painter.setBrush(ink(c['selected'] if actual else c['card_hover'] if v['hover']>.3 else c['card']))
+        painter.setPen(QPen(ink(c['selected_border'] if actual else c['border']),1))
+        painter.drawRoundedRect(QRectF(self.rect()).adjusted(.5,.5,-.5,-.5),c['card_radius'],c['card_radius'])
+        painter.setPen(QPen(QColor('#0A84FF') if actual else ink(c['input_border']),1));painter.setBrush(QColor('#0A84FF') if actual else Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(QRectF(12.5,12.5,14,14),4,4)
+        if actual:
+            painter.setPen(QPen(QColor('white'),1.5,Qt.SolidLine,Qt.RoundCap,Qt.RoundJoin));painter.drawLine(QPointF(16,19),QPointF(18,22));painter.drawLine(QPointF(18,22),QPointF(23,16))
+        art=thumbnail(self.popup.shelf,self.ref,44);x=(self.width()-44)//2
+        painter.drawPixmap(x,13,art);draw_status(painter,QRectF(x+33,46,10,10),self.cloud_status)
         state=getattr(self.popup.shelf.content,'transfers',{}).get(self.ref)
-        icon_rect=QRectF((self.width()-64)/2,13,64,64)
-        painter.drawPixmap(icon_rect,self.icon,QRectF(self.icon.rect()))
-        status_rect=QRectF(icon_rect.right()-12,icon_rect.bottom()-17,20,20)
-        draw_cloud_status_badge(painter,status_rect,self.cloud_status,
-                                None if state and state.get('phase') in ('copying','downloading') else state)
-        if state and state.get('phase') in ('copying','downloading'):
-            draw_progress_badge(painter,QRectF(icon_rect.left()-5,icon_rect.bottom()-17,18,18),state)
-        painter.setPen(QColor(color('text')))
-        self._draw_title(painter, QRectF(6, 85, self.width() - 12, 38), self.title)
+        if state:
+            draw_progress_badge(painter,QRectF(x+47,40,16,16),state)
+        font=QFont(painter.font());font.setPixelSize(12);font.setWeight(QFont.Bold);painter.setFont(font);painter.setPen(QColor(c['text']))
+        painter.drawText(QRectF(12,66,self.width()-24,18),Qt.AlignVCenter,painter.fontMetrics().elidedText(self.title.replace('\n',' '),Qt.ElideRight,self.width()-24))
+        font.setPixelSize(10);font.setWeight(QFont.Normal);painter.setFont(font);painter.setPen(QColor(c['secondary']))
+        painter.drawText(QRectF(12,86,self.width()-24,14),Qt.AlignVCenter,item_detail(self.popup.shelf,self.ref).split(' · ')[0])
         painter.end()

@@ -110,7 +110,7 @@ fallback task scheduler or second Startup-folder shortcut is added.
 Windows `.exe` update manifests must never be offered to the Mac build. Publish
 separate verified HTTPS indexes for each supported macOS architecture. Existing
 1.8.12 and older clients read `updates/macos-arm64.json` or
-`updates/macos-x86_64.json`. Keep those legacy indexes at the verified 1.8.13
+`updates/macos-x86_64.json`. Keep those legacy indexes at the verified 1.8.14
 DMG bridge so their updater can open the native installer for a manual drag to
 Applications. Version 1.8.13 and later clients read the corresponding
 `updates/macos-arm64-auto.json` or `updates/macos-x86_64-auto.json`; these point

@@ -132,6 +132,17 @@ def main(arguments=None):
         cocoa_env = dict(env, HOME=profile, QT_QPA_PLATFORM='cocoa',
                          FLICKDOCK_CI_COCOA_SMOKE='1')
         try:
+            # Stage the exact native flag reported on macOS 27. Hosted Macs
+            # may choose different Qt defaults, so launch success alone does
+            # not verify that edge/shelf native ordering avoids the conflict.
+            spaces_path = Path(profile) / 'cocoa-spaces.json'
+            run([python, ROOT / 'test_mac_cocoa_spaces.py', '--output', spaces_path],
+                env=cocoa_env)
+            spaces = json.loads(spaces_path.read_text(encoding='utf-8'))
+            if (not spaces.get('ok') or spaces.get('qt_platform') != 'cocoa'
+                    or {case.get('window') for case in spaces.get('cases', [])} != {'edge', 'shelf'}):
+                raise RuntimeError('Native macOS Spaces collection behavior verification failed')
+            frozen['cocoa_window_order'] = spaces
             subprocess.run([str(binary), '--verify-cocoa-startup', str(smoke_path)],
                            cwd=ROOT, env=cocoa_env, check=True, timeout=20)
             cocoa = json.loads(smoke_path.read_text(encoding='utf-8'))

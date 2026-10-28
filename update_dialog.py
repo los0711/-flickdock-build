@@ -1,13 +1,16 @@
 """Presentation for update checks/downloads; no network or installation here."""
 from __future__ import annotations
 
+import sys
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (QDialog, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QPlainTextEdit,
-                               QProgressBar, QPushButton, QVBoxLayout)
+                               QProgressBar, QPushButton, QSizePolicy, QVBoxLayout)
 
 from app_settings import SettingsCloseButton, SettingsTitleBar
 from platform_native import remove_host_window_shadow
+from native_ui_common import colors as ui_colors
 
 
 def _plain(value, fallback=""):
@@ -19,6 +22,24 @@ def _bytes(value):
     if value >= 1024 * 1024: return f"{value / (1024 * 1024):.1f} MB"
     if value >= 1024: return f"{value / 1024:.0f} KB"
     return f"{value} B"
+
+
+class _ElidedLabel(QLabel):
+    def __init__(self,text='',parent=None):
+        super().__init__(parent);self._full_text=''
+        self.setTextFormat(Qt.TextFormat.PlainText)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Preferred)
+        self.setMinimumWidth(0);self.setText(text)
+
+    def setText(self,text):
+        self._full_text=str(text);self.setAccessibleName(self._full_text)
+        self._fit()
+
+    def resizeEvent(self,event):
+        super().resizeEvent(event);self._fit()
+
+    def _fit(self):
+        super().setText(self.fontMetrics().elidedText(self._full_text,Qt.TextElideMode.ElideRight,max(1,self.contentsRect().width())))
 
 
 class UpdateDialog(QDialog):
@@ -46,8 +67,8 @@ class UpdateDialog(QDialog):
         self.setFont(QFont("HarmonyOS Sans SC", 11))
         self.setModal(False)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setMinimumSize(492, 412)
-        self.resize(532, 512)
+        self.setMinimumSize(452, 222)
+        self.resize(452, 272)
         self._current_version = _plain(current_version, "—")
         self._latest_version = ""
         self._notes = ""
@@ -74,95 +95,84 @@ class UpdateDialog(QDialog):
         self.surface.setGraphicsEffect(shadow)
         outer.addWidget(self.surface)
         root = QVBoxLayout(self.surface)
-        root.setContentsMargins(24, 16, 24, 22)
+        root.setContentsMargins(20,20,20,20)
         root.setSpacing(16)
         self.title_bar = SettingsTitleBar(self)
+        self.title_bar.setFixedHeight(48)
         header = QHBoxLayout(self.title_bar)
-        header.setContentsMargins(0, 0, 0, 0)
-        title = QLabel("软件更新", self.title_bar)
-        title.setObjectName("updateTitle")
-        title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        header.addWidget(title, 1)
-        self.close_button = SettingsCloseButton(self.title_bar)
-        self.close_button.setObjectName("updateClose")
-        self.close_button.setAccessibleName("关闭软件更新")
-        self.close_button.setToolTip("关闭")
-        self.close_button.clicked.connect(self.reject)
-        header.addWidget(self.close_button)
+        header.setContentsMargins(0,0,0,12);header.setSpacing(10)
+        self.update_symbol=QLabel('↑',self.title_bar)
+        self.update_symbol.setObjectName('updateSymbol');self.update_symbol.setFixedSize(32,32)
+        self.update_symbol.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.update_symbol.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        header.addWidget(self.update_symbol)
+        captions=QVBoxLayout();captions.setSpacing(2)
+        self.title_label=_ElidedLabel('软件更新',self.title_bar);self.title_label.setObjectName('updateTitle')
+        self.title_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.title_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        captions.addWidget(self.title_label)
+        self.version_summary=_ElidedLabel('',self.title_bar);self.version_summary.setObjectName('updateCaption')
+        self.version_summary.setTextFormat(Qt.TextFormat.PlainText)
+        self.version_summary.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        captions.addWidget(self.version_summary)
+        header.addLayout(captions,1)
+        self.close_button=SettingsCloseButton(self.title_bar,glyph_size=10)
+        self.close_button.setObjectName('updateClose');self.close_button.setFixedSize(24,24)
+        self.close_button.setAccessibleName('关闭软件更新');self.close_button.setToolTip('关闭')
+        self.close_button.clicked.connect(self.reject);header.addWidget(self.close_button)
         root.addWidget(self.title_bar)
 
-        self.version_card = QFrame(self)
-        self.version_card.setObjectName("updateVersions")
-        versions = QHBoxLayout(self.version_card)
-        versions.setContentsMargins(16, 14, 16, 14)
-        versions.setSpacing(24)
-        for label, attribute in (("当前版本", "current_version_label"), ("最新版本", "latest_version_label")):
-            column = QVBoxLayout()
-            column.setSpacing(5)
-            caption = QLabel(label, self.version_card)
-            caption.setObjectName("updateCaption")
-            column.addWidget(caption)
-            value = QLabel(self.version_card)
-            value.setObjectName("updateVersionValue")
-            value.setTextFormat(Qt.TextFormat.PlainText)
-            setattr(self, attribute, value)
-            column.addWidget(value)
-            versions.addLayout(column, 1)
-        root.addWidget(self.version_card)
+        # Keep the same public version labels for the existing state binding;
+        # the reference presents their values in the compact header.
+        self.version_card=QFrame(self.surface);self.version_card.hide()
+        self.current_version_label=QLabel(self.version_card)
+        self.latest_version_label=QLabel(self.version_card)
+        for label in (self.current_version_label,self.latest_version_label):
+            label.setTextFormat(Qt.TextFormat.PlainText)
+        self.notes_card=QFrame(self.surface);self.notes_card.setObjectName('updateNotesCard')
+        notes=QVBoxLayout(self.notes_card);notes.setContentsMargins(12,12,12,12);notes.setSpacing(5)
+        self.notes_heading=QLabel('更新内容：',self.notes_card);self.notes_heading.setObjectName('updateNotesHeading')
+        notes.addWidget(self.notes_heading)
+        self.release_notes=QPlainTextEdit(self.notes_card)
+        self.release_notes.setObjectName('updateNotes');self.release_notes.setReadOnly(True)
+        self.release_notes.setUndoRedoEnabled(False);self.release_notes.setAccessibleName('更新说明')
+        self.release_notes.document().setDocumentMargin(0)
+        self.release_notes.setMinimumHeight(40);self.release_notes.setMaximumHeight(112)
+        notes.addWidget(self.release_notes)
+        root.addWidget(self.notes_card)
 
-        self.status_label = QLabel(self)
-        self.status_label.setObjectName("updateStatus")
-        self.status_label.setTextFormat(Qt.TextFormat.PlainText)
-        root.addWidget(self.status_label)
-        self.message_label = QLabel(self)
-        self.message_label.setObjectName("updateMessage")
-        self.message_label.setWordWrap(True)
-        self.message_label.setTextFormat(Qt.TextFormat.PlainText)
-        root.addWidget(self.message_label)
-        self.progress_bar = QProgressBar(self)
-        self.progress_bar.setObjectName("updateProgress")
-        self.progress_bar.setTextVisible(False)
-        self.progress_bar.setFixedHeight(6)
-        self.progress_bar.setAccessibleName("更新下载进度")
-        root.addWidget(self.progress_bar)
-        self.progress_label = QLabel(self)
-        self.progress_label.setObjectName("updateCaption")
-        self.progress_label.setTextFormat(Qt.TextFormat.PlainText)
-        root.addWidget(self.progress_label)
-        self.notes_heading = QLabel("更新说明", self)
-        self.notes_heading.setObjectName("updateCaption")
-        root.addWidget(self.notes_heading)
-        self.release_notes = QPlainTextEdit(self)
-        self.release_notes.setObjectName("updateNotes")
-        self.release_notes.setReadOnly(True)
-        self.release_notes.setUndoRedoEnabled(False)
-        self.release_notes.setAccessibleName("更新说明")
-        self.release_notes.setMinimumHeight(90)
-        self.release_notes.setMaximumHeight(180)
-        root.addWidget(self.release_notes, 1)
-        root.addStretch()
+        self.progress_area=QFrame(self.surface);self.progress_area.setObjectName('updateProgressArea')
+        progress=QVBoxLayout(self.progress_area);progress.setContentsMargins(0,0,0,0);progress.setSpacing(6)
+        status_row=QHBoxLayout();status_row.setSpacing(8)
+        self.status_label=QLabel(self.progress_area);self.status_label.setObjectName('updateStatus')
+        self.status_label.setTextFormat(Qt.TextFormat.PlainText);status_row.addWidget(self.status_label,1)
+        self.progress_label=QLabel(self.progress_area);self.progress_label.setObjectName('updateProgressLabel')
+        self.progress_label.setTextFormat(Qt.TextFormat.PlainText);status_row.addWidget(self.progress_label)
+        progress.addLayout(status_row)
+        self.message_label=QLabel(self.progress_area);self.message_label.setObjectName('updateMessage')
+        self.message_label.setWordWrap(True);self.message_label.setTextFormat(Qt.TextFormat.PlainText)
+        progress.addWidget(self.message_label)
+        self.progress_bar=QProgressBar(self.progress_area);self.progress_bar.setObjectName('updateProgress')
+        self.progress_bar.setTextVisible(False);self.progress_bar.setFixedHeight(6)
+        self.progress_bar.setAccessibleName('更新下载进度');progress.addWidget(self.progress_bar)
+        self.sha_label=_ElidedLabel('',self.progress_area);self.sha_label.setObjectName('updateSha')
+        self.sha_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.sha_label.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Preferred)
+        progress.addWidget(self.sha_label)
+        root.addWidget(self.progress_area)
 
-        footer = QHBoxLayout()
-        footer.setSpacing(10)
-        self.skip_button = QPushButton("跳过此版本", self)
-        self.skip_button.setObjectName("updateSkip")
-        self.skip_button.setMinimumHeight(38)
-        self.skip_button.setAutoDefault(False)
-        self.skip_button.clicked.connect(self._skip)
-        footer.addWidget(self.skip_button)
+        footer=QHBoxLayout();footer.setSpacing(10)
+        self.skip_button=QPushButton('跳过此版本',self.surface);self.skip_button.setObjectName('updateSkip')
+        self.skip_button.setFixedHeight(28);self.skip_button.setAutoDefault(False)
+        self.skip_button.clicked.connect(self._skip);footer.addWidget(self.skip_button)
         footer.addStretch()
-        self.secondary_button = QPushButton(self)
-        self.secondary_button.setMinimumSize(82, 38)
-        self.secondary_button.setAutoDefault(False)
-        self.secondary_button.clicked.connect(self._secondary_clicked)
-        footer.addWidget(self.secondary_button)
-        self.primary_button = QPushButton(self)
-        self.primary_button.setObjectName("updatePrimary")
-        self.primary_button.setMinimumSize(112, 38)
-        self.primary_button.setAutoDefault(False)
-        self.primary_button.setDefault(False)
-        self.primary_button.clicked.connect(self._primary_clicked)
-        footer.addWidget(self.primary_button)
+        self.secondary_button=QPushButton(self.surface);self.secondary_button.setFixedHeight(28)
+        self.secondary_button.setMinimumWidth(56);self.secondary_button.setAutoDefault(False)
+        self.secondary_button.clicked.connect(self._secondary_clicked);footer.addWidget(self.secondary_button)
+        self.primary_button=QPushButton(self.surface);self.primary_button.setObjectName('updatePrimary')
+        self.primary_button.setFixedHeight(28);self.primary_button.setMinimumWidth(112)
+        self.primary_button.setAutoDefault(False);self.primary_button.setDefault(False)
+        self.primary_button.clicked.connect(self._primary_clicked);footer.addWidget(self.primary_button)
         root.addLayout(footer)
         self.request_check.connect(self._check_client)
         self.request_download.connect(self._download_client)
@@ -240,7 +250,7 @@ class UpdateDialog(QDialog):
         status, message, primary, secondary = {
             "idle": ("检查软件更新", "获取最新版本与更新说明。", "检查更新", "关闭"),
             "checking": ("正在检查更新…", "正在获取最新版本信息。", "正在检查…", "取消检查"),
-            "available": ("发现新版本", "查看更新说明，准备好后即可下载。", "下载并更新", "稍后"),
+            "available": ("发现新版本", "查看更新说明，准备好后即可下载。", "立即下载并更新", "稍后"),
             "latest": ("已是最新版本", "当前安装的版本已是最新版本。", "重新检查", "关闭"),
             "error": ("暂时无法完成更新", self._error or "请稍后重试。", {"check":"重试", "download":"重试下载", "install":"重试安装"}.get(self._retry_action, "重试"), "关闭"),
             "downloading": ("正在下载更新", "下载完成后即可安装新版本。", "正在下载…", "取消下载"),
@@ -250,6 +260,8 @@ class UpdateDialog(QDialog):
         }[state]
         self.current_version_label.setText(self._current_version)
         self.latest_version_label.setText(self._latest_version or (self._current_version if state=="latest" else "—"))
+        self.title_label.setText(f"发现新版本 FlickDock v{self._latest_version}" if state=='available' and self._latest_version else 'FlickDock 软件更新')
+        self.version_summary.setText(f"当前版本 v{self._current_version} · 覆盖安装保留搁架与设置")
         self.status_label.setText(status)
         self.message_label.setText(message if len(message)<=300 else message[:299]+"…")
         self.primary_button.setText(primary)
@@ -259,10 +271,13 @@ class UpdateDialog(QDialog):
         self.secondary_button.setEnabled(state!="cancelling")
         self.skip_button.setVisible(state=="available" and bool(self._latest_version))
         notes_visible = state in ("available", "downloading", "ready")
+        self.notes_card.setVisible(notes_visible)
         self.notes_heading.setVisible(notes_visible)
         self.release_notes.setVisible(notes_visible)
         text = self._notes or "此版本未提供更新说明。"
         if self.release_notes.toPlainText()!=text: self.release_notes.setPlainText(text)
+        line_count=max(2,min(6,len(text.splitlines())))
+        self.release_notes.setFixedHeight(max(40,line_count*self.release_notes.fontMetrics().height()+8))
         progress_visible = state in ("checking", "downloading", "ready", "cancelling")
         self.progress_bar.setVisible(progress_visible)
         self.progress_label.setVisible(state in ("downloading", "ready"))
@@ -276,6 +291,21 @@ class UpdateDialog(QDialog):
         else:
             self.progress_bar.setRange(0, 0)
             self.progress_label.setText(f"已下载 {_bytes(self._received)}")
+        # The HTML's compact offer puts versions in the header and presents
+        # progress only when a real update operation is running.
+        self.progress_area.setVisible(state!='available')
+        self.message_label.setVisible(state not in ('downloading','checking','cancelling'))
+        checksum=''
+        if isinstance(self._manifest,dict):
+            installer=self._manifest.get('installer')
+            if isinstance(installer,dict):checksum=_plain(installer.get('sha256'))
+        self.sha_label.setText('SHA-256: '+checksum)
+        self.sha_label.setToolTip('SHA-256: '+checksum)
+        self.sha_label.setVisible(bool(checksum) and state in ('downloading','ready'))
+        self.surface.layout().activate()
+        self.layout().activate()
+        target_height=max(222,self.minimumSizeHint().height())
+        if self.height()!=target_height:self.resize(self.width(),target_height)
 
     def _primary_clicked(self):
         if self._state in ("idle", "latest", "cancelled") or (self._state=="error" and self._retry_action=="check"):
@@ -365,38 +395,39 @@ class UpdateDialog(QDialog):
         self.set_state("cancelled")
 
     def apply_theme(self, theme):
-        dark = theme=="dark"
-        self.close_button.dark = dark
-        self.close_button.update()
-        bg, surface = ("#1d2027", "#272c35") if dark else ("#f7f9fc", "#ffffff")
-        ink, secondary = ("#edf2fa", "#a5b1c3") if dark else ("#253246", "#637186")
-        edge, hover = ("#3c4554", "#39465a") if dark else ("#dce3ed", "#edf4fe")
+        dark=theme=='dark';c=ui_colors(theme)
+        family='.AppleSystemUIFont' if sys.platform=='darwin' else 'HarmonyOS Sans SC'
+        font=QFont(family);font.setPixelSize(12);self.setFont(font)
+        self.close_button.dark=dark;self.close_button.update()
         self.setStyleSheet(f"""
-            QDialog#flickdockUpdate {{background:transparent;color:{ink};}}
-            QFrame#updateSurface {{background:{bg};border:1px solid {edge};border-radius:18px;}}
-            QDialog#flickdockUpdate QLabel {{background:transparent;color:{ink};font-size:13px;}}
-            QDialog#flickdockUpdate QLabel#updateTitle {{font-size:21px;font-weight:600;}}
-            QDialog#flickdockUpdate QLabel#updateCaption {{color:{secondary};font-size:12px;}}
-            QDialog#flickdockUpdate QLabel#updateVersionValue {{font-size:17px;font-weight:600;}}
-            QDialog#flickdockUpdate QLabel#updateStatus {{font-size:15px;font-weight:600;}}
-            QDialog#flickdockUpdate QLabel#updateMessage {{color:{secondary};}}
-            QFrame#updateVersions {{background:{surface};border:1px solid {edge};border-radius:12px;}}
-            QPlainTextEdit#updateNotes {{background:{surface};color:{ink};border:1px solid {edge};border-radius:10px;padding:8px;font-size:13px;selection-background-color:#2584ed;selection-color:white;}}
-            QProgressBar#updateProgress {{background:{edge};border:0;border-radius:3px;}}
-            QProgressBar#updateProgress::chunk {{background:#2584ed;border-radius:3px;}}
-            QDialog#flickdockUpdate QPushButton {{background:{surface};color:{ink};border:1px solid {edge};border-radius:9px;padding:6px 12px;font-size:13px;}}
-            QDialog#flickdockUpdate QPushButton:hover {{background:{hover};border-color:#75a4dc;}}
-            QDialog#flickdockUpdate QPushButton:pressed {{background:{edge};}}
-            QDialog#flickdockUpdate QPushButton:focus {{border:1px solid #5d9eeb;}}
-            QDialog#flickdockUpdate QPushButton#updatePrimary {{background:#2584ed;color:white;border-color:#2584ed;}}
-            QDialog#flickdockUpdate QPushButton#updatePrimary:hover {{background:#3694fa;}}
-            QDialog#flickdockUpdate QPushButton#updatePrimary:disabled {{background:{edge};color:{secondary};border-color:{edge};}}
-            QDialog#flickdockUpdate QPushButton:disabled {{background:{edge};color:{secondary};border-color:{edge};}}
-            QDialog#flickdockUpdate QPushButton#updateSkip {{background:transparent;border:0;color:{secondary};padding:6px 0;}}
-            QDialog#flickdockUpdate QPushButton#updateClose {{background:transparent;border:0;border-radius:10px;padding:0;}}
-            QDialog#flickdockUpdate QPushButton#updateClose:hover {{background:{hover};}}
+            QDialog#flickdockUpdate {{background:transparent;color:{c['text']};}}
+            QFrame#updateSurface {{background:{c['surface']};border:1px solid {c['glass_border']};border-radius:{c['radius']}px;}}
+            QWidget#settingsTitleBar {{background:transparent;border:0;border-bottom:1px solid {c['divider']};}}
+            QDialog#flickdockUpdate QLabel {{background:transparent;color:{c['text']};font-size:12px;border:0;}}
+            QDialog#flickdockUpdate QLabel#updateSymbol {{background:rgba(10,132,255,51);color:{c['blue']};border-radius:12px;font-size:20px;font-weight:700;}}
+            QDialog#flickdockUpdate QLabel#updateTitle {{font-size:14px;font-weight:700;}}
+            QDialog#flickdockUpdate QLabel#updateCaption {{color:{c['secondary']};font-size:11px;}}
+            QDialog#flickdockUpdate QLabel#updateNotesHeading {{font-size:12px;font-weight:700;}}
+            QDialog#flickdockUpdate QLabel#updateStatus {{font-size:12px;font-weight:700;}}
+            QDialog#flickdockUpdate QLabel#updateProgressLabel {{font-size:11px;color:{c['cyan'] if dark else c['blue']};font-family:monospace;}}
+            QDialog#flickdockUpdate QLabel#updateMessage {{color:{c['secondary']};font-size:12px;}}
+            QDialog#flickdockUpdate QLabel#updateSha {{color:{c['muted']};font-size:11px;font-family:monospace;}}
+            QFrame#updateNotesCard {{background:{c['card']};border:1px solid {c['border']};border-radius:12px;}}
+            QPlainTextEdit#updateNotes {{background:transparent;color:{c['secondary']};border:0;padding:0;font-size:12px;selection-background-color:{c['blue']};selection-color:white;}}
+            QProgressBar#updateProgress {{background:{c['control']};border:0;border-radius:3px;}}
+            QProgressBar#updateProgress::chunk {{background:{c['green']};border-radius:3px;}}
+            QDialog#flickdockUpdate QPushButton {{background:{c['control']};color:{c['text']};border:1px solid transparent;border-radius:12px;padding:0 12px;font-size:12px;}}
+            QDialog#flickdockUpdate QPushButton:hover {{background:{c['hover']};}}
+            QDialog#flickdockUpdate QPushButton:pressed {{background:{c['selected']};}}
+            QDialog#flickdockUpdate QPushButton#updatePrimary {{background:{c['blue']};color:white;font-weight:700;}}
+            QDialog#flickdockUpdate QPushButton#updatePrimary:hover {{background:rgba(10,132,255,230);}}
+            QDialog#flickdockUpdate QPushButton:disabled {{background:{c['control']};color:{c['muted']};}}
+            QDialog#flickdockUpdate QPushButton#updateSkip {{background:transparent;border:0;color:{c['secondary']};padding:0;}}
+            QDialog#flickdockUpdate QPushButton#updateClose {{background:transparent;border:0;border-radius:8px;padding:0;}}
+            QDialog#flickdockUpdate QPushButton#updateClose:hover {{background:{c['hover']};}}
             QDialog#flickdockUpdate QScrollBar:vertical {{width:6px;background:transparent;border:0;}}
-            QDialog#flickdockUpdate QScrollBar::handle:vertical {{background:{'#5a677b' if dark else '#c1ccda'};border-radius:3px;min-height:24px;}}
-            QDialog#flickdockUpdate QScrollBar::add-line:vertical, QDialog#flickdockUpdate QScrollBar::sub-line:vertical {{height:0;}}
-            QDialog#flickdockUpdate QScrollBar::add-page:vertical, QDialog#flickdockUpdate QScrollBar::sub-page:vertical {{background:transparent;}}
+            QDialog#flickdockUpdate QScrollBar::handle:vertical {{background:rgba(142,142,147,71);border-radius:3px;min-height:24px;}}
+            QDialog#flickdockUpdate QScrollBar::add-line:vertical,QDialog#flickdockUpdate QScrollBar::sub-line:vertical {{height:0;}}
+            QDialog#flickdockUpdate QScrollBar::add-page:vertical,QDialog#flickdockUpdate QScrollBar::sub-page:vertical {{background:transparent;}}
         """)
+        self.surface.graphicsEffect().setColor(QColor(0,0,0,140) if dark else QColor(15,23,42,41))

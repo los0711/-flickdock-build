@@ -5,12 +5,12 @@ from PySide6.QtGui import QColor, QPalette
 
 _theme = 'light'
 _PALETTES = {
-    'light': {'surface':'#ffffff','canvas':'#f5f7fa','text':'#263344','secondary':'#637186',
-              'border':'#dce3ed','hover':'#e6f0fd','icon':'#344b65','button':'#eaf0f7',
-              'selected':'#dcecff','tab':'#ffffff','accent':'#1876db'},
-    'dark': {'surface':'#252b35','canvas':'#1d232d','text':'#edf2fa','secondary':'#acb9cc',
-             'border':'#465266','hover':'#334966','icon':'#e0ebfb','button':'#394555',
-             'selected':'#314e70','tab':'#435166','accent':'#7cb6ff'}
+    'light': {'surface':'#ffffff','canvas':'#f0f2f6','text':'#1d1d1f','secondary':'#515154',
+              'border':'#dfe2e8','hover':'#e8f2ff','icon':'#3a3a3c','button':'#f1f2f5',
+              'selected':'#d6eaff','tab':'#ffffff','accent':'#007aff'},
+    'dark': {'surface':'#1c1c1e','canvas':'#161616','text':'#f5f5f7','secondary':'#a1a1aa',
+             'border':'#3a3a3c','hover':'#303034','icon':'#e4e4e7','button':'#2c2c2e',
+             'selected':'#1c3854','tab':'#2c2c2e','accent':'#0a84ff'}
 }
 
 def set_theme(theme):
@@ -24,20 +24,21 @@ def color(key):
     return _PALETTES[_theme].get(key, _PALETTES[_theme]['text'])
 
 _DARK = {
-    '#fff':'#252b35', '#ffffff':'#252b35', '#fefeff':'#29303b',
-    '#f8f9fb':'#2b3340', '#f5f7fa':'#1d232d', '#f5f7fb':'#1d232d',
-    '#eef1f6':'#1c232d', '#e7ebf1':'#3e4b5d', '#e6eaf0':'#465266',
-    '#e1e5ec':'#465266', '#e5e8ed':'#465266', '#e1e7ef':'#425167',
-    '#dce3ed':'#465266', '#e5e5e9':'#465266', '#ededf0':'#465266',
-    '#f4f8fd':'#263b54', '#bfdbfa':'#5b85b8', '#edf6ff':'#283f5d',
-    '#75b8ff':'#84baff', '#d9dfe8':'#526780', '#f5f7fa':'#1d232d',
-    '#e9f3ff':'#334966', '#d9eaff':'#355676', '#c3ccd9':'#687a93',
-    '#c2cbd8':'#687a93', '#72aff3':'#83b8fa',
-    '#1d1d1f':'#edf2fa', '#25272c':'#edf2fa', '#28313d':'#edf2fa',
-    '#303a48':'#edf2fa', '#354252':'#e4edf9', '#282d35':'#edf2fa',
-    '#313741':'#edf2fa', '#213247':'#f2f6ff', '#8a95a4':'#b5c3d8',
-    '#7b838f':'#acb9cc', '#626c79':'#b5c3d8', '#738091':'#acb9cc',
-    '#7d8796':'#acb9cc', '#7c8796':'#acb9cc', '#8490a0':'#acb9cc'
+    '#fff':'#1c1c1e', '#ffffff':'#1c1c1e', '#fefeff':'#242426',
+    '#f8f9fb':'#242426', '#f5f7fa':'#161616', '#f5f7fb':'#161616',
+    '#eef1f6':'#242426', '#e7ebf1':'#2c2c2e', '#e6eaf0':'#3a3a3c',
+    '#e1e5ec':'#3a3a3c', '#e5e8ed':'#3a3a3c', '#e1e7ef':'#303034',
+    '#dce3ed':'#3a3a3c', '#e5e5e9':'#3a3a3c', '#ededf0':'#3a3a3c',
+    '#f4f8fd':'#1e2b39', '#bfdbfa':'#567daf', '#edf6ff':'#1e354b',
+    '#75b8ff':'#0a84ff', '#d9dfe8':'#454549',
+    '#e9f3ff':'#1c3854', '#d9eaff':'#1e4264', '#c3ccd9':'#606066',
+    '#c2cbd8':'#606066', '#72aff3':'#0a84ff',
+    '#1d1d1f':'#f5f5f7', '#25272c':'#f5f5f7', '#28313d':'#f5f5f7',
+    '#303a48':'#f5f5f7', '#354252':'#f5f5f7', '#282d35':'#f5f5f7',
+    '#313741':'#f5f5f7', '#213247':'#f5f5f7', '#8a95a4':'#a1a1aa',
+    '#7b838f':'#a1a1aa', '#626c79':'#a1a1aa', '#738091':'#a1a1aa',
+    '#7d8796':'#a1a1aa', '#7c8796':'#a1a1aa', '#8490a0':'#a1a1aa',
+    '#1876db':'#0a84ff', '#176bc2':'#0a84ff', '#3989ef':'#0a84ff'
 }
 
 def qss(source, font_family):

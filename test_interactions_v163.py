@@ -50,10 +50,11 @@ with tempfile.TemporaryDirectory(prefix='flickdock-interactions-v163-') as tmp:
             chosen=set(popup.selected);exports=[]
             def drag(drag,*args):
                 exports.append({str(Path(url.toLocalFile()).resolve()) for url in drag.mimeData().urls()});return Qt.DropAction.CopyAction
-            QTest.mousePress(item,Qt.MouseButton.LeftButton,pos=QPoint(15,25))
-            move=QMouseEvent(QEvent.Type.MouseMove,QPointF(40,25),QPointF(item.mapToGlobal(QPoint(40,25))),Qt.MouseButton.NoButton,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier)
+            # Drag the card body; the reference adds a checkbox at (12,12).
+            QTest.mousePress(item,Qt.MouseButton.LeftButton,pos=QPoint(38,50))
+            move=QMouseEvent(QEvent.Type.MouseMove,QPointF(65,50),QPointF(item.mapToGlobal(QPoint(65,50))),Qt.MouseButton.NoButton,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier)
             with patch.object(subject.QDrag,'exec',drag):QApplication.sendEvent(item,move)
-            QTest.mouseRelease(item,Qt.MouseButton.LeftButton,pos=QPoint(40,25))
+            QTest.mouseRelease(item,Qt.MouseButton.LeftButton,pos=QPoint(65,50))
             assert exports==[chosen] and popup.selected==chosen,(mode,exports,chosen,popup.selected)
         packed=[]
         with patch.object(shelf,'compress_refs',side_effect=lambda paths:packed.append(list(paths))):

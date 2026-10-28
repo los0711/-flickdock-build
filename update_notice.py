@@ -1,10 +1,12 @@
 """Small, nonmodal application window for an available FlickDock update."""
 from __future__ import annotations
+import sys
 
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, Signal
 from PySide6.QtGui import QColor, QCursor, QGuiApplication
 from PySide6.QtWidgets import (QFrame, QGraphicsDropShadowEffect, QHBoxLayout,
                                QLabel, QPushButton, QVBoxLayout, QWidget)
+from native_ui_common import colors as ui_colors
 
 
 class UpdateNotice(QWidget):
@@ -18,10 +20,10 @@ class UpdateNotice(QWidget):
         self.setWindowTitle("FlickDock · 新版本")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-        self.setFixedSize(376, 164)
+        self.setFixedSize(452, 178)
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(14, 10, 14, 18)
+        outer.setContentsMargins(16,16,16,16)
         self.surface = QFrame(self)
         self.surface.setObjectName("updateNoticeSurface")
         outer.addWidget(self.surface)
@@ -32,29 +34,40 @@ class UpdateNotice(QWidget):
         self.surface.setGraphicsEffect(shadow)
 
         content = QVBoxLayout(self.surface)
-        content.setContentsMargins(19, 15, 19, 16)
-        content.setSpacing(5)
+        content.setContentsMargins(20,20,20,20)
+        content.setSpacing(16)
+        header=QHBoxLayout();header.setSpacing(10)
+        self.symbol=QLabel('↑',self.surface);self.symbol.setObjectName('updateNoticeSymbol')
+        self.symbol.setFixedSize(32,32);self.symbol.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        header.addWidget(self.symbol)
+        captions=QVBoxLayout();captions.setSpacing(3)
         self.title = QLabel("FlickDock 有新版本", self.surface)
         self.title.setObjectName("updateNoticeTitle")
-        content.addWidget(self.title)
+        captions.addWidget(self.title)
         self.version_label = QLabel(self.surface)
         self.version_label.setObjectName("updateNoticeVersion")
         self.version_label.setTextFormat(Qt.TextFormat.PlainText)
-        content.addWidget(self.version_label)
-        content.addStretch(1)
+        captions.addWidget(self.version_label);header.addLayout(captions,1)
+        self.close_button=QPushButton('×',self.surface);self.close_button.setObjectName('updateNoticeClose')
+        self.close_button.setFixedSize(24,24);self.close_button.setAccessibleName('稍后更新')
+        self.close_button.setAutoDefault(False);self.close_button.clicked.connect(self.hide)
+        header.addWidget(self.close_button)
+        content.addLayout(header)
 
         actions = QHBoxLayout()
         actions.setSpacing(9)
         actions.addStretch(1)
         self.later_button = QPushButton("稍后", self.surface)
         self.later_button.setObjectName("updateNoticeLater")
-        self.later_button.setFixedSize(72, 34)
+        self.later_button.setFixedSize(56,28)
+        self.later_button.setAutoDefault(False)
         self.later_button.setAccessibleName("稍后更新")
         self.later_button.clicked.connect(self.hide)
         actions.addWidget(self.later_button)
         self.update_button = QPushButton("立即更新", self.surface)
         self.update_button.setObjectName("updateNoticePrimary")
-        self.update_button.setFixedSize(94, 34)
+        self.update_button.setFixedSize(92,28)
+        self.update_button.setAutoDefault(False)
         self.update_button.clicked.connect(self.update_requested.emit)
         actions.addWidget(self.update_button)
         content.addLayout(actions)
@@ -65,27 +78,23 @@ class UpdateNotice(QWidget):
         self.apply_theme(theme)
 
     def apply_theme(self, theme):
-        dark = theme == "dark"
-        surface = "#252b35" if dark else "#ffffff"
-        ink = "#edf2fa" if dark else "#263344"
-        secondary = "#acb9cc" if dark else "#637186"
-        edge = "#465266" if dark else "#dce3ed"
-        hover = "#334966" if dark else "#eaf0f7"
-        accent = "#276ab6" if dark else "#1876db"
-        accent_hover = "#2c70bd" if dark else "#176cc8"
+        c=ui_colors(theme)
+        family='.AppleSystemUIFont' if sys.platform=='darwin' else 'HarmonyOS Sans SC'
         self.setStyleSheet(f"""
-            QFrame#updateNoticeSurface {{ background:{surface}; border:1px solid {edge}; border-radius:17px; }}
-            QLabel#updateNoticeTitle {{ color:{ink}; border:0; background:transparent;
-                font-family:'HarmonyOS Sans SC'; font-size:15px; font-weight:600; }}
-            QLabel#updateNoticeVersion {{ color:{secondary}; border:0; background:transparent;
-                font-family:'HarmonyOS Sans SC'; font-size:13px; }}
-            QPushButton {{ border:1px solid {edge}; border-radius:9px; background:transparent;
-                color:{ink}; font-family:'HarmonyOS Sans SC'; font-size:13px; }}
-            QPushButton:hover {{ background:{hover}; }}
-            QPushButton:pressed {{ background:{edge}; }}
-            QPushButton:focus {{ border:1px solid {edge}; }}
-            QPushButton#updateNoticePrimary {{ background:{accent}; border-color:{accent}; color:white; font-weight:600; }}
-            QPushButton#updateNoticePrimary:hover {{ background:{accent_hover}; border-color:{accent_hover}; }}
+            QFrame#updateNoticeSurface {{ background:{c['surface']}; border:1px solid {c['glass_border']}; border-radius:{c['radius']}px; }}
+            QLabel#updateNoticeTitle {{ color:{c['text']}; border:0; background:transparent;
+                font-family:'{family}'; font-size:14px; font-weight:700; }}
+            QLabel#updateNoticeVersion {{ color:{c['secondary']}; border:0; background:transparent;
+                font-family:'{family}'; font-size:11px; }}
+            QLabel#updateNoticeSymbol {{ color:{c['blue']}; background:rgba(10,132,255,51); border:0; border-radius:12px; font-size:20px; font-weight:700; }}
+            QPushButton {{ border:1px solid transparent; border-radius:12px; background:{c['control']};
+                color:{c['text']}; font-family:'{family}'; font-size:12px; padding:0; }}
+            QPushButton:hover {{ background:{c['hover']}; }}
+            QPushButton:pressed {{ background:{c['selected']}; }}
+            QPushButton#updateNoticePrimary {{ background:{c['blue']}; color:white; font-weight:700; }}
+            QPushButton#updateNoticePrimary:hover {{ background:rgba(10,132,255,230); }}
+            QPushButton#updateNoticeClose {{ border:0; border-radius:8px; background:transparent; color:{c['secondary']}; font-size:18px; }}
+            QPushButton#updateNoticeClose:hover {{ background:{c['hover']}; }}
         """)
 
     def show_version(self, version):
@@ -93,6 +102,7 @@ class UpdateNotice(QWidget):
         if not version:
             return
         self.version_label.setText(f"v{version} 已发布")
+        self.title.setText(f"发现新版本 FlickDock v{version}")
         self.update_button.setAccessibleName(f"立即更新到 {version}")
         screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
         if screen is not None:

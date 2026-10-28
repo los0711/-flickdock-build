@@ -63,6 +63,34 @@ def keep_tool_visible_when_inactive(widget, *, platform=None):
     return True
 
 
+def _fullscreen_collection_behavior(window, appkit):
+    # Qt may set MoveToActiveSpace before we raise its native window. Cocoa
+    # rejects that flag together with CanJoinAllSpaces. Keep unrelated Qt
+    # behavior bits, and do not add optional Stage Manager flags here.
+    behavior = int(window.collectionBehavior())
+    behavior &= ~int(getattr(appkit, 'NSWindowCollectionBehaviorMoveToActiveSpace', 0))
+    return (behavior | appkit.NSWindowCollectionBehaviorCanJoinAllSpaces
+            | appkit.NSWindowCollectionBehaviorFullScreenAuxiliary)
+
+
+def _recoverable_native_window_error(error):
+    if isinstance(error, (ImportError, AttributeError, OSError, RuntimeError, TypeError, ValueError)):
+        return True
+    cocoa_error = getattr(sys.modules.get('objc'), 'error', None)
+    return isinstance(cocoa_error, type) and isinstance(error, cocoa_error)
+
+
+def _restore_native_window_order(window, original):
+    try:
+        window.setLevel_(original[0])
+    except Exception:
+        pass
+    try:
+        window.setCollectionBehavior_(original[1])
+    except Exception:
+        pass
+
+
 def raise_shelf_for_reveal(widget, *, platform=None):
     """Temporarily order a summoned shelf over a full-screen drag source.
 
@@ -88,6 +116,7 @@ def raise_shelf_for_reveal(widget, *, platform=None):
             return bool(set_window_pos(int(widget.winId()), -1, 0, 0, 0, 0, 0x0213))
         except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
             return False
+    window = original = None
     try:
         import AppKit
         import objc
@@ -95,17 +124,20 @@ def raise_shelf_for_reveal(widget, *, platform=None):
         window = view.window()
         if window is None:
             return False
-        if getattr(widget, '_flickdock_native_order', None) is None:
-            widget._flickdock_native_order = (window.level(), window.collectionBehavior())
-        behavior = (window.collectionBehavior()
-                    | AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces
-                    | AppKit.NSWindowCollectionBehaviorFullScreenAuxiliary
-                    | getattr(AppKit, 'NSWindowCollectionBehaviorCanJoinAllApplications', 0))
-        window.setCollectionBehavior_(behavior)
+        original = getattr(widget, '_flickdock_native_order', None)
+        if original is None:
+            original = (window.level(), window.collectionBehavior())
+            widget._flickdock_native_order = original
+        window.setCollectionBehavior_(_fullscreen_collection_behavior(window, AppKit))
         window.setLevel_(AppKit.NSFloatingWindowLevel)
         window.orderFrontRegardless()
-    except (ImportError, AttributeError, OSError, RuntimeError, TypeError, ValueError):
-        return False
+    except Exception as error:
+        if window is not None and original is not None:
+            _restore_native_window_order(window, original)
+            widget._flickdock_native_order = None
+        if _recoverable_native_window_error(error):
+            return False
+        raise
     return True
 
 
@@ -137,8 +169,12 @@ def lower_shelf_after_reveal(widget, *, platform=None):
             return False
         window.setLevel_(original[0])
         window.setCollectionBehavior_(original[1])
-    except (ImportError, AttributeError, OSError, RuntimeError, TypeError, ValueError):
-        return False
+    except Exception as error:
+        # PyObjC framework exceptions are objc.error rather than RuntimeError.
+        # Keep the saved order available if Cocoa temporarily refuses restore.
+        if _recoverable_native_window_error(error):
+            return False
+        raise
     widget._flickdock_native_order = None
     return True
 
@@ -160,6 +196,7 @@ def raise_edge_target(widget, *, platform=None):
             return bool(set_window_pos(int(widget.winId()), -1, 0, 0, 0, 0, 0x0213))
         except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
             return False
+    window = original = None
     try:
         import AppKit
         import objc
@@ -167,15 +204,16 @@ def raise_edge_target(widget, *, platform=None):
         window = view.window()
         if window is None:
             return False
-        behavior = (window.collectionBehavior()
-                    | AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces
-                    | AppKit.NSWindowCollectionBehaviorFullScreenAuxiliary
-                    | getattr(AppKit, 'NSWindowCollectionBehaviorCanJoinAllApplications', 0))
-        window.setCollectionBehavior_(behavior)
+        original = (window.level(), window.collectionBehavior())
+        window.setCollectionBehavior_(_fullscreen_collection_behavior(window, AppKit))
         window.setLevel_(AppKit.NSFloatingWindowLevel)
         window.orderFrontRegardless()
-    except (ImportError, AttributeError, OSError, RuntimeError, TypeError, ValueError):
-        return False
+    except Exception as error:
+        if window is not None and original is not None:
+            _restore_native_window_order(window, original)
+        if _recoverable_native_window_error(error):
+            return False
+        raise
     return True
 
 

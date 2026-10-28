@@ -128,8 +128,8 @@ class TransferUITests(unittest.TestCase):
         self.assertFalse(popup.zip_button.isEnabled())
         self.assertFalse(popup.zip_all_button.isEnabled())
         self.assertFalse(popup.clear_button.isEnabled())
-        self.assertIs(popup.category_buttons['all'].parent(),popup.category_segments)
-        self.assertGreater(popup.empty_state.width(),popup.scroll.width())
+        self.assertIs(popup.category_buttons['all'].parent(),popup.sidebar)
+        self.assertGreater(popup.empty_state.width(),300)
         self.assertTrue(all(button.property('flatToolbar') for button in
             (self.shelf.cloud_button,self.shelf.lan_button,self.shelf.pin_button,
              self.shelf.expand_button,self.shelf.menu_button,self.shelf.close_button)))
@@ -315,6 +315,10 @@ class TransferUITests(unittest.TestCase):
         self.assertEqual(sum(row.isVisible() for row,*_ in popup.strip_rows),2)
         self.assertIn('+2',popup.strip_more.text())
         self.assertEqual(popup.strip_rows[0][3].value(),300)
+        popup.setFixedWidth(330);popup.layout().activate();flush()
+        self.assertTrue(popup.transfer_strip.isVisible())
+        self.assertLessEqual(popup.transfer_strip.geometry().right(),popup.width())
+        self.assertEqual(sum(row.isVisible() for row,*_ in popup.strip_rows),2)
         epoch=popup._build_epoch
         self.shelf.content.transfers[refs[-1]]['received']=65
         self.shelf.transfers_updated();flush()
@@ -442,18 +446,30 @@ class TransferUITests(unittest.TestCase):
         self.shelf.content.transfers[paths[1]]={'id':'selected-upload','phase':'uploading','received':10,'total':100}
         self.shelf.transfers_updated();self.shelf._repaint_transfers();flush()
         self.assertFalse(popup.preview.transfer_row.isVisible(),'a repaint must not restore individual progress over a selected group')
-    def test_transfers_filter_tabs_fit_narrow_overview_with_four_digit_count(self):
+    def test_transfers_filter_uses_single_row_picker_and_single_column_at_narrow_width(self):
         for index in range(1024):
             ref='flickdock:transfer:layout-'+str(index)
             self.shelf.content.pending[ref]={'name':f'项目{index}.bin','kind':'file'}
             self.shelf.content.transfers[ref]={'id':str(index),'phase':'queued','received':0,'total':100}
         self.shelf.refresh();popup=self.overview();popup.update_transfer_status()
         native_geometry=self.shelf.geometry()
-        for width in (330,480,500):
+        for width in (330,480,500,756):
             popup.setFixedWidth(width);popup.layout().activate();flush()
-            self.assertEqual(popup._segment_columns,4 if width<448 else 8)
+            self.assertEqual(popup._narrow_layout,width<540)
+            self.assertEqual(popup.category_picker.isVisible(),width<540)
+            self.assertEqual(popup.sidebar.isVisible(),width>=540)
+            self.assertLessEqual(popup.category_picker.geometry().right(),popup.rect().right())
             for selected in ('all','uploading'):
                 popup.set_category(selected);popup.layout().activate();flush()
+                if width<540 and selected=='uploading':
+                    self.assertTrue(popup.scroll.isVisible())
+                    self.assertFalse(popup.preview.isVisible())
+                    popup.toggle_narrow_preview();flush()
+                    self.assertFalse(popup.scroll.isVisible())
+                    self.assertTrue(popup.preview.isVisible())
+                    self.assertGreater(popup.preview.width(),width-30)
+                    popup.toggle_narrow_preview();flush()
+                if width<540:continue
                 for button in popup.category_buttons.values():
                     self.assertLessEqual(button.geometry().right(),popup.rect().right(),
                                          f'{button.text()} extends beyond the {width}px overview')
@@ -463,6 +479,41 @@ class TransferUITests(unittest.TestCase):
                     self.assertGreaterEqual(button.width()-16,text_width,
                                             f'{button.text()} is clipped in the {width}px overview')
         self.assertEqual(self.shelf.geometry(),native_geometry,'filter layout must not resize the native animation host')
+
+    def test_narrow_overview_selection_preview_category_and_bulk_menu(self):
+        refs=[self.shelf.content.add_text(text) for text in ('第一项内容','第二项内容')]
+        self.shelf.files['permanent'].extend(refs);self.shelf.refresh()
+        popup=self.overview();popup.setFixedWidth(330);popup.layout().activate();flush()
+        self.assertTrue(popup._narrow_layout)
+        popup.select_item(refs[-1]);flush()
+        self.assertTrue(popup.zip_button.isVisible())
+        self.assertTrue(popup.scroll.isVisible())
+        self.assertFalse(popup.preview.isVisible())
+        popup.toggle_narrow_preview();flush()
+        self.assertEqual(popup.preview.current_path,refs[-1])
+        self.assertTrue(popup.preview.isVisible())
+        self.assertFalse(popup.scroll.isVisible())
+        self.assertEqual(popup.narrow_view_button.text(),'返回内容')
+        popup.toggle_narrow_preview();flush()
+        self.assertTrue(popup.scroll.isVisible())
+        self.assertFalse(popup.preview.isVisible())
+        labels=[]
+        def choose_images(menu,*_):
+            labels.extend(action.text() for action in menu.actions())
+            next(action for action in menu.actions() if action.text()=='图片').trigger()
+        with patch.object(subject.AnimatedMenu,'exec',choose_images):popup.open_category_menu()
+        self.assertIn('传输中',labels)
+        self.assertEqual(popup.category,'images')
+        self.assertEqual(popup.category_picker.text(),'图片')
+        popup.set_category('all');popup.select_item(refs[-1]);flush()
+        bulk=[]
+        def inspect_bulk(menu,*_):
+            bulk.extend((action.text(),action.isEnabled()) for action in menu.actions() if not action.isSeparator())
+        with patch.object(subject.AnimatedMenu,'exec',inspect_bulk):popup.open_bulk_menu()
+        self.assertEqual(bulk,[('打包所选…',True),('打包全部…',True),('清空全部',True)])
+        for widget in (popup.title,popup.bulk_more,popup.category_picker,popup.narrow_view_button,popup.scroll):
+            self.assertGreaterEqual(widget.mapTo(popup,QPoint(0,0)).x(),0)
+            self.assertLessEqual(widget.mapTo(popup,QPoint(widget.width(),0)).x(),popup.width())
     def test_transfer_summary_reports_copy_upload_download_without_mislabeling(self):
         for index,phase in enumerate(('copying','uploading','downloading','queued','remote','verifying','retrying','validating')):
             ref=self.pending(f'项目{index}.bin',remote=phase in ('remote','downloading'))

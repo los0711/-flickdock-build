@@ -70,7 +70,10 @@ def draw_cloud_status_badge(painter, rect, status, transfer=None):
         painter.drawLine(QPointF(10,7.4),QPointF(10,10.2))
         painter.drawLine(QPointF(10,10.2),QPointF(12,11.5))
     elif status == 'local':
-        painter.drawLine(QPointF(6,10),QPointF(14,10))
+        # A small local-screen glyph reads as "on this device"; a minus sign
+        # looked indistinguishable from the remove affordance on file cards.
+        painter.drawRoundedRect(QRectF(5.5,6.4,9,6.5),1.2,1.2)
+        painter.drawLine(QPointF(8,14.2),QPointF(12,14.2))
     elif status == 'paused':
         painter.drawLine(QPointF(7.5,6.5),QPointF(7.5,13.5))
         painter.drawLine(QPointF(12.5,6.5),QPointF(12.5,13.5))
@@ -101,8 +104,13 @@ class CloudStatusBadge(QWidget):
         self.update()
 
     def paintEvent(self, event):
-        painter = QPainter(self)
-        draw_cloud_status_badge(painter, QRectF(6, 6, 20, 20), self.status, self.transfer)
+        from reference_widgets import draw_status,palette,ink
+        painter=QPainter(self);painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen);painter.setBrush(ink(palette()['control']))
+        extent=min(24,self.width(),self.height())
+        painter.drawEllipse(QRectF((self.width()-extent)/2,(self.height()-extent)/2,extent,extent))
+        draw_status(painter,QRectF((self.width()-10)/2,(self.height()-10)/2,10,10),self.status)
+        if self.transfer:draw_ring(painter,QRectF((self.width()-20)/2,(self.height()-20)/2,20,20),self.transfer)
 
 
 def transfer_fraction(state):
@@ -251,7 +259,7 @@ class TransferIconLabel(QLabel):
         pixmap=self.pixmap()
         if pixmap and not pixmap.isNull():
             painter.drawPixmap(0,0,28,28,pixmap)
-        draw_cloud_status_badge(painter,QRectF(self.width()-18,self.height()-18,18,18),
+        draw_cloud_status_badge(painter,QRectF(self.width()-16,self.height()-16,16,16),
                                 self.cloud_status,state)
 
 
