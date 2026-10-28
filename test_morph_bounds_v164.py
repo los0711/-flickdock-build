@@ -53,8 +53,10 @@ def sample(shelf,progress):
     image=shelf.grab().toImage();ratio=image.devicePixelRatioF()
     rect=shelf._surface_snapshot.content_rect()
     center_x=round(rect.center().x()*ratio);center_y=round(rect.center().y()*ratio)
-    xs=[x for x in range(image.width()) if image.pixelColor(x,center_y).alpha()>=200]
-    ys=[y for y in range(image.height()) if image.pixelColor(center_x,y).alpha()>=200]
+    # Trace the half-coverage silhouette of the new translucent card. A 200
+    # threshold inspected the opaque interior, not its antialiased boundary.
+    xs=[x for x in range(image.width()) if image.pixelColor(x,center_y).alpha()>=128]
+    ys=[y for y in range(image.height()) if image.pixelColor(center_x,y).alpha()>=128]
     assert xs and ys,'surface disappeared'
     actual=[min(xs),min(ys),max(xs),max(ys)]
     expected=[math.floor(rect.left()*ratio),math.floor(rect.top()*ratio),

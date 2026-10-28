@@ -85,7 +85,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-settings-chrome-v164-') as te
             dialog.show(); dialog.resize(892, height); flush()
             dialog.theme_combo.setCurrentIndex(dialog.theme_combo.findData(theme))
             dialog.save_button.setFocus(); flush()
-            assert dialog.title_bar.height() == 52
+            assert dialog.title_bar.height() == 55
             assert dialog.title_bar.rect().contains(dialog.close_button.geometry())
             assert dialog.rect().contains(dialog.save_button.geometry())
             assert dialog.rect().contains(dialog.cancel_button.geometry())

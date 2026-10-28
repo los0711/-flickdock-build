@@ -1225,7 +1225,7 @@ class SettingsDialog(QDialog):
         root=self.surface.layout();self._empty_layout(root)
         root.setContentsMargins(0,0,0,0);root.setSpacing(0)
         header=self.title_bar.layout();header.setContentsMargins(20,0,20,0);header.setSpacing(12)
-        self.title_bar.setFixedHeight(52)
+        self.title_bar.setFixedHeight(55)
         self.version_label.setFixedHeight(20)
         self.update_button.setMinimumSize(0,28);self.update_button.setMaximumHeight(28)
         self.close_button.setMinimumSize(28,28);self.close_button.setMaximumSize(28,28)
