@@ -1250,8 +1250,8 @@
     },
     {
       "path": "test_mac_cocoa_spaces.py",
-      "size": 9500,
-      "sha256": "c637721e148c5282a123359119625ead4086f3f054d37e95f24219f6d062439c"
+      "size": 9817,
+      "sha256": "e8d999857532d91b36d9ad7808c30ec26e9509a95b9e3ee15e25359253985f2b"
     },
     {
       "path": "test_mac_updates.py",

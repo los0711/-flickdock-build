@@ -69,9 +69,6 @@ def main() -> int:
     # Observe its completion, then measure from a real external-app baseline.
     pump_until(lambda:any(n['event']=='did_finish_launch' for n in notifications))
     snapshot('launch_notification')
-    pump_until(lambda:bool(AppKit.NSApplication.sharedApplication().isActive()))
-    control_pump(.1)
-    snapshot('launch_completed')
     can_join = int(AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces)
     move = int(AppKit.NSWindowCollectionBehaviorMoveToActiveSpace)
     ignores_cycle = int(AppKit.NSWindowCollectionBehaviorIgnoresCycle)
@@ -94,6 +91,14 @@ def main() -> int:
         widgets.append((name,widget,raise_window))
         # Construct the native window while still hidden, as at app startup.
         widget.winId()
+    # A bare Python process need not become active until it has shown a
+    # regular window. Exercise one explicit opening as setup, then hide it;
+    # the measured operations below still begin hidden and never reactivate.
+    warmup=widgets[-1][1]
+    warmup.show();warmup.activateWindow()
+    pump_until(lambda:bool(AppKit.NSApplication.sharedApplication().isActive()))
+    snapshot('explicit_opening_completed')
+    warmup.hide();control_pump(.1)
     external.activateWithOptions_(AppKit.NSApplicationActivateIgnoringOtherApps)
     pump_until(lambda:front_pid()==external_pid and not AppKit.NSApplication.sharedApplication().isActive())
     baseline=snapshot('external_baseline')
