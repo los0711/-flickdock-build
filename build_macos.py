@@ -12,7 +12,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import copy
+import stat
+import time
 import venv
+import zipfile
 
 ROOT = Path(__file__).resolve().parent
 
@@ -55,6 +59,51 @@ def _checksum(path):
     return digest.hexdigest()
 
 
+def _bundle_inventory(app):
+    records={}
+    for path in [app,*app.rglob('*')]:
+        key=path.relative_to(app).as_posix()
+        mode=stat.S_IMODE(path.lstat().st_mode)
+        records[key]=('link',os.readlink(path),mode) if path.is_symlink() else (
+            ('directory',mode) if path.is_dir() else ('file',_checksum(path),mode))
+    return records
+
+
+def _create_zip(app,archive):
+    # Retain ditto's resource-fork, symlink and permission metadata. BZIP2
+    # compresses the bundled native runtime without removing any payload.
+    # Prove compatibility with the same native extractor used by old clients.
+    with tempfile.TemporaryDirectory(prefix='flickdock-zip-') as directory:
+        folder=Path(directory);original=folder/'original.zip'
+        run(['/usr/bin/ditto','-c','-k','--keepParent','--zlibCompressionLevel','9',app,original])
+        with zipfile.ZipFile(original) as source,zipfile.ZipFile(archive,'x') as target:
+            target.comment=source.comment
+            for member in source.infolist():
+                info=copy.copy(member)
+                compression=zipfile.ZIP_BZIP2 if member.file_size>=4096 else zipfile.ZIP_DEFLATED
+                target.writestr(info,source.read(member),compress_type=compression,compresslevel=9)
+        extracted=folder/'extracted'
+        run(['/usr/bin/ditto','-x','-k',archive,extracted])
+        if _bundle_inventory(app)!=_bundle_inventory(extracted/app.name):
+            raise RuntimeError('Native ZIP round trip changed bundle bytes, symlinks or permissions')
+
+
+def _create_dmg(staging,dmg):
+    arguments=['/usr/bin/hdiutil','create','-volname','FlickDock','-srcfolder',str(staging),
+               '-ov','-format','UDBZ',str(dmg)]
+    for attempt in range(3):
+        result=subprocess.run(arguments,cwd=ROOT,capture_output=True,text=True,
+                              env=dict(os.environ,LC_ALL='C'))
+        if result.stdout:print(result.stdout,flush=True)
+        if result.stderr:print(result.stderr,file=sys.stderr,flush=True)
+        if result.returncode==0:return
+        if attempt==2 or 'resource busy' not in (result.stdout+result.stderr).lower():
+            raise subprocess.CalledProcessError(result.returncode,arguments)
+        # Only this unpublished destination may exist after a failed create.
+        if dmg.exists():dmg.unlink()
+        time.sleep(2*(attempt+1))
+
+
 def main(arguments=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--target-arch', choices=('arm64', 'x86_64', 'universal2'), default=platform.machine())
@@ -73,6 +122,12 @@ def main(arguments=None):
         parser.error('--notary-profile requires --sign-identity')
     if options.entitlements and not options.entitlements.is_file():
         parser.error('--entitlements file does not exist')
+    # Fail early if the host's native ZIP implementation cannot read BZIP2.
+    with tempfile.TemporaryDirectory(prefix='flickdock-codec-probe-') as directory:
+        folder=Path(directory);probe=folder/'Probe.app';probe.mkdir()
+        executable=probe/'executable';executable.write_bytes(bytes(range(256))*64);executable.chmod(0o755)
+        (probe/'alias').symlink_to('executable')
+        _create_zip(probe,folder/'probe.zip')
     build = ROOT / 'build' / 'macos'
     build.mkdir(parents=True, exist_ok=True)
     python = Path(sys.executable)
@@ -191,12 +246,12 @@ def main(arguments=None):
     archive = report.parent / (name + '.zip')
     if archive.exists():
         raise FileExistsError('Refusing to overwrite an existing versioned macOS release ZIP')
-    run(['/usr/bin/ditto', '-c', '-k', '--keepParent', app, archive])
+    _create_zip(app,archive)
     if options.notary_profile:
         run(['/usr/bin/xcrun', 'notarytool', 'submit', archive, '--keychain-profile', options.notary_profile, '--wait'])
         run(['/usr/bin/xcrun', 'stapler', 'staple', app])
         archive.unlink()
-        run(['/usr/bin/ditto', '-c', '-k', '--keepParent', app, archive])
+        _create_zip(app,archive)
     dmg = report.parent / (name + '.dmg')
     if dmg.exists():
         raise FileExistsError('Refusing to overwrite an existing versioned macOS DMG')
@@ -204,8 +259,7 @@ def main(arguments=None):
         staging = Path(folder)
         shutil.copytree(app, staging / 'FlickDock.app', symlinks=True)
         (staging / 'Applications').symlink_to('/Applications', target_is_directory=True)
-        run(['/usr/bin/hdiutil', 'create', '-volname', 'FlickDock', '-srcfolder', staging,
-             '-ov', '-format', 'UDZO', dmg])
+        _create_dmg(staging,dmg)
     if options.sign_identity:
         run(['/usr/bin/codesign', '--sign', options.sign_identity, '--timestamp', dmg])
     if options.notary_profile:
@@ -229,19 +283,25 @@ def main(arguments=None):
     if installer.exists():
         raise FileExistsError('Refusing to overwrite an existing versioned macOS installer')
     run(['/usr/bin/pkgbuild', '--component', app, '--install-location', '/Applications',
-         '--identifier', 'com.flickdock.installer', '--version', APP_VERSION, installer])
+         '--identifier', 'com.flickdock.installer', '--version', APP_VERSION,
+         '--compression','latest','--min-os-version','14.4',installer])
     # Check the package payload and metadata without installing on this Mac.
     with tempfile.TemporaryDirectory(prefix='flickdock-pkg-verify-') as directory:
         expanded = Path(directory) / 'expanded'
-        run(['/usr/sbin/pkgutil', '--expand', installer, expanded])
+        run(['/usr/sbin/pkgutil', '--expand-full', installer, expanded])
         package_info = (expanded / 'PackageInfo').read_text(encoding='utf-8')
         if 'com.flickdock.installer' not in package_info or APP_VERSION not in package_info:
             raise RuntimeError('macOS installer metadata does not match this build')
+        if _bundle_inventory(app)!=_bundle_inventory(expanded/'Payload'/app.name):
+            raise RuntimeError('Native PKG round trip changed bundle bytes, symlinks or permissions')
+    if any(item.stat().st_size>100000000 for item in (archive,dmg,installer)):
+        raise RuntimeError('Native package exceeds the public download service 100 MB attachment limit')
     artifacts = [dict(name=item.name, bytes=item.stat().st_size, sha256=_checksum(item))
                  for item in (archive, dmg, installer)]
     report.write_text(json.dumps(dict(ok=True, host=platform.platform(), version=APP_VERSION,
           architecture=options.target_arch, signed=bool(options.sign_identity), dmg_verified=True,
-          notarized=bool(options.notary_profile), frozen=frozen, artifacts=artifacts),
+          notarized=bool(options.notary_profile),zip_roundtrip_verified=True,pkg_payload_verified=True,
+          frozen=frozen, artifacts=artifacts),
           ensure_ascii=False, indent=2), encoding='utf-8')
     print(report)
     return 0

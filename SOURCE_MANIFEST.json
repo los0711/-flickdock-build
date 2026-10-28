@@ -555,8 +555,8 @@
     },
     {
       "path": "build_macos.py",
-      "size": 14896,
-      "sha256": "95c5e7cc46089f7adf17154af79fb75f996081bac1f9fdbed97caa10bf7e63d0"
+      "size": 18061,
+      "sha256": "d656cdbe1b034eb528a9937e09f927829598dc317c848e95bfb9706dc96f3e2f"
     },
     {
       "path": "bundle_policy.py",
@@ -1245,8 +1245,8 @@
     },
     {
       "path": "test_mac_build.py",
-      "size": 6022,
-      "sha256": "8fb8088e5dcd637ffdee209cdeea95a5922ac6923d0b8fa88cb44598c516db0b"
+      "size": 6027,
+      "sha256": "d4e246fead2508b5bb4f968e1293c739ee30388ddeecc5c24c954480a3549a23"
     },
     {
       "path": "test_mac_cocoa_spaces.py",
@@ -1465,8 +1465,8 @@
     },
     {
       "path": "test_update_macos.py",
-      "size": 6649,
-      "sha256": "3b1e01b99a959952ab2b962c084286edfa6ae4c6e215153e5e406fdba8dd2b0b"
+      "size": 7095,
+      "sha256": "9325c0269ff4bea5e494181ba53d19331f3deb4873d9da922cc91fcc7d30b67f"
     },
     {
       "path": "test_update_macos_controller.py",

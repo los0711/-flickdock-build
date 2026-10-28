@@ -45,7 +45,7 @@ class MacBuildTests(unittest.TestCase):
         source = Path(build_macos.__file__).read_text(encoding='utf-8')
         self.assertIn("'/usr/bin/pkgbuild'", source)
         self.assertIn("'--install-location', '/Applications'", source)
-        self.assertIn("'/usr/sbin/pkgutil', '--expand'", source)
+        self.assertIn("'/usr/sbin/pkgutil', '--expand-full'", source)
 
     def test_cocoa_smoke_is_opt_in_and_uses_disposable_profile(self):
         source = Path(build_macos.__file__).read_text(encoding='utf-8')

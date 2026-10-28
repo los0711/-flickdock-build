@@ -13,7 +13,13 @@ import zipfile
 
 import test_update_client_v170 as https_fixture
 import update_client as subject
-wait_until, app = https_fixture.wait_until, https_fixture.app
+app = https_fixture.app
+
+def wait_until(predicate):
+    # Native TLS/backend startup on hosted Intel Macs can exceed one second.
+    # These cases verify validation/cancellation; dedicated timeout tests keep
+    # their short deadlines in test_update_client_v170.
+    return https_fixture.wait_until(predicate, timeout=8000)
 
 
 class MacHTTPS(unittest.TestCase):
@@ -44,7 +50,7 @@ class MacHTTPS(unittest.TestCase):
     def client(self):
         network = self.Network()
         client = subject.UpdateClient('1.9.0', Path(self.folder.name) / 'updates', endpoint=self.origin + '/mac-manifest',
-                    allowed_hosts={'127.0.0.1'}, network=network, platform='darwin', machine='arm64', timeout_ms=1000)
+                    allowed_hosts={'127.0.0.1'}, network=network, platform='darwin', machine='arm64', timeout_ms=5000)
         client._test_network = network
         self.clients.append(client)
         state = {key: [] for key in ('update_available', 'failed', 'progress', 'verified_file', 'cancelled')}
@@ -98,6 +104,8 @@ class MacHTTPS(unittest.TestCase):
                 client.check(True)
                 wait_until(lambda: state['update_available'] or state['failed'])
                 if mode != 'arch':
+                    self.assertFalse(state['failed'],state['failed'])
+                    self.assertTrue(state['update_available'],'Valid manifest must precede the corrupt payload')
                     client.download(state['update_available'][0][0])
                     wait_until(lambda: state['failed'])
                 self.assertTrue(state['failed'])
