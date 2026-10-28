@@ -73,7 +73,7 @@ IDLE_SECONDS = 3.0
 BASE = data_directory(APP_NAME)
 STATE_FILE = BASE / "shelves.json"
 OLD_STATE_FILE = Path(os.getenv("APPDATA", str(Path.home()))) / "DoudouShelf" / "shelves.json"
-FONT_FAMILY = "HarmonyOS Sans SC"
+FONT_FAMILY = "sans-serif"
 CARD_W, CARD_H = 332, 318
 EXPANDED_W, EXPANDED_H = 1040, 600
 MODES = ("permanent",)
@@ -81,28 +81,8 @@ MODES = ("permanent",)
 
 def load_font(app):
     global FONT_FAMILY
-    if sys.platform == 'darwin':
-        # AppKit's system font supplies San Francisco with PingFang fallback.
-        # Use the installed system face rather than bundling Apple font files.
-        font = QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont)
-        FONT_FAMILY = font.family()
-        font.setPointSize(11)
-        app.setFont(font)
-        return
-    font_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).parent)) / "fonts"
-    families = []
-    for weight in ("Regular",):
-        source = font_dir / f"HarmonyOS_Sans_SC_{weight}.ttf"
-        if source.exists():
-            font_id = QFontDatabase.addApplicationFont(str(source))
-            if font_id >= 0:
-                families.extend(QFontDatabase.applicationFontFamilies(font_id))
-    if "HarmonyOS Sans SC" not in families:
-        raise RuntimeError("随附 HarmonyOS Sans 字体无法加载，请重新安装 FlickDock。")
-    FONT_FAMILY = "HarmonyOS Sans SC"
-    font = QFont(FONT_FAMILY, 11)
-    font.setHintingPreference(QFont.HintingPreference.PreferFullHinting)
-    app.setFont(font)
+    from native_ui_common import configure_reference_font
+    FONT_FAMILY=configure_reference_font(app).family()
 
 def motion_enabled() -> bool:
     if sys.platform != "win32":
@@ -993,6 +973,15 @@ class ContentsPopup(QFrame):
         chosen=self.chosen_refs()
         if len(chosen)>1:self.preview.show_group(chosen)
         elif self.primary_selection in self.visible_refs(): self.preview.show_path(self.primary_selection)
+        elif not chosen:
+            refs=self.visible_refs()
+            self.preview.group_view.hide()
+            if refs:
+                current=self.preview.current_path if self.preview.current_path in refs else refs[0]
+                self.preview.show_path(current)
+            else:
+                self.preview._group_refs=()
+                self.preview.current_path=None
 
     def compress_selected(self):
         self.shelf.compress_refs(self.chosen_refs())

@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QDialog, QFrame, QGraphicsDropShadowEffect, QHBox
 
 from app_settings import SettingsCloseButton, SettingsTitleBar
 from platform_native import remove_host_window_shadow
-from native_ui_common import colors as ui_colors
+from native_ui_common import colors as ui_colors, reference_font
 
 
 def _plain(value, fallback=""):
@@ -64,7 +64,7 @@ class UpdateDialog(QDialog):
         super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
         self.setObjectName("flickdockUpdate")
         self.setWindowTitle("FlickDock · 软件更新")
-        self.setFont(QFont("HarmonyOS Sans SC", 11))
+        self.setFont(QFont(reference_font().family(), 11))
         self.setModal(False)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setMinimumSize(452, 222)
@@ -396,7 +396,7 @@ class UpdateDialog(QDialog):
 
     def apply_theme(self, theme):
         dark=theme=='dark';c=ui_colors(theme)
-        family='.AppleSystemUIFont' if sys.platform=='darwin' else 'HarmonyOS Sans SC'
+        family=reference_font().family()
         font=QFont(family);font.setPixelSize(12);self.setFont(font)
         self.close_button.dark=dark;self.close_button.update()
         self.setStyleSheet(f"""

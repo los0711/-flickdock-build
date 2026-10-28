@@ -7,11 +7,57 @@ specified by that document.
 from __future__ import annotations
 
 import sys
+import os
+from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QEasingCurve, QPointF, QRectF, QSize, Qt, QVariantAnimation
-from PySide6.QtGui import QColor, QFont, QIcon, QIconEngine, QPainter, QPixmap
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QIconEngine, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
-from PySide6.QtWidgets import QAbstractButton, QHBoxLayout, QLabel, QPushButton, QWidget
+from PySide6.QtWidgets import QApplication, QAbstractButton, QHBoxLayout, QLabel, QPushButton, QWidget
+
+
+WINDOWS_FONT_STACK=('HarmonyOS Sans SC','PingFang SC','Microsoft YaHei UI','Segoe UI Variable')
+
+
+def reference_font():
+    """Use the application font chosen from the HTML's platform font stack."""
+    return QFont(QApplication.font()) if QApplication.instance() else QFont()
+
+
+def configure_reference_font(app):
+    """Match installed browser fonts, without forcing the bundled Regular face.
+
+    Qt's offscreen backend has no Windows font catalogue. Read only the
+    installed fonts used by the reference so isolated screenshots resolve the
+    same families and real weights as Chromium on this computer.
+    """
+    if sys.platform=='darwin':
+        font=QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont)
+    else:
+        if sys.platform=='win32' and app.platformName() in ('offscreen','minimal') and not getattr(app,'_reference_os_fonts_loaded',False):
+            import winreg
+            faces={'HarmonyOS Sans SC','HarmonyOS Sans SC Medium','HarmonyOS Sans SC Bold',
+                   'Microsoft YaHei UI','Microsoft YaHei','Microsoft YaHei UI Bold','Microsoft YaHei Bold',
+                   'Segoe UI Variable','Segoe UI','Segoe UI Semibold','Segoe UI Bold'}
+            for hive in (winreg.HKEY_CURRENT_USER,winreg.HKEY_LOCAL_MACHINE):
+                try:
+                    with winreg.OpenKey(hive,r'SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts') as key:
+                        for index in range(winreg.QueryInfoKey(key)[1]):
+                            name,value,_=winreg.EnumValue(key,index)
+                            if name.removesuffix(' (TrueType)') not in faces or not isinstance(value,str):continue
+                            path=Path(value)
+                            if not path.is_absolute():path=Path(os.environ.get('SystemRoot','C:/Windows'))/'Fonts'/path
+                            if path.is_file():QFontDatabase.addApplicationFont(str(path))
+                except OSError:pass
+            app._reference_os_fonts_loaded=True
+        available=set(QFontDatabase.families())
+        family=next((name for name in WINDOWS_FONT_STACK if name in available),None)
+        font=QFont(family) if family else QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont)
+    # Preserve fractional horizontal advances, as Chromium does; full glyph
+    # hinting rounds every character and makes the same 13px title ~10px wider.
+    font.setHintingPreference(QFont.HintingPreference.PreferVerticalHinting)
+    font.setPointSize(11);app.setFont(font)
+    return font
 
 
 _DARK = {
@@ -119,7 +165,7 @@ class _SourceIconEngine(QIconEngine):
             renderer.render(painter, QRectF(rect))
         else:
             glyph = _SOURCE_GLYPHS.get(self.name, '')
-            font = QFont('HarmonyOS Sans SC')
+            font = reference_font()
             font.setPixelSize(max(8, rect.height() - (5 if self.name == 'copy' else 2)))
             font.setWeight(QFont.Weight.Medium)
             painter.setFont(font)
@@ -320,7 +366,7 @@ def apply_theme(widget, theme='dark', platform=None):
     c = colors(theme, platform)
     widget.setProperty('uiTheme', str(theme))
     widget.setProperty('uiPlatform', str(platform))
-    font = QFont('.AppleSystemUIFont' if platform in ('mac','macos','darwin') else 'HarmonyOS Sans SC')
+    font = reference_font()
     font.setPixelSize(12)
     widget.setFont(font)
     widget.setStyleSheet(f'''

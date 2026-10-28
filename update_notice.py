@@ -6,7 +6,7 @@ from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, Signal
 from PySide6.QtGui import QColor, QCursor, QGuiApplication
 from PySide6.QtWidgets import (QFrame, QGraphicsDropShadowEffect, QHBoxLayout,
                                QLabel, QPushButton, QVBoxLayout, QWidget)
-from native_ui_common import colors as ui_colors
+from native_ui_common import colors as ui_colors, reference_font
 
 
 class UpdateNotice(QWidget):
@@ -79,7 +79,7 @@ class UpdateNotice(QWidget):
 
     def apply_theme(self, theme):
         c=ui_colors(theme)
-        family='.AppleSystemUIFont' if sys.platform=='darwin' else 'HarmonyOS Sans SC'
+        family=reference_font().family()
         self.setStyleSheet(f"""
             QFrame#updateNoticeSurface {{ background:{c['surface']}; border:1px solid {c['glass_border']}; border-radius:{c['radius']}px; }}
             QLabel#updateNoticeTitle {{ color:{c['text']}; border:0; background:transparent;

@@ -31,11 +31,8 @@ def ink(value):
 
 
 def css(widget, dark, light=None):
-    # Chromium synthesizes semibold from the bundled Regular face as bold;
-    # Qt only enables that synthesis at 700. Match the supplied HTML weight.
-    dark=dark.replace('font:600 ','font:700 ').replace('font-weight:600','font-weight:700')
-    if light is not None:light=light.replace('font:600 ','font:700 ').replace('font-weight:600','font-weight:700')
-    if sys.platform=='darwin' and QApplication.instance():
+    # Resolve the source's real 400/500/600/700 weights in the selected OS face.
+    if QApplication.instance():
         family=QApplication.font().family()
         dark=dark.replace("'HarmonyOS Sans SC'",f"'{family}'")
         if light is not None:light=light.replace("'HarmonyOS Sans SC'",f"'{family}'")
@@ -90,7 +87,7 @@ class ToolbarButton(FeedbackButton):
         p.translate(center);p.scale(v['scale']*self._presentation_scale[0],v['scale']*self._presentation_scale[1]);p.translate(-center)
         if self.glyph in ('copy','check'):
             p.setPen(Qt.NoPen);p.setBrush(QColor(c['blue']));p.drawRoundedRect(QRectF(self.rect()).adjusted(0,1,0,-1),8,8)
-            f=p.font();f.setPixelSize(12);p.setFont(f);p.setPen(QColor('white'));p.drawText(self.rect(),Qt.AlignCenter,'复制' if self.glyph=='copy' else '✓');p.end();return
+            f=p.font();f.setPixelSize(12);f.setWeight(QFont.Medium);p.setFont(f);p.setPen(QColor('white'));p.drawText(self.rect(),Qt.AlignCenter,'复制' if self.glyph=='copy' else '✓');p.end();return
         if self.isChecked() or v['hover']>.01 or v['down']>.01:
             fill=ink(c['selected'] if self.isChecked() else c['hover'])
             if not self.isChecked():fill.setAlphaF(fill.alphaF()*min(1,v['hover']+v['down']))
@@ -144,7 +141,7 @@ class ProfileButton(QPushButton):
         if self.underMouse():p.setPen(Qt.NoPen);p.setBrush(ink(c['control']));p.drawRoundedRect(self.rect().adjusted(0,2,0,-1),12,12)
         gradient=QLinearGradient(8,41,36,13);gradient.setColorAt(0,QColor('#0A84FF'));gradient.setColorAt(1,QColor('#BF5AF2'));p.setBrush(gradient);p.setPen(Qt.NoPen);p.drawEllipse(QRectF(8,12,28,28))
         f=p.font();f.setPixelSize(12);f.setBold(True);p.setFont(f);p.setPen(QColor('white'));p.drawText(QRectF(8,12,28,28),Qt.AlignCenter,self.username[:1].upper())
-        p.setPen(QColor(c['text']));p.drawText(QRectF(46,10,self.width()-68,20),Qt.AlignVCenter,p.fontMetrics().elidedText(self.username,Qt.ElideRight,self.width()-68))
+        f.setWeight(QFont.DemiBold);p.setFont(f);p.setPen(QColor(c['text']));p.drawText(QRectF(46,10,self.width()-68,20),Qt.AlignVCenter,p.fontMetrics().elidedText(self.username,Qt.ElideRight,self.width()-68))
         f.setPixelSize(10);f.setBold(False);p.setFont(f);p.setPen(QColor(c['secondary']));p.drawText(QRectF(46,29,self.width()-68,14),Qt.AlignVCenter,p.fontMetrics().elidedText(self.status,Qt.ElideRight,self.width()-68))
         icon('right',c['muted']).paint(p,QRect(self.width()-20,22,12,12));p.end()
 
@@ -334,8 +331,8 @@ def build_overview(view,preview_type):
     view.view_list=button('列表','list',parent=view.view_segment);view.view_grid=button('图标','grid',parent=view.view_segment)
     for control,key in ((view.view_list,'list'),(view.view_grid,'icons')):
         control.setFixedHeight(26);control.setCheckable(True)
-        css(control,"QPushButton{background:transparent;border:0;border-radius:6px;color:#A1A1AA;padding:3px 8px;font:12px 'HarmonyOS Sans SC';} QPushButton:checked{background:rgba(255,255,255,31);color:#F5F5F7;font-weight:700;}",
-            "QPushButton{background:transparent;border:0;border-radius:6px;color:#86868B;padding:3px 8px;font:12px 'HarmonyOS Sans SC';} QPushButton:checked{background:#FFFFFF;color:#1D1D1F;font-weight:700;}")
+        css(control,"QPushButton{background:transparent;border:0;border-radius:6px;color:#A1A1AA;padding:3px 8px;font:12px 'HarmonyOS Sans SC';} QPushButton:checked{background:rgba(255,255,255,31);color:#F5F5F7;font-weight:600;}",
+            "QPushButton{background:transparent;border:0;border-radius:6px;color:#86868B;padding:3px 8px;font:12px 'HarmonyOS Sans SC';} QPushButton:checked{background:#FFFFFF;color:#1D1D1F;font-weight:600;}")
         control.clicked.connect(lambda checked=False,key=key:view.change_view_mode(key));segment.addWidget(control)
         control.setChecked(view.shelf.manager.settings.view_mode==key)
     head.addWidget(view.view_segment)

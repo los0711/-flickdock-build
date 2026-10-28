@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QFrame, QGraphic
 
 from flickdock_icons import draw_glyph
 from platform_native import remove_host_window_shadow
-from native_ui_common import colors as ui_colors, icon as ui_icon
+from native_ui_common import colors as ui_colors, icon as ui_icon, reference_font
 
 
 def _label(value='', parent=None, *, muted=False):
@@ -454,7 +454,7 @@ class LanPanel(QFrame):
         self._dark = False; self._samples = {}; self._started = False
         self._history_path = settings.base / 'lan_history.json' if settings else None
         self._history = self._load_history()
-        self.setObjectName('lanPanel'); self.setFont(QFont('HarmonyOS Sans SC', 10))
+        self.setObjectName('lanPanel'); self.setFont(QFont(reference_font().family(), 10))
         self.setMinimumHeight(0)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout = QVBoxLayout(self); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(0)
@@ -715,7 +715,7 @@ class LanPanel(QFrame):
         self.device_delegate.dark = self._dark
         c=ui_colors(theme)
         self.setProperty('uiTheme',theme)
-        font=QFont('.AppleSystemUIFont' if sys.platform=='darwin' else 'HarmonyOS Sans SC')
+        font=reference_font()
         font.setPixelSize(12);self.setFont(font)
         color,muted,border,field,accent=c['text'],c['secondary'],c['border'],c['input'],c['blue']
         faint='rgba(255,255,255,8)' if self._dark else 'rgba(0,0,0,6)'
@@ -1110,7 +1110,7 @@ class LanDialog(QDialog):
     def apply_theme(self, theme):
         dark = theme == 'dark'
         c=ui_colors(theme)
-        font_family='.AppleSystemUIFont' if sys.platform=='darwin' else 'HarmonyOS Sans SC'
+        font_family=reference_font().family()
         surface,ink,hover=c['surface'],c['text'],c['hover']
         self.title_icon.setPixmap(ui_icon('nearby',c['cyan'] if dark else c['blue']).pixmap(16,16))
         self.dock_button.setIcon(ui_icon('dock',c['secondary']))

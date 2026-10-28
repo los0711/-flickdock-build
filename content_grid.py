@@ -219,7 +219,7 @@ class IconItem(QWidget):
         state=getattr(self.popup.shelf.content,'transfers',{}).get(self.ref)
         if state:
             draw_progress_badge(painter,QRectF(x+47,40,16,16),state)
-        font=QFont(painter.font());font.setPixelSize(12);font.setWeight(QFont.Bold);painter.setFont(font);painter.setPen(QColor(c['text']))
+        font=QFont(painter.font());font.setPixelSize(12);font.setWeight(QFont.DemiBold);painter.setFont(font);painter.setPen(QColor(c['text']))
         painter.drawText(QRectF(12,66,self.width()-24,18),Qt.AlignVCenter,painter.fontMetrics().elidedText(self.title.replace('\n',' '),Qt.ElideRight,self.width()-24))
         font.setPixelSize(10);font.setWeight(QFont.Normal);painter.setFont(font);painter.setPen(QColor(c['secondary']))
         painter.drawText(QRectF(12,86,self.width()-24,14),Qt.AlignVCenter,item_detail(self.popup.shelf,self.ref).split(' · ')[0])

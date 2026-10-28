@@ -2,7 +2,7 @@
 
 External Explorer/browser drag-source artwork belongs to those applications.
 This module paints only the pixmap supplied to FlickDock's own QDrag objects.
-The application's bundled HarmonyOS font must already have been loaded.
+The application's reference platform font must already have been selected.
 """
 from __future__ import annotations
 
@@ -26,12 +26,12 @@ _TEXT_WIDTH = DRAG_WIDTH - _LABEL_PADDING * 2 - 2
 
 
 def _label_font() -> QFont:
-    # Do not ask Windows for a default font or depend on fonts installed by the
-    # user. Main loads this bundled family before constructing any shelf UI.
-    font = QFont("HarmonyOS Sans SC")
+    # Keep drag labels on the same platform font as the reference interface.
+    from native_ui_common import reference_font
+    font = reference_font()
     font.setPixelSize(12)
     font.setWeight(QFont.Weight.Medium)
-    font.setHintingPreference(QFont.HintingPreference.PreferFullHinting)
+    font.setHintingPreference(QFont.HintingPreference.PreferVerticalHinting)
     return font
 
 

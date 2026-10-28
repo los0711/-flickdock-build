@@ -30,6 +30,7 @@ from platform_startup import (StartupManager, CallbackBackend,
                               write_startup_value as _platform_write_startup)
 from platform_native import remove_host_window_shadow
 from surface_morph import paint_surface_shadow
+from native_ui_common import reference_font
 
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -960,8 +961,7 @@ class SettingsDialog(QDialog):
         self._draft_color = store.dock_color
         self.setObjectName("flickdockSettings")
         self.setWindowTitle("FlickDock 设置")
-        font = (QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont)
-                if sys.platform == "darwin" else QFont("HarmonyOS Sans SC", 11))
+        font = reference_font()
         font.setPointSize(11)
         self.setFont(font)
         self.setModal(False)

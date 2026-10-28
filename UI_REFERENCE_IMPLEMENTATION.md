@@ -25,7 +25,7 @@
 | 清空确认 | 340px 宽 | 数量、说明、取消与清空 |
 | 云方向菜单 | 256px 宽 | 上传和接收两个真实开关 |
 
-Windows 使用随附 HarmonyOS Sans 和参考 Windows 圆角；macOS 使用系统 GeneralFont 及相应中文回退、参考 Mac 圆角和独立窗口控件。小屏幕保留紧凑布局与分类/预览入口，避免把完整窗口裁掉。
+字体使用 HTML 的平台字体栈，不强制注册随包的鸿蒙 Regular 字体。Windows 按已安装的 HarmonyOS Sans SC → PingFang SC → Microsoft YaHei UI → Segoe UI Variable → 系统默认依次回退；macOS 使用系统 GeneralFont（San Francisco）及中文回退。所有面板继承实际选中的字体及已安装字重，并保留水平小数字距。Windows/macOS 使用参考各自的圆角和独立窗口控件。小屏幕保留紧凑布局与分类/预览入口，避免把完整窗口裁掉。
 
 ## 原功能对应入口
 

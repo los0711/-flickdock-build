@@ -229,7 +229,9 @@ def document_svg(value: str = '', stack: int = 1) -> str:
     body = back + f'<defs><linearGradient id="paper" x1="0" y1="0" x2="1" y2="1"><stop stop-color="{top}"/><stop offset="1" stop-color="{color}"/></linearGradient></defs><rect x="13" y="5" width="43" height="51" rx="7" fill="url(#paper)"/><path d="M41 5h8a7 7 0 0 1 7 7v8z" fill="#ffffff" fill-opacity=".23"/><rect x="13.5" y="5.5" width="42" height="50" rx="6.5" fill="none" stroke="#ffffff" stroke-opacity=".18"/>'
     symbol = _CATEGORY_SYMBOLS[category].format(c='#ffffff')
     body += f'<g transform="translate(0,-11)" opacity=".3" fill="none" stroke="#ffffff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">{symbol}</g>'
-    body += f'<text x="34.5" y="44" text-anchor="middle" font-family="HarmonyOS Sans SC,Arial,sans-serif" font-size="{12 if len(label)>3 else 14}" font-weight="600" fill="#ffffff">{escape(label)}</text>'
+    from native_ui_common import reference_font
+    family=escape(reference_font().family(),{'"':'&quot;',"'":'&apos;'})
+    body += f'<text x="34.5" y="44" text-anchor="middle" font-family="{family},Arial,sans-serif" font-size="{12 if len(label)>3 else 14}" font-weight="600" fill="#ffffff">{escape(label)}</text>'
     return _svg(body,'0 0 64 64')
 
 

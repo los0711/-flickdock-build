@@ -176,5 +176,24 @@ class WorkspaceTests(unittest.TestCase):
         self.assertTrue(any('添加文件' in text for text in page));self.assertTrue(any('打包全部' in text for text in page))
         self.assertFalse(any('重命名' in text for text in page))
 
+    def test_deselect_all_retires_group_preview_and_copies_current_single_item(self):
+        popup=self.overview()
+        popup.toggle_select_all_visible();flush()
+        self.assertEqual(set(popup.selected),set(self.paths))
+        self.assertEqual(tuple(popup.preview._group_refs),tuple(popup.chosen_refs()))
+        self.assertTrue(popup.preview.group_view.isVisible())
+        popup.toggle_select_all_visible();flush()
+        self.assertEqual(popup.selected,set())
+        self.assertEqual(popup.chosen_refs(),[])
+        self.assertFalse(popup.preview._group_refs)
+        self.assertFalse(popup.preview.group_view.isVisible())
+        self.assertIn(popup.preview.current_path,self.paths)
+        self.assertFalse(popup.zip_button.isEnabled())
+        self.assertEqual(popup.preview.copy_button.glyph,'copy')
+        copied=[]
+        with patch.object(self.shelf,'copy_items',side_effect=lambda refs:copied.append(tuple(refs))):
+            popup.preview.copy_button.click();flush()
+        self.assertEqual(copied,[(popup.preview.current_path,)])
+
 
 if __name__=='__main__':unittest.main(verbosity=2)

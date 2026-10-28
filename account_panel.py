@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import sys
 from account_service import valid_new_password
+from native_ui_common import reference_font
 
 from PySide6.QtCore import QByteArray, QDateTime, QEvent, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter, QLinearGradient
@@ -123,8 +124,7 @@ class AccountPanel(QFrame):
         # Keep the argument for older app builds; the email controls are gone.
         self.email_binding=False
         self.setObjectName('accountPanel')
-        self.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont)
-                     if sys.platform=='darwin' else QFont('HarmonyOS Sans SC',11))
+        self.setFont(reference_font())
         self.setMinimumWidth(0)
         self.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Preferred)
         self._mode='login';self._account_id='';self._busy=bool(service.busy)
