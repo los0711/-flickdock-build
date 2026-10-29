@@ -100,7 +100,7 @@ SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'cloud/migrations/0004_instant_uploads.sql','cloud/migrations/0005_account_names.sql','cloud/src/index.ts','cloud/src/hash-state.ts','cloud/src/wan.ts','cloud/src/relay-budget.ts',
     'cloud/src/wasm.d.ts','cloud/src/vendor/hash-wasm-sha256-4.12.0.wasm',
     'cloud/src/vendor/hash-wasm-sha256-4.12.0.json','cloud/src/vendor/hash-wasm-4.12.0-LICENSE.txt',
-    'cloud/test/integration.mjs','cloud/test/hash-state.mjs','cloud/test/upload-cancel.mjs','cloud/test/account-names.mjs','cloud/test/qa-server.mjs',
+    'cloud/test/integration.mjs','cloud/test/hash-state.mjs','cloud/test/upload-cancel.mjs','cloud/test/wan-codes.mjs','cloud/test/account-names.mjs','cloud/test/qa-server.mjs',
     '.github/workflows/macos-build.yml','ci_assets.py','p2p_assets.py',
     'p2p/bridge.mjs','p2p/package.json','p2p/package-lock.json','p2p/node-shasums.json',
     'website/wrangler.jsonc','website/package.json','website/package-lock.json',

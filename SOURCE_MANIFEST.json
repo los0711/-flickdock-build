@@ -140,8 +140,8 @@
     },
     {
       "path": "app_settings.py",
-      "size": 111801,
-      "sha256": "5ec179f6191724dcfb8ff42776184f07e5e3787989e63f663e3d72f3a8bd7eeb"
+      "size": 110939,
+      "sha256": "11be27944753f097736bc29816ea4d23f99a51b6c4a70abc6eb4c8942245beb6"
     },
     {
       "path": "app_version.py",
@@ -620,8 +620,8 @@
     },
     {
       "path": "cloud/package.json",
-      "size": 615,
-      "sha256": "46188867862981d652fabbfd495f8d256676c6c72d5d5f322b5c6bf376c302ea"
+      "size": 642,
+      "sha256": "0c223bbd49fbe7db00374e7ac89d862e1f3ec2505651853fe574ed2d23b3ee83"
     },
     {
       "path": "cloud/src/hash-state.ts",
@@ -655,8 +655,8 @@
     },
     {
       "path": "cloud/src/wan.ts",
-      "size": 23860,
-      "sha256": "53ef86e2108cb7efa40276e1f74313a1d8edaf3abc6d8563551fcfa3ea7321c0"
+      "size": 29683,
+      "sha256": "24ee54737bfec3112948f2355b4f0d18c8acf481c08ff3ff06cd9a48c6d837b4"
     },
     {
       "path": "cloud/src/wasm.d.ts",
@@ -687,6 +687,11 @@
       "path": "cloud/test/upload-cancel.mjs",
       "size": 6966,
       "sha256": "92cb2e4956d59d71c8f19ead6480989df239674c246c9f70112dc0e0ef248329"
+    },
+    {
+      "path": "cloud/test/wan-codes.mjs",
+      "size": 5506,
+      "sha256": "5aae83bbe7e92b2dd9952a88a2ad3afdcb30861667eee0a086925df19094d628"
     },
     {
       "path": "cloud/tsconfig.json",
@@ -815,8 +820,8 @@
     },
     {
       "path": "lan_panel.py",
-      "size": 77898,
-      "sha256": "87779b787a3d6407fe2fd0c4e564e4adeeb7ed5fc672c741130bf1d6ccebbd0c"
+      "size": 81805,
+      "sha256": "6dc74b1a960bc01f7cab1cd243bab37f3400268a1d97e9a9ac8314917e383b7b"
     },
     {
       "path": "lan_transfer.py",
@@ -955,8 +960,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 33226,
-      "sha256": "cf3864e9b6d322bd8ffdb19bd72dc608d4b10ca828a2a71d4354dccf5147ac49"
+      "size": 33253,
+      "sha256": "9dbf57ed09d00f9d342d22c8067255e34e94eda61537df960181ed771c037698"
     },
     {
       "path": "requirements.txt",
@@ -1195,8 +1200,8 @@
     },
     {
       "path": "test_html_native_lan.py",
-      "size": 5757,
-      "sha256": "90da3c184cfeff9953c98d996deac3673c7d7bd585a8d0f7ee1b579a8253d1a5"
+      "size": 6020,
+      "sha256": "252cef1c6582779d9bccd4ef18465a282b67d161d0b5a7b18abc2fad29cba9c3"
     },
     {
       "path": "test_html_native_workspace.py",
@@ -1480,8 +1485,8 @@
     },
     {
       "path": "test_wan_transfer_v1816.py",
-      "size": 10054,
-      "sha256": "e5eaed4c478580d4a8c87d7d8b763a0c53dc7973ab4de48c91e4d4d4aa70e5de"
+      "size": 16229,
+      "sha256": "5dae5d3e14316a393e8a0412a05b0994c0199355e9a08d87741555e22f88ded3"
     },
     {
       "path": "test_widget_retirement_v162.py",
@@ -1545,8 +1550,8 @@
     },
     {
       "path": "verify_wan.py",
-      "size": 5154,
-      "sha256": "77f1c24a7f0ae255f7438289336430c9958ec35eb173d946dae042de14a15ec8"
+      "size": 5206,
+      "sha256": "081484ce0cb34c956ef0c7e1ecf6c4e1e16bd27a64fe7cf0382355051e1f970f"
     },
     {
       "path": "version_info.txt",
@@ -1555,8 +1560,8 @@
     },
     {
       "path": "wan_transfer.py",
-      "size": 21891,
-      "sha256": "4a9842cb923103b9c6a648ed3801938c3d90ae886b71a792cedd08ec5016514c"
+      "size": 26594,
+      "sha256": "b867148febfee66705a480c0e3f361bde1b45a92afcfe8fcb0325f57348ac818"
     },
     {
       "path": "webrtc_stream.py",

@@ -70,7 +70,10 @@ class NativeLanTests(unittest.TestCase):
             dialog.apply_theme('dark');dialog.show();APP.processEvents()
             self.assertEqual(len(dialog.traffic_buttons),3)
             self.assertEqual(dialog.traffic_buttons[0].size().width(),12)
-            self.assertFalse(dialog.traffic_buttons[2].isEnabled())
+            self.assertTrue(dialog.traffic_buttons[2].isEnabled())
+            previous=dialog.geometry();dialog.traffic_buttons[2].click();APP.processEvents()
+            self.assertNotEqual(dialog.geometry(),previous)
+            dialog.traffic_buttons[2].click();APP.processEvents();self.assertEqual(dialog.geometry(),previous)
             if os.environ.get('FLICKDOCK_CAPTURE_LAN'):
                 output=Path(__file__).resolve().parents[2]/'outputs'
                 dialog.grab().save(str(output/'html-native-lan-mac-controls.png'))

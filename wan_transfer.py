@@ -22,6 +22,8 @@ class WanTransferService(LanTransferService):
     def __init__(self,base,parent=None,*,device_name='',enabled=True,origin=DEFAULT_CLOUD_URL,node=None,allow_test_origin=False,qa_force_relay=False):
         super().__init__(parent,device_name=device_name,discovery=False)
         self.base=Path(base);self.enabled=enabled;self.origin=origin;self.node=node;self.code=''
+        self._code_refresh_at=0.;self._code_expires_at=0.;self._code_duration=240.;self._refresh_sent_at=0.
+        self._last_signal=0.;self._peer_poll_count=0
         self.allow_test_origin=allow_test_origin
         self._qa_force_relay=bool(qa_force_relay and os.environ.get('QT_QPA_PLATFORM')=='offscreen')
         self._credential='';self._pending={};self._outbox={};self._connected=False;self._closing=False
@@ -38,8 +40,8 @@ class WanTransferService(LanTransferService):
         self.socket.errorOccurred.connect(self._disconnected);self.socket.textMessageReceived.connect(self._message)
         self._command.connect(self._handle_command);self._native.connect(self._handle_native)
         self.retry=QTimer(self);self.retry.setSingleShot(True);self.retry.timeout.connect(self._connect)
-        self.poll=QTimer(self);self.poll.setInterval(30000);self.poll.timeout.connect(lambda:self._send_signal({'type':'recent'}))
-        self.code_timer=QTimer(self);self.code_timer.setInterval(240000);self.code_timer.timeout.connect(lambda:self._send_signal({'type':'refresh'}))
+        self.poll=QTimer(self);self.poll.setInterval(15000);self.poll.timeout.connect(self._heartbeat)
+        self.code_timer=QTimer(self);self.code_timer.setInterval(1000);self.code_timer.timeout.connect(self.check_code)
         self.completed.connect(self._completed_wan)
 
     def start(self):
@@ -56,12 +58,43 @@ class WanTransferService(LanTransferService):
         self.status_changed.emit('正在连接远程传输服务…');self.socket.open(request)
     def _hello(self):
         self._connected=True;self.retry.stop();self.poll.start();self.code_timer.start()
+        self._last_signal=time.monotonic()
         self._send_signal(dict(type='hello',name=self.device_name,platform='macos' if sys.platform=='darwin' else 'windows'))
     def _disconnected(self,*_):
         self._connected=False;self.poll.stop();self.code_timer.stop();self.code=''
+        self._code_refresh_at=self._code_expires_at=self._refresh_sent_at=0.
         for state in self._pending.values():state['retry_inflight']=False
+        self.peers_changed.emit(self.peers())
         self.identity_changed.emit(dict(code='',online=False))
         if not self._closing and self.enabled and not self.retry.isActive():self.retry.start(5000)
+    def _heartbeat(self):
+        if not self._connected:return
+        if time.monotonic()-self._last_signal>40:
+            self.socket.abort();self._disconnected();return
+        self._send_signal(dict(type='ping'))
+        self._peer_poll_count+=1
+        if self._peer_poll_count%4==0:self._send_signal(dict(type='recent'))
+    def peers(self):
+        rows=super().peers()
+        return rows if self._connected else [dict(row,online=False) for row in rows]
+    def code_identity(self):
+        now=time.monotonic();valid=self._connected and self.code and now<self._code_expires_at
+        return dict(code=self.code if valid else '',online=self._connected,
+            refresh_remaining=max(0.,self._code_refresh_at-now),refresh_duration=self._code_duration,
+            expires_remaining=max(0.,self._code_expires_at-now),refreshing=bool(self._refresh_sent_at))
+    def check_code(self):
+        if not self._connected:return
+        now=time.monotonic()
+        if self._refresh_sent_at and now-self._refresh_sent_at>=12:
+            self.socket.abort();self._disconnected();return
+        if now>=self._code_refresh_at and not self._refresh_sent_at:
+            if self._send_signal(dict(type='refresh')):self._refresh_sent_at=now
+        if self.code and now>=self._code_expires_at:
+            self.code='';self.identity_changed.emit(self.code_identity())
+    def remove_peer(self,identifier):
+        if identifier not in self._peers:return
+        if not self._send_signal(dict(type='remove',peer=identifier)):
+            raise ValueError('远程服务尚未连接，请稍后再试。')
     def _send_signal(self,value):
         if self._connected:
             return self.socket.sendTextMessage(json.dumps(value,separators=(',',':')))>0
@@ -77,6 +110,8 @@ class WanTransferService(LanTransferService):
                 self._send_signal(dict(type='connected',id=identifier,generation=state['generation']));continue
             if state['role']=='send' and state.get('request'):
                 self._send_signal(state['request'])
+            elif state['role']=='send' and state.get('prepare') and not state.get('prepared_ok'):
+                self._send_signal(state['prepare'])
             elif state['role']=='receive' and state.get('destination'):
                 self._send_signal(dict(type='accept',id=identifier))
     def _request_retry(self,identifier,state):
@@ -103,6 +138,7 @@ class WanTransferService(LanTransferService):
         try:
             value=json.loads(message)
             if value.get('schema_version')!=1:return
+            self._last_signal=time.monotonic()
             kind=value.get('type');identifier=value.get('id');state=self._pending.get(identifier)
             if kind in ('cancelled','settled') or kind=='error' and value.get('requestType') in ('cancel','reject'):
                 for key in list(self._outbox):
@@ -113,7 +149,14 @@ class WanTransferService(LanTransferService):
                 self.peers_changed.emit(self.peers())
                 if kind=='identity':
                     reconnect=not self.code
-                    self.code=value.get('code','');self.identity_changed.emit(dict(code=self.code,online=True))
+                    now=time.monotonic();server_now=float(value.get('serverNow',time.time()*1000))
+                    expires=max(0.,min(300.,(float(value.get('expires',server_now+300000))-server_now)/1000))
+                    refresh=max(0.,min(expires,(float(value.get('refreshAt',server_now+240000))-server_now)/1000))
+                    self.code=str(value.get('code') or '')
+                    if not re.fullmatch('[23456789A-HJ-NP-Z]{8}',self.code):self.code=''
+                    self._code_refresh_at=now+refresh;self._code_expires_at=now+expires
+                    self._code_duration=max(1.,refresh);self._refresh_sent_at=0.
+                    self.identity_changed.emit(self.code_identity())
                     self.status_changed.emit('远程互传已就绪。首次传输请使用对方的接收码。')
                     if reconnect:self._recover_signaling()
                 return
@@ -131,7 +174,11 @@ class WanTransferService(LanTransferService):
                 self.offer_received.emit(dict(id=identifier,peer=peer['name'],host='远程',code='',device_code=device_code,total=total,count=value['count'],names=value['names']))
                 return
             if not state:return
-            if kind=='waiting':
+            if kind=='prepared':
+                peer=value.get('peer',{})
+                if state['role']!='send' or not re.fullmatch('[a-f0-9]{64}',str(peer.get('id',''))):return
+                state['peer']=peer;state['prepared_ok']=True;state['prepared'].set()
+            elif kind=='waiting':
                 state['requested']=True
                 state['peer']=value['peer'];transfer=self._transfers.get(identifier)
                 if transfer:transfer.peer=value['peer']['name'];self._notify(transfer,'waiting')
@@ -160,6 +207,7 @@ class WanTransferService(LanTransferService):
                 bridge=state.get('bridge')
                 if value.get('requestType')=='relay' and bridge and bridge.opened.is_set() and not bridge.closed:return
                 state['error']=str(value.get('message') or '远程连接失败。');state['ready'].set();self.status_changed.emit(state['error'])
+                if state.get('prepared'):state['prepared'].set()
                 if state['role']=='receive' and identifier not in self._transfers:
                     self.progress.emit(dict(id=identifier,state='error',direction='receive',peer=state['peer']['name'],received=0,total=state.get('total',0),message=state['error']))
                     self._handle_command(dict(_retire=True,id=identifier))
@@ -230,17 +278,41 @@ class WanTransferService(LanTransferService):
         if not self._connected:raise ValueError('远程服务尚未连接，请稍后再试。')
         peer=self._peers.get(peer_id)
         if not peer and not re.fullmatch('[23456789A-HJ-NP-Z]{8}',str(peer_id)):raise ValueError('请输入有效的接收码，或选择最近设备。')
+        if peer and not peer.get('online'):raise ValueError('对方设备不在线，无法发送。')
         identifier=uuid4().hex;peer=dict(peer or dict(code=peer_id,name='接收码 '+peer_id))
         with self._lock:
             if sum(t.active and t.direction=='send' for t in self._transfers.values())>=2:raise ValueError('请等待当前传输完成。')
-            transfer=_Transfer(identifier,'send',peer['name'],active=True);transfer.remote_peer=peer;self._transfers[identifier]=transfer
+            transfer=_Transfer(identifier,'send',peer['name'],active=True);transfer.token=secrets.token_hex(32)
+            transfer.remote_peer=peer;self._transfers[identifier]=transfer
             self._pending[identifier]=dict(role='send',peer=peer,ready=threading.Event(),generation=0)
-        self._thread(self._outgoing,transfer,peer,list(paths));return identifier
+        if peer.get('code'):
+            state=self._pending[identifier];state['prepared']=threading.Event()
+            state['prepare']=dict(type='prepare',id=identifier,token=transfer.token,code=peer['code'])
+            self._send_signal(state['prepare'])
+            self._thread(self._prepared_outgoing,transfer,list(paths))
+        else:self._thread(self._outgoing,transfer,peer,list(paths))
+        return identifier
+    def _prepared_outgoing(self,transfer,paths):
+        state=self._pending.get(transfer.transfer_id)
+        if not state:
+            self._notify(transfer,'cancelled' if transfer.cancel.is_set() else 'error',message='已取消传输。',phase='prepare')
+            transfer.active=False;transfer.updated=time.monotonic();return
+        self._notify(transfer,'preparing');deadline=time.monotonic()+25
+        while not state['prepared'].wait(.1):
+            if self._stopped.is_set() or transfer.cancel.is_set():break
+            if time.monotonic()>=deadline:
+                state['error']='接收码验证超时，请检查网络后重试。';break
+        if state.get('prepared_ok') and not transfer.cancel.is_set() and not state.get('error'):
+            transfer.peer=state['peer']['name'];self._outgoing(transfer,state['peer'],paths);return
+        self._command.emit(dict(type='cancel',id=transfer.transfer_id))
+        self._notify(transfer,'cancelled' if transfer.cancel.is_set() else 'error',
+            message=state.get('error') or '已取消传输。',phase='prepare')
+        transfer.active=False;transfer.updated=time.monotonic()
     def _connect_peer(self,peer,transfer,entries):
         state=self._pending[transfer.transfer_id];state['ready'].clear();state.pop('error',None);state.pop('connect_started',None)
         request=dict(type='request',id=transfer.transfer_id,token=transfer.token,digest=hashlib.sha256(json.dumps(entries,sort_keys=True).encode()).hexdigest(),
             total=str(transfer.total),count=sum(row['kind']=='file' for row in entries),names=[row['path'] for row in entries if '/' not in row['path']][:12])
-        request.update(dict(code=peer['code']) if peer.get('code') else dict(peer=peer['id']))
+        request.update(dict(prepared=True) if state.get('prepared_ok') else dict(code=peer['code']) if peer.get('code') else dict(peer=peer['id']))
         self._command.emit(dict(_connect=True,**request));deadline=time.monotonic()+210
         while not state['ready'].wait(.1):
             if self._stopped.is_set() or transfer.cancel.is_set():raise InterruptedError('已取消传输。')

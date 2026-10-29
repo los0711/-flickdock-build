@@ -1,5 +1,6 @@
 """WAN recovery/security contracts and actual bounded native host-ICE stream."""
 import hashlib,json,os,sys,tempfile,threading,time,unittest
+from unittest.mock import patch
 from pathlib import Path
 from uuid import uuid4
 from PySide6.QtWidgets import QApplication
@@ -33,6 +34,85 @@ class WanRecovery(unittest.TestCase):
         offers=[];self.service.offer_received.connect(offers.append)
         self.message(type='request',peer=dict(id='d'*64,name='发送方'),token='b'*64,digest='c'*64,total='12',count=1,names=['file.txt'],deviceCode='ABCD2345')
         self.assertEqual(offers[0]['device_code'],'ABCD2345')
+    def test_refresh_deadline_restarts_from_server_identity_not_socket_start(self):
+        self.service._connected=True;identities=[];self.service.identity_changed.connect(identities.append)
+        with patch('wan_transfer.time.monotonic',return_value=1000):
+            self.message(type='identity',code='ABCD2345',serverNow=100000,refreshAt=340000,expires=400000,recent=[])
+        with patch('wan_transfer.time.monotonic',return_value=1239):
+            self.service.check_code();self.assertFalse(self.sent)
+            self.assertEqual(self.service.code_identity()['refresh_remaining'],1)
+        with patch('wan_transfer.time.monotonic',return_value=1241):
+            self.service.check_code();self.assertEqual(self.sent[-1],dict(type='refresh'))
+            self.service.check_code();self.assertEqual(len(self.sent),1)
+            self.message(type='identity',code='EFGH6789',serverNow=500000,refreshAt=740000,expires=800000,recent=[])
+        with patch('wan_transfer.time.monotonic',return_value=1242):
+            self.assertEqual(self.service.code_identity()['refresh_remaining'],239)
+            self.assertEqual(self.service.code_identity()['code'],'EFGH6789')
+        self.assertEqual(identities[-1]['code'],'EFGH6789')
+    def test_unanswered_refresh_reconnects_instead_of_leaving_an_expired_code(self):
+        self.service._connected=True
+        with patch('wan_transfer.time.monotonic',return_value=1000):
+            self.message(type='identity',code='ABCD2345',serverNow=0,refreshAt=240000,expires=300000,recent=[])
+        with patch('wan_transfer.time.monotonic',return_value=1240):self.service.check_code()
+        with patch('wan_transfer.time.monotonic',return_value=1253):self.service.check_code()
+        self.assertFalse(self.service._connected);self.assertEqual(self.service.code_identity()['code'],'')
+    def test_valid_code_is_reserved_before_folder_preparation(self):
+        self.service._connected=True;workers=[];outgoing=[]
+        self.service._thread=lambda target,*args:workers.append((target,args))
+        self.service._outgoing=lambda *args:outgoing.append(args)
+        identifier=self.service.send('ABCD2345',[str(self.root)])
+        self.assertEqual(self.sent[0]['type'],'prepare');self.assertFalse(outgoing)
+        self.service._message(json.dumps(dict(schema_version=1,type='prepared',id=identifier,peer=dict(id='d'*64,name='Mac'))))
+        workers[0][0](*workers[0][1])
+        self.assertEqual(outgoing[0][1],dict(id='d'*64,name='Mac'))
+        self.assertTrue(self.service._pending[identifier]['prepared_ok'])
+        self.assertEqual(self.sent[0]['token'],outgoing[0][0].token)
+    def test_cancellation_before_preparation_worker_releases_the_send_slot(self):
+        self.service._connected=True;workers=[];events=[]
+        self.service._thread=lambda target,*args:workers.append((target,args))
+        self.service.progress.connect(events.append)
+        identifier=self.service.send('ABCD2345',[str(self.root)])
+        self.service.cancel(identifier);workers[0][0](*workers[0][1]);APP.processEvents()
+        self.assertFalse(self.service._transfers[identifier].active)
+        self.assertEqual(events[-1]['state'],'cancelled')
+    def test_recent_device_send_ignores_expired_code_and_delete_waits_for_server(self):
+        self.service._connected=True;self.service.code='';workers=[]
+        self.service._peers={'d'*64:dict(id='d'*64,name='Mac',online=True)}
+        self.service._thread=lambda target,*args:workers.append((target,args))
+        identifier=self.service.send('d'*64,[str(self.root)])
+        self.assertFalse(self.sent);self.assertNotIn('prepare',self.service._pending[identifier])
+        self.service.remove_peer('d'*64);self.assertEqual(self.sent[-1],dict(type='remove',peer='d'*64))
+        self.message(type='peers',peers=[]);self.assertEqual(self.service.peers(),[])
+    def test_offline_recent_device_cannot_start_a_transfer_and_disconnect_updates_status(self):
+        self.service._connected=True;changes=[];self.service.peers_changed.connect(changes.append)
+        self.service._peers={'d'*64:dict(id='d'*64,name='Mac',online=False)}
+        with self.assertRaisesRegex(ValueError,'不在线，无法发送'):self.service.send('d'*64,[str(self.root)])
+        self.assertEqual(self.service._transfers,{})
+        self.service._peers['d'*64]['online']=True;self.service._disconnected()
+        self.assertFalse(changes[-1][0]['online'])
+    def test_code_circle_and_delete_button_use_live_identity_in_both_themes(self):
+        from app_settings import SettingsStore
+        from lan_panel import LanDialog
+        self.service._connected=True
+        dialog=LanDialog(self.service,SettingsStore(self.root/'settings'))
+        try:
+            dialog.show();APP.processEvents()
+            with patch('wan_transfer.time.monotonic',return_value=1000):
+                self.message(type='identity',code='ABCD2345',serverNow=0,refreshAt=240000,expires=300000,
+                    recent=[dict(id='d'*64,name='Mac',online=True)])
+                panel=dialog.panel
+                for theme in ('light','dark'):
+                    dialog.apply_theme(theme);APP.processEvents();self.assertFalse(panel.code_countdown.grab().isNull())
+                    self.assertTrue(panel.send_code_value.isEnabled())
+                    self.assertEqual(panel.send_code_value.text(),'ABCD2345')
+                    self.assertLessEqual(abs(panel.send_code_value.geometry().center().y()-panel.code_countdown.geometry().center().y()),1)
+                panel.remove_recent_button.click();self.assertEqual(self.sent[-1],dict(type='remove',peer='d'*64))
+                self.message(type='peers',peers=[]);self.assertFalse(panel.remove_recent_button.isEnabled())
+            QApplication.clipboard().setText('not a code')
+            with patch('wan_transfer.time.monotonic',return_value=1301):
+                panel.send_code_value._copy();self.assertEqual(QApplication.clipboard().text(),'not a code')
+                panel.code_countdown._tick();self.assertFalse(panel.send_code_value.isEnabled())
+        finally:dialog.close();dialog.deleteLater();APP.processEvents()
     def test_request_not_acknowledged_by_local_queue(self):
         state=self.state();state.pop('requested');request=dict(state['request'])
         self.service._handle_command(dict(_connect=True,**request))

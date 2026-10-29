@@ -1305,12 +1305,6 @@ class SettingsDialog(QDialog):
         self.version_label.setFixedHeight(20)
         self.update_button.setMinimumSize(0,28);self.update_button.setMaximumHeight(28)
         self.close_button.setMinimumSize(28,28);self.close_button.setMaximumSize(28,28)
-        from native_ui_common import icon as reference_icon
-        self.dock_button=QPushButton(self.title_bar);self.dock_button.setObjectName('settingsDock')
-        self.dock_button.setFixedSize(28,28);self.dock_button.setIconSize(QSize(16,16))
-        self.dock_button.setIcon(reference_icon('dock','#A1A1AA',16));self.dock_button.setAccessibleName('收起到屏幕边缘')
-        self.dock_button.clicked.connect(lambda:(self.dock_requested.emit(),self.reject()))
-        header.insertWidget(header.count()-1,self.dock_button)
         if sys.platform=='darwin':
             traffic=QWidget(self.title_bar);dots=QHBoxLayout(traffic);dots.setContentsMargins(0,0,0,0);dots.setSpacing(8)
             from native_ui_common import toggle_window_zoom
@@ -1893,9 +1887,6 @@ class SettingsDialog(QDialog):
             if button.property('segmentGlyph'):
                 tint=('#F5F5F7' if dark else '#1D1D1F') if button.isChecked() else ('#A1A1AA' if dark else '#68686D')
                 button.setIcon(segment_icon(button.property('segmentGlyph'),tint))
-        if hasattr(self,'dock_button'):
-            from native_ui_common import icon as reference_icon
-            self.dock_button.setIcon(reference_icon('dock','#A1A1AA' if dark else '#636366',16))
         self.trigger_visible_checkbox.dark = dark
         self.trigger_visible_checkbox.update()
         self.update_activity.dark = dark
@@ -1977,7 +1968,6 @@ class SettingsDialog(QDialog):
             QDialog#flickdockSettings QPushButton#settingsLink {{background:transparent;border:0;padding:0;font-size:11px;color:#0A84FF;}}
             QDialog#flickdockSettings QPushButton#settingsUpdate,QDialog#flickdockSettings QPushButton#settingsSave {{background:#0A84FF;color:#FFFFFF;border:0;font-size:12px;padding:5px 12px;}}
             QDialog#flickdockSettings QPushButton#settingsClose {{border-radius:8px;padding:0;}}
-            QDialog#flickdockSettings QPushButton#settingsDock {{background:transparent;border:0;border-radius:8px;padding:0;}}
             QDialog#flickdockSettings QLineEdit,QDialog#flickdockSettings QComboBox,QDialog#flickdockSettings QSpinBox {{background:{ref_input};font-size:12px;padding:3px 8px;}}
             QDialog#flickdockSettings QSpinBox QLineEdit {{padding:0;border:0;}}
             QDialog#flickdockSettings QKeySequenceEdit {{background:{ref_input};font-size:12px;}}

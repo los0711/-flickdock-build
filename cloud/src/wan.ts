@@ -3,7 +3,8 @@ import {relayUsage,relayBudget,type RelayBudgetEnv} from './relay-budget';
 type RelayGate={epoch:number;blocked:boolean};
 type Credential={username:string;expires:number;revoke_pending?:boolean};
 type Device={id:string;name:string;platform:string;online?:boolean;last?:number};
-type Seat=Device&{ip:string;connected:number;window:number;messages:number};
+type Seat=Device&{ip:string;connected:number;window:number;messages:number;last_seen?:number;watching?:string[]};
+type Pairing={sender:string;receiver:string;token:string;expires:number};
 type Session={id:string;sender:Device;receiver:Device;token:string;digest:string;total:string;count:number;names:string[];accepted:boolean;generation:number;expires:number;done:string[];connected?:string[];sender_code?:string};
 export interface WanEnv extends RelayBudgetEnv {WAN:DurableObjectNamespace<WanHub>;TURN_KEY_ID?:string;TURN_KEY_TOKEN?:string;TURN_ENABLED?:string;}
 const json=(value:object,status=200)=>Response.json({schema_version:1,...value},{status,headers:{'Cache-Control':'no-store'}});
@@ -29,10 +30,13 @@ export async function wanRoute(request:Request,env:WanEnv):Promise<Response>{
 
 export class WanHub extends DurableObject<WanEnv>{
   private async scheduleCleanup(){
-    const next=Date.now()+300000,current=await this.ctx.storage.getAlarm();
+    const next=Date.now()+30000,current=await this.ctx.storage.getAlarm();
     if(current===null||current>next)await this.ctx.storage.setAlarm(next);
   }
-  private send(socket:WebSocket,value:object){socket.send(JSON.stringify({schema_version:1,...value}));}
+  private send(socket:WebSocket,value:object){
+    if(socket.readyState!==1)return false;
+    try{socket.send(JSON.stringify({schema_version:1,...value}));return true;}catch{return false;}
+  }
   private socket(id:string){return this.ctx.getWebSockets(id).find(socket=>socket.readyState===1);}
   private peer(id:string){const socket=this.socket(id);return socket?publicDevice(socket.deserializeAttachment() as Seat):null;}
   private async limited(key:string,limit:number,period:number){
@@ -56,7 +60,27 @@ export class WanHub extends DurableObject<WanEnv>{
   }
   private async recent(id:string){
     const rows=await this.ctx.storage.get<Device[]>('recent:'+id)||[];
+    const socket=this.socket(id);
+    if(socket){const seat=socket.deserializeAttachment() as Seat;seat.watching=rows.slice(0,30).map(row=>row.id);socket.serializeAttachment(seat);}
     return rows.slice(0,30).map(row=>({...row,...this.peer(row.id),online:!!this.socket(row.id)}));
+  }
+  private async presence(id:string){
+    // Recent lists can be asymmetric after their independent 30-device limit.
+    // Watch the list actually displayed by each connected observer.
+    for(const target of this.ctx.getWebSockets()){
+      const seat=target.deserializeAttachment() as Seat;
+      if(target.readyState===1&&seat.watching?.includes(id))this.send(target,{type:'peers',peers:await this.recent(seat.id)});
+    }
+  }
+  async webSocketClose(socket:WebSocket){
+    const seat=socket.deserializeAttachment() as Seat;
+    try{socket.close(1000,'Disconnected');}catch{}
+    await this.presence(seat.id);
+  }
+  async webSocketError(socket:WebSocket){
+    const seat=socket.deserializeAttachment() as Seat;
+    try{socket.close(1011,'Connection lost');}catch{}
+    await this.presence(seat.id);
   }
   private async remember(value:Session){
     await this.ctx.storage.transaction(async tx=>{
@@ -70,13 +94,36 @@ export class WanHub extends DurableObject<WanEnv>{
     }
   }
   private async code(socket:WebSocket){
-    const seat=socket.deserializeAttachment() as Seat,previous=await this.ctx.storage.get<string>('own-code:'+seat.id);
-    if(previous)await this.ctx.storage.delete('code:'+previous);
+    const seat=socket.deserializeAttachment() as Seat;
     const alphabet='23456789ABCDEFGHJKLMNPQRSTUVWXYZ';let code='';
     for(const byte of crypto.getRandomValues(new Uint8Array(8)))code+=alphabet[byte%alphabet.length];
-    const expires=Date.now()+300000;
-    await this.ctx.storage.put({['code:'+code]:{device:seat.id,expires},['own-code:'+seat.id]:code});
-    this.send(socket,{type:'identity',device:publicDevice(seat),code,expires,recent:await this.recent(seat.id)});
+    const serverNow=Date.now(),expires=serverNow+300000,refreshAt=serverNow+240000;
+    // Refresh leaves the previous code valid for its original remaining minute.
+    // Redeeming either alias invalidates all aliases in the same epoch.
+    await this.ctx.storage.transaction(async tx=>{
+      const epoch=await tx.get<number>('code-epoch:'+seat.id)||0;
+      await tx.put({['code:'+code]:{device:seat.id,expires,epoch},['own-code:'+seat.id]:code});
+    });
+    this.send(socket,{type:'identity',device:publicDevice(seat),code,expires,refreshAt,serverNow,recent:await this.recent(seat.id)});
+  }
+  private async claimCode(code:unknown,seat:Seat,prepare?:{id:string;token:string}){
+    if(!check(code,/^[23456789A-HJ-NP-Z]{8}$/))throw new Error('接收码无效或已过期，请复制对方当前的接收码。');
+    return this.ctx.storage.transaction(async tx=>{
+      if(prepare){
+        const existing=await tx.get<Pairing>('pairing:'+prepare.id);
+        if(existing){
+          if(existing.sender!==seat.id||existing.token!==prepare.token||existing.expires<=Date.now())throw new Error('接收码验证已失效，请重新发起。');
+          return existing.receiver;
+        }
+        if(await tx.get('pairing-cancel:'+seat.id+':'+prepare.id))throw new Error('已取消传输。');
+      }
+      const key='code:'+code,row=await tx.get<{device:string;expires:number;epoch?:number}>(key);
+      if(!row||row.expires<=Date.now()||row.device===seat.id||(row.epoch||0)!==(await tx.get<number>('code-epoch:'+row.device)||0))throw new Error('接收码无效或已过期，请复制对方当前的接收码。');
+      if(!this.socket(row.device))throw new Error('对方设备不在线。');
+      await tx.put('code-epoch:'+row.device,(row.epoch||0)+1);await tx.delete(key);
+      if(prepare)await tx.put('pairing:'+prepare.id,{sender:seat.id,receiver:row.device,token:prepare.token,expires:Date.now()+600000} satisfies Pairing);
+      return row.device;
+    });
   }
   private async session(id:unknown,seat:Seat){
     if(!check(id,TRANSFER))throw new Error('传输标识无效。');
@@ -109,11 +156,12 @@ export class WanHub extends DurableObject<WanEnv>{
       if(Date.now()-seat.connected>86400000){socket.close(4001,'Reconnect');return;}
       if(Date.now()-seat.window>60000){seat.window=Date.now();seat.messages=0;}
       if(++seat.messages>240)throw new Error('信令请求过于频繁。');
-      socket.serializeAttachment(seat);request=JSON.parse(message);
+      seat.last_seen=Date.now();socket.serializeAttachment(seat);request=JSON.parse(message);
+      if(request.type==='ping'){this.send(socket,{type:'pong'});return;}
       if(request.type==='hello'){
         seat.name=String(request.name||'未命名设备').replace(/[\x00-\x1f]/g,'').slice(0,64);
         seat.platform=['windows','macos','linux'].includes(request.platform)?request.platform:'other';socket.serializeAttachment(seat);
-        await this.ctx.storage.put('device:'+seat.id,publicDevice(seat));await this.code(socket);
+        await this.ctx.storage.put('device:'+seat.id,publicDevice(seat));await this.code(socket);await this.presence(seat.id);
         const pending=await this.ctx.storage.list<{expires:number}>({prefix:'pending:'+seat.id+':',limit:64});
         for(const [key,row] of pending){
           if(row.expires<Date.now())continue;
@@ -129,7 +177,31 @@ export class WanHub extends DurableObject<WanEnv>{
         for(const [a,b] of [[seat.id,request.peer],[request.peer,seat.id]]){
           const rows=await this.ctx.storage.get<Device[]>('recent:'+a)||[];await this.ctx.storage.put('recent:'+a,rows.filter(row=>row.id!==b));
         }
-        this.send(socket,{type:'peers',peers:await this.recent(seat.id)});return;
+        for(const id of [seat.id,request.peer]){const target=this.socket(id);if(target)this.send(target,{type:'peers',peers:await this.recent(id)});}return;
+      }
+      if(request.type==='prepare'){
+        if(!check(request.id,TRANSFER)||!check(request.token,ID))throw new Error('传输请求无效。');
+        let pairing=await this.ctx.storage.get<Pairing>('pairing:'+request.id);
+        if(pairing){
+          if(pairing.sender!==seat.id||pairing.token!==request.token||pairing.expires<=Date.now())throw new Error('接收码验证已失效，请重新发起。');
+        }else{
+          await this.limited('request:'+seat.id,15,60000);await this.limited('guess:'+seat.ip,30,60000);
+          const receiver=await this.claimCode(request.code,seat,{id:request.id,token:request.token});
+          pairing={sender:seat.id,receiver,token:request.token,expires:Date.now()+600000};
+          const target=this.socket(receiver);if(target)await this.code(target);
+        }
+        const peer=this.peer(pairing.receiver);if(!peer)throw new Error('对方设备不在线。');
+        this.send(socket,{type:'prepared',id:request.id,peer});return;
+      }
+      if(request.type==='cancel'&&check(request.id,TRANSFER)){
+        const preparedOnly=await this.ctx.storage.transaction(async tx=>{
+          if(await tx.get('session:'+request.id))return false;
+          const pairing=await tx.get<Pairing>('pairing:'+request.id);
+          if(pairing&&pairing.sender!==seat.id)throw new Error('无法取消此请求。');
+          await tx.delete('pairing:'+request.id);
+          await tx.put('pairing-cancel:'+seat.id+':'+request.id,{expires:Date.now()+600000});return true;
+        });
+        if(preparedOnly){this.send(socket,{type:'cancelled',id:request.id});return;}
       }
       if(request.type==='request'){
         if(!check(request.id,TRANSFER)||!check(request.token,ID)||!check(request.digest,ID)
@@ -141,15 +213,14 @@ export class WanHub extends DurableObject<WanEnv>{
           if(previous.expires<Date.now())throw new Error('传输请求已失效，请重新发起。');
           await this.replay(socket,previous);return;
         }
-        await this.limited('request:'+seat.id,15,60000);await this.limited('guess:'+seat.ip,30,60000);
+        if(!request.prepared){await this.limited('request:'+seat.id,15,60000);await this.limited('guess:'+seat.ip,30,60000);}
         let target:string;
-        if(request.code){
-          if(!check(request.code,/^[23456789A-HJ-NP-Z]{8}$/))throw new Error('接收码无效或已过期。');
-          target=await this.ctx.storage.transaction(async tx=>{
-            const key='code:'+request.code,row=await tx.get<{device:string;expires:number}>(key);
-            if(!row||row.expires<Date.now()||row.device===seat.id)throw new Error('接收码无效或已过期。');
-            await tx.delete(key);return row.device;
-          });
+        if(request.prepared){
+          const pairing=await this.ctx.storage.get<Pairing>('pairing:'+request.id);
+          if(!pairing||pairing.sender!==seat.id||pairing.token!==request.token||pairing.expires<=Date.now())throw new Error('接收码验证已失效，请重新发起。');
+          target=pairing.receiver;
+        }else if(request.code){
+          target=await this.claimCode(request.code,seat);
         }else{
           if(!check(request.peer,ID)||(await this.recent(seat.id)).every(row=>row.id!==request.peer))throw new Error('首次传输请使用对方的接收码。');
           target=request.peer;
@@ -158,9 +229,19 @@ export class WanHub extends DurableObject<WanEnv>{
         if(!receiver||!recipient)throw new Error('对方设备不在线。');
         if(await this.ctx.storage.get('session:'+request.id))throw new Error('传输请求已存在。');
         const value:Session={id:request.id,sender:publicDevice(seat),receiver,token:request.token,digest:request.digest,total:request.total,count:request.count,names:request.names,accepted:false,generation:0,expires:Date.now()+86400000,done:[],sender_code:await this.ctx.storage.get<string>('own-code:'+seat.id)||''};
-        await this.ctx.storage.put({['session:'+value.id]:value,['pending:'+value.sender.id+':'+value.id]:{expires:value.expires},['pending:'+value.receiver.id+':'+value.id]:{expires:value.expires}});
-        this.send(recipient,{type:'request',id:value.id,peer:value.sender,deviceCode:value.sender_code,token:value.token,digest:value.digest,total:value.total,count:value.count,names:value.names});
-        this.send(socket,{type:'waiting',id:value.id,peer:receiver});await this.code(recipient);return;
+        const already=await this.ctx.storage.transaction(async tx=>{
+          if(await tx.get('pairing-cancel:'+seat.id+':'+request.id))throw new Error('已取消传输。');
+          const previous=await tx.get<Session>('session:'+value.id);
+          if(previous){
+            if(previous.sender.id!==seat.id||previous.token!==value.token||previous.digest!==value.digest||previous.total!==value.total||previous.count!==value.count||JSON.stringify(previous.names)!==JSON.stringify(value.names))throw new Error('传输请求冲突。');
+            return previous;
+          }
+          await tx.put({['session:'+value.id]:value,['pending:'+value.sender.id+':'+value.id]:{expires:value.expires},['pending:'+value.receiver.id+':'+value.id]:{expires:value.expires}});
+          await tx.delete('pairing:'+request.id);return null;
+        });
+        if(already){await this.replay(socket,already);return;}
+        if(!this.send(recipient,{type:'request',id:value.id,peer:value.sender,deviceCode:value.sender_code,token:value.token,digest:value.digest,total:value.total,count:value.count,names:value.names}))throw new Error('对方设备不在线，无法发送。');
+        this.send(socket,{type:'waiting',id:value.id,peer:receiver});if(request.code&&!request.prepared)await this.code(recipient);return;
       }
       const value=await this.session(request.id,seat),other=value.sender.id===seat.id?value.receiver.id:value.sender.id;
       if(request.type==='accept'){
@@ -210,13 +291,13 @@ export class WanHub extends DurableObject<WanEnv>{
         this.send(target,{type:request.type,id:value.id,generation:value.generation,...(request.type==='description'?{sdp:request.sdp,descriptionType:request.descriptionType}:{candidate:request.candidate,mid:request.mid})});return;
       }
       if(request.type==='complete'){
+        if(value.done.length===2){await this.publish(value,{type:'settled'});return;}
         if(!value.done.includes(seat.id))value.done.push(seat.id);
         await this.ctx.storage.put('session:'+value.id,value);
         if(value.done.length===2){
           value.expires=Date.now()+600000;await this.ctx.storage.put('session:'+value.id,value);
           await this.ctx.storage.delete(['pending:'+value.sender.id+':'+value.id,'pending:'+value.receiver.id+':'+value.id]);
           await this.revokeSession(value.id);
-          await this.remember(value);
           await this.publish(value,{type:'settled'});
         }
         return;
@@ -308,6 +389,13 @@ export class WanHub extends DurableObject<WanEnv>{
   }
   async alarm(){
     const now=Date.now();let remaining=false,paged=false,credentialCount=0;
+    for(const socket of this.ctx.getWebSockets()){
+      const seat=socket.deserializeAttachment() as Seat;
+      if(now-(seat.last_seen||seat.connected)>90000){
+        try{socket.close(4001,'Heartbeat expired');}catch{}
+        await this.presence(seat.id);
+      }
+    }
     for await(const rows of this.credentialPages()){
       const expired=[...rows].filter(([,row])=>row.expires<=now).map(([key])=>key);
       if(expired.length)await this.ctx.storage.delete(expired);
@@ -320,7 +408,7 @@ export class WanHub extends DurableObject<WanEnv>{
       paged=blocked?await this.revokeAll():await this.revokePending();
       credentialCount=(await this.ctx.storage.list({prefix:'credential:',limit:1})).size;
     }
-    for(const prefix of ['code:','session:','pending:','ip:','request:','guess:','retry:','relay:']){
+    for(const prefix of ['code:','pairing:','pairing-cancel:','session:','pending:','ip:','request:','guess:','retry:','relay:']){
       const cursor=await this.ctx.storage.get<string>('sweep:'+prefix);
       const rows=await this.ctx.storage.list<any>({prefix,limit:1000,...(cursor?{startAfter:cursor}:{})});
       const expired=[...rows].filter(([,row])=>(row.expires||row.until||now+1)<now).map(([key])=>key);
@@ -329,6 +417,6 @@ export class WanHub extends DurableObject<WanEnv>{
       else await this.ctx.storage.delete('sweep:'+prefix);
       remaining=remaining||rows.size>expired.length||!!cursor;
     }
-    if(paged||remaining||credentialCount||this.ctx.getWebSockets().length)await this.ctx.storage.setAlarm(now+(paged?1000:credentialCount?60000:300000));
+    if(paged||remaining||credentialCount||this.ctx.getWebSockets().length)await this.ctx.storage.setAlarm(now+(paged?1000:this.ctx.getWebSockets().length?30000:credentialCount?60000:300000));
   }
 }

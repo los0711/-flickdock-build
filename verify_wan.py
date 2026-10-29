@@ -37,7 +37,7 @@ def run(argv,load_font):
                 assert not list(destination.iterdir()),'Files written before consent'
                 assert offer.get('device_code')==services[0].code,'Sender device code missing from the incoming request'
                 assert services[1].accept(offer['id'],destination)
-            except Exception as error:finish(str(error))
+            except Exception as error:finish(type(error).__name__+': '+str(error))
         services[1].offer_received.connect(receive)
         for index,service in enumerate(services):
             service.completed.connect(lambda value,index=index:completed[index].append(value))
@@ -60,7 +60,7 @@ def run(argv,load_font):
                 for service in services:
                     for transfer in service._transfers.values():
                         if transfer.cancel.is_set() and not transfer.finished:raise RuntimeError('WAN transfer failed; inspect states')
-            except Exception as error:report['states']=states[-15:];finish(str(error))
+            except Exception as error:report['states']=states[-15:];finish(type(error).__name__+': '+str(error))
         timer=QTimer();timer.setInterval(25);timer.timeout.connect(poll);timer.start()
         deadline=QTimer();deadline.setSingleShot(True);deadline.timeout.connect(lambda:(report.update(states=states[-15:]),finish('WAN verification timed out')));deadline.start(180000)
         for service in services:service.start()
