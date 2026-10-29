@@ -640,8 +640,8 @@
     },
     {
       "path": "cloud/src/clipboard.ts",
-      "size": 11568,
-      "sha256": "0500b117c7947012190a9af060f7c9ec0909b6270674fcad17231a6d5d861d68"
+      "size": 12536,
+      "sha256": "1a57ff8fed3846217b8a199f6c4a6420f6339d2b34b41c5afe316746bd90c12b"
     },
     {
       "path": "cloud/src/hash-state.ts",
@@ -700,8 +700,8 @@
     },
     {
       "path": "cloud/test/clipboard.mjs",
-      "size": 7776,
-      "sha256": "8d72276f83ee2d03d2b1054a38faf7783d774d001877b2b3c64f6e8eee0fd486"
+      "size": 8830,
+      "sha256": "67767363d0902dfd2c3e1cf6a3f9a84ec88d201267889aca4297c88ac33fa633"
     },
     {
       "path": "cloud/test/hash-state.mjs",

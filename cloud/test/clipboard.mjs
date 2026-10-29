@@ -40,6 +40,16 @@ try{
   }
   assert.equal((await json('GET','/v1/clipboard',outsider.token)).clipboard,null);
   assert.equal((await req('GET',`/v1/clipboard/${first}/content`,outsider.token)).status,409);
+  const oldHeaders={'User-Agent':'FlickDock/1.8.19 (CloudSync)'};
+  const oldWrite=await req('POST','/v1/clipboard',b.token,JSON.stringify({id:randomUUID()}),{'Content-Type':'application/json',...oldHeaders});
+  assert.equal(oldWrite.status,409,'Old clients must settle obsolete copies instead of retrying every five seconds');
+  const oldHead=await req('GET','/v1/clipboard',b.token,undefined,oldHeaders);
+  const oldValue=await oldHead.json();assert.equal(oldValue.clipboard,null);assert.equal(oldValue.upgrade_required,true);
+  assert.equal((await req('GET',`/v1/clipboard/${first}/content`,b.token,undefined,oldHeaders)).status,426);
+  const current=await req('GET','/v1/clipboard',b.token,undefined,{'User-Agent':'FlickDock/1.8.20 (CloudSync)'});
+  assert.equal((await current.json()).clipboard.id,first);
+  const currentBody=await req('GET',`/v1/clipboard/${first}/content`,b.token,undefined,{'User-Agent':'FlickDock/1.8.20 (CloudSync)'});
+  assert.equal(currentBody.status,200);assert.deepEqual(Buffer.from(await currentBody.arrayBuffer()),body);
   assert.equal((await req('GET','/v1/clipboard')).status,401);
   console.log('PASS original bytes, repeated non-consuming paste, authenticated account isolation');
   const second=await stage(b.token);

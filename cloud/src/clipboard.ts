@@ -7,6 +7,12 @@ const fail=(status:number,code:string)=>json({error:{code,message:'Clipboard con
 const key=(head:Head)=>head.object_key||`clipboard/${head.account}/${head.id}`;
 const allocation=(head:Head)=>head.allocation_id||'clipboard:'+head.id;
 const retiredKey=(head:Head)=>'clipboard-retired:'+allocation(head);
+function legacyReader(request:Request){
+  const match=/^FlickDock\/(\d+)\.(\d+)\.(\d+)(?:\s|$)/.exec(request.headers.get('User-Agent')||'');
+  if(!match)return false;
+  const [major,minor,patch]=match.slice(1).map(Number);
+  return major<1||major===1&&(minor<8||minor===8&&patch<20);
+}
 async function schedule(ctx:DurableObjectState,at:number){const old=await ctx.storage.getAlarm();if(old===null||old>at)await ctx.storage.setAlarm(at);}
 
 async function retire(ctx:DurableObjectState,env:Env,head:Head){
@@ -97,17 +103,26 @@ export async function clipboardRequest(request:Request,ctx:DurableObjectState,en
       await tx.put('clipboard-pending',next);await tx.put('clipboard-order',next);
       await tx.put('clipboard-seen:'+value.id,Date.now());return next;
     });
-    if(head==='upgrade')return fail(426,'CLIPBOARD_UPGRADE_REQUIRED');
+    // 1.8.19 retries unknown HTTP failures every five seconds. Its existing
+    // conflict path settles a superseded copy, so use that compatible status
+    // to stop retrying an intent which must never replace v2 content.
+    if(head==='upgrade')return fail(legacyReader(request)?409:426,'CLIPBOARD_UPGRADE_REQUIRED');
     if(head===null)return fail(409,'CLIPBOARD_REPLACED');
     await schedule(ctx,Date.now()+600000);
     return json({clipboard:head},201);
   }
   let head=await ctx.storage.get<Head>('clipboard-head');
   if(head&&!head.expired&&Date.now()-head.at>=86400000){await clipboardAlarm(ctx,env);head=await ctx.storage.get<Head>('clipboard-head');}
-  if(request.method==='GET'&&path==='/clipboard')return json({clipboard:head||null});
+  // Pre-v2 clients cannot decode the new lossless text envelope. Do not let
+  // them download and cache it again on every poll while awaiting upgrade.
+  // This is capability negotiation only; account/device auth stays above.
+  const needsUpgrade=head?.sequence!==undefined&&legacyReader(request);
+  if(request.method==='GET'&&path==='/clipboard')return needsUpgrade?
+    json({clipboard:null,upgrade_required:true}):json({clipboard:head||null});
   const id=path.match(/^\/clipboard\/([a-f0-9-]{36})\/content$/)?.[1];
   if(!id)return fail(409,'CLIPBOARD_REPLACED');
   if(request.method==='GET'){
+    if(needsUpgrade)return fail(426,'CLIPBOARD_UPGRADE_REQUIRED');
     if(!head||head.id!==id||head.account!==account)return fail(409,'CLIPBOARD_REPLACED');
     if(!head.ready)return fail(404,'CLIPBOARD_PENDING');
     await spend('B');const object=await env.FILES.get(key(head));
