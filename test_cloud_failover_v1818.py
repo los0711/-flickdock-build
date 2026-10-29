@@ -15,6 +15,11 @@ class FailoverTests(unittest.TestCase):
         owner=self
         def handler(index):
             class Handler(BaseHTTPRequestHandler):
+                def setup(self):
+                    super().setup()
+                    # The fixture sends small HTTP header/body writes. Avoid
+                    # OS-dependent Nagle/delayed-ACK delays in a 220ms budget.
+                    self.connection.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
                 def log_message(self,*_):pass
                 def request(self):
                     body=self.rfile.read(int(self.headers.get('Content-Length',0)));owner.calls[index].append((self.command,self.path,body))
@@ -22,7 +27,8 @@ class FailoverTests(unittest.TestCase):
                     if owner.behavior[index]=='late-drop':time.sleep(.12);self.close_connection=True;return
                     if owner.behavior[index]=='late-gateway':
                         time.sleep(.12)
-                        try:self.send_response(503);self.end_headers();self.wfile.write(b'<html>Gateway unavailable</html>')
+                        result=b'<html>Gateway unavailable</html>'
+                        try:self.send_response(503);self.send_header('Content-Length',str(len(result)));self.end_headers();self.wfile.write(result)
                         except OSError:pass
                         return
                     if owner.behavior[index]=='wait':owner.events[index].wait(3)
@@ -37,6 +43,8 @@ class FailoverTests(unittest.TestCase):
         self.origins=tuple('http://127.0.0.1:'+str(server.server_port) for server in self.servers)
         self.patch=patch.object(cloud_api,'CLOUD_ORIGINS',self.origins);self.patch.start()
         self.api=cloud_api.CloudApi(self.origins[0],allow_test_http=True)
+        self.reply_trace=[]
+        self.api.network.finished.connect(lambda reply:self.reply_trace.append(dict(time=time.monotonic(),status=reply.attribute(cloud_api.QNetworkRequest.Attribute.HttpStatusCodeAttribute),error=reply.error().name)))
     def tearDown(self):
         self.api.close();self.api.deleteLater();QCoreApplication.sendPostedEvents(None,QEvent.DeferredDelete);APP.processEvents()
         self.patch.stop()
@@ -81,7 +89,7 @@ class FailoverTests(unittest.TestCase):
         self.api.request('GET','/v1/sync/changes',lambda value,error:result.append((value,error)),authenticated=False,timeout_ms=220)
         self.until(lambda:result)
         self.assertIsNotNone(result[0][1]);self.assertLess(time.monotonic()-started,.31)
-        self.assertEqual(len(self.calls[1]),1,(self.calls,result[0][1],time.monotonic()-started))
+        self.assertEqual(len(self.calls[1]),1,(self.calls,result[0][1],time.monotonic()-started,[dict(row,time=row['time']-started) for row in self.reply_trace]))
 
     def test_qt_internal_retry_of_dropped_get_cannot_extend_total_deadline(self):
         self.behavior[0]='late-drop';self.behavior[1]='wait';result=[];started=time.monotonic()

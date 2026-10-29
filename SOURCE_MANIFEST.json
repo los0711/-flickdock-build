@@ -915,8 +915,8 @@
     },
     {
       "path": "p2p/bridge.mjs",
-      "size": 7608,
-      "sha256": "34586bf921ea8ca54784f98fbc34a3ac6b7a8927595e1eb51ce4101cf7d96d60"
+      "size": 7662,
+      "sha256": "6a062af335c115fe40868925b42fc9172230f6b0dbc53759b07b19bafbf46ca9"
     },
     {
       "path": "p2p/node-shasums.json",
@@ -935,13 +935,13 @@
     },
     {
       "path": "p2p/test-turn-tls.mjs",
-      "size": 6972,
-      "sha256": "1e2750cf8aeeba65a9d69b552de71a6e7a2dc0ecf227ab2169d95fcdb7063673"
+      "size": 10160,
+      "sha256": "c6d28572d642e1e018848b449374f3b406fda81a30982dbe19a52a9898edaed3"
     },
     {
       "path": "p2p/turn_tls.mjs",
-      "size": 5446,
-      "sha256": "c224efe953d5d7c4fa2c78939465257339ed803c4abea6bd5860bb70625d7d3c"
+      "size": 8314,
+      "sha256": "e79bbb78da2cb565d7c203f8a337400d2b61fbabf68bca9d05c926e72a6f131c"
     },
     {
       "path": "p2p_assets.py",
@@ -1115,8 +1115,8 @@
     },
     {
       "path": "test_cloud_failover_v1818.py",
-      "size": 7354,
-      "sha256": "b9c4f26986aa189b4c5e2ec4d944013939abc4aed3712b611d259e1622f88120"
+      "size": 8068,
+      "sha256": "216f73267da0841ff222d705a1db1f94aa4f378a206c3a364d5d28945d3eb8e8"
     },
     {
       "path": "test_cloud_file_status_v1810.py",
@@ -1525,8 +1525,8 @@
     },
     {
       "path": "test_wan_transfer_v1816.py",
-      "size": 17499,
-      "sha256": "a29a19f0b488095e58866291aa30632a633fb8fdcae03606adf795061b55798e"
+      "size": 19543,
+      "sha256": "cbf0c938c1dc484377690f612a472bd9f76f83826498fb644ea80757ee9b88f2"
     },
     {
       "path": "test_widget_retirement_v162.py",
@@ -1595,8 +1595,8 @@
     },
     {
       "path": "verify_wan.py",
-      "size": 5206,
-      "sha256": "081484ce0cb34c956ef0c7e1ecf6c4e1e16bd27a64fe7cf0382355051e1f970f"
+      "size": 5781,
+      "sha256": "c17cce3e9419605ad10bdbd7808d1eda93b8787632c13dce82f76bec04679288"
     },
     {
       "path": "version_info.txt",
@@ -1605,8 +1605,8 @@
     },
     {
       "path": "wan_transfer.py",
-      "size": 29516,
-      "sha256": "7a83219b4b8408399670749d435f418740e9b9aefc8a4fa82439cc04dd0d33ee"
+      "size": 30321,
+      "sha256": "63fafd260f2ac88b501dd36bcbdd31195be9f2bff4343557822af18bd35c65ab"
     },
     {
       "path": "webrtc_stream.py",

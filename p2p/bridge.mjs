@@ -72,9 +72,9 @@ function bind(dc) {
 async function control(value) {
   if(value.type==='init') {
     if(pc)throw new Error('Already initialized');
-    turnTransport=await adaptTurnServers(value.iceServers||[],()=>{event({type:'error',message:'中继连接中断，正在尝试恢复。'});stop();},value.preferTls!==false);
+    turnTransport=await adaptTurnServers(value.iceServers||[],()=>{event({type:'error',message:'中继连接中断，正在尝试恢复。'});stop();},value.preferTls!==false,value.proxies||{});
     if(closed){turnTransport.close();return;}
-    event({type:'transport',relayTransport:turnTransport.relayTransport,tlsFallback:!!turnTransport.tlsFallback});
+    event({type:'transport',relayTransport:turnTransport.relayTransport,tlsFallback:!!turnTransport.tlsFallback,proxyUsed:!!turnTransport.proxyUsed});
     pc=new rtc.PeerConnection('FlickDock',{iceServers:turnTransport.iceServers,maxMessageSize:131072,iceTransportPolicy:value.forceRelay?'relay':'all',enableIceTcp:true});
     // Unknown SDP attributes are ignored by older clients. Start conservatively
     // and enlarge the bounded credit/message window only for an agreeing peer.

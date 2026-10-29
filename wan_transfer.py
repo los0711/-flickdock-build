@@ -7,13 +7,22 @@ import hashlib,json,os,re,secrets,shutil,socket,sys,threading,time
 from pathlib import Path
 from uuid import uuid4
 from PySide6.QtCore import QTimer,QUrl,Signal
-from PySide6.QtNetwork import QNetworkRequest
+from PySide6.QtNetwork import QNetworkRequest,QNetworkProxy,QNetworkProxyFactory,QNetworkProxyQuery
 from PySide6.QtWebSockets import QWebSocket
 from lan_transfer import LanTransferService,_Transfer,_validate_manifest
 from selection_archive import _is_link
 from webrtc_stream import WebRTCStream
 from cloud_config import DEFAULT_CLOUD_URL,CLOUD_ORIGINS
 SIGNAL_ORIGINS=CLOUD_ORIGINS
+
+def _turn_http_proxy(port):
+    # Match Qt's existing destination-specific proxy/bypass selection. Proxy
+    # credentials travel only through the private child-process IPC channel.
+    for proxy in QNetworkProxyFactory.proxyForQuery(QNetworkProxyQuery(QUrl('https://turn.cloudflare.com:'+str(port)))):
+        if proxy.type()==QNetworkProxy.ProxyType.NoProxy:return None
+        if proxy.type()==QNetworkProxy.ProxyType.HttpProxy:
+            return dict(type='http',host=proxy.hostName(),port=proxy.port(),username=proxy.user(),password=proxy.password())
+    return None
 
 class WanTransferService(LanTransferService):
     identity_changed=Signal(dict)
@@ -268,7 +277,8 @@ class WanTransferService(LanTransferService):
                 else:urls.append(dict(hostname=host,port=int(port),username=server['username'],password=server['credential'],relayType='TurnTls' if scheme=='turns' else 'TurnTcp' if transport=='tcp' else 'TurnUdp'))
         bridge=WebRTCStream(lambda event:self._native.emit(dict(id=identifier,generation=generation,event=event)),node=self.node)
         state['bridge']=bridge
-        bridge.control(dict(type='init',iceServers=urls,initiator=state['role']=='send',forceRelay=self._qa_force_relay,preferTls=not state.get('tls_failed',False)))
+        proxies={str(port):_turn_http_proxy(port) for port in sorted({row['port'] for row in urls if isinstance(row,dict) and row.get('relayType')=='TurnTls'})}
+        bridge.control(dict(type='init',iceServers=urls,initiator=state['role']=='send',forceRelay=self._qa_force_relay,preferTls=not state.get('tls_failed',False),proxies=proxies))
         if state['role']=='send':
             transfer=self._transfers.get(identifier)
             if transfer:self._notify(transfer,'connecting',route='relay' if value.get('relayAttempt') else 'direct')

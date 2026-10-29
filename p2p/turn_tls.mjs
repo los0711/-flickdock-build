@@ -1,6 +1,7 @@
 // RFC 8656 TURN framing over verified TLS. DTLS still encrypts peer file data.
 import dgram from 'node:dgram';
 import tls from 'node:tls';
+import net from 'node:net';
 
 const MAX_FRAME=65556,MAX_QUEUE=32*1024*1024,MAX_RECEIVE=2*1024*1024;
 export function udpToStream(packet){
@@ -34,10 +35,54 @@ export class TurnStreamDecoder{
   }
 }
 
-export async function tlsTurnTunnel(server,onError=()=>{}){
+// Use only the proxy selected by Qt for this fixed TURN destination. The
+// proxy sees encrypted TLS records; peer file bytes are also DTLS encrypted.
+export function httpConnectSocket(server,proxy,timeoutMs=7000){
+  if(server.hostname!=='turn.cloudflare.com'||!Number.isInteger(server.port)||server.port<1||server.port>65535
+      ||!proxy||proxy.type!=='http'||typeof proxy.host!=='string'||!proxy.host||proxy.host.length>253
+      ||/[\s/\\\x00-\x1f\x7f]/.test(proxy.host)||!Number.isInteger(proxy.port)||proxy.port<1||proxy.port>65535
+      ||['username','password'].some(key=>proxy[key]!==undefined&&(typeof proxy[key]!=='string'||proxy[key].length>2048)))
+    return Promise.reject(Error('Invalid TURN proxy'));
+  return new Promise((resolve,reject)=>{
+    const socket=net.connect({host:proxy.host,port:proxy.port});let buffer=Buffer.alloc(0),settled=false;
+    const timer=setTimeout(()=>finish(Error('TURN proxy timeout')),timeoutMs);
+    function finish(error){
+      if(settled)return;settled=true;clearTimeout(timer);
+      socket.removeListener('data',receive);socket.removeListener('error',failed);
+      socket.removeListener('end',ended);socket.removeListener('close',ended);socket.removeListener('connect',connected);
+      if(error){socket.destroy();reject(error);}else resolve(socket);
+    }
+    function failed(){finish(Error('TURN proxy connection failed'));}
+    function ended(){finish(Error('TURN proxy connection closed'));}
+    function receive(data){
+      if(buffer.length+data.length>16384){finish(Error('TURN proxy header exceeded'));return;}
+      buffer=Buffer.concat([buffer,data]);const end=buffer.indexOf('\r\n\r\n');if(end<0)return;
+      if(!/^HTTP\/1\.[01] 200(?: |\r\n)/.test(buffer.toString('latin1'))||buffer.length!==end+4){
+        finish(Error('TURN proxy refused tunnel'));return;
+      }
+      // Hand the socket to TLS before it can emit further data.
+      socket.pause();finish();
+    }
+    function connected(){
+      const authority=server.hostname+':'+server.port;
+      const authorization=proxy.username||proxy.password
+        ? 'Proxy-Authorization: Basic '+Buffer.from((proxy.username||'')+':'+(proxy.password||'')).toString('base64')+'\r\n':'';
+      socket.write('CONNECT '+authority+' HTTP/1.1\r\nHost: '+authority+'\r\n'+authorization+'\r\n');
+    }
+    socket.once('error',failed);socket.once('end',ended);socket.once('close',ended);
+    socket.on('data',receive);socket.once('connect',connected);
+  });
+}
+
+export async function tlsTurnTunnel(server,onError=()=>{},proxy=null){
   if(server.hostname!=='turn.cloudflare.com'||server.relayType!=='TurnTls'||!Number.isInteger(server.port)||server.port<1||server.port>65535
       ||typeof server.username!=='string'||typeof server.password!=='string')throw Error('Invalid TURN TLS endpoint');
-  const socket=tls.connect({host:server.hostname,port:server.port,servername:server.hostname,rejectUnauthorized:true});
+  const deadline=Date.now()+7000;
+  const transport=proxy?await httpConnectSocket(server,proxy):null;
+  let socket;
+  try{socket=tls.connect({...(transport?{socket:transport}:{host:server.hostname,port:server.port}),servername:server.hostname,rejectUnauthorized:true});}
+  catch(error){transport?.destroy();throw error;}
+  transport?.resume();
   socket.setNoDelay(true);
   let udp,peer,closed=false,ready=false,pendingUDP=0,rejectClosed;
   const ended=new Promise((_,reject)=>{rejectClosed=reject;});
@@ -46,13 +91,14 @@ export async function tlsTurnTunnel(server,onError=()=>{}){
     rejectClosed(Error('TURN TLS connection closed'));
     try{udp?.close();}catch{}
     socket.destroy();
+    transport?.destroy();
   };
   const fail=()=>{if(closed)return;close();if(ready)onError();};
   socket.on('error',fail);socket.on('close',fail);socket.on('end',fail);
   try{
     let timer;
     const connect=new Promise((resolve,reject)=>{
-      timer=setTimeout(()=>reject(Error('TURN TLS connect timeout')),7000);
+      timer=setTimeout(()=>reject(Error('TURN TLS connect timeout')),Math.max(1,deadline-Date.now()));
       socket.once('secureConnect',resolve);
     });
     try{await Promise.race([connect,ended]);}finally{clearTimeout(timer);}
@@ -84,14 +130,15 @@ export async function tlsTurnTunnel(server,onError=()=>{}){
   }catch(error){close();throw error;}
 }
 
-export async function adaptTurnServers(servers,onError,preferTls=true){
+export async function adaptTurnServers(servers,onError,preferTls=true,proxies={}){
   const relays=servers.filter(row=>row&&typeof row==='object'&&row.relayType==='TurnTls').sort((a,b)=>(a.port===443?0:1)-(b.port===443?0:1));
   // Direct sessions contain STUN only: do not introduce any TLS connection.
   if(!relays.length)return {iceServers:servers,close:()=>{},relayTransport:servers.some(row=>row?.relayType==='TurnUdp')?'udp':'direct'};
   for(const relay of preferTls?relays:[]){
     try{
-      const tunnel=await tlsTurnTunnel(relay,onError);
-      return {iceServers:[...servers.filter(row=>typeof row==='string'&&row.startsWith('stun:')),tunnel.server],close:tunnel.close,relayTransport:'tls'};
+      const proxy=proxies?.[relay.port]||null;
+      const tunnel=await tlsTurnTunnel(relay,onError,proxy);
+      return {iceServers:[...servers.filter(row=>typeof row==='string'&&row.startsWith('stun:')),tunnel.server],close:tunnel.close,relayTransport:'tls',proxyUsed:!!proxy};
     }catch{}
   }
   // TLS may be blocked. Retain only real UDP endpoints from this credential set.

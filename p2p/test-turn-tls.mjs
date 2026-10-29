@@ -4,7 +4,8 @@ import {randomBytes} from 'node:crypto';
 import test from 'node:test';
 import dgram from 'node:dgram';
 import tls from 'node:tls';
-import {udpToStream,TurnStreamDecoder,tlsTurnTunnel,adaptTurnServers} from './turn_tls.mjs';
+import net from 'node:net';
+import {udpToStream,TurnStreamDecoder,tlsTurnTunnel,adaptTurnServers,httpConnectSocket} from './turn_tls.mjs';
 
 const relay=(port=443)=>({hostname:'turn.cloudflare.com',port,relayType:'TurnTls',username:'test-user',password:'test-credential'});
 const udpRelay={...relay(3478),relayType:'TurnUdp'},stun='stun:stun.cloudflare.com:3478';
@@ -102,4 +103,52 @@ test('bounded TLS send queue and malformed receive frame fail explicitly',async 
   assert.equal(errors,1);assert(fake.datagrams[0].closed);tunnel.close();
   const second=await tlsTurnTunnel(relay(),()=>errors++);
   fake.sockets[1].emit('data',Buffer.from([0x80,0,0,0]));assert.equal(errors,2);assert(fake.datagrams[1].closed);second.close();
+});
+
+const httpProxy={type:'http',host:'127.0.0.1',port:7890};
+function proxySetup(t,response,{eof=false}={}){
+  const sockets=[],options=[];
+  t.mock.method(net,'connect',value=>{
+    options.push(value);const socket=new TLS();socket.paused=false;
+    socket.pause=()=>{socket.paused=true;};socket.resume=()=>{socket.paused=false;};
+    const write=socket.write.bind(socket);
+    socket.write=data=>{write(data);queueMicrotask(()=>{
+      for(const part of response||[])socket.emit('data',Buffer.from(part));
+      if(eof)socket.emit('end');
+    });return true;};
+    sockets.push(socket);queueMicrotask(()=>socket.emit('connect'));return socket;
+  });
+  return {sockets,options};
+}
+test('configured HTTP proxy CONNECT keeps fixed authority, fragmented headers and private basic auth',async t=>{
+  const fake=proxySetup(t,['HTTP/1.1 200 Connec','tion established\r\nX-Test: yes\r\n','\r\n']);
+  const socket=await httpConnectSocket(relay(),{...httpProxy,username:'测试',password:'local-secret'});
+  assert.deepEqual(fake.options,[{host:'127.0.0.1',port:7890}]);assert(socket.paused);
+  assert.equal(socket.writes[0].toString(),'CONNECT turn.cloudflare.com:443 HTTP/1.1\r\nHost: turn.cloudflare.com:443\r\nProxy-Authorization: Basic '+Buffer.from('测试:local-secret').toString('base64')+'\r\n\r\n');
+  socket.destroy();
+});
+test('proxy rejects arbitrary destinations, malformed configuration and credential types before connecting',async t=>{
+  const fake=proxySetup(t,[]);
+  for(const [server,proxy] of [[{...relay(),hostname:'127.0.0.1'},httpProxy],[relay(),{...httpProxy,host:'a\r\nInjected'}],[relay(),{...httpProxy,port:0}],[relay(),{...httpProxy,password:{}}]])
+    await assert.rejects(()=>httpConnectSocket(server,proxy),/Invalid/);
+  assert.equal(fake.sockets.length,0);
+});
+test('proxy refusal, oversized/truncated header and unsolicited bytes close the owned socket',async t=>{
+  for(const parts of [['HTTP/1.1 407 Authentication required\r\n\r\n'],['x'.repeat(16385)],['HTTP/1.1 200 OK\r\n'],['HTTP/1.1 200 OK\r\n\r\nextra']]){
+    const fake=proxySetup(t,parts,{eof:true});
+    await assert.rejects(()=>httpConnectSocket(relay(),httpProxy),/TURN proxy/);
+    assert(fake.sockets[0].destroyed);assert.equal(fake.sockets[0].listenerCount('data'),0);
+  }
+});
+test('proxy timeout is bounded and cancels its pending socket',async t=>{
+  const fake=proxySetup(t,[]);t.mock.timers.enable({apis:['setTimeout']});
+  const pending=httpConnectSocket(relay(),httpProxy);const rejected=assert.rejects(pending,/timeout/);
+  t.mock.timers.tick(7001);await rejected;assert(fake.sockets[0].destroyed);
+});
+test('TLS over HTTP proxy retains certificate verification and closes raw tunnel with the adapter',async t=>{
+  const proxy=proxySetup(t,['HTTP/1.1 200 OK\r\n\r\n']);const fake=setup(t);
+  const tunnel=await tlsTurnTunnel(relay(),()=>{},httpProxy);
+  assert.deepEqual(fake.options[0],{socket:proxy.sockets[0],servername:'turn.cloudflare.com',rejectUnauthorized:true});
+  assert.equal(proxy.sockets[0].paused,false);tunnel.close();
+  assert(fake.sockets[0].destroyed);assert(proxy.sockets[0].destroyed);assert(fake.datagrams[0].closed);
 });

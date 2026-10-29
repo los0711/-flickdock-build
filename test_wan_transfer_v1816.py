@@ -152,13 +152,37 @@ class WanRecovery(unittest.TestCase):
             self.service._begin(self.identifier,state,dict(generation=2,iceServers=[],relayAllowed=False))
         self.assertFalse(fake.control.call_args.args[0]['preferTls'])
 
+    def test_direct_session_does_not_resolve_a_proxy(self):
+        state=self.state();fake=unittest.mock.Mock()
+        with patch('wan_transfer.WebRTCStream',return_value=fake),patch('wan_transfer._turn_http_proxy',side_effect=AssertionError('Direct P2P must not query proxy')):
+            self.service._begin(self.identifier,state,dict(generation=2,iceServers=[],relayAllowed=False))
+        self.assertEqual(fake.control.call_args.args[0]['proxies'],{})
+
+    def test_turn_uses_qt_proxy_selection_and_honors_bypass(self):
+        from PySide6.QtNetwork import QNetworkProxy
+        from wan_transfer import _turn_http_proxy
+        proxy=QNetworkProxy(QNetworkProxy.ProxyType.HttpProxy,'127.0.0.1',7890,'qa-user','qa-secret')
+        bypass=QNetworkProxy(QNetworkProxy.ProxyType.NoProxy)
+        with patch('wan_transfer.QNetworkProxyFactory.proxyForQuery',return_value=[proxy,bypass]) as query:
+            self.assertEqual(_turn_http_proxy(5349),dict(type='http',host='127.0.0.1',port=7890,username='qa-user',password='qa-secret'))
+            self.assertEqual(query.call_args.args[0].url().host(),'turn.cloudflare.com')
+            self.assertEqual(query.call_args.args[0].url().port(),5349)
+        with patch('wan_transfer.QNetworkProxyFactory.proxyForQuery',return_value=[bypass,proxy]):self.assertIsNone(_turn_http_proxy(443))
+
+    def test_selected_proxy_is_forwarded_to_the_native_tls_adapter(self):
+        state=self.state();fake=unittest.mock.Mock();proxy=dict(type='http',host='127.0.0.1',port=7890)
+        servers=[dict(urls=['turns:turn.cloudflare.com:443?transport=tcp','turns:turn.cloudflare.com:5349?transport=tcp'],username='qa',credential='private')]
+        with patch('wan_transfer.WebRTCStream',return_value=fake),patch('wan_transfer._turn_http_proxy',side_effect=lambda port:proxy if port==443 else None):
+            self.service._begin(self.identifier,state,dict(generation=2,iceServers=servers,relayAllowed=False))
+        self.assertEqual(fake.control.call_args.args[0]['proxies'],{'443':proxy,'5349':None})
+
 class TurnTLS(unittest.TestCase):
     def test_real_adapter_framing_and_transport_failure_contracts(self):
         root=Path(__file__).parent/'p2p';node=root/'runtime'/('node.exe' if sys.platform=='win32' else 'node')
         if not node.is_file():self.skipTest('Build host must prepare pinned WebRTC assets')
         result=subprocess.run([str(node),'--test',str(root/'test-turn-tls.mjs')],cwd=root,capture_output=True,text=True,timeout=30)
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-        self.assertIn('pass 8',result.stdout)
+        self.assertIn('pass 13',result.stdout)
 
 class NativeStream(unittest.TestCase):
     def setUp(self):

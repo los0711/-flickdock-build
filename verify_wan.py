@@ -39,9 +39,16 @@ def run(argv,load_font):
                 assert services[1].accept(offer['id'],destination)
             except Exception as error:finish(type(error).__name__+': '+str(error))
         services[1].offer_received.connect(receive)
+        def native_diagnostic(peer,value):
+            event=value.get('event',{})
+            if event.get('type')=='transport':
+                report.setdefault('native_transports',[]).append(dict(peer=peer,generation=value.get('generation'),
+                    transport=event.get('relayTransport'),proxy_used=bool(event.get('proxyUsed')),elapsed_seconds=time.perf_counter()-started))
         for index,service in enumerate(services):
             service.completed.connect(lambda value,index=index:completed[index].append(value))
-            service.progress.connect(lambda value:states.append({key:value.get(key) for key in ('state','route','received','total')}))
+            service.progress.connect(lambda value,index=index:states.append(dict(peer=index,elapsed_seconds=time.perf_counter()-started,
+                **{key:value.get(key) for key in ('state','route','received','total')})))
+            service._native.connect(lambda value,index=index:native_diagnostic(index,value))
             service.status_changed.connect(lambda value:print(value,flush=True))
         def poll():
             nonlocal identifier
