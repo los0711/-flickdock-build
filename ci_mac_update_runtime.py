@@ -16,7 +16,7 @@ def main(binary,output):
         root=Path(directory).resolve();target=root/'FlickDock.app'
         shutil.copytree(source,target,symlinks=True)
         probe=root/'probe.py'
-        probe.write_text('''import json,sys\nfrom pathlib import Path\nfrom PySide6.QtCore import QCoreApplication,QTimer\na=QCoreApplication(sys.argv)\nif '--post-update-ready' in sys.argv:\n i=sys.argv.index('--post-update-ready');QTimer.singleShot(20,lambda:Path(sys.argv[i+1]).write_text(sys.argv[i+2]));QTimer.singleShot(1000,a.quit);a.exec()\nelif '--verify-platform' in sys.argv:\n Path(sys.argv[-1]).write_text(json.dumps(dict(ok=True,version='1.8.21',frozen=bool(getattr(sys,'frozen',False)))))\n''')
+        probe.write_text('''import json,sys,os\nfrom pathlib import Path\nfrom PySide6.QtCore import QCoreApplication,QTimer\na=QCoreApplication(sys.argv)\nif '--post-update-ready' in sys.argv:\n i=sys.argv.index('--post-update-ready');marker=Path(sys.argv[i+1]);root=marker.parent.parent\n (root/'probe-first-pid').write_text(str(os.getpid()));a.aboutToQuit.connect(lambda:(root/'probe-exited').write_text('yes'))\n QTimer.singleShot(20,lambda:marker.write_text(sys.argv[i+2]));QTimer.singleShot(1000,a.quit);a.exec()\nelif '--verify-platform' in sys.argv:\n Path(sys.argv[-1]).write_text(json.dumps(dict(ok=True,version='1.8.21',frozen=bool(getattr(sys,'frozen',False)))))\n''')
         subprocess.run([sys.executable,'-m','PyInstaller','--noconfirm','--onedir','--windowed',
             '--name','FlickDock','--osx-bundle-identifier','com.flickdock.app',
             '--distpath',str(root/'probe-dist'),'--workpath',str(root/'probe-work'),
@@ -45,6 +45,13 @@ def main(binary,output):
         assert self_version=='1.8.21'
         reader=json.loads((root/'runtime-reader.json').read_text());assert reader['cold_pyz_read_after_swap'] and reader['independent_executable']
         assert old_hash!=hashlib.sha256((target/'Contents/MacOS/FlickDock').read_bytes()).hexdigest()
+        deadline=time.monotonic()+10
+        from mac_updates import _pid_alive
+        while time.monotonic()<deadline:
+            pid_path=root/'probe-first-pid'
+            if pid_path.is_file() and (root/'probe-exited').is_file() and not _pid_alive(int(pid_path.read_text())):break
+            time.sleep(.1)
+        else:raise AssertionError('First replacement process did not exit before reopening')
         # Exit/reopen from the canonical target must run the replacement.
         report=root/'reopened.json'
         subprocess.run([str(target/'Contents/MacOS/FlickDock'),'--verify-platform',str(report)],check=True,timeout=20)

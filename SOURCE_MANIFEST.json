@@ -585,8 +585,8 @@
     },
     {
       "path": "ci_mac_update_runtime.py",
-      "size": 4790,
-      "sha256": "52fb9f96d55ec7833f27852fa3a6974b188959b9a702274bcfe6fe27b157c873"
+      "size": 5368,
+      "sha256": "1d74302096b25f86a2902067aa0723e19e826121aa89f87b0eb1fdfdc69b7978"
     },
     {
       "path": "clipboard_sync.py",
