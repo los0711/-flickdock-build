@@ -35,6 +35,7 @@ def run(argv,load_font):
             offers.append(offer)
             try:
                 assert not list(destination.iterdir()),'Files written before consent'
+                assert offer.get('device_code')==services[0].code,'Sender device code missing from the incoming request'
                 assert services[1].accept(offer['id'],destination)
             except Exception as error:finish(str(error))
         services[1].offer_received.connect(receive)

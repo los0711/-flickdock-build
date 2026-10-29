@@ -5,7 +5,7 @@ const LEGACY_WINDOW=4*1024*1024, LEGACY_MESSAGE=32*1024;
 const WINDOW=16*1024*1024, MESSAGE=64*1024;
 rtc.initLogger('Fatal',()=>{});
 rtc.setSctpSettings({recvBufferSize:32*1024*1024,sendBufferSize:16*1024*1024,maxChunksOnQueue:16384});
-let pc,channel,closed=false,unacked=0,pendingOutput=0,wake=()=>{},statsTimer;
+let pc,channel,closed=false,unacked=0,acknowledged=0,pendingOutput=0,wake=()=>{},statsTimer;
 let sendWindow=LEGACY_WINDOW,sendMessage=LEGACY_MESSAGE,credit=0,creditTimer;
 const flowNonce=randomBytes(16).toString('hex');
 function frame(kind,body,done) {
@@ -17,7 +17,7 @@ function frame(kind,body,done) {
 const event=value=>frame('J',value);
 function stats() {
   if(!pc||closed)return;
-  event({type:'stats',sent:pc.bytesSent(),received:pc.bytesReceived()});
+  event({type:'stats',sent:pc.bytesSent(),received:pc.bytesReceived(),delivered:acknowledged});
 }
 function stop() {
   if(closed)return;stats();closed=true;wake();clearTimeout(creditTimer);clearInterval(statsTimer);
@@ -48,7 +48,7 @@ function bind(dc) {
     if(data.length===5&&data[0]===2) {
       const count=data.readUInt32BE(1);
       if(count>unacked)throw new Error('Invalid credit');
-      unacked-=count;wake();return;
+      unacked-=count;acknowledged+=count;wake();return;
     }
     if(data[0]!==1||data.length<2||data.length>MESSAGE+1)throw new Error('Invalid channel frame');
     const payload=data.subarray(1);

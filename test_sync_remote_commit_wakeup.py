@@ -207,10 +207,31 @@ def test_all_bytes_sent_is_waiting_for_cloud_receipt():
         engine.close()
 
 
+def test_pending_metadata_refreshes_while_another_transfer_is_busy():
+    with tempfile.TemporaryDirectory(prefix='flickdock-busy-pending-') as root:
+        service=Service('sender');adapter=Adapter()
+        engine=ShelfSync(root,service,adapter,poll_ms=600000,remote_poll_ms=600000)
+        seen=[];engine.transfers_changed.connect(seen.append)
+        try:
+            service.account_changed.emit({'id':'poll-account'})
+            assert spin(lambda:service.api.pulls>=1 and not engine.running)
+            engine.remote_transfers=[];seen.clear();engine.running=True
+            cursor=engine.state['cursor'];pulls=service.api.pulls
+            engine.request_refresh();engine.request_refresh()
+            assert spin(lambda:any(row.get('phase')=='remote' for batch in seen for row in batch))
+            assert engine.running,'The ongoing transfer must remain running'
+            assert service.api.pulls==pulls+1,'Concurrent hints share one metadata request'
+            assert engine.state['cursor']==cursor and adapter.view['permanent']==[]
+            service.api.was_cancelled=True;engine.request_refresh()
+            assert spin(lambda:not engine.remote_transfers),'Cancellation must clear the placeholder while busy'
+        finally:engine.close()
+
+
 if __name__=='__main__':
     test_lost_commit_hint_still_starts_download()
     test_own_upload_does_not_start_remote_poll()
     test_cancel_hint_and_lost_cancel_hint_clear_remote_placeholder()
     test_disconnected_socket_recovers_unseen_commit_without_idle_poll()
     test_all_bytes_sent_is_waiting_for_cloud_receipt()
+    test_pending_metadata_refreshes_while_another_transfer_is_busy()
     print('PASS remote commit/cancel handoff with or without hint, disconnected fallback, idle/own no-poll, receipt phase')

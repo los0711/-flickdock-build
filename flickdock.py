@@ -818,7 +818,6 @@ class ContentsPopup(QFrame):
         query=self.search_edit.text().strip().casefold() if hasattr(self,'search_edit') else ''
         return [ref for ref in reversed(self.shelf.display_refs()) if
             (ref in transfers if self.category=='uploading' else
-             not self.shelf.content.is_pending(ref) and
              (self.category=='all' or self.shelf.content.category(ref)==self.category))
              and (not query or query in self.shelf.content.title(ref).casefold())]
 
@@ -932,8 +931,8 @@ class ContentsPopup(QFrame):
         for key,button in self.sidebar_buttons.items():
             label=next(name for name_key,name in self.CATEGORIES if name_key==key)
             if key=='uploading':count=len(self.shelf.content.transfers)
-            elif key=='all':count=sum(not self.shelf.content.is_pending(r) for r in self.shelf.display_refs())
-            else:count=sum(self.shelf.content.category(r)==key for r in self.shelf.display_refs() if not self.shelf.content.is_pending(r))
+            elif key=='all':count=len(self.shelf.display_refs())
+            else:count=sum(self.shelf.content.category(r)==key for r in self.shelf.display_refs())
             button.setText(label)
             self.nav_counts[key].setText(str(count) if count else '')
             self.nav_counts[key].setVisible(bool(count))
@@ -2495,6 +2494,15 @@ class ShelfWindow(QWidget):
 
     def mousePressEvent(self, event):
         self.touch()
+        if event.button()==Qt.MouseButton.LeftButton:
+            # Cocoa can deliver a toolbar-edge press to the frameless host.
+            # Reserve the entire painted button target before title dragging.
+            for button in (self.cloud_button,self.pin_button,self.expand_button,self.menu_button,self.close_button):
+                if button.isVisible() and button.geometry().contains(event.position().toPoint()):
+                    self.drag_origin=None
+                    if button.isEnabled():
+                        self._header_pressed_button=button;button.setDown(True)
+                    event.accept();return
         local=self.card.mapFrom(self,event.position().toPoint())
         if event.button() == Qt.MouseButton.LeftButton and self.card.rect().contains(local) and local.y()<60:
             self.geometry_morph.stop()
@@ -2503,6 +2511,10 @@ class ShelfWindow(QWidget):
 
     def mouseMoveEvent(self, event):
         self.touch()
+        button=getattr(self,'_header_pressed_button',None)
+        if button is not None:
+            button.setDown(button.geometry().contains(event.position().toPoint()))
+            event.accept();return
         if self.drag_origin and event.buttons() & Qt.MouseButton.LeftButton:
             target = event.globalPosition().toPoint() - self.drag_origin
             self.geometry_morph.jump(QRect(target, self.visual_geometry().size()))
@@ -2510,6 +2522,13 @@ class ShelfWindow(QWidget):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        button=getattr(self,'_header_pressed_button',None)
+        if button is not None:
+            self._header_pressed_button=None;button.setDown(False)
+            inside=button.isVisible() and button.isEnabled() and button.geometry().contains(event.position().toPoint())
+            event.accept()
+            if inside:button.click()
+            return
         if self.drag_origin:
             self.drag_origin = None
             self.manager.save()

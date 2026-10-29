@@ -100,6 +100,27 @@ class FeedbackTests(unittest.TestCase):
             top=control.y();bottom=view.view_segment.height()-control.geometry().bottom()-1
             self.assertLessEqual(abs(top-bottom),1,(top,bottom))
 
+    def test_host_routed_expand_button_edges_never_start_title_drag(self):
+        self.fixture.overview();flush()
+        button=self.shelf.expand_button
+        for point in (QPoint(1,1),QPoint(30,1),QPoint(1,30),QPoint(30,30),QPoint(16,16)):
+            before=self.shelf.expanded
+            QTest.mouseClick(self.shelf,Qt.LeftButton,pos=button.mapTo(self.shelf,point));flush()
+            self.assertIsNone(self.shelf.drag_origin)
+            self.assertNotEqual(self.shelf.expanded,before)
+
+    def test_mac_green_settings_control_zooms_and_restores(self):
+        from PySide6.QtWidgets import QPushButton
+        with tempfile.TemporaryDirectory() as root,patch.object(app_settings.sys,'platform','darwin'):
+            dialog=app_settings.SettingsDialog(app_settings.SettingsStore(Path(root)))
+            dialog.show();flush();before=dialog.geometry()
+            try:
+                green=dialog.findChildren(QPushButton,'settingsTraffic')[2]
+                QTest.mouseClick(green,Qt.LeftButton);flush()
+                self.assertNotEqual(dialog.geometry(),before)
+                QTest.mouseClick(green,Qt.LeftButton);flush();self.assertEqual(dialog.geometry(),before)
+            finally:dialog.close();dialog.deleteLater();flush()
+
     def test_settings_segments_keep_one_selection_on_repeated_clicks(self):
         from PySide6.QtWidgets import QPushButton
         with tempfile.TemporaryDirectory() as root:
@@ -131,6 +152,23 @@ class FeedbackTests(unittest.TestCase):
             QTest.mouseClick(box,Qt.LeftButton);choose.assert_called_once_with('permanent')
         APP.sendEvent(box,QEvent(QEvent.Enter));self.assertTrue(box._hovered)
         APP.sendEvent(box,QEvent(QEvent.Leave));self.assertFalse(box._hovered)
+
+    def test_incoming_cloud_upload_appears_in_an_already_open_overview_and_preview(self):
+        self.shelf.files['permanent']=[]
+        view=self.fixture.overview();flush();self.fixture.manager._sync_transfer_refs=set()
+        state=dict(id='live-remote',phase='remote',remote=True,name='另一台设备.png',kind='file',received=0,total=1000000)
+        flickdock.ShelfManager._transfers_changed(self.fixture.manager,[state]);flush()
+        ref='flickdock:transfer:live-remote'
+        self.assertIn(ref,view.visible_refs());self.assertFalse(view.empty_state.isVisible())
+        self.assertEqual(view.nav_counts['all'].text(),'1');self.assertEqual(view.count_label.text(),'1 项')
+        view.set_category('images');flush();self.assertIn(ref,view.visible_refs())
+        self.assertEqual(view.preview.current_path,ref);self.assertFalse(view.preview.open_button.isEnabled())
+        self.assertEqual(self.shelf.zones['permanent'].caption.text(),'1 项')
+        state['received']=400000
+        flickdock.ShelfManager._transfers_changed(self.fixture.manager,[state]);flush()
+        self.assertEqual(view.preview.current_path,ref)
+        self.assertEqual(self.shelf.content.transfers[ref]['received'],400000)
+        self.assertFalse(self.shelf.content.mime_for([ref]).hasUrls())
 
     def test_dock_drop_zone_blue_border_follows_hover_without_opening_overview(self):
         from PySide6.QtCore import QEvent

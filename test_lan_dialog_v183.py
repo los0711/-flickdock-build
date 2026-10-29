@@ -112,6 +112,16 @@ class LanDialogTests(unittest.TestCase):
         self.assertEqual(panel.peer_code_input.text(),'')
         self.assertEqual(self.service.sent[-1],('ABCD2345',[str(file)]))
 
+    def test_remote_offer_displays_sender_device_code_and_copies_it(self):
+        from PySide6.QtWidgets import QLabel
+        panel=self.dialog.panel;panel._wan=True
+        panel.show_offer(dict(id='device-code',peer='远程电脑',names=['file.txt'],count=1,total=12,code='',device_code='ABCD2345'))
+        APP.processEvents();card=panel._rows['device-code']['extra']
+        caption=card.findChild(QLabel,'lanOfferCodeCaption')
+        self.assertEqual(caption.text(),'设备码');self.assertTrue(caption.isVisible())
+        value=card.findChild(QPushButton,'lanOfferCodeValue');self.assertEqual(value.text(),'ABCD2345')
+        value.click();self.assertEqual(APP.clipboard().text(),'ABCD2345')
+
     def test_remote_eta_and_turn_usage_survive_terminal_history(self):
         panel=self.dialog.panel;panel._wan=True
         event=dict(id='turn-qa',direction='send',peer='Mac',state='transferring',total=20_000_000,received=2_000_000,route='relay',relay_bytes=2_050_000)

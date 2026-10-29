@@ -28,6 +28,11 @@ class WanRecovery(unittest.TestCase):
         identity=self.service.device_id;other=WanTransferService(self.root,enabled=False)
         try:self.assertEqual(identity,other.device_id);self.assertEqual(hashlib.sha256((self.root/'wan-device.key').read_bytes()).hexdigest(),identity)
         finally:other.close();other.deleteLater()
+
+    def test_incoming_request_uses_the_signaled_sender_device_code(self):
+        offers=[];self.service.offer_received.connect(offers.append)
+        self.message(type='request',peer=dict(id='d'*64,name='发送方'),token='b'*64,digest='c'*64,total='12',count=1,names=['file.txt'],deviceCode='ABCD2345')
+        self.assertEqual(offers[0]['device_code'],'ABCD2345')
     def test_request_not_acknowledged_by_local_queue(self):
         state=self.state();state.pop('requested');request=dict(state['request'])
         self.service._handle_command(dict(_connect=True,**request))
@@ -90,6 +95,25 @@ class NativeStream(unittest.TestCase):
         receiver=threading.Thread(target=consume,daemon=True);receiver.start()
         self.peers[0].sendall(original);self.peers[0].close();receiver.join(10)
         self.assertFalse(receiver.is_alive());self.assertEqual(failure,[]);self.assertEqual(hashlib.sha256(received).digest(),hashlib.sha256(original).digest())
+
+    def test_network_progress_counts_only_acknowledged_file_bytes(self):
+        header=b'manifest-header';body=os.urandom(2*1024*1024);trailer=b'sha256-trailer'
+        original=header+body+trailer;received=bytearray()
+        def consume():
+            while len(received)<len(original):
+                try:part=self.peers[1].recv(65536)
+                except TimeoutError:continue
+                if not part:break
+                received.extend(part)
+        thread=threading.Thread(target=consume,daemon=True);thread.start()
+        self.peers[0].sendall(header);self.peers[0].set_payload_offset(123)
+        self.peers[0].send_payload(body);self.peers[0].sendall(trailer);thread.join(8)
+        deadline=time.monotonic()+3
+        while self.peers[0].payload_progress()<123+len(body) and time.monotonic()<deadline:
+            self.peers[0].traffic(refresh=True);time.sleep(.01)
+        self.assertEqual(bytes(received),original)
+        self.assertEqual(self.peers[0].payload_progress(),123+len(body))
+        self.assertFalse(self.peers[0]._payload_spans)
 
     def test_native_file_pipeline_preserves_folder_bytes_and_native_usage(self):
         from lan_transfer import LanTransferService,_Transfer

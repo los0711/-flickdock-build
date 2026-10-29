@@ -46,6 +46,16 @@ def rounded_popup(popup, radius=10):
         popup.installEventFilter(popup._rounded_popup_clip)
     popup._rounded_popup_clip.update_clip(popup)
 
+
+def toggle_window_zoom(window):
+    """Zoom a frameless utility window in its current work area, then restore."""
+    previous=getattr(window,'_flickdock_zoom_restore',None)
+    if previous is not None:
+        window.setGeometry(previous);window._flickdock_zoom_restore=None
+    elif window.screen() is not None:
+        window._flickdock_zoom_restore=window.geometry()
+        window.setGeometry(window.screen().availableGeometry())
+
 def readable_size(value):
     value=int(value)
     return value+(1 if value>=12 else 2) if sys.platform=='win32' else value

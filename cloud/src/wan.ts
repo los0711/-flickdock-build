@@ -4,7 +4,7 @@ type RelayGate={epoch:number;blocked:boolean};
 type Credential={username:string;expires:number;revoke_pending?:boolean};
 type Device={id:string;name:string;platform:string;online?:boolean;last?:number};
 type Seat=Device&{ip:string;connected:number;window:number;messages:number};
-type Session={id:string;sender:Device;receiver:Device;token:string;digest:string;total:string;count:number;names:string[];accepted:boolean;generation:number;expires:number;done:string[];connected?:string[]};
+type Session={id:string;sender:Device;receiver:Device;token:string;digest:string;total:string;count:number;names:string[];accepted:boolean;generation:number;expires:number;done:string[];connected?:string[];sender_code?:string};
 export interface WanEnv extends RelayBudgetEnv {WAN:DurableObjectNamespace<WanHub>;TURN_KEY_ID?:string;TURN_KEY_TOKEN?:string;TURN_ENABLED?:string;}
 const json=(value:object,status=200)=>Response.json({schema_version:1,...value},{status,headers:{'Cache-Control':'no-store'}});
 const hash=async(value:string)=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value))),b=>b.toString(16).padStart(2,'0')).join('');
@@ -94,7 +94,7 @@ export class WanHub extends DurableObject<WanEnv>{
     if(value.accepted){
       this.send(socket,{type:'resumed',id:value.id,accepted:true,generation:value.generation,settled:value.done.length===2});
     }else if(seat.id===value.receiver.id){
-      this.send(socket,{type:'request',id:value.id,peer:value.sender,token:value.token,digest:value.digest,total:value.total,count:value.count,names:value.names});
+      this.send(socket,{type:'request',id:value.id,peer:value.sender,deviceCode:value.sender_code||'',token:value.token,digest:value.digest,total:value.total,count:value.count,names:value.names});
     }else this.send(socket,{type:'waiting',id:value.id,peer:value.receiver});
   }
   private async removeSession(value:Session){
@@ -157,9 +157,9 @@ export class WanHub extends DurableObject<WanEnv>{
         const receiver=this.peer(target),recipient=this.socket(target);
         if(!receiver||!recipient)throw new Error('对方设备不在线。');
         if(await this.ctx.storage.get('session:'+request.id))throw new Error('传输请求已存在。');
-        const value:Session={id:request.id,sender:publicDevice(seat),receiver,token:request.token,digest:request.digest,total:request.total,count:request.count,names:request.names,accepted:false,generation:0,expires:Date.now()+86400000,done:[]};
+        const value:Session={id:request.id,sender:publicDevice(seat),receiver,token:request.token,digest:request.digest,total:request.total,count:request.count,names:request.names,accepted:false,generation:0,expires:Date.now()+86400000,done:[],sender_code:await this.ctx.storage.get<string>('own-code:'+seat.id)||''};
         await this.ctx.storage.put({['session:'+value.id]:value,['pending:'+value.sender.id+':'+value.id]:{expires:value.expires},['pending:'+value.receiver.id+':'+value.id]:{expires:value.expires}});
-        this.send(recipient,{type:'request',id:value.id,peer:value.sender,token:value.token,digest:value.digest,total:value.total,count:value.count,names:value.names});
+        this.send(recipient,{type:'request',id:value.id,peer:value.sender,deviceCode:value.sender_code,token:value.token,digest:value.digest,total:value.total,count:value.count,names:value.names});
         this.send(socket,{type:'waiting',id:value.id,peer:receiver});await this.code(recipient);return;
       }
       const value=await this.session(request.id,seat),other=value.sender.id===seat.id?value.receiver.id:value.sender.id;

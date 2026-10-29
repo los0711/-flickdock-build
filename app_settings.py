@@ -1313,7 +1313,8 @@ class SettingsDialog(QDialog):
         header.insertWidget(header.count()-1,self.dock_button)
         if sys.platform=='darwin':
             traffic=QWidget(self.title_bar);dots=QHBoxLayout(traffic);dots.setContentsMargins(0,0,0,0);dots.setSpacing(8)
-            for color,action in (('#FF5F56',self.reject),('#FFBD2E',lambda:(self.mini_requested.emit(),self.reject())),('#27C93F',None)):
+            from native_ui_common import toggle_window_zoom
+            for color,action in (('#FF5F56',self.reject),('#FFBD2E',lambda:(self.mini_requested.emit(),self.reject())),('#27C93F',lambda:toggle_window_zoom(self))):
                 dot=QPushButton(traffic);dot.setFixedSize(12,12);dot.setObjectName('settingsTraffic')
                 dot.setStyleSheet(f'background:{color};border:0;border-radius:6px;padding:0;')
                 dot.setAutoDefault(False)

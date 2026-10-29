@@ -1074,7 +1074,9 @@ class LanPanel(QFrame):
         row['history_count'] = int(offer['count'])
         names = '、'.join(str(name) for name in offer.get('names', [])[:3])
         if len(offer.get('names', [])) > 3: names += ' 等'
-        row['detail'].setText(f"{names} · {_size(offer['total'])} · 确认码 {offer['code']}")
+        confirmation=str(offer.get('device_code') or offer.get('code') or '').strip()
+        code_label='设备码' if self._wan else '确认码'
+        row['detail'].setText(f"{names} · {_size(offer['total'])}"+(f" · {code_label} {confirmation}" if confirmation else ''))
         row['heading'].hide(); row['detail'].hide(); row['bar'].hide()
 
         card = QFrame(row['frame']); card.setObjectName('lanOfferCard')
@@ -1091,14 +1093,15 @@ class LanPanel(QFrame):
         header.addLayout(identity, 1)
         code = QFrame(card); code.setObjectName('lanOfferCode')
         code_layout = QVBoxLayout(code); code_layout.setContentsMargins(0,0,0,0); code_layout.setSpacing(2)
-        caption = _label('确认码', code); caption.setObjectName('lanOfferCodeCaption')
+        caption = _label(code_label, code); caption.setObjectName('lanOfferCodeCaption')
         caption.setMinimumHeight(14)
         caption.setAlignment(Qt.AlignmentFlag.AlignRight)
-        code_value = _CopyCodeButton(str(offer['code']), code); code_value.setObjectName('lanOfferCodeValue')
+        code_value = _CopyCodeButton(confirmation or '暂不可用', code); code_value.setObjectName('lanOfferCodeValue')
         caption.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         code_value.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
-        code_value.setAccessibleName('与发送方核对六位数字 ' + str(offer['code']))
+        code_value.setAccessibleName(('点击复制发送方设备码 ' if self._wan else '与发送方核对六位数字 ') + confirmation)
         code_layout.addWidget(caption); code_layout.addWidget(code_value)
+        code.setVisible(self._wan or bool(confirmation))
         header.addWidget(code)
         contents.addLayout(header)
         files=QHBoxLayout();files.setSpacing(8)
@@ -1296,8 +1299,9 @@ class LanDialog(QDialog):
         title_row = QHBoxLayout(self.title_bar); title_row.setContentsMargins(20,0,20,0);title_row.setSpacing(12)
         self.traffic_buttons=[]
         if sys.platform=='darwin':
+            from native_ui_common import toggle_window_zoom
             controls=QHBoxLayout();controls.setSpacing(8)
-            for value,callback in (('#FF5F56',self.close),('#FFBD2E',lambda:self._navigate('mini')),('#27C93F',None)):
+            for value,callback in (('#FF5F56',self.close),('#FFBD2E',lambda:self._navigate('mini')),('#27C93F',lambda:toggle_window_zoom(self))):
                 button=_button('',self.title_bar);button.setFixedSize(12,12)
                 button.setStyleSheet(f'QPushButton{{background:{value};border:0;border-radius:6px;padding:0;min-height:0;}}')
                 if callback:button.clicked.connect(callback)

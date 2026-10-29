@@ -507,10 +507,25 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
           // whole-part SHA pass from the Workers Free CPU budget.
           let source:ReadableStream<Uint8Array>|Uint8Array=data!,received=0,lastProgress=0;
           if(streamed){
-            source=request.body!.pipeThrough(new TransformStream<Uint8Array,Uint8Array>({transform(chunk,controller){
-              received+=chunk.byteLength;controller.enqueue(chunk);
-              const now=Date.now();if(now-lastProgress>=750){lastProgress=now;announceProgress(env,ctx,owner,value,value.verified_size+received);}
-            }})).pipeThrough(new FixedLengthStream(expected));
+            // Network chunks can be a few KiB. Calling JS for every chunk
+            // exhausts Workers Free's CPU budget on 64 MiB parts. Native BYOB
+            // batches a MiB before entering JS; buffers remain bounded and
+            // FixedLengthStream retains R2's known-length/checksum contract.
+            let byob:ReadableStreamBYOBReader|null=null;
+            try{byob=request.body!.getReader({mode:'byob'});}catch{}
+            const fallback=byob?null:request.body!.getReader();
+            source=new ReadableStream<Uint8Array>({
+              async pull(controller){
+                const buffer=byob?new Uint8Array(1024*1024):null;
+                const result=byob?(typeof byob.readAtLeast==='function'?await byob.readAtLeast(buffer!.length,buffer!):await byob.read(buffer!)):await fallback!.read();
+                if(result.value?.byteLength){
+                  received+=result.value.byteLength;controller.enqueue(result.value);
+                  const now=Date.now();if(now-lastProgress>=750){lastProgress=now;announceProgress(env,ctx,owner,value,value.verified_size+received);}
+                }
+                if(result.done)controller.close();
+              },
+              cancel(reason){return (byob??fallback!).cancel(reason);}
+            },{highWaterMark:0}).pipeThrough(new FixedLengthStream(expected));
           }
           const stored=await env.FILES.put(key,source,{sha256:hash});
           if(!stored||stored.size!==expected||!stored.checksums.sha256||hex(new Uint8Array(stored.checksums.sha256))!==hash){

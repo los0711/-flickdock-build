@@ -183,7 +183,7 @@ class TransferUITests(unittest.TestCase):
             active_compact=opaque_artwork(compact)
             removed=self.shelf.content.transfers.pop(ref);normal_compact=opaque_artwork(compact);self.shelf.content.transfers[ref]=removed
             self.assertNotEqual(active_compact,normal_compact,'compact shelf needs a small progress badge')
-            popup=self.overview();self.assertNotIn(ref,popup.visible_refs())
+            popup=self.overview();self.assertIn(ref,popup.visible_refs())
             popup.set_category('uploading');popup.preview.show_path(ref,force=True);flush()
             item=next(item for item in popup.rows_body.findChildren(IconItem) if item.ref==ref)
             active=opaque_artwork(item)
@@ -251,7 +251,7 @@ class TransferUITests(unittest.TestCase):
         with patch.object(subject.MediaPreview,'set_source',side_effect=AssertionError('Pending content cannot play')),\
              patch.object(QDesktopServices,'openUrl',side_effect=AssertionError('Pending content cannot open')),\
              patch.object(subject.QMessageBox,'warning',side_effect=AssertionError('Pending content cannot open modal errors')):
-            popup=self.overview();self.assertNotIn(ref,popup.visible_refs())
+            popup=self.overview();self.assertIn(ref,popup.visible_refs())
             popup.set_category('uploading');popup.preview.show_path(ref,force=True)
             self.assertIs(popup.preview.stack.currentWidget(),popup.preview.icon)
             self.assertFalse(popup.preview.copy_button.isEnabled())
@@ -315,7 +315,7 @@ class TransferUITests(unittest.TestCase):
               for index in range(4)]
         popup=self.overview()
         self.assertEqual(popup.category,'all')
-        self.assertEqual(popup.visible_refs(),[],'active transfers stay outside the completed list')
+        self.assertEqual(popup.visible_refs(),list(reversed(refs)),'pending transfers appear in the open overview')
         self.assertTrue(popup.transfer_strip.isVisible())
         self.assertEqual(popup._strip_refs,refs[-1:])
         self.assertEqual(sum(row.isVisible() for row,*_ in popup.strip_rows),1)
@@ -396,7 +396,7 @@ class TransferUITests(unittest.TestCase):
         popup.set_category('uploading');self.assertIn(path,popup.visible_refs())
         pending=self.pending('远端尚未上传完的文件.mp4',remote=True)
         popup.set_category('all');self.assertIn(path,popup.visible_refs())
-        self.assertNotIn(pending,popup.visible_refs())
+        self.assertIn(pending,popup.visible_refs())
         popup.set_category('uploading');self.assertIn(pending,popup.visible_refs())
 
     def test_selected_preview_uses_same_cloud_state_mark_as_file_artwork(self):

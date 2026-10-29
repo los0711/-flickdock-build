@@ -560,8 +560,11 @@ class LanTransferService(QObject):
 
     def _notify(self, transfer, state, **extra):
         transfer.updated = time.monotonic()
+        delivered=getattr(transfer.socket,'payload_progress',None)
+        received=(min(transfer.done,delivered()) if transfer.direction=='send' and callable(delivered)
+                  and state in ('transferring','reconnecting','error','interrupted','cancelled') else transfer.done)
         self.progress.emit(dict(id=transfer.transfer_id, direction=transfer.direction, peer=transfer.peer,
-                                state=state, received=transfer.done, total=transfer.total, **extra))
+                                state=state, received=received, total=transfer.total, **extra))
 
     def _connect_peer(self,peer,transfer,entries):
         raw=socket.create_connection((peer['host'],peer['port']),timeout=8)
@@ -615,6 +618,8 @@ class LanTransferService(QObject):
                         raise ValueError('接收方的续传位置无效。')
                     if index == len(files) and offset: raise ValueError('接收方的续传位置无效。')
                     transfer.done = sum(row['size'] for row in files[:index]) + offset
+                    if hasattr(stream,'set_payload_offset'):stream.set_payload_offset(transfer.done)
+                    write_payload=getattr(stream,'send_payload',stream.sendall)
                     if reply.get('pipeline')==1:receipts=_FileAcknowledgements(stream,transfer.cancel,len(files)-index)
                     last_emit = 0
                     file_buffer = bytearray(BLOCK_BYTES)
@@ -640,7 +645,7 @@ class LanTransferService(QObject):
                                 count = incoming.readinto(file_view[:min(BLOCK_BYTES, remaining)])
                                 if not count: raise ValueError('原文件已改变，请重新发起传输。')
                                 data = file_view[:count]
-                                stream.sendall(data); digest.update(data)
+                                write_payload(data); digest.update(data)
                                 transfer.done += count; remaining -= count
                                 if time.monotonic() - last_emit >= .08:
                                     self._notify(transfer, 'transferring', name=row['path'], code=code); last_emit = time.monotonic()

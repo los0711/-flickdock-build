@@ -262,8 +262,10 @@ def main(arguments=None):
                     or {case.get('window') for case in spaces.get('cases', [])} != {'edge', 'shelf'}):
                 raise RuntimeError('Native macOS Spaces collection behavior verification failed')
             frozen['cocoa_window_order'] = spaces
+            # Hosted Intel Cocoa event dispatch can spend >20s in a native
+            # readiness call. Keep the assertions intact with a bounded guard.
             subprocess.run([str(binary), '--verify-cocoa-startup', str(smoke_path)],
-                           cwd=ROOT, env=cocoa_env, check=True, timeout=20)
+                           cwd=ROOT, env=cocoa_env, check=True, timeout=120)
             cocoa = json.loads(smoke_path.read_text(encoding='utf-8'))
             if (not cocoa.get('ok') or cocoa.get('version') != APP_VERSION
                     or cocoa.get('qt_platform') != 'cocoa'

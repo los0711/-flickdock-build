@@ -289,7 +289,36 @@ class ShelfSync(QObject):
 
     def request_refresh(self):
         if self.closed or not self.account_id or not self.service.signed_in or not self.receive_enabled:return
-        if self.running:self._refresh_again=True
+        if self.running:
+            self._refresh_again=True
+            cooldown=getattr(self,'_remote_snapshot_not_before',(None,0))
+            if cooldown[0]==self.epoch and cooldown[1]>time.monotonic():
+                self.remote_poll.start(max(1,round((cooldown[1]-time.monotonic())*1000)))
+                return
+            # A long local upload/download must not postpone visibility of a
+            # different device's pending files. Read only transfer metadata;
+            # the active journal still owns content processing and its cursor.
+            if getattr(self,'_remote_snapshot_epoch',None)==self.epoch:return
+            self._remote_snapshot_epoch=self.epoch
+            cursor=str(self.state.get('cursor','0'))
+            if not cursor.isdecimal():cursor='0'
+            def visible(result,error):
+                self._remote_snapshot_epoch=None
+                if error:
+                    failures=getattr(self,'_remote_snapshot_failures',0)+1
+                    self._remote_snapshot_failures=failures
+                    delay=(self._retry_delay(error) if getattr(error,'status',0)==429 or self._quota_error(error)
+                           else min(8,.5*2**min(failures-1,4)))
+                    self._remote_snapshot_not_before=(self.epoch,time.monotonic()+delay)
+                    self.remote_poll.start(max(1,min(2147483647,round(delay*1000))))
+                    return
+                self._remote_snapshot_failures=0
+                remote=result.get('transfers')
+                if isinstance(remote,list) and len(remote)<=100:
+                    self.remote_transfers=[r for r in remote if isinstance(r,dict) and type(r.get('size')) is int
+                        and r['size']>=0 and isinstance(r.get('item_id'),str) and isinstance(r.get('upload_id'),str)]
+                    self._schedule_remote_poll();self._notify_transfers()
+            self._request('GET','/v1/sync/changes?cursor='+cursor+'&limit=1',visible)
         else:self.debounce.start(1)
 
     def remote_progress(self,value):

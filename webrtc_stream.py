@@ -19,6 +19,8 @@ class WebRTCStream:
         self._controls=deque();self._writes=deque();self._write_bytes=0;self._control_bytes=0
         self._closed=False;self._timeout=1.;self.opened=threading.Event();self.route='';self.on_signal=on_signal
         self._traffic={'sent':0,'received':0};self._stats_generation=0;self.last_activity=time.monotonic()
+        self._sent_position=0;self._payload_spans=deque();self._payload_delivered=0
+        self._delivered_position=0;self._payload_offset=0;self._payload_origin=0
         threading.Thread(target=self._reader,daemon=True,name='FlickDock-WebRTC-pipe').start()
         threading.Thread(target=self._writer,daemon=True,name='FlickDock-WebRTC-writer').start()
 
@@ -39,6 +41,7 @@ class WebRTCStream:
                     self._condition.wait(remaining)
                 if self._closed:raise ConnectionError('远程连接已中断。')
                 self._writes.append((kind,data));self._write_bytes+=len(data)
+                if kind==b'B':self._sent_position+=len(data)
             self._condition.notify_all()
     def _writer(self):
         try:
@@ -87,6 +90,10 @@ class WebRTCStream:
                                     if count>self._traffic[key]:self.last_activity=time.monotonic()
                                     self._traffic[key]=max(self._traffic[key],count)
                             self._stats_generation+=1;self._condition.notify_all()
+                            delivered=value.get('delivered')
+                            if type(delivered) is int and delivered>=self._delivered_position:
+                                self._delivered_position=delivered
+                                self._advance_payload()
                     self.on_signal(value)
                 else:raise ValueError('Invalid bridge type')
         except (OSError,EOFError,ValueError):pass
@@ -105,6 +112,28 @@ class WebRTCStream:
     def sendall(self,data):
         view=memoryview(data)
         for start in range(0,len(view),65536):self._write(b'B',view[start:start+65536].tobytes())
+    def set_payload_offset(self,offset):
+        with self._condition:
+            self._payload_offset=offset;self._payload_origin=self._payload_delivered
+    def _advance_payload(self):
+        while self._payload_spans:
+            start,end=self._payload_spans[0]
+            count=max(0,min(end,self._delivered_position)-start)
+            self._payload_delivered+=count
+            if start+count==end:self._payload_spans.popleft()
+            else:
+                self._payload_spans[0]=(start+count,end);break
+    def send_payload(self,data):
+        # Mark only file bytes, excluding manifests/checksums. A peer credit
+        # acknowledges arrival across the network, unlike local queue writes.
+        with self._condition:
+            start=self._sent_position;end=start+len(data)
+            if self._payload_spans and self._payload_spans[-1][1]==start:
+                self._payload_spans[-1]=(self._payload_spans[-1][0],end)
+            elif end>start:self._payload_spans.append((start,end))
+            self.sendall(data);self._advance_payload()
+    def payload_progress(self):
+        with self._condition:return self._payload_offset+self._payload_delivered-self._payload_origin
     def recv(self,size):
         target=bytearray(size);count=self.recv_into(target);return bytes(target[:count])
     def recv_into(self,target):

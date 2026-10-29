@@ -126,7 +126,9 @@ class WanTransferService(LanTransferService):
                         or not re.fullmatch('[a-f0-9]{64}',str(value.get('token','')))
                         or not re.fullmatch('[a-f0-9]{64}',str(value.get('digest','')))):return
                 self._pending[identifier]=dict(role='receive',peer=peer,token=value['token'],digest=value['digest'],total=total,count=value['count'],names=value['names'],ready=threading.Event(),generation=0)
-                self.offer_received.emit(dict(id=identifier,peer=peer['name'],host='远程',code='',total=total,count=value['count'],names=value['names']))
+                device_code=str(value.get('deviceCode') or '')
+                if not re.fullmatch('[23456789A-HJ-NP-Z]{8}',device_code):device_code=''
+                self.offer_received.emit(dict(id=identifier,peer=peer['name'],host='远程',code='',device_code=device_code,total=total,count=value['count'],names=value['names']))
                 return
             if not state:return
             if kind=='waiting':
@@ -211,6 +213,10 @@ class WanTransferService(LanTransferService):
             if state['role']=='receive':
                 if self._slots.acquire(blocking=False):self._thread(self._incoming,state['bridge'],state['peer']['id'])
                 else:self.cancel(identifier)
+        elif kind=='stats':
+            transfer=self._transfers.get(identifier)
+            if transfer and state.get('progress_state')=='transferring' and not transfer.cancel.is_set():
+                self._notify(transfer,'transferring')
         elif kind in ('error','closed') or kind=='state' and event.get('state')=='failed':
             if not state['bridge'].opened.is_set():
                 if state.get('relay_requested'):return
@@ -287,6 +293,7 @@ class WanTransferService(LanTransferService):
         QTimer.singleShot(600000,retire)
     def _notify(self,transfer,state,**extra):
         pending=self._pending.get(transfer.transfer_id,{})
+        pending['progress_state']=state
         if pending.get('route'):extra['route']=pending['route']
         bridge=pending.get('bridge');relay_bytes=pending.get('relay_bytes_prior',0)
         if bridge and bridge.route=='relay':
