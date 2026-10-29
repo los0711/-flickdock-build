@@ -165,7 +165,7 @@ class SettingsAccountTests(unittest.TestCase):
                 self.assertTrue(self.panel.devices_body.rect().contains(row.geometry()))
             for widget in self.panel.findChildren(QWidget):
                 if widget.isVisible():
-                    container=self.panel.password_dialog if widget.window() is self.panel.password_dialog else self.panel
+                    container=widget.window() if widget.isWindow() or widget.window() is not self.dialog else self.panel
                     point=widget.mapTo(container,QPoint())
                     self.assertGreaterEqual(point.x(),0)
                     self.assertLessEqual(point.x()+widget.width(),container.width())

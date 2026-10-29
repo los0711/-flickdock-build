@@ -33,6 +33,7 @@ from update_client import (DEFAULT_ALLOWED_HOSTS, MAX_MANIFEST_BYTES, _json_obje
 
 BUNDLE_ID = 'com.flickdock.app'
 MAX_ZIP_BYTES = 1024 * 1024 * 1024
+_deferred_trees=set()
 MAX_UNPACKED_BYTES = 4 * 1024 * 1024 * 1024
 MAX_MEMBERS = 100000
 _STAGE = re.compile(r'\.flickdock-update-[0-9a-f]{32}\Z')
@@ -208,16 +209,38 @@ class PreparedMacUpdate:
     bundle_id: str = BUNDLE_ID
     source_archive: Path | None = None
     ready_token: str = ''
+    helper_app: Path | None = None
 
     def cleanup(self):
         if _STAGE.fullmatch(self.stage.name) and self.stage.is_absolute():
             if self.stage.is_symlink():
                 raise ValueError('更新暂存目录发生变化，未清理。')
-            shutil.rmtree(self.stage, ignore_errors=True)
+            if not _defer_running_runtime_cleanup(self.stage):shutil.rmtree(self.stage, ignore_errors=True)
+
+
+def _defer_running_runtime_cleanup(directory):
+    """Never remove the executable/PYZ from which this helper still imports."""
+    directory=Path(directory).absolute()
+    if sys.platform!='darwin' or not getattr(sys,'frozen',False):return False
+    if not Path(sys.executable).absolute().is_relative_to(directory):return False
+    if (directory.is_symlink() or directory.resolve()!=directory
+            or not (_STAGE.fullmatch(directory.name) or re.fullmatch(r'\.flickdock-updater-runtime-[a-f0-9]{32}',directory.name))):
+        raise ValueError('更新运行目录身份无效，未自动清理。')
+    details=directory.stat();identity=f'{details.st_dev}:{details.st_ino}'
+    if (str(directory),identity) in _deferred_trees:return True
+    # Paths are separate argv, and stat rechecks the original directory inode
+    # after process exit. The fixed script never follows a replacement symlink.
+    script='while /bin/kill -0 "$1" 2>/dev/null; do /bin/sleep 0.2; done; if [ ! -L "$2" ] && [ "$(/usr/bin/stat -f "%d:%i" "$2" 2>/dev/null)" = "$3" ]; then /bin/rm -rf -- "$2"; fi'
+    try:
+        subprocess.Popen(['/bin/sh','-c',script,'flickdock-update-cleanup',str(os.getpid()),str(directory),identity],
+            cwd='/',start_new_session=True,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        _deferred_trees.add((str(directory),identity))
+    except OSError:pass # Preserve a live runtime if deferred cleanup cannot start.
+    return True
 
 
 def prepare_update(zip_path, manifest, *, current_version, installed_app,
-                   staging_parent=None, expected_bundle_id=BUNDLE_ID, cancel_event=None):
+                   staging_parent=None, expected_bundle_id=BUNDLE_ID, cancel_event=None,copy_runtime=True):
     """Background-only IO. Originals stay untouched until install_prepared()."""
     version = manifest.get('version') if isinstance(manifest, dict) else None
     if compare_versions(version, current_version) <= 0:
@@ -257,9 +280,18 @@ def prepare_update(zip_path, manifest, *, current_version, installed_app,
             raise ValueError('更新 ZIP 在解包期间发生变化。')
         bundle_metadata(bundle, bundle_id=expected_bundle_id, version=version)
         _check_cancel(cancel_event)
+        helper_app=None
+        if copy_runtime:
+            required=sum(path.stat().st_size for path in target.rglob('*') if path.is_file() and not path.is_symlink())
+            if shutil.disk_usage(stage).free<required+32*1024*1024:
+                raise ValueError('磁盘空间不足，无法准备独立更新程序；原应用未替换。')
+            helper_app=stage/'updater-runtime'/'FlickDock.app'
+            shutil.copytree(target,helper_app,symlinks=True)
+            _check_cancel(cancel_event)
+            bundle_metadata(helper_app,bundle_id=expected_bundle_id,version=current_version)
         return PreparedMacUpdate(stage, bundle, target, version, current_version,
                                  _tree_hash(bundle, cancel_event), os.getpid(), expected_bundle_id,
-                                 zip_path, uuid4().hex)
+                                 zip_path, uuid4().hex,helper_app)
     except BaseException:
         shutil.rmtree(stage, ignore_errors=True)
         raise
@@ -278,6 +310,10 @@ def _validate_prepared(prepared, *, verify_tree=True):
         raise ValueError('macOS 更新暂存位置无效。')
     if not re.fullmatch(r'[0-9a-f]{32}', prepared.ready_token):
         raise ValueError('macOS 更新就绪令牌无效。')
+    if prepared.helper_app is not None:
+        if prepared.helper_app!=prepared.stage/'updater-runtime'/'FlickDock.app':
+            raise ValueError('更新运行程序位置无效。')
+        bundle_metadata(prepared.helper_app,bundle_id=prepared.bundle_id,version=prepared.current_version)
     if _target(prepared.installed_app) != prepared.installed_app:
         raise ValueError('macOS 更新目标位置无效。')
     if compare_versions(prepared.version, prepared.current_version) <= 0:
@@ -384,11 +420,13 @@ def launch_update_helper(prepared, *, executable=None, popen=None, quit_callback
     executable = Path(executable or sys.executable).resolve(strict=True)
     if executable != prepared.installed_app / 'Contents' / 'MacOS' / 'FlickDock':
         raise ValueError('更新辅助进程必须来自当前应用。')
+    if prepared.helper_app is None:raise ValueError('独立更新程序尚未准备。')
+    helper_executable=prepared.helper_app/'Contents'/'MacOS'/'FlickDock'
     receipt = prepared.stage / 'update-receipt.json'
     payload = {key: str(value) if isinstance(value, Path) else value for key, value in vars(prepared).items()}
     receipt.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
     receipt.chmod(0o600)
-    process = (popen or subprocess.Popen)([str(executable), '--apply-mac-update', str(receipt)],
+    process = (popen or subprocess.Popen)([str(helper_executable), '--apply-mac-update', str(receipt)],
                       cwd=str(prepared.installed_app.parent), start_new_session=True,
                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                       shell=False)
@@ -517,7 +555,7 @@ def _record_update_failure(prepared, message):
         temporary.unlink(missing_ok=True)
 
 
-def consume_update_failure(base):
+def consume_update_failure(base,current_version=None):
     """Read one failed Mac handoff once, from the current user profile only."""
     path = Path(base) / 'mac-update-failure.json'
     try:
@@ -530,6 +568,8 @@ def consume_update_failure(base):
                 or len(value['error']) > 500 or not isinstance(value.get('recorded_at'), (int, float))
                 or not 0 <= time.time() - value['recorded_at'] <= 7 * 86400):
             return ''
+        if current_version is not None and isinstance(value.get('version'),str):
+            if compare_versions(current_version,value['version'])>=0:return ''
         return value['error']
     except (OSError, ValueError, TypeError, UnicodeError):
         return ''
@@ -577,7 +617,29 @@ def _trusted_manifest_for(version, *, machine=None, opener=None):
     """Root independently checks the current official index, not the receipt."""
     endpoint = manifest_endpoint('darwin', machine)
     if opener is None:
-        opener = urllib.request.build_opener(_TrustedManifestRedirect()).open
+        # Use the same OS certificate trust, system proxy and authenticated
+        # public mirror policy as the GUI. Frozen OpenSSL's Python-framework
+        # cert.pem is not present on a clean Mac and must not be relied upon.
+        from PySide6.QtCore import QCoreApplication,QEventLoop,QTimer
+        from update_client import UpdateClient
+        global _helper_qt_app
+        _helper_qt_app=QCoreApplication.instance() or QCoreApplication(['FlickDock-update-verification'])
+        loop=QEventLoop();answer=[];errors=[]
+        client=UpdateClient('0.0.0',platform='darwin',machine=machine)
+        def available(manifest,_manual):answer.append(manifest);loop.quit()
+        def failed(message,_manual):errors.append(message);loop.quit()
+        client.update_available.connect(available);client.failed.connect(failed)
+        timer=QTimer();timer.setSingleShot(True)
+        timer.timeout.connect(lambda:failed('官方清单验证超时。',False));timer.start(35000)
+        try:
+            client.check(manual=False)
+            if not answer and not errors:loop.exec()
+            if not answer:raise ValueError(errors[-1] if errors else '无法验证官方更新清单。')
+            manifest=answer[0]
+            if manifest['version']!=version or not manifest['installer']['url'].lower().split('?',1)[0].endswith('.zip'):
+                raise ValueError('官方自动更新索引已变更，请重新检查更新。')
+            return manifest
+        finally:timer.stop();client.close();client.deleteLater()
     request = urllib.request.Request(endpoint, headers={'Accept': 'application/json',
                                  'Cache-Control': 'no-cache', 'User-Agent': 'FlickDock-Mac-Update'})
     with opener(request, timeout=15) as response:
@@ -591,6 +653,75 @@ def _trusted_manifest_for(version, *, machine=None, opener=None):
     if manifest['version'] != version or not manifest['installer']['url'].lower().split('?', 1)[0].endswith('.zip'):
         raise ValueError('官方自动更新索引已变更，请重新检查更新。')
     return manifest
+
+
+def _root_runtime_parent():
+    # /Applications can be renamed by an administrator group member. Keep
+    # privileged executable paths under root's non-user-writable ancestry.
+    parent=Path('/private/var/root/Library/Caches/FlickDock/updater-runtimes')
+    parent.mkdir(parents=True,mode=0o700,exist_ok=True)
+    _verify_root_ancestry(parent)
+    return parent
+
+
+def _verify_root_ancestry(path):
+    if path.resolve(strict=True)!=path:raise ValueError('管理员更新运行路径包含链接。')
+    for node in (path,*path.parents):
+        details=node.lstat()
+        if not stat.S_ISDIR(details.st_mode) or details.st_uid!=0 or stat.S_IMODE(details.st_mode)&0o022:
+            raise ValueError('管理员更新运行路径可被其他用户修改。')
+
+
+def _current_root_runtime(prepared):
+    executable=Path(sys.executable).absolute()
+    if executable==prepared.installed_app/'Contents/MacOS/FlickDock':return None
+    app=executable.parent.parent.parent;runtime=app.parent
+    if (app.name!='FlickDock.app' or executable!=app/'Contents/MacOS/FlickDock'
+            or not re.fullmatch(r'\.flickdock-updater-runtime-[a-f0-9]{32}',runtime.name)
+            or runtime.parent!=Path('/private/var/root/Library/Caches/FlickDock/updater-runtimes')):
+        raise ValueError('管理员更新程序必须来自已安装应用或独立安全运行目录。')
+    _verify_root_ancestry(runtime)
+    record_path=runtime/'provenance.json';details=record_path.lstat()
+    if not stat.S_ISREG(details.st_mode) or details.st_uid!=0 or details.st_size>4096:
+        raise ValueError('管理员运行目录来源记录无效。')
+    record=json.loads(record_path.read_text(encoding='utf8'))
+    if record!={'target':str(prepared.installed_app),'current_version':prepared.current_version,
+                'receipt':str(prepared.stage/'update-receipt.json'),'tree_sha256':_tree_hash(app)}:
+        raise ValueError('管理员运行目录与本次更新不匹配。')
+    bundle_metadata(app,version=prepared.current_version)
+    return runtime
+
+
+def _ensure_stable_root_runtime(prepared):
+    runtime=_current_root_runtime(prepared)
+    if runtime is not None:
+        return runtime
+    parent=_root_runtime_parent();runtime=parent/('.flickdock-updater-runtime-'+uuid4().hex)
+    runtime.mkdir(mode=0o700)
+    try:
+        app=runtime/'FlickDock.app';shutil.copytree(prepared.installed_app,app,symlinks=True)
+        bundle_metadata(app,version=prepared.current_version)
+        record={'target':str(prepared.installed_app),'current_version':prepared.current_version,
+                'receipt':str(prepared.stage/'update-receipt.json'),'tree_sha256':_tree_hash(app)}
+        (runtime/'provenance.json').write_text(json.dumps(record),encoding='utf8')
+        executable=app/'Contents/MacOS/FlickDock'
+        os.execv(str(executable),[str(executable),'--elevated-mac-update',str(prepared.stage/'update-receipt.json')])
+    except BaseException:
+        shutil.rmtree(runtime,ignore_errors=True);raise
+
+
+def finish_update_helper(receipt_path):
+    """Run before interpreter teardown; retain runtime through the final import."""
+    if sys.platform!='darwin' or not getattr(sys,'frozen',False):return
+    if os.geteuid()==0:
+        runtime=Path(sys.executable).absolute().parent.parent.parent.parent
+        if runtime.parent!=Path('/private/var/root/Library/Caches/FlickDock/updater-runtimes'):return
+        _verify_root_ancestry(runtime);_defer_running_runtime_cleanup(runtime)
+    else:
+        prepared=_read_receipt(receipt_path)
+        if (prepared.stage.stat().st_uid==os.geteuid() and prepared.helper_app is not None
+                and Path(sys.executable).absolute()==prepared.helper_app/'Contents/MacOS/FlickDock'):
+            prepared.cleanup()
 
 
 def _privileged_receipt(prepared, *, test_only):
@@ -614,7 +745,7 @@ def _privileged_receipt(prepared, *, test_only):
         if target != Path('/Applications/FlickDock.app'):
             raise ValueError('管理员授权仅可更新 /Applications/FlickDock.app。')
         if Path(sys.executable).absolute() != target / 'Contents' / 'MacOS' / 'FlickDock':
-            raise ValueError('管理员更新程序必须来自当前 FlickDock.app。')
+            _current_root_runtime(prepared)
         import pwd
         owner_home = Path(pwd.getpwuid(prepared.stage.stat().st_uid).pw_dir)
         expected = owner_home / 'Library' / 'Application Support' / 'FlickDock' / 'updates' / prepared.version
@@ -672,6 +803,7 @@ def run_elevated_update_helper(receipt_path, *, timeout=30, test_only=False,
         if time.monotonic() >= deadline:
             raise TimeoutError('等待 FlickDock 退出超时；原应用未替换。')
         time.sleep(0.1)
+    if not test_only:_ensure_stable_root_runtime(prepared)
     manifest = trusted_manifest if trusted_manifest is not None else _trusted_manifest_for(
                     prepared.version, machine=update_architecture())
     if (manifest.get('version') != prepared.version or
@@ -686,7 +818,7 @@ def run_elevated_update_helper(receipt_path, *, timeout=30, test_only=False,
         sealed_zip = protected / 'update.zip'
         _copy_verified_archive(prepared.source_archive, sealed_zip, manifest)
         fresh = prepare_update(sealed_zip, manifest, current_version=prepared.current_version,
-                    installed_app=target, staging_parent=target.parent)
+                    installed_app=target, staging_parent=target.parent,copy_runtime=False)
         try:
             # The sealed extraction happens inside this privileged helper.
             # Preserve the original GUI PID for install_prepared's exit guard;
@@ -712,6 +844,7 @@ def _read_receipt(receipt_path):
     data = json.loads(receipt.read_text(encoding='utf-8'))
     for key in ('stage', 'app_path', 'installed_app', 'source_archive'):
         data[key] = Path(data[key])
+    if data.get('helper_app') is not None:data['helper_app']=Path(data['helper_app'])
     prepared = PreparedMacUpdate(**data)
     if receipt != prepared.stage / 'update-receipt.json' or type(prepared.owner_pid) is not int or prepared.owner_pid <= 0:
         raise ValueError('更新辅助进程收据身份无效。')

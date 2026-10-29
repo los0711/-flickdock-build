@@ -81,6 +81,12 @@ class MacControllerTests(unittest.TestCase):
         self.temp.cleanup()
 
     def popen(self, arguments, **options): self.events.append(('popen', arguments, options)); return object()
+    def complete_and_install(self,path,manifest):
+        self.client.complete(path,manifest)
+        if self.controller.state=='ready':
+            self.assertFalse(self.controller._jobs)
+            self.controller.activate()
+
     def authorize(self):
         self.client.offer(self.manifest)
         self.assertTrue(self.controller.start_update())
@@ -89,15 +95,16 @@ class MacControllerTests(unittest.TestCase):
     def test_auto_result_does_not_launch_and_explicit_update_uses_mac_helper(self):
         self.controller.check_automatically()
         self.client.offer(self.manifest)
-        self.client.complete(self.zip, self.manifest)
+        self.complete_and_install(self.zip, self.manifest)
         self.assertEqual(self.events, [])
         self.assertEqual(self.controller.state, 'available')
         self.assertTrue(self.controller.start_update())
         self.client.offer(self.manifest)
-        self.client.complete(self.zip, self.manifest)
+        self.complete_and_install(self.zip, self.manifest)
         self.assertTrue(spin(lambda:len(self.events)==2))
         self.assertEqual([value[0] for value in self.events], ['popen','quit'])
-        self.assertEqual(self.events[0][1][:2], [str(self.exe),'--apply-mac-update'])
+        self.assertEqual(self.events[0][1][1], '--apply-mac-update')
+        self.assertIn('updater-runtime',self.events[0][1][0])
         self.assertFalse(self.events[0][2]['shell'])
         self.assertEqual(mac_updates.bundle_metadata(self.bundle)['CFBundleShortVersionString'], '1.7.0')
         self.assertFalse(hasattr(self.controller, 'dialog'))
@@ -105,13 +112,13 @@ class MacControllerTests(unittest.TestCase):
     def test_cancel_download_ignores_late_callback_until_another_click(self):
         self.authorize()
         self.controller.cancel()
-        self.client.complete(self.zip,self.manifest)
+        self.complete_and_install(self.zip,self.manifest)
         APP.processEvents()
         self.assertEqual(self.events,[])
         self.assertEqual(self.controller.state,'cancelled')
         self.controller.start_update()
         self.client.offer(self.manifest)
-        self.client.complete(self.zip,self.manifest)
+        self.complete_and_install(self.zip,self.manifest)
         self.assertTrue(spin(lambda:len(self.events)==2))
 
     def test_cancel_preparation_and_close_reject_late_success_without_ui_block(self):
@@ -124,7 +131,7 @@ class MacControllerTests(unittest.TestCase):
             return real(*args,**kwargs)
         beats=[]; timer=QTimer();timer.setInterval(20);timer.timeout.connect(lambda:beats.append(time.perf_counter()));timer.start()
         with patch.object(mac_updates,'prepare_update',delayed):
-            self.client.complete(self.zip,self.manifest)
+            self.complete_and_install(self.zip,self.manifest)
             self.assertTrue(spin(entered.is_set))
             self.assertTrue(spin(lambda:len(beats)>=4))
             started=time.perf_counter();self.controller.close()
@@ -140,40 +147,40 @@ class MacControllerTests(unittest.TestCase):
         def cancel(state,payload):
             if state=='installing':self.controller.cancel()
         self.controller.state_changed.connect(cancel)
-        self.client.complete(self.zip,self.manifest)
+        self.complete_and_install(self.zip,self.manifest)
         self.assertTrue(spin(lambda:not self.controller._jobs))
         self.assertEqual(self.events,[])
         self.assertEqual(self.controller.state,'cancelled')
         self.controller.state_changed.disconnect(cancel)
         self.assertTrue(self.controller.start_update())
         self.client.offer(self.manifest)
-        self.client.complete(self.zip,self.manifest)
+        self.complete_and_install(self.zip,self.manifest)
         self.assertTrue(spin(lambda:len(self.events)==2))
         self.assertEqual(self.client.calls.count('download'),2)
 
     def test_outside_zip_and_wrong_architecture_never_spawn(self):
         self.authorize()
         outside=self.base/'outside.zip';outside.write_bytes(self.zip.read_bytes())
-        self.client.complete(outside,self.manifest)
+        self.complete_and_install(outside,self.manifest)
         self.assertEqual(self.controller.state,'error')
         self.assertEqual(self.events,[])
         wrong=copy.deepcopy(self.manifest);wrong['architecture']='x86_64'
         self.client.offer(wrong)
-        self.controller.start_update();self.client.offer(wrong);self.client.complete(self.zip,wrong)
+        self.controller.start_update();self.client.offer(wrong);self.complete_and_install(self.zip,wrong)
         self.assertEqual(self.controller.state,'error')
         self.assertEqual(self.events,[])
 
     def test_failed_helper_spawn_does_not_quit_and_explicit_retry_works(self):
         def denied(*args,**kwargs):raise OSError('helper spawn denied')
         self.controller._popen=denied
-        self.authorize();self.client.complete(self.zip,self.manifest)
+        self.authorize();self.complete_and_install(self.zip,self.manifest)
         self.assertTrue(spin(lambda:self.controller.state=='error'))
         self.assertEqual(self.events,[])
         self.assertIn('helper spawn denied',self.controller.state_payload['error'])
         self.controller._popen=self.popen
         self.assertTrue(self.controller.start_update())
         self.client.offer(self.manifest)
-        self.client.complete(self.zip,self.manifest)
+        self.complete_and_install(self.zip,self.manifest)
         self.assertTrue(spin(lambda:len(self.events)==2))
 
 

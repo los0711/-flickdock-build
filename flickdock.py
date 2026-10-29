@@ -270,7 +270,7 @@ class DropZone(QFrame):
             self.drop_highlight = True
             self.icon.set_hover(True)
             self._apply_style()
-            self.shelf.touch()
+            self.shelf.touch(passive_drag=True)
             event.setDropAction(Qt.DropAction.CopyAction)
             event.accept()
         else:
@@ -278,7 +278,7 @@ class DropZone(QFrame):
 
     def dragMoveEvent(self, event):
         if self.shelf.accepts_content_drop(event):
-            self.shelf.touch()
+            self.shelf.touch(passive_drag=True)
             event.setDropAction(Qt.DropAction.CopyAction)
             event.accept()
         else:
@@ -1644,8 +1644,9 @@ class ShelfWindow(QWidget):
             mode = self.active_mode if self.files[self.active_mode] else next((m for m in MODES if self.files[m]), self.active_mode)
             self.show_contents(mode)
 
-    def touch(self):
+    def touch(self,*,passive_drag=False):
         self.last_activity = time.monotonic()
+        if not passive_drag and self.presentation_kind=='drag':self._shake_last_interaction=self.last_activity
 
     def has_files(self) -> bool:
         return bool(self.display_refs())
@@ -1919,7 +1920,7 @@ class ShelfWindow(QWidget):
                 self.status_label.setText('文字文件未能保存：'+str(error));return False
         self._cancel_intake()
         epoch=self._intake_epoch
-        self._intake_preserve_view=source=='paste'
+        self._intake_preserve_view=source=='paste' or self.expanded
         self.incoming_drop = True
         self.manager.just_dropped = time.monotonic()
         if self.visible_state=='hiding' or not self.isVisible():
@@ -2011,7 +2012,7 @@ class ShelfWindow(QWidget):
         if self.accepts_content_drop(event):
             self.active_mode = "permanent"
             self._highlight_content_drop(True)
-            self.touch()
+            self.touch(passive_drag=True)
             event.setDropAction(Qt.DropAction.CopyAction)
             event.accept()
         else:
@@ -2019,7 +2020,7 @@ class ShelfWindow(QWidget):
 
     def dragMoveEvent(self, event):
         if self.accepts_content_drop(event):
-            self.touch()
+            self.touch(passive_drag=True)
             event.setDropAction(Qt.DropAction.CopyAction)
             event.accept()
         else:
@@ -2155,6 +2156,8 @@ class ShelfWindow(QWidget):
             vx,vy=velocity
             offset=QPoint(round(max(-24,min(24,-vx*.012))),round(max(-18,min(18,-vy*.012))))
         self._show_at(QPoint(x,y),reason,offset,reserve=reserve)
+        if reason=='drag':
+            self._shake_pointer=QPoint(cursor);self._shake_last_interaction=time.monotonic()
         if velocity is not None and self.manager.motion:
             # The newly revealed shelf settles against the actual flick,
             # with a small elastic impulse, rather than a generic fade alone.
@@ -2164,6 +2167,18 @@ class ShelfWindow(QWidget):
         area=self.manager.edge.screen_area()
         size=QSize(*(getattr(self,'_expanded_size',(EXPANDED_W,EXPANDED_H)) if self.expanded else (CARD_W,CARD_H)))+QSize(28,27)
         return reveal_rect(area,self.manager.edge.geometry(),size,self.manager.settings.dock_edge)
+
+    def shake_idle_expired(self,position,now,inside):
+        rect=self.visual_geometry().adjusted(14,7,-14,-20)
+        previous=getattr(self,'_shake_pointer',QPoint(position))
+        distance=lambda point:max(rect.left()-point.x(),point.x()-rect.right(),rect.top()-point.y(),point.y()-rect.bottom(),0)
+        current_distance=distance(position)
+        if (position-previous).manhattanLength()>=3:
+            if inside or current_distance<96 or current_distance<distance(previous):
+                self._shake_last_interaction=now
+            self._shake_pointer=QPoint(position)
+        last=getattr(self,'_shake_last_interaction',self.last_activity)
+        return now-last>=(.8 if current_distance>220 else IDLE_SECONDS)
 
     def reveal_from_dock(self,*,expanded=False):
         if self.manager.edge_suppressed: return
@@ -2693,6 +2708,9 @@ class ShelfManager:
         self.cocoa_smoke = bool(cocoa_smoke)
         self.motion = motion_enabled()
         self.settings = SettingsStore(BASE)
+        if not self.cocoa_smoke and app.platformName() not in ('offscreen','minimal'):
+            from runtime_cleanup import schedule_cleanup
+            schedule_cleanup(BASE,APP_VERSION)
         self.startup_error = None
         if not self.cocoa_smoke:
             try:
@@ -2734,6 +2752,8 @@ class ShelfManager:
         self.drag_started_inside = False
         self.auto_shown = None
         self.edge = DockHandle(self)
+        from drop_bridge import DropBridge
+        self.drop_bridge=DropBridge(self)
         self.drag_gate = ContentDragGate(self._content_type_ready,self._probe_drop,lambda:self.outgoing_drag)
         self.tray = QSystemTrayIcon(menu_bar_icon() if sys.platform=='darwin' else app_icon(), app)
         self.tray.setToolTip(f"FlickDock {APP_VERSION} · 文件搁架")
@@ -2766,7 +2786,9 @@ class ShelfManager:
             self.account = AccountService(BASE)
         self.connectivity=CloudConnectivity(self.account.api,self.app,
             enabled=not self.cocoa_smoke and self.app.platformName() not in ('offscreen','minimal'))
+        self.account.api.diagnostics_dir=BASE
         self.connectivity.changed.connect(self._network_status_changed)
+        self.connectivity.environment_changed.connect(self._network_environment_changed)
         self.sync = ShelfSync(BASE,self.account,ShelfAdapter(self))
         self.sync.set_directions(self.settings.sync_upload_enabled,self.settings.sync_receive_enabled)
         self._intake_sync_timer=QTimer(self.app)
@@ -2842,9 +2864,9 @@ class ShelfManager:
         if self._quitting:
             return
         from mac_updates import consume_update_failure
-        error = consume_update_failure(BASE)
+        error = consume_update_failure(BASE,current_version=APP_VERSION)
         if error:
-            self.show_settings()
+            self._previous_update_error=error
             self.updates.open_error(error)
 
     def _update_busy(self):
@@ -2901,7 +2923,8 @@ class ShelfManager:
 
     def _present_update_notice(self):
         if self._present_clipboard_intro():return
-        if (self._quitting or self.updates.state!='available' or not self.shelf.isVisible()
+        failed_handoff=self.updates.state=='error' and bool(getattr(self,'_previous_update_error',''))
+        if (self._quitting or not (self.updates.state=='available' or failed_handoff) or not self.shelf.isVisible()
                 or not self.shelf.expanded or self.shelf.content_transition_active()
                 or self.shelf.presentation._timer.isActive() or self.settings_open()):return
         if self.update_notice is not None and self.update_notice.isVisible():return
@@ -2914,7 +2937,9 @@ class ShelfManager:
             self.update_notice=UpdateNotice(self.shelf,theme=self.settings.theme)
             self.update_notice.update_requested.connect(self._start_notified_update)
             self.update_notice.dismissed.connect(self._snooze_update_notice)
-        self.update_notice.show_version(self.updates.state_payload.get('version',''),notes=(self.updates.manifest or {}).get('notes',''))
+        self.update_notice.show_version(self.updates.state_payload.get('version','') or APP_VERSION,
+                                       notes=(self.updates.manifest or {}).get('notes','') or ('上次更新未完成，原应用已保留。' if failed_handoff else ''))
+        self.update_notice.set_state(self.updates.state,**self.updates.state_payload)
 
     def _snooze_update_notice(self):
         path=Path(self.settings.base)/'updates'/'notice-state.json'
@@ -2925,15 +2950,10 @@ class ShelfManager:
         except OSError:pass
 
     def _start_notified_update(self):
-        if self.update_notice is not None:
-            self.update_notice.hide()
-        self.show_settings()
         self.updates.activate()
 
     def _update_notice_state_changed(self, state, payload):
-        if state in ('latest', 'downloading', 'verifying', 'ready', 'installing', 'handoff'):
-            if self.update_notice is not None:
-                self.update_notice.hide()
+        if self.update_notice is not None:self.update_notice.set_state(state,**payload)
 
     def _sync_status_changed(self,text):
         self._sync_status = text
@@ -3061,6 +3081,11 @@ class ShelfManager:
             if hasattr(shelf,'network_status'):shelf.network_status.set_state(state)
             if shelf.popup and hasattr(shelf.popup,'network_status'):shelf.popup.network_status.set_state(state)
 
+    def _network_environment_changed(self,state):
+        for shelf in self.shelves:
+            if hasattr(shelf,'network_status'):shelf.network_status.set_environment(state)
+            if shelf.popup and hasattr(shelf.popup,'network_status'):shelf.popup.network_status.set_environment(state)
+
 
     def _center_dialog(self,dialog):
         screen=QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
@@ -3079,8 +3104,7 @@ class ShelfManager:
             self.settings_dialog.dock_requested.connect(lambda:self.shelf.hide_animated(explicit=True))
             self.settings_dialog.mini_requested.connect(self.show_shortcut)
             self.settings_dialog.update_requested.connect(self.updates.activate)
-            self.settings_dialog.rejected.connect(self.updates.cancel)
-            self.updates.state_changed.connect(lambda state,payload:self.settings_dialog.set_update_state(state,**payload))
+            self.updates.state_changed.connect(self._render_settings_update)
             self.account_panel = AccountPanel(self.account,self.settings_dialog,theme=self.settings.theme,email_binding=False)
             self.settings_dialog.set_account_panel(self.account_panel)
             self.settings_dialog.preview_changed.connect(self.preview_dock)
@@ -3088,6 +3112,7 @@ class ShelfManager:
             self.settings_dialog.shortcut_validator = lambda values: self.hotkeys.validate(values["shelf_shortcut"], values["overview_shortcut"])
         if self.settings_dialog.isVisible():self.settings_dialog.load_values()
         self.settings_dialog.set_update_state(self.updates.state,**self.updates.state_payload)
+        self.settings_dialog.set_update_details((self.updates.manifest or {}).get('version',''),(self.updates.manifest or {}).get('notes',''))
         self.account_panel.set_sync_status(self._sync_status)
         self._center_dialog(self.settings_dialog)
         self.settings_dialog.show()
@@ -3100,6 +3125,12 @@ class ShelfManager:
             self.settings_dialog.error_label.show()
         self.settings_dialog.raise_()
         self.settings_dialog.activateWindow()
+
+    def _render_settings_update(self,state,payload):
+        if self.settings_dialog is None:return
+        self.settings_dialog.set_update_state(state,**payload)
+        manifest=self.updates.manifest or {}
+        self.settings_dialog.set_update_details(manifest.get('version',''),manifest.get('notes',''))
 
     def show_lan_dialog(self):
         self._show_transfer_dialog(self.lan)
@@ -3173,12 +3204,19 @@ class ShelfManager:
 
     def preview_dock(self,values):
         self._dock_preview_values=dict(values) if isinstance(values,dict) else None
+        if self._dock_preview_values is not None:self.dock_preview.values=dict(self._dock_preview_values)
         self.edge.position_at_edge()
-        if self._dock_preview_values is not None:
+        if self._settings_prompt_active():
+            self.dock_preview.hide();self.settings_edge_hint.hide()
+        elif self._dock_preview_values is not None:
             self.edge.hide();self.dock_preview.show_preview(self.edge.screen_area(),self._dock_preview_values)
         else:
             self.dock_preview.hide()
             if not self._quitting:self.update_handles()
+
+    def _settings_prompt_active(self):
+        modal=QApplication.activeModalWidget()
+        return (modal is not None and modal is not self.settings_dialog) or QApplication.activePopupWidget() is not None
 
     def apply_settings(self):
         current=dict(self.settings._data)
@@ -3397,7 +3435,13 @@ class ShelfManager:
             self.sync.set_interactive(self.shelf.isVisible() or bool(self.settings_dialog and self.settings_dialog.isVisible())
                 or bool(self.lan_dialog and self.lan_dialog.isVisible()) or bool(self.wan_dialog and self.wan_dialog.isVisible()))
         now=time.monotonic(); pos=QCursor.pos()
+        self.drop_bridge.sync(self.shelf,dragging=bool(mouse_buttons_mask()&1))
         if self.settings_open():
+            if self._settings_prompt_active():
+                self.dock_preview.hide();self.settings_edge_hint.hide()
+                self.reset_drag_gesture();self.was_down=bool(mouse_buttons_mask()&1);return
+            if self._dock_preview_values is not None and not self.dock_preview.isVisible():
+                self.dock_preview.show_preview(self.edge.screen_area(),self._dock_preview_values)
             if (self.edge.activation_region().contains(pos) or self.settings_edge_hint.contains_pointer(pos)):
                 if not self.settings_edge_hint.isVisible():self.settings_edge_hint.show_hint()
             else:self.settings_edge_hint.hide()
@@ -3439,6 +3483,10 @@ class ShelfManager:
             if shelf.presentation_kind=='dock' and not blocked and not self.outgoing_drag:
                 if not inside and shelf.visible_state!='hiding': shelf.hide_animated(explicit=False)
                 elif inside and shelf.visible_state=='hiding' and not shelf._explicit_hiding and not self.edge_suppressed: shelf.reveal_from_dock()
+            elif shelf.presentation_kind=='drag' and shelf.visible_state=='floating' and not blocked:
+                if shelf.shake_idle_expired(pos,now,inside):
+                    shelf.hide_animated(explicit=False)
+                    self.auto_shown=None;self.just_dropped=now;self.reset_drag_gesture()
             elif shelf.visible_state=='floating' and not blocked and not down and not shelf.preview_playing:
                 if inside or in_settings: shelf.touch()
                 elif now-shelf.last_activity>=IDLE_SECONDS: shelf.hide_animated(explicit=False)
@@ -3482,7 +3530,7 @@ class ShelfManager:
         self.update_timer.stop()
         self.updates.close()
         self.sync.close()
-        self.clipboard_sync.close();self.events.close()
+        self.clipboard_sync.close();self.events.close();self.drop_bridge.hide();self.drop_bridge.deleteLater()
         self.account.close()
         self.hotkeys.close()
         if self.settings_dialog:

@@ -1,0 +1,59 @@
+"""Native CI only: run the frozen old helper across a real bundle replacement.
+
+The new target is a tiny separately frozen Qt fixture, never a release package.
+No user application or settings are touched; all targets live in mkdtemp.
+"""
+import hashlib,json,os,plistlib,shutil,subprocess,sys,tempfile,time,zipfile
+from pathlib import Path
+from mac_updates import prepare_update,launch_update_helper,bundle_metadata
+
+def main(binary,output):
+    if sys.platform!='darwin' or os.environ.get('GITHUB_ACTIONS')!='true':
+        raise RuntimeError('Requires the ephemeral native macOS CI runner')
+    from app_version import APP_VERSION
+    source=Path(binary).resolve().parents[2]
+    with tempfile.TemporaryDirectory(prefix='flickdock-native-update-') as directory:
+        root=Path(directory).resolve();target=root/'FlickDock.app'
+        shutil.copytree(source,target,symlinks=True)
+        probe=root/'probe.py'
+        probe.write_text('''import json,sys\nfrom pathlib import Path\nfrom PySide6.QtCore import QCoreApplication,QTimer\na=QCoreApplication(sys.argv)\nif '--post-update-ready' in sys.argv:\n i=sys.argv.index('--post-update-ready');Path(sys.argv[i+1]).write_text(sys.argv[i+2]);QTimer.singleShot(1000,a.quit);a.exec()\nelif '--verify-platform' in sys.argv:\n Path(sys.argv[-1]).write_text(json.dumps(dict(ok=True,version='1.8.21',frozen=bool(getattr(sys,'frozen',False)))))\n''')
+        subprocess.run([sys.executable,'-m','PyInstaller','--noconfirm','--onedir','--windowed',
+            '--name','FlickDock','--osx-bundle-identifier','com.flickdock.app',
+            '--distpath',str(root/'probe-dist'),'--workpath',str(root/'probe-work'),
+            '--specpath',str(root),str(probe)],check=True,stdout=subprocess.DEVNULL)
+        new=root/'probe-dist/FlickDock.app';info=new/'Contents/Info.plist'
+        metadata=plistlib.loads(info.read_bytes());metadata.update(CFBundleShortVersionString='1.8.21',CFBundleVersion='1.8.21')
+        info.write_bytes(plistlib.dumps(metadata))
+        # Editing Info.plist invalidates the ad-hoc bundle signature.
+        subprocess.run(['/usr/bin/codesign','--force','--deep','--sign','-',str(new)],check=True)
+        archive=root/'update.zip'
+        # ditto emits native symlink and executable metadata used by shipping.
+        subprocess.run(['/usr/bin/ditto','-c','-k','--sequesterRsrc','--keepParent',str(new),str(archive)],check=True)
+        manifest=dict(version='1.8.21',installer=dict(size=archive.stat().st_size,
+            sha256=hashlib.sha256(archive.read_bytes()).hexdigest()))
+        old_hash=hashlib.sha256((target/'Contents/MacOS/FlickDock').read_bytes()).hexdigest()
+        prepared=prepare_update(archive,manifest,current_version=APP_VERSION,installed_app=target,staging_parent=root)
+        prepared.owner_pid=99999999
+        # Same production entry and copied-runtime launcher; only Popen is
+        # injected because the test driver itself is an unfrozen interpreter.
+        process=launch_update_helper(prepared,executable=target/'Contents/MacOS/FlickDock',
+            popen=subprocess.Popen,quit_callback=lambda:None)
+        status=process.wait(timeout=100)
+        error=prepared.stage/'install-error.txt'
+        if status:raise RuntimeError(error.read_text() if error.is_file() else 'Native helper failed: '+str(status))
+        self_version=bundle_metadata(target)['CFBundleShortVersionString']
+        assert self_version=='1.8.21'
+        assert old_hash!=hashlib.sha256((target/'Contents/MacOS/FlickDock').read_bytes()).hexdigest()
+        # Exit/reopen from the canonical target must run the replacement.
+        report=root/'reopened.json'
+        subprocess.run([str(target/'Contents/MacOS/FlickDock'),'--verify-platform',str(report)],check=True,timeout=20)
+        reopened=json.loads(report.read_text());assert reopened['ok'] and reopened['frozen'] and reopened['version']=='1.8.21'
+        deadline=time.monotonic()+8
+        while prepared.stage.exists() and time.monotonic()<deadline:time.sleep(.1)
+        assert not prepared.stage.exists(),'Copied updater runtime was not cleaned after helper exit'
+        result=dict(ok=True,frozen_old_helper=True,bundle_replaced=True,reopened_new_version=True,
+                    runtime_cleaned=True,original_version=APP_VERSION,target_version=self_version,
+                    privileged_authorization_tested=False)
+        Path(output).write_text(json.dumps(result,indent=2));print(json.dumps(result))
+
+if __name__=='__main__':main(*sys.argv[1:])

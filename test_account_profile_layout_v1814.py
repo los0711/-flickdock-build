@@ -80,16 +80,16 @@ class AccountProfileLayoutTests(unittest.TestCase):
         self.assertEqual(self.panel._devices['other']['name'],'MacBook Air')
         self.assertIsNot(rows['other'],self.panel._rows_by_id['other'])
 
-    def test_rename_form_expands_card_and_actions_stay_at_right_edge(self):
+    def test_rename_is_floating_without_resizing_rows_and_actions_stay_at_right_edge(self):
         for width in (740,892,1024):
             self.dialog.resize(width,632);self.settle()
             for key in ('current','other'):
+                previous=self.panel._rows_by_id[key].size()
                 self.panel.device_rename_buttons[key].click();self.settle()
                 form=self.panel._rename_forms[key];row=self.panel._rows_by_id[key]
                 self.assertTrue(form.isVisible())
-                for container in (row,self.panel.devices_body,self.panel.signed_in_page):
-                    bottom=form.mapTo(container,form.rect().bottomRight())
-                    self.assertTrue(container.rect().contains(bottom),(width,key,container.objectName(),bottom,container.rect()))
+                self.assertTrue(form.isWindow());self.assertEqual(row.size(),previous)
+                self.assertTrue(form.screen().availableGeometry().contains(form.frameGeometry()))
                 rename=self.panel.device_rename_buttons[key]
                 last=self.panel.device_buttons.get(key,rename)
                 self.assertLessEqual(row.width()-last.mapTo(row,last.rect().bottomRight()).x(),14)

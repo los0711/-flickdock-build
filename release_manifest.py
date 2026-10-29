@@ -34,12 +34,12 @@ RUNTIME_SOURCES=(
     'flickdock.py','app_settings.py','async_images.py','capture_files.py',
     'confirm_clear.py','content_grid.py','content_resolver.py','content_stack.py',
     'dock_geometry.py','dock_preview.py','drag_artwork.py','drag_probe.py',
-    'drop_routing.py','flickdock_icons.py','flickdock_motion.py','global_hotkeys.py',
+    'drop_routing.py','drop_bridge.py','flickdock_icons.py','flickdock_motion.py','global_hotkeys.py',
     'image_preview.py','instance_guard.py','media_preview.py','offscreen_verify.py',
     'runtime_media.py','selection_archive.py','shake_detector.py','shelf_content.py',
     'surface_morph.py','ui_theme.py','widget_retirement.py','app_version.py',
-    'native_ui_common.py','reference_widgets.py','pointer_paste.py','settings_edge_hint.py','cloud_connectivity.py','clipboard_sync.py','verify_clipboard.py','transfer_priority.py',
-    'update_client.py','update_dialog.py','update_controller.py','update_notice.py',
+    'native_ui_common.py','reference_widgets.py','pointer_paste.py','settings_edge_hint.py','cloud_connectivity.py','clipboard_sync.py','verify_clipboard.py','transfer_priority.py','small_upload_lane.py','runtime_cleanup.py',
+    'update_client.py','update_dialog.py','update_controller.py','update_notice.py','release_history.py','network_environment.py','network_diagnostics.py','ci_mac_update_runtime.py',
     'platform_startup.py','platform_native.py','mac_updates.py','mac_entry.py','runtime_macos.py',
     'account_store.py','cloud_api.py','cloud_config.py','cloud_events.py','account_service.py','account_panel.py',
     'shelf_sync.py','sync_files.py','sync_adapter.py','verify_cloud.py','shortcut_preview.py',
@@ -47,6 +47,7 @@ RUNTIME_SOURCES=(
     'wan_transfer.py','webrtc_stream.py','nearby_transport.py','verify_wan.py','windows_network.py',
 )
 MAINTAINED_TESTS=(
+    'test_small_upload_lane.py','test_feedback_v1820.py',
     'test_pointer_paste_v1819.py','test_presentation_v1819.py','test_clipboard_sync_v1819.py','test_wan_account_v1819.py','test_webrtc_close_v1819.py',
     'test_feedback_v1818.py','test_nearby_transport_v1818.py','test_wan_signaling_v1818.py','test_cloud_failover_v1818.py','test_windows_network_v1818.py',
     'test_app_settings.py','test_global_hotkeys.py','test_shelf_content.py',

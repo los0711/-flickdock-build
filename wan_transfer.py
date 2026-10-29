@@ -20,8 +20,9 @@ def _turn_http_proxy(port):
     # credentials travel only through the private child-process IPC channel.
     for proxy in QNetworkProxyFactory.proxyForQuery(QNetworkProxyQuery(QUrl('https://turn.cloudflare.com:'+str(port)))):
         if proxy.type()==QNetworkProxy.ProxyType.NoProxy:return None
-        if proxy.type()==QNetworkProxy.ProxyType.HttpProxy:
-            return dict(type='http',host=proxy.hostName(),port=proxy.port(),username=proxy.user(),password=proxy.password())
+        if proxy.type() in (QNetworkProxy.ProxyType.HttpProxy,QNetworkProxy.ProxyType.Socks5Proxy):
+            return dict(type='http' if proxy.type()==QNetworkProxy.ProxyType.HttpProxy else 'socks5',
+                        host=proxy.hostName(),port=proxy.port(),username=proxy.user(),password=proxy.password())
     return None
 
 class WanTransferService(LanTransferService):
@@ -123,9 +124,13 @@ class WanTransferService(LanTransferService):
         try:self.socket.abort()
         finally:self.socket.blockSignals(previous)
     def _socket_error(self,*_):
+        from network_diagnostics import record_event
+        record_event(self.base,'remote','signaling',getattr(self.socket.error(),'name','SOCKET_ERROR'))
         self._connection_error='远程连接失败：'+str(self.socket.errorString())[:180]
         self._abort_signaling();self._disconnected()
     def _connection_timed_out(self):
+        from network_diagnostics import record_event
+        record_event(self.base,'remote','signaling','CONNECT_TIMEOUT')
         self._connection_error='远程连接超时，正在切换备用入口。'
         self._abort_signaling();self._disconnected()
     def reconnect(self):
@@ -325,10 +330,16 @@ class WanTransferService(LanTransferService):
                 if host not in ('stun.cloudflare.com','turn.cloudflare.com'):continue
                 if scheme=='stun':urls.append(url)
                 else:urls.append(dict(hostname=host,port=int(port),username=server['username'],password=server['credential'],relayType='TurnTls' if scheme=='turns' else 'TurnTcp' if transport=='tcp' else 'TurnUdp'))
-        bridge=WebRTCStream(lambda event:self._native.emit(dict(id=identifier,generation=generation,event=event)),node=self.node)
+        try:bridge=WebRTCStream(lambda event:self._native.emit(dict(id=identifier,generation=generation,event=event)),node=self.node)
+        except (OSError,RuntimeError) as error:
+            self._begin_failed(identifier,state,'远程传输组件启动失败，请检查安装完整性和系统权限。',
+                               'COMPONENT_'+type(error).__name__.upper());return
         state['bridge']=bridge
-        proxies={str(port):_turn_http_proxy(port) for port in sorted({row['port'] for row in urls if isinstance(row,dict) and row.get('relayType')=='TurnTls'})}
-        bridge.control(dict(type='init',iceServers=urls,initiator=state['role']=='send',forceRelay=self._qa_force_relay,preferTls=not state.get('tls_failed',False),proxies=proxies))
+        try:
+            proxies={str(port):_turn_http_proxy(port) for port in sorted({row['port'] for row in urls if isinstance(row,dict) and row.get('relayType')=='TurnTls'})}
+            bridge.control(dict(type='init',iceServers=urls,initiator=state['role']=='send',forceRelay=self._qa_force_relay,preferTls=not state.get('tls_failed',False),proxies=proxies))
+        except (OSError,RuntimeError):
+            bridge.shutdown();self._begin_failed(identifier,state,'远程传输组件初始化失败，请重试或重新安装当前版本。','INIT_FAILED');return
         if state['role']=='send':
             transfer=self._transfers.get(identifier)
             if transfer:self._notify(transfer,'connecting',route='relay' if value.get('relayAttempt') else 'direct')
@@ -345,6 +356,10 @@ class WanTransferService(LanTransferService):
         identifier=value['id'];state=self._pending.get(identifier)
         if not state or state.get('generation')!=value['generation']:return
         event=value['event'];kind=event.get('type')
+        if (kind=='closed' and type(event.get('exit_code')) is int and event['exit_code']!=0
+                and not state['bridge'].opened.is_set() and not self._closing):
+            self._begin_failed(identifier,state,'远程传输组件异常退出，请检查安装完整性和系统权限。',
+                               str(event.get('reason','UNKNOWN')));return
         if kind in ('description','candidate'):
             self._send_signal(dict(id=identifier,generation=state['generation'],**event))
         elif kind=='transport':
@@ -362,6 +377,8 @@ class WanTransferService(LanTransferService):
             if transfer and state.get('progress_state')=='transferring' and not transfer.cancel.is_set():
                 self._notify(transfer,'transferring')
         elif kind in ('error','closed') or kind=='state' and event.get('state')=='failed':
+            from network_diagnostics import record_event
+            record_event(self.base,'remote','ice','WEBRTC_'+str(kind).upper())
             # A TLS handshake alone does not prove that TURN allocation works.
             # The next bounded, resumable attempt can try the supplied UDP row.
             if state.get('relay_transport')=='tls' and not state.get('done'):state['tls_failed']=True
@@ -372,6 +389,17 @@ class WanTransferService(LanTransferService):
                 else:
                     state['error']='P2P 连接未能建立，请检查网络后重试。';state['network_error']=True;state['ready'].set()
             if kind=='error':self.status_changed.emit(str(event.get('message') or 'WebRTC 连接中断。'))
+
+    def _begin_failed(self,identifier,state,message,code):
+        from network_diagnostics import record_event
+        record_event(self.base,'remote','component',code)
+        state['error']=message;state['ready'].set();self.status_changed.emit(message)
+        if state.get('prepared'):state['prepared'].set()
+        self._send_signal(dict(type='cancel',id=identifier))
+        if state.get('role')=='receive' and identifier not in self._transfers:
+            self.progress.emit(dict(id=identifier,state='error',direction='receive',peer=state['peer']['name'],
+                                    received=0,total=state.get('total',0),message=message))
+            self._handle_command(dict(_retire=True,id=identifier))
 
     def send(self,peer_id,paths):
         if not self._connected:raise ValueError('远程服务尚未连接，请稍后再试。')

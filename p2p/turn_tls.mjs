@@ -74,11 +74,63 @@ export function httpConnectSocket(server,proxy,timeoutMs=7000){
   });
 }
 
+export function socks5ConnectSocket(server,proxy,timeoutMs=7000){
+  if(server.hostname!=='turn.cloudflare.com'||!Number.isInteger(server.port)||server.port<1||server.port>65535
+      ||!proxy||proxy.type!=='socks5'||typeof proxy.host!=='string'||!proxy.host||proxy.host.length>253
+      ||/[\s/\\\x00-\x1f\x7f]/.test(proxy.host)||!Number.isInteger(proxy.port)||proxy.port<1||proxy.port>65535
+      ||['username','password'].some(key=>proxy[key]!==undefined&&(typeof proxy[key]!=='string'||Buffer.byteLength(proxy[key])>255)))
+    return Promise.reject(Error('Invalid TURN SOCKS5 proxy'));
+  return new Promise((resolve,reject)=>{
+    const socket=net.connect({host:proxy.host,port:proxy.port});
+    let buffer=Buffer.alloc(0),phase='greeting',settled=false;
+    const auth=!!(proxy.username||proxy.password),timer=setTimeout(()=>finish(Error('TURN SOCKS5 proxy timeout')),timeoutMs);
+    function finish(error){
+      if(settled)return;settled=true;clearTimeout(timer);
+      socket.removeListener('data',receive);socket.removeListener('error',failed);socket.removeListener('end',ended);
+      socket.removeListener('close',ended);socket.removeListener('connect',connected);
+      if(error){socket.destroy();reject(error);}else resolve(socket);
+    }
+    function failed(){finish(Error('TURN SOCKS5 proxy connection failed'));}
+    function ended(){finish(Error('TURN SOCKS5 proxy connection closed'));}
+    function connected(){socket.write(auth?Buffer.from([5,2,0,2]):Buffer.from([5,1,0]));}
+    function connect(){
+      phase='connect';const host=Buffer.from(server.hostname,'ascii'),port=Buffer.alloc(2);port.writeUInt16BE(server.port);
+      socket.write(Buffer.concat([Buffer.from([5,1,0,3,host.length]),host,port]));
+    }
+    function receive(data){
+      if(buffer.length+data.length>1024){finish(Error('TURN SOCKS5 proxy response exceeded'));return;}
+      buffer=Buffer.concat([buffer,data]);
+      if(phase==='greeting'&&buffer.length>=2){
+        const version=buffer[0],method=buffer[1];buffer=buffer.subarray(2);
+        if(version!==5||![0,2].includes(method)||method===2&&!auth){finish(Error('TURN SOCKS5 proxy authentication refused'));return;}
+        if(method===0)connect();
+        else{
+          phase='auth';const user=Buffer.from(proxy.username||''),password=Buffer.from(proxy.password||'');
+          socket.write(Buffer.concat([Buffer.from([1,user.length]),user,Buffer.from([password.length]),password]));
+        }
+      }
+      if(phase==='auth'&&buffer.length>=2){
+        if(buffer[0]!==1||buffer[1]!==0){finish(Error('TURN SOCKS5 proxy authentication refused'));return;}
+        buffer=buffer.subarray(2);connect();
+      }
+      if(phase==='connect'&&buffer.length>=5){
+        if(buffer[0]!==5||buffer[1]!==0||buffer[2]!==0||![1,3,4].includes(buffer[3])){finish(Error('TURN SOCKS5 proxy refused tunnel'));return;}
+        const length=buffer[3]===1?10:buffer[3]===4?22:7+buffer[4];
+        if(buffer.length<length)return;
+        if(buffer.length!==length){finish(Error('TURN SOCKS5 proxy unsolicited bytes'));return;}
+        socket.pause();finish();
+      }
+    }
+    socket.once('error',failed);socket.once('end',ended);socket.once('close',ended);
+    socket.on('data',receive);socket.once('connect',connected);
+  });
+}
+
 export async function tlsTurnTunnel(server,onError=()=>{},proxy=null){
   if(server.hostname!=='turn.cloudflare.com'||server.relayType!=='TurnTls'||!Number.isInteger(server.port)||server.port<1||server.port>65535
       ||typeof server.username!=='string'||typeof server.password!=='string')throw Error('Invalid TURN TLS endpoint');
   const deadline=Date.now()+7000;
-  const transport=proxy?await httpConnectSocket(server,proxy):null;
+  const transport=proxy?await (proxy.type==='socks5'?socks5ConnectSocket:httpConnectSocket)(server,proxy):null;
   let socket;
   try{socket=tls.connect({...(transport?{socket:transport}:{host:server.hostname,port:server.port}),servername:server.hostname,rejectUnauthorized:true});}
   catch(error){transport?.destroy();throw error;}

@@ -64,10 +64,10 @@ def manifest_endpoint(platform=None, machine=None):
     architecture = update_architecture(machine)
     if architecture not in ('arm64', 'x86_64'):
         raise ValueError('当前 Mac 架构没有对应的更新通道。')
-    # 1.8.12 and older clients are permanently bridged by the legacy DMG
-    # indices. New builds use the automatic ZIP channel so a future release
-    # cannot strand an older updater on a ZIP it cannot install.
-    return MAC_MANIFEST_BASE + 'macos-' + architecture + '-auto.json'
+    # <=1.8.19 helpers run inside the bundle being replaced and depend on an
+    # external Python CA path. Their existing channel is a DMG bridge; the
+    # stable-runtime/Qt-trust updater introduced in 1.8.20 uses a new channel.
+    return MAC_MANIFEST_BASE + 'macos-' + architecture + '-auto-v2.json'
 
 
 def validate_manifest(value, allowed_hosts=DEFAULT_ALLOWED_HOSTS, *, platform=None, machine=None):
@@ -357,7 +357,14 @@ class UpdateClient(QObject):
             if reply.error() == QNetworkReply.NetworkError.TimeoutError:
                 self._fail('检查更新超时。' if self._mode == 'check' else '下载安装包超时。',retry_mirror=True)
                 return
-            self._fail('更新请求失败：' + reply.errorString(),retry_mirror=True)
+            problem=reply.error()
+            detail=('DNS 解析失败' if problem==QNetworkReply.NetworkError.HostNotFoundError else
+                    'TLS 证书或加密连接失败' if problem==QNetworkReply.NetworkError.SslHandshakeFailedError else
+                    '系统代理连接失败' if problem in (QNetworkReply.NetworkError.ProxyConnectionRefusedError,
+                        QNetworkReply.NetworkError.ProxyConnectionClosedError,QNetworkReply.NetworkError.ProxyNotFoundError,
+                        QNetworkReply.NetworkError.ProxyTimeoutError) else
+                    f'服务器返回 HTTP {status}' if status else '网络连接失败')
+            self._fail('更新请求失败：'+detail+'。',retry_mirror=True)
             return
         try:
             if self._mode == 'check':
@@ -426,11 +433,13 @@ class UpdateClient(QObject):
     def _fail(self, message, *, retry_mirror=False):
         if not self.busy:
             return
+        from network_diagnostics import record_event
+        record_event(self.updates_dir.parent,'update',self._mode,'REQUEST_FAILED')
         if (retry_mirror and self._mode=='check' and not self._mirror_attempted
                 and self.endpoint.startswith(MAC_MANIFEST_BASE)
                 and 'flickdock-site.roger000416.workers.dev' in self.allowed_hosts):
             filename=self.endpoint[len(MAC_MANIFEST_BASE):]
-            if filename in ('latest.json','macos-arm64-auto.json','macos-x86_64-auto.json','macos-arm64.json','macos-x86_64.json'):
+            if filename in ('latest.json','macos-arm64-auto.json','macos-x86_64-auto.json','macos-arm64-auto-v2.json','macos-x86_64-auto-v2.json','macos-arm64.json','macos-x86_64.json'):
                 self._mirror_attempted=True;self._generation+=1;self._detach_reply()
                 self._body.clear();self._prefix.clear();self._received=0;self._redirects=0;self._redirect_bytes=0
                 self._timer.start(self.timeout_ms);self._request(WORKER_MANIFEST_BASE+filename)

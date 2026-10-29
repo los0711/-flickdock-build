@@ -150,7 +150,7 @@ class MacBuildTests(unittest.TestCase):
             log = Path(directory) / 'Library/Logs/FlickDock/startup-last-error.log'
             self.assertIn('smoke startup failure', log.read_text(encoding='utf-8'))
 
-    def test_previous_update_failure_opens_settings_with_error_once(self):
+    def test_previous_update_failure_records_error_without_automatically_opening_settings(self):
         manager = flickdock.ShelfManager.__new__(flickdock.ShelfManager)
         events = []
         manager._quitting = False
@@ -158,7 +158,8 @@ class MacBuildTests(unittest.TestCase):
         manager.updates = SimpleNamespace(open_error=lambda error: events.append(error))
         with patch.object(mac_updates, 'consume_update_failure', return_value='管理员授权已取消'):
             manager._show_previous_mac_update_failure()
-        self.assertEqual(events, ['settings', '管理员授权已取消'])
+        self.assertEqual(events, ['管理员授权已取消'])
+        self.assertEqual(manager._previous_update_error,'管理员授权已取消')
 
 
 if __name__ == '__main__': unittest.main(verbosity=2)

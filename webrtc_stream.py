@@ -12,8 +12,8 @@ class WebRTCStream:
         root=Path(root or getattr(sys,'_MEIPASS',Path(__file__).parent))/'p2p'
         executable=Path(node) if node else root/'runtime'/('node.exe' if sys.platform=='win32' else 'node')
         if not executable.is_file():raise RuntimeError('远程传输组件缺失，请重新安装 FlickDock。')
-        self._process=subprocess.Popen([str(executable),str(root/'bridge.mjs')],stdin=subprocess.PIPE,stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,cwd=root,creationflags=subprocess.CREATE_NO_WINDOW if sys.platform=='win32' else 0,
+        self._process=subprocess.Popen([str(executable),'--use-system-ca',str(root/'bridge.mjs')],stdin=subprocess.PIPE,stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,cwd=root,creationflags=subprocess.CREATE_NO_WINDOW if sys.platform=='win32' else 0,
             env={key:value for key,value in os.environ.items() if key not in ('NODE_OPTIONS','NODE_PATH','NODE_EXTRA_CA_CERTS')})
         self._condition=threading.Condition();self._data=deque();self._size=0
         self._controls=deque();self._writes=deque();self._write_bytes=0;self._control_bytes=0
@@ -23,13 +23,31 @@ class WebRTCStream:
         self._sent_position=0;self._payload_spans=deque();self._payload_delivered=0
         self._delivered_position=0;self._payload_offset=0;self._payload_origin=0
         self._reader_done=threading.Event()
+        self._stderr_code='UNKNOWN';self._stderr_done=threading.Event()
         self._write_closed=False;self._shutdown_started=False;self._close_lock=threading.Lock()
         self._reader_thread=threading.Thread(target=self._reader,daemon=True,name='FlickDock-WebRTC-pipe')
+        threading.Thread(target=self._drain_stderr,daemon=True,name='FlickDock-WebRTC-diagnostics').start()
         self._reader_thread.start()
         threading.Thread(target=self._writer,daemon=True,name='FlickDock-WebRTC-writer').start()
 
     @property
     def closed(self):return self._closed
+
+    def _drain_stderr(self):
+        tail=b''
+        try:
+            while chunk:=self._process.stderr.read(1024):
+                tail=(tail+chunk)[-4096:]
+                for code in (b'ERR_DLOPEN_FAILED',b'ERR_MODULE_NOT_FOUND',b'MODULE_NOT_FOUND',b'CERT_HAS_EXPIRED',b'UNABLE_TO_VERIFY_LEAF_SIGNATURE'):
+                    if code in tail:self._stderr_code=code.decode('ascii')
+        except (OSError,ValueError,AttributeError):pass
+        finally:self._stderr_done.set()
+
+    def _closed_event(self):
+        try:exit_code=self._process.wait(timeout=.2)
+        except subprocess.TimeoutExpired:exit_code=None
+        self._stderr_done.wait(.1)
+        return {'type':'closed','exit_code':exit_code,'reason':self._stderr_code}
     def control(self,value):self._write(b'C' if value.get('type')=='close' else b'J',json.dumps(value,separators=(',',':')).encode())
     def _write(self,kind,data):
         with self._condition:
@@ -63,7 +81,7 @@ class WebRTCStream:
                 self._process.stdin.write(struct.pack('!I',len(data)+1)+kind+data);self._process.stdin.flush()
         except (OSError,ValueError):
             with self._condition:self._closed=True;self._condition.notify_all()
-            self.on_signal({'type':'closed'})
+            self.on_signal(self._closed_event())
 
     def _read_pipe(self,size):
         result=bytearray()
@@ -117,7 +135,7 @@ class WebRTCStream:
             with self._condition:self._closed=True;self._condition.notify_all()
             self._close_sockets()
             self._reader_done.set()
-            self.on_signal({'type':'closed'})
+            self.on_signal(self._closed_event())
 
     def own_socket(self,stream):
         with self._condition:
@@ -202,6 +220,8 @@ class WebRTCStream:
             # Writer failure/closure does not mean stdout has reached EOF.
             if threading.current_thread() is not self._reader_thread:self._reader_done.wait(1)
             with self._condition:self._closed=True;self._write_closed=True;self._condition.notify_all()
-            for stream in (self._process.stdin,self._process.stdout):
+            self._stderr_done.wait(1)
+            for stream in (self._process.stdin,self._process.stdout,getattr(self._process,'stderr',None)):
+                if stream is None:continue
                 try:stream.close()
                 except OSError:pass

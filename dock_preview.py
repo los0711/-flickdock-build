@@ -65,7 +65,7 @@ class DockPreview(QWidget):
         if not self.values['trigger_visible']:
             tint.setAlpha(0)
         p.setBrush(tint)
-        outline = QColor(ui_theme.color('accent'))
+        outline = QColor(self.values['dock_color']);outline.setAlpha(255)
         p.setPen(QPen(outline, 1.5, Qt.PenStyle.DashLine))
         p.drawRoundedRect(target.adjusted(.75, .75, -.75, -.75), 3, 3)
         badge = QRectF(self.badge_rect.translated(-origin))

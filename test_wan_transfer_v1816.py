@@ -168,6 +168,9 @@ class WanRecovery(unittest.TestCase):
             self.assertEqual(query.call_args.args[0].url().host(),'turn.cloudflare.com')
             self.assertEqual(query.call_args.args[0].url().port(),5349)
         with patch('wan_transfer.QNetworkProxyFactory.proxyForQuery',return_value=[bypass,proxy]):self.assertIsNone(_turn_http_proxy(443))
+        proxy.setType(QNetworkProxy.ProxyType.Socks5Proxy)
+        with patch('wan_transfer.QNetworkProxyFactory.proxyForQuery',return_value=[proxy]):
+            self.assertEqual(_turn_http_proxy(443)['type'],'socks5')
 
     def test_selected_proxy_is_forwarded_to_the_native_tls_adapter(self):
         state=self.state();fake=unittest.mock.Mock();proxy=dict(type='http',host='127.0.0.1',port=7890)
@@ -182,7 +185,7 @@ class TurnTLS(unittest.TestCase):
         if not node.is_file():self.skipTest('Build host must prepare pinned WebRTC assets')
         result=subprocess.run([str(node),'--test',str(root/'test-turn-tls.mjs')],cwd=root,capture_output=True,text=True,timeout=30)
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-        self.assertIn('pass 13',result.stdout)
+        self.assertIn('pass 16',result.stdout)
 
 class NativeStream(unittest.TestCase):
     def setUp(self):

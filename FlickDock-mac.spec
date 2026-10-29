@@ -11,8 +11,8 @@ from app_version import APP_VERSION
 from p2p_assets import bundle_assets
 p2p_binaries,p2p_datas=bundle_assets()
 
-assets = [(root / 'fonts' / 'HarmonyOS_Sans_SC_Regular.ttf', 'fonts')]
-assets += [(root / 'assets/ui/qtbase_zh_CN.qm', 'assets/ui')]
+# macOS uses its system font; the Windows-only font is not a runtime dependency.
+assets = [(root / 'assets/ui/qtbase_zh_CN.qm', 'assets/ui')]
 assets += [(root / 'licenses' / name, 'licenses') for name in (
     'HarmonyOS-Sans-LICENSE.txt', 'Python-LICENSE.txt', 'LGPL-3.0.txt',
     'GPL-3.0.txt', 'PyInstaller-COPYING.txt','OpenSSL-LICENSE.txt','Cloud-Client-LICENSES.txt',

@@ -207,6 +207,16 @@ class ClipboardTests(unittest.TestCase):
         item=package(('text',dict(text=text,html='')),folder)
         self.assertIsNotNone(item);self.assertEqual(unpack('text',item['path'],folder)[1]['text'],text)
 
+    def test_receive_cache_failure_releases_fetch_and_retries_without_changing_native_copy(self):
+        client=self.clients[0]
+        with patch.object(client,'_directory',side_effect=OSError('temporary cache permission')):
+            self.clips[1].text('remote copy after cache recovery')
+            until(lambda:self.hub.head and self.hub.head['ready'])
+            until(lambda:client.retry.isActive())
+            self.assertFalse(client._fetching);self.assertFalse(client._priority_active())
+            self.assertFalse(self.clips[0].mimeData().hasText())
+        client._retry();until(lambda:self.clips[0].mimeData().text()=='remote copy after cache recovery')
+
     def test_observed_remote_clock_is_floor_for_only_future_copy(self):
         client=self.clients[0];mono=time.monotonic()
         client._clock_anchor=(mono,10000);client._observed_clock=20000

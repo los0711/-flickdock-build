@@ -181,6 +181,7 @@ class MacUpdateTests(unittest.TestCase):
               patch.object(update.sys, 'frozen', True, create=True),
               patch.object(update.os, 'geteuid', return_value=0, create=True),
               patch.object(update, '_privileged_receipt', return_value=self.target),
+              patch.object(update, '_ensure_stable_root_runtime'),
               patch.object(update, '_trusted_manifest_for', return_value=self.manifest),
               patch.object(update, '_pid_alive', side_effect=lambda pid: pid == os.getpid()),
               patch.object(update, '_write_privileged_marker'),
@@ -338,7 +339,7 @@ class MacUpdateTests(unittest.TestCase):
             update.launch_update_helper(prepared, executable=executable, popen=popen,
                                          quit_callback=lambda: events.append(('quit',)))
         self.assertEqual([item[0] for item in events], ['spawn', 'quit'])
-        self.assertEqual(events[0][1][:2], [str(executable), '--apply-mac-update'])
+        self.assertEqual(events[0][1][:2], [str(prepared.helper_app/'Contents/MacOS/FlickDock'), '--apply-mac-update'])
         self.assert_old()
         receipt = Path(events[0][1][2])
         with self.assertRaises(TimeoutError):

@@ -94,7 +94,6 @@ class InlineUpdates(unittest.TestCase):
             popen=self.popen,defer_ms=20)
         self.controller.state_changed.connect(lambda state,p:self.dialog.set_update_state(state,**p))
         self.dialog.update_requested.connect(self.controller.activate)
-        self.dialog.rejected.connect(self.controller.cancel)
         self.dialog.set_update_state(self.controller.state,**self.controller.state_payload)
 
     def tearDown(self):
@@ -113,6 +112,13 @@ class InlineUpdates(unittest.TestCase):
         QTest.mouseClick(self.dialog.update_button,Qt.MouseButton.LeftButton)
         APP.processEvents()
 
+    def complete_and_install(self,path,manifest):
+        self.client.complete(path,manifest)
+        if self.controller.state=='ready':
+            self.assertEqual(self.controller._jobs,{})
+            self.assertEqual(self.dialog.update_button.text(),'重启并安装')
+            self.click()
+
     def offer(self):
         self.dialog.show();APP.processEvents();self.click()
         self.assertEqual(self.controller.state,'checking')
@@ -125,7 +131,7 @@ class InlineUpdates(unittest.TestCase):
         self.client.available(self.manifest if manifest is None else manifest)
         self.assertEqual(self.controller.state,'downloading')
 
-    def test_single_real_button_authorizes_download_hash_install_no_extra_window(self):
+    def test_settings_download_then_explicit_restart_keeps_one_shared_controller(self):
         self.offer()
         top={id(w) for w in APP.topLevelWidgets()}
         self.assertFalse(hasattr(self.controller,'dialog'))
@@ -137,7 +143,7 @@ class InlineUpdates(unittest.TestCase):
         self.assertFalse(self.dialog.update_button.isEnabled())
         self.client.progress.emit(len(self.body)//4,len(self.body))
         self.assertIn('25%',self.dialog.update_status_label.text())
-        self.client.complete(self.path,self.manifest)
+        self.complete_and_install(self.path,self.manifest)
         self.assertTrue(wait(lambda:len(self.events)==2))
         self.assertEqual([e[0] for e in self.events],['popen','quit'])
         arguments,options=self.events[0][1:]
@@ -160,7 +166,7 @@ class InlineUpdates(unittest.TestCase):
         latest_path.write_bytes(self.body)
         self.client.available(current)
         self.assertEqual(self.client.calls[-1],('download','1.8.1',True))
-        self.client.complete(latest_path,current)
+        self.complete_and_install(latest_path,current)
         self.assertTrue(wait(lambda:len(self.events)==2))
         self.assertIn('1.8.1',self.events[0][1][0])
 
@@ -196,31 +202,22 @@ class InlineUpdates(unittest.TestCase):
         self.offer();self.begin_download();self.controller.cancel()
         self.assertEqual(self.controller.state,'cancelled')
         self.client.progress.emit(len(self.body),len(self.body))
-        self.client.complete(self.path,self.manifest)
+        self.complete_and_install(self.path,self.manifest)
         APP.processEvents()
         self.assertEqual(self.controller.state,'cancelled');self.assertEqual(self.events,[])
-        self.begin_download();self.client.complete(self.path,self.manifest)
+        self.begin_download();self.complete_and_install(self.path,self.manifest)
         self.assertTrue(wait(lambda:len(self.events)==2))
 
-    def test_settings_close_during_hash_reopen_retry_discards_old_success(self):
+    def test_settings_close_keeps_authorized_task_and_reopen_keeps_real_state(self):
         self.offer();self.begin_download()
-        entered,release=threading.Event(),threading.Event();real=subject.verify_installer
-        def delayed(*args,**kwargs):
-            entered.set();release.wait(3);kwargs.pop('cancelled',None)
-            return real(*args,**kwargs)
-        with patch.object(subject,'verify_installer',delayed):
-            self.client.complete(self.path,self.manifest)
-            self.assertTrue(wait(entered.is_set))
-            QTest.mouseClick(self.dialog.close_button,Qt.MouseButton.LeftButton)
-            APP.processEvents();release.set()
-            self.assertTrue(wait(lambda:not self.controller._jobs))
-        self.assertEqual(self.events,[])
+        self.dialog.reject();APP.processEvents()
+        self.assertEqual(self.controller.state,'downloading')
+        self.client.complete(self.path,self.manifest)
+        self.assertEqual(self.controller.state,'ready');self.assertEqual(self.events,[])
         self.dialog.show();APP.processEvents()
-        self.assertTrue(self.dialog.update_button.isEnabled())
-        self.assertEqual(self.controller.state,'cancelled')
-        self.begin_download();self.client.complete(self.path,self.manifest)
-        self.assertTrue(wait(lambda:len(self.events)==2))
-        self.assertEqual(len([c for c in self.client.calls if c[0]=='download']),2)
+        self.assertEqual(self.dialog.update_button.text(),'重启并安装')
+        self.click();self.assertTrue(wait(lambda:len(self.events)==2))
+        self.assertEqual(len([c for c in self.client.calls if c[0]=='download']),1)
 
     def test_controller_close_during_hash_suppresses_late_handoff_and_releases_lease(self):
         self.offer();self.begin_download()
@@ -229,7 +226,7 @@ class InlineUpdates(unittest.TestCase):
             entered.set();release.wait(3);kwargs.pop('cancelled',None)
             return real(*args,**kwargs)
         with patch.object(subject,'verify_installer',delayed):
-            self.client.complete(self.path,self.manifest)
+            self.complete_and_install(self.path,self.manifest)
             self.assertTrue(wait(entered.is_set))
             self.controller.close();release.set()
             self.assertTrue(wait(lambda:not self.controller._jobs))
@@ -241,19 +238,19 @@ class InlineUpdates(unittest.TestCase):
         self.assertEqual(self.dialog.update_button.text(),'重试更新')
         self.begin_download()
         def denied(*args,**kwargs):raise OSError('spawn denied')
-        self.controller._popen=denied;self.client.complete(self.path,self.manifest)
+        self.controller._popen=denied;self.complete_and_install(self.path,self.manifest)
         self.assertTrue(wait(lambda:self.controller.state=='error'))
         self.assertIn('spawn denied',self.controller.state_payload['error'])
         self.assertEqual(self.events,[])
-        self.controller._popen=self.popen;self.begin_download();self.client.complete(self.path,self.manifest)
+        self.controller._popen=self.popen;self.begin_download();self.complete_and_install(self.path,self.manifest)
         self.assertTrue(wait(lambda:len(self.events)==2))
 
     def test_tamper_unrequested_callback_and_path_guards(self):
         self.offer()
-        self.client.complete(self.path,self.manifest);APP.processEvents()
+        self.complete_and_install(self.path,self.manifest);APP.processEvents()
         self.assertEqual(self.events,[]);self.assertEqual(self.controller.state,'available')
         self.begin_download();self.path.write_bytes(b'MZ'+b'X'*(len(self.body)-2))
-        self.client.complete(self.path,self.manifest)
+        self.complete_and_install(self.path,self.manifest)
         self.assertTrue(wait(lambda:self.controller.state=='error'))
         self.assertEqual(self.events,[])
         outside=self.base/'outside.exe';outside.write_bytes(self.body)

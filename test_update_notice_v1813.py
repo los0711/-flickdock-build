@@ -88,8 +88,8 @@ class UpdateNoticeTests(unittest.TestCase):
         self.assertTrue(notice.isVisible())
         QTest.mouseClick(notice.update_button, Qt.MouseButton.LeftButton)
         APP.processEvents()
-        self.assertFalse(notice.isVisible())
-        self.assertEqual(self.manager.settings_opens, 1)
+        self.assertTrue(notice.isVisible())
+        self.assertEqual(self.manager.settings_opens, 0)
         self.assertEqual(self.manager.updates.activations, 1)
 
     def test_completed_or_quitting_update_does_not_show_stale_notice(self):
@@ -105,7 +105,13 @@ class UpdateNoticeTests(unittest.TestCase):
         workspace.until(lambda:not self.fixture.shelf.presentation._timer.isActive())
         self.manager._show_update_notice('1.8.13')
         self.manager._update_notice_state_changed('downloading', {})
-        self.assertFalse(self.manager.update_notice.isVisible())
+        self.assertTrue(self.manager.update_notice.isVisible())
+        self.manager._update_notice_state_changed('downloading',dict(version='1.8.13',received=50,total=100))
+        self.assertIn('50%',self.manager.update_notice.status_label.text())
+        self.assertFalse(self.manager.update_notice.update_button.isEnabled())
+        self.manager._update_notice_state_changed('error',dict(error='TLS fixture failed'))
+        self.assertIn('TLS fixture failed',self.manager.update_notice.status_label.text())
+        self.assertTrue(self.manager.update_notice.update_button.isEnabled())
 
     def test_mask_blocks_toolbar_and_underlying_keyboard_and_never_follows_into_preview(self):
         popup=self.fixture.overview();workspace.until(lambda:not self.fixture.shelf.presentation._timer.isActive())

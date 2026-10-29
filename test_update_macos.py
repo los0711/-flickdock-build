@@ -59,8 +59,8 @@ class MacHTTPS(unittest.TestCase):
 
     def test_architecture_endpoints_and_cross_platform_manifest_guards(self):
         self.assertEqual(subject.manifest_endpoint('win32', 'AMD64'), subject.DEFAULT_MANIFEST_URL)
-        self.assertTrue(subject.manifest_endpoint('darwin', 'aarch64').endswith('/macos-arm64-auto.json'))
-        self.assertTrue(subject.manifest_endpoint('darwin', 'x86_64').endswith('/macos-x86_64-auto.json'))
+        self.assertTrue(subject.manifest_endpoint('darwin', 'aarch64').endswith('/macos-arm64-auto-v2.json'))
+        self.assertTrue(subject.manifest_endpoint('darwin', 'x86_64').endswith('/macos-x86_64-auto-v2.json'))
         self.assertEqual(subject.validate_manifest(self.manifest, {'127.0.0.1'}, platform='darwin', machine='arm64')['architecture'], 'arm64')
         with self.assertRaises(ValueError): subject.validate_manifest(self.manifest, {'127.0.0.1'}, platform='darwin', machine='x86_64')
         with self.assertRaises(ValueError): subject.validate_manifest(self.manifest, {'127.0.0.1'}, platform='win32')

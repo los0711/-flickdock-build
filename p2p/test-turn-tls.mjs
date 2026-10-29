@@ -5,7 +5,7 @@ import test from 'node:test';
 import dgram from 'node:dgram';
 import tls from 'node:tls';
 import net from 'node:net';
-import {udpToStream,TurnStreamDecoder,tlsTurnTunnel,adaptTurnServers,httpConnectSocket} from './turn_tls.mjs';
+import {udpToStream,TurnStreamDecoder,tlsTurnTunnel,adaptTurnServers,httpConnectSocket,socks5ConnectSocket} from './turn_tls.mjs';
 
 const relay=(port=443)=>({hostname:'turn.cloudflare.com',port,relayType:'TurnTls',username:'test-user',password:'test-credential'});
 const udpRelay={...relay(3478),relayType:'TurnUdp'},stun='stun:stun.cloudflare.com:3478';
@@ -106,6 +106,40 @@ test('bounded TLS send queue and malformed receive frame fail explicitly',async 
 });
 
 const httpProxy={type:'http',host:'127.0.0.1',port:7890};
+const socksProxy={type:'socks5',host:'127.0.0.1',port:1080};
+function socksSetup(t,responses){
+  const sockets=[];
+  t.mock.method(net,'connect',()=>{
+    const socket=new TLS();socket.pause=()=>{socket.paused=true};socket.resume=()=>{socket.paused=false};
+    socket.write=data=>{
+      socket.writes.push(Buffer.from(data));const response=responses[socket.writes.length-1]||[];
+      queueMicrotask(()=>{for(const part of response)socket.emit('data',Buffer.from(part));});return true;
+    };
+    sockets.push(socket);queueMicrotask(()=>socket.emit('connect'));return socket;
+  });
+  return sockets;
+}
+test('SOCKS5 uses the selected proxy and fixed TURN hostname with fragmented replies',async t=>{
+  const sockets=socksSetup(t,[[[5],[0]],[[5,0,0,1,127],[0,0,1,0,80]]]);
+  const socket=await socks5ConnectSocket(relay(),socksProxy);
+  assert.deepEqual([...socket.writes[0]],[5,1,0]);assert(socket.paused);
+  const request=socket.writes[1];assert.equal(request.subarray(5,-2).toString(),'turn.cloudflare.com');
+  assert.equal(request.readUInt16BE(request.length-2),443);assert.equal(sockets.length,1);socket.destroy();
+});
+test('SOCKS5 authenticates through private IPC-derived credentials and refuses bad auth',async t=>{
+  const sockets=socksSetup(t,[[[5,2]],[[1,0]],[[5,0,0,3,1,97,0,80]]]);
+  const socket=await socks5ConnectSocket(relay(),{...socksProxy,username:'u',password:'p'});
+  assert.deepEqual([...socket.writes[1]],[1,1,117,1,112]);socket.destroy();
+  t.mock.restoreAll();const bad=socksSetup(t,[[[5,2]],[[1,1]]]);
+  await assert.rejects(()=>socks5ConnectSocket(relay(),{...socksProxy,username:'u',password:'p'}),/authentication refused/);
+  assert(bad[0].destroyed);
+});
+test('SOCKS5 rejects arbitrary authorities or oversized credentials before opening a socket',async t=>{
+  const sockets=socksSetup(t,[]);
+  await assert.rejects(()=>socks5ConnectSocket({...relay(),hostname:'example.invalid'},socksProxy),/Invalid/);
+  await assert.rejects(()=>socks5ConnectSocket(relay(),{...socksProxy,password:'x'.repeat(256)}),/Invalid/);
+  assert.equal(sockets.length,0);
+});
 function proxySetup(t,response,{eof=false}={}){
   const sockets=[],options=[];
   t.mock.method(net,'connect',value=>{

@@ -5,7 +5,7 @@ import sys
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, Signal,QEvent,QRectF
 from PySide6.QtGui import QColor, QCursor, QGuiApplication,QPainter
 from PySide6.QtWidgets import (QFrame, QGraphicsDropShadowEffect, QHBoxLayout,
-                               QLabel, QPushButton, QVBoxLayout, QWidget,QScrollArea,QApplication)
+                               QLabel, QPushButton, QVBoxLayout, QWidget,QScrollArea,QApplication,QProgressBar)
 from shiboken6 import isValid
 from native_ui_common import colors as ui_colors, reference_font
 
@@ -64,6 +64,11 @@ class UpdateNotice(QWidget):
         self.notes_label.setWordWrap(True);self.notes_label.setTextFormat(Qt.TextFormat.PlainText)
         self.notes_label.setAlignment(Qt.AlignmentFlag.AlignTop|Qt.AlignmentFlag.AlignLeft)
         self.notes_area.setWidget(self.notes_label);self.notes_area.hide();content.addWidget(self.notes_area,1)
+        self.status_label=QLabel(self.surface);self.status_label.setWordWrap(True)
+        self.status_label.setTextFormat(Qt.TextFormat.PlainText);self.status_label.hide();content.addWidget(self.status_label)
+        self.progress=QProgressBar(self.surface);self.progress.setFixedHeight(5)
+        self.progress.setTextVisible(False);self.progress.hide();content.addWidget(self.progress)
+        self._state='available'
 
         actions = QHBoxLayout()
         actions.setSpacing(9)
@@ -113,6 +118,33 @@ class UpdateNotice(QWidget):
     def dismiss(self):
         self.dismissed.emit();self.hide()
 
+    def set_state(self,state,version='',received=0,total=0,error=''):
+        """Render the shared controller without owning its task lifetime."""
+        self._state=state
+        labels={'idle':('','检查更新'),'checking':('正在检查更新…','检查中…'),
+                'available':('可以开始下载','立即更新'),'latest':('当前已是最新版本','检查更新'),
+                'downloading':(f'正在下载 {min(100,round(received*100/total))}%' if total else '正在下载…','下载中…'),
+                'verifying':('正在校验安装包…','校验中…'),'ready':('下载完成，可以安装','重启并安装'),
+                'installing':('正在安装；如系统提示，请完成授权。','安装中…'),
+                'handoff':('安装程序已启动，请按系统提示完成。','安装已启动'),
+                'error':(str(error)[:800] or '更新未完成，请重试。','重试更新' if version else '重试检查'),
+                'cancelled':('更新已取消','继续更新'),'cancelling':('正在取消…','请稍候…')}
+        text,action=labels.get(state,('','检查更新'))
+        self.status_label.setText(text);self.status_label.setVisible(bool(text))
+        self.status_label.setToolTip(str(error))
+        busy=state in ('checking','downloading','verifying','installing','cancelling','handoff')
+        self.update_button.setText(action);self.update_button.setEnabled(not busy)
+        self.progress.setVisible(state in ('checking','downloading','verifying','installing'))
+        if state=='downloading' and total>0:
+            self.progress.setRange(0,1000);self.progress.setValue(min(1000,round(received*1000/total)))
+        else:self.progress.setRange(0,0)
+        self._fit_surface()
+
+    def _fit_surface(self):
+        width=min(420,max(240,self.width()-32))
+        wanted=(272 if not self.notes_area.isHidden() else 146)+(64 if not self.status_label.isHidden() else 0)
+        self.surface.setFixedSize(width,min(wanted,max(130,self.height()-32)))
+
     def eventFilter(self,watched,event):
         if self.isVisible() and self._owner and isValid(self._owner):
             if watched in (self._owner,self._owner.card) and event.type() in (QEvent.Type.Hide,QEvent.Type.Close):self.hide()
@@ -132,6 +164,7 @@ class UpdateNotice(QWidget):
                     return True
         if event.type() in (QEvent.Type.Resize,QEvent.Type.Move) and self._owner:
             self.setGeometry(self._owner.card.geometry())
+            self._fit_surface()
         return False
 
     def paintEvent(self,event):
@@ -166,12 +199,13 @@ class UpdateNotice(QWidget):
         self.update_button.setAccessibleName(f"立即更新到 {version}")
         notes=str(notes).strip()[:4000]
         self.notes_label.setText('本次更新\n'+notes if notes else '')
-        self.notes_area.setVisible(bool(notes));self.surface.setFixedSize(420,272 if notes else 146)
+        self.notes_area.setVisible(bool(notes))
         if self._owner:
             self.setGeometry(self._owner.card.geometry())
             self._owner.setProperty('flickdockConfirmationActive',True)
             self._previous_focus=QApplication.focusWidget()
         QApplication.instance().installEventFilter(self)
         self.show()
+        self._fit_surface()
         self.raise_()
         if self._owner and self._owner.isActiveWindow():self.later_button.setFocus(Qt.FocusReason.OtherFocusReason)

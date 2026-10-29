@@ -9,6 +9,7 @@ Interrupted connections resume their verified prefix within the running session.
 from __future__ import annotations
 
 import ctypes
+import codecs
 import ctypes.util
 from collections import deque
 from dataclasses import dataclass, field
@@ -34,6 +35,9 @@ from PySide6.QtCore import QObject, Signal
 from selection_archive import _is_link, _source_reader
 from sync_files import safe_name
 from transfer_priority import yield_bulk_payload
+
+# Source launches use the same eager initialization as the frozen entry hooks.
+codecs.lookup('idna')
 
 DISCOVERY_PORT = 45875
 BLOCK_BYTES = 1024 * 1024

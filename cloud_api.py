@@ -58,6 +58,7 @@ class CloudApi(QObject):
         self._handoffs={}
         self._closed = False
         self._allow_test_http = allow_test_http
+        self.diagnostics_dir=None
 
     def _url(self, path):
         base = QUrl(self.origin)
@@ -347,6 +348,9 @@ class CloudApi(QObject):
                 except OSError: pass  # A locked partial file must not stall the receive queue.
         if status == 401 and state['auth_token'] and state['auth_token'] == self.token and not self._closed:
             self.unauthorized.emit()
+        if error is not None:
+            from network_diagnostics import record_event
+            record_event(self.diagnostics_dir,'cloud','request',getattr(error,'code','') or 'REQUEST_FAILED',status)
         if (not self._closed and error is not None and getattr(error,'code','')=='NETWORK_UNREACHABLE'
                 and state['origin'] in CLOUD_ORIGINS):
             # Slots can cancel/close synchronously while the new entrance is

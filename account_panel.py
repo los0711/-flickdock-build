@@ -568,6 +568,7 @@ class AccountPanel(QFrame):
                 and not self._editing_device):
             self._update_enabled();return
         self._rendered_devices_signature=signature
+        for form in self._rename_forms.values():form.hide();form.deleteLater()
         self._devices={};self.device_buttons={};self._rows_by_id={}
         self.device_rename_buttons={};self.device_name_edits={};self._rename_forms={}
         self._rename_save_buttons={};self._editing_device=''
@@ -592,14 +593,14 @@ class AccountPanel(QFrame):
                 device_name.setFixedHeight(24)
                 device_name.setObjectName('accountDeviceName')
                 device_name.setProperty('compactDeviceName',True)
-                device_name.setSizePolicy(QSizePolicy.Policy.Preferred,QSizePolicy.Policy.Fixed)
-                device_name.setMaximumWidth(device_name.fontMetrics().horizontalAdvance(device_name.text())+3)
-                horizontal.addWidget(device_name)
+                device_name.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Fixed)
+                device_name.setMaximumWidth(16777215)
+                horizontal.addWidget(device_name,1)
                 platform={'windows':'Windows','macos':'Mac','linux':'Linux'}.get(str(device.get('platform','')),'其他设备')
                 current=bool(device.get('current') or key==str(self.service.device_id))
                 timestamp=QDateTime.fromString(str(device.get('last_seen_at') or ''),Qt.DateFormat.ISODate)
                 suffix='此设备' if current else '最近在线 '+timestamp.toLocalTime().toString('MM-dd HH:mm') if timestamp.isValid() else ''
-                device_name.setToolTip(platform+(' · '+suffix if suffix else ''))
+                device_name.setToolTip(str(device.get('name') or '未命名设备')+'\n'+platform+(' · '+suffix if suffix else ''))
                 row.setAccessibleName(str(device.get('name') or '未命名设备')+'，'+platform+('，本机' if current else ''))
                 subtitle=AccountNameLabel(row);subtitle.setObjectName('accountCurrentDevice' if current else 'accountDeviceMeta')
                 subtitle.setFixedHeight(20)
@@ -609,7 +610,6 @@ class AccountPanel(QFrame):
                     subtitle.setFixedWidth(48)
                     horizontal.addWidget(subtitle)
                 else:subtitle.hide()
-                horizontal.addStretch(1)
                 actions=QWidget(row);actions.setObjectName('accountDeviceActions')
                 action_layout=QHBoxLayout(actions);action_layout.setContentsMargins(0,0,0,0);action_layout.setSpacing(3)
                 actions.setSizePolicy(QSizePolicy.Policy.Fixed,QSizePolicy.Policy.Fixed)
@@ -628,10 +628,16 @@ class AccountPanel(QFrame):
                     def show_device_menu(point,key=key,row=row):
                         menu=QMenu(row);self._style_menu(menu);menu.addAction('修改设备名称',partial(self._edit_device_name,key));menu.exec(row.mapToGlobal(point))
                     row.customContextMenuRequested.connect(show_device_menu)
+                if not current:action_layout.insertSpacing(0,18)
+                actions.setFixedWidth(85 if not current else 32)
                 horizontal.addWidget(actions,0,Qt.AlignmentFlag.AlignRight)
-                rename_form=QWidget(row);rename_layout=QHBoxLayout(rename_form)
-                rename_layout.setContentsMargins(0,0,0,0);rename_layout.setSpacing(6)
-                edit=QLineEdit(rename_form);edit.setText(str(device.get('name') or ''))
+                from app_settings import ReferenceModalDialog
+                rename_form=ReferenceModalDialog(self,surface_width=340,modal=True)
+                rename_form.setObjectName('accountModal');rename_form.setWindowTitle('修改设备名称')
+                rename_form.set_surface_theme('dark' if self._dark else 'light');rename_form.setStyleSheet(self.styleSheet())
+                rename_form.body_layout.addWidget(_label('修改设备名称',rename_form.body))
+                rename_layout=QHBoxLayout();rename_layout.setSpacing(6)
+                edit=QLineEdit(rename_form.body);edit.setText(str(device.get('name') or ''))
                 edit.setMaxLength(80);edit.setMinimumWidth(0);edit.setMinimumHeight(34)
                 edit.setAccessibleName('新的设备名称')
                 cancel=_button('取消',rename_form)
@@ -639,8 +645,11 @@ class AccountPanel(QFrame):
                 cancel.clicked.connect(self._cancel_rename)
                 save.clicked.connect(partial(self._save_device_name,key))
                 edit.textChanged.connect(lambda *_:self._update_enabled())
-                rename_layout.addWidget(edit,1);rename_layout.addWidget(cancel);rename_layout.addWidget(save)
-                row_layout.addWidget(rename_form);rename_form.hide()
+                rename_form.body_layout.addWidget(edit)
+                rename_layout.addStretch();rename_layout.addWidget(cancel);rename_layout.addWidget(save)
+                rename_form.body_layout.addLayout(rename_layout);rename_form.hide()
+                rename_form.rejected.connect(partial(self._rename_dismissed,key))
+                edit.returnPressed.connect(save.click)
                 self.device_name_edits[key]=edit;self._rename_forms[key]=rename_form
                 self._rename_save_buttons[key]=save
                 for child in rename_form.findChildren(QWidget):child.installEventFilter(self)
@@ -664,6 +673,7 @@ class AccountPanel(QFrame):
         if self.confirm_frame.isVisible():
             self.devices_layout.removeWidget(self.confirm_frame)
             self.devices_layout.addWidget(self.confirm_frame,(len(self._device_rows)+columns-1)//columns,0,1,columns)
+        self.devices_layout.setColumnStretch(0,1)
         self.devices_layout.setColumnStretch(1,1 if columns==2 else 0)
         self.devices_layout.invalidate()
         self.devices_body.updateGeometry();self.signed_in_page.updateGeometry()
@@ -704,13 +714,11 @@ class AccountPanel(QFrame):
         self._fit_device_forms()
 
     def _fit_device_forms(self):
-        for key,row in getattr(self,'_rows_by_id',{}).items():
-            editing=not self._rename_forms[key].isHidden()
-            row.layout().setContentsMargins(10,7,10,16 if editing else 7)
-            row.layout().invalidate()
-            row.setMinimumHeight(max(44,row.layout().minimumSize().height()))
-            row.updateGeometry()
-        self.devices_layout.invalidate();self.devices_body.updateGeometry();self._queue_fit()
+        self._update_enabled()
+
+    def _rename_dismissed(self,key,*_):
+        if self._editing_device==key:self._editing_device=''
+        self._update_enabled()
 
     def _save_device_name(self,key,*_):
         if self._busy or not self.service.signed_in or key not in self._devices:return
@@ -853,7 +861,8 @@ class AccountPanel(QFrame):
             QDialog#accountModal QPushButton#accountTab:checked {{background:{'rgba(255,255,255,38)' if self._dark else '#FFFFFF'};color:{ink};}}
             QFrame#accountSecurity {{background:transparent;border:0;}}
         '''
-        for dialog in (self.password_dialog,self.auth_dialog):dialog.set_surface_theme(theme)
+        for dialog in (self.password_dialog,self.auth_dialog,*self._rename_forms.values()):
+            dialog.set_surface_theme(theme)
         for button in (self.password_close,self.auth_close):button.dark=self._dark;button.update()
         semantic=ui_colors(theme)
         style+=f'''
@@ -879,7 +888,8 @@ class AccountPanel(QFrame):
         if sys.platform=='win32':
             style+='\nQFrame#accountPanel QLabel#accountState {font-size:12px;}'
         self.setStyleSheet(style)
+        for form in self._rename_forms.values():form.setStyleSheet(style)
         for row in self._device_rows:
             for name in row.findChildren(AccountNameLabel):
-                if name.property('compactDeviceName'):name.setMaximumWidth(name.fontMetrics().horizontalAdvance(name.text())+3)
+                if name.property('compactDeviceName'):name.setMaximumWidth(16777215)
         for glyph in self.findChildren(AccountGlyph):glyph.dark=self._dark;glyph.update()

@@ -17,6 +17,7 @@ from uuid import uuid4
 from PySide6.QtCore import QObject, QThreadPool, QTimer, Qt, Signal
 from account_store import atomic_json
 from selection_archive import _source_reader
+from small_upload_lane import SmallUploadLane
 from sync_files import (DiskWork, DIRECTORY_MIME, assemble_parts, fingerprint, read_part, read_utf8, safe_name,
                         stage_item, unpack_directory,MAX_FILE_BYTES)
 
@@ -95,6 +96,8 @@ class ShelfSync(QObject):
         self._event_stream_online=True
         self._progress_persisted=0.0
         self._part_cache={}
+        self._lane_context=None
+        self.small_lane=SmallUploadLane(self)
         self._refresh_again=False
         self._cycle_direction='receive'
         self.upload_enabled=True
@@ -180,6 +183,7 @@ class ShelfSync(QObject):
             if self.service.signed_in and not self.timer.isActive(): self.timer.start()
             return
         self.epoch += 1; self.timer.stop(); self.debounce.stop(); self.remote_poll.stop()
+        self.small_lane.reset()
         self._intake_announced=set()
         self.running = False; self.transfer = None
         self._refresh_again=False
@@ -252,6 +256,7 @@ class ShelfSync(QObject):
         if removed and self.running:
             self._interrupt_cycle()
         self.debounce.start(1 if removed else 400)
+        self.small_lane.kick()
 
     def _end_intake(self,entry):
         identifier=entry.pop('intake_id',None)
@@ -429,6 +434,7 @@ class ShelfSync(QObject):
 
     def _interrupt_cycle(self):
         self.epoch+=1
+        self.small_lane.reset()
         self.running=False;self.transfer=None
         self._part_cache.clear()
         self._cleanup_inflight.clear()
@@ -528,27 +534,36 @@ class ShelfSync(QObject):
         return True
 
     def _request(self, method, path, callback, **kwargs):
-        epoch = self.epoch; holder = []
+        epoch = self.epoch; holder = []; lane=self._lane_context
         def done(result,error):
             if holder: self.requests.discard(holder[0])
             if self.closed or epoch != self.epoch: return
-            callback(result,error)
+            if lane is not None:
+                # Protocol callbacks can stop the main cycle on conflicts;
+                # the small lane defers reconciliation without stopping bulk.
+                if lane is not self.small_lane.active:return
+                if error:self.small_lane.finish(error);return
+                self.small_lane.run(lane,callback,result,error)
+            else:callback(result,error)
         key = self.api.request(method,path,done,**kwargs)
         holder.append(key); self.requests.add(key)
         return key
 
     def _work(self, function, args, callback):
-        epoch = self.epoch; job = DiskWork(function,*args); self.jobs.add(job)
+        epoch = self.epoch; job = DiskWork(function,*args); self.jobs.add(job);lane=self._lane_context
         def done(result,error):
             self.jobs.discard(job)
             if self.closed or epoch != self.epoch:
                 if function is stage_item and isinstance(result,dict) and result.get('path'):
                     Path(result['path']).unlink(missing_ok=True)
                 return
-            callback(result,error)
+            if lane is not None:self.small_lane.run(lane,callback,result,error)
+            else:callback(result,error)
         job.signals.done.connect(done); self.pool.start(job)
 
     def _error(self,error):
+        if self._lane_context is not None:
+            self.small_lane.finish(error);return
         if getattr(error,'code','') in ('UPLOAD_CANCELLED','UPLOAD_EXPIRED'):
             transfer=self.transfer or {}
             entry=self.state.get('entries',{}).get(transfer.get('id'))
@@ -585,6 +600,8 @@ class ShelfSync(QObject):
 
     def _needs_remote_version(self):
         """Stop retrying a conflicting upload while inbound sync is off."""
+        if self._lane_context is not None:
+            self.small_lane.finish(ValueError('云端版本已改变。'));return
         self.state['awaiting_receive']=True
         self.running=False;self.transfer=None
         self._persist();self._notify_transfers()
@@ -722,6 +739,8 @@ class ShelfSync(QObject):
             entry.pop('pending_hash',None); entry.pop('pending_seq',None)
 
     def _retire_uploads(self):
+        if self._lane_context is not None:
+            self.small_lane.finish(ValueError('上传需要重新核对。'));return
         if not self.upload_enabled:
             self._after_cleanup()
             return
@@ -1197,6 +1216,8 @@ class ShelfSync(QObject):
         self._change_view(change)
 
     def _push_next(self):
+        if self._lane_context is not None:
+            self.small_lane.finish();return
         if not self.upload_enabled or (not self.receive_enabled and self.state.get('awaiting_receive')):
             self.running=False;self.transfer=None
             self._notify_transfers()
@@ -1217,7 +1238,8 @@ class ShelfSync(QObject):
                 any(x not in active and x not in self._cleanup_inflight
                     for x in self.state.setdefault('pending_uploads',[])))):
             self._retire_uploads(); return
-        pending = next((e for e in self.state['entries'].values() if e.get('dirty') and not e.get('paused_upload') and
+        lane_id=(self.small_lane.active or {}).get('id')
+        pending = next((e for e in self.state['entries'].values() if e['id']!=lane_id and e.get('dirty') and not e.get('paused_upload') and
                         ((e.get('deleted') and e.get('version',0)==0 and not self.state.get('pending_uploads')) or (not e.get('deleted') and
                         e.get('blocked_fingerprint') != e.get('fingerprint')))),None)
         if pending is None:
@@ -1252,6 +1274,7 @@ class ShelfSync(QObject):
         self._announce_intakes()
         snapshot = dict(pending); self.transfer = snapshot
         self._notify_transfers()
+        self.small_lane.kick()
         def staged(result,error):
             if error:
                 self._end_intake(snapshot)
@@ -1371,7 +1394,7 @@ class ShelfSync(QObject):
         self._push_next()
 
     def _send_part(self,transfer,index):
-        self._part_cache={key:value for key,value in self._part_cache.items() if key[0]==transfer.get('upload_id') and key[1]>=index}
+        self._part_cache={key:value for key,value in self._part_cache.items() if key[0]!=transfer.get('upload_id') or key[1]>=index}
         if not self._resume_matches(transfer):
             self._forget_resume(transfer['id']); self._persist(); self._retire_uploads(); return
         if index >= transfer['part_count']:
@@ -1447,6 +1470,7 @@ class ShelfSync(QObject):
         if self.closed: return
         self.local_changed(); self._persist()
         self.closed = True; self.epoch += 1
+        self.small_lane.reset()
         self.service.account_changed.disconnect(self.select_account)
         self.timer.stop(); self.debounce.stop(); self.remote_poll.stop()
         for key in tuple(self.requests): self.api.cancel(key)

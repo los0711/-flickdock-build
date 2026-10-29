@@ -25,7 +25,7 @@ def _dmg_launch(source,target,*,runner=subprocess.run,launcher=subprocess.Popen)
         # Finder supplies its standard replacement/authorization UI. Arguments
         # remain data; neither application path is interpolated into script code.
         script='''on run argv
-display dialog "将 FlickDock 安装到“应用程序”后打开？安装完成后会退出安装镜像。" buttons {"取消", "安装并打开"} default button "安装并打开" cancel button "取消" with title "安装 FlickDock"
+display dialog "将 FlickDock 安装到“应用程序”并替换旧版本后打开？以后将从这个位置启动。" buttons {"取消", "安装并打开"} default button "安装并打开" cancel button "取消" with title "安装 FlickDock"
 tell application "Finder" to duplicate (POSIX file (item 1 of argv)) to (POSIX file (item 2 of argv)) with replacing
 end run'''
         running=runner(['/usr/bin/pgrep','-x','FlickDock'],capture_output=True,text=True)
@@ -54,7 +54,18 @@ def _relocate_disk_image_launch():
     if sys.platform!='darwin' or not getattr(sys,'frozen',False) or os.environ.get('QT_QPA_PLATFORM') in ('offscreen','minimal'):return False
     from platform_native import app_bundle
     source=app_bundle()
-    return bool(source and source.as_posix().startswith('/Volumes/') and _dmg_launch(source,Path('/Applications/FlickDock.app')))
+    if source is None:return False
+    target=Path('/Applications/FlickDock.app')
+    if source==target:return False
+    transient=(source.as_posix().startswith('/Volumes/') or 'AppTranslocation' in source.parts
+               or source.is_relative_to(Path.home()/'Downloads'))
+    # Once a canonical installation exists, launching a download/old copy must
+    # return to it rather than creating another independent update target.
+    canonical=False
+    if target.is_dir():
+        try:canonical=plistlib.loads((target/'Contents/Info.plist').read_bytes()).get('CFBundleIdentifier')=='com.flickdock.app'
+        except (OSError,ValueError):pass
+    return bool((transient or canonical) and _dmg_launch(source,target))
 
 
 def verify_cocoa_window_order(edge, shelf):
@@ -218,7 +229,7 @@ def verify_platform(report_path):
 def main(arguments=None):
     arguments = list(sys.argv[1:] if arguments is None else arguments)
     if '--elevated-mac-update' in arguments:
-        from mac_updates import run_elevated_update_helper, write_privileged_update_error
+        from mac_updates import run_elevated_update_helper, write_privileged_update_error,finish_update_helper
         index = arguments.index('--elevated-mac-update')
         if index + 1 >= len(arguments):
             return 2
@@ -233,8 +244,11 @@ def main(arguments=None):
                 except OSError:
                     pass
             return 1
+        finally:
+            try:finish_update_helper(receipt)
+            except (OSError,ValueError,RuntimeError):pass
     if '--apply-mac-update' in arguments:
-        from mac_updates import run_update_helper
+        from mac_updates import run_update_helper,finish_update_helper
         index = arguments.index('--apply-mac-update')
         if index + 1 >= len(arguments):
             return 2
@@ -250,6 +264,9 @@ def main(arguments=None):
                 except OSError:
                     pass
             return 1
+        finally:
+            try:finish_update_helper(receipt)
+            except (OSError,ValueError,RuntimeError):pass
     if '--verify-platform' in arguments:
         index = arguments.index('--verify-platform')
         return verify_platform(arguments[index + 1]) if index + 1 < len(arguments) else 2

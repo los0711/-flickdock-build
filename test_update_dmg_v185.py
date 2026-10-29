@@ -52,6 +52,8 @@ class DmgUpdateTests(unittest.TestCase):
             self.assertTrue(controller.start_update())
             client.offer(self.manifest)
             client.complete(self.image,self.manifest)
+            self.assertEqual(controller.state,'ready');self.assertFalse(launched)
+            self.assertTrue(controller.activate())
             until(lambda:controller.state=='handoff')
             self.assertEqual(launched,[(['/usr/bin/open',str(self.image)],{'shell':False})])
             self.assertFalse(controller.busy)

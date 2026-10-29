@@ -341,7 +341,9 @@ class ClipboardSync(QObject):
 
     def _directory(self):
         path=Path(tempfile.mkdtemp(prefix='clip-',dir=self.cache));created=time.time()
-        (path/'.lease.json').write_text(json.dumps({'flickdock_clipboard':1,'created_at':created}),encoding='utf8')
+        try:(path/'.lease.json').write_text(json.dumps({'flickdock_clipboard':1,'created_at':created}),encoding='utf8')
+        except OSError:
+            shutil.rmtree(path,ignore_errors=True);raise
         self._directories.append((path,created));return path
 
     def _work(self,action,callback):
@@ -463,7 +465,10 @@ class ClipboardSync(QObject):
                 self._finish_refresh();return
             kind,size,sha=head.get('kind'),head.get('size'),head.get('sha256')
             if kind not in ('text','image','files') or type(size) is not int or not 0<size<(MAX_ARCHIVE_BYTES if kind in ('files','text') else MAX_BYTES) or not isinstance(sha,str) or len(sha)!=64:self._finish_refresh();return
-            directory=self._directory();path=directory/'download.bin';self._fetching=True
+            try:directory=self._directory()
+            except OSError:
+                self._finish_refresh();self.retry.start();return
+            path=directory/'download.bin';self._fetching=True
             self._priority_flags(receiving=True)
             def downloaded(result,error):
                 if error:self._finish_refresh();self.retry.start();return

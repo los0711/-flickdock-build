@@ -185,7 +185,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-intake-entry-v164-') as tempo
                         finally: release.set()
                         until(lambda: not shelf.copy_jobs)
                 else: drop(entry, original)
-                if pinned:
+                if pinned or entry=='overview':
                     until(lambda: not shelf.incoming_drop)
                     assert shelf.isVisible() and shelf.visible_state!='hiding' and not hides
                     assert shelf.expanded == (entry=='overview')
@@ -208,7 +208,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-intake-entry-v164-') as tempo
                 manager.timer.stop()
                 assert len(pulses)==1, pulses
                 if entry=='overview' and not pinned:
-                    assert pulses[0][:2] == (False, False), pulses
+                    assert pulses[0][:2] == (True, False), pulses
                 assert len(shelf.files['permanent'])==(2 if pinned else 1)
                 stored = Path(shelf.files['permanent'][-1])
                 assert stored.read_bytes()==original.read_bytes()
@@ -261,8 +261,8 @@ with tempfile.TemporaryDirectory(prefix='flickdock-intake-entry-v164-') as tempo
             reset('reference')
             show('overview')
             drop('overview', source('interrupted-fold'))
-            assert not shelf.expanded and shelf.geometry_morph.active
-            # The user opens overview again while the intake fold is active.
+            assert shelf.expanded and not shelf.geometry_morph.active
+            # Opening the already visible overview during intake is idempotent.
             manager.show_overview()
             run_for(1300)
             assert not shelf.incoming_drop, ('Fold retarget lost intake completion', shelf.expanded,

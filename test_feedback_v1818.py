@@ -263,8 +263,8 @@ class FeedbackTests(unittest.TestCase):
                     panel.set_sync_status('搁架已同步。');panel.service.status_changed.emit('设备名称修改成功。')
                     panel.device_rename_buttons['other'].click();flush()
                     form=panel._rename_forms['other'];row=panel._rows_by_id['other']
-                    self.assertGreaterEqual(row.height()-form.geometry().bottom()-1,15)
-                    self.assertTrue(row.rect().contains(form.geometry()))
+                    self.assertTrue(form.isWindow());self.assertEqual(row.height(),44)
+                    self.assertTrue(form.screen().availableGeometry().contains(form.frameGeometry()))
                     for label in (panel.username_label,panel.sync_status_label):
                         bounds=QRect(label.mapTo(panel.profile_frame,QPoint()),label.size())
                         self.assertTrue(panel.profile_frame.rect().contains(bounds),(label.text(),bounds,panel.profile_frame.rect()))
@@ -282,12 +282,14 @@ class FeedbackTests(unittest.TestCase):
             'paused':dict(dirty=True,paused_upload=True,ref='paused'),
             'stale':dict(dirty=True,ref='gone',fingerprint='old',blocked_fingerprint='old')}
         engine=SimpleNamespace(upload_enabled=True,receive_enabled=True,state=dict(entries=entries),running=True,transfer=None,
+            _lane_context=None,small_lane=SimpleNamespace(active=None),
             _cycle_direction='',_refresh_again=False,_notify_transfers=lambda:None,_pending_removal=lambda:None,_paused=lambda _:False,
             adapter=SimpleNamespace(snapshot=lambda:dict(permanent=['blocked'])),status_changed=SimpleNamespace(emit=statuses.append))
+        for identity,entry in entries.items():entry['id']=identity
         ShelfSync._push_next(engine);self.assertEqual(statuses[-1],'搁架已同步。')
         engine.adapter.snapshot=lambda:dict(permanent=['paused','blocked'])
         ShelfSync._push_next(engine);self.assertIn('1 项暂停上传',statuses[-1]);self.assertNotIn('暂留本机',statuses[-1])
-        entries['blocked']=dict(dirty=True,ref='blocked',fingerprint='current',blocked_fingerprint='current')
+        entries['blocked']=dict(id='blocked',dirty=True,ref='blocked',fingerprint='current',blocked_fingerprint='current')
         ShelfSync._push_next(engine);self.assertIn('1 项暂留本机',statuses[-1])
 
 if __name__=='__main__':unittest.main()

@@ -350,6 +350,9 @@ class UpdateController(QObject):
 
     def activate(self):
         """The settings button checks, updates, or retries its current action."""
+        if self._state=='ready' and self._verified_path and self.can_start_update:
+            self._authorized=True
+            return self._start_verification()
         return self.start_update() if self.can_start_update else self.open(manual=True)
 
     def open(self, manual=True):
@@ -483,8 +486,9 @@ class UpdateController(QObject):
         self._manifest, self._verified_path = copy.deepcopy(manifest), str(path)
         self._set_state('ready', received=manifest['installer']['size'],
                         total=manifest['installer']['size'])
-        if self._authorized and not self._closed:
-            self._start_verification()
+        # Download remains alive independently of its UI. Installing/restarting
+        # is a distinct action rendered by both the notice and Settings.
+        self._authorized=False
 
     def _start_verification(self):
         if self._closed or self._installing or not self._authorized:

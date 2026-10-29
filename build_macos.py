@@ -199,7 +199,7 @@ def main(arguments=None):
          'test_shelf_raise_v1810', 'test_intake_first_frame_v1810',
          'test_sync_remote_commit_wakeup', 'test_cloud_file_status_v1810',
          'test_trigger_reliability_v1810', 'test_event_stream_wiring_v1810',
-         'test_pointer_paste_v1819','test_presentation_v1819','test_clipboard_sync_v1819','test_wan_account_v1819','test_webrtc_close_v1819','test_update_notice_v1813','-v'], env=env)
+         'test_pointer_paste_v1819','test_presentation_v1819','test_clipboard_sync_v1819','test_wan_account_v1819','test_webrtc_close_v1819','test_update_notice_v1813','test_small_upload_lane','test_feedback_v1820','-v'], env=env)
     # Native WebRTC and QWebSocket lifetimes are verified in their own Qt
     # process, matching the standalone frozen-client gate below.
     run([python,'-m','unittest','test_wan_transfer_v1816','-v'],env=env)
@@ -220,6 +220,9 @@ def main(arguments=None):
     from app_version import APP_VERSION
     report = ROOT.parent / 'outputs' / f'mac-build-{APP_VERSION}-{options.target_arch}.json'
     report.parent.mkdir(parents=True, exist_ok=True)
+    update_runtime_path=report.parent/f'mac-update-runtime-{options.target_arch}.json'
+    if os.environ.get('GITHUB_ACTIONS')=='true':
+        run([python,ROOT/'ci_mac_update_runtime.py',binary,update_runtime_path],env=env)
     with tempfile.TemporaryDirectory(prefix='flickdock-mac-verify-') as profile:
         smoke = Path(profile) / 'platform.json'
         run([binary, '--verify-platform', smoke], env=dict(env, XDG_CONFIG_HOME=profile, APPDATA=profile))
@@ -347,7 +350,8 @@ def main(arguments=None):
     report.write_text(json.dumps(dict(ok=True, host=platform.platform(), version=APP_VERSION,
           architecture=options.target_arch, signed=bool(options.sign_identity), dmg_verified=True,
           notarized=bool(options.notary_profile),zip_roundtrip_verified=True,pkg_payload_verified=True,
-          frozen=frozen, artifacts=artifacts),
+          frozen=frozen, artifacts=artifacts,
+          native_update_runtime=(json.loads(update_runtime_path.read_text()) if update_runtime_path.is_file() else None)),
           ensure_ascii=False, indent=2), encoding='utf-8')
     print(report)
     return 0

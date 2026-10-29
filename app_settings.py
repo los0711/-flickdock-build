@@ -1110,7 +1110,10 @@ class SettingsDialog(QDialog):
         self.version_label = QLabel(f"v{APP_VERSION}", self.title_bar)
         self.version_label.setObjectName("settingsVersion")
         self.version_label.setAccessibleName("当前版本")
-        self.version_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.version_label.setToolTip('查看版本更新记录')
+        self.version_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.version_label.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.version_label.installEventFilter(self)
         header.addWidget(self.version_label)
         header.addStretch()
         self.update_status_label = QLabel(self.title_bar)
@@ -1137,6 +1140,14 @@ class SettingsDialog(QDialog):
         root.addWidget(self.title_bar)
         self.update_activity = UpdateActivityBar(self.surface)
         root.addWidget(self.update_activity)
+        self.update_notes_area=QScrollArea(self.surface);self.update_notes_area.setWidgetResizable(True)
+        self.update_notes_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.update_notes_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.update_notes_area.setFixedHeight(104);self.update_notes_area.hide()
+        self.update_notes_area.setStyleSheet('QScrollArea{background:transparent;border:0;} QScrollArea>QWidget>QWidget{background:transparent;}')
+        self.update_notes_label=QLabel(self.update_notes_area);self.update_notes_label.setWordWrap(True)
+        self.update_notes_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.update_notes_area.setWidget(self.update_notes_label);root.addWidget(self.update_notes_area)
 
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
@@ -1392,6 +1403,7 @@ class SettingsDialog(QDialog):
                 dots.addWidget(dot)
             header.insertWidget(0,traffic)
         root.addWidget(self.title_bar);root.addWidget(self.update_activity)
+        root.addWidget(self.update_notes_area)
         root.addWidget(self.scroll,1)
         # Keep fractional-DPI child borders inside the scrolling viewport,
         # separated from the fixed footer by an opaque surface gutter.
@@ -1504,6 +1516,7 @@ class SettingsDialog(QDialog):
         footer.addWidget(self.cancel_button);footer.addWidget(self.save_button);root.addWidget(footer_frame)
         self._show_layout(root);self._show_layout(self.body_layout)
         self.update_activity.setVisible(self.update_activity.active)
+        self.update_notes_area.hide()
 
     @property
     def update_state(self):
@@ -1550,7 +1563,7 @@ class SettingsDialog(QDialog):
             "latest": ("已是最新版本", "检查更新"),
             "available": ("有新版本", "立即更新"),
             "downloading": (f"正在下载 {min(100, round(received*100/total))}%" if total else "正在下载…", "更新中…"),
-            "verifying": ("正在校验…", "更新中…"), "ready": ("更新已准备好", "立即更新"),
+            "verifying": ("正在校验…", "更新中…"), "ready": ("更新已准备好", "重启并安装"),
             "installing": ("正在安装…", "更新中…"), "handoff": ("请将 FlickDock 拖到“应用程序”", "检查更新"),
             "cancelling": ("正在取消…", "更新中…"),
             "cancelled": ("更新已取消", "继续更新" if version else "检查更新"),
@@ -1587,6 +1600,11 @@ class SettingsDialog(QDialog):
             self.surface.layout().activate()
             self.surface.repaint();self.repaint()
 
+    def set_update_details(self,version,notes):
+        text=str(notes).strip()[:16000]
+        self.update_notes_label.setText('v'+str(version)+' · 本次更新\n'+text if text else '')
+        self.update_notes_area.setVisible(bool(text) and self._update_state not in ('idle','checking','latest'))
+
     def paintEvent(self,event):
         from surface_morph import paint_surface_shadow
         painter=QPainter(self)
@@ -1617,6 +1635,11 @@ class SettingsDialog(QDialog):
         return previous
 
     def eventFilter(self, watched, event):
+        if watched is getattr(self,'version_label',None):
+            if event.type()==QEvent.Type.MouseButtonPress and event.button()==Qt.MouseButton.LeftButton:return True
+            if ((event.type()==QEvent.Type.MouseButtonRelease and event.button()==Qt.MouseButton.LeftButton)
+                    or event.type()==QEvent.Type.KeyPress and event.key() in (Qt.Key.Key_Return,Qt.Key.Key_Space)):
+                self.show_release_history();return True
         if (getattr(watched,'_toggle_target',None) is not None
                 and event.type()==QEvent.Type.MouseButtonRelease and event.button()==Qt.MouseButton.LeftButton):
             watched._toggle_target.click();event.accept();return True
@@ -1635,6 +1658,23 @@ class SettingsDialog(QDialog):
             event.accept()
             return True
         return super().eventFilter(watched, event)
+
+    def show_release_history(self):
+        from release_history import history_text
+        dialog=getattr(self,'_release_history_dialog',None)
+        if dialog is None:
+            dialog=ReferenceModalDialog(self,surface_width=500,modal=True)
+            dialog.setWindowTitle('FlickDock 更新记录');self._release_history_dialog=dialog
+            header=QHBoxLayout();header.addWidget(QLabel('版本更新记录',dialog.body),1)
+            close=SettingsCloseButton(dialog.body);close.clicked.connect(dialog.reject);header.addWidget(close)
+            dialog.body_layout.addLayout(header)
+            label=QLabel(history_text(),dialog.body);label.setWordWrap(True)
+            label.setTextFormat(Qt.TextFormat.PlainText);label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            dialog.body_layout.addWidget(label)
+        theme=self.theme_combo.currentData();dialog.set_surface_theme(theme)
+        ink='#F5F5F7' if theme=='dark' else '#1D1D1F'
+        dialog.setStyleSheet(f'QLabel{{color:{ink};background:transparent;font-size:12px;}}')
+        dialog.show();dialog.raise_()
 
     def _adapt_settings_layout(self):
         if not hasattr(self,'_settings_adaptive'):return
