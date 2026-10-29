@@ -32,6 +32,9 @@ from instance_guard import InstanceGuard
 from shelf_content import ContentRepository, merge_shelves
 from app_settings import SettingsStore, SettingsDialog
 from global_hotkeys import HotkeyManager
+from pointer_paste import PointerPasteController,pointer_over_shelf
+from settings_edge_hint import SettingsEdgeHint
+from cloud_connectivity import CloudConnectivity
 from surface_morph import SurfaceMorph, SurfaceSnapshot
 from content_grid import IconItem
 from shake_detector import ShakeDetector, config_for_sensitivity
@@ -62,6 +65,7 @@ from platform_native import (data_directory, native_input_available, mouse_butto
                              lower_shelf_after_reveal, raise_edge_target)
 from account_service import AccountService
 from cloud_events import CloudEvents
+from clipboard_sync import ClipboardSync
 from account_panel import AccountPanel
 from shelf_sync import ShelfSync
 from sync_adapter import ShelfAdapter
@@ -925,7 +929,7 @@ class ContentsPopup(QFrame):
         self.hovered_ref=None
         self.selected.intersection_update(refs)
         if self.primary_selection not in self.selected: self.primary_selection=next((r for r in refs if r in self.selected),None)
-        self.title.setText("ClickDock");self.count_label.setText(f"{len(self.shelf.display_refs())} 项")
+        self.title.setText("FlickDock");self.count_label.setText(f"{len(self.shelf.display_refs())} 项")
         from reference_widgets import css,icon,palette
         for key,button in self.sidebar_buttons.items():
             label=next(name for name_key,name in self.CATEGORIES if name_key==key)
@@ -1189,6 +1193,7 @@ class ShelfWindow(QWidget):
         self.presentation_kind = "manual"
         self._menu_open = False
         self.incoming_drop = False
+        self._intake_preserve_view=False
         self._intake_epoch = 0
         self._intake_stage = 'idle'
         self._intake_timer=QTimer(self)
@@ -1210,6 +1215,7 @@ class ShelfWindow(QWidget):
         self.surface_effect.setOffset(0, 4)
         self.card.setGraphicsEffect(self.surface_effect)
         self.presentation = Spring(self, {"sx": 1, "sy": 1, "alpha": 1, "dx": 0, "dy": 0}, self._apply_presentation, motion=self.manager.motion)
+        self.presentation.settled.connect(lambda:getattr(self.manager,'_present_update_notice',lambda:None)())
         self._morph_host_active=False
         self.geometry_morph=SurfaceMorph(self,self.geometry(),self._apply_geometry,motion=self.manager.motion,prepare=self._prepare_morph,settle=self._settle_morph)
         self._explicit_hiding = False
@@ -1252,6 +1258,8 @@ class ShelfWindow(QWidget):
         self.account_button.clicked.connect(lambda:self.manager.show_settings())
         self.cloud_button = ToolbarButton('cloud', self.card, motion=self.manager.motion)
         self.cloud_button.clicked.connect(self.show_cloud_menu)
+        from reference_widgets import NetworkStatus
+        self.network_status=NetworkStatus(self.manager,self.card)
         self.refresh_cloud_button()
         self.expand_button = ToolbarButton("expand", self.card, motion=self.manager.motion)
         self.expand_button.setToolTip("展开内容")
@@ -1267,7 +1275,7 @@ class ShelfWindow(QWidget):
         self.rename_edit.returnPressed.connect(self.commit_rename)
         self.rename_edit.editingFinished.connect(self.commit_rename)
         self.rename_edit.hide()
-        for button in (self.cloud_button,self.pin_button,self.expand_button,self.menu_button,self.close_button):
+        for button in (self.cloud_button,self.network_status,self.pin_button,self.expand_button,self.menu_button,self.close_button):
             button.setProperty('flatToolbar',True)
             button.setParent(self)
         for button in (self.lan_button,self.account_button):
@@ -1297,8 +1305,8 @@ class ShelfWindow(QWidget):
         center=QRectF(self.card.geometry()).center();effect=self.surface_effect
         transform=QTransform();transform.translate(center.x()+effect.dx,center.y()+effect.dy)
         transform.scale(effect.sx,effect.sy);transform.translate(-center.x(),-center.y())
-        buttons=(self.pin_button,self.expand_button,self.menu_button,self.close_button) if expanded else (self.cloud_button,self.pin_button,self.expand_button,self.menu_button,self.close_button)
-        self.cloud_button.setVisible(not expanded)
+        buttons=(self.pin_button,self.expand_button,self.menu_button,self.close_button) if expanded else (self.cloud_button,self.network_status,self.pin_button,self.expand_button,self.menu_button,self.close_button)
+        self.cloud_button.setVisible(not expanded);self.network_status.setVisible(not expanded)
         for index,item in enumerate(buttons):
             size=32
             x=width-16-len(buttons)*(size+6)+index*(size+6)+6
@@ -1314,6 +1322,7 @@ class ShelfWindow(QWidget):
             item=getattr(self,attr,None)
             if item is not None:item.setVisible(not expanded and attr in ('header_line','footer_line') and (self.presentation_kind!='drag' or attr=='header_line'))
         if self.presentation_kind=='drag':
+            self.network_status.hide()
             for item in (self.pin_button,self.expand_button,self.menu_button,self.close_button,self.traffic_controls):item.hide()
             center=transform.map(QRectF(self.card.x()+width-48,self.card.y()+8,32,32).center())
             self.cloud_button.move(round(center.x()-16),round(center.y()-16));self.cloud_button.show();self.cloud_button.raise_()
@@ -1422,7 +1431,7 @@ class ShelfWindow(QWidget):
         snapshot=getattr(self,'_surface_snapshot',None)
         if snapshot is None:
             snapshot=self._surface_snapshot=SurfaceSnapshot(self)
-        controls=(self.cloud_button,self.lan_button,self.pin_button,self.expand_button,self.menu_button,self.close_button)
+        controls=(self.cloud_button,self.network_status,self.lan_button,self.pin_button,self.expand_button,self.menu_button,self.close_button)
         source=getattr(self,'_morph_from_image',None)
         if source is None: source=snapshot.capture_current(self.card,controls)
         self._morph_from_image=None
@@ -1469,6 +1478,7 @@ class ShelfWindow(QWidget):
             self.setMask(QRegion(self.card.geometry().adjusted(-10,-10,10,10)))
         if self.expanded and self.popup:
             QTimer.singleShot(16,self.popup.resume_content)
+            QTimer.singleShot(16,lambda:getattr(self.manager,'_present_update_notice',lambda:None)())
         if self._pending_image_paths: self._image_timer.start(16)
 
     def content_transition_active(self):
@@ -1507,7 +1517,7 @@ class ShelfWindow(QWidget):
 
     def _place_morph_controls(self,snapshot,rect):
         transform=snapshot.presentation_transform(rect)
-        buttons=(self.pin_button,self.expand_button,self.menu_button,self.close_button) if self.expanded else (self.cloud_button,self.pin_button,self.expand_button,self.menu_button,self.close_button)
+        buttons=(self.pin_button,self.expand_button,self.menu_button,self.close_button) if self.expanded else (self.cloud_button,self.network_status,self.pin_button,self.expand_button,self.menu_button,self.close_button)
         size=32
         width=rect.width()-28
         for index,button in enumerate(buttons):
@@ -1526,7 +1536,7 @@ class ShelfWindow(QWidget):
         if not self.geometry_morph.motion: return
         snapshot=getattr(self,'_surface_snapshot',None)
         if snapshot is None: snapshot=self._surface_snapshot=SurfaceSnapshot(self)
-        self._morph_from_image=snapshot.capture_current(self.card,(self.cloud_button,self.lan_button,self.pin_button,self.expand_button,self.menu_button,self.close_button))
+        self._morph_from_image=snapshot.capture_current(self.card,(self.cloud_button,self.network_status,self.lan_button,self.pin_button,self.expand_button,self.menu_button,self.close_button))
 
     def visual_geometry(self): return QRect(self.geometry_morph.current)
 
@@ -1677,7 +1687,9 @@ class ShelfWindow(QWidget):
                     state.get('id') in getattr(sync,'download_transfers',{}))
 
     def _delete_owned(self,ref):
-        spec=owned_copy_spec(ref,self.content.metadata.get(ref,{}),self.manager.settings.capture_dir)
+        metadata=self.content.metadata.get(ref,{})
+        owned_ref=metadata.get('text_file',ref) if self.content.is_text(ref) else ref
+        spec=owned_copy_spec(owned_ref,metadata,self.manager.settings.capture_dir)
         if spec is None:return
         if self.popup:
             if self.popup.preview.media.path==ref:self.popup.preview.media.release_source()
@@ -1878,10 +1890,13 @@ class ShelfWindow(QWidget):
         self.manager.save()
         self.manager.update_handles()
 
-    def receive_mime(self, mode, mime):
-        if self.manager.outgoing_drag or self.dragging or confirmation_active(self):
+    def receive_mime(self, mode, mime, *, source='drop'):
+        if (self.manager.outgoing_drag or self.dragging or confirmation_active(self)
+                or getattr(self.manager,'settings_open',lambda:False)()):
             return False
         remote=self.resolver.candidates(mime)
+        if source=='paste' and mime.hasText() and not mime.hasUrls() and not mime.hasImage():
+            remote=[]
         jobs=[]
         if remote and not any(url.isLocalFile() for url in mime.urls()) and not mime.hasImage():
             paths=[]
@@ -1896,8 +1911,15 @@ class ShelfWindow(QWidget):
             paths = self.content.capture_mime(mime, self.manager.settings.capture_dir)
         if not paths:
             return False
+        if source=='paste':
+            try:
+                for ref in paths:
+                    if self.content.is_text(ref) and not jobs:self.content.materialize_pasted_text(ref,self.manager.settings.capture_dir)
+            except OSError as error:
+                self.status_label.setText('文字文件未能保存：'+str(error));return False
         self._cancel_intake()
         epoch=self._intake_epoch
+        self._intake_preserve_view=source=='paste'
         self.incoming_drop = True
         self.manager.just_dropped = time.monotonic()
         if self.visible_state=='hiding' or not self.isVisible():
@@ -1916,6 +1938,7 @@ class ShelfWindow(QWidget):
         self._intake_epoch+=1
         self.incoming_drop=False
         self._intake_stage='idle'
+        self._intake_preserve_view=False
         self._intake_timer.stop()
         for zone in self.zones.values():zone.icon.cancel_pulse()
         if self._intake_tile is not None:
@@ -1930,7 +1953,7 @@ class ShelfWindow(QWidget):
         if not self.isVisible():
             self._show_at(self._dock_target,self.presentation_kind,QPoint())
         self._intake_mode=mode
-        if self.expanded and not self.pinned:
+        if self.expanded and not self.pinned and not self._intake_preserve_view:
             self._intake_stage='folding'
             self._intake_timer.start()
             # This completion belongs to the intake, not the interruptible
@@ -2026,8 +2049,9 @@ class ShelfWindow(QWidget):
         self._intake_stage='idle';self._intake_timer.stop()
         # Completing a drop commits the tuck just like the hide control. The
         # pointer is still over the drop zone and must leave before reopening.
-        if not self.pinned and self.presentation_kind!='dock':self.hide_animated(explicit=True)
+        if not self.pinned and self.presentation_kind!='dock' and not self._intake_preserve_view:self.hide_animated(explicit=True)
         else:self.touch()
+        self._intake_preserve_view=False
 
     def drag_files(self, mode, paths):
         paths=[ref for ref in paths if not self.content.is_pending(ref)]
@@ -2085,10 +2109,11 @@ class ShelfWindow(QWidget):
             # surface becomes visible. Expansion then never moves its HWND
             # while Windows still holds the old compact backing-store image.
             self.setGeometry(self._reserved_surface_rect(rect,reserve))
-        if was_visible and self.geometry_morph.current != rect:
-            self.geometry_morph.animate(rect)
-        else:
-            self.geometry_morph.jump(rect)
+        if self.geometry_morph.current != rect:
+            if was_visible:self.geometry_morph.animate(rect)
+            else:self.geometry_morph.jump(rect)
+        elif not was_visible:
+            self._apply_geometry(rect)
         if not was_visible:
             self.presentation.jump({"sx": .95 if self.manager.motion else 1, "sy": .91 if self.manager.motion else 1,
                                     "alpha": 0, "dx": offset.x() if self.manager.motion else 0, "dy": offset.y() if self.manager.motion else 0})
@@ -2140,11 +2165,24 @@ class ShelfWindow(QWidget):
         size=QSize(*(getattr(self,'_expanded_size',(EXPANDED_W,EXPANDED_H)) if self.expanded else (CARD_W,CARD_H)))+QSize(28,27)
         return reveal_rect(area,self.manager.edge.geometry(),size,self.manager.settings.dock_edge)
 
-    def reveal_from_dock(self):
+    def reveal_from_dock(self,*,expanded=False):
         if self.manager.edge_suppressed: return
-        rect=self._dock_target_rect()
         offsets={'right':QPoint(30,0),'left':QPoint(-30,0),'top':QPoint(0,-24),'bottom':QPoint(0,24)}
-        self._show_at(rect.topLeft(),'dock',offsets[self.manager.settings.dock_edge])
+        if self.isVisible():
+            # A hover return interrupts the presentation spring in place. The
+            # original overview was constrained from the compact anchor; a new
+            # expanded reveal_rect here would change its vertical anchor.
+            self._show_at(self.visual_geometry().topLeft(),'dock',QPoint())
+            return
+        compact=self._dock_target_rect()
+        rect=self._expansion_rect(compact) if expanded else compact
+        with self._surface_transaction():
+            if expanded:
+                # Build the final view before ordering the native surface in.
+                # There is no compact entrance followed by a second morph.
+                self.setGeometry(self._reserved_surface_rect(compact,rect))
+                self._show_contents('permanent',rect,animate=False)
+            self._show_at(rect.topLeft(),'dock',offsets[self.manager.settings.dock_edge],reserve=compact if expanded else None)
 
     def hide_animated(self, explicit=True):
         if not self.isVisible() or self.visible_state == "hiding" or (self.pinned and not explicit):
@@ -2278,7 +2316,7 @@ class ShelfWindow(QWidget):
             self.zones[mode].pulse("drop")
 
     def paste_clipboard(self, mode):
-        self.receive_mime(mode,QApplication.clipboard().mimeData())
+        return self.receive_mime(mode,QApplication.clipboard().mimeData(),source='paste')
 
     def copy_items(self, refs):
         refs=[ref for ref in refs if not self.content.is_pending(ref)]
@@ -2332,6 +2370,10 @@ class ShelfWindow(QWidget):
     def open_path(self, ref):
         if self.content.is_pending(ref):return
         if self.content.is_text(ref):
+            if self.content.metadata.get(ref,{}).get('pasted_text'):
+                path=self.content.materialize_pasted_text(ref,self.manager.settings.capture_dir)
+                from PySide6.QtGui import QDesktopServices
+                QDesktopServices.openUrl(QUrl.fromLocalFile(path));return
             if self.content.category(ref)=='links':
                 from PySide6.QtGui import QDesktopServices
                 QDesktopServices.openUrl(QUrl(self.content.text(ref))); return
@@ -2501,6 +2543,8 @@ class ShelfWindow(QWidget):
         if event.button()==Qt.MouseButton.LeftButton:
             # Cocoa can deliver a toolbar-edge press to the frameless host.
             # Reserve the entire painted button target before title dragging.
+            if self.network_status.isVisible() and self.network_status.geometry().contains(event.position().toPoint()):
+                self.drag_origin=None;event.accept();return
             for button in (self.cloud_button,self.pin_button,self.expand_button,self.menu_button,self.close_button):
                 if button.isVisible() and button.geometry().contains(event.position().toPoint()):
                     self.drag_origin=None
@@ -2658,6 +2702,7 @@ class ShelfManager:
         ui_theme.set_theme(self.settings.theme)
         ui_theme.apply_application(app, FONT_FAMILY)
         self.settings_dialog = None
+        self.settings_edge_hint=SettingsEdgeHint(self)
         self.lan_dialog = None
         self.wan_dialog = None
         self.updates = UpdateController(APP_VERSION, BASE, settings=self.settings,
@@ -2719,6 +2764,9 @@ class ShelfManager:
             self.account = AccountService(BASE, store=SessionStore(BASE, DEFAULT_CLOUD_URL, enabled=False))
         else:
             self.account = AccountService(BASE)
+        self.connectivity=CloudConnectivity(self.account.api,self.app,
+            enabled=not self.cocoa_smoke and self.app.platformName() not in ('offscreen','minimal'))
+        self.connectivity.changed.connect(self._network_status_changed)
         self.sync = ShelfSync(BASE,self.account,ShelfAdapter(self))
         self.sync.set_directions(self.settings.sync_upload_enabled,self.settings.sync_receive_enabled)
         self._intake_sync_timer=QTimer(self.app)
@@ -2729,6 +2777,8 @@ class ShelfManager:
         self.events.content_changed.connect(self.sync.request_refresh)
         self.events.transfer_progress.connect(self.sync.remote_progress)
         self.events.devices_changed.connect(self.account.list_devices)
+        self.clipboard_sync=ClipboardSync(self.account,self.events,BASE,self.app,
+            enabled=not self.cocoa_smoke and self.app.platformName() not in ('offscreen','minimal'))
         # A healthy event socket keeps the quiet five-minute reconciliation.
         # While disconnected, ShelfSync uses a bounded fallback so a missed
         # upload completion or cancellation cannot leave another device stale.
@@ -2743,6 +2793,8 @@ class ShelfManager:
         from wan_transfer import WanTransferService
         self.wan=WanTransferService(BASE,self.app,device_name=self.account.device_name,
             enabled=not self.cocoa_smoke and self.app.platformName() not in ('offscreen','minimal'))
+        self.wan.attach_account(self.account,lan_id=self.lan.device_id,nearby_peers=self.lan.peers)
+        self.lan.peers_changed.connect(lambda _:self.wan.peers_changed.emit(self.wan.peers()))
         self.wan.offer_received.connect(self._wan_offer)
         self.wan.start()
         self.account.account_changed.connect(self._lan_identity)
@@ -2757,8 +2809,11 @@ class ShelfManager:
         else:
             self.hotkeys = HotkeyManager(app, self.show_shortcut, self.show_overview)
         self.shortcut_error = self.hotkeys.apply(self.settings.shelf_shortcut, self.settings.overview_shortcut)
+        self.pointer_paste=PointerPasteController(app,self.paste_target_at_pointer,self.paste_into_target,native=not self.cocoa_smoke)
+        self.pointer_paste.permission_changed.connect(self._refresh_paste_permission)
         self._applied_settings = dict(self.settings._data)
         self.settings.changed.connect(self.apply_settings)
+        QTimer.singleShot(0,self.warm_overview)
         self.timer = QTimer(self.app)
         self.timer.timeout.connect(self.poll)
         self.timer.setTimerType(Qt.TimerType.PreciseTimer)
@@ -2773,8 +2828,8 @@ class ShelfManager:
         # background network traffic or installer execution.
         if (not self.cocoa_smoke and getattr(sys, 'frozen', False)
                 and self.app.platformName() not in ('offscreen', 'minimal')):
-            self.update_timer.start(15 * 60 * 1000)
-            QTimer.singleShot(1500, self.updates.check_automatically)
+            self.update_timer.start(2 * 60 * 1000)
+            QTimer.singleShot(0, self.updates.check_automatically)
         if (not self.cocoa_smoke and sys.platform == 'darwin'
                 and getattr(sys, 'frozen', False)):
             QTimer.singleShot(1000, self._show_previous_mac_update_failure)
@@ -2807,10 +2862,31 @@ class ShelfManager:
         if (self._quitting or self.updates.state != 'available'
                 or self.updates.state_payload.get('version') != version):
             return
+        self._present_update_notice()
+
+    def _present_update_notice(self):
+        if (self._quitting or self.updates.state!='available' or not self.shelf.isVisible()
+                or not self.shelf.expanded or self.shelf.content_transition_active()
+                or self.shelf.presentation._timer.isActive() or self.settings_open()):return
+        if self.update_notice is not None and self.update_notice.isVisible():return
+        if confirmation_active(self.shelf):return
+        path=Path(self.settings.base)/'updates'/'notice-state.json'
+        try:
+            if json.loads(path.read_text(encoding='utf8')).get('dismissed_on')==time.strftime('%Y-%m-%d'):return
+        except (OSError,ValueError,TypeError,AttributeError):pass
         if self.update_notice is None:
-            self.update_notice = UpdateNotice(theme=self.settings.theme)
+            self.update_notice=UpdateNotice(self.shelf,theme=self.settings.theme)
             self.update_notice.update_requested.connect(self._start_notified_update)
-        self.update_notice.show_version(version)
+            self.update_notice.dismissed.connect(self._snooze_update_notice)
+        self.update_notice.show_version(self.updates.state_payload.get('version',''),notes=(self.updates.manifest or {}).get('notes',''))
+
+    def _snooze_update_notice(self):
+        path=Path(self.settings.base)/'updates'/'notice-state.json'
+        try:
+            path.parent.mkdir(parents=True,exist_ok=True)
+            temporary=path.with_suffix('.tmp');temporary.write_text(json.dumps({'dismissed_on':time.strftime('%Y-%m-%d')}),encoding='utf8')
+            temporary.replace(path)
+        except OSError:pass
 
     def _start_notified_update(self):
         if self.update_notice is not None:
@@ -2894,16 +2970,60 @@ class ShelfManager:
         self.active_shelf.show_transient()
 
     def show_docked(self):
+        if self.settings_open():self.settings_edge_hint.show_hint();return
         if self._dock_preview_values is not None or confirmation_active(self.shelf): return
         if self.active_shelf is None or not self.active_shelf.has_files():
             self.active_shelf = next((s for s in self.shelves if s.has_files()), self.shelves[0])
-        self.active_shelf.reveal_from_dock()
-        if self.settings.trigger_view=='expanded' and not self.active_shelf.expanded:
-            self.active_shelf.show_contents()
+        self.active_shelf.reveal_from_dock(expanded=self.settings.trigger_view=='expanded')
+
+    def warm_overview(self):
+        if self._quitting or self.settings.trigger_view!='expanded':return
+        shelf=self.shelf
+        if not shelf.isVisible() and shelf.popup is None:
+            shelf.popup=ContentsPopup(shelf)
+            shelf.popup.hide()
 
     def paste_new(self):
-        self.show_first()
+        if not self.active_shelf.isVisible():self.show_first()
         self.active_shelf.paste_clipboard("permanent")
+
+    def settings_open(self):
+        return bool(self.settings_dialog and self.settings_dialog.isVisible())
+
+    def paste_target_at_pointer(self):
+        if (self._quitting or self.settings_open() or self.outgoing_drag
+                or QApplication.activeModalWidget() is not None or QApplication.activePopupWidget() is not None):return None
+        point=QCursor.pos()
+        for shelf in self.shelves:
+            if (shelf.isVisible() and shelf.visible_state!='hiding' and not shelf.dragging
+                    and not shelf.intake_blocks_overview() and not confirmation_active(shelf)
+                    and shelf.visual_geometry().adjusted(14,7,-14,-20).contains(point)
+                    and pointer_over_shelf(shelf,point)):
+                # Ignore the reserved transparent animation canvas and the hover
+                # bridge; neither is an actual paste surface.
+                return shelf
+        return None
+
+    def paste_into_target(self,shelf):
+        if (shelf in self.shelves and shelf.isVisible() and not self.settings_open()
+                and not confirmation_active(shelf)):return shelf.paste_clipboard('permanent')
+        return False
+
+    def close_settings_from_edge(self):
+        if self.settings_dialog:self.settings_dialog.reject()
+        self.settings_edge_hint.hide();self.update_handles()
+
+    def _settings_closed(self,*_):
+        self.settings_edge_hint.hide();self.update_handles()
+
+    def _refresh_paste_permission(self):
+        if self.settings_dialog:
+            self.settings_dialog.set_pointer_paste_permission(self.pointer_paste.permission_required,self.pointer_paste.request_permission)
+
+    def _network_status_changed(self,state):
+        for shelf in self.shelves:
+            if hasattr(shelf,'network_status'):shelf.network_status.set_state(state)
+            if shelf.popup and hasattr(shelf.popup,'network_status'):shelf.popup.network_status.set_state(state)
 
 
     def _center_dialog(self,dialog):
@@ -2918,6 +3038,8 @@ class ShelfManager:
         self.shelf._release_reveal_level()
         if self.settings_dialog is None:
             self.settings_dialog = SettingsDialog(self.settings)
+            self.settings_dialog.finished.connect(self._settings_closed)
+            self._refresh_paste_permission()
             self.settings_dialog.dock_requested.connect(lambda:self.shelf.hide_animated(explicit=True))
             self.settings_dialog.mini_requested.connect(self.show_shortcut)
             self.settings_dialog.update_requested.connect(self.updates.activate)
@@ -2933,6 +3055,7 @@ class ShelfManager:
         self.account_panel.set_sync_status(self._sync_status)
         self._center_dialog(self.settings_dialog)
         self.settings_dialog.show()
+        self.update_handles()
         self.settings_dialog.scroll.verticalScrollBar().setValue(0)
         QTimer.singleShot(0,self.settings_dialog,lambda:self.settings_dialog.scroll.verticalScrollBar().setValue(0))
         problem = self.shortcut_error or self.startup_error
@@ -2957,6 +3080,7 @@ class ShelfManager:
             dialog=LanDialog(service,self.settings)
             dialog.overview_requested.connect(lambda:self.show_overview_from_transfer(dialog))
             dialog.transfer_mode_requested.connect(lambda:self.show_lan_dialog() if dialog._wan else self.show_wan_dialog())
+            dialog.lan_recommended.connect(self._use_recommended_lan)
             dialog.mini_requested.connect(self.show_shortcut)
             dialog.dock_requested.connect(lambda:self.shelf.hide_animated(explicit=True))
         dialog.set_service(service).set_paths_provider(self._lan_selected)
@@ -2964,6 +3088,14 @@ class ShelfManager:
         if not dialog.isVisible():
             self._center_dialog(dialog);dialog.show()
         dialog.raise_();dialog.activateWindow()
+
+    def _use_recommended_lan(self,paths,identifier):
+        previous=self.lan_dialog.panel if self.lan_dialog else None
+        self.show_lan_dialog();panel=self.lan_dialog.panel
+        if paths:panel.queue_paths(paths)
+        index=panel.devices.findData(identifier)
+        if index>=0:panel.devices.setCurrentIndex(index)
+        if previous and previous is not panel:previous.queue_paths([],replace=True)
 
     def offer_large_intake(self,paths):
         if not paths or self._quitting:return
@@ -3044,6 +3176,8 @@ class ShelfManager:
             self.edge.position_at_edge()
         if 'shake_sensitivity' in changed:self._apply_shake_sensitivity()
         if changed & {'trigger_view','capture_mode','shake_sensitivity'}:self.reset_drag_gesture()
+        if 'trigger_view' in changed and self.settings.trigger_view=='expanded':
+            QTimer.singleShot(0,self.warm_overview)
         if changed & {'theme','keep_empty_handle','trigger_visible','dock_edge','dock_position','dock_length','dock_thickness','dock_color','dock_opacity'}:
             self.update_handles()
         if changed & {'shelf_shortcut','overview_shortcut'}:
@@ -3053,9 +3187,13 @@ class ShelfManager:
         if confirmation_active(self.shelf) or self.shelf._archive_choosing:return
         self.reset_drag_gesture();self.edge_suppressed=False
         target=QRect(dialog.card.mapToGlobal(QPoint()),dialog.card.size()).adjusted(-14,-7,14,20)
-        self.shelf.presentation_kind='overview';self.shelf.visible_state='floating'
-        self.shelf.show_contents(target=target,animate=False)
-        self.shelf.show();self.shelf._raise_for_reveal()
+        with self.shelf._surface_transaction():
+            self.shelf.presentation_kind='overview';self.shelf.visible_state='floating'
+            if not self.shelf.isVisible():self.shelf.setGeometry(self.shelf._reserved_surface_rect(target,target))
+            self.shelf.show_contents(target=target,animate=False)
+            self.shelf.presentation.jump({'sx':.97 if self.motion else 1,'sy':.97 if self.motion else 1,'alpha':0,'dx':0,'dy':0})
+            self.shelf.show();self.shelf._raise_for_reveal()
+            self.shelf.presentation.animate({'sx':1,'sy':1,'alpha':1,'dx':0,'dy':0},response=.19,damping=1)
         self.shelf.activateWindow();self.shelf.setFocus()
 
     def reset_drag_gesture(self):
@@ -3180,6 +3318,8 @@ class ShelfManager:
                 self.sync.local_changed()
 
     def update_handles(self):
+        if self.settings_open() and self._dock_preview_values is None:
+            self.edge.show_handle();return
         if self._dock_preview_values is not None:
             self.edge.hide();return
         if (self.settings.keep_empty_handle or any(s.has_files() for s in self.shelves)) and not any(s.isVisible() for s in self.shelves):
@@ -3219,6 +3359,12 @@ class ShelfManager:
             self.sync.set_interactive(self.shelf.isVisible() or bool(self.settings_dialog and self.settings_dialog.isVisible())
                 or bool(self.lan_dialog and self.lan_dialog.isVisible()) or bool(self.wan_dialog and self.wan_dialog.isVisible()))
         now=time.monotonic(); pos=QCursor.pos()
+        if self.settings_open():
+            if (self.edge.activation_region().contains(pos) or self.settings_edge_hint.contains_pointer(pos)):
+                if not self.settings_edge_hint.isVisible():self.settings_edge_hint.show_hint()
+            else:self.settings_edge_hint.hide()
+            self.reset_drag_gesture();self.was_down=bool(mouse_buttons_mask()&1);return
+        self.settings_edge_hint.hide()
         app_active=self.app.applicationState() == Qt.ApplicationState.ApplicationActive
         app_deactivated=self._app_was_active and not app_active
         self._app_was_active=app_active
@@ -3292,12 +3438,13 @@ class ShelfManager:
         if hasattr(self,'lan'):self.lan.close()
         if hasattr(self,'wan'):self.wan.close()
         self._quitting=True
+        self.pointer_paste.close();self.connectivity.close();self.settings_edge_hint.close()
         self._intake_sync_timer.stop()
         self.timer.stop()
         self.update_timer.stop()
         self.updates.close()
         self.sync.close()
-        self.events.close()
+        self.clipboard_sync.close();self.events.close()
         self.account.close()
         self.hotkeys.close()
         if self.settings_dialog:
@@ -3333,6 +3480,9 @@ def main():
     if '--verify-cloud-stream' in sys.argv:
         from test_cloud_api_stream_v183 import main as verify_cloud_stream
         return verify_cloud_stream()
+    if '--verify-clipboard' in sys.argv:
+        from verify_clipboard import main as verify_clipboard
+        return verify_clipboard()
     if '--verify-wan' in sys.argv:
         from verify_wan import run
         return run(sys.argv,load_font)

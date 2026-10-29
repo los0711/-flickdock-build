@@ -34,6 +34,9 @@ class WanTransferService(LanTransferService):
         self.base=Path(base);self.enabled=enabled;self.origin=origin;self.node=node;self.code=''
         self._code_refresh_at=0.;self._code_expires_at=0.;self._code_duration=240.;self._refresh_sent_at=0.
         self._last_signal=0.;self._peer_poll_count=0
+        self.account_service=None;self.lan_id='';self.nearby_peers_provider=lambda:[]
+        self._bind_epoch=0;self._bind_key=None;self._bound_identity=None;self._pending_identity=None
+        self._account_nonce='';self._account_ack=False
         self.allow_test_origin=allow_test_origin
         self._qa_force_relay=bool(qa_force_relay and os.environ.get('QT_QPA_PLATFORM')=='offscreen')
         self._credential='';self._pending={};self._outbox={};self._connected=False;self._closing=False
@@ -57,6 +60,47 @@ class WanTransferService(LanTransferService):
         self.connect_timeout=QTimer(self);self.connect_timeout.setSingleShot(True);self.connect_timeout.setInterval(10000)
         self.connect_timeout.timeout.connect(self._connection_timed_out)
         self.completed.connect(self._completed_wan)
+        self.bind_retry=QTimer(self);self.bind_retry.setSingleShot(True);self.bind_retry.setInterval(5000);self.bind_retry.timeout.connect(self._bind_account)
+
+    def attach_account(self,account,*,lan_id='',nearby_peers=None):
+        self.account_service=account;self.lan_id=lan_id
+        if nearby_peers:self.nearby_peers_provider=nearby_peers
+        account.account_changed.connect(self._account_changed)
+        account.devices_changed.connect(lambda _:self._send_signal(dict(type='recent')))
+        self._account_changed()
+
+    def _account_identity(self):
+        account=self.account_service
+        return (account.device_id,account.api.token) if account and account.signed_in else None
+
+    def _account_changed(self,*_,force=False):
+        identity=self._account_identity()
+        if not force and identity is not None and identity in (self._bound_identity,self._pending_identity):return
+        self._bind_epoch+=1;self.bind_retry.stop();self._bound_identity=None
+        if self._bind_key and self.account_service:self.account_service.api.cancel(self._bind_key)
+        self._bind_key=None;self._pending_identity=identity
+        self._account_nonce=secrets.token_hex(16);self._account_ack=False
+        self._send_signal(dict(type='account_state',nonce=self._account_nonce,active=identity is not None))
+
+    def _bind_account(self):
+        identity=self._account_identity()
+        if (not identity or not self._account_ack or not self.enabled or not self._connected or self._closing or self._bind_key
+                or identity==self._bound_identity):return
+        epoch=self._bind_epoch;pending=object();self._bind_key=pending
+        def done(result,error):
+            if epoch!=self._bind_epoch or self._closing:return
+            self._bind_key=None
+            if error:
+                if getattr(error,'status',0)!=401:self.bind_retry.start()
+                return
+            self._bound_identity=identity;self._send_signal(dict(type='recent'))
+        key=self.account_service.api.request('POST','/v1/wan/account',done,
+            data={'credential':self._credential,'lan_id':self.lan_id,'nonce':self._account_nonce},timeout_ms=12000)
+        if self._bind_key is pending:self._bind_key=key
+
+    def nearby_peer(self,identifier):
+        peer=self._peers.get(identifier,{})
+        return next((row for row in self.nearby_peers_provider() if row.get('id')==peer.get('lan_id')),None)
 
     def start(self):
         if self.enabled and not self._connected and not self.retry.isActive():self.retry.start(0)
@@ -92,7 +136,8 @@ class WanTransferService(LanTransferService):
     def _hello(self):
         self._connected=True;self.retry.stop();self.poll.start();self.code_timer.start()
         self._last_signal=time.monotonic()
-        self._send_signal(dict(type='hello',name=self.device_name,platform='macos' if sys.platform=='darwin' else 'windows'))
+        self._send_signal(dict(type='hello',name=self.device_name,platform='macos' if sys.platform=='darwin' else 'windows',lan_id=self.lan_id))
+        self._account_changed(force=True)
     def _disconnected(self,*_):
         self.connect_timeout.stop()
         self._connected=False;self.poll.stop();self.code_timer.stop();self.code=''
@@ -179,6 +224,10 @@ class WanTransferService(LanTransferService):
             if value.get('schema_version')!=1:return
             self._last_signal=time.monotonic()
             kind=value.get('type');identifier=value.get('id');state=self._pending.get(identifier)
+            if kind=='account_state':
+                if value.get('nonce')==self._account_nonce:
+                    self._account_ack=True;self._bind_account()
+                return
             if kind in ('cancelled','settled') or kind=='error' and value.get('requestType') in ('cancel','reject'):
                 for key in list(self._outbox):
                     if key[0]==identifier:self._outbox.pop(key,None)
@@ -198,7 +247,8 @@ class WanTransferService(LanTransferService):
                     self._code_refresh_at=now+refresh;self._code_expires_at=now+expires
                     self._code_duration=max(1.,refresh);self._refresh_sent_at=0.
                     self.identity_changed.emit(self.code_identity())
-                    self.status_changed.emit('远程互传已就绪。首次传输请使用对方的接收码。')
+                    self._bind_account()
+                    self.status_changed.emit('远程互传已就绪。同账号或最近设备可直接发送。')
                     if reconnect:self._recover_signaling()
                 return
             if kind=='request':
@@ -427,7 +477,8 @@ class WanTransferService(LanTransferService):
         super()._notify(transfer,state,**extra)
         if state in ('error','cancelled'):self._command.emit(dict(_retire=True,id=transfer.transfer_id))
     def close(self):
-        self._closing=True;self.retry.stop();self.poll.stop();self.code_timer.stop();self.connect_timeout.stop()
+        self._closing=True;self.retry.stop();self.poll.stop();self.code_timer.stop();self.connect_timeout.stop();self.bind_retry.stop()
+        if self._bind_key and self.account_service:self.account_service.api.cancel(self._bind_key)
         self.socket.abort();super().close()
         for state in self._pending.values():
             if state.get('bridge'):state['bridge'].close(abort=True)

@@ -2,17 +2,18 @@ import {DurableObject} from 'cloudflare:workers';
 import {relayUsage,relayBudget,type RelayBudgetEnv} from './relay-budget';
 type RelayGate={epoch:number;blocked:boolean};
 type Credential={username:string;expires:number;revoke_pending?:boolean};
-type Device={id:string;name:string;platform:string;online?:boolean;last?:number};
-type Seat=Device&{ip:string;connected:number;window:number;messages:number;last_seen?:number;watching?:string[]};
+type Device={id:string;name:string;platform:string;online?:boolean;last?:number;lan_id?:string;account_device?:boolean};
+type Seat=Device&{ip:string;connected:number;window:number;messages:number;last_seen?:number;watching?:string[];account?:string;auth_nonce?:string;account_active?:boolean};
+type Binding={account:string;device:string;session:string;lan_id:string;nonce:string};
 type Pairing={sender:string;receiver:string;token:string;expires:number};
 type Session={id:string;sender:Device;receiver:Device;token:string;digest:string;total:string;count:number;names:string[];accepted:boolean;generation:number;expires:number;done:string[];connected?:string[];sender_code?:string};
-export interface WanEnv extends RelayBudgetEnv {WAN:DurableObjectNamespace<WanHub>;TURN_KEY_ID?:string;TURN_KEY_TOKEN?:string;TURN_ENABLED?:string;}
+export interface WanEnv extends RelayBudgetEnv {WAN:DurableObjectNamespace<WanHub>;DB:D1Database;TURN_KEY_ID?:string;TURN_KEY_TOKEN?:string;TURN_ENABLED?:string;}
 const json=(value:object,status=200)=>Response.json({schema_version:1,...value},{status,headers:{'Cache-Control':'no-store'}});
 const hash=async(value:string)=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value))),b=>b.toString(16).padStart(2,'0')).join('');
 const check=(value:unknown,pattern:RegExp):value is string=>typeof value==='string'&&pattern.test(value);
 const ID=/^[a-f0-9]{64}$/,TRANSFER=/^[a-f0-9]{32}$/;
 const stun=[{urls:['stun:stun.cloudflare.com:3478']}];
-function publicDevice(value:Device):Device{return {id:value.id,name:value.name,platform:value.platform};}
+function publicDevice(value:Device):Device{return {id:value.id,name:value.name,platform:value.platform,...(value.lan_id?{lan_id:value.lan_id}:{})};}
 
 export async function wanRoute(request:Request,env:WanEnv):Promise<Response>{
   const url=new URL(request.url);
@@ -47,8 +48,59 @@ export class WanHub extends DurableObject<WanEnv>{
       await tx.put(key,row);return row;
     });
   }
+  private async binding(id:string){
+    const value=await this.ctx.storage.get<Binding>('account-binding:'+id);
+    if(!value)return null;
+    const seat=this.socket(id)?.deserializeAttachment() as Seat|undefined;
+    if(!seat?.account_active||seat.auth_nonce!==value.nonce)return null;
+    const valid=await this.env.DB.prepare('SELECT 1 valid FROM sessions s JOIN devices d ON d.id=s.device_id WHERE s.token_hash=? AND s.account_id=? AND s.device_id=? AND s.expires_at>? AND d.revoked_at IS NULL')
+      .bind(value.session,value.account,value.device,Date.now()).first();
+    return valid?value:null;
+  }
+  private async accountPeers(id:string):Promise<Device[]>{
+    const self=await this.binding(id);if(!self)return [];
+    const devices=(await this.env.DB.prepare('SELECT id,name,platform FROM devices WHERE account_id=? AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 20').bind(self.account).all<{id:string;name:string;platform:string}>()).results;
+    const members=await this.ctx.storage.get<Record<string,string>>('account-members:'+self.account)||{};
+    const rows:Device[]=[];
+    for(const device of devices){
+      if(device.id===self.device)continue;
+      const peerId=members[device.id],binding=peerId?await this.binding(peerId):null;
+      rows.push({id:peerId||await hash('account-device:'+self.account+':'+device.id),name:device.name,platform:device.platform,
+        account_device:true,online:!!(binding?.account===self.account&&binding.device===device.id&&this.socket(peerId)),lan_id:binding?.lan_id||''});
+    }
+    return rows;
+  }
+  private async accountPresence(accounts:string[]){
+    for(const socket of this.ctx.getWebSockets()){
+      const seat=socket.deserializeAttachment() as Seat;
+      if(seat.account&&accounts.includes(seat.account))this.send(socket,{type:'peers',peers:await this.recent(seat.id)});
+    }
+  }
+  private async unbind(id:string){
+    const old=await this.ctx.storage.get<Binding>('account-binding:'+id);await this.ctx.storage.delete('account-binding:'+id);
+    const live=this.socket(id);if(live){const seat=live.deserializeAttachment() as Seat;delete seat.account;live.serializeAttachment(seat);}
+    if(old)await this.accountPresence([old.account]);
+    if(live)this.send(live,{type:'peers',peers:await this.recent(id)});
+  }
   async fetch(request:Request):Promise<Response>{
     const id=request.headers.get('X-Wan-Device'),ip=request.headers.get('X-Wan-IP');
+    if(new URL(request.url).pathname==='/account'&&request.method==='POST'){
+      const account=request.headers.get('X-Wan-Account')||'',device=request.headers.get('X-Wan-Account-Device')||'',session=request.headers.get('X-Wan-Session')||'',lan_id=request.headers.get('X-Wan-Lan')||'',nonce=request.headers.get('X-Wan-Nonce')||'';
+      if(!check(id,ID)||!check(session,ID)||!/^[a-f0-9-]{36}$/.test(account)||!/^[a-f0-9-]{36}$/.test(device))return json({error:{message:'Invalid account device'}},401);
+      const valid=await this.env.DB.prepare('SELECT 1 valid FROM sessions s JOIN devices d ON d.id=s.device_id WHERE s.token_hash=? AND s.account_id=? AND s.device_id=? AND s.expires_at>? AND d.revoked_at IS NULL').bind(session,account,device,Date.now()).first();
+      if(!valid)return json({error:{message:'Session expired'}},401);
+      const intent=()=>{const seat=this.socket(id)?.deserializeAttachment() as Seat|undefined;return seat?.account_active&&seat.auth_nonce===nonce;};
+      if(!check(nonce,TRANSFER)||!intent())return json({error:{message:'Account intent changed'}},409);
+      const old=await this.ctx.storage.get<Binding>('account-binding:'+id);
+      await this.ctx.storage.transaction(async tx=>{
+        if(!intent())throw new Error('Account intent changed');
+        const members=await tx.get<Record<string,string>>('account-members:'+account)||{};members[device]=id;
+        if(!intent())throw new Error('Account intent changed');
+        await tx.put('account-members:'+account,members);await tx.put('account-binding:'+id,{account,device,session,lan_id,nonce});
+      });
+      const live=this.socket(id);if(live&&intent()){const seat=live.deserializeAttachment() as Seat;seat.account=account;seat.lan_id=lan_id;live.serializeAttachment(seat);}
+      await this.accountPresence([account,...(old?[old.account]:[])]);return json({bound:true});
+    }
     if(!check(id,ID)||!check(ip,ID))return json({error:{message:'Invalid device'}},401);
     try{
       await this.limited('connect:'+id,30,60000);
@@ -59,33 +111,39 @@ export class WanHub extends DurableObject<WanEnv>{
     for(const existing of this.ctx.getWebSockets(id))try{existing.close(4000,'Reconnected');}catch{}
     const pair=new WebSocketPair();const [client,server]=Object.values(pair);
     this.ctx.acceptWebSocket(server,[id]);
-    server.serializeAttachment({id,ip,connected:Date.now(),name:'未命名设备',platform:'other',window:Date.now(),messages:0} satisfies Seat);
+    const binding=await this.binding(id);
+    server.serializeAttachment({id,ip,connected:Date.now(),name:'未命名设备',platform:'other',window:Date.now(),messages:0,...(binding?{account:binding.account,lan_id:binding.lan_id}:{})} satisfies Seat);
     await this.scheduleCleanup();
     return new Response(null,{status:101,webSocket:client});
   }
   private async recent(id:string){
-    const rows=await this.ctx.storage.get<Device[]>('recent:'+id)||[];
+    const history=await this.ctx.storage.get<Device[]>('recent:'+id)||[];
+    const account=await this.accountPeers(id),ids=new Set(account.map(row=>row.id));
+    const rows=[...account,...history.filter(row=>!ids.has(row.id))];
     const socket=this.socket(id);
-    if(socket){const seat=socket.deserializeAttachment() as Seat;seat.watching=rows.slice(0,30).map(row=>row.id);socket.serializeAttachment(seat);}
-    return rows.slice(0,30).map(row=>({...row,...this.peer(row.id),online:!!this.socket(row.id)}));
+    if(socket){const seat=socket.deserializeAttachment() as Seat;seat.watching=rows.slice(0,50).map(row=>row.id);socket.serializeAttachment(seat);}
+    return rows.slice(0,50).map(row=>row.account_device?row:({...row,...this.peer(row.id),online:!!this.socket(row.id)}));
   }
   private async presence(id:string){
     // Recent lists can be asymmetric after their independent 30-device limit.
     // Watch the list actually displayed by each connected observer.
     for(const target of this.ctx.getWebSockets()){
       const seat=target.deserializeAttachment() as Seat;
-      if(target.readyState===1&&seat.watching?.includes(id))this.send(target,{type:'peers',peers:await this.recent(seat.id)});
+      const changed=this.socket(id)?.deserializeAttachment() as Seat|undefined;
+      if(target.readyState===1&&(seat.watching?.includes(id)||changed?.account&&seat.account===changed.account))this.send(target,{type:'peers',peers:await this.recent(seat.id)});
     }
   }
   async webSocketClose(socket:WebSocket){
     const seat=socket.deserializeAttachment() as Seat;
     try{socket.close(1000,'Disconnected');}catch{}
     await this.presence(seat.id);
+    if(seat.account)await this.accountPresence([seat.account]);
   }
   async webSocketError(socket:WebSocket){
     const seat=socket.deserializeAttachment() as Seat;
     try{socket.close(1011,'Connection lost');}catch{}
     await this.presence(seat.id);
+    if(seat.account)await this.accountPresence([seat.account]);
   }
   private async remember(value:Session){
     await this.ctx.storage.transaction(async tx=>{
@@ -163,9 +221,16 @@ export class WanHub extends DurableObject<WanEnv>{
       if(++seat.messages>240)throw new Error('信令请求过于频繁。');
       seat.last_seen=Date.now();socket.serializeAttachment(seat);request=JSON.parse(message);
       if(request.type==='ping'){this.send(socket,{type:'pong'});return;}
+      if(request.type==='account_logout'){await this.unbind(seat.id);return;}
+      if(request.type==='account_state'){
+        if(!check(request.nonce,TRANSFER)||typeof request.active!=='boolean')throw new Error('账号状态无效。');
+        seat.auth_nonce=request.nonce;seat.account_active=request.active;delete seat.account;socket.serializeAttachment(seat);
+        await this.unbind(seat.id);this.send(socket,{type:'account_state',nonce:request.nonce});return;
+      }
       if(request.type==='hello'){
         seat.name=String(request.name||'未命名设备').replace(/[\x00-\x1f]/g,'').slice(0,64);
         seat.platform=['windows','macos','linux'].includes(request.platform)?request.platform:'other';socket.serializeAttachment(seat);
+        if(check(request.lan_id,/^[a-f0-9]{32}$/)){seat.lan_id=request.lan_id;socket.serializeAttachment(seat);}
         await this.ctx.storage.put('device:'+seat.id,publicDevice(seat));await this.code(socket);await this.presence(seat.id);
         const pending=await this.ctx.storage.list<{expires:number}>({prefix:'pending:'+seat.id+':',limit:64});
         for(const [key,row] of pending){
@@ -227,7 +292,15 @@ export class WanHub extends DurableObject<WanEnv>{
         }else if(request.code){
           target=await this.claimCode(request.code,seat);
         }else{
-          if(!check(request.peer,ID)||(await this.recent(seat.id)).every(row=>row.id!==request.peer))throw new Error('首次传输请使用对方的接收码。');
+          const self=await this.binding(seat.id),other=check(request.peer,ID)?await this.binding(request.peer):null;
+          const sameAccount=!!(self&&other&&self.account===other.account&&self.device!==other.device);
+          const history=await this.ctx.storage.get<Device[]>('recent:'+seat.id)||[];
+          if(!check(request.peer,ID))throw new Error('首次传输请使用对方的接收码。');
+          if(!sameAccount&&history.every(row=>row.id!==request.peer)){
+            const knownAccount=(await this.accountPeers(seat.id)).some(row=>row.id===request.peer);
+            if(knownAccount)throw new Error('对方设备不在线。');
+            throw new Error('首次传输请使用对方的接收码。');
+          }
           target=request.peer;
         }
         const receiver=this.peer(target),recipient=this.socket(target);

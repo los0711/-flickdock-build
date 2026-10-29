@@ -15,7 +15,7 @@ globalThis.FixedLengthStream=class extends TransformStream {
 };
 
 registerHooks({resolve(specifier,context,next){
-  if(['./hash-state','./wan','./relay-budget'].includes(specifier))specifier+='.ts';
+  if(['./hash-state','./wan','./relay-budget','./clipboard','./intake'].includes(specifier))specifier+='.ts';
   return next(specifier,context);
 },load(url,context,next){
   if(url==='cloudflare:workers')return {format:'module',shortCircuit:true,source:'export class DurableObject { constructor(ctx,env){this.ctx=ctx;this.env=env} }; export class WorkerEntrypoint { constructor(ctx,env){this.ctx=ctx;this.env=env} }'};

@@ -156,6 +156,25 @@ class CloudSelector(QPushButton):
         p.end()
 
 
+class NetworkStatus(QWidget):
+    """Cloud reachability, independent of login and sync-direction switches."""
+    def __init__(self,manager,parent=None):
+        super().__init__(parent);self.setFixedSize(32,32);self.sx=self.sy=1
+        self.set_state(getattr(getattr(manager,'connectivity',None),'state','checking'))
+
+    def set_state(self,state):
+        self.state=state
+        message={'online':'云端网络畅通','offline':'VPN 断连或云端网络不可达，暂时无法读取云端文件','checking':'正在检查云端网络…'}.get(state,'正在检查云端网络…')
+        self.setToolTip(message);self.setAccessibleName(message);self.update()
+
+    def set_presentation_scale(self,sx,sy):self.sx,self.sy=sx,sy;self.update()
+
+    def paintEvent(self,event):
+        painter=QPainter(self);painter.setRenderHint(QPainter.Antialiasing);painter.translate(self.width()/2,self.height()/2);painter.scale(self.sx,self.sy)
+        c=palette();tint=c['green'] if self.state=='online' else c['red'] if self.state=='offline' else c['muted']
+        icon('globe',tint).paint(painter,QRect(-8,-8,16,16));painter.end()
+
+
 class LanButton(ToolbarButton):
     """One footer target for the LAN symbol and caption."""
     def paintEvent(self,event):
@@ -190,7 +209,7 @@ class ProfileButton(QPushButton):
 
     def set_profile(self,name,connected=False,status=''):
         self.username=str(name or '未登录');self.connected=bool(connected)
-        self.status=str(status or ('已登录' if connected else '登录以同步搁架'));self.update()
+        self.status='' if connected else str(status or '登录以同步搁架');self.update()
         self.setAccessibleName(f'账号与设置，{self.username}，{self.status}')
 
     def paintEvent(self,event):
@@ -202,8 +221,9 @@ class ProfileButton(QPushButton):
         f=p.font();f.setPixelSize(14 if sys.platform=='win32' else 12);f.setBold(True);p.setFont(f);p.setPen(QColor('white'))
         if self.connected:p.drawText(avatar,Qt.AlignCenter,self.username[:1].upper())
         else:icon('user',c['secondary']).paint(p,QRect(14,round(avatar.center().y()-8),16,16))
-        f.setWeight(QFont.DemiBold);p.setFont(f);p.setPen(QColor(c['text']));p.drawText(QRectF(46,10,self.width()-68,20),Qt.AlignVCenter,p.fontMetrics().elidedText(self.username,Qt.ElideRight,self.width()-68))
-        f.setPixelSize(12 if sys.platform=='win32' else 10);f.setBold(False);p.setFont(f);p.setPen(QColor(c['secondary']));p.drawText(QRectF(46,29,self.width()-68,16),Qt.AlignVCenter,p.fontMetrics().elidedText(self.status,Qt.ElideRight,self.width()-68))
+        f.setWeight(QFont.DemiBold);p.setFont(f);p.setPen(QColor(c['text']));p.drawText(QRectF(46,0 if self.connected else 10,self.width()-68,self.height() if self.connected else 20),Qt.AlignVCenter,p.fontMetrics().elidedText(self.username,Qt.ElideRight,self.width()-68))
+        if self.status:
+            f.setPixelSize(12 if sys.platform=='win32' else 10);f.setBold(False);p.setFont(f);p.setPen(QColor(c['secondary']));p.drawText(QRectF(46,29,self.width()-68,16),Qt.AlignVCenter,p.fontMetrics().elidedText(self.status,Qt.ElideRight,self.width()-68))
         icon('right',c['muted']).paint(p,QRect(self.width()-20,22,12,12))
         if keyboard_focus_visible(self):
             p.setPen(QPen(QColor(c['link']),1.5));p.setBrush(Qt.NoBrush);p.drawRoundedRect(QRectF(self.rect()).adjusted(2,2,-2,-2),8,8)
@@ -478,13 +498,14 @@ def build_overview(view,preview_type):
     from flickdock_icons import app_icon
     view.brand_logo=QLabel(view.header);view.brand_logo.setFixedSize(24,24)
     view.brand_logo.setPixmap(app_icon().pixmap(QSize(24,24),view.devicePixelRatioF()));head.addWidget(view.brand_logo)
-    view.title=label('ClickDock',15,600,parent=view.header);head.addWidget(view.title)
+    view.title=label('FlickDock',15,600,parent=view.header);head.addWidget(view.title)
     view.count_label=label('',11,600,'secondary',view.header);view.count_label.setAlignment(Qt.AlignCenter)
     css(view.count_label,"color:#D4D4D8;background:rgba(255,255,255,28);border:0;border-radius:10px;padding:1px 9px;font:600 11px 'HarmonyOS Sans SC';",
         "color:#515154;background:rgba(0,0,0,18);border:0;border-radius:10px;padding:1px 9px;font:600 11px 'HarmonyOS Sans SC';")
     view.count_label.setFixedHeight(20);head.addWidget(view.count_label)
     view.cloud_selector=CloudSelector(view.shelf,view.header)
     view.cloud_selector.clicked.connect(view.shelf.show_cloud_menu);head.addWidget(view.cloud_selector)
+    view.network_status=NetworkStatus(view.shelf.manager,view.header);head.addWidget(view.network_status)
     head.addStretch(1)
     view.search_edit=QLineEdit(view.header);view.search_edit.setPlaceholderText('搜索...');view.search_edit.setFixedSize(176,32)
     view.search_edit.setClearButtonEnabled(True)

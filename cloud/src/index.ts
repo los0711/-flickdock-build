@@ -4,6 +4,8 @@ import {PersistentSHA256} from './hash-state';
 import {DurableObject,WorkerEntrypoint} from 'cloudflare:workers';
 import {isIP} from 'node:net';
 import {wanRoute,type WanEnv} from './wan';
+import {clipboardRequest,clipboardAlarm} from './clipboard';
+import {intakeRequest} from './intake';
 export {WanHub} from './wan';
 
 interface Env extends WanEnv {
@@ -50,6 +52,10 @@ export class AccountEvents extends DurableObject<Env> {
   private progressSent=new Map<string,{at:number;bytes:number}>();
   async fetch(request:Request):Promise<Response>{
     const url=new URL(request.url);
+    if(url.pathname==='/intake')return intakeRequest(request,this.ctx,
+      ()=>this.fetch(new Request('https://internal/publish',{method:'POST',body:JSON.stringify({type:'content',device:request.headers.get('X-Device-Id')||''})})));
+    if(url.pathname.startsWith('/clipboard'))return clipboardRequest(request,this.ctx,this.env,
+      kind=>budget(this.env,kind,1),device=>this.fetch(new Request('https://internal/publish',{method:'POST',body:JSON.stringify({type:'clipboard',device})})));
     if(url.pathname==='/connect'&&request.headers.get('Upgrade')?.toLowerCase()==='websocket'){
       const pair=new WebSocketPair();const [client,server]=Object.values(pair);
       this.ctx.acceptWebSocket(server);
@@ -66,7 +72,7 @@ export class AccountEvents extends DurableObject<Env> {
     }
     if(url.pathname==='/publish'&&request.method==='POST'){
       const data=await request.json() as {type?:string;device?:string;progress?:Row};
-      if(!['content','devices','progress'].includes(data.type||''))return new Response(null,{status:400});
+      if(!['content','devices','progress','clipboard'].includes(data.type||''))return new Response(null,{status:400});
       if(data.type==='progress'&&data.progress){
         const value=data.progress,previous=this.progressSent.get(value.upload_id),now=Date.now();
         if(previous&&now-previous.at<750&&value.received_bytes>=previous.bytes&&value.received_bytes<value.total)return new Response(null,{status:204});
@@ -84,6 +90,7 @@ export class AccountEvents extends DurableObject<Env> {
     }
     return new Response(null,{status:404});
   }
+  async alarm(){await clipboardAlarm(this.ctx,this.env);}
 }
 
 function announce(env:Env,ctx:ExecutionContext,owner:Row,type:'content'|'devices'){
@@ -211,7 +218,15 @@ async function item(env:Env,accountId:string,id:string){return first(env,'SELECT
 function record(row:Row){return {id:row.id,version:row.version,deleted:!!row.deleted,kind:row.kind,name:row.name,mime_type:row.mime_type,size:row.size,sha256:row.sha256,updated_at:iso(row.updated_at),expires_at:row.expires_at?iso(row.expires_at):null};}
 async function transfers(env:Env,accountId:string){
   const values=await rows(env,"SELECT u.*,d.name device_name FROM uploads u LEFT JOIN devices d ON d.id=u.device_id WHERE u.account_id=? AND u.state IN ('pending','verifying') AND u.expires_at>? ORDER BY u.rowid DESC LIMIT 10",accountId,Date.now());
-  return values.map(value=>({upload_id:value.id,item_id:value.item_id,base_version:value.base_version,kind:value.kind,name:value.name,mime_type:value.mime_type,size:value.size,sha256:value.sha256,received_bytes:value.verified_size,next_part:value.next_part,chunk_size:value.chunk_size,part_count:value.part_count,state:value.state,expires_at:iso(value.expires_at),device_id:value.device_id??null,device_name:value.device_name??null}));
+  const active=values.map(value=>({upload_id:value.id,item_id:value.item_id,base_version:value.base_version,kind:value.kind,name:value.name,mime_type:value.mime_type,size:value.size,sha256:value.sha256,received_bytes:value.verified_size,next_part:value.next_part,chunk_size:value.chunk_size,part_count:value.part_count,state:value.state,expires_at:iso(value.expires_at),device_id:value.device_id??null,device_name:value.device_name??null}));
+  if(!env.EVENTS)return active;
+  const response=await env.EVENTS.get(env.EVENTS.idFromName(accountId)).fetch('https://internal/intake');
+  const pending=await response.json() as {transfers:Row[]},ids=new Set(active.map(row=>row.item_id));
+  return [...active,...pending.transfers.filter(row=>!ids.has(row.item_id))].slice(0,100);
+}
+async function endIntake(env:Env,owner:Row,id:string){
+  if(env.EVENTS)await env.EVENTS.get(env.EVENTS.idFromName(owner.id)).fetch('https://internal/intake',{method:'POST',
+    headers:{'X-Device-Id':owner.device_id},body:JSON.stringify({end:id})});
 }
 async function findUpload(env:Env,owner:Row,id:string){
   const row=await first(env,'SELECT u.*,EXISTS(SELECT 1 FROM cancelled_uploads c WHERE c.account_id=? AND c.id=u.id AND c.expires_at>?) cancelled FROM uploads u WHERE u.id=?',owner.id,Date.now(),id);
@@ -280,7 +295,7 @@ async function cleanup(env:Env){
 
 async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Response>{
   const url=new URL(request.url),path=url.pathname,method=request.method;
-  if(path.startsWith('/v1/wan/'))return wanRoute(request,env);
+  if(path.startsWith('/v1/wan/')&&path!=='/v1/wan/account')return wanRoute(request,env);
   if(method==='GET'&&path==='/v1/health')return json({service:'flickdock-cloud'});
   // Cloudflare enforces its account-wide free limits. Keep per-identity
   // authentication abuse controls below, but do not reject normal sync early.
@@ -318,6 +333,21 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
     return json(signedIn,register?201:200);
   }
   const owner=await auth(request,env);
+  if(path==='/v1/wan/account'&&method==='POST'){
+    const value=await body(request,['credential','lan_id','nonce']);const credential=digest(value.credential);
+    const nonce=text(value.nonce,'nonce',32,32);if(!/^[a-f0-9]{32}$/.test(nonce))fail(400,'INVALID_REQUEST','Invalid account intent');
+    const lanId=typeof value.lan_id==='string'&&/^[a-f0-9]{32}$/.test(value.lan_id)?value.lan_id:'';
+    return env.WAN.get(env.WAN.idFromName('flickdock-wan-v1')).fetch(new Request('https://internal/account',
+      {method:'POST',headers:{'X-Wan-Device':sha(credential),'X-Wan-Account':owner.id,
+        'X-Wan-Account-Device':owner.device_id,'X-Wan-Session':owner.token_hash,'X-Wan-Lan':lanId,'X-Wan-Nonce':nonce}}));
+  }
+  if(path==='/v1/clipboard'||path.startsWith('/v1/clipboard/')){
+    const headers=new Headers(request.headers);headers.delete('Authorization');
+    headers.set('X-Clipboard-Account',owner.id);headers.set('X-Clipboard-Device',owner.device_id);
+    headers.set('X-Clipboard-Session',owner.token_hash);
+    return env.EVENTS.get(env.EVENTS.idFromName(owner.id)).fetch(new Request('https://internal'+path.slice(3),
+      {method,headers,body:request.body}));
+  }
   if(method==='GET'&&path==='/v1/events'){
     if(request.headers.get('Upgrade')?.toLowerCase()!=='websocket')fail(426,'UPGRADE_REQUIRED','WebSocket required');
     return env.EVENTS.get(env.EVENTS.idFromName(owner.id)).fetch(new Request('https://internal/connect',
@@ -395,6 +425,22 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
     const all=await rows(env,'SELECT seq,record FROM changes WHERE account_id=? AND seq>? ORDER BY seq LIMIT ?',owner.id,Number(cursor),limit+1),page=all.slice(0,limit);
     return json({changes:page.map(c=>({cursor:String(c.seq),record:JSON.parse(c.record)})),cursor:page.length?String(page.at(-1)!.seq):cursor,has_more:all.length>limit,transfers:await transfers(env,owner.id)});
   }
+  if(method==='POST'&&path==='/v1/sync/intake'){
+    const input=await body(request,['items']);
+    if(!Array.isArray(input.items)||input.items.length>100)fail(400,'INVALID_REQUEST','Invalid intake items');
+    const device=await first(env,'SELECT name FROM devices WHERE id=? AND account_id=?',owner.device_id,owner.id);
+    const items=input.items.map((row:Row)=>{
+      if(!row||typeof row!=='object')fail(400,'INVALID_REQUEST','Invalid intake item');
+      const kind=text(row.kind,'kind',1,8);if(!['file','text','url'].includes(kind))fail(400,'INVALID_REQUEST','Invalid kind');
+      return {upload_id:uuid(row.upload_id),item_id:uuid(row.item_id),name:text(row.name,'name',1,255),kind,
+        size:integer(row.size,'size'),device_id:owner.device_id,device_name:device?.name||'另一台设备'};
+    });
+    await env.EVENTS.get(env.EVENTS.idFromName(owner.id)).fetch('https://internal/intake',{method:'POST',
+      headers:{'X-Device-Id':owner.device_id},body:JSON.stringify({items})});
+    return json({announced:true});
+  }
+  match=path.match(/^\/v1\/sync\/intake\/([^/]+)$/);
+  if(method==='DELETE'&&match){await endIntake(env,owner,uuid(match[1]));return json({removed:true});}
   if(method==='POST'&&path==='/v1/uploads'){
     const required=['item_id','base_version','kind','name','mime_type','size','sha256'];
     const input=await body(request,[...required,'upload_id','fast_upload','fast_multipart'],required);
@@ -405,6 +451,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
     if(input.fast_upload!==undefined&&typeof input.fast_upload!=='boolean')fail(400,'INVALID_REQUEST','fast_upload must be boolean');
     if(input.fast_multipart!==undefined&&typeof input.fast_multipart!=='boolean')fail(400,'INVALID_REQUEST','fast_multipart must be boolean');
     const suppliedId=input.upload_id!==undefined,uploadId=suppliedId?uuid(input.upload_id,'upload_id'):crypto.randomUUID();
+    await endIntake(env,owner,uploadId);
     const reuse=async()=>{
       const previous=await findUpload(env,owner,uploadId);
       const spec={item_id:id,base_version:base,kind,name,mime_type:mime,size,sha256:hash};
@@ -609,6 +656,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
     const id=uuid(match[1]);
     const existing=await first(env,'SELECT account_id,item_id,state FROM uploads WHERE id=?',id);
     if(existing&&existing.account_id!==owner.id)fail(404,'NOT_FOUND','Upload not found');
+    await endIntake(env,owner,id);
     const now=Date.now();
     // Register a terminal receipt even for an unknown UUID: a delayed POST may
     // still be in flight. The insert trigger guards that opposite race too.

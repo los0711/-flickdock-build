@@ -1,6 +1,7 @@
 """Original-byte staging, bounded cancellation and adaptive directory transfer."""
 import hashlib
 import io
+import os
 from pathlib import Path
 import tempfile
 import threading
@@ -11,6 +12,13 @@ import sync_files
 
 
 class StagingTests(unittest.TestCase):
+    def test_unknown_incompressible_binary_skips_deflate_without_changing_bytes(self):
+        source=self.root/'binary';source.mkdir();data=os.urandom(2*1024*1024)
+        (source/'capture.rawdata').write_bytes(data)
+        staged=sync_files.stage_item(str(source),None,'binary',self.outbox,self.cancel)
+        with zipfile.ZipFile(staged['path']) as archive:
+            self.assertEqual(archive.getinfo('capture.rawdata').compress_type,zipfile.ZIP_STORED)
+            self.assertEqual(archive.read('capture.rawdata'),data)
     def setUp(self):
         self.temporary=tempfile.TemporaryDirectory(prefix='flickdock-stage-review-')
         self.root=Path(self.temporary.name);self.outbox=self.root/'outbox';self.cancel=threading.Event()

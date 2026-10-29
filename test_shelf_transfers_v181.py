@@ -49,12 +49,16 @@ def until(condition, timeout=8):
 
 class Server(BaseServer):
     def __init__(self):
-        super().__init__(); self.calls = []; self.actor = ''; self.receipts = set()
+        super().__init__(); self.calls = []; self.actor = ''; self.receipts = set();self.intakes={}
 
     def dispatch(self, token, method, path, data, raw):
         self.calls.append((token, method, path)); parts = path.split('?')[0].split('/')[2:]
+        if parts==['sync','intake'] and method=='POST':
+            for row in data['items']:self.intakes[row['upload_id']]=dict(row,token=token,device_id=self.actor,device_name=self.actor,state='preparing',received_bytes=0)
+            return {'schema_version':1,'announced':True}
         uid = data.get('upload_id') if method == 'POST' and parts == ['uploads'] else parts[1] if parts[0] == 'uploads' and len(parts) > 1 else None
         if uid and method == 'DELETE':
+            self.intakes.pop(uid,None)
             upload = self.uploads.get(uid)
             if upload and upload['token'] != token: raise CloudError('Missing', 404, 'NOT_FOUND')
             if not upload or upload['state'] != 'committed':
@@ -68,6 +72,7 @@ class Server(BaseServer):
         if parts == ['transfers'] and method == 'GET': return {'transfers': self.transfers(token)}
         result = super().dispatch(token, method, path, data, raw)
         if method == 'POST' and parts == ['uploads']:
+            self.intakes.pop(result['upload_id'],None)
             self.uploads[result['upload_id']].setdefault('device_id', self.actor)
         if parts[0] == 'items' and method == 'DELETE':
             for identifier, upload in list(self.uploads.items()):
@@ -83,7 +88,8 @@ class Server(BaseServer):
                              kind=spec['kind'], name=spec['name'], size=spec['size'],
                              received_bytes=sum(map(len, upload['chunks'])), device_id=upload['device_id'],
                              device_name='另一台电脑'))
-        return rows
+        ids={row['item_id'] for row in rows}
+        return rows+[copy.deepcopy(row) for row in self.intakes.values() if row['token']==token and row['item_id'] not in ids]
 
 
 class Api(QObject):
@@ -152,6 +158,24 @@ class Adapter(BaseAdapter):
 
 
 class TransferTests(unittest.TestCase):
+    def test_other_device_sees_placeholder_before_disk_worker_finishes(self):
+        service,adapter,sender=self.replica('device-a')
+        other,remote,receiver=self.replica('device-b')
+        until(lambda:not sender.running and not receiver.running)
+        captured=[];original=sender._work
+        def work(function,args,callback):
+            if function.__name__=='stage_item':captured.append((function,args,callback))
+            else:original(function,args,callback)
+        with patch.object(sender,'_work',side_effect=work):
+            adapter.add(str(self.source));sender.local_changed()
+            until(lambda:bool(captured) and bool(self.server.intakes))
+            receiver.request_refresh();seen=[];receiver.transfers_changed.connect(lambda rows:seen.append(rows))
+            until(lambda:any(row.get('phase')=='preparing' and row.get('remote') for batch in seen for row in batch))
+            self.assertEqual(self.server.uploads,{})
+            self.assertEqual(remote.view['permanent'],[])
+            adapter.view['permanent'].clear();sender.local_changed()
+            until(lambda:not self.server.intakes)
+        self.assertTrue(self.source.exists())
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory(prefix='flickdock-transfer-qa-'); self.root = Path(self.folder.name)
         self.server = Server(); self.engines = []

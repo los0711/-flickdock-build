@@ -595,6 +595,7 @@ class LanPanel(QFrame):
     """
     received_paths = Signal(list)
     transfer_started = Signal()
+    lan_recommended = Signal(list,str)
 
     def __init__(self, service, parent=None, *, theme='light', settings=None):
         super().__init__(parent)
@@ -667,6 +668,13 @@ class LanPanel(QFrame):
             self.remove_recent_button.clicked.connect(self._remove_recent)
             devices_row.addWidget(self.remove_recent_button);send.addLayout(devices_row)
         else:send.addWidget(self.devices)
+        self.nearby_hint=QFrame(self.send_column);nearby_row=QHBoxLayout(self.nearby_hint)
+        nearby_row.setContentsMargins(0,2,0,2);nearby_row.setSpacing(8)
+        nearby_text=_label('已在局域网发现此设备，推荐使用局域网传输',self.nearby_hint,muted=True)
+        nearby_text.setWordWrap(True);nearby_row.addWidget(nearby_text,1)
+        self.use_lan_button=_button('使用局域网',self.nearby_hint);nearby_row.addWidget(self.use_lan_button)
+        self.use_lan_button.clicked.connect(self._recommend_lan);self.nearby_hint.hide()
+        if self._wan:send.addWidget(self.nearby_hint)
         self.peer_code_label=_label('对方接收码',self.send_column)
         self.peer_code_label.setObjectName('lanSection');self.peer_code_label.setVisible(self._wan)
         if self._wan:send.addWidget(self.peer_code_label)
@@ -675,6 +683,8 @@ class LanPanel(QFrame):
         self.peer_code_input.setAccessibleName('对方的接收码');self.peer_code_input.setMaxLength(8)
         self.peer_code_input.setMinimumHeight(36);self.peer_code_input.setVisible(self._wan)
         if self._wan:send.addWidget(self.peer_code_input)
+        self.devices.currentIndexChanged.connect(self._target_changed)
+        self.peer_code_input.textChanged.connect(self._target_changed)
         send.addStretch(1)
         self.send_code = QFrame(self.send_column); self.send_code.setObjectName('lanSendCode')
         send_code_layout=QHBoxLayout(self.send_code);send_code_layout.setContentsMargins(14,8,14,8)
@@ -1016,18 +1026,20 @@ class LanPanel(QFrame):
         if self._wan:
             selected=self.devices.currentData();self.devices.clear()
             for peer in peers:
-                self.devices.addItem(str(peer.get('name') or '未命名设备'),peer['id'])
+                name=str(peer.get('name') or '未命名设备')
+                self.devices.addItem(('同账号 · ' if peer.get('account_device') else '')+name,peer['id'])
                 index=self.devices.count()-1
                 self.devices.setItemData(index,'在线' if peer.get('online') else '离线',Qt.ItemDataRole.ToolTipRole)
                 self.devices.setItemData(index,peer.get('platform','unknown'),Qt.ItemDataRole.UserRole+1)
                 self.devices.setItemData(index,bool(peer.get('online')),Qt.ItemDataRole.UserRole+2)
+                self.devices.setItemData(index,bool(peer.get('account_device')),Qt.ItemDataRole.UserRole+3)
             index=self.devices.findData(selected)
             self.devices.setCurrentIndex(index if index>=0 else 0 if peers else -1)
-            self.target_label.setText('最近传输设备'+(f' ({len(peers)})' if peers else ''))
+            self.target_label.setText(('同账号与最近设备' if any(p.get('account_device') for p in peers) else '最近传输设备')+(f' ({len(peers)})' if peers else ''))
             self.peer_count.setText(f'{sum(bool(p.get("online")) for p in peers)} 台在线')
             self.scan_indicator.online=any(p.get('online') for p in peers)
             self.scan_indicator.set_scanning(False);self.send_button.setEnabled(True)
-            if self.remove_recent_button:self.remove_recent_button.setEnabled(bool(peers))
+            self._target_changed()
             return
         selected = self.devices.currentData(); self.devices.clear()
         for peer in peers:
@@ -1050,6 +1062,19 @@ class LanPanel(QFrame):
     def _code_identity_changed(self,identity):
         if self.code_countdown:self.code_countdown._tick()
         else:self.send_code_value.setText(identity.get('code') or '连接中…')
+
+    def _target_changed(self,*_):
+        if not self._wan:return
+        if self.remove_recent_button:self.remove_recent_button.setEnabled(bool(self.devices.currentData()) and not bool(self.devices.currentData(Qt.ItemDataRole.UserRole+3)))
+        nearby=getattr(self.service,'nearby_peer',lambda _:None)(self.devices.currentData()) if not self.peer_code_input.text().strip() else None
+        self.nearby_hint.setVisible(bool(nearby))
+
+    def _recommend_lan(self):
+        peer=getattr(self.service,'nearby_peer',lambda _:None)(self.devices.currentData())
+        if not peer:return
+        paths=list(self._queued_paths)
+        if not paths and self._paths_provider:paths=list(self._paths_provider() or [])
+        self.lan_recommended.emit(paths,peer['id'])
 
     def _remove_recent(self):
         identifier=self.devices.currentData()
@@ -1354,6 +1379,7 @@ class LanDialog(QDialog):
     """A dedicated layered transfer window opened from the overview."""
     overview_requested = Signal()
     transfer_mode_requested = Signal()
+    lan_recommended = Signal(list,str)
     mini_requested = Signal()
     dock_requested = Signal()
 
@@ -1404,6 +1430,7 @@ class LanDialog(QDialog):
         content.addWidget(self.title_bar)
         self.panel_stack=QStackedWidget(self.card)
         self.panel = LanPanel(service, self.panel_stack, theme=settings.theme, settings=settings)
+        self.panel.lan_recommended.connect(self.lan_recommended)
         self._panels[service]=self.panel;self.panel_stack.addWidget(self.panel)
         if self._wan:self.close_button.setAccessibleName('关闭远程传输窗口')
         content.addWidget(self.panel_stack, 1)
@@ -1421,6 +1448,7 @@ class LanDialog(QDialog):
         try:
             if service not in self._panels:
                 panel=LanPanel(service,self.panel_stack,theme=self._theme,settings=self._settings)
+                panel.lan_recommended.connect(self.lan_recommended)
                 self._panels[service]=panel;self.panel_stack.addWidget(panel)
                 for widget in (panel,*panel.findChildren(QWidget)):widget.setAcceptDrops(True)
             self.panel=self._panels[service];self._wan=getattr(service,'mode','lan')=='wan'

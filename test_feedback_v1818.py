@@ -154,17 +154,20 @@ class FeedbackTests(unittest.TestCase):
                     self.assertTrue(panel.profile_frame.rect().contains(QRect(panel.sync_status_label.mapTo(panel.profile_frame,QPoint()),panel.sync_status_label.size())),count)
                 finally:dialog.close();dialog.deleteLater();flush()
 
-    def test_finishing_update_retires_effect_cache_and_queues_full_surface_repaint(self):
+    def test_finishing_update_paints_a_clean_surface_without_waiting_for_input(self):
         with tempfile.TemporaryDirectory() as directory:
             dialog=app_settings.SettingsDialog(app_settings.SettingsStore(Path(directory)));dialog.show();flush()
             try:
                 for state in ('latest','available','error','cancelled'):
                     dialog.set_update_state('checking');flush()
-                    effect=dialog.surface.graphicsEffect()
-                    with patch.object(effect,'setEnabled',wraps=effect.setEnabled) as retire,patch.object(dialog.surface,'update',wraps=dialog.surface.update) as refresh:
+                    line_y=dialog.update_activity.mapTo(dialog,QPoint(0,1)).y()
+                    with patch.object(dialog.surface,'repaint',wraps=dialog.surface.repaint) as refresh:
                         dialog.set_update_state(state);flush()
-                    self.assertEqual([call.args for call in retire.call_args_list],[(False,),(True,)])
+                    self.assertIsNone(dialog.surface.graphicsEffect())
                     self.assertTrue(refresh.called);self.assertTrue(dialog.update_activity.isHidden());self.assertEqual(dialog.update_activity.height(),0)
+                    image=dialog.grab().toImage();dpr=image.devicePixelRatio()
+                    blue=sum(1 for x in range(40,dialog.width()-40) if (lambda c:c.blue()>150 and c.blue()>c.red()+50)(image.pixelColor(round(x*dpr),round(line_y*dpr))))
+                    self.assertLess(blue,5,(state,blue))
             finally:dialog.close();dialog.deleteLater();flush()
 
     def test_menu_bar_icon_is_a_template_and_accessory_policy_uses_only_native_adapter(self):
@@ -238,6 +241,7 @@ class FeedbackTests(unittest.TestCase):
         fixture=_workspace.WorkspaceTests();fixture.setUp();service=LanTransferService(discovery=False)
         dialog=LanDialog(service,fixture.settings);dialog.move(300,160);dialog.show();flush()
         manager=flickdock.ShelfManager.__new__(flickdock.ShelfManager);manager.shelf=fixture.shelf
+        manager.motion=fixture.manager.motion
         manager.reset_drag_gesture=lambda:None
         dialog.overview_requested.connect(lambda:manager.show_overview_from_transfer(dialog))
         expected=QRect(dialog.card.mapToGlobal(QPoint()),dialog.card.size())

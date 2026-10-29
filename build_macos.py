@@ -198,7 +198,8 @@ def main(arguments=None):
          'test_ui_feedback_v1815', 'test_directory_sync_v1815', 'test_feedback_v1816','test_feedback_v1818',
          'test_shelf_raise_v1810', 'test_intake_first_frame_v1810',
          'test_sync_remote_commit_wakeup', 'test_cloud_file_status_v1810',
-         'test_trigger_reliability_v1810', 'test_event_stream_wiring_v1810', '-v'], env=env)
+         'test_trigger_reliability_v1810', 'test_event_stream_wiring_v1810',
+         'test_pointer_paste_v1819','test_presentation_v1819','test_clipboard_sync_v1819','test_wan_account_v1819','test_update_notice_v1813','-v'], env=env)
     # Native WebRTC and QWebSocket lifetimes are verified in their own Qt
     # process, matching the standalone frozen-client gate below.
     run([python,'-m','unittest','test_wan_transfer_v1816','-v'],env=env)

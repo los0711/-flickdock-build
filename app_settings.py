@@ -1080,11 +1080,10 @@ class SettingsDialog(QDialog):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(16, 16, 16, 16)
         self.surface = SettingsSurface(self)
-        shadow = QGraphicsDropShadowEffect(self.surface)
-        shadow.setBlurRadius(24)
-        shadow.setOffset(0, 6)
-        shadow.setColor(QColor(15, 28, 48, 78))
-        self.surface.setGraphicsEffect(shadow)
+        # Paint a cached shadow on the host instead of caching the entire
+        # settings subtree in QGraphicsEffect. Native Windows backing stores
+        # can otherwise retain a hidden update stripe until the next input.
+        self._shadow_cache=OrderedDict()
         outer.addWidget(self.surface)
         root = QVBoxLayout(self.surface)
         root.setContentsMargins(24, 16, 24, 20)
@@ -1449,6 +1448,7 @@ class SettingsDialog(QDialog):
         dl.addWidget(sensitivity_panel);self.dock_position_hint.hide();self.shake_effort_label.hide();self.body_layout.addWidget(dock)
         lower=QWidget(self.body);lower_grid=QHBoxLayout(lower);lower_grid.setContentsMargins(0,0,0,0);lower_grid.setSpacing(16)
         kl=shortcuts.layout();self._empty_layout(kl);kl.setContentsMargins(16,16,16,16);kl.setSpacing(12)
+        self._pointer_paste_panel=shortcuts
         kh=QHBoxLayout();title=QLabel('全局快捷键 (点击直接按键修改)',shortcuts);title.setObjectName('settingsSection');kh.addWidget(title,1)
         reset=QPushButton('恢复默认',shortcuts);reset.setObjectName('settingsLink');reset.setAutoDefault(False)
         reset.clicked.connect(lambda:(self.shelf_shortcut_edit.setKeySequence(QKeySequence(SHELF_SHORTCUT)),self.overview_shortcut_edit.setKeySequence(QKeySequence(OVERVIEW_SHORTCUT))))
@@ -1459,6 +1459,7 @@ class SettingsDialog(QDialog):
         self._empty_layout(startup.layout());startup.hide()
         kl.addWidget(self._reference_toggle(self.startup_checkbox,'登录系统时自动启动',shortcuts))
         self.startup_status_label.setParent(shortcuts);self.startup_status_label.hide()
+        self._pointer_paste_permission=None
         cl=cloud.layout();self._empty_layout(cl);cl.setContentsMargins(16,16,16,16);cl.setSpacing(10)
         ch=QLabel('云同步与存储',cloud);ch.setObjectName('settingsSection');cl.addWidget(ch)
         for control,label in ((self.sync_upload_checkbox,'上传本机搁架到云端'),(self.sync_receive_checkbox,'接收云端与其他设备内容')):
@@ -1517,6 +1518,14 @@ class SettingsDialog(QDialog):
         QTimer.singleShot(0,self._fit_settings_top)
         return previous
 
+    def set_pointer_paste_permission(self,required,authorize):
+        if self._pointer_paste_permission is None:
+            panel=QWidget(self._pointer_paste_panel);layout=QVBoxLayout(panel);layout.setContentsMargins(0,0,0,0);layout.setSpacing(6)
+            label=QLabel('跨应用粘贴需要允许 FlickDock 使用 macOS 辅助功能。',panel);label.setWordWrap(True);layout.addWidget(label)
+            button=QPushButton('前往授权',panel);button.setAutoDefault(False);button.clicked.connect(authorize);layout.addWidget(button)
+            self._pointer_paste_panel.layout().addWidget(panel);self._pointer_paste_permission=panel
+        self._pointer_paste_permission.setVisible(bool(required))
+
     def set_update_state(self, state, version="", received=0, total=0, error=""):
         """Render update feedback beside the single explicit update action."""
         received, total = max(0, int(received)), max(0, int(total))
@@ -1549,8 +1558,28 @@ class SettingsDialog(QDialog):
             self.update_error_label.setVisible(state=='error' and bool(error))
         self.update_button.setText(action)
         self.update_button.setAccessibleName(action)
+        busy=state in ('checking','downloading','verifying','installing','cancelling')
+        if busy and self.update_button.hasFocus():
+            # Disabling the focused button makes QDialog advance to Close with
+            # TabFocusReason, which paints a misleading keyboard focus ring.
+            self.title_bar.setFocus(Qt.FocusReason.OtherFocusReason)
+        restore_focus=not busy and self.title_bar.hasFocus()
         self.update_button.setEnabled(state not in ("checking", "downloading", "verifying", "installing", "cancelling"))
+        if restore_focus:self.update_button.setFocus(Qt.FocusReason.OtherFocusReason)
         self.update_activity.set_activity(state, received, total)
+        if not self.update_activity.active and self.isVisible():
+            self.surface.layout().activate()
+            self.surface.repaint();self.repaint()
+
+    def paintEvent(self,event):
+        from surface_morph import paint_surface_shadow
+        painter=QPainter(self)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+        painter.fillRect(event.rect(),Qt.GlobalColor.transparent)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+        paint_surface_shadow(painter,QRectF(self.surface.geometry()),self._shadow_cache,
+            blur=24,offset=QPointF(0,6),color=QColor(15,28,48,78))
+        painter.end()
 
     def set_lan_panel(self, widget):
         """Mount the local transfer view directly after the account card."""

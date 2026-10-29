@@ -2,10 +2,11 @@
 from __future__ import annotations
 import sys
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, Signal
-from PySide6.QtGui import QColor, QCursor, QGuiApplication
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, Signal,QEvent,QRectF
+from PySide6.QtGui import QColor, QCursor, QGuiApplication,QPainter
 from PySide6.QtWidgets import (QFrame, QGraphicsDropShadowEffect, QHBoxLayout,
-                               QLabel, QPushButton, QVBoxLayout, QWidget)
+                               QLabel, QPushButton, QVBoxLayout, QWidget,QScrollArea,QApplication)
+from shiboken6 import isValid
 from native_ui_common import colors as ui_colors, reference_font
 
 
@@ -13,20 +14,24 @@ class UpdateNotice(QWidget):
     """Present one update offer without a system notification or focus steal."""
 
     update_requested = Signal()
+    dismissed = Signal()
 
     def __init__(self, parent=None, *, theme="light"):
-        super().__init__(parent, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
+        super().__init__(parent, Qt.WindowType.Widget)
         self.setObjectName("flickdockUpdateNotice")
         self.setWindowTitle("FlickDock · 新版本")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-        self.setFixedSize(452, 178)
+        self._owner=parent
+        self._previous_focus=None
+        if parent:parent.installEventFilter(self);parent.card.installEventFilter(self)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(16,16,16,16)
         self.surface = QFrame(self)
         self.surface.setObjectName("updateNoticeSurface")
-        outer.addWidget(self.surface)
+        outer.addWidget(self.surface,0,Qt.AlignmentFlag.AlignCenter)
+        self.surface.setFixedSize(420,146)
         shadow = QGraphicsDropShadowEffect(self.surface)
         shadow.setBlurRadius(23)
         shadow.setOffset(0, 5)
@@ -50,9 +55,15 @@ class UpdateNotice(QWidget):
         captions.addWidget(self.version_label);header.addLayout(captions,1)
         self.close_button=QPushButton('×',self.surface);self.close_button.setObjectName('updateNoticeClose')
         self.close_button.setFixedSize(24,24);self.close_button.setAccessibleName('稍后更新')
-        self.close_button.setAutoDefault(False);self.close_button.clicked.connect(self.hide)
+        self.close_button.setAutoDefault(False);self.close_button.clicked.connect(self.dismiss)
         header.addWidget(self.close_button)
         content.addLayout(header)
+        self.notes_area=QScrollArea(self.surface);self.notes_area.setWidgetResizable(True)
+        self.notes_area.setFrameShape(QFrame.Shape.NoFrame);self.notes_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.notes_label=QLabel(self.notes_area);self.notes_label.setObjectName('updateNoticeNotes')
+        self.notes_label.setWordWrap(True);self.notes_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.notes_label.setAlignment(Qt.AlignmentFlag.AlignTop|Qt.AlignmentFlag.AlignLeft)
+        self.notes_area.setWidget(self.notes_label);self.notes_area.hide();content.addWidget(self.notes_area,1)
 
         actions = QHBoxLayout()
         actions.setSpacing(9)
@@ -62,7 +73,7 @@ class UpdateNotice(QWidget):
         self.later_button.setFixedSize(56,28)
         self.later_button.setAutoDefault(False)
         self.later_button.setAccessibleName("稍后更新")
-        self.later_button.clicked.connect(self.hide)
+        self.later_button.clicked.connect(self.dismiss)
         actions.addWidget(self.later_button)
         self.update_button = QPushButton("立即更新", self.surface)
         self.update_button.setObjectName("updateNoticePrimary")
@@ -86,6 +97,8 @@ class UpdateNotice(QWidget):
                 font-family:'{family}'; font-size:14px; font-weight:700; }}
             QLabel#updateNoticeVersion {{ color:{c['secondary']}; border:0; background:transparent;
                 font-family:'{family}'; font-size:11px; }}
+            QScrollArea {{background:transparent;border:0;}}
+            QLabel#updateNoticeNotes {{color:{c['secondary']};background:transparent;border:0;font-family:'{family}';font-size:12px;}}
             QLabel#updateNoticeSymbol {{ color:{c['blue']}; background:rgba(10,132,255,51); border:0; border-radius:12px; font-size:20px; font-weight:700; }}
             QPushButton {{ border:1px solid transparent; border-radius:12px; background:{c['control']};
                 color:{c['text']}; font-family:'{family}'; font-size:12px; padding:0; }}
@@ -97,25 +110,68 @@ class UpdateNotice(QWidget):
             QPushButton#updateNoticeClose:hover {{ background:{c['hover']}; }}
         """)
 
-    def show_version(self, version):
+    def dismiss(self):
+        self.dismissed.emit();self.hide()
+
+    def eventFilter(self,watched,event):
+        if self.isVisible() and self._owner and isValid(self._owner):
+            if watched in (self._owner,self._owner.card) and event.type() in (QEvent.Type.Hide,QEvent.Type.Close):self.hide()
+            if isinstance(watched,QWidget) and (watched is self._owner or self._owner.isAncestorOf(watched)) and event.type() in (QEvent.Type.KeyPress,QEvent.Type.ShortcutOverride):
+                if event.key()==Qt.Key.Key_Escape:
+                    event.accept()
+                    if event.type()==QEvent.Type.KeyPress:self.dismiss()
+                    return True
+                if not (watched is self or self.isAncestorOf(watched)):
+                    event.accept();return True
+                if event.key() in (Qt.Key.Key_Tab,Qt.Key.Key_Backtab):
+                    event.accept()
+                    if event.type()==QEvent.Type.KeyPress:
+                        buttons=(self.later_button,self.update_button,self.close_button);current=QApplication.focusWidget()
+                        index=buttons.index(current) if current in buttons else 0
+                        buttons[(index+(-1 if event.key()==Qt.Key.Key_Backtab else 1))%len(buttons)].setFocus(Qt.FocusReason.TabFocusReason)
+                    return True
+        if event.type() in (QEvent.Type.Resize,QEvent.Type.Move) and self._owner:
+            self.setGeometry(self._owner.card.geometry())
+        return False
+
+    def paintEvent(self,event):
+        painter=QPainter(self);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen);painter.setBrush(QColor(0,0,0,150))
+        painter.drawRoundedRect(QRectF(self.rect()),16 if sys.platform=='darwin' else 10,16 if sys.platform=='darwin' else 10)
+        painter.end()
+
+    def hideEvent(self,event):
+        QApplication.instance().removeEventFilter(self)
+        if self._owner and isValid(self._owner):
+            self._owner.setProperty('flickdockConfirmationActive',False)
+            if self._owner.isActiveWindow() and self._previous_focus and isValid(self._previous_focus):
+                self._previous_focus.setFocus(Qt.FocusReason.OtherFocusReason)
+        super().hideEvent(event)
+
+    def mousePressEvent(self,event):event.accept()
+    def mouseReleaseEvent(self,event):event.accept()
+    def mouseMoveEvent(self,event):event.accept()
+    def wheelEvent(self,event):event.accept()
+
+    def keyPressEvent(self,event):
+        if event.key()==Qt.Key.Key_Escape:self.dismiss();event.accept();return
+        super().keyPressEvent(event)
+
+    def show_version(self, version,notes=''):
         version = str(version).strip()[:32]
         if not version:
             return
         self.version_label.setText(f"v{version} 已发布")
         self.title.setText(f"发现新版本 FlickDock v{version}")
         self.update_button.setAccessibleName(f"立即更新到 {version}")
-        screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
-        if screen is not None:
-            area = screen.availableGeometry()
-            self.move(area.right() - self.width() - 18, area.bottom() - self.height() - 18)
-        self._appearance.stop()
-        if not self.isVisible() and QGuiApplication.platformName() not in ("offscreen", "minimal"):
-            self.setWindowOpacity(0.0)
-            self.show()
-            self._appearance.setStartValue(0.0)
-            self._appearance.setEndValue(1.0)
-            self._appearance.start()
-        else:
-            self.setWindowOpacity(1.0)
-            self.show()
+        notes=str(notes).strip()[:4000]
+        self.notes_label.setText('本次更新\n'+notes if notes else '')
+        self.notes_area.setVisible(bool(notes));self.surface.setFixedSize(420,272 if notes else 146)
+        if self._owner:
+            self.setGeometry(self._owner.card.geometry())
+            self._owner.setProperty('flickdockConfirmationActive',True)
+            self._previous_focus=QApplication.focusWidget()
+        QApplication.instance().installEventFilter(self)
+        self.show()
         self.raise_()
+        if self._owner and self._owner.isActiveWindow():self.later_button.setFocus(Qt.FocusReason.OtherFocusReason)

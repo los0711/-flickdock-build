@@ -16,6 +16,7 @@ from PySide6.QtWebSockets import QWebSocket
 class CloudEvents(QObject):
     content_changed = Signal()
     devices_changed = Signal()
+    clipboard_changed = Signal()
     transfer_progress = Signal(dict)
 
     def __init__(self, account, parent=None, *, enabled=True):
@@ -82,6 +83,7 @@ class CloudEvents(QObject):
         except (ValueError,TypeError): return
         if not isinstance(value,dict) or value.get('schema_version')!=1:return
         if value.get('type')=='content': self.content_debounce.start(90)
+        elif value.get('type')=='clipboard':self.clipboard_changed.emit()
         elif value.get('type')=='devices': self.devices_debounce.start(250)
         elif value.get('type')=='progress':
             if not re.fullmatch('[a-f0-9-]{36}',str(value.get('upload_id',''))):return

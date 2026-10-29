@@ -9,6 +9,7 @@ import stat
 import threading
 from uuid import uuid4
 import zipfile
+import zlib
 
 from PySide6.QtCore import QObject, QRunnable, Signal
 from selection_archive import _source_reader, _is_link
@@ -32,11 +33,19 @@ def _write_sync_file(archive, source, name, cancel):
     # The bundled 3.12 runtime uses the supported ZipFile default for this field.
     if hasattr(info,'compress_level'):info.compress_level=1
     else:info._compresslevel=1
-    with _source_reader(source) as incoming, archive.open(info,'w',force_zip64=True) as outgoing:
-        while data:=incoming.read(1024*1024):
-            if cancel.is_set():raise InterruptedError()
-            outgoing.write(data)
-            written+=len(data)
+    with _source_reader(source) as incoming:
+        sample=incoming.read(65536)
+        # Unknown binary formats can be just as incompressible as photos.
+        # Reuse the first read rather than scanning the whole file twice.
+        if (info.compress_type==zipfile.ZIP_DEFLATED and before.st_size>=1024*1024
+                and sample and len(zlib.compress(sample,1))>=len(sample)*.98):
+            info.compress_type=zipfile.ZIP_STORED
+        with archive.open(info,'w',force_zip64=True) as outgoing:
+            data=sample
+            while data:
+                if cancel.is_set():raise InterruptedError()
+                outgoing.write(data);written+=len(data)
+                data=incoming.read(1024*1024)
         if cancel.is_set():raise InterruptedError()
     after=source.stat()
     if written!=before.st_size or (before.st_size,before.st_mtime_ns)!=(after.st_size,after.st_mtime_ns):

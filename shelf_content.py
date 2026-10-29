@@ -1,4 +1,4 @@
-"""Native shelf content, including text which never becomes a disk document.
+"""Native shelf content, optionally with an owned TXT backing for pasted text.
 
 File references remain paths. Text references are opaque IDs backed by the
 state's JSON mapping. A native text-only drag exposes only text/plain, so an
@@ -95,6 +95,25 @@ class ContentRepository:
         if refs is None:
             return dict(self.texts)
         return {ref: self.texts[ref] for ref in refs if ref in self.texts}
+
+    def materialize_pasted_text(self,ref,capture_dir):
+        """Keep the text identity/MIME while giving a clipboard item a TXT file."""
+        raw=self.text(ref)
+        if raw is None:return None
+        from owned_files import owned_copy_spec
+        meta=self.metadata.get(ref,{})
+        existing=meta.get('text_file')
+        if existing and owned_copy_spec(existing,meta,capture_dir) and Path(existing).is_file():return str(existing)
+        root=Path(capture_dir).absolute();batch=root/'imports'/('capture-text-'+uuid4().hex)
+        batch.mkdir(parents=True,exist_ok=False)
+        path=batch/'粘贴的文字.txt'
+        try:
+            with path.open('xb') as stream:stream.write(raw.encode('utf8'))
+        except Exception:
+            path.unlink(missing_ok=True);batch.rmdir();raise
+        self.metadata.setdefault(ref,{}).update(text_file=str(path),title=path.name,
+            capture_mode='copy',owned_root=str(root),pasted_text=True)
+        return str(path)
 
     def prune(self, refs: list[str]) -> None:
         keep = set(refs)

@@ -144,7 +144,7 @@ class FeedbackTests(unittest.TestCase):
         from PySide6.QtCore import QEvent,QSize
         self.shelf.files['permanent']=[]
         view=self.fixture.overview();flush()
-        self.assertEqual(view.title.text(),'ClickDock');self.assertEqual(view.count_label.text(),'0 项')
+        self.assertEqual(view.title.text(),'FlickDock');self.assertEqual(view.count_label.text(),'0 项')
         box=view.empty_drop
         self.assertTrue(box.isVisible());self.assertEqual(box.size(),QSize(280,220))
         self.assertLessEqual(abs(box.geometry().center().x()-view.empty_state.rect().center().x()),1)

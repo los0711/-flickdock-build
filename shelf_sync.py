@@ -85,6 +85,7 @@ class ShelfSync(QObject):
         self._cleanup_inflight = set()
         self.remote_transfers=[]
         self._live_upload_progress={}
+        self._intake_announced=set()
         self.download_transfers={}
         self._interactive=False
         self._base_poll_ms=poll_ms
@@ -178,6 +179,7 @@ class ShelfSync(QObject):
             if self.service.signed_in and not self.timer.isActive(): self.timer.start()
             return
         self.epoch += 1; self.timer.stop(); self.debounce.stop(); self.remote_poll.stop()
+        self._intake_announced=set()
         self.running = False; self.transfer = None
         self._refresh_again=False
         self.remote_transfers=[]; self._live_upload_progress.clear(); self.transfers_changed.emit([])
@@ -230,21 +232,65 @@ class ShelfSync(QObject):
                 entry = {'id':identity,'ref':ref,'version':0,'seq':0}
                 entries[identity] = entry
             if entry.get('fingerprint') != fp or entry.get('deleted'):
+                self._end_intake(entry)
                 entry.pop('blocked_fingerprint',None); entry.pop('last_error',None)
                 entry.pop('paused_upload',None)
                 entry.update(fingerprint=fp,name=name,dirty=True,deleted=False,
                              kind='url' if text is not None and re.fullmatch(r'https?://\S+',text.strip()) else 'text' if text is not None else 'file',
                              seq=entry.get('seq',0)+1)
+                entry.update(intake_id=str(uuid4()),intake_seq=entry['seq'])
         removed = False
         for entry in entries.values():
             if entry.get('ref') not in refs and not entry.get('deleted'):
+                self._end_intake(entry)
                 entry.update(deleted=True,dirty=True,seq=entry.get('seq',0)+1)
                 removed = True
         self._persist()
+        self._announce_intakes()
         self._notify_transfers()
         if removed and self.running:
             self._interrupt_cycle()
         self.debounce.start(1 if removed else 400)
+
+    def _end_intake(self,entry):
+        identifier=entry.pop('intake_id',None)
+        entry.pop('intake_seq',None)
+        if identifier and self.state is not None:
+            # Reuse the durable upload cancellation journal. A view mutation
+            # may interrupt this epoch before a DELETE can reach the server.
+            pending=self.state.setdefault('pending_uploads',[])
+            if identifier not in pending:pending.append(identifier)
+
+    def _announce_intakes(self):
+        if not self.upload_enabled or not self.account_id or not self.service.signed_in:return
+        if self._retry_paused() or self._paused('quota_not_before'):return
+        announced=getattr(self,'_intake_announced',None)
+        if announced is None:self._intake_announced=announced=set()
+        rows=[]
+        for entry in self.state.get('entries',{}).values():
+            if (not entry.get('dirty') or entry.get('deleted') or entry.get('paused_upload')
+                or entry.get('blocked_fingerprint')==entry.get('fingerprint')):continue
+            if not entry.get('intake_id'):
+                entry.update(intake_id=str(uuid4()),intake_seq=entry['seq'])
+            identifier=entry['intake_id']
+            if identifier in announced:continue
+            size=0
+            try:
+                # Directory inode sizes are not file content sizes. They remain
+                # indeterminate until the worker finishes the real archive.
+                path=Path(entry['ref'])
+                if path.is_file():size=path.stat().st_size
+            except OSError:pass
+            rows.append(dict(upload_id=identifier,item_id=entry['id'],name=entry.get('name','未命名')[:255],
+                             kind=entry.get('kind','file'),size=size))
+        self._persist()
+        # Keep each metadata request within the existing 16 KiB API body limit,
+        # including names encoded as JSON Unicode escapes.
+        for offset in range(0,len(rows),8):
+            batch=rows[offset:offset+8];ids={row['upload_id'] for row in batch};announced.update(ids)
+            def done(result,error,ids=ids):
+                if error:self._intake_announced.difference_update(ids)
+            self._request('POST','/v1/sync/intake',done,data={'items':batch})
 
     def set_interactive(self,value):
         value=bool(value)
@@ -377,7 +423,7 @@ class ShelfSync(QObject):
             if live.get('total')==remote.get('size') and time.monotonic()-live.get('seen',0)<15:received=max(received,live.get('received_bytes',0))
             transfers.append(dict(id=identity,ref=local.get('ref'),name=remote.get('name',''),kind=remote.get('kind','file'),
                 upload_id=remote.get('upload_id'),received=received,total=remote.get('size',0),
-                phase='remote',remote=True,device_name=remote.get('device_name','另一台设备')))
+                phase='preparing' if remote.get('state')=='preparing' else 'remote',remote=True,device_name=remote.get('device_name','另一台设备')))
         self.transfers_changed.emit(transfers)
 
     def _interrupt_cycle(self):
@@ -385,6 +431,7 @@ class ShelfSync(QObject):
         self.running=False;self.transfer=None
         self._part_cache.clear()
         self._cleanup_inflight.clear()
+        self._intake_announced=set()
         for key in tuple(self.requests):self.api.cancel(key)
         self.requests.clear()
         for job in tuple(self.jobs):job.cancel.set()
@@ -394,6 +441,7 @@ class ShelfSync(QObject):
         entry=next((e for e in self.state.get('entries',{}).values() if value in (e.get('id'),e.get('ref'))),None)
         if entry:
             self._interrupt_cycle()
+            self._end_intake(entry)
             if remove:entry.update(deleted=True,dirty=True,seq=entry.get('seq',0)+1)
             else:
                 entry['paused_upload']=True
@@ -416,6 +464,7 @@ class ShelfSync(QObject):
         if not self.state:return
         for entry in self.state.get('entries',{}).values():
             if entry.get('ref')==ref:
+                self._end_intake(entry)
                 entry.pop('paused_upload',None);entry.pop('blocked_fingerprint',None);entry['dirty']=True
                 ignored=self.state.get('ignored_versions',{}).get(entry['id'],0)
                 if isinstance(ignored,int):entry['version']=max(entry.get('version',0),ignored)
@@ -656,6 +705,8 @@ class ShelfSync(QObject):
         pending = self.state.setdefault('pending_uploads',[])
         if completed and upload_id in pending: pending.remove(upload_id)
         entry = self.state['entries'].get(identity)
+        if entry and entry.get('intake_id')==transfer.get('intake_id'):
+            entry.pop('intake_id',None);entry.pop('intake_seq',None)
         if entry and entry.get('pending_seq') == transfer.get('seq'):
             entry.pop('pending_hash',None); entry.pop('pending_seq',None)
 
@@ -1187,10 +1238,12 @@ class ShelfSync(QObject):
                     self._forget_resume(identity); self._persist(); self._retire_uploads(); return
                 self._resume_upload(result)
             self._work(_verify_staged,(resume,),verified); return
+        self._announce_intakes()
         snapshot = dict(pending); self.transfer = snapshot
         self._notify_transfers()
         def staged(result,error):
             if error:
+                self._end_intake(snapshot)
                 entry = self.state['entries'].get(identity)
                 if entry and entry.get('seq')==snapshot['seq']:
                     entry.update(blocked_fingerprint=snapshot['fingerprint'],last_error=str(error))
@@ -1215,7 +1268,7 @@ class ShelfSync(QObject):
                 from cloud_api import CloudError
                 self._error(CloudError('上传断点已失效。',410,'UPLOAD_CANCELLED'));return
         if not snapshot.get('upload_id'):
-            snapshot['upload_id'] = str(uuid4())
+            snapshot['upload_id'] = snapshot.get('intake_id') or str(uuid4())
         pending = self.state.setdefault('pending_uploads',[])
         if snapshot['upload_id'] not in pending: pending.append(snapshot['upload_id'])
         current = self.state['entries'].get(identity)
