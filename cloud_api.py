@@ -11,6 +11,7 @@ from uuid import uuid4
 from PySide6.QtCore import QObject, QTimer, QUrl, Qt, Signal, QFile, QIODevice
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 from app_version import APP_VERSION
+from cloud_config import CLOUD_ORIGINS
 
 
 class CloudError(Exception):
@@ -42,6 +43,7 @@ class UploadSlice(QIODevice):
 
 class CloudApi(QObject):
     unauthorized = Signal()
+    origin_changed = Signal(str)
     supports_file_upload = True
     supports_file_slices = True
 
@@ -52,6 +54,8 @@ class CloudApi(QObject):
         self.token = ''
         self._requests = {}
         self._deferred = {}
+        self._fallback_aliases={}
+        self._handoffs={}
         self._closed = False
         self._allow_test_http = allow_test_http
 
@@ -69,7 +73,7 @@ class CloudApi(QObject):
 
     def request(self, method, path, callback, *, data=None, raw=None, source=None, source_offset=0, source_size=None, headers=None,
                 authenticated=True, destination=None, expected=None, timeout_ms=45000,
-                progress=None, receive_progress=None):
+                progress=None, receive_progress=None,_fallback_used=False,_deadline=None):
         """callback(result,error); optional progress callbacks report network bytes.
 
         Upload progress counts bytes handed to the network, not committed R2
@@ -79,6 +83,7 @@ class CloudApi(QObject):
         source_file = None
         try:
             if self._closed: raise CloudError('同步服务已关闭。')
+            if _deadline is not None and time.monotonic()>=_deadline:raise CloudError('同步请求超时，请检查网络。')
             request = QNetworkRequest(self._url(path))
             request.setAttribute(QNetworkRequest.Attribute.RedirectPolicyAttribute,
                                  QNetworkRequest.RedirectPolicy.ManualRedirectPolicy)
@@ -128,8 +133,32 @@ class CloudApi(QObject):
                      'upload_total':upload_size,'upload_sent':-1,'progress_at':0.,
                      'receive_progress':receive_progress if callable(receive_progress) and destination else None,
                      'download_reported':-1,'download_at':0.,
-                     'auth_token':self.token if authenticated else None}
+                     'auth_token':self.token if authenticated else None,
+                     'origin':self.origin,'sent':None,'connect_timer':None,
+                     'started':time.monotonic(),'budget':max(total_timeout,300000) if destination else total_timeout,
+                     'retry':None}
+            if _deadline is not None:state['budget']=min(state['budget'],max(1,round((_deadline-time.monotonic())*1000)))
+            deadline=state['deadline']=time.monotonic()+state['budget']/1000
+            if self.origin in CLOUD_ORIGINS and not _fallback_used:
+                state['retry']=lambda remaining,done:self.request(method,path,done,data=data,raw=raw,source=source,
+                    source_offset=source_offset,source_size=source_size,headers=dict(headers) if headers else None,
+                    authenticated=authenticated,destination=destination,expected=expected,timeout_ms=remaining,
+                    progress=progress,receive_progress=receive_progress,_fallback_used=True,_deadline=deadline)
+            state['method']=str(method).upper()
             self._requests[key] = state
+            sent_signal=getattr(reply,'requestSent',None)
+            if sent_signal is not None:
+                state['sent']=False
+                connect_timer=QTimer(self);connect_timer.setSingleShot(True);state['connect_timer']=connect_timer
+                def sent():
+                    state['sent']=True;connect_timer.stop()
+                sent_signal.connect(sent)
+                if getattr(reply,'metaDataChanged',None) is not None:reply.metaDataChanged.connect(sent)
+                if getattr(reply,'encrypted',None) is not None:reply.encrypted.connect(connect_timer.stop)
+                if getattr(reply,'uploadProgress',None) is not None:
+                    reply.uploadProgress.connect(lambda count,_:connect_timer.stop() if count>0 else None)
+                connect_timer.timeout.connect(lambda:self._finish(key,error=CloudError('连接云同步服务超时。',code='NETWORK_UNREACHABLE')))
+                connect_timer.start(min(10000,timeout_ms))
             timer.timeout.connect(lambda: self._finish(key, error=CloudError('同步请求超时，请检查网络。')))
             reply.readyRead.connect(lambda: self._drain(key))
             reply.finished.connect(lambda: self._finish(key))
@@ -141,7 +170,7 @@ class CloudApi(QObject):
                     report=lambda sent,total:self._upload_progress(key,sent,total)
                     try:signal.connect(report,Qt.ConnectionType.QueuedConnection)
                     except TypeError:signal.connect(report)  # Minimal injected test transports.
-            timer.start(max(total_timeout, 300000) if destination else total_timeout)
+            timer.start(state['budget'])
         except Exception as error:
             if source_file is not None and key not in self._requests:
                 source_file.close()
@@ -223,12 +252,19 @@ class CloudApi(QObject):
                 QTimer.singleShot(0, lambda: self._finish(key)); return
         self._requests.pop(key, None)
         state['timer'].stop(); state['timer'].deleteLater()
+        if state['connect_timer'] is not None:state['connect_timer'].stop();state['connect_timer'].deleteLater()
         reply = state['reply']
         status = int(reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute) or 0)
         result = None
         phase = 'response'
         try:
             if error is not None: raise error
+            if status==0 and reply.error()!=QNetworkReply.NetworkError.NoError:
+                problem=reply.error()
+                text=('服务地址无法解析' if problem==QNetworkReply.NetworkError.HostNotFoundError else
+                      '系统代理不可用' if problem in (QNetworkReply.NetworkError.ProxyConnectionRefusedError,QNetworkReply.NetworkError.ProxyConnectionClosedError,QNetworkReply.NetworkError.ProxyNotFoundError,QNetworkReply.NetworkError.ProxyTimeoutError) else
+                      'TLS 加密连接失败，请检查系统时间和证书' if problem==QNetworkReply.NetworkError.SslHandshakeFailedError else '网络连接失败')
+                raise CloudError('无法连接云同步服务：'+text+'。',code='NETWORK_UNREACHABLE')
             # A proxy can close an HTTP response after delivering every byte
             # of the original. For downloads, the expected length and SHA-256
             # below decide whether the file is complete; Qt's socket error
@@ -263,6 +299,8 @@ class CloudApi(QObject):
                     now = time.time()
                     raise CloudError('云同步免费请求额度今日已用完。', status, 'PLATFORM_QUOTA',
                                      {'error': {'retry_after': int(86400 - now % 86400) + 1}})
+                if status in (403,502,503,504) and response_body.lstrip().startswith(b'<'):
+                    raise CloudError('云服务入口暂时不可用，已准备备用连接。',status,'NETWORK_UNREACHABLE')
                 try: parsed = json.loads(state['body'].decode('utf8')) if state['body'] else {}
                 except (UnicodeError,ValueError): raise CloudError('云同步服务返回了无效响应。',status)
                 if status not in (200,201,202,204):
@@ -307,9 +345,39 @@ class CloudApi(QObject):
                 except OSError: pass  # A locked partial file must not stall the receive queue.
         if status == 401 and state['auth_token'] and state['auth_token'] == self.token and not self._closed:
             self.unauthorized.emit()
+        if (not self._closed and error is not None and getattr(error,'code','')=='NETWORK_UNREACHABLE'
+                and state['origin'] in CLOUD_ORIGINS):
+            # Slots can cancel/close synchronously while the new entrance is
+            # announced. Keep the original key cancellable throughout handoff.
+            self._handoffs[key]=state
+            if self.origin==state['origin']:
+                self.origin=CLOUD_ORIGINS[(CLOUD_ORIGINS.index(self.origin)+1)%len(CLOUD_ORIGINS)]
+                self.origin_changed.emit(self.origin)
+            self._handoffs.pop(key,None)
+            if self._closed or state.get('cancelled'):return
+            remaining=max(0,state['budget']-round((time.monotonic()-state['started'])*1000))
+            before_connect=reply.error() in (QNetworkReply.NetworkError.HostNotFoundError,QNetworkReply.NetworkError.ConnectionRefusedError,
+                QNetworkReply.NetworkError.ProxyConnectionRefusedError,QNetworkReply.NetworkError.ProxyNotFoundError,QNetworkReply.NetworkError.SslHandshakeFailedError)
+            # A timeout/closed connection is ambiguous for mutations. Only
+            # idempotent reads or a definitive pre-HTTP failure can replay.
+            if (state['retry'] is not None and remaining>0
+                    and (state['method'] in ('GET','HEAD') or state['sent'] is False and before_connect)
+                    and (state['auth_token'] is None or state['auth_token']==self.token)):
+                def done(result,problem):
+                    self._fallback_aliases.pop(key,None)
+                    if not self._closed:state['callback'](result,problem)
+                self._fallback_aliases[key]=state['retry'](remaining,done)
+                return
         if not self._closed: state['callback'](result,error)
 
     def cancel(self, key):
+        handoff=self._handoffs.pop(key,None)
+        if handoff is not None:
+            handoff['cancelled']=True
+            if not self._closed:handoff['callback'](None,CloudError('同步操作已取消。',code='cancelled'))
+            return
+        alias=self._fallback_aliases.pop(key,None)
+        if alias is not None:self.cancel(alias);return
         pending=self._deferred.pop(key,None)
         if pending is not None:
             if not self._closed:pending[0](None,CloudError('同步操作已取消。',code='cancelled'))
@@ -317,7 +385,7 @@ class CloudApi(QObject):
         self._finish(key, CloudError('同步操作已取消。',code='cancelled'))
 
     def cancel_all(self):
-        for key in (*self._requests,*self._deferred): self.cancel(key)
+        for key in (*self._handoffs,*self._fallback_aliases,*self._requests,*self._deferred): self.cancel(key)
 
     def close(self):
         self._closed = True

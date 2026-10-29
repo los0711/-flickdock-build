@@ -87,7 +87,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-interactions-v163-') as tmp:
         assert shelf.expanded and shelf.presentation_kind=='dock'
         shelf.hide_immediately();manager.auto_shown=None
         manager._content_drag_validated(QPoint(300,300))
-        assert shelf.expanded and shelf.presentation_kind=='drag'
+        assert not shelf.expanded and shelf.presentation_kind=='drag'
         assert all(button.isHidden() for button in (shelf.pin_button,shelf.expand_button,shelf.menu_button,shelf.close_button))
         shelf.hide_immediately();manager.auto_shown=None;manager.settings.update(trigger_view='compact')
         manager._content_drag_validated(QPoint(300,300));assert not shelf.expanded

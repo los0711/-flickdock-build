@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame,
                                 QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton,
                                 QScrollArea, QSystemTrayIcon, QVBoxLayout, QWidget, QPlainTextEdit, QStackedWidget, QGridLayout, QSizePolicy, QButtonGroup, QProgressBar, QWidgetAction, QDialog)
 
-from flickdock_icons import app_icon, tray_icon, glyph_icon, glyph_pixmap, file_pixmap, document_pixmap
+from flickdock_icons import app_icon, tray_icon, menu_bar_icon, glyph_icon, glyph_pixmap, file_pixmap, document_pixmap
 from flickdock_motion import Spring, MotionShadow, ContentTile, FeedbackButton
 from drag_probe import ContentDragGate, is_content_mime, native_window_move_active
 from instance_guard import InstanceGuard
@@ -213,7 +213,7 @@ class DropZone(QFrame):
         self.caption=QLabel(self);self.caption.setGeometry(131,230,68,32);self.caption.setAlignment(Qt.AlignCenter);self.caption.setAttribute(Qt.WA_TransparentForMouseEvents)
         self.count_arrow=QLabel(self);self.count_arrow.setGeometry(180,240,12,12);self.count_arrow.setAttribute(Qt.WA_TransparentForMouseEvents)
         self._pill_hovered=False;self._pill_timer=QTimer(self);self._pill_timer.setSingleShot(True);self._pill_timer.timeout.connect(self._open_from_pill_hover)
-        self.feedback=Spring(self,{'hover':0},lambda _:self._apply_style(),motion=shelf.manager.motion)
+        self.feedback=Spring(self,{'hover':0},lambda _:self.icon.update(),motion=shelf.manager.motion)
         self._style_caption(False);self._apply_style()
 
     @property
@@ -227,9 +227,8 @@ class DropZone(QFrame):
 
     def _apply_style(self):
         from reference_widgets import css
-        border='#0A84FF' if (self.drop_highlight or
-            (self._pointer_hovered and self.shelf.presentation_kind=='dock')) else 'transparent'
-        css(self,f'QFrame#dropZone{{background:transparent;border:1px solid {border};border-radius:8px;}}')
+        css(self,'QFrame#dropZone{background:transparent;border:1px solid transparent;border-radius:8px;}')
+        self.icon.update()
 
     def _open_from_pill_hover(self):
         # Hover only reveals feedback. Opening the workspace requires a click.
@@ -2211,17 +2210,17 @@ class ShelfWindow(QWidget):
     def intake_blocks_overview(self):
         return self.presentation_kind=='drag' and (self.incoming_drop or self.visible_state=='hiding')
 
-    def show_contents(self, mode="permanent", target=None):
+    def show_contents(self, mode="permanent", target=None, *, animate=True):
         if self.intake_blocks_overview():return
         with self._surface_transaction():
-            self._show_contents(mode,target)
+            self._show_contents(mode,target,animate=animate)
         if self.isVisible():
             self._raise_for_reveal()
 
-    def _show_contents(self,mode,target):
+    def _show_contents(self,mode,target,*,animate=True):
         if self.property('flickdockConfirmationActive'): return
-        self._capture_morph_source()
-        self._transition_preparing=True
+        if animate:self._capture_morph_source()
+        self._transition_preparing=animate
         self.visible_state = "floating"
         if self.popup is None:
             self.popup = ContentsPopup(self)
@@ -2235,13 +2234,18 @@ class ShelfWindow(QWidget):
         self.expand_button.set_glyph("collapse")
         current=self.visual_geometry()
         default_target=self._expansion_rect(current)
-        width,height=default_target.width()-28,default_target.height()-27
+        destination=default_target if target is None else QRect(target)
+        width,height=destination.width()-28,destination.height()-27
         self._expanded_size = (width, height)
         self.popup.setGeometry(0, 0, width, height)
         self.popup.show()
-        destination=default_target if target is None else QRect(target)
-        self.geometry_morph.animate(destination)
-        self.presentation.animate({"sx": 1, "sy": 1, "alpha": 1, "dx": 0, "dy": 0}, response=.19, damping=1)
+        presentation={"sx": 1, "sy": 1, "alpha": 1, "dx": 0, "dy": 0}
+        if animate:
+            self.geometry_morph.animate(destination)
+            self.presentation.animate(presentation,response=.19,damping=1)
+        else:
+            self.geometry_morph.jump(destination)
+            self.presentation.jump(presentation)
         self.touch()
 
     def collapse_contents(self, target=None, finished=None):
@@ -2686,7 +2690,7 @@ class ShelfManager:
         self.auto_shown = None
         self.edge = DockHandle(self)
         self.drag_gate = ContentDragGate(self._content_type_ready,self._probe_drop,lambda:self.outgoing_drag)
-        self.tray = QSystemTrayIcon(app_icon(), app)
+        self.tray = QSystemTrayIcon(menu_bar_icon() if sys.platform=='darwin' else app_icon(), app)
         self.tray.setToolTip(f"FlickDock {APP_VERSION} · 文件搁架")
         menu = AnimatedMenu()
         style_menu(menu)
@@ -2694,6 +2698,8 @@ class ShelfManager:
         menu.addAction("粘贴到搁架", self.paste_new)
         menu.addAction("设置…", self.show_settings)
         menu.addAction("检查更新…", self.check_updates)
+        if sys.platform=='win32':
+            menu.addAction("修复网络访问…",self.repair_network_access)
         menu.addSeparator()
         menu.addAction("退出 FlickDock", self.quit)
         self.tray.setContextMenu(menu)
@@ -2872,6 +2878,11 @@ class ShelfManager:
         # shown and raised. _show_at calls update_handles after that handoff.
         self.active_shelf = shelf
 
+    def repair_network_access(self):
+        from windows_network import repair_network_access
+        if not repair_network_access():
+            QMessageBox.information(self.shelf,'联网修复','未完成管理员授权，请重新选择“修复网络访问”后确认系统提示。')
+
     def tray_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
             self.show_first()
@@ -2932,30 +2943,27 @@ class ShelfManager:
         self.settings_dialog.activateWindow()
 
     def show_lan_dialog(self):
-        self.shelf._release_reveal_level()
-        if self.lan_dialog is None:
-            # A native owner inherits its topmost level on Windows. Keep the
-            # modeless transfer panel independent of the transient shelf level.
-            self.lan_dialog = LanDialog(self.lan,self.settings)
-            self.lan_dialog.panel.set_paths_provider(self._lan_selected)
-            self.lan_dialog.overview_requested.connect(self.show_overview)
-            self.lan_dialog.transfer_mode_requested.connect(self.show_wan_dialog)
-            self.lan_dialog.mini_requested.connect(self.show_shortcut)
-            self.lan_dialog.dock_requested.connect(lambda:self.shelf.hide_animated(explicit=True))
-        self._center_dialog(self.lan_dialog)
-        self.lan_dialog.show(); self.lan_dialog.raise_(); self.lan_dialog.activateWindow()
+        self._show_transfer_dialog(self.lan)
 
     def show_wan_dialog(self):
+        self._show_transfer_dialog(self.wan)
+
+    def _show_transfer_dialog(self,service):
         self.shelf._release_reveal_level()
-        if self.wan_dialog is None:
-            self.wan_dialog=LanDialog(self.wan,self.settings)
-            self.wan_dialog.panel.set_paths_provider(self._lan_selected)
-            self.wan_dialog.overview_requested.connect(self.show_overview)
-            self.wan_dialog.transfer_mode_requested.connect(self.show_lan_dialog)
-            self.wan_dialog.mini_requested.connect(self.show_shortcut)
-            self.wan_dialog.dock_requested.connect(lambda:self.shelf.hide_animated(explicit=True))
-        self._center_dialog(self.wan_dialog)
-        self.wan_dialog.show();self.wan_dialog.raise_();self.wan_dialog.activateWindow()
+        dialog=self.lan_dialog or self.wan_dialog
+        if dialog is None:
+            # One independent native window; both modes retain their own panel
+            # state without exposing the desktop between close/show operations.
+            dialog=LanDialog(service,self.settings)
+            dialog.overview_requested.connect(lambda:self.show_overview_from_transfer(dialog))
+            dialog.transfer_mode_requested.connect(lambda:self.show_lan_dialog() if dialog._wan else self.show_wan_dialog())
+            dialog.mini_requested.connect(self.show_shortcut)
+            dialog.dock_requested.connect(lambda:self.shelf.hide_animated(explicit=True))
+        dialog.set_service(service).set_paths_provider(self._lan_selected)
+        self.lan_dialog=self.wan_dialog=dialog
+        if not dialog.isVisible():
+            self._center_dialog(dialog);dialog.show()
+        dialog.raise_();dialog.activateWindow()
 
     def offer_large_intake(self,paths):
         if not paths or self._quitting:return
@@ -3009,7 +3017,8 @@ class ShelfManager:
         previous=getattr(self,'_applied_settings',None)
         self._applied_settings=current
         changed={key for key in current if previous is None or previous.get(key)!=current[key]}
-        if changed and changed<={'view_mode'}:
+        if not changed:return
+        if 'view_mode' in changed:
             # A presentation preference cannot reset a drag gesture, repaint
             # every application panel, re-register hotkeys or touch sync.
             if self.shelf.popup:
@@ -3017,26 +3026,37 @@ class ShelfManager:
                 popup.view_list.setChecked(self.settings.view_mode=='list')
                 popup.view_grid.setChecked(self.settings.view_mode=='icons')
                 popup.rebuild()
-            return
-        self.reset_drag_gesture()
-        ui_theme.set_theme(self.settings.theme)
-        ui_theme.apply_application(self.app, FONT_FAMILY)
-        self.shelf.refresh()
-        self.shelf.refresh_cloud_button()
-        self.sync.set_directions(self.settings.sync_upload_enabled,self.settings.sync_receive_enabled)
-        self.edge.position_at_edge()
-        self._apply_shake_sensitivity()
-        self.update_handles()
-        if self.shelf.popup: self.shelf.popup.preview.media.apply_theme()
-        if self.settings_dialog:
-            self.settings_dialog.apply_theme(self.settings.theme)
-            self.account_panel.apply_theme(self.settings.theme)
-        if self.lan_dialog:self.lan_dialog.apply_theme(self.settings.theme)
-        if self.wan_dialog:self.wan_dialog.apply_theme(self.settings.theme)
-        self.updates.apply_theme(self.settings.theme)
-        if self.update_notice is not None:
-            self.update_notice.apply_theme(self.settings.theme)
-        self.shortcut_error = self.hotkeys.apply(self.settings.shelf_shortcut, self.settings.overview_shortcut)
+        if 'theme' in changed:
+            ui_theme.set_theme(self.settings.theme)
+            ui_theme.apply_application(self.app, FONT_FAMILY)
+            self.shelf.refresh()
+            self.shelf.refresh_cloud_button()
+            if self.shelf.popup:self.shelf.popup.preview.media.apply_theme()
+            if self.settings_dialog:self.settings_dialog.apply_theme(self.settings.theme)
+            if self.lan_dialog:self.lan_dialog.apply_theme(self.settings.theme)
+            if self.wan_dialog:self.wan_dialog.apply_theme(self.settings.theme)
+            self.updates.apply_theme(self.settings.theme)
+            if self.update_notice is not None:self.update_notice.apply_theme(self.settings.theme)
+        if changed & {'sync_upload_enabled','sync_receive_enabled'}:
+            self.sync.set_directions(self.settings.sync_upload_enabled,self.settings.sync_receive_enabled)
+            self.shelf.refresh_cloud_button()
+        if changed & {'dock_edge','dock_position','dock_length','dock_thickness','dock_color','dock_opacity','trigger_visible'}:
+            self.edge.position_at_edge()
+        if 'shake_sensitivity' in changed:self._apply_shake_sensitivity()
+        if changed & {'trigger_view','capture_mode','shake_sensitivity'}:self.reset_drag_gesture()
+        if changed & {'theme','keep_empty_handle','trigger_visible','dock_edge','dock_position','dock_length','dock_thickness','dock_color','dock_opacity'}:
+            self.update_handles()
+        if changed & {'shelf_shortcut','overview_shortcut'}:
+            self.shortcut_error=self.hotkeys.apply(self.settings.shelf_shortcut,self.settings.overview_shortcut)
+
+    def show_overview_from_transfer(self,dialog):
+        if confirmation_active(self.shelf) or self.shelf._archive_choosing:return
+        self.reset_drag_gesture();self.edge_suppressed=False
+        target=QRect(dialog.card.mapToGlobal(QPoint()),dialog.card.size()).adjusted(-14,-7,14,20)
+        self.shelf.presentation_kind='overview';self.shelf.visible_state='floating'
+        self.shelf.show_contents(target=target,animate=False)
+        self.shelf.show();self.shelf._raise_for_reveal()
+        self.shelf.activateWindow();self.shelf.setFocus()
 
     def reset_drag_gesture(self):
         self._drag_content_ready=False
@@ -3173,8 +3193,8 @@ class ShelfManager:
             return
         self._content_gesture_at=None
         shelf = self.active_shelf or self.shelves[0]
+        if shelf.expanded:shelf.hide_immediately()
         shelf.show_transient(position,reason='drag',velocity=self.shake_detector.trigger_velocity)
-        if self.settings.trigger_view=='expanded':shelf.show_contents()
         self.auto_shown = shelf
 
     def _content_type_ready(self,position):
@@ -3334,6 +3354,8 @@ def main():
     app.setQuitOnLastWindowClosed(False)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
+    from platform_native import configure_menu_bar_application
+    configure_menu_bar_application()
     load_font(app)
     guard = InstanceGuard(app, str(BASE))
     if not guard.acquire():

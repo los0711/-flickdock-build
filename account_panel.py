@@ -106,9 +106,11 @@ class AccountGlyph(QWidget):
         if not self.device:
             gradient=QLinearGradient(0,self.height(),self.width(),0)
             gradient.setColorAt(0,QColor('#0A84FF'));gradient.setColorAt(1,QColor('#BF5AF2'))
-            painter.setPen(Qt.PenStyle.NoPen);painter.setBrush(gradient);painter.drawEllipse(QRectF(self.rect()))
+            painter.setPen(Qt.PenStyle.NoPen);painter.setBrush(gradient);painter.drawEllipse(QRectF(self.rect()).adjusted(.5,.5,-.5,-.5))
             font=self.font();font.setPixelSize(14);font.setWeight(QFont.Weight.Bold);painter.setFont(font)
-            painter.setPen(QColor('#FFFFFF'));painter.drawText(self.rect(),Qt.AlignmentFlag.AlignCenter,self.initial)
+            painter.setPen(QColor('#FFFFFF'))
+            if self.initial:painter.drawText(self.rect(),Qt.AlignmentFlag.AlignCenter,self.initial)
+            else:ui_icon('user','#FFFFFF').paint(painter,(self.width()-22)//2,(self.height()-22)//2,22,22)
             return
         tint=ui_colors('dark' if self.dark else 'light')['secondary']
         size=min(20,max(0,min(self.width(),self.height())-4))
@@ -297,8 +299,10 @@ class AccountPanel(QFrame):
         root=self.layout();self._empty_layout(root);root.setContentsMargins(16,16,16,16);root.setSpacing(12)
         self.unsigned_profile_button=_button('',self,name='accountUnsignedProfile')
         self.unsigned_profile_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        unsigned=QHBoxLayout(self.unsigned_profile_button);unsigned.setContentsMargins(0,0,0,0);unsigned.setSpacing(12)
+        self.unsigned_profile_button.setMinimumHeight(58)
+        unsigned=QHBoxLayout(self.unsigned_profile_button);unsigned.setContentsMargins(12,8,12,8);unsigned.setSpacing(12)
         self.unsigned_glyph=AccountGlyph(self.unsigned_profile_button);self.unsigned_glyph.setFixedSize(40,40)
+        self.unsigned_glyph.initial=''
         unsigned.addWidget(self.unsigned_glyph)
         unsigned_text=QVBoxLayout();unsigned_text.setSpacing(2)
         unsigned_name=_label('登录账号',self.unsigned_profile_button);unsigned_name.setObjectName('accountUnsignedTitle')
@@ -378,11 +382,9 @@ class AccountPanel(QFrame):
         self.auth_dialog.body_layout.addWidget(self.auth_page)
         self.auth_dialog.rejected.connect(self.close_auth)
         self.auth_page.show();self.signed_in_page.show();self.status_label.hide()
-        # These three growing blocks are placed atomically. Cocoa's cached
-        # nested height-for-width result can otherwise keep the alias at its
-        # previous position for a frame after the profile subtitle wraps.
+        # The measured fixed heights bound wrapping; keep layout ownership of
+        # positions so Cocoa and Qt cannot retain different child coordinates.
         signed.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
-        signed.setEnabled(False)
         self.signed_in_page.setMinimumSize(0,0)
 
     @staticmethod
@@ -676,18 +678,17 @@ class AccountPanel(QFrame):
         if self.signed_in_page.isHidden():
             self.height_changed.emit();return
         width=max(1,self.signed_in_page.width())
-        profile=max(40,self.profile_frame.layout().totalHeightForWidth(width))
+        identity=self.profile_frame.layout()
+        profile=max(40,identity.minimumSize().height(),identity.sizeHint().height(),identity.totalHeightForWidth(width))
         self.profile_frame.setFixedHeight(profile)
         devices=max(0,self.devices_layout.minimumSize().height()+2)
         self.devices_body.setFixedHeight(devices)
-        self.profile_frame.setGeometry(0,0,width,profile)
-        y=profile+12
-        if not self.login_alias_edit.isHidden():
-            alias=max(self.login_alias_edit.minimumHeight(),self.login_alias_edit.sizeHint().height())
-            self.login_alias_edit.setGeometry(0,y,width,alias);y+=alias+12
-        self.devices_body.setGeometry(0,y,width,devices)
-        self.signed_in_page.setFixedHeight(y+devices)
-        self.layout().invalidate();self.updateGeometry()
+        # Layout owns child positions on every platform. Manual setGeometry
+        # raced Cocoa's next layout pass and placed status text over controls.
+        signed=self.signed_in_page.layout();signed.invalidate()
+        self.signed_in_page.setFixedHeight(max(signed.minimumSize().height(),signed.sizeHint().height(),signed.totalHeightForWidth(width)))
+        signed.activate()
+        self.layout().invalidate();self.layout().activate();self.updateGeometry()
         self.height_changed.emit()
 
     def _edit_device_name(self,key,*_):
@@ -703,7 +704,9 @@ class AccountPanel(QFrame):
         self._fit_device_forms()
 
     def _fit_device_forms(self):
-        for row in getattr(self,'_rows_by_id',{}).values():
+        for key,row in getattr(self,'_rows_by_id',{}).items():
+            editing=not self._rename_forms[key].isHidden()
+            row.layout().setContentsMargins(10,7,10,16 if editing else 7)
             row.layout().invalidate()
             row.setMinimumHeight(max(44,row.layout().minimumSize().height()))
             row.updateGeometry()
@@ -761,6 +764,8 @@ class AccountPanel(QFrame):
         super().hideEvent(event)
 
     def apply_theme(self,theme):
+        if getattr(self,'_applied_theme',None)==theme:return
+        self._applied_theme=theme
         self._dark=theme=='dark'
         card,field,ink,secondary,edge,hover=(('#242426','#1c1c1e','#f5f5f7','#a1a1aa','#3a3a3c','#303034') if self._dark
             else ('#ffffff','#f8f9fb','#1d1d1f','#515154','#dfe2e8','#e8f2ff'))
@@ -769,7 +774,7 @@ class AccountPanel(QFrame):
             card='rgba(39,44,53,246)' if self._dark else 'rgba(255,255,255,248)'
             inset='rgba(32,37,46,230)' if self._dark else 'rgba(247,249,252,230)'
         success='#7dd6a8' if self._dark else '#14784a'
-        self.setStyleSheet(f'''
+        style=f'''
             QFrame#accountPanel {{background:{card};border:1px solid {edge};border-radius:13px;}}
             QFrame#accountPanel QLabel {{background:transparent;color:{ink};font-size:13px;border:0;}}
             QFrame#accountPanel QLabel#accountTitle {{font-size:15px;font-weight:600;}}
@@ -804,12 +809,12 @@ class AccountPanel(QFrame):
             QFrame#accountConfirm {{background:{field};border:1px solid {edge};border-radius:9px;}}
             QFrame#accountSecurity {{background:{field};border:1px solid {edge};border-radius:9px;}}
             QFrame#accountPanel QPushButton#accountDanger {{color:{'#ffb1b5' if self._dark else '#b9404c'};}}
-        ''')
+        '''
         card='rgba(255,255,255,10)' if self._dark else 'rgba(255,255,255,184)'
         edge='rgba(255,255,255,18)' if self._dark else 'rgba(0,0,0,18)'
         control='rgba(255,255,255,26)' if self._dark else 'rgba(0,0,0,14)'
         radius=12 if sys.platform=='darwin' else 8
-        self.setStyleSheet(self.styleSheet()+f'''
+        style+=f'''
             QFrame#accountPanel {{background:{card};border:1px solid {edge};border-radius:16px;}}
             QFrame#accountPanel QLabel {{font-size:12px;}}
             QFrame#accountPanel QLabel#accountUsername {{font-size:14px;font-weight:600;}}
@@ -847,11 +852,11 @@ class AccountPanel(QFrame):
             QDialog#accountModal QPushButton#accountTab {{background:transparent;border:0;padding:4px 6px;border-radius:8px;}}
             QDialog#accountModal QPushButton#accountTab:checked {{background:{'rgba(255,255,255,38)' if self._dark else '#FFFFFF'};color:{ink};}}
             QFrame#accountSecurity {{background:transparent;border:0;}}
-        ''')
+        '''
         for dialog in (self.password_dialog,self.auth_dialog):dialog.set_surface_theme(theme)
         for button in (self.password_close,self.auth_close):button.dark=self._dark;button.update()
         semantic=ui_colors(theme)
-        self.setStyleSheet(self.styleSheet()+f'''
+        style+=f'''
             QFrame#accountPanel QLabel {{font-size:13px;}}
             QFrame#accountPanel QLabel#accountUsername {{font-size:16px;font-weight:600;}}
             QFrame#accountPanel QLabel#accountState[online="true"] {{color:{semantic['green']};}}
@@ -865,12 +870,15 @@ class AccountPanel(QFrame):
             QFrame#accountPanel QPushButton:focus {{border-color:transparent;}}
             QFrame#accountPanel QPushButton[keyboardFocus="true"],QDialog#accountModal QPushButton[keyboardFocus="true"] {{border:1px solid {semantic['link']};}}
             QFrame#accountPanel QPushButton:disabled,QDialog#accountModal QPushButton:disabled {{color:{semantic['muted']};background:{semantic['control']};}}
-        ''')
+            QFrame#accountPanel QPushButton#accountUnsignedProfile {{background:{semantic['card']};border:1px solid {semantic['border']};border-radius:12px;padding:0;}}
+            QFrame#accountPanel QPushButton#accountUnsignedProfile:hover {{background:{semantic['hover']};}}
+        '''
         for button in [*self.device_buttons.values(),*self.device_rename_buttons.values()]:button.dark=self._dark;button.update()
         from native_ui_common import readable_qss
-        self.setStyleSheet(readable_qss(self.styleSheet()))
+        style=readable_qss(style)
         if sys.platform=='win32':
-            self.setStyleSheet(self.styleSheet()+'\nQFrame#accountPanel QLabel#accountState {font-size:12px;}')
+            style+='\nQFrame#accountPanel QLabel#accountState {font-size:12px;}'
+        self.setStyleSheet(style)
         for row in self._device_rows:
             for name in row.findChildren(AccountNameLabel):
                 if name.property('compactDeviceName'):name.setMaximumWidth(name.fontMetrics().horizontalAdvance(name.text())+3)

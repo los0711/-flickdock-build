@@ -199,6 +199,12 @@ def tray_icon(size: int = 32, color: str = '#147fe9', dpr: float | None = None) 
     return QIcon(_SvgIconEngine(_svg(_mark_svg(color),'0 0 64 64')))
 
 
+def menu_bar_icon() -> QIcon:
+    value=tray_icon(color='#000000')
+    value.setIsMask(True)
+    return value
+
+
 def _category(value: str) -> str:
     value = value.lower().strip()
     if value in _CATEGORY_SYMBOLS or value == 'folder':

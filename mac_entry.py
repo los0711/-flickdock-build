@@ -147,7 +147,30 @@ def verify_cocoa_interactions(edge, shelf):
     shelf.show_contents();settle();shelf.collapse_contents();settle()
     if shelf.geometry()!=canvas:raise AssertionError('Cocoa changed the native origin after collapse')
     shelf.hide_immediately()
-    return dict(passive_drag_probe=True,stable_native_canvas=True)
+    # A mode switch must retain the same actual NSWindow, rather than merely
+    # recreating a Qt window at matching coordinates between two paints.
+    import tempfile
+    from app_settings import SettingsStore
+    from lan_panel import LanDialog
+    from lan_transfer import LanTransferService
+    from wan_transfer import WanTransferService
+    with tempfile.TemporaryDirectory(prefix='flickdock-cocoa-transfer-') as directory:
+        lan=LanTransferService(discovery=False)
+        wan=WanTransferService(Path(directory)/'wan',enabled=False)
+        dialog=LanDialog(lan,SettingsStore(Path(directory)/'settings'))
+        try:
+            dialog.show();app.processEvents();geometry=dialog.geometry()
+            view=objc.objc_object(c_void_p=ctypes.c_void_p(int(dialog.winId())))
+            number=view.window().windowNumber()
+            for service in (wan,lan,wan,lan):
+                dialog.set_service(service);app.processEvents()
+                current=objc.objc_object(c_void_p=ctypes.c_void_p(int(dialog.winId()))).window()
+                if current.windowNumber()!=number or not current.isVisible() or dialog.geometry()!=geometry:
+                    raise AssertionError('Transfer mode switch replaced or moved its Cocoa native window')
+        finally:dialog.close();dialog.deleteLater();lan.close();wan.close();app.processEvents()
+    if AppKit.NSApplication.sharedApplication().activationPolicy()!=AppKit.NSApplicationActivationPolicyAccessory:
+        raise AssertionError('FlickDock acquired an unexpected Dock application tile')
+    return dict(passive_drag_probe=True,stable_native_canvas=True,menu_bar_accessory=True,stable_transfer_window=True)
 
 
 def verify_platform(report_path):
@@ -171,6 +194,7 @@ def verify_platform(report_path):
     if bundle is None:
         raise ValueError('平台验证需要实际打包的 .app。')
     data = bundle_metadata(bundle, version=APP_VERSION)
+    if data.get('LSUIElement') is not True:raise ValueError('Mac 应用缺少菜单栏常驻配置。')
     media = QMediaPlayer()
     media.deleteLater()
     derived = hashlib.scrypt(b'build-fixture', salt=b'FlickDock-build-fixture', n=2, r=1, p=1, dklen=16)
@@ -183,7 +207,7 @@ def verify_platform(report_path):
                   qt_platform=application.platformName(), bundle_id=data['CFBundleIdentifier'],
                   native_hooks=False, startup_mutation=False, quartz_imported=True,
                   scrypt_available=True, keychain_backend_imported=True, keychain_accessed=False,
-                  lan_tls_certificate_generated=True, lan_openssl_runtime=ssl.OPENSSL_VERSION,
+                  lan_tls_certificate_generated=True, lan_openssl_runtime=ssl.OPENSSL_VERSION,menu_bar_agent=True,
                   media_backend=os.getenv('QT_MEDIA_BACKEND', ''), bundle=str(bundle))
     if native_input_available() or startup_runtime_allowed():
         raise ValueError('离屏验证意外启用了本机输入或登录启动写入。')

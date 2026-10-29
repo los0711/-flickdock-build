@@ -1161,9 +1161,14 @@ class ShelfSync(QObject):
         if pending is None:
             self.running = False; self.transfer = None
             self._notify_transfers()
-            blocked = sum(bool(e.get('dirty')) for e in self.state['entries'].values())
+            visible=set(self.adapter.snapshot().get('permanent',[]))
+            blocked=sum(bool(e.get('dirty') and not e.get('deleted') and not e.get('paused_upload')
+                and e.get('ref') in visible and e.get('blocked_fingerprint')==e.get('fingerprint'))
+                for e in self.state['entries'].values())
+            paused=sum(bool(e.get('dirty') and not e.get('deleted') and e.get('paused_upload')
+                and e.get('ref') in visible) for e in self.state['entries'].values())
             retrying=len(self.state.get('deferred_downloads',{}))
-            self.status_changed.emit(f'{retrying} 项等待重试，其他内容已同步。' if retrying else f'可同步内容已同步；{blocked} 项暂留本机，请检查文件大小或位置。' if blocked else '搁架已同步。')
+            self.status_changed.emit(f'{retrying} 项等待重试，其他内容已同步。' if retrying else f'可同步内容已同步；{blocked} 项暂留本机，请检查文件大小或位置。' if blocked else f'其他可同步内容已同步；{paused} 项暂停上传。' if paused else '搁架已同步。')
             if self._refresh_again:
                 self._refresh_again=False;self.debounce.start(1)
             elif self.state.get('deferred_downloads'):

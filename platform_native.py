@@ -10,6 +10,15 @@ from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QCursor, QGuiApplication
 
 
+def configure_menu_bar_application(*,platform=None,appkit=None):
+    """An accessory app may activate its windows without acquiring a Dock tile."""
+    if (platform or sys.platform)!='darwin':return False
+    if appkit is None:
+        if QGuiApplication.platformName()!='cocoa':return False
+        import AppKit as appkit
+    return bool(appkit.NSApplication.sharedApplication().setActivationPolicy_(appkit.NSApplicationActivationPolicyAccessory))
+
+
 def data_directory(app_name='FlickDock', *, platform=None, home=None, environ=None):
     platform = sys.platform if platform is None else platform
     environ = os.environ if environ is None else environ

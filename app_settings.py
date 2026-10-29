@@ -13,7 +13,7 @@ from pathlib import Path
 import sys
 from uuid import uuid4
 
-from PySide6.QtCore import QByteArray, QCoreApplication, QElapsedTimer, QEvent, QObject, QPoint, QPointF, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QByteArray, QCoreApplication, QElapsedTimer, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QColor, QFont, QFontDatabase, QPainter, QPen, QGuiApplication, QIcon, QPixmap, QWheelEvent
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
                                QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QLineEdit, QPushButton,
@@ -247,7 +247,6 @@ class UpdateActivityBar(QWidget):
         self.active = state in ("checking", "downloading", "verifying", "installing", "cancelling")
         self.fraction = min(1., max(0., received / total)) if state == "downloading" and total > 0 else None
         self.setAccessibleDescription("正在安装更新" if state == "installing" else "正在处理更新")
-        old_geometry=self.geometry()
         self.setFixedHeight(4 if self.active else 0)
         self.setVisible(self.active)
         if self.active and self.fraction is None:
@@ -262,8 +261,15 @@ class UpdateActivityBar(QWidget):
             # hidden child, otherwise the last blue stripe can remain on Win.
             parent=self.parentWidget()
             if parent:
-                parent.updateGeometry();parent.update(old_geometry)
-                if parent.graphicsEffect():parent.graphicsEffect().update()
+                parent.updateGeometry()
+                if parent.layout():parent.layout().activate()
+                effect=parent.graphicsEffect()
+                if previous_active and effect and effect.isEnabled():
+                    # Hiding the child may leave QGraphicsEffect's cached source
+                    # intact on Windows. Explicitly retire that source once.
+                    effect.setEnabled(False);effect.setEnabled(True)
+                parent.update();parent.window().update()
+                QTimer.singleShot(0,parent,parent.update)
 
     def showEvent(self, event):
         if self.active and self.fraction is None:
@@ -855,16 +861,48 @@ class ReferenceModalDialog(QDialog):
         self.setModal(modal)
         self._surface_dark=False
         self._shadow_cache=OrderedDict()
-        self.setFixedWidth(surface_width+40)
+        self._natural_surface_width=surface_width
         outer=QVBoxLayout(self);outer.setContentsMargins(20,20,20,20);outer.setSpacing(0)
         self.surface=QFrame(self);self.surface.setObjectName('referenceModalSurface')
-        self.surface.setAutoFillBackground(False);self.surface.setFixedWidth(surface_width)
+        self.surface.setAutoFillBackground(False)
         outer.addWidget(self.surface)
-        self.body_layout=QVBoxLayout(self.surface)
+        surface_layout=QVBoxLayout(self.surface);surface_layout.setContentsMargins(0,0,0,0)
+        self.scroll=QScrollArea(self.surface);self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame);self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setStyleSheet('QScrollArea{background:transparent;border:0;} QScrollArea>QWidget>QWidget{background:transparent;} QScrollBar:vertical{width:6px;background:transparent;} QScrollBar::handle:vertical{background:rgba(142,142,147,90);border-radius:3px;min-height:20px;} QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;} QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{background:transparent;}')
+        self.body=QWidget(self.scroll);self.scroll.setWidget(self.body);surface_layout.addWidget(self.scroll)
+        self.body_layout=QVBoxLayout(self.body)
         self.body_layout.setSizeConstraints(QLayout.SizeConstraint.SetNoConstraint,QLayout.SizeConstraint.SetMinimumSize)
-        outer.setSizeConstraints(QLayout.SizeConstraint.SetNoConstraint,QLayout.SizeConstraint.SetMinimumSize)
+        outer.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
         self.body_layout.setContentsMargins(20,20,20,20);self.body_layout.setSpacing(16)
+        self._fit_timer=QTimer(self);self._fit_timer.setSingleShot(True);self._fit_timer.timeout.connect(self.adjustSize)
+        self.body.installEventFilter(self)
         if parent is not None:self.setFont(parent.font())
+        # Establish the natural width even before the first show/layout pass;
+        # subsequent fits can shrink it to the current screen.
+        self.resize(surface_width+40,120);outer.activate()
+
+    def _available_geometry(self):
+        owner=self.parentWidget().window() if self.parentWidget() else None
+        screen=owner.screen() if owner else QGuiApplication.primaryScreen()
+        return screen.availableGeometry() if screen else QRect(0,0,1024,768)
+
+    def sizeHint(self):
+        if not hasattr(self,'body_layout'):return super().sizeHint()
+        width=min(self._natural_surface_width+40,max(1,self._available_geometry().width()-16))
+        height=max(self.body_layout.sizeHint().height(),self.body_layout.totalHeightForWidth(max(1,width-40)))+40
+        return QSize(width,height)
+
+    def adjustSize(self):
+        if not hasattr(self,'body_layout'):return super().adjustSize()
+        hint=self.sizeHint();available=self._available_geometry()
+        size=QSize(hint.width(),min(hint.height(),max(1,available.height()-16)))
+        if self.size()!=size:self.resize(size)
+
+    def eventFilter(self,watched,event):
+        if watched is self.body and event.type()==QEvent.Type.LayoutRequest and not self._fit_timer.isActive():
+            self._fit_timer.start(0)
+        return super().eventFilter(watched,event)
 
     def set_surface_theme(self, theme):
         self._surface_dark=theme=='dark';self.update()
@@ -881,6 +919,7 @@ class ReferenceModalDialog(QDialog):
         painter.drawRoundedRect(rect.adjusted(.5,.5,-.5,-.5),radius,radius)
 
     def showEvent(self, event):
+        self.adjustSize();self.scroll.verticalScrollBar().setValue(0)
         owner=self.parentWidget().window() if self.parentWidget() else None
         if owner is not None and owner is not self:
             owner.winId();self.winId()
@@ -1317,6 +1356,9 @@ class SettingsDialog(QDialog):
             header.insertWidget(0,traffic)
         root.addWidget(self.title_bar);root.addWidget(self.update_activity)
         root.addWidget(self.scroll,1)
+        # Keep fractional-DPI child borders inside the scrolling viewport,
+        # separated from the fixed footer by an opaque surface gutter.
+        self.scroll.setViewportMargins(0,0,0,2)
         # Qt reserves six pixels for its scroll bar; the source's overlay
         # scrollbar occupies that space inside the right-hand 20px inset.
         self.body_layout.setContentsMargins(21,20,15,12);self.body_layout.setSpacing(16)
@@ -1410,7 +1452,9 @@ class SettingsDialog(QDialog):
         self.scroll.viewport().installEventFilter(self)
         root.addWidget(self.error_label)
         root.addWidget(self.update_error_label)
-        footer_frame=QFrame(self.surface);footer_frame.setObjectName('settingsFooter');footer_frame.setFixedHeight(52)
+        footer_frame=QFrame(self.surface);self.footer_frame=footer_frame
+        footer_frame.setObjectName('settingsFooter');footer_frame.setFixedHeight(52)
+        footer_frame.setAttribute(Qt.WidgetAttribute.WA_StyledBackground,True)
         footer=QHBoxLayout(footer_frame);footer.setContentsMargins(24,0,24,0);footer.setSpacing(10)
         self.author_button.setMinimumHeight(28);footer.addWidget(self.author_button)
         dot=QLabel('·',footer_frame);dot.setObjectName('settingsDetail');footer.addWidget(dot)
@@ -1839,11 +1883,18 @@ class SettingsDialog(QDialog):
             values = self.draft()
             if values["shelf_shortcut"] == values["overview_shortcut"]:
                 raise ValueError("打开搁架和打开总览需要使用不同的快捷键。")
-            if self.shortcut_validator is not None:
+            if self.shortcut_validator is not None and any(values[key]!=getattr(self.store,key) for key in ('shelf_shortcut','overview_shortcut')):
                 error = self.shortcut_validator(values)
                 if error:
                     raise ValueError(error)
-            self.store.update(**values)
+            # Skip unchanged paths and native login writes. An explicit Save
+            # still repairs a missing requested login item and verifies it.
+            changed={key:value for key,value in values.items()
+                     if value!=(str(self.store.capture_dir) if key=='capture_dir' else getattr(self.store,key))}
+            if _startup_runtime_allowed() and values['autostart'] and 'autostart' not in changed:
+                startup=self.store.startup_status()
+                if startup.supported and not startup.enabled:changed['autostart']=True
+            if changed:self.store.update(**changed)
         except (OSError, ValueError, RuntimeError) as error:
             self.error_label.setText(str(error) or "设置未能保存，请重试。")
             self.error_label.show()
@@ -1899,7 +1950,7 @@ class SettingsDialog(QDialog):
         indicator_edge = "#7891af" if dark else "#7690af"
         field = "#1c1c1e" if dark else "#f8f9fb"
         hover = "#303034" if dark else "#e8f2ff"
-        self.setStyleSheet(f"""
+        style=f"""
             QDialog#flickdockSettings {{background:transparent;color:{ink};}}
             QFrame#settingsSurface {{background:transparent;border:0;}}
             QScrollArea#settingsScroll, QWidget#settingsBody {{background:transparent;border:0;}}
@@ -1947,7 +1998,7 @@ class SettingsDialog(QDialog):
             QDialog#flickdockSettings QCheckBox::indicator {{width:17px;height:17px;border:1px solid {indicator_edge};border-radius:5px;background:{field};}}
             QDialog#flickdockSettings QCheckBox::indicator:checked {{background:#2584ed;border-color:#2584ed;}}
             QDialog#flickdockSettings QLabel#settingsError {{color:{'#ff9b9b' if dark else '#b9404c'};font-size:12px;}}
-        """)
+        """
         for button in self.findChildren(QPushButton):
             button.setAttribute(Qt.WidgetAttribute.WA_MacShowFocusRect, False)
         radius=12 if sys.platform=='darwin' else 8
@@ -1955,7 +2006,7 @@ class SettingsDialog(QDialog):
         ref_edge='rgba(255,255,255,18)' if dark else 'rgba(0,0,0,18)'
         ref_control='rgba(255,255,255,15)' if dark else 'rgba(0,0,0,14)'
         ref_input='#242426' if dark else '#FFFFFF'
-        self.setStyleSheet(self.styleSheet()+f'''
+        style+=f'''
             QDialog#flickdockSettings QLabel,QDialog#flickdockSettings QCheckBox {{font-size:12px;}}
             QDialog#flickdockSettings QLabel#settingsTitle {{font-size:15px;font-weight:600;}}
             QDialog#flickdockSettings QLabel#settingsSection {{font-size:12px;font-weight:600;}}
@@ -1973,12 +2024,12 @@ class SettingsDialog(QDialog):
             QDialog#flickdockSettings QKeySequenceEdit {{background:{ref_input};font-size:12px;}}
             QDialog#flickdockSettings QKeySequenceEdit QLineEdit {{padding:2px 5px;}}
             QDialog#flickdockSettings QPushButton {{font-size:12px;padding:4px 10px;background:{ref_control};border:0;}}
-            QFrame#settingsFooter {{border-top:1px solid {ref_edge};background:{'rgba(0,0,0,77)' if dark else 'rgba(240,242,247,191)'};}}
-        ''')
+            QFrame#settingsFooter {{border-top:1px solid {ref_edge};background:{'#141416' if dark else '#F4F5F9'};border-bottom-left-radius:10px;border-bottom-right-radius:10px;}}
+        '''
         for switch in self.findChildren(SettingsToggleSwitch):switch.dark=dark;switch.update()
         from native_ui_common import colors
         semantic=colors(theme)
-        self.setStyleSheet(self.styleSheet()+f'''
+        style+=f'''
             QDialog#flickdockSettings QLabel,QDialog#flickdockSettings QCheckBox {{font-size:13px;}}
             QDialog#flickdockSettings QLabel#settingsTitle {{font-size:16px;font-weight:600;}}
             QDialog#flickdockSettings QLabel#settingsSection {{font-size:13px;font-weight:600;}}
@@ -1993,9 +2044,10 @@ class SettingsDialog(QDialog):
             QDialog#flickdockSettings QPushButton#settingsUpdate[updateAvailable="true"]:hover {{background:{'#43DC6A' if dark else '#12733C'};}}
             QDialog#flickdockSettings QPushButton#settingsLink {{color:{semantic['link']};}}
             QWidget#settingsToggleOption {{background:{semantic['card']};border:1px solid {semantic['border']};border-radius:8px;}}
-        ''')
+        '''
         from native_ui_common import readable_qss
-        self.setStyleSheet(readable_qss(self.styleSheet()))
+        style=readable_qss(style)
+        self.setStyleSheet(style)
         if self.license_dialog is not None:
             self.license_dialog.apply_theme(theme)
         if self.author_dialog is not None:

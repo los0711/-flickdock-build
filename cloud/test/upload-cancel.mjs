@@ -18,7 +18,7 @@ registerHooks({resolve(specifier,context,next){
   if(['./hash-state','./wan','./relay-budget'].includes(specifier))specifier+='.ts';
   return next(specifier,context);
 },load(url,context,next){
-  if(url==='cloudflare:workers')return {format:'module',shortCircuit:true,source:'export class DurableObject { constructor(ctx,env){this.ctx=ctx;this.env=env} }'};
+  if(url==='cloudflare:workers')return {format:'module',shortCircuit:true,source:'export class DurableObject { constructor(ctx,env){this.ctx=ctx;this.env=env} }; export class WorkerEntrypoint { constructor(ctx,env){this.ctx=ctx;this.env=env} }'};
   if(url.endsWith('.wasm'))return {format:'module',shortCircuit:true,source:`export default new WebAssembly.Module(Uint8Array.from(${JSON.stringify([...readFileSync(new URL(url))])}));`};
   if(url.endsWith('.ts'))return {format:'module',shortCircuit:true,source:transformSync(readFileSync(new URL(url),'utf8'),{loader:'ts',format:'esm',target:'es2022'}).code};
   return next(url,context);

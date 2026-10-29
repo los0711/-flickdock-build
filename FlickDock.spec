@@ -18,6 +18,7 @@ asset_files=[(root/'fonts'/name,'fonts') for name in font_names]
 asset_files += [(root/'licenses'/name,'licenses') for name in license_names]
 asset_files += [(root/'THIRD_PARTY_NOTICES.md','.'),(root/'font_manifest.json','.')]
 asset_files += [(root/'assets/ui/qtbase_zh_CN.qm','assets/ui')]
+asset_files += [(root/'windows-network.ps1','.')]
 # This build runtime's SSLContext loads an auxiliary public CA policy file
 # beside ssl.py. Preserve that policy in the frozen layout as well.
 ssl_policy=Path(ssl.__file__).with_name('codex-rejected-cas.pem')

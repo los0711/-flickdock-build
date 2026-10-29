@@ -9,13 +9,13 @@ import sys
 import time
 from collections import deque
 
-from PySide6.QtCore import QByteArray, QEvent, QObject, QRect, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QByteArray, QEvent, QObject, QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog, QFrame, QGraphicsDropShadowEffect,
                                QHBoxLayout, QLabel, QLineEdit, QProgressBar, QPushButton,
                                QListView, QMenu, QScrollArea, QSizePolicy, QStyle, QStyledItemDelegate,
-                               QStyleOptionButton, QStylePainter, QVBoxLayout, QWidget)
+                               QStyleOptionButton, QStylePainter, QToolTip, QVBoxLayout, QWidget, QStackedWidget)
 
 from flickdock_icons import draw_glyph
 from platform_native import remove_host_window_shadow
@@ -66,6 +66,7 @@ class _CopyCodeButton(_PressButton):
         self.setText(current)
         QApplication.clipboard().setText(code)
         self.setToolTip('已复制');self._feedback.start(1600)
+        QToolTip.showText(self.mapToGlobal(QPoint(0,self.height()+4)),'已复制到剪贴板',self,self.rect(),1600)
         self.setAccessibleDescription('已复制到剪贴板')
 
 
@@ -90,8 +91,8 @@ class _CodeCountdown(QWidget):
         self._timer=QTimer(self);self._timer.setInterval(250);self._timer.timeout.connect(self._tick)
     def _tick(self):
         identity=self.service.code_identity()
-        self.button.setText(identity.get('code') or ('刷新中…' if identity.get('online') else '连接中…'))
-        self.button.setEnabled(bool(identity.get('code')))
+        self.button.setText(identity.get('code') or ('重试连接' if identity.get('error') else '刷新中…' if identity.get('online') else '连接中…'))
+        self.button.setEnabled(bool(identity.get('code') or identity.get('error')))
         self.update()
     def showEvent(self,event):
         super().showEvent(event);self._tick();self._timer.start()
@@ -685,6 +686,8 @@ class LanPanel(QFrame):
         self.code_countdown=None
         if self._wan and callable(getattr(service,'code_identity',None)):
             self.send_code_value.code_provider=lambda:service.code_identity().get('code','')
+            if callable(getattr(service,'reconnect',None)):
+                self.send_code_value.clicked.connect(lambda:service.reconnect() if not service.code_identity().get('code') else None)
             self.code_countdown=_CodeCountdown(service,self.send_code_value,self.send_code)
             send_code_layout.addWidget(self.code_countdown)
         if self._wan and hasattr(service,'identity_changed'):
@@ -904,6 +907,8 @@ class LanPanel(QFrame):
         except (ValueError, OSError) as error: self.status_label.setText(str(error))
 
     def apply_theme(self, theme):
+        if getattr(self,'_applied_theme',None)==theme:return
+        self._applied_theme=theme
         self._dark = theme == 'dark'
         self.device_delegate.dark = self._dark
         c=ui_colors(theme)
@@ -912,7 +917,7 @@ class LanPanel(QFrame):
         font.setPixelSize(13);self.setFont(font)
         color,muted,border,field,accent=c['text'],c['secondary'],c['border'],c['input'],c['action']
         faint='rgba(255,255,255,8)' if self._dark else 'rgba(0,0,0,6)'
-        self.setStyleSheet(f"""
+        style=f"""
             QFrame#lanPanel {{ background:transparent; border:0; }}
             QFrame#lanPanel QLabel {{ color:{color}; background:transparent; border:0; font-size:12px; }}
             QFrame#lanPanel QLabel#lanSection {{ font-size:12px; font-weight:700; }}
@@ -967,8 +972,8 @@ class LanPanel(QFrame):
             QFrame#lanPanel QPushButton[accessibleName="上一页传输"], QFrame#lanPanel QPushButton[accessibleName="下一页传输"] {{ min-width:24px; max-width:24px; min-height:24px; max-height:24px; padding:0; }}
             QFrame#lanPanel QProgressBar {{ border:0; background:{c['control']}; height:6px; max-height:6px; border-radius:3px; }}
             QFrame#lanPanel QProgressBar::chunk {{ background:{c['cyan']}; border-radius:3px; }}
-        """)
-        self.setStyleSheet(self.styleSheet()+f'''
+        """
+        style+=f'''
             QFrame#lanPanel QLabel#lanOfferKicker {{background:{c['action']};color:{c['on_action']};}}
             QFrame#lanPanel QPushButton#lanTextButton:hover {{color:{c['link']};}}
             QFrame#lanPanel QPushButton[keyboardFocus="true"] {{border:1px solid {c['link']};}}
@@ -987,9 +992,10 @@ class LanPanel(QFrame):
             QScrollBar::handle:vertical {{background:{c['input_border']};border-radius:3px;min-height:24px;}}
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{height:0;}}
             QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{background:transparent;}}
-        ''')
+        '''
         from native_ui_common import readable_qss
-        self.setStyleSheet(readable_qss(self.styleSheet()))
+        style=readable_qss(style)
+        self.setStyleSheet(style)
         for row in self._rows.values():
             row['cancel'].dark = self._dark; row['cancel'].update()
             if row.get('offer_icon'):
@@ -1353,6 +1359,7 @@ class LanDialog(QDialog):
 
     def __init__(self, service, settings, parent=None):
         super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self._settings=settings;self._panels={};self._theme=settings.theme
         self._wan=getattr(service,'mode','lan')=='wan'
         self.setObjectName('lanDialog'); self.setWindowTitle('FlickDock · '+('远程传输' if self._wan else '局域网互传'))
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -1380,6 +1387,7 @@ class LanDialog(QDialog):
         self.title_icon.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         title_row.addWidget(self.title_icon)
         title = _label('远程传输' if self._wan else '局域网互传', self.title_bar); title.setObjectName('lanDialogTitle')
+        self.title_label=title
         title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         title_row.addWidget(title, 1)
         self.back_button=_button('返回总览',self.title_bar);self.back_button.setObjectName('lanDialogBack')
@@ -1394,15 +1402,43 @@ class LanDialog(QDialog):
         close.setFixedSize(32, 32); close.setAccessibleName('关闭局域网传输窗口')
         close.clicked.connect(self.close); title_row.addWidget(close)
         content.addWidget(self.title_bar)
-        self.panel = LanPanel(service, self.card, theme=settings.theme, settings=settings)
+        self.panel_stack=QStackedWidget(self.card)
+        self.panel = LanPanel(service, self.panel_stack, theme=settings.theme, settings=settings)
+        self._panels[service]=self.panel;self.panel_stack.addWidget(self.panel)
         if self._wan:self.close_button.setAccessibleName('关闭远程传输窗口')
-        content.addWidget(self.panel, 1)
+        content.addWidget(self.panel_stack, 1)
         self.apply_theme(settings.theme)
         self.drop_router=_TransferDropRouter(self)
 
     def _navigate(self, target):
-        self.close()
+        if target!='transfer_mode':self.close()
         getattr(self, target+'_requested').emit()
+
+    def set_service(self,service):
+        """Swap only the content, keeping one native surface and shadow alive."""
+        if self.panel.service is service:return self.panel
+        self.setUpdatesEnabled(False)
+        try:
+            if service not in self._panels:
+                panel=LanPanel(service,self.panel_stack,theme=self._theme,settings=self._settings)
+                self._panels[service]=panel;self.panel_stack.addWidget(panel)
+                for widget in (panel,*panel.findChildren(QWidget)):widget.setAcceptDrops(True)
+            self.panel=self._panels[service];self._wan=getattr(service,'mode','lan')=='wan'
+            self.panel_stack.setCurrentWidget(self.panel)
+            title='远程传输' if self._wan else '局域网互传'
+            self.title_label.setText(title);self.setWindowTitle('FlickDock · '+title)
+            self.transfer_mode_button.setText('局域网互传' if self._wan else '远程传输')
+            self.close_button.setAccessibleName('关闭'+title+'窗口')
+            self._refresh_title_icon()
+            if self._wan and callable(getattr(service,'check_code',None)):
+                service.check_code();self.panel._code_identity_changed(service.code_identity())
+        finally:
+            self.setUpdatesEnabled(True);self.card.update();self.update()
+        return self.panel
+
+    def _refresh_title_icon(self):
+        c=ui_colors(self._theme)
+        self.title_icon.setPixmap(ui_icon('web' if self._wan else 'nearby',c['cyan'] if self._theme=='dark' else c['blue']).pixmap(16,16))
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -1411,12 +1447,14 @@ class LanDialog(QDialog):
             self.panel.service.check_code();self.panel._code_identity_changed(self.panel.service.code_identity())
 
     def apply_theme(self, theme):
+        if getattr(self,'_applied_dialog_theme',None)==theme:return
+        self._applied_dialog_theme=theme;self._theme=theme
         dark = theme == 'dark'
         self.setProperty('uiTheme', theme)
         c=ui_colors(theme)
         font_family=reference_font().family()
         surface,ink,hover=c['surface'],c['text'],c['hover']
-        self.title_icon.setPixmap(ui_icon('web' if self._wan else 'nearby',c['cyan'] if dark else c['blue']).pixmap(16,16))
+        self._refresh_title_icon()
         self.card.setStyleSheet(f'''
             QFrame#lanDialogCard {{ background:{surface}; border:1px solid {c['glass_border']}; border-radius:{c['radius']}px; }}
             QWidget#lanTitleBar {{ background:transparent; border:0; border-bottom:1px solid {c['divider']}; }}
@@ -1432,6 +1470,6 @@ class LanDialog(QDialog):
         shadow=self.card.graphicsEffect()
         shadow.setBlurRadius(56 if not dark else 64);shadow.setOffset(0,12)
         shadow.setColor(QColor(0,0,0,120) if dark else QColor(15,23,42,41))
-        self.panel.apply_theme(theme)
+        for panel in self._panels.values():panel.apply_theme(theme)
         from native_ui_common import readable_qss
         self.card.setStyleSheet(readable_qss(self.card.styleSheet()))

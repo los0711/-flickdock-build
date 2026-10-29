@@ -39,7 +39,7 @@ class MacBuildTests(unittest.TestCase):
         self.assertIn("root / 'runtime_macos.py'", source)
         self.assertNotIn("root / 'runtime_media.py'", source)
         self.assertIn("LSMinimumSystemVersion='14.4'", source)
-        self.assertIn('LSUIElement=False', source)
+        self.assertIn('LSUIElement=True', source)
 
     def test_installer_is_a_native_pkg_for_applications(self):
         source = Path(build_macos.__file__).read_text(encoding='utf-8')

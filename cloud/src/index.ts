@@ -1,7 +1,8 @@
 import {createHash, createHmac, timingSafeEqual} from 'node:crypto';
 import {caseFold} from 'unicode-case-folding';
 import {PersistentSHA256} from './hash-state';
-import {DurableObject} from 'cloudflare:workers';
+import {DurableObject,WorkerEntrypoint} from 'cloudflare:workers';
+import {isIP} from 'node:net';
 import {wanRoute,type WanEnv} from './wan';
 export {WanHub} from './wan';
 
@@ -708,7 +709,18 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
   return fail(404,'NOT_FOUND','API route not found');
 }
 
-export default {
+// This named entrypoint is available only to an account service binding. The
+// public HTTP handler never trusts the forwarded client-IP header.
+export class AppGateway extends WorkerEntrypoint<Env> {
+  async fetch(request:Request):Promise<Response>{
+    const headers=new Headers(request.headers),ip=headers.get('X-FlickDock-Client-IP')||'';
+    if(!isIP(ip))return json({error:{code:'INVALID_GATEWAY',message:'Client network identity unavailable'}},400);
+    headers.set('CF-Connecting-IP',ip);headers.delete('X-FlickDock-Client-IP');
+    return application.fetch(new Request(request,{headers}),this.env,this.ctx);
+  }
+}
+
+const application={
   async fetch(request:Request,env:Env,ctx:ExecutionContext):Promise<Response>{
     try{
       const url=new URL(request.url);
@@ -729,3 +741,4 @@ export default {
   },
   async scheduled(_event:ScheduledController,env:Env,ctx:ExecutionContext){ctx.waitUntil(cleanup(env));},
 } satisfies ExportedHandler<Env>;
+export default application;

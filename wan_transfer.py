@@ -12,7 +12,8 @@ from PySide6.QtWebSockets import QWebSocket
 from lan_transfer import LanTransferService,_Transfer,_validate_manifest
 from selection_archive import _is_link
 from webrtc_stream import WebRTCStream
-from cloud_config import DEFAULT_CLOUD_URL
+from cloud_config import DEFAULT_CLOUD_URL,CLOUD_ORIGINS
+SIGNAL_ORIGINS=CLOUD_ORIGINS
 
 class WanTransferService(LanTransferService):
     identity_changed=Signal(dict)
@@ -27,6 +28,8 @@ class WanTransferService(LanTransferService):
         self.allow_test_origin=allow_test_origin
         self._qa_force_relay=bool(qa_force_relay and os.environ.get('QT_QPA_PLATFORM')=='offscreen')
         self._credential='';self._pending={};self._outbox={};self._connected=False;self._closing=False
+        self._origins=SIGNAL_ORIGINS if origin==DEFAULT_CLOUD_URL else (origin,)
+        self._origin_index=0;self._connect_attempt=0;self._connection_error='';self._manual_retry_at=0.
         try:
             path=self.base/'wan-device.key';path.parent.mkdir(parents=True,exist_ok=True)
             if not path.exists():
@@ -37,36 +40,63 @@ class WanTransferService(LanTransferService):
         except (OSError,ValueError):self._credential=''
         self.socket=QWebSocket(parent=self)
         self.socket.connected.connect(self._hello);self.socket.disconnected.connect(self._disconnected)
-        self.socket.errorOccurred.connect(self._disconnected);self.socket.textMessageReceived.connect(self._message)
+        self.socket.errorOccurred.connect(self._socket_error);self.socket.textMessageReceived.connect(self._message)
         self._command.connect(self._handle_command);self._native.connect(self._handle_native)
         self.retry=QTimer(self);self.retry.setSingleShot(True);self.retry.timeout.connect(self._connect)
         self.poll=QTimer(self);self.poll.setInterval(15000);self.poll.timeout.connect(self._heartbeat)
         self.code_timer=QTimer(self);self.code_timer.setInterval(1000);self.code_timer.timeout.connect(self.check_code)
+        self.connect_timeout=QTimer(self);self.connect_timeout.setSingleShot(True);self.connect_timeout.setInterval(10000)
+        self.connect_timeout.timeout.connect(self._connection_timed_out)
         self.completed.connect(self._completed_wan)
 
     def start(self):
         if self.enabled and not self._connected and not self.retry.isActive():self.retry.start(0)
     def _connect(self):
         if self._closing or not self.enabled:return
-        if not self._credential:self.status_changed.emit('无法保存远程设备凭据，请检查应用数据目录。');return
-        url=QUrl(self.origin)
+        if not self._credential:
+            self._connection_error='无法读取远程设备信息，请检查应用数据目录权限。'
+            self.identity_changed.emit(self.code_identity());self.status_changed.emit(self._connection_error);return
+        url=QUrl(self._origins[self._origin_index])
         local=self.allow_test_origin and url.scheme()=='http' and url.host()=='127.0.0.1'
-        if not local and (url.scheme()!='https' or url.host()!='flickdock-cloud.roger000416.workers.dev'):
+        if not local and (url.scheme()!='https' or url.toString().rstrip('/') not in SIGNAL_ORIGINS):
             self.status_changed.emit('远程服务地址无效。');return
-        url.setScheme('ws' if local else 'wss');url.setPath('/v1/wan/connect');url.setQuery('');url.setFragment('')
+        url.setScheme('ws' if local else 'wss');url.setPath('/v1/wan/connect');url.setQuery(None);url.setFragment(None)
         request=QNetworkRequest(url);request.setRawHeader(b'Authorization',('Bearer '+self._credential).encode())
-        self.status_changed.emit('正在连接远程传输服务…');self.socket.open(request)
+        self._connection_error='';self.identity_changed.emit(self.code_identity())
+        self.status_changed.emit('正在连接远程传输服务…');self.connect_timeout.start();self.socket.open(request)
+
+    def _abort_signaling(self):
+        previous=self.socket.blockSignals(True)
+        try:self.socket.abort()
+        finally:self.socket.blockSignals(previous)
+    def _socket_error(self,*_):
+        self._connection_error='远程连接失败：'+str(self.socket.errorString())[:180]
+        self._abort_signaling();self._disconnected()
+    def _connection_timed_out(self):
+        self._connection_error='远程连接超时，正在切换备用入口。'
+        self._abort_signaling();self._disconnected()
+    def reconnect(self):
+        if self._closing or not self.enabled or time.monotonic()-self._manual_retry_at<1:return
+        self._manual_retry_at=time.monotonic();self.retry.stop();self.connect_timeout.stop()
+        self._abort_signaling();self._connected=False;self._connect_attempt=0
+        self._origin_index=(self._origin_index+1)%len(self._origins);self.retry.start(0)
     def _hello(self):
         self._connected=True;self.retry.stop();self.poll.start();self.code_timer.start()
         self._last_signal=time.monotonic()
         self._send_signal(dict(type='hello',name=self.device_name,platform='macos' if sys.platform=='darwin' else 'windows'))
     def _disconnected(self,*_):
+        self.connect_timeout.stop()
         self._connected=False;self.poll.stop();self.code_timer.stop();self.code=''
         self._code_refresh_at=self._code_expires_at=self._refresh_sent_at=0.
         for state in self._pending.values():state['retry_inflight']=False
         self.peers_changed.emit(self.peers())
-        self.identity_changed.emit(dict(code='',online=False))
-        if not self._closing and self.enabled and not self.retry.isActive():self.retry.start(5000)
+        if not self._closing and self.enabled and not self.retry.isActive():
+            self._connect_attempt=min(11,self._connect_attempt+1)
+            self._origin_index=(self._origin_index+1)%len(self._origins)
+            self.retry.start(250 if self._connect_attempt==1 else min(300000,1000*2**(self._connect_attempt-2)))
+            if not self._connection_error:self._connection_error='远程连接已断开，正在重试。'
+            self.status_changed.emit(self._connection_error)
+        self.identity_changed.emit(self.code_identity())
     def _heartbeat(self):
         if not self._connected:return
         if time.monotonic()-self._last_signal>40:
@@ -79,7 +109,7 @@ class WanTransferService(LanTransferService):
         return rows if self._connected else [dict(row,online=False) for row in rows]
     def code_identity(self):
         now=time.monotonic();valid=self._connected and self.code and now<self._code_expires_at
-        return dict(code=self.code if valid else '',online=self._connected,
+        return dict(code=self.code if valid else '',online=self._connected,error=self._connection_error,
             refresh_remaining=max(0.,self._code_refresh_at-now),refresh_duration=self._code_duration,
             expires_remaining=max(0.,self._code_expires_at-now),refreshing=bool(self._refresh_sent_at))
     def check_code(self):
@@ -154,6 +184,8 @@ class WanTransferService(LanTransferService):
                     refresh=max(0.,min(expires,(float(value.get('refreshAt',server_now+240000))-server_now)/1000))
                     self.code=str(value.get('code') or '')
                     if not re.fullmatch('[23456789A-HJ-NP-Z]{8}',self.code):self.code=''
+                    if not self.code:raise ValueError('Invalid receiving code')
+                    self.connect_timeout.stop();self._connect_attempt=0;self._connection_error=''
                     self._code_refresh_at=now+refresh;self._code_expires_at=now+expires
                     self._code_duration=max(1.,refresh);self._refresh_sent_at=0.
                     self.identity_changed.emit(self.code_identity())
@@ -328,8 +360,11 @@ class WanTransferService(LanTransferService):
         if state.get('error'):
             if state.pop('network_error',False):raise ConnectionError(state['error'])
             raise ValueError(state['error'])
-        return state['bridge']
-    def _incoming_stream(self,raw):return raw
+        from nearby_transport import try_nearby
+        return try_nearby(state['bridge'],'send',transfer.cancel)
+    def _incoming_stream(self,raw):
+        from nearby_transport import try_nearby
+        return try_nearby(raw,'receive',self._stopped)
     def _stream_code(self,stream,identifier):return ''
     def _incoming_offer(self,transfer,host,code):
         state=self._pending.get(transfer.transfer_id)
@@ -382,7 +417,7 @@ class WanTransferService(LanTransferService):
         super()._notify(transfer,state,**extra)
         if state in ('error','cancelled'):self._command.emit(dict(_retire=True,id=transfer.transfer_id))
     def close(self):
-        self._closing=True;self.retry.stop();self.poll.stop();self.code_timer.stop()
+        self._closing=True;self.retry.stop();self.poll.stop();self.code_timer.stop();self.connect_timeout.stop()
         self.socket.abort();super().close()
         for state in self._pending.values():
             if state.get('bridge'):state['bridge'].close(abort=True)

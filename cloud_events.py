@@ -37,6 +37,9 @@ class CloudEvents(QObject):
         self.devices_debounce = QTimer(self); self.devices_debounce.setSingleShot(True)
         self.devices_debounce.timeout.connect(self.devices_changed)
         account.account_changed.connect(self._account_changed)
+        origin_signal=getattr(getattr(account,'api',None),'origin_changed',None)
+        if origin_signal is not None:
+            origin_signal.connect(lambda _:self._account_changed(account.account) if account.signed_in else None)
 
     def _account_changed(self, account):
         self.retry.stop(); self.content_debounce.stop(); self.devices_debounce.stop()

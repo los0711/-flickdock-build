@@ -175,11 +175,11 @@ class FeedbackTests(unittest.TestCase):
         zone=self.shelf.zones['permanent'] if hasattr(self.shelf,'zones') else self.shelf.drop_zone
         self.shelf.presentation_kind='dock'
         APP.sendEvent(zone,QEvent(QEvent.Enter));flush()
-        self.assertIn('#0A84FF',zone.styleSheet());self.assertIsNone(self.shelf.popup)
+        self.assertNotIn('#0A84FF',zone.styleSheet());self.assertTrue(zone.icon._hovered);self.assertIsNone(self.shelf.popup)
         APP.sendEvent(zone,QEvent(QEvent.Leave));flush()
         self.assertNotIn('#0A84FF',zone.styleSheet())
         zone.drop_highlight=True;zone._apply_style()
-        self.assertIn('#0A84FF',zone.styleSheet())
+        self.assertNotIn('#0A84FF',zone.styleSheet())
 
     def test_rounded_combo_and_menu_preserve_keyboard_selection_and_close(self):
         from PySide6.QtWidgets import QMenu

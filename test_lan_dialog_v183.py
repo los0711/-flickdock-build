@@ -58,11 +58,11 @@ class LanDialogTests(unittest.TestCase):
         self.assertEqual(self.service.sent,[('peer-1',[str(source)])])
         self.assertEqual(self.dialog.panel._queued_paths,[])
 
-    def test_transfer_mode_button_closes_current_dialog_and_emits_navigation(self):
+    def test_transfer_mode_button_keeps_native_dialog_visible_and_emits_navigation(self):
         navigated=[];self.dialog.transfer_mode_requested.connect(lambda:navigated.append(True))
         self.assertEqual(self.dialog.transfer_mode_button.text(),'远程传输')
         self.dialog.transfer_mode_button.click();APP.processEvents()
-        self.assertEqual(navigated,[True]);self.assertFalse(self.dialog.isVisible())
+        self.assertEqual(navigated,[True]);self.assertTrue(self.dialog.isVisible())
 
     def test_file_drop_anywhere_in_transfer_dialog_queues_once_and_rejects_web_urls(self):
         for index,target in enumerate((self.dialog,self.dialog.title_bar,self.dialog.panel,

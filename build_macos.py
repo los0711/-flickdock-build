@@ -28,7 +28,7 @@ def run(arguments, *, env=None):
 def make_icon(destination):
     # Offscreen SVG rendering uses the same original mark as the Windows app.
     os.environ['QT_QPA_PLATFORM'] = 'offscreen'
-    from PySide6.QtCore import QByteArray, Qt
+    from PySide6.QtCore import QByteArray, QRectF, Qt
     from PySide6.QtGui import QImage, QPainter
     from PySide6.QtSvg import QSvgRenderer
     from PySide6.QtWidgets import QApplication
@@ -43,7 +43,8 @@ def make_icon(destination):
             image = QImage(pixels, pixels, QImage.Format.Format_ARGB32_Premultiplied)
             image.fill(Qt.GlobalColor.transparent)
             painter = QPainter(image)
-            renderer.render(painter)
+            inset=pixels*.065
+            renderer.render(painter,QRectF(inset,inset,pixels-2*inset,pixels-2*inset))
             painter.end()
             name = f'icon_{size}x{size}' + ('@2x' if scale == 2 else '') + '.png'
             if not image.save(str(iconset / name)):
@@ -194,13 +195,16 @@ def main(arguments=None):
          'test_shelf_sync_v180', 'test_sync_review_v180', 'test_account_security_v180',
          'test_lan_transfer_v181', 'test_lan_dialog_v183', 'test_shelf_transfers_v181',
          'test_account_profile_layout_v1814', 'test_lan_hig_layout_v1814',
-         'test_ui_feedback_v1815', 'test_directory_sync_v1815', 'test_feedback_v1816',
+         'test_ui_feedback_v1815', 'test_directory_sync_v1815', 'test_feedback_v1816','test_feedback_v1818',
          'test_shelf_raise_v1810', 'test_intake_first_frame_v1810',
          'test_sync_remote_commit_wakeup', 'test_cloud_file_status_v1810',
          'test_trigger_reliability_v1810', 'test_event_stream_wiring_v1810', '-v'], env=env)
     # Native WebRTC and QWebSocket lifetimes are verified in their own Qt
     # process, matching the standalone frozen-client gate below.
     run([python,'-m','unittest','test_wan_transfer_v1816','-v'],env=env)
+    run([python,'-m','unittest','test_nearby_transport_v1818','-v'],env=env)
+    run([python,'-m','unittest','test_wan_signaling_v1818','-v'],env=env)
+    run([python,'-m','unittest','test_cloud_failover_v1818','-v'],env=env)
     run([python,'-m','unittest','test_stream_upload_v1816','-v'],env=env)
     run([python, ROOT / 'test_update_macos.py'], env=env)
     run([python, ROOT / 'build_macos.py', '--icon-only', build / 'FlickDock.icns'], env=env)

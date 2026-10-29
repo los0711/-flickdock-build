@@ -1,5 +1,5 @@
 #define Root AddBackslash(SourcePath)
-#define AppVersion "1.8.17"
+#define AppVersion "1.8.18"
 
 [Setup]
 AppId={{C51D7C62-61AE-45D7-A96D-6DC63B8495E7}
@@ -36,6 +36,7 @@ Name: "chinesesimp"; MessagesFile: "{#Root}ChineseSimplified.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷方式："
+Name: "firewall"; Description: "允许 FlickDock 联网（需要管理员确认）"; GroupDescription: "网络："
 
 [Files]
 Source: "{#Root}dist\FlickDock\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -46,8 +47,12 @@ Name: "{userprograms}\FlickDock\卸载 FlickDock"; Filename: "{uninstallexe}"
 Name: "{userdesktop}\FlickDock"; Filename: "{app}\FlickDock.exe"; Tasks: desktopicon
 
 [Run]
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ""{app}\_internal\windows-network.ps1"" -InstallDirectory ""{app}"" -Quiet"; Verb: "runas"; Flags: shellexec waituntilterminated runhidden skipifsilent; Tasks: firewall
 Filename: "{app}\FlickDock.exe"; Description: "启动 FlickDock"; Flags: nowait postinstall skipifsilent; Check: not IsOnlineUpdate
 Filename: "{app}\FlickDock.exe"; Flags: nowait; Check: IsOnlineUpdate
+
+[UninstallRun]
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ""{app}\_internal\windows-network.ps1"" -InstallDirectory ""{app}"" -Action Remove -Quiet"; Verb: "runas"; Flags: shellexec waituntilterminated runhidden skipifdoesntexist; RunOnceId: "FlickDockFirewallCleanup"
 
 [Code]
 function OpenProcess(Access: LongWord; Inherit: Boolean; ProcessId: LongWord): THandle;

@@ -45,13 +45,15 @@ def css(widget, dark, light=None):
         dark=dark.replace("'HarmonyOS Sans SC'",f"'{family}'")
         if light is not None:light=light.replace("'HarmonyOS Sans SC'",f"'{family}'")
     widget._reference_style=(readable_qss(dark), readable_qss(light if light is not None else dark))
-    widget.setStyleSheet(widget._reference_style[ui_theme.current_theme()=='light'])
+    resolved=widget._reference_style[ui_theme.current_theme()=='light']
+    if widget.styleSheet()!=resolved:widget.setStyleSheet(resolved)
 
 
 def refresh_tree(widget):
     for child in [widget, *widget.findChildren(QWidget)]:
         source=getattr(child,'_reference_style',None)
-        if source:child.setStyleSheet(source[ui_theme.current_theme()=='light'])
+        if source and child.styleSheet()!=source[ui_theme.current_theme()=='light']:
+            child.setStyleSheet(source[ui_theme.current_theme()=='light'])
         if getattr(child,'_reference_icon',None):
             name,tint=child._reference_icon
             child.setIcon(icon(name,palette().get(tint,tint)))
@@ -193,12 +195,13 @@ class ProfileButton(QPushButton):
 
     def paintEvent(self,event):
         p=QPainter(self);p.setRenderHint(QPainter.Antialiasing);c=palette()
-        p.setPen(QPen(ink(c['divider']),1));p.drawLine(0,0,self.width(),0)
-        if self.underMouse():p.setPen(Qt.NoPen);p.setBrush(ink(c['control']));p.drawRoundedRect(self.rect().adjusted(0,2,0,-1),12,12)
-        p.setBrush(QColor(c['action']) if self.connected else ink(c['control']));p.setPen(Qt.NoPen);p.drawEllipse(QRectF(8,12,28,28))
+        p.setPen(QPen(ink(c['border']),1));p.setBrush(ink(c['hover'] if self.underMouse() else c['control']))
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(.5,1.5,-.5,-1.5),10,10)
+        avatar=QRectF(8,(self.height()-28)/2,28,28)
+        p.setBrush(QColor(c['action']) if self.connected else ink(c['control']));p.setPen(Qt.NoPen);p.drawEllipse(avatar)
         f=p.font();f.setPixelSize(14 if sys.platform=='win32' else 12);f.setBold(True);p.setFont(f);p.setPen(QColor('white'))
-        if self.connected:p.drawText(QRectF(8,12,28,28),Qt.AlignCenter,self.username[:1].upper())
-        else:icon('user',c['secondary']).paint(p,QRect(14,18,16,16))
+        if self.connected:p.drawText(avatar,Qt.AlignCenter,self.username[:1].upper())
+        else:icon('user',c['secondary']).paint(p,QRect(14,round(avatar.center().y()-8),16,16))
         f.setWeight(QFont.DemiBold);p.setFont(f);p.setPen(QColor(c['text']));p.drawText(QRectF(46,10,self.width()-68,20),Qt.AlignVCenter,p.fontMetrics().elidedText(self.username,Qt.ElideRight,self.width()-68))
         f.setPixelSize(12 if sys.platform=='win32' else 10);f.setBold(False);p.setFont(f);p.setPen(QColor(c['secondary']));p.drawText(QRectF(46,29,self.width()-68,16),Qt.AlignVCenter,p.fontMetrics().elidedText(self.status,Qt.ElideRight,self.width()-68))
         icon('right',c['muted']).paint(p,QRect(self.width()-20,22,12,12))
@@ -432,7 +435,9 @@ class MiniStack(StackTile):
         p=QPainter(self);p.setRenderHints(QPainter.Antialiasing|QPainter.SmoothPixmapTransform)
         if not self.refs:
             r=QRectF((self.width()-176)/2,28,176,128)
-            p.setPen(QPen(ink(palette()['border']),1,Qt.DashLine));p.setBrush(ink(palette()['card']));p.drawRoundedRect(r,16,16)
+            active=self._hovered or bool(getattr(self.parent(),'drop_highlight',False))
+            color=palette()['link'] if active else palette()['border']
+            p.setPen(QPen(ink(color),1,Qt.DashLine));p.setBrush(ink(palette()['card']));p.drawRoundedRect(r,16,16)
             icon('upload',palette()['secondary']).paint(p,QRect(round(r.center().x()-12),round(r.center().y()-31),24,24))
             f=p.font()
             f.setPixelSize(13);p.setFont(f);p.setPen(QColor(palette()['text']));p.drawText(r.adjusted(0,34,0,0),Qt.AlignCenter,'点击选择文件');p.end();return

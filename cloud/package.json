@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node test/hash-state.mjs && node test/upload-cancel.mjs && node test/wan-codes.mjs && node test/account-names.mjs && node test/integration.mjs",
+    "test": "node test/hash-state.mjs && node test/upload-cancel.mjs && node test/wan-codes.mjs && node test/wan-connect.mjs && node test/account-names.mjs && node test/integration.mjs",
     "dev": "wrangler dev --local",
     "deploy": "wrangler deploy"
   },

@@ -9,6 +9,8 @@ rtc.setSctpSettings({recvBufferSize:32*1024*1024,sendBufferSize:16*1024*1024,max
 let pc,channel,turnTransport,closed=false,unacked=0,acknowledged=0,pendingOutput=0,wake=()=>{},statsTimer;
 let sendWindow=LEGACY_WINDOW,sendMessage=LEGACY_MESSAGE,credit=0,creditTimer;
 const flowNonce=randomBytes(16).toString('hex');
+const nearbyNonce=randomBytes(16).toString('hex');
+let nearbyCapable=false;
 function frame(kind,body,done) {
   if(closed)return;
   const data=Buffer.isBuffer(body)?body:Buffer.from(JSON.stringify(body));
@@ -39,7 +41,8 @@ function bind(dc) {
   dc.onBufferedAmountLow(()=>wake());
   dc.onOpen(()=>{
     const pair=pc.getSelectedCandidatePair();
-    event({type:'open',route:pair?.local?.type==='relay'||pair?.remote?.type==='relay'?'relay':'direct',maxMessageSize:dc.maxMessageSize()});wake();
+    event({type:'open',route:pair?.local?.type==='relay'||pair?.remote?.type==='relay'?'relay':'direct',maxMessageSize:dc.maxMessageSize(),
+      nearby:{capable:nearbyCapable&&!!pair?.local&&!!pair?.remote&&pair.local.type!=='relay'&&pair.remote.type!=='relay',local:pair?.local?.address,remote:pair?.remote?.address}});wake();
     statsTimer=setInterval(stats,250);
   });
   dc.onClosed(()=>{event({type:'closed'});stop();});
@@ -47,6 +50,7 @@ function bind(dc) {
   dc.onMessage(message=>{
     if(typeof message==='string')throw new Error('Unexpected text channel message');
     const data=Buffer.isBuffer(message)?message:Buffer.from(message);
+    if(data[0]===3&&nearbyCapable&&data.length>1&&data.length<=1025){event({type:'nearby',data:JSON.parse(data.subarray(1).toString('utf8'))});return;}
     if(data.length===5&&data[0]===2) {
       const count=data.readUInt32BE(1);
       if(count>unacked)throw new Error('Invalid credit');
@@ -74,7 +78,7 @@ async function control(value) {
     pc=new rtc.PeerConnection('FlickDock',{iceServers:turnTransport.iceServers,maxMessageSize:131072,iceTransportPolicy:value.forceRelay?'relay':'all',enableIceTcp:true});
     // Unknown SDP attributes are ignored by older clients. Start conservatively
     // and enlarge the bounded credit/message window only for an agreeing peer.
-    pc.onLocalDescription((sdp,type)=>event({type:'description',sdp:sdp.replace(/^a=x-flickdock-flow:[^\r\n]*\r?\n?/gm,'').trimEnd()+`\r\na=x-flickdock-flow:2 ${flowNonce} ${WINDOW} ${MESSAGE}\r\n`,descriptionType:type}));
+    pc.onLocalDescription((sdp,type)=>event({type:'description',sdp:sdp.replace(/^a=x-flickdock-(?:flow|nearby):[^\r\n]*\r?\n?/gm,'').trimEnd()+`\r\na=x-flickdock-flow:2 ${flowNonce} ${WINDOW} ${MESSAGE}\r\na=x-flickdock-nearby:1 ${nearbyNonce}\r\n`,descriptionType:type}));
     pc.onLocalCandidate((candidate,mid)=>event({type:'candidate',candidate,mid}));
     pc.onStateChange(state=>{event({type:'state',state});if(state==='failed')stop();});
     pc.onDataChannel(bind);
@@ -83,6 +87,8 @@ async function control(value) {
     // libdatachannel v1 peers echo unknown offer attributes in their answer.
     // Each endpoint must advertise its own nonce; an echo cannot opt in.
     const flow=/^a=x-flickdock-flow:2 ([a-f0-9]{32}) ([0-9]+) ([0-9]+)\r?$/m.exec(value.sdp);
+    const nearby=/^a=x-flickdock-nearby:1 ([a-f0-9]{32})\r?$/m.exec(value.sdp);
+    nearbyCapable=!!nearby&&nearby[1]!==nearbyNonce;
     if(flow&&flow[1]!==flowNonce) {
       const window=Number(flow[2]),message=Number(flow[3]);
       if(Number.isSafeInteger(window)&&window>=LEGACY_WINDOW&&window<=WINDOW&&Number.isSafeInteger(message)&&message>=LEGACY_MESSAGE&&message<=MESSAGE) {
@@ -93,6 +99,11 @@ async function control(value) {
   }
   else if(value.type==='candidate')pc.addRemoteCandidate(value.candidate,value.mid);
   else if(value.type==='stats')stats();
+  else if(value.type==='nearby'){
+    if(!nearbyCapable||!channel?.isOpen())throw new Error('Nearby capability unavailable');
+    const body=Buffer.from(JSON.stringify(value.data));if(body.length>1024)throw new Error('Nearby control too large');
+    channel.sendMessageBinary(Buffer.concat([Buffer.from([3]),body]));
+  }
   else if(value.type==='close') {
     const deadline=Date.now()+3000;
     while(!closed&&unacked>0&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,5));

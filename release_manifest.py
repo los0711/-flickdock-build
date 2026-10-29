@@ -44,9 +44,10 @@ RUNTIME_SOURCES=(
     'account_store.py','cloud_api.py','cloud_config.py','cloud_events.py','account_service.py','account_panel.py',
     'shelf_sync.py','sync_files.py','sync_adapter.py','verify_cloud.py','shortcut_preview.py',
     'lan_transfer.py','lan_panel.py','transfer_visuals.py','owned_files.py','verify_transfers.py',
-    'wan_transfer.py','webrtc_stream.py','verify_wan.py',
+    'wan_transfer.py','webrtc_stream.py','nearby_transport.py','verify_wan.py','windows_network.py',
 )
 MAINTAINED_TESTS=(
+    'test_feedback_v1818.py','test_nearby_transport_v1818.py','test_wan_signaling_v1818.py','test_cloud_failover_v1818.py','test_windows_network_v1818.py',
     'test_app_settings.py','test_global_hotkeys.py','test_shelf_content.py',
     'test_content_grid.py','test_content_tile_completion.py','test_svg_hidpi.py',
     'test_shake_detector.py','test_drag_probe.py','test_content_resolver.py',
@@ -80,7 +81,7 @@ MAINTAINED_TESTS=(
     'test_remote_transfer_actions_v1812.py','test_wan_transfer_v1816.py',
 )
 SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
-    'FlickDock.spec','FlickDock.iss','version_info.txt','ChineseSimplified.isl',
+    'FlickDock.spec','FlickDock.iss','version_info.txt','ChineseSimplified.isl','windows-network.ps1',
     'flickdock.ico','THIRD_PARTY_NOTICES.md','font_manifest.json','bundle_policy.py',
     'release_manifest.py','release_macos.py','package_source.py','PUBLISHING.md','README.md','AGENTS.md','UI_REFERENCE_IMPLEMENTATION.md','HIG_DESIGN.md','.gitignore','.gitattributes',
     'check_release_v16.py','release_dpr_v165.py','PACKAGE_AUDIT.md',
@@ -100,11 +101,11 @@ SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'cloud/migrations/0004_instant_uploads.sql','cloud/migrations/0005_account_names.sql','cloud/src/index.ts','cloud/src/hash-state.ts','cloud/src/wan.ts','cloud/src/relay-budget.ts',
     'cloud/src/wasm.d.ts','cloud/src/vendor/hash-wasm-sha256-4.12.0.wasm',
     'cloud/src/vendor/hash-wasm-sha256-4.12.0.json','cloud/src/vendor/hash-wasm-4.12.0-LICENSE.txt',
-    'cloud/test/integration.mjs','cloud/test/hash-state.mjs','cloud/test/upload-cancel.mjs','cloud/test/wan-codes.mjs','cloud/test/account-names.mjs','cloud/test/qa-server.mjs',
+    'cloud/test/integration.mjs','cloud/test/hash-state.mjs','cloud/test/upload-cancel.mjs','cloud/test/wan-codes.mjs','cloud/test/wan-connect.mjs','cloud/test/account-names.mjs','cloud/test/qa-server.mjs',
     '.github/workflows/macos-build.yml','ci_assets.py','p2p_assets.py',
     'p2p/bridge.mjs','p2p/turn_tls.mjs','p2p/test-turn-tls.mjs','p2p/package.json','p2p/package-lock.json','p2p/node-shasums.json',
-    'website/wrangler.jsonc','website/package.json','website/package-lock.json',
-    'website/README.md','website/CHINA_DEPLOYMENT.md','website/test/check-site.mjs',
+    'website/wrangler.jsonc','website/worker.mjs','website/package.json','website/package-lock.json',
+    'website/README.md','website/CHINA_DEPLOYMENT.md','website/test/check-site.mjs','website/test/check-gateway.mjs',
     'website/scripts/build-retiehe.mjs',
     'website/public/.assetsignore','website/public/index.html',
     'website/public/styles.css','website/public/site.js',

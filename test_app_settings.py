@@ -201,10 +201,11 @@ with tempfile.TemporaryDirectory(prefix="flickdock-settings-") as temporary:
     before = store.path.read_bytes()
     received = []
     dialog.shortcut_validator = lambda values: received.append(values) or "这个快捷键已被其他程序使用。"
+    dialog.shelf_shortcut_edit.setKeySequence(subject.QKeySequence('Ctrl+Alt+P'))
     dialog.save()
     assert dialog.error_label.isVisible() and "快捷键" in dialog.error_label.text()
     assert store.path.read_bytes() == before and dialog.isVisible()
-    assert received[0]["shelf_shortcut"] == "Ctrl+Alt+O"
+    assert received[0]["shelf_shortcut"] == "Ctrl+Alt+P"
     dialog.shortcut_validator = None
     with patch.object(subject, "_read_startup_value", return_value=None) as read, \
          patch.object(subject, "_write_startup_value") as write:

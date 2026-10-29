@@ -50,7 +50,12 @@ export class WanHub extends DurableObject<WanEnv>{
   async fetch(request:Request):Promise<Response>{
     const id=request.headers.get('X-Wan-Device'),ip=request.headers.get('X-Wan-IP');
     if(!check(id,ID)||!check(ip,ID))return json({error:{message:'Invalid device'}},401);
-    try{await this.limited('ip:'+ip,40,3600000);}catch{return json({error:{message:'Too many connections'}},429);}
+    try{
+      await this.limited('connect:'+id,30,60000);
+      // Reconnecting a proven anonymous device must not consume the shared
+      // network's new-device allowance (VMs/NAT and transient outages).
+      if(!await this.ctx.storage.get('device:'+id))await this.limited('ip:'+ip,40,3600000);
+    }catch{return json({error:{message:'Too many connections'}},429);}
     for(const existing of this.ctx.getWebSockets(id))try{existing.close(4000,'Reconnected');}catch{}
     const pair=new WebSocketPair();const [client,server]=Object.values(pair);
     this.ctx.acceptWebSocket(server,[id]);
@@ -408,7 +413,7 @@ export class WanHub extends DurableObject<WanEnv>{
       paged=blocked?await this.revokeAll():await this.revokePending();
       credentialCount=(await this.ctx.storage.list({prefix:'credential:',limit:1})).size;
     }
-    for(const prefix of ['code:','pairing:','pairing-cancel:','session:','pending:','ip:','request:','guess:','retry:','relay:']){
+    for(const prefix of ['code:','pairing:','pairing-cancel:','session:','pending:','ip:','connect:','request:','guess:','retry:','relay:']){
       const cursor=await this.ctx.storage.get<string>('sweep:'+prefix);
       const rows=await this.ctx.storage.list<any>({prefix,limit:1000,...(cursor?{startAfter:cursor}:{})});
       const expired=[...rows].filter(([,row])=>(row.expires||row.until||now+1)<now).map(([key])=>key);

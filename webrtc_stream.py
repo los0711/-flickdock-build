@@ -18,6 +18,7 @@ class WebRTCStream:
         self._condition=threading.Condition();self._data=deque();self._size=0
         self._controls=deque();self._writes=deque();self._write_bytes=0;self._control_bytes=0
         self._closed=False;self._timeout=1.;self.opened=threading.Event();self.route='';self.on_signal=on_signal
+        self._nearby_context={};self._nearby_messages=deque();self._nearby_delivered=0;self._sockets=[]
         self._traffic={'sent':0,'received':0};self._stats_generation=0;self.last_activity=time.monotonic()
         self._sent_position=0;self._payload_spans=deque();self._payload_delivered=0
         self._delivered_position=0;self._payload_offset=0;self._payload_origin=0
@@ -81,7 +82,18 @@ class WebRTCStream:
                         self._data.append(packet[1:]);self._size+=len(packet)-1;self._condition.notify_all()
                 elif packet[:1]==b'J':
                     value=json.loads(packet[1:])
-                    if value.get('type')=='open':self.route=value['route'];self.opened.set()
+                    if value.get('type')=='open':
+                        self.route=value['route'];self._nearby_context=value.get('nearby',{});self.opened.set()
+                    if value.get('type')=='nearby':
+                        data=value.get('data',{})
+                        with self._condition:
+                            if data.get('state')=='credit':
+                                count=data.get('received','')
+                                if isinstance(count,str) and count.isascii() and count.isdigit() and len(count)<=20:
+                                    self._nearby_delivered=max(self._nearby_delivered,int(count))
+                            elif len(self._nearby_messages)<8:self._nearby_messages.append(data)
+                            else:raise ValueError('Nearby control queue exceeded')
+                            self._condition.notify_all()
                     if value.get('type')=='stats':
                         with self._condition:
                             for key in ('sent','received'):
@@ -99,7 +111,18 @@ class WebRTCStream:
         except (OSError,EOFError,ValueError):pass
         finally:
             with self._condition:self._closed=True;self._condition.notify_all()
+            self._close_sockets()
             self.on_signal({'type':'closed'})
+
+    def own_socket(self,stream):
+        with self._condition:
+            if self._closed:stream.close();raise ConnectionError('远程连接已中断。')
+            self._sockets.append(stream)
+    def _close_sockets(self):
+        with self._condition:sockets,self._sockets=self._sockets,[]
+        for stream in sockets:
+            try:stream.close()
+            except OSError:pass
 
     def settimeout(self,value):self._timeout=value
     def traffic(self,*,refresh=False):
@@ -150,6 +173,7 @@ class WebRTCStream:
             self._size-=count;self._condition.notify_all();return count
     def shutdown(self,*_):self.close(abort=True)
     def close(self,*,abort=False):
+        self._close_sockets()
         if not abort and not self._closed:
             try:self.control({'type':'close'})
             except OSError:pass
