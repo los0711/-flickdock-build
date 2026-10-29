@@ -75,7 +75,7 @@ class FeedbackTests(unittest.TestCase):
 
     def test_completed_old_update_cleanup_retains_unknown_current_and_unfinished(self):
         with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory);updates=root/'updates';updates.mkdir()
+            root=Path(directory).resolve();updates=root/'updates';updates.mkdir()
             for version,name in [('1.8.16','setup.exe'),('1.8.17','setup.exe'),('1.8.18','setup.exe'),('1.8.20','setup.exe'),('1.8.21','setup.exe')]:
                 folder=updates/version;folder.mkdir();path=folder/name;path.write_bytes(b'X'*4096);os.utime(path,(1,1))
             (updates/'1.8.17'/'setup-ongoing.part').write_bytes(b'partial')
