@@ -88,6 +88,7 @@ class ShelfSync(QObject):
         self._intake_announced=set()
         self.download_transfers={}
         self._interactive=False
+        self._clipboard_priority=False
         self._base_poll_ms=poll_ms
         self._remote_poll_ms=remote_poll_ms
         self._disconnected_poll_ms=disconnected_poll_ms
@@ -633,7 +634,7 @@ class ShelfSync(QObject):
         return False
 
     def tick(self):
-        if self.closed or self.running or not self.account_id or not self.service.signed_in: return
+        if self.closed or self._clipboard_priority or self.running or not self.account_id or not self.service.signed_in: return
         if not self.upload_enabled and not self.receive_enabled:
             self.status_changed.emit('云同步已暂停；内容保留在本机。')
             return
@@ -645,6 +646,16 @@ class ShelfSync(QObject):
         self.cleanup_attempts = {}
         self.running = True; self.status_changed.emit('正在同步…')
         self._retire_uploads()
+
+    def set_clipboard_priority(self,active):
+        active=bool(active)
+        if active==self._clipboard_priority:return
+        self._clipboard_priority=active
+        if active:
+            # An interrupted multipart upload keeps its durable resume journal.
+            # Reconciliation discovers parts already accepted by the server.
+            if self.running:self._interrupt_cycle()
+        elif not self.closed:self.debounce.start(1)
 
     def _after_cleanup(self):
         if self._retry_paused() or self._paused('quota_not_before'):

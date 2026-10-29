@@ -2778,7 +2778,11 @@ class ShelfManager:
         self.events.transfer_progress.connect(self.sync.remote_progress)
         self.events.devices_changed.connect(self.account.list_devices)
         self.clipboard_sync=ClipboardSync(self.account,self.events,BASE,self.app,
-            enabled=not self.cocoa_smoke and self.app.platformName() not in ('offscreen','minimal'))
+            enabled=self._clipboard_runtime_enabled())
+        self.clipboard_sync.activity_changed.connect(self.sync.set_clipboard_priority)
+        from transfer_priority import set_clipboard_priority
+        self.clipboard_sync.activity_changed.connect(set_clipboard_priority)
+        self._clipboard_intro=None
         # A healthy event socket keeps the quiet five-minute reconciliation.
         # While disconnected, ShelfSync uses a bounded fallback so a missed
         # upload completion or cancellation cannot leave another device stale.
@@ -2864,7 +2868,39 @@ class ShelfManager:
             return
         self._present_update_notice()
 
+    def _clipboard_runtime_enabled(self):
+        return (self.settings.clipboard_sync_enabled and self.settings.clipboard_notice_seen
+                and not self.cocoa_smoke and self.app.platformName() not in ('offscreen','minimal'))
+
+    def _present_clipboard_intro(self):
+        if self.settings.clipboard_notice_seen:return False
+        shelf=self.shelf
+        if (self.cocoa_smoke or self.app.platformName() in ('offscreen','minimal')
+                or not shelf.isVisible() or not shelf.expanded or self.settings_open()
+                or shelf.content_transition_active() or confirmation_active(shelf)):return False
+        if self._clipboard_intro is not None:
+            if self._clipboard_intro.isVisible():return True
+            self._clipboard_intro.deleteLater();self._clipboard_intro=None
+        intro=UpdateNotice(shelf,theme=self.settings.theme);self._clipboard_intro=intro
+        intro.show_version('云剪贴板','复制的文本、链接、图片或单个文件（小于 20 MB）会自动加密传输到云端，'
+                           '并同步到同账号已绑定设备。云端仅保留最新内容，保留 24 小时；粘贴不会删除内容。'
+                           '\n\n默认开启，可随时在“设置 → 云剪贴板同步”关闭。')
+        intro.title.setText('云剪贴板已默认开启')
+        intro.version_label.setText('剪贴板内容将同步到云端')
+        intro.update_button.setText('知道了');intro.later_button.setText('关闭同步')
+        intro.later_button.setFixedWidth(76)
+        def finish(enabled):
+            if self._clipboard_intro is not intro:return
+            try:self.settings.update(clipboard_sync_enabled=enabled,clipboard_notice_seen=True)
+            except OSError:return
+            intro.hide();self._clipboard_intro=None;intro.deleteLater()
+        intro.update_requested.connect(lambda:finish(True))
+        intro.later_button.clicked.disconnect();intro.later_button.clicked.connect(lambda:finish(False))
+        intro.dismissed.connect(lambda:finish(True))
+        return True
+
     def _present_update_notice(self):
+        if self._present_clipboard_intro():return
         if (self._quitting or self.updates.state!='available' or not self.shelf.isVisible()
                 or not self.shelf.expanded or self.shelf.content_transition_active()
                 or self.shelf.presentation._timer.isActive() or self.settings_open()):return
@@ -3150,6 +3186,8 @@ class ShelfManager:
         self._applied_settings=current
         changed={key for key in current if previous is None or previous.get(key)!=current[key]}
         if not changed:return
+        if changed & {'clipboard_sync_enabled','clipboard_notice_seen'}:
+            self.clipboard_sync.set_enabled(self._clipboard_runtime_enabled())
         if 'view_mode' in changed:
             # A presentation preference cannot reset a drag gesture, repaint
             # every application panel, re-register hotkeys or touch sync.

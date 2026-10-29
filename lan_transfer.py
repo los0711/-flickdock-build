@@ -33,6 +33,7 @@ from uuid import uuid4
 from PySide6.QtCore import QObject, Signal
 from selection_archive import _is_link, _source_reader
 from sync_files import safe_name
+from transfer_priority import yield_bulk_payload
 
 DISCOVERY_PORT = 45875
 BLOCK_BYTES = 1024 * 1024
@@ -642,6 +643,7 @@ class LanTransferService(QObject):
                             remaining = size - resume
                             while remaining:
                                 if transfer.cancel.is_set(): raise InterruptedError('已取消传输。')
+                                yield_bulk_payload(transfer.cancel)
                                 count = incoming.readinto(file_view[:min(BLOCK_BYTES, remaining)])
                                 if not count: raise ValueError('原文件已改变，请重新发起传输。')
                                 data = file_view[:count]
@@ -744,6 +746,7 @@ class LanTransferService(QObject):
                 with target.open('r+b' if offset else 'xb') as output:
                     output.seek(offset)
                     while offset < row['size']:
+                        yield_bulk_payload(transfer.cancel)
                         data = view[:min(BLOCK_BYTES, row['size'] - offset)]
                         _read_into(stream,data,transfer.cancel)
                         output.write(data); digest.update(data); offset += len(data)

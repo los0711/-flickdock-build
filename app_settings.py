@@ -471,6 +471,7 @@ class SettingsStore(QObject):
         self._data = {"theme": "light", "capture_dir": str(self.base / "saved"), "autostart": True,
                       "capture_mode": "reference", "keep_empty_handle": True,
                       "sync_upload_enabled": True, "sync_receive_enabled": True,
+                      "clipboard_sync_enabled": True, "clipboard_notice_seen": False,
                       "trigger_view": "compact", "shake_sensitivity": DEFAULT_SHAKE_SENSITIVITY,
                       "view_mode": "list", "shelf_shortcut": SHELF_SHORTCUT,
                       "overview_shortcut": OVERVIEW_SHORTCUT, "dock_edge": "right",
@@ -495,7 +496,7 @@ class SettingsStore(QObject):
                         self._data["lan_receive_dir"] = str(candidate)
                 if isinstance(data.get("autostart"), bool):
                     self._data["autostart"] = data["autostart"]
-                for name in ("sync_upload_enabled", "sync_receive_enabled"):
+                for name in ("sync_upload_enabled", "sync_receive_enabled", "clipboard_sync_enabled", "clipboard_notice_seen"):
                     if isinstance(data.get(name), bool):
                         self._data[name] = data[name]
                 if data.get("capture_mode") in CAPTURE_MODES:
@@ -561,6 +562,14 @@ class SettingsStore(QObject):
     @property
     def sync_upload_enabled(self) -> bool:
         return self._data["sync_upload_enabled"]
+
+    @property
+    def clipboard_sync_enabled(self) -> bool:
+        return self._data["clipboard_sync_enabled"]
+
+    @property
+    def clipboard_notice_seen(self) -> bool:
+        return self._data["clipboard_notice_seen"]
 
     @property
     def sync_receive_enabled(self) -> bool:
@@ -662,7 +671,7 @@ class SettingsStore(QObject):
                trigger_visible=None, dock_color=None, dock_opacity=None,
                capture_mode=None, keep_empty_handle=None, trigger_view=None,
                shake_sensitivity=None, sync_upload_enabled=None,
-               sync_receive_enabled=None) -> bool:
+               sync_receive_enabled=None, clipboard_sync_enabled=None, clipboard_notice_seen=None) -> bool:
         candidate = dict(self._data)
         if theme is not None:
             if theme not in ("light", "dark"):
@@ -679,7 +688,9 @@ class SettingsStore(QObject):
                 raise ValueError("空搁架显示入口需要为开启或关闭。")
             candidate["keep_empty_handle"] = keep_empty_handle
         for name, value in (("sync_upload_enabled", sync_upload_enabled),
-                            ("sync_receive_enabled", sync_receive_enabled)):
+                            ("sync_receive_enabled", sync_receive_enabled),
+                            ("clipboard_sync_enabled", clipboard_sync_enabled),
+                            ("clipboard_notice_seen", clipboard_notice_seen)):
             if value is not None:
                 if not isinstance(value, bool):
                     raise ValueError("云同步选项需要为开启或关闭。")
@@ -1178,6 +1189,10 @@ class SettingsDialog(QDialog):
         cloud_layout.addWidget(cloud_heading)
         self.sync_upload_checkbox = SettingsToggleSwitch("上传本机搁架到云端", cloud)
         self.sync_receive_checkbox = SettingsToggleSwitch("接收云端与其他设备内容", cloud)
+        self.clipboard_sync_checkbox = SettingsToggleSwitch("云剪贴板同步", cloud)
+        self.clipboard_sync_checkbox.setAccessibleName('云剪贴板同步')
+        self.clipboard_sync_checkbox.setToolTip('自动同步小于 20 MB 的文本、链接、图片或单个文件，仅限同账号设备；可在这里关闭。')
+        self.clipboard_sync_checkbox.toggled.connect(self._clipboard_sync_changed)
         self.sync_upload_checkbox.setAccessibleName("上传本机搁架到云端")
         self.sync_receive_checkbox.setAccessibleName("接收云端与其他设备内容")
         cloud_layout.addWidget(self.sync_upload_checkbox)
@@ -1462,7 +1477,8 @@ class SettingsDialog(QDialog):
         self._pointer_paste_permission=None
         cl=cloud.layout();self._empty_layout(cl);cl.setContentsMargins(16,16,16,16);cl.setSpacing(10)
         ch=QLabel('云同步与存储',cloud);ch.setObjectName('settingsSection');cl.addWidget(ch)
-        for control,label in ((self.sync_upload_checkbox,'上传本机搁架到云端'),(self.sync_receive_checkbox,'接收云端与其他设备内容')):
+        for control,label in ((self.sync_upload_checkbox,'上传本机搁架到云端'),(self.sync_receive_checkbox,'接收云端与其他设备内容'),
+                              (self.clipboard_sync_checkbox,'云剪贴板同步（小于 20 MB）')):
             cl.addWidget(self._reference_toggle(control,label,cloud))
         self._empty_layout(storage.layout());storage.hide()
         cl.addWidget(self._reference_segment(self.capture_mode_combo,('快捷方式','复制到保存位置')))
@@ -1863,6 +1879,7 @@ class SettingsDialog(QDialog):
         self._loading_values = True
         self.sync_upload_checkbox.setChecked(self.store.sync_upload_enabled)
         self.sync_receive_checkbox.setChecked(self.store.sync_receive_enabled)
+        self.clipboard_sync_checkbox.setChecked(self.store.clipboard_sync_enabled)
         self.theme_combo.setCurrentIndex(1 if self.store.theme == "dark" else 0)
         self.folder_edit.setText(str(self.store.capture_dir))
         self.capture_mode_combo.setCurrentIndex(self.capture_mode_combo.findData(self.store.capture_mode))
@@ -1902,6 +1919,15 @@ class SettingsDialog(QDialog):
             self._sync_direction_controls()
             self.error_label.setText(str(error) or "云同步设置未能保存。")
             self.error_label.show()
+
+    def _clipboard_sync_changed(self,checked):
+        if self._loading_values:return
+        try:self.store.update(clipboard_sync_enabled=checked,clipboard_notice_seen=True)
+        except (OSError,ValueError) as error:
+            blocked=self.clipboard_sync_checkbox.blockSignals(True)
+            self.clipboard_sync_checkbox.setChecked(self.store.clipboard_sync_enabled)
+            self.clipboard_sync_checkbox.blockSignals(blocked)
+            self.error_label.setText(str(error));self.error_label.show()
 
     def _sync_direction_controls(self):
         for control, value in ((self.sync_upload_checkbox, self.store.sync_upload_enabled),

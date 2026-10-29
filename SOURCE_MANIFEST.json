@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "product": "FlickDock",
-  "version": "1.8.19",
+  "version": "1.8.20",
   "files": [
     {
       "path": ".gitattributes",
@@ -12,6 +12,11 @@
       "path": ".github/workflows/macos-build.yml",
       "size": 3057,
       "sha256": "2fef03de287baec7dbb47d334f5e5406da011ee0ca336ce16d8bfe921a9aefd4"
+    },
+    {
+      "path": ".github/workflows/native-clipboard.yml",
+      "size": 1310,
+      "sha256": "ccac803d53a1c02df98eec7130943a944e5f4f28484fe16285a6380318a5e0ed"
     },
     {
       "path": ".gitignore",
@@ -56,7 +61,7 @@
     {
       "path": "FlickDock.iss",
       "size": 4295,
-      "sha256": "f24ce48c08c15d1f5374e435a76afe59d791f8242ad907f9cd6f4468a02b93e9"
+      "sha256": "331bb5f99e259b9a6d41700b699e60276fa999a691cb3abae6cf8a8123b73d62"
     },
     {
       "path": "FlickDock.spec",
@@ -140,13 +145,13 @@
     },
     {
       "path": "app_settings.py",
-      "size": 118174,
-      "sha256": "5bfcdbd0003e053d8ca882af19fd378132d3286900a89f251e1ba96162147a7c"
+      "size": 119863,
+      "sha256": "266bf0cf2c3fe225fa81ac880779b10c007247623f756e5ba3405cc6d0112246"
     },
     {
       "path": "app_version.py",
       "size": 112,
-      "sha256": "73649ab33cd16cb0b305a0c1ae5c67f34d3b65488ac2ba999a72c65a93f69b77"
+      "sha256": "2fb632243f943869518b3d15ab4eec55edd8ff45bb91da9659e41036b031c0d7"
     },
     {
       "path": "assets/icons/content-archive.svg",
@@ -580,8 +585,8 @@
     },
     {
       "path": "clipboard_sync.py",
-      "size": 22428,
-      "sha256": "52aeaa879c40c9ad9be2c79f56567149c350a879d00a5691d59c859128c8000b"
+      "size": 30273,
+      "sha256": "74dfe00aec0134f47147142a62b04c5cb1c1249d060afa9151d4fc922f130bbb"
     },
     {
       "path": "cloud/.gitignore",
@@ -630,8 +635,8 @@
     },
     {
       "path": "cloud/src/clipboard.ts",
-      "size": 8880,
-      "sha256": "a242ce3da51a710b5b5faad32464137fe52958cc15c102a16399451516c32d19"
+      "size": 11568,
+      "sha256": "0500b117c7947012190a9af060f7c9ec0909b6270674fcad17231a6d5d861d68"
     },
     {
       "path": "cloud/src/hash-state.ts",
@@ -690,8 +695,8 @@
     },
     {
       "path": "cloud/test/clipboard.mjs",
-      "size": 6779,
-      "sha256": "d4204014537bfe85eb51722dc0757cfae39479bcc891a4b8657c77008a250e18"
+      "size": 7776,
+      "sha256": "8d72276f83ee2d03d2b1054a38faf7783d774d001877b2b3c64f6e8eee0fd486"
     },
     {
       "path": "cloud/test/hash-state.mjs",
@@ -740,8 +745,8 @@
     },
     {
       "path": "cloud_api.py",
-      "size": 24461,
-      "sha256": "e37de22646ce5bff30e11a07e8c57fc2fe54924dbc130b573741d169bffd9efb"
+      "size": 24682,
+      "sha256": "7451803beaf5b20a97cc89f55d9611463c53a9688aca23e8ae9e807400358515"
     },
     {
       "path": "cloud_config.py",
@@ -820,8 +825,8 @@
     },
     {
       "path": "flickdock.py",
-      "size": 193521,
-      "sha256": "ee8d3b8e5c50df2809b9cdd1a663bbb6cc905c5c85aa3fd59d5cef52982df1ba"
+      "size": 196065,
+      "sha256": "7658a27b5c0c9c3f3577a51d3ab03ffe01d6f2fae1da1db387f93747d492d8c1"
     },
     {
       "path": "flickdock_icons.py",
@@ -865,8 +870,8 @@
     },
     {
       "path": "lan_transfer.py",
-      "size": 50580,
-      "sha256": "86e61c3d14fd6d199b9037e51806d7a05039096ded2eab21efdb2d9e4226b01f"
+      "size": 50757,
+      "sha256": "6d67d82fda3fcb118f7f5715a54710d2636bdd2b8c138d9f235175bb8e7ae7b0"
     },
     {
       "path": "licenses/Cloud-Client-LICENSES.txt",
@@ -1020,8 +1025,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 33998,
-      "sha256": "7dbd42b7182a54a765786378a2c81a4756a5ed346b5baca260a5524f69790fa5"
+      "size": 34067,
+      "sha256": "d28f9ae5af3c18aa497ae7d6c4890293a570e9b141a7eaec3679f86f5fc6dc8d"
     },
     {
       "path": "requirements.txt",
@@ -1060,8 +1065,8 @@
     },
     {
       "path": "shelf_sync.py",
-      "size": 86089,
-      "sha256": "e05c3ffecfa0e0b55dd2603a052e8b26d50c0110e8bd462d38316f85339dda92"
+      "size": 86601,
+      "sha256": "4eb2ae96c1c4bbe4d6f09590216fc152161d9a6ef4bacc0be1a0d5005353adf3"
     },
     {
       "path": "shortcut_preview.py",
@@ -1145,8 +1150,8 @@
     },
     {
       "path": "test_clipboard_sync_v1819.py",
-      "size": 9360,
-      "sha256": "8c2d556511c454c49b7913850a99908b9f3a224aab1d8c33ed68deddd005f199"
+      "size": 14743,
+      "sha256": "0afdc6489a5906629fb0dca8bd9bee370d615138697f96471087de4f113084a2"
     },
     {
       "path": "test_cloud_api_stream_v183.py",
@@ -1575,8 +1580,8 @@
     },
     {
       "path": "test_update_notice_v1813.py",
-      "size": 5448,
-      "sha256": "7e5f8fb3d5e9d974097471bab9da02135b70ea17e8939843f9f7b0808c2b4227"
+      "size": 5500,
+      "sha256": "d1f1105ed1383ecb1bbbb72edd5be0ced105085211b73a8553ddf0620174a948"
     },
     {
       "path": "test_wan_account_v1819.py",
@@ -1624,6 +1629,11 @@
       "sha256": "813f5c80d04828668de1a763ea93d5e7b98a2e82bd0c4f433bfea2239f4079d2"
     },
     {
+      "path": "transfer_priority.py",
+      "size": 810,
+      "sha256": "edb14633ffa3200380f7c0551ba7f6b5de04812529319e29da3b6dad0bd43526"
+    },
+    {
       "path": "transfer_visuals.py",
       "size": 12473,
       "sha256": "ae4545c7f4f54c74a2ab824acd0abc18c4d2fba6d3cb119c7b0d396d70a3716e"
@@ -1655,8 +1665,8 @@
     },
     {
       "path": "verify_clipboard.py",
-      "size": 4957,
-      "sha256": "736241dbc6b2a1691e50e101625f1c4ae0813600d444ab4e0305c2ccdf9f0fee"
+      "size": 8772,
+      "sha256": "19e5fda1e895f7b7bd367beecb509bcd50812fe4c1c20612a35cfe69c9749f8b"
     },
     {
       "path": "verify_cloud.py",
@@ -1676,7 +1686,7 @@
     {
       "path": "version_info.txt",
       "size": 623,
-      "sha256": "9fc222572ea2e683c34b458ce6af93f5bf20c4b88456220ab4faa38d353a4ff8"
+      "sha256": "24055f13f37b35beee2b344cad6af93dde2ebf97af29ce8fcc139ba370db514f"
     },
     {
       "path": "wan_transfer.py",

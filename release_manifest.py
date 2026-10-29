@@ -38,7 +38,7 @@ RUNTIME_SOURCES=(
     'image_preview.py','instance_guard.py','media_preview.py','offscreen_verify.py',
     'runtime_media.py','selection_archive.py','shake_detector.py','shelf_content.py',
     'surface_morph.py','ui_theme.py','widget_retirement.py','app_version.py',
-    'native_ui_common.py','reference_widgets.py','pointer_paste.py','settings_edge_hint.py','cloud_connectivity.py','clipboard_sync.py','verify_clipboard.py',
+    'native_ui_common.py','reference_widgets.py','pointer_paste.py','settings_edge_hint.py','cloud_connectivity.py','clipboard_sync.py','verify_clipboard.py','transfer_priority.py',
     'update_client.py','update_dialog.py','update_controller.py','update_notice.py',
     'platform_startup.py','platform_native.py','mac_updates.py','mac_entry.py','runtime_macos.py',
     'account_store.py','cloud_api.py','cloud_config.py','cloud_events.py','account_service.py','account_panel.py',
@@ -82,6 +82,7 @@ MAINTAINED_TESTS=(
     'test_remote_transfer_actions_v1812.py','test_wan_transfer_v1816.py',
 )
 SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
+    '.github/workflows/native-clipboard.yml',
     'FlickDock.spec','FlickDock.iss','version_info.txt','ChineseSimplified.isl','windows-network.ps1',
     'flickdock.ico','THIRD_PARTY_NOTICES.md','font_manifest.json','bundle_policy.py',
     'release_manifest.py','release_macos.py','package_source.py','PUBLISHING.md','README.md','AGENTS.md','UI_REFERENCE_IMPLEMENTATION.md','HIG_DESIGN.md','.gitignore','.gitattributes',

@@ -1,0 +1,42 @@
+name: Native clipboard verification
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [cloud-build]
+
+permissions:
+  contents: read
+
+jobs:
+  clipboard:
+    if: github.repository == 'los0711/-flickdock-build'
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-latest, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    env:
+      PYTHONUTF8: '1'
+      FD_QA_NATIVE: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Install the reviewed Qt runtime
+        run: python -m pip install PySide6==6.12.0
+      - name: Install native macOS pasteboard bindings
+        if: runner.os == 'macOS'
+        run: python -m pip install 'pyobjc-framework-Quartz>=11,<13'
+      - name: Install locked local cloud test dependencies
+        run: npm ci --prefix cloud --no-audit --no-fund
+      - name: Verify actual OS copy and paste through the production cloud client
+        shell: pwsh
+        run: |
+          $env:FD_QA_PYTHON = (Get-Command python).Source
+          node cloud/test/clipboard.mjs

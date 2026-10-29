@@ -30,6 +30,7 @@ class FakeUpdates:
 
 
 class FakeManager:
+    def _present_clipboard_intro(self):return False
     _show_update_notice = ShelfManager._show_update_notice
     _start_notified_update = ShelfManager._start_notified_update
     _update_notice_state_changed = ShelfManager._update_notice_state_changed

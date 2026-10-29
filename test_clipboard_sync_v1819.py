@@ -4,6 +4,7 @@ os.environ['QT_QPA_PLATFORM']='offscreen'
 import hashlib,json,tempfile,unittest,zipfile,time
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 from PySide6.QtCore import QObject,Signal,QMimeData,QTimer,QUrl
 from PySide6.QtGui import QImage,QColor
 from test_html_native_workspace import APP,until,flush
@@ -31,7 +32,7 @@ class Events(QObject):
 
 
 class Hub:
-    def __init__(self):self.head=None;self.body=None;self.events=[];self.calls=[]
+    def __init__(self):self.head=None;self.pending=None;self.body=None;self.events=[];self.calls=[]
     def api(self,device):
         hub=self
         class Api:
@@ -40,17 +41,19 @@ class Hub:
                 def deliver():
                     result=None;error=None
                     if path=='/v1/clipboard' and method=='POST':
-                        hub.head=dict(id=kw['data']['id'],device=device,ready=False);hub.body=None;result={'clipboard':dict(hub.head)}
+                        hub.pending=dict(id=kw['data']['id'],device=device,ready=False,copied_at=kw['data']['copied_at']);result={'clipboard':dict(hub.pending)}
                     elif path=='/v1/clipboard':result={'clipboard':dict(hub.head) if hub.head else None}
                     elif method=='PUT':
-                        if not hub.head or hub.head['id'] not in path:error=RuntimeError('replaced')
+                        if not hub.pending or hub.pending['id'] not in path:error=RuntimeError('replaced')
                         else:
+                            hub.head=hub.pending;hub.pending=None
                             hub.body=Path(kw['source']).read_bytes();hub.head.update(ready=True,kind=kw['headers']['X-Clipboard-Kind'],size=len(hub.body),sha256=hashlib.sha256(hub.body).hexdigest());result={'clipboard':dict(hub.head)}
                     else:
                         if not hub.head or hub.head['id'] not in path or hub.body is None:error=RuntimeError('replaced')
                         else:
                             assert len(hub.body)==kw['expected']['size'] and hashlib.sha256(hub.body).hexdigest()==kw['expected']['sha256']
                             Path(kw['destination']).write_bytes(hub.body);result=str(kw['destination'])
+                    if isinstance(result,dict):result['server_time']=round(time.time()*1000)
                     callback(result,error)
                     if method in ('POST','PUT'):
                         for event in hub.events:event.clipboard_changed.emit()
@@ -98,13 +101,17 @@ class ClipboardTests(unittest.TestCase):
         until(lambda:bytes(self.clips[0].mimeData().data('image/png'))==expected)
         self.assertEqual(self.hub.body,expected)
 
-    def test_new_copy_during_preparation_cannot_restore_old_data_and_limit_clears_slot(self):
+    def test_new_copy_during_preparation_cannot_restore_old_data_and_limit_preserves_slot(self):
         self.clips[0].text('old');self.clips[0].text('latest')
         until(lambda:self.clips[1].mimeData().text()=='latest')
+        previous=self.hub.head['id']
+        previous_fence=self.clients[0]._local_fence
         self.clips[0].text('x'*MAX_BYTES)
-        until(lambda:self.hub.head is not None and not self.hub.head['ready'] and self.clients[0]._pending is None)
-        until(lambda:not self.clips[1].mimeData().hasText())
-        self.assertIsNone(self.hub.body)
+        until(lambda:self.clients[0]._local_fence is not previous_fence and self.clients[0]._pending is None)
+        self.assertEqual(self.hub.head['id'],previous)
+        self.assertEqual(self.clips[0].mimeData().text(),'x'*MAX_BYTES)
+        self.assertEqual(self.clips[1].mimeData().text(),'latest')
+        self.assertTrue(self.hub.head['ready'])
 
     def test_untrusted_archive_cannot_escape_owned_download_directory(self):
         path=self.base/'unsafe.zip'
@@ -144,6 +151,83 @@ class ClipboardTests(unittest.TestCase):
         self.clients[0].account.account_changed.emit({'id':'same-session-profile'})
         until(lambda:self.clips[1].mimeData().text()=='copy while profile is loading')
         self.assertTrue(self.hub.head['ready'])
+
+    def test_duplicate_file_notifications_create_one_upload_without_touching_source_clipboard(self):
+        source=self.base/'original.txt';source.write_text('original bytes',encoding='utf8')
+        mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(source))]);self.clips[0].setMimeData(mime)
+        until(lambda:self.clips[1].mimeData().hasUrls())
+        before=len(self.hub.calls)
+        for _ in range(8):self.clips[0].dataChanged.emit()
+        flush();time.sleep(.08);flush()
+        self.assertEqual(len([m for m,p in self.hub.calls[before:] if m in ('POST','PUT')]),0)
+        self.assertIs(self.clips[0].mimeData(),mime)
+        self.assertEqual(Path(mime.urls()[0].toLocalFile()).read_text(), 'original bytes')
+
+    def test_delayed_received_image_notifications_do_not_echo(self):
+        image=QImage(33,22,QImage.Format_ARGB32);image.fill(QColor('red'))
+        mime=QMimeData();mime.setImageData(image);self.clips[0].setMimeData(mime)
+        until(lambda:self.clips[1].mimeData().hasImage())
+        before=sum(m=='PUT' for m,p in self.hub.calls)
+        for _ in range(4):self.clips[1].dataChanged.emit()
+        time.sleep(.08);flush()
+        self.assertEqual(sum(m=='PUT' for m,p in self.hub.calls),before)
+
+    def test_disabling_sync_preserves_native_copy_and_stops_uploads(self):
+        self.clients[0].set_enabled(False);self.clips[0].text('local only')
+        time.sleep(.08);flush()
+        self.assertEqual(self.clips[0].mimeData().text(),'local only');self.assertIsNone(self.hub.head)
+
+    def test_failed_local_staging_preserves_copy_against_older_cloud_and_can_retry(self):
+        self.clips[1].text('older remote');until(lambda:self.hub.head and self.hub.head['ready'])
+        client=self.clients[0];client._seen=''
+        for failure in ('_next_sequence','_directory'):
+            with patch.object(client,failure,side_effect=OSError('temporary disk failure')):
+                self.clips[0].text('new local '+failure)
+                until(lambda:client._local_retry is not None)
+                self.assertIsNone(client._pending);self.assertFalse(client._priority_active())
+                client.refresh();until(lambda:not client._fetching)
+                self.assertEqual(self.clips[0].mimeData().text(),'new local '+failure)
+            client._retry();until(lambda:client._pending is None and client._local_retry is None)
+            until(lambda:self.clips[2].mimeData().text()=='new local '+failure)
+
+    def test_metadata_poll_never_preempts_bulk_and_received_file_survives_disable_expiry(self):
+        client=self.clients[0];changes=[];client.activity_changed.connect(changes.append)
+        client.refresh();until(lambda:not client._fetching)
+        self.assertEqual(changes,[])
+        source=self.base/'native.dat';source.write_bytes(b'keep pasteable')
+        mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(source))]);self.clips[1].setMimeData(mime)
+        until(lambda:self.clips[0].mimeData().hasUrls())
+        path=Path(self.clips[0].mimeData().urls()[0].toLocalFile());client.set_enabled(False)
+        with patch('clipboard_sync.time.time',return_value=time.time()+90000):client._cleanup()
+        until(lambda:not client._jobs)
+        self.assertEqual(path.read_bytes(),b'keep pasteable')
+
+    def test_near_limit_control_text_is_not_inflated_by_json_escaping(self):
+        folder=self.base/'control';folder.mkdir();text='\x00'*(MAX_BYTES-1)
+        item=package(('text',dict(text=text,html='')),folder)
+        self.assertIsNotNone(item);self.assertEqual(unpack('text',item['path'],folder)[1]['text'],text)
+
+    def test_observed_remote_clock_is_floor_for_only_future_copy(self):
+        client=self.clients[0];mono=time.monotonic()
+        client._clock_anchor=(mono,10000);client._observed_clock=20000
+        captured=dict(mono=mono,at=None,floor=9000)
+        client._calibrate(dict(server_time=10001,clipboard={'copied_at':30000}),mono)
+        self.assertLess(client._copy_timestamp(captured),30000)
+        new=dict(mono=mono,at=None,floor=client._observed_clock)
+        self.assertEqual(client._copy_timestamp(new),30001)
+
+    def test_bulk_payload_yields_to_clipboard_and_cancellation_still_works(self):
+        import threading
+        from transfer_priority import set_clipboard_priority,yield_bulk_payload
+        started=threading.Event();finished=threading.Event();cancel=threading.Event()
+        def bulk():started.set();yield_bulk_payload(cancel);finished.set()
+        set_clipboard_priority(True);thread=threading.Thread(target=bulk);thread.start()
+        try:
+            self.assertTrue(started.wait(.5));self.assertFalse(finished.wait(.08))
+            set_clipboard_priority(False);self.assertTrue(finished.wait(.5))
+            set_clipboard_priority(True);cancel.set()
+            with self.assertRaises(InterruptedError):yield_bulk_payload(cancel)
+        finally:set_clipboard_priority(False);thread.join(1)
 
 
 if __name__=='__main__':unittest.main()

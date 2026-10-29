@@ -73,7 +73,7 @@ class CloudApi(QObject):
 
     def request(self, method, path, callback, *, data=None, raw=None, source=None, source_offset=0, source_size=None, headers=None,
                 authenticated=True, destination=None, expected=None, timeout_ms=45000,
-                progress=None, receive_progress=None,_fallback_used=False,_deadline=None):
+                progress=None, receive_progress=None,priority='normal',_fallback_used=False,_deadline=None):
         """callback(result,error); optional progress callbacks report network bytes.
 
         Upload progress counts bytes handed to the network, not committed R2
@@ -85,6 +85,8 @@ class CloudApi(QObject):
             if self._closed: raise CloudError('同步服务已关闭。')
             if _deadline is not None and time.monotonic()>=_deadline:raise CloudError('同步请求超时，请检查网络。')
             request = QNetworkRequest(self._url(path))
+            if priority=='high':request.setPriority(QNetworkRequest.Priority.HighPriority)
+            elif source is not None:request.setPriority(QNetworkRequest.Priority.LowPriority)
             request.setAttribute(QNetworkRequest.Attribute.RedirectPolicyAttribute,
                                  QNetworkRequest.RedirectPolicy.ManualRedirectPolicy)
             request.setRawHeader(b'Accept', b'application/json')
@@ -143,7 +145,7 @@ class CloudApi(QObject):
                 state['retry']=lambda remaining,done:self.request(method,path,done,data=data,raw=raw,source=source,
                     source_offset=source_offset,source_size=source_size,headers=dict(headers) if headers else None,
                     authenticated=authenticated,destination=destination,expected=expected,timeout_ms=remaining,
-                    progress=progress,receive_progress=receive_progress,_fallback_used=True,_deadline=deadline)
+                    progress=progress,receive_progress=receive_progress,priority=priority,_fallback_used=True,_deadline=deadline)
             state['method']=str(method).upper()
             self._requests[key] = state
             sent_signal=getattr(reply,'requestSent',None)
