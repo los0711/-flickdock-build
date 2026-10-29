@@ -18,7 +18,7 @@ class FailoverTests(unittest.TestCase):
                 def setup(self):
                     super().setup()
                     # The fixture sends small HTTP header/body writes. Avoid
-                    # OS-dependent Nagle/delayed-ACK delays in a 220ms budget.
+                    # OS-dependent Nagle/delayed-ACK delays in deadline checks.
                     self.connection.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
                 def log_message(self,*_):pass
                 def request(self):
@@ -26,7 +26,7 @@ class FailoverTests(unittest.TestCase):
                     if owner.behavior[index]=='drop':self.close_connection=True;return
                     if owner.behavior[index]=='late-drop':time.sleep(.12);self.close_connection=True;return
                     if owner.behavior[index]=='late-gateway':
-                        time.sleep(.12)
+                        time.sleep(.45)
                         result=b'<html>Gateway unavailable</html>'
                         try:self.send_response(503);self.send_header('Content-Length',str(len(result)));self.end_headers();self.wfile.write(result)
                         except OSError:pass
@@ -76,9 +76,9 @@ class FailoverTests(unittest.TestCase):
         self.assertEqual(len(result),1);self.assertEqual(result[0][1].code,'cancelled')
         self.assertFalse(self.api._requests);self.assertFalse(self.api._fallback_aliases)
     def test_fallback_keeps_original_total_deadline(self):
-        # Establish both real loopback entrances before timing their remaining
-        # request budget. A cold Qt/proxy bootstrap may consume all 220ms before
-        # the alternate can be sent; that case has its own cold deadline test.
+        # Allow real HTTP handoff on a loaded native runner. With only 220ms,
+        # the remaining 10-30ms could expire before the alternate sees bytes.
+        # A reset budget would now take ~1.65s; the original deadline is 1.2s.
         for origin in self.origins:
             self.api.origin=origin;ready=[]
             self.api.request('GET','/v1/health',lambda value,error:ready.append((value,error)),authenticated=False)
@@ -86,9 +86,9 @@ class FailoverTests(unittest.TestCase):
         self.api.origin=self.origins[0]
         for calls in self.calls:calls.clear()
         self.behavior[0]='late-gateway';self.behavior[1]='wait';result=[];started=time.monotonic()
-        self.api.request('GET','/v1/sync/changes',lambda value,error:result.append((value,error)),authenticated=False,timeout_ms=220)
+        self.api.request('GET','/v1/sync/changes',lambda value,error:result.append((value,error)),authenticated=False,timeout_ms=1200)
         self.until(lambda:result)
-        self.assertIsNotNone(result[0][1]);self.assertLess(time.monotonic()-started,.31)
+        self.assertIsNotNone(result[0][1]);self.assertLess(time.monotonic()-started,1.5)
         self.assertEqual(len(self.calls[1]),1,(self.calls,result[0][1],time.monotonic()-started,[dict(row,time=row['time']-started) for row in self.reply_trace]))
 
     def test_qt_internal_retry_of_dropped_get_cannot_extend_total_deadline(self):

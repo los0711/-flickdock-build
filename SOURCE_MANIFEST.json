@@ -1165,8 +1165,8 @@
     },
     {
       "path": "test_cloud_failover_v1818.py",
-      "size": 8068,
-      "sha256": "216f73267da0841ff222d705a1db1f94aa4f378a206c3a364d5d28945d3eb8e8"
+      "size": 8066,
+      "sha256": "15f195a0c7f7472452e62f6507b0be57b345a339d4d2fceccf3e224fab93bf1e"
     },
     {
       "path": "test_cloud_file_status_v1810.py",
