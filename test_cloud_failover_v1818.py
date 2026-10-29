@@ -68,11 +68,20 @@ class FailoverTests(unittest.TestCase):
         self.assertEqual(len(result),1);self.assertEqual(result[0][1].code,'cancelled')
         self.assertFalse(self.api._requests);self.assertFalse(self.api._fallback_aliases)
     def test_fallback_keeps_original_total_deadline(self):
+        # Establish both real loopback entrances before timing their remaining
+        # request budget. A cold Qt/proxy bootstrap may consume all 220ms before
+        # the alternate can be sent; that case has its own cold deadline test.
+        for origin in self.origins:
+            self.api.origin=origin;ready=[]
+            self.api.request('GET','/v1/health',lambda value,error:ready.append((value,error)),authenticated=False)
+            self.until(lambda:ready);self.assertIsNone(ready[0][1])
+        self.api.origin=self.origins[0]
+        for calls in self.calls:calls.clear()
         self.behavior[0]='late-gateway';self.behavior[1]='wait';result=[];started=time.monotonic()
         self.api.request('GET','/v1/sync/changes',lambda value,error:result.append((value,error)),authenticated=False,timeout_ms=220)
         self.until(lambda:result)
         self.assertIsNotNone(result[0][1]);self.assertLess(time.monotonic()-started,.31)
-        self.assertEqual(len(self.calls[1]),1)
+        self.assertEqual(len(self.calls[1]),1,(self.calls,result[0][1],time.monotonic()-started))
 
     def test_qt_internal_retry_of_dropped_get_cannot_extend_total_deadline(self):
         self.behavior[0]='late-drop';self.behavior[1]='wait';result=[];started=time.monotonic()
