@@ -12,12 +12,32 @@ from test_html_native_workspace import APP,flush,until
 import test_html_native_workspace as _workspace
 from test_account_settings_v181 import Service
 from account_panel import AccountPanel
+import account_panel
 from lan_panel import _CopyCodeButton,LanDialog
 from lan_transfer import LanTransferService
 from shelf_sync import ShelfSync
 import flickdock,app_settings,reference_widgets
 
 class FeedbackTests(unittest.TestCase):
+    def test_wrapped_profile_height_does_not_reuse_old_fixed_height_at_a_previous_width(self):
+        # The Mac font/layout branch reproduces Qt's stale 44px HFW allocation
+        # after cycling widths, even on the offscreen Windows backend.
+        with tempfile.TemporaryDirectory() as directory,patch.object(app_settings,'_startup_runtime_allowed',return_value=False),patch.object(account_panel.sys,'platform','darwin'):
+            from native_ui_common import configure_reference_font
+            configure_reference_font(APP)
+            dialog=app_settings.SettingsDialog(app_settings.SettingsStore(Path(directory)))
+            service=Service();service.account=dict(id='fixture',username='Roger',login_alias='id:legacy-account-identity')
+            panel=AccountPanel(service);dialog.set_account_panel(panel)
+            panel.set_sync_status('可同步内容已同步；1 项暂留本机，请检查文件大小或原文件所在位置。')
+            dialog.show();flush()
+            try:
+                for width in (892,740,1024,892,1024):
+                    dialog.resize(width,632);flush()
+                    bottom=panel.profile_frame.mapTo(panel.signed_in_page,panel.profile_frame.rect().bottomRight()).y()
+                    top=panel.login_alias_edit.mapTo(panel.signed_in_page,QPoint()).y()
+                    self.assertGreaterEqual(top-bottom,12,(width,top,bottom))
+            finally:dialog.close();dialog.deleteLater();flush()
+
     def test_lan_remote_switch_keeps_one_visible_native_window_and_independent_queues(self):
         from wan_transfer import WanTransferService
         class Watch(QObject):
@@ -106,7 +126,7 @@ class FeedbackTests(unittest.TestCase):
                                 previous=bounds;dialog.scroll.ensureWidgetVisible(field);flush()
                                 viewport=dialog.scroll.viewport()
                                 visible=QRect(field.mapTo(viewport,QPoint()),field.size()).intersected(viewport.rect())
-                                self.assertEqual(visible.height(),field.height())
+                                self.assertEqual(visible.height(),field.height(),(size,mode,field.accessibleName(),field.geometry(),viewport.size(),dialog.scroll.verticalScrollBar().value(),dialog.scroll.verticalScrollBar().maximum()))
                             panel.close_auth()
                         service.signed_in=True;panel._toggle_password(True);flush()
                         dialog=panel.password_dialog

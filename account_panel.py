@@ -678,9 +678,9 @@ class AccountPanel(QFrame):
         if self.signed_in_page.isHidden():
             self.height_changed.emit();return
         width=max(1,self.signed_in_page.width())
-        identity=self.profile_frame.layout()
-        profile=max(40,identity.minimumSize().height(),identity.sizeHint().height(),identity.totalHeightForWidth(width))
-        self.profile_frame.setFixedHeight(profile)
+        # Let the profile layout measure its wrapped subtitle at this width.
+        # A changing fixed height became part of QWidgetItemV2's cached HFW,
+        # leaving a stale 44px allocation for a subsequently 60px profile.
         devices=max(0,self.devices_layout.minimumSize().height()+2)
         self.devices_body.setFixedHeight(devices)
         # Layout owns child positions on every platform. Manual setGeometry

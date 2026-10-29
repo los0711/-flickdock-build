@@ -848,6 +848,21 @@ class ThirdPartyDialog(QDialog):
         """)
 
 
+class ModalScrollArea(QScrollArea):
+    def ensureWidgetVisible(self,widget,xmargin=50,ymargin=50):
+        super().ensureWidgetVisible(widget,xmargin,ymargin)
+        # Qt follows a line edit's cursor rectangle. A custom field's full
+        # rounded border must remain visible as well, including on Cocoa.
+        if widget is None or self.widget() is None or not self.widget().isAncestorOf(widget):return
+        point=widget.mapTo(self.viewport(),QPoint())
+        margin=max(0,min(ymargin,(self.viewport().height()-widget.height())//2))
+        top,bottom=point.y(),point.y()+widget.height()
+        bar=self.verticalScrollBar()
+        if top<margin:bar.setValue(bar.value()+top-margin)
+        elif bottom>self.viewport().height()-margin:
+            bar.setValue(bar.value()+bottom-self.viewport().height()+margin)
+
+
 class ReferenceModalDialog(QDialog):
     """A source-sized rounded surface with transparent shadow gutters.
 
@@ -867,7 +882,7 @@ class ReferenceModalDialog(QDialog):
         self.surface.setAutoFillBackground(False)
         outer.addWidget(self.surface)
         surface_layout=QVBoxLayout(self.surface);surface_layout.setContentsMargins(0,0,0,0)
-        self.scroll=QScrollArea(self.surface);self.scroll.setWidgetResizable(True)
+        self.scroll=ModalScrollArea(self.surface);self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.Shape.NoFrame);self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll.setStyleSheet('QScrollArea{background:transparent;border:0;} QScrollArea>QWidget>QWidget{background:transparent;} QScrollBar:vertical{width:6px;background:transparent;} QScrollBar::handle:vertical{background:rgba(142,142,147,90);border-radius:3px;min-height:20px;} QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;} QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{background:transparent;}')
         self.body=QWidget(self.scroll);self.scroll.setWidget(self.body);surface_layout.addWidget(self.scroll)
@@ -895,6 +910,12 @@ class ReferenceModalDialog(QDialog):
 
     def adjustSize(self):
         if not hasattr(self,'body_layout'):return super().adjustSize()
+        for control in self.body.findChildren(QWidget):
+            if isinstance(control,(QLineEdit,QPushButton)):
+                control.installEventFilter(self)
+                if not control.testAttribute(Qt.WidgetAttribute.WA_LayoutUsesWidgetRect):
+                    control.setAttribute(Qt.WidgetAttribute.WA_LayoutUsesWidgetRect,True)
+                    control.updateGeometry();self.body_layout.invalidate()
         hint=self.sizeHint();available=self._available_geometry()
         size=QSize(hint.width(),min(hint.height(),max(1,available.height()-16)))
         if self.size()!=size:self.resize(size)
@@ -902,6 +923,8 @@ class ReferenceModalDialog(QDialog):
     def eventFilter(self,watched,event):
         if watched is self.body and event.type()==QEvent.Type.LayoutRequest and not self._fit_timer.isActive():
             self._fit_timer.start(0)
+        if event.type()==QEvent.Type.FocusIn and isinstance(watched,(QLineEdit,QPushButton)):
+            QTimer.singleShot(0,self.scroll,lambda:self.scroll.ensureWidgetVisible(watched,12,12) if watched.hasFocus() and self.isVisible() else None)
         return super().eventFilter(watched,event)
 
     def set_surface_theme(self, theme):
