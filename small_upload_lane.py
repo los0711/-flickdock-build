@@ -52,7 +52,13 @@ class SmallUploadLane:
         owner._notify_transfers()
         # Do not re-enter the bulk cycle while its request is outstanding.
         owner.debounce.start(30001 if error else 1)
-        QTimer.singleShot(0,owner,self.kick)
+        QTimer.singleShot(0,owner,self._continue)
+
+    def _continue(self):
+        owner=self.owner
+        if owner.closed or owner._clipboard_priority:return
+        if owner.running and owner.transfer is None and self.active is None:owner._push_next()
+        else:self.kick()
 
     def eligible(self, entry, texts):
         if (entry.get('version', 0) != 0 or entry.get('deleted')

@@ -20,7 +20,7 @@ def spin(predicate,seconds=6):
 class Api(QObject):
     token='fixture'
     def __init__(self):
-        super().__init__();self.pending={};self.uploads={};self.committed={};self.held={};self.cancelled=[];self.fail_small_once=False
+        super().__init__();self.pending={};self.uploads={};self.committed={};self.held={};self.cancelled=[];self.fail_small_once=False;self.hold_small=False;self.held_names={}
     def request(self,method,path,callback,**kwargs):
         key=uuid4().hex;self.pending[key]=True
         def deliver():
@@ -48,8 +48,9 @@ class Api(QObject):
             elif method=='DELETE':result={}
             else:raise AssertionError((method,path))
             callback(result,None)
-        if '/parts/' in path and self.uploads[path.split('/')[3]]['size']>4*1024*1024:
+        if '/parts/' in path and (self.uploads[path.split('/')[3]]['size']>4*1024*1024 or self.hold_small):
             self.held[key]=deliver
+            self.held_names[key]=self.uploads[path.split('/')[3]]['name']
         else:QTimer.singleShot(0,deliver)
         return key
     def cancel(self,key):
@@ -120,6 +121,28 @@ class SmallLaneTests(unittest.TestCase):
                 self.assertTrue(spin(lambda:'small.bin' in api.committed))
                 self.assertEqual(api.committed['small.bin'],b'original');self.assertIn(upload_id,api.uploads)
                 self.assertEqual(len(api.uploads),2);self.assertTrue(held.issubset(api.pending));self.assertFalse(api.cancelled)
+            finally:engine.close()
+
+    def test_bulk_finishing_first_does_not_hide_or_unprotect_small_tail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);bulk=root/'large.bin';bulk.write_bytes(b'L'*(5*1024*1024))
+            api=Api();service=Service(api);adapter=Adapter();adapter.view['permanent']=[str(bulk)]
+            engine=ShelfSync(root/'profile',service,adapter,poll_ms=600000);statuses=[];engine.status_changed.connect(statuses.append)
+            engine.set_directions(True,False);service.account_changed.emit({'id':'fixture'})
+            try:
+                self.assertTrue(spin(lambda:bool(api.held)))
+                small=root/'small.bin';small.write_bytes(b'original');api.hold_small=True
+                adapter.view['permanent'].append(str(small));engine.local_changed()
+                self.assertTrue(spin(lambda:len(api.held)==2))
+                large_key=next(key for key,name in api.held_names.items() if name=='large.bin')
+                small_key=next(key for key,name in api.held_names.items() if name=='small.bin')
+                statuses.clear();api.held.pop(large_key)()
+                self.assertTrue(spin(lambda:'large.bin' in api.committed and engine.transfer is None))
+                self.assertTrue(engine.running);self.assertIsNotNone(engine.small_lane.active)
+                self.assertNotIn('搁架已同步。',statuses)
+                engine.set_clipboard_priority(True)
+                self.assertIn(small_key,api.cancelled);self.assertIsNone(engine.small_lane.active)
+                self.assertNotIn('small.bin',api.committed)
             finally:engine.close()
 
 if __name__=='__main__':unittest.main()

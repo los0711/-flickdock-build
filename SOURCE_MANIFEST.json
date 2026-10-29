@@ -1095,8 +1095,8 @@
     },
     {
       "path": "shelf_sync.py",
-      "size": 87970,
-      "sha256": "f2b95eb16919ab95517be9895a8ee23a1632e5220b85b219e7980ca846c4cd51"
+      "size": 88543,
+      "sha256": "3dfba56beffbc381cc4e36d5fc8ea9b29b55712f6e58f25eb5ef57c14231136d"
     },
     {
       "path": "shortcut_preview.py",
@@ -1105,8 +1105,8 @@
     },
     {
       "path": "small_upload_lane.py",
-      "size": 4783,
-      "sha256": "5222923edc6cee8c8ea0da9ba1c3b86d50f1d5045f4ebbfc51fcf7aa0bc37c13"
+      "size": 5019,
+      "sha256": "0861eb9bc085b1e3a2f6bc7847b4a77b9623a5a2b561456191b55c975dc6314c"
     },
     {
       "path": "surface_morph.py",
@@ -1280,8 +1280,8 @@
     },
     {
       "path": "test_feedback_v1818.py",
-      "size": 22015,
-      "sha256": "aba3f60c52b7509d59e4ad2ebd44eb51336ddb9f7c6d0de26443470e01029517"
+      "size": 22027,
+      "sha256": "356b479d0e05965baa769c6c856c136cdc448849f223d10ca1d78968f8b54e1f"
     },
     {
       "path": "test_feedback_v1820.py",
@@ -1525,8 +1525,8 @@
     },
     {
       "path": "test_small_upload_lane.py",
-      "size": 7220,
-      "sha256": "03be7085863d6436c17c2761f65aa65ed45ffec01aa7b74954f170c3fc0c1acb"
+      "size": 8986,
+      "sha256": "cbf8e20142f2875bb670176333688b8e297e9bcf90c4eb41ee6c580d1b30bc38"
     },
     {
       "path": "test_stream_upload_v1816.py",

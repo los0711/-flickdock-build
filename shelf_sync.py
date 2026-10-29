@@ -671,7 +671,7 @@ class ShelfSync(QObject):
         if active:
             # An interrupted multipart upload keeps its durable resume journal.
             # Reconciliation discovers parts already accepted by the server.
-            if self.running:self._interrupt_cycle()
+            if self.running or self.small_lane.active is not None:self._interrupt_cycle()
         elif not self.closed:self.debounce.start(1)
 
     def _after_cleanup(self):
@@ -1239,10 +1239,12 @@ class ShelfSync(QObject):
                     for x in self.state.setdefault('pending_uploads',[])))):
             self._retire_uploads(); return
         lane_id=(self.small_lane.active or {}).get('id')
-        pending = next((e for e in self.state['entries'].values() if e['id']!=lane_id and e.get('dirty') and not e.get('paused_upload') and
+        pending = next((e for e in self.state['entries'].values() if e['id']!=lane_id and self.small_lane.retry_at.get(e['id'],0)<=time.monotonic() and e.get('dirty') and not e.get('paused_upload') and
                         ((e.get('deleted') and e.get('version',0)==0 and not self.state.get('pending_uploads')) or (not e.get('deleted') and
                         e.get('blocked_fingerprint') != e.get('fingerprint')))),None)
         if pending is None:
+            if self.small_lane.active is not None:
+                self.running=True;self.transfer=None;self._notify_transfers();return
             self.running = False; self.transfer = None
             self._notify_transfers()
             visible=set(self.adapter.snapshot().get('permanent',[]))
@@ -1251,13 +1253,16 @@ class ShelfSync(QObject):
                 for e in self.state['entries'].values())
             paused=sum(bool(e.get('dirty') and not e.get('deleted') and e.get('paused_upload')
                 and e.get('ref') in visible) for e in self.state['entries'].values())
-            retrying=len(self.state.get('deferred_downloads',{}))
+            small_retries=[deadline for identity,deadline in self.small_lane.retry_at.items()
+                           if deadline>time.monotonic() and self.state['entries'].get(identity,{}).get('dirty')]
+            retrying=len(self.state.get('deferred_downloads',{}))+len(small_retries)
             self.status_changed.emit(f'{retrying} 项等待重试，其他内容已同步。' if retrying else f'可同步内容已同步；{blocked} 项暂留本机，请检查文件大小或位置。' if blocked else f'其他可同步内容已同步；{paused} 项暂停上传。' if paused else '搁架已同步。')
             if self._refresh_again:
                 self._refresh_again=False;self.debounce.start(1)
             elif self.state.get('deferred_downloads'):
                 due=min(item.get('retry_at',time.time()) for item in self.state['deferred_downloads'].values())
                 self.debounce.start(max(1,min(60000,round((due-time.time())*1000))))
+            elif small_retries:self.debounce.start(max(1,round((min(small_retries)-time.monotonic())*1000)+1))
             return
         identity = pending['id']
         if pending.get('deleted'):
