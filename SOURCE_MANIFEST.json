@@ -1380,8 +1380,8 @@
     },
     {
       "path": "test_nearby_transport_v1818.py",
-      "size": 6980,
-      "sha256": "03bd4bf6e56e7b10027987e68b0b630779a3dfd4229d4aa406cd7684879d2b7e"
+      "size": 8415,
+      "sha256": "ff5d4ca01623f3065e1103e3083e88d09a3b8bd70595d5fbcaa083f486a66ca6"
     },
     {
       "path": "test_overview_drop_v163.py",

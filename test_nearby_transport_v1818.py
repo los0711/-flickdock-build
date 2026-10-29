@@ -58,6 +58,7 @@ class NearbyTests(unittest.TestCase):
             expected=hashlib.sha256(block*128).hexdigest()
             sender=LanTransferService(discovery=False);receiver=LanTransferService(discovery=False)
             sender.mode=receiver.mode='wan'
+            progress=[];sender.progress.connect(progress.append)
             sender._connect_peer=lambda *args:streams['send'];sender._stream_code=lambda *args:''
             receiver._incoming_stream=lambda raw:streams['receive'];receiver._stream_code=lambda *args:''
             def accept(transfer,*args):transfer.destination=destination;transfer.accepted.set()
@@ -67,7 +68,13 @@ class NearbyTests(unittest.TestCase):
             self.assertTrue(transfer.finished);self.assertFalse(thread.is_alive())
             actual=destination/source.name;self.assertEqual(actual.stat().st_size,128*1024*1024)
             self.assertEqual(hashlib.sha256(actual.read_bytes()).hexdigest(),expected)
-            self.assertEqual(streams['send'].payload_progress(),128*1024*1024)
+            native.APP.processEvents()
+            # The verified TLS completion is authoritative. Optional progress
+            # credits use the separate DataChannel and may stop just before
+            # its teardown; querying that closed stream is not a final receipt.
+            self.assertEqual(progress[-1]['state'],'complete')
+            self.assertEqual(progress[-1]['received'],128*1024*1024)
+            self.assertEqual(progress[-1]['total'],128*1024*1024)
             print(json.dumps(dict(transport='nearby-pinned-tls',size_mib=128,seconds=round(elapsed,3),mib_per_second=round(128/elapsed,2),sha256_verified=True)),flush=True)
             sender.close();receiver.close();sender.deleteLater();receiver.deleteLater();native.APP.processEvents()
 
@@ -97,6 +104,19 @@ class NearbyTests(unittest.TestCase):
         started=time.monotonic();self.raw[1].close(abort=True);self.assertTrue(ended.wait(1));self.assertLess(time.monotonic()-started,1)
 
 class NearbyBoundaryTests(unittest.TestCase):
+    def test_live_progress_counts_peer_read_payload_excluding_protocol_bytes(self):
+        raw=SimpleNamespace(_nearby_delivered=0,own_socket=lambda _:None)
+        stream=nearby.NearbyStream(raw,SimpleNamespace(sendall=lambda _:None))
+        stream.sendall(b'H'*10);stream.set_payload_offset(100);stream.send_payload(b'B'*20);stream.sendall(b'T'*10)
+        self.assertEqual(stream.payload_progress(),100)
+        raw._nearby_delivered=10;self.assertEqual(stream.payload_progress(),100)
+        raw._nearby_delivered=17;self.assertEqual(stream.payload_progress(),107)
+        raw._nearby_delivered=40;self.assertEqual(stream.payload_progress(),120)
+        self.assertFalse(stream._spans)
+        stream.set_payload_offset(200);stream.send_payload(b'C'*30)
+        self.assertEqual(stream.payload_progress(),200)
+        raw._nearby_delivered=65;self.assertEqual(stream.payload_progress(),225)
+        raw._nearby_delivered=70;self.assertEqual(stream.payload_progress(),230)
     def test_legacy_public_relay_and_ipv6_peers_do_not_open_an_extra_socket(self):
         for capable,route,remote in ((False,'direct','192.168.1.3'),(True,'relay','192.168.1.3'),(True,'direct','8.8.8.8'),(True,'direct','::1')):
             raw=SimpleNamespace(route=route,_nearby_context=dict(capable=capable,local='192.168.1.2',remote=remote))
