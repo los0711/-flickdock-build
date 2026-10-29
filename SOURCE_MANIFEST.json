@@ -555,8 +555,8 @@
     },
     {
       "path": "build_macos.py",
-      "size": 21095,
-      "sha256": "080edf9d4c9c4b1967efcf6a2ad1834100cde6e3ec0810fedec3769801e96e86"
+      "size": 21121,
+      "sha256": "405e40d67f70d84753e14019d8e71cbfbc7099afe0e2a0d90d2a8fd581be8e90"
     },
     {
       "path": "bundle_policy.py",
@@ -950,8 +950,8 @@
     },
     {
       "path": "p2p/bridge.mjs",
-      "size": 7662,
-      "sha256": "6a062af335c115fe40868925b42fc9172230f6b0dbc53759b07b19bafbf46ca9"
+      "size": 7701,
+      "sha256": "8242c55e47d17699c8acecda5558a80427a880e678e42f1ed45ccdf11e99c54f"
     },
     {
       "path": "p2p/node-shasums.json",
@@ -1020,8 +1020,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 33969,
-      "sha256": "842a3951b6e1f7f6984f52bec61da69a319890c62e918a745113768432bf9a9c"
+      "size": 33998,
+      "sha256": "7dbd42b7182a54a765786378a2c81a4756a5ed346b5baca260a5524f69790fa5"
     },
     {
       "path": "requirements.txt",
@@ -1380,8 +1380,8 @@
     },
     {
       "path": "test_nearby_transport_v1818.py",
-      "size": 6539,
-      "sha256": "37a99147c61844bc1d01396fc086e1f3cb745657f0523e6cb545434e1c6ea406"
+      "size": 6980,
+      "sha256": "03bd4bf6e56e7b10027987e68b0b630779a3dfd4229d4aa406cd7684879d2b7e"
     },
     {
       "path": "test_overview_drop_v163.py",
@@ -1580,8 +1580,8 @@
     },
     {
       "path": "test_wan_account_v1819.py",
-      "size": 3203,
-      "sha256": "74c9f7421b755da4111e0609d99f8a4c12fee6e58ca7fe8259252059d39c91d0"
+      "size": 4018,
+      "sha256": "ba4d12313d7942058a6246e6e767f04125dff132c1dad0e88299c004c6defcc4"
     },
     {
       "path": "test_wan_signaling_v1818.py",
@@ -1592,6 +1592,11 @@
       "path": "test_wan_transfer_v1816.py",
       "size": 19543,
       "sha256": "cbf0c938c1dc484377690f612a472bd9f76f83826498fb644ea80757ee9b88f2"
+    },
+    {
+      "path": "test_webrtc_close_v1819.py",
+      "size": 5496,
+      "sha256": "d5492d0ed2c4ba7e8cdfe9481454a5a91d72747e0bfd1c3e901059cb39f8ea74"
     },
     {
       "path": "test_widget_retirement_v162.py",
@@ -1675,13 +1680,13 @@
     },
     {
       "path": "wan_transfer.py",
-      "size": 33390,
-      "sha256": "9a187652766258afa15a75453dfb2ea7d733633b1731f4ac0c3173940b52aa21"
+      "size": 33996,
+      "sha256": "0386647dc066920fb9f4a9d9e9a5c0ff346c798707a614906d4fb01ff7e6271d"
     },
     {
       "path": "webrtc_stream.py",
-      "size": 10573,
-      "sha256": "61466689c7c88cc634d9d10166fecc2e253abb1dfcfb1bc4da10f3a2ef163652"
+      "size": 12068,
+      "sha256": "b41d8c17290be4e9ed3c5757a8e18bda58c4397ec62a0c0f5f55995184779179"
     },
     {
       "path": "website/CHINA_DEPLOYMENT.md",

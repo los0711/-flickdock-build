@@ -13,6 +13,12 @@ from lan_transfer import LanTransferService,_Transfer
 class NearbyTests(unittest.TestCase):
     def setUp(self):
         self.fixture=native.NativeStream();self.fixture.setUp();self.raw=self.fixture.peers
+        # Exercise the actual pinned-TLS handshake over IPv4 loopback, rather
+        # than whichever VPN/VM adapter host ICE happens to select on the runner.
+        # Relay/public/IPv6 eligibility remains covered separately below.
+        for raw in self.raw:
+            self.assertEqual(raw.route,'direct');self.assertTrue(raw._nearby_context.get('capable'))
+            raw._nearby_context.update(local='127.0.0.1',remote='127.0.0.1')
     def tearDown(self):self.fixture.tearDown()
     def upgrade(self,change_offer=None,break_commit=False):
         results={};errors={};cancel=threading.Event()

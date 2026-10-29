@@ -22,7 +22,10 @@ class WebRTCStream:
         self._traffic={'sent':0,'received':0};self._stats_generation=0;self.last_activity=time.monotonic()
         self._sent_position=0;self._payload_spans=deque();self._payload_delivered=0
         self._delivered_position=0;self._payload_offset=0;self._payload_origin=0
-        threading.Thread(target=self._reader,daemon=True,name='FlickDock-WebRTC-pipe').start()
+        self._reader_done=threading.Event()
+        self._write_closed=False;self._shutdown_started=False;self._close_lock=threading.Lock()
+        self._reader_thread=threading.Thread(target=self._reader,daemon=True,name='FlickDock-WebRTC-pipe')
+        self._reader_thread.start()
         threading.Thread(target=self._writer,daemon=True,name='FlickDock-WebRTC-writer').start()
 
     @property
@@ -36,11 +39,12 @@ class WebRTCStream:
                 if len(self._controls)>=128 or self._control_bytes+len(data)>1024*1024:raise ConnectionError('连接信令积压，请重试。')
                 self._controls.append(data);self._control_bytes+=len(data)
             else:
-                while self._write_bytes+len(data)>4*1024*1024 and not self._closed:
+                if self._write_closed:raise ConnectionError('远程连接已中断。')
+                while self._write_bytes+len(data)>4*1024*1024 and not self._closed and not self._write_closed:
                     remaining=deadline-time.monotonic()
                     if remaining<=0:raise socket.timeout('对方设备长时间未接收数据。')
                     self._condition.wait(remaining)
-                if self._closed:raise ConnectionError('远程连接已中断。')
+                if self._closed or self._write_closed:raise ConnectionError('远程连接已中断。')
                 self._writes.append((kind,data));self._write_bytes+=len(data)
                 if kind==b'B':self._sent_position+=len(data)
             self._condition.notify_all()
@@ -71,14 +75,14 @@ class WebRTCStream:
 
     def _reader(self):
         try:
-            while not self._closed:
+            while True:
                 size=struct.unpack('!I',self._read_pipe(4))[0]
                 if not 1<=size<=131073:raise ValueError('Invalid bridge frame')
                 packet=self._read_pipe(size)
                 if packet[:1]==b'B':
                     with self._condition:
-                        while self._size>=8*1024*1024 and not self._closed:self._condition.wait()
-                        if self._closed:return
+                        while self._size>=8*1024*1024 and not self._closed and not self._write_closed:self._condition.wait()
+                        if self._closed or self._write_closed:continue
                         self._data.append(packet[1:]);self._size+=len(packet)-1;self._condition.notify_all()
                 elif packet[:1]==b'J':
                     value=json.loads(packet[1:])
@@ -112,6 +116,7 @@ class WebRTCStream:
         finally:
             with self._condition:self._closed=True;self._condition.notify_all()
             self._close_sockets()
+            self._reader_done.set()
             self.on_signal({'type':'closed'})
 
     def own_socket(self,stream):
@@ -171,16 +176,32 @@ class WebRTCStream:
             data=self._data.popleft();count=min(len(target),len(data));target[:count]=data[:count]
             if count<len(data):self._data.appendleft(data[count:])
             self._size-=count;self._condition.notify_all();return count
-    def shutdown(self,*_):self.close(abort=True)
+    def shutdown(self,*_):
+        with self._condition:
+            if self._shutdown_started:return
+            self._shutdown_started=True;self._write_closed=True
+            self._writes.clear();self._write_bytes=0;self._condition.notify_all()
+        self._close_sockets()
+        # Cancellation is a UI action. Stop pending payload immediately and
+        # reclaim the subprocess/terminal statistics outside the GUI thread.
+        threading.Thread(target=lambda:self.close(abort=True),daemon=True,name='FlickDock-WebRTC-cancel').start()
     def close(self,*,abort=False):
         self._close_sockets()
-        if not abort and not self._closed:
-            try:self.control({'type':'close'})
-            except OSError:pass
-        if abort and self._process.poll() is None:self._process.terminate()
-        try:self._process.wait(timeout=4)
-        except subprocess.TimeoutExpired:self._process.kill();self._process.wait(timeout=3)
-        with self._condition:self._closed=True;self._condition.notify_all()
-        for stream in (self._process.stdin,self._process.stdout):
-            try:stream.close()
-            except OSError:pass
+        with self._close_lock:
+            if abort and self._process.poll() is None:
+                # Let a responsive bridge emit actual final wire counters.
+                # A stuck send/peer still has a bounded hard-stop fallback.
+                try:
+                    self.control({'type':'abort'});self._process.wait(timeout=.25)
+                except (OSError,subprocess.TimeoutExpired):self._process.terminate()
+            elif not self._closed and not self._shutdown_started:
+                try:self.control({'type':'close'})
+                except OSError:pass
+            try:self._process.wait(timeout=4)
+            except subprocess.TimeoutExpired:self._process.kill();self._process.wait(timeout=3)
+            # Writer failure/closure does not mean stdout has reached EOF.
+            if threading.current_thread() is not self._reader_thread:self._reader_done.wait(1)
+            with self._condition:self._closed=True;self._write_closed=True;self._condition.notify_all()
+            for stream in (self._process.stdin,self._process.stdout):
+                try:stream.close()
+                except OSError:pass

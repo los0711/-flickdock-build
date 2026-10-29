@@ -47,7 +47,7 @@ RUNTIME_SOURCES=(
     'wan_transfer.py','webrtc_stream.py','nearby_transport.py','verify_wan.py','windows_network.py',
 )
 MAINTAINED_TESTS=(
-    'test_pointer_paste_v1819.py','test_presentation_v1819.py','test_clipboard_sync_v1819.py','test_wan_account_v1819.py',
+    'test_pointer_paste_v1819.py','test_presentation_v1819.py','test_clipboard_sync_v1819.py','test_wan_account_v1819.py','test_webrtc_close_v1819.py',
     'test_feedback_v1818.py','test_nearby_transport_v1818.py','test_wan_signaling_v1818.py','test_cloud_failover_v1818.py','test_windows_network_v1818.py',
     'test_app_settings.py','test_global_hotkeys.py','test_shelf_content.py',
     'test_content_grid.py','test_content_tile_completion.py','test_svg_hidpi.py',

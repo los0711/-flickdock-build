@@ -204,7 +204,7 @@ class WanTransferService(LanTransferService):
     def _handle_command(self,value):
         if value.pop('_retire',False):
             state=self._pending.pop(value['id'],None)
-            if state and state.get('bridge'):state['bridge'].close(abort=True)
+            if state and state.get('bridge'):state['bridge'].shutdown()
         elif value.pop('_connect',False):
             identifier=value['id'];state=self._pending.get(identifier)
             if not state:return
@@ -446,6 +446,7 @@ class WanTransferService(LanTransferService):
         if shutil.disk_usage(path).free<state['total']+1024*1024:raise ValueError('接收位置的可用空间不足。')
         state['destination']=path;self._send_signal(dict(type='accept',id=identifier));return True
     def cancel(self,identifier,*,remote=False):
+        active=bool(self._transfers.get(identifier) and self._transfers[identifier].active)
         state=self._pending.get(identifier)
         if state:
             state['error']='已取消传输。';state['ready'].set()
@@ -453,7 +454,9 @@ class WanTransferService(LanTransferService):
             if state.get('bridge'):state['bridge'].shutdown()
         if identifier in self._transfers:super().cancel(identifier)
         elif state:self.progress.emit(dict(id=identifier,state='cancelled',direction=state['role'],peer=state['peer']['name'],received=0,total=state.get('total',0)))
-        self._pending.pop(identifier,None)
+        # An active worker publishes its terminal wire counters before the
+        # queued retire command removes the bridge context.
+        if not active:self._pending.pop(identifier,None)
     def _cancel_remote(self,transfer):self._command.emit(dict(type='cancel',id=transfer.transfer_id))
     def _completed_wan(self,value):
         state=self._pending.get(value['id'])
@@ -470,8 +473,14 @@ class WanTransferService(LanTransferService):
         pending['progress_state']=state
         if pending.get('route'):extra['route']=pending['route']
         bridge=pending.get('bridge');relay_bytes=pending.get('relay_bytes_prior',0)
+        worker=threading.current_thread() is not threading.main_thread()
+        if bridge and worker and state in ('error','cancelled','interrupted'):
+            # A failed writer may close before stdout's last stats frame is
+            # consumed. Drain in the transfer worker before publishing history;
+            # retiring this context must never wait for a process on the GUI.
+            bridge.close(abort=True)
         if bridge and bridge.route=='relay':
-            final=state in ('complete','error','cancelled','interrupted') and threading.current_thread() is not threading.main_thread()
+            final=state in ('complete','error','cancelled','interrupted') and worker
             relay_bytes+=sum(bridge.traffic(refresh=final).values())
         extra['relay_bytes']=relay_bytes
         super()._notify(transfer,state,**extra)

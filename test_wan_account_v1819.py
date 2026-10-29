@@ -19,6 +19,17 @@ class Account(QObject):
         self.api.request.side_effect=lambda method,path,callback,**kw:self.callbacks.append(callback) or 'pending-key'
 
 class AccountTransferTests(unittest.TestCase):
+    def test_cancel_keeps_bridge_context_until_worker_publishes_terminal_usage(self):
+        from lan_transfer import _Transfer
+        import threading
+        identifier='d'*32;transfer=_Transfer(identifier,'send','Mac',active=True)
+        bridge=Mock(route='relay');bridge.traffic.return_value=dict(sent=12345,received=456)
+        self.wan._pending[identifier]=dict(peer=dict(name='Mac'),role='send',ready=threading.Event(),bridge=bridge,route='relay')
+        self.wan._transfers[identifier]=transfer;events=[];self.wan.progress.connect(events.append)
+        self.wan._notify(transfer,'transferring');self.wan.cancel(identifier)
+        self.assertIn(identifier,self.wan._pending)
+        self.wan._notify(transfer,'cancelled')
+        self.assertEqual([row['relay_bytes'] for row in events],[12801,12801])
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.root=Path(self.temp.name)
         self.wan=WanTransferService(self.root/'wan',enabled=False);self.sent=[]

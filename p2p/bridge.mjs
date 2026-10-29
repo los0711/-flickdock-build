@@ -104,6 +104,7 @@ async function control(value) {
     const body=Buffer.from(JSON.stringify(value.data));if(body.length>1024)throw new Error('Nearby control too large');
     channel.sendMessageBinary(Buffer.concat([Buffer.from([3]),body]));
   }
+  else if(value.type==='abort')stop();
   else if(value.type==='close') {
     const deadline=Date.now()+3000;
     while(!closed&&unacked>0&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,5));
