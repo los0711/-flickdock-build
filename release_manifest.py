@@ -102,7 +102,7 @@ SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'cloud/src/vendor/hash-wasm-sha256-4.12.0.json','cloud/src/vendor/hash-wasm-4.12.0-LICENSE.txt',
     'cloud/test/integration.mjs','cloud/test/hash-state.mjs','cloud/test/upload-cancel.mjs','cloud/test/wan-codes.mjs','cloud/test/account-names.mjs','cloud/test/qa-server.mjs',
     '.github/workflows/macos-build.yml','ci_assets.py','p2p_assets.py',
-    'p2p/bridge.mjs','p2p/package.json','p2p/package-lock.json','p2p/node-shasums.json',
+    'p2p/bridge.mjs','p2p/turn_tls.mjs','p2p/test-turn-tls.mjs','p2p/package.json','p2p/package-lock.json','p2p/node-shasums.json',
     'website/wrangler.jsonc','website/package.json','website/package-lock.json',
     'website/README.md','website/CHINA_DEPLOYMENT.md','website/test/check-site.mjs',
     'website/scripts/build-retiehe.mjs',

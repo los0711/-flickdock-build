@@ -41,7 +41,7 @@ def prepare():
 
 def selected():
     package,_=target();folder=ROOT/'p2p'
-    names=['p2p/bridge.mjs','p2p/package.json','p2p/runtime/'+('node' if sys.platform=='darwin' else 'node.exe'),'p2p/runtime/Node-LICENSE.txt']
+    names=['p2p/bridge.mjs','p2p/turn_tls.mjs','p2p/package.json','p2p/runtime/'+('node' if sys.platform=='darwin' else 'node.exe'),'p2p/runtime/Node-LICENSE.txt']
     for module in ('node-datachannel','detect-libc','@node-datachannel/'+package):
         base=folder/'node_modules'/module
         if not base.is_dir():raise FileNotFoundError('Missing native WebRTC package '+module)

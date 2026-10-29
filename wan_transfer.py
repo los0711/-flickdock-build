@@ -224,6 +224,7 @@ class WanTransferService(LanTransferService):
         state['requested']=True;state['retry_inflight']=False
         state['relay_allowed']=bool(value.get('relayAllowed'));state['connect_started']=time.monotonic()
         state['relay_requested']=False;state.pop('network_error',None)
+        state['relay_transport']=''
         urls=[]
         for server in value['iceServers']:
             for url in server.get('urls',[]):
@@ -235,7 +236,7 @@ class WanTransferService(LanTransferService):
                 else:urls.append(dict(hostname=host,port=int(port),username=server['username'],password=server['credential'],relayType='TurnTls' if scheme=='turns' else 'TurnTcp' if transport=='tcp' else 'TurnUdp'))
         bridge=WebRTCStream(lambda event:self._native.emit(dict(id=identifier,generation=generation,event=event)),node=self.node)
         state['bridge']=bridge
-        bridge.control(dict(type='init',iceServers=urls,initiator=state['role']=='send',forceRelay=self._qa_force_relay))
+        bridge.control(dict(type='init',iceServers=urls,initiator=state['role']=='send',forceRelay=self._qa_force_relay,preferTls=not state.get('tls_failed',False)))
         if state['role']=='send':
             transfer=self._transfers.get(identifier)
             if transfer:self._notify(transfer,'connecting',route='relay' if value.get('relayAttempt') else 'direct')
@@ -254,6 +255,9 @@ class WanTransferService(LanTransferService):
         event=value['event'];kind=event.get('type')
         if kind in ('description','candidate'):
             self._send_signal(dict(id=identifier,generation=state['generation'],**event))
+        elif kind=='transport':
+            state['relay_transport']=event.get('relayTransport','')
+            if event.get('tlsFallback'):state['tls_failed']=True
         elif kind=='open':
             state['route']=event['route'];state['ready'].set()
             self._send_signal(dict(type='connected',id=identifier,generation=state['generation']))
@@ -266,6 +270,9 @@ class WanTransferService(LanTransferService):
             if transfer and state.get('progress_state')=='transferring' and not transfer.cancel.is_set():
                 self._notify(transfer,'transferring')
         elif kind in ('error','closed') or kind=='state' and event.get('state')=='failed':
+            # A TLS handshake alone does not prove that TURN allocation works.
+            # The next bounded, resumable attempt can try the supplied UDP row.
+            if state.get('relay_transport')=='tls' and not state.get('done'):state['tls_failed']=True
             if not state['bridge'].opened.is_set():
                 if state.get('relay_requested'):return
                 if state['role']=='send' and state.get('relay_allowed'):

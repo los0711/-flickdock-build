@@ -1,11 +1,12 @@
 // Native libdatachannel worker. Stdio is framed binary; secrets never use argv.
 import rtc from 'node-datachannel';
 import {randomBytes} from 'node:crypto';
+import {adaptTurnServers} from './turn_tls.mjs';
 const LEGACY_WINDOW=4*1024*1024, LEGACY_MESSAGE=32*1024;
 const WINDOW=16*1024*1024, MESSAGE=64*1024;
 rtc.initLogger('Fatal',()=>{});
 rtc.setSctpSettings({recvBufferSize:32*1024*1024,sendBufferSize:16*1024*1024,maxChunksOnQueue:16384});
-let pc,channel,closed=false,unacked=0,acknowledged=0,pendingOutput=0,wake=()=>{},statsTimer;
+let pc,channel,turnTransport,closed=false,unacked=0,acknowledged=0,pendingOutput=0,wake=()=>{},statsTimer;
 let sendWindow=LEGACY_WINDOW,sendMessage=LEGACY_MESSAGE,credit=0,creditTimer;
 const flowNonce=randomBytes(16).toString('hex');
 function frame(kind,body,done) {
@@ -21,6 +22,7 @@ function stats() {
 }
 function stop() {
   if(closed)return;stats();closed=true;wake();clearTimeout(creditTimer);clearInterval(statsTimer);
+  turnTransport?.close();
   try{channel?.close();pc?.close();rtc.cleanup();}catch{}
   process.stdout.end(()=>process.exit(0));
 }
@@ -66,7 +68,10 @@ function bind(dc) {
 async function control(value) {
   if(value.type==='init') {
     if(pc)throw new Error('Already initialized');
-    pc=new rtc.PeerConnection('FlickDock',{iceServers:value.iceServers||[],maxMessageSize:131072,iceTransportPolicy:value.forceRelay?'relay':'all',enableIceTcp:true});
+    turnTransport=await adaptTurnServers(value.iceServers||[],()=>{event({type:'error',message:'中继连接中断，正在尝试恢复。'});stop();},value.preferTls!==false);
+    if(closed){turnTransport.close();return;}
+    event({type:'transport',relayTransport:turnTransport.relayTransport,tlsFallback:!!turnTransport.tlsFallback});
+    pc=new rtc.PeerConnection('FlickDock',{iceServers:turnTransport.iceServers,maxMessageSize:131072,iceTransportPolicy:value.forceRelay?'relay':'all',enableIceTcp:true});
     // Unknown SDP attributes are ignored by older clients. Start conservatively
     // and enlarge the bounded credit/message window only for an agreeing peer.
     pc.onLocalDescription((sdp,type)=>event({type:'description',sdp:sdp.replace(/^a=x-flickdock-flow:[^\r\n]*\r?\n?/gm,'').trimEnd()+`\r\na=x-flickdock-flow:2 ${flowNonce} ${WINDOW} ${MESSAGE}\r\n`,descriptionType:type}));

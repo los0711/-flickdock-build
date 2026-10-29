@@ -1,5 +1,5 @@
 """WAN recovery/security contracts and actual bounded native host-ICE stream."""
-import hashlib,json,os,sys,tempfile,threading,time,unittest
+import hashlib,json,os,subprocess,sys,tempfile,threading,time,unittest
 from unittest.mock import patch
 from pathlib import Path
 from uuid import uuid4
@@ -142,6 +142,23 @@ class WanRecovery(unittest.TestCase):
         state=self.state('receive');self.service._completed_wan(dict(id=self.identifier))
         self.assertTrue(state['done']);self.assertIn(self.identifier,self.service._pending)
         self.message(type='settled');self.assertNotIn(self.identifier,self.service._pending)
+
+    def test_failed_tls_allocation_switches_next_generation_to_supplied_udp(self):
+        state=self.state();fake=unittest.mock.Mock();fake.opened.is_set.return_value=False
+        state.update(bridge=fake,relay_transport='tls',relay_allowed=False)
+        self.service._handle_native(dict(id=self.identifier,generation=1,event=dict(type='state',state='failed')))
+        self.assertTrue(state['ready'].is_set());self.assertTrue(state['tls_failed'])
+        with patch('wan_transfer.WebRTCStream',return_value=fake):
+            self.service._begin(self.identifier,state,dict(generation=2,iceServers=[],relayAllowed=False))
+        self.assertFalse(fake.control.call_args.args[0]['preferTls'])
+
+class TurnTLS(unittest.TestCase):
+    def test_real_adapter_framing_and_transport_failure_contracts(self):
+        root=Path(__file__).parent/'p2p';node=root/'runtime'/('node.exe' if sys.platform=='win32' else 'node')
+        if not node.is_file():self.skipTest('Build host must prepare pinned WebRTC assets')
+        result=subprocess.run([str(node),'--test',str(root/'test-turn-tls.mjs')],cwd=root,capture_output=True,text=True,timeout=30)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('pass 8',result.stdout)
 
 class NativeStream(unittest.TestCase):
     def setUp(self):

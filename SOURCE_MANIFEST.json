@@ -905,8 +905,8 @@
     },
     {
       "path": "p2p/bridge.mjs",
-      "size": 6263,
-      "sha256": "aeab1e2a2c66fd773f20bc27407906017c142b26285331fd6097b3cb848ee565"
+      "size": 6694,
+      "sha256": "3f55dfcc56d81c655f0acc36d017bf49be87324c428a5f69a3c11e6dfe8a4cce"
     },
     {
       "path": "p2p/node-shasums.json",
@@ -924,9 +924,19 @@
       "sha256": "15f296f476145288520529f74299ac1733f9801d53aa6b6490bf75c48aafd8a8"
     },
     {
+      "path": "p2p/test-turn-tls.mjs",
+      "size": 6972,
+      "sha256": "1e2750cf8aeeba65a9d69b552de71a6e7a2dc0ecf227ab2169d95fcdb7063673"
+    },
+    {
+      "path": "p2p/turn_tls.mjs",
+      "size": 5446,
+      "sha256": "c224efe953d5d7c4fa2c78939465257339ed803c4abea6bd5860bb70625d7d3c"
+    },
+    {
       "path": "p2p_assets.py",
-      "size": 4301,
-      "sha256": "526553eadb011d3eaa1d77549e53315bca80429bdeaa235e655bf233f274da75"
+      "size": 4320,
+      "sha256": "9208271690cb4f7cf1abc6f630a876fdc9ee5adb1a9159ef02bf70c11f74013d"
     },
     {
       "path": "package_source.py",
@@ -960,8 +970,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 33253,
-      "sha256": "9dbf57ed09d00f9d342d22c8067255e34e94eda61537df960181ed771c037698"
+      "size": 33296,
+      "sha256": "4bd3af30f5b6d2611dbdc7ee1b3a850816fd078a82ea56a7ee999119954e9751"
     },
     {
       "path": "requirements.txt",
@@ -1485,8 +1495,8 @@
     },
     {
       "path": "test_wan_transfer_v1816.py",
-      "size": 16229,
-      "sha256": "5dae5d3e14316a393e8a0412a05b0994c0199355e9a08d87741555e22f88ded3"
+      "size": 17499,
+      "sha256": "a29a19f0b488095e58866291aa30632a633fb8fdcae03606adf795061b55798e"
     },
     {
       "path": "test_widget_retirement_v162.py",
@@ -1560,8 +1570,8 @@
     },
     {
       "path": "wan_transfer.py",
-      "size": 26594,
-      "sha256": "b867148febfee66705a480c0e3f361bde1b45a92afcfe8fcb0325f57348ac818"
+      "size": 27100,
+      "sha256": "a607b25078ce8e0547df85b8ae47682d2fe32914fa2d0a29ccf3138ce51c585a"
     },
     {
       "path": "webrtc_stream.py",
