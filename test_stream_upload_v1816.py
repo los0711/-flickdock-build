@@ -7,10 +7,27 @@ from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QCoreApplication,QEvent
 from cloud_api import CloudApi,UploadSlice
-from sync_files import hash_part
+from sync_files import hash_part,stage_item
 APP=QApplication.instance() or QApplication([])
 
 class StreamTests(unittest.TestCase):
+    def test_staging_reuses_large_chunk_checksums_without_another_disk_pass(self):
+        from shelf_sync import ShelfSync
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);source=root/'large.bin'
+            with source.open('wb') as stream:stream.truncate(97*1024*1024+17)
+            staged=stage_item(str(source),None,source.name,root/'outbox',threading.Event())
+            self.assertEqual(len(staged['chunk_hashes']),2)
+            for i,digest in enumerate(staged['chunk_hashes']):
+                self.assertEqual(digest,hash_part(staged['path'],i,staged['chunk_bytes'],threading.Event()))
+            sync=ShelfSync.__new__(ShelfSync);sync._part_cache={};sync.api=SimpleNamespace(supports_file_slices=True)
+            sync._resume_matches=lambda transfer:True;sync._work=lambda *args:self.fail('Staged chunk was unnecessarily re-read')
+            requests=[];sync._request=lambda *args,**options:requests.append((args,options))
+            transfer=dict(staged,id='fixture',upload_id='upload',chunk_size=staged['chunk_bytes'],part_count=2,name=source.name)
+            sync._send_part(transfer,0)
+            self.assertEqual(requests[0][1]['headers']['X-Content-SHA256'],staged['chunk_hashes'][0])
+            self.assertEqual(requests[0][1]['source_size'],64*1024*1024)
     def test_device_bounds_seek_and_hash_memory(self):
         with tempfile.TemporaryDirectory() as folder:
             path=Path(folder)/'original.bin';payload=bytes(range(256))*40000;path.write_bytes(payload)

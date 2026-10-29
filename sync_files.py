@@ -16,6 +16,7 @@ from selection_archive import _source_reader, _is_link
 # Overall service space is bounded; no separate 64 MB intake restriction.
 MAX_FILE_BYTES = 8 * 1024 * 1024 * 1024
 DIRECTORY_MIME = 'application/x-flickdock-directory+zip'
+STAGED_CHUNK_BYTES=64*1024*1024
 # Avoid burning CPU recompressing media/container formats. Text, code and other
 # compressible data use fast deflate to reduce cloud requests and transfer bytes.
 _STORED_EXTENSIONS=frozenset(('jpg','jpeg','png','gif','webp','avif','heic','heif','jxl',
@@ -57,6 +58,17 @@ def directory_size(ref,cancel):
     return dict(logical_size=total,file_count=count)
 
 
+def oversized_intake(paths,cancel):
+    """Scan directories off the GUI thread; their inode size is not content size."""
+    for ref in paths:
+        if cancel.is_set():raise InterruptedError()
+        path=Path(ref)
+        if not path.exists() or _is_link(path):continue
+        size=directory_size(path,cancel)['logical_size'] if path.is_dir() else path.stat().st_size
+        if size>200*1024*1024:return list(paths)
+    return []
+
+
 def safe_name(name,limit=160):
     # Same portable basename on Windows/macOS; never interpret a remote path.
     cleaned = ''.join('_' if c in '<>:"/\\|?*' or ord(c) < 32 else c for c in str(name))
@@ -83,6 +95,18 @@ def stage_item(ref, text, name, directory, cancel, limit=MAX_FILE_BYTES):
         if cancel.is_set():raise InterruptedError()
         mime = mimetypes.guess_type(name)[0] or 'application/octet-stream'
         digest,size=hashlib.sha256(),0
+        chunk_hashes=[];part_digest=hashlib.sha256();part_bytes=0
+        large=text is None and Path(ref).is_file() and Path(ref).stat().st_size>90*1024*1024
+        def update(data):
+            nonlocal part_digest,part_bytes
+            digest.update(data)
+            if not large:return
+            view=memoryview(data);position=0
+            while position<len(view):
+                count=min(len(view)-position,STAGED_CHUNK_BYTES-part_bytes)
+                part_digest.update(view[position:position+count]);position+=count;part_bytes+=count
+                if part_bytes==STAGED_CHUNK_BYTES:
+                    chunk_hashes.append(part_digest.hexdigest());part_digest=hashlib.sha256();part_bytes=0
         if text is not None:
             data = text.encode('utf8')
             if len(data) > limit: raise ValueError('这段文字超过云同步大小限制。')
@@ -110,10 +134,11 @@ def stage_item(ref, text, name, directory, cancel, limit=MAX_FILE_BYTES):
                         if target.stat().st_size > limit: raise ValueError('文件夹压缩包超过云同步限制。')
             # ZIP writers patch local headers on seekable files. Hash only the
             # finished archive, preserving its actual bytes and empty folders.
+            large=target.stat().st_size>90*1024*1024
             with target.open('rb') as stream:
                 while chunk:=stream.read(1024*1024):
                     if cancel.is_set():raise InterruptedError()
-                    digest.update(chunk);size+=len(chunk)
+                    update(chunk);size+=len(chunk)
                     if size>limit:raise ValueError('此项超过云同步大小限制。')
         else:
             total = 0
@@ -122,9 +147,13 @@ def stage_item(ref, text, name, directory, cancel, limit=MAX_FILE_BYTES):
                     if cancel.is_set(): raise InterruptedError()
                     total += len(chunk)
                     if total > limit: raise ValueError('此项超过当前云空间容量；原文件仍保留在本机。')
-                    copy.write(chunk);digest.update(chunk);size=total
+                    copy.write(chunk);update(chunk);size=total
         if cancel.is_set():raise InterruptedError()
-        return {'path':str(target),'size':size,'sha256':digest.hexdigest(),'mime_type':mime}
+        result={'path':str(target),'size':size,'sha256':digest.hexdigest(),'mime_type':mime}
+        if large:
+            if part_bytes:chunk_hashes.append(part_digest.hexdigest())
+            result.update(chunk_hashes=chunk_hashes,chunk_bytes=STAGED_CHUNK_BYTES)
+        return result
     except BaseException:
         target.unlink(missing_ok=True)
         raise

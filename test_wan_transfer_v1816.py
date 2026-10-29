@@ -90,6 +90,26 @@ class NativeStream(unittest.TestCase):
         receiver=threading.Thread(target=consume,daemon=True);receiver.start()
         self.peers[0].sendall(original);self.peers[0].close();receiver.join(10)
         self.assertFalse(receiver.is_alive());self.assertEqual(failure,[]);self.assertEqual(hashlib.sha256(received).digest(),hashlib.sha256(original).digest())
+
+    def test_native_file_pipeline_preserves_folder_bytes_and_native_usage(self):
+        from lan_transfer import LanTransferService,_Transfer
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);source=root/'folder';source.mkdir();destination=root/'received';destination.mkdir()
+            for i in range(20):(source/f'{i:02}.bin').write_bytes(bytes([i])*65536)
+            sender=LanTransferService(discovery=False);receiver=LanTransferService(discovery=False)
+            sender.mode=receiver.mode='wan'
+            sender._connect_peer=lambda *args:self.peers[0];sender._stream_code=lambda *args:''
+            receiver._incoming_stream=lambda stream:stream;receiver._stream_code=lambda *args:''
+            def accept(transfer,*args):transfer.destination=destination;transfer.accepted.set()
+            receiver._incoming_offer=accept
+            identifier=uuid4().hex;transfer=_Transfer(identifier,'send','fixture',active=True)
+            receiver._slots.acquire();thread=threading.Thread(target=receiver._incoming,args=(self.peers[1],'fixture'),daemon=True)
+            thread.start();sender._outgoing(transfer,{},[source]);thread.join(12)
+            self.assertTrue(transfer.finished);self.assertFalse(thread.is_alive())
+            for path in source.iterdir():self.assertEqual((destination/source.name/path.name).read_bytes(),path.read_bytes())
+            self.assertGreater(sum(self.peers[0].traffic().values()),0)
+            self.assertFalse(any(t.name=='FlickDock-file-ack' and t.is_alive() for t in threading.enumerate()))
+            sender.close();receiver.close();sender.deleteLater();receiver.deleteLater();APP.processEvents()
     def test_slow_consumer_does_not_block_ui_control_or_cancel(self):
         stopped=threading.Event()
         def send():

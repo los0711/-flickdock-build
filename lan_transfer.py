@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.util
+from collections import deque
 from dataclasses import dataclass, field
 import errno
 import hashlib
@@ -40,6 +41,55 @@ MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 MAX_ENTRIES = 100000
 MAX_TOTAL_BYTES = (1 << 63) - 1
 PROTOCOL = 'flickdock-lan-1'
+
+
+class _FileAcknowledgements:
+    """Drain file receipts while the sender fills a bounded file pipeline."""
+    def __init__(self,stream,cancel,count):
+        self.stream=stream;self.cancel=cancel;self.pending=deque();self.bytes=0
+        self.condition=threading.Condition();self.error=None;self.complete=False;self.submitted=0;self.stopped=False
+        self.thread=threading.Thread(target=self._read,args=(count,),daemon=True,name='FlickDock-file-ack')
+        self.thread.start()
+
+    def _read(self,count):
+        try:
+            for _ in range(count):
+                with self.condition:
+                    while not self.submitted and not self.stopped and not self.cancel.is_set():self.condition.wait(.2)
+                    if self.stopped or self.cancel.is_set():raise InterruptedError('已取消传输。')
+                    self.submitted-=1
+                answer=_read_json(self.stream,self.cancel)
+                if answer.get('state')!='verified':raise ValueError(answer.get('message') or '接收方文件校验失败。')
+                with self.condition:
+                    if not self.pending:raise ValueError('接收方文件确认顺序无效。')
+                    self.bytes-=self.pending.popleft();self.condition.notify_all()
+            answer=_read_json(self.stream,self.cancel)
+            if answer.get('state')!='complete':raise ValueError(answer.get('message') or '接收方保存文件失败。')
+        except Exception as error:
+            with self.condition:self.error=error
+        finally:
+            with self.condition:self.complete=True;self.condition.notify_all()
+
+    def reserve(self,size):
+        with self.condition:
+            while not self.error and not self.cancel.is_set() and self.pending and (len(self.pending)>=8 or self.bytes+size>32*1024*1024):
+                self.condition.wait(.2)
+            if self.cancel.is_set():raise InterruptedError('已取消传输。')
+            if self.error:raise self.error
+            self.pending.append(size);self.bytes+=size
+
+    def sent(self):
+        with self.condition:self.submitted+=1;self.condition.notify_all()
+
+    def stop(self):
+        with self.condition:self.stopped=True;self.condition.notify_all()
+        self.thread.join(2)
+
+    def finish(self):
+        with self.condition:
+            while not self.complete and not self.cancel.is_set():self.condition.wait(.2)
+            if self.cancel.is_set():raise InterruptedError('已取消传输。')
+            if self.error:raise self.error
 
 def _transfer_error(error):
     if isinstance(error,PermissionError):
@@ -191,7 +241,7 @@ def _read_exact(stream, size, cancel, *, timeout=45):
         if cancel.is_set(): raise InterruptedError('已取消传输。')
         try: data = stream.recv(min(size - len(output), BLOCK_BYTES))
         except socket.timeout:
-            if time.monotonic() - last_data > timeout: raise TimeoutError('局域网连接超时。')
+            if time.monotonic() - max(last_data,getattr(stream,'last_activity',0)) > timeout: raise TimeoutError('传输连接超时。')
             continue
         if not data: raise ConnectionError('局域网连接已中断。')
         output.extend(data); last_data = time.monotonic()
@@ -545,10 +595,11 @@ class LanTransferService(QObject):
             transfer.total = total; token = transfer.token or secrets.token_hex(32)
             transfer.token = token
             code = ''
-            offer = dict(protocol=PROTOCOL, id=transfer.transfer_id, token=token,
+            offer = dict(protocol=PROTOCOL, id=transfer.transfer_id, token=token,pipeline=1 if getattr(self,'mode','lan')=='wan' else 0,
                          sender=self.device_name, entries=entries)
             files = [row for row in entries if row['kind'] == 'file']
             for attempt in range(3):
+                receipts=None
                 if transfer.cancel.is_set(): raise InterruptedError('已取消传输。')
                 try:
                     phase = 'connect'
@@ -564,6 +615,7 @@ class LanTransferService(QObject):
                         raise ValueError('接收方的续传位置无效。')
                     if index == len(files) and offset: raise ValueError('接收方的续传位置无效。')
                     transfer.done = sum(row['size'] for row in files[:index]) + offset
+                    if reply.get('pipeline')==1:receipts=_FileAcknowledgements(stream,transfer.cancel,len(files)-index)
                     last_emit = 0
                     file_buffer = bytearray(BLOCK_BYTES)
                     file_view = memoryview(file_buffer)
@@ -573,6 +625,7 @@ class LanTransferService(QObject):
                         if info.st_size != size or info.st_mtime_ns != modified: raise ValueError('原文件已改变，请重新发起传输。')
                         resume = offset if number == index else 0
                         if resume > size: raise ValueError('接收方的续传位置无效。')
+                        if receipts:receipts.reserve(size-resume)
                         digest = hashlib.sha256()
                         with _source_reader(source) as incoming:
                             prefix = resume
@@ -595,10 +648,14 @@ class LanTransferService(QObject):
                         current = source.stat()
                         if current.st_size != size or current.st_mtime_ns != modified: raise ValueError('原文件已改变，请重新发起传输。')
                         _send_json(stream, {'sha256': digest.hexdigest()})
-                        answer = _read_json(stream, transfer.cancel)
-                        if answer.get('state') != 'verified': raise ValueError('接收方文件校验失败。')
-                    reply = _read_json(stream, transfer.cancel)
-                    if reply.get('state') != 'complete': raise ValueError('接收方保存文件失败。')
+                        if receipts:receipts.sent()
+                        if not receipts:
+                            answer = _read_json(stream, transfer.cancel)
+                            if answer.get('state') != 'verified': raise ValueError('接收方文件校验失败。')
+                    if receipts:receipts.finish()
+                    else:
+                        reply = _read_json(stream, transfer.cancel)
+                        if reply.get('state') != 'complete': raise ValueError('接收方保存文件失败。')
                     transfer.finished = True; self._notify(transfer, 'complete', code=code)
                     self.completed.emit({'id': transfer.transfer_id, 'direction': 'send', 'peer': transfer.peer,
                                          'paths': [str(path) for path in paths], 'total': total})
@@ -609,6 +666,7 @@ class LanTransferService(QObject):
                     transfer.cancel.wait(.5 * (attempt + 1))
                 finally:
                     if stream: stream.close(); stream = None
+                    if receipts:receipts.stop()
                     transfer.socket = None
         except Exception as error:
             self._notify(transfer, 'cancelled' if transfer.cancel.is_set() else 'error', message=_transfer_error(error),
@@ -663,7 +721,7 @@ class LanTransferService(QObject):
                 for row in entries:
                     if row['kind'] == 'directory': stage.joinpath(*PurePosixPath(row['path']).parts).mkdir()
             files = [row for row in entries if row['kind'] == 'file']
-            _send_json(stream, {'state': 'ready', 'next_file': transfer.next_file, 'offset': transfer.offset})
+            _send_json(stream, {'state': 'ready', 'next_file': transfer.next_file, 'offset': transfer.offset, 'pipeline':1 if getattr(self,'mode','lan')=='wan' and request.get('pipeline')==1 else 0})
             last_emit = 0
             buffer=bytearray(BLOCK_BYTES);view=memoryview(buffer)
             for number in range(transfer.next_file, len(files)):

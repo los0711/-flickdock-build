@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QFontDatabase
-from PySide6.QtWidgets import QApplication, QLabel
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton
 
 from app_settings import SettingsStore
 from lan_panel import LanDialog
@@ -58,7 +58,7 @@ class NativeLanTests(unittest.TestCase):
                'total':5*1024**3,'code':'964191'}
         panel.show_offer(offer);APP.processEvents()
         row=panel._rows['incoming'];card=row['extra']
-        self.assertEqual(card.findChild(QLabel,'lanOfferCodeValue').text(),'964191')
+        self.assertEqual(card.findChild(QPushButton,'lanOfferCodeValue').text(),'964191')
         panel._accept('incoming')
         self.assertEqual(self.service.calls[-1],('accept','incoming',panel.receive_path.text()))
         self.assertTrue(row['heading'].isVisible());self.assertFalse(card.isVisible())

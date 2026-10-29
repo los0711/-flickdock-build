@@ -58,6 +58,17 @@ export class WanHub extends DurableObject<WanEnv>{
     const rows=await this.ctx.storage.get<Device[]>('recent:'+id)||[];
     return rows.slice(0,30).map(row=>({...row,...this.peer(row.id),online:!!this.socket(row.id)}));
   }
+  private async remember(value:Session){
+    await this.ctx.storage.transaction(async tx=>{
+      for(const [self,peer] of [[value.sender,value.receiver],[value.receiver,value.sender]]){
+        const rows=await tx.get<Device[]>('recent:'+self.id)||[];
+        await tx.put('recent:'+self.id,[{...peer,last:Date.now()},...rows.filter(row=>row.id!==peer.id)].slice(0,30));
+      }
+    });
+    for(const device of [value.sender,value.receiver]){
+      const target=this.socket(device.id);if(target)this.send(target,{type:'peers',peers:await this.recent(device.id)});
+    }
+  }
   private async code(socket:WebSocket){
     const seat=socket.deserializeAttachment() as Seat,previous=await this.ctx.storage.get<string>('own-code:'+seat.id);
     if(previous)await this.ctx.storage.delete('code:'+previous);
@@ -156,6 +167,7 @@ export class WanHub extends DurableObject<WanEnv>{
         if(seat.id!==value.receiver.id)throw new Error('无法接受此请求。');
         if(value.accepted){await this.replay(socket,value);return;}
         value.accepted=true;value.generation++;await this.ctx.storage.put('session:'+value.id,value);
+        await this.remember(value);
         await this.publish(value,{type:'begin',initiator:value.sender.id,iceServers:stun,relayAllowed:this.env.TURN_ENABLED==='true'});return;
       }
       if(request.type==='reject'||request.type==='cancel'){
@@ -204,11 +216,7 @@ export class WanHub extends DurableObject<WanEnv>{
           value.expires=Date.now()+600000;await this.ctx.storage.put('session:'+value.id,value);
           await this.ctx.storage.delete(['pending:'+value.sender.id+':'+value.id,'pending:'+value.receiver.id+':'+value.id]);
           await this.revokeSession(value.id);
-          for(const [self,peer] of [[value.sender,value.receiver],[value.receiver,value.sender]]){
-            const rows=await this.ctx.storage.get<Device[]>('recent:'+self.id)||[];
-            await this.ctx.storage.put('recent:'+self.id,[{...peer,last:Date.now()},...rows.filter(row=>row.id!==peer.id)].slice(0,30));
-            const target=this.socket(self.id);if(target)this.send(target,{type:'peers',peers:await this.recent(self.id)});
-          }
+          await this.remember(value);
           await this.publish(value,{type:'settled'});
         }
         return;

@@ -6,6 +6,7 @@ hint is harmless because ShelfSync retains bounded periodic reconciliation.
 from __future__ import annotations
 
 import json
+import re
 
 from PySide6.QtCore import QObject, QTimer, QUrl, Signal
 from PySide6.QtNetwork import QNetworkRequest
@@ -15,6 +16,7 @@ from PySide6.QtWebSockets import QWebSocket
 class CloudEvents(QObject):
     content_changed = Signal()
     devices_changed = Signal()
+    transfer_progress = Signal(dict)
 
     def __init__(self, account, parent=None, *, enabled=True):
         super().__init__(parent)
@@ -72,12 +74,17 @@ class CloudEvents(QObject):
         self.retry.start(min(300000, 1000 * (2 ** (self._attempt-1))))
 
     def _message(self, message):
-        if len(message)>256: return
+        if len(message)>512: return
         try: value=json.loads(message)
         except (ValueError,TypeError): return
         if not isinstance(value,dict) or value.get('schema_version')!=1:return
         if value.get('type')=='content': self.content_debounce.start(90)
         elif value.get('type')=='devices': self.devices_debounce.start(250)
+        elif value.get('type')=='progress':
+            if not re.fullmatch('[a-f0-9-]{36}',str(value.get('upload_id',''))):return
+            if any(type(value.get(key)) is not int for key in ('received_bytes','total','at')):return
+            if not 0<=value['received_bytes']<=value['total']<=2**53-1:return
+            self.transfer_progress.emit(value)
 
     def close(self):
         self.closed=True; self.retry.stop()

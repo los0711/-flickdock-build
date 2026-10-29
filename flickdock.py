@@ -48,7 +48,7 @@ from async_images import ImageCache
 from widget_retirement import WidgetRetirementQueue
 from capture_files import CopyFilesJob
 from owned_files import owned_copy_spec, delete_owned_copy
-from sync_files import DiskWork, directory_size
+from sync_files import DiskWork, directory_size, oversized_intake
 from transfer_visuals import (CLOUD_STATUS_LABELS, CloudStatusBadge, cloud_status_for_ref,
                               TransferIconLabel, TransferOverlay, TransferRateTracker,
                               transfer_fraction, transfer_phase_label)
@@ -173,6 +173,8 @@ class AnimatedMenu(QMenu):
 
 
 def style_menu(menu: QMenu) -> None:
+    from native_ui_common import rounded_popup
+    rounded_popup(menu, 10)
     palette = menu.palette()
     palette.setColor(QPalette.ColorRole.Window, QColor(ui_theme.color("surface")))
     palette.setColor(QPalette.ColorRole.Base, QColor(ui_theme.color("surface")))
@@ -183,8 +185,8 @@ def style_menu(menu: QMenu) -> None:
     sources=[]
     for theme in ('dark','light'):
         c=colors(theme)
-        sources.append(f"QMenu{{background:{'#242426' if theme=='dark' else '#FFFFFF'};color:{c['text']};border:1px solid {c['border']};border-radius:{c['radius']}px;padding:6px 0;font:12px '{FONT_FAMILY}';}}"
-                       f"QMenu::item{{background:transparent;color:{c['text']};padding:6px 14px;min-width:178px;border:0;}}"
+        sources.append(f"QMenu{{background:{'#242426' if theme=='dark' else '#FFFFFF'};color:{c['text']};border:1px solid {c['border']};border-radius:10px;padding:6px 0;font:12px '{FONT_FAMILY}';}}"
+                       f"QMenu::item{{background:transparent;color:{c['text']};padding:7px 12px;margin:1px 6px;min-width:178px;border:0;border-radius:6px;}}"
                        f"QMenu::item:selected{{background:{c['action']};color:#FFFFFF;}}"
                        f"QMenu::item:disabled{{color:{c['muted']};}} QMenu::separator{{height:1px;background:{c['divider']};margin:5px 10px;}}")
     css(menu,*sources)
@@ -201,7 +203,7 @@ class DropZone(QFrame):
         super().__init__(shelf.card)
         from reference_widgets import MiniStack,label,css
         self.shelf,self.mode=shelf,mode;self.origin=QPoint();self.did_drag=False;self.drop_highlight=False
-        self._click_armed=False
+        self._click_armed=False;self._pointer_hovered=False
         self.setObjectName('dropZone');self.setAcceptDrops(True);self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor);self.setFixedSize(330,268);self.setFocusPolicy(Qt.StrongFocus)
         self.setAccessibleName('搁架，拖入内容或打开总览')
@@ -225,7 +227,8 @@ class DropZone(QFrame):
 
     def _apply_style(self):
         from reference_widgets import css
-        border='#0A84FF' if self.drop_highlight else 'transparent'
+        border='#0A84FF' if (self.drop_highlight or
+            (self._pointer_hovered and self.shelf.presentation_kind=='dock')) else 'transparent'
         css(self,f'QFrame#dropZone{{background:transparent;border:1px solid {border};border-radius:8px;}}')
 
     def _open_from_pill_hover(self):
@@ -295,11 +298,13 @@ class DropZone(QFrame):
 
     def enterEvent(self, event):
         self.shelf.touch()
+        self._pointer_hovered=True;self._apply_style()
         self.feedback.animate({"hover": 1.0}, response=.14, damping=1.0)
         self.icon.set_hover(True)
         super().enterEvent(event)
 
     def leaveEvent(self, event):
+        self._pointer_hovered=False;self._apply_style()
         self._pill_hovered = False
         self._pill_timer.stop()
         self._style_caption(False)
@@ -308,7 +313,7 @@ class DropZone(QFrame):
         super().leaveEvent(event)
 
     def hideEvent(self, event):
-        self._click_armed=False
+        self._click_armed=False;self._pointer_hovered=False;self._apply_style()
         self._pill_hovered = False
         self._pill_timer.stop()
         self._style_caption(False)
@@ -922,7 +927,7 @@ class ContentsPopup(QFrame):
         self.hovered_ref=None
         self.selected.intersection_update(refs)
         if self.primary_selection not in self.selected: self.primary_selection=next((r for r in refs if r in self.selected),None)
-        self.title.setText("内容总览");self.count_label.setText(f"{len(self.shelf.display_refs())} 项")
+        self.title.setText("ClickDock");self.count_label.setText(f"{len(self.shelf.display_refs())} 项")
         from reference_widgets import css,icon,palette
         for key,button in self.sidebar_buttons.items():
             label=next(name for name_key,name in self.CATEGORIES if name_key==key)
@@ -1240,7 +1245,7 @@ class ShelfWindow(QWidget):
         from reference_widgets import LanButton
         self.lan_button = LanButton('nearby', self.card, motion=self.manager.motion)
         self.lan_button.setToolTip('互传')
-        self.lan_button.setAccessibleName('选择局域网或广域网传输')
+        self.lan_button.setAccessibleName('选择局域网或远程传输')
         self.lan_button.clicked.connect(self.show_transfer_menu)
         from reference_widgets import AvatarButton
         self.account_button = AvatarButton('user', self.card, motion=self.manager.motion)
@@ -1741,9 +1746,13 @@ class ShelfWindow(QWidget):
     def import_paths(self,mode,refs,on_committed=None,on_failed=None):
         """Apply the intake policy only to external file imports, never ZIPs."""
         refs=list(refs)
+        def committed(paths):
+            if hasattr(self.manager,'offer_large_intake'):
+                self.manager.offer_large_intake([ref for ref in paths if not self.content.is_text(ref)])
+            if on_committed:on_committed()
         if self.manager.settings.capture_mode!='copy':
             self.add_paths(mode,refs,defer_cloud=on_committed is not None)
-            if on_committed:on_committed()
+            committed(refs)
             return
         directory=self.manager.settings.capture_dir
         owned=os.path.normcase(os.path.abspath(directory))
@@ -1754,7 +1763,7 @@ class ShelfWindow(QWidget):
             if key!=owned and not key.startswith(owned+os.sep):external.append(ref)
         if not external:
             self.add_paths(mode,refs,defer_cloud=on_committed is not None)
-            if on_committed:on_committed()
+            committed(refs)
             return
         job=CopyFilesJob(external,directory,parent=self)
         epoch=self._copy_epoch
@@ -1780,10 +1789,11 @@ class ShelfWindow(QWidget):
                 replacement=dict(zip(external,paths))
                 for old,new in replacement.items():
                     self.content.metadata[new]={'capture_mode':'copy','original_name':Path(old).name,'owned_root':str(Path(directory).absolute())}
-                self.add_paths(mode,[replacement.get(ref,ref) for ref in refs],
+                captured=[replacement.get(ref,ref) for ref in refs]
+                self.add_paths(mode,captured,
                                defer_cloud=on_committed is not None)
-                if on_committed:on_committed()
-                else:self.zones[mode].pulse('drop')
+                committed(captured)
+                if not on_committed:self.zones[mode].pulse('drop')
             else:
                 for path in paths or []:
                     self.content.metadata[path]={'capture_mode':'copy','owned_root':str(Path(directory).absolute())}
@@ -2216,6 +2226,7 @@ class ShelfWindow(QWidget):
         self.visible_state = "floating"
         if self.popup is None:
             self.popup = ContentsPopup(self)
+        self.refresh_account_identity()
         self.popup.reset_for_open()
         self.popup.hovered_ref=None
         self.popup.restore_selected_preview()
@@ -2280,7 +2291,7 @@ class ShelfWindow(QWidget):
     def show_transfer_menu(self):
         menu=QMenu(self);style_menu(menu)
         menu.addAction('局域网互传',self.manager.show_lan_dialog)
-        menu.addAction('广域网传输',self.manager.show_wan_dialog)
+        menu.addAction('远程传输',self.manager.show_wan_dialog)
         self._transfer_menu=menu
         menu.popup(self.lan_button.mapToGlobal(QPoint(0,-menu.sizeHint().height())))
 
@@ -2691,6 +2702,7 @@ class ShelfManager:
         self.events = CloudEvents(self.account,self.app,
             enabled=not self.cocoa_smoke and self.app.platformName() not in ('offscreen','minimal'))
         self.events.content_changed.connect(self.sync.request_refresh)
+        self.events.transfer_progress.connect(self.sync.remote_progress)
         self.events.devices_changed.connect(self.account.list_devices)
         # A healthy event socket keeps the quiet five-minute reconciliation.
         # While disconnected, ShelfSync uses a bounded fallback so a missed
@@ -2736,8 +2748,8 @@ class ShelfManager:
         # background network traffic or installer execution.
         if (not self.cocoa_smoke and getattr(sys, 'frozen', False)
                 and self.app.platformName() not in ('offscreen', 'minimal')):
-            self.update_timer.start(6 * 60 * 60 * 1000)
-            QTimer.singleShot(4000, self.updates.check_automatically)
+            self.update_timer.start(15 * 60 * 1000)
+            QTimer.singleShot(1500, self.updates.check_automatically)
         if (not self.cocoa_smoke and sys.platform == 'darwin'
                 and getattr(sys, 'frozen', False)):
             QTimer.singleShot(1000, self._show_previous_mac_update_failure)
@@ -2864,6 +2876,11 @@ class ShelfManager:
         self.active_shelf.paste_clipboard("permanent")
 
 
+    def _center_dialog(self,dialog):
+        screen=QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
+        area=screen.availableGeometry()
+        dialog.move(area.center()-QPoint(dialog.width()//2,dialog.height()//2))
+
     def show_settings(self):
         if self.update_notice is not None:
             self.update_notice.hide()
@@ -2884,6 +2901,7 @@ class ShelfManager:
         if self.settings_dialog.isVisible():self.settings_dialog.load_values()
         self.settings_dialog.set_update_state(self.updates.state,**self.updates.state_payload)
         self.account_panel.set_sync_status(self._sync_status)
+        self._center_dialog(self.settings_dialog)
         self.settings_dialog.show()
         self.settings_dialog.scroll.verticalScrollBar().setValue(0)
         QTimer.singleShot(0,self.settings_dialog,lambda:self.settings_dialog.scroll.verticalScrollBar().setValue(0))
@@ -2902,14 +2920,10 @@ class ShelfManager:
             self.lan_dialog = LanDialog(self.lan,self.settings)
             self.lan_dialog.panel.set_paths_provider(self._lan_selected)
             self.lan_dialog.overview_requested.connect(self.show_overview)
+            self.lan_dialog.transfer_mode_requested.connect(self.show_wan_dialog)
             self.lan_dialog.mini_requested.connect(self.show_shortcut)
             self.lan_dialog.dock_requested.connect(lambda:self.shelf.hide_animated(explicit=True))
-        if not self.lan_dialog.isVisible():
-            anchor = self.shelf.frameGeometry()
-            area = (QGuiApplication.screenAt(anchor.center()) or QGuiApplication.primaryScreen()).availableGeometry()
-            x = max(area.left()+8,min(anchor.center().x()-self.lan_dialog.width()//2,area.right()-self.lan_dialog.width()-8))
-            y = max(area.top()+8,min(anchor.center().y()-self.lan_dialog.height()//2,area.bottom()-self.lan_dialog.height()-8))
-            self.lan_dialog.move(x,y)
+        self._center_dialog(self.lan_dialog)
         self.lan_dialog.show(); self.lan_dialog.raise_(); self.lan_dialog.activateWindow()
 
     def show_wan_dialog(self):
@@ -2918,14 +2932,45 @@ class ShelfManager:
             self.wan_dialog=LanDialog(self.wan,self.settings)
             self.wan_dialog.panel.set_paths_provider(self._lan_selected)
             self.wan_dialog.overview_requested.connect(self.show_overview)
+            self.wan_dialog.transfer_mode_requested.connect(self.show_lan_dialog)
             self.wan_dialog.mini_requested.connect(self.show_shortcut)
             self.wan_dialog.dock_requested.connect(lambda:self.shelf.hide_animated(explicit=True))
-        if not self.wan_dialog.isVisible():
-            area=(QGuiApplication.screenAt(self.shelf.frameGeometry().center()) or QGuiApplication.primaryScreen()).availableGeometry()
-            center=self.shelf.frameGeometry().center()
-            self.wan_dialog.move(max(area.left()+8,min(center.x()-self.wan_dialog.width()//2,area.right()-self.wan_dialog.width()-8)),
-                max(area.top()+8,min(center.y()-self.wan_dialog.height()//2,area.bottom()-self.wan_dialog.height()-8)))
+        self._center_dialog(self.wan_dialog)
         self.wan_dialog.show();self.wan_dialog.raise_();self.wan_dialog.activateWindow()
+
+    def offer_large_intake(self,paths):
+        if not paths or self._quitting:return
+        if not hasattr(self,'_large_intake_jobs'):self._large_intake_jobs=set();self._large_intake_queue=[];self._large_intake_prompt=False
+        job=DiskWork(oversized_intake,list(paths));self._large_intake_jobs.add(job)
+        def done(result,error):
+            self._large_intake_jobs.discard(job)
+            if error or not result or self._quitting:return
+            self._large_intake_queue.append(result)
+            self._offer_next_large_intake()
+        job.signals.done.connect(done);QThreadPool.globalInstance().start(job)
+
+    def _offer_next_large_intake(self):
+        if self._quitting or self._large_intake_prompt or not self._large_intake_queue:return
+        if self._update_busy():QTimer.singleShot(250,self._offer_next_large_intake);return
+        paths=[ref for ref in self._large_intake_queue.pop(0) if ref in self.shelf.files['permanent'] and Path(ref).exists()]
+        if paths:
+            self._large_intake_prompt=True
+            try:
+                if self._confirm_large_remote():
+                    if hasattr(self,'sync'):
+                        for ref in paths:self.sync.cancel_upload(ref)
+                    self.show_wan_dialog();self.wan_dialog.panel.queue_paths(paths)
+            finally:self._large_intake_prompt=False
+        QTimer.singleShot(0,self._offer_next_large_intake)
+
+    def _confirm_large_remote(self):
+        dialog=QMessageBox(self.shelf)
+        dialog.setWindowTitle('发送大文件');dialog.setText('刚放入的项目超过 200 MB')
+        dialog.setInformativeText('是否使用远程传输发送这些文件？\n文件会保留在搁架，并暂停这些项目的云端上传。')
+        send=dialog.addButton('远程传输',QMessageBox.ButtonRole.AcceptRole)
+        dialog.addButton('留在搁架',QMessageBox.ButtonRole.RejectRole)
+        dialog.setDefaultButton(send);dialog.exec()
+        return dialog.clickedButton() is send
 
     def dock_values(self):
         if self._dock_preview_values is not None: return self._dock_preview_values

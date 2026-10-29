@@ -6,6 +6,55 @@ import os
 from pathlib import Path
 import sys
 import traceback
+import plistlib
+import subprocess
+import re
+
+
+def _dmg_launch(source,target,*,runner=subprocess.run,launcher=subprocess.Popen):
+    """Install/redirect an explicit disk-image launch before any GUI hooks run."""
+    def metadata(path):
+        try:return plistlib.loads((path/'Contents/Info.plist').read_bytes())
+        except (OSError,ValueError):return {}
+    current=metadata(source);installed=metadata(target)
+    if current.get('CFBundleIdentifier')!='com.flickdock.app':return False
+    if target.is_symlink():raise ValueError('应用程序中的 FlickDock 是链接，请先检查安装位置。')
+    if target.exists() and installed.get('CFBundleIdentifier')!='com.flickdock.app':raise ValueError('应用程序中已有不同的 FlickDock.app，请先检查安装位置。')
+    version=lambda value:tuple(map(int,value.split('.'))) if isinstance(value,str) and re.fullmatch(r'\d+\.\d+\.\d+',value) else (0,0,0)
+    if installed.get('CFBundleIdentifier')!='com.flickdock.app' or version(installed.get('CFBundleShortVersionString'))<version(current.get('CFBundleShortVersionString')):
+        # Finder supplies its standard replacement/authorization UI. Arguments
+        # remain data; neither application path is interpolated into script code.
+        script='''on run argv
+display dialog "将 FlickDock 安装到“应用程序”后打开？安装完成后会退出安装镜像。" buttons {"取消", "安装并打开"} default button "安装并打开" cancel button "取消" with title "安装 FlickDock"
+tell application "Finder" to duplicate (POSIX file (item 1 of argv)) to (POSIX file (item 2 of argv)) with replacing
+end run'''
+        running=runner(['/usr/bin/pgrep','-x','FlickDock'],capture_output=True,text=True)
+        if any(pid.isdigit() and int(pid)!=os.getpid() for pid in running.stdout.split()):
+            close='display dialog "请先退出正在运行的 FlickDock，再打开安装镜像安装新版本。" buttons {"好"} default button "好" with title "FlickDock 正在运行"'
+            runner(['/usr/bin/osascript','-e',close],capture_output=True);return True
+        copied=runner(['/usr/bin/osascript','-e',script,str(source),str(target.parent)],capture_output=True)
+        if copied.returncode:return True
+        installed=metadata(target)
+        if installed.get('CFBundleIdentifier')!='com.flickdock.app' or installed.get('CFBundleShortVersionString')!=current.get('CFBundleShortVersionString'):
+            raise ValueError('安装未完成，请从“应用程序”检查 FlickDock。')
+    # Only detach a confirmed disk-image mount, never an external physical disk.
+    result=runner(['/usr/bin/hdiutil','info','-plist'],capture_output=True)
+    try:images=plistlib.loads(result.stdout).get('images',[])
+    except (ValueError,TypeError):images=[]
+    mount=source.parent
+    image=any(str(image.get('image-path','')).lower().endswith('.dmg') and
+           any(entity.get('mount-point')==str(mount) for entity in image.get('system-entities',[])) for image in images)
+    launcher(['/bin/sh','-c','cd /; while /bin/kill -0 "$1" 2>/dev/null; do /bin/sleep 0.2; done; /usr/bin/open -a "$2"; if [ -n "$3" ]; then /usr/bin/hdiutil detach "$3" >/dev/null 2>&1; fi',
+              'flickdock-installed-launch',str(os.getpid()),str(target),str(mount) if image else ''],
+              cwd='/',stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
+    return True
+
+
+def _relocate_disk_image_launch():
+    if sys.platform!='darwin' or not getattr(sys,'frozen',False) or os.environ.get('QT_QPA_PLATFORM') in ('offscreen','minimal'):return False
+    from platform_native import app_bundle
+    source=app_bundle()
+    return bool(source and source.as_posix().startswith('/Volumes/') and _dmg_launch(source,Path('/Applications/FlickDock.app')))
 
 
 def verify_cocoa_window_order(edge, shelf):
@@ -181,6 +230,7 @@ def main(arguments=None):
         index = arguments.index('--verify-platform')
         return verify_platform(arguments[index + 1]) if index + 1 < len(arguments) else 2
     try:
+        if not arguments and _relocate_disk_image_launch():return 0
         from platform_native import configure_media_backend
         configure_media_backend()
         from flickdock import main as application_main

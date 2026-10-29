@@ -30,7 +30,7 @@ class WanTransferService(LanTransferService):
             if not path.exists():
                 with os.fdopen(os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600),'w') as stream:stream.write(secrets.token_hex(32))
             self._credential=path.read_text().strip()
-            if not re.fullmatch('[a-f0-9]{64}',self._credential):raise ValueError('广域网设备凭据已损坏。')
+            if not re.fullmatch('[a-f0-9]{64}',self._credential):raise ValueError('远程设备凭据已损坏。')
             self.device_id=hashlib.sha256(self._credential.encode()).hexdigest()
         except (OSError,ValueError):self._credential=''
         self.socket=QWebSocket(parent=self)
@@ -46,14 +46,14 @@ class WanTransferService(LanTransferService):
         if self.enabled and not self._connected and not self.retry.isActive():self.retry.start(0)
     def _connect(self):
         if self._closing or not self.enabled:return
-        if not self._credential:self.status_changed.emit('无法保存广域网设备凭据，请检查应用数据目录。');return
+        if not self._credential:self.status_changed.emit('无法保存远程设备凭据，请检查应用数据目录。');return
         url=QUrl(self.origin)
         local=self.allow_test_origin and url.scheme()=='http' and url.host()=='127.0.0.1'
         if not local and (url.scheme()!='https' or url.host()!='flickdock-cloud.roger000416.workers.dev'):
-            self.status_changed.emit('广域网服务地址无效。');return
+            self.status_changed.emit('远程服务地址无效。');return
         url.setScheme('ws' if local else 'wss');url.setPath('/v1/wan/connect');url.setQuery('');url.setFragment('')
         request=QNetworkRequest(url);request.setRawHeader(b'Authorization',('Bearer '+self._credential).encode())
-        self.status_changed.emit('正在连接广域网传输服务…');self.socket.open(request)
+        self.status_changed.emit('正在连接远程传输服务…');self.socket.open(request)
     def _hello(self):
         self._connected=True;self.retry.stop();self.poll.start();self.code_timer.start()
         self._send_signal(dict(type='hello',name=self.device_name,platform='macos' if sys.platform=='darwin' else 'windows'))
@@ -114,7 +114,7 @@ class WanTransferService(LanTransferService):
                 if kind=='identity':
                     reconnect=not self.code
                     self.code=value.get('code','');self.identity_changed.emit(dict(code=self.code,online=True))
-                    self.status_changed.emit('广域网互传已就绪。首次传输请使用对方的接收码。')
+                    self.status_changed.emit('远程互传已就绪。首次传输请使用对方的接收码。')
                     if reconnect:self._recover_signaling()
                 return
             if kind=='request':
@@ -126,7 +126,7 @@ class WanTransferService(LanTransferService):
                         or not re.fullmatch('[a-f0-9]{64}',str(value.get('token','')))
                         or not re.fullmatch('[a-f0-9]{64}',str(value.get('digest','')))):return
                 self._pending[identifier]=dict(role='receive',peer=peer,token=value['token'],digest=value['digest'],total=total,count=value['count'],names=value['names'],ready=threading.Event(),generation=0)
-                self.offer_received.emit(dict(id=identifier,peer=peer['name'],host='广域网',code='',total=total,count=value['count'],names=value['names']))
+                self.offer_received.emit(dict(id=identifier,peer=peer['name'],host='远程',code='',total=total,count=value['count'],names=value['names']))
                 return
             if not state:return
             if kind=='waiting':
@@ -157,17 +157,19 @@ class WanTransferService(LanTransferService):
                 if value.get('requestType') in ('description','candidate','connected'):return
                 bridge=state.get('bridge')
                 if value.get('requestType')=='relay' and bridge and bridge.opened.is_set() and not bridge.closed:return
-                state['error']=str(value.get('message') or '广域网连接失败。');state['ready'].set();self.status_changed.emit(state['error'])
+                state['error']=str(value.get('message') or '远程连接失败。');state['ready'].set();self.status_changed.emit(state['error'])
                 if state['role']=='receive' and identifier not in self._transfers:
                     self.progress.emit(dict(id=identifier,state='error',direction='receive',peer=state['peer']['name'],received=0,total=state.get('total',0),message=state['error']))
                     self._handle_command(dict(_retire=True,id=identifier))
-        except (OSError,ValueError,KeyError,TypeError):self.status_changed.emit('广域网连接状态无效，请重新连接。')
+        except (OSError,ValueError,KeyError,TypeError):self.status_changed.emit('远程连接状态无效，请重新连接。')
 
     def _begin(self,identifier,state,value):
         previous=state.get('bridge')
         if state.get('done') and state['role']=='send':return
         if value.get('relayAttempt') and previous and previous.opened.is_set() and not previous.closed:return
-        if previous:previous.close(abort=True)
+        if previous:
+            if previous.route=='relay':state['relay_bytes_prior']=state.get('relay_bytes_prior',0)+sum(previous.traffic().values())
+            previous.close(abort=True)
         generation=value['generation'];state['generation']=generation;state['ready'].clear();state.pop('error',None)
         state['requested']=True;state['retry_inflight']=False
         state['relay_allowed']=bool(value.get('relayAllowed'));state['connect_started']=time.monotonic()
@@ -219,7 +221,7 @@ class WanTransferService(LanTransferService):
             if kind=='error':self.status_changed.emit(str(event.get('message') or 'WebRTC 连接中断。'))
 
     def send(self,peer_id,paths):
-        if not self._connected:raise ValueError('广域网服务尚未连接，请稍后再试。')
+        if not self._connected:raise ValueError('远程服务尚未连接，请稍后再试。')
         peer=self._peers.get(peer_id)
         if not peer and not re.fullmatch('[23456789A-HJ-NP-Z]{8}',str(peer_id)):raise ValueError('请输入有效的接收码，或选择最近设备。')
         identifier=uuid4().hex;peer=dict(peer or dict(code=peer_id,name='接收码 '+peer_id))
@@ -237,7 +239,7 @@ class WanTransferService(LanTransferService):
         while not state['ready'].wait(.1):
             if self._stopped.is_set() or transfer.cancel.is_set():raise InterruptedError('已取消传输。')
             if time.monotonic()>deadline:raise TimeoutError('对方未确认或连接未成功，请重新发起。')
-            if state.get('connect_started') and time.monotonic()-state['connect_started']>30:raise TimeoutError('无法建立广域网连接，请重试。')
+            if state.get('connect_started') and time.monotonic()-state['connect_started']>30:raise TimeoutError('无法建立远程连接，请重试。')
         if state.get('error'):
             if state.pop('network_error',False):raise ConnectionError(state['error'])
             raise ValueError(state['error'])
@@ -286,6 +288,11 @@ class WanTransferService(LanTransferService):
     def _notify(self,transfer,state,**extra):
         pending=self._pending.get(transfer.transfer_id,{})
         if pending.get('route'):extra['route']=pending['route']
+        bridge=pending.get('bridge');relay_bytes=pending.get('relay_bytes_prior',0)
+        if bridge and bridge.route=='relay':
+            final=state in ('complete','error','cancelled','interrupted') and threading.current_thread() is not threading.main_thread()
+            relay_bytes+=sum(bridge.traffic(refresh=final).values())
+        extra['relay_bytes']=relay_bytes
         super()._notify(transfer,state,**extra)
         if state in ('error','cancelled'):self._command.emit(dict(_retire=True,id=transfer.transfer_id))
     def close(self):

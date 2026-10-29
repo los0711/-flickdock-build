@@ -46,20 +46,37 @@ const hex=(data:Uint8Array)=>Buffer.from(data).toString('hex');
 const sha=(data:string|Uint8Array)=>createHash('sha256').update(data).digest('hex');
 
 export class AccountEvents extends DurableObject<Env> {
+  private progressSent=new Map<string,{at:number;bytes:number}>();
   async fetch(request:Request):Promise<Response>{
     const url=new URL(request.url);
     if(url.pathname==='/connect'&&request.headers.get('Upgrade')?.toLowerCase()==='websocket'){
       const pair=new WebSocketPair();const [client,server]=Object.values(pair);
       this.ctx.acceptWebSocket(server);
-      server.serializeAttachment({device:request.headers.get('X-Device-Id')||''});
+      server.serializeAttachment({device:request.headers.get('X-Device-Id')||'',expires:Number(request.headers.get('X-Session-Expires'))||0});
       return new Response(null,{status:101,webSocket:client});
     }
-    if(url.pathname==='/publish'&&request.method==='POST'){
-      const data=await request.json() as {type?:string;device?:string};
-      if(data.type!=='content'&&data.type!=='devices')return new Response(null,{status:400});
-      const message=JSON.stringify({schema_version:1,type:data.type});
+    if(url.pathname==='/revoke'&&request.method==='POST'){
+      const value=await request.json() as {device?:string;except?:string};
       for(const socket of this.ctx.getWebSockets()){
-        if(socket.deserializeAttachment()?.device===data.device)continue;
+        const device=socket.deserializeAttachment()?.device;
+        if(value.device?device===value.device:!!value.except&&device!==value.except)try{socket.close(4001,'Session revoked');}catch{}
+      }
+      return new Response(null,{status:204});
+    }
+    if(url.pathname==='/publish'&&request.method==='POST'){
+      const data=await request.json() as {type?:string;device?:string;progress?:Row};
+      if(!['content','devices','progress'].includes(data.type||''))return new Response(null,{status:400});
+      if(data.type==='progress'&&data.progress){
+        const value=data.progress,previous=this.progressSent.get(value.upload_id),now=Date.now();
+        if(previous&&now-previous.at<750&&value.received_bytes>=previous.bytes&&value.received_bytes<value.total)return new Response(null,{status:204});
+        this.progressSent.set(value.upload_id,{at:now,bytes:value.received_bytes});
+        if(this.progressSent.size>100)this.progressSent.delete(this.progressSent.keys().next().value!);
+      }
+      const message=JSON.stringify({schema_version:1,type:data.type,...(data.type==='progress'?data.progress:{})});
+      for(const socket of this.ctx.getWebSockets()){
+        const attachment=socket.deserializeAttachment();
+        if(!attachment?.expires||attachment.expires<=Date.now()){try{socket.close(4001,'Session expired');}catch{}continue;}
+        if(attachment.device===data.device)continue;
         try{socket.send(message);}catch{try{socket.close();}catch{}}
       }
       return new Response(null,{status:204});
@@ -73,6 +90,15 @@ function announce(env:Env,ctx:ExecutionContext,owner:Row,type:'content'|'devices
   const stub=env.EVENTS.get(env.EVENTS.idFromName(owner.id));
   ctx.waitUntil(stub.fetch('https://internal/publish',{method:'POST',
     body:JSON.stringify({type,device:owner.device_id||''})}).catch(()=>undefined));
+}
+function announceProgress(env:Env,ctx:ExecutionContext,owner:Row,value:Row,received:number){
+  if(!env.EVENTS)return;
+  const stub=env.EVENTS.get(env.EVENTS.idFromName(owner.id));
+  ctx.waitUntil(stub.fetch('https://internal/publish',{method:'POST',body:JSON.stringify({type:'progress',device:owner.device_id||'',
+    progress:{upload_id:value.id,received_bytes:Math.min(value.size,received),total:value.size,at:Date.now()}})}).catch(()=>undefined));
+}
+async function revokeEvents(env:Env,owner:Row,value:{device?:string;except?:string}){
+  if(env.EVENTS)await env.EVENTS.get(env.EVENTS.idFromName(owner.id)).fetch('https://internal/revoke',{method:'POST',body:JSON.stringify(value)});
 }
 const iso=(value:number)=>new Date(value).toISOString();
 function config(value:string|undefined,fallback:number,max=Number.MAX_SAFE_INTEGER){const n=value===undefined?fallback:Number(value);if(!Number.isSafeInteger(n)||n<1||n>max)fail(503,'CONFIGURATION','Service configuration is invalid');return n;}
@@ -175,7 +201,7 @@ async function session(env:Env,owner:Row,name:string,platform:string){
 }
 async function auth(request:Request,env:Env){
   const bearer=request.headers.get('Authorization')||'';if(!/^Bearer [a-f0-9]{64}$/.test(bearer))fail(401,'UNAUTHORIZED','Sign in required');
-  const row=await first(env,'SELECT a.*,s.device_id,s.token_hash,d.last_seen_at FROM sessions s JOIN devices d ON d.id=s.device_id JOIN accounts a ON a.id=s.account_id WHERE s.token_hash=? AND s.expires_at>? AND d.revoked_at IS NULL',sha(bearer.slice(7)),Date.now());
+  const row=await first(env,'SELECT a.*,s.device_id,s.token_hash,s.expires_at session_expires,d.last_seen_at FROM sessions s JOIN devices d ON d.id=s.device_id JOIN accounts a ON a.id=s.account_id WHERE s.token_hash=? AND s.expires_at>? AND d.revoked_at IS NULL',sha(bearer.slice(7)),Date.now());
   if(!row)fail(401,'UNAUTHORIZED','Session expired or device revoked');
   if(row!.last_seen_at<Date.now()-60000)await query(env,'UPDATE devices SET last_seen_at=? WHERE id=?',Date.now(),row!.device_id).run();
   return row!;
@@ -294,7 +320,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
   if(method==='GET'&&path==='/v1/events'){
     if(request.headers.get('Upgrade')?.toLowerCase()!=='websocket')fail(426,'UPGRADE_REQUIRED','WebSocket required');
     return env.EVENTS.get(env.EVENTS.idFromName(owner.id)).fetch(new Request('https://internal/connect',
-      {headers:{Upgrade:'websocket','X-Device-Id':owner.device_id}}));
+      {headers:{Upgrade:'websocket','X-Device-Id':owner.device_id,'X-Session-Expires':String(owner.session_expires)}}));
   }
   if(method==='GET'&&(path==='/v1/me'||path==='/v1/sync/changes'||path.startsWith('/v1/items/')))await expireItems(env,owner.id);
   if(method==='GET'&&path==='/v1/me'){
@@ -314,8 +340,8 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
     announce(env,ctx,owner,'devices');
     return json({device_id:id,name});
   }
-  if(method==='DELETE'&&match){const id=uuid(match[1]);const result=await query(env,'UPDATE devices SET revoked_at=? WHERE id=? AND account_id=?',Date.now(),id,owner.id).run();if(!result.meta.changes)fail(404,'NOT_FOUND','Device not found');announce(env,ctx,owner,'devices');return json({revoked:true});}
-  if(method==='POST'&&path==='/v1/auth/logout'){await query(env,'UPDATE devices SET revoked_at=? WHERE id=? AND account_id=?',Date.now(),owner.device_id,owner.id).run();announce(env,ctx,owner,'devices');return json({revoked:true});}
+  if(method==='DELETE'&&match){const id=uuid(match[1]);const result=await query(env,'UPDATE devices SET revoked_at=? WHERE id=? AND account_id=?',Date.now(),id,owner.id).run();if(!result.meta.changes)fail(404,'NOT_FOUND','Device not found');await revokeEvents(env,owner,{device:id});announce(env,ctx,owner,'devices');return json({revoked:true});}
+  if(method==='POST'&&path==='/v1/auth/logout'){await query(env,'UPDATE devices SET revoked_at=? WHERE id=? AND account_id=?',Date.now(),owner.device_id,owner.id).run();await revokeEvents(env,owner,{device:owner.device_id});announce(env,ctx,owner,'devices');return json({revoked:true});}
   if(method==='POST'&&path==='/v1/auth/password/challenge'){
     await body(request,[]);await rate(env,'password-change:'+owner.id,10,3600000);
     const id=crypto.randomUUID(),salt=hex(crypto.getRandomValues(new Uint8Array(16))),expires=Date.now()+300000;
@@ -335,6 +361,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
       query(env,'DELETE FROM sessions WHERE account_id=? AND device_id<>? AND EXISTS(SELECT 1 FROM accounts WHERE id=? AND auth_salt=? AND auth_verifier=?)',owner.id,owner.device_id,owner.id,challenge.new_salt,newProof),
     ]);
     if(!changed[0].meta.changes)fail(409,'PASSWORD_CHANGED','Password or session changed; request a new challenge');
+    await revokeEvents(env,owner,{except:owner.device_id});
     announce(env,ctx,owner,'devices');
     return json({changed:true,other_devices_revoked:true});
   }
@@ -478,7 +505,14 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
         try {
           // R2 validates this checksum in its storage service, saving one
           // whole-part SHA pass from the Workers Free CPU budget.
-          const stored=await env.FILES.put(key,streamed?request.body!:data!,{sha256:hash});
+          let source:ReadableStream<Uint8Array>|Uint8Array=data!,received=0,lastProgress=0;
+          if(streamed){
+            source=request.body!.pipeThrough(new TransformStream<Uint8Array,Uint8Array>({transform(chunk,controller){
+              received+=chunk.byteLength;controller.enqueue(chunk);
+              const now=Date.now();if(now-lastProgress>=750){lastProgress=now;announceProgress(env,ctx,owner,value,value.verified_size+received);}
+            }})).pipeThrough(new FixedLengthStream(expected));
+          }
+          const stored=await env.FILES.put(key,source,{sha256:hash});
           if(!stored||stored.size!==expected||!stored.checksums.sha256||hex(new Uint8Array(stored.checksums.sha256))!==hash){
             if(stored)await env.FILES.delete(key);
             fail(503,'STORAGE_CHECKSUM','Storage did not confirm the part checksum');
@@ -497,12 +531,14 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
           query(env,'UPDATE parts SET ready=1 WHERE upload_id=? AND idx=? AND EXISTS(SELECT 1 FROM uploads WHERE id=? AND next_part>?)',id,partIndex,id,partIndex),
         ]);
         released=!!result[0].meta.changes;
+        if(released)announceProgress(env,ctx,owner,value,value.verified_size+expected);
         // The receiver already saw the upload reservation. A hint on every
         // 1 MiB part caused one changefeed GET per part on each other device.
         // Coarse milestones keep remote progress live without that fan-out.
         if(released&&!last&&(partIndex+1)%32===0)announce(env,ctx,owner,'content');
         if(!released){const latest=await first(env,'SELECT ready FROM parts WHERE upload_id=? AND idx=?',id,partIndex);if(!latest?.ready){await findUpload(env,owner,id);fail(409,'UPLOAD_NOT_PENDING','Upload changed while writing the part');}}
       }catch(error){
+        announceProgress(env,ctx,owner,value,value.verified_size);
         // A storage/network error racing a manual cancel is still terminal for
         // this UUID. Do not tell a client to retry or resurrect that upload.
         await findUpload(env,owner,id);throw error;

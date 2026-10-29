@@ -40,6 +40,46 @@ class FeedbackTests(unittest.TestCase):
         service.account_changed.emit(dict(service.account));flush()
         self.assertEqual(view.account_nav.username,'已恢复账号');self.assertTrue(view.account_nav.connected)
 
+    def test_first_overview_after_account_resume_has_the_current_identity(self):
+        service=Service();service.account={'id':'resumed-before-open','username':'恢复后首次打开'}
+        self.fixture.manager.account=service
+        self.assertIsNone(self.shelf.popup)
+        view=self.fixture.overview();flush()
+        self.assertEqual(view.account_nav.username,'恢复后首次打开')
+        self.assertTrue(view.account_nav.connected)
+
+    def test_large_drop_offer_queues_captured_files_without_removing_the_shelf(self):
+        from types import SimpleNamespace
+        from sync_files import oversized_intake
+        import threading
+        path=self.fixture.base/'large.bin'
+        with path.open('wb') as stream:stream.truncate(200*1024*1024)
+        self.assertEqual(oversized_intake([str(path)],threading.Event()),[])
+        with path.open('r+b') as stream:stream.truncate(200*1024*1024+1)
+        self.assertEqual(oversized_intake([str(path)],threading.Event()),[str(path)])
+        manager=flickdock.ShelfManager.__new__(flickdock.ShelfManager);queued=[];opened=[]
+        manager._quitting=False;manager._large_intake_prompt=False;manager._large_intake_queue=[[str(path)]]
+        manager._update_busy=lambda:False;manager._confirm_large_remote=lambda:True
+        manager.shelf=SimpleNamespace(files={'permanent':[str(path)]})
+        manager.wan_dialog=SimpleNamespace(panel=SimpleNamespace(queue_paths=lambda paths:queued.extend(paths)))
+        manager.show_wan_dialog=lambda:opened.append(True)
+        manager._offer_next_large_intake();flush()
+        self.assertEqual(opened,[True]);self.assertEqual(queued,[str(path)])
+        self.assertEqual(manager.shelf.files['permanent'],[str(path)])
+
+    def test_secondary_dialog_is_recentered_after_a_previous_move(self):
+        from PySide6.QtWidgets import QDialog
+        from PySide6.QtCore import QRect
+        class Screen:
+            def availableGeometry(self):return QRect(1920,30,1600,900)
+        dialog=QDialog();dialog.resize(800,500);dialog.move(11,12)
+        manager=flickdock.ShelfManager.__new__(flickdock.ShelfManager)
+        with patch.object(flickdock.QGuiApplication,'screenAt',return_value=Screen()):
+            manager._center_dialog(dialog);first=dialog.pos();dialog.move(38,40);manager._center_dialog(dialog)
+        self.assertEqual(dialog.pos(),first)
+        self.assertLessEqual((dialog.geometry().center()-Screen().availableGeometry().center()).manhattanLength(),2)
+        dialog.deleteLater();flush()
+
     def test_other_device_rename_has_a_visible_direct_action(self):
         panel=AccountPanel(Service());panel.resize(650,260);panel.show();flush()
         try:
@@ -60,6 +100,72 @@ class FeedbackTests(unittest.TestCase):
             top=control.y();bottom=view.view_segment.height()-control.geometry().bottom()-1
             self.assertLessEqual(abs(top-bottom),1,(top,bottom))
 
+    def test_settings_segments_keep_one_selection_on_repeated_clicks(self):
+        from PySide6.QtWidgets import QPushButton
+        with tempfile.TemporaryDirectory() as root:
+            dialog=app_settings.SettingsDialog(app_settings.SettingsStore(Path(root)))
+            dialog.show();flush()
+            try:
+                segments=dialog.findChildren(__import__('PySide6.QtWidgets',fromlist=['QFrame']).QFrame,'settingsSegment')
+                for segment in segments:
+                    buttons=segment.findChildren(QPushButton,'settingsSegmentButton')
+                    for button in buttons:
+                        for _ in range(2):
+                            QTest.mouseClick(button,Qt.LeftButton);flush()
+                            self.assertEqual(sum(item.isChecked() for item in buttons),1)
+                            self.assertTrue(button.isChecked())
+                    if any(item.property('segmentGlyph')=='grid' for item in buttons):
+                        self.assertEqual({item.property('segmentGlyph') for item in buttons},{'list','grid'})
+                        self.assertTrue(all(not item.icon().isNull() for item in buttons))
+            finally:dialog.close();dialog.deleteLater();flush()
+
+    def test_empty_overview_has_centered_clickable_drop_box(self):
+        from PySide6.QtCore import QEvent,QSize
+        self.shelf.files['permanent']=[]
+        view=self.fixture.overview();flush()
+        self.assertEqual(view.title.text(),'ClickDock');self.assertEqual(view.count_label.text(),'0 项')
+        box=view.empty_drop
+        self.assertTrue(box.isVisible());self.assertEqual(box.size(),QSize(280,220))
+        self.assertLessEqual(abs(box.geometry().center().x()-view.empty_state.rect().center().x()),1)
+        with patch.object(self.shelf,'pick_files') as choose:
+            QTest.mouseClick(box,Qt.LeftButton);choose.assert_called_once_with('permanent')
+        APP.sendEvent(box,QEvent(QEvent.Enter));self.assertTrue(box._hovered)
+        APP.sendEvent(box,QEvent(QEvent.Leave));self.assertFalse(box._hovered)
+
+    def test_dock_drop_zone_blue_border_follows_hover_without_opening_overview(self):
+        from PySide6.QtCore import QEvent
+        zone=self.shelf.zones['permanent'] if hasattr(self.shelf,'zones') else self.shelf.drop_zone
+        self.shelf.presentation_kind='dock'
+        APP.sendEvent(zone,QEvent(QEvent.Enter));flush()
+        self.assertIn('#0A84FF',zone.styleSheet());self.assertIsNone(self.shelf.popup)
+        APP.sendEvent(zone,QEvent(QEvent.Leave));flush()
+        self.assertNotIn('#0A84FF',zone.styleSheet())
+        zone.drop_highlight=True;zone._apply_style()
+        self.assertIn('#0A84FF',zone.styleSheet())
+
+    def test_rounded_combo_and_menu_preserve_keyboard_selection_and_close(self):
+        from PySide6.QtWidgets import QMenu
+        from PySide6.QtCore import QPoint
+        combo=app_settings.SettingsComboBox();combo.addItems(['右侧','左侧','顶部'])
+        combo.resize(160,32);combo.show();flush()
+        try:
+            for _ in range(2):
+                combo.showPopup();flush();popup=combo.view().window()
+                self.assertTrue(popup.isVisible())
+                self.assertFalse(popup.mask().contains(QPoint(0,0)))
+                self.assertTrue(popup.mask().contains(popup.rect().center()))
+                QTest.keyClick(combo.view(),Qt.Key_Down);QTest.keyClick(combo.view(),Qt.Key_Return);flush()
+                self.assertFalse(popup.isVisible())
+            self.assertEqual(combo.currentIndex(),2)
+        finally:combo.close();combo.deleteLater();flush()
+        menu=QMenu();menu.addAction('云同步');menu.addAction('设置')
+        flickdock.style_menu(menu);menu.popup(QPoint(30,30));flush()
+        try:
+            self.assertFalse(menu.mask().contains(QPoint(0,0)))
+            self.assertTrue(menu.mask().contains(menu.rect().center()))
+            QTest.keyClick(menu,Qt.Key_Escape);flush();self.assertFalse(menu.isVisible())
+        finally:menu.close();menu.deleteLater();flush()
+
     def test_one_icon_never_stretches_to_fill_content_pane(self):
         self.shelf.files['permanent']=self.shelf.files['permanent'][:1]
         self.shelf.manager.settings.update(view_mode='icons')
@@ -78,6 +184,19 @@ class FeedbackTests(unittest.TestCase):
             dialog.set_update_state('latest')
             self.assertTrue(dialog.update_activity.isHidden());self.assertEqual(dialog.update_activity.height(),0)
             dialog.set_update_state('checking');self.assertEqual(dialog.update_activity.height(),4)
+            dialog.close();dialog.deleteLater();flush()
+
+    def test_new_update_has_a_version_capsule_and_green_action(self):
+        with tempfile.TemporaryDirectory() as root:
+            dialog=app_settings.SettingsDialog(app_settings.SettingsStore(Path(root)))
+            dialog.show();dialog.set_update_state('available',version='1.9.0');flush()
+            self.assertTrue(dialog.update_version_label.isVisible())
+            self.assertEqual(dialog.update_version_label.text(),'v1.9.0')
+            self.assertTrue(dialog.update_button.property('updateAvailable'))
+            self.assertEqual(dialog.update_button.text(),'立即更新')
+            self.assertTrue(dialog.update_activity.isHidden())
+            dialog.set_update_state('latest');self.assertFalse(dialog.update_version_label.isVisible())
+            self.assertFalse(dialog.update_button.property('updateAvailable'))
             dialog.close();dialog.deleteLater();flush()
 
     def test_mac_edge_includes_exact_outer_coordinate_and_native_canvas_stays_inside_workarea(self):

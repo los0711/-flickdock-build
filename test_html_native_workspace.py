@@ -257,7 +257,7 @@ class WorkspaceTests(unittest.TestCase):
             menu=subject.AnimatedMenu();subject.style_menu(menu);action=menu.addAction('选择菜单项目')
             menu.popup(QPoint(0,0));menu.setActiveAction(action);flush();rect=menu.actionGeometry(action);image=menu.grab().toImage()
             check('selected menu item',brightest_pixel(image,QRect(rect.x()+14,rect.y()+4,85,rect.height()-8)),
-                  image.pixelColor(rect.right()-5,rect.center().y()))
+                  image.pixelColor(rect.right()-12,rect.center().y()))
             menu.close();menu.deleteLater();flush()
             unselected_mode=popup.view_grid;image=popup.grab().toImage()
             check('unselected view toggle',unselected_mode.palette().color(QPalette.ButtonText),

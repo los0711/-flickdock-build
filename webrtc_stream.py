@@ -11,13 +11,14 @@ class WebRTCStream:
     def __init__(self,on_signal,*,node=None,root=None):
         root=Path(root or getattr(sys,'_MEIPASS',Path(__file__).parent))/'p2p'
         executable=Path(node) if node else root/'runtime'/('node.exe' if sys.platform=='win32' else 'node')
-        if not executable.is_file():raise RuntimeError('广域网传输组件缺失，请重新安装 FlickDock。')
+        if not executable.is_file():raise RuntimeError('远程传输组件缺失，请重新安装 FlickDock。')
         self._process=subprocess.Popen([str(executable),str(root/'bridge.mjs')],stdin=subprocess.PIPE,stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,cwd=root,creationflags=subprocess.CREATE_NO_WINDOW if sys.platform=='win32' else 0,
             env={key:value for key,value in os.environ.items() if key not in ('NODE_OPTIONS','NODE_PATH','NODE_EXTRA_CA_CERTS')})
         self._condition=threading.Condition();self._data=deque();self._size=0
         self._controls=deque();self._writes=deque();self._write_bytes=0;self._control_bytes=0
         self._closed=False;self._timeout=1.;self.opened=threading.Event();self.route='';self.on_signal=on_signal
+        self._traffic={'sent':0,'received':0};self._stats_generation=0;self.last_activity=time.monotonic()
         threading.Thread(target=self._reader,daemon=True,name='FlickDock-WebRTC-pipe').start()
         threading.Thread(target=self._writer,daemon=True,name='FlickDock-WebRTC-writer').start()
 
@@ -28,7 +29,7 @@ class WebRTCStream:
         with self._condition:
             deadline=time.monotonic()+max(30,self._timeout)
             if kind==b'J':
-                if self._closed:raise ConnectionError('广域网连接已中断。')
+                if self._closed:raise ConnectionError('远程连接已中断。')
                 if len(self._controls)>=128 or self._control_bytes+len(data)>1024*1024:raise ConnectionError('连接信令积压，请重试。')
                 self._controls.append(data);self._control_bytes+=len(data)
             else:
@@ -36,7 +37,7 @@ class WebRTCStream:
                     remaining=deadline-time.monotonic()
                     if remaining<=0:raise socket.timeout('对方设备长时间未接收数据。')
                     self._condition.wait(remaining)
-                if self._closed:raise ConnectionError('广域网连接已中断。')
+                if self._closed:raise ConnectionError('远程连接已中断。')
                 self._writes.append((kind,data));self._write_bytes+=len(data)
             self._condition.notify_all()
     def _writer(self):
@@ -78,6 +79,14 @@ class WebRTCStream:
                 elif packet[:1]==b'J':
                     value=json.loads(packet[1:])
                     if value.get('type')=='open':self.route=value['route'];self.opened.set()
+                    if value.get('type')=='stats':
+                        with self._condition:
+                            for key in ('sent','received'):
+                                count=value.get(key)
+                                if type(count) is int and count>=0:
+                                    if count>self._traffic[key]:self.last_activity=time.monotonic()
+                                    self._traffic[key]=max(self._traffic[key],count)
+                            self._stats_generation+=1;self._condition.notify_all()
                     self.on_signal(value)
                 else:raise ValueError('Invalid bridge type')
         except (OSError,EOFError,ValueError):pass
@@ -86,6 +95,13 @@ class WebRTCStream:
             self.on_signal({'type':'closed'})
 
     def settimeout(self,value):self._timeout=value
+    def traffic(self,*,refresh=False):
+        with self._condition:
+            if refresh and not self._closed:
+                generation=self._stats_generation
+                self.control({'type':'stats'})
+                self._condition.wait_for(lambda:self._stats_generation!=generation or self._closed,timeout=.5)
+            return dict(self._traffic)
     def sendall(self,data):
         view=memoryview(data)
         for start in range(0,len(view),65536):self._write(b'B',view[start:start+65536].tobytes())

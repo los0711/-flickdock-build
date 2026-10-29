@@ -77,18 +77,19 @@ class RemoveDeviceButton(QPushButton):
         self.setObjectName('accountRemoveDevice')
         self.setFixedSize(32,32)
         self.setAutoDefault(False);self.setDefault(False)
-        self.setToolTip('修改设备名称' if rename else '移除设备')
+        self.setToolTip('修改设备名称' if rename else '移除登录')
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
 
     def paintEvent(self,event):
         super().paintEvent(event)
         if self.text():return
-        color='#c2cddd' if self.dark else '#68788f'
+        color=('#64B5FF' if self.dark else '#007AFF') if self.rename else ('#FF453A' if self.dark else '#D63230')
         path=('m11.5 3.5 3 3M3 15l3.4-.7L15 5.7a1.1 1.1 0 0 0 0-1.5l-1.2-1.3a1.1 1.1 0 0 0-1.6 0L3.7 11.5 3 15' if self.rename
-              else 'M3 5h12M7 2.5h4l1 2.5M5 5l.6 10.5h6.8L13 5M7.5 7.5v5.5M10.5 7.5v5.5')
+              else 'M7 3H3v12h4M10 5l4 4-4 4M6 9h8')
         svg=f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 18 18"><path d="{path}" fill="none" stroke="{color}" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>'
         painter=QPainter(self)
         if not self.isEnabled():painter.setOpacity(.4)
-        QSvgRenderer(QByteArray(svg.encode('utf8'))).render(painter,QRectF(9,9,14,14))
+        QSvgRenderer(QByteArray(svg.encode('utf8'))).render(painter,QRectF((self.width()-18)/2,(self.height()-18)/2,18,18))
 
 
 class AccountGlyph(QWidget):
@@ -607,21 +608,25 @@ class AccountPanel(QFrame):
                     horizontal.addWidget(subtitle)
                 else:subtitle.hide()
                 horizontal.addStretch(1)
-                rename=RemoveDeviceButton(row,rename=True);rename.dark=self._dark
-                rename.setText('改名');rename.setObjectName('accountDeviceRename');rename.setFixedSize(44,32)
+                actions=QWidget(row);actions.setObjectName('accountDeviceActions')
+                action_layout=QHBoxLayout(actions);action_layout.setContentsMargins(0,0,0,0);action_layout.setSpacing(3)
+                actions.setSizePolicy(QSizePolicy.Policy.Fixed,QSizePolicy.Policy.Fixed)
+                rename=RemoveDeviceButton(actions,rename=True);rename.dark=self._dark
+                rename.setObjectName('accountDeviceRename');rename.setFixedSize(32,32)
                 rename.setAccessibleName('修改设备名称 '+str(device.get('name') or '未命名设备'))
                 rename.clicked.connect(partial(self._edit_device_name,key));rename.installEventFilter(self)
-                self.device_rename_buttons[key]=rename;horizontal.addWidget(rename)
+                self.device_rename_buttons[key]=rename;action_layout.addWidget(rename)
                 if not current:
-                    button=RemoveDeviceButton(row);button.dark=self._dark
-                    button.setText('移除登录');button.setObjectName('accountDeviceRevoke');button.setFixedSize(72,32)
+                    button=RemoveDeviceButton(actions);button.dark=self._dark
+                    button.setObjectName('accountDeviceRevoke');button.setFixedSize(32,32)
                     button.setAccessibleName('移除设备 '+str(device.get('name') or '未命名设备'))
                     button.clicked.connect(partial(self._ask_remove,key));button.installEventFilter(self)
-                    self.device_buttons[key]=button;horizontal.addWidget(button)
+                    self.device_buttons[key]=button;action_layout.addWidget(button)
                     row.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
                     def show_device_menu(point,key=key,row=row):
                         menu=QMenu(row);self._style_menu(menu);menu.addAction('修改设备名称',partial(self._edit_device_name,key));menu.exec(row.mapToGlobal(point))
                     row.customContextMenuRequested.connect(show_device_menu)
+                horizontal.addWidget(actions,0,Qt.AlignmentFlag.AlignRight)
                 rename_form=QWidget(row);rename_layout=QHBoxLayout(rename_form)
                 rename_layout.setContentsMargins(0,0,0,0);rename_layout.setSpacing(6)
                 edit=QLineEdit(rename_form);edit.setText(str(device.get('name') or ''))
@@ -690,10 +695,19 @@ class AccountPanel(QFrame):
         self._cancel_rename();self._cancel_remove();self._editing_device=key
         self.device_name_edits[key].setText(str(self._devices[key].get('name') or ''))
         self._rename_forms[key].show();self.device_name_edits[key].setFocus();self.device_name_edits[key].selectAll()
+        self._fit_device_forms()
 
     def _cancel_rename(self,*_):
         for form in self._rename_forms.values():form.hide()
         self._editing_device=''
+        self._fit_device_forms()
+
+    def _fit_device_forms(self):
+        for row in getattr(self,'_rows_by_id',{}).values():
+            row.layout().invalidate()
+            row.setMinimumHeight(max(44,row.layout().minimumSize().height()))
+            row.updateGeometry()
+        self.devices_layout.invalidate();self.devices_body.updateGeometry();self._queue_fit()
 
     def _save_device_name(self,key,*_):
         if self._busy or not self.service.signed_in or key not in self._devices:return
@@ -815,6 +829,8 @@ class AccountPanel(QFrame):
             QFrame#accountPanel QLabel#accountUnsignedTitle {{font-size:14px;font-weight:600;}}
             QFrame#accountPanel QPushButton#accountDeviceRename {{background:transparent;border:0;padding:0;color:#0A84FF;font-size:12px;}}
             QFrame#accountPanel QPushButton#accountDeviceRevoke {{background:transparent;border:0;padding:0;color:#FF453A;font-size:12px;}}
+            QFrame#accountPanel QPushButton#accountDeviceRename:hover {{background:rgba(10,132,255,20);border-radius:7px;}}
+            QFrame#accountPanel QPushButton#accountDeviceRevoke:hover {{background:rgba(255,69,58,20);border-radius:7px;}}
             QFrame#accountPanel QPushButton#accountPrimary {{background:#0A84FF;color:#FFFFFF;border:0;}}
             QFrame#accountAuthTabs {{background:{'rgba(0,0,0,64)' if self._dark else 'rgba(240,242,247,191)'};border:1px solid {edge};border-radius:12px;}}
             QFrame#accountPanel QPushButton#accountTab {{background:transparent;border:0;padding:4px 6px;border-radius:8px;}}

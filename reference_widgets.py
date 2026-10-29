@@ -18,6 +18,14 @@ from native_ui_common import colors, icon, keyboard_focus_visible, readable_qss
 from content_stack import StackTile
 from flickdock_motion import FeedbackButton
 from transfer_visuals import TransferIconLabel, CLOUD_STATUS_LABELS
+from lan_panel import _DropZone
+
+
+class OverviewEmptyDropZone(_DropZone):
+    """Use the same unscaled rounded dash path as the transfer drop target."""
+    def paintEvent(self, event):
+        self.illustration.dark=ui_theme.current_theme()=='dark'
+        super().paintEvent(event)
 
 
 def palette():
@@ -465,7 +473,7 @@ def build_overview(view,preview_type):
     from flickdock_icons import app_icon
     view.brand_logo=QLabel(view.header);view.brand_logo.setFixedSize(24,24)
     view.brand_logo.setPixmap(app_icon().pixmap(QSize(24,24),view.devicePixelRatioF()));head.addWidget(view.brand_logo)
-    view.title=label('内容总览',15,600,parent=view.header);head.addWidget(view.title)
+    view.title=label('ClickDock',15,600,parent=view.header);head.addWidget(view.title)
     view.count_label=label('',11,600,'secondary',view.header);view.count_label.setAlignment(Qt.AlignCenter)
     css(view.count_label,"color:#D4D4D8;background:rgba(255,255,255,28);border:0;border-radius:10px;padding:1px 9px;font:600 11px 'HarmonyOS Sans SC';",
         "color:#515154;background:rgba(0,0,0,18);border:0;border-radius:10px;padding:1px 9px;font:600 11px 'HarmonyOS Sans SC';")
@@ -514,7 +522,7 @@ def build_overview(view,preview_type):
         view.nav_counts[key]=count;view.category_buttons[key]=control;view.sidebar_buttons[key]=control
     view.transfer_badge=view.nav_counts['uploading']
     side.addStretch(1)
-    view.wan_nav=button('广域网传输','web','secondary',view.sidebar);view.wan_nav.setFixedHeight(34);view.wan_nav.clicked.connect(lambda:view.shelf.manager.show_wan_dialog());side.addWidget(view.wan_nav)
+    view.wan_nav=button('远程传输','web','secondary',view.sidebar);view.wan_nav.setFixedHeight(34);view.wan_nav.clicked.connect(lambda:view.shelf.manager.show_wan_dialog());side.addWidget(view.wan_nav)
     view.lan_nav=button('局域网互传','nearby','secondary',view.sidebar);view.lan_nav.setFixedHeight(34);view.lan_nav.clicked.connect(lambda:view.shelf.manager.show_lan_dialog());side.addWidget(view.lan_nav)
     view.settings_nav=button('设置','settings',parent=view.sidebar);view.settings_nav.setFixedHeight(34);view.settings_nav.clicked.connect(lambda:view.shelf.manager.show_settings());side.addWidget(view.settings_nav)
     for control in (view.wan_nav,view.lan_nav,view.settings_nav):
@@ -546,9 +554,19 @@ def build_overview(view,preview_type):
     # transparent palette otherwise clears a hole in transition snapshots.
     view.rows_body.setAutoFillBackground(False);mid.addWidget(view.scroll,1)
     view.marquee=MarqueeSelection(view)
-    view.empty_state=QWidget(view.middle);empty=QVBoxLayout(view.empty_state);empty.addStretch(1)
-    view.empty_symbol=label('',36,400,'muted',view.empty_state);view.empty_title=label('搁架为空',14,600,'text',view.empty_state);view.empty_hint=label('拖入文件、图片、文字或链接',12,400,'secondary',view.empty_state)
-    for control in (view.empty_symbol,view.empty_title,view.empty_hint):control.setAlignment(Qt.AlignCenter);empty.addWidget(control)
+    view.empty_state=QWidget(view.middle);empty=QVBoxLayout(view.empty_state);empty.setContentsMargins(16,16,16,16);empty.addStretch(1)
+    view.empty_drop=OverviewEmptyDropZone(view.empty_state);view.empty_drop.setFixedSize(280,220)
+    view.empty_drop.setAccessibleName('搁架为空，点击选择文件，或拖入文件、图片、文字或链接')
+    view.empty_drop.clicked.connect(lambda:view.shelf.pick_files('permanent'))
+    view.empty_drop.illustration.hide()
+    view.empty_symbol=label('',36,400,'muted',view.empty_drop);view.empty_symbol.setAlignment(Qt.AlignCenter)
+    view.empty_drop.layout().insertWidget(1,view.empty_symbol)
+    view.empty_title=view.empty_drop.title;view.empty_hint=view.empty_drop.hint
+    css(view.empty_title,"color:#F5F5F7;background:transparent;border:0;font:600 14px 'HarmonyOS Sans SC';","color:#1D1D1F;background:transparent;border:0;font:600 14px 'HarmonyOS Sans SC';")
+    css(view.empty_hint,"color:#A1A1AA;background:transparent;border:0;font:12px 'HarmonyOS Sans SC';","color:#636366;background:transparent;border:0;font:12px 'HarmonyOS Sans SC';")
+    for control in (view.empty_symbol,view.empty_title,view.empty_hint):control.setAttribute(Qt.WA_TransparentForMouseEvents)
+    view.empty_hint.setText('拖入内容，或点击选择文件');view.empty_hint.show()
+    empty.addWidget(view.empty_drop,0,Qt.AlignCenter)
     empty.addStretch(1);mid.addWidget(view.empty_state,1);view.empty_state.hide()
     view.transfer_strip=TransferStrip(view)
     css(view.transfer_strip,'QFrame{background:#121213;border:0;border-top:1px solid rgba(255,255,255,15);}',

@@ -30,7 +30,7 @@ from platform_startup import (StartupManager, CallbackBackend,
                               write_startup_value as _platform_write_startup)
 from platform_native import remove_host_window_shadow
 from surface_morph import paint_surface_shadow
-from native_ui_common import reference_font
+from native_ui_common import reference_font, rounded_popup
 
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -137,6 +137,7 @@ class SettingsComboBox(QComboBox):
         self.setAttribute(Qt.WidgetAttribute.WA_MacShowFocusRect, False)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setView(QListView(self))
+        self.setMaxVisibleItems(8)
         self.setItemDelegate(SettingsOptionDelegate(self))
         self._popup_style=_InlineComboStyle('Fusion');self._popup_style.setParent(self)
         self.setStyle(self._popup_style)
@@ -153,11 +154,15 @@ class SettingsComboBox(QComboBox):
         popup.setObjectName("flickdockSettingsOptions")
         surface = "#272c35" if self.dark else "#ffffff"
         edge = "#3c4554" if self.dark else "#dce3ed"
-        popup.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground,False)
-        popup.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint,True)
-        popup.setAutoFillBackground(True)
+        rounded_popup(popup,10)
         popup.setStyleSheet(f"QFrame#flickdockSettingsOptions {{background:{surface};"
                             f"border:1px solid {edge};border-radius:10px;}}")
+        self.view().setStyleSheet(
+            f"QListView{{background:{surface};color:{'#f5f5f7' if self.dark else '#1d1d1f'};"
+            "border:0;padding:5px;outline:0;}"
+            "QListView::item{border:0;border-radius:6px;padding:5px 10px;margin:1px 0;}"
+            f"QListView::item:selected{{background:{'#254b73' if self.dark else '#e5f0ff'};"
+            f"color:{'#ffffff' if self.dark else '#12579c'};}}")
         super().showPopup()
 
     def paintEvent(self, event):
@@ -1041,6 +1046,11 @@ class SettingsDialog(QDialog):
         self.update_status_label.setMaximumWidth(124)
         self.update_status_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         header.addWidget(self.update_status_label)
+        self.update_version_label=QLabel(self.title_bar)
+        self.update_version_label.setObjectName('settingsVersion')
+        self.update_version_label.setAccessibleName('新版本')
+        self.update_version_label.setFixedHeight(20);self.update_version_label.hide()
+        header.addWidget(self.update_version_label)
         self.update_button = QPushButton("检查更新", self.title_bar)
         self.update_button.setObjectName("settingsUpdate")
         self.update_button.setMinimumSize(96, 36)
@@ -1246,18 +1256,28 @@ class SettingsDialog(QDialog):
         combo.hide()
         group=QFrame(self.surface);group.setObjectName('settingsSegment')
         row=QHBoxLayout(group);row.setContentsMargins(4,4,4,4);row.setSpacing(6)
+        from PySide6.QtWidgets import QButtonGroup
+        selection=QButtonGroup(group);selection.setExclusive(True)
         buttons=[]
         for index,label in enumerate(labels):
             button=QPushButton(label,group);button.setObjectName('settingsSegmentButton')
             button.setCheckable(True);button.setAutoDefault(False);button.setMinimumHeight(32)
-            if combo is self.theme_combo:
+            selection.addButton(button,index)
+            if combo is self.theme_combo or combo is self.view_combo:
                 from native_ui_common import icon
-                button.setIcon(icon('sun' if index==0 else 'moon','#68686D'))
+                glyph=('sun' if index==0 else 'moon') if combo is self.theme_combo else ('list' if index==0 else 'grid')
+                button.setProperty('segmentGlyph',glyph);button.setIcon(icon(glyph,'#68686D'))
                 button.setIconSize(QSize(15,15))
             button.clicked.connect(lambda _checked=False,i=index:combo.setCurrentIndex(i))
             row.addWidget(button,1);buttons.append(button)
         def synchronize(*_):
-            for i,button in enumerate(buttons):button.setChecked(combo.currentIndex()==i)
+            from native_ui_common import icon
+            for i,button in enumerate(buttons):
+                button.setChecked(combo.currentIndex()==i)
+                if button.property('segmentGlyph'):
+                    dark=self.theme_combo.currentData()=='dark'
+                    tint=('#F5F5F7' if dark else '#1D1D1F') if button.isChecked() else ('#A1A1AA' if dark else '#68686D')
+                    button.setIcon(icon(button.property('segmentGlyph'),tint))
         combo.currentIndexChanged.connect(synchronize);synchronize()
         return group
 
@@ -1453,7 +1473,11 @@ class SettingsDialog(QDialog):
             raise ValueError(f"Unknown update state: {state}")
         self._update_state = state
         status, action = labels[state]
-        if state=='available' and version:status+=' v'+str(version)
+        offered=bool(version) and state in ('available','ready','cancelled','error')
+        self.update_version_label.setText('v'+str(version) if offered else '')
+        self.update_version_label.setVisible(offered)
+        self.update_button.setProperty('updateAvailable',offered)
+        self.update_button.style().unpolish(self.update_button);self.update_button.style().polish(self.update_button)
         self.update_status_label.setText(status)
         self.update_status_label.setAccessibleName(status + (f"，版本 {version}" if version else ""))
         self.update_status_label.setAccessibleDescription(str(error))
@@ -1863,6 +1887,11 @@ class SettingsDialog(QDialog):
         self.shake_sensitivity_reset_button.update()
         self.close_button.dark = dark
         self.close_button.update()
+        from native_ui_common import icon as segment_icon
+        for button in self.findChildren(QPushButton,'settingsSegmentButton'):
+            if button.property('segmentGlyph'):
+                tint=('#F5F5F7' if dark else '#1D1D1F') if button.isChecked() else ('#A1A1AA' if dark else '#68686D')
+                button.setIcon(segment_icon(button.property('segmentGlyph'),tint))
         if hasattr(self,'dock_button'):
             from native_ui_common import icon as reference_icon
             self.dock_button.setIcon(reference_icon('dock','#A1A1AA' if dark else '#636366',16))
@@ -1969,6 +1998,8 @@ class SettingsDialog(QDialog):
             QDialog#flickdockSettings QPushButton[keyboardFocus="true"] {{border:1px solid {semantic['link']};}}
             QDialog#flickdockSettings QPushButton#settingsUpdate,QDialog#flickdockSettings QPushButton#settingsSave {{background:{semantic['action']};color:{semantic['on_action']};}}
             QDialog#flickdockSettings QPushButton#settingsUpdate:hover,QDialog#flickdockSettings QPushButton#settingsSave:hover,QDialog#flickdockSettings QPushButton#settingsSave:pressed {{background:{semantic['action_hover']};color:{semantic['on_action']};}}
+            QDialog#flickdockSettings QPushButton#settingsUpdate[updateAvailable="true"] {{background:{'#30D158' if dark else '#168545'};color:{'#102318' if dark else '#FFFFFF'};}}
+            QDialog#flickdockSettings QPushButton#settingsUpdate[updateAvailable="true"]:hover {{background:{'#43DC6A' if dark else '#12733C'};}}
             QDialog#flickdockSettings QPushButton#settingsLink {{color:{semantic['link']};}}
             QWidget#settingsToggleOption {{background:{semantic['card']};border:1px solid {semantic['border']};border-radius:8px;}}
         ''')

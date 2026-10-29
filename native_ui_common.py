@@ -11,12 +11,40 @@ import os
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QEasingCurve, QEvent, QObject, QPointF, QRectF, QSize, Qt, QVariantAnimation, QTranslator
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QIconEngine, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QIconEngine, QPainter, QPainterPath, QPen, QPixmap, QRegion
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QApplication, QAbstractButton, QHBoxLayout, QLabel, QPushButton, QWidget
 
 
 WINDOWS_FONT_STACK=('HarmonyOS Sans SC','Segoe UI Variable Text','Segoe UI','Noto Sans SC','Source Han Sans SC')
+
+
+class _RoundedPopupClip(QObject):
+    """Clip the opaque popup host too, including Cocoa's square backing."""
+    def __init__(self, popup, radius):
+        super().__init__(popup)
+        self.radius = radius
+
+    def update_clip(self, popup):
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(popup.rect()), self.radius, self.radius)
+        popup.setMask(QRegion(path.toFillPolygon().toPolygon()))
+
+    def eventFilter(self, watched, event):
+        if event.type() in (QEvent.Type.Resize, QEvent.Type.Show):
+            self.update_clip(watched)
+        return False
+
+
+def rounded_popup(popup, radius=10):
+    """Retain Qt popup/keyboard behavior, without native glass outside corners."""
+    if not hasattr(popup, '_rounded_popup_clip'):
+        popup.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        popup.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint, True)
+        popup.setAutoFillBackground(True)
+        popup._rounded_popup_clip = _RoundedPopupClip(popup, radius)
+        popup.installEventFilter(popup._rounded_popup_clip)
+    popup._rounded_popup_clip.update_clip(popup)
 
 def readable_size(value):
     value=int(value)

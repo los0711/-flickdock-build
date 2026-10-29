@@ -8,6 +8,12 @@ import {registerHooks} from 'node:module';
 import {DatabaseSync} from 'node:sqlite';
 import {transformSync} from 'esbuild';
 
+// Node lacks this workerd primitive. The real local integration test also
+// exercises R2's known-length stream requirement with a slow request body.
+globalThis.FixedLengthStream=class extends TransformStream {
+  constructor(expected){let count=0;super({transform(chunk,controller){count+=chunk.byteLength;assert.ok(count<=expected);controller.enqueue(chunk);},flush(){assert.equal(count,expected);}});}
+};
+
 registerHooks({resolve(specifier,context,next){
   if(['./hash-state','./wan','./relay-budget'].includes(specifier))specifier+='.ts';
   return next(specifier,context);

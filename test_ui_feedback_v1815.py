@@ -187,7 +187,7 @@ class SettingsFeedbackTests(unittest.TestCase):
             self.assertLessEqual(dialog._reference_top.height(),dialog._reference_appearance.sizeHint().height()+4)
             current=panel._rows_by_id['current']
             marker=current.findChild(QWidget,'accountCurrentDevice');rename=panel.device_rename_buttons['current']
-            self.assertLess(marker.geometry().right(),rename.geometry().left())
+            self.assertLess(marker.mapTo(current,marker.rect().topRight()).x(),rename.mapTo(current,rename.rect().topLeft()).x())
             original=list(service.devices)
             service.devices.extend(dict(id='extra'+str(i),name='额外设备 '+str(i),platform='windows') for i in range(8))
             service.list_devices()

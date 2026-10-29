@@ -47,6 +47,54 @@ class MacBuildTests(unittest.TestCase):
         self.assertIn("'--install-location', '/Applications'", source)
         self.assertIn("'/usr/sbin/pkgutil', '--expand-full'", source)
 
+    def test_pkg_replaces_canonical_bundle_and_checks_running_instances(self):
+        import plistlib
+        recorded=[]
+        with tempfile.TemporaryDirectory() as directory:
+            folder=Path(directory);app=folder/'FlickDock.app';app.mkdir();(app/'payload').write_bytes(b'fixture')
+            def inspect(command,**options):
+                recorded.append([str(value) for value in command])
+                if command[0]=='/usr/bin/pkgbuild':
+                    component=Path(command[command.index('--component-plist')+1])
+                    values=plistlib.loads(component.read_bytes())[0]
+                    self.assertFalse(values['BundleIsRelocatable']);self.assertTrue(values['BundleHasStrictIdentifier'])
+                    self.assertEqual(values['BundleOverwriteAction'],'upgrade')
+                    script=Path(command[command.index('--scripts')+1])/'preinstall'
+                    self.assertIn('pgrep -x FlickDock',script.read_text(encoding='utf8'))
+                    self.assertNotIn('killall',script.read_text(encoding='utf8'))
+            with patch.object(build_macos,'run',side_effect=inspect):build_macos._create_pkg(app,folder/'new.pkg','1.8.17')
+        self.assertTrue(any(command[:2]==['/bin/sh','-n'] for command in recorded))
+
+    def test_disk_image_launch_uses_installed_copy_and_only_ejects_an_image_mount(self):
+        import plistlib
+        for image in (True,False):
+            with tempfile.TemporaryDirectory() as directory:
+                root=Path(directory);source=root/'mounted/FlickDock.app';target=root/'Applications/FlickDock.app'
+                for app in (source,target):
+                    (app/'Contents').mkdir(parents=True)
+                    (app/'Contents/Info.plist').write_bytes(plistlib.dumps(dict(CFBundleIdentifier='com.flickdock.app',CFBundleShortVersionString='1.8.17')))
+                commands=[];launches=[]
+                def run(command,**options):
+                    commands.append(command)
+                    return SimpleNamespace(returncode=0,stdout=plistlib.dumps(dict(images=[{'image-path':'/fixture.dmg','system-entities':[{'mount-point':str(source.parent)}]}] if image else [])))
+                self.assertTrue(mac_entry._dmg_launch(source,target,runner=run,launcher=lambda *args,**options:launches.append(args)))
+                self.assertEqual(commands[0],['/usr/bin/hdiutil','info','-plist'])
+                self.assertEqual(len(launches),1)
+                self.assertEqual(launches[0][0][-2],str(target))
+                self.assertEqual(launches[0][0][-1],str(source.parent) if image else '')
+
+    def test_disk_image_does_not_replace_a_running_older_installation(self):
+        import plistlib
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);source=root/'mounted/FlickDock.app';target=root/'Applications/FlickDock.app'
+            (source/'Contents').mkdir(parents=True)
+            (source/'Contents/Info.plist').write_bytes(plistlib.dumps(dict(CFBundleIdentifier='com.flickdock.app',CFBundleShortVersionString='1.8.17')))
+            calls=[]
+            def run(command,**options):
+                calls.append(command);return SimpleNamespace(returncode=0,stdout='999999' if command[0].endswith('pgrep') else b'')
+            self.assertTrue(mac_entry._dmg_launch(source,target,runner=run))
+            self.assertEqual(len(calls),2);self.assertIn('请先退出',calls[1][-1]);self.assertFalse(target.exists())
+
     def test_cocoa_smoke_is_opt_in_and_uses_disposable_profile(self):
         source = Path(build_macos.__file__).read_text(encoding='utf-8')
         self.assertIn("TemporaryDirectory(prefix='flickdock-cocoa-smoke-')", source)

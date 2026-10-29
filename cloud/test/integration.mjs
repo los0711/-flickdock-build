@@ -8,6 +8,7 @@ import {join,resolve,dirname,sep} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as sleep} from 'node:timers/promises';
 import net from 'node:net';
+import WebSocket from 'ws';
 
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const wrangler=join(root,'node_modules/wrangler/bin/wrangler.js');
@@ -20,7 +21,7 @@ configuration.vars.EMAIL_PROVIDER='disabled';
 // reservations created before the smaller production CPU safety setting.
 configuration.vars.CHUNK_BYTES=String(1024*1024);
 const configFile=join(state,'wrangler-test.json');await writeFile(configFile,JSON.stringify(configuration));
-const env={...process.env,WRANGLER_SEND_METRICS:'false',CLOUDFLARE_API_TOKEN:'',CLOUDFLARE_API_KEY:'',CLOUDFLARE_EMAIL:'',CLOUDFLARE_ACCOUNT_ID:''};
+const env={...process.env,WRANGLER_SEND_METRICS:'false',CLOUDFLARE_API_TOKEN:'',CLOUDFLARE_API_KEY:'',CLOUDFLARE_EMAIL:'',CLOUDFLARE_ACCOUNT_ID:'',HTTP_PROXY:'',HTTPS_PROXY:'',ALL_PROXY:'',http_proxy:'',https_proxy:'',all_proxy:'',NO_PROXY:'127.0.0.1,localhost'};
 const checks=[];let server,output='';
 const hash=data=>createHash('sha256').update(data).digest('hex');
 const secret='local-test-secret-never-used-for-real-email';
@@ -84,6 +85,25 @@ try{
     assert.equal((await request('GET','/v1/devices',undefined,alice.token)).devices.length,2);
     assert.ok(!sql('SELECT token_hash FROM sessions').includes(alice.token));
     await request('POST','/v1/auth/login',{...credentials('alice'),password:'wrong testing password'},undefined,401);
+  });
+  await check('peer receives real upload progress before a streamed R2 part completes',async()=>{
+    const sender=await request('POST','/v1/auth/register',credentials('event-progress-fixture'),undefined,201),receiver=await request('POST','/v1/auth/login',credentials('event-progress-fixture'));
+    const socket=new WebSocket(base.replace('http:','ws:')+'/v1/events',{headers:{Authorization:'Bearer '+receiver.token}}),progress=[];
+    socket.on('message',body=>{const value=JSON.parse(body.toString());if(value.type==='progress')progress.push(value);});
+    await new Promise((resolve,reject)=>{socket.once('open',resolve);socket.once('error',reject);});
+    try{
+      const data=Buffer.alloc(6*1024*1024,0x62),id=randomUUID(),digest=hash(data);
+      const reserved=await request('POST','/v1/uploads',{item_id:id,base_version:0,kind:'file',name:'progress.bin',mime_type:'application/octet-stream',size:data.length,sha256:digest,fast_upload:true},sender.token,201);
+      let position=0;
+      const body=new ReadableStream({async pull(controller){if(position===data.length){controller.close();return;}await sleep(35);const end=Math.min(position+65536,data.length);controller.enqueue(data.subarray(position,end));position=end;}});
+      const uploaded=await localFetch(base+`/v1/uploads/${reserved.upload_id}/parts/0`,{method:'PUT',headers:{Authorization:'Bearer '+sender.token,'X-Content-SHA256':digest,'Content-Length':String(data.length)},body,duplex:'half'});
+      assert.equal(uploaded.status,200,await uploaded.text());await sleep(200);
+      const samples=progress.filter(value=>value.upload_id===reserved.upload_id);
+      assert.ok(samples.filter(value=>value.received_bytes>0&&value.received_bytes<data.length).length>=3,JSON.stringify(samples));
+      assert.ok(samples.every(value=>value.total===data.length));
+      const committed=await request('POST',`/v1/uploads/${reserved.upload_id}/commit`,{},sender.token);assert.equal(committed.record.sha256,digest);
+      await request('DELETE',`/v1/items/${id}`,{base_version:1},sender.token);
+    }finally{socket.close();}
   });
   await check('client KDF challenge is stable per user, purpose-bound, expiring and single-use',async()=>{
     const one=await request('POST','/v1/auth/challenge',{username:'alice',purpose:'login'}),two=await request('POST','/v1/auth/challenge',{username:'ALICE',purpose:'login'});

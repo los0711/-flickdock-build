@@ -1,9 +1,13 @@
 // Native libdatachannel worker. Stdio is framed binary; secrets never use argv.
 import rtc from 'node-datachannel';
-const WINDOW=4*1024*1024, MESSAGE=32*1024;
+import {randomBytes} from 'node:crypto';
+const LEGACY_WINDOW=4*1024*1024, LEGACY_MESSAGE=32*1024;
+const WINDOW=16*1024*1024, MESSAGE=64*1024;
 rtc.initLogger('Fatal',()=>{});
-rtc.setSctpSettings({recvBufferSize:16*1024*1024,sendBufferSize:8*1024*1024,maxChunksOnQueue:16384});
-let pc,channel,closed=false,unacked=0,pendingOutput=0,wake=()=>{};
+rtc.setSctpSettings({recvBufferSize:32*1024*1024,sendBufferSize:16*1024*1024,maxChunksOnQueue:16384});
+let pc,channel,closed=false,unacked=0,pendingOutput=0,wake=()=>{},statsTimer;
+let sendWindow=LEGACY_WINDOW,sendMessage=LEGACY_MESSAGE,credit=0,creditTimer;
+const flowNonce=randomBytes(16).toString('hex');
 function frame(kind,body,done) {
   if(closed)return;
   const data=Buffer.isBuffer(body)?body:Buffer.from(JSON.stringify(body));
@@ -11,25 +15,36 @@ function frame(kind,body,done) {
   process.stdout.write(Buffer.concat([header,data]),done);
 }
 const event=value=>frame('J',value);
+function stats() {
+  if(!pc||closed)return;
+  event({type:'stats',sent:pc.bytesSent(),received:pc.bytesReceived()});
+}
 function stop() {
-  if(closed)return;closed=true;wake();
+  if(closed)return;stats();closed=true;wake();clearTimeout(creditTimer);clearInterval(statsTimer);
   try{channel?.close();pc?.close();rtc.cleanup();}catch{}
-  process.exit(0);
+  process.stdout.end(()=>process.exit(0));
+}
+function acknowledge() {
+  clearTimeout(creditTimer);creditTimer=undefined;
+  if(!credit||!channel?.isOpen())return;
+  const ack=Buffer.allocUnsafe(5);ack[0]=2;ack.writeUInt32BE(credit,1);
+  channel.sendMessageBinary(ack);credit=0;
 }
 function bind(dc) {
   if(channel)throw new Error('Unexpected extra data channel');
   channel=dc;
-  dc.setBufferedAmountLowThreshold(WINDOW/2);
+  dc.setBufferedAmountLowThreshold(LEGACY_WINDOW/2);
   dc.onBufferedAmountLow(()=>wake());
   dc.onOpen(()=>{
     const pair=pc.getSelectedCandidatePair();
     event({type:'open',route:pair?.local?.type==='relay'||pair?.remote?.type==='relay'?'relay':'direct',maxMessageSize:dc.maxMessageSize()});wake();
+    statsTimer=setInterval(stats,250);
   });
   dc.onClosed(()=>{event({type:'closed'});stop();});
   dc.onError(()=>{event({type:'error',message:'WebRTC 数据通道中断'});stop();});
   dc.onMessage(message=>{
     if(typeof message==='string')throw new Error('Unexpected text channel message');
-    const data=Buffer.from(message);
+    const data=Buffer.isBuffer(message)?message:Buffer.from(message);
     if(data.length===5&&data[0]===2) {
       const count=data.readUInt32BE(1);
       if(count>unacked)throw new Error('Invalid credit');
@@ -42,21 +57,37 @@ function bind(dc) {
     frame('B',payload,()=>{
       pendingOutput-=payload.length;
       if(!channel?.isOpen())return;
-      const ack=Buffer.allocUnsafe(5);ack[0]=2;ack.writeUInt32BE(payload.length,1);channel.sendMessageBinary(ack);
+      credit+=payload.length;
+      if(credit>=256*1024)acknowledge();
+      else if(!creditTimer)creditTimer=setTimeout(acknowledge,2);
     });
   });
 }
 async function control(value) {
   if(value.type==='init') {
     if(pc)throw new Error('Already initialized');
-    pc=new rtc.PeerConnection('FlickDock',{iceServers:value.iceServers||[],maxMessageSize:65536,iceTransportPolicy:value.forceRelay?'relay':'all',enableIceTcp:true});
-    pc.onLocalDescription((sdp,type)=>event({type:'description',sdp,descriptionType:type}));
+    pc=new rtc.PeerConnection('FlickDock',{iceServers:value.iceServers||[],maxMessageSize:131072,iceTransportPolicy:value.forceRelay?'relay':'all',enableIceTcp:true});
+    // Unknown SDP attributes are ignored by older clients. Start conservatively
+    // and enlarge the bounded credit/message window only for an agreeing peer.
+    pc.onLocalDescription((sdp,type)=>event({type:'description',sdp:sdp.replace(/^a=x-flickdock-flow:[^\r\n]*\r?\n?/gm,'').trimEnd()+`\r\na=x-flickdock-flow:2 ${flowNonce} ${WINDOW} ${MESSAGE}\r\n`,descriptionType:type}));
     pc.onLocalCandidate((candidate,mid)=>event({type:'candidate',candidate,mid}));
     pc.onStateChange(state=>{event({type:'state',state});if(state==='failed')stop();});
     pc.onDataChannel(bind);
     if(value.initiator)bind(pc.createDataChannel('flickdock-file-v1',{protocol:'flickdock-file-v1'}));
-  } else if(value.type==='description')pc.setRemoteDescription(value.sdp,value.descriptionType);
+  } else if(value.type==='description') {
+    // libdatachannel v1 peers echo unknown offer attributes in their answer.
+    // Each endpoint must advertise its own nonce; an echo cannot opt in.
+    const flow=/^a=x-flickdock-flow:2 ([a-f0-9]{32}) ([0-9]+) ([0-9]+)\r?$/m.exec(value.sdp);
+    if(flow&&flow[1]!==flowNonce) {
+      const window=Number(flow[2]),message=Number(flow[3]);
+      if(Number.isSafeInteger(window)&&window>=LEGACY_WINDOW&&window<=WINDOW&&Number.isSafeInteger(message)&&message>=LEGACY_MESSAGE&&message<=MESSAGE) {
+        sendWindow=window;sendMessage=message;
+      }
+    }
+    pc.setRemoteDescription(value.sdp,value.descriptionType);
+  }
   else if(value.type==='candidate')pc.addRemoteCandidate(value.candidate,value.mid);
+  else if(value.type==='stats')stats();
   else if(value.type==='close') {
     const deadline=Date.now()+3000;
     while(!closed&&unacked>0&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,5));
@@ -66,8 +97,8 @@ async function control(value) {
 }
 async function send(data) {
   for(let position=0;position<data.length;) {
-    const size=Math.min(MESSAGE,data.length-position,Math.max(1,(channel?.maxMessageSize()||MESSAGE+1)-1));
-    while(!closed&&(!channel?.isOpen()||unacked+size>WINDOW||channel.bufferedAmount()>WINDOW)) {
+    const size=Math.min(sendMessage,data.length-position,Math.max(1,(channel?.maxMessageSize()||sendMessage+1)-1));
+    while(!closed&&(!channel?.isOpen()||unacked+size>sendWindow||channel.bufferedAmount()>sendWindow)) {
       await new Promise(resolve=>{wake=resolve;});
     }
     if(closed)return;

@@ -1,5 +1,5 @@
 #define Root AddBackslash(SourcePath)
-#define AppVersion "1.8.16"
+#define AppVersion "1.8.17"
 
 [Setup]
 AppId={{C51D7C62-61AE-45D7-A96D-6DC63B8495E7}

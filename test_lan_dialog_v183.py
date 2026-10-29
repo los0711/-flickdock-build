@@ -58,6 +58,72 @@ class LanDialogTests(unittest.TestCase):
         self.assertEqual(self.service.sent,[('peer-1',[str(source)])])
         self.assertEqual(self.dialog.panel._queued_paths,[])
 
+    def test_transfer_mode_button_closes_current_dialog_and_emits_navigation(self):
+        navigated=[];self.dialog.transfer_mode_requested.connect(lambda:navigated.append(True))
+        self.assertEqual(self.dialog.transfer_mode_button.text(),'远程传输')
+        self.dialog.transfer_mode_button.click();APP.processEvents()
+        self.assertEqual(navigated,[True]);self.assertFalse(self.dialog.isVisible())
+
+    def test_file_drop_anywhere_in_transfer_dialog_queues_once_and_rejects_web_urls(self):
+        for index,target in enumerate((self.dialog,self.dialog.title_bar,self.dialog.panel,
+                                       self.dialog.panel.devices,self.dialog.panel.receive_path)):
+            source=self.root/f'whole-window-{index}.txt';source.write_text(str(index))
+            mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(source))])
+            enter=QDragEnterEvent(target.rect().center(),Qt.CopyAction,mime,Qt.LeftButton,Qt.NoModifier)
+            APP.sendEvent(target,enter);self.assertTrue(enter.isAccepted())
+            self.assertTrue(self.dialog.panel.drop_zone._active)
+            drop=QDropEvent(QPointF(12,12),Qt.CopyAction,mime,Qt.LeftButton,Qt.NoModifier)
+            APP.sendEvent(target,drop);self.assertTrue(drop.isAccepted())
+            self.assertEqual(self.dialog.panel._queued_paths.count(str(source)),1)
+            self.assertFalse(self.dialog.panel.drop_zone._active)
+        mime=QMimeData();mime.setUrls([QUrl('https://example.invalid/file.zip')])
+        enter=QDragEnterEvent(self.dialog.rect().center(),Qt.CopyAction,mime,Qt.LeftButton,Qt.NoModifier)
+        APP.sendEvent(self.dialog,enter);self.assertFalse(enter.isAccepted())
+        self.assertEqual(len(self.dialog.panel._queued_paths),5)
+
+    def test_wan_recent_devices_have_no_placeholder_and_code_has_title(self):
+        from wan_transfer import WanTransferService
+        service=WanTransferService(self.root/'wan',enabled=False)
+        dialog=LanDialog(service,self.settings);dialog.show();APP.processEvents()
+        try:
+            self.assertEqual(dialog.transfer_mode_button.text(),'局域网互传')
+            self.assertEqual(dialog.panel.peer_code_label.text(),'对方接收码')
+            self.assertTrue(dialog.panel.peer_code_label.isVisible())
+            self.assertEqual(dialog.panel.devices.count(),0)
+            peers=[dict(id='a'*64,name='最近设备',online=True,platform='macos'),dict(id='b'*64,name='第二设备',online=False,platform='windows')]
+            dialog.panel._peers_changed(peers)
+            self.assertEqual(dialog.panel.devices.count(),2)
+            self.assertEqual(dialog.panel.devices.currentData(),'a'*64)
+            self.assertTrue(dialog.panel.devices.itemData(0,Qt.ItemDataRole.UserRole+2))
+            self.assertFalse(dialog.panel.devices.itemData(1,Qt.ItemDataRole.UserRole+2))
+            dialog.panel.devices.setCurrentIndex(1);dialog.panel._peers_changed(peers)
+            self.assertEqual(dialog.panel.devices.currentData(),'b'*64)
+            dialog.panel._peers_changed([]);self.assertEqual(dialog.panel.devices.currentIndex(),-1)
+        finally:dialog.close();dialog.deleteLater();service.close();service.deleteLater();APP.processEvents()
+
+    def test_codes_copy_without_disappearing_and_send_clears_only_valid_request(self):
+        panel=self.dialog.panel
+        panel.send_code_value.setText('1 2 3 4 5 6');panel.send_code_value.click()
+        self.assertEqual(APP.clipboard().text(),'123456')
+        self.assertEqual(panel.send_code_value.text(),'1 2 3 4 5 6')
+        panel._wan=True;panel.peer_code_input.setText('ABCD2345')
+        file=self.root/'queued.dat';file.write_bytes(b'content');panel.queue_paths([str(file)])
+        panel.send_button.click()
+        self.assertEqual(panel.peer_code_input.text(),'')
+        self.assertEqual(self.service.sent[-1],('ABCD2345',[str(file)]))
+
+    def test_remote_eta_and_turn_usage_survive_terminal_history(self):
+        panel=self.dialog.panel;panel._wan=True
+        event=dict(id='turn-qa',direction='send',peer='Mac',state='transferring',total=20_000_000,received=2_000_000,route='relay',relay_bytes=2_050_000)
+        with patch('lan_panel.time.monotonic',return_value=10):panel._progress(event)
+        event.update(received=4_000_000,relay_bytes=4_100_000)
+        with patch('lan_panel.time.monotonic',return_value=11):panel._progress(event)
+        detail=panel._rows['turn-qa']['detail'].text()
+        self.assertIn('剩余约 8 秒',detail);self.assertIn('TURN:4.1MB',detail)
+        event.update(state='cancelled',relay_bytes=4_200_000);panel._progress(event)
+        self.assertEqual(panel._history[0]['relay_bytes'],4_200_000)
+        self.assertIn('TURN:4.2MB',panel.history_rows[0].title.accessibleName())
+
     def test_destination_and_recent_transfer_survive_window_reopen(self):
         destination=self.root/'chosen';destination.mkdir()
         self.settings.set_lan_receive_dir(destination)

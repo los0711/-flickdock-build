@@ -28,7 +28,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-overview-drop-') as tmp:
                 manager.show_overview();activate.assert_not_called();focus.assert_not_called()
             assert shelf.expanded and shelf.isVisible()
         overview();popup=shelf.popup
-        targets=[popup,popup.empty_state,popup.scroll.viewport(),popup.rows_body,
+        targets=[popup,popup.empty_state,popup.empty_drop,popup.header,popup.search_edit,popup.scroll.viewport(),popup.rows_body,
                  popup.preview,popup.preview.text.viewport(),popup.preview.image,popup.preview.media.surface]
         for index,target in enumerate(targets):
             path=Path(tmp)/f'file-{index}.txt';path.write_text(str(index),encoding='utf8')

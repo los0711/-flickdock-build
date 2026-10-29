@@ -109,6 +109,38 @@ def _create_dmg(staging,dmg):
         time.sleep(2*(attempt+1))
 
 
+PKG_PREINSTALL='''#!/bin/sh
+set -eu
+# Never replace the executable of a running instance, including older copies.
+while /usr/bin/pgrep -x FlickDock >/dev/null 2>&1; do
+  console_user=$(/usr/bin/stat -f %Su /dev/console)
+  case "$console_user" in root|loginwindow|'') echo '请先退出 FlickDock，再重新安装。' >&2; exit 1;; esac
+  console_uid=$(/usr/bin/id -u "$console_user")
+  /bin/launchctl asuser "$console_uid" /usr/bin/sudo -u "$console_user" /usr/bin/osascript <<'APPLESCRIPT' || exit 1
+display dialog "FlickDock 正在运行。请先退出已打开的 FlickDock，然后点击继续。安装程序会覆盖 /Applications 中的旧版本。" buttons {"取消安装", "继续"} default button "继续" cancel button "取消安装" with title "安装 FlickDock" with icon caution
+APPLESCRIPT
+done
+exit 0
+'''
+
+
+def _create_pkg(app,installer,version):
+    with tempfile.TemporaryDirectory(prefix='flickdock-pkg-') as directory:
+        folder=Path(directory);payload=folder/'payload';payload.mkdir()
+        shutil.copytree(app,payload/app.name,symlinks=True)
+        components=folder/'components.plist'
+        components.write_bytes(plistlib.dumps([dict(RootRelativeBundlePath=app.name,
+            BundleIsRelocatable=False,BundleHasStrictIdentifier=True,
+            BundleIsVersionChecked=True,BundleOverwriteAction='upgrade')]))
+        scripts=folder/'scripts';scripts.mkdir();preinstall=scripts/'preinstall'
+        preinstall.write_text(PKG_PREINSTALL,encoding='utf8');preinstall.chmod(0o755)
+        run(['/bin/sh','-n',preinstall])
+        run(['/usr/bin/pkgbuild','--root',payload,'--component-plist',components,
+             '--install-location', '/Applications','--scripts',scripts,
+             '--identifier','com.flickdock.installer','--version',version,
+             '--compression','latest','--min-os-version','14.4',installer])
+
+
 def main(arguments=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--target-arch', choices=('arm64', 'x86_64', 'universal2'), default=platform.machine())
@@ -291,9 +323,7 @@ def main(arguments=None):
     installer = report.parent / (name + '.pkg')
     if installer.exists():
         raise FileExistsError('Refusing to overwrite an existing versioned macOS installer')
-    run(['/usr/bin/pkgbuild', '--component', app, '--install-location', '/Applications',
-         '--identifier', 'com.flickdock.installer', '--version', APP_VERSION,
-         '--compression','latest','--min-os-version','14.4',installer])
+    _create_pkg(app,installer,APP_VERSION)
     # Check the package payload and metadata without installing on this Mac.
     with tempfile.TemporaryDirectory(prefix='flickdock-pkg-verify-') as directory:
         expanded = Path(directory) / 'expanded'

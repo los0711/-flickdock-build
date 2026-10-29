@@ -84,6 +84,7 @@ class ShelfSync(QObject):
         self.cleanup_attempts = {}
         self._cleanup_inflight = set()
         self.remote_transfers=[]
+        self._live_upload_progress={}
         self.download_transfers={}
         self._interactive=False
         self._base_poll_ms=poll_ms
@@ -127,6 +128,7 @@ class ShelfSync(QObject):
             self.state.pop('awaiting_receive',None)
         if not receive_enabled:
             self.remote_transfers=[]
+            self._live_upload_progress.clear()
             self.download_transfers.clear()
             self.remote_poll.stop()
         self._persist()
@@ -178,7 +180,7 @@ class ShelfSync(QObject):
         self.epoch += 1; self.timer.stop(); self.debounce.stop(); self.remote_poll.stop()
         self.running = False; self.transfer = None
         self._refresh_again=False
-        self.remote_transfers=[]; self.transfers_changed.emit([])
+        self.remote_transfers=[]; self._live_upload_progress.clear(); self.transfers_changed.emit([])
         self.download_transfers.clear()
         self._part_cache.clear();self._progress_persisted=0.0
         self._cleanup_inflight.clear()
@@ -290,6 +292,15 @@ class ShelfSync(QObject):
         if self.running:self._refresh_again=True
         else:self.debounce.start(1)
 
+    def remote_progress(self,value):
+        if self.closed or not self.account_id or not self.receive_enabled:return
+        identifier=value.get('upload_id');previous=self._live_upload_progress.get(identifier,{})
+        if value.get('at',0)<previous.get('at',0):return
+        self._live_upload_progress[identifier]=dict(value,seen=time.monotonic())
+        if len(self._live_upload_progress)>100:self._live_upload_progress.pop(next(iter(self._live_upload_progress)))
+        if not previous and not any(row.get('upload_id')==identifier for row in self.remote_transfers):self.request_refresh()
+        self._notify_transfers()
+
     def _notify_transfers(self):
         if self.state is None:return
         transfers=[];known=set()
@@ -332,8 +343,11 @@ class ShelfSync(QObject):
             local=entries.get(identity,{})
             if remote.get('device_id')==getattr(self.service,'device_id','') and local.get('paused_upload'):continue
             if remote.get('device_id')==getattr(self.service,'device_id',''):continue
+            live=self._live_upload_progress.get(remote.get('upload_id'),{})
+            received=remote.get('received_bytes',0)
+            if live.get('total')==remote.get('size') and time.monotonic()-live.get('seen',0)<15:received=max(received,live.get('received_bytes',0))
             transfers.append(dict(id=identity,ref=local.get('ref'),name=remote.get('name',''),kind=remote.get('kind','file'),
-                upload_id=remote.get('upload_id'),received=remote.get('received_bytes',0),total=remote.get('size',0),
+                upload_id=remote.get('upload_id'),received=received,total=remote.get('size',0),
                 phase='remote',remote=True,device_name=remote.get('device_name','另一台设备')))
         self.transfers_changed.emit(transfers)
 
@@ -1289,18 +1303,21 @@ class ShelfSync(QObject):
             self._send_part(transfer,index+1)
         if getattr(self.api,'supports_file_slices',False) and transfer['part_count']>1:
             from sync_files import hash_part
+            staged_hashes=transfer.get('chunk_hashes')
+            precomputed=(transfer.get('chunk_bytes')==transfer['chunk_size'] and isinstance(staged_hashes,list)
+                and len(staged_hashes)==transfer['part_count'] and all(isinstance(value,str) and re.fullmatch('[a-f0-9]{64}',value) for value in staged_hashes))
             def hashed(digest,error):
                 if error:self._error(error);return
                 offset=index*transfer['chunk_size'];size=min(transfer['chunk_size'],transfer['size']-offset)
                 self._request('PUT',f'/v1/uploads/{transfer["upload_id"]}/parts/{index}',sent,
                     source=transfer['path'],source_offset=offset,source_size=size,
                     headers={'X-Content-SHA256':digest},progress=progress)
-                if index+1<transfer['part_count']:
+                if not precomputed and index+1<transfer['part_count']:
                     key=(transfer['upload_id'],index+1)
                     self._work(hash_part,(transfer['path'],index+1,transfer['chunk_size']),
                         lambda result,error:self._part_cache.__setitem__(key,result) if not error and
                             self._resume_matches(transfer) and transfer.get('next_part',0)<=index+1 else None)
-            cached=self._part_cache.pop((transfer['upload_id'],index),None)
+            cached=staged_hashes[index] if precomputed else self._part_cache.pop((transfer['upload_id'],index),None)
             if isinstance(cached,str):hashed(cached,None)
             else:self._work(hash_part,(transfer['path'],index,transfer['chunk_size']),hashed)
             return
