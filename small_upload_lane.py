@@ -7,7 +7,7 @@ from pathlib import Path
 import time
 
 from sync_files import stage_item
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer,Qt
 
 SMALL_BYTES = 4*1024*1024
 
@@ -17,10 +17,13 @@ class SmallUploadLane:
         self.owner = owner
         self.active = None
         self.retry_at = {}
+        self.retry=QTimer(owner);self.retry.setSingleShot(True);self.retry.timeout.connect(self.kick)
+        self.retry.setTimerType(Qt.TimerType.PreciseTimer)
 
     def reset(self):
         self.active = None
         self.retry_at.clear()
+        self.retry.stop()
 
     def run(self, token, callback, *args):
         if token is not self.active:
@@ -42,11 +45,14 @@ class SmallUploadLane:
         if error:
             self.retry_at[token['id']] = time.monotonic()+30
             owner._refresh_again = True
+        else:self.retry_at.pop(token['id'],None)
+        future=[value for value in self.retry_at.values() if value>time.monotonic()]
+        if future:self.retry.start(max(1,round((min(future)-time.monotonic())*1000)+1))
         owner._persist()
         owner._notify_transfers()
         # Do not re-enter the bulk cycle while its request is outstanding.
         owner.debounce.start(30001 if error else 1)
-        if not error:QTimer.singleShot(0,owner,self.kick)
+        QTimer.singleShot(0,owner,self.kick)
 
     def eligible(self, entry, texts):
         if (entry.get('version', 0) != 0 or entry.get('deleted')
@@ -82,11 +88,21 @@ class SmallUploadLane:
         texts = owner.adapter.snapshot().get('texts', {})
         resumes = owner.state.setdefault('resumable_uploads', {})
         entry = next((item for item in owner.state['entries'].values()
-                      if item['id'] != bulk['id'] and item['id'] not in resumes
+                      if item['id'] != bulk['id']
                       and self.eligible(item, texts)), None)
         if entry is None:
             return
-        token = self.active = dict(entry)
+        saved=resumes.get(entry['id'])
+        token = self.active = dict(saved or entry)
+        if saved:
+            from shelf_sync import _verify_staged
+            def verified(result,error):
+                if error:
+                    owner._forget_resume(token['id']);self.finish(error);return
+                resumes[token['id']]=token
+                owner._resume_upload(token)
+            self.run(token,owner._work,_verify_staged,(token,),verified)
+            return
 
         def staged(result, error):
             if error:

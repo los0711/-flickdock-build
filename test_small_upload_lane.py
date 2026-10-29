@@ -6,6 +6,7 @@ os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
 from PySide6.QtCore import QObject,QTimer,Signal
 from PySide6.QtWidgets import QApplication
 from shelf_sync import ShelfSync
+from cloud_api import CloudError
 
 APP=QApplication.instance() or QApplication([])
 def spin(predicate,seconds=6):
@@ -19,7 +20,7 @@ def spin(predicate,seconds=6):
 class Api(QObject):
     token='fixture'
     def __init__(self):
-        super().__init__();self.pending={};self.uploads={};self.committed={};self.held={};self.cancelled=[]
+        super().__init__();self.pending={};self.uploads={};self.committed={};self.held={};self.cancelled=[];self.fail_small_once=False
     def request(self,method,path,callback,**kwargs):
         key=uuid4().hex;self.pending[key]=True
         def deliver():
@@ -31,8 +32,14 @@ class Api(QObject):
                 result=dict(upload_id=data['upload_id'],chunk_size=max(65536,data['size']),part_count=1)
             elif '/parts/' in path:
                 row=self.uploads[path.split('/')[3]];row['bytes']=kwargs['raw']
+                if self.fail_small_once and row['size']<=4*1024*1024:
+                    self.fail_small_once=False;callback(None,CloudError('temporary',503));return
                 assert hashlib.sha256(row['bytes']).hexdigest()==row['sha256']
                 result={}
+            elif method=='GET' and path.startswith('/v1/uploads/'):
+                row=self.uploads[path.split('/')[3]]
+                result=dict(upload_id=row['upload_id'],item_id=row['item_id'],base_version=row['base_version'],size=row['size'],sha256=row['sha256'],
+                            chunk_size=max(65536,row['size']),part_count=1,state='pending',next_part=0)
             elif path.endswith('/commit'):
                 row=self.uploads[path.split('/')[3]];self.committed[row['name']]=row['bytes']
                 result=dict(record=dict(id=row['item_id'],version=1,sha256=row['sha256']))
@@ -94,5 +101,25 @@ class SmallLaneTests(unittest.TestCase):
             self.assertTrue(spin(lambda:not engine.running))
             self.assertEqual(events,[]);self.assertIsNone(engine.small_lane.active)
             engine.close()
+
+    def test_transient_small_failure_resumes_without_waiting_for_bulk(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);bulk=root/'large.bin';bulk.write_bytes(b'L'*(5*1024*1024))
+            api=Api();service=Service(api);adapter=Adapter();adapter.view['permanent']=[str(bulk)]
+            engine=ShelfSync(root/'profile',service,adapter,poll_ms=600000)
+            engine.set_directions(True,False);service.account_changed.emit({'id':'fixture'})
+            try:
+                self.assertTrue(spin(lambda:bool(api.held)));held=set(api.held)
+                small=root/'small.bin';small.write_bytes(b'original');api.fail_small_once=True
+                adapter.view['permanent'].append(str(small));engine.local_changed()
+                self.assertTrue(spin(lambda:bool(engine.small_lane.retry_at)))
+                self.assertNotIn('small.bin',api.committed)
+                identity=next(e['id'] for e in engine.state['entries'].values() if e['ref']==str(small))
+                upload_id=engine.state['resumable_uploads'][identity]['upload_id']
+                engine.small_lane.retry_at[identity]=0;engine.small_lane.retry.stop();engine.small_lane.kick()
+                self.assertTrue(spin(lambda:'small.bin' in api.committed))
+                self.assertEqual(api.committed['small.bin'],b'original');self.assertIn(upload_id,api.uploads)
+                self.assertEqual(len(api.uploads),2);self.assertTrue(held.issubset(api.pending));self.assertFalse(api.cancelled)
+            finally:engine.close()
 
 if __name__=='__main__':unittest.main()

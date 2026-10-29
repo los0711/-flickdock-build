@@ -911,8 +911,23 @@ def run_update_helper(receipt_path, *, timeout=30, test_only=False, pid_alive=_p
         return prepared.installed_app
     if relaunch is None and not test_only:
         relaunch = lambda path: _open_app(path, prepared)
+    runtime_probe=None
+    if (os.environ.get('GITHUB_ACTIONS')=='true' and os.environ.get('FLICKDOCK_CI_RUNTIME_READER')=='1'
+            and sys.platform=='darwin' and getattr(sys,'frozen',False) and os.geteuid()!=0):
+        # Read a previously unimported module without executing it. This
+        # diagnostic has no effect outside the explicit ephemeral CI gate.
+        reader=__loader__._pyz_archive
+        entry=next(name for name in ('wan_transfer','shelf_sync','release_history') if name not in sys.modules)
+        before=hashlib.sha256(reader.extract(entry,raw=True)).hexdigest()
+        assert Path(sys.executable).absolute()==prepared.helper_app/'Contents/MacOS/FlickDock'
+        def runtime_probe():
+            after=hashlib.sha256(reader.extract(entry,raw=True)).hexdigest()
+            assert before==after
+            (prepared.stage.parent/'runtime-reader.json').write_text(json.dumps(dict(
+                ok=True,independent_executable=True,cold_pyz_read_after_swap=True,module=entry,sha256=after)))
     try:
         return install_prepared(prepared, replace=replace, relaunch=relaunch,
+                 replacement_ready=runtime_probe,
                  await_readiness=(lambda: _wait_for_ready(prepared)) if not test_only else None,
                  test_only=test_only)
     except BaseException:

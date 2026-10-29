@@ -1266,6 +1266,7 @@ class ShelfSync(QObject):
         resume = resumes.get(identity)
         if resume:
             self.transfer = resume
+            self.small_lane.kick()
             def verified(result,error):
                 if error:
                     self._forget_resume(identity); self._persist(); self._retire_uploads(); return
@@ -1363,7 +1364,7 @@ class ShelfSync(QObject):
                 # Repeating commit returns its existing record. Receive can
                 # be disabled, so a changefeed pull cannot be the sole way to
                 # settle a commit reply lost just before switching modes.
-                if self.receive_enabled:self._pull()
+                if self.receive_enabled and self._lane_context is None:self._pull()
                 else:self._send_part(transfer,transfer['part_count'])
                 return
             index = result.get('next_part')

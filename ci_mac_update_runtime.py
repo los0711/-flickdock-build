@@ -16,7 +16,7 @@ def main(binary,output):
         root=Path(directory).resolve();target=root/'FlickDock.app'
         shutil.copytree(source,target,symlinks=True)
         probe=root/'probe.py'
-        probe.write_text('''import json,sys\nfrom pathlib import Path\nfrom PySide6.QtCore import QCoreApplication,QTimer\na=QCoreApplication(sys.argv)\nif '--post-update-ready' in sys.argv:\n i=sys.argv.index('--post-update-ready');Path(sys.argv[i+1]).write_text(sys.argv[i+2]);QTimer.singleShot(1000,a.quit);a.exec()\nelif '--verify-platform' in sys.argv:\n Path(sys.argv[-1]).write_text(json.dumps(dict(ok=True,version='1.8.21',frozen=bool(getattr(sys,'frozen',False)))))\n''')
+        probe.write_text('''import json,sys\nfrom pathlib import Path\nfrom PySide6.QtCore import QCoreApplication,QTimer\na=QCoreApplication(sys.argv)\nif '--post-update-ready' in sys.argv:\n i=sys.argv.index('--post-update-ready');QTimer.singleShot(20,lambda:Path(sys.argv[i+1]).write_text(sys.argv[i+2]));QTimer.singleShot(1000,a.quit);a.exec()\nelif '--verify-platform' in sys.argv:\n Path(sys.argv[-1]).write_text(json.dumps(dict(ok=True,version='1.8.21',frozen=bool(getattr(sys,'frozen',False)))))\n''')
         subprocess.run([sys.executable,'-m','PyInstaller','--noconfirm','--onedir','--windowed',
             '--name','FlickDock','--osx-bundle-identifier','com.flickdock.app',
             '--distpath',str(root/'probe-dist'),'--workpath',str(root/'probe-work'),
@@ -37,12 +37,13 @@ def main(binary,output):
         # Same production entry and copied-runtime launcher; only Popen is
         # injected because the test driver itself is an unfrozen interpreter.
         process=launch_update_helper(prepared,executable=target/'Contents/MacOS/FlickDock',
-            popen=subprocess.Popen,quit_callback=lambda:None)
+            popen=lambda *args,**kwargs:subprocess.Popen(*args,**kwargs,env=dict(os.environ,FLICKDOCK_CI_RUNTIME_READER='1')),quit_callback=lambda:None)
         status=process.wait(timeout=100)
         error=prepared.stage/'install-error.txt'
         if status:raise RuntimeError(error.read_text() if error.is_file() else 'Native helper failed: '+str(status))
         self_version=bundle_metadata(target)['CFBundleShortVersionString']
         assert self_version=='1.8.21'
+        reader=json.loads((root/'runtime-reader.json').read_text());assert reader['cold_pyz_read_after_swap'] and reader['independent_executable']
         assert old_hash!=hashlib.sha256((target/'Contents/MacOS/FlickDock').read_bytes()).hexdigest()
         # Exit/reopen from the canonical target must run the replacement.
         report=root/'reopened.json'
@@ -53,7 +54,7 @@ def main(binary,output):
         assert not prepared.stage.exists(),'Copied updater runtime was not cleaned after helper exit'
         result=dict(ok=True,frozen_old_helper=True,bundle_replaced=True,reopened_new_version=True,
                     runtime_cleaned=True,original_version=APP_VERSION,target_version=self_version,
-                    privileged_authorization_tested=False)
+                    cold_pyz_read_after_swap=True,privileged_authorization_tested=False)
         Path(output).write_text(json.dumps(result,indent=2));print(json.dumps(result))
 
 if __name__=='__main__':main(*sys.argv[1:])

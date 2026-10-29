@@ -585,8 +585,8 @@
     },
     {
       "path": "ci_mac_update_runtime.py",
-      "size": 4493,
-      "sha256": "927b2f277ad6711a2fb8032f2f5dfedfc38a141e32a82b4df4882969786e6071"
+      "size": 4790,
+      "sha256": "52fb9f96d55ec7833f27852fa3a6974b188959b9a702274bcfe6fe27b157c873"
     },
     {
       "path": "clipboard_sync.py",
@@ -935,8 +935,8 @@
     },
     {
       "path": "mac_updates.py",
-      "size": 48796,
-      "sha256": "71cf818136edf98595a1c8cf4d909a6ce7bca75b55766316dd49ff75a03abc73"
+      "size": 49870,
+      "sha256": "87a7289077c87b72fe142968938c3e153ac48bc5e31fdb4cca3eb814ca31b773"
     },
     {
       "path": "media_preview.py",
@@ -1095,8 +1095,8 @@
     },
     {
       "path": "shelf_sync.py",
-      "size": 87904,
-      "sha256": "4bbacb12ad86d3c154a28d9b19a0eae12ceaacfa298712b811ecb674a8a19d16"
+      "size": 87970,
+      "sha256": "f2b95eb16919ab95517be9895a8ee23a1632e5220b85b219e7980ca846c4cd51"
     },
     {
       "path": "shortcut_preview.py",
@@ -1105,8 +1105,8 @@
     },
     {
       "path": "small_upload_lane.py",
-      "size": 3973,
-      "sha256": "aae50d2932c7c13c06211f3d02c068f00ff01f2b22db4dd776ff8bbb3b26f19e"
+      "size": 4783,
+      "sha256": "5222923edc6cee8c8ea0da9ba1c3b86d50f1d5045f4ebbfc51fcf7aa0bc37c13"
     },
     {
       "path": "surface_morph.py",
@@ -1525,8 +1525,8 @@
     },
     {
       "path": "test_small_upload_lane.py",
-      "size": 5060,
-      "sha256": "5809f27c184c9bacbc670e0ef668e9ed06cd3e84891862547bd2d3634c0e9e7a"
+      "size": 7220,
+      "sha256": "03be7085863d6436c17c2761f65aa65ed45ffec01aa7b74954f170c3fc0c1acb"
     },
     {
       "path": "test_stream_upload_v1816.py",
