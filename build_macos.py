@@ -22,7 +22,21 @@ ROOT = Path(__file__).resolve().parent
 
 
 def run(arguments, *, env=None):
-    subprocess.run([str(value) for value in arguments], cwd=ROOT, env=env, check=True)
+    values=[str(value) for value in arguments]
+    try:
+        subprocess.run(values, cwd=ROOT, env=env, check=True)
+    except subprocess.CalledProcessError:
+        # Disposable CI must retain the real failure before TemporaryDirectory
+        # removes its report. Windowed bundles keep import errors in this log.
+        if os.environ.get('GITHUB_ACTIONS')=='true':
+            diagnostics=[]
+            if '--verify-output' in values:
+                diagnostics.append(Path(values[values.index('--verify-output')+1]))
+            diagnostics.append(Path.home()/'Library/Logs/FlickDock/startup-last-error.log')
+            for path in diagnostics:
+                if path.is_file():
+                    print('FAILED VERIFICATION:',path.name,path.read_text(encoding='utf8')[-32768:],flush=True)
+        raise
 
 
 def make_icon(destination):
