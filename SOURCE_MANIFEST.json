@@ -15,8 +15,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 4775,
-      "sha256": "72da25de44f16f16ec9ae7f8a97bed2cf4980b90e1a2aec3f9081547f59952d7"
+      "size": 5066,
+      "sha256": "e3111a06d26a4339b37ead73d26eaf1abdfce8683470d4656b0b7f98f38ffa78"
     },
     {
       "path": ".gitignore",

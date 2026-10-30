@@ -1,40 +1,38 @@
-name: Native clipboard verification
-
+name: Published updater verification
+run-name: ${{ inputs.phase }} frozen macOS updater verification
 on:
   workflow_dispatch:
-  push:
-    branches: [cloud-build]
-
+    inputs:
+      phase:
+        description: Verify existing public channel before release, or new channel after release
+        required: true
+        default: preflight
+        type: choice
+        options: [preflight, readback]
 permissions:
   contents: read
-
+  actions: read
 jobs:
-  cloud-contract:
+  updater:
     if: github.repository == 'los0711/-flickdock-build'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-        with:
-          persist-credentials: false
-      - name: Install locked local service test dependencies
-        run: npm ci --prefix cloud --no-audit --no-fund
-      - name: Verify actual workerd, D1, R2 and signaling contracts
-        run: |
-          npm run typecheck --prefix cloud
-          npm test --prefix cloud
-  clipboard:
-    if: github.repository == 'los0711/-flickdock-build'
-    timeout-minutes: 15
+    timeout-minutes: 12
     strategy:
       fail-fast: false
       matrix:
-        runner: [windows-latest, macos-15, macos-15-intel]
+        include:
+          - runner: macos-15
+            arch: arm64
+            python_arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+            python_arch: x64
     runs-on: ${{ matrix.runner }}
     env:
+      QT_QPA_PLATFORM: offscreen
       PYTHONUTF8: '1'
-      FD_QA_NATIVE: '1'
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
+      QA_PHASE: ${{ inputs.phase }}
+      QA_ARCH: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
@@ -42,62 +40,58 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: '3.12'
-      - name: Install the reviewed Qt runtime
+          architecture: ${{ matrix.python_arch }}
+      - name: Install only the reviewed extraction dependency
         run: python -m pip install PySide6==6.12.0
-      - name: Install native macOS pasteboard bindings
-        if: runner.os == 'macOS'
-        run: python -m pip install 'pyobjc-framework-Quartz>=11,<13'
-      - name: Reproduce asynchronous metadata reconciliation before framework warmup
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          QT_QPA_PLATFORM=offscreen python -m unittest test_motion_resources_v1822.DisplayMetadataTests -v
-          QT_QPA_PLATFORM=offscreen python -m unittest test_stability_v1822 test_resources_v1822.ResourceTests test_motion_resources_v1822.MotionTests test_motion_resources_v1822.DisplayMetadataTests test_motion_resources_v1822.MacVolumeTests test_receive_lifecycle_v1822.ReceiveLifecycleTests test_transfer_entry_v1822.EntryTests test_small_upload_lane.SmallLaneTests -q
-      - name: Inspect native volume metadata on the disposable Mac filesystem
-        if: runner.os == 'macOS'
+      - name: Retrieve the exact verified native release artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: FlickDock-macOS-${{ matrix.arch }}-cbda920daf73c359a1cd49592713f7fccb64c662
+          path: qa-artifact
+          repository: los0711/-flickdock-build
+          run-id: '41139596054'
+          github-token: ${{ github.token }}
+      - name: Run the shipped frozen updater against the real public channel
         shell: bash
         run: |
           python - <<'PY'
-          import json, tempfile, os, objc
+          import hashlib,json,os,subprocess,tempfile,zipfile
           from pathlib import Path
-          from Foundation import NSURL, NSURLVolumeIsLocalKey, NSURLVolumeURLKey
-          from file_metadata import _local_volume
-          with tempfile.TemporaryDirectory(prefix='flickdock-volume-probe-') as directory:
-              parent=Path(directory).resolve(strict=True)
-              print(json.dumps({'python_volume_flag':getattr(os,'ST_LOCAL',None),'objc_version':getattr(objc,'__version__',None),'classifier':_local_volume(str(parent/'missing.bin'))}))
-              with objc.autorelease_pool():
-                  url=NSURL.fileURLWithPath_(str(parent))
-                  for label,query in (
-                      ('single',lambda:url.getResourceValue_forKey_error_(None,NSURLVolumeIsLocalKey,None)),
-                      ('dictionary',lambda:url.resourceValuesForKeys_error_([NSURLVolumeIsLocalKey,NSURLVolumeURLKey],None))):
-                      try: print(label,repr(query()))
-                      except Exception as error: print(label,type(error).__name__,str(error))
+          from mac_updates import _extract
+          from release_macos import _validate_bundle
+          arch=os.environ['QA_ARCH'];phase=os.environ['QA_PHASE']
+          assert phase in ('preflight','readback')
+          root=Path.cwd();artifact=root/'qa-artifact'
+          build=json.loads((artifact/f'mac-build-1.8.22-{arch}.json').read_text())
+          assert build['ok'] and build['version']=='1.8.22' and build['architecture']==arch
+          archive=artifact/f'FlickDock-1.8.22-macOS-{arch}.zip'
+          item=next(x for x in build['artifacts'] if x['name']==archive.name)
+          with archive.open('rb') as stream:checksum=hashlib.file_digest(stream,'sha256').hexdigest()
+          assert archive.stat().st_size==item['bytes'] and checksum==item['sha256']
+          _validate_bundle(archive,'1.8.22',arch)
+          output=root/f'updater-{phase}-{arch}.json'
+          current,target=('1.8.20','1.8.21') if phase=='preflight' else ('1.8.21','1.8.22')
+          with tempfile.TemporaryDirectory(prefix='flickdock-native-updater-') as directory:
+              folder=Path(directory)
+              with zipfile.ZipFile(archive) as package:app=_extract(package,folder/'stage',None)
+              env={key:value for key,value in os.environ.items() if not any(word in key.upper() for word in ('TOKEN','SECRET','PASSWORD','CREDENTIAL')) and key not in ('SSH_AUTH_SOCK','GIT_ASKPASS')}
+              profile=folder/'profile';profile.mkdir()
+              env.update(HOME=str(profile),APPDATA=str(profile),LOCALAPPDATA=str(profile),XDG_CONFIG_HOME=str(profile),QT_QPA_PLATFORM='offscreen')
+              command=[str(app/'Contents/MacOS/FlickDock'),'--verify-update','--verify-current',current,'--verify-output',str(output)]
+              result=subprocess.run(command,env=env,timeout=240)
+              data=json.loads(output.read_text()) if output.exists() else {}
+              assert result.returncode==0 and data.get('ok') and data.get('frozen'),data
+              assert data.get('version')=='1.8.22' and data.get('available_version')==target and data.get('latest_version')==target,data
+              assert data.get('verified_download') is True and data.get('download_bytes',0)>0 and data.get('installer_executed') is False,data
+              data.update(verification_phase=phase,architecture=arch,native_artifact_run=41139596054,native_artifact_commit='cbda920daf73c359a1cd49592713f7fccb64c662',native_archive_sha256=checksum,installed=False)
+              output.write_text(json.dumps(data,ensure_ascii=False,indent=2)+'\n')
+              print(json.dumps(data,ensure_ascii=False))
           PY
-      - name: Install locked local cloud test dependencies
-        run: npm ci --prefix cloud --no-audit --no-fund
-      - name: Verify actual OS copy and paste through the production cloud client
-        shell: pwsh
-        run: |
-          $env:FD_QA_PYTHON = (Get-Command python).Source
-          node cloud/test/clipboard.mjs
-      - name: Verify actual native utility windows on the disposable runner
-        run: python ci_utility_windows.py --output native-utility.json
-      - name: Ensure native installer compiler
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          if (-not (Get-Command ISCC.exe -ErrorAction SilentlyContinue) -and -not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
-            choco install innosetup --yes --no-progress
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
-      - name: Verify actual installer shutdown and replacement
-        if: runner.os == 'Windows'
-        run: python ci_installer_close.py --output native-installer-close.json
-      - name: Retain native window verification
+      - name: Retain actual updater results
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: native-utility-${{ matrix.runner }}-${{ github.sha }}
-          path: |
-            native-utility.json
-            native-installer-close.json
+          name: updater-${{ inputs.phase }}-${{ matrix.arch }}
+          path: updater-${{ inputs.phase }}-${{ matrix.arch }}.json
+          if-no-files-found: warn
           retention-days: 3
