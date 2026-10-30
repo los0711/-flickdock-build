@@ -1,5 +1,7 @@
 """Finite glyph motion and display-only asynchronous filesystem probes."""
-import threading,unittest
+import threading,unittest,tempfile,stat
+from contextlib import contextmanager
+from types import SimpleNamespace
 from unittest.mock import patch
 from pathlib import Path
 from PySide6.QtCore import QAbstractAnimation,QEvent,QTimer
@@ -103,6 +105,58 @@ class DisplayMetadataTests(unittest.TestCase):
                 QTest.qWait(600);flush()
                 self.assertIn(ref,self.shelf.files['permanent']);self.assertNotIn(ref,self.shelf._missing_refs)
         finally:release.set()
+
+
+class MacVolumeTests(unittest.TestCase):
+    def bridge(self,*,ok=True,value=True,mount='/',error=None):
+        events=[]
+        @contextmanager
+        def pool():
+            events.append('enter')
+            try:yield
+            finally:events.append('exit')
+        def resource(_out,key,_error):
+            events.append(key)
+            if error is not None:raise error
+            return (ok,value if key=='local' else SimpleNamespace(path=lambda:mount),None)
+        url=SimpleNamespace(getResourceValue_forKey_error_=resource)
+        modules={'objc':SimpleNamespace(autorelease_pool=pool,error=RuntimeError),
+            'Foundation':SimpleNamespace(NSURL=SimpleNamespace(fileURLWithPath_=lambda path:url),
+                                       NSURLVolumeIsLocalKey='local',NSURLVolumeURLKey='volume')}
+        return modules,events
+
+    def test_native_metadata_must_explicitly_confirm_local_and_releases_pool(self):
+        from file_metadata import _local_volume
+        with tempfile.TemporaryDirectory() as directory:
+            for ok,value,expected in ((True,True,True),(True,False,False),(True,None,None),(False,True,None)):
+                with self.subTest(ok=ok,value=value):
+                    modules,events=self.bridge(ok=ok,value=value)
+                    with patch('file_metadata.sys.platform','darwin'),patch.dict('sys.modules',modules):
+                        self.assertIs(_local_volume(str(Path(directory)/'missing.bin')),expected)
+                    self.assertEqual(events,['enter','local','exit'])
+
+    def test_unmounted_volume_cannot_fall_back_to_local_root(self):
+        from file_metadata import _local_volume
+        for mount,expected in (('/',None),('/Volumes/Offline',True)):
+            modules,events=self.bridge(mount=mount)
+            with patch('file_metadata.sys.platform','darwin'),patch.dict('sys.modules',modules),\
+                    patch('file_metadata.Path.resolve',return_value=Path('/Volumes/Offline')),\
+                    patch('file_metadata.Path.stat',return_value=SimpleNamespace(st_mode=stat.S_IFDIR)),\
+                    patch('file_metadata.Path.is_symlink',return_value=False):
+                self.assertIs(_local_volume('/Volumes/Offline/missing.bin'),expected)
+            self.assertEqual(events,['enter','local','volume','exit'])
+
+    def test_dangling_symlink_is_not_a_confirmed_local_deletion(self):
+        from file_metadata import _local_volume
+        with patch('file_metadata.sys.platform','darwin'),patch('file_metadata.Path.is_symlink',return_value=True):
+            self.assertIsNone(_local_volume('/Users/fixture/network-link'))
+
+    def test_native_query_error_preserves_unknown_and_releases_pool(self):
+        from file_metadata import _local_volume
+        modules,events=self.bridge(error=RuntimeError('native query unavailable'))
+        with tempfile.TemporaryDirectory() as directory,patch('file_metadata.sys.platform','darwin'),patch.dict('sys.modules',modules):
+            self.assertIsNone(_local_volume(str(Path(directory)/'missing.bin')))
+        self.assertEqual(events,['enter','local','exit'])
 
 
 if __name__=='__main__':unittest.main()

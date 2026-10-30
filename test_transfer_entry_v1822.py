@@ -56,7 +56,8 @@ class EntryTests(unittest.TestCase):
         root=QWidget();root.resize(440,420);button=QPushButton('文件互传',root);button.setGeometry(20,360,180,34)
         calls=[];router=TransferEntryRouter(root,button,lambda mode,paths:calls.append((mode,paths)))
         root.show();flush()
-        mime=QMimeData();paths=['C:/original/file one.bin','C:/original/file two.bin']
+        mime=QMimeData();paths=[(Path(tempfile.gettempdir())/'flickdock original'/name).as_posix()
+                              for name in ('file one.bin','file two.bin')]
         mime.setUrls([QUrl.fromLocalFile(path) for path in paths])
         try:
             for mode,y in (('lan',25),('wan',77)):

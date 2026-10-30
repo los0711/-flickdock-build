@@ -18,10 +18,32 @@ def _local_volume(ref):
             drive=ctypes.WinDLL('kernel32',use_last_error=True).GetDriveTypeW
             drive.argtypes=[ctypes.c_wchar_p];drive.restype=ctypes.c_uint
             return drive(str(Path(ref).anchor)) in (2,3,6)
+        if sys.platform=='darwin':
+            source=Path(ref)
+            if source.is_symlink():return None
+            import objc
+            from Foundation import NSURL,NSURLVolumeIsLocalKey,NSURLVolumeURLKey
+            parent=source.parent.resolve(strict=True)
+            if not stat.S_ISDIR(parent.stat().st_mode):return None
+            # Query the existing parent, never walk a disconnected share up to
+            # an unrelated local ancestor. Release native objects on this worker.
+            try:
+                with objc.autorelease_pool():
+                    url=NSURL.fileURLWithPath_(str(parent))
+                    ok,value,_=url.getResourceValue_forKey_error_(None,NSURLVolumeIsLocalKey,None)
+                    if not ok or value is None:return None
+                    local=bool(value)
+                    candidate=(parent/source.name).as_posix()
+                    if local and candidate.startswith('/Volumes/'):
+                        expected='/Volumes/'+candidate.split('/')[2]
+                        ok,volume,_=url.getResourceValue_forKey_error_(None,NSURLVolumeURLKey,None)
+                        if not ok or volume is None or str(volume.path()).rstrip('/')!=expected:return None
+                    return local
+            except (RuntimeError,objc.error):return None
         import os
         local=getattr(os,'ST_LOCAL',None)
         if local is not None:return bool(os.statvfs(Path(ref).parent).f_flag & local)
-    except (OSError,ValueError):pass
+    except (ImportError,AttributeError,OSError,ValueError,TypeError):pass
     return None
 
 

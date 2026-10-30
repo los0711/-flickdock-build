@@ -70,8 +70,10 @@ class DownloadDiskTests(unittest.TestCase):
                     timer.start();api.request('GET','/v1/test/content',lambda value,error:result.append((value,error)),
                         authenticated=False,destination=target,expected=dict(size=len(payload),sha256=sha))
                     until(entered.is_set);before=len(beats)
-                    QTest.qWait(80)
-                    self.assertGreater(len(beats)-before,4,'GUI must keep servicing timers while disk is blocked')
+                    # Timer coalescing differs by platform. Require repeated
+                    # GUI callbacks while the worker is still held, not a
+                    # particular number of nominal 5ms frames in 80ms.
+                    until(lambda:len(beats)-before>=3,seconds=1)
                     self.assertFalse(target.exists());self.assertFalse(result)
                     release.set();until(lambda:bool(result))
                 self.assertNotEqual(threads,[threading.get_ident()]);self.assertEqual(result,[(target,None)])
