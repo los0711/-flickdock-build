@@ -222,6 +222,8 @@ class DropZone(QFrame):
         self._pill_hovered=False;self._pill_timer=QTimer(self);self._pill_timer.setSingleShot(True);self._pill_timer.timeout.connect(self._open_from_pill_hover)
         self.feedback=Spring(self,{'hover':0},lambda _:self.icon.update(),motion=shelf.manager.motion)
         self._style_caption(False);self._apply_style()
+        from clipboard_preview import ClipboardButton
+        self.clipboard_button=ClipboardButton(shelf.manager,self);self.clipboard_button.move(200,230)
 
     @property
     def paths(self):
@@ -252,6 +254,7 @@ class DropZone(QFrame):
 
     def refresh(self):
         self._apply_style()
+        self.clipboard_button.refresh()
         self.count_arrow.setPixmap(glyph_pixmap('chevron',14,ui_theme.color('secondary'),dpr=self.devicePixelRatioF()))
         self.icon.set_stack(self.shelf.content,self.paths,self.shelf.preview_cache)
         if not self.paths:
@@ -1440,6 +1443,7 @@ class ShelfWindow(QWidget):
             x=131 if self.presentation_kind=='drag' else 242
             y=214 if self.presentation_kind=='drag' else 230
             zone.caption.move(x,y);zone.count_arrow.move(x+49,y+10)
+            zone.clipboard_button.move(x-42,y);zone.clipboard_button.setVisible(self.presentation_kind!='drag')
             zone.hint.move(40,180 if self.presentation_kind=='drag' else 188)
 
     def refresh_cloud_button(self):
@@ -2926,6 +2930,10 @@ class ShelfManager:
             enabled=self._clipboard_runtime_enabled())
         self.clipboard_sync.activity_changed.connect(self.sync.set_clipboard_priority)
         self.clipboard_sync.copy_result.connect(self._clipboard_copy_result)
+        from clipboard_preview import ClipboardPresenter
+        self.clipboard_presenter=ClipboardPresenter(self.clipboard_sync,self.app)
+        self.clipboard_preview_dialog=None
+        for zone in self.shelf.zones.values():zone.clipboard_button.refresh()
         from transfer_priority import set_clipboard_priority
         self.clipboard_sync.activity_changed.connect(set_clipboard_priority)
         self._clipboard_intro=None
@@ -3024,6 +3032,14 @@ class ShelfManager:
             from intake_notice import ClipboardNotice
             self.clipboard_notice=ClipboardNotice(self)
         self.clipboard_notice.show_result(ok,context)
+
+    def show_clipboard_preview(self):
+        if self._quitting:return
+        if self.clipboard_preview_dialog is None:
+            from clipboard_preview import ClipboardPreview
+            self.clipboard_preview_dialog=ClipboardPreview(self)
+        self.clipboard_preview_dialog.refresh();self.clipboard_preview_dialog.show()
+        self.clipboard_preview_dialog.raise_();self.clipboard_preview_dialog.activateWindow()
 
     def _present_clipboard_intro(self):
         if self.settings.clipboard_notice_seen:return False
@@ -3682,6 +3698,8 @@ class ShelfManager:
     def quit(self):
         if hasattr(self,'intake_notice'):self.intake_notice.hide()
         if hasattr(self,'clipboard_notice'):self.clipboard_notice.hide()
+        if getattr(self,'clipboard_preview_dialog',None) is not None:self.clipboard_preview_dialog.hide()
+        if hasattr(self,'clipboard_presenter'):self.clipboard_presenter.close()
         if self.update_dialog is not None:self.update_dialog.hide()
         if self.update_notice is not None:
             self.update_notice.hide()

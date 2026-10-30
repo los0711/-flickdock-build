@@ -7,14 +7,17 @@ from PySide6.QtTest import QTest
 
 import flickdock as subject
 from sync_adapter import ShelfAdapter
-from test_html_native_workspace import WorkspaceTests, flush, until
+from test_html_native_workspace import flush, until
+import test_html_native_workspace as workspace_fixture
 from content_stack import StackTile
 
 
 class LiveShelfTests(unittest.TestCase):
-    setUp = WorkspaceTests.setUp
-    tearDown = WorkspaceTests.tearDown
-    overview = WorkspaceTests.overview
+    def setUp(self):
+        workspace_fixture.WorkspaceTests.setUp(self)
+        self.patches.enter_context(patch('native_ui_common.reduced_motion',return_value=False))
+    tearDown = workspace_fixture.WorkspaceTests.tearDown
+    overview = workspace_fixture.WorkspaceTests.overview
 
     def rows(self, popup):
         return {row.path: row for row in popup.rows_body.findChildren(subject.FileRow)

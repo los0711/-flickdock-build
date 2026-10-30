@@ -560,8 +560,8 @@
     },
     {
       "path": "build_macos.py",
-      "size": 21799,
-      "sha256": "857d8ea15c6d601de4bdc384ea5be6fc6c1e067902e1fead2bbd0bfcf3070294"
+      "size": 21830,
+      "sha256": "5fd4296310c40f75e9397cc3b186aa34cae9d8c23d83aaea1486d734766137fb"
     },
     {
       "path": "bundle_policy.py",
@@ -594,9 +594,14 @@
       "sha256": "c2794d07d1c8f84911fff5e55f68af9061be4e3352435e0e678e802d6a2119ac"
     },
     {
+      "path": "clipboard_preview.py",
+      "size": 8603,
+      "sha256": "2df080b93c67dbbc1a3fff32b48aa86aa5833c2da930a64703ce1ef336c0886a"
+    },
+    {
       "path": "clipboard_sync.py",
-      "size": 40381,
-      "sha256": "c60a163024285f366e5f6b95f04ed2a6ba68288447d2fc204b860626c5c9ebda"
+      "size": 41436,
+      "sha256": "5dcb8e7680b77572e6b60ee8b20c736b6be76114d0202be861232281d67cc331"
     },
     {
       "path": "cloud/.gitignore",
@@ -845,8 +850,8 @@
     },
     {
       "path": "flickdock.py",
-      "size": 209905,
-      "sha256": "e26238190eda0b48e0a101d301550a3e65f7a88179d31373b59c669d47c912dd"
+      "size": 211102,
+      "sha256": "5b3f82994b4b442cd63e2ebef811ea3886e884ca35d02e1a5d2b47bb26d40a42"
     },
     {
       "path": "flickdock_icons.py",
@@ -1065,8 +1070,8 @@
     },
     {
       "path": "reference_widgets.py",
-      "size": 51604,
-      "sha256": "1e18d071e21174b47d1c1d3f301624606f9d161de7031aba371f81e1a83d2443"
+      "size": 52118,
+      "sha256": "dbe9239e8b06709c55f0285019e9236040a65603907c9a6e590d4ee2f7cf24eb"
     },
     {
       "path": "release_dpr_v165.py",
@@ -1075,8 +1080,8 @@
     },
     {
       "path": "release_history.py",
-      "size": 20973,
-      "sha256": "aa2f646c64c97d7ed2e86d62a98db9664023f961b6e6b75c8c5e57002fd10b97"
+      "size": 21136,
+      "sha256": "17aa73c1b1bc235e4431dda78fc282e88b157dc541fadc7bf8e8e298148238c7"
     },
     {
       "path": "release_macos.py",
@@ -1085,8 +1090,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 36097,
-      "sha256": "5a3663fbf0d9c2f8054b74db4f0f0e27139b2a5d28debfa567a70c0cd47bef40"
+      "size": 36154,
+      "sha256": "94db99c9cdb826ebeea8f5e87088a94f2e6eac090b34d1c6df214dcdba09e2ad"
     },
     {
       "path": "release_signing.py",
@@ -1227,6 +1232,11 @@
       "path": "test_clipboard_fast_v1821.py",
       "size": 9977,
       "sha256": "886e6df394094b1d4dd34ac37c208da5935fa6e6f16381055c24749ea3fba46f"
+    },
+    {
+      "path": "test_clipboard_preview_v1821.py",
+      "size": 6724,
+      "sha256": "0f69faeccb304a08fa21091a6d712b0606afd73e84ebbe65de8b94f96ab379c6"
     },
     {
       "path": "test_clipboard_sync_v1819.py",
@@ -1375,8 +1385,8 @@
     },
     {
       "path": "test_html_native_workspace.py",
-      "size": 24797,
-      "sha256": "158fc2f729079c7ce15023f8f37cde1ed66d66e2c87147c00e9c7e18d19ab48c"
+      "size": 24807,
+      "sha256": "80e8629df5e86a6ee63177f7292c6d522a8aa7b226dbfe1811f844cef9cb3031"
     },
     {
       "path": "test_intake_entry_v164.py",
@@ -1500,8 +1510,8 @@
     },
     {
       "path": "test_presentation_v1819.py",
-      "size": 6890,
-      "sha256": "2e737e29e881dffc3fd5ae5499a289af9325f1ce0fa6641ce2e9802374835c9c"
+      "size": 6994,
+      "sha256": "8e4fbe3290aeff4d099f54d6dc998e13f1f8c71deb680407fd48df2a51233651"
     },
     {
       "path": "test_release_macos_v180.py",
@@ -1565,8 +1575,8 @@
     },
     {
       "path": "test_shelf_live_v1821.py",
-      "size": 10425,
-      "sha256": "e5a64b6242d20a6da92507bfa7d59be276f249603e71f1a0872bc1ee21e93258"
+      "size": 10637,
+      "sha256": "4ea55f880bb4426f36012ad4280c8a0f13536e2b4fa1ead6416e0aa95f23e907"
     },
     {
       "path": "test_shelf_raise_v1810.py",
@@ -1655,8 +1665,8 @@
     },
     {
       "path": "test_update_client_v170.py",
-      "size": 19672,
-      "sha256": "dd6c95bb015f4be537db7e280136aad3c8a88200527aa8b48ac3b49fd2304164"
+      "size": 19871,
+      "sha256": "125887b942f310f2d8a6487ab922f087bce12b5dcd23d60f8ecc1b8cacf6f2f9"
     },
     {
       "path": "test_update_dialog_v170.py",
@@ -1675,8 +1685,8 @@
     },
     {
       "path": "test_update_macos.py",
-      "size": 7101,
-      "sha256": "975be48f177855ef3ca9138bae8f618affd485bb04bdfde53de458a2286c20b9"
+      "size": 7264,
+      "sha256": "537cc6b9b38ef162032a9de7446ce783304022b627cada7c713ff756ebd96284"
     },
     {
       "path": "test_update_macos_controller.py",
@@ -1700,8 +1710,8 @@
     },
     {
       "path": "test_utility_windows_v1821.py",
-      "size": 6950,
-      "sha256": "a77d7e261dfea04d655e8f2ff068dde0340b7e4bbe2bfac8d6cc49ae3ba0e700"
+      "size": 7055,
+      "sha256": "a45c48c823b00c14ccdc8a6fa4ac9fb301394c6a9dc0220a8b810227a28bd404"
     },
     {
       "path": "test_wan_account_v1819.py",
@@ -1785,8 +1795,8 @@
     },
     {
       "path": "update_download.py",
-      "size": 14903,
-      "sha256": "f299ac1a50f2022dc4016064e361ab86cb41e8118337e6916be36f652e900a01"
+      "size": 15088,
+      "sha256": "bda6feb7594b3d3472480e3238cdbc9b9b0c2a6ea7afb05f341466b38cfa85bc"
     },
     {
       "path": "update_notice.py",

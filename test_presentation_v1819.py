@@ -18,6 +18,7 @@ from settings_edge_hint import SettingsEdgeHint
 class PresentationTests(unittest.TestCase):
     def setUp(self):
         self.fixture=workspace.WorkspaceTests();self.fixture.setUp()
+        self.fixture.patches.enter_context(patch('native_ui_common.reduced_motion',return_value=False))
         self.shelf=self.fixture.shelf;self.manager=self.fixture.manager
         self.manager.edge=SimpleNamespace(screen_area=lambda:QRect(0,0,1920,1080),geometry=lambda:QRect(1912,300,8,90))
         self.manager.edge_suppressed=False;self.shelf.pinned=False

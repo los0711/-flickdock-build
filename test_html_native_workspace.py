@@ -65,7 +65,7 @@ class Screen:
 class WorkspaceTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(prefix='flickdock-native-workspace-')
-        self.base=Path(self.temp.name);self.patches=ExitStack();self.events=[]
+        self.base=Path(self.temp.name).resolve();self.patches=ExitStack();self.events=[]
         self.patches.enter_context(patch.object(app_settings,'_startup_runtime_allowed',return_value=False))
         self.patches.enter_context(patch.object(subject.QGuiApplication,'screenAt',return_value=Screen()))
         self.patches.enter_context(patch.object(subject.QGuiApplication,'primaryScreen',return_value=Screen()))

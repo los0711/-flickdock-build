@@ -225,6 +225,7 @@ class _Job(QRunnable):
 class ClipboardSync(QObject):
     activity_changed=Signal(bool)
     copy_result=Signal(bool,dict)
+    view_changed=Signal(dict)
 
     @property
     def _pending(self):return getattr(self,'_pending_value',None)
@@ -256,6 +257,7 @@ class ClipboardSync(QObject):
         self._identity=self._session_identity()
         self._pushed_head=None
         self._prepared_receive=None
+        self._view_revision=0;self.view=dict(value=snapshot(self.clipboard),phase='local',id='',revision=0)
         self._applied_version=0;self._receiving_version=0
         self.pool=QThreadPool(self);self.pool.setMaxThreadCount(2)
         self._ignored=None;self._ignored_sequence=None;self._last_sequence=object();self._last_local_signature=object();self._seen='';self._keys=set();self._jobs={};self._pending=None;self._fetching=False;self._refresh_again=False
@@ -307,6 +309,8 @@ class ClipboardSync(QObject):
         else:self.poll.stop();self.mac_poll.stop()
 
     def _schedule_change(self):
+        if not self._active() and not self.closed:
+            self._set_view(snapshot(self.clipboard),'local');return
         if self._active() and not self._applying:
             sequence=self._sequence()
             if sequence is not None:
@@ -380,6 +384,7 @@ class ClipboardSync(QObject):
         for key in tuple(self._keys):self.api.cancel(key)
         self._keys.clear()
         for job in self._jobs:job.cancelled.set()
+        if not self.closed:self._set_view(snapshot(self.clipboard),'local')
         if self._active():QTimer.singleShot(0,self.refresh)
 
     def _directory(self):
@@ -431,11 +436,17 @@ class ClipboardSync(QObject):
         for job in self._jobs:job.cancelled.set()
         self._local_retry=None
         self._prepared_receive=None
-        if value is None:self._pending=None;return
+        if value is None:self._set_view(None,'local');self._pending=None;return
         self._local_retry=dict(id=str(uuid4()),sequence=None,generation=generation,staged=False,package=None,
                                prepared=False,created_at=time.time(),intent=self._local_fence,value=value,
                                feedback=self._copy_context(value))
+        self._set_view(value,'uploading',self._local_retry['id'])
         self._prepare_local()
+
+    def _set_view(self,value,phase,identity=''):
+        if value is not self.view.get('value'):self._view_revision+=1
+        self.view=dict(value=value,phase=phase,id=identity,revision=self._view_revision)
+        self.view_changed.emit(dict(self.view))
 
     def _copy_context(self,value):
         from PySide6.QtGui import QCursor,QGuiApplication
@@ -458,6 +469,8 @@ class ClipboardSync(QObject):
         return dict(id='',point=point,fullscreen=fullscreen)
 
     def _copy_result(self,pending,ok):
+        if self.view.get('id')==pending['id']:
+            self._set_view(self.view['value'],'synced' if ok else 'error',pending['id'])
         if pending.get('feedback_result') is ok:return
         pending['feedback_result']=ok
         context=dict(pending.get('feedback',{}),id=pending['id'])
@@ -558,6 +571,7 @@ class ClipboardSync(QObject):
         if self._local_retry:self._prepare_local();return
         if self._pending:
             self._priority_flags(waiting=False)
+            if self.view.get('id')==self._pending['id']:self._set_view(self.view['value'],'uploading',self._pending['id'])
             if self._pending['staged']:self._upload(self._pending)
             else:self._stage(self._pending)
         else:self.refresh()
@@ -635,8 +649,9 @@ class ClipboardSync(QObject):
                             if self._apply(value,directory,identity=identity):
                                 self._seen=identity
                                 self._applied_version=max(self._applied_version,head_version(head))
+                                self._set_view(value,'synced',identity)
                                 self._prepared_receive=None
-                            else:self.retry.start(5000)
+                            else:self._set_view(value,'error',identity);self.retry.start(5000)
                     else:self._refresh_again=True
                     self._finish_refresh()
                 self._request('GET','/v1/clipboard',confirmed)

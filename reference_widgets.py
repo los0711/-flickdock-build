@@ -625,6 +625,13 @@ def build_overview(view,preview_type):
         css(progress,'QProgressBar{background:#343438;border:0;} QProgressBar::chunk{background:#64D2FF;}',
             'QProgressBar{background:#DDE4ED;border:0;} QProgressBar::chunk{background:#0A84FF;}')
         line.addWidget(name,1);line.addWidget(percent);line.addWidget(view.strip_more);progress.hide();strip.addWidget(row);view.strip_rows.append((row,name,percent,progress))
+    # Layout keeps this target above the live transfer strip at every size.
+    from clipboard_preview import ClipboardButton
+    view.clipboard_footer=QWidget(view.middle);view.clipboard_footer.setFixedHeight(44)
+    clipboard_row=QHBoxLayout(view.clipboard_footer);clipboard_row.setContentsMargins(12,6,12,6)
+    view.clipboard_button=ClipboardButton(view.shelf.manager,view.clipboard_footer)
+    clipboard_row.addWidget(view.clipboard_button);clipboard_row.addStretch()
+    mid.addWidget(view.clipboard_footer)
     mid.addWidget(view.transfer_strip);view.transfer_strip.hide();body.addWidget(view.middle,1)
     view.preview=preview_type(view);view.preview.setFixedWidth(340);body.addWidget(view.preview)
     root.addLayout(body,1)

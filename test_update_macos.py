@@ -84,7 +84,8 @@ class MacHTTPS(unittest.TestCase):
         self.assertEqual(path.name, 'update.zip')
         self.assertEqual(path.read_bytes(), self.payload)
         self.assertTrue(path.read_bytes().startswith(b'PK\x03\x04'))
-        self.assertGreater(len(state['progress']), 2)
+        self.assertGreaterEqual(len(state['progress']), 2)
+        self.assertEqual(state['progress'][-1],(len(self.payload),len(self.payload)))
         self.assertFalse(list(path.parent.glob('*.part')))
         self.assertFalse((path.parent / 'setup.exe').exists())
 
@@ -122,6 +123,7 @@ class MacHTTPS(unittest.TestCase):
         client.cancel()
         self.assertTrue(state['cancelled'])
         self.assertFalse(state['verified_file'])
+        wait_until(lambda:not list(client.updates_dir.rglob('*.part')))
         self.assertFalse(list(client.updates_dir.rglob('*.part')))
         self.routes['/mac.zip'] = dict(status=302, location='http://127.0.0.1/insecure.zip')
         client.download(self.manifest)

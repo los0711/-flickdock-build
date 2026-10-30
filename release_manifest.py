@@ -38,7 +38,7 @@ RUNTIME_SOURCES=(
     'image_preview.py','instance_guard.py','media_preview.py','offscreen_verify.py',
     'runtime_media.py','selection_archive.py','shake_detector.py','shelf_content.py',
     'surface_morph.py','ui_theme.py','widget_retirement.py','item_transitions.py','ui_transitions.py','app_version.py',
-    'native_ui_common.py','reference_widgets.py','pointer_paste.py','settings_edge_hint.py','cloud_connectivity.py','clipboard_sync.py','verify_clipboard.py','transfer_priority.py','small_upload_lane.py','runtime_cleanup.py','window_chrome.py','intake_notice.py',
+    'native_ui_common.py','reference_widgets.py','pointer_paste.py','settings_edge_hint.py','cloud_connectivity.py','clipboard_sync.py','clipboard_preview.py','verify_clipboard.py','transfer_priority.py','small_upload_lane.py','runtime_cleanup.py','window_chrome.py','intake_notice.py',
     'update_client.py','update_download.py','update_signatures.py','update_dialog.py','update_controller.py','update_notice.py','release_history.py','network_environment.py','network_diagnostics.py','ci_mac_update_runtime.py','ci_utility_windows.py',
     'platform_startup.py','platform_native.py','mac_updates.py','mac_entry.py','runtime_macos.py',
     'account_store.py','cloud_api.py','cloud_config.py','cloud_events.py','account_service.py','account_panel.py',
@@ -47,7 +47,7 @@ RUNTIME_SOURCES=(
     'wan_transfer.py','webrtc_stream.py','nearby_transport.py','verify_wan.py','windows_network.py','pairing_qr.py',
 )
 MAINTAINED_TESTS=(
-    'test_shelf_live_v1821.py','test_pairing_qr_v1821.py','test_release_notes_v1821.py','test_clipboard_fast_v1821.py','test_utility_windows_v1821.py','test_update_resume_v1821.py','test_update_signatures_v1821.py',
+    'test_shelf_live_v1821.py','test_pairing_qr_v1821.py','test_release_notes_v1821.py','test_clipboard_fast_v1821.py','test_clipboard_preview_v1821.py','test_utility_windows_v1821.py','test_update_resume_v1821.py','test_update_signatures_v1821.py',
     'test_small_upload_lane.py','test_feedback_v1820.py',
     'test_pointer_paste_v1819.py','test_presentation_v1819.py','test_clipboard_sync_v1819.py','test_wan_account_v1819.py','test_webrtc_close_v1819.py',
     'test_feedback_v1818.py','test_nearby_transport_v1818.py','test_wan_signaling_v1818.py','test_cloud_failover_v1818.py','test_windows_network_v1818.py',

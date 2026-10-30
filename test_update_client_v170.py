@@ -148,7 +148,9 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(Path(target),Path(self.folder.name)/'updates'/'1.10.0'/'setup.exe')
         self.assertEqual(Path(target).read_bytes(),self.payload)
         self.assertEqual(manual,True);self.assertEqual(manifest['installer']['sha256'],hashlib.sha256(self.payload).hexdigest())
-        self.assertGreater(len(state['progress']),2);self.assertGreater(len(beats),2)
+        self.assertGreaterEqual(len(state['progress']),2);self.assertGreater(len(beats),2)
+        self.assertEqual(state['progress'][-1],(len(self.payload),len(self.payload)))
+        self.assertEqual([row[0] for row in state['progress']],sorted(row[0] for row in state['progress']))
         self.assertFalse(list(Path(self.folder.name).rglob('*.part')))
         self.assertFalse(any('Authorization' in headers for _,headers in self.requests))
 

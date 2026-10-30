@@ -90,7 +90,9 @@ class SharedUpdateTests(unittest.TestCase):
             self.assertEqual(view.message.text(),'复制同步失败')
             self.assertLessEqual(abs(view.geometry().center().x()-area.center().x()),1)
             self.assertGreater(view.y(),area.center().y());view.timer.setInterval(20)
-            QTest.qWait(40);self.assertFalse(view.isVisible())
+            deadline=time.monotonic()+1
+            while view.isVisible() and time.monotonic()<deadline:QTest.qWait(10)
+            self.assertFalse(view.isVisible())
         finally:view.close();view.deleteLater();APP.processEvents()
 
     def test_close_and_reopen_view_does_not_cancel_or_duplicate_download(self):

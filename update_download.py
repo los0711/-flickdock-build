@@ -63,7 +63,10 @@ class UpdateDownload(QObject):
             self.jobs.discard(job)
             if self.stopped:
                 if self.retain_lease:return
-                try:self._release(discard=self.delete_partial)
+                try:
+                    with _lease_lock:
+                        if self.delete_partial and self._owns() and value==str(self.final):self.final.unlink(missing_ok=True)
+                    self._release(discard=self.delete_partial)
                 except OSError:pass # A locked temporary file is safe to retain.
                 return
             callback(value,error)
