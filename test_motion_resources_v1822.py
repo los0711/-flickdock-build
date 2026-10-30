@@ -52,6 +52,20 @@ class DisplayMetadataTests(unittest.TestCase):
     setUp=WorkspaceTests.setUp
     tearDown=WorkspaceTests.tearDown
 
+    def test_late_missing_candidate_gets_its_own_full_observation_interval(self):
+        first,second=self.paths[:2]
+        with patch('file_metadata._local_volume',return_value=True):
+            Path(first).unlink();self.shelf.file_metadata.refresh(first)
+            until(lambda:first in self.shelf._missing_refs);QTest.qWait(400)
+            Path(second).unlink();self.shelf.file_metadata.refresh(second)
+            until(lambda:second in self.shelf._missing_refs)
+            until(lambda:first not in self.shelf.files['permanent'])
+            self.assertIn(second,self.shelf.files['permanent'])
+            self.assertFalse(self.shelf._missing_refs[second]['confirming'])
+            Path(second).write_bytes(b'restored');self.shelf.file_metadata.refresh(second)
+            until(lambda:second not in self.shelf._missing_refs);QTest.qWait(550);flush()
+            self.assertIn(second,self.shelf.files['permanent'])
+
     def test_refresh_does_not_stat_on_gui_and_missing_local_file_is_reconciled(self):
         ref=self.paths[0];self.shelf.file_metadata.invalidate(ref)
         original=Path.stat;gui=threading.get_ident();threads=[]

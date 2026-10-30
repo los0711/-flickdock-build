@@ -1957,10 +1957,13 @@ class ShelfWindow(QWidget):
         return True
 
     def _confirm_missing_refs(self):
+        now=time.monotonic();future=[]
         for ref,candidate in tuple(self._missing_refs.items()):
             if ref not in self.files['permanent']:self._missing_refs.pop(ref,None)
             elif not candidate['confirming']:
-                candidate['confirming']=True;self.file_metadata.refresh(ref)
+                if candidate['confirm_after']>now:future.append(candidate['confirm_after'])
+                else:candidate['confirming']=True;self.file_metadata.refresh(ref)
+        if future:self._missing_timer.start(max(1,int((min(future)-time.monotonic())*1000)+1))
 
     def _file_information_ready(self,ref):
         if ref not in self.files['permanent']:self._missing_refs.pop(ref,None);return
@@ -1972,7 +1975,7 @@ class ShelfWindow(QWidget):
                 for mode in MODES:self.files[mode]=[value for value in self.files[mode] if value!=ref]
                 self.refresh();return
             if candidate is None:
-                self._missing_refs[ref]=dict(confirming=False,checked_at=info['checked_at'])
+                self._missing_refs[ref]=dict(confirming=False,checked_at=info['checked_at'],confirm_after=time.monotonic()+.5)
                 if not self._missing_timer.isActive():self._missing_timer.start()
         else:self._missing_refs.pop(ref,None)
         self.zones['permanent'].icon.update()
