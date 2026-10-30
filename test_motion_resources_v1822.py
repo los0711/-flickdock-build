@@ -82,7 +82,15 @@ class DisplayMetadataTests(unittest.TestCase):
         Path(ref).unlink();self.shelf.file_metadata.refresh(ref)
         try:until(lambda:ref not in self.shelf.files['permanent'])
         except AssertionError:
-            raise AssertionError(dict(file_info=self.shelf.file_metadata.request(ref),
+            import sys,traceback
+            cache=self.shelf.file_metadata
+            frames=sys._current_frames()
+            workers={thread.name:traceback.format_stack(frames[thread.ident])
+                for thread in threading.enumerate() if thread.name.startswith('FlickDock file info') and thread.ident in frames}
+            active={path:(generation,cancel.is_set(),future.done())
+                for path,(generation,cancel,future) in cache._active.items()}
+            raise AssertionError(dict(file_info=cache.request(ref),closed=cache.closed,
+                active=active,waiting=dict(cache._waiting),workers=workers,
                 candidate=self.shelf._missing_refs.get(ref),retry_active=self.shelf._missing_timer.isActive())) from None
         self.assertTrue(Path(self.paths[1]).exists())
 
