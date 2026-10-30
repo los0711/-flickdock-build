@@ -225,7 +225,9 @@ class _Job(QRunnable):
 class ClipboardSync(QObject):
     activity_changed=Signal(bool)
     copy_result=Signal(bool,dict)
-    view_changed=Signal(dict)
+    # Keep original image bytes as a shared Python object, rather than copying
+    # a potentially 20 MB value through QVariantMap for each status update.
+    view_changed=Signal(object)
     native_access_changed=Signal()
 
     @property

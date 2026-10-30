@@ -600,8 +600,8 @@
     },
     {
       "path": "clipboard_sync.py",
-      "size": 42682,
-      "sha256": "2ccf15024ba75a86ed64ec97f97322def76b45e7fd1429561c8411b913864b9d"
+      "size": 42839,
+      "sha256": "d52ad615acf4a4a4ad0bc0625582c966570739cc3b01a252cf0b841cb54e974b"
     },
     {
       "path": "cloud/.gitignore",
@@ -975,8 +975,8 @@
     },
     {
       "path": "mac_permissions_ui.py",
-      "size": 6857,
-      "sha256": "8e527a0cdc4532b3ac3ba6aef6c3eb84360b1491ecae18dff889e103e2d45bae"
+      "size": 7447,
+      "sha256": "e3c477bd5e1fc351050a427efe3872a107de01bbfc2114b76eaddf1e5209fb9d"
     },
     {
       "path": "mac_updates.py",
@@ -1450,8 +1450,8 @@
     },
     {
       "path": "test_mac_permissions_v1821.py",
-      "size": 8425,
-      "sha256": "0a9ae8ae5685b82758a7422e27f09ebd6292200d55f828b5e6b8aed637f27865"
+      "size": 8532,
+      "sha256": "3249db7ee8d4468a73dabc93e746a5e75d14ca748e8235b02eb3ed1e944993d7"
     },
     {
       "path": "test_mac_updates.py",

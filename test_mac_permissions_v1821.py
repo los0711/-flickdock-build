@@ -100,6 +100,7 @@ class PermissionUITests(unittest.TestCase):
                 states.update(accessibility='allowed',input='not_required');dialog.setup_button.click();self.assertEqual(calls[-1],'network')
                 self.assertEqual(dialog.states['network'],'unknown');self.assertIn('确认',dialog.rows['network'][0].text())
                 self.assertEqual(dialog.states['files'],'on_demand')
+                manager.settings.theme='light';dialog.refresh();self.assertFalse(dialog.close_button.dark)
                 dialog.setup_button.click();flush();self.assertFalse(dialog.isVisible());self.assertFalse(dialog.timer.isActive())
             finally:dialog.close();dialog.deleteLater();owner.deleteLater();flush()
 
