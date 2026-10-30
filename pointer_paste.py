@@ -165,7 +165,17 @@ class PointerPasteController(QObject):
         if self._native and sys.platform=='darwin':self.retry.start()
 
     @property
-    def permission_required(self):return bool(self.backend and self.backend.permission_required)
+    def permission_required(self):
+        if sys.platform=='darwin' and self._native:
+            from mac_permissions import MacPermissionBackend
+            # A tap can fail for reasons other than TCC. Never claim a denial
+            # merely because the listener is temporarily unavailable.
+            return MacPermissionBackend().accessibility()!='allowed'
+        return bool(self.backend and self.backend.permission_required)
+
+    @property
+    def listener_pending(self):
+        return bool(self._native and sys.platform=='darwin' and not (self.backend and self.backend.available))
 
     def retry_native(self):
         if self._closed:return

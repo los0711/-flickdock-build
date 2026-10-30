@@ -9,16 +9,19 @@ import time
 
 _bulk_ready=threading.Event()
 _bulk_ready.set()
+_priority_until=0.0
 
 
 def set_clipboard_priority(active):
+    global _priority_until
+    _priority_until=time.monotonic()+2 if active else 0.0
     if active:_bulk_ready.clear()
     else:_bulk_ready.set()
 
 
 def yield_bulk_payload(cancel):
     if _bulk_ready.is_set():return
-    deadline=time.monotonic()+2
+    deadline=_priority_until
     while not _bulk_ready.is_set():
         if cancel.is_set():raise InterruptedError('已取消传输。')
         remaining=deadline-time.monotonic()

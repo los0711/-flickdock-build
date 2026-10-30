@@ -9,6 +9,20 @@ permissions:
   contents: read
 
 jobs:
+  cloud-contract:
+    if: github.repository == 'los0711/-flickdock-build'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Install locked local service test dependencies
+        run: npm ci --prefix cloud --no-audit --no-fund
+      - name: Verify actual workerd, D1, R2 and signaling contracts
+        run: |
+          npm run typecheck --prefix cloud
+          npm test --prefix cloud
   clipboard:
     if: github.repository == 'los0711/-flickdock-build'
     timeout-minutes: 15

@@ -54,18 +54,18 @@ class FeedbackTests(unittest.TestCase):
             manager._show_transfer_dialog=lambda service:flickdock.ShelfManager._show_transfer_dialog(manager,service)
             manager.show_lan_dialog=lambda:flickdock.ShelfManager.show_lan_dialog(manager)
             manager.show_wan_dialog=lambda:flickdock.ShelfManager.show_wan_dialog(manager)
-            dialog.transfer_mode_requested.connect(lambda:manager.show_lan_dialog() if dialog._wan else manager.show_wan_dialog())
+            dialog.mode_selected.connect(lambda mode:manager.show_wan_dialog() if mode=='wan' else manager.show_lan_dialog())
             watch=Watch();dialog.installEventFilter(watch);handle=dialog.winId();geometry=dialog.geometry()
             first=Path(directory)/'lan.txt';first.write_text('LAN');second=Path(directory)/'remote.txt';second.write_text('WAN')
             lan_panel=dialog.panel;lan_panel.queue_paths([first])
             try:
-                QTest.mouseClick(dialog.transfer_mode_button,Qt.LeftButton);flush();wan_panel=dialog.panel
+                QTest.mouseClick(dialog.mode_buttons['lan' if dialog._wan else 'wan'],Qt.LeftButton);flush();wan_panel=dialog.panel
                 self.assertIs(wan_panel.service,wan);wan_panel.queue_paths([second])
                 for _ in range(12):
-                    QTest.mouseClick(dialog.transfer_mode_button,Qt.LeftButton);flush()
+                    QTest.mouseClick(dialog.mode_buttons['lan' if dialog._wan else 'wan'],Qt.LeftButton);flush()
                     self.assertEqual(dialog.winId(),handle);self.assertEqual(dialog.geometry(),geometry);self.assertTrue(dialog.isVisible())
                 self.assertFalse(watch.events);manager._center_dialog.assert_not_called()
-                self.assertEqual(lan_panel._queued_paths,[str(first)]);self.assertEqual(wan_panel._queued_paths,[str(second)])
+                self.assertEqual(lan_panel._queued_paths,[str(first),str(second)]);self.assertEqual(wan_panel._queued_paths,[str(first),str(second)])
                 self.assertEqual(len(dialog._panels),2)
             finally:dialog.close();dialog.deleteLater();lan.close();wan.close();flush()
 
@@ -286,7 +286,7 @@ class FeedbackTests(unittest.TestCase):
             'paused':dict(dirty=True,paused_upload=True,ref='paused'),
             'stale':dict(dirty=True,ref='gone',fingerprint='old',blocked_fingerprint='old')}
         engine=SimpleNamespace(upload_enabled=True,receive_enabled=True,state=dict(entries=entries),running=True,transfer=None,
-            _lane_context=None,small_lane=SimpleNamespace(active=None,retry_at={}),clipboard_bridge=None,
+            _clipboard_priority=False,_lane_context=None,small_lane=SimpleNamespace(active=None,retry_at={}),clipboard_bridge=None,
             _cycle_direction='',_refresh_again=False,_notify_transfers=lambda:None,_pending_removal=lambda:None,_paused=lambda _:False,
             adapter=SimpleNamespace(snapshot=lambda:dict(permanent=['blocked'])),status_changed=SimpleNamespace(emit=statuses.append))
         for identity,entry in entries.items():entry['id']=identity

@@ -25,7 +25,10 @@ def stack_pixmap(repository, refs, size=110, *, dpr=None, preview_cache=None, ar
     for ref in selected:
         kind=repository.category(ref)
         name=repository.title(ref) if getattr(repository,'is_pending',lambda r:False)(ref) else ref
-        value=('link' if kind=='links' else 'TEXT') if repository.is_text(ref) else Path(name).suffix or ('folder' if Path(ref).is_dir() else 'generic')
+        metadata=getattr(repository,'file_metadata',None)
+        info=metadata.request(ref) if metadata is not None and not repository.is_text(ref) else None
+        folder=info['is_dir'] if info else Path(ref).is_dir() if metadata is None else False
+        value=('link' if kind=='links' else 'TEXT') if repository.is_text(ref) else Path(name).suffix or ('folder' if folder else 'generic')
         variant=0;color=content_color(value)
         while color in colors:
             variant+=1;color=content_color(value,variant)

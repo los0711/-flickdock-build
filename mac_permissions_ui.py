@@ -51,6 +51,11 @@ class MacPermissionsDialog(ReferenceModalDialog):
             state=self.states[kind];label.setText(self.LABELS.get(state,'待检测'))
             if state=='unknown' and kind!='network':label.setText('无法检测，请查看系统设置')
             button.setText('查看设置' if state in ('allowed','legacy','not_required','observed') else '设置')
+        pending=(pointer is not None and not available and self.states['accessibility']=='allowed'
+                and self.states['input'] in ('allowed','legacy'))
+        if getattr(self,'_listener_pending',False) and not pending:
+            self.hint.setText('跨应用粘贴监听已恢复。' if available else '权限状态已更新，请检查尚未允许的项目。')
+        self._listener_pending=pending
         if (pointer is not None and not available and self.states['accessibility']=='allowed'
                 and self.states['input'] in ('allowed','legacy')):
             self.rows['input'][0].setText('权限已允许，监听待恢复')

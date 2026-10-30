@@ -63,6 +63,9 @@ class WanTransferService(LanTransferService):
         self.connect_timeout=QTimer(self);self.connect_timeout.setSingleShot(True);self.connect_timeout.setInterval(10000)
         self.connect_timeout.timeout.connect(self._connection_timed_out)
         self.completed.connect(self._completed_wan)
+        self._retirement_running=False
+        self.retirement_timer=QTimer(self);self.retirement_timer.setInterval(60000)
+        self.retirement_timer.timeout.connect(self._retire_terminal);self.retirement_timer.start()
         self.bind_retry=QTimer(self);self.bind_retry.setSingleShot(True);self.bind_retry.setInterval(5000);self.bind_retry.timeout.connect(self._bind_account)
 
     def attach_account(self,account,*,lan_id='',nearby_peers=None):
@@ -166,6 +169,26 @@ class WanTransferService(LanTransferService):
         self._send_signal(dict(type='ping'))
         self._peer_poll_count+=1
         if self._peer_poll_count%4==0:self._send_signal(dict(type='recent'))
+
+    def _retire_terminal(self):
+        if self._closing or self._retirement_running:return
+        now=time.monotonic()
+        with self._lock:
+            candidates=[(key,value) for key,value in self._transfers.items()
+                        if not value.active and key not in self._pending and now-value.updated>1800]
+        if not candidates:return
+        self._retirement_running=True
+        def release():
+            try:
+                for key,value in candidates:
+                    # Keep the same ACK/resume grace as LAN. Disk cleanup must
+                    # not run on Qt or while holding the shared task lock.
+                    if self._cleanup(value):
+                        with self._lock:
+                            if self._transfers.get(key) is value and not value.active and key not in self._pending:
+                                self._transfers.pop(key,None)
+            finally:self._retirement_running=False
+        self._thread(release)
     def peers(self):
         rows=super().peers()
         return rows if self._connected else [dict(row,online=False) for row in rows]
@@ -343,7 +366,7 @@ class WanTransferService(LanTransferService):
         if value.get('relayAttempt') and previous and previous.opened.is_set() and not previous.closed:return
         if previous:
             if previous.route=='relay':state['relay_bytes_prior']=state.get('relay_bytes_prior',0)+sum(previous.traffic().values())
-            previous.close(abort=True)
+            previous.shutdown()
         generation=value['generation'];state['generation']=generation;state['ready'].clear();state.pop('error',None)
         state['requested']=True;state['retry_inflight']=False
         state['relay_allowed']=bool(value.get('relayAllowed'));state['connect_started']=time.monotonic()
@@ -542,8 +565,9 @@ class WanTransferService(LanTransferService):
         super()._notify(transfer,state,**extra)
         if state in ('error','cancelled'):self._command.emit(dict(_retire=True,id=transfer.transfer_id))
     def close(self):
+        self.retirement_timer.stop()
         self._closing=True;self.retry.stop();self.poll.stop();self.code_timer.stop();self.connect_timeout.stop();self.bind_retry.stop()
         if self._bind_key and self.account_service:self.account_service.api.cancel(self._bind_key)
         self.socket.abort();super().close()
         for state in self._pending.values():
-            if state.get('bridge'):state['bridge'].close(abort=True)
+            if state.get('bridge'):state['bridge'].shutdown()

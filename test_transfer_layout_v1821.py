@@ -13,6 +13,22 @@ from test_html_native_lan import FakeLan
 
 
 class TransferGeometryTests(unittest.TestCase):
+    def test_short_logical_screen_scrolls_right_column_without_overlapping_destination(self):
+        with tempfile.TemporaryDirectory() as directory,patch('window_chrome.WindowChrome._available',return_value=QRect(0,0,853,480)):
+            base=Path(directory);wan=WanTransferService(base/'wan',enabled=False)
+            dialog=LanDialog(FakeLan(),SettingsStore(base/'profile'));dialog.show();flush()
+            try:
+                for theme in ('dark','light'):
+                    dialog.apply_theme(theme)
+                    for service in (dialog.panel.service,wan):
+                        panel=dialog.set_service(service);flush()
+                        history=QRect(panel.history_scroll.mapTo(panel.activity_column,QPoint()),panel.history_scroll.size())
+                        destination=QRect(panel.receive_path.mapTo(panel.activity_column,QPoint()),panel.receive_path.size())
+                        self.assertFalse(history.intersects(destination))
+                        bar=panel.activity_scroll.verticalScrollBar();bar.setValue(bar.maximum());flush()
+                        self.assertTrue(panel.activity_scroll.viewport().rect().contains(panel.choose_destination.mapTo(panel.activity_scroll.viewport(),panel.choose_destination.rect().bottomRight())))
+            finally:dialog.hide();dialog.deleteLater();wan.close();wan.deleteLater();flush()
+
     def test_full_forms_queue_rows_never_overlap_and_shadow_is_not_clipped(self):
         with tempfile.TemporaryDirectory() as directory,patch('window_chrome.WindowChrome._available',return_value=QRect(0,0,1920,1080)):
             base=Path(directory);paths=[]
@@ -30,7 +46,10 @@ class TransferGeometryTests(unittest.TestCase):
                             for count in (1,2,3,6,0,2):
                                 panel.queue_paths(paths[:count],replace=True);flush()
                                 if count:
-                                    self.assertLess(panel.drop_zone.geometry().bottom(),panel.queue_scroll.geometry().top())
+                                    drop=QRect(panel.drop_zone.mapTo(panel,QPoint()),panel.drop_zone.size())
+                                    queue=QRect(panel.queue_scroll.mapTo(panel,QPoint()),panel.queue_scroll.size())
+                                    self.assertFalse(drop.intersects(queue))
+                                    self.assertLess(panel.queue_area.geometry().bottom(),panel.send_scroll.geometry().top())
                                     for first,second in zip(panel.queue_rows,panel.queue_rows[1:]):self.assertLess(first.geometry().bottom(),second.geometry().top())
                                     self.assertGreaterEqual(panel.queue_body.height(),count*36+(count-1)*6)
                             # A short screen must still make every send action reachable.

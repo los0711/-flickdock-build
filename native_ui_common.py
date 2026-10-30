@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import sys
 import os
+import threading
+from collections import OrderedDict
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QEasingCurve, QEvent, QObject, QPointF, QRectF, QSize, Qt, QVariantAnimation, QTranslator
@@ -253,6 +255,8 @@ _SVG_BODY = {
     'check': '<path d="m5 12 4 4L19 6"/>',
     'close': '<path d="m6 6 12 12M18 6 6 18"/>',
     'trash': '<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/>',
+    'package': '<path d="m12 3 9 5-9 5-9-5 9-5ZM3 8v10l9 5 9-5V8M12 13v10M7.5 5.5l9 5"/>',
+    'package-selected': '<path d="m10 2 8 4.5-8 4.5-8-4.5L10 2ZM2 6.5v9L10 20M10 11v9M6 4.2l8 4.5"/><rect x="13" y="13" width="10" height="10" rx="2"/><path d="m15.5 18 1.8 1.8 3.7-4"/>',
     'copy': '<rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h3"/>',
     'user': '<circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/>',
     'eye': '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>',
@@ -268,6 +272,21 @@ _SVG_BODY = {
 _ALIASES = {'folder': 'file', 'upload': 'transferring', 'download': 'transferring',
             'wifi': 'nearby', 'lan': 'nearby', 'chevron-down': 'chevron',
             'chevron-right': 'right', 'cloud-upload': 'cloud', 'cloud-off': 'cloud'}
+
+
+_svg_renderers=threading.local()
+
+
+def cached_svg_renderer(svg):
+    # SVG renderers stay on the painting thread. One bounded cache is reused
+    # across identical glyphs rather than reparsing XML for every paint frame.
+    cache=getattr(_svg_renderers,'cache',None)
+    if cache is None:cache=_svg_renderers.cache=OrderedDict()
+    renderer=cache.pop(svg,None)
+    if renderer is None:renderer=QSvgRenderer(QByteArray(svg.encode('utf8')))
+    cache[svg]=renderer
+    while len(cache)>128:cache.popitem(last=False)
+    return renderer
 
 
 class _SourceIconEngine(QIconEngine):
@@ -298,7 +317,7 @@ class _SourceIconEngine(QIconEngine):
         if mode == QIcon.Mode.Disabled:
             painter.setOpacity(0.4)
         if self.svg:
-            renderer = QSvgRenderer(QByteArray(self.svg.encode('utf-8')))
+            renderer = cached_svg_renderer(self.svg)
             renderer.render(painter, QRectF(rect))
         painter.restore()
 

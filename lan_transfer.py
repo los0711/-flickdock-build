@@ -350,6 +350,7 @@ class _Transfer:
     peer: str
     cancel: threading.Event = field(default_factory=threading.Event)
     accepted: threading.Event = field(default_factory=threading.Event)
+    receiver_idle: threading.Event = field(default_factory=threading.Event)
     lock: threading.Lock = field(default_factory=threading.Lock)
     socket: object = None
     destination: object = None
@@ -701,26 +702,43 @@ class LanTransferService(QObject):
                 self.cancel(identifier); _send_json(stream, {'state': 'cancelled'}); return
             entries = request.get('entries'); total = _validate_manifest(entries)
             manifest_hash = hashlib.sha256(json.dumps(entries, sort_keys=True).encode('utf8')).hexdigest()
-            with self._lock:
-                transfer = self._transfers.get(identifier)
-                if transfer:
-                    if transfer.direction != 'receive' or transfer.active or transfer.cancel.is_set() or not secrets.compare_digest(transfer.token, token) or transfer.manifest_hash != manifest_hash:
-                        raise ValueError('无法恢复这项传输。')
-                    if transfer.finished:
-                        # A final acknowledgement can be lost after the atomic
-                        # rename. A retry confirms that same completed transfer.
-                        _send_json(stream, {'state': 'ready', 'next_file': sum(e['kind'] == 'file' for e in entries), 'offset': 0})
-                        _send_json(stream, {'state': 'complete'}); return
-                else:
-                    if len([t for t in self._transfers.values() if not t.finished and not t.cancel.is_set()]) >= 16:
-                        raise ValueError('待处理的传输请求过多。')
-                    sender = str(request.get('sender') or '局域网设备')[:64]
-                    transfer = _Transfer(identifier, 'receive', sender, entries=entries, token=token,
-                                         manifest_hash=manifest_hash, total=total)
-                    self._transfers[identifier] = transfer
-                    code=self._stream_code(stream,identifier)
-                    self._incoming_offer(transfer,host,code)
-                transfer.active = True; transfer.socket = stream; acquired = True
+            handoff_deadline=time.monotonic()+8
+            already_finished=False
+            while True:
+                with self._lock:
+                    transfer=self._transfers.get(identifier)
+                    if transfer:
+                        if (transfer.direction!='receive' or transfer.cancel.is_set()
+                                or not secrets.compare_digest(transfer.token,token)
+                                or transfer.manifest_hash!=manifest_hash):
+                            raise ValueError('无法恢复这项传输。')
+                        busy=transfer.active
+                        already_finished=transfer.finished and not busy
+                    else:
+                        if len([t for t in self._transfers.values() if not t.finished and not t.cancel.is_set()])>=16:
+                            raise ValueError('待处理的传输请求过多。')
+                        sender=str(request.get('sender') or '局域网设备')[:64]
+                        transfer=_Transfer(identifier,'receive',sender,entries=entries,token=token,
+                            manifest_hash=manifest_hash,total=total)
+                        self._transfers[identifier]=transfer
+                        code=self._stream_code(stream,identifier)
+                        self._incoming_offer(transfer,host,code);busy=False
+                    if not busy:
+                        if not already_finished:
+                            transfer.receiver_idle.clear();transfer.active=True;transfer.socket=stream;acquired=True
+                        break
+                # The previous generation still owns the receive stage. Wait
+                # outside the task lock; never run two writers for this ID.
+                if self._stopped.is_set() or transfer.cancel.is_set():raise InterruptedError('已取消传输。')
+                if time.monotonic()>=handoff_deadline:
+                    # A wire-level close remains retryable for old clients;
+                    # sending a semantic rejection would permanently fail it.
+                    stream.close();stream=None
+                    raise ConnectionError('旧连接尚在释放，正在重新连接。')
+                transfer.receiver_idle.wait(.05)
+            if already_finished:
+                _send_json(stream,{'state':'ready','next_file':sum(e['kind']=='file' for e in entries),'offset':0})
+                _send_json(stream,{'state':'complete'});return
             deadline = time.monotonic() + 180
             while not transfer.accepted.wait(.2):
                 if transfer.cancel.is_set() or self._stopped.is_set(): raise InterruptedError('已取消传输。')
@@ -810,17 +828,25 @@ class LanTransferService(QObject):
                 try: _send_json(stream, {'state': 'error', 'message': str(error)})
                 except OSError: pass
         finally:
-            if stream: stream.close()
-            else: raw.close()
-            if transfer and acquired:
-                transfer.socket = None
-                cleaned = self._cleanup(transfer) if transfer.cancel.is_set() else True
-                transfer.active = False; transfer.updated = time.monotonic()
-                if terminal:
-                    state, message = terminal
-                    if not cleaned: state, message = 'error', '未完成文件暂时被占用，将继续重试清理。'
-                    self._notify(transfer, state, message=message)
-            self._slots.release()
+            try:
+                try:
+                    if stream:stream.close()
+                    else:raw.close()
+                except Exception as error:
+                    self.status_changed.emit('传输连接关闭异常（'+type(error).__name__+'），正在释放任务。')
+            finally:
+                try:
+                    if transfer and acquired:
+                        transfer.socket=None
+                        try:cleaned=self._cleanup(transfer) if transfer.cancel.is_set() else True
+                        finally:
+                            with self._lock:
+                                transfer.active=False;transfer.updated=time.monotonic();transfer.receiver_idle.set()
+                        if terminal:
+                            state,message=terminal
+                            if not cleaned:state,message='error','未完成文件暂时被占用，将继续重试清理。'
+                            self._notify(transfer,state,message=message)
+                finally:self._slots.release()
 
     @staticmethod
     def _cleanup(transfer):

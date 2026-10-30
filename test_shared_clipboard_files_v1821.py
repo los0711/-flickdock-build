@@ -118,6 +118,7 @@ class SharedFilesTests(unittest.TestCase):
     def new_engine(self):
         engine=ShelfSync(self.base/'profile',self.peer,self.adapter,poll_ms=600000)
         engine.set_directions(True,False);engine.select_account(self.peer.account);engine.attach_clipboard(self.clients[-1])
+        self.clients[-1].activity_changed.connect(engine.set_clipboard_priority)
         self.engines.append(engine);return engine
     def tearDown(self):
         for engine in self.engines:engine.close()

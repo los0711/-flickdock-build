@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 import re
 
-from PySide6.QtCore import QObject, QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer
+from PySide6.QtCore import QObject, QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QVariantAnimation
 from PySide6.QtGui import QColor, QFont, QIcon, QPalette, QImage, QPainter, QPainterPath, QPen, QPixmap, QLinearGradient
 from PySide6.QtWidgets import (QLabel, QPushButton, QWidget, QFrame, QHBoxLayout,
     QVBoxLayout, QScrollArea, QLineEdit, QProgressBar, QButtonGroup, QSizePolicy,
@@ -71,14 +71,59 @@ def label(value='',size=12,weight=400,tint='text',parent=None):
 
 class IconTextButton(QPushButton):
     """Use one logical icon/text group on both Qt platform styles."""
+    def _retarget_icon(self,*,hover=None,pressed=None):
+        target=getattr(self,'_icon_target',QPointF())
+        target=QPointF(target.x() if hover is None else float(hover),target.y() if pressed is None else float(pressed))
+        self._icon_target=target
+        from ui_transitions import motion_allowed,exit_curve
+        if not self.isEnabled() or not motion_allowed():
+            if hasattr(self,'_icon_animation'):self._icon_animation.stop()
+            self._icon_value=target if self.isEnabled() else QPointF();self.update();return
+        current=getattr(self,'_icon_value',QPointF())
+        if current==target:return
+        if not hasattr(self,'_icon_animation'):
+            self._icon_animation=QVariantAnimation(self)
+            self._icon_animation.setEasingCurve(exit_curve())
+            def changed(value):self._icon_value=value;self.update()
+            self._icon_animation.valueChanged.connect(changed)
+        self._icon_animation.stop();self._icon_animation.setDuration(100 if target.y() else 170)
+        self._icon_animation.setStartValue(current);self._icon_animation.setEndValue(target);self._icon_animation.start()
+
+    def enterEvent(self,event):self._retarget_icon(hover=1);super().enterEvent(event)
+    def leaveEvent(self,event):self._retarget_icon(hover=0);super().leaveEvent(event)
+    def mousePressEvent(self,event):
+        if event.button()==Qt.LeftButton and self.isEnabled():self._retarget_icon(pressed=1)
+        super().mousePressEvent(event)
+    def mouseReleaseEvent(self,event):self._retarget_icon(pressed=0);super().mouseReleaseEvent(event)
+    def hideEvent(self,event):
+        if hasattr(self,'_icon_animation'):self._icon_animation.stop()
+        self._icon_target=self._icon_value=QPointF();super().hideEvent(event)
+    def changeEvent(self,event):
+        if event.type()==QEvent.EnabledChange and not self.isEnabled():
+            if hasattr(self,'_icon_animation'):self._icon_animation.stop()
+            self._icon_target=self._icon_value=QPointF()
+        super().changeEvent(event)
+
     def hitButton(self,position):return self.rect().contains(position)
     def paintEvent(self,event):
-        if self.icon().isNull() or not self.text():return super().paintEvent(event)
+        if self.icon().isNull():return super().paintEvent(event)
         from PySide6.QtWidgets import QStyleOptionButton, QStyle, QStylePainter
         option=QStyleOptionButton();self.initStyleOption(option)
         art,words=QIcon(option.icon),str(option.text);option.icon=QIcon();option.text=''
         painter=QStylePainter(self);painter.drawControl(QStyle.CE_PushButton,option)
         painter.setFont(self.font())
+        if not words:
+            size=self.iconSize();rect=QRect((self.width()-size.width())//2,(self.height()-size.height())//2,size.width(),size.height())
+            value=getattr(self,'_icon_value',QPointF());glyph=getattr(self,'_reference_icon',('',))[0]
+            painter.save();center=QRectF(rect).center();painter.translate(center)
+            painter.scale(1-.05*value.y(),1-.05*value.y())
+            if glyph in ('settings','refresh','trash'):painter.rotate(value.x()*{'settings':10,'refresh':28,'trash':-5}[glyph])
+            elif glyph in ('file','package','package-selected','cloud'):painter.translate(0,-value.x())
+            elif glyph in ('nearby','web'):painter.translate(value.x(),0)
+            elif glyph in ('expand','collapse'):painter.rotate(value.x()*(6 if glyph=='expand' else -6))
+            painter.translate(-center)
+            art.paint(painter,rect,Qt.AlignCenter,QIcon.Normal if self.isEnabled() else QIcon.Disabled)
+            painter.restore();return
         size=self.iconSize();gap=6;left=bool(self.property('leftAligned'))
         space=self.width()-(56 if left else 16)-size.width()-gap
         text=painter.fontMetrics().elidedText(words,Qt.ElideRight,max(1,space))
@@ -96,7 +141,24 @@ class IconTextButton(QPushButton):
 class SortButton(IconTextButton):
     """Stable text baseline with independently tinted vector direction arrows."""
     direction=0
-    def set_direction(self,direction):self.direction=direction;self.update()
+    def set_direction(self,direction):
+        if direction==self.direction:return
+        self.direction=direction
+        from ui_transitions import motion_allowed,exit_curve
+        target=QPointF(float(direction==1),float(direction==2))
+        if not motion_allowed() or not self.isVisible():
+            if hasattr(self,'_sort_animation'):self._sort_animation.stop()
+            self._sort_value=target;self.update();return
+        if not hasattr(self,'_sort_animation'):
+            self._sort_animation=QVariantAnimation(self);self._sort_animation.setDuration(140)
+            self._sort_animation.setEasingCurve(exit_curve())
+            def changed(value):self._sort_value=value;self.update()
+            self._sort_animation.valueChanged.connect(changed)
+        self._sort_animation.stop();self._sort_animation.setStartValue(getattr(self,'_sort_value',QPointF()))
+        self._sort_animation.setEndValue(target);self._sort_animation.start()
+    def hideEvent(self,event):
+        if hasattr(self,'_sort_animation'):self._sort_animation.stop()
+        self._sort_value=QPointF(float(self.direction==1),float(self.direction==2));super().hideEvent(event)
     def arrow_colors(self):
         c=palette()
         return tuple(c['link'] if self.direction==value else c['muted'] for value in (1,2))
@@ -108,9 +170,14 @@ class SortButton(IconTextButton):
         p=QStylePainter(self);p.drawControl(QStyle.CE_PushButton,option);p.setFont(self.font())
         text_width=p.fontMetrics().horizontalAdvance(self.text());x=(self.width()-text_width-28)/2
         p.setPen(QColor(palette()['secondary']));p.drawText(QRectF(x,0,text_width,self.height()),Qt.AlignLeft|Qt.AlignVCenter,self.text())
-        left,right=self.arrow_colors()
-        svg=f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 16"><g fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path stroke="{left}" d="M6 13V3M3 6l3-3 3 3"/><path stroke="{right}" d="M18 3v10m-3-3 3 3 3-3"/></g></svg>'
-        QSvgRenderer(QByteArray(svg.encode())).render(p,QRectF(x+text_width+4,(self.height()-16)/2,24,16))
+        from native_ui_common import cached_svg_renderer
+        values=getattr(self,'_sort_value',QPointF(float(self.direction==1),float(self.direction==2)))
+        for index,path in enumerate(('M4 9 12 1 20 9Z','M4 15 12 23 20 15Z')):
+            rect=QRectF(x+text_width+8,(self.height()-18)/2,18,18)
+            for tint,opacity in ((palette()['muted'],1),(palette()['link'],values.x() if index==0 else values.y())):
+                if opacity<=0:continue
+                svg=f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="{tint}" d="{path}"/></svg>'
+                p.save();p.setOpacity(opacity);cached_svg_renderer(svg).render(p,rect);p.restore()
 
 
 def button(value='',glyph='',variant='quiet',parent=None,*,control_type=IconTextButton):
@@ -150,7 +217,14 @@ class ToolbarButton(FeedbackButton):
         if not self.isEnabled():p.setOpacity(.4)
         name={'pin-filled':'pin','check':'check'}.get(self.glyph,self.glyph)
         tint=self._glyph_tint or (c['blue'] if self.isChecked() else c['secondary'])
+        p.save();p.setOpacity(p.opacity()*getattr(self,'_entry_alpha',1.));p.translate(getattr(self,'_entry_dx',0.),0.)
+        hover=v['hover']
+        if name=='cloud':p.translate(0,-hover)
+        elif name in ('expand','collapse'):
+            p.translate(center);p.rotate(6*hover if name=='expand' else -6*hover);p.translate(-center)
+        elif name=='dock':p.translate(hover,0)
         icon(name,tint).paint(p,QRect((self.width()-16)//2,(self.height()-16)//2,16,16))
+        p.restore()
         if self.hasFocus() and self._keyboard_focus:
             p.setPen(QPen(QColor(c['blue']),1.5));p.setBrush(Qt.NoBrush)
             p.drawRoundedRect(QRectF(self.rect()).adjusted(2,2,-2,-2),7,7)
@@ -209,7 +283,7 @@ class LanButton(ToolbarButton):
             p.setPen(Qt.NoPen);p.setBrush(ink(c['hover']));p.drawRoundedRect(QRectF(self.rect()).adjusted(1,1,-1,-1),8,8)
         icon('nearby',c['link']).paint(p,QRect(7,(self.height()-16)//2,16,16))
         f=self.font();f.setPixelSize(13 if sys.platform=='win32' else 12);p.setFont(f);p.setPen(QColor(c['text']))
-        p.drawText(QRectF(29,0,self.width()-33,self.height()),Qt.AlignLeft|Qt.AlignVCenter,'互传')
+        p.drawText(QRectF(29,0,self.width()-33,self.height()),Qt.AlignLeft|Qt.AlignVCenter,'文件互传')
         if keyboard_focus_visible(self):
             p.setPen(QPen(QColor(c['link']),1.5));p.setBrush(Qt.NoBrush);p.drawRoundedRect(QRectF(self.rect()).adjusted(2,2,-2,-2),7,7)
         p.end()
@@ -401,13 +475,18 @@ def item_detail(shelf,ref):
     if content.is_text(ref):
         raw=content.text(ref) or ''
         return f'{len(raw)} 字符 · 原生文字' if content.category(ref)!='links' else '网页链接'
-    folder=Path(ref).is_dir()
+    cache=getattr(shelf,'file_metadata',None);info=cache.request(ref) if cache is not None else None
+    folder=info['is_dir'] if info else Path(ref).is_dir() if cache is None else False
     if folder:
         size=shelf.request_directory_size(ref) if hasattr(shelf,'request_directory_size') else None
         if size is None:return '正在统计大小 · 文件夹'
     else:
-        try:size=Path(ref).stat().st_size
-        except OSError:size=int(content.pending.get(ref,{}).get('size') or content.transfers.get(ref,{}).get('total') or 0)
+        if cache is not None:
+            size=info['size'] if info and info['exists'] else content.pending.get(ref,{}).get('size') or content.metadata.get(ref,{}).get('size') or content.transfers.get(ref,{}).get('total')
+            if size is None:return '文件信息不可用' if info and info.get('error') else '正在读取文件信息…'
+        else:
+            try:size=Path(ref).stat().st_size
+            except OSError:size=int(content.pending.get(ref,{}).get('size') or content.transfers.get(ref,{}).get('total') or 0)
     amount=f'{size/1024/1024/1024:.1f} GB' if size>=1024**3 else f'{size/1024/1024:.1f} MB' if size>=1024**2 else f'{size/1024:.1f} KB' if size>=1024 else f'{size} B'
     if folder:return amount+' · 文件夹'
     ext=Path(content.title(ref)).suffix.lstrip('.').upper()
@@ -458,7 +537,8 @@ def thumbnail(shelf,ref,size=40):
             p.setPen(Qt.NoPen);p.setBrush(QColor(255,255,255,42));p.drawEllipse(QRectF(size*.22,size*.22,size*.56,size*.56))
         icon(glyph,'#D8E1F4' if category=='video' else '#64D2FF').paint(p,QRect(round(size*.26),round(size*.26),round(size*.48),round(size*.48)))
     else:
-        name=ext.lstrip('.').upper() or ('DIR' if Path(ref).is_dir() else 'FILE')
+        cache=getattr(shelf,'file_metadata',None);info=cache.request(ref) if cache is not None and not ext else None
+        name=ext.lstrip('.').upper() or ('DIR' if info and info['is_dir'] or cache is None and Path(ref).is_dir() else 'FILE')
         color='#B52B47' if name=='PDF' else '#466B99' if name=='ZIP' else palette()['action']
         p.setPen(Qt.NoPen);p.setBrush(QColor(color));p.drawRoundedRect(QRectF(size*.12,size*.34,size*.76,size*.33),3,3)
         font=QFont();font.setPixelSize(max(8,round(size*.23)));font.setWeight(QFont.Bold);p.setFont(font);p.setPen(QColor('white'))
@@ -547,22 +627,28 @@ def build_overview(view,preview_type):
     css(view.search_edit,"QLineEdit{background:#28282A;color:#F5F5F7;border:1px solid #3B3B3F;border-radius:8px;padding:4px 10px;font:12px 'HarmonyOS Sans SC';}",
         "QLineEdit{background:#F0F0F2;color:#1D1D1F;border:1px solid #D4D4D8;border-radius:8px;padding:4px 10px;font:12px 'HarmonyOS Sans SC';}")
     head.addWidget(view.search_edit)
-    view.view_segment=QFrame(view.header);view.view_segment.setFixedSize(154,32)
+    view.view_segment=QFrame(view.header);view.view_segment.setFixedSize(72,32)
     css(view.view_segment,'QFrame{background:rgba(255,255,255,10);border:1px solid rgba(255,255,255,18);border-radius:9px;}',
         'QFrame{background:rgba(0,0,0,10);border:1px solid rgba(0,0,0,18);border-radius:9px;}')
     segment=QHBoxLayout(view.view_segment);segment.setContentsMargins(2,2,2,2);segment.setSpacing(0)
-    view.view_list=button('列表','list',parent=view.view_segment);view.view_grid=button('图标','grid',parent=view.view_segment)
+    view.view_list=button('','list',parent=view.view_segment);view.view_grid=button('','grid',parent=view.view_segment)
+    view.view_list.setToolTip('列表视图');view.view_list.setAccessibleName('列表视图')
+    view.view_grid.setToolTip('图标视图');view.view_grid.setAccessibleName('图标视图')
+    view.view_buttons=QButtonGroup(view);view.view_buttons.setExclusive(True)
     for control,key in ((view.view_list,'list'),(view.view_grid,'icons')):
-        control.setFixedHeight(26);control.setCheckable(True)
+        control.setFixedSize(34,26);control.setCheckable(True);view.view_buttons.addButton(control)
         css(control,"QPushButton{background:transparent;border:0;border-radius:6px;color:#A1A1AA;padding:3px 8px;font:12px 'HarmonyOS Sans SC';} QPushButton:checked{background:rgba(255,255,255,31);color:#F5F5F7;font-weight:600;}",
             "QPushButton{background:transparent;border:0;border-radius:6px;color:#515154;padding:3px 8px;font:12px 'HarmonyOS Sans SC';} QPushButton:checked{background:#FFFFFF;color:#1D1D1F;font-weight:600;}")
         control.clicked.connect(lambda checked=False,key=key:view.change_view_mode(key));segment.addWidget(control)
         control.setChecked(view.shelf.manager.settings.view_mode==key)
     head.addWidget(view.view_segment)
     head.addStretch(1)
-    view.zip_button=button('打包所选',variant='secondary',parent=view.header);view.zip_button.clicked.connect(view.compress_selected);head.addWidget(view.zip_button)
-    view.zip_all_button=button('打包全部',variant='secondary',parent=view.header);view.zip_all_button.clicked.connect(lambda:view.shelf.compress_refs(list(view.shelf.files['permanent'])));head.addWidget(view.zip_all_button)
-    view.clear_button=button('清空全部',variant='danger',parent=view.header);view.clear_button.clicked.connect(view.shelf.confirm_clear_all);head.addWidget(view.clear_button)
+    view.zip_button=button('','package-selected',parent=view.header);view.zip_button.clicked.connect(view.compress_selected);head.addWidget(view.zip_button)
+    view.zip_all_button=button('','package',parent=view.header);view.zip_all_button.clicked.connect(lambda:view.shelf.compress_refs(list(view.shelf.files['permanent'])));head.addWidget(view.zip_all_button)
+    view.clear_button=button('','trash',parent=view.header);view.clear_button.clicked.connect(view.shelf.confirm_clear_all);head.addWidget(view.clear_button)
+    for control,title in ((view.zip_button,'打包所选'),(view.zip_all_button,'打包全部'),(view.clear_button,'全部删除')):
+        control.setFixedSize(32,32);control.setProperty('iconOnly',True);control.setToolTip(title);control.setAccessibleName(title)
+    view.clear_button._reference_icon=('trash','red');view.clear_button.setIcon(icon('trash',palette()['red']))
     head.addSpacing(156)
     root.addWidget(view.header)
     body=QHBoxLayout();body.setContentsMargins(0,0,0,0);body.setSpacing(0);view.body_layout=body
@@ -582,8 +668,8 @@ def build_overview(view,preview_type):
         view.nav_counts[key]=count;view.category_buttons[key]=control;view.sidebar_buttons[key]=control
     view.transfer_badge=view.nav_counts['uploading']
     side.addStretch(1)
-    view.wan_nav=button('远程传输','web','secondary',view.sidebar);view.wan_nav.setFixedHeight(34);view.wan_nav.clicked.connect(lambda:view.shelf.manager.show_wan_dialog());side.addWidget(view.wan_nav)
-    view.lan_nav=button('局域网互传','nearby','secondary',view.sidebar);view.lan_nav.setFixedHeight(34);view.lan_nav.clicked.connect(lambda:view.shelf.manager.show_lan_dialog());side.addWidget(view.lan_nav)
+    view.wan_nav=button('远程传输','web','secondary',view.sidebar);view.wan_nav.hide()
+    view.lan_nav=button('文件互传','nearby','secondary',view.sidebar);view.lan_nav.setFixedHeight(34);view.lan_nav.clicked.connect(lambda:view.shelf.manager.show_transfer_dialog());side.addWidget(view.lan_nav)
     view.settings_nav=button('设置','settings',parent=view.sidebar);view.settings_nav.setFixedHeight(34);view.settings_nav.clicked.connect(lambda:view.shelf.manager.show_settings());side.addWidget(view.settings_nav)
     for control in (view.wan_nav,view.lan_nav,view.settings_nav):
         control.setProperty('leftAligned',True)

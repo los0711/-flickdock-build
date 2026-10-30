@@ -485,7 +485,11 @@ class ClipboardSync(QObject):
 
     def _changed(self):
         if not self._active() or self._applying:return
-        value=self._snapshot();sig=signature(value);sequence=self._sequence()
+        sequence=self._sequence()
+        # Repeated native notifications for one copy must not ask another app
+        # to render the same delayed clipboard again or repeat file/image work.
+        if sequence is not None and sequence==self._last_sequence:return
+        value=self._snapshot();sig=signature(value)
         if value is None and sequence is not None and sequence!=self._last_sequence:
             # Some native owners announce a new sequence before delayed data
             # is readable. Retry briefly without consuming its copy event.

@@ -59,10 +59,10 @@ class LanDialogTests(unittest.TestCase):
         self.assertEqual(self.dialog.panel._queued_paths,[])
 
     def test_transfer_mode_button_keeps_native_dialog_visible_and_emits_navigation(self):
-        navigated=[];self.dialog.transfer_mode_requested.connect(lambda:navigated.append(True))
-        self.assertEqual(self.dialog.transfer_mode_button.text(),'远程传输')
-        self.dialog.transfer_mode_button.click();APP.processEvents()
-        self.assertEqual(navigated,[True]);self.assertTrue(self.dialog.isVisible())
+        navigated=[];self.dialog.mode_selected.connect(lambda mode:navigated.append(mode))
+        self.assertEqual(self.dialog.mode_buttons['wan'].text(),'远程传输')
+        self.dialog.mode_buttons['wan'].click();APP.processEvents()
+        self.assertEqual(navigated,['wan']);self.assertTrue(self.dialog.isVisible())
 
     def test_file_drop_anywhere_in_transfer_dialog_queues_once_and_rejects_web_urls(self):
         for index,target in enumerate((self.dialog,self.dialog.title_bar,self.dialog.panel,
@@ -86,7 +86,7 @@ class LanDialogTests(unittest.TestCase):
         service=WanTransferService(self.root/'wan',enabled=False)
         dialog=LanDialog(service,self.settings);dialog.show();APP.processEvents()
         try:
-            self.assertEqual(dialog.transfer_mode_button.text(),'局域网互传')
+            self.assertEqual(dialog.mode_buttons['lan'].text(),'局域网传输')
             self.assertEqual(dialog.panel.peer_code_label.text(),'对方接收码')
             self.assertTrue(dialog.panel.peer_code_label.isVisible())
             self.assertEqual(dialog.panel.devices.count(),0)

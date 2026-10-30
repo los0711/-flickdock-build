@@ -418,8 +418,13 @@ class PreviewPane(QFrame):
 
     def _poster_ready(self, path, image):
         if not image.isNull():
-            self.shelf.preview_cache[path]=image.copy()
-            if len(self.shelf.preview_cache)>100: self.shelf.preview_cache.pop(next(iter(self.shelf.preview_cache)))
+            # This is a thumbnail cache, separate from the visible full-quality
+            # video surface. Bound both dimensions and total native image bytes.
+            poster=image.scaled(512,512,Qt.KeepAspectRatio,Qt.SmoothTransformation) if max(image.width(),image.height())>512 else QImage(image)
+            self.shelf.preview_cache.pop(path,None);self.shelf.preview_cache[path]=poster
+            while (len(self.shelf.preview_cache)>100 or
+                   sum(value.sizeInBytes() for value in self.shelf.preview_cache.values())>16*1024*1024):
+                self.shelf.preview_cache.pop(next(iter(self.shelf.preview_cache)))
             if self.popup.isVisible(): self.popup.update_item_icon(path)
             self.shelf.zones['permanent'].refresh()
 
@@ -738,6 +743,8 @@ class ContentsPopup(QFrame):
         self.scroll.viewport().installEventFilter(self)
         self.rebuild();self.update_transfer_status()
         self.drop_router=OverviewDropRouter(self)
+        from transfer_entry import TransferEntryRouter
+        self.transfer_entry=TransferEntryRouter(self,self.lan_nav,lambda mode,paths:self.shelf.manager.queue_transfer_paths(mode,paths))
 
     def eventFilter(self,watched,event):
         if (watched is self.scroll.viewport() and event.type()==QEvent.Resize
@@ -863,6 +870,11 @@ class ContentsPopup(QFrame):
         if content.is_text(ref):return len((content.text(ref) or '').encode('utf8'))
         pending=content.pending.get(ref,{})
         if 'size' in pending:return max(0,int(pending.get('size') or 0))
+        cache=getattr(self.shelf,'file_metadata',None)
+        if cache is not None:
+            info=cache.request(ref)
+            if info and info['is_dir']:return max(0,int(self.shelf.request_directory_size(ref) or 0))
+            return max(0,int((info or {}).get('size') or content.metadata.get(ref,{}).get('size') or 0))
         try:
             path=Path(ref)
             if path.is_dir():
@@ -878,6 +890,9 @@ class ContentsPopup(QFrame):
         if key not in ('time','size'):return
         self.sort_direction=(self.sort_direction+1)%3 if self.sort_key==key else 1
         self.sort_key=key if self.sort_direction else None
+        if self.sort_key=='size' and hasattr(self.shelf,'file_metadata'):
+            for ref in self.shelf.files['permanent']:
+                if not self.shelf.content.is_text(ref) and not self.shelf.content.is_pending(ref):self.shelf.file_metadata.refresh(ref)
         self.rebuild();self.update_selection_actions();self.shelf.touch()
 
     def update_transfer_status(self):
@@ -1167,11 +1182,12 @@ class ContentsPopup(QFrame):
     def update_selection_actions(self):
         count=len(self.chosen_refs());busy=self.shelf.archive_job is not None
         choosing=self.shelf._archive_choosing
-        self.zip_button.setVisible(self.width()>=980 or bool(count) or busy or choosing)
-        self.zip_button.setText('打包中…' if busy else '选择位置…' if choosing else '打包所选')
+        self.zip_button.setVisible(True)
+        self.zip_button.setText('')
+        self.zip_button.setAccessibleName('打包中…' if busy else '选择保存位置…' if choosing else '打包所选')
         self.zip_button.setEnabled(bool(count) and not busy and not choosing)
         self.zip_all_button.setEnabled(bool(self.shelf.files['permanent']) and not busy and not choosing)
-        self.zip_button.setToolTip(f'将选中的 {count} 项打包为 ZIP')
+        self.zip_button.setToolTip('正在打包…' if busy else '选择保存位置…' if choosing else f'将选中的 {count} 项打包为 ZIP')
         self.selection_hint.setText('默认')
         for key,control in self.sort_buttons.items():
             direction=self.sort_direction if self.sort_key==key else 0
@@ -1311,6 +1327,11 @@ class ShelfWindow(QWidget):
         self.number = number
         data = data or {}
         self.content = ContentRepository(data.get("texts"),data.get("metadata"))
+        from file_metadata import FileMetadataCache
+        self.file_metadata=FileMetadataCache(self);self.content.file_metadata=self.file_metadata
+        self._missing_refs={};self._missing_timer=QTimer(self);self._missing_timer.setSingleShot(True)
+        self._missing_timer.setInterval(500);self._missing_timer.timeout.connect(self._confirm_missing_refs)
+        self.file_metadata.ready.connect(self._file_information_ready)
         self.transfer_rates=TransferRateTracker()
         self.image_cache=ImageCache(self)
         self.content.thumbnail_provider=self.image_cache.pixmap
@@ -1419,9 +1440,11 @@ class ShelfWindow(QWidget):
         self.pin_button.setAccessibleName(self.pin_button.toolTip())
         from reference_widgets import LanButton
         self.lan_button = LanButton('nearby', self.card, motion=self.manager.motion)
-        self.lan_button.setToolTip('互传')
+        self.lan_button.setToolTip('文件互传')
         self.lan_button.setAccessibleName('选择局域网或远程传输')
         self.lan_button.clicked.connect(self.show_transfer_menu)
+        from transfer_entry import TransferEntryRouter
+        self.transfer_entry=TransferEntryRouter(self,self.lan_button,lambda mode,paths:self.manager.queue_transfer_paths(mode,paths))
         from reference_widgets import AvatarButton
         self.account_button = AvatarButton('user', self.card, motion=self.manager.motion)
         self.account_button.setToolTip('账号与设置')
@@ -1468,6 +1491,9 @@ class ShelfWindow(QWidget):
             control=QPushButton(self.traffic_controls);control.setGeometry(index*20,0,12,12);control.setStyleSheet(f'background:{tint};border:0;border-radius:6px;')
             control.clicked.connect((lambda:self.hide_animated(explicit=True)) if index==0 else self.show_contents if index==1 else self.pin_button.click)
         self._layout_header(CARD_W)
+
+        from ui_transitions import ToolbarEntrance
+        self._toolbar_entrance=ToolbarEntrance(self,lambda:[self.close_button,self.menu_button,self.expand_button,self.pin_button,self.cloud_button])
 
     def _layout_header(self,width):
         expanded=self.expanded
@@ -1892,7 +1918,7 @@ class ShelfWindow(QWidget):
             refresh_tree(self);self._tree_theme=theme
         self.refresh_account_identity()
         for mode in MODES:
-            self.files[mode] = [p for p in self.files[mode] if self.content.exists(p)]
+            self.files[mode] = [p for p in self.files[mode] if self._display_ref_exists(p)]
             self.zones[mode].refresh()
         count = len(self.display_refs())
         self.status_label.setText('正在复制内容…' if self.copy_jobs else '')
@@ -1925,17 +1951,61 @@ class ShelfWindow(QWidget):
             job.signals.done.connect(done);QThreadPool.globalInstance().start(job)
         return cached[1] if cached else None
 
+    def _display_ref_exists(self,ref):
+        if self.content.is_text(ref) or self.content.is_pending(ref):return self.content.exists(ref)
+        self.file_metadata.request(ref)
+        return True
+
+    def _confirm_missing_refs(self):
+        for ref,candidate in tuple(self._missing_refs.items()):
+            if ref not in self.files['permanent']:self._missing_refs.pop(ref,None)
+            elif not candidate['confirming']:
+                candidate['confirming']=True;self.file_metadata.refresh(ref)
+
+    def _file_information_ready(self,ref):
+        if ref not in self.files['permanent']:self._missing_refs.pop(ref,None);return
+        info=self.file_metadata.request(ref) or {}
+        if not info.get('exists') and info.get('errno') in (2,20) and info.get('local_volume') is True:
+            candidate=self._missing_refs.get(ref)
+            if candidate and candidate['confirming'] and info['checked_at']>candidate['checked_at']:
+                self._missing_refs.pop(ref,None)
+                for mode in MODES:self.files[mode]=[value for value in self.files[mode] if value!=ref]
+                self.refresh();return
+            if candidate is None:
+                self._missing_refs[ref]=dict(confirming=False,checked_at=info['checked_at'])
+                if not self._missing_timer.isActive():self._missing_timer.start()
+        else:self._missing_refs.pop(ref,None)
+        self.zones['permanent'].icon.update()
+        if self.popup and self.popup.isVisible():
+            from reference_widgets import item_detail
+            item=self.popup._item_widgets.get(ref)
+            if item is not None:
+                if hasattr(item,'detail_label'):item.detail_label.setText(item_detail(self,ref))
+                item.update()
+            if self.popup.preview.current_path==ref and self.popup.preview.info.text().startswith('正在读取'):
+                self.popup.preview.info.setText(item_detail(self,ref))
+            if self.popup.sort_key=='size' and self.popup.sort_direction:
+                if not hasattr(self.popup,'_size_sort_timer'):
+                    timer=QTimer(self.popup);timer.setSingleShot(True)
+                    timer.timeout.connect(lambda:self.popup.rebuild() if self.popup.isVisible() and self.popup.sort_key=='size' else None)
+                    self.popup._size_sort_timer=timer
+                if not self.popup._size_sort_timer.isActive():self.popup._size_sort_timer.start(32)
+
     def add_paths(self, mode, refs, *, defer_cloud=False):
         from shelf_intake_limit import MAX_SHELF_BYTES
+        import stat
         rejected=[]
         for ref in refs:
+            info=None
             if not self.content.is_text(ref):
                 try:
-                    if Path(ref).is_file() and Path(ref).stat().st_size>MAX_SHELF_BYTES:
+                    info=Path(ref).stat()
+                    if stat.S_ISREG(info.st_mode) and info.st_size>MAX_SHELF_BYTES:
                         rejected.append(ref);continue
                 except OSError:pass
             value = ref if self.content.is_text(ref) else str(Path(ref).resolve())
             if self.content.exists(value):
+                if info is not None:self.file_metadata.prime(value,info)
                 if value in self.files[mode]: self.files[mode].remove(value)
                 self.files[mode].append(value)
         self.refresh()
@@ -2310,6 +2380,7 @@ class ShelfWindow(QWidget):
 
     def _show_at(self, target, kind, offset, reserve=None):
         was_visible = self.isVisible()
+        was_hiding=self.visible_state=='hiding'
         self.manager.activate_shelf(self)
         self.presentation_kind = kind
         self.visible_state = "floating"
@@ -2338,6 +2409,8 @@ class ShelfWindow(QWidget):
         else:
             self._layout_header(self.card.width())
         self.show()
+        if kind=='dock' and not self.expanded and self.manager.motion and (not was_visible or was_hiding):
+            self._toolbar_entrance.reveal(reset=not was_visible)
         remove_host_window_shadow(self)
         self._raise_for_reveal()
         self.touch()
@@ -2427,6 +2500,7 @@ class ShelfWindow(QWidget):
         self.geometry_morph.stop()
         if self.popup: self.popup.preview.media.stop()
         self.visible_state = "hiding"
+        if self.presentation_kind=='dock' and not self.expanded and self.manager.motion:self._toolbar_entrance.conceal()
         self.manager.update_handles()
         docked = self.presentation_kind == "dock"
         if self.manager.motion:
@@ -2574,11 +2648,7 @@ class ShelfWindow(QWidget):
         return [ref for ref in self.files[mode] if not self.content.is_text(ref) and self.content.exists(ref)]
 
     def show_transfer_menu(self):
-        menu=QMenu(self);style_menu(menu)
-        menu.addAction('局域网互传',self.manager.show_lan_dialog)
-        menu.addAction('远程传输',self.manager.show_wan_dialog)
-        self._transfer_menu=menu
-        menu.popup(self.lan_button.mapToGlobal(QPoint(0,-menu.sizeHint().height())))
+        self.manager.show_transfer_dialog()
 
     def show_menu(self, mode=None, pos=None):
         if confirmation_active(self):return
@@ -2669,7 +2739,8 @@ class ShelfWindow(QWidget):
         self.geometry_morph.complete()
         self._archive_choosing=True
         if self.popup:
-            self.popup.zip_button.setText('选择保存位置…')
+            self.popup.zip_button.setToolTip('选择保存位置…')
+            self.popup.zip_button.setAccessibleName('选择保存位置…')
             self.popup.zip_button.setEnabled(False)
         try:chosen=self.choose_zip_path()
         finally:
@@ -3385,7 +3456,8 @@ class ShelfManager:
             mac=sys.platform=='darwin'
             required=self.pointer_paste.permission_required or (mac and not self.clipboard_sync._native_accessible())
             self.settings_dialog.set_pointer_paste_permission(required,
-                self.show_mac_permissions if mac else self.pointer_paste.request_permission,unified=mac)
+                self.show_mac_permissions if mac else self.pointer_paste.request_permission,unified=mac,
+                listener_pending=mac and self.pointer_paste.listener_pending)
 
     def _network_status_changed(self,state):
         for shelf in self.shelves:
@@ -3443,10 +3515,15 @@ class ShelfManager:
         if self.settings_dialog is None:return
         self.settings_dialog.set_update_state(state,**payload)
         manifest=self.updates.manifest or {}
-        from release_history import update_notes
-        notes=update_notes(getattr(self.updates,'app_version',APP_VERSION),manifest.get('version',''),
-                           manifest.get('notes',''),manifest.get('releases'))
-        self.settings_dialog.set_update_details(manifest.get('version',''),notes)
+        self.settings_dialog.set_update_details(manifest.get('version',''),'')
+
+    def show_transfer_dialog(self):
+        dialog=self.lan_dialog or self.wan_dialog
+        self._show_transfer_dialog(self.wan if dialog and dialog._wan else self.lan)
+
+    def queue_transfer_paths(self,mode,paths):
+        self._show_transfer_dialog(self.wan if mode=='wan' else self.lan)
+        self.lan_dialog.panel.queue_paths(paths)
 
     def show_lan_dialog(self):
         self._show_transfer_dialog(self.lan)
@@ -3464,7 +3541,7 @@ class ShelfManager:
             # state without exposing the desktop between close/show operations.
             dialog=LanDialog(service,self.settings)
             dialog.overview_requested.connect(lambda:self.show_overview_from_transfer(dialog))
-            dialog.transfer_mode_requested.connect(lambda:self.show_lan_dialog() if dialog._wan else self.show_wan_dialog())
+            dialog.mode_selected.connect(lambda mode:self.show_wan_dialog() if mode=='wan' else self.show_lan_dialog())
             dialog.lan_recommended.connect(self._use_recommended_lan)
             dialog.mini_requested.connect(self.show_shortcut)
             dialog.dock_requested.connect(lambda:self.shelf.hide_animated(explicit=True))
@@ -3472,7 +3549,8 @@ class ShelfManager:
         self.lan_dialog=self.wan_dialog=dialog
         if not dialog.isVisible():
             self._center_dialog(dialog)
-        dialog.showNormal() if dialog.isMinimized() else dialog.show()
+        if dialog.isMinimized():dialog.showNormal()
+        elif not dialog.isVisible():dialog.show()
         dialog.raise_();dialog.activateWindow()
 
     def _use_recommended_lan(self,paths,identifier):
@@ -3951,6 +4029,9 @@ def main():
     guard = InstanceGuard(app, str(BASE))
     if not guard.acquire():
         return
+    if sys.platform=='win32' and native_input_available():
+        from gui_watchdog import GuiWatchdog
+        app._ui_watchdog=GuiWatchdog(app,BASE)
     mac_icon=Path(sys.executable).parent.parent/'Resources'/'FlickDock.icns'
     app.setWindowIcon(QIcon(str(mac_icon)) if sys.platform=='darwin' and getattr(sys,'frozen',False)
                       and mac_icon.is_file() else app_icon())

@@ -32,6 +32,7 @@ VERSION_RE=re.compile(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z')
 HASH_RE=re.compile(r'[0-9a-f]{64}\Z')
 RUNTIME_SOURCES=(
     'flickdock.py','app_settings.py','async_images.py','capture_files.py',
+    'download_writer.py','file_metadata.py','transfer_entry.py','gui_watchdog.py',
     'confirm_clear.py','content_grid.py','content_resolver.py','content_stack.py',
     'dock_geometry.py','dock_preview.py','drag_artwork.py','drag_probe.py',
     'drop_routing.py','drop_bridge.py','flickdock_icons.py','flickdock_motion.py','global_hotkeys.py',
@@ -47,6 +48,7 @@ RUNTIME_SOURCES=(
     'wan_transfer.py','webrtc_stream.py','nearby_transport.py','verify_wan.py','windows_network.py',
 )
 MAINTAINED_TESTS=(
+    'test_stability_v1822.py','test_resources_v1822.py','test_transfer_entry_v1822.py','test_receive_lifecycle_v1822.py','test_motion_resources_v1822.py',
     'test_display_groups_v1821.py','test_transfer_layout_v1821.py','test_interaction_scope_v1821.py','test_shared_clipboard_files_v1821.py','test_download_ranges_v1821.py','test_remote_handoff_v1821.py',
     'test_mac_permissions_v1821.py','test_shelf_live_v1821.py','test_release_notes_v1821.py','test_clipboard_fast_v1821.py','test_clipboard_preview_v1821.py','test_utility_windows_v1821.py','test_update_resume_v1821.py','test_update_signatures_v1821.py',
     'test_small_upload_lane.py','test_feedback_v1820.py',
@@ -93,7 +95,7 @@ SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'MOTION_V161.md','MOTION_V162.md','MOTION_V163.md','MOTION_V164.md','MOTION_V165.md',
     'bench_morph_v161.py','bench_cold_expand_v162.py','bench_clear_confirm_v161.py',
     'bench_cloud_latency_v183.py','bench_cloud_events_v183.py','bench_cloud_transfer_v188.py',
-    'bench_lan_throughput_v183.py',
+    'bench_lan_throughput_v183.py','bench_resources_v1822.py','bench_ui_resources_v1822.py','performance_metrics.py',
     'fonts/HarmonyOS_Sans_SC_Regular.ttf',
     'assets/ui/qtbase_zh_CN.qm',
     'licenses/HarmonyOS-Sans-LICENSE.txt','licenses/Python-LICENSE.txt',

@@ -396,7 +396,9 @@ class MediaPreview(QWidget):
             self._report_playing(False)
         self.status_label.hide()
         if first_frame:
-            self.frame_ready.emit(self.path, image.copy())
+            poster=(image.scaled(512,512,Qt.KeepAspectRatio,Qt.SmoothTransformation)
+                    if max(image.width(),image.height())>512 else QImage(image))
+            self.frame_ready.emit(self.path, poster)
 
     def _poster_timeout(self):
         if not self._poster_pending:

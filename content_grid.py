@@ -99,6 +99,10 @@ class IconItem(QWidget):
         return chosen or [self.ref]
 
     def enterEvent(self, event):
+        if not hasattr(self,'_dwell_hint'):
+            from ui_transitions import DwellHint
+            self._dwell_hint=DwellHint(self)
+        if self.popup.shelf.manager.motion:self._dwell_hint.enter()
         self.remove_button.show()
         if hasattr(self.popup, 'hover_item'): self.popup.hover_item(self.ref)
         else: self.popup.preview.show_path(self.ref)
@@ -245,7 +249,8 @@ class IconItem(QWidget):
         if actual:
             painter.setPen(QPen(QColor('white'),1.5,Qt.SolidLine,Qt.RoundCap,Qt.RoundJoin));painter.drawLine(QPointF(16,19),QPointF(18,22));painter.drawLine(QPointF(18,22),QPointF(23,16))
         art=thumbnail(self.popup.shelf,self.ref,44);x=(self.width()-44)//2
-        painter.drawPixmap(x,13,art);draw_status(painter,QRectF(x+30,43,14,14),self.cloud_status)
+        lift=2*getattr(getattr(self,'_dwell_hint',None),'value',0.)
+        painter.drawPixmap(QPointF(x,13-lift),art);draw_status(painter,QRectF(x+30,43-lift,14,14),self.cloud_status)
         state=getattr(self.popup.shelf.content,'transfers',{}).get(self.ref)
         if state:
             draw_progress_badge(painter,QRectF(x+47,40,16,16),state)

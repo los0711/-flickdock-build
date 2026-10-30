@@ -29,6 +29,7 @@ class OrderingTests(unittest.TestCase):
         for key,ascending in (('time',initial),('size',[self.paths[1],self.paths[2],self.paths[0]])):
             for expected in (ascending,list(reversed(ascending)),list(reversed(initial))):
                 popup.sort_buttons[key].click();flush()
+                until(lambda:popup.visible_refs()==expected and not (hasattr(popup,'_size_sort_timer') and popup._size_sort_timer.isActive()))
                 self.assertEqual(popup.visible_refs(),expected)
                 self.assertEqual(popup.selected,{self.paths[1]});self.assertEqual(popup.preview.current_path,preview)
                 self.assertTrue(all(popup._item_widgets[ref] is rows[ref] for ref in self.paths))
@@ -41,6 +42,22 @@ class OrderingTests(unittest.TestCase):
         path=self.base/'new.bin';path.write_bytes(b'1');self.shelf.add_paths('permanent',[str(path)]);flush()
         self.assertEqual(popup.visible_refs()[0],str(path))
         self.assertEqual(popup.sort_key,'size')
+
+    def test_last_chosen_sort_resets_other_direction(self):
+        popup=self.overview()
+        for key in ('time','size','time','size'):
+            popup.sort_buttons[key].click();flush()
+            other='size' if key=='time' else 'time'
+            self.assertEqual(popup.sort_key,key)
+            self.assertEqual(popup.sort_direction,1)
+            self.assertEqual(popup.sort_buttons[key].direction,1)
+            self.assertEqual(popup.sort_buttons[other].direction,0)
+        popup.sort_buttons['size'].click();flush()
+        self.assertEqual(popup.sort_buttons['size'].direction,2)
+        self.assertEqual(popup.sort_buttons['time'].direction,0)
+        popup.selection_hint.click();flush()
+        self.assertIsNone(popup.sort_key)
+        self.assertTrue(all(control.direction==0 for control in popup.sort_buttons.values()))
 
     def test_sort_pair_arrows_and_default_reset_even_when_order_is_unchanged(self):
         from reference_widgets import palette

@@ -26,7 +26,7 @@ class ReleaseNotesTests(unittest.TestCase):
         self.assertNotIn('already installed',result)
         self.assertLess(result.index('1.8.11'),result.index('1.8.10'))
         dialog=UpdateDialog('1.8.9');dialog.set_state('available',manifest=manifest)
-        self.assertEqual(dialog.release_notes.toPlainText(),result)
+        self.assertEqual(dialog.release_notes.toPlainText(),'');self.assertFalse(dialog.notes_card.isVisible());self.assertEqual(dialog._notes,result)
         mac=self.manifest();mac.update(platform='darwin',architecture='arm64')
         mac['installer']=dict(mac['installer'],url=mac['installer']['url'].replace('.exe','.zip'))
         self.assertEqual(validate_manifest(mac,platform='darwin',machine='arm64')['releases'],RELEASES)
@@ -71,7 +71,7 @@ class ReleaseNotesTests(unittest.TestCase):
         target=Mock()
         manager=SimpleNamespace(settings_dialog=target,updates=SimpleNamespace(manifest=manifest,app_version='1.8.10'))
         ShelfManager._render_settings_update(manager,'available',{})
-        target.set_update_details.assert_called_once_with('1.8.11','latest fixes')
+        target.set_update_details.assert_called_once_with('1.8.11','')
 
 
 if __name__=='__main__':unittest.main()

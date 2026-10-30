@@ -82,10 +82,11 @@ with tempfile.TemporaryDirectory(prefix='flickdock-update-ui-v170-') as temporar
     client.checking.emit(False)
     client.update_available.emit(manifest, False)
     assert dialog.state=='available' and not dialog.isVisible() and not installed
-    assert dialog.release_notes.toPlainText()==manifest['notes']
+    assert not dialog.notes_card.isVisible() and not dialog.release_notes.toPlainText()
+    assert dialog._notes==manifest['notes']
     assert dialog.current_version_label.text()=='1.7.0'
     assert dialog.latest_version_label.text()=='1.7.1'
-    print('PASS automatic latest/error/available signals never show UI or install; versions and release notes are plain text')
+    print('PASS automatic latest/error/available signals never show UI or install; versions are plain text; notes are reserved for overview')
 
     dialog.set_state('idle')
     dialog.show(); flush()

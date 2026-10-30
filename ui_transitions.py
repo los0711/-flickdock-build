@@ -1,5 +1,5 @@
 """Opacity-only utility transitions, separate from the native shelf compositor."""
-from PySide6.QtCore import QCoreApplication,QEvent,QObject,QPoint,QPointF,Qt,QVariantAnimation,QEasingCurve
+from PySide6.QtCore import QCoreApplication,QEvent,QObject,QPoint,QPointF,Qt,QTimer,QVariantAnimation,QEasingCurve
 from PySide6.QtGui import QGuiApplication,QPainter
 from PySide6.QtWidgets import QWidget
 from shiboken6 import isValid
@@ -14,6 +14,72 @@ def exit_curve():
     curve=QEasingCurve(QEasingCurve.BezierSpline)
     curve.addCubicBezierSegment(QPointF(.23,1),QPointF(.32,1),QPointF(1,1))
     return curve
+
+
+class DwellHint(QObject):
+    """A single two-pixel glyph lift after deliberate hover; never an idle loop."""
+    def __init__(self,owner):
+        super().__init__(owner);self.owner=owner;self.value=0.
+        self.wait=QTimer(self);self.wait.setSingleShot(True);self.wait.setInterval(1400)
+        self.wait.timeout.connect(self._start)
+        self.animation=QVariantAnimation(self);self.animation.setDuration(240)
+        self.animation.setEasingCurve(exit_curve())
+        self.animation.setKeyValueAt(0.,0.);self.animation.setKeyValueAt(.45,1.);self.animation.setKeyValueAt(1.,0.)
+        self.animation.valueChanged.connect(self._frame);owner.installEventFilter(self)
+
+    def enter(self):
+        self.stop()
+        if motion_allowed() and self.owner.isVisible():self.wait.start()
+
+    def _start(self):
+        if self.owner.isVisible() and self.owner.isEnabled() and motion_allowed():self.animation.start()
+
+    def _frame(self,value):
+        self.value=float(value)
+        if isValid(self.owner):self.owner.update()
+
+    def stop(self):
+        self.wait.stop();self.animation.stop();self._frame(0.)
+
+    def eventFilter(self,watched,event):
+        if QCoreApplication.closingDown() or not isValid(self.owner) or not isValid(self.animation):return False
+        if event.type() in (QEvent.Hide,QEvent.Leave,QEvent.MouseButtonPress,QEvent.DragEnter):self.stop()
+        elif event.type()==QEvent.EnabledChange and not self.owner.isEnabled():self.stop()
+        return False
+
+
+class ToolbarEntrance(QObject):
+    """One finite clock for all compact header glyphs, with fixed hit regions."""
+    def __init__(self,owner,controls):
+        super().__init__(owner);self.owner=owner;self.controls=controls;self.progress=1.
+        self.animation=QVariantAnimation(self);self.animation.setDuration(240)
+        self.animation.valueChanged.connect(self._frame);self.curve=exit_curve()
+        owner.installEventFilter(self)
+
+    def reveal(self,*,reset=False):
+        if reset:self._frame(0.)
+        self._target(1.)
+
+    def conceal(self):self._target(0.)
+
+    def _target(self,target):
+        self.animation.stop()
+        if not motion_allowed():self._frame(1.);return
+        current=self.progress
+        self.animation.setDuration(240 if target else 160)
+        self.animation.setStartValue(current);self.animation.setEndValue(target);self.animation.start()
+
+    def _frame(self,value):
+        self.progress=float(value);controls=self.controls()
+        for index,control in enumerate(controls):
+            local=max(0.,min(1.,(self.progress-index*.055)/(1-max(0,len(controls)-1)*.055)))
+            local=self.curve.valueForProgress(local)
+            control._entry_alpha=local;control._entry_dx=6*(1-local);control.update()
+
+    def eventFilter(self,watched,event):
+        if event.type()==QEvent.Hide:
+            self.animation.stop();self._frame(1.)
+        return False
 
 
 def fade_hide(window):

@@ -5,6 +5,7 @@ import json
 import os
 import re
 import time
+import queue
 from pathlib import Path
 from uuid import uuid4
 
@@ -12,6 +13,7 @@ from PySide6.QtCore import QObject, QTimer, QUrl, Qt, Signal, QFile, QIODevice
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 from app_version import APP_VERSION
 from cloud_config import CLOUD_ORIGINS
+from download_writer import DownloadWriter
 
 
 class CloudError(Exception):
@@ -59,6 +61,7 @@ class CloudApi(QObject):
         self._closed = False
         self._allow_test_http = allow_test_http
         self.diagnostics_dir=None
+        self._writers=set()
 
     def _url(self, path):
         base = QUrl(self.origin)
@@ -140,6 +143,9 @@ class CloudApi(QObject):
                      'origin':self.origin,'sent':None,'connect_timer':None,
                      'started':time.monotonic(),'budget':max(total_timeout,300000) if destination else total_timeout,
                      'retry':None}
+            state.update(writer=None,writer_result=None,writer_finishing=False,writer_completed=False,disk_priority=priority,
+                         deferred_error=None,drain_scheduled=False)
+            if destination and callable(getattr(reply,'setReadBufferSize',None)):reply.setReadBufferSize(1024*1024)
             if _deadline is not None:state['budget']=min(state['budget'],max(1,round((_deadline-time.monotonic())*1000)))
             deadline=state['deadline']=time.monotonic()+state['budget']/1000
             if self.origin in CLOUD_ORIGINS and not _fallback_used:
@@ -220,39 +226,86 @@ class CloudApi(QObject):
     def _drain(self, key):
         state = self._requests.get(key)
         if state is None: return
+        if state['deferred_error'] is not None:return
         reply = state['reply']
         status = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute) or 0
         try:
             budget = 512 * 1024
             while reply.bytesAvailable() and budget > 0:
-                chunk = bytes(reply.read(min(65536, budget))); budget -= len(chunk)
+                limit=min(65536,budget)
+                if state['destination'] is not None and status==200:
+                    writer=self._download_writer(key,state)
+                    limit=min(limit,writer.capacity())
+                    if not limit:break
+                chunk = bytes(reply.read(limit)); budget -= len(chunk)
                 if not chunk: break
                 state['received'] += len(chunk)
                 if state['destination'] is not None and status == 200:
                     expected = state['expected'] or {}
                     if state['received'] > expected.get('size', 0): raise CloudError('同步文件大小与记录不符。')
-                    if state['file'] is None:
-                        target = state['destination']; target.parent.mkdir(parents=True, exist_ok=True)
-                        part = target.with_name('.' + target.name + '-' + key + '.part')
-                        state['part'], state['file'] = part, part.open('xb')
-                    state['file'].write(chunk); state['hash'].update(chunk)
+                    writer.write(chunk)
                     self._download_progress(state)
                 else:
                     if len(state['body']) + len(chunk) > 2 * 1024 * 1024: raise CloudError('云服务响应超过限制。')
                     state['body'].extend(chunk)
-            if reply.bytesAvailable(): QTimer.singleShot(0, lambda: self._drain(key))
+            if reply.bytesAvailable() and not state['drain_scheduled']:
+                state['drain_scheduled']=True
+                def resume():
+                    if key not in self._requests:return
+                    state['drain_scheduled']=False;self._drain(key)
+                QTimer.singleShot(10,resume)
         except Exception as error:
             self._finish(key, error=error if isinstance(error, CloudError) else CloudError('无法保存同步文件。'))
+
+    def _download_writer(self,key,state):
+        if state['writer'] is None:
+            try:writer=DownloadWriter(state['destination'],key,self,priority=state['disk_priority'])
+            except queue.Full:raise CloudError('本地文件保存队列繁忙，请稍后重试。',code='DOWNLOAD_QUEUE_BUSY')
+            state['writer']=writer
+            self._writers.add(writer)
+            def completed(result):
+                self._writers.discard(writer)
+                current=self._requests.get(key)
+                if current is state:
+                    state['writer_result']=result;state['writer_completed']=True
+                    if state['deferred_error'] is not None:self._finish(key,error=state['deferred_error'])
+                    elif result and result.get('code')=='cancelled':
+                        self._finish(key,error=CloudError('同步操作已取消。',code='cancelled'))
+                    elif result and result.get('code')=='DOWNLOAD_SAVE_FAILED':
+                        self._finish(key,CloudError('无法保存云端文件，请检查保存位置或文件占用。',code='DOWNLOAD_SAVE_FAILED',details=result))
+                    elif state['writer_finishing']:self._finish(key)
+                writer.deleteLater()
+            writer.finished.connect(completed,Qt.ConnectionType.QueuedConnection)
+        return state['writer']
 
     def _finish(self, key, error=None):
         state = self._requests.get(key)
         if state is None: return
+        if state['deferred_error'] is not None:
+            if not state['writer_completed']:return
+            error=state['deferred_error']
+        if error is not None and state['writer'] is not None and not state['writer_completed']:
+            # Do not confirm cancellation while an older disk commit could
+            # still publish. This is asynchronous: Qt remains responsive.
+            state['deferred_error']=error;state['writer'].cancel();state['timer'].stop()
+            if state['connect_timer'] is not None:state['connect_timer'].stop()
+            if not state['reply'].isFinished():state['reply'].abort()
+            return
         if error is None:
             self._drain(key)
             state = self._requests.get(key)
             if state is None: return
             if state['reply'].bytesAvailable():
-                QTimer.singleShot(0, lambda: self._finish(key)); return
+                QTimer.singleShot(10, lambda: self._finish(key)); return
+            status=int(state['reply'].attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute) or 0)
+            if status==200 and state['destination'] is not None and state['writer_result'] is None:
+                if not state['writer_finishing']:
+                    state['writer_finishing']=True
+                    expected=state['expected'] or {}
+                    digest=expected.get('sha256') or bytes(state['reply'].rawHeader('X-Content-SHA256')).decode('ascii','replace')
+                    try:self._download_writer(key,state).finish(expected.get('size',0),digest)
+                    except CloudError as problem:self._finish(key,error=problem)
+                return
         self._requests.pop(key, None)
         state['timer'].stop(); state['timer'].deleteLater()
         if state['connect_timer'] is not None:state['connect_timer'].stop();state['connect_timer'].deleteLater()
@@ -274,33 +327,15 @@ class CloudApi(QObject):
             # alone must not turn verified content into a retry.
             if status == 200 and state['destination'] is not None:
                 phase = 'download_verify'
-                expected = state['expected']
-                digest = expected.get('sha256') or bytes(reply.rawHeader('X-Content-SHA256')).decode('ascii','replace')
-                if (not re.fullmatch(r'[0-9a-f]{64}',digest) or state['received'] != expected['size'] or state['hash'].hexdigest() != digest):
-                    truncated=state['received']!=expected['size']
-                    valid_header=bool(re.fullmatch(r'[0-9a-f]{64}',digest))
-                    code='DOWNLOAD_TRUNCATED' if truncated else 'DOWNLOAD_HEADER_INVALID' if not valid_header else 'DOWNLOAD_HASH_MISMATCH'
-                    message=(f'下载连接中断：已接收 {state["received"]} / {expected["size"]} 字节，正在恢复。' if truncated else
-                        '云端下载响应缺少有效校验信息，正在重试。' if not valid_header else '下载内容校验不一致，正在重新获取该分块。')
-                    raise CloudError(message,status,code,details={
-                        'received_size':state['received'], 'expected_size':expected['size'],
-                        'hash_matches':state['hash'].hexdigest() == digest,
-                        'network_error':reply.error().value,
-                        'reply_finished':reply.isFinished(),
-                        'response_length':bytes(reply.rawHeader('Content-Length')).decode('ascii','replace'),
-                        'header_digest_valid':bool(re.fullmatch(r'[0-9a-f]{64}',digest))})
-                if state['file'] is None:
-                    state['part'] = state['destination'].with_name('.' + key + '.part')
-                    state['file'] = state['part'].open('xb')
-                phase = 'download_save'
-                state['file'].flush(); os.fsync(state['file'].fileno()); state['file'].close(); state['file'] = None
-                os.replace(state['part'], state['destination']); state['part'] = None
-                # The bytes were hashed while streaming to this fsynced file.
-                # Callers that opt in can avoid rereading a large part before
-                # the final whole-file verification. Keep the legacy Path
-                # result for clients and injected transports using this API.
-                result = ({'path':state['destination'],'sha256':digest}
-                          if expected.get('with_digest') else state['destination'])
+                saved=state['writer_result'] or {}
+                if saved.get('code'):
+                    code=saved['code']
+                    message=('下载连接中断，正在恢复。' if code=='DOWNLOAD_TRUNCATED' else
+                        '云端下载响应缺少有效校验信息，正在重试。' if code=='DOWNLOAD_HEADER_INVALID' else
+                        '下载内容校验不一致，正在重新获取该分块。')
+                    raise CloudError(message,status,code,details=saved)
+                result=({'path':saved['path'],'sha256':saved['sha256']}
+                        if state['expected'].get('with_digest') else saved['path'])
             else:
                 response_body = bytes(state['body'])
                 if status in (429, 503, 1027) and b'1027' in response_body and b'cloudflare' in response_body.lower():
@@ -345,12 +380,8 @@ class CloudApi(QObject):
             if state['source_file'] is not None:
                 state['source_file'].close()
                 state['source_file'].deleteLater()
-            if state['file'] is not None:
-                try: state['file'].close()
-                except OSError: pass  # Preserve the transfer error and finish its callback.
-            if state['part'] is not None:
-                try: state['part'].unlink(missing_ok=True)
-                except OSError: pass  # A locked partial file must not stall the receive queue.
+            if state['writer'] is not None and not state['writer_completed']:
+                state['writer'].cancel()
         if status == 401 and state['auth_token'] and state['auth_token'] == self.token and not self._closed:
             self.unauthorized.emit()
         if error is not None:
