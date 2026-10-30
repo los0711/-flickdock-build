@@ -983,7 +983,7 @@ class ShelfSync(QObject):
                 self._persist();self._cleanup_retry.start(1)
                 if not self.running:
                     if error and getattr(error,'code','')=='ALREADY_COMMITTED':
-                        self.running=True;self._after_cleanup()
+                        self.running=True;self._retire_uploads()
                     else:self.debounce.start(1)
             self._request('DELETE','/v1/uploads/'+quote(identity,safe=''),done)
 

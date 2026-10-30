@@ -11,9 +11,10 @@ from performance_metrics import process_sample
 
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--baseline',action='store_true')
+    parser.add_argument('--baseline-ref',default='0667cab3fee2bb4bdc8ea4768e03073587024268')
     parser.add_argument('--output',type=Path,required=True);args=parser.parse_args()
     def source(name):
-        return (subprocess.check_output(['git','show','HEAD:'+name]).decode('utf8') if args.baseline
+        return (subprocess.check_output(['git','show',args.baseline_ref+':'+name]).decode('utf8') if args.baseline
                 else Path(name).read_text(encoding='utf8'))
     app=QApplication([]);decode_source=source('async_images.py');namespace={}
     exec(compile(decode_source,'async_images.py','exec'),namespace);decode=namespace['_decode']
@@ -25,6 +26,7 @@ def main():
     result=dict(mode='baseline_HEAD_1.8.21' if args.baseline else 'working_tree',
         conditions=dict(qt_platform=app.platformName(),poster_count=8,poster_resolution=[3840,2160],
                         image_target=128,encoded_bytes=16*1024*1024),
+        baseline_source_ref=args.baseline_ref if args.baseline else None,
         source_sha256=hashlib.sha256((decode_source+ast.unparse(method)).encode()).hexdigest())
     with tempfile.TemporaryDirectory(prefix='flickdock-resources-') as directory:
         path=Path(directory)/'large.jpg';image=QImage(3000,2000,QImage.Format_RGB32);image.fill(Qt.blue)
