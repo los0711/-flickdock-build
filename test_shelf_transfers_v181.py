@@ -319,6 +319,52 @@ class TransferTests(unittest.TestCase):
         self.assertEqual(adapter.view['permanent'], [str(self.source)])
         self.assertFalse(self.server.uploads); self.assertFalse(self.server.account('account-A')['items'])
 
+    def test_remote_cancel_reaches_server_while_own_upload_is_still_held(self):
+        service,adapter,engine,transfer=self.pending();uid=transfer['upload_id']
+        other_service,other_adapter,other=self.replica('device-b')
+        until(lambda:not other.running and bool(other.remote_transfers))
+        own=self.root/'other.bin';own.write_bytes(self.payload+b'other original')
+        other_service.api.hold_part=1;other_adapter.add(str(own));other.local_changed()
+        until(lambda:bool(other_service.api.held));held=list(other_service.api.held);epoch=other.epoch;own_id=other.transfer['id']
+        self.assertTrue(other.cancel_upload(transfer['id']))
+        until(lambda:uid not in self.server.uploads,timeout=2)
+        self.assertEqual(other.epoch,epoch);self.assertTrue(other.running)
+        self.assertEqual(other.transfer['id'],own_id)
+        self.assertTrue(all(row[0] in other_service.api.pending.values() for row in held))
+        other_service.api.release();until(lambda:not other.running)
+        self.assertEqual(Path(other_adapter.view['permanent'][0]).read_bytes(),own.read_bytes())
+
+    def test_two_slow_cleanup_receipts_do_not_loop_changefeed_or_block_fresh_bytes(self):
+        service,adapter,engine,transfer=self.pending();service.api.hold_delete=True
+        engine.cancel_upload(str(self.source))
+        engine.state['pending_uploads'].append(str(uuid4()))
+        fresh=self.root/'fresh.txt';fresh.write_bytes(b'fresh original bytes')
+        before=len(self.server.calls);adapter.add(str(fresh));engine.local_changed()
+        until(lambda:any(item['record']['name']=='fresh.txt' for item in self.server.account('account-A')['items'].values()),timeout=3)
+        calls=self.server.calls[before:]
+        self.assertLess(sum('/v1/sync/changes' in path for _,_,path in calls),10)
+        self.assertTrue(engine._cleanup_inflight)
+        self.assertIn(transfer['upload_id'],self.server.uploads)
+        record=next(item for item in self.server.account('account-A')['items'].values() if item['record']['name']=='fresh.txt')
+        self.assertEqual(record['data'],b'fresh original bytes')
+
+    def test_remote_cancel_retries_independently_after_temporary_cleanup_error(self):
+        service,adapter,engine,transfer=self.pending();uid=transfer['upload_id']
+        other_service,other_adapter,other=self.replica('device-b')
+        until(lambda:not other.running and bool(other.remote_transfers))
+        own=self.root/'busy.bin';own.write_bytes(self.payload+b'other')
+        other_service.api.hold_part=1;other_adapter.add(str(own));other.local_changed()
+        until(lambda:bool(other_service.api.held));own_id=other.transfer['id'];attempts=[];original=self.server.dispatch
+        def flaky(token,method,path,data,raw):
+            if method=='DELETE' and path=='/v1/uploads/'+uid:
+                attempts.append(path)
+                if len(attempts)==1:raise CloudError('temporary cleanup failure',503)
+            return original(token,method,path,data,raw)
+        with patch.object(self.server,'dispatch',side_effect=flaky),patch.object(other,'_retry_delay',return_value=.05):
+            other.cancel_upload(transfer['id']);until(lambda:uid not in self.server.uploads,timeout=2)
+        self.assertEqual(len(attempts),2);self.assertTrue(other.running);self.assertEqual(other.transfer['id'],own_id)
+        self.assertFalse(other._cleanup_inflight);other_service.api.release();until(lambda:not other.running)
+
     def test_offline_origin_after_cancel_receipt_expiry_pauses_until_explicit_fresh_retry(self):
         service,adapter,engine,transfer=self.pending()
         identifier,uid,stage=transfer['id'],transfer['upload_id'],Path(transfer['path'])

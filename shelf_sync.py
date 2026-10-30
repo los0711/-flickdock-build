@@ -86,6 +86,8 @@ class ShelfSync(QObject):
         self.retry_ms = 15000; self.transfer = None
         self.cleanup_attempts = {}
         self._cleanup_inflight = set()
+        self._cleanup_retry=QTimer(self);self._cleanup_retry.setSingleShot(True)
+        self._cleanup_retry.timeout.connect(self._retire_abandoned_uploads)
         self.remote_transfers=[]
         self._remote_heads={}
         self._receive_fences={}
@@ -214,7 +216,7 @@ class ShelfSync(QObject):
         self._receive_fences.clear()
         self.download_transfers.clear()
         self._part_cache.clear();self._progress_persisted=0.0
-        self._cleanup_inflight.clear()
+        self._cleanup_inflight.clear();self._cleanup_retry.stop()
         for job in tuple(self.jobs): job.cancel.set()
         for key in tuple(self.requests): self.api.cancel(key)
         self.requests.clear()
@@ -523,7 +525,7 @@ class ShelfSync(QObject):
         self.small_lane.reset()
         self.running=False;self.transfer=None
         self._part_cache.clear()
-        self._cleanup_inflight.clear()
+        self._cleanup_inflight.clear();self._cleanup_retry.stop()
         self._intake_announced=set()
         for key in tuple(self.requests):self.api.cancel(key)
         self.requests.clear()
@@ -580,6 +582,7 @@ class ShelfSync(QObject):
             self.remote_transfers.remove(remote)
         if self.clipboard_bridge:self.clipboard_bridge.reconcile()
         self._persist();self._notify_transfers();self.debounce.start(1)
+        self._retire_abandoned_uploads()
         return True
 
     def retry_upload(self,ref):
@@ -937,6 +940,18 @@ class ShelfSync(QObject):
                     self.state['entries'].pop(identity,None); self._forget_download(identity)
                 self._persist(); self._retire_uploads()
             self._request('DELETE','/v1/items/'+quote(identity,safe=''),removed,data={'base_version':version}); return
+        self._retire_abandoned_uploads()
+        self._persist();self._after_cleanup()
+
+    def _retire_abandoned_uploads(self):
+        # Explicit cancellation must reach the server without waiting for an
+        # unrelated payload cycle. This lane never changes running/transfer.
+        if self.closed or not self.state or not self.account_id or not self.service.signed_in or self._cleanup_inflight:return
+        if self._paused('cleanup_not_before'):
+            delay=max(1,min(2147483647,int((self.state['cleanup_not_before']-time.time())*1000)+1))
+            self._cleanup_retry.start(delay);return
+        self.state.pop('cleanup_not_before',None)
+        resumes=self.state.setdefault('resumable_uploads',{})
         abandoned = self.state.setdefault('pending_uploads',[])
         active = {x.get('upload_id') for x in resumes.values()}
         identity = next((x for x in abandoned if x not in active and x not in self._cleanup_inflight),None)
@@ -951,6 +966,7 @@ class ShelfSync(QObject):
                     self.state['cleanup_not_before'] = time.time()+delay
                     if self._quota_error(error): self.state['quota_not_before']=self.state['cleanup_not_before']
                     self._persist();self.debounce.start(min(2147483647,int(delay*1000)+1))
+                    self._cleanup_retry.start(min(2147483647,int(delay*1000)+1))
                     self.status_changed.emit('云端清理暂时中断，删除操作已保留并会自动重试。')
                     return
                 if error and getattr(error,'code','') == 'ALREADY_COMMITTED':
@@ -964,10 +980,12 @@ class ShelfSync(QObject):
                             current['version'] = record['version']
                             if record.get('deleted'): self.state['entries'].pop(current['id'],None)
                 if identity in abandoned: abandoned.remove(identity)
-                self._persist()
-                if not self.running: self.debounce.start(1)
+                self._persist();self._cleanup_retry.start(1)
+                if not self.running:
+                    if error and getattr(error,'code','')=='ALREADY_COMMITTED':
+                        self.running=True;self._after_cleanup()
+                    else:self.debounce.start(1)
             self._request('DELETE','/v1/uploads/'+quote(identity,safe=''),done)
-        self._persist();self._after_cleanup()
 
     def _pull(self):
         if not self.receive_enabled:
@@ -1430,9 +1448,7 @@ class ShelfSync(QObject):
             if not isinstance(transfer,dict) or not self._resume_matches(transfer):
                 self._forget_resume(identity)
         active = {x.get('upload_id') for x in resumes.values()}
-        if (self._pending_removal() is not None or (not self._paused('cleanup_not_before') and
-                any(x not in active and x not in self._cleanup_inflight
-                    for x in self.state.setdefault('pending_uploads',[])))):
+        if self._pending_removal() is not None:
             self._retire_uploads(); return
         lane_id=(self.small_lane.active or {}).get('id')
         pending = next((e for e in self.state['entries'].values() if e['id']!=lane_id and (not self.clipboard_bridge or not self.clipboard_bridge.waiting(e)) and self.small_lane.retry_at.get(e['id'],0)<=time.monotonic() and e.get('dirty') and not e.get('paused_upload') and
@@ -1676,7 +1692,7 @@ class ShelfSync(QObject):
         self.closed = True; self.epoch += 1
         self.small_lane.reset()
         self.service.account_changed.disconnect(self.select_account)
-        self.timer.stop(); self.debounce.stop(); self.remote_poll.stop()
+        self.timer.stop(); self.debounce.stop(); self.remote_poll.stop();self._cleanup_retry.stop()
         for key in tuple(self.requests): self.api.cancel(key)
         for job in tuple(self.jobs): job.cancel.set()
         self.pool.waitForDone(3000)
