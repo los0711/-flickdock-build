@@ -72,6 +72,16 @@ class UtilityTests(unittest.TestCase):
         dock_window_state(other,False,appkit=kit);self.assertEqual(policies[-1],1)
         other.deleteLater();APP.processEvents()
 
+    def test_corner_resize_fallback_keeps_controls_available(self):
+        self.service._transfers.clear();window=self.dialog;surface=window.chrome.surface
+        before=window.size();point=surface.rect().bottomRight()-QPoint(1,1)
+        with patch('window_chrome.native_input_available',return_value=False):
+            QTest.mousePress(surface,Qt.LeftButton,pos=point)
+            QTest.mouseMove(surface,point+QPoint(40,30));QTest.mouseRelease(surface,Qt.LeftButton,pos=point+QPoint(40,30))
+        APP.processEvents()
+        self.assertGreater(window.width(),before.width());self.assertGreater(window.height(),before.height())
+        self.assertGreaterEqual(window.width(),window.minimumWidth());self.assertGreaterEqual(window.height(),window.minimumHeight())
+
 
 class SharedUpdateTests(unittest.TestCase):
     def test_copy_feedback_is_nonactivating_clamped_and_auto_dismisses(self):

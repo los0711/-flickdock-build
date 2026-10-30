@@ -11,6 +11,32 @@ from shiboken6 import isValid
 _dock_windows=weakref.WeakSet()
 _chromes=weakref.WeakSet()
 
+
+def ensure_native_resize(window):
+    """Qt's frameless flag omits WS_THICKFRAME, required by system resizing.
+
+    Keep Qt responsible for the frameless client area and hit testing. Change
+    only this window's capabilities, without installing a window procedure.
+    """
+    if sys.platform!='win32' or not native_input_available():return False
+    import ctypes
+    from ctypes import wintypes
+    try:
+        api=ctypes.WinDLL('user32',use_last_error=True)
+        get=api.GetWindowLongPtrW;get.argtypes=[wintypes.HWND,ctypes.c_int];get.restype=ctypes.c_ssize_t
+        put=api.SetWindowLongPtrW;put.argtypes=[wintypes.HWND,ctypes.c_int,ctypes.c_ssize_t];put.restype=ctypes.c_ssize_t
+        position=api.SetWindowPos
+        position.argtypes=[wintypes.HWND,wintypes.HWND,ctypes.c_int,ctypes.c_int,ctypes.c_int,ctypes.c_int,wintypes.UINT]
+        position.restype=wintypes.BOOL
+        handle=int(window.winId());required=0x40000|0x80000|0x20000|0x10000
+        style=get(handle,-16)
+        if style&required!=required:
+            ctypes.set_last_error(0);previous=put(handle,-16,style|required)
+            if not previous and ctypes.get_last_error():return False
+            if not position(handle,None,0,0,0,0,0x37):return False
+        return get(handle,-16)&required==required
+    except (AttributeError,OSError):return False
+
 def _shutdown_chrome():
     app=QApplication.instance()
     if app is not None and isValid(app):
@@ -79,6 +105,7 @@ class WindowChrome(QObject):
         super().__init__(window);self.window=window;self.title=title_bar;self.surface=surface or window
         self.key=key;self.path=Path(settings.base)/'window-sizes.json';self._drag=None;self._cursor=False
         self._normal=window.size();self._restoring=False
+        self._native_resize=False;self._native_configuring=False
         if sys.platform=='win32':
             window.setWindowFlags(window.windowFlags()|Qt.WindowMinimizeButtonHint|Qt.WindowMaximizeButtonHint|Qt.WindowSystemMenuHint)
             old=getattr(window,'close_button',None)
@@ -146,6 +173,10 @@ class WindowChrome(QObject):
         if QCoreApplication.closingDown() or not isValid(self.window):return False
         w=self.window;kind=event.type()
         if watched is w:
+            if kind in (QEvent.Show,QEvent.WinIdChange,QEvent.WindowStateChange) and not self._native_configuring:
+                self._native_configuring=True
+                try:self._native_resize=ensure_native_resize(w)
+                finally:self._native_configuring=False
             if kind==QEvent.Resize and not w.isMaximized() and not w.isMinimized() and not self._restoring:
                 self._normal=w.size();self._save_timer.start()
             elif kind==QEvent.Hide:
@@ -175,7 +206,7 @@ class WindowChrome(QObject):
             elif self._cursor:w.unsetCursor();self._cursor=False
         if kind==QEvent.MouseButtonRelease and self._drag:self._drag=None;event.accept();return True
         if kind==QEvent.MouseButtonPress and event.button()==Qt.LeftButton and edges:
-            if not (native_input_available() and w.windowHandle() and w.windowHandle().startSystemResize(edges)):
+            if not (native_input_available() and (sys.platform!='win32' or self._native_resize) and w.windowHandle() and w.windowHandle().startSystemResize(edges)):
                 self._drag=(global_point,QRect(w.geometry()),edges)
             event.accept();return True
         header=watched is self.title or self.title.isAncestorOf(watched)

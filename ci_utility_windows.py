@@ -45,6 +45,7 @@ def main():
                 import ctypes
                 style=ctypes.windll.user32.GetWindowLongW(int(window.winId()),-16)
                 report.setdefault('styles',[]).append(dict(thickframe=bool(style&0x40000),minimize=bool(style&0x20000),maximize=bool(style&0x10000)))
+                assert all(report['styles'][-1].values()),'Native sizing/min/max capabilities were lost'
             else:
                 import AppKit
                 assert AppKit.NSApplication.sharedApplication().activationPolicy()==AppKit.NSApplicationActivationPolicyRegular

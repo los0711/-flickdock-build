@@ -590,8 +590,8 @@
     },
     {
       "path": "ci_utility_windows.py",
-      "size": 4328,
-      "sha256": "c2794d07d1c8f84911fff5e55f68af9061be4e3352435e0e678e802d6a2119ac"
+      "size": 4433,
+      "sha256": "b7bf975875ad41e9a4fb99bbe5c27308dacbd58680e763ec62ef6a6d5a5890b0"
     },
     {
       "path": "clipboard_preview.py",
@@ -1710,8 +1710,8 @@
     },
     {
       "path": "test_utility_windows_v1821.py",
-      "size": 7055,
-      "sha256": "a45c48c823b00c14ccdc8a6fa4ac9fb301394c6a9dc0220a8b810227a28bd404"
+      "size": 7825,
+      "sha256": "a512f9ed6365a8ba08ed2ab29248f1d506a2a4f76a5173e3693ab2ccb73b00c8"
     },
     {
       "path": "test_wan_account_v1819.py",
@@ -1960,8 +1960,8 @@
     },
     {
       "path": "window_chrome.py",
-      "size": 11405,
-      "sha256": "bf5094a9b91e47330e17df6f0e9887bfabcc1b4621afd3c3d46cdbfb372c7569"
+      "size": 13143,
+      "sha256": "b528ccb563426194d9f700fb013fa48f64b9b5c9e9705c800f342a994b143b0b"
     },
     {
       "path": "windows-network.ps1",
