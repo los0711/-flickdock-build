@@ -1,5 +1,6 @@
 """Open-window remote changes; disposable Qt offscreen views, no OS hooks."""
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from PySide6.QtCore import QTimer
@@ -75,19 +76,23 @@ class LiveShelfTests(unittest.TestCase):
         before=self.rows(popup);remaining=self.paths[0]
         start=before[remaining].pos()
         adapter=ShelfAdapter(self.manager);view=adapter.snapshot()
-        view['permanent']=[remaining];adapter.restore(view);flush()
-        motion=popup.item_transitions
-        self.assertEqual(len(motion.ghosts),2)
-        self.assertTrue(motion.overlay.isVisible())
-        self.assertEqual(set(popup.visible_refs()),{remaining})
-        self.assertIs(self.rows(popup)[remaining],before[remaining])
-        self.assertEqual(before[remaining].pos(),start)
-        QTest.qWait(75);flush()
-        middle=before[remaining].pos()
-        self.assertLess(middle.y(),start.y())
-        QTest.qWait(170);flush()
-        self.assertLess(before[remaining].y(),middle.y())
-        self.assertFalse(motion.timer.isActive());self.assertFalse(motion.ghosts)
+        clock=[0.0]
+        # Drive only this visual clock: a busy CI runner may paint a first
+        # animation tick during flush(), which is valid rather than a jump.
+        with patch('item_transitions.time',SimpleNamespace(perf_counter=lambda:clock[0])):
+            view['permanent']=[remaining];adapter.restore(view);flush()
+            motion=popup.item_transitions
+            self.assertEqual(len(motion.ghosts),2)
+            self.assertTrue(motion.overlay.isVisible())
+            self.assertEqual(set(popup.visible_refs()),{remaining})
+            self.assertIs(self.rows(popup)[remaining],before[remaining])
+            self.assertEqual(before[remaining].pos(),start)
+            clock[0]=.075;motion._tick();flush()
+            middle=before[remaining].pos()
+            self.assertLess(middle.y(),start.y())
+            clock[0]=.245;motion._tick();flush()
+            self.assertLess(before[remaining].y(),middle.y())
+            self.assertFalse(motion.timer.isActive());self.assertFalse(motion.ghosts)
         self.assertTrue(popup.isVisible());self.assertTrue(self.shelf.expanded)
 
     def test_delete_all_fades_over_empty_state_then_releases_snapshots(self):

@@ -40,14 +40,17 @@ class PreviewTests(unittest.TestCase):
         workspace.until(lambda:self.model.state.get('phase')=='synced')
         popup=self.overview();small=self.shelf.zones['permanent'].clipboard_button
         self.assertIs(popup.clipboard_button.presenter,small.presenter)
-        before=len(self.hub.calls);small.click();workspace.flush()
+        # A publish acknowledgement can still schedule its normal head GET.
+        # Previewing must not write/upload again, independent of that read.
+        writes=lambda:[call for call in self.hub.calls if call[0]!='GET']
+        before=writes();small.click();workspace.flush()
         dialog=self.manager.clipboard_preview_dialog
         self.assertTrue(dialog.isVisible());self.assertIs(dialog.content.currentWidget(),dialog.text)
         self.assertEqual(dialog.text.toPlainText(),self.clip.mimeData().text())
         self.assertEqual(dialog.badge.status,'synced')
         popup.clipboard_button.click();workspace.flush()
         self.assertIs(self.manager.clipboard_preview_dialog,dialog)
-        self.assertEqual(len(self.hub.calls),before)
+        self.assertEqual(writes(),before)
         self.assertEqual(self.clip.mimeData().text(),'original 中文\nhttps://example.invalid')
         self.clip.text('new value');workspace.until(lambda:dialog.text.toPlainText()=='new value')
 

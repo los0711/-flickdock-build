@@ -1245,8 +1245,8 @@
     },
     {
       "path": "test_clipboard_preview_v1821.py",
-      "size": 6724,
-      "sha256": "0f69faeccb304a08fa21091a6d712b0606afd73e84ebbe65de8b94f96ab379c6"
+      "size": 6928,
+      "sha256": "6be0ff9b1f62d4e3cf690bb17cec342245c5c23f740428b3aa13103305c55e6b"
     },
     {
       "path": "test_clipboard_sync_v1819.py",
@@ -1590,8 +1590,8 @@
     },
     {
       "path": "test_shelf_live_v1821.py",
-      "size": 10637,
-      "sha256": "4ea55f880bb4426f36012ad4280c8a0f13536e2b4fa1ead6416e0aa95f23e907"
+      "size": 11010,
+      "sha256": "53d3a629d9c73fdb3347b3d01c43a743acf7ac37857767044651aa17da19ff72"
     },
     {
       "path": "test_shelf_raise_v1810.py",
