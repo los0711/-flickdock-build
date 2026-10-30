@@ -38,6 +38,9 @@ def until(predicate,seconds=5):
     deadline=time.monotonic()+seconds
     while not predicate() and time.monotonic()<deadline:
         flush();QTest.qWait(5)
+        # QTest's C++ wait can retain the Python GIL. Give disk/import workers
+        # an explicit turn, as QApplication.exec does in the running app.
+        time.sleep(.001)
     if not predicate():raise AssertionError('Native workspace fixture did not settle')
 
 
