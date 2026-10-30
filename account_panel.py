@@ -40,7 +40,7 @@ class PasswordEdit(QLineEdit):
         if not text:self._set_revealed(False)
 
     def _set_revealed(self,revealed):
-        cursor=self.cursorPosition();start=self.selectionStart();length=len(self.selectedText())
+        cursor=self.cursorPosition();start=self.selectionStart();length=len(self.selectedText().encode('utf-16-le'))//2
         modified=self.isModified()
         self.setEchoMode(QLineEdit.EchoMode.Normal if revealed else QLineEdit.EchoMode.Password)
         self.visibility_action.setChecked(revealed)

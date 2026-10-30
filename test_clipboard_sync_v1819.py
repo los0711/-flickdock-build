@@ -227,6 +227,19 @@ class ClipboardTests(unittest.TestCase):
         new=dict(mono=mono,at=None,floor=client._observed_clock)
         self.assertEqual(client._copy_timestamp(new),30001)
 
+    def test_native_write_retry_reuses_verified_file_without_downloading_again(self):
+        receiver=self.clients[1];source=self.base/'write-busy.bin';source.write_bytes(b'original fixture bytes')
+        with patch.object(self.clips[1],'setMimeData',return_value=None):
+            mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(source))]);self.clips[0].setMimeData(mime)
+            until(lambda:receiver.retry.isActive() and receiver._prepared_receive is not None)
+            identity=self.hub.head['id'];path='/v1/clipboard/'+identity+'/content'
+            before=sum(method=='GET' and endpoint==path for method,endpoint in self.hub.calls)
+        receiver.retry.stop();receiver._retry()
+        until(lambda:self.clips[1].mimeData().hasUrls())
+        self.assertEqual(sum(method=='GET' and endpoint==path for method,endpoint in self.hub.calls),before)
+        received=Path(self.clips[1].mimeData().urls()[0].toLocalFile())
+        self.assertEqual(received.read_bytes(),source.read_bytes());self.assertEqual(receiver._seen,identity)
+
     def test_bulk_payload_yields_to_clipboard_and_cancellation_still_works(self):
         import threading
         from transfer_priority import set_clipboard_priority,yield_bulk_payload

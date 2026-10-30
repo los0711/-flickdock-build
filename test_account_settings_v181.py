@@ -212,7 +212,7 @@ class SettingsAccountTests(unittest.TestCase):
         from PySide6.QtWidgets import QToolButton
         self.fill_password()
         for edit in (self.panel.password_edit,self.panel.old_password_edit,self.panel.new_password_edit,self.panel.confirm_password_edit):
-            edit.setText('visibility-only-fixture');edit.setSelection(12,-5)
+            edit.setText('visible-😀-fixture');edit.setSelection(12,-5)
             before=(edit.text(),edit.cursorPosition(),edit.selectionStart(),edit.selectedText(),edit.size())
             self.assertEqual(edit.echoMode(),QLineEdit.Password)
             edit.visibility_action.trigger()

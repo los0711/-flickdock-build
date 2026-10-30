@@ -255,6 +255,7 @@ class ClipboardSync(QObject):
         except (OSError,ValueError,KeyError,TypeError):pass
         self._identity=self._session_identity()
         self._pushed_head=None
+        self._prepared_receive=None
         self._applied_version=0;self._receiving_version=0
         self.pool=QThreadPool(self);self.pool.setMaxThreadCount(2)
         self._ignored=None;self._ignored_sequence=None;self._last_sequence=object();self._last_local_signature=object();self._seen='';self._keys=set();self._jobs={};self._pending=None;self._fetching=False;self._refresh_again=False
@@ -367,6 +368,7 @@ class ClipboardSync(QObject):
             self.refresh();return
         self._identity=identity;self._ignored=None;self._local_retry=None;self._local_fence=None
         self._pushed_head=None
+        self._prepared_receive=None
         self._applied_version=0;self._receiving_version=0
         self._clock_anchor=None;self._observed_clock=0
         # A session switch is not a Copy action. Establish a native baseline so
@@ -428,6 +430,7 @@ class ClipboardSync(QObject):
         self._pending=None;self._priority_flags(waiting=False,receiving=False)
         for job in self._jobs:job.cancelled.set()
         self._local_retry=None
+        self._prepared_receive=None
         if value is None:self._pending=None;return
         self._local_retry=dict(id=str(uuid4()),sequence=None,generation=generation,staged=False,package=None,
                                prepared=False,created_at=time.time(),intent=self._local_fence,value=value,
@@ -608,14 +611,18 @@ class ClipboardSync(QObject):
             kind,size,sha=head.get('kind'),head.get('size'),head.get('sha256')
             if kind not in ('text','image','files') or type(size) is not int or not 0<size<(MAX_ARCHIVE_BYTES if kind in ('files','text') else MAX_BYTES) or not isinstance(sha,str) or len(sha)!=64:self._finish_refresh();return
             is_inline=kind=='text' and isinstance(head.get('inline'),str) and size<=32768
-            try:directory=self.cache if is_inline else self._directory()
+            cached=self._prepared_receive
+            if cached and cached[0]!=(identity,kind,size,sha):self._prepared_receive=None;cached=None
+            try:directory=cached[2] if cached else self.cache if is_inline else self._directory()
             except OSError:
                 self._finish_refresh();self.retry.start();return
             path=directory/'download.bin';self._fetching=True
             self._receiving_version=head_version(head)
             self._priority_flags(receiving=True)
             def prepared(value):
-                if value is None or generation!=self._generation:self._finish_refresh();return
+                if generation!=self._generation:self._finish_refresh();return
+                if value is None:self._finish_refresh();self.retry.start();return
+                self._prepared_receive=((identity,kind,size,sha),value,directory)
                 def confirmed(result,error):
                     current=result.get('clipboard') if isinstance(result,dict) else None
                     if error:
@@ -628,7 +635,8 @@ class ClipboardSync(QObject):
                             if self._apply(value,directory,identity=identity):
                                 self._seen=identity
                                 self._applied_version=max(self._applied_version,head_version(head))
-                            else:self.retry.start(200)
+                                self._prepared_receive=None
+                            else:self.retry.start(5000)
                     else:self._refresh_again=True
                     self._finish_refresh()
                 self._request('GET','/v1/clipboard',confirmed)
@@ -636,7 +644,8 @@ class ClipboardSync(QObject):
                 if error:self._finish_refresh();self.retry.start();return
                 if generation!=self._generation:self._finish_refresh();return
                 self._work(lambda _:unpack(kind,path,directory),prepared)
-            if is_inline:
+            if cached:prepared(cached[1])
+            elif is_inline:
                 try:value=unpack_inline(head)
                 except (ValueError,TypeError,UnicodeError):
                     self._finish_refresh();self.retry.start();return
