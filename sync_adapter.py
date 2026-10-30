@@ -43,6 +43,7 @@ class ShelfAdapter:
             remap={ref:targets.get(ref.removeprefix('flickdock:transfer:') if shelf.content.is_pending(ref)
                     else shelf.content.metadata.get(ref,{}).get('_cloud_item_id'),ref)
                    for ref in shelf.display_refs()}
+            shelf.popup.remap_items(remap)
             current = shelf.popup.preview.current_path
             preferred=remap.get(current,current)
             shelf.popup.selected={remap.get(ref,ref) for ref in shelf.popup.selected}

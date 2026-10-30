@@ -13,7 +13,7 @@ from PySide6.QtCore import QByteArray, QEvent, QObject, QPoint, QRect, QRectF, Q
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog, QFrame, QGraphicsDropShadowEffect,
-                               QHBoxLayout, QLabel, QLineEdit, QProgressBar, QPushButton,
+                               QHBoxLayout, QLayout, QLabel, QLineEdit, QProgressBar, QPushButton,
                                QListView, QMenu, QScrollArea, QSizePolicy, QStyle, QStyledItemDelegate,
                                QStyleOptionButton, QStylePainter, QToolTip, QVBoxLayout, QWidget, QStackedWidget)
 
@@ -645,6 +645,7 @@ class LanPanel(QFrame):
         send.addWidget(self.drop_zone)
         self.queue_body = QFrame(self.send_column); self.queue_body.setObjectName('lanQueueBody')
         self.queue_layout = QVBoxLayout(self.queue_body); self.queue_layout.setContentsMargins(0,0,0,0); self.queue_layout.setSpacing(6)
+        self.queue_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
         self.queue_rows = []
         self.queue_scroll = QScrollArea(self.send_column)
         self.queue_scroll.setObjectName('lanQueueScroll')
@@ -740,7 +741,14 @@ class LanPanel(QFrame):
         self.send_button.setMinimumHeight(36)
         self.send_button.clicked.connect(self._send)
         send.addWidget(self.send_button)
-        columns.addWidget(self.send_column, 5)
+        # The WAN form has additional receive-code fields. Keep its natural
+        # minimum height and scroll on short screens instead of letting Qt
+        # resolve impossible fixed heights by overlapping adjacent controls.
+        self.send_scroll=QScrollArea(self);self.send_scroll.setObjectName('lanSendScroll')
+        self.send_scroll.setFrameShape(QFrame.Shape.NoFrame);self.send_scroll.setWidgetResizable(True)
+        self.send_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        send.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+        self.send_scroll.setWidget(self.send_column);columns.addWidget(self.send_scroll,5)
 
         self.activity_column = QFrame(self); self.activity_column.setObjectName('lanActivityColumn')
         activity = QVBoxLayout(self.activity_column); activity.setContentsMargins(20,20,20,20); activity.setSpacing(8)
@@ -1027,7 +1035,7 @@ class LanPanel(QFrame):
             QFrame#lanPanel QLabel#lanHistoryState {{font-size:11px;}}
             QFrame#lanPanel QPushButton, QFrame#lanPanel QComboBox {{font-size:13px;}}
             QFrame#lanPanel QLineEdit {{font-size:12px;}}
-            QScrollArea#lanQueueScroll, QScrollArea#lanHistoryScroll {{background:transparent;border:0;}}
+            QScrollArea#lanSendScroll, QScrollArea#lanQueueScroll, QScrollArea#lanHistoryScroll {{background:transparent;border:0;}}
             QScrollArea#lanQueueScroll > QWidget > QWidget, QScrollArea#lanHistoryScroll > QWidget > QWidget {{background:transparent;}}
             QScrollBar:vertical {{background:transparent;width:6px;margin:2px 0;}}
             QScrollBar::handle:vertical {{background:{c['input_border']};border-radius:3px;min-height:24px;}}
@@ -1575,8 +1583,8 @@ class LanDialog(QDialog):
         p.fillRect(event.rect(),Qt.transparent)
         p.setCompositionMode(QPainter.CompositionMode_SourceOver)
         paint_surface_shadow(p,QRectF(self.card.geometry()),self._shadow_cache,
-            blur=64 if self._theme=='dark' else 56,offset=QPointF(0,12),
-            color=QColor(0,0,0,120) if self._theme=='dark' else QColor(15,23,42,41))
+            blur=18,offset=QPointF(0,4),
+            color=QColor(0,0,0,78) if self._theme=='dark' else QColor(15,23,42,32))
         p.end()
 
     def _refresh_title_icon(self):

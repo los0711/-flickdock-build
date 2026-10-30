@@ -21,6 +21,9 @@ class ClipboardNotice(QWidget):
         self.message.setTextFormat(Qt.PlainText);self.preview.setTextFormat(Qt.PlainText)
         labels.addWidget(self.message);labels.addWidget(self.preview);row.addLayout(labels,1)
         self.setFixedSize(330,76)
+        self._pending_result=None
+        self._result_timer=QTimer(self);self._result_timer.setSingleShot(True);self._result_timer.setInterval(160)
+        self._result_timer.timeout.connect(self._deliver_result)
         self.timer=QTimer(self);self.timer.setSingleShot(True);self.timer.timeout.connect(self.dismiss)
         from PySide6.QtCore import QVariantAnimation,QEasingCurve
         self.animation=QVariantAnimation(self);self.animation.setDuration(200);self.animation.setEasingCurve(QEasingCurve.OutCubic)
@@ -41,6 +44,24 @@ class ClipboardNotice(QWidget):
         self._closing=True;self.animation.stop()
         if reduced_motion():self.hide();return
         self.animation.setStartValue(self.windowOpacity());self.animation.setEndValue(0.);self.animation.start()
+
+    def supersede(self):
+        self._result_timer.stop();self._pending_result=None;self.generation+=1
+        self.hide()
+
+    def disable_success(self):
+        if self._pending_result is not None and self._pending_result[0]:
+            self._result_timer.stop();self._pending_result=None
+        if self.message.text()=='复制已同步':self.dismiss()
+
+    def schedule_result(self,ok,context):
+        self._pending_result=(ok,dict(context));self._result_timer.start()
+
+    def _deliver_result(self):
+        result,self._pending_result=self._pending_result,None
+        if (result is not None and not getattr(self.manager,'_quitting',False)
+                and getattr(self.manager,'_clipboard_runtime_enabled',lambda:True)()
+                and (not result[0] or getattr(self.manager.settings,'clipboard_success_notice',True))):self.show_result(*result)
 
     def show_result(self,ok,context):
         from native_ui_common import colors,reduced_motion,icon

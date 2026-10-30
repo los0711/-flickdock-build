@@ -42,6 +42,23 @@ class OrderingTests(unittest.TestCase):
         self.assertEqual(popup.visible_refs()[0],str(path))
         self.assertEqual(popup.sort_key,'size')
 
+    def test_sort_pair_arrows_and_default_reset_even_when_order_is_unchanged(self):
+        from reference_widgets import palette
+        popup=self.overview();initial=list(popup.visible_refs())
+        self.assertEqual(popup.selection_hint.text(),'默认')
+        for key in ('time','size'):
+            control=popup.sort_buttons[key]
+            self.assertEqual(control.geometry().center().y(),popup.selection_hint.geometry().center().y())
+            for direction in (1,2,0):
+                control.click();flush();self.assertEqual(control.direction,direction)
+                self.assertEqual(control.arrow_colors(),tuple(palette()['link'] if direction==value else palette()['muted'] for value in (1,2)))
+                self.assertEqual(control.text(),'时间' if key=='time' else '大小')
+        popup.cycle_sort('time');popup.cycle_sort('time');flush()
+        self.assertEqual(popup.visible_refs(),initial)
+        popup.selection_hint.click();flush()
+        self.assertEqual(popup.visible_refs(),initial);self.assertIsNone(popup.sort_key)
+        self.assertTrue(all(control.direction==0 for control in popup.sort_buttons.values()))
+
     def test_shelf_limit_rejects_only_over_limit_and_directory_scan_precedes_import(self):
         from shelf_intake_limit import MAX_SHELF_BYTES,classify
         import threading
@@ -96,18 +113,20 @@ class UtilityPreferenceTests(unittest.TestCase):
             store=SettingsStore(Path(directory));editor=DisplayTriggerEditor(store)
             try:
                 self.assertTrue(display_values(store,main)['enabled']);self.assertFalse(display_values(store,second)['enabled'])
-                row=editor.rows[display_id(second)];row[1].setChecked(True);row[2].setCurrentIndex(row[2].findData('left'));row[3].setValue(73)
+                row=editor.rows[display_id(second)];row.toggle.setChecked(True);row.edge.setCurrentIndex(row.edge.findData('left'));row.controls['position'].setValue(73)
+                self.assertFalse(store.display_triggers);store.update(display_triggers=editor.profiles())
                 self.assertEqual(display_values(store,second)['dock_position'],73);self.assertEqual(display_values(store,main)['dock_position'],8)
                 screens.return_value=[main,third];editor.refresh();self.assertNotIn(display_id(second),editor.rows)
                 screens.return_value=[third,second,main];editor.refresh()
-                self.assertEqual(editor.rows[display_id(second)][3].value(),73)
+                self.assertEqual(editor.rows[display_id(second)].controls['position'].value(),73)
                 loaded=SettingsStore(Path(directory));self.assertEqual(loaded.display_triggers,store.display_triggers)
                 self.assertEqual(display_id(Screen('DISPLAY2','222')),display_id(second))
                 # A newly-primary display without a profile must update both
                 # its UI and runtime before any position-only edit is saved.
                 with patch('display_triggers.QGuiApplication.primaryScreen',return_value=third):
-                    editor.refresh();self.assertTrue(editor.rows[display_id(third)][1].isChecked())
-                    editor.rows[display_id(third)][3].setValue(61)
+                    editor.refresh();self.assertTrue(editor.rows[display_id(third)].toggle.isChecked())
+                    editor.rows[display_id(third)].controls['position'].setValue(61)
+                    store.update(display_triggers=editor.profiles())
                     self.assertTrue(display_values(store,third)['enabled'])
             finally:editor.deleteLater();flush()
 
@@ -128,6 +147,22 @@ class UtilityPreferenceTests(unittest.TestCase):
                 notice.dismiss();self.assertFalse(notice.isVisible())
             finally:
                 until(lambda:not notice.jobs);notice.deleteLater();flush()
+
+    def test_rapid_copy_notice_discards_superseded_results(self):
+        from intake_notice import ClipboardNotice
+        with patch('native_ui_common.reduced_motion',return_value=True):
+            notice=ClipboardNotice(SimpleNamespace(settings=SimpleNamespace(theme='dark')))
+            try:
+                with patch.object(notice,'show_result',wraps=notice.show_result) as display:
+                    notice.schedule_result(False,dict(id='old',value=('text',{'text':'old'})))
+                    notice.supersede()
+                    notice.schedule_result(True,dict(id='latest',value=('text',{'text':'latest'})))
+                    self.assertFalse(notice.isVisible());QTest.qWait(190);flush()
+                    display.assert_called_once();self.assertEqual(display.call_args.args[1]['id'],'latest')
+                    self.assertEqual(notice.message.text(),'复制已同步')
+                    self.assertEqual(notice.preview.text(),'latest')
+                    notice.supersede();self.assertFalse(notice.isVisible())
+            finally:notice.hide();notice.deleteLater();flush()
 
 
 class CustomClientTests(unittest.TestCase):

@@ -234,6 +234,7 @@ class _Job(QRunnable):
 class ClipboardSync(QObject):
     activity_changed=Signal(bool)
     copy_result=Signal(bool,dict)
+    copy_started=Signal()
     # Keep original image bytes as a shared Python object, rather than copying
     # a potentially 20 MB value through QVariantMap for each status update.
     view_changed=Signal(object)
@@ -352,7 +353,7 @@ class ClipboardSync(QObject):
             point=QCursor.pos();self._copy_point=(point.x(),point.y())
             # Stop an in-flight remote read before the native notification's
             # coalescing delay; the user's newer local copy always wins.
-            self._copy_notified_mono=time.monotonic();self._generation+=1;self.change_debounce.start()
+            self._copy_notified_mono=time.monotonic();self._generation+=1;self.copy_started.emit();self.change_debounce.start()
 
     def _copy_timestamp(self,intent):
         if intent['at'] is None and self._clock_anchor is not None:
@@ -400,7 +401,7 @@ class ClipboardSync(QObject):
     def _task_error(self,pending,error):
         self._copy_result(pending,False)
         if getattr(self,'file_jobs',None) is not None:self.file_jobs.fail(pending,error)
-        if self._pending is pending:self._priority_flags(waiting=True);self.retry.start()
+        if self._pending is pending and pending.get('generation',self._generation)==self._generation:self._priority_flags(waiting=True);self.retry.start()
 
     def _task_ready(self,pending,head):
         item=pending['package']
@@ -508,6 +509,7 @@ class ClipboardSync(QObject):
         self._local_fence=dict(mono=getattr(self,'_copy_notified_mono',time.monotonic()),at=None,floor=self._observed_clock)
         self._copy_timestamp(self._local_fence)
         self._ignored=None;self._generation+=1;self._epoch+=1;generation=self._generation
+        self.copy_started.emit()
         self.file_jobs.supersede()
         # Superseding a local upload prevents its late completion restoring it.
         self._cancel_replaced_work();self._fetching=False
@@ -550,7 +552,8 @@ class ClipboardSync(QObject):
     def _copy_result(self,pending,ok):
         # A retained old file can finish for the shelf while a newer clipboard
         # is active. Its completion must not emit stale clipboard feedback.
-        if self.view.get('id')!=pending['id']:return
+        if (self.view.get('id')!=pending['id']
+                or pending.get('generation',self._generation)!=self._generation):return
         if self.view.get('id')==pending['id']:
             self._set_view(self.view['value'],'synced' if ok else 'error',pending['id'])
         if pending.get('feedback_result') is ok:return

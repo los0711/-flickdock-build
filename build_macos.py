@@ -228,7 +228,7 @@ def main(arguments=None):
          'test_sync_remote_commit_wakeup', 'test_cloud_file_status_v1810',
          'test_trigger_reliability_v1810', 'test_event_stream_wiring_v1810',
          'test_pointer_paste_v1819','test_presentation_v1819','test_clipboard_sync_v1819','test_wan_account_v1819','test_webrtc_close_v1819','test_update_notice_v1813','test_small_upload_lane','test_feedback_v1820',
-         'test_interaction_scope_v1821','test_shared_clipboard_files_v1821','test_download_ranges_v1821','test_remote_handoff_v1821','test_mac_permissions_v1821','test_shelf_live_v1821','test_release_notes_v1821','test_clipboard_fast_v1821','test_clipboard_preview_v1821','test_utility_windows_v1821','test_update_signatures_v1821','-v'], env=env)
+         'test_display_groups_v1821','test_transfer_layout_v1821','test_interaction_scope_v1821','test_shared_clipboard_files_v1821','test_download_ranges_v1821','test_remote_handoff_v1821','test_mac_permissions_v1821','test_shelf_live_v1821','test_release_notes_v1821','test_clipboard_fast_v1821','test_clipboard_preview_v1821','test_utility_windows_v1821','test_update_signatures_v1821','-v'], env=env)
     run([python,'test_update_resume_v1821.py','-v'],env=env)
     # Native WebRTC and QWebSocket lifetimes are verified in their own Qt
     # process, matching the standalone frozen-client gate below.

@@ -71,6 +71,45 @@ class LiveShelfTests(unittest.TestCase):
             self.assertEqual(rebuild.call_count, 0)
         self.assertEqual(self.rows(popup), before)
 
+    def test_reservation_to_verified_file_keeps_card_and_never_deletes_its_pixels(self):
+        from PySide6.QtGui import QImage,QColor
+        self.manager.motion=True;self.manager._sync_transfer_refs=set()
+        tile=self.shelf.zones['permanent'].icon;tile.motion=True
+        self.manager.sync=SimpleNamespace(catching_up=False,sync_status_for_ref=lambda _:'synced')
+        popup=self.overview();adapter=ShelfAdapter(self.manager)
+        for mode in ('list','icons'):
+            self.settings.update(view_mode=mode);popup._render_signature=None;popup.rebuild();flush()
+            identity='handoff-'+mode;pending='flickdock:transfer:'+identity
+            transfer=dict(id=identity,remote=True,phase='downloading',name=mode+'.png',kind='file',total=1024,received=100)
+            subject.ShelfManager._transfers_changed(self.manager,[transfer]);until(lambda:pending in popup._item_widgets)
+            tile.landing.setCurrentTime(260);popup.select_item(pending);old=popup._item_widgets[pending]
+            image=QImage(64,64,QImage.Format_RGB32);image.fill(QColor('#2478ab'))
+            path=self.base/(mode+'.png');image.save(str(path));ref=str(path)
+            view=adapter.snapshot();view['permanent'].append(ref);view['metadata'][ref]={'_cloud_item_id':identity,'title':path.name}
+            with patch.object(self.shelf,'show') as show,patch.object(self.shelf,'hide') as hide:
+                adapter.restore(view);until(lambda:ref in popup._item_widgets)
+                subject.ShelfManager._transfers_changed(self.manager,[]);flush()
+                self.assertIs(popup._item_widgets[ref],old);self.assertFalse(popup.item_transitions.ghosts)
+                self.assertEqual(popup.selected,{ref});self.assertEqual(popup.preview.current_path,ref)
+                self.assertEqual(tile.landing.state(),tile.landing.State.Stopped)
+                self.assertEqual(tile.removal.state(),tile.removal.State.Stopped)
+                show.assert_not_called();hide.assert_not_called()
+            with patch.object(popup,'remove_path') as remove:
+                old.remove_button.click();remove.assert_called_once_with(ref)
+            if mode=='list':
+                with patch.object(popup,'select_item') as select:
+                    old.selection_check.click();select.assert_called_once_with(ref,toggle=True)
+
+    def test_single_icon_opens_in_first_slot_before_any_new_file_arrives(self):
+        self.settings.update(view_mode='icons');self.shelf.files['permanent']=self.paths[:1];self.shelf.refresh()
+        popup=self.overview();flush();flush()
+        item=popup._item_widgets[self.paths[0]]
+        self.assertEqual(item.x(),popup.rows_layout.contentsMargins().left())
+        self.assertEqual(item.y(),popup.rows_layout.contentsMargins().top())
+        self.assertGreater(popup._grid_columns,1)
+        popup.resize(740,550);flush();flush()
+        self.assertEqual(item.x(),popup.rows_layout.contentsMargins().left())
+
     def test_batch_removal_parallel_fades_and_survivors_move(self):
         popup=self.overview();self.manager.motion=True
         before=self.rows(popup);remaining=self.paths[0]

@@ -111,14 +111,14 @@ with tempfile.TemporaryDirectory(prefix="flickdock-v161-integration-") as tempor
             manager.show_settings()
             dialog = manager.settings_dialog
             flush(app)
-            assert manager.dock_preview.isVisible() and not shelf.isVisible() and not manager.edge.isVisible()
-            assert manager.dock_preview.target_rect == manager.edge.geometry()
+            assert not manager.dock_preview.isVisible() and not shelf.isVisible() and manager.edge.isVisible()
+            assert manager.edge.geometry() == trigger_rect(manager.edge.screen_area(), **dict(edge=manager.dock_values()["dock_edge"],position=manager.dock_values()["dock_position"],length=manager.dock_values()["dock_length"],thickness=manager.dock_values()["dock_thickness"]))
             before = manager.settings.path.read_bytes() if manager.settings.path.exists() else None
             original_values = dict(manager.dock_values())
             for widget, value in ((dialog.dock_position_slider, 69), (dialog.dock_length_spin, 220),
                                   (dialog.dock_thickness_spin, 16), (dialog.dock_opacity_slider, 43)):
                 widget.setValue(value)
-                assert manager.dock_preview.target_rect == manager.edge.geometry()
+                assert manager.edge.geometry() == trigger_rect(manager.edge.screen_area(), **dict(edge=manager.dock_values()["dock_edge"],position=manager.dock_values()["dock_position"],length=manager.dock_values()["dock_length"],thickness=manager.dock_values()["dock_thickness"]))
             dialog.dock_edge_combo.setCurrentIndex(dialog.dock_edge_combo.findData("left"))
             dialog.trigger_visible_checkbox.setChecked(False)
             picker_errors = []
@@ -127,7 +127,7 @@ with tempfile.TemporaryDirectory(prefix="flickdock-v161-integration-") as tempor
                 try:
                     assert picker is not None
                     picker.setCurrentColor(QColor("#2a9b6f"))
-                    assert manager.dock_preview.values["dock_color"] == "#2a9b6f"
+                    assert manager.dock_values()["dock_color"] == "#2a9b6f"
                 except Exception as error:
                     picker_errors.append(error)
                 finally:
@@ -139,7 +139,7 @@ with tempfile.TemporaryDirectory(prefix="flickdock-v161-integration-") as tempor
             assert draft == {"dock_edge": "left", "dock_position": 69, "dock_length": 220,
                              "dock_thickness": 16, "dock_opacity": 43, "trigger_visible": False, "dock_color": "#2a9b6f"}
             assert manager.edge.geometry() == trigger_rect(manager.edge.screen_area(), "left", 69, 220, 16)
-            assert manager.dock_preview.values == draft
+            assert not manager.dock_preview.isVisible()
             assert not manager.settings.path.exists() if before is None else manager.settings.path.read_bytes() == before
             dialog.cancel_button.click()
             assert manager._dock_preview_values is None and not manager.dock_preview.isVisible()

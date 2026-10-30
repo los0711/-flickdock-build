@@ -319,7 +319,7 @@ class SettingsCheckBox(QCheckBox):
 
 
 class SettingsToggleSwitch(SettingsCheckBox):
-    """Compact native-style switch with a full-row click target and visible focus."""
+    """Compact switch whose painted track is the only pointer target."""
     def __init__(self, text, parent=None):
         super().__init__(text, parent)
         self.dark = False
@@ -333,7 +333,7 @@ class SettingsToggleSwitch(SettingsCheckBox):
         return QSize(max(190, base.width() + 38), max(38, base.height()))
 
     def hitButton(self, position):
-        return self.rect().contains(position)
+        return QRectF(self.width()-44,(self.height()-22)/2,38,22).contains(position)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -1094,6 +1094,13 @@ class SettingsSurface(QFrame):
         painter.drawRoundedRect(QRectF(self.rect()).adjusted(.5, .5, -.5, -.5), radius, radius)
 
 
+class _MeasuredSettingsFrame(QFrame):
+    # The containing settings flow measures these sections explicitly. Do not
+    # let QWidgetItem substitute a different nested HFW for their fixed height.
+    def hasHeightForWidth(self):return False
+    def heightForWidth(self,width):return self.sizeHint().height()
+
+
 class SettingsDialog(QDialog):
     def show(self):
         self.chrome.prepare_open();self._window_fade.reopen();super().show()
@@ -1413,7 +1420,7 @@ class SettingsDialog(QDialog):
         holder=QWidget(parent);row=QHBoxLayout(holder);row.setContentsMargins(0,0,0,0);row.setSpacing(8)
         text=QLabel(label,holder);row.addWidget(text,1)
         text.setWordWrap(True);text.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        text.setBuddy(control);holder._toggle_target=control;holder.installEventFilter(self)
+        text.setBuddy(control)
         control.setAccessibleName(label)
         control.setText('');control.setMinimumSize(44,32);control.setMaximumSize(44,32)
         control.setParent(holder);row.addWidget(control)
@@ -1454,7 +1461,7 @@ class SettingsDialog(QDialog):
         # scrollbar occupies that space inside the right-hand 20px inset.
         self.body_layout.setContentsMargins(21,20,15,12);self.body_layout.setSpacing(16)
         self._empty_layout(self.body_layout)
-        top=QWidget(self.body);top_grid=QGridLayout(top);top_grid.setContentsMargins(0,0,0,0);top_grid.setSpacing(16)
+        top=_MeasuredSettingsFrame(self.body);top_grid=QGridLayout(top);top_grid.setContentsMargins(0,0,0,0);top_grid.setSpacing(16)
         for col in range(12):top_grid.setColumnStretch(col,1)
         self.account_slot=QWidget(top);self.account_slot_layout=QVBoxLayout(self.account_slot)
         self.account_slot_layout.setContentsMargins(0,0,0,0);self.account_slot_layout.setSpacing(0)
@@ -1488,7 +1495,7 @@ class SettingsDialog(QDialog):
         dr.addWidget(trigger,0,0);dr.addWidget(empty,0,1);dl.addLayout(dr)
         selectors=QGridLayout();selectors.setSpacing(12)
         selector_panels=[]
-        for i,(label,control) in enumerate((('停靠在',self.dock_edge_combo),('触发后显示',self.trigger_view_combo),('标记颜色',self.dock_color_button))):
+        for i,(label,control) in enumerate((('触发后显示',self.trigger_view_combo),)):
             panel=self._reference_subcard(dock);line=QHBoxLayout(panel);line.setContentsMargins(10,10,10,10);line.setSpacing(8)
             text=QLabel(label,panel);text.setObjectName('settingsDetail');line.addWidget(text,1)
             control.setMinimumSize(0,28);control.setMaximumHeight(28)
@@ -1496,26 +1503,17 @@ class SettingsDialog(QDialog):
             else:control.setMaximumWidth(128)
             line.addWidget(control);selectors.addWidget(panel,0,i);selector_panels.append(panel)
         dl.addLayout(selectors)
-        numeric=QGridLayout();numeric.setSpacing(12)
-        for i,(label,spin,slider) in enumerate((('边缘位置',self.dock_position_spin,self.dock_position_slider),
-                ('触发条长度',self.dock_length_spin,None),('触发条厚度',self.dock_thickness_spin,None),
-                ('不透明度',self.dock_opacity_spin,self.dock_opacity_slider))):
-            panel=self._reference_subcard(dock);box=QVBoxLayout(panel);box.setContentsMargins(12,12,12,12);box.setSpacing(8)
-            row=QHBoxLayout();row.addWidget(QLabel(label,panel),1)
-            spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons);spin.setMinimumHeight(26);spin.setMaximumHeight(26);spin.setFixedWidth(88)
-            spin.lineEdit().setMinimumSize(60,18)
-            row.addWidget(spin);box.addLayout(row)
-            if slider is None:
-                slider=SettingsSlider(Qt.Orientation.Horizontal,panel);slider.setRange(spin.minimum(),spin.maximum());slider.setValue(spin.value())
-                slider.valueChanged.connect(spin.setValue);spin.valueChanged.connect(slider.setValue)
-            box.addWidget(slider);numeric.addWidget(panel,i//2,i%2)
-        dl.addLayout(numeric)
+        from display_triggers import DisplayTriggerEditor
+        self.display_trigger_editor=DisplayTriggerEditor(self.store,dock)
+        self.display_trigger_editor.profiles_changed.connect(self._emit_preview)
+        self.display_trigger_editor.geometry_changed.connect(self._fit_settings_body)
+        dl.addWidget(self.display_trigger_editor)
         sensitivity_panel=self._reference_subcard(dock);sl=QHBoxLayout(sensitivity_panel);sl.setContentsMargins(12,12,12,12);sl.setSpacing(16)
         sl.addWidget(QLabel('摇动灵敏度 (1–100)',sensitivity_panel));sl.addWidget(self.shake_sensitivity_slider,1)
         self.shake_sensitivity_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons);self.shake_sensitivity_spin.setFixedSize(64,28)
         sl.addWidget(self.shake_sensitivity_spin);self.shake_sensitivity_reset_button.setFixedSize(28,28);sl.addWidget(self.shake_sensitivity_reset_button)
         dl.addWidget(sensitivity_panel);self.dock_position_hint.hide();self.shake_effort_label.hide();self.body_layout.addWidget(dock)
-        lower=QWidget(self.body);lower_grid=QHBoxLayout(lower);lower_grid.setContentsMargins(0,0,0,0);lower_grid.setSpacing(16)
+        lower=_MeasuredSettingsFrame(self.body);lower_grid=QHBoxLayout(lower);lower_grid.setContentsMargins(0,0,0,0);lower_grid.setSpacing(16)
         kl=shortcuts.layout();self._empty_layout(kl);kl.setContentsMargins(16,16,16,16);kl.setSpacing(12)
         kl.setAlignment(Qt.AlignmentFlag.AlignTop)
         self._pointer_paste_panel=shortcuts
@@ -1551,9 +1549,9 @@ class SettingsDialog(QDialog):
         browse=QPushButton('浏览…',cloud);browse.setMinimumHeight(28);browse.setObjectName('settingsBrowse');browse.setAutoDefault(False);browse.clicked.connect(self.choose_directory);path.addWidget(browse);cl.addLayout(path)
         lower_grid.addWidget(shortcuts,1);lower_grid.addWidget(cloud,1);self.body_layout.addWidget(lower)
         self.body_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self.body_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
-        from display_triggers import DisplayTriggerEditor
-        self.display_trigger_editor=DisplayTriggerEditor(self.store,dock);dock.layout().addWidget(self.display_trigger_editor)
+        self.body_layout.setSizeConstraints(QLayout.SizeConstraint.SetMinimumSize,QLayout.SizeConstraint.SetNoConstraint)
+        self._body_fit_timer=QTimer(self);self._body_fit_timer.setSingleShot(True)
+        self._body_fit_timer.timeout.connect(self._fit_settings_body)
         self._settings_adaptive=(dr,trigger,empty,selectors,selector_panels,lower_grid)
         self.body.installEventFilter(self)
         self.scroll.viewport().installEventFilter(self)
@@ -1570,6 +1568,7 @@ class SettingsDialog(QDialog):
         self.cancel_button.setMinimumSize(0,28);self.cancel_button.setMaximumHeight(28);self.save_button.setMinimumSize(0,28);self.save_button.setMaximumHeight(28)
         footer.addWidget(self.cancel_button);footer.addWidget(self.save_button);root.addWidget(footer_frame)
         self._show_layout(root);self._show_layout(self.body_layout)
+        self.display_trigger_editor.load_values()
         self.update_activity.setVisible(self.update_activity.active)
         self.update_notes_area.hide()
 
@@ -1672,7 +1671,7 @@ class SettingsDialog(QDialog):
         painter.fillRect(event.rect(),Qt.GlobalColor.transparent)
         painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
         paint_surface_shadow(painter,QRectF(self.surface.geometry()),self._shadow_cache,
-            blur=24,offset=QPointF(0,6),color=QColor(15,28,48,78))
+            blur=14,offset=QPointF(0,3),color=QColor(15,28,48,60))
         painter.end()
 
     def set_lan_panel(self, widget):
@@ -1700,14 +1699,16 @@ class SettingsDialog(QDialog):
             if ((event.type()==QEvent.Type.MouseButtonRelease and event.button()==Qt.MouseButton.LeftButton)
                     or event.type()==QEvent.Type.KeyPress and event.key() in (Qt.Key.Key_Return,Qt.Key.Key_Space)):
                 self.show_release_history();return True
-        if (getattr(watched,'_toggle_target',None) is not None
-                and event.type()==QEvent.Type.MouseButtonRelease and event.button()==Qt.MouseButton.LeftButton):
-            watched._toggle_target.click();event.accept();return True
         if watched is getattr(self,'_reference_top',None) and event.type()==QEvent.Type.Resize:
             # CSS grid's 8/4 spans include the seven/three internal 16px gaps.
             # Qt drops those empty-track gaps, so explicitly retain the same
             # column widths rather than approximating them with a 2:1 layout.
             self._adapt_settings_layout()
+        if (watched is getattr(self,'body',None) and event.type()==QEvent.Type.LayoutRequest
+                or watched is getattr(getattr(self,'scroll',None),'viewport',lambda:None)() and event.type()==QEvent.Type.Resize):
+            if hasattr(self,'_body_fit_timer'):
+                self.body_layout.activate();self._fit_settings_body()
+                if event.type()==QEvent.Type.Resize:self._body_fit_timer.start(0)
         if (watched is getattr(self,'body',None) or watched is getattr(getattr(self,'scroll',None),'viewport',lambda:None)()) and event.type()==QEvent.Type.Resize:
             self._adapt_settings_layout()
         # QKeySequenceEdit consumes Esc while recording a shortcut. Closing
@@ -1761,6 +1762,27 @@ class SettingsDialog(QDialog):
         lower.setDirection(QHBoxLayout.Direction.TopToBottom if narrow else QHBoxLayout.Direction.LeftToRight)
         self._fit_settings_top()
 
+    def _fit_settings_body(self):
+        # Measure sections explicitly: Qt's nested HFW totalSizeHint uses an
+        # ideal width and can compress an accordion or preserve a stale tail.
+        # These are scroll-content heights, never native window dimensions.
+        description=getattr(self,'retention_description',None)
+        if description is not None and description.isVisible():
+            needed=description.heightForWidth(max(1,description.width()))
+            if needed>0 and description.minimumHeight()!=needed:description.setMinimumHeight(needed)
+        layout=self.body_layout;margins=layout.contentsMargins();heights=[]
+        for index in range(layout.count()):
+            section=layout.itemAt(index).widget()
+            if section is None or section.isHidden():continue
+            inner=section.layout()
+            wrapped=inner.totalHeightForWidth(section.width()) if inner is not None and inner.hasHeightForWidth() else -1
+            height=section.height() if section is self._reference_top else max(section.sizeHint().height(),section.minimumSizeHint().height(),wrapped)
+            if section.minimumHeight()!=height or section.maximumHeight()!=height:section.setFixedHeight(height)
+            heights.append(height)
+        height=margins.top()+margins.bottom()+sum(heights)+max(0,len(heights)-1)*layout.spacing()
+        height=max(height,self.scroll.viewport().height())
+        if self.body.minimumHeight()!=height or self.body.maximumHeight()!=height:self.body.setFixedHeight(height)
+
     def _fit_settings_top(self):
         if not hasattr(self,'_reference_top'):return
         panel=self._account_panel or self.account_placeholder
@@ -1770,6 +1792,7 @@ class SettingsDialog(QDialog):
         narrow=self.scroll.viewport().width()-36<700
         height=left+right+16 if narrow else max(left,right)
         self._reference_top.setFixedHeight(max(1,height))
+        self.body_layout.invalidate();self.body_layout.activate();self._fit_settings_body()
 
     def _card(self):
         card = QFrame(self)
@@ -1788,7 +1811,7 @@ class SettingsDialog(QDialog):
         return field
 
     def _dock_card(self):
-        card = self._card()
+        card = _MeasuredSettingsFrame(self);card.setObjectName("settingsCard")
         layout = QVBoxLayout(card)
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(12)
@@ -1912,7 +1935,8 @@ class SettingsDialog(QDialog):
         return {"dock_edge": self.dock_edge_combo.currentData(), "dock_position": self.dock_position_spin.value(),
                 "dock_length": self.dock_length_spin.value(), "dock_thickness": self.dock_thickness_spin.value(),
                 "trigger_visible": self.trigger_visible_checkbox.isChecked(), "dock_color": self._draft_color,
-                "dock_opacity": self.dock_opacity_spin.value()}
+                "dock_opacity": self.dock_opacity_spin.value(),
+                "display_triggers": self.display_trigger_editor.profiles()}
 
     def _emit_preview(self, *_):
         if not self._loading_values and self.isVisible():
@@ -1977,6 +2001,7 @@ class SettingsDialog(QDialog):
 
     def load_values(self):
         self._loading_values = True
+        self.display_trigger_editor.load_values()
         self.automatic_updates_checkbox.setChecked(self.store.automatic_updates)
         self.sync_upload_checkbox.setChecked(self.store.sync_upload_enabled)
         self.sync_receive_checkbox.setChecked(self.store.sync_receive_enabled)

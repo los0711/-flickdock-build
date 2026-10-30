@@ -221,13 +221,14 @@ class LanDialogTests(unittest.TestCase):
     def test_two_columns_keep_send_and_transfer_visible_without_window_scroll(self):
         panel=self.dialog.panel
         self.assertLess(panel.send_column.geometry().right(),panel.activity_column.geometry().left())
-        # The window and its two columns remain fixed; only the potentially
-        # long pending-file and recent-history lists scroll independently.
+        # Columns stay independent; the send form also scrolls when the
+        # full WAN code controls cannot fit a short viewport.
         self.assertEqual(set(self.dialog.findChildren(QScrollArea)),
-                         {panel.queue_scroll,panel.history_scroll})
+                         {panel.send_scroll,panel.queue_scroll,panel.history_scroll})
         self.assertIs(panel.queue_scroll.widget(),panel.queue_body)
         self.assertIs(panel.history_scroll.widget(),panel.history_body)
-        self.assertIs(panel.send_column.parentWidget(),panel)
+        self.assertIs(panel.send_scroll.widget(),panel.send_column)
+        self.assertEqual(panel.send_scroll.verticalScrollBar().maximum(),0)
         self.assertIs(panel.activity_column.parentWidget(),panel)
         self.assertTrue(panel.drop_zone.isVisible())
         self.assertFalse(any(button.text() in ('添加文件','添加文件夹')

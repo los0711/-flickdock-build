@@ -93,8 +93,28 @@ class IconTextButton(QPushButton):
         painter.drawText(QRectF(x+size.width()+gap,0,self.width()-x-size.width()-gap-8,self.height()),Qt.AlignLeft|Qt.AlignVCenter,text)
 
 
-def button(value='',glyph='',variant='quiet',parent=None):
-    widget=IconTextButton(value,parent)
+class SortButton(IconTextButton):
+    """Stable text baseline with independently tinted vector direction arrows."""
+    direction=0
+    def set_direction(self,direction):self.direction=direction;self.update()
+    def arrow_colors(self):
+        c=palette()
+        return tuple(c['link'] if self.direction==value else c['muted'] for value in (1,2))
+    def paintEvent(self,event):
+        from PySide6.QtWidgets import QStyleOptionButton,QStyle,QStylePainter
+        from PySide6.QtSvg import QSvgRenderer
+        from PySide6.QtCore import QByteArray
+        option=QStyleOptionButton();self.initStyleOption(option);option.text='';option.icon=QIcon()
+        p=QStylePainter(self);p.drawControl(QStyle.CE_PushButton,option);p.setFont(self.font())
+        text_width=p.fontMetrics().horizontalAdvance(self.text());x=(self.width()-text_width-28)/2
+        p.setPen(QColor(palette()['secondary']));p.drawText(QRectF(x,0,text_width,self.height()),Qt.AlignLeft|Qt.AlignVCenter,self.text())
+        left,right=self.arrow_colors()
+        svg=f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 16"><g fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path stroke="{left}" d="M6 13V3M3 6l3-3 3 3"/><path stroke="{right}" d="M18 3v10m-3-3 3 3 3-3"/></g></svg>'
+        QSvgRenderer(QByteArray(svg.encode())).render(p,QRectF(x+text_width+4,(self.height()-16)/2,24,16))
+
+
+def button(value='',glyph='',variant='quiet',parent=None,*,control_type=IconTextButton):
+    widget=control_type(value,parent)
     widget.setProperty('referenceVariant',variant)
     widget.setCursor(Qt.PointingHandCursor)
     widget.setFocusPolicy(Qt.StrongFocus)
@@ -576,10 +596,10 @@ def build_overview(view,preview_type):
     css(view.selection_bar,'QFrame{border:0;border-bottom:1px solid rgba(255,255,255,10);background:transparent;}',
         'QFrame{border:0;border-bottom:1px solid rgba(0,0,0,10);background:transparent;}')
     select=QHBoxLayout(view.selection_bar);select.setContentsMargins(16,0,12,0);select.setSpacing(8)
-    view.selection_hint=label('',11,400,'secondary',view.selection_bar);select.addWidget(view.selection_hint)
+    view.selection_hint=button('默认',parent=view.selection_bar);view.selection_hint.setAccessibleName('恢复默认排序');view.selection_hint.clicked.connect(view.reset_sort);select.addWidget(view.selection_hint)
     view.sort_buttons={}
     for key,title in (('time','时间'),('size','大小')):
-        control=button(title,parent=view.selection_bar);control.setCheckable(True)
+        control=button(title,parent=view.selection_bar,control_type=SortButton);control.setCheckable(True);control.setMinimumWidth(80)
         control.setAccessibleName('按'+title+'排序，正序、倒序、默认循环')
         control.clicked.connect(lambda _,key=key:view.cycle_sort(key))
         view.sort_buttons[key]=control;select.addWidget(control)

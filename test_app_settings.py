@@ -155,7 +155,7 @@ with tempfile.TemporaryDirectory(prefix="flickdock-settings-") as temporary:
     assert dialog._reference_top.layout().indexOf(dialog.account_slot) >= 0
     assert dialog.dock_card.isAncestorOf(dialog.trigger_visible_checkbox)
     assert dialog.surface.size().width() == min(892,dialog.chrome._available().width()-16)-32 and dialog.surface.size().height() == min(632,dialog.chrome._available().height()-16)-32
-    assert set(previews[-1]) == {"dock_edge", "dock_position", "dock_length", "dock_thickness", "trigger_visible", "dock_color", "dock_opacity"}
+    assert set(previews[-1]) == {"dock_edge", "dock_position", "dock_length", "dock_thickness", "trigger_visible", "dock_color", "dock_opacity", "display_triggers"}
     dialog.theme_combo.setCurrentIndex(0)
     dialog.folder_edit.setText(str(invalid))
     dialog.save()
@@ -166,7 +166,7 @@ with tempfile.TemporaryDirectory(prefix="flickdock-settings-") as temporary:
     assert dialog.dock_edge_combo.currentData() == "right" and dialog.dock_position_spin.value() == 0
     assert dialog.dock_length_spin.value() == 32 and dialog.dock_thickness_spin.value() == 2
     app.processEvents()  # Finish the source form's theme/NoButtons layout pass.
-    for field in (dialog.dock_position_spin, dialog.dock_length_spin, dialog.dock_thickness_spin, dialog.dock_opacity_spin):
+    for field in next(iter(dialog.display_trigger_editor.rows.values())).controls.values():
         editor = field.findChild(QLineEdit)
         assert editor.isVisible() and editor.width() >= 60 and editor.height() >= 18
     assert not hasattr(dialog, "font_notice") and dialog.author_button.text() == "Author @Roger"
@@ -183,7 +183,7 @@ with tempfile.TemporaryDirectory(prefix="flickdock-settings-") as temporary:
     dialog.dock_opacity_slider.setValue(37)
     dialog._set_dock_color("#aa44cc")
     assert previews[-1] == {"dock_edge": "bottom", "dock_position": 58, "dock_length": 240,
-                            "dock_thickness": 12, "trigger_visible": False, "dock_color": "#aa44cc", "dock_opacity": 37}
+                            "dock_thickness": 12, "trigger_visible": False, "dock_color": "#aa44cc", "dock_opacity": 37, "display_triggers": {}}
     assert store.path.read_bytes() == draft_before and store.trigger_visible and store.dock_opacity == 100
     def cancel_color(picker):
         picker.setCurrentColor(QColor("#123456"))

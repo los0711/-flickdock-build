@@ -161,5 +161,23 @@ class ClipboardFastTests(unittest.TestCase):
             until(lambda:self.clips[1].mimeData().text()=='retry publication')
         self.assertEqual(results,[False,True])
 
+    def test_new_copy_suppresses_synchronous_cancel_error_before_view_is_replaced(self):
+        sender=self.clients[0];results=[];sender.copy_result.connect(lambda ok,data:results.append((ok,data['id'])))
+        until(lambda:not sender._fetching)
+        original=sender._prepare_local
+        # Keep the first real copy pending, then inject the synchronous cancel
+        # callback at the exact replacement point, before _set_view(new id).
+        with patch.object(sender,'_prepare_local',return_value=None):
+            self.clips[0].text('first copy waiting to upload')
+            until(lambda:sender._local_retry is not None)
+        old=sender._local_retry;supersede=sender.file_jobs.supersede
+        def interrupted():
+            supersede();sender._task_error(old,RuntimeError('superseded by newer copy'))
+        with patch.object(sender.file_jobs,'supersede',side_effect=interrupted):
+            self.clips[0].text('latest copy')
+            until(lambda:self.clips[1].mimeData().text()=='latest copy')
+        self.assertEqual(results,[(True,self.hub.head['id'])])
+        self.assertNotEqual(self.hub.head['id'],old['id'])
+
 
 if __name__=='__main__':unittest.main()

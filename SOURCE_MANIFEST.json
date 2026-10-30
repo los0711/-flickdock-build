@@ -145,8 +145,8 @@
     },
     {
       "path": "app_settings.py",
-      "size": 128240,
-      "sha256": "5ff7ce403ce71f83b3fac89512fcd515be09ec732543c197c291289cf60a95c0"
+      "size": 129662,
+      "sha256": "16617311073c0056398b6a390708146b33aa5779b4f308f023f40bb9dcf51fe7"
     },
     {
       "path": "app_version.py",
@@ -560,8 +560,8 @@
     },
     {
       "path": "build_macos.py",
-      "size": 23570,
-      "sha256": "957fdb6192774c2e5fd650ea464c29d495dd747641161fd2551d5cfc82165a07"
+      "size": 23627,
+      "sha256": "4defd3e35ede2f93dacacd15bfe4a5d01cf24b5e3be687e29b72152badbfe2c7"
     },
     {
       "path": "bundle_policy.py",
@@ -605,8 +605,8 @@
     },
     {
       "path": "clipboard_sync.py",
-      "size": 47517,
-      "sha256": "a39f47055c1493d21d3e5f0c8cb90d06bc5b08e0fa3fe567566ce1efa4905f35"
+      "size": 47748,
+      "sha256": "4e57852a1974ddbafab219f41fd544d6861dbd6a9372fff6ed351074346998db"
     },
     {
       "path": "cloud/.gitignore",
@@ -835,8 +835,8 @@
     },
     {
       "path": "display_triggers.py",
-      "size": 5612,
-      "sha256": "30c7a3217de5e483bcb880f163c3a6951f56f3b2c6a03051cd71d28872915e7c"
+      "size": 13789,
+      "sha256": "e17320861c1150c8741ce9a31882fdf622d4c70fe880abe5f0c706fa013d130a"
     },
     {
       "path": "dock_geometry.py",
@@ -875,8 +875,8 @@
     },
     {
       "path": "flickdock.py",
-      "size": 219051,
-      "sha256": "82ecc9f52ebacc4e77152a7cc3c41c37d133b54a2dd1126c969044df4adc3f44"
+      "size": 221551,
+      "sha256": "c5f1195e59df73ccfce12b1518d6882ff86ab8c85f4a65dc6706f28ed10d7c7b"
     },
     {
       "path": "flickdock_icons.py",
@@ -915,8 +915,8 @@
     },
     {
       "path": "intake_notice.py",
-      "size": 5638,
-      "sha256": "ddf1b9fe83f3c4e3eb84a16eecd28a1270192e50f2a0c5fb68d14b49b5091d79"
+      "size": 6716,
+      "sha256": "081ecb06bdb5096abd1d736103e8c9a91444836022ea51e2f66346263b528119"
     },
     {
       "path": "item_transitions.py",
@@ -925,8 +925,8 @@
     },
     {
       "path": "lan_panel.py",
-      "size": 93304,
-      "sha256": "7233a15c2e84afd86cadacb8f56affde9c90035c1cb6b06e6450492db3c49f04"
+      "size": 94005,
+      "sha256": "8a5fd9b722062c05ae22257b139c4fd01e225dc121e7cdc91c2fb547f0a29367"
     },
     {
       "path": "lan_transfer.py",
@@ -1095,8 +1095,8 @@
     },
     {
       "path": "reference_widgets.py",
-      "size": 52536,
-      "sha256": "6468c0775db87f79974c08ba47bcb85b47bbe64eab1ba13c83c030c873e84977"
+      "size": 54122,
+      "sha256": "14db4d4ac5202a4a6eb55255f9374d1f7ab918954d158e77057152eba0838376"
     },
     {
       "path": "release_dpr_v165.py",
@@ -1105,8 +1105,8 @@
     },
     {
       "path": "release_history.py",
-      "size": 22338,
-      "sha256": "46816640104696f892611a6787cf30702541d327eaf764d0d18cdfa7b7f61da9"
+      "size": 22942,
+      "sha256": "7e479690e166ffda4be9815b877c1f834fbd2493f8092aa7b04546a3969fcd7d"
     },
     {
       "path": "release_macos.py",
@@ -1115,8 +1115,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 36508,
-      "sha256": "a992db8861a06ff73752a8e7984d3d56ca38fb26fec3efc5441b1fb4d56ba2a4"
+      "size": 36571,
+      "sha256": "98e8a0b7a4b95fec0b18558706eec413253650d5d330cbbb5e4cc28fb1c8ffe6"
     },
     {
       "path": "release_signing.py",
@@ -1195,8 +1195,8 @@
     },
     {
       "path": "sync_adapter.py",
-      "size": 4197,
-      "sha256": "95cc3c6531bf28e272e868eadeacd318636347530605421ca816794ee9238f38"
+      "size": 4240,
+      "sha256": "8a92248a43e3b78ceb543c696b5649d674a078f12acc25563a9de3198123c063"
     },
     {
       "path": "sync_files.py",
@@ -1235,8 +1235,8 @@
     },
     {
       "path": "test_app_settings.py",
-      "size": 22282,
-      "sha256": "fff1fe903f00c7c8b0333f0dbfbeaa4acb2c678742c26a9a359437acf2ac7446"
+      "size": 22293,
+      "sha256": "1748d03cde4367b0d616c898f842b32192f747e42b1520dc8a2e0f6e9488a19b"
     },
     {
       "path": "test_async_images_v162.py",
@@ -1265,8 +1265,8 @@
     },
     {
       "path": "test_clipboard_fast_v1821.py",
-      "size": 9977,
-      "sha256": "886e6df394094b1d4dd34ac37c208da5935fa6e6f16381055c24749ea3fba46f"
+      "size": 11120,
+      "sha256": "dec69d513a8dc82db98e6f57ba039b802fdef7ec3899e7feecb93c732f1720e0"
     },
     {
       "path": "test_clipboard_preview_v1821.py",
@@ -1337,6 +1337,11 @@
       "path": "test_directory_sync_v1815.py",
       "size": 7013,
       "sha256": "db53ae90a70e02e374721335890820ab6e5c2a403f443b23823e656d406a79ef"
+    },
+    {
+      "path": "test_display_groups_v1821.py",
+      "size": 9697,
+      "sha256": "8a6660364b616db1acc1f3251faa42bbe963346411086635e9585b3dc2c2788a"
     },
     {
       "path": "test_dock_preview_v16.py",
@@ -1445,13 +1450,13 @@
     },
     {
       "path": "test_integration_v161.py",
-      "size": 18156,
-      "sha256": "ee7a91ebee4bed867c1370303e98792323dee843fb4b2682b1e4e5b9f460b36d"
+      "size": 18548,
+      "sha256": "5e8436153ce00207f3dc7dabc192cc062ebc993eee339a92aef00dd81459ad9a"
     },
     {
       "path": "test_interaction_scope_v1821.py",
-      "size": 12878,
-      "sha256": "8859ebf604708bf4d11bfefe980e5be85b27d28b8c1ef944897350e7cc8da058"
+      "size": 15372,
+      "sha256": "b317adfda7220fbe585d8c7e9ddc78cbe0efa703f27572a0634d38b6b1a35d41"
     },
     {
       "path": "test_interactions_v163.py",
@@ -1460,8 +1465,8 @@
     },
     {
       "path": "test_lan_dialog_v183.py",
-      "size": 19469,
-      "sha256": "7cb68feb273ee2cf40702def6fe7f0fd1f0a7a704d98167a9beaba319d139ab5"
+      "size": 19552,
+      "sha256": "da5d685f6e8f8bd72a1d1837572658366d46b5eee52aaba7f2324ae741a05bd0"
     },
     {
       "path": "test_lan_hig_layout_v1814.py",
@@ -1630,8 +1635,8 @@
     },
     {
       "path": "test_shelf_live_v1821.py",
-      "size": 11010,
-      "sha256": "53d3a629d9c73fdb3347b3d01c43a743acf7ac37857767044651aa17da19ff72"
+      "size": 13958,
+      "sha256": "c8b7b2591182994fb0044e573de20acdb45c91627b55dfaad11f12f6a233a956"
     },
     {
       "path": "test_shelf_raise_v1810.py",
@@ -1702,6 +1707,11 @@
       "path": "test_sync_timeout_recovery.py",
       "size": 4071,
       "sha256": "3ca993b9de849a1eb34e44446a394708d6659ef20076618ced931a52142a775c"
+    },
+    {
+      "path": "test_transfer_layout_v1821.py",
+      "size": 4148,
+      "sha256": "c45b415fc4c05f61bab63673c2f0e5c8f7f87fae1abdc8170f848bf0f96f09a0"
     },
     {
       "path": "test_transfer_ui_v181.py",

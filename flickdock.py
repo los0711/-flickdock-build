@@ -598,7 +598,7 @@ class FileRow(QFrame):
         row=QHBoxLayout(self);row.setContentsMargins(12,8,8,8);row.setSpacing(12)
         self.selection_check=SelectionCheck(self);self.selection_check.setFixedSize(40,40);self.selection_check.setChecked(path in popup.selected)
         self.selection_check.setAccessibleName('选择 '+popup.shelf.content.title(path))
-        self.selection_check.clicked.connect(lambda _:popup.select_item(path,toggle=True))
+        self.selection_check.clicked.connect(lambda _:popup.select_item(self.path,toggle=True))
         from reference_widgets import css
         css(self.selection_check,'QCheckBox::indicator{width:14px;height:14px;border:1px solid #45454B;border-radius:4px;background:transparent;} QCheckBox::indicator:checked{background:#0A84FF;border-color:#0A84FF;}',
             'QCheckBox::indicator{width:14px;height:14px;border:1px solid #CACAD0;border-radius:4px;background:transparent;} QCheckBox::indicator:checked{background:#0A84FF;border-color:#0A84FF;}')
@@ -609,7 +609,7 @@ class FileRow(QFrame):
         css(self.name_label,"color:#F5F5F7;background:transparent;border:0;font:600 13px 'HarmonyOS Sans SC';","color:#1D1D1F;background:transparent;border:0;font:600 13px 'HarmonyOS Sans SC';")
         self.detail_label=label(item_detail(popup.shelf,path),11,400,'secondary',self);self.detail_label.setAttribute(Qt.WA_TransparentForMouseEvents)
         names.addWidget(self.name_label);names.addWidget(self.detail_label);row.addLayout(names,1)
-        self.remove_button=ToolbarButton('close',self,motion=popup.shelf.manager.motion);self.remove_button.setFixedSize(32,32);self.remove_button.setToolTip('从搁架移除');self.remove_button.setAccessibleName('从搁架移除 '+popup.shelf.content.title(path));self.remove_button.clicked.connect(lambda:popup.remove_path(path))
+        self.remove_button=ToolbarButton('close',self,motion=popup.shelf.manager.motion);self.remove_button.setFixedSize(32,32);self.remove_button.setToolTip('从搁架移除');self.remove_button.setAccessibleName('从搁架移除 '+popup.shelf.content.title(path));self.remove_button.clicked.connect(lambda:popup.remove_path(self.path))
         policy=self.remove_button.sizePolicy();policy.setRetainSizeWhenHidden(True);self.remove_button.setSizePolicy(policy)
         row.addWidget(self.remove_button);self.remove_button.hide();self.refresh_cloud_status()
 
@@ -733,8 +733,17 @@ class ContentsPopup(QFrame):
         self._build_timer.timeout.connect(self._append_batch)
         from reference_widgets import build_overview
         build_overview(self,PreviewPane)
+        self._responsive_timer=QTimer(self);self._responsive_timer.setSingleShot(True)
+        self._responsive_timer.timeout.connect(self._apply_responsive_layout)
+        self.scroll.viewport().installEventFilter(self)
         self.rebuild();self.update_transfer_status()
         self.drop_router=OverviewDropRouter(self)
+
+    def eventFilter(self,watched,event):
+        if (watched is self.scroll.viewport() and event.type()==QEvent.Resize
+                and event.size().width()!=event.oldSize().width()):
+            self._responsive_timer.start(0)
+        return super().eventFilter(watched,event)
 
     def resizeEvent(self,event):
         super().resizeEvent(event)
@@ -862,11 +871,14 @@ class ContentsPopup(QFrame):
             return path.stat().st_size
         except OSError:return max(0,int(content.metadata.get(ref,{}).get('size') or 0))
 
+    def reset_sort(self):
+        self.sort_key=None;self.sort_direction=0;self.rebuild();self.update_selection_actions();self.shelf.touch()
+
     def cycle_sort(self,key):
         if key not in ('time','size'):return
         self.sort_direction=(self.sort_direction+1)%3 if self.sort_key==key else 1
         self.sort_key=key if self.sort_direction else None
-        self.rebuild();self.shelf.touch()
+        self.rebuild();self.update_selection_actions();self.shelf.touch()
 
     def update_transfer_status(self):
         self.shelf.transfer_rates.observe(self.shelf.content.transfers)
@@ -1019,12 +1031,16 @@ class ContentsPopup(QFrame):
             for ref in changed:
                 if ref in self._item_widgets:self._item_widgets[ref].refresh_content()
         elif self.shelf.manager.settings.view_mode=='icons':
-            grid=QGridLayout(); grid.setContentsMargins(0,0,0,0); grid.setHorizontalSpacing(8); grid.setVerticalSpacing(8)
+            grid=QGridLayout(); grid.setAlignment(Qt.AlignTop|Qt.AlignLeft); grid.setContentsMargins(0,0,0,0); grid.setHorizontalSpacing(8); grid.setVerticalSpacing(8)
             self.rows_layout.addLayout(grid)
             available=max(112,self.scroll.viewport().width()-24)
             columns=max(1,min(4,(available+8)//136))
             self._grid_columns=columns
             for column in range(columns):grid.setColumnStretch(column,1)
+            # Empty columns need real expanding cells too. Without them Qt
+            # gives a one-card grid its 176px maximum and centers the layout.
+            for index in range(len(refs),((len(refs)+columns-1)//columns)*columns):
+                grid.addItem(QSpacerItem(112,120,QSizePolicy.Expanding,QSizePolicy.Fixed),index//columns,index%columns)
             def append(index,ref):
                 slot=self._build_slots.pop(index,None)
                 if slot is not None:grid.removeItem(slot)
@@ -1096,6 +1112,17 @@ class ContentsPopup(QFrame):
             if item.layout():
                 self._detach_rows_layout(item.layout());item.layout().deleteLater()
 
+    def remap_items(self,mapping):
+        # A remote reservation becomes a verified local path without becoming
+        # a new UI item. Retarget the live widget before capturing transitions;
+        # otherwise the same file briefly fades out over its replacement.
+        for old,new in mapping.items():
+            if old==new or old not in self._item_widgets or new in self._item_widgets:continue
+            widget=self._item_widgets.pop(old);self._item_widgets[new]=widget
+            widget.path=new
+            if hasattr(widget,'ref'):widget.ref=new
+            if hasattr(widget,'icon_label'):widget.icon_label.ref=new
+
     def _item_widget(self,ref,kind,changed):
         widget=self._item_widgets.get(ref)
         if widget is None:
@@ -1145,10 +1172,10 @@ class ContentsPopup(QFrame):
         self.zip_button.setEnabled(bool(count) and not busy and not choosing)
         self.zip_all_button.setEnabled(bool(self.shelf.files['permanent']) and not busy and not choosing)
         self.zip_button.setToolTip(f'将选中的 {count} 项打包为 ZIP')
-        self.selection_hint.setText(f'已选 {count} 项' if count else '排序')
+        self.selection_hint.setText('默认')
         for key,control in self.sort_buttons.items():
             direction=self.sort_direction if self.sort_key==key else 0
-            control.setText(('时间' if key=='time' else '大小')+(' ↑' if direction==1 else ' ↓' if direction==2 else ''))
+            control.setText('时间' if key=='time' else '大小');control.set_direction(direction)
             control.setChecked(bool(direction))
             control.setToolTip(('正序' if direction==1 else '倒序' if direction==2 else '默认：最新添加在前')+' · 点击切换')
         visible=self.visible_refs()
@@ -1305,6 +1332,7 @@ class ShelfWindow(QWidget):
         self.handle: DockHandle | None = None
         self.popup: ContentsPopup | None = None
         self.archive_job=None
+        self._file_choosing=False;self._picker_return_until=0.0
         self._archive_choosing=False
         self._archive_refs=()
         self._archive_epoch=0
@@ -2513,11 +2541,23 @@ class ShelfWindow(QWidget):
         self.geometry_morph.animate(destination,finished=finished)
         self.touch()
 
+    def picker_hold_active(self,now=None):
+        return self._file_choosing or (time.monotonic() if now is None else now)<self._picker_return_until
+
     def pick_files(self, mode: str):
-        paths, _ = QFileDialog.getOpenFileNames(self, "选择文件")
-        if paths:
-            self.import_paths(mode, paths)
-            self.zones[mode].pulse("drop")
+        if self._file_choosing:return
+        self._file_choosing=True
+        try:
+            paths, _ = QFileDialog.getOpenFileNames(self, "选择文件")
+            if paths:
+                self.import_paths(mode, paths)
+                self.zones[mode].pulse("drop")
+        finally:
+            # Native pickers can deactivate Qt and deliver the final pointer
+            # event after their nested loop returns. Keep the existing mode
+            # and allow a comfortable move back to either shelf surface.
+            self._file_choosing=False;self._picker_return_until=time.monotonic()+1.5
+            self.touch()
 
     def paste_clipboard(self, mode):
         return self.receive_mime(mode,QApplication.clipboard().mimeData(),source='paste')
@@ -3006,6 +3046,7 @@ class ShelfManager:
         self.sync.attach_clipboard(self.clipboard_sync)
         self.clipboard_sync.activity_changed.connect(self.sync.set_clipboard_priority)
         self.clipboard_sync.copy_result.connect(self._clipboard_copy_result)
+        self.clipboard_sync.copy_started.connect(self._clipboard_copy_started)
         self.clipboard_sync.native_access_changed.connect(self._refresh_paste_permission)
         from clipboard_preview import ClipboardPresenter
         self.clipboard_presenter=ClipboardPresenter(self.clipboard_sync,self.app)
@@ -3103,13 +3144,16 @@ class ShelfManager:
         return (self.settings.clipboard_sync_enabled and self.settings.clipboard_notice_seen
                 and not self.cocoa_smoke and self.app.platformName() not in ('offscreen','minimal'))
 
+    def _clipboard_copy_started(self):
+        if hasattr(self,'clipboard_notice'):self.clipboard_notice.supersede()
+
     def _clipboard_copy_result(self,ok,context):
         if self._quitting or not self._clipboard_runtime_enabled():return
         if ok and not self.settings.clipboard_success_notice:return
         if not hasattr(self,'clipboard_notice'):
             from intake_notice import ClipboardNotice
             self.clipboard_notice=ClipboardNotice(self)
-        self.clipboard_notice.show_result(ok,context)
+        self.clipboard_notice.schedule_result(ok,context)
 
     def show_clipboard_preview(self):
         if self._quitting:return
@@ -3492,15 +3536,14 @@ class ShelfManager:
 
     def preview_dock(self,values):
         self._dock_preview_values=dict(values) if isinstance(values,dict) else None
-        if self._dock_preview_values is not None:self.dock_preview.values=dict(self._dock_preview_values)
-        self.edge.position_at_edge()
+        # Real per-screen handles preview the draft and remain independent hit
+        # targets. A single transparent preview on the active screen hid all
+        # secondary handles while settings were open.
+        self.dock_preview.hide()
+        self._position_edges()
         if self._settings_prompt_active():
-            self.dock_preview.hide();self.settings_edge_hint.hide()
-        elif self._dock_preview_values is not None:
-            self.edge.hide();self.dock_preview.show_preview(self.edge.screen_area(),self._dock_preview_values)
-        else:
-            self.dock_preview.hide()
-            if not self._quitting:self.update_handles()
+            self.settings_edge_hint.hide()
+        if not self._quitting:self.update_handles()
 
     def _settings_prompt_active(self):
         modal=QApplication.activeModalWidget()
@@ -3514,8 +3557,9 @@ class ShelfManager:
         if not changed:return
         if changed & {'clipboard_sync_enabled','clipboard_notice_seen'}:
             self.clipboard_sync.set_enabled(self._clipboard_runtime_enabled())
+            if not self._clipboard_runtime_enabled() and hasattr(self,'clipboard_notice'):self.clipboard_notice.supersede()
         if 'clipboard_success_notice' in changed and not self.settings.clipboard_success_notice:
-            if hasattr(self,'clipboard_notice'):self.clipboard_notice.dismiss()
+            if hasattr(self,'clipboard_notice'):self.clipboard_notice.disable_success()
         if 'view_mode' in changed:
             # A presentation preference cannot reset a drag gesture, repaint
             # every application panel, re-register hotkeys or touch sync.
@@ -3698,7 +3742,7 @@ class ShelfManager:
 
     def update_handles(self):
         for edge in getattr(self,'edges',{'primary':self.edge}).values():
-            if self.settings_open() and self._dock_preview_values is None:edge.show_handle()
+            if self.settings_open():edge.show_handle()
             elif self._dock_preview_values is not None:edge.hide()
             elif (self.settings.keep_empty_handle or any(s.has_files() for s in self.shelves)) and not any(s.isVisible() for s in self.shelves):edge.show_handle()
             else:edge.hide()
@@ -3742,9 +3786,7 @@ class ShelfManager:
             if self._settings_prompt_active():
                 self.dock_preview.hide();self.settings_edge_hint.hide()
                 self.reset_drag_gesture();self.was_down=bool(mouse_buttons_mask()&1);return
-            if self._dock_preview_values is not None and not self.dock_preview.isVisible():
-                self.dock_preview.show_preview(self.edge.screen_area(),self._dock_preview_values)
-            if (self.edge.activation_region().contains(pos) or self.settings_edge_hint.contains_pointer(pos)):
+            if self.edge.values()['enabled'] and (self.edge.activation_region().contains(pos) or self.settings_edge_hint.contains_pointer(pos)):
                 if not self.settings_edge_hint.isVisible():self.settings_edge_hint.show_hint()
             else:self.settings_edge_hint.hide()
             self.reset_drag_gesture();self.was_down=bool(mouse_buttons_mask()&1);return
@@ -3760,7 +3802,7 @@ class ShelfManager:
             retired=False
             for shelf in self.shelves:
                 if (shelf.isVisible() and not shelf.pinned and not shelf.dragging
-                        and not shelf.incoming_drop and not shelf._archive_choosing
+                        and not shelf.incoming_drop and not shelf._archive_choosing and not shelf.picker_hold_active(now)
                         and not confirmation_active(shelf) and not self.outgoing_drag):
                     # Qt-visible windows can already be behind a full-screen
                     # browser. Retire them before the edge handoff this tick.
@@ -3770,8 +3812,8 @@ class ShelfManager:
         for shelf in self.shelves:
             if not shelf.isVisible(): continue
             modal=QApplication.activeModalWidget(); popup=QApplication.activePopupWidget()
-            blocked=shelf._menu_open or shelf.rename_edit.isVisible() or modal is not None or popup is not None or confirmation_active(shelf)
-            press_blocked=modal is not None or shelf.rename_edit.isVisible() or (popup is not None and popup.frameGeometry().contains(pos)) or confirmation_active(shelf)
+            blocked=shelf.picker_hold_active(now) or shelf._menu_open or shelf.rename_edit.isVisible() or modal is not None or popup is not None or confirmation_active(shelf)
+            press_blocked=shelf.picker_hold_active(now) or modal is not None or shelf.rename_edit.isVisible() or (popup is not None and popup.frameGeometry().contains(pos)) or confirmation_active(shelf)
             in_settings=app_active and self.settings_dialog is not None and self.settings_dialog.isVisible() and self.settings_dialog.frameGeometry().contains(pos)
             in_settings=in_settings or bool(app_active and self.lan_dialog and self.lan_dialog.isVisible() and self.lan_dialog.frameGeometry().contains(pos))
             in_settings=in_settings or bool(app_active and self.wan_dialog and self.wan_dialog.isVisible() and self.wan_dialog.frameGeometry().contains(pos))
@@ -3822,7 +3864,7 @@ class ShelfManager:
 
     def quit(self):
         if hasattr(self,'intake_notice'):self.intake_notice.hide()
-        if hasattr(self,'clipboard_notice'):self.clipboard_notice.hide()
+        if hasattr(self,'clipboard_notice'):self.clipboard_notice.supersede()
         if hasattr(self,'remote_intake_notice'):self.remote_intake_notice.hide()
         for job in getattr(self,'_large_intake_jobs',()):job.cancel.set()
         if hasattr(self,'oversize_notice'):self.oversize_notice.hide()
