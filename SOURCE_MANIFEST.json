@@ -1665,8 +1665,8 @@
     },
     {
       "path": "test_update_client_v170.py",
-      "size": 19871,
-      "sha256": "125887b942f310f2d8a6487ab922f087bce12b5dcd23d60f8ecc1b8cacf6f2f9"
+      "size": 19888,
+      "sha256": "d19999cb840227c1929abdd20bfab69f7ca0e7e911477bf1218caef6bce165c5"
     },
     {
       "path": "test_update_dialog_v170.py",

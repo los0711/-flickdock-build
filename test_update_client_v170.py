@@ -127,7 +127,7 @@ class UpdateTests(unittest.TestCase):
     def client(self,endpoint='/manifest',current='1.9.9',timeout=1000):
         network=self.Network()
         client=subject.UpdateClient(current,Path(self.folder.name)/'updates',endpoint=self.origin+endpoint,
-                                    allowed_hosts={'127.0.0.1'},network=network,timeout_ms=timeout)
+                                    allowed_hosts={'127.0.0.1'},network=network,timeout_ms=timeout,platform='win32')
         client._test_network=network
         self.clients.append(client)
         state={name:[] for name in ('checking','update_available','up_to_date','failed','progress','verified_file','cancelled')}
