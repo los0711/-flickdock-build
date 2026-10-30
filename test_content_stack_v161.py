@@ -45,5 +45,7 @@ with tempfile.TemporaryDirectory() as directory:
             tile.landing.setCurrentTime(moment);tile.grab()
         assert provider.call_count==1,'Landing frames must reuse decoded artwork instead of reopening images'
     tile.close()
-    export_svg_family(Path(__file__).parent/'assets/icons')
+    exported=root/'exported-icons'
+    export_svg_family(exported)
+    assert (exported/'flickdock.svg').is_file()
 print('CONTENT_STACK_V161_OK latest on top/five maximum/distinct colors/four DPI scales')
