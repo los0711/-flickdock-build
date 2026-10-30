@@ -40,13 +40,14 @@ class SettingsAccountTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(prefix='flickdock-account-ui-')
         self.runtime=patch.object(app_settings,'_startup_runtime_allowed',return_value=False);self.runtime.start()
+        self.screen=patch('window_chrome.WindowChrome._available',return_value=__import__('PySide6.QtCore',fromlist=['QRect']).QRect(0,0,1920,1080));self.screen.start()
         self.store=app_settings.SettingsStore(Path(self.temp.name))
         self.dialog=app_settings.SettingsDialog(self.store)
         self.service=Service();self.panel=AccountPanel(self.service,email_binding=False)
         self.dialog.set_account_panel(self.panel);self.dialog.resize(892,632);self.dialog.show();APP.processEvents()
     def tearDown(self):
         self.dialog.close();self.dialog.deleteLater();APP.processEvents()
-        self.runtime.stop();self.temp.cleanup()
+        self.runtime.stop();self.screen.stop();self.temp.cleanup()
     def click(self,button):QTest.mouseClick(button,Qt.MouseButton.LeftButton);APP.processEvents()
     def fill_password(self,old='original-secret-123',new='new-private-secret-456',confirm=None):
         if not self.panel.password_toggle_button.isChecked():self.click(self.panel.password_toggle_button)
@@ -60,18 +61,18 @@ class SettingsAccountTests(unittest.TestCase):
     def test_password_confirmation_success_and_private_values(self):
         self.fill_password(confirm='different-new-secret')
         self.click(self.panel.password_change_button)
-        self.assertFalse(self.service.calls);self.assertIn('不一致',self.panel.status_label.text())
+        self.assertFalse(self.service.calls);self.assertIn('不一致',self.panel.password_status_label.text());self.assertEqual(self.panel.status_label.text(),'')
         self.panel.confirm_password_edit.setText(self.panel.new_password_edit.text())
         QTest.keyClick(self.panel.confirm_password_edit,Qt.Key.Key_Return);APP.processEvents()
         self.assertEqual(self.service.calls,[('password',('original-secret-123','new-private-secret-456','new-private-secret-456'))])
         self.assertFalse(self.store.path.exists())
         self.service.status_changed.emit('error original-secret-123 new-private-secret-456')
-        self.assertNotIn('secret',self.panel.status_label.text())
+        self.assertNotIn('secret',self.panel.password_status_label.text())
         self.service.password_changed.emit()
-        self.assertFalse(self.panel.password_form.isVisible())
+        self.assertTrue(self.panel.password_form.isVisible())
         for edit in (self.panel.old_password_edit,self.panel.new_password_edit,self.panel.confirm_password_edit):
             self.assertEqual(edit.text(),'')
-        self.assertIn('其他设备',self.panel.status_label.text())
+        self.assertIn('其他设备',self.panel.password_status_label.text());self.assertEqual(self.panel.status_label.text(),'')
         self.fill_password();self.dialog.hide();APP.processEvents()
         self.assertEqual(self.panel.old_password_edit.text(),'');self.assertEqual(self.panel.new_password_edit.text(),'')
     def test_current_and_other_devices_can_rename_inline_enter_does_not_save(self):

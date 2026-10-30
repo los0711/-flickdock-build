@@ -576,7 +576,14 @@ def build_overview(view,preview_type):
     css(view.selection_bar,'QFrame{border:0;border-bottom:1px solid rgba(255,255,255,10);background:transparent;}',
         'QFrame{border:0;border-bottom:1px solid rgba(0,0,0,10);background:transparent;}')
     select=QHBoxLayout(view.selection_bar);select.setContentsMargins(16,0,12,0);select.setSpacing(8)
-    view.selection_hint=label('',11,400,'secondary',view.selection_bar);select.addWidget(view.selection_hint,1)
+    view.selection_hint=label('',11,400,'secondary',view.selection_bar);select.addWidget(view.selection_hint)
+    view.sort_buttons={}
+    for key,title in (('time','时间'),('size','大小')):
+        control=button(title,parent=view.selection_bar);control.setCheckable(True)
+        control.setAccessibleName('按'+title+'排序，正序、倒序、默认循环')
+        control.clicked.connect(lambda _,key=key:view.cycle_sort(key))
+        view.sort_buttons[key]=control;select.addWidget(control)
+    select.addStretch(1)
     view.select_all_button=button('全选',parent=view.selection_bar);view.select_all_button.clicked.connect(view.toggle_select_all_visible);select.addWidget(view.select_all_button)
     view.paste_button=button('粘贴',parent=view.selection_bar);view.paste_button.hide()
     mid.addWidget(view.selection_bar)
@@ -627,8 +634,8 @@ def build_overview(view,preview_type):
         line.addWidget(name,1);line.addWidget(percent);line.addWidget(view.strip_more);progress.hide();strip.addWidget(row);view.strip_rows.append((row,name,percent,progress))
     # Layout keeps this target above the live transfer strip at every size.
     from clipboard_preview import ClipboardButton
-    view.clipboard_footer=QWidget(view.middle);view.clipboard_footer.setFixedHeight(44)
-    clipboard_row=QHBoxLayout(view.clipboard_footer);clipboard_row.setContentsMargins(12,6,12,6)
+    view.clipboard_footer=QWidget(view.middle);view.clipboard_footer.setFixedHeight(56)
+    clipboard_row=QHBoxLayout(view.clipboard_footer);clipboard_row.setContentsMargins(12,12,12,12)
     view.clipboard_button=ClipboardButton(view.shelf.manager,view.clipboard_footer)
     clipboard_row.addWidget(view.clipboard_button);clipboard_row.addStretch()
     mid.addWidget(view.clipboard_footer)

@@ -476,17 +476,20 @@ class SettingsStore(QObject):
         self._data = {"theme": "light", "capture_dir": str(self.base / "saved"), "autostart": True,
                       "capture_mode": "reference", "keep_empty_handle": True,
                       "sync_upload_enabled": True, "sync_receive_enabled": True,
-                      "clipboard_sync_enabled": True, "clipboard_notice_seen": False,
+                      "clipboard_sync_enabled": True, "clipboard_notice_seen": False, "clipboard_success_notice": True,
                       "trigger_view": "compact", "shake_sensitivity": DEFAULT_SHAKE_SENSITIVITY,
                       "view_mode": "list", "shelf_shortcut": SHELF_SHORTCUT,
                       "overview_shortcut": OVERVIEW_SHORTCUT, "dock_edge": "right",
                       "dock_position": 8, "dock_length": 76, "dock_thickness": 8,
                       "trigger_visible": True, "dock_color": "#567daf", "dock_opacity": 100,
-                      "startup_initialized": False,
+                      "startup_initialized": False, "display_triggers": {}, "automatic_updates": True,
                       "lan_receive_dir": str(Path.home() / "Downloads")}
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
             if isinstance(data, dict):
+                from display_triggers import validate_profiles
+                try:self._data['display_triggers']=validate_profiles(data.get('display_triggers',{}))
+                except ValueError:pass
                 if data.get("theme") in ("light", "dark"):
                     self._data["theme"] = data["theme"]
                 directory = data.get("capture_dir")
@@ -501,7 +504,7 @@ class SettingsStore(QObject):
                         self._data["lan_receive_dir"] = str(candidate)
                 if isinstance(data.get("autostart"), bool):
                     self._data["autostart"] = data["autostart"]
-                for name in ("sync_upload_enabled", "sync_receive_enabled", "clipboard_sync_enabled", "clipboard_notice_seen"):
+                for name in ("sync_upload_enabled", "sync_receive_enabled", "clipboard_sync_enabled", "clipboard_notice_seen", "clipboard_success_notice", "automatic_updates"):
                     if isinstance(data.get(name), bool):
                         self._data[name] = data[name]
                 if data.get("capture_mode") in CAPTURE_MODES:
@@ -571,6 +574,18 @@ class SettingsStore(QObject):
     @property
     def clipboard_sync_enabled(self) -> bool:
         return self._data["clipboard_sync_enabled"]
+
+    @property
+    def automatic_updates(self):
+        return self._data["automatic_updates"]
+
+    @property
+    def display_triggers(self):
+        return {key:dict(row) for key,row in self._data['display_triggers'].items()}
+
+    @property
+    def clipboard_success_notice(self) -> bool:
+        return self._data["clipboard_success_notice"]
 
     @property
     def clipboard_notice_seen(self) -> bool:
@@ -676,8 +691,11 @@ class SettingsStore(QObject):
                trigger_visible=None, dock_color=None, dock_opacity=None,
                capture_mode=None, keep_empty_handle=None, trigger_view=None,
                shake_sensitivity=None, sync_upload_enabled=None,
-               sync_receive_enabled=None, clipboard_sync_enabled=None, clipboard_notice_seen=None) -> bool:
+               sync_receive_enabled=None, clipboard_sync_enabled=None, clipboard_notice_seen=None, clipboard_success_notice=None, display_triggers=None, automatic_updates=None) -> bool:
         candidate = dict(self._data)
+        if display_triggers is not None:
+            from display_triggers import validate_profiles
+            candidate['display_triggers']=validate_profiles(display_triggers)
         if theme is not None:
             if theme not in ("light", "dark"):
                 raise ValueError("请选择浅色或暗色外观。")
@@ -695,7 +713,9 @@ class SettingsStore(QObject):
         for name, value in (("sync_upload_enabled", sync_upload_enabled),
                             ("sync_receive_enabled", sync_receive_enabled),
                             ("clipboard_sync_enabled", clipboard_sync_enabled),
-                            ("clipboard_notice_seen", clipboard_notice_seen)):
+                            ("clipboard_notice_seen", clipboard_notice_seen),
+                            ("clipboard_success_notice", clipboard_success_notice),
+                            ("automatic_updates", automatic_updates)):
             if value is not None:
                 if not isinstance(value, bool):
                     raise ValueError("云同步选项需要为开启或关闭。")
@@ -1076,7 +1096,7 @@ class SettingsSurface(QFrame):
 
 class SettingsDialog(QDialog):
     def show(self):
-        self._window_fade.reopen();super().show()
+        self.chrome.prepare_open();self._window_fade.reopen();super().show()
 
     preview_changed = Signal(object)
     gesture_preview_changed = Signal(object)
@@ -1221,6 +1241,8 @@ class SettingsDialog(QDialog):
         self.clipboard_sync_checkbox.setAccessibleName('云剪贴板同步')
         self.clipboard_sync_checkbox.setToolTip('自动同步小于 20 MB 的文本、链接、图片或单个文件，仅限同账号设备；可在这里关闭。')
         self.clipboard_sync_checkbox.toggled.connect(self._clipboard_sync_changed)
+        self.clipboard_success_checkbox=SettingsToggleSwitch('剪贴板同步成功提示',cloud)
+        self.clipboard_success_checkbox.toggled.connect(self._clipboard_success_changed)
         self.sync_upload_checkbox.setAccessibleName("上传本机搁架到云端")
         self.sync_receive_checkbox.setAccessibleName("接收云端与其他设备内容")
         cloud_layout.addWidget(self.sync_upload_checkbox)
@@ -1506,14 +1528,23 @@ class SettingsDialog(QDialog):
             editor.setMinimumHeight(30);editor.setMaximumHeight(30);editor.setFixedWidth(175);row.addWidget(editor);kl.addLayout(row)
         self._empty_layout(startup.layout());startup.hide()
         kl.addWidget(self._reference_toggle(self.startup_checkbox,'登录系统时自动启动',shortcuts))
+        self.automatic_updates_checkbox=SettingsToggleSwitch('自动更新',shortcuts)
+        self.automatic_updates_checkbox.setAccessibleName('自动检查并后台下载更新')
+        self.automatic_updates_checkbox.setToolTip('自动检查并后台下载更新；安装前提示重启，不中断正在进行的传输。')
+        self.automatic_updates_checkbox.toggled.connect(self._automatic_updates_changed)
+        kl.addWidget(self._reference_toggle(self.automatic_updates_checkbox,'自动更新',shortcuts))
         self.startup_status_label.setParent(shortcuts);self.startup_status_label.hide()
         self._pointer_paste_permission=None
         cl=cloud.layout();self._empty_layout(cl);cl.setContentsMargins(16,16,16,16);cl.setSpacing(10)
         cl.setAlignment(Qt.AlignmentFlag.AlignTop)
         ch=QLabel('云同步与存储',cloud);ch.setObjectName('settingsSection');cl.addWidget(ch)
         for control,label in ((self.sync_upload_checkbox,'上传本机搁架到云端'),(self.sync_receive_checkbox,'接收云端与其他设备内容'),
-                              (self.clipboard_sync_checkbox,'云剪贴板同步（小于 20 MB）')):
+                              (self.clipboard_sync_checkbox,'云剪贴板同步（小于 20 MB）'),
+                              (self.clipboard_success_checkbox,'剪贴板同步成功提示')):
             cl.addWidget(self._reference_toggle(control,label,cloud))
+        self.retention_description=QLabel('云端文件保存时间\n小于 100 MB：上传成功后保留 24 小时。\n100 MB 及以上：上传成功后保留 2 小时。\n从完整上传成功时计时；到期仅清理云端副本，本机原文件和已下载的文件不受影响。',cloud)
+        self.retention_description.setObjectName('settingsDetail');self.retention_description.setWordWrap(True)
+        self.retention_description.setTextFormat(Qt.PlainText);cl.addWidget(self.retention_description)
         self._empty_layout(storage.layout());storage.hide()
         cl.addWidget(self._reference_segment(self.capture_mode_combo,('快捷方式','复制到保存位置')))
         path=QHBoxLayout();path.setSpacing(8);self.folder_edit.setMinimumHeight(28);self.folder_edit.setMaximumHeight(28);path.addWidget(self.folder_edit,1)
@@ -1521,6 +1552,8 @@ class SettingsDialog(QDialog):
         lower_grid.addWidget(shortcuts,1);lower_grid.addWidget(cloud,1);self.body_layout.addWidget(lower)
         self.body_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.body_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+        from display_triggers import DisplayTriggerEditor
+        self.display_trigger_editor=DisplayTriggerEditor(self.store,dock);dock.layout().addWidget(self.display_trigger_editor)
         self._settings_adaptive=(dr,trigger,empty,selectors,selector_panels,lower_grid)
         self.body.installEventFilter(self)
         self.scroll.viewport().installEventFilter(self)
@@ -1944,9 +1977,11 @@ class SettingsDialog(QDialog):
 
     def load_values(self):
         self._loading_values = True
+        self.automatic_updates_checkbox.setChecked(self.store.automatic_updates)
         self.sync_upload_checkbox.setChecked(self.store.sync_upload_enabled)
         self.sync_receive_checkbox.setChecked(self.store.sync_receive_enabled)
         self.clipboard_sync_checkbox.setChecked(self.store.clipboard_sync_enabled)
+        self.clipboard_success_checkbox.setChecked(self.store.clipboard_success_notice)
         self.theme_combo.setCurrentIndex(1 if self.store.theme == "dark" else 0)
         self.folder_edit.setText(str(self.store.capture_dir))
         self.capture_mode_combo.setCurrentIndex(self.capture_mode_combo.findData(self.store.capture_mode))
@@ -1986,6 +2021,24 @@ class SettingsDialog(QDialog):
             self._sync_direction_controls()
             self.error_label.setText(str(error) or "云同步设置未能保存。")
             self.error_label.show()
+
+    def _automatic_updates_changed(self,checked):
+        if self._loading_values:return
+        try:self.store.update(automatic_updates=checked)
+        except (OSError,ValueError) as error:
+            blocked=self.automatic_updates_checkbox.blockSignals(True)
+            self.automatic_updates_checkbox.setChecked(self.store.automatic_updates)
+            self.automatic_updates_checkbox.blockSignals(blocked)
+            self.error_label.setText(str(error));self.error_label.show()
+
+    def _clipboard_success_changed(self,checked):
+        if self._loading_values:return
+        try:self.store.update(clipboard_success_notice=checked)
+        except (OSError,ValueError) as error:
+            blocked=self.clipboard_success_checkbox.blockSignals(True)
+            self.clipboard_success_checkbox.setChecked(self.store.clipboard_success_notice)
+            self.clipboard_success_checkbox.blockSignals(blocked)
+            self.error_label.setText(str(error));self.error_label.show()
 
     def _clipboard_sync_changed(self,checked):
         if self._loading_values:return
@@ -2066,6 +2119,7 @@ class SettingsDialog(QDialog):
         dark = theme == "dark"
         self.surface.dark = dark
         self.surface.update()
+        if hasattr(self,'display_trigger_editor'):self.display_trigger_editor.apply_theme(theme)
         shadow=self.surface.graphicsEffect()
         if isinstance(shadow,QGraphicsDropShadowEffect):
             shadow.setColor(QColor(0,0,0,107) if dark else QColor(15,23,42,41))

@@ -154,7 +154,7 @@ class AccountTests(unittest.TestCase):
 
     def test_auth_errors_inline_redact_password_and_switch_clears_password(self):
         before=len(self.api.requests);self.click(self.panel.submit_button)
-        self.assertEqual(len(self.api.requests),before);self.assertIn('账号',self.panel.status_label.text())
+        self.assertEqual(len(self.api.requests),before);self.assertIn('账号',self.panel.auth_status_label.text())
         self.assertTrue(self.panel.auth_status_label.isVisible())
         self.assertIn('账号',self.panel.auth_status_label.text())
         self.assertGreater(self.panel.auth_status_label.y(),self.panel.submit_button.y())
@@ -162,8 +162,8 @@ class AccountTests(unittest.TestCase):
         self.click(self.panel.submit_button)
         self.finish_challenge()
         self.api.finish(self.api.last(),error=CloudError('rejected '+PASSWORD,401,'INVALID_CREDENTIALS'))
-        self.assertNotIn(PASSWORD,self.panel.status_label.text())
-        self.assertIn('密码不正确',self.panel.status_label.text());self.assertEqual(self.panel.password_edit.text(),'')
+        self.assertNotIn(PASSWORD,self.panel.auth_status_label.text())
+        self.assertIn('密码不正确',self.panel.auth_status_label.text());self.assertEqual(self.panel.password_edit.text(),'')
         self.assertTrue(self.panel.submit_button.isEnabled());self.assertTrue(self.panel.auth_page.isVisible())
         self.click(self.panel.register_tab);self.assertEqual(self.panel.password_edit.text(),'')
         self.panel.password_edit.setText(PASSWORD);self.dialog.hide();flush()

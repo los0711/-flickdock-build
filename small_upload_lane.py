@@ -61,6 +61,8 @@ class SmallUploadLane:
         else:self.kick()
 
     def eligible(self, entry, texts):
+        bridge=getattr(self.owner,'clipboard_bridge',None)
+        if bridge and bridge.waiting(entry):return False
         if (entry.get('version', 0) != 0 or entry.get('deleted')
                 or not entry.get('dirty') or entry.get('paused_upload')
                 or entry.get('blocked_fingerprint') == entry.get('fingerprint')

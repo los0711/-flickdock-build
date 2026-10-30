@@ -245,7 +245,9 @@ class FeedbackTests(unittest.TestCase):
         manager.motion=fixture.manager.motion
         manager.reset_drag_gesture=lambda:None
         dialog.overview_requested.connect(lambda:manager.show_overview_from_transfer(dialog))
-        expected=QRect(dialog.card.mapToGlobal(QPoint()),dialog.card.size())
+        previous=QRect(200,100,1148,707)
+        manager._overview_return_rect=previous
+        expected=previous.adjusted(14,7,-14,-20)
         try:
             with patch.object(fixture.shelf,'show_transient',side_effect=AssertionError('Edge reveal called')):
                 QTest.mouseClick(dialog.back_button,Qt.LeftButton);flush()
@@ -284,7 +286,7 @@ class FeedbackTests(unittest.TestCase):
             'paused':dict(dirty=True,paused_upload=True,ref='paused'),
             'stale':dict(dirty=True,ref='gone',fingerprint='old',blocked_fingerprint='old')}
         engine=SimpleNamespace(upload_enabled=True,receive_enabled=True,state=dict(entries=entries),running=True,transfer=None,
-            _lane_context=None,small_lane=SimpleNamespace(active=None,retry_at={}),
+            _lane_context=None,small_lane=SimpleNamespace(active=None,retry_at={}),clipboard_bridge=None,
             _cycle_direction='',_refresh_again=False,_notify_transfers=lambda:None,_pending_removal=lambda:None,_paused=lambda _:False,
             adapter=SimpleNamespace(snapshot=lambda:dict(permanent=['blocked'])),status_changed=SimpleNamespace(emit=statuses.append))
         for identity,entry in entries.items():entry['id']=identity

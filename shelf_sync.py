@@ -101,6 +101,7 @@ class ShelfSync(QObject):
         self._part_cache={}
         self._lane_context=None
         self.small_lane=SmallUploadLane(self)
+        self.clipboard_bridge=None
         self._refresh_again=False
         self._cycle_direction='receive'
         self.upload_enabled=True
@@ -117,6 +118,11 @@ class ShelfSync(QObject):
         self.remote_poll = QTimer(self); self.remote_poll.setSingleShot(True)
         self.remote_poll.timeout.connect(self.request_refresh)
         service.account_changed.connect(self.select_account)
+
+    def attach_clipboard(self,client):
+        from shared_clipboard_files import ShelfClipboardBridge
+        self.clipboard_bridge=ShelfClipboardBridge(self,client)
+        self.clipboard_bridge.reconcile()
 
     def set_directions(self, upload_enabled, receive_enabled):
         """Switch cloud directions without losing local edits or transfer journals.
@@ -180,6 +186,7 @@ class ShelfSync(QObject):
             previous['view'] = self.adapter.snapshot(); atomic_json(path,previous)
 
     def select_account(self, account):
+        if self.clipboard_bridge:self.clipboard_bridge.reset()
         if self.closed: return
         target = account.get('id') if isinstance(account,dict) else None
         if target == self.account_id and self.state is not None:
@@ -243,6 +250,8 @@ class ShelfSync(QObject):
                 entry = {'id':identity,'ref':ref,'version':0,'seq':0}
                 entries[identity] = entry
             if entry.get('fingerprint') != fp or entry.get('deleted'):
+                previous=entry.pop('shared_clipboard',None)
+                if previous and self.clipboard_bridge:self.clipboard_bridge.files.release(previous,entry['id'])
                 paused_intake=entry.get('paused_upload') and entry.get('fingerprint') is None
                 self._end_intake(entry)
                 entry.pop('blocked_fingerprint',None); entry.pop('last_error',None)
@@ -257,6 +266,7 @@ class ShelfSync(QObject):
                 self._end_intake(entry)
                 entry.update(deleted=True,dirty=True,seq=entry.get('seq',0)+1)
                 removed = True
+        if self.clipboard_bridge:self.clipboard_bridge.reconcile()
         self._persist()
         self._announce_intakes()
         self._notify_transfers()
@@ -443,8 +453,11 @@ class ShelfSync(QObject):
                            or size>0 and received>=size))
             phase=('verifying' if sent_all else 'uploading') if resume.get('upload_id') else (
                 'preparing' if self.transfer and self.transfer.get('id')==identity else 'queued')
+            shared=self.clipboard_bridge.progress(entry) if self.clipboard_bridge else None
+            if shared:size,received,phase=shared['total'],shared['received'],shared['phase']
             transfers.append(dict(id=identity,ref=entry['ref'],name=entry.get('name',''),kind=entry.get('kind','file'),
-                upload_id=resume.get('upload_id'),received=received,total=size,phase=phase,remote=False))
+                upload_id=resume.get('upload_id'),received=received,total=size,phase=phase,remote=False,
+                message=shared.get('message','') if shared else ''))
             known.add(identity)
         entries=self.state.get('entries',{})
         for identity,record in (self.download_transfers.items() if self.receive_enabled else ()):
@@ -464,7 +477,7 @@ class ShelfSync(QObject):
             latest=self._remote_heads.get(identity,record)
             transfers.append(dict(id=identity,ref=entries.get(identity,{}).get('ref'),name=latest.get('name',record.get('name','')),
                 kind=record.get('kind','file'),received=received,total=size,
-                phase=phase,remote=True))
+                phase=phase,remote=True,message=self.state.get('deferred_downloads',{}).get(identity,{}).get('last_error','')))
             known.add(identity)
         for remote in (self.remote_transfers if self.receive_enabled else ()):
             identity=remote.get('item_id')
@@ -492,6 +505,7 @@ class ShelfSync(QObject):
 
     def _interrupt_cycle(self):
         self.epoch+=1
+        if self.clipboard_bridge:self.clipboard_bridge.reset()
         self._receive_fences.clear()
         self.small_lane.reset()
         self.running=False;self.transfer=None
@@ -531,6 +545,7 @@ class ShelfSync(QObject):
             pending=self.state.setdefault('pending_uploads',[])
             if remote['upload_id'] not in pending:pending.append(remote['upload_id'])
             self.remote_transfers.remove(remote)
+        if self.clipboard_bridge:self.clipboard_bridge.reconcile()
         self._persist();self._notify_transfers();self.debounce.start(1)
         return True
 
@@ -576,6 +591,10 @@ class ShelfSync(QObject):
             return 'paused'
         if self._retry_paused() and self.state.get('retry_direction')=='upload':
             return 'paused'
+        if self.clipboard_bridge:
+            shared=self.clipboard_bridge.progress(entry)
+            if shared:
+                return 'error' if shared['phase']=='retrying' else 'uploading' if shared['phase'] in ('uploading','verifying','ready') else 'pending'
         resume=self.state.get('resumable_uploads',{}).get(entry['id'],{})
         if resume.get('upload_id') or self.transfer and self.transfer.get('id')==entry['id']:
             return 'uploading'
@@ -1034,7 +1053,9 @@ class ShelfSync(QObject):
                 self._error(error);return
             pending=self.state.setdefault('deferred_downloads',{})
             attempts=pending.get(identity,{}).get('attempts',0)+1
+            code=getattr(error,'code','')
             message=re.sub(r'https?://\S+','[连接]',str(error))[:180]
+            if code and re.fullmatch('[A-Z_]{1,48}',code):message+='（'+code+'）'
             pending[identity]=dict(record=dict(record),remote_order=remote_order,attempts=attempts,
                 retry_at=time.time()+min(60,2**min(attempts,6)),last_error=message)
             self.download_transfers[identity].pop('_assembling',None)
@@ -1103,7 +1124,7 @@ class ShelfSync(QObject):
         previous=self.state.get('downloads',{}).get(record['id'],{})
         # Large multipart objects use the service's bounded range view. Some
         # routes cleanly terminate 64 MiB streams early, without an HTTP error.
-        small_parts=[record['size']>90*1024*1024 or
+        small_parts=[record['size']>4*1024*1024 or
             previous.get('version')==record['version'] and 0<previous.get('chunk_size',0)<=4*1024*1024 and record['size']>4*1024*1024]
         def content_headers():return {'X-FlickDock-Range-Bytes':'4194304'} if small_parts[0] else {'X-FlickDock-Fast-Content':'1'}
         expected_target = self._download_target(record)
@@ -1243,7 +1264,7 @@ class ShelfSync(QObject):
                                 else:failed(error,index)
                             self._work(_checked_download_part,(path,size,record['sha256']),recovered)
                         elif (attempts[0]<3 and not self._quota_error(error)
-                                and getattr(error,'status',0) in (0,408,500,502,503,504)
+                                and (getattr(error,'status',0) in (0,408,500,502,503,504) or getattr(error,'code','') in ('DOWNLOAD_TRUNCATED','DOWNLOAD_HASH_MISMATCH','DOWNLOAD_HEADER_INVALID'))
                                 and getattr(error,'code','') not in ('cancelled','DOWNLOAD_SAVE_FAILED','CLIENT_PROCESSING_ERROR')):
                             # Retry only the failed range; retain every verified
                             # neighbor rather than delay the entire item cycle.
@@ -1324,8 +1345,15 @@ class ShelfSync(QObject):
             else:self.status_changed.emit('搁架已同步。')
             if self._refresh_again and self.receive_enabled:
                 self._refresh_again=False;self.debounce.start(1)
+            elif self.receive_enabled and self.state.get('deferred_downloads'):
+                # Receive-only sessions also own interrupted downloads. This
+                # early return used to skip their wake-up timer entirely.
+                due=min(item.get('retry_at',time.time()) for item in self.state['deferred_downloads'].values())
+                self.debounce.start(max(1,min(60000,round((due-time.time())*1000)+1)))
+                self.status_changed.emit(f"{len(self.state['deferred_downloads'])} 项等待重试，其他内容已接收。")
             return
         self._cycle_direction='upload'
+        if self.clipboard_bridge:self.clipboard_bridge.reconcile()
         resumes = self.state.setdefault('resumable_uploads',{})
         for identity,transfer in tuple(resumes.items()):
             if not isinstance(transfer,dict) or not self._resume_matches(transfer):
@@ -1336,7 +1364,7 @@ class ShelfSync(QObject):
                     for x in self.state.setdefault('pending_uploads',[])))):
             self._retire_uploads(); return
         lane_id=(self.small_lane.active or {}).get('id')
-        pending = next((e for e in self.state['entries'].values() if e['id']!=lane_id and self.small_lane.retry_at.get(e['id'],0)<=time.monotonic() and e.get('dirty') and not e.get('paused_upload') and
+        pending = next((e for e in self.state['entries'].values() if e['id']!=lane_id and (not self.clipboard_bridge or not self.clipboard_bridge.waiting(e)) and self.small_lane.retry_at.get(e['id'],0)<=time.monotonic() and e.get('dirty') and not e.get('paused_upload') and
                         ((e.get('deleted') and e.get('version',0)==0 and not self.state.get('pending_uploads')) or (not e.get('deleted') and
                         e.get('blocked_fingerprint') != e.get('fingerprint')))),None)
         if pending is None:

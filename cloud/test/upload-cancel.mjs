@@ -15,7 +15,7 @@ globalThis.FixedLengthStream=class extends TransformStream {
 };
 
 registerHooks({resolve(specifier,context,next){
-  if(['./hash-state','./wan','./relay-budget','./clipboard','./intake'].includes(specifier))specifier+='.ts';
+  if(['./hash-state','./wan','./relay-budget','./clipboard','./intake','./shared-file'].includes(specifier))specifier+='.ts';
   return next(specifier,context);
 },load(url,context,next){
   if(url==='cloudflare:workers')return {format:'module',shortCircuit:true,source:'export class DurableObject { constructor(ctx,env){this.ctx=ctx;this.env=env} }; export class WorkerEntrypoint { constructor(ctx,env){this.ctx=ctx;this.env=env} }'};
@@ -29,7 +29,7 @@ const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{reso
 
 async function race(failPut,fastUpload=false,fastMultipart=false){
   const sqlite=new DatabaseSync(':memory:');
-  for(const file of ['0001_schema.sql','0002_retention.sql','0003_transfers_password.sql'])sqlite.exec(readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));
+  for(const file of ['0001_schema.sql','0002_retention.sql','0003_transfers_password.sql','0004_instant_uploads.sql','0005_account_names.sql','0006_cloud_retention.sql','0007_clipboard_upload_refs.sql'])sqlite.exec(readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));
   class Statement{
     constructor(sql,values=[]){this.sql=sql;this.values=values;}
     bind(...values){return new Statement(this.sql,values);}
@@ -40,7 +40,7 @@ async function race(failPut,fastUpload=false,fastMultipart=false){
   }
   const DB={prepare:sql=>new Statement(sql),async batch(statements){sqlite.exec('BEGIN');try{const result=statements.map(s=>s.execute());sqlite.exec('COMMIT');return result;}catch(error){sqlite.exec('ROLLBACK');throw error;}}};
   const now=Date.now(),account=randomUUID(),device=randomUUID(),token='a'.repeat(64);
-  sqlite.prepare('INSERT INTO accounts(id,username,username_norm,auth_salt,auth_verifier,created_at,quota_bytes) VALUES(?,?,?,?,?,?,?)').run(account,'test','test','0'.repeat(32),'0'.repeat(64),now,8589934592);
+  sqlite.prepare('INSERT INTO accounts(id,username,username_norm,username_key,auth_salt,auth_verifier,created_at,quota_bytes) VALUES(?,?,?,?,?,?,?,?)').run(account,'test','test','test','0'.repeat(32),'0'.repeat(64),now,8589934592);
   sqlite.prepare('INSERT INTO devices(id,account_id,name,platform,created_at,last_seen_at) VALUES(?,?,?,?,?,?)').run(device,account,'test','windows',now,now);
   sqlite.prepare('INSERT INTO sessions VALUES(?,?,?,?)').run(sha(token),account,device,now+86400000);
   const objects=new Map(),entered=deferred(),finish=deferred();

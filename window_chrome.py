@@ -107,6 +107,7 @@ class WindowChrome(QObject):
     def __init__(self,window,title_bar,settings,key,*,surface=None):
         super().__init__(window);self.window=window;self.title=title_bar;self.surface=surface or window
         self.key=key;self.path=Path(settings.base)/'window-sizes.json';self._drag=None;self._cursor=False
+        self.default_size=QSize(892,632) if key=="settings" else QSize(980,704)
         self._normal=window.size();self._restoring=False
         self._native_resize=False;self._native_configuring=False
         if sys.platform=='win32':
@@ -122,7 +123,7 @@ class WindowChrome(QObject):
             if old is not None:window.close_button.setAccessibleName(old.accessibleName())
         self._save_timer=QTimer(self);self._save_timer.setSingleShot(True);self._save_timer.setInterval(400)
         self._save_timer.timeout.connect(self.save_size)
-        self.restore_size();QApplication.instance().installEventFilter(self)
+        QApplication.instance().installEventFilter(self)
         _chromes.add(self)
         window.finished.connect(lambda *_:dock_window_state(window,False))
         from ui_transitions import WindowFade
@@ -132,14 +133,14 @@ class WindowChrome(QObject):
         screen=QGuiApplication.screenAt(QCursor.pos()) or self.window.screen() or QGuiApplication.primaryScreen()
         return screen.availableGeometry() if screen else QRect(0,0,1024,768)
 
+    def prepare_open(self):
+        """Reset while hidden, before any native surface is exposed."""
+        if self.window.isVisible():return
+        self.window.setWindowState(self.window.windowState() & ~(Qt.WindowMaximized|Qt.WindowMinimized))
+        self.fit_screen(self.default_size)
+
     def restore_size(self):
-        size=None
-        try:
-            if self.path.stat().st_size<=16384:
-                data=json.loads(self.path.read_text(encoding='utf8')).get(self.key)
-                if isinstance(data,list) and len(data)==2 and all(type(n) is int and 200<=n<=16000 for n in data):size=QSize(*data)
-        except (OSError,ValueError,AttributeError):pass
-        if size is not None:self.fit_screen(size)
+        self.prepare_open()
 
     def fit_screen(self,size=None):
         size=size or self.window.size()
@@ -152,14 +153,8 @@ class WindowChrome(QObject):
         self._normal=self.window.size();self._restoring=False
 
     def save_size(self):
+        # Utility sizes are deliberately session-only; never write on resize.
         self._save_timer.stop()
-        try:
-            data=json.loads(self.path.read_text(encoding='utf8')) if self.path.exists() and self.path.stat().st_size<=16384 else {}
-            if not isinstance(data,dict):data={}
-            data[self.key]=[self._normal.width(),self._normal.height()]
-            self.path.parent.mkdir(parents=True,exist_ok=True)
-            temporary=self.path.with_suffix('.tmp');temporary.write_text(json.dumps(data),encoding='utf8');temporary.replace(self.path)
-        except (OSError,ValueError):pass
 
     def _edges(self,point):
         if self.window.isMaximized() or self.window.isMinimized():return Qt.Edges()
@@ -181,7 +176,7 @@ class WindowChrome(QObject):
                 try:self._native_resize=ensure_native_resize(w)
                 finally:self._native_configuring=False
             if kind==QEvent.Resize and not w.isMaximized() and not w.isMinimized() and not self._restoring:
-                self._normal=w.size();self._save_timer.start()
+                self._normal=w.size()
             elif kind==QEvent.Hide:
                 self.save_size()
                 if not w.isMinimized():dock_window_state(w,False)

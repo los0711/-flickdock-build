@@ -181,6 +181,8 @@ class InlineUpdates(unittest.TestCase):
 
     def test_automatic_states_only_never_show_or_execute_and_defer_tray_notice(self):
         notices=[];busy=[True]
+        # Exercise notification-only compatibility without an auto-download preference.
+        self.controller.settings=None
         self.controller._is_busy=lambda:busy[0]
         self.controller.notification_shown.connect(notices.append)
         self.controller.check_automatically()

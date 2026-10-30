@@ -5,75 +5,82 @@ from PySide6.QtWidgets import QWidget,QFrame,QHBoxLayout,QLabel,QPushButton,QVBo
 from platform_native import keep_tool_visible_when_inactive
 
 
-class IntakeNotice(QWidget):
-    remote_requested=Signal(list)
-    def __init__(self,manager):
-        super().__init__();self.manager=manager;self.paths=[]
-        self.setWindowFlags(Qt.Tool|Qt.FramelessWindowHint|Qt.WindowStaysOnTopHint|Qt.WindowDoesNotAcceptFocus)
-        self.setAttribute(Qt.WA_ShowWithoutActivating);self.setAttribute(Qt.WA_TranslucentBackground)
-        keep_tool_visible_when_inactive(self)
-        root=QVBoxLayout(self);root.setContentsMargins(0,0,0,0)
-        self.card=QFrame(self);root.addWidget(self.card)
-        row=QHBoxLayout(self.card);row.setContentsMargins(14,11,12,11);row.setSpacing(12)
-        self.message=QLabel(self.card);self.message.setWordWrap(True);row.addWidget(self.message,1)
-        self.remote_button=QPushButton('远程互传',self.card);self.remote_button.setMinimumSize(78,30)
-        self.remote_button.setAutoDefault(False);row.addWidget(self.remote_button)
-        self.remote_button.clicked.connect(self._remote)
-        self.timer=QTimer(self);self.timer.setSingleShot(True);self.timer.timeout.connect(self.dismiss)
-        from ui_transitions import WindowFade
-        self._window_fade=WindowFade(self)
-        self.setFixedWidth(390)
-    def dismiss(self):
-        if not self._window_fade.defer_done(0,lambda _:self.hide()):self.hide()
-    def _remote(self):
-        paths=list(self.paths);self.hide();self.remote_requested.emit(paths)
-    def show_retention(self,paths,large):
-        from native_ui_common import colors
-        c=colors(self.manager.settings.theme);self.paths=list(paths)
-        self.card.setStyleSheet(f"QFrame{{background:{c['surface']};border:1px solid {c['border']};border-radius:10px;}} QLabel{{color:{c['text']};border:0;font-size:12px;}} QPushButton{{background:{c['blue']};color:white;border:0;border-radius:7px;padding:4px 8px;font-size:12px;}}")
-        self.message.setText('较大文件云端上传成功后仅保留 2 小时，建议使用远程互传。' if large else '文件云端上传成功后保留 24 小时，本地原文件不受影响。')
-        self.remote_button.setVisible(large);self.adjustSize()
-        shelf=self.manager.shelf;anchor=shelf.visual_geometry()
-        screen=QGuiApplication.screenAt(anchor.center()) or QGuiApplication.primaryScreen();area=screen.availableGeometry()
-        self.move(max(area.left()+8,min(anchor.right()-self.width(),area.right()-self.width()-8)),
-                  max(area.top()+8,min(anchor.bottom()+8,area.bottom()-self.height()-8)))
-        self.show();self.raise_();self.timer.start(8000 if large else 3500)
-    def hideEvent(self,event):
-        self.timer.stop();super().hideEvent(event)
-        QTimer.singleShot(0,self.manager._offer_next_large_intake)
-
-
 class ClipboardNotice(QWidget):
-    """Short sender-only feedback; never owns keyboard, pointer or Dock focus."""
+    """One reusable sender-only top-right card; it never accepts user input."""
     def __init__(self,manager):
-        super().__init__();self.manager=manager
+        super().__init__();self.manager=manager;self.generation=0;self.jobs=set();self._closing=False
         self.setWindowFlags(Qt.Tool|Qt.FramelessWindowHint|Qt.WindowStaysOnTopHint|Qt.WindowDoesNotAcceptFocus|Qt.WindowTransparentForInput)
         self.setAttribute(Qt.WA_ShowWithoutActivating);self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents)
-        keep_tool_visible_when_inactive(self)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents);keep_tool_visible_when_inactive(self)
         root=QHBoxLayout(self);root.setContentsMargins(0,0,0,0)
         self.card=QFrame(self);root.addWidget(self.card)
-        row=QHBoxLayout(self.card);row.setContentsMargins(12,8,12,8);row.setSpacing(7)
-        self.symbol=QLabel(self.card);self.symbol.setFixedSize(15,15);row.addWidget(self.symbol)
-        self.message=QLabel(self.card);row.addWidget(self.message)
+        row=QHBoxLayout(self.card);row.setContentsMargins(14,12,14,12);row.setSpacing(12)
+        self.symbol=QLabel(self.card);self.symbol.setFixedSize(38,38);self.symbol.setAlignment(Qt.AlignCenter);row.addWidget(self.symbol)
+        labels=QVBoxLayout();labels.setSpacing(4);labels.setContentsMargins(0,0,0,0)
+        self.message=QLabel(self.card);self.preview=QLabel(self.card)
+        self.message.setTextFormat(Qt.PlainText);self.preview.setTextFormat(Qt.PlainText)
+        labels.addWidget(self.message);labels.addWidget(self.preview);row.addLayout(labels,1)
+        self.setFixedSize(330,76)
         self.timer=QTimer(self);self.timer.setSingleShot(True);self.timer.timeout.connect(self.dismiss)
-        from ui_transitions import WindowFade
-        self._window_fade=WindowFade(self)
+        from PySide6.QtCore import QVariantAnimation,QEasingCurve
+        self.animation=QVariantAnimation(self);self.animation.setDuration(200);self.animation.setEasingCurve(QEasingCurve.OutCubic)
+        self.animation.valueChanged.connect(self._frame);self.animation.finished.connect(self._finished)
+
+    def _frame(self,value):
+        fraction=float(value)
+        self.move(round(self._outside.x()+(self._target.x()-self._outside.x())*fraction),self._target.y())
+        self.setWindowOpacity(fraction)
+
+    def _finished(self):
+        if self._closing:self.hide()
+        else:self.timer.start(2200)
 
     def dismiss(self):
-        if not self._window_fade.defer_done(0,lambda _:self.hide()):self.hide()
+        from native_ui_common import reduced_motion
+        if not self.isVisible():return
+        self._closing=True;self.animation.stop()
+        if reduced_motion():self.hide();return
+        self.animation.setStartValue(self.windowOpacity());self.animation.setEndValue(0.);self.animation.start()
 
     def show_result(self,ok,context):
-        from native_ui_common import colors
-        from flickdock_icons import glyph_pixmap
-        c=colors(self.manager.settings.theme)
+        from native_ui_common import colors,reduced_motion,icon
+        from pathlib import Path
+        c=colors(self.manager.settings.theme);self.generation+=1;generation=self.generation
         self.message.setText('复制已同步' if ok else '复制同步失败')
-        self.symbol.setPixmap(glyph_pixmap('check' if ok else 'close',15,c['green'] if ok else c['red'],dpr=self.devicePixelRatioF()))
-        self.card.setStyleSheet(f"QFrame{{background:{c['surface']};border:1px solid {c['border']};border-radius:8px;}} QLabel{{color:{c['text']};border:0;font-size:12px;background:transparent;}}")
-        self.adjustSize();point=QPoint(*context.get('point',(0,0)))
+        self.message.setStyleSheet('font-size:12px;font-weight:600;color:'+c['green' if ok else 'red']+';')
+        self.card.setStyleSheet(f"QFrame{{background:{c['surface']};border:1px solid {c['border']};border-radius:8px;}} QLabel{{color:{c['text']};border:0;font-size:11px;background:transparent;}}")
+        value=context.get('value');kind=value[0] if value else '';data=value[1] if value else None
+        detail='';glyph='copy'
+        if kind=='text':detail=str(data.get('text','')).replace('\n',' ');glyph='web' if detail.startswith(('https://','http://')) else 'text'
+        elif kind=='image':detail='图片';glyph='images'
+        elif kind=='files' and data:
+            path=Path(data[0]);glyph='file';detail=path.name
+            try:
+                size=path.stat().st_size;detail+=f' · {size/1024/1024:.1f} MB' if size>=1024**2 else f' · {size/1024:.1f} KB'
+            except OSError:pass
+        self.preview.setText(self.preview.fontMetrics().elidedText(detail,Qt.ElideRight,250))
+        self.symbol.setPixmap(icon(glyph,c['secondary']).pixmap(30,30))
+        for job in self.jobs:job.cancel.set()
+        if value and kind in ('image','files'):
+            from clipboard_preview import read_clip_image
+            from sync_files import DiskWork
+            from PySide6.QtCore import QThreadPool
+            from PySide6.QtGui import QImage,QPixmap
+            from shiboken6 import isValid
+            job=DiskWork(read_clip_image,value,38);self.jobs.add(job)
+            def ready(image,error):
+                self.jobs.discard(job)
+                if isValid(self) and generation==self.generation and not error and isinstance(image,QImage) and not image.isNull():self.symbol.setPixmap(QPixmap.fromImage(image))
+            job.signals.done.connect(ready);QThreadPool.globalInstance().start(job,10)
+        point=QPoint(*context.get('point',(0,0)))
         screen=QGuiApplication.screenAt(point) or QGuiApplication.primaryScreen();area=screen.availableGeometry()
-        if context.get('fullscreen'):
-            x=area.center().x()-self.width()//2;y=area.bottom()-self.height()-32
-        else:x=point.x()+14;y=point.y()+22
-        self.move(max(area.left()+8,min(x,area.right()-self.width()-8)),max(area.top()+8,min(y,area.bottom()-self.height()-8)))
-        self._window_fade.reopen();self.show();self.raise_();self.timer.start(1400)
+        self._target=QPoint(area.right()-self.width()-15,area.top()+16);self._outside=QPoint(area.right()+1,self._target.y())
+        visible=self.isVisible();self.timer.stop();self.animation.stop();self._closing=False
+        self.show();self.raise_()
+        if reduced_motion():self._frame(1.);self.timer.start(2200)
+        elif visible and self.windowOpacity()>=.99:self._frame(1.);self.timer.start(2200)
+        else:
+            self.animation.setStartValue(self.windowOpacity() if visible else 0.);self.animation.setEndValue(1.);self.animation.start()
+
+    def hideEvent(self,event):
+        self.timer.stop();self.animation.stop();super().hideEvent(event)

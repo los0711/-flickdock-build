@@ -13,6 +13,7 @@ const storage={
   async put(key,value){if(typeof key==='string')values.set(key,copy(value));else for(const [k,v] of Object.entries(key))values.set(k,copy(v));},
   async delete(keys){for(const key of Array.isArray(keys)?keys:[keys])values.delete(key);},
   async transaction(fn){return fn(storage);},async getAlarm(){return null;},async setAlarm(){},
+  async list(options={}){return new Map([...values].filter(([key])=>key.startsWith(options.prefix||'')).slice(0,options.limit||1000).map(([key,value])=>[key,copy(value)]));},
 };
 const peers=[];
 function socket(id){const seat={id:id.repeat(64),name:id,platform:'windows',connected:now,window:now,messages:0,ip:id.repeat(64)};
@@ -20,7 +21,11 @@ function socket(id){const seat={id:id.repeat(64),name:id,platform:'windows',conn
 const alice=socket('a'),bob=socket('b'),mallory=socket('c');
 const ctx={storage,getWebSockets:id=>peers.filter(peer=>!id||peer.deserializeAttachment().id===id)};
 const hub=new WanHub(ctx,{TURN_ENABLED:'false'});let sequence=0;
-const send=(socket,value)=>hub.webSocketMessage(socket,JSON.stringify(value));
+const send=async(socket,value)=>{
+  const before=socket.rows.length;
+  await hub.webSocketMessage(socket,JSON.stringify(value));
+  if(['accept','cancel','complete'].includes(value.type))assert.deepEqual(socket.rows.slice(before).filter(row=>row.type==='error'),[],`Unexpected ${value.type} failure`);
+};
 const last=(socket,type)=>socket.rows.filter(row=>row.type===type).at(-1);
 const next=()=>String(++sequence).padStart(32,'0');
 const input=id=>({type:'request',id,token:'d'.repeat(64),digest:'e'.repeat(64),total:'12',count:1,names:['original.bin']});
@@ -44,10 +49,11 @@ try{
   now+=360000;const recentId=next();await send(alice,{...input(recentId),peer:bob.deserializeAttachment().id});assert.equal(last(bob,'request').id,recentId);
   await send(alice,{type:'cancel',id:recentId});
   const expiredId=next();await send(mallory,{type:'prepare',id:expiredId,token:'d'.repeat(64),code:last(bob,'identity').code});assert.equal(last(mallory,'error').id,expiredId);
-  await send(alice,{type:'remove',peer:bob.deserializeAttachment().id});assert.deepEqual(last(alice,'peers').peers,[]);assert.deepEqual(last(bob,'peers').peers,[]);
+  await send(alice,{type:'remove',peer:bob.deserializeAttachment().id});assert.deepEqual(last(alice,'peers').peers,[]);assert.equal(last(bob,'peers').peers[0].id,alice.deserializeAttachment().id,'Removing local recent history preserves the other device history');
   await send(alice,{type:'complete',id});await send(bob,{type:'complete',id});
   assert.deepEqual(await storage.get('recent:'+alice.deserializeAttachment().id),[],'Late completion replays must not restore a deleted device');
-  const removedId=next();await send(alice,{...input(removedId),peer:bob.deserializeAttachment().id});assert.equal(last(alice,'error').id,removedId);
+  const removedId=next();await send(alice,{...input(removedId),peer:bob.deserializeAttachment().id});assert.equal(last(bob,'request').id,removedId,'Removing displayed history preserves previously confirmed pairing');
+  await send(alice,{type:'cancel',id:removedId});
   now+=60000;await send(bob,{type:'refresh'});const valid=last(bob,'identity').code,cancelled=next();
   await send(alice,{type:'cancel',id:cancelled});await send(alice,{type:'prepare',id:cancelled,token:'d'.repeat(64),code:valid});assert.equal(last(alice,'error').id,cancelled);
   const legacyId=next();await send(alice,{...input(legacyId),code:valid});assert.equal(last(bob,'request').id,legacyId,'Existing desktop versions retain the code request protocol');

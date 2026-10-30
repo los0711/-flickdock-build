@@ -30,7 +30,7 @@ class Screen:
 
 
 phase=None;shelf=None;current=None;in_prepare=0
-segments=[];events=[];calls=[];beats=[];violations=[];function_costs=[]
+segments=[];events=[];calls=[];beats=[];violations=[];function_costs=[];entrance_frames=[]
 started=time.perf_counter()
 def moment():return (time.perf_counter()-started)*1000
 
@@ -61,6 +61,11 @@ def spin_until(predicate,timeout=4000):
 
 
 def sample():
+    if phase and shelf is not None and shelf.presentation._timer.isActive():
+        values=dict(shelf.presentation.values)
+        if not entrance_frames or entrance_frames[-1]['phase']!=phase or entrance_frames[-1]['values']!=values:
+            entrance_frames.append(dict(phase=phase,at=round(moment(),3),values=values,
+                                        host=rect(shelf.geometry()),visual=rect(shelf.visual_geometry())))
     if current is None or shelf is None or not shelf.geometry_morph.active or in_prepare:return
     visual=rect(shelf.visual_geometry())
     host,card=rect(shelf.geometry()),rect(shelf.card.geometry())
@@ -72,7 +77,8 @@ def sample():
 
 
 def beat():
-    beats.append(dict(at=moment(),phase=phase,morph=bool(shelf and shelf.geometry_morph.active)))
+    beats.append(dict(at=moment(),phase=phase,morph=bool(shelf and shelf.geometry_morph.active),
+                      entrance=bool(shelf and shelf.presentation._timer.isActive())))
 
 
 def instrument(cls,name):
@@ -203,7 +209,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-clock-v164-') as temporary:
                       scope='Real QEventLoop, no animation seeking; offscreen, no DWM claim',
                       baseline_heartbeat_max_ms=round(max(baseline_gaps),3),
                       adaptive_heartbeat_budget_ms=round(heartbeat_budget,3),operations=[],
-                      segments=segments,calls=calls,slow_events=events,functions=function_costs,violations=violations)
+                      segments=segments,entrance_frames=entrance_frames,calls=calls,slow_events=events,functions=function_costs,violations=violations)
         failures=[]
         for result in results:
             relevant=[segment for segment in segments if segment['phase']==result['name']]
@@ -217,7 +223,8 @@ with tempfile.TemporaryDirectory(prefix='flickdock-clock-v164-') as temporary:
                     failures.append(f"segment {segment['id']} changed host/card at completion")
             phase_beats=[entry for entry in beats if result['begin']<=entry['at']<=result['end']]
             gaps=[right['at']-left['at'] for left,right in zip(phase_beats,phase_beats[1:])]
-            active_gaps=[right['at']-left['at'] for left,right in zip(phase_beats,phase_beats[1:]) if left['morph'] or right['morph']]
+            active_gaps=[right['at']-left['at'] for left,right in zip(phase_beats,phase_beats[1:])
+                         if left['morph'] or right['morph'] or left['entrance'] or right['entrance']]
             summary=dict(name=result['name'],max_heartbeat_gap_ms=round(max(gaps or [0]),3),
                          max_animation_heartbeat_gap_ms=round(max(active_gaps or [0]),3),
                          prepares=len(relevant),cancelled_before_tick=len(relevant)-len(visible),
@@ -226,7 +233,17 @@ with tempfile.TemporaryDirectory(prefix='flickdock-clock-v164-') as temporary:
                          max_entry_call_ms=max([entry['duration_ms'] for entry in calls if entry['phase']==result['name']] or [0]),
                          **{key:value for key,value in result.items() if key not in ('name','begin','end')})
             evidence['operations'].append(summary)
-            if not visible:failures.append(result['name']+' showed no real-clock transition')
+            if result['name']=='cold_overview':
+                # The shortcut now reveals the final overview using the same
+                # alpha/scale spring as the preview, without a geometry morph.
+                frames=[frame for frame in entrance_frames if frame['phase']=='cold_overview']
+                summary['entrance_frames']=len(frames)
+                if relevant:failures.append('cold overview unexpectedly expanded from a compact shelf')
+                if len(frames)<5:failures.append('cold overview showed no real-clock entrance')
+                if frames and any(frame['host']!=frames[0]['host'] or frame['visual']!=frames[0]['visual'] or
+                                  frame['values']['dx']!=0 for frame in frames):
+                    failures.append('cold overview entrance moved sideways or resized the native surface')
+            elif not visible:failures.append(result['name']+' showed no real-clock transition')
             if max(active_gaps or [0])>heartbeat_budget:failures.append(result['name']+' blocked the 20 ms heartbeat')
         constructed=[entry for entry in function_costs if entry['name']=='IconItem.__init__' and entry['morph'] and not entry['preparing']]
         evidence['icons_constructed_during_animation']=len(constructed)
@@ -236,7 +253,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-clock-v164-') as temporary:
         if painter_errors:failures.append('invalid painter lifecycle')
         evidence['painter_errors']=painter_errors;evidence['failures']=failures
         Path(__file__).with_name('morph-clock-v164.json').write_text(json.dumps(evidence,ensure_ascii=False,indent=2),encoding='utf8')
-        print(json.dumps({key:value for key,value in evidence.items() if key not in ('segments','calls','slow_events','functions','violations')},ensure_ascii=False,indent=2))
+        print(json.dumps({key:value for key,value in evidence.items() if key not in ('segments','entrance_frames','calls','slow_events','functions','violations')},ensure_ascii=False,indent=2))
         manager.quit()
         assert not failures,failures
 print('MORPH_CLOCK_V164_OK')

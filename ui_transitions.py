@@ -36,7 +36,7 @@ class WindowFade(QObject):
 
     def eventFilter(self,watched,event):
         if QCoreApplication.closingDown() or not isValid(self.window):return False
-        if event.type()==QEvent.Show and not self.window.isMinimized():
+        if event.type()==QEvent.Show and not event.spontaneous() and not self.window.isMinimized():
             self.pending=None;self.animation.stop()
             if self.enabled():
                 self.window.setWindowOpacity(.78);self._start(1.0)

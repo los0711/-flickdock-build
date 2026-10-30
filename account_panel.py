@@ -225,6 +225,7 @@ class AccountPanel(QFrame):
         self.setMinimumWidth(0)
         self.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Preferred)
         self._mode='login';self._account_id='';self._busy=bool(service.busy)
+        self._feedback_scope='';self._feedback_timers={};self._feedback_animations={}
         self._devices={};self.device_buttons={};self._device_rows=[];self._rows_by_id={}
         self.device_rename_buttons={};self.device_name_edits={};self._rename_forms={}
         self._rename_save_buttons={};self._editing_device=''
@@ -575,13 +576,47 @@ class AccountPanel(QFrame):
         for edit in (self.password_edit,self.old_password_edit,self.new_password_edit,self.confirm_password_edit):
             secret=edit.text()
             if secret:message=message.replace(secret,'…')
-        self.status_label.setText(message[:240]);self.status_label.setVisible(bool(message) and self.service.signed_in)
-        self.auth_status_label.setText(message[:240]);self.auth_status_label.setVisible(bool(message) and not self.service.signed_in)
-        self.password_status_label.setText(message[:240]);self.password_status_label.setVisible(bool(message) and self.password_dialog.isVisible())
+        password=self._feedback_scope=='password' or self.password_dialog.isVisible()
+        target=self.password_status_label if password else self.status_label if self.service.signed_in else self.auth_status_label
+        timer=self._feedback_timers.get(target)
+        if timer:timer.stop()
+        previous=self._feedback_animations.pop(target,None)
+        if previous:previous.stop();previous.deleteLater()
+        effect=target.graphicsEffect()
+        if effect:effect.setOpacity(1.)
+        target.setText(message[:240]);target.setVisible(bool(message) and (not password or self.password_dialog.isVisible()))
+        if message.startswith(('设备名称已更新','密码已更新','密码已修改')):
+            self._transient_feedback(target,password=password)
+        if password and message.startswith(('密码已修改','密码已更新')):self._feedback_scope=''
+        elif not self._busy:self._feedback_scope=''
+
         for dialog in (self.auth_dialog,self.password_dialog):
             if dialog.isVisible():QTimer.singleShot(0,lambda dialog=dialog:self._fit_auth_form(dialog))
         self._refreshing=False;self._revoke_pending='';self._cancel_remove();self._update_enabled()
         self._queue_fit()
+
+    def _transient_feedback(self,label,*,password=False):
+        from PySide6.QtCore import QVariantAnimation
+        from PySide6.QtWidgets import QGraphicsOpacityEffect
+        effect=label.graphicsEffect()
+        if effect is None:effect=QGraphicsOpacityEffect(label);label.setGraphicsEffect(effect)
+        effect.setOpacity(1.)
+        timer=self._feedback_timers.get(label)
+        if timer:timer.stop()
+        timer=QTimer(self);timer.setSingleShot(True);self._feedback_timers[label]=timer
+        def fade():
+            from ui_transitions import motion_allowed
+            animation=QVariantAnimation(label);animation.setDuration(180 if motion_allowed() else 0)
+            self._feedback_animations[label]=animation
+            animation.setStartValue(1.);animation.setEndValue(0.)
+            animation.valueChanged.connect(effect.setOpacity)
+            def finish():
+                self._feedback_animations.pop(label,None)
+                label.clear();label.hide();effect.setOpacity(1.);animation.deleteLater()
+                if password and self.password_dialog.isVisible():self._fit_auth_form(self.password_dialog)
+                self._queue_fit()
+            animation.finished.connect(finish);animation.start()
+        timer.timeout.connect(fade);timer.start(2400)
 
     def _fit_auth_form(self,dialog):
         form=self.auth_page if dialog is self.auth_dialog else self.password_form
@@ -641,6 +676,7 @@ class AccountPanel(QFrame):
 
     def _change_password(self):
         if self._busy or not self.service.signed_in:return
+        self._feedback_scope='password'
         old,new,confirm=self.old_password_edit.text(),self.new_password_edit.text(),self.confirm_password_edit.text()
         if not old:
             self._status_changed('请输入原密码。');self.old_password_edit.setFocus();return
@@ -653,8 +689,11 @@ class AccountPanel(QFrame):
         self._invoke(self.service.change_password,old,new,confirm)
 
     def _password_changed(self):
-        self._reset_password()
+        for edit in (self.old_password_edit,self.new_password_edit,self.confirm_password_edit):edit.clear()
+        self._feedback_scope='password'
         self._status_changed('密码已更新，其他设备需要重新登录。')
+        self._feedback_scope='password'  # Route the service's following status too.
+
 
     def refresh_devices(self):
         if not self.service.signed_in or self._busy or self._refreshing:return

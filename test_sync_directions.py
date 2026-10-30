@@ -89,17 +89,18 @@ class Cloud(QObject):
                     self.changes.append(copy.deepcopy(record))
                     result = dict(instant=True,record=copy.deepcopy(record))
                 elif method == 'GET' and path.endswith('/content'):
-                    assert kwargs.get('headers',{}).get('X-FlickDock-Fast-Content')=='1'
+                    assert kwargs.get('headers',{}).get('X-FlickDock-Fast-Content')=='1' or kwargs.get('headers',{}).get('X-FlickDock-Range-Bytes')=='4194304'
                     identity = path.split('/')[3]
                     record,payload = self.items[identity]
                     assert payload, 'remote fixture content must have bytes'
-                    result = dict(record=copy.deepcopy(record),
-                                  chunk_size=len(payload) if len(payload)>4*1024*1024 else 65536,
-                                  part_count=1)
+                    chunk=4*1024*1024 if kwargs.get('headers',{}).get('X-FlickDock-Range-Bytes')=='4194304' else len(payload) if len(payload)>4*1024*1024 else 65536
+                    result = dict(record=copy.deepcopy(record),chunk_size=chunk,part_count=(len(payload)+chunk-1)//chunk)
                 elif method == 'GET' and '/parts/' in path:
-                    assert kwargs.get('headers',{}).get('X-FlickDock-Fast-Content')=='1'
+                    assert kwargs.get('headers',{}).get('X-FlickDock-Fast-Content')=='1' or kwargs.get('headers',{}).get('X-FlickDock-Range-Bytes')=='4194304'
                     identity = path.split('/')[3]
                     payload = self.items[identity][1]
+                    if kwargs.get('headers',{}).get('X-FlickDock-Range-Bytes')=='4194304':
+                        index=int(path.split('/parts/')[1].split('?')[0]);payload=payload[index*4*1024*1024:(index+1)*4*1024*1024]
                     target = Path(kwargs['destination'])
                     assert len(payload) == kwargs['expected']['size']
                     target.parent.mkdir(parents=True,exist_ok=True)

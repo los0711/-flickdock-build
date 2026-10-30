@@ -28,15 +28,10 @@ def run_update(argv, load_font):
     load_font(app)
     # Verify optional native dependencies from the actual frozen payload,
     # rather than from the publishing machine's Python installation.
-    import threading
-    from pairing_qr import qr_image,decode_qr
-    code='2345ABCD'
-    if decode_qr(qr_image(code),threading.Event())!=code:
-        raise ValueError('冻结程序二维码识别验证失败。')
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     key=Ed25519PrivateKey.generate();message=b'FlickDock frozen crypto dependency probe'
     key.public_key().verify(key.sign(message),message)
-    report.update(pairing_qr_roundtrip=True,publisher_crypto_runtime=True)
+    report.update(publisher_crypto_runtime=True)
     with tempfile.TemporaryDirectory(prefix='flickdock-channel-') as profile:
         updater = UpdateClient(current, Path(profile) / 'updates', timeout_ms=60000)
         done = False

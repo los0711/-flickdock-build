@@ -62,7 +62,7 @@ class _CopyCodeButton(_PressButton):
         current=self.code_provider() if self.code_provider else self.text()
         if not current:return
         code=''.join(current.split())
-        if len(code) not in (6,8) or not code.isalnum():return
+        if not (len(code) in (4,6) and code.isascii() and code.isdigit() or len(code)==8 and code.isascii() and code.isalnum()):return
         self.setText(current)
         QApplication.clipboard().setText(code)
         self.setToolTip('已复制');self._feedback.start(1600)
@@ -222,6 +222,7 @@ class _ScanIndicator(QWidget):
 
 
 class _DevicesCombo(QComboBox):
+    remove_requested=Signal(str)
     def __init__(self,parent=None):
         super().__init__(parent)
         from app_settings import _InlineComboStyle
@@ -236,6 +237,20 @@ class _DevicesCombo(QComboBox):
         dark=bool(getattr(self.itemDelegate(),'dark',False))
         popup.setStyleSheet('QFrame{background:'+('#242426' if dark else '#FFFFFF')+';border:1px solid '+('#424248' if dark else '#D4D4D8')+';border-radius:10px;}')
         super().showPopup()
+        self.view().viewport().installEventFilter(self)
+
+    def eventFilter(self,watched,event):
+        if watched is self.view().viewport() and getattr(self,'removable',False):
+            if event.type() in (QEvent.MouseButtonPress,QEvent.MouseButtonRelease,QEvent.MouseButtonDblClick):
+                index=self.view().indexAt(event.position().toPoint())
+                if index.isValid() and self.view().visualRect(index).adjusted(self.view().visualRect(index).width()-34,0,-4,0).contains(event.position().toPoint()):
+                    if event.type()==QEvent.MouseButtonPress:self._remove_pressed=index.data(Qt.UserRole)
+                    elif event.type()==QEvent.MouseButtonRelease:
+                        identifier=index.data(Qt.UserRole)
+                        if identifier and identifier==getattr(self,'_remove_pressed',None):self.remove_requested.emit(identifier)
+                        self._remove_pressed=None
+                    return True
+        return super().eventFilter(watched,event)
 
     def wheelEvent(self, event): event.ignore()
 
@@ -284,11 +299,14 @@ class _DeviceDelegate(QStyledItemDelegate):
         host = str(index.data(Qt.ItemDataRole.ToolTipRole) or '')
         primary = '#edf2fa' if self.dark else '#172537'
         secondary = '#a4b3c7' if self.dark else '#74849a'
-        width = max(20, option.rect.width()-82)
+        removable=getattr(self,'removable',False)
+        width = max(20, option.rect.width()-(112 if removable else 82))
         online=index.data(Qt.ItemDataRole.UserRole+2)
         if online is not None:
             painter.setPen(Qt.PenStyle.NoPen);painter.setBrush(QColor('#30D158' if online else '#8E8E93'))
-            painter.drawEllipse(QRectF(option.rect.right()-22,option.rect.center().y()-4,8,8))
+            painter.drawEllipse(QRectF(option.rect.right()-(52 if removable else 22),option.rect.center().y()-4,8,8))
+        if removable:
+            ui_icon('close',secondary).paint(painter,QRect(option.rect.right()-27,option.rect.center().y()-9,18,18))
         painter.setFont(option.font)
         painter.setPen(QColor(primary))
         painter.drawText(QRectF(option.rect.left()+49,option.rect.top()+8,width,20),
@@ -658,16 +676,9 @@ class LanPanel(QFrame):
         self.device_delegate = _DeviceDelegate(self.devices_view)
         self.devices_view.setItemDelegate(self.device_delegate)
         self.devices.setView(self.devices_view)
-        self.remove_recent_button=None
-        if self._wan:
-            devices_row=QHBoxLayout();devices_row.setContentsMargins(0,0,0,0);devices_row.setSpacing(6)
-            devices_row.addWidget(self.devices,1)
-            self.remove_recent_button=_button('',self.send_column);self.remove_recent_button.setFixedSize(36,36)
-            self.remove_recent_button.setIconSize(QSize(17,17));self.remove_recent_button.setToolTip('删除所选最近设备')
-            self.remove_recent_button.setAccessibleName('删除所选最近设备');self.remove_recent_button.setEnabled(False)
-            self.remove_recent_button.clicked.connect(self._remove_recent)
-            devices_row.addWidget(self.remove_recent_button);send.addLayout(devices_row)
-        else:send.addWidget(self.devices)
+        self.devices.removable=self._wan;self.device_delegate.removable=self._wan
+        self.devices.remove_requested.connect(self._remove_recent)
+        send.addWidget(self.devices)
         self.nearby_hint=QFrame(self.send_column);nearby_row=QHBoxLayout(self.nearby_hint)
         nearby_row.setContentsMargins(0,2,0,2);nearby_row.setSpacing(8)
         nearby_text=_label('已在局域网发现此设备，推荐使用局域网传输',self.nearby_hint,muted=True)
@@ -679,18 +690,10 @@ class LanPanel(QFrame):
         self.peer_code_label.setObjectName('lanSection');self.peer_code_label.setVisible(self._wan)
         if self._wan:send.addWidget(self.peer_code_label)
         self.peer_code_input=QLineEdit(self.send_column)
-        self.peer_code_input.setPlaceholderText('输入对方的 8 位接收码')
+        self.peer_code_input.setPlaceholderText('输入 8 位本机码或 4 位一次性码')
         self.peer_code_input.setAccessibleName('对方的接收码');self.peer_code_input.setMaxLength(8)
         self.peer_code_input.setMinimumHeight(36);self.peer_code_input.setVisible(self._wan)
         if self._wan:send.addWidget(self.peer_code_input)
-        if self._wan:
-            qr_actions=QHBoxLayout();qr_actions.setSpacing(8)
-            self.qr_clipboard_button=_button('识别剪贴板二维码',self.send_column)
-            self.qr_file_button=_button('识别二维码图片',self.send_column)
-            self.qr_clipboard_button.clicked.connect(self._read_clipboard_qr)
-            self.qr_file_button.clicked.connect(self._read_file_qr)
-            qr_actions.addWidget(self.qr_clipboard_button);qr_actions.addWidget(self.qr_file_button)
-            send.addLayout(qr_actions)
         self.devices.currentIndexChanged.connect(self._target_changed)
         self.peer_code_input.textChanged.connect(self._target_changed)
         send.addStretch(1)
@@ -708,13 +711,30 @@ class LanPanel(QFrame):
                 self.send_code_value.clicked.connect(lambda:service.reconnect() if not service.code_identity().get('code') else None)
             self.code_countdown=_CodeCountdown(service,self.send_code_value,self.send_code)
             send_code_layout.addWidget(self.code_countdown)
-            self.qr_share_button=_button('二维码',self.send_code);self.qr_share_button.setEnabled(False)
-            self.qr_share_button.clicked.connect(self._show_code_qr);send_code_layout.addWidget(self.qr_share_button)
         if self._wan and hasattr(service,'identity_changed'):
             service.identity_changed.connect(self._code_identity_changed)
             self._code_identity_changed(service.code_identity() if callable(getattr(service,'code_identity',None))
                                         else dict(code=getattr(service,'code','')))
         send.addWidget(self.send_code)
+        if self._wan and hasattr(service,'custom_code_changed'):
+            custom_row=QHBoxLayout();custom_row.setSpacing(6)
+            self.custom_input=QLineEdit(self.send_column);self.custom_input.setMaxLength(4)
+            from PySide6.QtCore import QRegularExpression
+            from PySide6.QtGui import QRegularExpressionValidator
+            self.custom_input.setValidator(QRegularExpressionValidator(QRegularExpression("[0-9]{0,4}"),self.custom_input))
+            self.custom_input.setInputMethodHints(Qt.ImhDigitsOnly)
+            self.custom_input.setPlaceholderText('自定义一次性接收码 · 4 位数字')
+            self.custom_input.setAccessibleName('自定义一次性接收码')
+            self.custom_set=_button('设置',self.send_column);self.custom_cancel=_button('取消',self.send_column)
+            self.custom_set.clicked.connect(self._set_custom);self.custom_cancel.clicked.connect(self._cancel_custom)
+            custom_row.addWidget(self.custom_input,1);custom_row.addWidget(self.custom_set);custom_row.addWidget(self.custom_cancel)
+            send.addLayout(custom_row)
+            status_row=QHBoxLayout();status_row.setSpacing(8)
+            self.custom_value=_CopyCodeButton('—',self.send_column)
+            self.custom_value.code_provider=lambda:service.custom_identity().get('code','') if service.custom_identity().get('status')=='available' and service.custom_identity().get('online') else ''
+            self.custom_status=_label('',self.send_column,muted=True)
+            status_row.addWidget(self.custom_value);status_row.addWidget(self.custom_status,1);send.addLayout(status_row)
+            service.custom_code_changed.connect(self._custom_changed);self._custom_changed(service.custom_identity())
         self.send_button = _button('发送', self); self.send_button.setObjectName('lanPrimary')
         self.send_button.setProperty('pressScale',True)
         self.send_button.setMinimumHeight(36)
@@ -1029,23 +1049,27 @@ class LanPanel(QFrame):
         for button in (self.previous_page,self.next_page):
             button.dark=self._dark;button.update()
         if self.code_countdown:self.code_countdown.dark=self._dark;self.code_countdown.update()
-        if self.remove_recent_button:self.remove_recent_button.setIcon(ui_icon('trash',c['secondary']))
         self.drop_zone.illustration.dark=self._dark;self.drop_zone.illustration.update()
         self.scan_indicator.dark=self._dark;self.scan_indicator.update()
 
     def _peers_changed(self, peers):
         if self._wan:
-            selected=self.devices.currentData();self.devices.clear()
+            selected=self.devices.currentData();scroll=self.devices.view().verticalScrollBar().value()
+            blocked=self.devices.blockSignals(True);wanted={peer['id'] for peer in peers}
+            for index in range(self.devices.count()-1,-1,-1):
+                if self.devices.itemData(index) not in wanted:self.devices.removeItem(index)
             for peer in peers:
                 name=str(peer.get('name') or '未命名设备')
-                self.devices.addItem(('同账号 · ' if peer.get('account_device') else '')+name,peer['id'])
-                index=self.devices.count()-1
+                index=self.devices.findData(peer['id'])
+                if index<0:self.devices.addItem('',peer['id']);index=self.devices.count()-1
+                self.devices.setItemText(index,('同账号 · ' if peer.get('account_device') else '')+name)
                 self.devices.setItemData(index,'在线' if peer.get('online') else '离线',Qt.ItemDataRole.ToolTipRole)
                 self.devices.setItemData(index,peer.get('platform','unknown'),Qt.ItemDataRole.UserRole+1)
                 self.devices.setItemData(index,bool(peer.get('online')),Qt.ItemDataRole.UserRole+2)
                 self.devices.setItemData(index,bool(peer.get('account_device')),Qt.ItemDataRole.UserRole+3)
             index=self.devices.findData(selected)
             self.devices.setCurrentIndex(index if index>=0 else 0 if peers else -1)
+            self.devices.blockSignals(blocked);self.devices.view().verticalScrollBar().setValue(scroll)
             self.target_label.setText(('同账号与最近设备' if any(p.get('account_device') for p in peers) else '最近传输设备')+(f' ({len(peers)})' if peers else ''))
             self.peer_count.setText(f'{sum(bool(p.get("online")) for p in peers)} 台在线')
             self.scan_indicator.online=any(p.get('online') for p in peers)
@@ -1073,62 +1097,26 @@ class LanPanel(QFrame):
     def _code_identity_changed(self,identity):
         if self.code_countdown:self.code_countdown._tick()
         else:self.send_code_value.setText(identity.get('code') or '连接中…')
-        if hasattr(self,'qr_share_button'):self.qr_share_button.setEnabled(bool(identity.get('code')))
-        dialog=getattr(self,'_qr_dialog',None)
-        if dialog is not None and dialog.isVisible():self._refresh_code_qr()
+    def _set_custom(self):
+        try:self.service.set_custom_code(self.custom_input.text())
+        except (ValueError,OSError) as error:self.custom_status.setText(str(error))
 
-    def _show_code_qr(self):
-        from app_settings import ReferenceModalDialog
-        if getattr(self,'_qr_dialog',None) is None:
-            self._qr_dialog=ReferenceModalDialog(self,surface_width=300,modal=False)
-            self._qr_dialog.setWindowTitle('FlickDock · 分享接收码')
-            self._qr_image_label=QLabel(self._qr_dialog.body);self._qr_image_label.setAlignment(Qt.AlignCenter)
-            self._qr_code_label=_label('',self._qr_dialog.body);self._qr_code_label.setAlignment(Qt.AlignCenter)
-            self._qr_dialog.body_layout.addWidget(self._qr_image_label)
-            self._qr_dialog.body_layout.addWidget(self._qr_code_label)
-            self._qr_dialog.body_layout.addWidget(_label('临时接收码会自动刷新。对方识别后选择文件发送，你确认后才开始传输。',self._qr_dialog.body))
-            close=_button('关闭',self._qr_dialog.body);close.clicked.connect(self._qr_dialog.reject)
-            self._qr_dialog.body_layout.addWidget(close)
-        self._refresh_code_qr();self._qr_dialog.set_surface_theme('dark' if self._dark else 'light')
-        self._qr_dialog.show();self._qr_dialog.raise_()
+    def _cancel_custom(self):
+        try:self.service.cancel_custom_code()
+        except (ValueError,OSError) as error:self.custom_status.setText(str(error))
 
-    def _refresh_code_qr(self):
-        from pairing_qr import qr_image
-        from PySide6.QtGui import QPixmap
-        code=self.service.code_identity().get('code','')
-        if not code:
-            self._qr_image_label.clear();self._qr_code_label.setText('正在刷新接收码…');return
-        image=qr_image(code)
-        self._qr_image_label.setPixmap(QPixmap.fromImage(image).scaled(240,240,Qt.KeepAspectRatio,Qt.FastTransformation))
-        self._qr_code_label.setText(code)
-
-    def _read_clipboard_qr(self):
-        # A deliberate user action, never an additional background listener.
-        self._decode_code_qr(QApplication.clipboard().image().copy())
-
-    def _read_file_qr(self):
-        path,_=QFileDialog.getOpenFileName(self,'选择接收码二维码','','图片 (*.png *.jpg *.jpeg *.webp *.bmp)')
-        if path:self._decode_code_qr(path)
-
-    def _decode_code_qr(self,source):
-        if getattr(self,'_qr_reading',False):return
-        from pairing_qr import decode_qr
-        from sync_files import DiskWork
-        from PySide6.QtCore import QThreadPool
-        self._qr_reading=True;self.qr_clipboard_button.setEnabled(False);self.qr_file_button.setEnabled(False)
-        job=DiskWork(decode_qr,source);self._qr_job=job
-        def done(result,error):
-            from shiboken6 import isValid
-            if not isValid(self):return
-            self._qr_reading=False;self._qr_job=None
-            self.qr_clipboard_button.setEnabled(True);self.qr_file_button.setEnabled(True)
-            if error:self.status_label.setText(str(error)[:200])
-            elif result:self.peer_code_input.setText(result);self.status_label.setText('接收码已填入，请选择文件后发送。')
-        job.signals.done.connect(done);QThreadPool.globalInstance().start(job)
+    def _custom_changed(self,value):
+        status=value.get('status','empty');online=bool(value.get('online'))
+        text={'available':'可用 · 10 分钟内有效','connecting':'正在建立会话','expired':'已过期','used':'已使用','cancelled':'已取消','empty':'可自定义一次性接收码'}.get(status,'')
+        self.custom_value.setText(value.get('code') or '—')
+        self.custom_value.setEnabled(online and status=='available')
+        self.custom_cancel.setEnabled(online and status in ('available','connecting'))
+        self.custom_set.setEnabled(online)
+        if status=='available':text=f'可用 · {max(0,int(value.get("remaining",0)))} 秒'
+        self.custom_status.setText(str(value.get('error') or (text if online else '远程服务未连接')))
 
     def _target_changed(self,*_):
         if not self._wan:return
-        if self.remove_recent_button:self.remove_recent_button.setEnabled(bool(self.devices.currentData()) and not bool(self.devices.currentData(Qt.ItemDataRole.UserRole+3)))
         nearby=getattr(self.service,'nearby_peer',lambda _:None)(self.devices.currentData()) if not self.peer_code_input.text().strip() else None
         self.nearby_hint.setVisible(bool(nearby))
 
@@ -1139,8 +1127,7 @@ class LanPanel(QFrame):
         if not paths and self._paths_provider:paths=list(self._paths_provider() or [])
         self.lan_recommended.emit(paths,peer['id'])
 
-    def _remove_recent(self):
-        identifier=self.devices.currentData()
+    def _remove_recent(self,identifier):
         if not identifier:return
         try:self.service.remove_peer(identifier)
         except (ValueError,OSError) as error:self.status_label.setText(str(error))
@@ -1447,7 +1434,7 @@ class LanDialog(QDialog):
     dock_requested = Signal()
 
     def show(self):
-        self._window_fade.reopen();super().show()
+        self.chrome.prepare_open();self._window_fade.reopen();super().show()
 
     def done(self,result):
         if self._window_fade.defer_done(result,self.done):return
@@ -1468,9 +1455,9 @@ class LanDialog(QDialog):
         self.setModal(False); self.resize(980, 704); self.setMinimumSize(824, 660)
         root = QVBoxLayout(self); root.setContentsMargins(22, 22, 22, 22)
         self.card = QFrame(self); self.card.setObjectName('lanDialogCard')
-        shadow = QGraphicsDropShadowEffect(self.card)
-        shadow.setBlurRadius(32); shadow.setOffset(0, 9); shadow.setColor(QColor(0, 0, 0, 90))
-        self.card.setGraphicsEffect(shadow); root.addWidget(self.card)
+        from collections import OrderedDict
+        self._shadow_cache=OrderedDict()
+        root.addWidget(self.card)
         content = QVBoxLayout(self.card); content.setContentsMargins(0, 0, 0, 0); content.setSpacing(0)
         self.title_bar = _DialogTitleBar(self)
         title_row = QHBoxLayout(self.title_bar); title_row.setContentsMargins(20,0,20,0);title_row.setSpacing(12)
@@ -1580,6 +1567,18 @@ class LanDialog(QDialog):
             self.setUpdatesEnabled(True);self.card.update();self.update()
         return self.panel
 
+    def paintEvent(self,event):
+        from surface_morph import paint_surface_shadow
+        from PySide6.QtCore import QPointF,QRectF
+        p=QPainter(self)
+        p.setCompositionMode(QPainter.CompositionMode_Source)
+        p.fillRect(event.rect(),Qt.transparent)
+        p.setCompositionMode(QPainter.CompositionMode_SourceOver)
+        paint_surface_shadow(p,QRectF(self.card.geometry()),self._shadow_cache,
+            blur=64 if self._theme=='dark' else 56,offset=QPointF(0,12),
+            color=QColor(0,0,0,120) if self._theme=='dark' else QColor(15,23,42,41))
+        p.end()
+
     def _refresh_title_icon(self):
         c=ui_colors(self._theme)
         self.title_icon.setPixmap(ui_icon('web' if self._wan else 'nearby',c['cyan'] if self._theme=='dark' else c['blue']).pixmap(16,16))
@@ -1612,9 +1611,7 @@ class LanDialog(QDialog):
             QPushButton#lanDialogClose:hover {{ background:{c['red']}; color:white; }}
             QPushButton#lanDialogBack:hover {{ background:{hover}; color:{ink}; }}
         ''')
-        shadow=self.card.graphicsEffect()
-        shadow.setBlurRadius(56 if not dark else 64);shadow.setOffset(0,12)
-        shadow.setColor(QColor(0,0,0,120) if dark else QColor(15,23,42,41))
+        self.update()
         for panel in self._panels.values():panel.apply_theme(theme)
         from native_ui_common import readable_qss
         self.card.setStyleSheet(readable_qss(self.card.styleSheet()))

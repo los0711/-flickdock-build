@@ -14,7 +14,6 @@ FlickDock uses unmodified Python, Qt for Python (PySide6/Shiboken), Qt and Harmo
 
 The application loads its bundled HarmonyOS Sans SC family; Apple font files are not included.
 
-Short-lived pairing-code QR images use python-qrcode 8.2 (BSD-3-Clause) and zxing-cpp 3.1.1 (Apache-2.0). They only render or recognize the existing pairing code. Complete notices are in `licenses/Pairing-QR-LICENSES.txt`.
 
 Cloud account credentials use keyring 25.7.0 with the native Windows Credential Manager or macOS Keychain backend. keyring, jaraco dependencies, more-itertools and pywin32-ctypes retain their original licenses in licenses/Cloud-Client-LICENSES.txt. CPython's native scrypt implementation requires OpenSSL libcrypto under the Apache License 2.0; see licenses/OpenSSL-LICENSE.txt. No credential service secrets are distributed with the client.
 

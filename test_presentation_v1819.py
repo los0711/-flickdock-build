@@ -46,10 +46,11 @@ class PresentationTests(unittest.TestCase):
     def test_transfer_return_enters_with_scale_and_fade_at_the_same_position(self):
         dialog=QFrame();dialog.setGeometry(150,170,1040,600);dialog.card=dialog
         self.manager.shelf=self.shelf;self.manager.reset_drag_gesture=Mock()
+        self.manager._overview_return_rect=QRect(136,163,1068,627)
         for motion in (True,False):
             self.shelf.hide_immediately();self.manager.motion=motion;self.shelf.presentation.motion=motion
             flickdock.ShelfManager.show_overview_from_transfer(self.manager,dialog)
-            target=QRect(dialog.mapToGlobal(QPoint()),dialog.size()).adjusted(-14,-7,14,20)
+            target=self.manager._overview_return_rect
             self.assertEqual(self.shelf.visual_geometry(),target)
             values=self.shelf.presentation.values
             self.assertEqual((values['dx'],values['dy'],values['alpha']),(0,0,0))
@@ -57,6 +58,47 @@ class PresentationTests(unittest.TestCase):
             until(lambda:not self.shelf.presentation._timer.isActive())
             self.assertEqual(self.shelf.visual_geometry(),target);self.assertTrue(self.shelf.expanded)
         dialog.deleteLater()
+
+    def test_overview_shortcut_reuses_preview_entrance_without_sideways_morph(self):
+        from global_hotkeys import HotkeyManager,_NoopBackend
+        self.manager.reset_drag_gesture=Mock()
+        self.manager._pointer_dragging=lambda:False
+        keys=HotkeyManager(APP,lambda:None,lambda:flickdock.ShelfManager.show_overview(self.manager),backend=_NoopBackend())
+        self.addCleanup(keys.close)
+        self.assertIsNone(keys.apply(self.manager.settings.shelf_shortcut,self.manager.settings.overview_shortcut))
+        overview_key=next(key for key,(_,role) in keys._registrations.items() if role=='overview')
+        for reduced in (False,True):
+            self.manager.motion=True;self.shelf.presentation.motion=True
+            self.shelf.geometry_morph.motion=True
+            with patch('native_ui_common.reduced_motion',return_value=reduced),patch.object(flickdock.QCursor,'pos',return_value=QPoint(1450,350)):
+                self.shelf.hide_immediately()
+                self.shelf.show_transient(QPoint(1450,350),reason='shortcut')
+                preview_start=dict(self.shelf.presentation.values)
+                for _ in range(2):
+                    self.shelf.hide_immediately()
+                    shown=[];samples=[];show=self.shelf.show
+                    def record_show():
+                        shown.append((self.shelf.expanded,QRect(self.shelf.visual_geometry())))
+                        show()
+                    def sample(values):
+                        samples.append((QRect(self.shelf.geometry()),QRect(self.shelf.visual_geometry()),dict(values)))
+                    original=self.shelf.presentation._on_update
+                    self.shelf.presentation._on_update=lambda values:(original(values),sample(values))
+                    try:
+                        with patch.object(self.shelf,'show',side_effect=record_show),patch.object(self.shelf.geometry_morph,'animate',wraps=self.shelf.geometry_morph.animate) as morph:
+                            self.assertTrue(keys._dispatch(overview_key))
+                            self.assertEqual(len(shown),1);self.assertTrue(shown[0][0])
+                            target=shown[0][1];host=QRect(self.shelf.geometry())
+                            self.assertEqual(self.shelf.presentation.values,preview_start)
+                            self.assertFalse(self.shelf.geometry_morph.active);morph.assert_not_called()
+                            samples.clear()
+                            until(lambda:not self.shelf.presentation._timer.isActive())
+                            self.assertTrue(samples)
+                            self.assertTrue(all(native==host and visual==target and values['dx']==0 for native,visual,values in samples))
+                            self.assertEqual(self.shelf.presentation.values,dict(sx=1,sy=1,alpha=1,dx=0,dy=0))
+                            if reduced:
+                                self.assertTrue(all(values['sx']==values['sy']==1 and values['dy']==0 for _,_,values in samples))
+                    finally:self.shelf.presentation._on_update=original
 
 
 class SettingsNetworkTests(unittest.TestCase):

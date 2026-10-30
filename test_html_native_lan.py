@@ -42,9 +42,10 @@ class NativeLanTests(unittest.TestCase):
         self.dialog.close();self.dialog.deleteLater();APP.processEvents();self.temp.cleanup()
 
     def test_reference_client_geometry_and_native_buttons_remain_modeless(self):
-        self.assertEqual(self.dialog.size().toTuple(),(980,704))
-        self.assertEqual((self.dialog.card.width(),self.dialog.card.height()),(936,660))
-        self.assertEqual(self.dialog.minimumSize().toTuple(),(824,660))
+        area=self.dialog.chrome._available()
+        self.assertEqual(self.dialog.size().toTuple(),(min(980,area.width()-16),min(704,area.height()-16)))
+        self.assertEqual((self.dialog.card.width(),self.dialog.card.height()),(self.dialog.width()-44,self.dialog.height()-44))
+        self.assertEqual(self.dialog.minimumSize().toTuple(),(min(824,area.width()-16),min(660,area.height()-16)))
         self.assertEqual(self.dialog.title_bar.height(),48)
         panel=self.dialog.panel
         self.assertAlmostEqual(panel.send_column.width()/panel.activity_column.width(),5/7,delta=.015)

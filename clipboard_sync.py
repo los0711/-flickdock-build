@@ -100,7 +100,7 @@ def package(value,directory,cancel=None):
     """Worker-only file/image encoding. ZIP uses no compression or base64."""
     cancel=cancel or threading.Event();path=Path(directory)/'content.bin'
     if value is None:return None
-    kind,data=value
+    kind,data=value;raw_file=None
     if kind=='text':
         text=data['text'].encode('utf8');html=data.get('html','').encode('utf8')
         if len(text)+len(html)>=MAX_BYTES:return None
@@ -141,21 +141,30 @@ def package(value,directory,cancel=None):
                 if cancel.is_set():return None
                 info=zipfile.ZipInfo(name,date_time=(2026,1,1,0,0,0))
                 if name.endswith('/'):archive.writestr(info,b'');continue
-                before=child.stat();copied=0
+                before=child.stat();copied=0;raw_hash=hashlib.sha256()
                 with child.open('rb') as source,archive.open(info,'w') as target:
                     while chunk:=source.read(256*1024):
                         if cancel.is_set():return None
                         written+=len(chunk)
                         copied+=len(chunk)
                         if written>=MAX_BYTES:return None
-                        target.write(chunk)
+                        target.write(chunk);raw_hash.update(chunk)
                 after=child.stat()
                 if copied!=before.st_size or (before.st_size,before.st_mtime_ns)!=(after.st_size,after.st_mtime_ns):return None
                 if path.stat().st_size>=MAX_ARCHIVE_BYTES:return None
+                raw_file=dict(name=child.name,size=copied,sha256=raw_hash.hexdigest(),
+                    source=str(child.absolute()),stat=[before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns])
+        if raw_file and raw_file['size']:
+            with zipfile.ZipFile(path) as archive:info=archive.infolist()[0]
+            with path.open('rb') as stream:
+                header=stream.read(30);name_length,extra_length=struct.unpack('<HH',header[26:30])
+                offset=30+name_length+extra_length;stream.seek(0);prefix=stream.read(offset)
+                stream.seek(offset+raw_file['size']);suffix=stream.read()
+            raw_file.update(offset=offset,prefix=base64.b64encode(prefix).decode('ascii'),suffix=base64.b64encode(suffix).decode('ascii'))
     size=path.stat().st_size
     if not 0<size<(MAX_ARCHIVE_BYTES if kind in ('files','text') else MAX_BYTES):return None
     with path.open('rb') as stream:digest=hashlib.file_digest(stream,'sha256').hexdigest()
-    return dict(kind=kind,path=str(path),size=size,sha256=digest)
+    return dict(kind=kind,path=str(path),size=size,sha256=digest,**({'raw_file':raw_file} if raw_file and raw_file.get('offset') else {}))
 
 
 def unpack(kind,path,directory):
@@ -286,6 +295,8 @@ class ClipboardSync(QObject):
         payload=getattr(events,'clipboard_payload',None)
         if payload is not None:payload.connect(self._pushed)
         events.socket.connected.connect(self.refresh)
+        from shared_clipboard_files import ClipboardFileJobs
+        self.file_jobs=ClipboardFileJobs(self,base)
         if enabled:
             QTimer.singleShot(0,self._cleanup)
             self.poll.start()
@@ -367,20 +378,61 @@ class ClipboardSync(QObject):
         os.replace(temporary,self._clock_path)
         return self._copy_clock
 
-    def _tick(self):self._cleanup();self.refresh()
+    def _tick(self):self.file_jobs.expire();self._cleanup();self.refresh()
 
-    def _request(self,method,path,callback,**kwargs):
-        epoch=self._epoch;holder=[];completed=False;started=time.monotonic()
+    def _valid_task(self,pending):
+        return (self._active() and self._pending is pending or
+                getattr(self,'file_jobs',None) is not None and self.file_jobs.valid(pending))
+
+    def _clear_task(self,pending):
+        if self._pending is pending:self._pending=None
+
+    def _cancel_replaced_work(self):
+        retained=[task for task in self.file_jobs.tasks.values() if self.file_jobs.held(task)]
+        keys=set().union(*(task.get('_keys',set()) for task in retained)) if retained else set()
+        for task in self.file_jobs.tasks.values():
+            if task.get('releases'):keys.update(task.get('_release_keys',()))
+        for key in tuple(self._keys-keys):self.api.cancel(key)
+        self._keys.intersection_update(keys)
+        for job in self._jobs:
+            if not getattr(job,'_shared_probe',False) and not any(task.get('_job') is job for task in retained):job.cancelled.set()
+
+    def _task_error(self,pending,error):
+        self._copy_result(pending,False)
+        if getattr(self,'file_jobs',None) is not None:self.file_jobs.fail(pending,error)
+        if self._pending is pending:self._priority_flags(waiting=True);self.retry.start()
+
+    def _task_ready(self,pending,head):
+        item=pending['package']
+        if (not isinstance(head,dict) or head.get('id')!=pending['id'] or not head.get('ready')
+                or head.get('sha256')!=item['sha256'] or head.get('size')!=item['size']):
+            self._task_error(pending,ValueError('剪贴板提交校验失败。'));return
+        if self._pending is pending:
+            self._seen=pending['id'];self._applied_version=max(self._applied_version,head_version(head))
+            self._copy_result(pending,True);self._pending=None
+        raw=item.get('raw_file')
+        if raw and pending.get('shared_files'):self.file_jobs.update(pending,'ready',raw['size'])
+        elif raw:self.file_jobs.update(pending,'unavailable')
+        self._cleanup()
+        if self._refresh_again:QTimer.singleShot(0,self.refresh)
+
+    def _request(self,method,path,callback,_task=None,**kwargs):
+        epoch=self._epoch;identity=self._identity;holder=[];completed=False;started=time.monotonic()
         def done(result,error):
             nonlocal completed
             completed=True
             if holder:self._keys.discard(holder[0])
-            if not self.closed and epoch==self._epoch:
+            if holder and _task is not None:_task.setdefault('_keys',set()).discard(holder[0])
+            if holder and _task is not None:_task.setdefault('_release_keys',set()).discard(holder[0])
+            if not self.closed and identity==self._identity and (epoch==self._epoch or _task is not None and self._valid_task(_task)):
                 self._calibrate(result,started);callback(result,error)
         key=self.api.request(method,path,done,timeout_ms=300000 if path.endswith('/content') else 12000,
-                             priority='high',**kwargs)
+                             priority='normal' if _task is not None and _task is not self._pending else 'high',**kwargs)
         holder.append(key)
-        if key is not None and not completed:self._keys.add(key)
+        if key is not None and not completed:
+            self._keys.add(key)
+            if _task is not None:_task.setdefault('_keys',set()).add(key)
+            if _task is not None and path.endswith('/release'):_task.setdefault('_release_keys',set()).add(key)
         return key
 
     def _session_identity(self):
@@ -391,6 +443,8 @@ class ClipboardSync(QObject):
         identity=self._session_identity()
         if not force and identity==self._identity:
             self.refresh();return
+        files=getattr(self,'file_jobs',None)
+        if files is not None:files.save()
         self._identity=identity;self._ignored=None;self._local_retry=None;self._local_fence=None
         self._pushed_head=None
         self._prepared_receive=None
@@ -405,6 +459,9 @@ class ClipboardSync(QObject):
         for key in tuple(self._keys):self.api.cancel(key)
         self._keys.clear()
         for job in self._jobs:job.cancelled.set()
+        if files is not None:
+            # The old account's journal was saved before switching identity.
+            files.journal=None;files.tasks={};files.reset(load=not self.closed)
         if not self.closed:self._set_view(self._snapshot(),'local')
         if self._active():QTimer.singleShot(0,self.refresh)
 
@@ -418,6 +475,7 @@ class ClipboardSync(QObject):
     def _work(self,action,callback):
         job=_Job(action);self._jobs[job]=callback;job.signals.finished.connect(self._finished,Qt.ConnectionType.QueuedConnection)
         self.pool.start(job,1)
+        return job
 
     def _finished(self,job,result):
         callback=self._jobs.pop(job,None)
@@ -450,17 +508,17 @@ class ClipboardSync(QObject):
         self._local_fence=dict(mono=getattr(self,'_copy_notified_mono',time.monotonic()),at=None,floor=self._observed_clock)
         self._copy_timestamp(self._local_fence)
         self._ignored=None;self._generation+=1;self._epoch+=1;generation=self._generation
+        self.file_jobs.supersede()
         # Superseding a local upload prevents its late completion restoring it.
-        for key in tuple(self._keys):self.api.cancel(key)
-        self._keys.clear();self._fetching=False
+        self._cancel_replaced_work();self._fetching=False
         self._pending=None;self._priority_flags(waiting=False,receiving=False)
-        for job in self._jobs:job.cancelled.set()
         self._local_retry=None
         self._prepared_receive=None
         if value is None:self._set_view(None,'local');self._pending=None;return
         self._local_retry=dict(id=str(uuid4()),sequence=None,generation=generation,staged=False,package=None,
                                prepared=False,created_at=time.time(),intent=self._local_fence,value=value,
                                feedback=self._copy_context(value))
+        self.file_jobs.register(self._local_retry,value)
         self._set_view(value,'uploading',self._local_retry['id'])
         self._prepare_local()
 
@@ -487,9 +545,12 @@ class ClipboardSync(QObject):
             if not fullscreen and self._is_native:
                 from platform_native import foreground_fullscreen
                 fullscreen=foreground_fullscreen(screen.geometry())
-        return dict(id='',point=point,fullscreen=fullscreen)
+        return dict(id='',point=point,fullscreen=fullscreen,value=value)
 
     def _copy_result(self,pending,ok):
+        # A retained old file can finish for the shelf while a newer clipboard
+        # is active. Its completion must not emit stale clipboard feedback.
+        if self.view.get('id')!=pending['id']:return
         if self.view.get('id')==pending['id']:
             self._set_view(self.view['value'],'synced' if ok else 'error',pending['id'])
         if pending.get('feedback_result') is ok:return
@@ -506,52 +567,51 @@ class ClipboardSync(QObject):
             self._copy_result(pending,False);self._pending=None;self.retry.start();return
         self._local_retry=None;self._pending=pending
         def prepared(result):
-            if self._pending is not pending:return
-            if result is None:self._copy_result(pending,False);self._pending=None;return
-            pending['package']=result;pending['prepared']=True;self._stage(pending)
+            if not self._valid_task(pending):return
+            if result is None:
+                self.file_jobs.update(pending,'unavailable');self._copy_result(pending,False);self._clear_task(pending);return
+            pending['package']=result;pending['prepared']=True;self.file_jobs.prepared(pending);self._stage(pending)
         value=pending.pop('value');quick=inline_text(value)
         if quick is not None:prepared(quick);return
         try:directory=self._directory()
         except OSError:
             self._copy_result(pending,False)
             pending['value']=value;self._local_retry=pending;self._pending=None;self.retry.start();return
-        self._work(lambda cancel:package(value,directory,cancel),prepared)
+        pending['_job']=self._work(lambda cancel:package(value,directory,cancel),prepared)
 
     def _stage(self,pending):
-        if not self._active() or self._pending is not pending:return
-        if time.time()-pending['created_at']>=86400:self._pending=None;self.refresh();return
+        if not self._valid_task(pending):return
+        if time.time()-pending['created_at']>=86400:self._clear_task(pending);self.refresh();return
         if self._copy_timestamp(pending['intent']) is None:
             def calibrated(result,error):
-                if self._pending is not pending:return
-                if error or self._clock_anchor is None:self._copy_result(pending,False);self._priority_flags(waiting=True);self.retry.start()
+                if not self._valid_task(pending):return
+                if error or self._clock_anchor is None:self._task_error(pending,error or ValueError('云端时钟校准失败。'))
                 else:self._stage(pending)
-            self._request('GET','/v1/clipboard',calibrated);return
+            self._request('GET','/v1/clipboard',calibrated,_task=pending);return
         def staged(result,error):
-            if self._pending is not pending:return
+            if not self._valid_task(pending):return
             if error:
                 if use_inline and getattr(error,'status',0) in (400,413):
                     pending['inline_fallback']=True;self._stage(pending);return
-                self._copy_result(pending,False)
-                if getattr(error,'status',0)==409:self._pending=None;self.refresh()
-                else:self._priority_flags(waiting=True);self.retry.start()
+                self._task_error(pending,error)
+                if getattr(error,'status',0)==409 and not self.file_jobs.held(pending):self._clear_task(pending);self.refresh()
                 return
             ready=result.get('clipboard',{}) if isinstance(result,dict) else {}
+            pending['shared_files']=bool(isinstance(result,dict) and result.get('shared_files'))
             item=pending['package']
             if (ready.get('id')==pending['id'] and ready.get('ready') and
                     ready.get('sha256')==item['sha256'] and ready.get('size')==item['size']):
-                self._seen=pending['id'];self._applied_version=max(self._applied_version,head_version(ready))
-                self._copy_result(pending,True)
-                self._pending=None;self._cleanup()
-                if self._refresh_again:QTimer.singleShot(0,self.refresh)
+                self._task_ready(pending,ready)
                 return
             pending['staged']=True;self._upload(pending)
         data={'id':pending['id'],'protocol':2,'sequence':pending['sequence'],'copied_at':pending['intent']['at']}
         use_inline=bool(pending['package'].get('inline') and not pending.get('inline_fallback'))
         if use_inline:data['inline']=pending['package']['inline']
-        self._request('POST','/v1/clipboard',staged,data=data)
+        self.file_jobs.save()
+        self._request('POST','/v1/clipboard',staged,data=data,_task=pending)
 
     def _upload(self,pending):
-        if self._pending is not pending or not pending['staged'] or not pending['prepared'] or pending.get('uploading'):return
+        if not self._valid_task(pending) or not pending['staged'] or not pending['prepared'] or pending.get('uploading'):return
         if time.time()-pending['created_at']>=86400:self._pending=None;self.refresh();return
         item=pending['package']
         if item is None:self._pending=None;return
@@ -566,26 +626,34 @@ class ClipboardSync(QObject):
                 path=directory/'content.bin';path.write_bytes(base64.b64decode(item['inline']['body'],validate=True))
                 return str(path)
             def materialized(path):
-                if self._pending is not pending:return
+                if not self._valid_task(pending):return
                 pending['materializing']=False
                 if path:item['path']=path;self._upload(pending)
                 else:self._priority_flags(waiting=True);self.retry.start()
             self._work(materialize,materialized);return
         pending['uploading']=True
+        self.file_jobs.update(pending,'uploading')
         def uploaded(result,error):
-            if self._pending is not pending:return
+            if not self._valid_task(pending):return
             pending['uploading']=False
             if error:
-                self._copy_result(pending,False)
-                if getattr(error,'status',0) in (403,409):self._pending=None;self.refresh()
-                else:self._priority_flags(waiting=True);self.retry.start()
+                self._task_error(pending,error)
+                if getattr(error,'status',0) in (403,409) and not self.file_jobs.held(pending):self._clear_task(pending);self.refresh()
                 return
-            self._seen=pending['id'];self._copy_result(pending,True);self._pending=None;self._cleanup()
             head=result.get('clipboard',{}) if isinstance(result,dict) else {}
-            self._applied_version=max(self._applied_version,head_version(head))
-            if self._refresh_again:QTimer.singleShot(0,self.refresh)
-        self._request('PUT',f'/v1/clipboard/{pending["id"]}/content',uploaded,source=item['path'],
-            headers={'X-Clipboard-Kind':item['kind'],'X-Content-SHA256':item['sha256']})
+            self._task_ready(pending,head)
+        headers={'X-Clipboard-Kind':item['kind'],'X-Content-SHA256':item['sha256']};options={}
+        raw_file=item.get('raw_file') if pending.get('shared_files') else None
+        if raw_file:
+            descriptor={key:raw_file[key] for key in ('name','size','sha256','prefix','suffix')}
+            headers['X-Clipboard-Raw-File']=json.dumps(descriptor,separators=(',',':'),ensure_ascii=True)
+            options.update(source_offset=raw_file['offset'],source_size=raw_file['size'])
+        def progress(sent,total):
+            if not self._valid_task(pending):return
+            count=min(raw_file['size'],max(0,sent)) if raw_file else sent
+            self.file_jobs.update(pending,'verifying' if sent>=total else 'uploading',count)
+        self._request('PUT',f'/v1/clipboard/{pending["id"]}/content',uploaded,source=item['path'],headers=headers,
+                      progress=progress,_task=pending,**options)
 
     def _retry(self):
         if not self._active():return
@@ -608,9 +676,7 @@ class ClipboardSync(QObject):
             # A new committed small copy supersedes a stale body download;
             # retain the last usable native clipboard until this one verifies.
             self._epoch+=1;self._generation+=1
-            for key in tuple(self._keys):self.api.cancel(key)
-            self._keys.clear()
-            for job in self._jobs:job.cancelled.set()
+            self._cancel_replaced_work()
             self._fetching=False;self._priority_flags(receiving=False)
         self.refresh()
 
@@ -751,6 +817,7 @@ class ClipboardSync(QObject):
         except (OSError,RuntimeError):return
         native_paths=[Path(path).resolve() for path in native[1]] if native and native[0]=='files' else []
         for directory,created in self._directories:
+            if directory in self.file_jobs.protected_directories():keep.append((directory,created));continue
             if now-created<86400:keep.append((directory,created));continue
             if any(path.is_relative_to(directory.resolve()) for path in native_paths):
                 keep.append((directory,created));continue

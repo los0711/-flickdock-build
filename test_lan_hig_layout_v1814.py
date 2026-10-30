@@ -25,6 +25,7 @@ from test_html_native_lan import APP, FakeLan
 
 class LanHigLayoutTests(unittest.TestCase):
     def setUp(self):
+        self.screen=patch('window_chrome.WindowChrome._available',return_value=__import__('PySide6.QtCore',fromlist=['QRect']).QRect(0,0,1920,1080));self.screen.start()
         self.temp=tempfile.TemporaryDirectory(prefix='flickdock-lan-hig-')
         self.base=Path(self.temp.name)
         configure_reference_font(APP)
@@ -35,7 +36,7 @@ class LanHigLayoutTests(unittest.TestCase):
         self.dialog.show();self.settle()
 
     def tearDown(self):
-        self.dialog.close();self.dialog.deleteLater();self.settle();self.temp.cleanup()
+        self.dialog.close();self.dialog.deleteLater();self.settle();self.screen.stop();self.temp.cleanup()
 
     @staticmethod
     def settle():

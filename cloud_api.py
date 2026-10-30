@@ -277,7 +277,12 @@ class CloudApi(QObject):
                 expected = state['expected']
                 digest = expected.get('sha256') or bytes(reply.rawHeader('X-Content-SHA256')).decode('ascii','replace')
                 if (not re.fullmatch(r'[0-9a-f]{64}',digest) or state['received'] != expected['size'] or state['hash'].hexdigest() != digest):
-                    raise CloudError('同步文件校验失败，将自动重试。', details={
+                    truncated=state['received']!=expected['size']
+                    valid_header=bool(re.fullmatch(r'[0-9a-f]{64}',digest))
+                    code='DOWNLOAD_TRUNCATED' if truncated else 'DOWNLOAD_HEADER_INVALID' if not valid_header else 'DOWNLOAD_HASH_MISMATCH'
+                    message=(f'下载连接中断：已接收 {state["received"]} / {expected["size"]} 字节，正在恢复。' if truncated else
+                        '云端下载响应缺少有效校验信息，正在重试。' if not valid_header else '下载内容校验不一致，正在重新获取该分块。')
+                    raise CloudError(message,status,code,details={
                         'received_size':state['received'], 'expected_size':expected['size'],
                         'hash_matches':state['hash'].hexdigest() == digest,
                         'network_error':reply.error().value,
@@ -350,7 +355,7 @@ class CloudApi(QObject):
             self.unauthorized.emit()
         if error is not None:
             from network_diagnostics import record_event
-            record_event(self.diagnostics_dir,'cloud','request',getattr(error,'code','') or 'REQUEST_FAILED',status)
+            record_event(self.diagnostics_dir,'cloud','request',getattr(error,'code','') or 'REQUEST_FAILED',status,details=getattr(error,'details',None))
         if (not self._closed and error is not None and getattr(error,'code','')=='NETWORK_UNREACHABLE'
                 and state['origin'] in CLOUD_ORIGINS):
             # Slots can cancel/close synchronously while the new entrance is

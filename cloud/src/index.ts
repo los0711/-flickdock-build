@@ -1,3 +1,4 @@
+import {purgeUpload} from './shared-file';
 import {createHash, createHmac, timingSafeEqual} from 'node:crypto';
 import {caseFold} from 'unicode-case-folding';
 import {PersistentSHA256} from './hash-state';
@@ -33,8 +34,8 @@ function chunkSize(env:Env,fileSize:number,fastUpload=false){
 // Keep each request well below the Workers inbound-body ceiling while cutting
 // round trips for large originals in half compared with 32 MiB parts.
 const FAST_MULTIPART_BYTES=64*1024*1024;
-function downloadRange(request:Request,physicalChunk:number){
-  return request.headers.get('X-FlickDock-Range-Bytes')==='4194304'&&physicalChunk%(4*1024*1024)===0?4*1024*1024:1024*1024;
+function downloadRange(request:Request,physicalChunk:number,physicalParts=0){
+  return request.headers.get('X-FlickDock-Range-Bytes')==='4194304'&&(physicalParts===1||physicalChunk%(4*1024*1024)===0)?4*1024*1024:1024*1024;
 }
 function uploadChunkSize(env:Env,fileSize:number,fastUpload=false,fastMultipart=false){
   // The newer capability is separate from fast_upload so 1.8.8 clients can
@@ -255,20 +256,26 @@ async function sendCode(env:Env,to:string,code:string,id:string){
     }
   }catch{fail(503,'EMAIL_UNAVAILABLE','Email provider did not accept the verification message');}
 }
-async function purgeUpload(env:Env,id:string){
-  const now=Date.now(),lease='gc:'+crypto.randomUUID();
-  const claimed=await query(env,"UPDATE uploads SET lease=?,lease_until=? WHERE id=? AND state='garbage' AND garbage_after<=? AND lease_until<=? AND NOT EXISTS(SELECT 1 FROM items i WHERE i.active_upload=uploads.id AND i.deleted=0) AND NOT EXISTS(SELECT 1 FROM read_leases r WHERE r.upload_id=uploads.id AND r.expires_at>?)",lease,now+300000,id,now,now,now).run();
-  if(!claimed.meta.changes)return false;
-  const parts=await rows(env,'SELECT key FROM parts WHERE upload_id=?',id);
-  // R2 DELETE operations are free. A depleted read/write budget must never
-  // prevent reclaiming storage. Bound each batch and retain allocation on error.
-  for(let start=0;start<parts.length;start+=512)await env.FILES.delete(parts.slice(start,start+512).map(p=>p.key));
-  await env.DB.batch([
-    query(env,'DELETE FROM allocations WHERE id=? AND EXISTS(SELECT 1 FROM uploads WHERE id=? AND lease=?)',id,id,lease),
-    query(env,'DELETE FROM uploads WHERE id=? AND lease=?',id,lease),
-  ]);
-  return true;
+async function readableUpload(env:Env,value:Row){
+  const upload=await first(env,'SELECT * FROM uploads WHERE id=? AND account_id=?',value.active_upload,value.account_id);
+  if(!upload)return null;
+  if(upload.state==='committed')return upload;
+  // A pre-fix cleanup race could reclassify a fully committed upload. Recover
+  // reads only when its original verification evidence is still complete.
+  // Never execute commit triggers, change versions or extend retention here.
+  if(upload.state!=='garbage'||value.deleted||value.expires_at!==null&&value.expires_at<=Date.now()
+      ||upload.size!==value.size||upload.sha256!==value.sha256||upload.computed_sha256!==value.sha256
+      ||upload.verified_size!==value.size||upload.next_part!==upload.part_count
+      ||upload.part_count!==Math.ceil(value.size/upload.chunk_size)
+      ||upload.lease?.startsWith('gc:'))return null;
+  const proof=await first(env,`SELECT COUNT(*) n,MIN(idx) lo,MAX(idx) hi,COALESCE(SUM(size),0) bytes,
+    SUM(CASE WHEN ready<>1 OR size<>MIN(?,?-idx*?) OR length(sha256)<>64 OR sha256 GLOB '*[^0-9a-f]*' THEN 1 ELSE 0 END) bad
+    FROM parts WHERE upload_id=?`,upload.chunk_size,value.size,upload.chunk_size,upload.id);
+  if(value.size===0&&upload.part_count===0&&proof?.n===0)return upload;
+  return proof&&proof.n===upload.part_count&&proof.lo===0&&proof.hi===upload.part_count-1
+      &&proof.bytes===value.size&&proof.bad===0?upload:null;
 }
+
 async function expireItems(env:Env,accountId?:string,limit=1){
   const now=Date.now();
   const expired=await rows(env,'SELECT account_id,id,version,active_upload FROM items WHERE deleted=0 AND expires_at<=?'+(accountId?' AND account_id=?':'')+' LIMIT ?',now,...(accountId?[accountId]:[]),limit);
@@ -282,10 +289,15 @@ async function expireItems(env:Env,accountId?:string,limit=1){
 async function cleanup(env:Env){
   const now=Date.now();
   await expireItems(env,undefined,32);
+  const expiredPins=await rows(env,'SELECT clipboard_id,upload_id,account_id FROM clipboard_upload_refs WHERE expires_at<=? LIMIT 32',now);
+  for(const pin of expiredPins){
+    const {releaseClipboardFile}=await import('./shared-file');
+    await releaseClipboardFile(env,pin.clipboard_id,pin.upload_id,pin.account_id);
+  }
   const stale=await rows(env,"SELECT * FROM uploads WHERE lease_until<? AND NOT EXISTS(SELECT 1 FROM read_leases r WHERE r.upload_id=uploads.id AND r.expires_at>?) AND ((state IN ('pending','verifying') AND expires_at<?) OR (state='garbage' AND garbage_after<=?)) LIMIT 32",now,now,now-600000,now);
   for(const value of stale){
     // Atomically exclude a reader that began after the candidate query.
-    const claimed=await query(env,"UPDATE uploads SET state='garbage',garbage_after=?,lease_until=0 WHERE id=? AND lease_until<? AND NOT EXISTS(SELECT 1 FROM read_leases r WHERE r.upload_id=uploads.id AND r.expires_at>?)",now,value.id,now,now).run();
+    const claimed=await query(env,"UPDATE uploads SET state='garbage',garbage_after=?,lease_until=0 WHERE id=? AND lease_until<? AND NOT EXISTS(SELECT 1 FROM read_leases r WHERE r.upload_id=uploads.id AND r.expires_at>?) AND NOT EXISTS(SELECT 1 FROM items i WHERE i.active_upload=uploads.id AND i.deleted=0) AND ((state IN ('pending','verifying') AND expires_at<?) OR (state='garbage' AND garbage_after<=?))",now,value.id,now,now,now-600000,now).run();
     if(!claimed.meta.changes)continue;
     await purgeUpload(env,value.id);
   }
@@ -448,11 +460,12 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
   if(method==='DELETE'&&match){await endIntake(env,owner,uuid(match[1]));return json({removed:true});}
   if(method==='POST'&&path==='/v1/uploads'){
     const required=['item_id','base_version','kind','name','mime_type','size','sha256'];
-    const input=await body(request,[...required,'upload_id','fast_upload','fast_multipart'],required);
+    const input=await body(request,[...required,'upload_id','fast_upload','fast_multipart','reuse_only'],required);
     const id=uuid(input.item_id,'item_id'),base=integer(input.base_version,'base_version'),kind=text(input.kind,'kind',1,8),name=text(input.name,'name',1,255),mime=text(input.mime_type,'mime_type',1,127),size=integer(input.size,'size'),hash=digest(input.sha256);
     if(!['file','text','url'].includes(kind)||!/^[a-zA-Z0-9!#$&^_.+-]+\/[a-zA-Z0-9!#$&^_.+-]+$/.test(mime))fail(400,'INVALID_REQUEST','Unknown kind or MIME type');
     // Persisting this optional UUID before POST lets a client recover a lost
     // initialization reply without reserving the entire file size twice.
+    if(input.reuse_only!==undefined&&typeof input.reuse_only!=='boolean')fail(400,'INVALID_REQUEST','reuse_only must be boolean');
     if(input.fast_upload!==undefined&&typeof input.fast_upload!=='boolean')fail(400,'INVALID_REQUEST','fast_upload must be boolean');
     if(input.fast_multipart!==undefined&&typeof input.fast_multipart!=='boolean')fail(400,'INVALID_REQUEST','fast_multipart must be boolean');
     const suppliedId=input.upload_id!==undefined,uploadId=suppliedId?uuid(input.upload_id,'upload_id'):crypto.randomUUID();
@@ -482,12 +495,12 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
       if(base===0&&await item(env,owner.id,id))await conflict(env,owner,id);
       // Reuse only content already committed and still referenced by a live
       // item in this account. A checksum alone never crosses account bounds.
-      const source=await first(env,"SELECT u.id FROM uploads u JOIN items i ON i.active_upload=u.id WHERE u.account_id=? AND i.account_id=? AND i.deleted=0 AND u.state='committed' AND u.computed_sha256=u.sha256 AND u.sha256=? AND u.size=? LIMIT 1",owner.id,owner.id,hash,size);
+      const source=await first(env,"SELECT u.id FROM uploads u WHERE u.account_id=? AND u.state='committed' AND u.computed_sha256=u.sha256 AND u.sha256=? AND u.size=? AND (EXISTS(SELECT 1 FROM items i WHERE i.account_id=? AND i.active_upload=u.id AND i.deleted=0) OR EXISTS(SELECT 1 FROM clipboard_upload_refs p WHERE p.account_id=u.account_id AND p.upload_id=u.id AND p.expires_at>?)) LIMIT 1",owner.id,hash,size,owner.id,Date.now());
       if(source){
         const now=Date.now();
         const previous=await item(env,owner.id,id);
         const result=await env.DB.batch([
-          query(env,"INSERT OR IGNORE INTO instant_receipts(upload_id,account_id,item_id,base_version,kind,name,mime_type,size,sha256,source_upload,result_version,expires_at) SELECT ?,?,?,?,?,?,?,?,?,u.id,?,? FROM uploads u WHERE u.id=? AND u.account_id=? AND u.state='committed' AND u.computed_sha256=u.sha256 AND u.sha256=? AND u.size=? AND EXISTS(SELECT 1 FROM items i WHERE i.account_id=? AND i.active_upload=u.id AND i.deleted=0) AND COALESCE((SELECT version FROM items WHERE account_id=? AND id=?),0)=? AND NOT EXISTS(SELECT 1 FROM uploads WHERE id=?)",uploadId,owner.id,id,base,kind,name,mime,size,hash,base+1,now+7*DAY,source.id,owner.id,hash,size,owner.id,owner.id,id,base,uploadId),
+          query(env,"INSERT OR IGNORE INTO instant_receipts(upload_id,account_id,item_id,base_version,kind,name,mime_type,size,sha256,source_upload,result_version,expires_at) SELECT ?,?,?,?,?,?,?,?,?,u.id,?,? FROM uploads u WHERE u.id=? AND u.account_id=? AND u.state='committed' AND u.computed_sha256=u.sha256 AND u.sha256=? AND u.size=? AND (EXISTS(SELECT 1 FROM items i WHERE i.account_id=? AND i.active_upload=u.id AND i.deleted=0) OR EXISTS(SELECT 1 FROM clipboard_upload_refs p WHERE p.account_id=u.account_id AND p.upload_id=u.id AND p.expires_at>unixepoch()*1000)) AND COALESCE((SELECT version FROM items WHERE account_id=? AND id=?),0)=? AND NOT EXISTS(SELECT 1 FROM uploads WHERE id=?)",uploadId,owner.id,id,base,kind,name,mime,size,hash,base+1,now+7*DAY,source.id,owner.id,hash,size,owner.id,owner.id,id,base,uploadId),
           query(env,"INSERT INTO items(account_id,id,version,active_upload,kind,name,mime_type,size,sha256,updated_at,expires_at) SELECT r.account_id,r.item_id,r.result_version,r.source_upload,r.kind,r.name,r.mime_type,r.size,r.sha256,?,?+CASE WHEN r.size>=104857600 THEN 7200000 ELSE 86400000 END FROM instant_receipts r WHERE r.upload_id=? AND r.account_id=? ON CONFLICT(account_id,id) DO UPDATE SET version=excluded.version,deleted=0,active_upload=excluded.active_upload,kind=excluded.kind,name=excluded.name,mime_type=excluded.mime_type,size=excluded.size,sha256=excluded.sha256,updated_at=excluded.updated_at,expires_at=excluded.expires_at WHERE items.version=excluded.version-1",now,now,uploadId,owner.id),
         ]);
         if(result[0].meta.changes){
@@ -502,6 +515,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
         const current=await item(env,owner.id,id);
         if((current?.version??0)!==base)await conflict(env,owner,id);
       }
+      if(input.reuse_only===true)fail(409,'REUSE_UNAVAILABLE','Shared file is not yet available or has expired');
       const count=await first(env,"SELECT COUNT(*) n FROM uploads WHERE account_id=? AND state IN ('pending','verifying')",owner.id);if(count!.n>=10)fail(429,'UPLOAD_LIMIT','Too many pending uploads');
       const expires=Date.now()+3*DAY,chunk=uploadChunkSize(env,size,input.fast_upload===true,input.fast_multipart===true),partCount=Math.ceil(size/chunk);
       await env.DB.batch([
@@ -692,21 +706,21 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
   match=path.match(/^\/v1\/items\/([^/]+)\/content$/);
   if(method==='GET'&&match){
     const id=uuid(match[1]),value=await item(env,owner.id,id);if(!value||value.deleted)fail(404,'NOT_FOUND','Item not found');
-    const upload=await first(env,'SELECT chunk_size,part_count FROM uploads WHERE id=? AND state=?',value!.active_upload,'committed');if(!upload)fail(503,'STORAGE_MISSING','Content metadata is unavailable');
+    const upload=await readableUpload(env,value!);if(!upload)fail(503,'STORAGE_MISSING','Content metadata is unavailable');
     // Releases predating fast upload accept at most 4 MiB per part. Expose a
     // 1 MiB virtual range view to those clients without duplicating R2 bytes.
     const legacy=upload!.chunk_size>4*1024*1024&&request.headers.get('X-FlickDock-Fast-Content')!=='1';
-    const chunk=legacy?downloadRange(request,upload!.chunk_size):upload!.chunk_size;
+    const chunk=legacy?downloadRange(request,upload!.chunk_size,upload!.part_count):upload!.chunk_size;
     return json({record:record(value!),chunk_size:chunk,part_count:legacy?Math.ceil(value!.size/chunk):upload!.part_count});
   }
   match=path.match(/^\/v1\/items\/([^/]+)\/parts\/(\d+)$/);
   if(method==='GET'&&match){
     const id=uuid(match[1]),index=integer(Number(match[2]),'part_index'),value=await item(env,owner.id,id);if(!value||value.deleted)fail(404,'NOT_FOUND','Item not found');
     if(url.searchParams.has('version')){const version=Number(url.searchParams.get('version'));integer(version,'version',1);if(version!==value!.version)await conflict(env,owner,id);}
-    const upload=await first(env,'SELECT chunk_size,part_count FROM uploads WHERE id=? AND state=?',value!.active_upload,'committed');
+    const upload=await readableUpload(env,value!);
     if(!upload)fail(503,'STORAGE_MISSING','Content metadata is unavailable');
     const legacy=upload!.chunk_size>4*1024*1024&&request.headers.get('X-FlickDock-Fast-Content')!=='1';
-    const virtualSize=downloadRange(request,upload!.chunk_size),expected=legacy?Math.min(virtualSize,value!.size-index*virtualSize):0;
+    const virtualSize=downloadRange(request,upload!.chunk_size,upload!.part_count),expected=legacy?Math.min(virtualSize,value!.size-index*virtualSize):0;
     if(legacy&&(!Number.isSafeInteger(index)||index>=Math.ceil(value!.size/virtualSize)))fail(404,'NOT_FOUND','Content part not found');
     const physicalIndex=legacy?Math.floor(index*virtualSize/upload!.chunk_size):index;
     const physicalOffset=legacy?index*virtualSize-physicalIndex*upload!.chunk_size:0;

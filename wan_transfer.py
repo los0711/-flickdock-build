@@ -27,6 +27,7 @@ def _turn_http_proxy(port):
 
 class WanTransferService(LanTransferService):
     identity_changed=Signal(dict)
+    custom_code_changed=Signal(dict)
     _command=Signal(dict)
     _native=Signal(dict)
     mode='wan'
@@ -35,6 +36,7 @@ class WanTransferService(LanTransferService):
         self.base=Path(base);self.enabled=enabled;self.origin=origin;self.node=node;self.code=''
         self._code_refresh_at=0.;self._code_expires_at=0.;self._code_duration=240.;self._refresh_sent_at=0.
         self._last_signal=0.;self._peer_poll_count=0
+        self._custom_code={};self._custom_expires=0.;self._custom_operation=''
         self.account_service=None;self.lan_id='';self.nearby_peers_provider=lambda:[]
         self._bind_epoch=0;self._bind_key=None;self._bound_identity=None;self._pending_identity=None
         self._account_nonce='';self._account_ack=False
@@ -156,6 +158,7 @@ class WanTransferService(LanTransferService):
             if not self._connection_error:self._connection_error='远程连接已断开，正在重试。'
             self.status_changed.emit(self._connection_error)
         self.identity_changed.emit(self.code_identity())
+        self.custom_code_changed.emit(self.custom_identity())
     def _heartbeat(self):
         if not self._connected:return
         if time.monotonic()-self._last_signal>40:
@@ -171,8 +174,25 @@ class WanTransferService(LanTransferService):
         return dict(code=self.code if valid else '',online=self._connected,error=self._connection_error,
             refresh_remaining=max(0.,self._code_refresh_at-now),refresh_duration=self._code_duration,
             expires_remaining=max(0.,self._code_expires_at-now),refreshing=bool(self._refresh_sent_at))
+    def custom_identity(self):
+        value=dict(self._custom_code);remaining=max(0.,self._custom_expires-time.monotonic())
+        value.update(online=self._connected,remaining=remaining)
+        if value.get('status') in ('available','connecting') and not remaining:value['status']='expired'
+        return value
+    def set_custom_code(self,code):
+        code=str(code).strip().upper()
+        if not re.fullmatch('[0-9]{4}',code):raise ValueError('请输入 4 位数字。')
+        self._custom_operation=uuid4().hex
+        if not self._send_signal(dict(type='custom_set',id=self._custom_operation,code=code)):
+            raise ValueError('远程服务尚未连接，请稍后再试。')
+    def cancel_custom_code(self):
+        self._custom_operation=uuid4().hex
+        if not self._send_signal(dict(type='custom_cancel',id=self._custom_operation,nonce=self._custom_code.get('nonce',''))):
+            raise ValueError('远程服务尚未连接，请稍后再试。')
+
     def check_code(self):
         if not self._connected:return
+        if self._custom_code:self.custom_code_changed.emit(self.custom_identity())
         now=time.monotonic()
         if self._refresh_sent_at and now-self._refresh_sent_at>=12:
             self.socket.abort();self._disconnected();return
@@ -229,6 +249,14 @@ class WanTransferService(LanTransferService):
             if value.get('schema_version')!=1:return
             self._last_signal=time.monotonic()
             kind=value.get('type');identifier=value.get('id');state=self._pending.get(identifier)
+            if kind=='custom_code':
+                if value.get('operation') and value['operation']!=self._custom_operation:return
+                self._custom_code=dict(value)
+                self._custom_expires=time.monotonic()+max(0.,min(600.,(float(value.get('expires',0))-float(value.get('serverNow',time.time()*1000)))/1000))
+                self.custom_code_changed.emit(self.custom_identity());return
+            if kind=='error' and value.get('requestType') in ('custom_set','custom_cancel','custom_status'):
+                if identifier and identifier!=self._custom_operation:return
+                self.custom_code_changed.emit(dict(self.custom_identity(),error=str(value.get('message') or '接收码设置失败。')));return
             if kind=='account_state':
                 if value.get('nonce')==self._account_nonce:
                     self._account_ack=True;self._bind_account()
@@ -404,7 +432,7 @@ class WanTransferService(LanTransferService):
     def send(self,peer_id,paths):
         if not self._connected:raise ValueError('远程服务尚未连接，请稍后再试。')
         peer=self._peers.get(peer_id)
-        if not peer and not re.fullmatch('[23456789A-HJ-NP-Z]{8}',str(peer_id)):raise ValueError('请输入有效的接收码，或选择最近设备。')
+        if not peer and not re.fullmatch('(?:[0-9]{4}|[23456789A-HJ-NP-Z]{8})',str(peer_id)):raise ValueError('请输入有效的接收码，或选择最近设备。')
         if peer and not peer.get('online'):raise ValueError('对方设备不在线，无法发送。')
         identifier=uuid4().hex;peer=dict(peer or dict(code=peer_id,name='接收码 '+peer_id))
         with self._lock:

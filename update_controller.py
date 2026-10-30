@@ -275,6 +275,7 @@ class UpdateController(QObject):
         self._is_busy, self._popen = is_busy or (lambda: False), popen
         self._closed, self._generation = False, 0
         self._installing = self._authorized = False
+        self._background_download=False
         self._jobs, self._notified = {}, set()
         self._pending_manifest = None
         self._pending_check = False
@@ -343,6 +344,11 @@ class UpdateController(QObject):
 
     def _settings_changed(self):
         self.apply_theme(getattr(self.settings, 'theme', self._theme))
+        if not getattr(self.settings,'automatic_updates',True):
+            self._pending_check=False;self._pending_manifest=None;self._timer.stop()
+            if self._background_download and self.client.busy:
+                self.pause() if hasattr(self.client,'pause') else self.cancel()
+            self._background_download=False
 
     def apply_theme(self, theme):
         self._theme = 'dark' if theme == 'dark' else 'light'
@@ -378,6 +384,8 @@ class UpdateController(QObject):
         return self.client.check(manual=True)
 
     def check_automatically(self):
+        if not getattr(self.settings,'automatic_updates',True):return False
+        if self._state=='ready' and self._verified_path:return True
         if self._closed or self._installing:
             return False
         if self._busy() or self.client.busy:
@@ -403,9 +411,12 @@ class UpdateController(QObject):
         install_requested = self._refreshing_before_install
         self._refreshing_before_install = False
         self._manifest, self._verified_path = copy.deepcopy(manifest), ''
-        self._authorized = install_requested
+        self._background_download=bool(not manual and getattr(self.settings,'automatic_updates',False))
+        self._authorized = install_requested or self._background_download
         self._set_state('available')
         if install_requested:
+            self._download_current_manifest()
+        elif self._background_download:
             self._download_current_manifest()
         elif not manual:
             self._pending_manifest = copy.deepcopy(manifest)
@@ -505,6 +516,9 @@ class UpdateController(QObject):
         # Download remains alive independently of its UI. Installing/restarting
         # is a distinct action rendered by both the notice and Settings.
         self._authorized=False
+        if self._background_download:
+            self._background_download=False
+            self.notification_shown.emit(manifest.get('version',''))
 
     def _start_verification(self):
         if self._closed or self._installing or not self._authorized:

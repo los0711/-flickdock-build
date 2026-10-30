@@ -106,8 +106,8 @@ class WanRecovery(unittest.TestCase):
                     self.assertTrue(panel.send_code_value.isEnabled())
                     self.assertEqual(panel.send_code_value.text(),'ABCD2345')
                     self.assertLessEqual(abs(panel.send_code_value.geometry().center().y()-panel.code_countdown.geometry().center().y()),1)
-                panel.remove_recent_button.click();self.assertEqual(self.sent[-1],dict(type='remove',peer='d'*64))
-                self.message(type='peers',peers=[]);self.assertFalse(panel.remove_recent_button.isEnabled())
+                panel.devices.remove_requested.emit('d'*64);self.assertEqual(self.sent[-1],dict(type='remove',peer='d'*64))
+                self.message(type='peers',peers=[]);self.assertEqual(panel.devices.count(),0)
             QApplication.clipboard().setText('not a code')
             with patch('wan_transfer.time.monotonic',return_value=1301):
                 panel.send_code_value._copy();self.assertEqual(QApplication.clipboard().text(),'not a code')

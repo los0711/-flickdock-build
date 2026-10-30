@@ -147,9 +147,10 @@ with tempfile.TemporaryDirectory(prefix='flickdock-settings-v163-') as temporary
                 knob=image.pixelColor(round((checkbox.width()-17)*ratio),round(checkbox.height()*ratio/2))
                 assert left.green()>180 and left.red()<100 and left.blue()<130 and min(knob.red(),knob.green(),knob.blue())>245
                 before=checkbox.isChecked()
+                dialog.scroll.ensureWidgetVisible(checkbox,8,8);flush()
                 QTest.mouseClick(checkbox,Qt.MouseButton.LeftButton,
                                  pos=QPoint(checkbox.width()-18,checkbox.height()//2))
-                assert checkbox.isChecked()!=before
+                assert checkbox.isChecked()!=before,(checkbox.text(),checkbox.accessibleName(),checkbox.isVisible(),checkbox.isEnabled())
             else:
                 assert_tick_visible(checkbox)
             checkbox.setChecked(True)

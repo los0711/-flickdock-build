@@ -168,7 +168,7 @@ class SettingsFeedbackTests(unittest.TestCase):
             dialog.close();dialog.deleteLater();flush()
 
     def test_async_login_devices_error_dialog_scroll_end_and_slider_handles(self):
-        with tempfile.TemporaryDirectory(prefix='flickdock-settings-1815-') as root,patch.object(app_settings,'_startup_runtime_allowed',return_value=False):
+        with tempfile.TemporaryDirectory(prefix='flickdock-settings-1815-') as root,patch.object(app_settings,'_startup_runtime_allowed',return_value=False),patch('window_chrome.WindowChrome._available',return_value=QRect(0,0,1920,1080)):
             dialog=app_settings.SettingsDialog(app_settings.SettingsStore(Path(root)))
             service=Service();service.signed_in=False;service.account=None
             panel=AccountPanel(service);dialog.set_account_panel(panel);dialog.show();flush()
@@ -184,7 +184,7 @@ class SettingsFeedbackTests(unittest.TestCase):
             for row in panel._rows_by_id.values():
                 for ancestor in (panel.devices_body,panel.signed_in_page,panel,dialog.account_slot):
                     self.assertTrue(ancestor.rect().contains(row.mapTo(ancestor,row.rect().bottomRight())),(ancestor.objectName(),row.geometry(),ancestor.size()))
-            self.assertLessEqual(dialog._reference_top.height(),dialog._reference_appearance.sizeHint().height()+4)
+            self.assertLessEqual(dialog._reference_top.height(),max(dialog._reference_appearance.sizeHint().height(),panel.sizeHint().height())+4)
             current=panel._rows_by_id['current']
             marker=current.findChild(QWidget,'accountCurrentDevice');rename=panel.device_rename_buttons['current']
             self.assertLess(marker.mapTo(current,marker.rect().topRight()).x(),rename.mapTo(current,rename.rect().topLeft()).x())

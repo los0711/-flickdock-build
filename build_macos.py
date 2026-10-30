@@ -183,8 +183,7 @@ def main(arguments=None):
         if not python.is_file():
             venv.EnvBuilder(with_pip=True).create(environment)
         run([python, '-m', 'pip', 'install', 'PySide6==6.12.0', 'PyInstaller==6.22.3',
-             'pyobjc-framework-Quartz>=11,<13', 'keyring==25.7.0',
-             'qrcode==8.2','zxing-cpp==3.1.1'])
+             'pyobjc-framework-Quartz>=11,<13', 'keyring==25.7.0'])
         if options.target_arch=='x86_64':
             # Intel currently builds this dependency from source. Dynamic
             # Homebrew OpenSSL can collide with Python's same-named dylibs
@@ -229,7 +228,7 @@ def main(arguments=None):
          'test_sync_remote_commit_wakeup', 'test_cloud_file_status_v1810',
          'test_trigger_reliability_v1810', 'test_event_stream_wiring_v1810',
          'test_pointer_paste_v1819','test_presentation_v1819','test_clipboard_sync_v1819','test_wan_account_v1819','test_webrtc_close_v1819','test_update_notice_v1813','test_small_upload_lane','test_feedback_v1820',
-         'test_mac_permissions_v1821','test_shelf_live_v1821','test_pairing_qr_v1821','test_release_notes_v1821','test_clipboard_fast_v1821','test_clipboard_preview_v1821','test_utility_windows_v1821','test_update_signatures_v1821','-v'], env=env)
+         'test_interaction_scope_v1821','test_shared_clipboard_files_v1821','test_download_ranges_v1821','test_mac_permissions_v1821','test_shelf_live_v1821','test_release_notes_v1821','test_clipboard_fast_v1821','test_clipboard_preview_v1821','test_utility_windows_v1821','test_update_signatures_v1821','-v'], env=env)
     run([python,'test_update_resume_v1821.py','-v'],env=env)
     # Native WebRTC and QWebSocket lifetimes are verified in their own Qt
     # process, matching the standalone frozen-client gate below.

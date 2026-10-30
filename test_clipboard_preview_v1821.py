@@ -70,6 +70,32 @@ class PreviewTests(unittest.TestCase):
         QTest.mouseClick(button,Qt.LeftButton,pos=QPoint(2,2))
         self.assertTrue(self.manager.clipboard_preview_dialog.isVisible())
 
+    def test_remote_file_refreshes_both_open_cards_and_enlarged_preview_without_reopen(self):
+        popup=self.overview();small=self.shelf.zones['permanent'].clipboard_button
+        self.manager.show_clipboard_preview();dialog=self.manager.clipboard_preview_dialog
+        files=list(self.shelf.files['permanent']);sender_clip=Clipboard();sender_events=Events()
+        self.hub.events.append(sender_events)
+        sender=ClipboardSync(Account(self.hub.api('other-device'),'other-device'),sender_events,self.base/'remote-clipboard',clipboard=sender_clip)
+        try:
+            image=QImage(120,80,QImage.Format_RGB32);image.fill(QColor('#2679ab'))
+            path=self.base/'remote-original.png';image.save(str(path),'PNG');original=path.read_bytes()
+            mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(path))]);sender_clip.setMimeData(mime)
+            workspace.until(lambda:self.model.state.get('phase')=='synced' and self.model.state.get('value') and
+                            self.model.state['value'][0]=='files' and not self.model.thumbnail.isNull() and not self.model.large.isNull())
+            self.assertIs(small.presenter,self.model);self.assertIs(popup.clipboard_button.presenter,self.model)
+            self.assertEqual(self.model.state['id'],self.hub.head['id']);self.assertEqual(dialog.badge.status,'synced')
+            self.assertIs(dialog.content.currentWidget(),dialog.image)
+            received=self.model.state['value'][1][0];self.assertEqual(__import__('pathlib').Path(received).read_bytes(),original)
+            path=self.base/'remote-second.txt';path.write_text('remote original file contents',encoding='utf8')
+            mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(path))]);sender_clip.setMimeData(mime)
+            workspace.until(lambda:'remote-second.txt' in dialog.info.text() and self.model.state.get('phase')=='synced')
+            self.assertTrue(self.model.thumbnail.isNull());self.assertIs(dialog.content.currentWidget(),dialog.info)
+            self.assertIs(self.manager.clipboard_preview_dialog,dialog);self.assertTrue(dialog.isVisible())
+            self.assertEqual(self.shelf.files['permanent'],files);self.assertTrue(self.shelf.expanded)
+            self.assertEqual(sum(method=='PUT' for method,_ in self.hub.calls),2)
+        finally:
+            sender.close();workspace.until(lambda:not sender._jobs)
+
     def test_image_enlarges_without_mutating_original_and_status_does_not_redecode(self):
         image=QImage(640,480,QImage.Format_RGB32);image.fill(QColor('#4267a1'))
         path=self.base/'original.png';image.save(str(path),'PNG');original=path.read_bytes()

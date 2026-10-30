@@ -49,11 +49,13 @@ class UtilityTests(unittest.TestCase):
         self.dialog.close();self.dialog.close_confirm_button.click();APP.processEvents()
         self.assertEqual(seen,[]);self.assertIn(('cancel','active'),self.service.calls)
 
-    def test_resize_persists_size_not_position_and_controls_use_full_bounds(self):
+    def test_reopen_resets_default_before_show_and_controls_use_full_bounds(self):
         self.service._transfers.clear();self.dialog.resize(1010,740);APP.processEvents()
         self.dialog.chrome.save_size()
         second=LanDialog(self.service,self.store)
-        self.assertEqual(second.size(),self.dialog.size())
+        self.assertEqual(second.size().toTuple(),(980,704))
+        self.dialog.hide();self.dialog.show();APP.processEvents()
+        self.assertEqual(self.dialog.size().toTuple(),(980,704))
         self.assertEqual(second.minimumSize().toTuple(),(824,660))
         if hasattr(second.chrome,'buttons'):
             second.show();APP.processEvents()
@@ -105,13 +107,14 @@ class SharedUpdateTests(unittest.TestCase):
             area=APP.primaryScreen().availableGeometry()
             view.show_result(True,dict(point=area.bottomRight().toTuple(),fullscreen=False))
             self.assertEqual(view.message.text(),'复制已同步')
+            QTest.qWait(240);APP.processEvents()
             self.assertTrue(area.contains(view.geometry()))
             self.assertTrue(view.testAttribute(Qt.WA_ShowWithoutActivating))
             self.assertTrue(view.windowFlags()&Qt.WindowTransparentForInput)
             view.show_result(False,dict(point=area.center().toTuple(),fullscreen=True))
             self.assertEqual(view.message.text(),'复制同步失败')
-            self.assertLessEqual(abs(view.geometry().center().x()-area.center().x()),1)
-            self.assertGreater(view.y(),area.center().y());view.timer.setInterval(20)
+            self.assertEqual(view.x(),area.right()-view.width()-15)
+            self.assertEqual(view.y(),area.top()+16);view.timer.start(20)
             deadline=time.monotonic()+1
             while view.isVisible() and time.monotonic()<deadline:QTest.qWait(10)
             self.assertFalse(view.isVisible())

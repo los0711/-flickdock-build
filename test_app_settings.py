@@ -154,7 +154,7 @@ with tempfile.TemporaryDirectory(prefix="flickdock-settings-") as temporary:
     assert body.layout().itemAt(0).widget() is dialog._reference_top
     assert dialog._reference_top.layout().indexOf(dialog.account_slot) >= 0
     assert dialog.dock_card.isAncestorOf(dialog.trigger_visible_checkbox)
-    assert dialog.surface.size().width() == 860 and dialog.surface.size().height() == 600
+    assert dialog.surface.size().width() == min(892,dialog.chrome._available().width()-16)-32 and dialog.surface.size().height() == min(632,dialog.chrome._available().height()-16)-32
     assert set(previews[-1]) == {"dock_edge", "dock_position", "dock_length", "dock_thickness", "trigger_visible", "dock_color", "dock_opacity"}
     dialog.theme_combo.setCurrentIndex(0)
     dialog.folder_edit.setText(str(invalid))

@@ -33,7 +33,7 @@ def main():
             initial=window.size();area=window.screen().availableGeometry()
             window.resize(max(window.minimumWidth(),min(initial.width()-60,area.width()-40)),max(window.minimumHeight(),initial.height()-30))
             app.processEvents();changed=window.size();window.chrome.save_size()
-            assert window.chrome.path.is_file()
+            assert not window.chrome.path.exists()
             if sys.platform=='win32':
                 buttons=window.chrome.buttons
                 QTest.mouseClick(buttons['max'],Qt.LeftButton,pos=QPoint(1,1));wait(window.isMaximized)
@@ -53,7 +53,10 @@ def main():
                 assert AppKit.NSApplication.sharedApplication().activationPolicy()==AppKit.NSApplicationActivationPolicyRegular
                 window.showNormal();wait(lambda:not window.isMinimized())
             window.close();wait(lambda:not window.isVisible())
-            report['windows'].append(dict(title=window.windowTitle(),resize=True,minimize=True,close=True))
+            window.show();wait(window.isVisible)
+            assert window.size()==initial,(window.size(),initial)
+            window.close();wait(lambda:not window.isVisible())
+            report['windows'].append(dict(title=window.windowTitle(),resize=True,minimize=True,close=True,reopen_default=True))
         if sys.platform=='darwin':
             import AppKit
             assert AppKit.NSApplication.sharedApplication().activationPolicy()==AppKit.NSApplicationActivationPolicyAccessory
