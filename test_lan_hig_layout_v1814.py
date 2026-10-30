@@ -144,14 +144,27 @@ class LanHigLayoutTests(unittest.TestCase):
             for theme in ('dark','light'):
                 with self.subTest(size=size,theme=theme):
                     self.dialog.resize(*size);self.dialog.apply_theme(theme);self.settle()
-                    for widget in (panel.drop_zone,panel.queue_scroll,panel.devices,panel.send_code,
-                            panel.send_button,panel.history_scroll,panel.receive_path,panel.choose_destination):
+                    for name in ('drop_zone','queue_scroll','devices','send_code',
+                            'send_button','history_scroll','receive_path','choose_destination'):
+                        widget=getattr(panel,name)
                         self.assertTrue(widget.isVisible())
                         for scroll in (panel.send_scroll,panel.activity_scroll):
                             if scroll.widget().isAncestorOf(widget):
-                                scroll.ensureWidgetVisible(widget,8,8);self.settle()
-                                self.assertTrue(scroll.viewport().rect().contains(widget.mapTo(scroll.viewport(),widget.rect().topLeft())),widget.objectName())
-                                self.assertTrue(scroll.viewport().rect().contains(widget.mapTo(scroll.viewport(),widget.rect().bottomRight())),widget.objectName())
+                                # ensureWidgetVisible uses a style-dependent
+                                # focus rect. Exercise actual scroll-bar reachability
+                                # and still require the whole outer frame to fit.
+                                viewport=scroll.viewport();bar=scroll.verticalScrollBar()
+                                top=widget.mapTo(viewport,widget.rect().topLeft()).y()
+                                bottom=widget.mapTo(viewport,widget.rect().bottomRight()).y()
+                                if top<0:bar.setValue(bar.value()+top-8)
+                                elif bottom>=viewport.height():bar.setValue(bar.value()+bottom-viewport.height()+9)
+                                self.settle()
+                                bounds=(name,widget.size().toTuple(),viewport.size().toTuple(),
+                                        widget.mapTo(viewport,widget.rect().topLeft()).toTuple(),
+                                        widget.mapTo(viewport,widget.rect().bottomRight()).toTuple(),
+                                        bar.value(),bar.maximum())
+                                self.assertTrue(viewport.rect().contains(widget.mapTo(viewport,widget.rect().topLeft())),bounds)
+                                self.assertTrue(viewport.rect().contains(widget.mapTo(viewport,widget.rect().bottomRight())),bounds)
                         self.assertTrue(panel.rect().contains(widget.mapTo(panel,widget.rect().topLeft())),widget.objectName())
                         self.assertTrue(panel.rect().contains(widget.mapTo(panel,widget.rect().bottomRight())),widget.objectName())
                     for row in panel._rows.values():
