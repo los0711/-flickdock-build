@@ -71,7 +71,9 @@ class HtmlNativeDialogs(unittest.TestCase):
         dialog.primary_button.click();self.assertEqual(client.calls[-1],('check',True))
         client.update_available.emit(manifest,True);APP.processEvents()
         self.assertEqual(dialog.surface.width(),420)
-        self.assertEqual(dialog.release_notes.toPlainText(),manifest['notes'])
+        # Changelog is intentionally centralized in the overview notice.
+        self.assertFalse(dialog.notes_card.isVisible())
+        self.assertEqual(dialog._notes,manifest['notes'])
         self.assertFalse(dialog.isModal())
         for theme in ('dark','light'):
             dialog.apply_theme(theme);APP.processEvents()

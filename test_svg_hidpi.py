@@ -44,7 +44,9 @@ with tempfile.TemporaryDirectory() as tmp:
             assert glyph.width()==round(24*dpr) and glyph.devicePixelRatio()==dpr
             assert alpha_count(glyph)>8
     assert bytes_of(glyph_pixmap('close',24,'#000000',dpr=1.25))!=bytes_of(glyph_pixmap('close',24,'#ffffff',dpr=1.25))
-    export_svg_family(root/'assets/icons')
+    exported=folder/'exported-icons'
+    export_svg_family(exported)
+    assert all(QSvgRenderer(str(p)).isValid() for p in exported.glob('*.svg'))
     assert all(QSvgRenderer(str(p)).isValid() for p in (root/'assets/icons').glob('*.svg'))
 
     sheet=QPixmap(round(900*ratio),round(430*ratio));sheet.setDevicePixelRatio(ratio);sheet.fill(QColor('#f5f7fa'));p=QPainter(sheet)

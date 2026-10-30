@@ -223,6 +223,7 @@ def main(arguments=None):
          'test_shelf_sync_v180', 'test_sync_review_v180', 'test_account_security_v180',
          'test_lan_transfer_v181', 'test_lan_dialog_v183', 'test_shelf_transfers_v181',
          'test_account_profile_layout_v1814', 'test_lan_hig_layout_v1814',
+         'test_html_native_lan', 'test_html_native_dialogs',
          'test_ui_feedback_v1815', 'test_directory_sync_v1815', 'test_feedback_v1816','test_feedback_v1818',
          'test_shelf_raise_v1810', 'test_intake_first_frame_v1810',
          'test_sync_remote_commit_wakeup', 'test_cloud_file_status_v1810',

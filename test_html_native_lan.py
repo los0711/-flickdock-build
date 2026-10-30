@@ -96,10 +96,30 @@ class NativeLanTests(unittest.TestCase):
                          'names':['Design_System_v2.fig'],'total':86*1024**2,'code':'849249'})
         APP.processEvents()
         self.assertGreaterEqual(self.dialog.card.height(),540)
-        for widget in (panel.history_body,panel.receive_path,panel.devices,panel.send_button):
-            rect=widget.rect(); top=widget.mapTo(panel,rect.topLeft()); bottom=widget.mapTo(panel,rect.bottomRight())
-            self.assertGreaterEqual(top.y(),0)
-            self.assertLessEqual(bottom.y(),panel.height())
+        for widget in (panel.history_scroll,panel.receive_path,panel.devices,panel.send_button):
+            scroll=next(area for area in (panel.send_scroll,panel.activity_scroll)
+                        if area.widget().isAncestorOf(widget))
+            viewport=scroll.viewport();bar=scroll.verticalScrollBar()
+            top=widget.mapTo(viewport,widget.rect().topLeft()).y()
+            bottom=widget.mapTo(viewport,widget.rect().bottomRight()).y()
+            if top<0:bar.setValue(bar.value()+top-8)
+            elif bottom>=viewport.height():bar.setValue(bar.value()+bottom-viewport.height()+9)
+            APP.processEvents()
+            bounds=(widget.objectName(),widget.size().toTuple(),viewport.size().toTuple(),
+                    widget.mapTo(viewport,widget.rect().topLeft()).toTuple(),
+                    widget.mapTo(viewport,widget.rect().bottomRight()).toTuple())
+            self.assertTrue(viewport.rect().contains(widget.mapTo(viewport,widget.rect().topLeft())),bounds)
+            self.assertTrue(viewport.rect().contains(widget.mapTo(viewport,widget.rect().bottomRight())),bounds)
+        # History content can scroll independently; every record must be reachable.
+        for row in panel.history_rows:
+            scroll=panel.history_scroll;viewport=scroll.viewport();bar=scroll.verticalScrollBar()
+            top=row.mapTo(viewport,row.rect().topLeft()).y()
+            bottom=row.mapTo(viewport,row.rect().bottomRight()).y()
+            if top<0:bar.setValue(bar.value()+top)
+            elif bottom>=viewport.height():bar.setValue(bar.value()+bottom-viewport.height()+1)
+            APP.processEvents()
+            self.assertTrue(viewport.rect().contains(row.mapTo(viewport,row.rect().topLeft())))
+            self.assertTrue(viewport.rect().contains(row.mapTo(viewport,row.rect().bottomRight())))
         if os.environ.get('FLICKDOCK_CAPTURE_LAN'):
             output=Path(__file__).resolve().parents[2]/'outputs';output.mkdir(exist_ok=True)
             for theme in ('dark','light'):

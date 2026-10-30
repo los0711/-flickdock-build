@@ -32,6 +32,18 @@ class ResourceTests(unittest.TestCase):
         self.assertEqual((frame.width(),frame.height()),(3840,2160))
         self.assertIn('47',cache);self.assertNotIn('0',cache);self.assertEqual(len(refresh),48)
 
+    def test_small_video_poster_keeps_pixels_without_missing_native_image_type(self):
+        cache={}
+        owner=SimpleNamespace(shelf=SimpleNamespace(preview_cache=cache,
+            zones={'permanent':SimpleNamespace(refresh=lambda:None)}),
+            popup=SimpleNamespace(isVisible=lambda:False))
+        frame=QImage(96,64,QImage.Format_RGBA8888);frame.fill(Qt.blue)
+        PreviewPane._poster_ready(owner,'small-video',frame)
+        self.assertEqual(cache['small-video'].size(),frame.size())
+        self.assertEqual(cache['small-video'].pixelColor(10,10),frame.pixelColor(10,10))
+        frame.fill(Qt.red)
+        self.assertEqual(cache['small-video'].pixelColor(10,10),Qt.blue)
+
     def test_forget_cancels_queued_decode_and_retires_its_runnable(self):
         with tempfile.TemporaryDirectory() as directory:
             first=Path(directory)/'first.png';second=Path(directory)/'removed.png'

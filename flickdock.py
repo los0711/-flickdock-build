@@ -19,7 +19,7 @@ from uuid import uuid4
 
 from PySide6.QtCore import (QEasingCurve, QPoint, QRect, QRectF, QSize, QEvent, Qt, QMimeData,
                              QPropertyAnimation, QTimer, QUrl, QThreadPool)
-from PySide6.QtGui import (QColor, QCursor, QDrag, QFont, QFontDatabase, QGuiApplication,
+from PySide6.QtGui import (QColor, QCursor, QDrag, QFont, QFontDatabase, QGuiApplication, QImage,
                            QIcon, QLinearGradient, QPainter, QPainterPath, QPalette, QPen, QPixmap, QTransform)
 from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame,
                                 QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton,
