@@ -28,7 +28,7 @@ class EventStreamWiringTests(unittest.TestCase):
             account_changed=Signal(object)
         account=Account();stream=CloudEvents(account,enabled=False);engine=ShelfSync.__new__(ShelfSync);QObject.__init__(engine)
         identifier=str(uuid4());engine.closed=False;engine.account_id='fixture';engine.receive_enabled=True;engine.upload_enabled=False
-        engine._live_upload_progress={};engine.remote_transfers=[dict(upload_id=identifier,item_id='item',size=1000000,received_bytes=0,device_id='sender')]
+        engine._live_upload_progress={};engine._remote_heads={};engine.remote_transfers=[dict(upload_id=identifier,item_id='item',size=1000000,received_bytes=0,device_id='sender')]
         engine.service=SimpleNamespace(device_id='receiver');engine.state={'entries':{}};engine.download_transfers={}
         gets=[];engine.request_refresh=lambda:gets.append(True);seen=[];engine.transfers_changed.connect(seen.append)
         stream.transfer_progress.connect(engine.remote_progress)

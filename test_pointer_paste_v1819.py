@@ -5,8 +5,8 @@ import ctypes,tempfile,unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock,patch
-from PySide6.QtCore import QPoint,QMimeData,QUrl,Qt,QEvent
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtCore import QPoint,QMimeData,QUrl,Qt,QEvent,QBuffer,QIODevice,QByteArray
+from PySide6.QtGui import QKeyEvent,QImage
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QLineEdit,QWidget,QApplication
 from test_html_native_workspace import APP,flush,until
@@ -62,6 +62,15 @@ class PasteIntakeTests(unittest.TestCase):
         QTest.mouseClick(self.shelf.network_status,Qt.LeftButton);flush()
         self.assertIsNone(self.shelf.drag_origin)
 
+    def test_encoded_photo_preserves_every_original_byte(self):
+        image=QImage(24,24,QImage.Format_RGB32);image.fill(Qt.red)
+        buffer=QBuffer();buffer.open(QIODevice.WriteOnly);self.assertTrue(image.save(buffer,'JPEG',83))
+        original=bytes(buffer.data());buffer.close()
+        mime=QMimeData();mime.setData('image/jpeg',QByteArray(original))
+        refs=self.shelf.content.capture_mime(mime,Path(self.fixture.temp.name)/'photo-captures')
+        self.assertEqual(len(refs),1);self.assertEqual(Path(refs[0]).suffix,'.jpg')
+        self.assertEqual(Path(refs[0]).read_bytes(),original)
+
     def test_paste_routes_by_pointer_while_another_editor_has_focus(self):
         manager=self.fixture.manager;manager.shelves=[self.shelf];manager.settings_open=lambda:False
         manager.paste_target_at_pointer=lambda:flickdock.ShelfManager.paste_target_at_pointer(manager)
@@ -108,6 +117,18 @@ class NativePasteTests(unittest.TestCase):
         accept.return_value=False;self.assertIs(hook._event(None,10,event,None),event)
         accept.return_value=True;event['flags']=9;self.assertIs(hook._event(None,10,event,None),event)
         hook._event(None,100,event,None);hook.close();q.CFMachPortInvalidate.assert_called_once_with(4)
+
+    def test_disabled_native_tap_is_detected_and_recreated(self):
+        backends=[]
+        def factory(accept):
+            backend=SimpleNamespace(available=True,permission_required=False,check_health=Mock(return_value=True),close=Mock())
+            backends.append(backend);return backend
+        controller=PointerPasteController(APP,lambda:None,lambda _:None,native=False,backend_factory=factory)
+        try:
+            controller.retry_native();self.assertEqual(len(backends),1)
+            backends[0].check_health.return_value=False
+            controller.retry_native();self.assertEqual(len(backends),2);backends[0].close.assert_called_once()
+        finally:controller.close()
 
     def test_native_hit_test_rejects_a_window_covering_the_shelf(self):
         widget=SimpleNamespace(winId=lambda:17)

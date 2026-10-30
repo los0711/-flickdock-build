@@ -7,9 +7,8 @@ class CloudConnectivity(QObject):
     environment_changed=Signal(dict)
     def __init__(self,api,parent=None,*,enabled=True):
         super().__init__(parent);self.api=api;self.state='checking';self._key=None;self._closed=False
-        from network_environment import NetworkEnvironment
-        self.environment=NetworkEnvironment(self,enabled=enabled)
-        self.environment.changed.connect(self._environment_changed)
+        # Reachability is the authenticated application's actual cloud route.
+        # Do not spawn periodic OS VPN/PowerShell probes for a status icon.
         self.timer=QTimer(self);self.timer.setInterval(12000);self.timer.timeout.connect(self.check)
         if enabled:self.timer.start();QTimer.singleShot(0,self,self.check)
 
@@ -32,6 +31,6 @@ class CloudConnectivity(QObject):
         if self._key is pending:self._key=key
 
     def close(self):
-        self._closed=True;self.timer.stop();self.environment.close()
+        self._closed=True;self.timer.stop()
         if self._key is not None:self.api.cancel(self._key)
         self._key=None

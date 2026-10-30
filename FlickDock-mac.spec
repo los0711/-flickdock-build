@@ -16,7 +16,7 @@ assets = [(root / 'assets/ui/qtbase_zh_CN.qm', 'assets/ui')]
 assets += [(root / 'licenses' / name, 'licenses') for name in (
     'HarmonyOS-Sans-LICENSE.txt', 'Python-LICENSE.txt', 'LGPL-3.0.txt',
     'GPL-3.0.txt', 'PyInstaller-COPYING.txt','OpenSSL-LICENSE.txt','Cloud-Client-LICENSES.txt',
-    'Lucide-LICENSE.txt','WebRTC-LICENSES.txt')]
+    'Lucide-LICENSE.txt','WebRTC-LICENSES.txt','Pairing-QR-LICENSES.txt','Release-Crypto-LICENSES.txt')]
 assets += [(root / 'THIRD_PARTY_NOTICES.md', '.'), (root / 'font_manifest.json', '.')]
 for path, destination in assets:
     if not path.is_file():
@@ -34,7 +34,7 @@ analysis = Analysis([str(root / 'mac_entry.py')], pathex=[str(root)], binaries=p
                    'keyring.backends.macOS', 'keyring.backends.macOS.api',
                    'PySide6.QtSvg', 'PySide6.QtMultimedia', 'PySide6.QtWebSockets'],
     runtime_hooks=[str(root / 'runtime_macos.py')],
-    excludes=['winreg', 'pefile', 'PySide6.QtWebEngineCore', 'PySide6.QtWebEngineWidgets',
+    excludes=['winreg', 'pefile', 'numpy', 'PIL', 'PySide6.QtWebEngineCore', 'PySide6.QtWebEngineWidgets',
               'PySide6.QtWebEngineQuick', 'PySide6.QtQml', 'PySide6.QtQuick',
               'PySide6.QtQuickWidgets', 'PySide6.QtPdf', 'PySide6.QtPdfWidgets'],
     noarchive=False, optimize=0)

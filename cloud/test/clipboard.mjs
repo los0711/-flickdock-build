@@ -7,10 +7,12 @@ import {fileURLToPath} from 'node:url';
 import {mkdtemp,writeFile,readFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import WebSocket from 'ws';
 const server=spawn(process.execPath,[fileURLToPath(new URL('./qa-server.mjs',import.meta.url))],{stdio:['pipe','pipe','pipe'],windowsHide:true});
 let log='',origin='';server.stderr.on('data',data=>log+=data);
 server.stdout.on('data',data=>{log+=data;const found=log.match(/http:\/\/127\.0\.0\.1:\d+/);if(found)origin=found[0]});
 const hash=data=>createHash('sha256').update(data).digest('hex');
+const sockets=[];
 try{
   for(let i=0;i<150&&!origin;i++){if(server.exitCode!==null)throw Error(log);await sleep(250)}
   assert(origin,'Worker did not start: '+log);
@@ -75,8 +77,34 @@ try{
   const result=await inflight;if(result instanceof Response){assert.notEqual(result.status,200);await result.arrayBuffer()}
   assert.equal((await json('GET','/v1/clipboard',a.token)).clipboard.id,fourth);
   console.log('PASS slow old upload cannot resurrect after newer clipboard');
+  const peer=new WebSocket(origin.replace('http:','ws:')+'/v1/events',{headers:{Authorization:'Bearer '+b.token}});
+  const isolated=new WebSocket(origin.replace('http:','ws:')+'/v1/events',{headers:{Authorization:'Bearer '+outsider.token}});
+  sockets.push(peer,isolated);const pushes=[],outside=[];
+  peer.on('message',data=>pushes.push(JSON.parse(String(data))));isolated.on('message',data=>outside.push(JSON.parse(String(data))));
+  await Promise.all(sockets.map(socket=>new Promise((resolve,reject)=>{socket.once('open',resolve);socket.once('error',reject)})));
+  const text=Buffer.from('inline original 中文\r\nhttps://example.invalid'),length=Buffer.alloc(4);length.writeUInt32BE(text.length);
+  const inlineBody=Buffer.concat([Buffer.from('FDCLIP2\0'),length,text]);const inlineId=randomUUID();
+  copied_at=Math.max(copied_at+1,Date.now());
+  const intent={id:inlineId,protocol:2,sequence:++sequence,copied_at,
+    inline:{kind:'text',body:inlineBody.toString('base64'),size:inlineBody.length,sha256:hash(inlineBody)}};
+  const committed=await json('POST','/v1/clipboard',a.token,intent,201);
+  assert.equal(committed.clipboard.ready,true);assert.equal(committed.clipboard.inline,intent.inline.body);
+  for(let i=0;i<100&&!pushes.some(value=>value.type==='clipboard_inline');i++)await sleep(10);
+  assert(pushes.some(value=>value.type==='clipboard_inline'&&value.clipboard.id===inlineId));
+  assert(!outside.some(value=>value.type==='clipboard_inline'));
+  const retry=await json('POST','/v1/clipboard',a.token,intent,201);assert.equal(retry.clipboard.version,committed.clipboard.version);
+  const invalid={...intent,id:randomUUID(),sequence:++sequence,inline:{...intent.inline,sha256:'0'.repeat(64)}};
+  await json('POST','/v1/clipboard',a.token,invalid,400);
+  assert.equal((await json('GET','/v1/clipboard',b.token)).clipboard.id,inlineId);
+  for(let i=0;i<3;i++){
+    const response=await req('GET',`/v1/clipboard/${inlineId}/content`,b.token);
+    assert.equal(response.status,200);assert.deepEqual(Buffer.from(await response.arrayBuffer()),inlineBody);
+  }
+  for(let i=0;i<50;i++){if((await json('GET','/v1/me',a.token)).storage.used_bytes===0)break;await sleep(100)}
+  assert.equal((await json('GET','/v1/me',a.token)).storage.used_bytes,0,'Small text replaces the old R2 allocation without creating another');
+  console.log('PASS atomic inline text, original bytes, account-scoped realtime push, retry, integrity and legacy content GET');
   if(process.env.FD_QA_PYTHON){
-    const child=spawn(process.env.FD_QA_PYTHON,[fileURLToPath(new URL('../../verify_clipboard.py',import.meta.url)),...(process.env.FD_QA_NATIVE==='1'?['--native-ci']:[])],{stdio:['pipe','pipe','pipe'],env:{...process.env,QT_QPA_PLATFORM:'offscreen'},windowsHide:true});
+    const child=spawn(process.env.FD_QA_PYTHON,[process.env.FD_QA_CLIENT_SCRIPT||fileURLToPath(new URL('../../verify_clipboard.py',import.meta.url)),...(process.env.FD_QA_NATIVE==='1'?['--native-ci']:[])],{stdio:['pipe','pipe','pipe'],env:{...process.env,QT_QPA_PLATFORM:'offscreen'},windowsHide:true});
     let output='';child.stdout.on('data',data=>output+=data);child.stderr.on('data',data=>output+=data);
     child.stdin.end(JSON.stringify({origin,a,b}));const code=await new Promise(resolve=>child.once('exit',resolve));assert.equal(code,0,output);console.log(output.trim());
   }
@@ -92,4 +120,4 @@ try{
       console.log('PASS frozen Qt executable: original clipboard bytes, screenshot pixels, repeated paste, early shelf placeholder');
     }finally{await rm(directory,{recursive:true,force:true})}
   }
-}finally{server.stdin.end();await new Promise(resolve=>{server.once('exit',resolve);setTimeout(resolve,10000).unref()})}
+}finally{for(const socket of sockets)socket.terminate();server.stdin.end();await new Promise(resolve=>{server.once('exit',resolve);setTimeout(resolve,10000).unref()})}

@@ -43,7 +43,7 @@ def make_icon(destination):
             image = QImage(pixels, pixels, QImage.Format.Format_ARGB32_Premultiplied)
             image.fill(Qt.GlobalColor.transparent)
             painter = QPainter(image)
-            inset=pixels*.065
+            inset=pixels*.04
             renderer.render(painter,QRectF(inset,inset,pixels-2*inset,pixels-2*inset))
             painter.end()
             name = f'icon_{size}x{size}' + ('@2x' if scale == 2 else '') + '.png'
@@ -169,7 +169,8 @@ def main(arguments=None):
         if not python.is_file():
             venv.EnvBuilder(with_pip=True).create(environment)
         run([python, '-m', 'pip', 'install', 'PySide6==6.12.0', 'PyInstaller==6.22.3',
-             'pyobjc-framework-Quartz>=11,<13', 'keyring==25.7.0', 'cryptography>=42'])
+             'pyobjc-framework-Quartz>=11,<13', 'keyring==25.7.0', 'cryptography==50.0.2',
+             'qrcode==8.2','zxing-cpp==3.1.1'])
     env = dict(os.environ, QT_QPA_PLATFORM='offscreen', QT_MEDIA_BACKEND='darwin',PYTHONFAULTHANDLER='1',
                FLICKDOCK_TARGET_ARCH=options.target_arch)
     # This workspace may contain Windows wheel files in py/. Never import them
@@ -199,7 +200,9 @@ def main(arguments=None):
          'test_shelf_raise_v1810', 'test_intake_first_frame_v1810',
          'test_sync_remote_commit_wakeup', 'test_cloud_file_status_v1810',
          'test_trigger_reliability_v1810', 'test_event_stream_wiring_v1810',
-         'test_pointer_paste_v1819','test_presentation_v1819','test_clipboard_sync_v1819','test_wan_account_v1819','test_webrtc_close_v1819','test_update_notice_v1813','test_small_upload_lane','test_feedback_v1820','-v'], env=env)
+         'test_pointer_paste_v1819','test_presentation_v1819','test_clipboard_sync_v1819','test_wan_account_v1819','test_webrtc_close_v1819','test_update_notice_v1813','test_small_upload_lane','test_feedback_v1820',
+         'test_shelf_live_v1821','test_pairing_qr_v1821','test_release_notes_v1821','test_clipboard_fast_v1821','test_utility_windows_v1821','test_update_signatures_v1821','-v'], env=env)
+    run([python,'test_update_resume_v1821.py','-v'],env=env)
     # Native WebRTC and QWebSocket lifetimes are verified in their own Qt
     # process, matching the standalone frozen-client gate below.
     run([python,'-m','unittest','test_wan_transfer_v1816','-v'],env=env)

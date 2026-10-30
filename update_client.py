@@ -13,11 +13,11 @@ import sys
 from uuid import uuid4
 
 from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal
-from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest, QSslSocket
+from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest, QSslSocket,QNetworkProxyFactory,QNetworkProxy
 
 
 # Stable public release URL; Gitee redirects raw files to its public CDN.
-DEFAULT_MANIFEST_URL = 'https://gitee.com/rooogerluo/flick-dock-releases/raw/master/updates/latest.json'
+DEFAULT_MANIFEST_URL = 'https://flickdock-site.roger000416.workers.dev/updates/latest.json'
 MAC_MANIFEST_BASE = 'https://gitee.com/rooogerluo/flick-dock-releases/raw/master/updates/'
 WORKER_MANIFEST_BASE='https://flickdock-site.roger000416.workers.dev/updates/'
 DEFAULT_ALLOWED_HOSTS = frozenset({'gitee.com', 'raw.giteeusercontent.com', 'foruda.gitee.com','flickdock-site.roger000416.workers.dev'})
@@ -67,7 +67,7 @@ def manifest_endpoint(platform=None, machine=None):
     # <=1.8.19 helpers run inside the bundle being replaced and depend on an
     # external Python CA path. Their existing channel is a DMG bridge; the
     # stable-runtime/Qt-trust updater introduced in 1.8.20 uses a new channel.
-    return MAC_MANIFEST_BASE + 'macos-' + architecture + '-auto-v2.json'
+    return WORKER_MANIFEST_BASE + 'macos-' + architecture + '-auto-v2.json'
 
 
 def validate_manifest(value, allowed_hosts=DEFAULT_ALLOWED_HOSTS, *, platform=None, machine=None):
@@ -107,6 +107,20 @@ def validate_manifest(value, allowed_hosts=DEFAULT_ALLOWED_HOSTS, *, platform=No
                   installer=dict(url=url, size=size, sha256=digest))
     if filename is not None:
         result['installer']['filename'] = filename
+    if 'releases' in value:
+        releases=value['releases']
+        if not isinstance(releases,list) or len(releases)>100:raise ValueError('历史更新说明无效。')
+        seen=set();total=0;accepted=[]
+        for row in releases:
+            if not isinstance(row,dict):raise ValueError('历史更新说明无效。')
+            number,description=row.get('version'),row.get('notes')
+            version_tuple(number)
+            if (number in seen or compare_versions(number,version)>0 or not isinstance(description,str)
+                    or len(description)>32768):raise ValueError('历史更新说明无效。')
+            total+=len(description)
+            if total>32768:raise ValueError('历史更新说明过长。')
+            seen.add(number);accepted.append(dict(version=number,notes=description))
+        result['releases']=accepted
     if platform == 'darwin':
         architecture = value.get('architecture')
         if (value.get('platform') != 'darwin' or architecture not in (update_architecture(machine), 'universal2')
@@ -117,6 +131,10 @@ def validate_manifest(value, allowed_hosts=DEFAULT_ALLOWED_HOSTS, *, platform=No
         result.update(platform='darwin', architecture=architecture)
     elif value.get('platform') not in (None, 'win32'):
         raise ValueError('更新清单不是 Windows 安装包。')
+    if 'publisher_signature' in value:
+        result['publisher_signature']=copy.deepcopy(value['publisher_signature'])
+        from update_signatures import verify_manifest_signature
+        verify_manifest_signature(result,required=True)
     return result
 
 
@@ -129,6 +147,11 @@ def _json_object(pairs):
     return result
 
 
+class _SystemProxies(QNetworkProxyFactory):
+    def queryProxy(self,query):
+        return QNetworkProxyFactory.systemProxyForQuery(query) or [QNetworkProxy(QNetworkProxy.NoProxy)]
+
+
 class UpdateClient(QObject):
     checking = Signal(bool)
     update_available = Signal(dict, bool)
@@ -137,6 +160,7 @@ class UpdateClient(QObject):
     progress = Signal(int, int)
     verified_file = Signal(str, dict, bool)
     cancelled = Signal(bool)
+    download_status = Signal(str,dict)
 
     def __init__(self, current_version, updates_dir=None, parent=None, *,
                  endpoint=None, allowed_hosts=DEFAULT_ALLOWED_HOSTS,
@@ -147,6 +171,7 @@ class UpdateClient(QObject):
         self.platform = sys.platform if platform is None else platform
         self.machine = update_architecture(machine)
         self.endpoint = manifest_endpoint(self.platform, self.machine) if endpoint is None else endpoint
+        self._require_publisher=endpoint is None
         self.allowed_hosts = frozenset(str(host).lower().rstrip('.') for host in allowed_hosts)
         if updates_dir is None:
             from platform_native import data_directory
@@ -156,6 +181,8 @@ class UpdateClient(QObject):
         if os.name == 'nt' and 'schannel' in QSslSocket.availableBackends():
             QSslSocket.setActiveBackend('schannel')
         self.network = network if network is not None else QNetworkAccessManager(self)
+        if network is None:
+            self._proxy_factory=_SystemProxies();self.network.setProxyFactory(self._proxy_factory)
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.setTimerType(Qt.TimerType.PreciseTimer)
@@ -178,6 +205,7 @@ class UpdateClient(QObject):
         self._hash = None
         self.last_operation = ''
         self._mirror_attempted=False
+        self._download_task=None
 
     @property
     def busy(self):
@@ -204,30 +232,37 @@ class UpdateClient(QObject):
         return True
 
     def download(self, manifest=None, manual=True):
-        if self._closed or self.busy:
-            return False
-        self._begin('download', manual)
+        if self._closed or self.busy:return False
+        self._begin('download',manual)
         try:
-            candidate = validate_manifest(manifest if manifest is not None else self._manifest, self.allowed_hosts,
-                                          platform=self.platform, machine=self.machine)
-            if compare_versions(candidate['version'], self.current_version) <= 0:
+            candidate=validate_manifest(manifest if manifest is not None else self._manifest,self.allowed_hosts,
+                                        platform=self.platform,machine=self.machine)
+            self._verify_publisher(candidate)
+            if compare_versions(candidate['version'],self.current_version)<=0:
                 raise ValueError('安装包版本不高于当前版本，已拒绝降级或重复安装。')
-            self._download_manifest = candidate
-            directory = self.updates_dir / candidate['version']
-            directory.mkdir(parents=True, exist_ok=True)
-            self._part = directory / (('update-' if self.platform == 'darwin' else 'setup-') + uuid4().hex + '.part')
-            mac_dmg = self.platform == 'darwin' and candidate['installer']['url'].lower().split('?', 1)[0].endswith('.dmg')
-            self._final = directory / ('update.dmg' if mac_dmg else 'update.zip' if self.platform == 'darwin' else 'setup.exe')
-            self._file = self._part.open('xb')
-            self._hash = hashlib.sha256()
-            self.progress.emit(0, candidate['installer']['size'])
-            if not self.busy:
-                return True
-            self._timer.start(max(300000, self.timeout_ms * 20))
-            self._request(candidate['installer']['url'])
-        except (OSError, ValueError, TypeError) as error:
-            self._fail(str(error))
+            self._download_manifest=candidate
+            from update_download import UpdateDownload
+            task=UpdateDownload(self.network,candidate,self.updates_dir/candidate['version'],self.platform,
+                                self.current_version,self.allowed_hosts,timeout_ms=self.timeout_ms,parent=self)
+            self._download_task=task;generation=self._generation
+            def live():return not self._closed and self._download_task is task and self._generation==generation
+            task.progress.connect(lambda received,total:self.progress.emit(received,total) if live() else None)
+            task.status.connect(lambda phase,payload:self.download_status.emit(phase,payload) if live() else None)
+            def finished(path):
+                if not live():return
+                manual=self._manual;self._download_task=None;self._complete()
+                self.verified_file.emit(path,copy.deepcopy(candidate),manual)
+            def failed(message):
+                if not live():return
+                manual=self._manual;self._download_task=None;self._complete();self.failed.emit(message,manual)
+            task.completed.connect(finished);task.failed.connect(failed);task.start()
+        except (OSError,ValueError,TypeError,RuntimeError) as error:self._fail(str(error))
         return True
+
+    def _verify_publisher(self,candidate):
+        if self._require_publisher and version_tuple(candidate['version'])>=(1,8,21):
+            from update_signatures import verify_manifest_signature
+            verify_manifest_signature(candidate,required=True)
 
     def _begin(self, mode, manual):
         self._generation += 1
@@ -371,6 +406,7 @@ class UpdateClient(QObject):
                 parsed = json.loads(bytes(self._body).decode('utf-8-sig'), object_pairs_hook=_json_object,
                                     parse_constant=lambda _: (_ for _ in ()).throw(ValueError('更新清单包含无效数值。')))
                 candidate = validate_manifest(parsed, self.allowed_hosts, platform=self.platform, machine=self.machine)
+                self._verify_publisher(candidate)
                 manual = self._manual
                 self._complete()
                 if compare_versions(candidate['version'], self.current_version) > 0:
@@ -436,15 +472,19 @@ class UpdateClient(QObject):
         from network_diagnostics import record_event
         record_event(self.updates_dir.parent,'update',self._mode,'REQUEST_FAILED')
         if (retry_mirror and self._mode=='check' and not self._mirror_attempted
-                and self.endpoint.startswith(MAC_MANIFEST_BASE)
+                and self.endpoint.startswith((MAC_MANIFEST_BASE,WORKER_MANIFEST_BASE))
                 and 'flickdock-site.roger000416.workers.dev' in self.allowed_hosts):
-            filename=self.endpoint[len(MAC_MANIFEST_BASE):]
+            primary,secondary=(MAC_MANIFEST_BASE,WORKER_MANIFEST_BASE) if self.endpoint.startswith(MAC_MANIFEST_BASE) else (WORKER_MANIFEST_BASE,MAC_MANIFEST_BASE)
+            filename=self.endpoint[len(primary):]
             if filename in ('latest.json','macos-arm64-auto.json','macos-x86_64-auto.json','macos-arm64-auto-v2.json','macos-x86_64-auto-v2.json','macos-arm64.json','macos-x86_64.json'):
                 self._mirror_attempted=True;self._generation+=1;self._detach_reply()
                 self._body.clear();self._prefix.clear();self._received=0;self._redirects=0;self._redirect_bytes=0
-                self._timer.start(self.timeout_ms);self._request(WORKER_MANIFEST_BASE+filename)
+                self._timer.start(self.timeout_ms);self._request(secondary+filename)
                 return
         manual = self._manual
+        if self._download_task is not None:
+            task,self._download_task=self._download_task,None
+            task.stop(discard=False)
         self._complete()
         try:
             self._cleanup_partial()
@@ -453,7 +493,19 @@ class UpdateClient(QObject):
         if not self._closed:
             self.failed.emit(str(message), manual)
 
+    def pause(self):
+        task=self._download_task
+        if task is None or task.stopped or task.phase=='verifying':return False
+        task.stop(discard=False,retain=True);self._complete()
+        self.download_status.emit('paused',dict(received=task.received,total=task.total,speed=0,eta=None,detail='已保留下载进度。'))
+        return True
+
     def cancel(self):
+        if self._download_task is not None:
+            task,self._download_task=self._download_task,None
+            task.stop(discard=True);manual=self._manual;self._complete()
+            if not self._closed:self.cancelled.emit(manual)
+            return True
         if not self.busy:
             return False
         manual = self._manual
@@ -470,4 +522,6 @@ class UpdateClient(QObject):
 
     def close(self):
         self._closed = True
-        self.cancel()
+        if self._download_task is not None:
+            self._download_task.stop(discard=False);self._download_task=None;self._complete()
+        else:self.cancel()

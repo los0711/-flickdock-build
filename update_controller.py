@@ -297,6 +297,8 @@ class UpdateController(QObject):
                 ('progress', self._progress), ('verified_file', self._download_verified),
                 ('cancelled', self._cancelled)):
             getattr(self.client, name).connect(handler)
+        if hasattr(self.client,'download_status'):self.client.download_status.connect(self._download_status)
+        self._download_metrics={};self._download_phase='downloading'
         if settings is not None and hasattr(settings, 'changed'):
             settings.changed.connect(self._settings_changed)
 
@@ -317,20 +319,26 @@ class UpdateController(QObject):
         return bool(self._installing or self.client.busy)
 
     @property
+    def verified_path(self):return self._verified_path
+
+    @property
+    def retry_operation(self):return self._retry_operation
+
+    @property
     def can_start_update(self):
         if self._closed or self.busy or self._manifest is None:
             return False
-        return (self._state in ('available', 'ready', 'cancelled')
+        return (self._state in ('available', 'ready', 'cancelled', 'paused')
                 or self._state == 'error' and self._retry_operation in ('download', 'install'))
 
-    def _set_state(self, state, *, version=None, received=0, total=0, error=''):
+    def _set_state(self, state, *, version=None, received=0, total=0, error='',speed=0,eta=None,detail=''):
         if self._closed:
             return
         if version is None:
             version = self._manifest.get('version', '') if self._manifest else ''
         self._state = state
         self._payload = dict(version=version, received=max(0, int(received)),
-                             total=max(0, int(total)), error=str(error))
+                             total=max(0, int(total)), error=str(error),speed=speed,eta=eta,detail=detail)
         self.state_changed.emit(state, dict(self._payload))
 
     def _settings_changed(self):
@@ -464,7 +472,8 @@ class UpdateController(QObject):
         if not self._authorized or self._closed or self._manifest is None:
             return False
         self._operation = 'download'
-        self._set_state('downloading')
+        self._download_phase='connecting' if hasattr(self.client,'download_status') else 'downloading';self._download_metrics={}
+        self._set_state(self._download_phase)
         if not self._authorized or self._closed:
             return False
         try:
@@ -478,7 +487,14 @@ class UpdateController(QObject):
 
     def _progress(self, received, total):
         if not self._closed and self._authorized and self._operation == 'download':
-            self._set_state('downloading', received=received, total=total)
+            self._set_state(self._download_phase, received=received, total=total,**self._download_metrics)
+
+    def _download_status(self,phase,payload):
+        if self._closed or not self._authorized or self._operation!='download':return
+        if phase not in ('connecting','downloading','reconnecting','paused','verifying'):return
+        self._download_phase=phase
+        self._download_metrics={key:payload.get(key,0 if key=='speed' else None if key=='eta' else '') for key in ('speed','eta','detail')}
+        self._set_state(phase,received=payload.get('received',0),total=payload.get('total',0),**self._download_metrics)
 
     def _download_verified(self, path, manifest, manual=False):
         if self._closed or not self._authorized or self._operation != 'download':
@@ -662,10 +678,17 @@ class UpdateController(QObject):
         if not self._closed:
             self._set_state('cancelled')
 
+    def pause(self):
+        if self._closed or not hasattr(self.client,'pause'):return False
+        paused=self.client.pause()
+        if paused:self._authorized=False
+        return paused
+
     def cancel(self):
         if self._closed:
             return False
-        active = self.busy or self._authorized
+        paused=self._state=='paused'
+        active = self.busy or self._authorized or paused
         self._authorized = False
         self._refreshing_before_install = False
         self._generation += 1
@@ -677,7 +700,7 @@ class UpdateController(QObject):
                 job.cancelled.set()
             else:
                 job.cancel()
-        if self.client.busy:
+        if self.client.busy or paused:
             self.client.cancel()
         if active:
             self._set_state('cancelled')
@@ -686,6 +709,19 @@ class UpdateController(QObject):
     def close(self):
         if self._closed:
             return
-        self.cancel()
+        # Application shutdown preserves verified download bytes. Explicit
+        # Cancel still discards them; routing shutdown through cancel() used
+        # to delete the resume file before client.close() could retain it.
         self._closed = True
+        self._authorized = False
+        self._generation += 1
+        self._installing = False
+        self._refreshing_before_install = False
+        self._timer.stop()
+        self._pending_manifest, self._pending_check = None, False
+        for job in self._jobs.values():
+            if isinstance(job, _Verification):
+                job.cancelled.set()
+            else:
+                job.cancel()
         self.client.close()

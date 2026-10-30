@@ -5,6 +5,13 @@ from platform_native import keep_tool_visible_when_inactive,raise_edge_target
 
 
 class SettingsEdgeHint(QWidget):
+    def show(self):
+        self._window_fade.reopen();super().show()
+
+    def hide(self):
+        if hasattr(self,'_window_fade') and self._window_fade.defer_done(None,lambda _:super(SettingsEdgeHint,self).hide()):return
+        super().hide()
+
     def __init__(self,manager):
         super().__init__();self.manager=manager
         self.setWindowFlags(Qt.Tool|Qt.FramelessWindowHint|Qt.WindowStaysOnTopHint|Qt.WindowDoesNotAcceptFocus)
@@ -17,6 +24,8 @@ class SettingsEdgeHint(QWidget):
         self.close_button=QPushButton('关闭设置',self.card);self.close_button.setMinimumHeight(34)
         self.close_button.clicked.connect(manager.close_settings_from_edge);inside.addWidget(self.close_button)
         self.setFixedWidth(224)
+        from ui_transitions import WindowFade
+        self._window_fade=WindowFade(self)
 
     def show_hint(self):
         from reference_widgets import palette
@@ -28,7 +37,7 @@ class SettingsEdgeHint(QWidget):
         elif side=='top':point=QPoint(edge.center().x()-self.width()//2,edge.bottom()+8)
         else:point=QPoint(edge.center().x()-self.width()//2,edge.top()-self.height()-8)
         self.move(max(area.left()+4,min(point.x(),area.right()-self.width()-4)),max(area.top()+4,min(point.y(),area.bottom()-self.height()-4)))
-        self.show();raise_edge_target(self)
+        self.show();raise_edge_target(self,above=getattr(self.manager,'dock_preview',None))
 
     def contains_pointer(self,point):
         # Include the short bridge so moving from the strip to the button

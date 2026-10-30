@@ -46,7 +46,7 @@ class PresentationTests(unittest.TestCase):
         dialog=QFrame();dialog.setGeometry(150,170,1040,600);dialog.card=dialog
         self.manager.shelf=self.shelf;self.manager.reset_drag_gesture=Mock()
         for motion in (True,False):
-            self.shelf.hide_immediately();self.manager.motion=motion
+            self.shelf.hide_immediately();self.manager.motion=motion;self.shelf.presentation.motion=motion
             flickdock.ShelfManager.show_overview_from_transfer(self.manager,dialog)
             target=QRect(dialog.mapToGlobal(QPoint()),dialog.size()).adjusted(-14,-7,14,20)
             self.assertEqual(self.shelf.visual_geometry(),target)

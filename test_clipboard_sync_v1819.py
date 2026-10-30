@@ -181,14 +181,15 @@ class ClipboardTests(unittest.TestCase):
         self.clips[1].text('older remote');until(lambda:self.hub.head and self.hub.head['ready'])
         client=self.clients[0];client._seen=''
         for failure in ('_next_sequence','_directory'):
+            expected='new local '+failure+('x'*33000 if failure=='_directory' else '')
             with patch.object(client,failure,side_effect=OSError('temporary disk failure')):
-                self.clips[0].text('new local '+failure)
+                self.clips[0].text(expected)
                 until(lambda:client._local_retry is not None)
                 self.assertIsNone(client._pending);self.assertFalse(client._priority_active())
                 client.refresh();until(lambda:not client._fetching)
-                self.assertEqual(self.clips[0].mimeData().text(),'new local '+failure)
+                self.assertEqual(self.clips[0].mimeData().text(),expected)
             client._retry();until(lambda:client._pending is None and client._local_retry is None)
-            until(lambda:self.clips[2].mimeData().text()=='new local '+failure)
+            until(lambda:self.clips[2].mimeData().text()==expected)
 
     def test_metadata_poll_never_preempts_bulk_and_received_file_survives_disable_expiry(self):
         client=self.clients[0];changes=[];client.activity_changed.connect(changes.append)

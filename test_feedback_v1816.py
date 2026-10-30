@@ -50,22 +50,27 @@ class FeedbackTests(unittest.TestCase):
 
     def test_large_drop_offer_queues_captured_files_without_removing_the_shelf(self):
         from types import SimpleNamespace
-        from sync_files import oversized_intake
+        from sync_files import intake_retention
         import threading
         path=self.fixture.base/'large.bin'
-        with path.open('wb') as stream:stream.truncate(200*1024*1024)
-        self.assertEqual(oversized_intake([str(path)],threading.Event()),[])
-        with path.open('r+b') as stream:stream.truncate(200*1024*1024+1)
-        self.assertEqual(oversized_intake([str(path)],threading.Event()),[str(path)])
-        manager=flickdock.ShelfManager.__new__(flickdock.ShelfManager);queued=[];opened=[]
-        manager._quitting=False;manager._large_intake_prompt=False;manager._large_intake_queue=[[str(path)]]
-        manager._update_busy=lambda:False;manager._confirm_large_remote=lambda:True
-        manager.shelf=SimpleNamespace(files={'permanent':[str(path)]})
+        with path.open('wb') as stream:stream.truncate(100*1024*1024-1)
+        self.assertEqual(intake_retention([str(path)],threading.Event()),{False:[str(path)],True:[]})
+        with path.open('r+b') as stream:stream.truncate(100*1024*1024)
+        self.assertEqual(intake_retention([str(path)],threading.Event()),{False:[],True:[str(path)]})
+        manager=flickdock.ShelfManager.__new__(flickdock.ShelfManager);queued=[];opened=[];cancelled=[]
+        manager._quitting=False;manager._large_intake_queue=[([str(path)],True)]
+        manager.settings=self.fixture.settings
+        manager.shelf=SimpleNamespace(files={'permanent':[str(path)]},visual_geometry=lambda:self.shelf.visual_geometry())
+        manager.sync=SimpleNamespace(cancel_upload=cancelled.append)
         manager.wan_dialog=SimpleNamespace(panel=SimpleNamespace(queue_paths=lambda paths:queued.extend(paths)))
         manager.show_wan_dialog=lambda:opened.append(True)
         manager._offer_next_large_intake();flush()
+        self.assertEqual(opened,[]);self.assertTrue(manager.intake_notice.isVisible())
+        self.assertIsNone(APP.activeModalWidget());manager.intake_notice.remote_button.click();flush()
         self.assertEqual(opened,[True]);self.assertEqual(queued,[str(path)])
+        self.assertEqual(cancelled,[str(path)]);self.assertTrue(path.exists())
         self.assertEqual(manager.shelf.files['permanent'],[str(path)])
+        manager._quitting=True;manager.intake_notice.close();manager.intake_notice.deleteLater();flush()
 
     def test_secondary_dialog_is_recentered_after_a_previous_move(self):
         from PySide6.QtWidgets import QDialog

@@ -71,6 +71,8 @@ def readable_qss(source):
 
 def reduced_motion():
     """Read the platform preference without starting native hooks or prompts."""
+    if any(os.environ.get(key,'').lower() in ('1','true','yes','on')
+           for key in ('FLICKDOCK_REDUCE_MOTION','FLICKDOCK_LOW_PERFORMANCE')):return True
     if sys.platform == 'darwin':
         try:
             from AppKit import NSWorkspace
@@ -253,6 +255,8 @@ _SVG_BODY = {
     'trash': '<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/>',
     'copy': '<rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h3"/>',
     'user': '<circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/>',
+    'eye': '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>',
+    'eye-off': '<path d="m3 3 18 18M10.6 5.1A12 12 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3.2 4.1M6.1 6.1A20 20 0 0 0 2 12s3.5 7 10 7a12 12 0 0 0 5.9-1.6M10 10a3 3 0 0 0 4 4"/>',
     'pause': '<path d="M8 4v16M16 4v16"/>',
     'desktop': '<rect x="3" y="3" width="18" height="13" rx="2"/><path d="M12 16v5M8 21h8"/>',
     'laptop': '<rect x="5" y="3" width="14" height="13" rx="2"/><path d="m5 16-3 5h20l-3-5M9 18h6"/>',

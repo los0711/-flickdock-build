@@ -200,7 +200,7 @@ def tray_icon(size: int = 32, color: str = '#147fe9', dpr: float | None = None) 
 
 
 def menu_bar_icon() -> QIcon:
-    value=tray_icon(color='#000000')
+    value=QIcon(_SvgIconEngine(_svg(_mark_svg('#000000'),'8 7 48 48')))
     value.setIsMask(True)
     return value
 

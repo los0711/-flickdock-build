@@ -14,8 +14,12 @@ FlickDock uses unmodified Python, Qt for Python (PySide6/Shiboken), Qt and Harmo
 
 The application loads its bundled HarmonyOS Sans SC family; Apple font files are not included.
 
+Short-lived pairing-code QR images use python-qrcode 8.2 (BSD-3-Clause) and zxing-cpp 3.1.1 (Apache-2.0). They only render or recognize the existing pairing code. Complete notices are in `licenses/Pairing-QR-LICENSES.txt`.
+
 Cloud account credentials use keyring 25.7.0 with the native Windows Credential Manager or macOS Keychain backend. keyring, jaraco dependencies, more-itertools and pywin32-ctypes retain their original licenses in licenses/Cloud-Client-LICENSES.txt. CPython's native scrypt implementation requires OpenSSL libcrypto under the Apache License 2.0; see licenses/OpenSSL-LICENSE.txt. No credential service secrets are distributed with the client.
 
 Media decoding uses Windows-installed codecs through Windows Media Foundation. The distribution does not include the Qt FFmpeg media plugin or FFmpeg codec DLLs.
 
 Wide-area file transfer uses the unmodified Node.js 24.12.0 runtime, node-datachannel 0.33.6 and libdatachannel 0.24.6. Node's complete notices are bundled at `p2p/runtime/Node-LICENSE.txt`. The native addon and libdatachannel are provided under MPL 2.0; corresponding source is available at https://github.com/murat-dogan/node-datachannel/tree/v0.33.6 and https://github.com/paullouisageneau/libdatachannel/tree/v0.24.6. Native transport dependencies and their license texts are retained in `licenses/WebRTC-LICENSES.txt`. These libraries are separate replaceable runtime files; FlickDock does not modify their source.
+
+Publisher signature verification uses cryptography 50.0.2 (Apache-2.0 / BSD-3-Clause). Complete licenses are included in licenses/Release-Crypto-LICENSES.txt.

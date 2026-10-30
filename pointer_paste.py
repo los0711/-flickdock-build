@@ -112,6 +112,14 @@ class MacPointerPaste:
         quartz.CFRunLoopAddSource(quartz.CFRunLoopGetMain(),self._source,quartz.kCFRunLoopCommonModes)
         quartz.CGEventTapEnable(self._tap,True)
         self.available=True;self.permission_required=False
+        self.check_health()
+
+    def check_health(self):
+        if self._closed or self._tap is None:return False
+        check=getattr(self.api,'CGEventTapIsEnabled',None)
+        if callable(check):
+            self.available=bool(check(self._tap));self.permission_required=not self.available
+        return self.available
 
     def _event(self,proxy,kind,event,context):
         q=self.api
@@ -119,6 +127,7 @@ class MacPointerPaste:
         if kind in (q.kCGEventTapDisabledByTimeout,q.kCGEventTapDisabledByUserInput):
             self._held=False
             if self._tap:q.CGEventTapEnable(self._tap,True)
+            self.check_health()
             return event
         try:
             if q.CGEventGetIntegerValueField(event,q.kCGKeyboardEventKeycode)!=9:return event
@@ -159,9 +168,12 @@ class PointerPasteController(QObject):
     def permission_required(self):return bool(self.backend and self.backend.permission_required)
 
     def retry_native(self):
-        if self._closed or self.backend and self.backend.available:return
-        if self._factory is None and not self._native:return
+        if self._closed:return
         old=self.permission_required
+        if self.backend and self.backend.available:
+            health=getattr(self.backend,'check_health',None)
+            if not callable(health) or health():return
+        if self._factory is None and not self._native:return
         if self.backend:self.backend.close()
         try:
             factory=self._factory or (MacPointerPaste if sys.platform=='darwin' else WinPointerPaste)

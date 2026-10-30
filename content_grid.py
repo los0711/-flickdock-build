@@ -62,6 +62,15 @@ class IconItem(QWidget):
         self.remove_button.clicked.connect(lambda: self.popup.remove_path(self.ref))
         self.remove_button.hide()
 
+    def refresh_content(self):
+        self.title=self.popup.shelf.content.title(self.ref)
+        self.setAccessibleName(self.title)
+        self.remove_button.setAccessibleName('从搁架移除 '+self.title)
+        provider=getattr(self.popup.shelf,'item_pixmap',self.popup.shelf.content.item_pixmap)
+        try:self.icon=provider(self.ref,64,dpr=self.devicePixelRatioF())
+        except TypeError:self.icon=provider(self.ref,64)
+        self.refresh_cloud_status();self.update()
+
     def refresh_cloud_status(self):
         lookup = getattr(self.popup, 'cloud_status', None)
         status = lookup(self.ref) if callable(lookup) else cloud_status_for_ref(self.popup.shelf, self.ref)
@@ -211,6 +220,8 @@ class IconItem(QWidget):
         painter.drawText(QPointF(rect.center().x()-metrics.horizontalAdvance(chunk)/2, rect.top()+metrics.ascent()), chunk)
 
     def paintEvent(self, event):
+        viewport=getattr(getattr(self.popup,'scroll',None),'viewport',lambda:None)()
+        if viewport is not None and not QRectF(self.mapTo(viewport,QPoint()),self.size()).intersects(QRectF(viewport.rect())):return
         from reference_widgets import palette,ink,thumbnail,draw_status,item_detail
         actual = self.ref in self.popup.selected
         if actual != self._selected:

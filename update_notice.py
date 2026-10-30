@@ -118,11 +118,13 @@ class UpdateNotice(QWidget):
     def dismiss(self):
         self.dismissed.emit();self.hide()
 
-    def set_state(self,state,version='',received=0,total=0,error=''):
+    def set_state(self,state,version='',received=0,total=0,error='',**details):
         """Render the shared controller without owning its task lifetime."""
         self._state=state
         labels={'idle':('','检查更新'),'checking':('正在检查更新…','检查中…'),
                 'available':('可以开始下载','立即更新'),'latest':('当前已是最新版本','检查更新'),
+                'connecting':('正在连接下载服务器…','连接中…'),
+                'reconnecting':('正在重新连接…','重新连接中…'),'paused':('下载已暂停','继续下载'),
                 'downloading':(f'正在下载 {min(100,round(received*100/total))}%' if total else '正在下载…','下载中…'),
                 'verifying':('正在校验安装包…','校验中…'),'ready':('下载完成，可以安装','重启并安装'),
                 'installing':('正在安装；如系统提示，请完成授权。','安装中…'),
@@ -132,7 +134,7 @@ class UpdateNotice(QWidget):
         text,action=labels.get(state,('','检查更新'))
         self.status_label.setText(text);self.status_label.setVisible(bool(text))
         self.status_label.setToolTip(str(error))
-        busy=state in ('checking','downloading','verifying','installing','cancelling','handoff')
+        busy=state in ('checking','connecting','reconnecting','downloading','verifying','installing','cancelling','handoff')
         self.update_button.setText(action);self.update_button.setEnabled(not busy)
         self.progress.setVisible(state in ('checking','downloading','verifying','installing'))
         if state=='downloading' and total>0:
@@ -197,8 +199,8 @@ class UpdateNotice(QWidget):
         self.version_label.setText(f"v{version} 已发布")
         self.title.setText(f"发现新版本 FlickDock v{version}")
         self.update_button.setAccessibleName(f"立即更新到 {version}")
-        notes=str(notes).strip()[:4000]
-        self.notes_label.setText('本次更新\n'+notes if notes else '')
+        notes=str(notes).strip()
+        self.notes_label.setText('更新内容\n'+notes if notes else '')
         self.notes_area.setVisible(bool(notes))
         if self._owner:
             self.setGeometry(self._owner.card.geometry())

@@ -330,7 +330,7 @@ try{
     for(let i=0;i<65;i++)await part(alice.token,reserved.upload_id,i,chunk);
     const seconds=(performance.now()-started)/1000;
     console.log('LOCAL_ONLY serial upload',JSON.stringify({mib:65,seconds:+seconds.toFixed(2),mib_per_sec:+(65/seconds).toFixed(2)}));
-    const committed=await request('POST',`/v1/uploads/${reserved.upload_id}/commit`,{},alice.token);assert.equal(committed.record.size,65*1024*1024);assert.equal(committed.record.expires_at,null);
+    const committed=await request('POST',`/v1/uploads/${reserved.upload_id}/commit`,{},alice.token);assert.equal(committed.record.size,65*1024*1024);assert.ok(Math.abs(Date.parse(committed.record.expires_at)-Date.now()-86400000)<3000);
     let size=0;const actual=createHash('sha256');
     for(let i=0;i<65;i++){const response=await localFetch(base+`/v1/items/${newId}/parts/${i}?version=1`,{headers:{Authorization:'Bearer '+alice.token}});assert.equal(response.status,200);const chunkHash=createHash('sha256');for await(const data of response.body){size+=data.length;actual.update(data);chunkHash.update(data);}assert.equal(chunkHash.digest('hex'),response.headers.get('X-Content-SHA256'));}
     assert.equal(size,65*1024*1024);assert.equal(actual.digest('hex'),expected);
@@ -501,21 +501,21 @@ try{
     }
   });
   let expiringFixture;
-  await check('D1 committed-size fixtures: exactly 500 MiB has no TTL; one byte larger expires 24 hours after commit (no large transfer)',async()=>{
-    for(const size of [524288000,524288001]){
+  await check('D1 committed-size fixtures: below 100 MiB retains 24 hours; 100 MiB and above retain 2 hours after commit (no large transfer)',async()=>{
+    for(const size of [104857599,104857600,524288001]){
       const newId=randomUUID(),data=Buffer.from('small actual object for metadata-only retention fixture '+size);
       const reserved=await reserve(alice.token,newId,data);await part(alice.token,reserved.upload_id,0,data);
       // Only the size/verified-size metadata and its matching allocation are
       // simulated. The commit endpoint and D1 retention triggers are real;
-      // the object stored in R2 is the small payload above, not a 500 MiB file.
+      // the object stored in R2 is the small payload above, not a large file.
       sql(`DELETE FROM allocations WHERE id='${reserved.upload_id}';INSERT INTO allocations(id,account_id,size) VALUES('${reserved.upload_id}','${alice.account.id}',${size});UPDATE uploads SET size=${size},verified_size=${size} WHERE id='${reserved.upload_id}';`);
       const committed=await request('POST',`/v1/uploads/${reserved.upload_id}/commit`,{},alice.token);
       const stored=sqlRows(`SELECT updated_at,expires_at FROM items WHERE id='${newId}' AND account_id='${alice.account.id}'`)[0];
       assert.equal(committed.record.size,size);
-      if(size===524288000){assert.equal(stored.expires_at,null);assert.equal(committed.record.expires_at,null);await request('DELETE',`/v1/items/${newId}`,{base_version:1},alice.token);}
+      assert.equal(stored.expires_at-stored.updated_at,size<104857600?86400000:7200000);
+      assert.equal(Date.parse(committed.record.expires_at),stored.expires_at);
+      if(size<524288001){await request('DELETE',`/v1/items/${newId}`,{base_version:1},alice.token);}
       else{
-        assert.equal(stored.expires_at-stored.updated_at,86400000);
-        assert.equal(Date.parse(committed.record.expires_at),stored.expires_at);
         expiringFixture={newId,uploadId:reserved.upload_id,data,size,key:sqlRows(`SELECT key FROM parts WHERE upload_id='${reserved.upload_id}'`)[0].key};
       }
     }
@@ -526,7 +526,7 @@ try{
     sql(`INSERT INTO read_leases(upload_id,id,expires_at) VALUES('${value.uploadId}','retention-reader',${Date.now()+60000});UPDATE items SET expires_at=1 WHERE account_id='${alice.account.id}' AND id='${value.newId}';`);
     const changed=await request('GET','/v1/sync/changes?cursor='+cursor,undefined,alice.token);
     const tombstone=changed.changes.filter(c=>c.record.id===value.newId).at(-1).record;
-    assert.equal(tombstone.deleted,true);assert.equal(tombstone.version,2);assert.equal(tombstone.size,0);assert.equal(tombstone.expires_at,null);
+    assert.equal(tombstone.deleted,true);assert.equal(tombstone.version,2);assert.equal(tombstone.size,0);assert.ok(tombstone.expires_at);
     await request('GET',`/v1/items/${value.newId}/content`,undefined,alice.token,404);
     assert.equal(sqlRows(`SELECT state FROM uploads WHERE id='${value.uploadId}'`)[0].state,'garbage');
     assert.equal(sqlRows(`SELECT size FROM allocations WHERE id='${value.uploadId}'`)[0].size,value.size);

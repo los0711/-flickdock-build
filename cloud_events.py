@@ -1,7 +1,7 @@
 """Account-scoped cloud change hints; the sync journal remains authoritative.
 
-WebSocket messages carry no content, path, token or account details. A missed
-hint is harmless because ShelfSync retains bounded periodic reconciliation.
+Shelf hints carry no file bodies. Bounded committed clipboard text may travel
+over this authenticated TLS socket; the journal still recovers missed hints.
 """
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ class CloudEvents(QObject):
     content_changed = Signal()
     devices_changed = Signal()
     clipboard_changed = Signal()
+    clipboard_payload = Signal(dict)
     transfer_progress = Signal(dict)
 
     def __init__(self, account, parent=None, *, enabled=True):
@@ -26,6 +27,7 @@ class CloudEvents(QObject):
         self.closed = False
         self._identity = ''
         self._attempt = 0
+        self._inline_version=0
         self.socket = QWebSocket(parent=self)
         self.socket.connected.connect(self._connected)
         self.socket.disconnected.connect(self._disconnected)
@@ -46,6 +48,7 @@ class CloudEvents(QObject):
         self.retry.stop(); self.content_debounce.stop(); self.devices_debounce.stop()
         self.socket.abort()
         self._attempt = 0
+        self._inline_version=0
         self._identity = account.get('id','') if isinstance(account,dict) else ''
         if self.enabled and self._identity and self.account.api.token:
             self.retry.start(0)
@@ -78,12 +81,23 @@ class CloudEvents(QObject):
         self.retry.start(min(300000, 1000 * (2 ** (self._attempt-1))))
 
     def _message(self, message):
-        if len(message)>512: return
+        if len(message)>65536: return
         try: value=json.loads(message)
         except (ValueError,TypeError): return
         if not isinstance(value,dict) or value.get('schema_version')!=1:return
+        if value.get('type')=='clipboard_inline':
+            head=value.get('clipboard')
+            if (not isinstance(head,dict) or head.get('kind')!='text' or not head.get('ready') or
+                    type(head.get('version')) is not int or not 1<=head['version']<=2**53-1 or
+                    not isinstance(head.get('inline'),str) or len(head['inline'])>43692 or
+                    type(head.get('size')) is not int or not 0<head['size']<=32768):return
+            self._inline_version=max(self._inline_version,head['version'])
+            self.clipboard_payload.emit(value);return
+        if len(message)>512:return
         if value.get('type')=='content': self.content_debounce.start(90)
-        elif value.get('type')=='clipboard':self.clipboard_changed.emit()
+        elif value.get('type')=='clipboard':
+            if type(value.get('version')) is int and value['version']<=self._inline_version:return
+            self.clipboard_changed.emit()
         elif value.get('type')=='devices': self.devices_debounce.start(250)
         elif value.get('type')=='progress':
             if not re.fullmatch('[a-f0-9-]{36}',str(value.get('upload_id',''))):return

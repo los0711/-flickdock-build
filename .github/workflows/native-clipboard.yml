@@ -40,3 +40,11 @@ jobs:
         run: |
           $env:FD_QA_PYTHON = (Get-Command python).Source
           node cloud/test/clipboard.mjs
+      - name: Verify actual native utility windows on the disposable runner
+        run: python ci_utility_windows.py --output native-utility.json
+      - name: Retain native window verification
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-utility-${{ matrix.runner }}-${{ github.sha }}
+          path: native-utility.json
+          retention-days: 3

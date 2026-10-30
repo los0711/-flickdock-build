@@ -78,6 +78,17 @@ def oversized_intake(paths,cancel):
     return []
 
 
+def intake_retention(paths,cancel):
+    groups={False:[],True:[]}
+    for ref in paths:
+        if cancel.is_set():raise InterruptedError()
+        path=Path(ref)
+        if not path.exists() or _is_link(path):continue
+        size=directory_size(path,cancel)['logical_size'] if path.is_dir() else path.stat().st_size
+        groups[size>=100*1024*1024].append(ref)
+    return groups
+
+
 def safe_name(name,limit=160):
     # Same portable basename on Windows/macOS; never interpret a remote path.
     cleaned = ''.join('_' if c in '<>:"/\\|?*' or ord(c) < 32 else c for c in str(name))

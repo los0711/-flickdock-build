@@ -85,6 +85,8 @@ class ShelfSync(QObject):
         self.cleanup_attempts = {}
         self._cleanup_inflight = set()
         self.remote_transfers=[]
+        self._remote_heads={}
+        self._receive_fences={}
         self._live_upload_progress={}
         self._intake_announced=set()
         self.download_transfers={}
@@ -94,6 +96,7 @@ class ShelfSync(QObject):
         self._remote_poll_ms=remote_poll_ms
         self._disconnected_poll_ms=disconnected_poll_ms
         self._event_stream_online=True
+        self.catching_up=True
         self._progress_persisted=0.0
         self._part_cache={}
         self._lane_context=None
@@ -183,11 +186,14 @@ class ShelfSync(QObject):
             if self.service.signed_in and not self.timer.isActive(): self.timer.start()
             return
         self.epoch += 1; self.timer.stop(); self.debounce.stop(); self.remote_poll.stop()
+        self.catching_up=True
         self.small_lane.reset()
         self._intake_announced=set()
         self.running = False; self.transfer = None
         self._refresh_again=False
         self.remote_transfers=[]; self._live_upload_progress.clear(); self.transfers_changed.emit([])
+        self._remote_heads.clear()
+        self._receive_fences.clear()
         self.download_transfers.clear()
         self._part_cache.clear();self._progress_persisted=0.0
         self._cleanup_inflight.clear()
@@ -237,9 +243,10 @@ class ShelfSync(QObject):
                 entry = {'id':identity,'ref':ref,'version':0,'seq':0}
                 entries[identity] = entry
             if entry.get('fingerprint') != fp or entry.get('deleted'):
+                paused_intake=entry.get('paused_upload') and entry.get('fingerprint') is None
                 self._end_intake(entry)
                 entry.pop('blocked_fingerprint',None); entry.pop('last_error',None)
-                entry.pop('paused_upload',None)
+                if not paused_intake:entry.pop('paused_upload',None)
                 entry.update(fingerprint=fp,name=name,dirty=True,deleted=False,
                              kind='url' if text is not None and re.fullmatch(r'https?://\S+',text.strip()) else 'text' if text is not None else 'file',
                              seq=entry.get('seq',0)+1)
@@ -312,6 +319,9 @@ class ShelfSync(QObject):
         online=bool(online)
         if online==self._event_stream_online:return
         self._event_stream_online=online
+        # Backfilled history is data reconciliation, not a sequence of new
+        # arrivals. Keep this flag until the final page has been applied.
+        self.catching_up=True
         self._schedule_remote_poll()
         if online and self.account_id and self.receive_enabled:
             # One reconciliation catches commits that happened while the
@@ -350,10 +360,14 @@ class ShelfSync(QObject):
             # A long local upload/download must not postpone visibility of a
             # different device's pending files. Read only transfer metadata;
             # the active journal still owns content processing and its cursor.
-            if getattr(self,'_remote_snapshot_epoch',None)==self.epoch:return
+            if getattr(self,'_remote_snapshot_epoch',None)==self.epoch:
+                self._remote_snapshot_dirty=True;return
             self._remote_snapshot_epoch=self.epoch
+            self._remote_snapshot_dirty=False
             cursor=str(self.state.get('cursor','0'))
             if not cursor.isdecimal():cursor='0'
+            observed=getattr(self,'_remote_snapshot_cursor',(None,'0'))
+            if observed[0]==self.epoch and str(observed[1]).isdecimal():cursor=str(max(int(cursor),int(observed[1])))
             def visible(result,error):
                 self._remote_snapshot_epoch=None
                 if error:
@@ -365,13 +379,47 @@ class ShelfSync(QObject):
                     self.remote_poll.start(max(1,min(2147483647,round(delay*1000))))
                     return
                 self._remote_snapshot_failures=0
+                changes=result.get('changes',[])
+                if isinstance(changes,list) and len(changes)<=100:
+                    self._observe_remote_changes(changes,apply_deletions=True)
+                    next_cursor=result.get('cursor')
+                    if isinstance(next_cursor,str) and next_cursor.isdecimal():self._remote_snapshot_cursor=(self.epoch,next_cursor)
                 remote=result.get('transfers')
                 if isinstance(remote,list) and len(remote)<=100:
                     self.remote_transfers=[r for r in remote if isinstance(r,dict) and type(r.get('size')) is int
                         and r['size']>=0 and isinstance(r.get('item_id'),str) and isinstance(r.get('upload_id'),str)]
                     self._schedule_remote_poll();self._notify_transfers()
-            self._request('GET','/v1/sync/changes?cursor='+cursor+'&limit=1',visible)
+                if result.get('has_more') or self._remote_snapshot_dirty:self.remote_poll.start(1)
+            self._request('GET','/v1/sync/changes?cursor='+cursor+'&limit=100',visible)
         else:self.debounce.start(1)
+
+    def _observe_remote_changes(self,changes,*,apply_deletions=False):
+        # This metadata lane never advances the durable content cursor. It may
+        # publish placeholders and tombstones while a large body is in flight;
+        # the normal journal still downloads/verifies every applied revision.
+        for change in changes:
+            record=change.get('record') if isinstance(change,dict) else None
+            if not isinstance(record,dict):continue
+            identity=record.get('id');version=record.get('version')
+            if (not isinstance(identity,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',identity)
+                    or type(version) is not int or not 1<=version<=9007199254740991):continue
+            previous=self._remote_heads.get(identity,{})
+            if version<=previous.get('version',0):continue
+            if not record.get('deleted') and (type(record.get('size')) is not int or
+                    not 0<=record['size']<=MAX_FILE_BYTES or
+                    not re.fullmatch(r'[0-9a-f]{64}',str(record.get('sha256','')))):continue
+            self._remote_heads[identity]=dict(record)
+            fence=self._receive_fences.get(identity)
+            if fence is not None and version>fence['version']:fence['superseded']=True
+            if apply_deletions and record.get('deleted'):self._receive(record,lambda:None)
+        if len(self._remote_heads)>4096:
+            for identity in tuple(self._remote_heads):
+                if identity not in self.download_transfers and identity not in self._receive_fences and not any(
+                        row.get('item_id')==identity for row in self.remote_transfers) and (
+                        identity not in self.state['entries'] or
+                        self.state['entries'][identity].get('version',0)>=self._remote_heads[identity]['version']):
+                    self._remote_heads.pop(identity,None)
+                    if len(self._remote_heads)<=4096:break
 
     def remote_progress(self,value):
         if self.closed or not self.account_id or not self.receive_enabled:return
@@ -413,12 +461,14 @@ class ShelfSync(QObject):
             phase=('retrying' if self.state.get('deferred_downloads',{}).get(identity,{}).get('retry_at',0)>time.time() else
                    'validating' if record.get('_assembling') else
                    'retrying' if not self.running and self._paused('not_before') else 'downloading')
-            transfers.append(dict(id=identity,ref=entries.get(identity,{}).get('ref'),name=record.get('name',''),
+            latest=self._remote_heads.get(identity,record)
+            transfers.append(dict(id=identity,ref=entries.get(identity,{}).get('ref'),name=latest.get('name',record.get('name','')),
                 kind=record.get('kind','file'),received=received,total=size,
                 phase=phase,remote=True))
             known.add(identity)
         for remote in (self.remote_transfers if self.receive_enabled else ()):
             identity=remote.get('item_id')
+            if self._remote_heads.get(identity,{}).get('deleted'):continue
             if identity in known:continue
             # A cancelled local fingerprint is deliberately local-only.
             local=entries.get(identity,{})
@@ -430,10 +480,19 @@ class ShelfSync(QObject):
             transfers.append(dict(id=identity,ref=local.get('ref'),name=remote.get('name',''),kind=remote.get('kind','file'),
                 upload_id=remote.get('upload_id'),received=received,total=remote.get('size',0),
                 phase='preparing' if remote.get('state')=='preparing' else 'remote',remote=True,device_name=remote.get('device_name','另一台设备')))
+            known.add(identity)
+        for identity,record in (self._remote_heads.items() if self.receive_enabled else ()):
+            entry=entries.get(identity,{})
+            if (identity in known or record.get('deleted') or entry.get('dirty') or
+                    entry.get('version',0)>=record['version'] or
+                    self.state.get('ignored_versions',{}).get(identity,0)>=record['version']):continue
+            transfers.append(dict(id=identity,ref=entry.get('ref'),name=record.get('name',''),kind=record.get('kind','file'),
+                received=0,total=record['size'],phase='downloading',remote=True))
         self.transfers_changed.emit(transfers)
 
     def _interrupt_cycle(self):
         self.epoch+=1
+        self._receive_fences.clear()
         self.small_lane.reset()
         self.running=False;self.transfer=None
         self._part_cache.clear()
@@ -446,6 +505,14 @@ class ShelfSync(QObject):
     def cancel_upload(self,value,*,remove=False):
         if self.closed or not self.state or not self.account_id:return False
         entry=next((e for e in self.state.get('entries',{}).values() if value in (e.get('id'),e.get('ref'))),None)
+        if entry is None and not remove and value in self.adapter.snapshot().get('permanent',[]):
+            # A nonmodal hint can be clicked before deferred intake journaling.
+            # Reserve its existing pause flag now, without opening/statting the
+            # original or allowing a later first fingerprint to unpause it.
+            identity=str(uuid4())
+            entry=dict(id=identity,ref=value,version=0,seq=0,dirty=True,deleted=False,paused_upload=True,
+                       name=self.adapter.title(value),kind='file')
+            self.state.setdefault('entries',{})[identity]=entry
         if entry:
             self._interrupt_cycle()
             self._end_intake(entry)
@@ -833,6 +900,7 @@ class ShelfSync(QObject):
                     and r.get('size',-1)>=0 and isinstance(r.get('item_id'),str) and isinstance(r.get('upload_id'),str)]
                 self._schedule_remote_poll()
             if not isinstance(changes,list) or len(changes)>100: self._error(ValueError('云同步记录无效。')); return
+            self._observe_remote_changes(changes)
             pending = list(enumerate(changes))
             incoming={change.get('record',{}).get('id') for change in changes if isinstance(change,dict)}
             for identity,deferred in list(self.state.get('deferred_downloads',{}).items()):
@@ -842,6 +910,8 @@ class ShelfSync(QObject):
                 if not pending:
                     self.state['cursor'] = str(result['cursor'])
                     self.state.pop('awaiting_receive',None)
+                    if not result.get('has_more'):
+                        self.catching_up=False
                     self._persist()
                     self._notify_transfers()
                     if result.get('has_more'): self._pull()
@@ -887,6 +957,9 @@ class ShelfSync(QObject):
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',identity): self._error(ValueError('同步项目标识无效。')); return
         if not isinstance(record.get('version'),int) or not 1 <= record['version'] <= 9007199254740991:
             self._error(ValueError('同步项目版本无效。')); return
+        if (self._remote_heads.get(identity,{}).get('version',0)>record['version']
+                and not self.state['entries'].get(identity,{}).get('dirty')):
+            callback();return
         deferred=self.state.setdefault('deferred_downloads',{}).get(identity)
         if deferred:
             if record['version']==deferred['record'].get('version') and deferred.get('retry_at',0)>time.time():
@@ -907,6 +980,13 @@ class ShelfSync(QObject):
             self.download_transfers.pop(identity,None)
             self._forget_download(identity)
             if entry:
+                if record.get('expires_at') and not entry.get('deleted'):
+                    # Cloud expiry retires only the remote lease. The existing
+                    # journal pause keeps local shelf/original bytes intact and
+                    # prevents an automatic re-upload loop after expiration.
+                    entry.update(version=record['version'],dirty=True,paused_upload=True)
+                    self._forget_resume(identity)
+                    self._persist();self._notify_transfers();callback();return
                 if entry.get('dirty'): self._fork(entry)
                 else: self._remove_ref(entry['ref'])
                 entries.pop(identity,None)
@@ -938,6 +1018,14 @@ class ShelfSync(QObject):
             entry = None
             self.status_changed.emit('另一台设备也修改了此项，已保留两个版本。')
         target = self.root/self.account_id/'files'/identity/str(record['version'])/safe_name(record['name'])
+        fence={'version':record['version'],'superseded':False,'finished':False}
+        self._receive_fences[identity]=fence
+        original_callback=callback
+        def callback():
+            if fence['finished']:return
+            fence['finished']=True
+            if self._receive_fences.get(identity) is fence:self._receive_fences.pop(identity,None)
+            original_callback()
         self.download_transfers[identity]=dict(record);self._notify_transfers()
         def receive_failed(error):
             # Authentication/quota errors affect the account. One damaged file,
@@ -954,15 +1042,21 @@ class ShelfSync(QObject):
             self.status_changed.emit('“'+str(record['name'])[:60]+'”同步未完成：'+message+'。其他文件继续同步。')
             callback()
         def downloaded(path,error):
+            if fence['superseded'] or self._remote_heads.get(identity,{}).get('version',0)>record['version']:
+                self.download_transfers.pop(identity,None)
+                self._notify_transfers();callback();return
             if error: receive_failed(error); return
             # Edits made while downloading must be preserved too.
             current = entries.get(identity)
             if current and current.get('dirty'):
                 self._fork(current); entries.pop(identity,None); current = None
             def apply_ref(ref,text=None):
+                if fence['superseded'] or self._remote_heads.get(identity,{}).get('version',0)>record['version']:
+                    self.download_transfers.pop(identity,None)
+                    self._notify_transfers();callback();return
                 if current: self._remove_ref(current['ref'])
                 if text is not None: ref = 'flickdock:text:'+identity
-                self._add_ref(ref,text,record['name'],remote_order=remote_order)
+                self._add_ref(ref,text,record['name'],remote_order=remote_order,cloud_identity=identity)
                 entries[identity] = {'id':identity,'ref':ref,'version':record['version'],
                     'sha256':record['sha256'],'name':record['name'],'kind':record['kind'],
                     'fingerprint':fingerprint(ref,text,record['name']),'dirty':False,'deleted':False,'seq':0,
@@ -1020,6 +1114,8 @@ class ShelfSync(QObject):
                 if getattr(error,'status',0)==404 and changed:
                     self._forget_download(record['id'])
                     self.download_transfers.pop(record['id'],None)
+                    if self._remote_heads.get(record['id'],{}).get('version',0)<=record['version']:
+                        self._remote_heads.pop(record['id'],None)
                     self._persist(); self._notify_transfers(); changed(None)
                 else: callback(None,error)
                 return
@@ -1201,8 +1297,9 @@ class ShelfSync(QObject):
     def _set_title(self,ref,name):
         self._change_view(lambda view:view.setdefault('metadata',{}).setdefault(ref,{}).update(title=name))
 
-    def _add_ref(self,ref,text,name,*,remote_order=None):
+    def _add_ref(self,ref,text,name,*,remote_order=None,cloud_identity=None):
         def change(view):
+            if cloud_identity:view.setdefault('metadata',{}).setdefault(ref,{})['_cloud_item_id']=cloud_identity
             if ref not in view['permanent']:
                 position=len(view['permanent'])
                 if remote_order is not None:

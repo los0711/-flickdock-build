@@ -98,7 +98,8 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(manifest['installer']['sha256'],hashlib.sha256(self.data).hexdigest())
         self.assertEqual(manifest['installer']['size'],len(self.data))
         self.assertNotIn('source',manifest)
-        self.assertEqual(set(manifest),{'schema_version','version','published_at','notes','installer'})
+        self.assertEqual(set(manifest),{'schema_version','version','published_at','notes','installer','releases'})
+        self.assertEqual(manifest['releases'][0]['notes'],'Checked release notes')
         archive_path=self.artifacts/'FlickDock-1.7.0-source.zip'
         inventory=json.loads((self.artifacts/'FlickDock-1.7.0-source-manifest.json').read_text(encoding='utf8'))
         with zipfile.ZipFile(archive_path) as archive:
@@ -115,6 +116,12 @@ class ReleaseTests(unittest.TestCase):
         self.assertTrue((self.artifacts/'FlickDock-1.7.0-release-record.json').is_file())
         request=self.server.requests[0]
         self.assertIsNone(request.get_header('Authorization'));self.assertIsNone(request.get_header('Cookie'))
+
+    def test_oversized_history_never_publishes_an_unreadable_index(self):
+        from unittest.mock import patch
+        with patch('release_history.release_entries',return_value=[dict(version=self.version,notes='文'*23000)]),patch('release_history.manifest_notes',return_value='文'*23000):
+            with self.assertRaises(release.ReleaseError):self.publish(notes='文'*23000)
+        self.assertFalse(self.output.exists())
 
     def test_same_version_identical_bytes_are_idempotent(self):
         first=self.publish();second=self.publish(initial_release=False)

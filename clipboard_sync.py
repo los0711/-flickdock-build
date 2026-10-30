@@ -1,6 +1,6 @@
 """Silent, account-wide latest clipboard. Reading never consumes the content."""
 from __future__ import annotations
-import hashlib,json,os,shutil,struct,sys,tempfile,threading,time,zipfile
+import base64,hashlib,json,os,shutil,struct,sys,tempfile,threading,time,zipfile
 from pathlib import Path,PurePosixPath
 from uuid import uuid4
 from PySide6.QtCore import QObject,QRunnable,QThreadPool,QTimer,Signal,QMimeData,QUrl,QBuffer,QIODevice,Qt
@@ -12,6 +12,42 @@ MAX_BYTES=20*1024*1024
 MAX_ARCHIVE_BYTES=MAX_BYTES+1024*1024 # metadata overhead, not additional user file bytes
 SYNC_MARKER='application/x-flickdock-cloud-clipboard'
 TEXT_MAGIC=b'FDCLIP2\0'
+
+
+def head_version(head):
+    version=head.get('version',0) if isinstance(head,dict) else 0
+    return version if type(version) is int and 0<=version<=2**53-1 else 0
+
+
+def inline_text(value):
+    if value is None or value[0]!='text':return None
+    data=value[1]
+    if len(data['text'])+len(data.get('html',''))>32756:return None
+    text=data['text'].encode('utf8');html=data.get('html','').encode('utf8')
+    blob=TEXT_MAGIC+struct.pack('!I',len(text))+text+html
+    if len(blob)>32768:return None
+    digest=hashlib.sha256(blob).hexdigest()
+    return dict(kind='text',path=None,size=len(blob),sha256=digest,
+        inline=dict(kind='text',body=base64.b64encode(blob).decode('ascii'),size=len(blob),sha256=digest))
+
+
+def text_value(raw):
+    if raw.startswith(TEXT_MAGIC):
+        offset=len(TEXT_MAGIC)+4
+        if len(raw)<offset or len(raw)-offset>=MAX_BYTES:raise ValueError('clipboard limit')
+        size=struct.unpack('!I',raw[len(TEXT_MAGIC):offset])[0]
+        if size>len(raw)-offset:raise ValueError('invalid text')
+        data=dict(text=raw[offset:offset+size].decode('utf8'),html=raw[offset+size:].decode('utf8'))
+    else:data=json.loads(raw.decode('utf8'))
+    if not isinstance(data,dict) or not isinstance(data.get('text'),str) or not isinstance(data.get('html',''),str):raise ValueError('invalid text')
+    return ('text',data)
+
+
+def unpack_inline(head):
+    if head.get('kind')!='text' or not 0<head.get('size',0)<=32768:raise ValueError('clipboard limit')
+    raw=base64.b64decode(head.get('inline',''),validate=True)
+    if len(raw)!=head['size'] or hashlib.sha256(raw).hexdigest()!=head.get('sha256'):raise ValueError('clipboard integrity')
+    return text_value(raw)
 
 def native_sequence():
     if not native_input_available():return None
@@ -53,8 +89,9 @@ def signature(value):
     if kind=='files':
         versions=[]
         for path in data:
-            try:info=Path(path).stat();versions.append((path,info.st_size,info.st_mtime_ns))
-            except OSError:versions.append((path,None,None))
+            canonical=os.path.normcase(os.path.abspath(path))
+            try:info=Path(path).stat();versions.append((canonical,info.st_size,info.st_mtime_ns))
+            except OSError:versions.append((canonical,None,None))
         return (kind,tuple(versions))
     return (kind,data['text'],data.get('html',''))
 
@@ -125,16 +162,7 @@ def unpack(kind,path,directory):
     path=Path(path)
     if path.stat().st_size>=(MAX_ARCHIVE_BYTES if kind in ('files','text') else MAX_BYTES):raise ValueError('clipboard limit')
     if kind=='text':
-        raw=path.read_bytes()
-        if raw.startswith(TEXT_MAGIC):
-            offset=len(TEXT_MAGIC)+4
-            if len(raw)<offset or len(raw)-offset>=MAX_BYTES:raise ValueError('clipboard limit')
-            size=struct.unpack('!I',raw[len(TEXT_MAGIC):offset])[0]
-            if size>len(raw)-offset:raise ValueError('invalid text')
-            data=dict(text=raw[offset:offset+size].decode('utf8'),html=raw[offset+size:].decode('utf8'))
-        else:data=json.loads(raw.decode('utf8'))
-        if not isinstance(data,dict) or not isinstance(data.get('text'),str) or not isinstance(data.get('html',''),str):raise ValueError('invalid text')
-        return (kind,data)
+        return text_value(path.read_bytes())
     if kind=='image':
         image=QImage(str(path))
         if image.isNull():raise ValueError('invalid image')
@@ -196,6 +224,7 @@ class _Job(QRunnable):
 
 class ClipboardSync(QObject):
     activity_changed=Signal(bool)
+    copy_result=Signal(bool,dict)
 
     @property
     def _pending(self):return getattr(self,'_pending_value',None)
@@ -225,7 +254,9 @@ class ClipboardSync(QObject):
         try:self._copy_clock=int(json.loads(self._clock_path.read_text(encoding='utf8'))['sequence'])
         except (OSError,ValueError,KeyError,TypeError):pass
         self._identity=self._session_identity()
-        self.pool=QThreadPool(self);self.pool.setMaxThreadCount(1)
+        self._pushed_head=None
+        self._applied_version=0;self._receiving_version=0
+        self.pool=QThreadPool(self);self.pool.setMaxThreadCount(2)
         self._ignored=None;self._ignored_sequence=None;self._last_sequence=object();self._last_local_signature=object();self._seen='';self._keys=set();self._jobs={};self._pending=None;self._fetching=False;self._refresh_again=False
         self.cache=Path(base)/'clipboard-cache';self.cache.mkdir(parents=True,exist_ok=True)
         self._directories=[];self._current_directory=None
@@ -238,13 +269,15 @@ class ClipboardSync(QObject):
             except (OSError,ValueError,AttributeError):pass
         self.poll=QTimer(self);self.poll.setInterval(30000);self.poll.timeout.connect(self._tick)
         self.retry=QTimer(self);self.retry.setSingleShot(True);self.retry.setInterval(5000);self.retry.timeout.connect(self._retry)
-        self.mac_poll=QTimer(self);self.mac_poll.setInterval(500);self.mac_poll.timeout.connect(self._mac_changed);self._mac_count=None
+        self.mac_poll=QTimer(self);self.mac_poll.setInterval(200);self.mac_poll.timeout.connect(self._mac_changed);self._mac_count=None
         self.change_debounce=QTimer(self);self.change_debounce.setSingleShot(True);self.change_debounce.setInterval(60)
         self.change_debounce.timeout.connect(self._changed)
         self.clipboard.dataChanged.connect(self._schedule_change)
         self._last_local_signature=signature(snapshot(self.clipboard));self._last_sequence=self._sequence()
         account.account_changed.connect(self._account_changed)
         events.clipboard_changed.connect(self.refresh)
+        payload=getattr(events,'clipboard_payload',None)
+        if payload is not None:payload.connect(self._pushed)
         events.socket.connected.connect(self.refresh)
         if enabled:
             QTimer.singleShot(0,self._cleanup)
@@ -274,6 +307,12 @@ class ClipboardSync(QObject):
 
     def _schedule_change(self):
         if self._active() and not self._applying:
+            sequence=self._sequence()
+            if sequence is not None:
+                if sequence==self._last_sequence:return
+            elif signature(snapshot(self.clipboard))==self._last_local_signature:return
+            from PySide6.QtGui import QCursor
+            point=QCursor.pos();self._copy_point=(point.x(),point.y())
             # Stop an in-flight remote read before the native notification's
             # coalescing delay; the user's newer local copy always wins.
             self._copy_notified_mono=time.monotonic();self._generation+=1;self.change_debounce.start()
@@ -327,6 +366,8 @@ class ClipboardSync(QObject):
         if not force and identity==self._identity:
             self.refresh();return
         self._identity=identity;self._ignored=None;self._local_retry=None;self._local_fence=None
+        self._pushed_head=None
+        self._applied_version=0;self._receiving_version=0
         self._clock_anchor=None;self._observed_clock=0
         # A session switch is not a Copy action. Establish a native baseline so
         # a delayed notification cannot export the previous account's content.
@@ -358,6 +399,14 @@ class ClipboardSync(QObject):
     def _changed(self):
         if not self._active() or self._applying:return
         value=snapshot(self.clipboard);sig=signature(value);sequence=self._sequence()
+        if value is None and sequence is not None and sequence!=self._last_sequence:
+            # Some native owners announce a new sequence before delayed data
+            # is readable. Retry briefly without consuming its copy event.
+            previous,attempts=getattr(self,'_native_read_retry',(None,0))
+            attempts=attempts+1 if previous==sequence else 1
+            self._native_read_retry=(sequence,attempts)
+            if attempts<=5:self.change_debounce.start(100);return
+        else:self._native_read_retry=(None,0)
         if self._ignored is not None and sig==self._ignored and (sequence is None or sequence==self._ignored_sequence):return
         if sequence is not None:
             if sequence==self._last_sequence:return
@@ -381,23 +430,55 @@ class ClipboardSync(QObject):
         self._local_retry=None
         if value is None:self._pending=None;return
         self._local_retry=dict(id=str(uuid4()),sequence=None,generation=generation,staged=False,package=None,
-                               prepared=False,created_at=time.time(),intent=self._local_fence,value=value)
+                               prepared=False,created_at=time.time(),intent=self._local_fence,value=value,
+                               feedback=self._copy_context(value))
         self._prepare_local()
+
+    def _copy_context(self,value):
+        from PySide6.QtGui import QCursor,QGuiApplication
+        from PySide6.QtCore import QPoint
+        point=getattr(self,'_copy_point',None) or QCursor.pos().toTuple()
+        screen=QGuiApplication.screenAt(QPoint(*point)) or QGuiApplication.primaryScreen()
+        fullscreen=False
+        if screen is not None:
+            if value[0]=='image':
+                data=value[1];image=data.get('image')
+                if image is not None:size=image.size()
+                else:
+                    buffer=QBuffer();buffer.setData(data.get('raw',b''));buffer.open(QIODevice.ReadOnly)
+                    size=QImageReader(buffer).size()
+                rect=screen.geometry();ratio=screen.devicePixelRatio()
+                fullscreen=any(abs(size.width()-rect.width()*scale)<=2 and abs(size.height()-rect.height()*scale)<=2 for scale in (1,ratio))
+            if not fullscreen and self._is_native:
+                from platform_native import foreground_fullscreen
+                fullscreen=foreground_fullscreen(screen.geometry())
+        return dict(id='',point=point,fullscreen=fullscreen)
+
+    def _copy_result(self,pending,ok):
+        if pending.get('feedback_result') is ok:return
+        pending['feedback_result']=ok
+        context=dict(pending.get('feedback',{}),id=pending['id'])
+        self.copy_result.emit(ok,context)
 
     def _prepare_local(self):
         pending=self._local_retry
         if not pending or not self._active():return
         try:
             if pending['sequence'] is None:pending['sequence']=self._next_sequence()
-            directory=self._directory()
         except OSError:
-            self._pending=None;self.retry.start();return
+            self._copy_result(pending,False);self._pending=None;self.retry.start();return
         self._local_retry=None;self._pending=pending
         def prepared(result):
             if self._pending is not pending:return
-            if result is None:self._pending=None;return
+            if result is None:self._copy_result(pending,False);self._pending=None;return
             pending['package']=result;pending['prepared']=True;self._stage(pending)
-        value=pending.pop('value');self._work(lambda cancel:package(value,directory,cancel),prepared)
+        value=pending.pop('value');quick=inline_text(value)
+        if quick is not None:prepared(quick);return
+        try:directory=self._directory()
+        except OSError:
+            self._copy_result(pending,False)
+            pending['value']=value;self._local_retry=pending;self._pending=None;self.retry.start();return
+        self._work(lambda cancel:package(value,directory,cancel),prepared)
 
     def _stage(self,pending):
         if not self._active() or self._pending is not pending:return
@@ -405,33 +486,67 @@ class ClipboardSync(QObject):
         if self._copy_timestamp(pending['intent']) is None:
             def calibrated(result,error):
                 if self._pending is not pending:return
-                if error or self._clock_anchor is None:self._priority_flags(waiting=True);self.retry.start()
+                if error or self._clock_anchor is None:self._copy_result(pending,False);self._priority_flags(waiting=True);self.retry.start()
                 else:self._stage(pending)
             self._request('GET','/v1/clipboard',calibrated);return
         def staged(result,error):
             if self._pending is not pending:return
             if error:
+                if use_inline and getattr(error,'status',0) in (400,413):
+                    pending['inline_fallback']=True;self._stage(pending);return
+                self._copy_result(pending,False)
                 if getattr(error,'status',0)==409:self._pending=None;self.refresh()
                 else:self._priority_flags(waiting=True);self.retry.start()
                 return
+            ready=result.get('clipboard',{}) if isinstance(result,dict) else {}
+            item=pending['package']
+            if (ready.get('id')==pending['id'] and ready.get('ready') and
+                    ready.get('sha256')==item['sha256'] and ready.get('size')==item['size']):
+                self._seen=pending['id'];self._applied_version=max(self._applied_version,head_version(ready))
+                self._copy_result(pending,True)
+                self._pending=None;self._cleanup()
+                if self._refresh_again:QTimer.singleShot(0,self.refresh)
+                return
             pending['staged']=True;self._upload(pending)
-        self._request('POST','/v1/clipboard',staged,data={'id':pending['id'],'protocol':2,'sequence':pending['sequence'],
-                                                       'copied_at':pending['intent']['at']})
+        data={'id':pending['id'],'protocol':2,'sequence':pending['sequence'],'copied_at':pending['intent']['at']}
+        use_inline=bool(pending['package'].get('inline') and not pending.get('inline_fallback'))
+        if use_inline:data['inline']=pending['package']['inline']
+        self._request('POST','/v1/clipboard',staged,data=data)
 
     def _upload(self,pending):
         if self._pending is not pending or not pending['staged'] or not pending['prepared'] or pending.get('uploading'):return
         if time.time()-pending['created_at']>=86400:self._pending=None;self.refresh();return
         item=pending['package']
         if item is None:self._pending=None;return
+        if not item.get('path'):
+            if pending.get('materializing'):return
+            pending['materializing']=True
+            try:directory=self._directory()
+            except OSError:
+                pending['materializing']=False;self._priority_flags(waiting=True);self.retry.start();return
+            def materialize(cancel):
+                if cancel.is_set():return None
+                path=directory/'content.bin';path.write_bytes(base64.b64decode(item['inline']['body'],validate=True))
+                return str(path)
+            def materialized(path):
+                if self._pending is not pending:return
+                pending['materializing']=False
+                if path:item['path']=path;self._upload(pending)
+                else:self._priority_flags(waiting=True);self.retry.start()
+            self._work(materialize,materialized);return
         pending['uploading']=True
         def uploaded(result,error):
             if self._pending is not pending:return
             pending['uploading']=False
             if error:
+                self._copy_result(pending,False)
                 if getattr(error,'status',0) in (403,409):self._pending=None;self.refresh()
                 else:self._priority_flags(waiting=True);self.retry.start()
                 return
-            self._seen=pending['id'];self._pending=None;self._cleanup()
+            self._seen=pending['id'];self._copy_result(pending,True);self._pending=None;self._cleanup()
+            head=result.get('clipboard',{}) if isinstance(result,dict) else {}
+            self._applied_version=max(self._applied_version,head_version(head))
+            if self._refresh_again:QTimer.singleShot(0,self.refresh)
         self._request('PUT',f'/v1/clipboard/{pending["id"]}/content',uploaded,source=item['path'],
             headers={'X-Clipboard-Kind':item['kind'],'X-Content-SHA256':item['sha256']})
 
@@ -444,50 +559,92 @@ class ClipboardSync(QObject):
             else:self._stage(self._pending)
         else:self.refresh()
 
+    def _pushed(self,value):
+        if not self._active():return
+        head=value.get('clipboard') if isinstance(value,dict) else None
+        if not isinstance(head,dict) or type(head.get('version')) is not int:return
+        if head['version']<=self._applied_version or head.get('id')==self._seen:return
+        previous=(self._pushed_head or {}).get('clipboard',{})
+        if head['version']>previous.get('version',0):self._pushed_head=value
+        if self._fetching and not self._pending and head['version']>self._receiving_version:
+            # A new committed small copy supersedes a stale body download;
+            # retain the last usable native clipboard until this one verifies.
+            self._epoch+=1;self._generation+=1
+            for key in tuple(self._keys):self.api.cancel(key)
+            self._keys.clear()
+            for job in self._jobs:job.cancelled.set()
+            self._fetching=False;self._priority_flags(receiving=False)
+        self.refresh()
+
     def refresh(self):
-        if not self._active() or self._pending:return
+        if not self._active():return
+        if self._pending:
+            self._refresh_again=True;return
         if self._fetching:self._refresh_again=True;return
+        self._refresh_again=False
         self._fetching=True;generation=self._generation
         def latest(result,error):
             if error:self._finish_refresh();self.retry.start();return
             head=result.get('clipboard') if isinstance(result,dict) else None
+            pushed=self._pushed_head
+            version=head.get('version',0) if isinstance(head,dict) else 0
+            if type(version) is not int:version=0
+            if pushed and pushed.get('clipboard',{}).get('version',0)>version:
+                self._pushed_head=None;head=pushed['clipboard']
             if not isinstance(head,dict) or generation!=self._generation:self._finish_refresh();return
             identity=head.get('id','')
             if not isinstance(identity,str) or len(identity)!=36 or any(c not in '0123456789abcdef-' for c in identity):self._finish_refresh();return
             if identity==self._seen:self._finish_refresh();return
-            if head.get('device')==getattr(self.account,'device_id',''):self._seen=identity;self._finish_refresh();return
+            if type(head.get('version')) is int and head['version']<=self._applied_version:self._finish_refresh();return
             if self._local_fence is not None:
                 fence=self._copy_timestamp(self._local_fence)
                 if fence is None or head.get('copied_at',head.get('at',0))<=fence:self._finish_refresh();return
             if not head.get('ready'):
                 # Pending/failed/oversize copies never erase a usable native
                 # clipboard. Expiry is owned by the cache lease, not polling.
+                if head.get('expired') and type(head.get('version')) is int:
+                    self._applied_version=max(self._applied_version,head['version'])
                 self._finish_refresh();return
             kind,size,sha=head.get('kind'),head.get('size'),head.get('sha256')
             if kind not in ('text','image','files') or type(size) is not int or not 0<size<(MAX_ARCHIVE_BYTES if kind in ('files','text') else MAX_BYTES) or not isinstance(sha,str) or len(sha)!=64:self._finish_refresh();return
-            try:directory=self._directory()
+            is_inline=kind=='text' and isinstance(head.get('inline'),str) and size<=32768
+            try:directory=self.cache if is_inline else self._directory()
             except OSError:
                 self._finish_refresh();self.retry.start();return
             path=directory/'download.bin';self._fetching=True
+            self._receiving_version=head_version(head)
             self._priority_flags(receiving=True)
+            def prepared(value):
+                if value is None or generation!=self._generation:self._finish_refresh();return
+                def confirmed(result,error):
+                    current=result.get('clipboard') if isinstance(result,dict) else None
+                    if error:
+                        self._finish_refresh();self.retry.start();return
+                    if generation!=self._generation:self._finish_refresh();return
+                    if isinstance(current,dict) and current.get('id')==identity and current.get('ready'):
+                        if signature(snapshot(self.clipboard))!=self._last_local_signature:
+                            self._schedule_change()
+                        else:
+                            if self._apply(value,directory,identity=identity):
+                                self._seen=identity
+                                self._applied_version=max(self._applied_version,head_version(head))
+                            else:self.retry.start(200)
+                    else:self._refresh_again=True
+                    self._finish_refresh()
+                self._request('GET','/v1/clipboard',confirmed)
             def downloaded(result,error):
                 if error:self._finish_refresh();self.retry.start();return
                 if generation!=self._generation:self._finish_refresh();return
-                def prepared(value):
-                    if value is None or generation!=self._generation:self._finish_refresh();return
-                    def confirmed(result,error):
-                        current=result.get('clipboard') if isinstance(result,dict) else None
-                        if error or generation!=self._generation:self._finish_refresh();return
-                        if isinstance(current,dict) and current.get('id')==identity and current.get('ready'):
-                            if signature(snapshot(self.clipboard))!=self._last_local_signature:
-                                self._schedule_change()
-                            else:self._seen=identity;self._apply(value,directory)
-                        else:self._refresh_again=True
-                        self._finish_refresh()
-                    self._request('GET','/v1/clipboard',confirmed)
                 self._work(lambda _:unpack(kind,path,directory),prepared)
-            self._request('GET',f'/v1/clipboard/{identity}/content',downloaded,destination=path,expected={'size':size,'sha256':sha})
-        self._request('GET','/v1/clipboard',latest)
+            if is_inline:
+                try:value=unpack_inline(head)
+                except (ValueError,TypeError,UnicodeError):
+                    self._finish_refresh();self.retry.start();return
+                prepared(value)
+            else:self._request('GET',f'/v1/clipboard/{identity}/content',downloaded,destination=path,expected={'size':size,'sha256':sha})
+        if self._pushed_head:
+            pushed,self._pushed_head=self._pushed_head,None;latest(pushed,None)
+        else:self._request('GET','/v1/clipboard',latest)
 
     def _finish_refresh(self):
         self._fetching=False
@@ -495,10 +652,9 @@ class ClipboardSync(QObject):
         if self._refresh_again:
             self._refresh_again=False;QTimer.singleShot(0,self.refresh)
 
-    def _apply(self,value,directory):
+    def _apply(self,value,directory,*,identity=None):
         kind,data=value;mime=QMimeData()
-        self._local_fence=None
-        mime.setData(SYNC_MARKER,self._seen.encode('ascii'))
+        mime.setData(SYNC_MARKER,(identity or self._seen).encode('ascii'))
         if kind=='files':mime.setUrls([QUrl.fromLocalFile(path) for path in data])
         elif kind=='image':
             mime.setImageData(data['image'])
@@ -508,11 +664,24 @@ class ClipboardSync(QObject):
             if data.get('html'):mime.setHtml(data['html'])
         self._applying=True
         try:
-            self.clipboard.setMimeData(mime);self._ignored=signature(snapshot(self.clipboard))
+            self.clipboard.setMimeData(mime)
+            actual=signature(snapshot(self.clipboard))
+            if kind=='image' and data.get('raw') and data.get('mime'):
+                native=self.clipboard.mimeData()
+                matches=native is not None and bytes(native.data(data['mime']))==data['raw']
+            else:matches=actual==signature(value)
+            if not matches:
+                native=self.clipboard.mimeData()
+                if native is not None and bytes(native.data(SYNC_MARKER))==(identity or self._seen).encode('ascii'):
+                    self._ignored=actual;self._last_local_signature=actual;self._ignored_sequence=self._sequence();self._last_sequence=self._ignored_sequence
+                return False
+            self._local_fence=None;self._ignored=actual
             self._ignored_sequence=self._sequence();self._last_sequence=self._ignored_sequence
             self._last_local_signature=self._ignored
             self._current_directory=directory
             if sys.platform=='darwin':self._mac_changed(initial=True)
+            return True
+        except (OSError,RuntimeError):return False
         finally:self._applying=False
 
     def _clear_remote_clipboard(self):

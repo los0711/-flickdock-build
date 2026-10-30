@@ -20,6 +20,7 @@ APP.setQuitOnLastWindowClosed(False)
 
 class FakeUpdates:
     def __init__(self):
+        self.app_version='1.8.12'
         self.state = 'available'
         self.state_payload = {'version': '1.8.13'}
         self.manifest={'version':'1.8.13','notes':'新增跨设备剪贴板\n修复总览与更新提示'}
@@ -43,6 +44,9 @@ class FakeManager:
         self.updates = FakeUpdates()
         self.update_notice = None
         self.settings_opens = 0
+        self.update_opens = 0
+
+    def show_update_dialog(self):self.update_opens+=1
 
     def settings_open(self):return False
 
@@ -88,7 +92,8 @@ class UpdateNoticeTests(unittest.TestCase):
         self.assertTrue(notice.isVisible())
         QTest.mouseClick(notice.update_button, Qt.MouseButton.LeftButton)
         APP.processEvents()
-        self.assertTrue(notice.isVisible())
+        self.assertFalse(notice.isVisible())
+        self.assertEqual(self.manager.update_opens,1)
         self.assertEqual(self.manager.settings_opens, 0)
         self.assertEqual(self.manager.updates.activations, 1)
 

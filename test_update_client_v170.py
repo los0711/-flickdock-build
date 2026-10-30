@@ -26,7 +26,7 @@ from PySide6.QtWidgets import QApplication
 import update_client as subject
 
 
-app=QApplication([])
+app=QApplication.instance() or QApplication([])
 def wait_until(predicate,timeout=4000):
     loop=QEventLoop();timer=QTimer();timer.setInterval(3);deadline=QTimer();deadline.setSingleShot(True)
     timer.timeout.connect(lambda:loop.quit() if predicate() else None);deadline.timeout.connect(loop.quit)
@@ -76,15 +76,21 @@ class UpdateTests(unittest.TestCase):
                 cls.requests.append((self.path,dict(self.headers)))
                 route=cls.routes.get(self.path,dict(status=404,body=b'not found'))
                 if route.get('delay'):time.sleep(route['delay'])
-                self.send_response(route.get('status',200))
+                body=route.get('body',b'');total=len(body);start=0;status=route.get('status',200)
+                if route.get('ranges') and self.headers.get('Range') and status==200:
+                    start=int(self.headers['Range'].split('=')[1].split('-')[0]);body=body[start:];status=206
+                self.send_response(status)
                 self.send_header('Content-Type',route.get('type','application/octet-stream'))
-                if route.get('length',True):self.send_header('Content-Length',str(route.get('declared',len(route.get('body',b'')))))
+                if route.get('length',True):self.send_header('Content-Length',str(route.get('declared',len(body))))
+                if status==206:self.send_header('Content-Range',f'bytes {start+(1 if route.get("bad_range") else 0)}-{total-1}/{total}')
                 if route.get('location'):self.send_header('Location',route['location'])
                 self.end_headers()
-                body=route.get('body',b'')
+                cut=route.get('drop_once') if not route.get('dropped') else None
                 try:
                     for offset in range(0,len(body),16384):
                         self.wfile.write(body[offset:offset+16384]);self.wfile.flush()
+                        if cut and offset+16384>=cut:
+                            route['dropped']=True;self.close_connection=True;return
                         if route.get('chunk_delay'):time.sleep(route['chunk_delay'])
                 except (OSError,ssl.SSLError):pass
         cls.server=ThreadingHTTPServer(('127.0.0.1',0),Handler);cls.server.daemon_threads=True
@@ -168,6 +174,7 @@ class UpdateTests(unittest.TestCase):
             self.assertEqual([path for path,_ in self.requests],['/primary/latest.json'])
             self.routes['/setup.exe']=dict(status=503,body=b'unavailable')
             self.requests.clear();state['failed'].clear();client.download(self.manifest)
+            client._download_task.max_retries=0
             wait_until(lambda:state['failed'])
             self.assertEqual([path for path,_ in self.requests],['/setup.exe'])
 

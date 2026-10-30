@@ -11,25 +11,26 @@ def main(binary,output):
     if sys.platform!='darwin' or os.environ.get('GITHUB_ACTIONS')!='true':
         raise RuntimeError('Requires the ephemeral native macOS CI runner')
     from app_version import APP_VERSION
+    major,minor,patch=map(int,APP_VERSION.split('.'));next_version=f'{major}.{minor}.{patch+1}'
     source=Path(binary).resolve().parents[2]
     with tempfile.TemporaryDirectory(prefix='flickdock-native-update-') as directory:
         root=Path(directory).resolve();target=root/'FlickDock.app'
         shutil.copytree(source,target,symlinks=True)
         probe=root/'probe.py'
-        probe.write_text('''import json,sys,os\nfrom pathlib import Path\nfrom PySide6.QtCore import QCoreApplication,QTimer\na=QCoreApplication(sys.argv)\nif '--post-update-ready' in sys.argv:\n i=sys.argv.index('--post-update-ready');marker=Path(sys.argv[i+1]);root=marker.parent.parent\n (root/'probe-first-pid').write_text(str(os.getpid()));a.aboutToQuit.connect(lambda:(root/'probe-exited').write_text('yes'))\n QTimer.singleShot(20,lambda:marker.write_text(sys.argv[i+2]));QTimer.singleShot(1000,a.quit);a.exec()\nelif '--verify-platform' in sys.argv:\n Path(sys.argv[-1]).write_text(json.dumps(dict(ok=True,version='1.8.21',frozen=bool(getattr(sys,'frozen',False)))))\n''')
+        probe.write_text('''import json,sys,os\nfrom pathlib import Path\nfrom PySide6.QtCore import QCoreApplication,QTimer\na=QCoreApplication(sys.argv)\nif '--post-update-ready' in sys.argv:\n i=sys.argv.index('--post-update-ready');marker=Path(sys.argv[i+1]);root=marker.parent.parent\n (root/'probe-first-pid').write_text(str(os.getpid()));a.aboutToQuit.connect(lambda:(root/'probe-exited').write_text('yes'))\n QTimer.singleShot(20,lambda:marker.write_text(sys.argv[i+2]));QTimer.singleShot(1000,a.quit);a.exec()\nelif '--verify-platform' in sys.argv:\n Path(sys.argv[-1]).write_text(json.dumps(dict(ok=True,version='1.8.21',frozen=bool(getattr(sys,'frozen',False)))))\n'''.replace('1.8.21',next_version))
         subprocess.run([sys.executable,'-m','PyInstaller','--noconfirm','--onedir','--windowed',
             '--name','FlickDock','--osx-bundle-identifier','com.flickdock.app',
             '--distpath',str(root/'probe-dist'),'--workpath',str(root/'probe-work'),
             '--specpath',str(root),str(probe)],check=True,stdout=subprocess.DEVNULL)
         new=root/'probe-dist/FlickDock.app';info=new/'Contents/Info.plist'
-        metadata=plistlib.loads(info.read_bytes());metadata.update(CFBundleShortVersionString='1.8.21',CFBundleVersion='1.8.21')
+        metadata=plistlib.loads(info.read_bytes());metadata.update(CFBundleShortVersionString=next_version,CFBundleVersion=next_version)
         info.write_bytes(plistlib.dumps(metadata))
         # Editing Info.plist invalidates the ad-hoc bundle signature.
         subprocess.run(['/usr/bin/codesign','--force','--deep','--sign','-',str(new)],check=True)
         archive=root/'update.zip'
         # ditto emits native symlink and executable metadata used by shipping.
         subprocess.run(['/usr/bin/ditto','-c','-k','--sequesterRsrc','--keepParent',str(new),str(archive)],check=True)
-        manifest=dict(version='1.8.21',installer=dict(size=archive.stat().st_size,
+        manifest=dict(version=next_version,installer=dict(size=archive.stat().st_size,
             sha256=hashlib.sha256(archive.read_bytes()).hexdigest()))
         old_hash=hashlib.sha256((target/'Contents/MacOS/FlickDock').read_bytes()).hexdigest()
         prepared=prepare_update(archive,manifest,current_version=APP_VERSION,installed_app=target,staging_parent=root)
@@ -42,7 +43,7 @@ def main(binary,output):
         error=prepared.stage/'install-error.txt'
         if status:raise RuntimeError(error.read_text() if error.is_file() else 'Native helper failed: '+str(status))
         self_version=bundle_metadata(target)['CFBundleShortVersionString']
-        assert self_version=='1.8.21'
+        assert self_version==next_version
         reader=json.loads((root/'runtime-reader.json').read_text());assert reader['cold_pyz_read_after_swap'] and reader['independent_executable']
         assert old_hash!=hashlib.sha256((target/'Contents/MacOS/FlickDock').read_bytes()).hexdigest()
         deadline=time.monotonic()+10
@@ -55,7 +56,7 @@ def main(binary,output):
         # Exit/reopen from the canonical target must run the replacement.
         report=root/'reopened.json'
         subprocess.run([str(target/'Contents/MacOS/FlickDock'),'--verify-platform',str(report)],check=True,timeout=20)
-        reopened=json.loads(report.read_text());assert reopened['ok'] and reopened['frozen'] and reopened['version']=='1.8.21'
+        reopened=json.loads(report.read_text());assert reopened['ok'] and reopened['frozen'] and reopened['version']==next_version
         deadline=time.monotonic()+8
         while prepared.stage.exists() and time.monotonic()<deadline:time.sleep(.1)
         assert not prepared.stage.exists(),'Copied updater runtime was not cleaned after helper exit'

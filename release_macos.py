@@ -161,7 +161,7 @@ def create_mac_release(*, archive: Path, build_report: Path, cloud_report: Path,
                        architecture: str, notes: str, download_url: str, output: Path,
                        previous: dict | None = None, initial_release=False,
                        allowed_hosts: set[str] | None = None, opener=None,
-                       channel: str = 'legacy') -> dict:
+                       channel: str = 'legacy',signer=None) -> dict:
     version_tuple(version)
     if architecture not in ARCHITECTURES:
         raise ReleaseError('Choose a native arm64 or x86_64 release channel')
@@ -204,8 +204,21 @@ def create_mac_release(*, archive: Path, build_report: Path, cloud_report: Path,
     manifest = dict(schema_version=1, version=version, platform='darwin', architecture=architecture,
                     published_at=datetime.now(timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z'),
                     notes=notes.strip(), installer=dict(filename=archive.name, url=download_url, size=size, sha256=digest))
+    from release_history import release_entries,manifest_notes
+    history=release_entries(version,notes)
+    if history:
+        manifest['releases']=history
+        manifest['notes']=manifest_notes(version,notes)
     try:
+        if signer is not None:
+            from update_signatures import sign_manifest
+            manifest=sign_manifest(manifest,signer)
+        elif version_tuple(version)>=(1,8,21) and validate_url(download_url) in ('gitee.com','flickdock-site.roger000416.workers.dev'):
+            raise ValueError('A publisher signature is required for this official release')
         validate_manifest(manifest, approved, platform='darwin', machine=architecture)
+        from update_client import MAX_MANIFEST_BYTES
+        if len((json.dumps(manifest,ensure_ascii=False,indent=2)+'\n').encode('utf8'))>MAX_MANIFEST_BYTES:
+            raise ValueError('Update descriptor exceeds the desktop reader limit')
     except (TypeError, ValueError) as error:
         raise ReleaseError('Mac release manifest is not accepted by the shipped updater') from error
     for baseline in baselines:
@@ -241,6 +254,7 @@ def main(arguments=None):
     parser.add_argument('--output-dir', type=Path, default=Path('updates'))
     parser.add_argument('--previous-manifest', type=Path)
     parser.add_argument('--initial-release', action='store_true')
+    parser.add_argument('--sign',action='store_true',help='Sign using the publisher credential in the OS vault')
     parser.add_argument('--allow-host', action='append', default=[])
     options = parser.parse_args(arguments)
     try:
@@ -251,7 +265,7 @@ def main(arguments=None):
             notes=options.notes, download_url=options.download_url, output=output,
             previous=_json(options.previous_manifest) if options.previous_manifest else None,
             initial_release=options.initial_release, allowed_hosts=set(options.allow_host) or None,
-            channel=options.channel)
+            channel=options.channel,signer=__import__('release_signing').publisher_signer() if options.sign else None)
     except (ReleaseError, OSError) as error:
         print(str(error), file=sys.stderr); return 1
     print(json.dumps(dict(version=options.version, architecture=options.architecture, manifest=str(output))))

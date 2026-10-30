@@ -251,7 +251,9 @@ class UpdateActivityBar(QWidget):
         self.setVisible(self.active)
         if self.active and self.fraction is None:
             if not previous_active or not self._clock.isValid(): self._clock.start()
-            if self.isVisible(): self._timer.start()
+            from native_ui_common import reduced_motion
+            if self.isVisible() and not reduced_motion(): self._timer.start()
+            else:self._timer.stop()
         else:
             self._timer.stop()
             if not self.active:self._clock.invalidate()
@@ -274,7 +276,8 @@ class UpdateActivityBar(QWidget):
     def showEvent(self, event):
         if self.active and self.fraction is None:
             if not self._clock.isValid(): self._clock.start()
-            self._timer.start()
+            from native_ui_common import reduced_motion
+            if not reduced_motion():self._timer.start()
         super().showEvent(event)
 
     def hideEvent(self, event):
@@ -292,7 +295,9 @@ class UpdateActivityBar(QWidget):
         if self.fraction is not None:
             painter.drawRoundedRect(QRectF(0, 0, self.width() * self.fraction, self.height()), 2, 2)
         else:
-            phase = (self._clock.elapsed() % 1400) / 1400 if self._clock.isValid() else 0
+            from native_ui_common import reduced_motion
+            phase = .5 if reduced_motion() else (self._clock.elapsed() % 1400) / 1400 if self._clock.isValid() else 0
+            if reduced_motion():self._timer.stop()
             width = self.width() * .25
             painter.drawRoundedRect(QRectF((self.width() + width) * phase - width, 0, width, self.height()), 2, 2)
 
@@ -907,6 +912,15 @@ class ReferenceModalDialog(QDialog):
         # Establish the natural width even before the first show/layout pass;
         # subsequent fits can shrink it to the current screen.
         self.resize(surface_width+40,120);outer.activate()
+        from ui_transitions import WindowFade
+        self._window_fade=WindowFade(self)
+
+    def done(self,result):
+        if self._window_fade.defer_done(result,self.done):return
+        super().done(result)
+
+    def show(self):
+        self._window_fade.reopen();super().show()
 
     def _available_geometry(self):
         owner=self.parentWidget().window() if self.parentWidget() else None
@@ -1061,6 +1075,9 @@ class SettingsSurface(QFrame):
 
 
 class SettingsDialog(QDialog):
+    def show(self):
+        self._window_fade.reopen();super().show()
+
     preview_changed = Signal(object)
     gesture_preview_changed = Signal(object)
     update_requested = Signal()
@@ -1319,6 +1336,8 @@ class SettingsDialog(QDialog):
         self.set_update_state("idle")
         for widget in self.findChildren(QWidget):
             widget.installEventFilter(self)
+        from window_chrome import WindowChrome
+        self.chrome=WindowChrome(self,self.title_bar,self.store,'settings',surface=self.surface)
 
     @staticmethod
     def _empty_layout(layout):
@@ -1395,7 +1414,8 @@ class SettingsDialog(QDialog):
         if sys.platform=='darwin':
             traffic=QWidget(self.title_bar);dots=QHBoxLayout(traffic);dots.setContentsMargins(0,0,0,0);dots.setSpacing(8)
             from native_ui_common import toggle_window_zoom
-            for color,action in (('#FF5F56',self.reject),('#FFBD2E',lambda:(self.mini_requested.emit(),self.reject())),('#27C93F',lambda:toggle_window_zoom(self))):
+            from window_chrome import minimize_utility
+            for color,action in (('#FF5F56',self.reject),('#FFBD2E',lambda:minimize_utility(self)),('#27C93F',lambda:toggle_window_zoom(self))):
                 dot=QPushButton(traffic);dot.setFixedSize(12,12);dot.setObjectName('settingsTraffic')
                 dot.setStyleSheet(f'background:{color};border:0;border-radius:6px;padding:0;')
                 dot.setAutoDefault(False)
@@ -1475,6 +1495,7 @@ class SettingsDialog(QDialog):
         dl.addWidget(sensitivity_panel);self.dock_position_hint.hide();self.shake_effort_label.hide();self.body_layout.addWidget(dock)
         lower=QWidget(self.body);lower_grid=QHBoxLayout(lower);lower_grid.setContentsMargins(0,0,0,0);lower_grid.setSpacing(16)
         kl=shortcuts.layout();self._empty_layout(kl);kl.setContentsMargins(16,16,16,16);kl.setSpacing(12)
+        kl.setAlignment(Qt.AlignmentFlag.AlignTop)
         self._pointer_paste_panel=shortcuts
         kh=QHBoxLayout();title=QLabel('全局快捷键 (点击直接按键修改)',shortcuts);title.setObjectName('settingsSection');kh.addWidget(title,1)
         reset=QPushButton('恢复默认',shortcuts);reset.setObjectName('settingsLink');reset.setAutoDefault(False)
@@ -1488,6 +1509,7 @@ class SettingsDialog(QDialog):
         self.startup_status_label.setParent(shortcuts);self.startup_status_label.hide()
         self._pointer_paste_permission=None
         cl=cloud.layout();self._empty_layout(cl);cl.setContentsMargins(16,16,16,16);cl.setSpacing(10)
+        cl.setAlignment(Qt.AlignmentFlag.AlignTop)
         ch=QLabel('云同步与存储',cloud);ch.setObjectName('settingsSection');cl.addWidget(ch)
         for control,label in ((self.sync_upload_checkbox,'上传本机搁架到云端'),(self.sync_receive_checkbox,'接收云端与其他设备内容'),
                               (self.clipboard_sync_checkbox,'云剪贴板同步（小于 20 MB）')):
@@ -1555,13 +1577,16 @@ class SettingsDialog(QDialog):
             self._pointer_paste_panel.layout().addWidget(panel);self._pointer_paste_permission=panel
         self._pointer_paste_permission.setVisible(bool(required))
 
-    def set_update_state(self, state, version="", received=0, total=0, error=""):
+    def set_update_state(self, state, version="", received=0, total=0, error="",**details):
         """Render update feedback beside the single explicit update action."""
         received, total = max(0, int(received)), max(0, int(total))
         labels = {
             "idle": ("", "检查更新"), "checking": ("正在检查…", "检查中…"),
             "latest": ("已是最新版本", "检查更新"),
             "available": ("有新版本", "立即更新"),
+            "connecting":("正在连接下载服务器…","连接中…"),
+            "reconnecting":("正在重新连接…","重新连接中…"),
+            "paused":("下载已暂停","继续下载"),
             "downloading": (f"正在下载 {min(100, round(received*100/total))}%" if total else "正在下载…", "更新中…"),
             "verifying": ("正在校验…", "更新中…"), "ready": ("更新已准备好", "重启并安装"),
             "installing": ("正在安装…", "更新中…"), "handoff": ("请将 FlickDock 拖到“应用程序”", "检查更新"),
@@ -1587,13 +1612,13 @@ class SettingsDialog(QDialog):
             self.update_error_label.setVisible(state=='error' and bool(error))
         self.update_button.setText(action)
         self.update_button.setAccessibleName(action)
-        busy=state in ('checking','downloading','verifying','installing','cancelling')
+        busy=state in ('checking','connecting','reconnecting','downloading','verifying','installing','cancelling')
         if busy and self.update_button.hasFocus():
             # Disabling the focused button makes QDialog advance to Close with
             # TabFocusReason, which paints a misleading keyboard focus ring.
             self.title_bar.setFocus(Qt.FocusReason.OtherFocusReason)
         restore_focus=not busy and self.title_bar.hasFocus()
-        self.update_button.setEnabled(state not in ("checking", "downloading", "verifying", "installing", "cancelling"))
+        self.update_button.setEnabled(not busy)
         if restore_focus:self.update_button.setFocus(Qt.FocusReason.OtherFocusReason)
         self.update_activity.set_activity(state, received, total)
         if not self.update_activity.active and self.isVisible():
@@ -1601,7 +1626,7 @@ class SettingsDialog(QDialog):
             self.surface.repaint();self.repaint()
 
     def set_update_details(self,version,notes):
-        text=str(notes).strip()[:16000]
+        text=str(notes).strip()
         self.update_notes_label.setText('v'+str(version)+' · 本次更新\n'+text if text else '')
         self.update_notes_area.setVisible(bool(text) and self._update_state not in ('idle','checking','latest'))
 
@@ -1984,6 +2009,7 @@ class SettingsDialog(QDialog):
             self._emit_preview()
 
     def done(self, result):
+        if self._window_fade.defer_done(result,self.done):return
         self._finish_preview(force=True)
         super().done(result)
 

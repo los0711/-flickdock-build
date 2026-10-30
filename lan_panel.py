@@ -683,6 +683,14 @@ class LanPanel(QFrame):
         self.peer_code_input.setAccessibleName('对方的接收码');self.peer_code_input.setMaxLength(8)
         self.peer_code_input.setMinimumHeight(36);self.peer_code_input.setVisible(self._wan)
         if self._wan:send.addWidget(self.peer_code_input)
+        if self._wan:
+            qr_actions=QHBoxLayout();qr_actions.setSpacing(8)
+            self.qr_clipboard_button=_button('识别剪贴板二维码',self.send_column)
+            self.qr_file_button=_button('识别二维码图片',self.send_column)
+            self.qr_clipboard_button.clicked.connect(self._read_clipboard_qr)
+            self.qr_file_button.clicked.connect(self._read_file_qr)
+            qr_actions.addWidget(self.qr_clipboard_button);qr_actions.addWidget(self.qr_file_button)
+            send.addLayout(qr_actions)
         self.devices.currentIndexChanged.connect(self._target_changed)
         self.peer_code_input.textChanged.connect(self._target_changed)
         send.addStretch(1)
@@ -700,9 +708,12 @@ class LanPanel(QFrame):
                 self.send_code_value.clicked.connect(lambda:service.reconnect() if not service.code_identity().get('code') else None)
             self.code_countdown=_CodeCountdown(service,self.send_code_value,self.send_code)
             send_code_layout.addWidget(self.code_countdown)
+            self.qr_share_button=_button('二维码',self.send_code);self.qr_share_button.setEnabled(False)
+            self.qr_share_button.clicked.connect(self._show_code_qr);send_code_layout.addWidget(self.qr_share_button)
         if self._wan and hasattr(service,'identity_changed'):
             service.identity_changed.connect(self._code_identity_changed)
-            self._code_identity_changed(dict(code=getattr(service,'code','')))
+            self._code_identity_changed(service.code_identity() if callable(getattr(service,'code_identity',None))
+                                        else dict(code=getattr(service,'code','')))
         send.addWidget(self.send_code)
         self.send_button = _button('发送', self); self.send_button.setObjectName('lanPrimary')
         self.send_button.setProperty('pressScale',True)
@@ -1062,6 +1073,58 @@ class LanPanel(QFrame):
     def _code_identity_changed(self,identity):
         if self.code_countdown:self.code_countdown._tick()
         else:self.send_code_value.setText(identity.get('code') or '连接中…')
+        if hasattr(self,'qr_share_button'):self.qr_share_button.setEnabled(bool(identity.get('code')))
+        dialog=getattr(self,'_qr_dialog',None)
+        if dialog is not None and dialog.isVisible():self._refresh_code_qr()
+
+    def _show_code_qr(self):
+        from app_settings import ReferenceModalDialog
+        if getattr(self,'_qr_dialog',None) is None:
+            self._qr_dialog=ReferenceModalDialog(self,surface_width=300,modal=False)
+            self._qr_dialog.setWindowTitle('FlickDock · 分享接收码')
+            self._qr_image_label=QLabel(self._qr_dialog.body);self._qr_image_label.setAlignment(Qt.AlignCenter)
+            self._qr_code_label=_label('',self._qr_dialog.body);self._qr_code_label.setAlignment(Qt.AlignCenter)
+            self._qr_dialog.body_layout.addWidget(self._qr_image_label)
+            self._qr_dialog.body_layout.addWidget(self._qr_code_label)
+            self._qr_dialog.body_layout.addWidget(_label('临时接收码会自动刷新。对方识别后选择文件发送，你确认后才开始传输。',self._qr_dialog.body))
+            close=_button('关闭',self._qr_dialog.body);close.clicked.connect(self._qr_dialog.reject)
+            self._qr_dialog.body_layout.addWidget(close)
+        self._refresh_code_qr();self._qr_dialog.set_surface_theme('dark' if self._dark else 'light')
+        self._qr_dialog.show();self._qr_dialog.raise_()
+
+    def _refresh_code_qr(self):
+        from pairing_qr import qr_image
+        from PySide6.QtGui import QPixmap
+        code=self.service.code_identity().get('code','')
+        if not code:
+            self._qr_image_label.clear();self._qr_code_label.setText('正在刷新接收码…');return
+        image=qr_image(code)
+        self._qr_image_label.setPixmap(QPixmap.fromImage(image).scaled(240,240,Qt.KeepAspectRatio,Qt.FastTransformation))
+        self._qr_code_label.setText(code)
+
+    def _read_clipboard_qr(self):
+        # A deliberate user action, never an additional background listener.
+        self._decode_code_qr(QApplication.clipboard().image().copy())
+
+    def _read_file_qr(self):
+        path,_=QFileDialog.getOpenFileName(self,'选择接收码二维码','','图片 (*.png *.jpg *.jpeg *.webp *.bmp)')
+        if path:self._decode_code_qr(path)
+
+    def _decode_code_qr(self,source):
+        if getattr(self,'_qr_reading',False):return
+        from pairing_qr import decode_qr
+        from sync_files import DiskWork
+        from PySide6.QtCore import QThreadPool
+        self._qr_reading=True;self.qr_clipboard_button.setEnabled(False);self.qr_file_button.setEnabled(False)
+        job=DiskWork(decode_qr,source);self._qr_job=job
+        def done(result,error):
+            from shiboken6 import isValid
+            if not isValid(self):return
+            self._qr_reading=False;self._qr_job=None
+            self.qr_clipboard_button.setEnabled(True);self.qr_file_button.setEnabled(True)
+            if error:self.status_label.setText(str(error)[:200])
+            elif result:self.peer_code_input.setText(result);self.status_label.setText('接收码已填入，请选择文件后发送。')
+        job.signals.done.connect(done);QThreadPool.globalInstance().start(job)
 
     def _target_changed(self,*_):
         if not self._wan:return
@@ -1383,9 +1446,22 @@ class LanDialog(QDialog):
     mini_requested = Signal()
     dock_requested = Signal()
 
+    def show(self):
+        self._window_fade.reopen();super().show()
+
+    def done(self,result):
+        if self._window_fade.defer_done(result,self.done):return
+        super().done(result)
+
+    def reject(self):
+        if not self._closing_confirmed and self._active_transfers():self.close()
+        else:super().reject()
+
     def __init__(self, service, settings, parent=None):
         super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
         self._settings=settings;self._panels={};self._theme=settings.theme
+        self._close_prompt=None;self._closing_confirmed=False;self._navigate_after_close=None
+        self.finished.connect(self._finish_navigation)
         self._wan=getattr(service,'mode','lan')=='wan'
         self.setObjectName('lanDialog'); self.setWindowTitle('FlickDock · '+('远程传输' if self._wan else '局域网互传'))
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -1402,7 +1478,8 @@ class LanDialog(QDialog):
         if sys.platform=='darwin':
             from native_ui_common import toggle_window_zoom
             controls=QHBoxLayout();controls.setSpacing(8)
-            for value,callback in (('#FF5F56',self.close),('#FFBD2E',lambda:self._navigate('mini')),('#27C93F',lambda:toggle_window_zoom(self))):
+            from window_chrome import minimize_utility
+            for value,callback in (('#FF5F56',self.close),('#FFBD2E',lambda:minimize_utility(self)),('#27C93F',lambda:toggle_window_zoom(self))):
                 button=_button('',self.title_bar);button.setFixedSize(12,12)
                 button.setStyleSheet(f'QPushButton{{background:{value};border:0;border-radius:6px;padding:0;min-height:0;}}')
                 if callback:button.clicked.connect(callback)
@@ -1436,10 +1513,46 @@ class LanDialog(QDialog):
         content.addWidget(self.panel_stack, 1)
         self.apply_theme(settings.theme)
         self.drop_router=_TransferDropRouter(self)
+        from window_chrome import WindowChrome
+        self.chrome=WindowChrome(self,self.title_bar,settings,'transfer',surface=self.card)
 
     def _navigate(self, target):
-        if target!='transfer_mode':self.close()
-        getattr(self, target+'_requested').emit()
+        if target=='transfer_mode':getattr(self,target+'_requested').emit();return
+        self._navigate_after_close=target
+        self.close()
+
+    def _finish_navigation(self,*_):
+        target=self._navigate_after_close;self._navigate_after_close=None
+        if target:getattr(self,target+'_requested').emit()
+
+    def _active_transfers(self):
+        return [(service,identifier) for service in self._panels
+                for identifier,transfer in tuple(getattr(service,'_transfers',{}).items())
+                if getattr(transfer,'active',False)]
+
+    def closeEvent(self,event):
+        if self._closing_confirmed or not self._active_transfers():
+            super().closeEvent(event);return
+        event.ignore()
+        if self._close_prompt is None:
+            from app_settings import ReferenceModalDialog
+            prompt=ReferenceModalDialog(self,surface_width=340,modal=True)
+            prompt.setWindowTitle('关闭传输窗口');prompt.set_surface_theme(self._theme)
+            text=_label('关闭将中断正在进行的传输，是否关闭？',prompt.body)
+            text.setStyleSheet('color:'+ui_colors(self._theme)['text']+';font-size:13px;')
+            prompt.body_layout.addWidget(text)
+            actions=QHBoxLayout();actions.addStretch()
+            cancel=_button('取消',prompt.body);confirm=_button('确定',prompt.body)
+            actions.addWidget(cancel);actions.addWidget(confirm);prompt.body_layout.addLayout(actions)
+            cancel.clicked.connect(prompt.reject)
+            def cancel_close():self._navigate_after_close=None
+            prompt.rejected.connect(cancel_close)
+            def confirmed():
+                for service,identifier in self._active_transfers():service.cancel(identifier)
+                self._closing_confirmed=True;prompt.accept();self.close()
+            confirm.clicked.connect(confirmed)
+            self.close_cancel_button=cancel;self.close_confirm_button=confirm;self._close_prompt=prompt
+        self._close_prompt.show();self._close_prompt.raise_();self._close_prompt.activateWindow()
 
     def set_service(self,service):
         """Swap only the content, keeping one native surface and shadow alive."""
@@ -1452,7 +1565,10 @@ class LanDialog(QDialog):
                 self._panels[service]=panel;self.panel_stack.addWidget(panel)
                 for widget in (panel,*panel.findChildren(QWidget)):widget.setAcceptDrops(True)
             self.panel=self._panels[service];self._wan=getattr(service,'mode','lan')=='wan'
-            self.panel_stack.setCurrentWidget(self.panel)
+            if not hasattr(self,'_page_fade'):
+                from ui_transitions import SnapshotFade
+                self._page_fade=SnapshotFade(self.panel_stack)
+            self._page_fade.change(lambda:self.panel_stack.setCurrentWidget(self.panel))
             title='远程传输' if self._wan else '局域网互传'
             self.title_label.setText(title);self.setWindowTitle('FlickDock · '+title)
             self.transfer_mode_button.setText('局域网互传' if self._wan else '远程传输')
@@ -1469,6 +1585,7 @@ class LanDialog(QDialog):
         self.title_icon.setPixmap(ui_icon('web' if self._wan else 'nearby',c['cyan'] if self._theme=='dark' else c['blue']).pixmap(16,16))
 
     def showEvent(self, event):
+        self._closing_confirmed=False
         super().showEvent(event)
         remove_host_window_shadow(self)
         if self._wan and callable(getattr(self.panel.service,'check_code',None)):

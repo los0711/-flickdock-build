@@ -13,7 +13,7 @@ p2p_binaries,p2p_datas=bundle_assets()
 font_names=['HarmonyOS_Sans_SC_Regular.ttf']
 license_names=['HarmonyOS-Sans-LICENSE.txt','Python-LICENSE.txt',
                'LGPL-3.0.txt','GPL-3.0.txt','PyInstaller-COPYING.txt',
-               'OpenSSL-LICENSE.txt','Cloud-Client-LICENSES.txt','Lucide-LICENSE.txt','WebRTC-LICENSES.txt']
+               'OpenSSL-LICENSE.txt','Cloud-Client-LICENSES.txt','Lucide-LICENSE.txt','WebRTC-LICENSES.txt','Pairing-QR-LICENSES.txt','Release-Crypto-LICENSES.txt']
 asset_files=[(root/'fonts'/name,'fonts') for name in font_names]
 asset_files += [(root/'licenses'/name,'licenses') for name in license_names]
 asset_files += [(root/'THIRD_PARTY_NOTICES.md','.'),(root/'font_manifest.json','.')]
@@ -41,7 +41,7 @@ a=Analysis(
                    '_md5','_sha1','_sha2','_sha3','_blake2','_hashlib',
                    'keyring.backends.Windows'],
     hookspath=[],hooksconfig={},runtime_hooks=[str(root/'runtime_media.py')],
-    excludes=['PySide6.'+name for name in unused_qt]+['keyring.backends.SecretService','keyring.backends.kwallet'],
+    excludes=['PySide6.'+name for name in unused_qt]+['keyring.backends.SecretService','keyring.backends.kwallet','numpy','PIL'],
     noarchive=False,optimize=0,
 )
 a.binaries,a.datas,report=filter_bundle(a.binaries,a.datas)

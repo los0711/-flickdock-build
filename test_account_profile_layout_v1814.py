@@ -11,7 +11,7 @@ from PySide6.QtCore import QPoint
 from PySide6.QtWidgets import QLabel
 
 import app_settings
-from account_panel import AccountGlyph, AccountPanel
+from account_panel import AccountGlyph, AccountNameLabel, AccountPanel
 from native_ui_common import configure_reference_font
 from test_account_settings_v181 import APP, Service
 
@@ -78,7 +78,8 @@ class AccountProfileLayoutTests(unittest.TestCase):
         self.service.devices[1]['name']='MacBook Air'
         self.service.list_devices();self.settle()
         self.assertEqual(self.panel._devices['other']['name'],'MacBook Air')
-        self.assertIsNot(rows['other'],self.panel._rows_by_id['other'])
+        self.assertIs(rows['other'],self.panel._rows_by_id['other'])
+        self.assertEqual(self.panel._rows_by_id['other'].findChild(AccountNameLabel,'accountDeviceName').text(),'MacBook Air')
 
     def test_rename_is_floating_without_resizing_rows_and_actions_stay_at_right_edge(self):
         for width in (740,892,1024):

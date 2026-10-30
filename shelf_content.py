@@ -27,13 +27,13 @@ def _decode_text(data: bytes) -> str:
         return data.decode("gb18030", errors="replace")
 
 
-def _unique_image_path(directory: Path) -> Path:
-    candidate = directory / "拖入的图片.png"
+def _unique_image_path(directory: Path, suffix='.png') -> Path:
+    candidate = directory / ('拖入的图片'+suffix)
     if not candidate.exists():
         return candidate
     # UUID fallback has no fixed collection-size limit and avoids races with
     # another capture using the same human-readable file name.
-    return directory / f"拖入的图片-{uuid4().hex[:12]}.png"
+    return directory / f"拖入的图片-{uuid4().hex[:12]}{suffix}"
 
 
 class ContentRepository:
@@ -64,8 +64,11 @@ class ContentRepository:
             return ref in self.texts
         return isinstance(ref, str) and bool(ref) and Path(ref).exists()
 
-    def title(self, ref: str) -> str:
+    def title(self, ref: str, *, live=True) -> str:
         if self.is_pending(ref): return str(self.pending.get(ref,{}).get('name','正在接收'))[:160]
+        transfer=self.transfers.get(ref,{})
+        if live and transfer.get('remote') and isinstance(transfer.get('name'),str) and transfer['name'].strip():
+            return transfer['name'].strip().splitlines()[0][:160]
         title = self.metadata.get(ref, {}).get('title')
         if isinstance(title, str) and title.strip():
             return title.strip().splitlines()[0][:160]
@@ -170,6 +173,23 @@ class ContentRepository:
         local = [u.toLocalFile() for u in mime.urls() if u.isLocalFile() and u.toLocalFile()]
         if local:
             return [str(Path(path).resolve()) for path in local]
+        # A cloud image or encoded original is already lossless. Preserve its
+        # exact bytes rather than converting every photo to a new PNG.
+        for format in ('image/png','image/jpeg','image/webp','image/bmp','image/tiff'):
+            if not mime.hasFormat(format):continue
+            raw=bytes(mime.data(format))
+            if not raw:continue
+            from PySide6.QtCore import QBuffer,QByteArray,QIODevice
+            from PySide6.QtGui import QImageReader
+            buffer=QBuffer();buffer.setData(QByteArray(raw));buffer.open(QIODevice.ReadOnly)
+            reader=QImageReader(buffer);actual=bytes(reader.format()).decode('ascii',errors='ignore').lower()
+            suffix={'png':'.png','jpeg':'.jpg','jpg':'.jpg','webp':'.webp','bmp':'.bmp','tiff':'.tiff'}.get(actual)
+            valid=bool(suffix and reader.canRead());buffer.close()
+            if valid:
+                directory=Path(capture_dir);directory.mkdir(parents=True,exist_ok=True)
+                path=_unique_image_path(directory,suffix)
+                with path.open('xb') as stream:stream.write(raw)
+                return [str(path.resolve())]
         if mime.hasImage():
             image = mime.imageData()
             if isinstance(image, QPixmap):

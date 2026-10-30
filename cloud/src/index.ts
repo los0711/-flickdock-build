@@ -55,7 +55,7 @@ export class AccountEvents extends DurableObject<Env> {
     if(url.pathname==='/intake')return intakeRequest(request,this.ctx,
       ()=>this.fetch(new Request('https://internal/publish',{method:'POST',body:JSON.stringify({type:'content',device:request.headers.get('X-Device-Id')||''})})));
     if(url.pathname.startsWith('/clipboard'))return clipboardRequest(request,this.ctx,this.env,
-      kind=>budget(this.env,kind,1),device=>this.fetch(new Request('https://internal/publish',{method:'POST',body:JSON.stringify({type:'clipboard',device})})));
+      kind=>budget(this.env,kind,1),(device,clipboard)=>this.fetch(new Request('https://internal/publish',{method:'POST',body:JSON.stringify({type:'clipboard',device,clipboard})})));
     if(url.pathname==='/connect'&&request.headers.get('Upgrade')?.toLowerCase()==='websocket'){
       const pair=new WebSocketPair();const [client,server]=Object.values(pair);
       this.ctx.acceptWebSocket(server);
@@ -71,7 +71,7 @@ export class AccountEvents extends DurableObject<Env> {
       return new Response(null,{status:204});
     }
     if(url.pathname==='/publish'&&request.method==='POST'){
-      const data=await request.json() as {type?:string;device?:string;progress?:Row};
+      const data=await request.json() as {type?:string;device?:string;progress?:Row;clipboard?:Row};
       if(!['content','devices','progress','clipboard'].includes(data.type||''))return new Response(null,{status:400});
       if(data.type==='progress'&&data.progress){
         const value=data.progress,previous=this.progressSent.get(value.upload_id),now=Date.now();
@@ -79,12 +79,15 @@ export class AccountEvents extends DurableObject<Env> {
         this.progressSent.set(value.upload_id,{at:now,bytes:value.received_bytes});
         if(this.progressSent.size>100)this.progressSent.delete(this.progressSent.keys().next().value!);
       }
-      const message=JSON.stringify({schema_version:1,type:data.type,...(data.type==='progress'?data.progress:{})});
+      const message=JSON.stringify({schema_version:1,type:data.type,...(data.type==='progress'?data.progress:{}),
+        ...(data.type==='clipboard'&&data.clipboard?{version:data.clipboard.version}:{})});
+      const inline=data.type==='clipboard'&&typeof data.clipboard?.inline==='string'?
+        JSON.stringify({schema_version:1,type:'clipboard_inline',clipboard:data.clipboard,server_time:Date.now()}):null;
       for(const socket of this.ctx.getWebSockets()){
         const attachment=socket.deserializeAttachment();
         if(!attachment?.expires||attachment.expires<=Date.now()){try{socket.close(4001,'Session expired');}catch{}continue;}
         if(attachment.device===data.device)continue;
-        try{socket.send(message);}catch{try{socket.close();}catch{}}
+        try{if(inline)socket.send(inline);socket.send(message);}catch{try{socket.close();}catch{}}
       }
       return new Response(null,{status:204});
     }
@@ -270,7 +273,9 @@ async function expireItems(env:Env,accountId?:string,limit=1){
   const now=Date.now();
   const expired=await rows(env,'SELECT account_id,id,version,active_upload FROM items WHERE deleted=0 AND expires_at<=?'+(accountId?' AND account_id=?':'')+' LIMIT ?',now,...(accountId?[accountId]:[]),limit);
   for(const value of expired){
-    await query(env,'UPDATE items SET deleted=1,version=version+1,active_upload=NULL,size=0,sha256=NULL,expires_at=NULL,updated_at=? WHERE account_id=? AND id=? AND version=? AND deleted=0 AND expires_at<=?',now,value.account_id,value.id,value.version,now).run();
+    // Retain the deadline in expiry tombstones so clients keep local originals.
+    // Explicit user deletion still has a null deadline and its usual semantics.
+    await query(env,'UPDATE items SET deleted=1,version=version+1,active_upload=NULL,size=0,sha256=NULL,updated_at=? WHERE account_id=? AND id=? AND version=? AND deleted=0 AND expires_at<=?',now,value.account_id,value.id,value.version,now).run();
     if(value.active_upload)await purgeUpload(env,value.active_upload);
   }
 }
@@ -483,7 +488,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
         const previous=await item(env,owner.id,id);
         const result=await env.DB.batch([
           query(env,"INSERT OR IGNORE INTO instant_receipts(upload_id,account_id,item_id,base_version,kind,name,mime_type,size,sha256,source_upload,result_version,expires_at) SELECT ?,?,?,?,?,?,?,?,?,u.id,?,? FROM uploads u WHERE u.id=? AND u.account_id=? AND u.state='committed' AND u.computed_sha256=u.sha256 AND u.sha256=? AND u.size=? AND EXISTS(SELECT 1 FROM items i WHERE i.account_id=? AND i.active_upload=u.id AND i.deleted=0) AND COALESCE((SELECT version FROM items WHERE account_id=? AND id=?),0)=? AND NOT EXISTS(SELECT 1 FROM uploads WHERE id=?)",uploadId,owner.id,id,base,kind,name,mime,size,hash,base+1,now+7*DAY,source.id,owner.id,hash,size,owner.id,owner.id,id,base,uploadId),
-          query(env,"INSERT INTO items(account_id,id,version,active_upload,kind,name,mime_type,size,sha256,updated_at,expires_at) SELECT r.account_id,r.item_id,r.result_version,r.source_upload,r.kind,r.name,r.mime_type,r.size,r.sha256,?,CASE WHEN r.size>524288000 THEN ? ELSE NULL END FROM instant_receipts r WHERE r.upload_id=? AND r.account_id=? ON CONFLICT(account_id,id) DO UPDATE SET version=excluded.version,deleted=0,active_upload=excluded.active_upload,kind=excluded.kind,name=excluded.name,mime_type=excluded.mime_type,size=excluded.size,sha256=excluded.sha256,updated_at=excluded.updated_at,expires_at=excluded.expires_at WHERE items.version=excluded.version-1",now,now+DAY,uploadId,owner.id),
+          query(env,"INSERT INTO items(account_id,id,version,active_upload,kind,name,mime_type,size,sha256,updated_at,expires_at) SELECT r.account_id,r.item_id,r.result_version,r.source_upload,r.kind,r.name,r.mime_type,r.size,r.sha256,?,?+CASE WHEN r.size>=104857600 THEN 7200000 ELSE 86400000 END FROM instant_receipts r WHERE r.upload_id=? AND r.account_id=? ON CONFLICT(account_id,id) DO UPDATE SET version=excluded.version,deleted=0,active_upload=excluded.active_upload,kind=excluded.kind,name=excluded.name,mime_type=excluded.mime_type,size=excluded.size,sha256=excluded.sha256,updated_at=excluded.updated_at,expires_at=excluded.expires_at WHERE items.version=excluded.version-1",now,now,uploadId,owner.id),
         ]);
         if(result[0].meta.changes){
           if(!result[1].meta.changes)fail(409,'VERSION_CONFLICT','Item changed before instant reuse');

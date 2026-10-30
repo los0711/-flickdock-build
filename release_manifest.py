@@ -37,16 +37,17 @@ RUNTIME_SOURCES=(
     'drop_routing.py','drop_bridge.py','flickdock_icons.py','flickdock_motion.py','global_hotkeys.py',
     'image_preview.py','instance_guard.py','media_preview.py','offscreen_verify.py',
     'runtime_media.py','selection_archive.py','shake_detector.py','shelf_content.py',
-    'surface_morph.py','ui_theme.py','widget_retirement.py','app_version.py',
-    'native_ui_common.py','reference_widgets.py','pointer_paste.py','settings_edge_hint.py','cloud_connectivity.py','clipboard_sync.py','verify_clipboard.py','transfer_priority.py','small_upload_lane.py','runtime_cleanup.py',
-    'update_client.py','update_dialog.py','update_controller.py','update_notice.py','release_history.py','network_environment.py','network_diagnostics.py','ci_mac_update_runtime.py',
+    'surface_morph.py','ui_theme.py','widget_retirement.py','item_transitions.py','ui_transitions.py','app_version.py',
+    'native_ui_common.py','reference_widgets.py','pointer_paste.py','settings_edge_hint.py','cloud_connectivity.py','clipboard_sync.py','verify_clipboard.py','transfer_priority.py','small_upload_lane.py','runtime_cleanup.py','window_chrome.py','intake_notice.py',
+    'update_client.py','update_download.py','update_signatures.py','update_dialog.py','update_controller.py','update_notice.py','release_history.py','network_environment.py','network_diagnostics.py','ci_mac_update_runtime.py','ci_utility_windows.py',
     'platform_startup.py','platform_native.py','mac_updates.py','mac_entry.py','runtime_macos.py',
     'account_store.py','cloud_api.py','cloud_config.py','cloud_events.py','account_service.py','account_panel.py',
     'shelf_sync.py','sync_files.py','sync_adapter.py','verify_cloud.py','shortcut_preview.py',
     'lan_transfer.py','lan_panel.py','transfer_visuals.py','owned_files.py','verify_transfers.py',
-    'wan_transfer.py','webrtc_stream.py','nearby_transport.py','verify_wan.py','windows_network.py',
+    'wan_transfer.py','webrtc_stream.py','nearby_transport.py','verify_wan.py','windows_network.py','pairing_qr.py',
 )
 MAINTAINED_TESTS=(
+    'test_shelf_live_v1821.py','test_pairing_qr_v1821.py','test_release_notes_v1821.py','test_clipboard_fast_v1821.py','test_utility_windows_v1821.py','test_update_resume_v1821.py','test_update_signatures_v1821.py',
     'test_small_upload_lane.py','test_feedback_v1820.py',
     'test_pointer_paste_v1819.py','test_presentation_v1819.py','test_clipboard_sync_v1819.py','test_wan_account_v1819.py','test_webrtc_close_v1819.py',
     'test_feedback_v1818.py','test_nearby_transport_v1818.py','test_wan_signaling_v1818.py','test_cloud_failover_v1818.py','test_windows_network_v1818.py',
@@ -86,7 +87,7 @@ SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     '.github/workflows/native-clipboard.yml',
     'FlickDock.spec','FlickDock.iss','version_info.txt','ChineseSimplified.isl','windows-network.ps1',
     'flickdock.ico','THIRD_PARTY_NOTICES.md','font_manifest.json','bundle_policy.py',
-    'release_manifest.py','release_macos.py','package_source.py','PUBLISHING.md','README.md','AGENTS.md','UI_REFERENCE_IMPLEMENTATION.md','HIG_DESIGN.md','.gitignore','.gitattributes',
+    'release_manifest.py','release_macos.py','release_signing.py','package_source.py','PUBLISHING.md','README.md','AGENTS.md','UI_REFERENCE_IMPLEMENTATION.md','HIG_DESIGN.md','.gitignore','.gitattributes',
     'check_release_v16.py','release_dpr_v165.py','PACKAGE_AUDIT.md',
     'MOTION_V161.md','MOTION_V162.md','MOTION_V163.md','MOTION_V164.md','MOTION_V165.md',
     'bench_morph_v161.py','bench_cold_expand_v162.py','bench_clear_confirm_v161.py',
@@ -96,12 +97,12 @@ SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'assets/ui/qtbase_zh_CN.qm',
     'licenses/HarmonyOS-Sans-LICENSE.txt','licenses/Python-LICENSE.txt',
     'licenses/LGPL-3.0.txt','licenses/GPL-3.0.txt','licenses/PyInstaller-COPYING.txt',
-    'licenses/OpenSSL-LICENSE.txt','licenses/Cloud-Client-LICENSES.txt','licenses/Lucide-LICENSE.txt','licenses/WebRTC-LICENSES.txt',
+    'licenses/OpenSSL-LICENSE.txt','licenses/Cloud-Client-LICENSES.txt','licenses/Lucide-LICENSE.txt','licenses/WebRTC-LICENSES.txt','licenses/Pairing-QR-LICENSES.txt','licenses/Release-Crypto-LICENSES.txt',
     'FlickDock-mac.spec','build_macos.py','MAC_BUILD.md','CLOUD_SYNC.md','FEATURE_V180.md','FEATURE_V181.md','FEATURE_V183.md',
     'cloud_remote_probe.py','cloud_feature_probe.py','cloud/package.json','cloud/package-lock.json','cloud/tsconfig.json',
     'cloud/wrangler.jsonc','cloud/README.md','cloud/.gitignore',
     'cloud/migrations/0001_schema.sql','cloud/migrations/0002_retention.sql','cloud/migrations/0003_transfers_password.sql',
-    'cloud/migrations/0004_instant_uploads.sql','cloud/migrations/0005_account_names.sql','cloud/src/index.ts','cloud/src/hash-state.ts','cloud/src/wan.ts','cloud/src/relay-budget.ts','cloud/src/clipboard.ts','cloud/src/intake.ts',
+    'cloud/migrations/0004_instant_uploads.sql','cloud/migrations/0005_account_names.sql','cloud/migrations/0006_cloud_retention.sql','cloud/src/index.ts','cloud/src/hash-state.ts','cloud/src/wan.ts','cloud/src/relay-budget.ts','cloud/src/clipboard.ts','cloud/src/intake.ts',
     'cloud/src/wasm.d.ts','cloud/src/vendor/hash-wasm-sha256-4.12.0.wasm',
     'cloud/src/vendor/hash-wasm-sha256-4.12.0.json','cloud/src/vendor/hash-wasm-4.12.0-LICENSE.txt',
     'cloud/test/integration.mjs','cloud/test/hash-state.mjs','cloud/test/upload-cancel.mjs','cloud/test/wan-codes.mjs','cloud/test/wan-connect.mjs','cloud/test/wan-account.mjs','cloud/test/account-names.mjs','cloud/test/qa-server.mjs','cloud/test/clipboard.mjs','cloud/test/clipboard-expiry.mjs',
@@ -137,7 +138,7 @@ ICON_FILES=tuple('assets/icons/'+name+'.svg' for name in (
     'format-rar','format-svg','format-svgz','format-txt','format-wav','format-webm',
     'format-xls','format-xlsx','format-zip',
 ))
-REQUIREMENTS=b'PySide6==6.12.0\nPyInstaller==6.22.3\npefile==2024.8.26\nkeyring==25.7.0\n'
+REQUIREMENTS=b'PySide6==6.12.0\nPyInstaller==6.22.3\npefile==2024.8.26\nkeyring==25.7.0\nqrcode==8.2\nzxing-cpp==3.1.1\ncryptography==50.0.2\n'
 SECRET_PATTERNS=(
     re.compile(rb'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----'),
     re.compile(rb'\b(?:ghp|github_pat|gitee_pat)_[A-Za-z0-9_]{20,}\b'),
@@ -420,7 +421,7 @@ def _write_atomic(path: Path,data: bytes) -> None:
 
 def create_release(*,root: Path,installer: Path,version: str,notes: str,download_url: str,
                    verification: Path,output: Path,artifacts: Path,previous: dict|None=None,
-                   initial_release=False,allowed_hosts: set[str]|None=None,opener=None) -> dict:
+                   initial_release=False,allowed_hosts: set[str]|None=None,opener=None,signer=None) -> dict:
     if installer.is_symlink():raise ReleaseError('Installer cannot be a symlink')
     root=root.resolve();installer=installer.resolve();version_tuple(version)
     if artifacts.resolve().is_relative_to(output.parent.resolve()):
@@ -453,6 +454,23 @@ def create_release(*,root: Path,installer: Path,version: str,notes: str,download
     manifest=dict(schema_version=1,version=version,
                   published_at=datetime.now(timezone.utc).isoformat(timespec='seconds').replace('+00:00','Z'),
                   notes=notes.strip(),installer=metadata)
+    from release_history import release_entries,manifest_notes
+    history=release_entries(version,notes)
+    if history:
+        manifest['releases']=history
+        manifest['notes']=manifest_notes(version,notes)
+    from update_client import validate_manifest,MAX_MANIFEST_BYTES
+    try:
+        if signer is not None:
+            from update_signatures import sign_manifest
+            manifest=sign_manifest(manifest,signer)
+        elif version_tuple(version)>=(1,8,21) and host in ('gitee.com','flickdock-site.roger000416.workers.dev'):
+            raise ValueError('A publisher signature is required for this official release')
+        validate_manifest(manifest,approved,platform='win32')
+        if len((json.dumps(manifest,ensure_ascii=False,indent=2)+'\n').encode('utf8'))>MAX_MANIFEST_BYTES:
+            raise ValueError('Update descriptor exceeds the desktop reader limit')
+    except (TypeError,ValueError) as error:
+        raise ReleaseError('Windows release manifest is not accepted by the shipped updater') from error
     for previous in baselines:
         if version!=previous['version']:continue
         old=previous['installer']
@@ -492,6 +510,7 @@ def main(argv=None) -> int:
     parser.add_argument('--previous-manifest',type=Path)
     parser.add_argument('--previous-url')
     parser.add_argument('--initial-release',action='store_true')
+    parser.add_argument('--sign',action='store_true',help='Sign using the publisher credential in the OS vault')
     parser.add_argument('--allow-host',action='append',default=[])
     args=parser.parse_args(argv)
     try:
@@ -504,7 +523,7 @@ def main(argv=None) -> int:
                                 notes=args.notes_file.read_text(encoding='utf-8-sig'),download_url=args.download_url,
                                 verification=args.verification,output=args.output or args.root/'updates/latest.json',
                                 artifacts=args.artifacts,previous=previous,initial_release=args.initial_release,
-                                allowed_hosts=approved)
+                                allowed_hosts=approved,signer=__import__('release_signing').publisher_signer() if args.sign else None)
     except (ReleaseError,OSError,SyntaxError) as exc:
         print('RELEASE_BLOCKED: '+str(exc),file=sys.stderr);return 1
     print(json.dumps(dict(version=manifest['version'],manifest=str(args.output or args.root/'updates/latest.json'),

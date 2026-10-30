@@ -43,12 +43,16 @@ class Spring(QObject):
 
     def animate(self, target: dict[str, float], finished: Callable[[], None] | None = None,
                 response: float = .24, damping: float = .70) -> None:
+        from native_ui_common import reduced_motion
+        motion=self.motion and not reduced_motion()
         for key, value in target.items():
             self.values.setdefault(key, float(value))
             self._velocities.setdefault(key, 0.0)
             self._targets[key] = float(value)
-        self.response = max(.06, float(response)) if self.motion else .13
-        self.damping = max(.25, float(damping)) if self.motion else 1.0
+            if not motion and key in ('x','y','sx','sy','dx','dy','w','h','width','height'):
+                self.values[key]=float(value);self._velocities[key]=0.0
+        self.response = max(.06, float(response)) if motion else .13
+        self.damping = max(.25, float(damping)) if motion else 1.0
         self._finished = finished
         self._started_at = time.perf_counter()
         self._start()
@@ -61,7 +65,8 @@ class Spring(QObject):
         self._on_update(dict(self.values))
 
     def kick(self, velocities: dict[str, float]) -> None:
-        if self.motion:
+        from native_ui_common import reduced_motion
+        if self.motion and not reduced_motion():
             for key, velocity in velocities.items():
                 self.values.setdefault(key, 0.0)
                 self._targets.setdefault(key, self.values[key])

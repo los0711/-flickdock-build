@@ -27,7 +27,8 @@ def flush():
 
 
 def assert_centered_cross(button, dark):
-    assert button.size().width() == button.size().height() == 28
+    if getattr(button,'role',None)=='close':assert button.size().toTuple()==(44,32)
+    else:assert button.size().width() == button.size().height() == 28
     assert button.glyph_rect.size().width() == button.glyph_rect.size().height() == 14
     assert button.glyph_rect.center() == QRectF(button.rect()).center()
     image = button.grab().toImage()

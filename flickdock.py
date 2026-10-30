@@ -23,7 +23,7 @@ from PySide6.QtGui import (QColor, QCursor, QDrag, QFont, QFontDatabase, QGuiApp
                            QIcon, QLinearGradient, QPainter, QPainterPath, QPalette, QPen, QPixmap, QTransform)
 from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame,
                                 QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton,
-                                QScrollArea, QSystemTrayIcon, QVBoxLayout, QWidget, QPlainTextEdit, QStackedWidget, QGridLayout, QSizePolicy, QButtonGroup, QProgressBar, QWidgetAction, QDialog)
+                                QScrollArea, QSystemTrayIcon, QVBoxLayout, QWidget, QPlainTextEdit, QStackedWidget, QGridLayout, QSizePolicy, QButtonGroup, QProgressBar, QWidgetAction, QDialog,QSpacerItem)
 
 from flickdock_icons import app_icon, tray_icon, menu_bar_icon, glyph_icon, glyph_pixmap, file_pixmap, document_pixmap
 from flickdock_motion import Spring, MotionShadow, ContentTile, FeedbackButton
@@ -51,7 +51,7 @@ from async_images import ImageCache
 from widget_retirement import WidgetRetirementQueue
 from capture_files import CopyFilesJob
 from owned_files import owned_copy_spec, delete_owned_copy
-from sync_files import DiskWork, directory_size, oversized_intake
+from sync_files import DiskWork, directory_size, oversized_intake, intake_retention
 from transfer_visuals import (CLOUD_STATUS_LABELS, CloudStatusBadge, cloud_status_for_ref,
                               TransferIconLabel, TransferOverlay, TransferRateTracker,
                               transfer_fraction, transfer_phase_label)
@@ -169,6 +169,9 @@ class AnimatedMenu(QMenu):
 
     def showEvent(self, event):
         self.fade.stop()
+        from native_ui_common import reduced_motion
+        if reduced_motion():
+            self.setWindowOpacity(1);super().showEvent(event);return
         self.setWindowOpacity(.25)
         super().showEvent(event)
         self.fade.setStartValue(.25)
@@ -607,6 +610,15 @@ class FileRow(QFrame):
         policy=self.remove_button.sizePolicy();policy.setRetainSizeWhenHidden(True);self.remove_button.setSizePolicy(policy)
         row.addWidget(self.remove_button);self.remove_button.hide();self.refresh_cloud_status()
 
+    def refresh_content(self):
+        from reference_widgets import item_detail
+        title=self.popup.shelf.content.title(self.path)
+        self.name_label.setText(title)
+        self.detail_label.setText(item_detail(self.popup.shelf,self.path))
+        self.selection_check.setAccessibleName('选择 '+title)
+        self.remove_button.setAccessibleName('从搁架移除 '+title)
+        self.icon_label.update();self.refresh_cloud_status();self.update()
+
     def refresh_cloud_status(self):
         lookup=getattr(self.popup,'cloud_status',None)
         status=lookup(self.path) if callable(lookup) else cloud_status_for_ref(self.popup.shelf,self.path)
@@ -615,7 +627,8 @@ class FileRow(QFrame):
         self.setAccessibleDescription(CLOUD_STATUS_LABELS.get(status,CLOUD_STATUS_LABELS['local']))
 
     def paintEvent(self,event):
-        from reference_widgets import palette,ink
+        from reference_widgets import palette,ink,outside_content_view
+        if outside_content_view(self):return
         c=palette();chosen=self.path in self.popup.selected
         self.selection_check.blockSignals(True);self.selection_check.setChecked(chosen);self.selection_check.blockSignals(False)
         p=QPainter(self);p.setRenderHint(QPainter.Antialiasing)
@@ -709,6 +722,8 @@ class ContentsPopup(QFrame):
         self.shelf,self.mode=shelf,"permanent"
         self.selected=set();self.primary_selection=None;self.hovered_ref=None;self.category='all'
         self._cloud_statuses={}
+        self._item_widgets={}
+        self._content_dirty=False
         self.retirement=WidgetRetirementQueue(self)
         self._build_timer=QTimer(self);self._build_timer.setSingleShot(True)
         self._build_timer.timeout.connect(self._append_batch)
@@ -914,19 +929,42 @@ class ContentsPopup(QFrame):
     def rebuild(self):
         refs=self.visible_refs()
         previous_signature=getattr(self,'_render_signature',None)
+        content=self.shelf.content
         signature=(tuple(refs),self.category,self.shelf.manager.settings.view_mode,
                    self.shelf.manager.settings.theme,
-                   tuple((ref,repr(self.shelf.content.metadata.get(ref,{}))) for ref in refs))
+                   tuple((ref,repr(content.metadata.get(ref,{})),
+                          repr(content.pending.get(ref,{})),content.texts.get(ref),content.title(ref)) for ref in refs))
         if getattr(self,'_render_signature',None)==signature:
             return
         self._read_cloud_statuses(refs)
         self._render_signature=signature
-        self._build_timer.stop()
-        self._build_epoch=getattr(self,'_build_epoch',0)+1
-        epoch=self._build_epoch
         position=self.scroll.verticalScrollBar().value()
-        self._clear_layout(self.rows_layout)
-        self.hovered_ref=None
+        old_widgets=self._item_widgets
+        row_type=IconItem if self.shelf.manager.settings.view_mode=='icons' else FileRow
+        same_layout=bool(previous_signature and previous_signature[:4]==signature[:4]
+                         and all(isinstance(w,row_type) for w in old_widgets.values()))
+        previous_metadata={row[0]:row[1:] for row in previous_signature[4]} if previous_signature else {}
+        changed={row[0] for row in signature[4] if previous_metadata.get(row[0])!=row[1:]}
+        # Metadata/progress cannot retire the live tree or disturb a focused row.
+        if not same_layout:
+            self._build_timer.stop()
+            self._build_epoch=getattr(self,'_build_epoch',0)+1
+            self._rows_minimum=getattr(self,'_rows_minimum',self.rows_body.minimumHeight())
+            self.rows_body.setMinimumHeight(max(self._rows_minimum,self.rows_body.height()))
+            from item_transitions import ItemTransitions
+            if not hasattr(self,'item_transitions'):
+                self.item_transitions=ItemTransitions(self.scroll,self.rows_body)
+            positions=self.item_transitions.capture(old_widgets)
+            removed={ref:w for ref,w in old_widgets.items() if ref not in refs}
+            animate=bool(previous_signature and self.isVisible() and self.shelf.manager.motion
+                         and previous_signature[1:4]==signature[1:4])
+            self.item_transitions.remove(removed.values(),enabled=animate)
+            self._detach_rows_layout(self.rows_layout)
+            self._item_widgets={ref:w for ref,w in old_widgets.items() if ref in refs and isinstance(w,row_type)}
+            for ref,w in old_widgets.items():
+                if self._item_widgets.get(ref) is not w:self.retirement.retire(w)
+            self._layout_animation=(positions,animate)
+        if self.hovered_ref not in refs:self.hovered_ref=None
         self.selected.intersection_update(refs)
         if self.primary_selection not in self.selected: self.primary_selection=next((r for r in refs if r in self.selected),None)
         self.title.setText("FlickDock");self.count_label.setText(f"{len(self.shelf.display_refs())} 项")
@@ -948,27 +986,71 @@ class ContentsPopup(QFrame):
         self.clear_button.setEnabled(self.shelf.has_files())
         self._position_nav_counts()
         self.category_buttons[self.category].setChecked(True)
-        if self.shelf.manager.settings.view_mode=='icons':
+        if same_layout:
+            for ref in changed:
+                if ref in self._item_widgets:self._item_widgets[ref].refresh_content()
+        elif self.shelf.manager.settings.view_mode=='icons':
             grid=QGridLayout(); grid.setContentsMargins(0,0,0,0); grid.setHorizontalSpacing(8); grid.setVerticalSpacing(8)
             self.rows_layout.addLayout(grid)
             available=max(112,self.scroll.viewport().width()-24)
             columns=max(1,min(4,(available+8)//136))
             self._grid_columns=columns
             for column in range(columns):grid.setColumnStretch(column,1)
-            def append(index,ref): grid.addWidget(IconItem(self,ref),index//columns,index%columns)
+            def append(index,ref):
+                slot=self._build_slots.pop(index,None)
+                if slot is not None:grid.removeItem(slot)
+                widget=self._item_widget(ref,IconItem,changed)
+                grid.addWidget(widget,index//columns,index%columns);widget.show()
         else:
-            def append(index,ref): self.rows_layout.insertWidget(self.rows_layout.count()-1,FileRow(self,ref))
-        self.rows_layout.addStretch()
-        self._build_refs=refs;self._build_cursor=0;self._build_append=append
-        self._build_position=position
+            def append(index,ref):
+                slot=self._build_slots.pop(index,None)
+                if slot is not None:self.rows_layout.removeItem(slot)
+                widget=self._item_widget(ref,FileRow,changed)
+                self.rows_layout.insertWidget(min(index,self.rows_layout.count()-1),widget);widget.show()
+        if not same_layout:
+            self.rows_layout.addStretch()
+            self._build_refs=refs;self._build_cursor=0;self._build_append=append
+            self._build_position=position
+            self._build_installed=set()
+            self._build_slots={}
+            # Move existing widgets in one layout transaction. Only new widget
+            # construction is batched; the viewport never sees a short list.
+            for index,ref in enumerate(refs):
+                if ref in self._item_widgets:
+                    append(index,ref);self._build_installed.add(ref)
+                elif row_type is IconItem:
+                    slot=QSpacerItem(112,120,QSizePolicy.Expanding,QSizePolicy.Fixed)
+                    grid.addItem(slot,index//columns,index%columns);self._build_slots[index]=slot
+                else:
+                    slot=QSpacerItem(0,58,QSizePolicy.Minimum,QSizePolicy.Fixed)
+                    self.rows_layout.insertItem(index,slot);self._build_slots[index]=slot
+            # A scroll widget cannot infer an accurate minimum from the
+            # temporary spacers until all children exist. Reserve its final
+            # height now; otherwise Qt overlaps hundreds of rows inside the
+            # viewport and the compositor paints every thumbnail per slice.
+            rows=(len(refs)+columns-1)//columns if row_type is IconItem else len(refs)
+            height=24+rows*(120 if row_type is IconItem else 58)+max(0,rows-1)*(8 if row_type is IconItem else 6)
+            self.rows_body.setMinimumHeight(max(getattr(self,'_rows_minimum',0),height))
+            self.rows_layout.activate()
+            positions,animate=self._layout_animation;self._layout_animation=None
+            self.item_transitions.reflow(self._item_widgets,positions,enabled=animate)
         # Four initial cards are enough to establish the endpoint. Remaining
         # widgets wait until the transition ends, with a small per-tick budget.
-        self._append_batch(initial=True)
+            self._append_batch(initial=True)
         if refs:
-            current=self.primary_selection or (self.preview.current_path if self.preview.current_path in refs else refs[0])
-            previous_metadata=dict(previous_signature[4]) if previous_signature else {}
+            preferred=getattr(self,'_preferred_preview',None);self._preferred_preview=None
+            current=self.primary_selection or (preferred if preferred in refs else
+                self.preview.current_path if self.preview.current_path in refs else refs[0])
             if not (self._narrow_layout and not self._narrow_preview):
-                self.preview.show_path(current,force=previous_metadata.get(current)!=repr(self.shelf.content.metadata.get(current,{})))
+                # The preview owns media handles. A name/size update must not
+                # reopen it; a changed cover or text payload may refresh it.
+                old_meta=getattr(self,'_preview_metadata',{})
+                new_meta={key:content.metadata.get(current,{}).get(key) for key in ('preview_image','text_file')}
+                new_meta['text']=content.texts.get(current)
+                self.preview.show_path(current,force=current==self.preview.current_path and old_meta!=new_meta)
+                self._preview_metadata=new_meta
+                if current in changed:
+                    self.preview.name.setText(content.title(current))
                 self.restore_selected_preview()
         else:
             self.preview.media.stop()
@@ -979,20 +1061,47 @@ class ContentsPopup(QFrame):
         self.scroll.verticalScrollBar().setValue(position)
         self.update_selection_actions()
 
+    def _detach_rows_layout(self,layout):
+        while layout.count():
+            item=layout.takeAt(0)
+            if item.layout():
+                self._detach_rows_layout(item.layout());item.layout().deleteLater()
+
+    def _item_widget(self,ref,kind,changed):
+        widget=self._item_widgets.get(ref)
+        if widget is None:
+            widget=kind(self,ref);self._item_widgets[ref]=widget
+        elif ref in changed:widget.refresh_content()
+        return widget
+
     def _append_batch(self,initial=False):
         if not initial and (self.shelf.content_transition_active() or not self.isVisible()): return
         start=time.perf_counter(); count=0
         while self._build_cursor<len(self._build_refs):
             index=self._build_cursor
-            self._build_append(index,self._build_refs[index]);self._build_cursor+=1;count+=1
-            if count>=(4 if initial else 6) or time.perf_counter()-start>=.003: break
+            ref=self._build_refs[index];self._build_cursor+=1
+            if ref in self._build_installed:continue
+            self._build_append(index,ref);self._build_installed.add(ref);count+=1
+            # One bounded construction slice per paint, instead of repainting
+            # the complete composited surface after every one or two rows.
+            if count>=(4 if initial else 6) or time.perf_counter()-start>=(.003 if initial else .008): break
         if self._build_cursor<len(self._build_refs):
             if not self.shelf.content_transition_active(): self._build_timer.start(1)
-        elif self._build_position and not self.scroll.verticalScrollBar().value():
-            self.scroll.verticalScrollBar().setValue(self._build_position)
+        else:
+            self.rows_body.setMinimumHeight(getattr(self,'_rows_minimum',0))
+            self.rows_layout.activate()
+            # The user may have scrolled while new widgets were constructed.
+            # The range was held stable; do not restore an obsolete position.
+            pending=getattr(self,'_layout_animation',None)
+            if pending:
+                self._layout_animation=None
+                positions,animate=pending
+                self.item_transitions.reflow(self._item_widgets,positions,enabled=animate)
 
     def resume_content(self):
         if self.shelf.content_transition_active() or not self.isVisible(): return
+        if self._content_dirty:
+            self._content_dirty=False;self.rebuild();self.update_transfer_status();self.refresh_cloud_status()
         if self._build_cursor<len(self._build_refs): self._build_timer.start(1)
         self.preview.resume_preview()
 
@@ -1652,7 +1761,9 @@ class ShelfWindow(QWidget):
         return bool(self.display_refs())
 
     def display_refs(self):
-        return list(self.files['permanent'])+list(self.content.pending)
+        identities={self.content.metadata.get(ref,{}).get('_cloud_item_id') for ref in self.files['permanent']}
+        return list(self.files['permanent'])+[ref for ref in self.content.pending
+            if ref.removeprefix('flickdock:transfer:') not in identities]
 
     def _repaint_transfers(self):
         if not self.content.transfers:self._transfer_timer.stop()
@@ -1669,8 +1780,16 @@ class ShelfWindow(QWidget):
         self.expand_button.setEnabled(True)
         self.zones['permanent'].refresh()
         if self.popup and self.popup.isVisible() and not self.content_transition_active():
+            # Pending names/types may arrive after the first progress hint.
+            titles={ref:state.get('name') for ref,state in self.content.transfers.items() if state.get('remote')}
+            if (getattr(self.popup,'_pending_content',None)!=self.content.pending or
+                    getattr(self.popup,'_transfer_titles',None)!=titles):
+                self.popup._pending_content={r:dict(v) for r,v in self.content.pending.items()}
+                self.popup._transfer_titles=titles
+                self.popup.rebuild()
             self.popup.update_transfer_status()
             self.popup.refresh_cloud_status()
+        elif self.popup:self.popup._content_dirty=True
         self.manager.update_handles()
 
     def cancel_transfer(self,ref):
@@ -1705,7 +1824,9 @@ class ShelfWindow(QWidget):
 
     def refresh(self):
         from reference_widgets import refresh_tree
-        refresh_tree(self)
+        theme=self.manager.settings.theme
+        if getattr(self,'_tree_theme',None)!=theme:
+            refresh_tree(self);self._tree_theme=theme
         self.refresh_account_identity()
         for mode in MODES:
             self.files[mode] = [p for p in self.files[mode] if self.content.exists(p)]
@@ -1715,6 +1836,7 @@ class ShelfWindow(QWidget):
         self.expand_button.setEnabled(True)
         if self.popup and self.popup.isVisible():
             if not self.content_transition_active():self.popup.rebuild()
+            else:self.popup._content_dirty=True
         self.update()
 
     def refresh_account_identity(self):
@@ -2726,6 +2848,7 @@ class ShelfManager:
         self.updates = UpdateController(APP_VERSION, BASE, settings=self.settings,
                                         quit_callback=self.quit, is_busy=self._update_busy)
         self.update_notice = None
+        self.update_dialog = None
         self.updates.notification_shown.connect(self._show_update_notice)
         self.updates.state_changed.connect(self._update_notice_state_changed)
         self._dock_preview_values=None
@@ -2802,6 +2925,7 @@ class ShelfManager:
         self.clipboard_sync=ClipboardSync(self.account,self.events,BASE,self.app,
             enabled=self._clipboard_runtime_enabled())
         self.clipboard_sync.activity_changed.connect(self.sync.set_clipboard_priority)
+        self.clipboard_sync.copy_result.connect(self._clipboard_copy_result)
         from transfer_priority import set_clipboard_priority
         self.clipboard_sync.activity_changed.connect(set_clipboard_priority)
         self._clipboard_intro=None
@@ -2879,7 +3003,7 @@ class ShelfManager:
                        for s in getattr(self, 'shelves', ())))
 
     def check_updates(self):
-        self.show_settings()
+        self.show_update_dialog()
         self.updates.open(manual=True)
 
     def _show_update_notice(self, version):
@@ -2893,6 +3017,13 @@ class ShelfManager:
     def _clipboard_runtime_enabled(self):
         return (self.settings.clipboard_sync_enabled and self.settings.clipboard_notice_seen
                 and not self.cocoa_smoke and self.app.platformName() not in ('offscreen','minimal'))
+
+    def _clipboard_copy_result(self,ok,context):
+        if self._quitting or not self._clipboard_runtime_enabled():return
+        if not hasattr(self,'clipboard_notice'):
+            from intake_notice import ClipboardNotice
+            self.clipboard_notice=ClipboardNotice(self)
+        self.clipboard_notice.show_result(ok,context)
 
     def _present_clipboard_intro(self):
         if self.settings.clipboard_notice_seen:return False
@@ -2923,6 +3054,7 @@ class ShelfManager:
 
     def _present_update_notice(self):
         if self._present_clipboard_intro():return
+        if getattr(self,'update_dialog',None) is not None and self.update_dialog.isVisible():return
         failed_handoff=self.updates.state=='error' and bool(getattr(self,'_previous_update_error',''))
         if (self._quitting or not (self.updates.state=='available' or failed_handoff) or not self.shelf.isVisible()
                 or not self.shelf.expanded or self.shelf.content_transition_active()
@@ -2937,8 +3069,12 @@ class ShelfManager:
             self.update_notice=UpdateNotice(self.shelf,theme=self.settings.theme)
             self.update_notice.update_requested.connect(self._start_notified_update)
             self.update_notice.dismissed.connect(self._snooze_update_notice)
+        from release_history import update_notes
+        manifest=self.updates.manifest or {}
+        notes=update_notes(getattr(self.updates,'app_version',APP_VERSION),manifest.get('version',''),
+                           manifest.get('notes',''),manifest.get('releases'))
         self.update_notice.show_version(self.updates.state_payload.get('version','') or APP_VERSION,
-                                       notes=(self.updates.manifest or {}).get('notes','') or ('上次更新未完成，原应用已保留。' if failed_handoff else ''))
+                                       notes=notes or ('上次更新未完成，原应用已保留。' if failed_handoff else ''))
         self.update_notice.set_state(self.updates.state,**self.updates.state_payload)
 
     def _snooze_update_notice(self):
@@ -2950,7 +3086,27 @@ class ShelfManager:
         except OSError:pass
 
     def _start_notified_update(self):
+        if self.update_notice is not None:self.update_notice.hide()
+        self.show_update_dialog()
         self.updates.activate()
+
+    def show_update_dialog(self):
+        if self.update_dialog is None:
+            from update_dialog import UpdateDialog
+            self.update_dialog=UpdateDialog(APP_VERSION,theme=self.settings.theme)
+            self.update_dialog.bind_controller(self.updates)
+        self.update_dialog.apply_theme(self.settings.theme)
+        if not self.update_dialog.isVisible():
+            self._center_dialog(self.update_dialog)
+        self.update_dialog.showNormal() if self.update_dialog.isMinimized() else self.update_dialog.show()
+        self.update_dialog.raise_();self.update_dialog.activateWindow()
+        return self.update_dialog
+
+    def _settings_update_clicked(self):
+        if self.updates.can_start_update or self.updates.busy:
+            self.show_update_dialog()
+            if self.updates.can_start_update:self.updates.activate()
+        else:self.updates.open(manual=True)
 
     def _update_notice_state_changed(self, state, payload):
         if self.update_notice is not None:self.update_notice.set_state(state,**payload)
@@ -2962,6 +3118,7 @@ class ShelfManager:
 
     def _transfers_changed(self,transfers):
         content=self.shelf.content
+        content.quiet_cloud_refresh=bool(getattr(getattr(self,'sync',None),'catching_up',False))
         for ref in self._sync_transfer_refs:
             content.transfers.pop(ref,None)
             content.pending.pop(ref,None)
@@ -3088,6 +3245,7 @@ class ShelfManager:
 
 
     def _center_dialog(self,dialog):
+        if hasattr(dialog,'chrome'):dialog.chrome.fit_screen()
         screen=QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
         area=screen.availableGeometry()
         dialog.move(area.center()-QPoint(dialog.width()//2,dialog.height()//2))
@@ -3096,14 +3254,15 @@ class ShelfManager:
         if self.update_notice is not None:
             self.update_notice.hide()
         self.reset_drag_gesture()
-        self.shelf._release_reveal_level()
+        self.shelf.hide_immediately()
+        self.auto_shown=None
         if self.settings_dialog is None:
             self.settings_dialog = SettingsDialog(self.settings)
             self.settings_dialog.finished.connect(self._settings_closed)
             self._refresh_paste_permission()
             self.settings_dialog.dock_requested.connect(lambda:self.shelf.hide_animated(explicit=True))
             self.settings_dialog.mini_requested.connect(self.show_shortcut)
-            self.settings_dialog.update_requested.connect(self.updates.activate)
+            self.settings_dialog.update_requested.connect(self._settings_update_clicked)
             self.updates.state_changed.connect(self._render_settings_update)
             self.account_panel = AccountPanel(self.account,self.settings_dialog,theme=self.settings.theme,email_binding=False)
             self.settings_dialog.set_account_panel(self.account_panel)
@@ -3112,7 +3271,7 @@ class ShelfManager:
             self.settings_dialog.shortcut_validator = lambda values: self.hotkeys.validate(values["shelf_shortcut"], values["overview_shortcut"])
         if self.settings_dialog.isVisible():self.settings_dialog.load_values()
         self.settings_dialog.set_update_state(self.updates.state,**self.updates.state_payload)
-        self.settings_dialog.set_update_details((self.updates.manifest or {}).get('version',''),(self.updates.manifest or {}).get('notes',''))
+        self._render_settings_update(self.updates.state,self.updates.state_payload)
         self.account_panel.set_sync_status(self._sync_status)
         self._center_dialog(self.settings_dialog)
         self.settings_dialog.show()
@@ -3130,7 +3289,10 @@ class ShelfManager:
         if self.settings_dialog is None:return
         self.settings_dialog.set_update_state(state,**payload)
         manifest=self.updates.manifest or {}
-        self.settings_dialog.set_update_details(manifest.get('version',''),manifest.get('notes',''))
+        from release_history import update_notes
+        notes=update_notes(getattr(self.updates,'app_version',APP_VERSION),manifest.get('version',''),
+                           manifest.get('notes',''),manifest.get('releases'))
+        self.settings_dialog.set_update_details(manifest.get('version',''),notes)
 
     def show_lan_dialog(self):
         self._show_transfer_dialog(self.lan)
@@ -3153,7 +3315,8 @@ class ShelfManager:
         dialog.set_service(service).set_paths_provider(self._lan_selected)
         self.lan_dialog=self.wan_dialog=dialog
         if not dialog.isVisible():
-            self._center_dialog(dialog);dialog.show()
+            self._center_dialog(dialog)
+        dialog.showNormal() if dialog.isMinimized() else dialog.show()
         dialog.raise_();dialog.activateWindow()
 
     def _use_recommended_lan(self,paths,identifier):
@@ -3167,36 +3330,33 @@ class ShelfManager:
     def offer_large_intake(self,paths):
         if not paths or self._quitting:return
         if not hasattr(self,'_large_intake_jobs'):self._large_intake_jobs=set();self._large_intake_queue=[];self._large_intake_prompt=False
-        job=DiskWork(oversized_intake,list(paths));self._large_intake_jobs.add(job)
+        job=DiskWork(intake_retention,list(paths));self._large_intake_jobs.add(job)
         def done(result,error):
             self._large_intake_jobs.discard(job)
             if error or not result or self._quitting:return
-            self._large_intake_queue.append(result)
+            self._large_intake_queue.extend((group,large) for large,group in result.items() if group)
             self._offer_next_large_intake()
         job.signals.done.connect(done);QThreadPool.globalInstance().start(job)
 
     def _offer_next_large_intake(self):
-        if self._quitting or self._large_intake_prompt or not self._large_intake_queue:return
-        if self._update_busy():QTimer.singleShot(250,self._offer_next_large_intake);return
-        paths=[ref for ref in self._large_intake_queue.pop(0) if ref in self.shelf.files['permanent'] and Path(ref).exists()]
+        if self._quitting or not self._large_intake_queue:return
+        if getattr(self,'intake_notice',None) is not None and self.intake_notice.isVisible():return
+        refs,large=self._large_intake_queue.pop(0)
+        paths=[ref for ref in refs if ref in self.shelf.files['permanent']]
         if paths:
-            self._large_intake_prompt=True
-            try:
-                if self._confirm_large_remote():
-                    if hasattr(self,'sync'):
-                        for ref in paths:self.sync.cancel_upload(ref)
-                    self.show_wan_dialog();self.wan_dialog.panel.queue_paths(paths)
-            finally:self._large_intake_prompt=False
-        QTimer.singleShot(0,self._offer_next_large_intake)
+            if not hasattr(self,'intake_notice'):
+                from intake_notice import IntakeNotice
+                self.intake_notice=IntakeNotice(self)
+                self.intake_notice.remote_requested.connect(self._remote_intake)
+                self.intake_notice.timer.timeout.connect(self._offer_next_large_intake)
+            self.intake_notice.show_retention(paths,large)
+        else:QTimer.singleShot(0,self._offer_next_large_intake)
 
-    def _confirm_large_remote(self):
-        dialog=QMessageBox(self.shelf)
-        dialog.setWindowTitle('发送大文件');dialog.setText('刚放入的项目超过 200 MB')
-        dialog.setInformativeText('是否使用远程传输发送这些文件？\n文件会保留在搁架，并暂停这些项目的云端上传。')
-        send=dialog.addButton('远程传输',QMessageBox.ButtonRole.AcceptRole)
-        dialog.addButton('留在搁架',QMessageBox.ButtonRole.RejectRole)
-        dialog.setDefaultButton(send);dialog.exec()
-        return dialog.clickedButton() is send
+    def _remote_intake(self,paths):
+        paths=[ref for ref in paths if ref in self.shelf.files['permanent']]
+        if not paths:return
+        for ref in paths:self.sync.cancel_upload(ref)
+        self.show_wan_dialog();self.wan_dialog.panel.queue_paths(paths)
 
     def dock_values(self):
         if self._dock_preview_values is not None: return self._dock_preview_values
@@ -3245,6 +3405,7 @@ class ShelfManager:
             if self.wan_dialog:self.wan_dialog.apply_theme(self.settings.theme)
             self.updates.apply_theme(self.settings.theme)
             if self.update_notice is not None:self.update_notice.apply_theme(self.settings.theme)
+            if self.update_dialog is not None:self.update_dialog.apply_theme(self.settings.theme)
         if changed & {'sync_upload_enabled','sync_receive_enabled'}:
             self.sync.set_directions(self.settings.sync_upload_enabled,self.settings.sync_receive_enabled)
             self.shelf.refresh_cloud_button()
@@ -3519,6 +3680,9 @@ class ShelfManager:
         self.was_down=down
 
     def quit(self):
+        if hasattr(self,'intake_notice'):self.intake_notice.hide()
+        if hasattr(self,'clipboard_notice'):self.clipboard_notice.hide()
+        if self.update_dialog is not None:self.update_dialog.hide()
         if self.update_notice is not None:
             self.update_notice.hide()
         if hasattr(self,'lan'):self.lan.close()
@@ -3596,7 +3760,9 @@ def main():
     guard = InstanceGuard(app, str(BASE))
     if not guard.acquire():
         return
-    app.setWindowIcon(app_icon())
+    mac_icon=Path(sys.executable).parent.parent/'Resources'/'FlickDock.icns'
+    app.setWindowIcon(QIcon(str(mac_icon)) if sys.platform=='darwin' and getattr(sys,'frozen',False)
+                      and mac_icon.is_file() else app_icon())
     manager = ShelfManager(app, cocoa_smoke=cocoa_smoke)
     guard.activated.connect(manager.show_first)
     if cocoa_smoke:

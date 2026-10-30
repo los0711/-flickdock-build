@@ -275,12 +275,14 @@ class InlineUpdates(unittest.TestCase):
                 self.dialog.set_update_state(state,version='1.8.0',received=25,total=100,error='fixture error')
                 APP.processEvents()
                 children=(self.dialog.version_label,self.dialog.update_status_label,self.dialog.update_button,self.dialog.close_button)
-                for child in children:self.assertTrue(self.dialog.title_bar.rect().contains(child.geometry()))
-                for left,right in zip(children,children[1:]):self.assertLess(left.geometry().right(),right.geometry().left())
+                positions=[QRectF(child.mapTo(self.dialog.title_bar,QPoint()),child.size()) for child in children]
+                for rect in positions:
+                    if not rect.isEmpty():self.assertTrue(QRectF(self.dialog.title_bar.rect()).contains(rect))
+                for left,right in zip(positions,positions[1:]):self.assertLess(left.right(),right.left())
                 self.assertTrue(self.dialog.surface.rect().contains(self.dialog.save_button.geometry()))
                 self.assertTrue(self.dialog.surface.rect().contains(self.dialog.cancel_button.geometry()))
             button=self.dialog.close_button
-            self.assertEqual(button.size().width(),28);self.assertEqual(button.glyph_rect.width(),14)
+            self.assertEqual(button.size().width(),44 if getattr(button,'role',None)=='close' else 28);self.assertEqual(button.glyph_rect.width(),14)
             self.assertEqual(button.glyph_rect.center(),QRectF(button.rect()).center())
             rendered=self.dialog.grab().toImage()
             dpr=rendered.devicePixelRatio()

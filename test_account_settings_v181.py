@@ -82,6 +82,8 @@ class SettingsAccountTests(unittest.TestCase):
             QTest.keyClick(edit,Qt.Key.Key_Return);APP.processEvents()
             self.assertEqual(self.service.calls[-1],('rename',(key,'新名称 '+key)))
             self.assertFalse(self.store.path.exists());self.assertTrue(self.dialog.isVisible())
+            for device in self.service.devices:
+                if device['id']==key:device['name']='新名称 '+key
             self.service.devices_changed.emit(copy.deepcopy(self.service.devices))
             self.assertEqual(self.panel._editing_device,'')
         self.assertNotIn('current',self.panel.device_buttons)
@@ -204,6 +206,44 @@ class SettingsAccountTests(unittest.TestCase):
         self.click(self.panel.auth_cancel_button)
         self.assertFalse(self.panel.auth_dialog.isVisible());self.assertEqual(self.panel.password_edit.text(),'')
         self.assertFalse(self.store.path.exists())
+
+
+    def test_all_password_fields_toggle_without_losing_text_cursor_or_selection(self):
+        from PySide6.QtWidgets import QToolButton
+        self.fill_password()
+        for edit in (self.panel.password_edit,self.panel.old_password_edit,self.panel.new_password_edit,self.panel.confirm_password_edit):
+            edit.setText('visibility-only-fixture');edit.setSelection(12,-5)
+            before=(edit.text(),edit.cursorPosition(),edit.selectionStart(),edit.selectedText(),edit.size())
+            self.assertEqual(edit.echoMode(),QLineEdit.Password)
+            edit.visibility_action.trigger()
+            self.assertEqual(edit.echoMode(),QLineEdit.Normal)
+            self.assertEqual((edit.text(),edit.cursorPosition(),edit.selectionStart(),edit.selectedText(),edit.size()),before)
+            edit.visibility_action.trigger();self.assertEqual(edit.echoMode(),QLineEdit.Password)
+            self.assertEqual((edit.text(),edit.cursorPosition(),edit.selectionStart(),edit.selectedText(),edit.size()),before)
+            buttons=edit.findChildren(QToolButton);self.assertTrue(buttons)
+            self.assertTrue(all(edit.rect().contains(button.geometry()) for button in buttons))
+            edit.visibility_action.trigger();edit.clear();self.assertEqual(edit.echoMode(),QLineEdit.Password)
+
+    def test_wrapped_login_errors_fit_and_form_can_retry_at_small_screen_sizes(self):
+        from PySide6.QtCore import QRect
+        self.service.logout();self.panel.show_auth();APP.processEvents()
+        dialog=self.panel.auth_dialog
+        for area in (QRect(0,0,1280,800),QRect(0,0,640,480),QRect(0,0,360,520)):
+            with patch.object(dialog,'_available_geometry',return_value=area):
+                dialog.adjustSize()
+                self.panel.username_edit.setText('fixture-user');self.panel.password_edit.setText('wrong-fixture')
+                self.panel._status_changed('账号或密码不正确，请修改后重试。'*10)
+                for _ in range(16):APP.processEvents()
+                label=self.panel.auth_status_label;form=self.panel.auth_page
+                self.assertGreaterEqual(label.height(),label.heightForWidth(label.width()))
+                for widget in (self.panel.username_edit,self.panel.password_edit,self.panel.submit_button,label):
+                    self.assertTrue(form.rect().contains(widget.mapTo(form,widget.rect().bottomRight())),(area,widget.objectName(),form.size(),widget.geometry()))
+                self.assertLessEqual(dialog.height(),area.height()-16)
+                self.assertTrue(self.panel.password_edit.isEnabled());self.assertTrue(self.panel.submit_button.isEnabled())
+                self.panel.password_edit.setText('corrected-fixture')
+                self.panel._status_changed('')
+                for _ in range(8):APP.processEvents()
+                self.assertFalse(label.isVisible());self.assertEqual(self.panel.password_edit.text(),'corrected-fixture')
 
 
 if __name__=='__main__':unittest.main(verbosity=2)

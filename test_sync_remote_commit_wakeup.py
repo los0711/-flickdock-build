@@ -167,9 +167,11 @@ def test_disconnected_socket_recovers_unseen_commit_without_idle_poll():
             engine.set_event_stream_online(False)
             service.account_changed.emit({'id':'poll-account'})
             assert spin(lambda:service.api.pulls>=1 and engine.remote_poll.isActive())
+            assert spin(lambda:not engine.running and not engine.catching_up)
             service.api.committed=True
             assert spin(lambda:len(adapter.view['permanent'])==1)
             assert Path(adapter.view['permanent'][0]).read_bytes()==PAYLOAD
+            assert spin(lambda:not engine.running and not engine.catching_up)
             assert engine.remote_poll.isActive(), 'Disconnected peers keep bounded reconciliation'
             engine.set_event_stream_online(True)
             assert not engine.remote_poll.isActive()
@@ -227,6 +229,46 @@ def test_pending_metadata_refreshes_while_another_transfer_is_busy():
         finally:engine.close()
 
 
+def test_committed_metadata_is_visible_while_local_body_is_busy():
+    with tempfile.TemporaryDirectory(prefix='flickdock-busy-committed-') as root:
+        service=Service('sender');adapter=Adapter()
+        engine=ShelfSync(root,service,adapter,poll_ms=600000,remote_poll_ms=600000)
+        seen=[];engine.transfers_changed.connect(seen.append)
+        try:
+            service.account_changed.emit({'id':'poll-account'})
+            assert spin(lambda:service.api.pulls>=1 and not engine.running)
+            engine.remote_transfers=[];seen.clear();engine.running=True
+            service.api.committed=True;cursor=engine.state['cursor']
+            engine.request_refresh()
+            assert spin(lambda:any(row.get('id')==IDENTITY and row.get('phase')=='downloading'
+                                   for batch in seen for row in batch))
+            assert engine.state['cursor']==cursor, 'Metadata cannot skip unverified body revisions'
+            assert adapter.view['permanent']==[], 'A placeholder is not an original-byte download'
+            assert engine.running
+        finally:engine.close()
+
+
+def test_tombstone_during_download_cannot_be_resurrected_by_old_body():
+    with tempfile.TemporaryDirectory(prefix='flickdock-delete-inflight-') as root:
+        service=Service('sender');adapter=Adapter()
+        engine=ShelfSync(root,service,adapter,poll_ms=600000)
+        try:
+            service.account_changed.emit({'id':'poll-account'})
+            assert spin(lambda:not engine.running)
+            held=[];completed=[]
+            engine._download_record=lambda record,target,callback,**kw:held.append(callback)
+            engine._observe_remote_changes([{'record':RECORD}])
+            engine._receive(copy.deepcopy(RECORD),lambda:completed.append(True))
+            assert held and engine.download_transfers
+            removed=dict(RECORD,version=2,deleted=True)
+            engine._observe_remote_changes([{'record':removed}],apply_deletions=True)
+            target=Path(root)/'old-body';target.write_bytes(PAYLOAD)
+            held[0](target,None)
+            assert completed==[True]
+            assert not adapter.view['permanent'] and not engine.download_transfers
+        finally:engine.close()
+
+
 if __name__=='__main__':
     test_lost_commit_hint_still_starts_download()
     test_own_upload_does_not_start_remote_poll()
@@ -234,4 +276,6 @@ if __name__=='__main__':
     test_disconnected_socket_recovers_unseen_commit_without_idle_poll()
     test_all_bytes_sent_is_waiting_for_cloud_receipt()
     test_pending_metadata_refreshes_while_another_transfer_is_busy()
+    test_committed_metadata_is_visible_while_local_body_is_busy()
+    test_tombstone_during_download_cannot_be_resurrected_by_old_body()
     print('PASS remote commit/cancel handoff with or without hint, disconnected fallback, idle/own no-poll, receipt phase')

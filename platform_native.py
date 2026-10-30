@@ -10,6 +10,34 @@ from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QCursor, QGuiApplication
 
 
+def foreground_fullscreen(screen_rect):
+    """Read the foreground bounds only; never activate or mutate a window."""
+    if QGuiApplication.platformName() in ('offscreen','minimal'):return False
+    try:
+        if sys.platform=='win32':
+            from ctypes import wintypes
+            class MonitorInfo(ctypes.Structure):
+                _fields_=[('size',wintypes.DWORD),('monitor',wintypes.RECT),('work',wintypes.RECT),('flags',wintypes.DWORD)]
+            user32=ctypes.windll.user32
+            user32.GetForegroundWindow.restype=wintypes.HWND
+            user32.MonitorFromWindow.argtypes=[wintypes.HWND,wintypes.DWORD]
+            user32.MonitorFromWindow.restype=wintypes.HANDLE
+            user32.GetMonitorInfoW.argtypes=[wintypes.HANDLE,ctypes.POINTER(MonitorInfo)]
+            user32.GetWindowRect.argtypes=[wintypes.HWND,ctypes.POINTER(wintypes.RECT)]
+            window=user32.GetForegroundWindow();bounds=wintypes.RECT();info=MonitorInfo();info.size=ctypes.sizeof(info)
+            if window and user32.GetWindowRect(window,ctypes.byref(bounds)) and user32.GetMonitorInfoW(user32.MonitorFromWindow(window,2),ctypes.byref(info)):
+                return all(abs(a-b)<=2 for a,b in zip((bounds.left,bounds.top,bounds.right,bounds.bottom),(info.monitor.left,info.monitor.top,info.monitor.right,info.monitor.bottom)))
+        elif sys.platform=='darwin':
+            import Quartz,AppKit
+            pid=AppKit.NSWorkspace.sharedWorkspace().frontmostApplication().processIdentifier()
+            for window in Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionOnScreenOnly|Quartz.kCGWindowListExcludeDesktopElements,Quartz.kCGNullWindowID) or []:
+                if window.get(Quartz.kCGWindowOwnerPID)!=pid or window.get(Quartz.kCGWindowLayer)!=0:continue
+                rect=window.get(Quartz.kCGWindowBounds,{})
+                return all(abs(a-b)<=2 for a,b in zip((rect.get('X',0),rect.get('Y',0),rect.get('Width',0),rect.get('Height',0)),screen_rect.getRect()))
+    except (OSError,RuntimeError,AttributeError,ImportError,TypeError):pass
+    return False
+
+
 def configure_menu_bar_application(*,platform=None,appkit=None):
     """An accessory app may activate its windows without acquiring a Dock tile."""
     if (platform or sys.platform)!='darwin':return False
@@ -188,7 +216,7 @@ def lower_shelf_after_reveal(widget, *, platform=None):
     return True
 
 
-def raise_edge_target(widget, *, platform=None):
+def raise_edge_target(widget, *, platform=None, above=None):
     """Keep the nonactivating edge sensor reachable in full-screen spaces."""
     platform = sys.platform if platform is None else platform
     if platform not in ('win32', 'darwin') or not native_input_available():
@@ -215,7 +243,11 @@ def raise_edge_target(widget, *, platform=None):
             return False
         original = (window.level(), window.collectionBehavior())
         window.setCollectionBehavior_(_fullscreen_collection_behavior(window, AppKit))
-        window.setLevel_(AppKit.NSFloatingWindowLevel)
+        level=AppKit.NSFloatingWindowLevel
+        if above is not None and above.isVisible():
+            other=objc.objc_object(c_void_p=ctypes.c_void_p(int(above.winId()))).window()
+            if other is not None:level=max(level,other.level()+1)
+        window.setLevel_(level)
         window.orderFrontRegardless()
     except Exception as error:
         if window is not None and original is not None:

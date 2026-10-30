@@ -282,7 +282,8 @@ class SurfaceMorph(QObject):
         self._to = QRect(rect)
         self._done = finished
         self.active=True; self.progress=0.0
-        if not self.motion or self._from == self._to:
+        from native_ui_common import reduced_motion
+        if not self.motion or reduced_motion() or self._from == self._to:
             self.current = QRect(self._to)
             self.update(QRect(self.current))
             self._finish()

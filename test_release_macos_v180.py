@@ -84,6 +84,11 @@ class MacReleaseTests(unittest.TestCase):
         with self.assertRaises(release.ReleaseError): self.publish(**overrides)
         self.assertFalse(self.output.exists())
 
+    def test_oversized_history_never_publishes_an_unreadable_index(self):
+        from unittest.mock import patch
+        with patch('release_history.release_entries',return_value=[dict(version=self.version,notes='文'*23000)]),patch('release_history.manifest_notes',return_value='文'*23000):
+            self.blocked(notes='文'*23000)
+
     def test_native_arm64_manifest_is_committed_after_whole_anonymous_stream_validation(self):
         self.server.on_request = lambda: self.assertFalse(self.output.exists())
         manifest = self.publish()

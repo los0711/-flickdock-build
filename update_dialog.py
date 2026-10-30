@@ -54,11 +54,15 @@ class UpdateDialog(QDialog):
     request_download = Signal()
     request_install = Signal()
     cancel_requested = Signal()
+    pause_requested = Signal()
     skipped = Signal(str)
     dismissed = Signal()
 
-    STATES = frozenset(("idle", "checking", "available", "latest", "error",
-                        "downloading", "ready", "cancelling", "cancelled"))
+    STATES = frozenset(("idle", "checking", "connecting", "reconnecting", "paused", "available", "latest", "error",
+                        "downloading", "verifying", "ready", "installing", "handoff", "cancelling", "cancelled"))
+
+    def show(self):
+        self._window_fade.reopen();super().show()
 
     def __init__(self, current_version: str, parent=None, *, theme="light"):
         super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
@@ -70,6 +74,8 @@ class UpdateDialog(QDialog):
         self.setMinimumSize(452, 222)
         self.resize(452, 272)
         self._current_version = _plain(current_version, "—")
+        from ui_transitions import WindowFade
+        self._window_fade=WindowFade(self)
         self._latest_version = ""
         self._notes = ""
         self._manifest = None
@@ -77,12 +83,14 @@ class UpdateDialog(QDialog):
         self._received = self._total = 0
         self._state = "idle"
         self._error = ""
+        self._speed=0;self._eta=None;self._detail=''
         self._retry_action = "check"
         self._cancel_pending = False
         self._install_requested = False
         self._dismissed = False
         self._client = None
         self._bindings = []
+        self._shared_controller = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(16, 16, 16, 16)
@@ -177,6 +185,7 @@ class UpdateDialog(QDialog):
         self.request_check.connect(self._check_client)
         self.request_download.connect(self._download_client)
         self.cancel_requested.connect(self._cancel_client)
+        self.pause_requested.connect(self._pause_client)
         self.apply_theme(theme)
         self._render_state()
 
@@ -211,18 +220,24 @@ class UpdateDialog(QDialog):
             signal = getattr(client, name)
             signal.connect(handler)
             self._bindings.append((signal, handler))
+        if hasattr(client,'download_status'):
+            client.download_status.connect(self._on_download_status)
+            self._bindings.append((client.download_status,self._on_download_status))
 
     def set_state(self, state, *, manifest=None, current_version=None, latest_version=None,
                   notes=None, error="", received_bytes=None, total_bytes=None,
-                  progress=None, verified_path=None, operation=None):
+                  progress=None, verified_path=None, operation=None,speed=0,eta=None,detail=''):
         if state not in self.STATES: raise ValueError(f"Unknown update state: {state}")
         previous = self._state
         self._state = state
+        self._speed=speed;self._eta=eta;self._detail=detail
         if current_version is not None: self._current_version = _plain(current_version, "—")
-        if manifest is not None:
+        if manifest is not None and (manifest!=self._manifest or current_version is not None):
             self._manifest = dict(manifest)
             self._latest_version = _plain(self._manifest.get("version"))
-            self._notes = _plain(self._manifest.get("notes"))
+            from release_history import update_notes
+            self._notes = update_notes(self._current_version,self._latest_version,
+                _plain(self._manifest.get('notes')),self._manifest.get('releases'))
         if latest_version is not None: self._latest_version = _plain(latest_version)
         if notes is not None: self._notes = _plain(notes)
         if received_bytes is not None: self._received = max(0, int(received_bytes))
@@ -233,7 +248,7 @@ class UpdateDialog(QDialog):
         if verified_path is not None: self._verified_path = str(verified_path)
         self._error = _plain(error)
         if state == "error":
-            self._retry_action = operation or ("download" if previous in ("downloading", "cancelling") else "check")
+            self._retry_action = operation or ("download" if previous in ("connecting", "reconnecting", "paused", "downloading", "verifying", "cancelling") else "check")
         if state in ("idle", "checking", "cancelled"):
             self._verified_path = ""
         if state != "ready": self._install_requested = False
@@ -241,6 +256,27 @@ class UpdateDialog(QDialog):
             self._received = 0 if received_bytes is None and progress is None else self._received
             self._total = 0 if total_bytes is None and progress is None else self._total
         self._render_state()
+
+    def bind_controller(self,controller):
+        """One task, multiple entry points. Closing a view never cancels it."""
+        if self._shared_controller is controller:return self
+        if self._shared_controller is not None or self._client is not None:raise ValueError('Update view is already bound')
+        self._shared_controller=controller
+        self.request_check.connect(controller.open)
+        self.request_download.connect(controller.activate)
+        self.request_install.connect(controller.activate)
+        self.cancel_requested.connect(controller.cancel)
+        self.pause_requested.connect(controller.pause)
+        controller.state_changed.connect(self._controller_state)
+        self._controller_state(controller.state,controller.state_payload)
+        return self
+
+    def _controller_state(self,state,payload):
+        controller=self._shared_controller
+        self.set_state(state,manifest=controller.manifest,latest_version=payload.get('version',''),
+            error=payload.get('error',''),received_bytes=payload.get('received',0),total_bytes=payload.get('total',0),
+            verified_path=controller.verified_path,operation=controller.retry_operation,
+            speed=payload.get('speed',0),eta=payload.get('eta'),detail=payload.get('detail',''))
 
     def show_error(self, message, *, operation="check"):
         self.set_state("error", error=message, operation=operation)
@@ -251,10 +287,16 @@ class UpdateDialog(QDialog):
             "idle": ("检查软件更新", "获取最新版本与更新说明。", "检查更新", "关闭"),
             "checking": ("正在检查更新…", "正在获取最新版本信息。", "正在检查…", "取消检查"),
             "available": ("发现新版本", "查看更新说明，准备好后即可下载。", "立即下载并更新", "稍后"),
+            "connecting":("正在连接下载服务器",self._detail or "连接成功后显示实际下载进度。","连接中…","取消下载"),
+            "reconnecting":("正在重新连接",self._detail or "网络恢复后从已有进度继续。","重新连接中…","取消下载"),
+            "paused":("下载已暂停","已保留下载进度。","继续下载","取消下载"),
             "latest": ("已是最新版本", "当前安装的版本已是最新版本。", "重新检查", "关闭"),
             "error": ("暂时无法完成更新", self._error or "请稍后重试。", {"check":"重试", "download":"重试下载", "install":"重试安装"}.get(self._retry_action, "重试"), "关闭"),
-            "downloading": ("正在下载更新", "下载完成后即可安装新版本。", "正在下载…", "取消下载"),
-            "ready": ("更新已下载", "安装前请保存正在进行的工作。", "正在打开安装程序…" if self._install_requested else "立即安装", "稍后"),
+            "downloading": ("正在下载更新", "下载完成后即可安装新版本。", "正在下载…", "暂停下载"),
+            "verifying": ("正在校验更新", "校验完成前可继续使用 FlickDock。", "校验中…", "后台继续"),
+            "ready": ("更新已下载", "准备好后重启并安装；安装前请保存正在进行的工作。", "正在打开安装程序…" if self._install_requested else "重启并安装", "稍后"),
+            "installing": ("正在安装更新", "如系统提示，请完成授权。", "安装中…", "关闭窗口"),
+            "handoff": ("安装程序已启动", "请按系统提示完成安装。", "安装已启动", "关闭窗口"),
             "cancelling": ("正在取消…", "正在结束当前更新任务。", "正在取消…", "正在取消…"),
             "cancelled": ("已取消", "你可以随时重新检查更新。", "重新检查", "关闭"),
         }[state]
@@ -264,13 +306,16 @@ class UpdateDialog(QDialog):
         self.version_summary.setText(f"当前版本 v{self._current_version} · 覆盖安装保留搁架与设置")
         self.status_label.setText(status)
         self.message_label.setText(message if len(message)<=300 else message[:299]+"…")
+        if state=='downloading':
+            remaining=(f'预计剩余 {max(1,round(self._eta))} 秒' if isinstance(self._eta,(int,float)) and self._eta>=0 else '正在估算剩余时间')
+            self.message_label.setText((_bytes(self._speed)+'/s · ' if self._speed>0 else '')+remaining)
         self.primary_button.setText(primary)
-        self.primary_button.setEnabled(state not in ("checking", "downloading", "cancelling")
+        self.primary_button.setEnabled(state not in ("checking", "connecting", "reconnecting", "downloading", "verifying", "installing", "handoff", "cancelling")
             and not (state=="ready" and (self._install_requested or not self._verified_path)))
         self.secondary_button.setText(secondary)
         self.secondary_button.setEnabled(state!="cancelling")
-        self.skip_button.setVisible(state=="available" and bool(self._latest_version))
-        notes_visible = state in ("available", "downloading", "ready")
+        self.skip_button.setVisible(self._shared_controller is None and state=="available" and bool(self._latest_version))
+        notes_visible = state in ("available", "connecting", "reconnecting", "paused", "downloading", "verifying", "ready", "installing", "handoff", "error")
         self.notes_card.setVisible(notes_visible)
         self.notes_heading.setVisible(notes_visible)
         self.release_notes.setVisible(notes_visible)
@@ -278,13 +323,13 @@ class UpdateDialog(QDialog):
         if self.release_notes.toPlainText()!=text: self.release_notes.setPlainText(text)
         line_count=max(2,min(6,len(text.splitlines())))
         self.release_notes.setFixedHeight(max(40,line_count*self.release_notes.fontMetrics().height()+8))
-        progress_visible = state in ("checking", "downloading", "ready", "cancelling")
+        progress_visible = state in ("checking", "connecting", "reconnecting", "paused", "downloading", "verifying", "installing", "ready", "cancelling")
         self.progress_bar.setVisible(progress_visible)
-        self.progress_label.setVisible(state in ("downloading", "ready"))
+        self.progress_label.setVisible(state in ("connecting", "reconnecting", "paused", "downloading", "ready"))
         if state=="ready":
             self.progress_bar.setRange(0, 100); self.progress_bar.setValue(100)
             self.progress_label.setText("下载完成")
-        elif state=="downloading" and self._total>0:
+        elif state in ('paused','downloading') and self._total>0:
             percentage = min(100, round(self._received*100/self._total))
             self.progress_bar.setRange(0, 100); self.progress_bar.setValue(percentage)
             self.progress_label.setText(f"{_bytes(self._received)} / {_bytes(self._total)} · {percentage}%")
@@ -294,7 +339,7 @@ class UpdateDialog(QDialog):
         # The HTML's compact offer puts versions in the header and presents
         # progress only when a real update operation is running.
         self.progress_area.setVisible(state!='available')
-        self.message_label.setVisible(state not in ('downloading','checking','cancelling'))
+        self.message_label.setVisible(state not in ('checking','cancelling'))
         checksum=''
         if isinstance(self._manifest,dict):
             installer=self._manifest.get('installer')
@@ -312,7 +357,7 @@ class UpdateDialog(QDialog):
             self._cancel_pending = False
             self.set_state("checking")
             self.request_check.emit()
-        elif self._state=="available" or (self._state=="error" and self._retry_action=="download"):
+        elif self._state in ('available','paused') or (self._state=="error" and self._retry_action=="download"):
             self._cancel_pending = False
             self.set_state("downloading")
             self.request_download.emit()
@@ -324,7 +369,9 @@ class UpdateDialog(QDialog):
             self.request_install.emit()
 
     def _secondary_clicked(self):
-        if self._state in ("checking", "downloading"): self._cancel()
+        if self._state=='downloading':self.pause_requested.emit()
+        elif self._state in ("checking", "paused"): self._cancel()
+        elif self._state in ('connecting','reconnecting'):self._cancel()
         elif self._state!="cancelling": self.reject()
 
     def _cancel(self):
@@ -344,7 +391,8 @@ class UpdateDialog(QDialog):
         remove_host_window_shadow(self)
 
     def done(self, result):
-        if self._state in ("checking", "downloading"): self._cancel()
+        if self._window_fade.defer_done(result,self.done):return
+        if self._shared_controller is None and self._state in ("checking", "downloading"): self._cancel()
         if not self._dismissed:
             self._dismissed = True
             self.dismissed.emit()
@@ -369,6 +417,11 @@ class UpdateDialog(QDialog):
     def _cancel_client(self):
         if self._client is not None: self._client.cancel()
 
+    def _pause_client(self):
+        if self._client is not None:
+            if hasattr(self._client,'pause'):self._client.pause()
+            else:self._cancel()
+
     def _on_checking(self, manual=False):
         self._cancel_pending = False
         self.set_state("checking")
@@ -385,6 +438,11 @@ class UpdateDialog(QDialog):
     def _on_progress(self, received, total):
         if not self._cancel_pending:
             self.set_state("downloading", received_bytes=received, total_bytes=total)
+
+    def _on_download_status(self,phase,payload):
+        if not self._cancel_pending:
+            self.set_state(phase,received_bytes=payload.get('received',0),total_bytes=payload.get('total',0),
+                           speed=payload.get('speed',0),eta=payload.get('eta'),detail=payload.get('detail',''))
 
     def _on_verified(self, path, manifest, manual=False):
         if not self._cancel_pending:

@@ -111,7 +111,7 @@ with tempfile.TemporaryDirectory(prefix="flickdock-v161-integration-") as tempor
             manager.show_settings()
             dialog = manager.settings_dialog
             flush(app)
-            assert manager.dock_preview.isVisible() and shelf.isVisible() and not manager.edge.isVisible()
+            assert manager.dock_preview.isVisible() and not shelf.isVisible() and not manager.edge.isVisible()
             assert manager.dock_preview.target_rect == manager.edge.geometry()
             before = manager.settings.path.read_bytes() if manager.settings.path.exists() else None
             original_values = dict(manager.dock_values())

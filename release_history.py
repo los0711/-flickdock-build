@@ -1,5 +1,25 @@
 """Bundled release history remains readable after updating or while offline."""
 HISTORY=(
+    ('1.8.21',{
+        '新增功能':('设置和传输窗口支持调整尺寸并记忆大小；Windows 增加最小化、最大化和还原按钮。',
+                     '独立更新窗口展示版本详情、下载进度和安装状态，下载后可选择合适时间重启安装。',
+                     '远程接收码支持展示二维码、识别剪贴板或图片中的二维码，沿用限时码和接收确认。',
+                     '登录、注册、修改密码的输入框统一支持显示或隐藏密码，保留输入内容和光标。'),
+        'Bug 修复':('修复打开中的预览、总览不能及时显示其他设备新增、删除和更新的问题。',
+                     '修复重复预览、上传状态更新引发列表重建、快速变化时滚动和选中状态丢失。',
+                     '修复 Mac 粘贴监听失效后不能恢复，以及设备名称提示、设置与总览窗口重叠等问题。',
+                     '修复剪贴板过期与新复制同时发生时，新内容可能被错误忽略的问题。',
+                     '修复更新后未恢复本设备云剪贴板、重复通知打断接收、暂时写入失败却标记成功等间歇失效。'),
+        '体验优化':('小文本和链接通过实时连接分发，减少文件暂存和云存储请求；剪贴板继续静默同步。',
+                     '跨设备删除支持同时淡出与自然补位；补充窗口、弹窗、页面切换过渡，并适配减少动态效果。',
+                     '云保存期限从完整上传成功起算：小于 100 MB 保留 24 小时，其余保留 2 小时；推荐提示不再阻断拖放。',
+                     '传输过程中关闭窗口会先确认；取消关闭可继续传输，确认后中断并关闭。',
+                     '网络图标只显示 FlickDock 云服务可用状态；Mac 设置和传输窗口关闭后恢复菜单栏常驻。',
+                     '跨版本更新说明按版本汇总，展示当前安装版本之后的历次更新内容。',
+                     '更新下载支持断点续传、暂停继续、断线自动重试；分阶段显示真实进度、速度和预计时间，并校验发布者签名。',
+                     '重新联网静默补齐搁架历史内容，保留正在查看的文件，不再反复播放到达动画。',
+                     '复制发出端短暂显示真实同步结果；全屏或整屏截图在屏幕底部中央提示，接收端继续无通知。'),
+    }),
     ('1.8.20',{
         '新增功能':('云剪贴板设置开关与首次使用说明；仅同账号设备自动同步小于 20 MB 的内容。',),
         'Bug 修复':('修复复制重复触发、远端回传循环和上传尚未完成时删除有效剪贴板内容。',
@@ -23,6 +43,29 @@ HISTORY=(
                      '更新提示仅在总览中居中显示，包含更新内容，关闭后次日再提示。'),
     }),
 )
+# Archived from previously published Windows/macOS update descriptors.
+HISTORY += (
+    ('1.8.18', {'更新内容': ('修复部分网络连接一直等待，新增可信备用入口和 Windows 应用联网修复；优化附近设备 P2P 大文件传输、系统代理网络下的中继传输与设置响应；修复提示错位、小屏登录注册裁切、更新进度残留、拖放悬停与返回总览；Mac 支持菜单栏常驻。',)}),
+    ('1.8.17', {'更新内容': ('广域网传输更名为“远程传输”。局域网与远程页面可直接切换，接收码与设备码点击复制；接收码增加自动刷新圆环倒计时，修复旧码和文件准备过程中过期的问题。最近设备可直接发送且支持删除，在线状态实时更新；对方离线时会明确提示无法发送。\n保持 P2P 优先，增加经过校验的 TLS 中继适配并优化本地缓冲、文件流水线与云同步磁盘读取；传输显示平滑速度、预计剩余时间及 TURN 用量，记录保留本次中继流量。\n云端上传进度实时推送给其他设备，修复 Mac 首次打开总览的登录状态和设备改名裁切；设备操作改为靠右的矢量图标。\n总览左上角改为 ClickDock；空搁架增加居中的虚线投放框，悬停变蓝，点击选择文件。整个总览及传输窗口均可拖入文件。\n修复外观和列表／图标切换丢失选中状态，优化菜单和设置下拉框圆角。新版本提示增加版本标记与绿色更新按钮，提升自动检查频率。\n超过 200 MiB 的内容可一键转到远程传输并自动加入待发送文件。Mac 推荐使用 PKG 安装，覆盖应用程序目录的旧版；运行中会先提示关闭。自动更新继续使用校验后的 ZIP。',)}),
+    ('1.8.16', {'更新内容': ('新增广域网传输：支持不同网络、不同设备，异地也能传文件；无需登录，凭接收码配对并经接收方确认，优先 P2P，必要时自动使用中继。小预览通过“互传”选择局域网或广域网，总览新增广域网入口。\n优化文件夹云同步与传输吞吐，修复大文件夹只显示约 4 KB、同步重试及 Mac 局域网发送失败。\n修复 Mac 触发、展开收缩、登录状态恢复与检查更新；Windows 使用鸿蒙字体并统一字号、对齐与控件热区，完成检查后立即隐藏进度。\n改进设置账户与设备排版、设备改名、传输完成和中断后的收尾、拖入边框与最近记录滚动。\nMac 手动安装请使用 DMG 或 PKG；ZIP 用于软件内自动更新。',)}),
+    ('1.8.15', {'更新内容': ('• 优化 Windows / Mac 界面字体、对齐、按钮热区、账号设备布局和颜色选择器。\n• 小预览数量靠右、晃动弹窗数量居中；边缘预览投放后在鼠标移开时收起，晃动弹窗投放到收起期间不再意外展开总览。\n• 优化总览框选、全选/弃选、云状态圆点、单行上传状态以及展开/收起的背景连续性。\n• 局域网传输显示平滑平均速度，完成、取消和中断后转入可删除的历史记录；修复关闭图标和 Mac 关闭后误开总览。\n• 修复文件夹显示约 4KB、接收解压重复失败、完成后反复重试和单项失败阻塞队列；优化大文件的分块接收与并发。\n• 优化 Mac 被动触发、窗口收起与 Spaces 兼容；检查更新完成后清除进度反馈。\n\nMac 安装包未进行 Developer ID 签名与公证。',)}),
+    ('1.8.14', {'更新内容': ('• 重新整理总览、小搁架、设置、账号和局域网互传的布局与视觉层级，采用清晰实底、统一 SVG 工具图标和深浅色语义。\n• 总览保留完整“更多”菜单，统一展开/收起按钮位置；每次打开回到全部和顶部，设置每次打开回到顶部。\n• 列表/图标切换只更新视图，减少全局设置重复应用；设置复用已创建页面，修复账号提示和设备行裁切。\n• 局域网发送区域居中，待发送项目和最近传输独立滚动；修复名称压缩与下拉箭头，传输记录可逐条删除。\n• 数量徽标居中，文件同步状态采用圆内符号，复制与状态对齐；改善文字对比度、键盘焦点和减少动态效果支持。\n• 修复 Mac 窗口 Spaces 行为冲突导致启动退出；冻结 Mac 构建验证贴边窗口和搁架的原生层级。\n\nMac 旧版若无法启动，请先从官网下载安装对应芯片的 DMG。原有搁架和账号功能保留。',)}),
+    ('1.8.13', {'更新内容': ('FlickDock 1.8.13：优化 Mac 启动与在线更新、账号和局域网界面。',)}),
+    ('1.8.12', {'更新内容': ('FlickDock 1.8.12：改进搁架唤出、云同步与局域网传输。',)}),
+    ('1.8.11', {'更新内容': ('FlickDock 1.8.11：改进搁架唤出、云端状态与跨设备同步。',)}),
+    ('1.8.10', {'更新内容': ('- 从屏幕边缘、晃动或快捷键唤出搁架时，窗口会立即显示在其他普通应用窗口前；切换应用后仍会让出前台。\n- 拖入内容后先显示本地文件与落入动画，再开始云端同步。\n- 局域网传输记录改为清晰的卡片，分别显示方向、设备、文件、时间与结果。\n- 云端上传字节发送完毕后显示等待云端确认；其他设备对进行中的上传增加按需刷新，缩短错过通知后的下载等待。\n- 文件图标右下角显示圆形云端状态，区分已同步、传输中、等待、仅本机、暂停和失败。\n- 上传取消、完成与删除会尽快刷新其他设备；“全部”页面的传输摘要也会即时更新。\n- 修复拖动晃动偶尔不弹出，以及鼠标进入屏幕边缘时触发条消失但搁架未显示的问题。\n\nmacOS 安装镜像尚未经过 Apple Developer ID 签名或公证。',)}),
+    ('1.8.9', {'更新内容': ('- 本机内容拖入搁架后立即出现在“全部”与对应分类；上传数量只显示在“传输中”分类和底部传输栏。\n- 修复甩动打开的搁架在拖放时偶尔跳过落入动画，以及录屏叠层与延迟拖放事件影响甩动触发的问题。\n- 优化云端原文件上传、下载和取消任务后的调度；大文件减少分块请求，首次上传仍受网络速度影响。\n- 改进 Windows 与 macOS 的局域网发送缓冲，保留 TLS 与文件校验。\n- macOS 登录后立即更新账号界面，避免系统钥匙串响应慢时卡住；登出后不会恢复过期会话。\n- 搁架与附属窗口会让出其他应用的前台位置；贴边触发区仍可唤出搁架。\n\nmacOS 安装镜像尚未经过 Apple Developer ID 签名或公证。',)}),
+    ('1.8.8', {'更新内容': ('- 加快 5–90 MiB 文件的云端上传与跨设备下载，保留原文件 SHA-256 校验与旧版客户端兼容。\n- 接收端优先显示同页较小的独立文件，避免被前一个大文件下载阻塞。\n- 总览和设置增加独立的云端上传、接收开关；传输区显示进度、百分比与预计剩余时间。\n- 优化局域网互传窗口、图标，以及 macOS 搁架在切换应用时的显示。\n- 增加 FlickDock 官网演示与下载入口。\n\nmacOS 安装镜像目前未经过 Apple Developer ID 签名或公证。',)}),
+    ('1.8.7', {'更新内容': ('FlickDock 1.8.7 · macOS\n\n• 使用兼容旧版客户端的 ZIP 过渡更新，让 1.8.4 用户能够直接在软件内升级。\n• 完整安装仍提供 DMG 和 PKG；升级后的客户端支持后续 DMG 在线更新。\n• 上传时图标保持正常颜色，在旁边显示小进度环；未完成项目集中在“传输中”，顶部显示剩余数量。\n• 优化 macOS 贴边入口与局域网传输窗口，并减少不必要的云同步请求。\n\nDMG 和 PKG 尚未取得 Apple Developer ID 签名或公证；首次打开时可能需要在系统安全设置中手动允许。更新下载会校验文件大小和 SHA-256。',)}),
+    ('1.8.6', {'更新内容': ('• 上传时文件图标保持正常颜色，在旁边显示小进度环；总览中的未完成项目集中在“传输中”。右上角显示剩余上传数，完成后短暂显示绿色勾。\n• 修复上传先开始、后打开总览时数量和汇总进度未立即显示的问题。\n• 优化 macOS 贴边入口悬停、局域网窗口层级与拖动，调整传输入口、拖入区域和设备选择。\n• macOS 在线更新改用经完整校验的 DMG，并打开系统安装镜像供拖入“应用程序”。\n• 云同步移除应用自行设置的每日请求上限，减少非必要查询；服务商免费额度用尽时暂停云端请求，本地搁架仍可使用。\n• 局域网传输调整 TCP 缓冲，实际速度仍取决于两台设备的 Wi‑Fi 连接、信号和磁盘性能。\n\nmacOS 安装包目前没有 Apple Developer ID 签名或公证；首次打开时可能需要在系统安全设置中手动允许。Windows 与 macOS 更新均校验大小和 SHA-256。',)}),
+    ('1.8.5', {'更新内容': ('• 上传时文件图标保持正常颜色，在旁边显示小进度环；总览中的未完成项目集中在“传输中”。右上角显示剩余上传数，完成后短暂显示绿色勾。\n• 优化 macOS 贴边入口悬停、局域网窗口层级与拖动，调整传输入口、拖入区域和设备选择。\n• macOS 在线更新改用经完整校验的 DMG，并打开系统安装镜像供拖入“应用程序”。\n• 云同步移除应用自行设置的每日请求上限，减少非必要查询；服务商免费额度用尽时暂停云端请求，本地搁架仍可使用。\n• 局域网传输调整 TCP 缓冲，实际速度仍取决于两台设备的 Wi‑Fi 连接、信号和磁盘性能。\n\nmacOS 安装包目前没有 Apple Developer ID 签名或公证；首次打开时可能需要在系统安全设置中手动允许。Windows 与 macOS 更新均校验大小和 SHA-256。',)}),
+    ('1.8.4', {'更新内容': ('• macOS 搁架去掉卡片背后的深色方框与多余描边，边缘入口到搁架之间的悬停区域更稳定。\n• macOS 提供可安装到“应用程序”的 PKG，应用会显示在 Dock；设置窗口保持在搁架上方，局域网收到的文件只保存到所选目录。\n• 设置按钮不再显示蓝色点击描边，下拉选项更易点按；两端精简了重复说明文字。\n• 云端登录和同步请求按用途分配免费额度内的独立限流，修复共享计数达到上限时 macOS 登录提示“操作过于频繁”。\n\nmacOS 安装包目前没有 Apple Developer ID Installer 签名或公证；首次安装可能需要在系统安全设置中手动允许。Windows 与 macOS 更新仍分别校验文件大小和 SHA-256。',)}),
+    ('1.8.3', {'更新内容': ('云端搁架：更快的原文件上传与跨设备变更推送。同一账号内再次放入内容完全相同的文件时，可复用云端原文件，免去第二次传输；删除最后一个引用后会清理云端文件。首次上传仍受网络线路和 Cloudflare 免费额度限制。\n局域网互传：复用接收缓冲区并保留 TLS 加密、SHA256 校验和断点续传。单机回环测试达到 365 MiB/s 以上；实际跨设备速度取决于网卡、链路、磁盘和 CPU。\n补充上传、下载与删除的离屏验证。Windows 10/11 x64，macOS 14.4+ 的 Apple 芯片与 Intel 构建。',)}),
+    ('1.8.2', {'更新内容': ('复制、上传与下载显示加载环和真实进度，可取消并清理未完成的云端文件；其他设备可见上传中的占位图。\n删除搁架里的复制项目会清理本地副本，外部原文件保留。\n账号面板重新设计，支持修改密码、设备改名及退出其他设备。\n新增带接收确认的局域网加密直传、进度、取消与会话内续传，原文件完整 SHA256 校验。\n设置禁用滚轮误改，空搁架边缘入口默认启用；更新安装提供进度反馈。\n启用 R2 Local Uploads、优化哈希/压缩/分块调度；保留免费额度保护，实际速度取决于网络与设备。\n\nWindows 10/11 x64；macOS 14.4+，Apple 芯片和 Intel。Mac 构建使用临时签名，未进行 Apple Developer ID 签名和公证。',)}),
+    ('1.8.0', {'更新内容': ('新增账号、多设备管理及 Windows/Mac 原文件云同步；支持断点续传。图片不压缩、不转格式，下载校验完整 SHA256。\n圆角设置窗、行内检查更新、开机启动修复。\n无额外64MB单文件限制；共享8GiB云空间。删除搁架内容同步清理云端，超过500MiB的云端内容在上传完成24小时后到期，本机原文件保留。免费服务每日额度与保留时间仍限制非常大的文件同步。\nWindows安装支持选择目录、桌面快捷方式、开始菜单与系统卸载。\nMac提供Apple芯片和Intel版本、内置更新；Mac包尚未签名公证。\nAuthor @Roger',)}),
+    ('1.7.0', {'更新内容': ('新增软件版本号与检查更新入口。\n支持启动后自动检查新版本、显示更新说明、下载进度、取消下载和校验后安装。\n在线更新沿用现有安装位置，保留搁架内容与设置，并在安装后重新启动。\n源代码单独保存在私有仓库；此公开发行仓库仅用于安装文件和更新索引。\n\n旧版用户需要安装一次 1.7.0，之后可以直接在 FlickDock 内更新。',)}),
+)
+
 
 
 def version_notes(version):
@@ -33,3 +76,44 @@ def version_notes(version):
 
 def history_text():
     return '\n\n\n'.join('v'+version+'\n\n'+version_notes(version) for version,_ in HISTORY)
+
+
+def _version(value):
+    import re
+    if not isinstance(value,str) or not re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)',value):return None
+    return tuple(map(int,value.split('.')))
+
+
+def release_entries(target,notes=None):
+    upper=_version(target)
+    result=[dict(version=version,notes=notes.strip() if version==target and isinstance(notes,str) else version_notes(version)) for version,_ in HISTORY
+            if upper is not None and _version(version)<=upper]
+    if upper is not None and isinstance(notes,str) and not any(row['version']==target for row in result):
+        result.append(dict(version=target,notes=notes.strip()))
+    return sorted(result,key=lambda row:_version(row['version']),reverse=True)
+
+
+def update_notes(current,target,notes='',releases=None):
+    """Show precisely the releases newer than this installed app, newest first."""
+    lower,upper=_version(current),_version(target)
+    if lower is None or upper is None:return notes if isinstance(notes,str) else ''
+    records={row['version']:row['notes'] for row in release_entries(target)}
+    for row in releases if isinstance(releases,list) else ():
+        if (isinstance(row,dict) and _version(row.get('version')) is not None and
+                isinstance(row.get('notes'),str)):
+            records[row['version']]=row['notes']
+    # Old clients receive a complete plain-text archive. New clients use the
+    # structured target entry, so that archive isn't duplicated under target.
+    supplied_target=isinstance(releases,list) and any(isinstance(row,dict) and row.get('version')==target
+                         and isinstance(row.get('notes'),str) for row in releases)
+    if not supplied_target and isinstance(notes,str) and notes.strip():records[target]=notes
+    selected=sorted((version for version in records if lower<_version(version)<=upper),key=_version,reverse=True)
+    if len(selected)==1:return records[selected[0]].strip()
+    return '\n\n'.join('v'+version+'\n'+records[version].strip() for version in selected)
+
+
+def manifest_notes(target,notes):
+    """Include intermediate changes for pre-history desktop clients as well."""
+    records=release_entries(target,notes)
+    if not any(row['version']==target for row in records):return notes.strip()
+    return '\n\n'.join('v'+row['version']+'\n'+row['notes'] for row in records)

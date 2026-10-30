@@ -160,15 +160,13 @@ class NetworkStatus(QWidget):
     """Cloud reachability, independent of login and sync-direction switches."""
     def __init__(self,manager,parent=None):
         super().__init__(parent);self.setFixedSize(32,32);self.sx=self.sy=1
+        self.setAttribute(Qt.WA_AlwaysShowToolTips,True)
         self.environment=dict(getattr(getattr(getattr(manager,'connectivity',None),'environment',None),'state',{}))
         self.set_state(getattr(getattr(manager,'connectivity',None),'state','checking'))
 
     def set_state(self,state):
         self.state=state
         message={'online':'云端网络畅通','offline':'云端网络不可达，暂时无法读取云端文件','checking':'正在检查云端网络…'}.get(state,'正在检查云端网络…')
-        vpn={'connected':'已连接','disconnected':'VPN 断连','unknown':'无法确认（部分第三方 VPN 不向系统注册）'}.get(self.environment.get('vpn','unknown'),'无法确认')
-        proxy={'enabled':'已启用','disabled':'未启用','unknown':'无法确认'}.get(self.environment.get('proxy','unknown'),'无法确认')
-        message+='\nVPN：'+vpn+'\n系统代理：'+proxy
         self.setToolTip(message);self.setAccessibleName(message);self.update()
 
     def set_environment(self,state):
@@ -180,10 +178,7 @@ class NetworkStatus(QWidget):
         painter=QPainter(self);painter.setRenderHint(QPainter.Antialiasing);painter.translate(self.width()/2,self.height()/2);painter.scale(self.sx,self.sy)
         c=palette();tint=c['green'] if self.state=='online' else c['red'] if self.state=='offline' else c['muted']
         icon('web',tint).paint(painter,QRect(-8,-8,16,16))
-        vpn=self.environment.get('vpn','unknown')
-        painter.setPen(QPen(QColor(c['surface']),1.5))
-        painter.setBrush(QColor(c['green'] if vpn=='connected' else c['red'] if vpn=='disconnected' else c['muted']))
-        painter.drawEllipse(QRectF(3,3,6,6));painter.end()
+        painter.end()
 
 
 class LanButton(ToolbarButton):
@@ -241,6 +236,12 @@ class ProfileButton(QPushButton):
         p.end()
 
 
+def outside_content_view(widget):
+    row=widget if hasattr(widget,'popup') else widget.parentWidget()
+    viewport=getattr(getattr(getattr(row,'popup',None),'scroll',None),'viewport',lambda:None)()
+    return viewport is not None and not QRect(widget.mapTo(viewport,QPoint()),widget.size()).intersects(viewport.rect())
+
+
 class SelectionCheck(QCheckBox):
     def __init__(self,parent=None):
         super().__init__(parent)
@@ -249,6 +250,7 @@ class SelectionCheck(QCheckBox):
     def hitButton(self,position):return self.rect().contains(position)
 
     def paintEvent(self,event):
+        if outside_content_view(self):return
         p=QPainter(self);p.setRenderHint(QPainter.Antialiasing)
         p.translate((self.width()-15)/2,(self.height()-15)/2)
         p.setBrush(QColor('#0A84FF') if self.isChecked() else Qt.NoBrush)
@@ -450,6 +452,7 @@ class ThumbnailLabel(TransferIconLabel):
         self.shelf=shelf;self.ref=ref;self.setFixedSize(40,40)
 
     def paintEvent(self,event):
+        if outside_content_view(self):return
         p=QPainter(self);p.setRenderHint(QPainter.Antialiasing)
         art=thumbnail(self.shelf,self.ref,40)
         p.drawPixmap(0,0,art)

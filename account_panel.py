@@ -8,10 +8,10 @@ import sys
 from account_service import valid_new_password
 from native_ui_common import reference_font, icon as ui_icon, colors as ui_colors
 
-from PySide6.QtCore import QByteArray, QDateTime, QEvent, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QByteArray, QDateTime, QEvent, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter, QLinearGradient
 from PySide6.QtSvg import QSvgRenderer
-from PySide6.QtWidgets import (QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMenu,
+from PySide6.QtWidgets import (QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMenu, QToolButton,
                                QPushButton, QSizePolicy, QVBoxLayout, QWidget, QLayout)
 
 
@@ -22,6 +22,81 @@ def _label(text='', parent=None, *, muted=False):
     label.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Preferred)
     if muted:label.setObjectName('accountMuted')
     return label
+
+
+class PasswordEdit(QLineEdit):
+    """One native trailing action; no duplicated password value or logging."""
+    def __init__(self,parent=None):
+        super().__init__(parent)
+        self._visibility_theme='light'
+        self.setEchoMode(QLineEdit.EchoMode.Password)
+        self.visibility_action=self.addAction(ui_icon('eye'),QLineEdit.ActionPosition.TrailingPosition)
+        self.visibility_action.setCheckable(True)
+        self.visibility_action.triggered.connect(self._set_revealed)
+        self.textChanged.connect(self._text_changed)
+        self.set_visibility_theme('light')
+
+    def _text_changed(self,text):
+        if not text:self._set_revealed(False)
+
+    def _set_revealed(self,revealed):
+        cursor=self.cursorPosition();start=self.selectionStart();length=len(self.selectedText())
+        modified=self.isModified()
+        self.setEchoMode(QLineEdit.EchoMode.Normal if revealed else QLineEdit.EchoMode.Password)
+        self.visibility_action.setChecked(revealed)
+        if start>=0:
+            self.setSelection(start+length,-length) if cursor==start else self.setSelection(start,length)
+        else:self.setCursorPosition(cursor)
+        self.setModified(modified);self._refresh_eye()
+
+    def _refresh_eye(self):
+        revealed=self.echoMode()==QLineEdit.EchoMode.Normal
+        title='隐藏密码' if revealed else '显示密码'
+        self.visibility_action.setText(title);self.visibility_action.setToolTip(title)
+        self.visibility_action.setIcon(ui_icon('eye-off' if revealed else 'eye',ui_colors(self._visibility_theme)['secondary']))
+        for button in self.findChildren(QToolButton):
+            button.setAccessibleName(title);button.setCursor(Qt.PointingHandCursor)
+
+    def set_visibility_theme(self,theme):
+        self._visibility_theme=theme;c=ui_colors(theme)
+        for button in self.findChildren(QToolButton):
+            button.setStyleSheet(f"QToolButton{{background:transparent;border:0;border-radius:5px;padding:3px;}} QToolButton:hover{{background:{c['hover']};}} QToolButton:pressed{{background:{c['selected']};}}")
+        self._refresh_eye()
+
+
+class AuthStatusLabel(QLabel):
+    """Keep wrapped errors measurable through the nested modal scroll area."""
+    def __init__(self,parent=None):
+        super().__init__('',parent)
+        self.setObjectName('accountMuted');self.setTextFormat(Qt.PlainText);self.setWordWrap(True)
+        self.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Fixed)
+        from PySide6.QtWidgets import QGraphicsOpacityEffect
+        from PySide6.QtCore import QPropertyAnimation,QEasingCurve
+        self._opacity=QGraphicsOpacityEffect(self);self.setGraphicsEffect(self._opacity)
+        self._fade=QPropertyAnimation(self._opacity,b'opacity',self);self._fade.setDuration(180)
+        self._fade.setEasingCurve(QEasingCurve.OutCubic)
+
+    def _fit_height(self):
+        height=self.heightForWidth(self.width())
+        if height!=self.minimumHeight() or self.maximumHeight()!=height:self.setFixedHeight(height);self.updateGeometry()
+
+    def hasHeightForWidth(self):return False
+
+    def heightForWidth(self,width):
+        return max(self.fontMetrics().height(),self.fontMetrics().boundingRect(QRect(0,0,max(1,width),10000),Qt.TextWordWrap,self.text()).height()) if self.text() else 0
+
+    def setText(self,text):
+        super().setText(text);self._fit_height()
+
+    def resizeEvent(self,event):
+        super().resizeEvent(event);self._fit_height()
+
+    def showEvent(self,event):
+        super().showEvent(event);self._fit_height()
+        from native_ui_common import reduced_motion
+        self._fade.stop()
+        if reduced_motion():self._opacity.setOpacity(1)
+        else:self._fade.setStartValue(.2);self._fade.setEndValue(1);self._fade.start()
 
 
 class AccountNameLabel(QLabel):
@@ -129,7 +204,7 @@ class AccountPanel(QFrame):
             return self.layout().totalHeightForWidth(width) if self.layout() else -1
         margins=self.layout().contentsMargins()
         height=self.signed_in_page.minimumHeight()+margins.top()+margins.bottom()+2
-        if not self.status_label.isHidden():
+        if self.status_label.parentWidget() is self and not self.status_label.isHidden():
             height+=max(self.status_label.sizeHint().height(),self.status_label.heightForWidth(max(1,width-34)))+self.layout().spacing()
         return height
 
@@ -178,12 +253,12 @@ class AccountPanel(QFrame):
         self.username_edit.setAccessibleName('账号');self.username_edit.setMaxLength(128)
         auth.addWidget(self.username_edit)
         auth.addWidget(_label('密码',self.auth_page))
-        self.password_edit=QLineEdit(self.auth_page);self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.password_edit=PasswordEdit(self.auth_page)
         self.password_edit.setAccessibleName('密码')
         auth.addWidget(self.password_edit)
         self.submit_button=_button('登录',self.auth_page,name='accountPrimary')
         self.submit_button.clicked.connect(self._submit_auth);auth.addWidget(self.submit_button)
-        self.auth_status_label=_label('',self.auth_page,muted=True)
+        self.auth_status_label=AuthStatusLabel(self.auth_page)
         self.auth_status_label.setAccessibleName('账号登录状态')
         auth.addWidget(self.auth_status_label)
         layout.addWidget(self.auth_page)
@@ -235,7 +310,7 @@ class AccountPanel(QFrame):
                 ('new_password_edit','新密码','至少 6 个字符，不含空白'),
                 ('confirm_password_edit','确认新密码','再次输入新密码')):
             password_layout.addWidget(_label(label,self.password_form))
-            edit=QLineEdit(self.password_form);edit.setEchoMode(QLineEdit.EchoMode.Password)
+            edit=PasswordEdit(self.password_form)
             edit.setAccessibleName(label);edit.setPlaceholderText(placeholder)
             setattr(self,attribute,edit);password_layout.addWidget(edit)
         password_layout.addWidget(_label('修改后，其他设备需要重新登录。',self.password_form,muted=True))
@@ -347,23 +422,30 @@ class AccountPanel(QFrame):
         self.devices_body.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Maximum)
         self.devices_body.installEventFilter(self)
         signed.addWidget(self.devices_body);self.devices_body.show()
+        root.removeWidget(self.status_label)
+        signed.addWidget(self.status_label)
         self.devices_heading_label.hide();self.refresh_button.hide()
         from app_settings import ReferenceModalDialog
         self.password_dialog=ReferenceModalDialog(self,surface_width=390,modal=True)
         self.password_dialog.setObjectName('accountModal');self.password_dialog.setWindowTitle('修改密码')
         self.password_close=self._modal_header(self.password_dialog,'修改密码',self._reset_password)
+        self.password_dialog.body_layout.setContentsMargins(20,10,20,16)
+        self.password_dialog.body_layout.setSpacing(10)
+        self.password_close.parentWidget().layout().setContentsMargins(0,0,0,6)
         self.password_dialog.body_layout.addWidget(self.password_form)
         password=self.password_form.layout();self._empty_layout(password)
         password.setContentsMargins(0,0,0,0);password.setSpacing(12)
+        password.setSizeConstraints(QLayout.SetNoConstraint,QLayout.SetMinimumSize)
         for edit,label,placeholder in ((self.old_password_edit,'原密码','输入原密码'),
                 (self.new_password_edit,'新密码 (至少 6 字符且不含空白)','输入新密码'),
                 (self.confirm_password_edit,'确认新密码','再次输入新密码')):
             password.addWidget(self._modal_field(edit,label,placeholder,self.password_form))
         self.password_change_button.setText('确认修改')
         password.addWidget(self._modal_actions(self.password_cancel_button,self.password_change_button,self.password_form))
-        self.password_status_label=_label('',self.password_form,muted=True);password.addWidget(self.password_status_label);self.password_status_label.hide()
+        self.password_status_label=AuthStatusLabel(self.password_form);password.addWidget(self.password_status_label);self.password_status_label.hide()
         self.password_dialog.rejected.connect(self._reset_password)
         auth=self.auth_page.layout();self._empty_layout(auth);auth.setSpacing(12)
+        auth.setSizeConstraints(QLayout.SetNoConstraint,QLayout.SetMinimumSize)
         tabs_frame=QFrame(self.auth_page);tabs_frame.setObjectName('accountAuthTabs')
         tabs=QHBoxLayout(tabs_frame);tabs.setContentsMargins(4,4,4,4);tabs.setSpacing(4)
         self.register_tab.setText('注册新账号')
@@ -381,6 +463,7 @@ class AccountPanel(QFrame):
         self.auth_close=self._modal_header(self.auth_dialog,'账号管理与登录',self.close_auth)
         self.auth_dialog.body_layout.addWidget(self.auth_page)
         self.auth_dialog.rejected.connect(self.close_auth)
+        self.auth_page.installEventFilter(self);self.password_form.installEventFilter(self)
         self.auth_page.show();self.signed_in_page.show();self.status_label.hide()
         # The measured fixed heights bound wrapping; keep layout ownership of
         # positions so Cocoa and Qt cannot retain different child coordinates.
@@ -405,7 +488,9 @@ class AccountPanel(QFrame):
         from app_settings import SettingsCloseButton
         frame=QFrame(dialog.surface);frame.setObjectName('accountModalHeader')
         header=QHBoxLayout(frame);header.setContentsMargins(0,0,0,12);header.setSpacing(12)
-        title=_label(text,frame);title.setObjectName('accountModalTitle');header.addWidget(title,1)
+        title=_label(text,frame);title.setObjectName('accountModalTitle');title.setWordWrap(False)
+        title.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Fixed);header.addWidget(title,1)
+        frame.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
         close=SettingsCloseButton(frame,glyph_size=14);close.setObjectName('accountModalClose')
         close.setFixedSize(24,24);close.clicked.connect(callback);header.addWidget(close)
         dialog.body_layout.addWidget(frame)
@@ -414,11 +499,12 @@ class AccountPanel(QFrame):
     def show_auth(self,mode='login'):
         if self.service.signed_in:return
         self.set_auth_mode(mode if mode in ('login','register') else 'login')
-        self.auth_page.show();self.auth_dialog.adjustSize();self.auth_dialog.show()
+        self.auth_page.show();self._fit_auth_form(self.auth_dialog);self.auth_dialog.show()
         self.auth_dialog.raise_();self.auth_dialog.activateWindow();self.username_edit.setFocus()
 
     def close_auth(self):
-        self.password_edit.clear();self.auth_dialog.hide()
+        from ui_transitions import fade_hide
+        self.password_edit.clear();fade_hide(self.auth_dialog)
 
     def _profile_menu(self, point):
         menu=QMenu(self.profile_frame)
@@ -439,6 +525,7 @@ class AccountPanel(QFrame):
         self.submit_button.setText('注册并登录' if mode=='register' else '登录账号')
         self.password_edit.setPlaceholderText('至少 6 个字符，不含空白' if mode=='register' else '请输入密码')
         self.password_edit.clear();self.status_label.clear();self.auth_status_label.clear();self.auth_status_label.hide()
+        if hasattr(self,'auth_dialog') and self.auth_dialog.isVisible():QTimer.singleShot(0,lambda:self._fit_auth_form(self.auth_dialog))
 
     def _submit_auth(self):
         if self._busy or self.service.signed_in:return
@@ -492,9 +579,23 @@ class AccountPanel(QFrame):
         self.auth_status_label.setText(message[:240]);self.auth_status_label.setVisible(bool(message) and not self.service.signed_in)
         self.password_status_label.setText(message[:240]);self.password_status_label.setVisible(bool(message) and self.password_dialog.isVisible())
         for dialog in (self.auth_dialog,self.password_dialog):
-            if dialog.isVisible():QTimer.singleShot(0,dialog.adjustSize)
+            if dialog.isVisible():QTimer.singleShot(0,lambda dialog=dialog:self._fit_auth_form(dialog))
         self._refreshing=False;self._revoke_pending='';self._cancel_remove();self._update_enabled()
         self._queue_fit()
+
+    def _fit_auth_form(self,dialog):
+        form=self.auth_page if dialog is self.auth_dialog else self.password_form
+        status=self.auth_status_label if dialog is self.auth_dialog else self.password_status_label
+        status._fit_height()
+        layout=form.layout();layout.invalidate()
+        height=layout.contentsMargins().top()+layout.contentsMargins().bottom()
+        items=[layout.itemAt(index) for index in range(layout.count()) if not layout.itemAt(index).isEmpty()]
+        height+=sum(max(item.minimumSize().height(),item.sizeHint().height()) for item in items)+max(0,len(items)-1)*layout.spacing()
+        if form.height()!=height or form.minimumHeight()!=height:form.setFixedHeight(height)
+        form.updateGeometry();dialog.body_layout.invalidate();dialog.adjustSize()
+        area=dialog._available_geometry()
+        dialog.move(max(area.left()+8,min(dialog.x(),area.right()-dialog.width()-7)),max(area.top()+8,min(dialog.y(),area.bottom()-dialog.height()-7)))
+        if dialog.isVisible() and status.isVisible():dialog.scroll.ensureWidgetVisible(status,0,8)
 
     def _busy_changed(self,busy):
         self._busy=bool(busy)
@@ -528,13 +629,14 @@ class AccountPanel(QFrame):
         if not self.service.signed_in or self._busy:return
         self.password_form.setVisible(bool(checked))
         if checked:
-            self.password_dialog.adjustSize();self.password_dialog.show();self.password_dialog.raise_();self.password_dialog.activateWindow();self.old_password_edit.setFocus()
+            self._fit_auth_form(self.password_dialog);self.password_dialog.show();self.password_dialog.raise_();self.password_dialog.activateWindow();self.old_password_edit.setFocus()
         else:self._reset_password()
 
     def _reset_password(self):
         for edit in (self.old_password_edit,self.new_password_edit,self.confirm_password_edit):edit.clear()
         self.password_toggle_button.setChecked(False);self.password_form.hide()
-        self.password_dialog.hide()
+        from ui_transitions import fade_hide
+        fade_hide(self.password_dialog)
         if hasattr(self,'password_status_label'):self.password_status_label.clear();self.password_status_label.hide()
 
     def _change_password(self):
@@ -568,19 +670,51 @@ class AccountPanel(QFrame):
                 and not self._editing_device):
             self._update_enabled();return
         self._rendered_devices_signature=signature
-        for form in self._rename_forms.values():form.hide();form.deleteLater()
-        self._devices={};self.device_buttons={};self._rows_by_id={}
-        self.device_rename_buttons={};self.device_name_edits={};self._rename_forms={}
-        self._rename_save_buttons={};self._editing_device=''
+        wanted={str(d['id']):d for d in visible_devices} if self.service.signed_in else {}
+        previous_devices=self._devices
+        reusable={key:row for key,row in self._rows_by_id.items() if key in wanted
+            and getattr(row,'_current_device',None)==bool(wanted[key].get('current') or key==str(self.service.device_id))
+            and previous_devices.get(key,{}).get('platform')==wanted[key].get('platform')}
+        motion=None;positions={}
+        from PySide6.QtWidgets import QScrollArea
+        ancestor=self.devices_body.parentWidget()
+        while ancestor is not None and not isinstance(ancestor,QScrollArea):ancestor=ancestor.parentWidget()
+        topology=list(wanted)!=list(self._rows_by_id) or len(reusable)!=len(wanted)
+        if ancestor is not None and topology:
+            from item_transitions import ItemTransitions
+            if not hasattr(self,'_device_motion'):self._device_motion=ItemTransitions(ancestor,self.devices_body)
+            motion=self._device_motion;positions=motion.capture(self._rows_by_id)
+            from ui_transitions import motion_allowed
+            motion.remove((row for key,row in self._rows_by_id.items() if key not in wanted),
+                          enabled=self.isVisible() and motion_allowed())
+        for key,form in tuple(self._rename_forms.items()):
+            if key not in reusable:form.hide();form.deleteLater()
+        for field in ('device_buttons','device_rename_buttons','device_name_edits','_rename_forms','_rename_save_buttons'):
+            setattr(self,field,{key:value for key,value in getattr(self,field).items() if key in reusable})
+        if self._editing_device not in reusable:self._editing_device=''
         for row in self._device_rows:
-            self.devices_layout.removeWidget(row)
-            for label in row.findChildren(QLabel):label.clear()
-            row.hide();row.deleteLater()
+            if row not in reusable.values():
+                self.devices_layout.removeWidget(row);row.hide();row.deleteLater()
+        self._devices={};self._rows_by_id={}
         self._device_rows=[]
         if self.service.signed_in:
             for device in devices:
                 if not isinstance(device,dict) or not device.get('id') or device.get('revoked_at'):continue
                 key=str(device['id']);self._devices[key]=dict(device)
+                if key in reusable:
+                    row=reusable[key];name=str(device.get('name') or '未命名设备')
+                    name_label=row.findChild(AccountNameLabel,'accountDeviceName');name_label.setText(name)
+                    platform={'windows':'Windows','macos':'Mac','linux':'Linux'}.get(str(device.get('platform','')),'其他设备')
+                    timestamp=QDateTime.fromString(str(device.get('last_seen_at') or ''),Qt.DateFormat.ISODate)
+                    suffix='此设备' if row._current_device else '最近在线 '+timestamp.toLocalTime().toString('MM-dd HH:mm') if timestamp.isValid() else ''
+                    name_label.setToolTip(name+'\n'+platform+(' · '+suffix if suffix else ''))
+                    row.setAccessibleName(name+('，本机' if row._current_device else ''))
+                    self.device_rename_buttons[key].setAccessibleName('修改设备名称 '+name)
+                    if key in self.device_buttons:self.device_buttons[key].setAccessibleName('移除设备 '+name)
+                    if self._editing_device!=key:self.device_name_edits[key].setText(name)
+                    elif previous_devices.get(key,{}).get('name')!=device.get('name'):self._cancel_rename()
+                    self._device_rows.append(row);self._rows_by_id[key]=row
+                    continue
                 row=QFrame(self.devices_body);row.setObjectName('accountDevice')
                 row.setMinimumHeight(44)
                 row_layout=QVBoxLayout(row);row_layout.setContentsMargins(10,5,10,5);row_layout.setSpacing(8)
@@ -598,6 +732,7 @@ class AccountPanel(QFrame):
                 horizontal.addWidget(device_name,1)
                 platform={'windows':'Windows','macos':'Mac','linux':'Linux'}.get(str(device.get('platform','')),'其他设备')
                 current=bool(device.get('current') or key==str(self.service.device_id))
+                row._current_device=current
                 timestamp=QDateTime.fromString(str(device.get('last_seen_at') or ''),Qt.DateFormat.ISODate)
                 suffix='此设备' if current else '最近在线 '+timestamp.toLocalTime().toString('MM-dd HH:mm') if timestamp.isValid() else ''
                 device_name.setToolTip(str(device.get('name') or '未命名设备')+'\n'+platform+(' · '+suffix if suffix else ''))
@@ -660,6 +795,9 @@ class AccountPanel(QFrame):
             self.devices_layout.addWidget(empty,0,0,1,2);self._device_rows.append(empty)
         self.devices_heading_label.setText('已登录设备'+(' · '+str(len(self._devices)) if self._devices else ''))
         self._layout_device_rows()
+        if motion is not None:
+            self._fit_signed_content();self.devices_layout.activate()
+            motion.reflow(self._rows_by_id,positions,enabled=self.isVisible() and motion_allowed())
         self.devices_body.updateGeometry();self.signed_in_page.updateGeometry();self.updateGeometry()
 
     def _layout_device_rows(self):
@@ -709,7 +847,8 @@ class AccountPanel(QFrame):
         self._fit_device_forms()
 
     def _cancel_rename(self,*_):
-        for form in self._rename_forms.values():form.hide()
+        from ui_transitions import fade_hide
+        for form in self._rename_forms.values():fade_hide(form)
         self._editing_device=''
         self._fit_device_forms()
 
@@ -746,6 +885,9 @@ class AccountPanel(QFrame):
         self._revoke_pending=key;self._update_enabled();self._invoke(self.service.revoke_device,key)
 
     def eventFilter(self,watched,event):
+        if watched in (self.auth_page,self.password_form) and event.type()==QEvent.Resize:
+            dialog=self.auth_dialog if watched is self.auth_page else self.password_dialog
+            if dialog.isVisible():QTimer.singleShot(0,lambda dialog=dialog:self._fit_auth_form(dialog))
         if watched is self.devices_body and event.type()==QEvent.Type.Resize:
             self._layout_device_rows()
         if watched in (self.devices_body,self.profile_frame,self.signed_in_page) and event.type() in (QEvent.Type.LayoutRequest,QEvent.Type.Resize):
@@ -863,6 +1005,8 @@ class AccountPanel(QFrame):
         '''
         for dialog in (self.password_dialog,self.auth_dialog,*self._rename_forms.values()):
             dialog.set_surface_theme(theme)
+        for edit in (self.password_edit,self.old_password_edit,self.new_password_edit,self.confirm_password_edit):
+            edit.set_visibility_theme(theme)
         for button in (self.password_close,self.auth_close):button.dark=self._dark;button.update()
         semantic=ui_colors(theme)
         style+=f'''
