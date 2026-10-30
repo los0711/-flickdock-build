@@ -14,6 +14,21 @@ from wan_transfer import WanTransferService
 
 
 class EntryTests(unittest.TestCase):
+    def test_mode_transition_captures_the_painted_old_page_not_an_empty_surface(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base=Path(directory);lan=FakeLan();wan=WanTransferService(base/'wan',enabled=False)
+            dialog=LanDialog(lan,SettingsStore(base/'profile'));dialog.show();flush()
+            try:
+                from PySide6.QtCore import QRect
+                old=dialog.panel;area=QRect(old.drop_zone.mapTo(dialog.panel_stack,QPoint()),old.drop_zone.size())
+                before=dialog.panel_stack.grab().toImage().copy(area)
+                with patch('ui_transitions.motion_allowed',return_value=True):dialog.set_service(wan)
+                self.assertFalse(dialog._page_fade.snapshot.isNull())
+                self.assertEqual(dialog._page_fade.snapshot.toImage().copy(area),before)
+                until(lambda:not dialog._page_fade.isVisible())
+                self.assertIs(dialog.panel.service,wan);self.assertTrue(dialog.panel.drop_zone.isVisible())
+            finally:dialog.hide();dialog.deleteLater();wan.close();wan.deleteLater();flush()
+
     def test_slow_network_path_information_never_blocks_mode_switch_or_duplicates_probe(self):
         with tempfile.TemporaryDirectory() as directory:
             base=Path(directory);path=base/'slow.bin';path.write_bytes(b'original')

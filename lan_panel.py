@@ -1595,7 +1595,6 @@ class LanDialog(QDialog):
         """Swap only the content, keeping one native surface and shadow alive."""
         if self.panel.service is service:return self.panel
         queued=list(self.panel._queued_paths)
-        self.setUpdatesEnabled(False)
         try:
             if service not in self._panels:
                 panel=LanPanel(service,self.panel_stack,theme=self._theme,settings=self._settings,metadata_cache=self.file_metadata)
@@ -1616,7 +1615,7 @@ class LanDialog(QDialog):
             if self._wan and callable(getattr(service,'check_code',None)):
                 service.check_code();self.panel._code_identity_changed(service.code_identity())
         finally:
-            self.setUpdatesEnabled(True);self.card.update();self.update()
+            self.card.update();self.update()
         return self.panel
 
     def paintEvent(self,event):
