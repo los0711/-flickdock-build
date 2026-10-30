@@ -18,7 +18,10 @@ def ensure_native_resize(window):
     Keep Qt responsible for the frameless client area and hit testing. Change
     only this window's capabilities, without installing a window procedure.
     """
-    if sys.platform!='win32' or not native_input_available():return False
+    if (sys.platform!='win32' or not native_input_available()
+            or not window.isVisible() or not window.testAttribute(Qt.WA_WState_Created)):return False
+    handle=int(window.effectiveWinId() or 0)
+    if not handle:return False
     import ctypes
     from ctypes import wintypes
     try:
@@ -28,7 +31,7 @@ def ensure_native_resize(window):
         position=api.SetWindowPos
         position.argtypes=[wintypes.HWND,wintypes.HWND,ctypes.c_int,ctypes.c_int,ctypes.c_int,ctypes.c_int,wintypes.UINT]
         position.restype=wintypes.BOOL
-        handle=int(window.winId());required=0x40000|0x80000|0x20000|0x10000
+        required=0x40000|0x80000|0x20000|0x10000
         style=get(handle,-16)
         if style&required!=required:
             ctypes.set_last_error(0);previous=put(handle,-16,style|required)

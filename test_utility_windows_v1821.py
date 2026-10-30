@@ -82,6 +82,15 @@ class UtilityTests(unittest.TestCase):
         self.assertGreater(window.width(),before.width());self.assertGreater(window.height(),before.height())
         self.assertGreaterEqual(window.width(),window.minimumWidth());self.assertGreaterEqual(window.height(),window.minimumHeight())
 
+    def test_destroyed_or_hidden_native_surface_is_never_recreated_by_frame_setup(self):
+        from window_chrome import ensure_native_resize
+        self.service._transfers.clear();window=self.dialog
+        with patch('window_chrome.sys.platform','win32'),patch('window_chrome.native_input_available',return_value=True),patch('ctypes.WinDLL',create=True) as api:
+            window.destroy();APP.processEvents()
+            self.assertFalse(window.testAttribute(Qt.WA_WState_Created))
+            self.assertFalse(ensure_native_resize(window));api.assert_not_called()
+            window.hide();self.assertFalse(ensure_native_resize(window));api.assert_not_called()
+
 
 class SharedUpdateTests(unittest.TestCase):
     def test_copy_feedback_is_nonactivating_clamped_and_auto_dismisses(self):
