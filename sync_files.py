@@ -16,6 +16,7 @@ from selection_archive import _source_reader, _is_link
 
 # Overall service space is bounded; no separate 64 MB intake restriction.
 MAX_FILE_BYTES = 8 * 1024 * 1024 * 1024
+REMOTE_RECOMMEND_BYTES = 200 * 1024 * 1024
 DIRECTORY_MIME = 'application/x-flickdock-directory+zip'
 STAGED_CHUNK_BYTES=64*1024*1024
 # Avoid burning CPU recompressing media/container formats. Text, code and other
@@ -74,7 +75,7 @@ def oversized_intake(paths,cancel):
         path=Path(ref)
         if not path.exists() or _is_link(path):continue
         size=directory_size(path,cancel)['logical_size'] if path.is_dir() else path.stat().st_size
-        if size>200*1024*1024:return list(paths)
+        if size>REMOTE_RECOMMEND_BYTES:return list(paths)
     return []
 
 

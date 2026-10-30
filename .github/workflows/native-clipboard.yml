@@ -42,9 +42,22 @@ jobs:
           node cloud/test/clipboard.mjs
       - name: Verify actual native utility windows on the disposable runner
         run: python ci_utility_windows.py --output native-utility.json
+      - name: Ensure native installer compiler
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command ISCC.exe -ErrorAction SilentlyContinue) -and -not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Verify actual installer shutdown and replacement
+        if: runner.os == 'Windows'
+        run: python ci_installer_close.py --output native-installer-close.json
       - name: Retain native window verification
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: native-utility-${{ matrix.runner }}-${{ github.sha }}
-          path: native-utility.json
+          path: |
+            native-utility.json
+            native-installer-close.json
           retention-days: 3

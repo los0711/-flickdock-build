@@ -1942,8 +1942,9 @@ class ShelfWindow(QWidget):
             except OSError as error:checked(None,error)
             return
         def committed(paths):
-
             if on_committed:on_committed()
+            offer=getattr(self.manager,'offer_large_intake',None)
+            if offer:offer(paths)
         if self.manager.settings.capture_mode!='copy':
             self.add_paths(mode,refs,defer_cloud=on_committed is not None)
             committed(refs)
@@ -2002,7 +2003,7 @@ class ShelfWindow(QWidget):
         self.status_label.setText('正在复制内容…')
         job.start();self.touch()
 
-    def remove_path(self, mode: str, path: str):
+    def remove_path(self, mode: str, path: str, *, keep_local=False):
         transfer_state=self.content.transfers.get(path,{})
         downloading=self._receiving_transfer(transfer_state)
         if downloading:self.manager.sync.cancel_download(transfer_state.get('id'),remove=True)
@@ -2032,7 +2033,7 @@ class ShelfWindow(QWidget):
         self.resolver.cancel(path)
         if path in self.files[mode]:
             self.files[mode].remove(path)
-        self._delete_owned(path)
+        if not keep_local:self._delete_owned(path)
         self.refresh()
         self.touch()
         self.manager.save()
@@ -3447,8 +3448,25 @@ class ShelfManager:
     def _remote_intake(self,paths):
         paths=[ref for ref in paths if ref in self.shelf.files['permanent']]
         if not paths:return
-        for ref in paths:self.sync.cancel_upload(ref)
-        self.show_wan_dialog();self.wan_dialog.panel.queue_paths(paths)
+        self.show_wan_dialog();panel=self.wan_dialog.panel;panel.queue_paths(paths)
+        queued=set(panel._queued_paths)
+        for ref in paths:
+            if ref in queued:self.shelf.remove_path('permanent',ref,keep_local=True)
+
+    def offer_large_intake(self,paths):
+        if self._quitting or not paths:return
+        job=DiskWork(oversized_intake,list(paths))
+        self._large_intake_jobs=getattr(self,'_large_intake_jobs',set());self._large_intake_jobs.add(job)
+        def ready(result,error):
+            self._large_intake_jobs.discard(job)
+            if self._quitting or error or not result:return
+            current=[ref for ref in result if ref in self.shelf.files['permanent']]
+            if not current:return
+            if not hasattr(self,'remote_intake_notice'):
+                from shelf_intake_limit import make_notice
+                self.remote_intake_notice=make_notice(self,recommendation=True)
+            self.remote_intake_notice.show_paths(current)
+        job.signals.done.connect(ready);QThreadPool.globalInstance().start(job,-1)
 
     def _refresh_displays(self,*_):
         from display_triggers import display_id
@@ -3805,6 +3823,8 @@ class ShelfManager:
     def quit(self):
         if hasattr(self,'intake_notice'):self.intake_notice.hide()
         if hasattr(self,'clipboard_notice'):self.clipboard_notice.hide()
+        if hasattr(self,'remote_intake_notice'):self.remote_intake_notice.hide()
+        for job in getattr(self,'_large_intake_jobs',()):job.cancel.set()
         if hasattr(self,'oversize_notice'):self.oversize_notice.hide()
         if getattr(self,'clipboard_preview_dialog',None) is not None:self.clipboard_preview_dialog.hide()
         if getattr(self,'mac_permissions_dialog',None) is not None:self.mac_permissions_dialog.hide()

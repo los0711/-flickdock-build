@@ -15,8 +15,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 1732,
-      "sha256": "dc158c1e500c088fc28c78bf75dc55c78672ff8b0543887fccf11e01306d60ac"
+      "size": 2354,
+      "sha256": "aba1422b903346b6cc8e2f1c3bb9ec24e264ccfad76001cb0dfbbd73f014b096"
     },
     {
       "path": ".gitignore",
@@ -60,8 +60,8 @@
     },
     {
       "path": "FlickDock.iss",
-      "size": 4295,
-      "sha256": "c1fad3c31995928ba70eab25c681d14aa3482ca8964701b9ac15b6584fb6a8c8"
+      "size": 4503,
+      "sha256": "e605843070798839c55ee186bf45c17d5f23bf07b972f54ac038a6b7b0da5529"
     },
     {
       "path": "FlickDock.spec",
@@ -560,8 +560,8 @@
     },
     {
       "path": "build_macos.py",
-      "size": 23542,
-      "sha256": "6cb78c58b45b81029d18e40970ad3fa61e8907d8a84ba7c3a3ec5af8344c0765"
+      "size": 23570,
+      "sha256": "957fdb6192774c2e5fd650ea464c29d495dd747641161fd2551d5cfc82165a07"
     },
     {
       "path": "bundle_policy.py",
@@ -582,6 +582,11 @@
       "path": "ci_assets.py",
       "size": 1227,
       "sha256": "c228e9cae6e7441ea0cf53e58a6d348d00c913454495349f3bcf67d3b14b8cfe"
+    },
+    {
+      "path": "ci_installer_close.py",
+      "size": 6680,
+      "sha256": "36cdff5287b327810b2fbb96e124e1e2f537e2ac33bf0e3b80ed4727ab5afeca"
     },
     {
       "path": "ci_mac_update_runtime.py",
@@ -870,8 +875,8 @@
     },
     {
       "path": "flickdock.py",
-      "size": 217788,
-      "sha256": "cbc97a07496a05822c8176b3dec3a7f221e58d7e8371fb04d21fbdb8ae495152"
+      "size": 219051,
+      "sha256": "82ecc9f52ebacc4e77152a7cc3c41c37d133b54a2dd1126c969044df4adc3f44"
     },
     {
       "path": "flickdock_icons.py",
@@ -1100,8 +1105,8 @@
     },
     {
       "path": "release_history.py",
-      "size": 22209,
-      "sha256": "4ebafbcda0f4df2f428876e26bfc9f308be9ec53a4a6b664eb808a794d2a1fd9"
+      "size": 22338,
+      "sha256": "46816640104696f892611a6787cf30702541d327eaf764d0d18cdfa7b7f61da9"
     },
     {
       "path": "release_macos.py",
@@ -1110,8 +1115,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 36412,
-      "sha256": "264a43a834d6988307949d39977e4f7a65adf2b12ef8df0e2d016b392b7a01f9"
+      "size": 36508,
+      "sha256": "a992db8861a06ff73752a8e7984d3d56ca38fb26fec3efc5441b1fb4d56ba2a4"
     },
     {
       "path": "release_signing.py",
@@ -1165,8 +1170,8 @@
     },
     {
       "path": "shelf_intake_limit.py",
-      "size": 3547,
-      "sha256": "2333141c0df02a384a00158e2eb92af2f8b0706a8c82b1a413afeab27e66643b"
+      "size": 3759,
+      "sha256": "6b92f29931696f22afe567030724411fa6d70f74f4f4040480cc03402a54b389"
     },
     {
       "path": "shelf_sync.py",
@@ -1195,8 +1200,8 @@
     },
     {
       "path": "sync_files.py",
-      "size": 16757,
-      "sha256": "b9b9f4738d2bb3c98bb905159110176dc7e2e05e6b00f6e2dc90178911b67178"
+      "size": 16809,
+      "sha256": "37e29a7ab6f9897b5a9313dc003bfc10c7555787b5355b74665fd44f43c7f363"
     },
     {
       "path": "test_account_actions_v181.py",
@@ -1567,6 +1572,11 @@
       "path": "test_release_notes_v1821.py",
       "size": 4397,
       "sha256": "b6a4f67796a26679783c3154692af5c99632d4f2dcea8f93690086484914e967"
+    },
+    {
+      "path": "test_remote_handoff_v1821.py",
+      "size": 4097,
+      "sha256": "b05fca258e2ca4f214643729a8726fef6c013c4f85385216ac4f6ca17800b50e"
     },
     {
       "path": "test_remote_transfer_actions_v1812.py",

@@ -23,7 +23,10 @@ UsePreviousTasks=yes
 WizardStyle=modern
 Compression=lzma2
 SolidCompression=no
-CloseApplications=yes
+; A tray window can hide on WM_CLOSE while its process still owns the bundle.
+; Keep Restart Manager's confirmation, then finish closing only this app's EXEs.
+CloseApplications=force
+CloseApplicationsFilter=FlickDock.exe,node.exe
 RestartApplications=no
 SetupLogging=yes
 VersionInfoVersion={#AppVersion}

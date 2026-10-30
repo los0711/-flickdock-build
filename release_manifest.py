@@ -47,7 +47,7 @@ RUNTIME_SOURCES=(
     'wan_transfer.py','webrtc_stream.py','nearby_transport.py','verify_wan.py','windows_network.py',
 )
 MAINTAINED_TESTS=(
-    'test_interaction_scope_v1821.py','test_shared_clipboard_files_v1821.py','test_download_ranges_v1821.py',
+    'test_interaction_scope_v1821.py','test_shared_clipboard_files_v1821.py','test_download_ranges_v1821.py','test_remote_handoff_v1821.py',
     'test_mac_permissions_v1821.py','test_shelf_live_v1821.py','test_release_notes_v1821.py','test_clipboard_fast_v1821.py','test_clipboard_preview_v1821.py','test_utility_windows_v1821.py','test_update_resume_v1821.py','test_update_signatures_v1821.py',
     'test_small_upload_lane.py','test_feedback_v1820.py',
     'test_pointer_paste_v1819.py','test_presentation_v1819.py','test_clipboard_sync_v1819.py','test_wan_account_v1819.py','test_webrtc_close_v1819.py',
@@ -107,7 +107,7 @@ SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'cloud/src/wasm.d.ts','cloud/src/vendor/hash-wasm-sha256-4.12.0.wasm',
     'cloud/src/vendor/hash-wasm-sha256-4.12.0.json','cloud/src/vendor/hash-wasm-4.12.0-LICENSE.txt',
     'cloud/test/integration.mjs','cloud/test/shared-file.mjs','cloud/test/hash-state.mjs','cloud/test/upload-cancel.mjs','cloud/test/wan-codes.mjs','cloud/test/wan-connect.mjs','cloud/test/wan-account.mjs','cloud/test/account-names.mjs','cloud/test/qa-server.mjs','cloud/test/clipboard.mjs','cloud/test/clipboard-expiry.mjs',
-    '.github/workflows/macos-build.yml','ci_assets.py','p2p_assets.py',
+    '.github/workflows/macos-build.yml','.github/workflows/native-clipboard.yml','ci_installer_close.py','ci_assets.py','p2p_assets.py',
     'p2p/bridge.mjs','p2p/turn_tls.mjs','p2p/test-turn-tls.mjs','p2p/package.json','p2p/package-lock.json','p2p/node-shasums.json',
     'website/wrangler.jsonc','website/worker.mjs','website/package.json','website/package-lock.json',
     'website/README.md','website/CHINA_DEPLOYMENT.md','website/test/check-site.mjs','website/test/check-gateway.mjs',

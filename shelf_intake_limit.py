@@ -28,7 +28,7 @@ def classify(paths,cancel):
     return allowed,blocked
 
 
-def make_notice(manager):
+def make_notice(manager,*,recommendation=False):
     from PySide6.QtCore import Qt,QTimer
     from PySide6.QtGui import QGuiApplication
     from PySide6.QtWidgets import QWidget,QFrame,QVBoxLayout,QHBoxLayout,QLabel,QPushButton
@@ -41,12 +41,14 @@ def make_notice(manager):
             keep_tool_visible_when_inactive(self)
             root=QVBoxLayout(self);root.setContentsMargins(0,0,0,0);self.card=QFrame(self);root.addWidget(self.card)
             row=QHBoxLayout(self.card);row.setContentsMargins(14,12,14,12);row.setSpacing(12)
-            self.label=QLabel('超过 1 GB，无法放入搁架，请使用远程传输。',self.card);self.label.setWordWrap(True);row.addWidget(self.label,1)
-            self.action=QPushButton('远程传输',self.card);self.action.setAutoDefault(False);row.addWidget(self.action)
+            self.label=QLabel('较大文件，建议使用远程传输。' if recommendation else '超过 1 GB，无法放入搁架，请使用远程传输。',self.card);self.label.setWordWrap(True);row.addWidget(self.label,1)
+            self.action=QPushButton('使用远程传输' if recommendation else '远程传输',self.card);self.action.setAutoDefault(False);row.addWidget(self.action)
             self.action.clicked.connect(self.open_remote)
             self.timer=QTimer(self);self.timer.setSingleShot(True);self.timer.timeout.connect(self.hide);self.setFixedWidth(380)
         def open_remote(self):
-            paths=list(self.paths);self.hide();manager.show_wan_dialog();manager.wan_dialog.panel.queue_paths(paths)
+            paths=list(self.paths);self.hide()
+            if recommendation:manager._remote_intake(paths)
+            else:manager.show_wan_dialog();manager.wan_dialog.panel.queue_paths(paths)
         def show_paths(self,paths):
             from native_ui_common import colors
             c=colors(manager.settings.theme);self.paths=list(dict.fromkeys(paths))
