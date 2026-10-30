@@ -24,6 +24,9 @@ class UtilityTests(unittest.TestCase):
 
     def tearDown(self):
         self.service._transfers.clear();self.dialog._closing_confirmed=True
+        # A test may emulate Win32 during surface destruction on an offscreen
+        # Mac host. Remove its registry entry after restoring the real platform.
+        dock_window_state(self.dialog,False)
         self.dialog.close();self.dialog.deleteLater();APP.processEvents();self.temp.cleanup();self.screen.stop()
 
     def test_close_and_escape_cancel_keep_transfer_confirm_cancels(self):

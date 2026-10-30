@@ -1569,13 +1569,15 @@ class SettingsDialog(QDialog):
         QTimer.singleShot(0,self._fit_settings_top)
         return previous
 
-    def set_pointer_paste_permission(self,required,authorize):
+    def set_pointer_paste_permission(self,required,authorize,*,unified=False):
         if self._pointer_paste_permission is None:
             panel=QWidget(self._pointer_paste_panel);layout=QVBoxLayout(panel);layout.setContentsMargins(0,0,0,0);layout.setSpacing(6)
-            label=QLabel('跨应用粘贴需要允许 FlickDock 使用 macOS 辅助功能。',panel);label.setWordWrap(True);layout.addWidget(label)
-            button=QPushButton('前往授权',panel);button.setAutoDefault(False);button.clicked.connect(authorize);layout.addWidget(button)
+            label=QLabel('集中检查剪贴板、跨应用粘贴和本地网络授权。' if unified else '跨应用粘贴需要允许 FlickDock 使用 macOS 辅助功能。',panel);label.setWordWrap(True);layout.addWidget(label)
+            self._pointer_paste_label=label
+            button=QPushButton('Mac 权限设置' if unified else '前往授权',panel);button.setAutoDefault(False);button.clicked.connect(authorize);layout.addWidget(button)
             self._pointer_paste_panel.layout().addWidget(panel);self._pointer_paste_permission=panel
-        self._pointer_paste_permission.setVisible(bool(required))
+        self._pointer_paste_permission.setVisible(bool(required or unified))
+        if unified:self._pointer_paste_label.setText('部分 Mac 权限尚未允许，请集中检查并设置。' if required else '集中检查剪贴板、跨应用粘贴和本地网络授权。')
 
     def set_update_state(self, state, version="", received=0, total=0, error="",**details):
         """Render update feedback beside the single explicit update action."""

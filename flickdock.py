@@ -2892,6 +2892,7 @@ class ShelfManager:
         menu.addAction("检查更新…", self.check_updates)
         if sys.platform=='win32':
             menu.addAction("修复网络访问…",self.repair_network_access)
+        elif sys.platform=='darwin':menu.addAction('Mac 权限设置…',self.show_mac_permissions)
         menu.addSeparator()
         menu.addAction("退出 FlickDock", self.quit)
         self.tray.setContextMenu(menu)
@@ -2930,6 +2931,7 @@ class ShelfManager:
             enabled=self._clipboard_runtime_enabled())
         self.clipboard_sync.activity_changed.connect(self.sync.set_clipboard_priority)
         self.clipboard_sync.copy_result.connect(self._clipboard_copy_result)
+        self.clipboard_sync.native_access_changed.connect(self._refresh_paste_permission)
         from clipboard_preview import ClipboardPresenter
         self.clipboard_presenter=ClipboardPresenter(self.clipboard_sync,self.app)
         self.clipboard_preview_dialog=None
@@ -3035,11 +3037,21 @@ class ShelfManager:
 
     def show_clipboard_preview(self):
         if self._quitting:return
+        if self.clipboard_presenter.state.get('permission_required'):
+            self.show_mac_permissions();return
         if self.clipboard_preview_dialog is None:
             from clipboard_preview import ClipboardPreview
             self.clipboard_preview_dialog=ClipboardPreview(self)
         self.clipboard_preview_dialog.refresh();self.clipboard_preview_dialog.show()
         self.clipboard_preview_dialog.raise_();self.clipboard_preview_dialog.activateWindow()
+
+    def show_mac_permissions(self):
+        if self._quitting or sys.platform!='darwin' or not native_input_available():return
+        from mac_permissions_ui import MacPermissionsDialog
+        if getattr(self,'mac_permissions_dialog',None) is None:
+            self.mac_permissions_dialog=MacPermissionsDialog(self,self.settings_dialog if self.settings_open() else self.shelf)
+        self._center_dialog(self.mac_permissions_dialog);self.mac_permissions_dialog.show()
+        self.mac_permissions_dialog.raise_();self.mac_permissions_dialog.activateWindow()
 
     def _present_clipboard_intro(self):
         if self.settings.clipboard_notice_seen:return False
@@ -3063,6 +3075,7 @@ class ShelfManager:
             try:self.settings.update(clipboard_sync_enabled=enabled,clipboard_notice_seen=True)
             except OSError:return
             intro.hide();self._clipboard_intro=None;intro.deleteLater()
+            if enabled and sys.platform=='darwin':QTimer.singleShot(0,self.show_mac_permissions)
         intro.update_requested.connect(lambda:finish(True))
         intro.later_button.clicked.disconnect();intro.later_button.clicked.connect(lambda:finish(False))
         intro.dismissed.connect(lambda:finish(True))
@@ -3244,10 +3257,14 @@ class ShelfManager:
 
     def _settings_closed(self,*_):
         self.settings_edge_hint.hide();self.update_handles()
+        if getattr(self,'mac_permissions_dialog',None) is not None:self.mac_permissions_dialog.hide()
 
     def _refresh_paste_permission(self):
         if self.settings_dialog:
-            self.settings_dialog.set_pointer_paste_permission(self.pointer_paste.permission_required,self.pointer_paste.request_permission)
+            mac=sys.platform=='darwin'
+            required=self.pointer_paste.permission_required or (mac and not self.clipboard_sync._native_accessible())
+            self.settings_dialog.set_pointer_paste_permission(required,
+                self.show_mac_permissions if mac else self.pointer_paste.request_permission,unified=mac)
 
     def _network_status_changed(self,state):
         for shelf in self.shelves:
@@ -3699,6 +3716,7 @@ class ShelfManager:
         if hasattr(self,'intake_notice'):self.intake_notice.hide()
         if hasattr(self,'clipboard_notice'):self.clipboard_notice.hide()
         if getattr(self,'clipboard_preview_dialog',None) is not None:self.clipboard_preview_dialog.hide()
+        if getattr(self,'mac_permissions_dialog',None) is not None:self.mac_permissions_dialog.hide()
         if hasattr(self,'clipboard_presenter'):self.clipboard_presenter.close()
         if self.update_dialog is not None:self.update_dialog.hide()
         if self.update_notice is not None:

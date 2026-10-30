@@ -58,6 +58,11 @@ def main():
             import AppKit
             assert AppKit.NSApplication.sharedApplication().activationPolicy()==AppKit.NSApplicationActivationPolicyAccessory
             report['dock_restored_to_menu_bar']=True
+            from mac_permissions import MacPermissionBackend
+            state=MacPermissionBackend().inspect(pointer_ok=True)
+            assert state['clipboard'] in ('default','ask','allowed','denied','legacy')
+            assert state['accessibility'] in ('allowed','denied')
+            report['native_permissions_metadata']=state
         report['ok']=True
         for window in (settings,transfer):window.deleteLater()
         app.processEvents()

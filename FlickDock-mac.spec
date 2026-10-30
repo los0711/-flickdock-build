@@ -51,4 +51,7 @@ app = BUNDLE(collection, name='FlickDock.app', icon=str(icon), bundle_identifier
                    CFBundlePackageType='APPL', CFBundleExecutable='FlickDock',
                    LSUIElement=True, NSHighResolutionCapable=True,
                    NSLocalNetworkUsageDescription='FlickDock 用于发现同一局域网的设备，并在你确认后加密传输文件。',
+                   NSDesktopFolderUsageDescription='FlickDock 读取你选择的桌面文件，用于搁架和文件传输。',
+                   NSDocumentsFolderUsageDescription='FlickDock 读取你选择的文稿文件，用于搁架和文件传输。',
+                   NSDownloadsFolderUsageDescription='FlickDock 在你选择的下载文件夹保存接收的文件。',
                    LSMinimumSystemVersion='14.4', NSPrincipalClass='NSApplication'))

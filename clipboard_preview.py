@@ -87,7 +87,8 @@ class ClipboardButton(QPushButton):
             self.presenter=presenter
             if presenter is not None:presenter.changed.connect(self.refresh)
         state=presenter.state if presenter is not None else {}
-        self.setToolTip('剪贴板 · '+(CLOUD_STATUS_LABELS.get(state.get('phase'),'仅保存在本机') if state.get('value') else '暂无可预览内容'))
+        self.setToolTip('剪贴板 · '+('需要设置 Mac 剪贴板权限，点击前往' if state.get('permission_required') else
+            CLOUD_STATUS_LABELS.get(state.get('phase'),'仅保存在本机') if state.get('value') else '暂无可预览内容'))
         self.update()
 
     def paintEvent(self,event):
@@ -103,7 +104,8 @@ class ClipboardButton(QPushButton):
         else:
             glyph='text' if value and value[0]=='text' else 'file' if value else 'copy'
             icon(glyph,c['secondary']).paint(p,7,7,18,18)
-        if value:draw_cloud_status_badge(p,QRectF(21,21,10,10),model.state.get('phase','local'))
+        if model and (value or model.state.get('permission_required')):
+            draw_cloud_status_badge(p,QRectF(21,21,10,10),'error' if model.state.get('permission_required') else model.state.get('phase','local'))
         p.end()
 
 

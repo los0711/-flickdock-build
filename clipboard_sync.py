@@ -226,6 +226,7 @@ class ClipboardSync(QObject):
     activity_changed=Signal(bool)
     copy_result=Signal(bool,dict)
     view_changed=Signal(dict)
+    native_access_changed=Signal()
 
     @property
     def _pending(self):return getattr(self,'_pending_value',None)
@@ -250,6 +251,7 @@ class ClipboardSync(QObject):
         self._is_native=clipboard is None or clipboard is QApplication.clipboard()
         self._sequence=native_sequence if self._is_native else lambda:None
         self.enabled=enabled;self.closed=False;self._epoch=0;self._generation=0;self._applying=False
+        self._native_access=self._native_accessible()
         self._clock_anchor=None;self._observed_clock=0;self._local_fence=None;self._local_retry=None
         self._clock_path=Path(base)/'clipboard-clock.json';self._copy_clock=0
         try:self._copy_clock=int(json.loads(self._clock_path.read_text(encoding='utf8'))['sequence'])
@@ -257,7 +259,7 @@ class ClipboardSync(QObject):
         self._identity=self._session_identity()
         self._pushed_head=None
         self._prepared_receive=None
-        self._view_revision=0;self.view=dict(value=snapshot(self.clipboard),phase='local',id='',revision=0)
+        self._view_revision=0;self.view=dict(value=self._snapshot(),phase='local',id='',revision=0,permission_required=not self._native_access)
         self._applied_version=0;self._receiving_version=0
         self.pool=QThreadPool(self);self.pool.setMaxThreadCount(2)
         self._ignored=None;self._ignored_sequence=None;self._last_sequence=object();self._last_local_signature=object();self._seen='';self._keys=set();self._jobs={};self._pending=None;self._fetching=False;self._refresh_again=False
@@ -276,7 +278,7 @@ class ClipboardSync(QObject):
         self.change_debounce=QTimer(self);self.change_debounce.setSingleShot(True);self.change_debounce.setInterval(60)
         self.change_debounce.timeout.connect(self._changed)
         self.clipboard.dataChanged.connect(self._schedule_change)
-        self._last_local_signature=signature(snapshot(self.clipboard));self._last_sequence=self._sequence()
+        self._last_local_signature=signature(self._snapshot());self._last_sequence=self._sequence()
         account.account_changed.connect(self._account_changed)
         events.clipboard_changed.connect(self.refresh)
         payload=getattr(events,'clipboard_payload',None)
@@ -290,6 +292,7 @@ class ClipboardSync(QObject):
 
     def _mac_changed(self,initial=False):
         if not self.enabled or self.closed:return
+        if not self.recheck_native_access():return
         try:
             from AppKit import NSPasteboard
             count=NSPasteboard.generalPasteboard().changeCount()
@@ -297,7 +300,23 @@ class ClipboardSync(QObject):
             if changed and not initial:self._schedule_change()
         except (ImportError,RuntimeError):pass
 
-    def _active(self):return self.enabled and not self.closed and self.account.signed_in
+    def _native_accessible(self,*,force=False):
+        if not self._is_native or sys.platform!='darwin' or not native_input_available():return True
+        from mac_permissions import background_clipboard_allowed
+        return background_clipboard_allowed(force=force)
+
+    def _snapshot(self):
+        if not self._native_accessible():return None
+        try:return snapshot(self.clipboard)
+        except (OSError,RuntimeError):return None
+
+    def recheck_native_access(self,*,force=False):
+        allowed=self._native_accessible(force=force)
+        if allowed!=self._native_access and not self.closed:
+            self._native_access=allowed;self._account_changed(force=True);self.native_access_changed.emit()
+        return allowed
+
+    def _active(self):return self.enabled and not self.closed and self.account.signed_in and self._native_accessible()
 
     def set_enabled(self,enabled):
         enabled=bool(enabled)
@@ -310,12 +329,12 @@ class ClipboardSync(QObject):
 
     def _schedule_change(self):
         if not self._active() and not self.closed:
-            self._set_view(snapshot(self.clipboard),'local');return
+            self._set_view(self._snapshot(),'local');return
         if self._active() and not self._applying:
             sequence=self._sequence()
             if sequence is not None:
                 if sequence==self._last_sequence:return
-            elif signature(snapshot(self.clipboard))==self._last_local_signature:return
+            elif signature(self._snapshot())==self._last_local_signature:return
             from PySide6.QtGui import QCursor
             point=QCursor.pos();self._copy_point=(point.x(),point.y())
             # Stop an in-flight remote read before the native notification's
@@ -377,14 +396,14 @@ class ClipboardSync(QObject):
         self._clock_anchor=None;self._observed_clock=0
         # A session switch is not a Copy action. Establish a native baseline so
         # a delayed notification cannot export the previous account's content.
-        self._last_local_signature=signature(snapshot(self.clipboard));self._last_sequence=self._sequence()
+        self._last_local_signature=signature(self._snapshot());self._last_sequence=self._sequence()
         if sys.platform=='darwin' and not self.closed:self._mac_changed(initial=True)
         self._epoch+=1;self._generation+=1;self._pending=None;self._seen='';self._fetching=False;self.retry.stop()
         self._priority_flags(waiting=False,receiving=False)
         for key in tuple(self._keys):self.api.cancel(key)
         self._keys.clear()
         for job in self._jobs:job.cancelled.set()
-        if not self.closed:self._set_view(snapshot(self.clipboard),'local')
+        if not self.closed:self._set_view(self._snapshot(),'local')
         if self._active():QTimer.singleShot(0,self.refresh)
 
     def _directory(self):
@@ -405,7 +424,7 @@ class ClipboardSync(QObject):
 
     def _changed(self):
         if not self._active() or self._applying:return
-        value=snapshot(self.clipboard);sig=signature(value);sequence=self._sequence()
+        value=self._snapshot();sig=signature(value);sequence=self._sequence()
         if value is None and sequence is not None and sequence!=self._last_sequence:
             # Some native owners announce a new sequence before delayed data
             # is readable. Retry briefly without consuming its copy event.
@@ -445,7 +464,7 @@ class ClipboardSync(QObject):
 
     def _set_view(self,value,phase,identity=''):
         if value is not self.view.get('value'):self._view_revision+=1
-        self.view=dict(value=value,phase=phase,id=identity,revision=self._view_revision)
+        self.view=dict(value=value,phase=phase,id=identity,revision=self._view_revision,permission_required=not self._native_accessible())
         self.view_changed.emit(dict(self.view))
 
     def _copy_context(self,value):
@@ -643,7 +662,7 @@ class ClipboardSync(QObject):
                         self._finish_refresh();self.retry.start();return
                     if generation!=self._generation:self._finish_refresh();return
                     if isinstance(current,dict) and current.get('id')==identity and current.get('ready'):
-                        if signature(snapshot(self.clipboard))!=self._last_local_signature:
+                        if signature(self._snapshot())!=self._last_local_signature:
                             self._schedule_change()
                         else:
                             if self._apply(value,directory,identity=identity):
@@ -677,6 +696,7 @@ class ClipboardSync(QObject):
             self._refresh_again=False;QTimer.singleShot(0,self.refresh)
 
     def _apply(self,value,directory,*,identity=None):
+        if not self._native_accessible(force=True):return False
         kind,data=value;mime=QMimeData()
         mime.setData(SYNC_MARKER,(identity or self._seen).encode('ascii'))
         if kind=='files':mime.setUrls([QUrl.fromLocalFile(path) for path in data])
@@ -689,7 +709,7 @@ class ClipboardSync(QObject):
         self._applying=True
         try:
             self.clipboard.setMimeData(mime)
-            actual=signature(snapshot(self.clipboard))
+            actual=signature(self._snapshot())
             if kind=='image' and data.get('raw') and data.get('mime'):
                 native=self.clipboard.mimeData()
                 matches=native is not None and bytes(native.data(data['mime']))==data['raw']
@@ -712,7 +732,7 @@ class ClipboardSync(QObject):
         previous=self._applying;self._applying=True
         try:
             self.clipboard.clear();self._ignored=None;self._current_directory=None
-            self._last_local_signature=signature(snapshot(self.clipboard))
+            self._last_local_signature=signature(self._snapshot())
             self._ignored_sequence=self._sequence();self._last_sequence=self._ignored_sequence
             if sys.platform=='darwin':self._mac_changed(initial=True)
         finally:self._applying=previous
@@ -721,15 +741,19 @@ class ClipboardSync(QObject):
         # Native applications may still hold the last file clipboard's paths
         # after Paste. Retain local downloads for a day, never delete originals.
         if self.closed:return
+        # An unreadable pasteboard is not an empty one. Its native file URLs
+        # must stay usable across a denied permission, including after restart.
+        if not self._native_accessible(force=True):return
         now=time.time();keep=[]
-        native=snapshot(self.clipboard)
+        try:native=snapshot(self.clipboard)
+        except (OSError,RuntimeError):return
         native_paths=[Path(path).resolve() for path in native[1]] if native and native[0]=='files' else []
         for directory,created in self._directories:
             if now-created<86400:keep.append((directory,created));continue
             if any(path.is_relative_to(directory.resolve()) for path in native_paths):
                 keep.append((directory,created));continue
             if directory==self._current_directory:
-                if self._ignored is not None and signature(snapshot(self.clipboard))==self._ignored:
+                if self._ignored is not None and signature(self._snapshot())==self._ignored:
                     keep.append((directory,created));continue
                 self._current_directory=None
             if directory.resolve().is_relative_to(self.cache.resolve()) and not directory.is_symlink() and not directory.is_junction():
