@@ -40,6 +40,35 @@ jobs:
         run: |
           $env:FD_QA_PYTHON = (Get-Command python).Source
           node cloud/test/clipboard.mjs
+      - name: Diagnose actual native macOS public update download
+        if: runner.os == 'macOS'
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json,tempfile,time
+          from PySide6.QtCore import QCoreApplication,QTimer
+          from update_client import UpdateClient
+          app=QCoreApplication([]);result={};started=time.monotonic()
+          with tempfile.TemporaryDirectory(prefix='flickdock-public-update-diagnostic-') as profile:
+              client=UpdateClient('1.8.14',Path(profile),timeout_ms=60000)
+              def finish(error=''):
+                  result.update(ok=not error,error=error,seconds=round(time.monotonic()-started,2))
+                  print('NATIVE PUBLIC UPDATE:',json.dumps(result,ensure_ascii=False),flush=True)
+                  client.close();app.exit(1 if error else 0)
+              def available(manifest,manual):
+                  result['version']=manifest['version'];result['installer']=manifest['installer']
+                  client.download(manifest,manual=True)
+              client.update_available.connect(available)
+              client.verified_file.connect(lambda path,manifest,manual:finish())
+              client.failed.connect(lambda error,manual:finish(error))
+              client.download_status.connect(lambda state,detail:result.update(last_state=state))
+              QTimer.singleShot(0,lambda:client.check(manual=True))
+              QTimer.singleShot(180000,lambda:finish('diagnostic deadline'))
+              status=app.exec()
+          raise SystemExit(status)
+          PY
       - name: Verify actual native utility windows on the disposable runner
         run: python ci_utility_windows.py --output native-utility.json
       - name: Retain native window verification
