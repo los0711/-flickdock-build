@@ -52,6 +52,7 @@ jobs:
         shell: bash
         run: |
           QT_QPA_PLATFORM=offscreen python -m unittest test_motion_resources_v1822.DisplayMetadataTests -v
+          QT_QPA_PLATFORM=offscreen python -m unittest test_stability_v1822 test_resources_v1822.ResourceTests test_motion_resources_v1822.MotionTests test_motion_resources_v1822.DisplayMetadataTests test_motion_resources_v1822.MacVolumeTests test_receive_lifecycle_v1822.ReceiveLifecycleTests test_transfer_entry_v1822.EntryTests test_small_upload_lane.SmallLaneTests -q
       - name: Inspect native volume metadata on the disposable Mac filesystem
         if: runner.os == 'macOS'
         shell: bash
