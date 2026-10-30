@@ -2898,6 +2898,7 @@ class DockHandle(QWidget):
     def position_at_edge(self):
         values=self.values()
         self.setGeometry(trigger_rect(self.screen_area(),values['dock_edge'],values['dock_position'],values['dock_length'],values['dock_thickness']))
+        self.update()  # Color/opacity changes need paint even when geometry stays identical.
 
     def show_handle(self):
         if not self.values()["enabled"]:self.hide();return

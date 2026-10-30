@@ -875,8 +875,8 @@
     },
     {
       "path": "flickdock.py",
-      "size": 221551,
-      "sha256": "c5f1195e59df73ccfce12b1518d6882ff86ab8c85f4a65dc6706f28ed10d7c7b"
+      "size": 221646,
+      "sha256": "3c1e60bd917d6dbb8c3105c16c9c10d2c9ab4741dd13bcc67648fecc4cbbcdd0"
     },
     {
       "path": "flickdock_icons.py",
@@ -1455,8 +1455,8 @@
     },
     {
       "path": "test_interaction_scope_v1821.py",
-      "size": 15372,
-      "sha256": "b317adfda7220fbe585d8c7e9ddc78cbe0efa703f27572a0634d38b6b1a35d41"
+      "size": 16993,
+      "sha256": "5536ac9dc2c0a4b473da2e2c8210d0c80bbc401d204486c633bf49ed22ed8791"
     },
     {
       "path": "test_interactions_v163.py",

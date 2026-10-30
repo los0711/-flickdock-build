@@ -78,6 +78,29 @@ class OrderingTests(unittest.TestCase):
 
 
 class UtilityPreferenceTests(unittest.TestCase):
+    def test_live_handle_repaints_color_and_opacity_when_geometry_does_not_change(self):
+        from PySide6.QtCore import QObject,QEvent
+        from unittest.mock import Mock
+        from flickdock import DockHandle,ShelfManager
+        class PaintCounter(QObject):
+            def __init__(self):super().__init__();self.paints=0
+            def eventFilter(self,widget,event):
+                if event.type()==QEvent.Paint:self.paints+=1
+                return False
+        with tempfile.TemporaryDirectory() as directory:
+            manager=SimpleNamespace(settings=SettingsStore(Path(directory)),motion=False,_dock_preview_values=None,
+                _quitting=False,settings_open=lambda:True,_settings_prompt_active=lambda:False,
+                dock_preview=SimpleNamespace(hide=Mock()),settings_edge_hint=SimpleNamespace(hide=Mock()))
+            edge=DockHandle(manager,APP.primaryScreen());manager.edge=edge;manager.edges={'primary':edge}
+            manager._position_edges=lambda:ShelfManager._position_edges(manager)
+            manager.update_handles=lambda:ShelfManager.update_handles(manager)
+            try:
+                edge.show_handle();flush();counter=PaintCounter();edge.installEventFilter(counter)
+                geometry=edge.geometry();ShelfManager.preview_dock(manager,dict(dock_color='#ff0000',dock_opacity=50));flush()
+                self.assertEqual(edge.geometry(),geometry);self.assertGreater(counter.paints,0)
+                self.assertEqual((edge.values()['dock_color'],edge.values()['dock_opacity']),('#ff0000',50))
+            finally:edge.hide();edge.deleteLater();flush()
+
     def test_settings_and_transfer_reset_independent_defaults_before_show(self):
         from test_html_native_lan import FakeLan
         from lan_panel import LanDialog
