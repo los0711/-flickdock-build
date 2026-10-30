@@ -183,8 +183,22 @@ def main(arguments=None):
         if not python.is_file():
             venv.EnvBuilder(with_pip=True).create(environment)
         run([python, '-m', 'pip', 'install', 'PySide6==6.12.0', 'PyInstaller==6.22.3',
-             'pyobjc-framework-Quartz>=11,<13', 'keyring==25.7.0', 'cryptography==50.0.2',
+             'pyobjc-framework-Quartz>=11,<13', 'keyring==25.7.0',
              'qrcode==8.2','zxing-cpp==3.1.1'])
+        if options.target_arch=='x86_64':
+            # Intel currently builds this dependency from source. Dynamic
+            # Homebrew OpenSSL can collide with Python's same-named dylibs
+            # when frozen; use cryptography's documented static build mode.
+            run([python,'-m','pip','install','--force-reinstall','--no-cache-dir',
+                 '--no-binary=cryptography','cryptography==50.0.2'],
+                env=dict(os.environ,OPENSSL_STATIC='1'))
+            run([python,'-c',
+                 "from cryptography.hazmat.bindings import _rust; import subprocess; "
+                 "links=subprocess.check_output(['/usr/bin/otool','-L',_rust.__file__],text=True); "
+                 "assert not any(name in links for name in ('libssl.','libcrypto.')),links; "
+                 "print('Verified static Intel cryptography OpenSSL binding')"])
+        else:
+            run([python,'-m','pip','install','cryptography==50.0.2'])
     env = dict(os.environ, QT_QPA_PLATFORM='offscreen', QT_MEDIA_BACKEND='darwin',PYTHONFAULTHANDLER='1',
                FLICKDOCK_TARGET_ARCH=options.target_arch)
     # This workspace may contain Windows wheel files in py/. Never import them

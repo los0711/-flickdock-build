@@ -560,8 +560,8 @@
     },
     {
       "path": "build_macos.py",
-      "size": 22588,
-      "sha256": "06e56938fd2b45198f302f0df550ef7c8498cc4807625e93e6106f80db267c9c"
+      "size": 23517,
+      "sha256": "54825c6dba7da2a8e399a6273ba496b74f09faa4c3ea8507ea1c7311674a6032"
     },
     {
       "path": "bundle_policy.py",
