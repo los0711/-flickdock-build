@@ -112,12 +112,14 @@ class ClipboardButton(QPushButton):
 class ClipboardPreview(ReferenceModalDialog):
     def __init__(self,manager):
         super().__init__(manager.shelf,surface_width=600,modal=False)
+        self.setWindowFlag(Qt.WindowStaysOnTopHint,True)
         self.manager=manager;self.presenter=manager.clipboard_presenter
         self.setWindowTitle('FlickDock · 剪贴板预览')
         head=QHBoxLayout();self.title=QLabel('剪贴板预览',self.body);head.addWidget(self.title,1)
         self.badge=CloudStatusBadge(self.body);head.addWidget(self.badge)
         self.close_button=SettingsCloseButton(self.body,glyph_size=14);self.close_button.setFixedSize(28,28)
-        self.close_button.setAccessibleName('关闭剪贴板预览');self.close_button.clicked.connect(self.close);head.addWidget(self.close_button)
+        self.close_button.setAccessibleName('关闭剪贴板预览');self.close_button.setToolTip('关闭剪贴板预览')
+        self.close_button.clicked.connect(self.close);head.addWidget(self.close_button)
         self.body_layout.addLayout(head)
         self.content=QStackedWidget(self.body);self.content.setMinimumHeight(260);self.body_layout.addWidget(self.content)
         self.text=QPlainTextEdit(self.content);self.text.setReadOnly(True);self.content.addWidget(self.text)
@@ -131,7 +133,7 @@ class ClipboardPreview(ReferenceModalDialog):
         model=self.presenter;value=model.state.get('value');phase=model.state.get('phase','local')
         c=colors(self.manager.settings.theme);self.set_surface_theme(self.manager.settings.theme)
         self.close_button.dark=self.manager.settings.theme=='dark'
-        self.setStyleSheet(f"QDialog{{background:transparent;}} QLabel{{background:transparent;color:{c['text']};font-size:12px;}} QPlainTextEdit{{background:{c['card']};color:{c['text']};border:1px solid {c['border']};border-radius:8px;padding:10px;}}")
+        self.setStyleSheet(f"QDialog{{background:transparent;}} QLabel{{background:transparent;color:{c['text']};font-size:12px;}} QPlainTextEdit{{background:{c['card']};color:{c['text']};border:1px solid {c['border']};border-radius:8px;padding:10px;}} QPushButton#settingsClose{{background:transparent;border:0;border-radius:8px;padding:0;}} QPushButton#settingsClose:hover{{background:{c['hover']};}} QPushButton#settingsClose:pressed{{background:{c['control']};}}")
         self.badge.set_status(phase);self.status.setText(CLOUD_STATUS_LABELS.get(phase,'仅保存在本机'))
         if not value:self.info.setText('剪贴板暂无可预览内容');self.content.setCurrentWidget(self.info)
         elif value[0]=='text':

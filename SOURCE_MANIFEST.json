@@ -595,8 +595,8 @@
     },
     {
       "path": "clipboard_preview.py",
-      "size": 8828,
-      "sha256": "95501569d4edd493ef35fc2901d1c1017bcd01e0950ff319db9724dbcb8aa0a7"
+      "size": 9161,
+      "sha256": "2e02cdc567c3bb692de0a80f4931f2a9fdad78d0e125b6490c90a931abe431fa"
     },
     {
       "path": "clipboard_sync.py",
@@ -1090,8 +1090,8 @@
     },
     {
       "path": "release_history.py",
-      "size": 21300,
-      "sha256": "299c91b7408382cf437398966b1965cabd2ea10267aa867ae0f213c232bde8f9"
+      "size": 21400,
+      "sha256": "215fa002c68181dcb8f91d814d50a36974e67d8764fdb3f31a55a7bb615570d2"
     },
     {
       "path": "release_macos.py",
@@ -1245,8 +1245,8 @@
     },
     {
       "path": "test_clipboard_preview_v1821.py",
-      "size": 6928,
-      "sha256": "6be0ff9b1f62d4e3cf690bb17cec342245c5c23f740428b3aa13103305c55e6b"
+      "size": 7062,
+      "sha256": "c46730f80937b86d26ccb024439537738e2748bf8f21f8fd8d63eea38127fe38"
     },
     {
       "path": "test_clipboard_sync_v1819.py",

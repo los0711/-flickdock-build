@@ -45,6 +45,8 @@ class PreviewTests(unittest.TestCase):
         writes=lambda:[call for call in self.hub.calls if call[0]!='GET']
         before=writes();small.click();workspace.flush()
         dialog=self.manager.clipboard_preview_dialog
+        self.assertTrue(dialog.windowFlags() & Qt.WindowStaysOnTopHint)
+        self.assertEqual(dialog.windowModality(),Qt.NonModal)
         self.assertTrue(dialog.isVisible());self.assertIs(dialog.content.currentWidget(),dialog.text)
         self.assertEqual(dialog.text.toPlainText(),self.clip.mimeData().text())
         self.assertEqual(dialog.badge.status,'synced')
