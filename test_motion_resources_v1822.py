@@ -80,7 +80,10 @@ class DisplayMetadataTests(unittest.TestCase):
             self.shelf.refresh();until(lambda:self.shelf.file_metadata.request(ref) is not None)
         self.assertTrue(threads);self.assertNotIn(gui,threads)
         Path(ref).unlink();self.shelf.file_metadata.refresh(ref)
-        until(lambda:ref not in self.shelf.files['permanent'])
+        try:until(lambda:ref not in self.shelf.files['permanent'])
+        except AssertionError:
+            raise AssertionError(dict(file_info=self.shelf.file_metadata.request(ref),
+                candidate=self.shelf._missing_refs.get(ref),retry_active=self.shelf._missing_timer.isActive())) from None
         self.assertTrue(Path(self.paths[1]).exists())
 
     def test_old_missing_result_does_not_remove_restored_path_or_unknown_volume(self):

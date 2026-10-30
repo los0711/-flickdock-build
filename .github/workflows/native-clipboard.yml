@@ -47,6 +47,26 @@ jobs:
       - name: Install native macOS pasteboard bindings
         if: runner.os == 'macOS'
         run: python -m pip install 'pyobjc-framework-Quartz>=11,<13'
+      - name: Inspect native volume metadata on the disposable Mac filesystem
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, tempfile, os, objc
+          from pathlib import Path
+          from Foundation import NSURL, NSURLVolumeIsLocalKey, NSURLVolumeURLKey
+          from file_metadata import _local_volume
+          with tempfile.TemporaryDirectory(prefix='flickdock-volume-probe-') as directory:
+              parent=Path(directory).resolve(strict=True)
+              print(json.dumps({'python_volume_flag':getattr(os,'ST_LOCAL',None),'objc_version':getattr(objc,'__version__',None),'classifier':_local_volume(str(parent/'missing.bin'))}))
+              with objc.autorelease_pool():
+                  url=NSURL.fileURLWithPath_(str(parent))
+                  for label,query in (
+                      ('single',lambda:url.getResourceValue_forKey_error_(None,NSURLVolumeIsLocalKey,None)),
+                      ('dictionary',lambda:url.resourceValuesForKeys_error_([NSURLVolumeIsLocalKey,NSURLVolumeURLKey],None))):
+                      try: print(label,repr(query()))
+                      except Exception as error: print(label,type(error).__name__,str(error))
+          PY
       - name: Install locked local cloud test dependencies
         run: npm ci --prefix cloud --no-audit --no-fund
       - name: Verify actual OS copy and paste through the production cloud client
