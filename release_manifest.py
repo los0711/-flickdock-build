@@ -95,7 +95,7 @@ SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'MOTION_V161.md','MOTION_V162.md','MOTION_V163.md','MOTION_V164.md','MOTION_V165.md',
     'bench_morph_v161.py','bench_cold_expand_v162.py','bench_clear_confirm_v161.py',
     'bench_cloud_latency_v183.py','bench_cloud_events_v183.py','bench_cloud_transfer_v188.py',
-    'bench_lan_throughput_v183.py','bench_resources_v1822.py','bench_ui_resources_v1822.py','performance_metrics.py',
+    'bench_lan_throughput_v183.py','bench_resources_v1822.py','bench_ui_resources_v1822.py','bench_idle_resources_v1822.py','performance_metrics.py',
     'fonts/HarmonyOS_Sans_SC_Regular.ttf',
     'assets/ui/qtbase_zh_CN.qm',
     'licenses/HarmonyOS-Sans-LICENSE.txt','licenses/Python-LICENSE.txt',

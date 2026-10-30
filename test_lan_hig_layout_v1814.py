@@ -147,6 +147,11 @@ class LanHigLayoutTests(unittest.TestCase):
                     for widget in (panel.drop_zone,panel.queue_scroll,panel.devices,panel.send_code,
                             panel.send_button,panel.history_scroll,panel.receive_path,panel.choose_destination):
                         self.assertTrue(widget.isVisible())
+                        for scroll in (panel.send_scroll,panel.activity_scroll):
+                            if scroll.widget().isAncestorOf(widget):
+                                scroll.ensureWidgetVisible(widget,8,8);self.settle()
+                                self.assertTrue(scroll.viewport().rect().contains(widget.mapTo(scroll.viewport(),widget.rect().topLeft())),widget.objectName())
+                                self.assertTrue(scroll.viewport().rect().contains(widget.mapTo(scroll.viewport(),widget.rect().bottomRight())),widget.objectName())
                         self.assertTrue(panel.rect().contains(widget.mapTo(panel,widget.rect().topLeft())),widget.objectName())
                         self.assertTrue(panel.rect().contains(widget.mapTo(panel,widget.rect().bottomRight())),widget.objectName())
                     for row in panel._rows.values():
