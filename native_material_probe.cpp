@@ -20,9 +20,9 @@
 #include <vector>
 
 using namespace winrt;
-using namespace Windows::UI::Composition;
-using namespace Windows::UI::Composition::Desktop;
-using namespace Windows::System;
+using namespace winrt::Windows::UI::Composition;
+using namespace winrt::Windows::UI::Composition::Desktop;
+using namespace winrt::Windows::System;
 namespace abi_comp = ABI::Windows::UI::Composition::Desktop;
 
 namespace {
@@ -200,8 +200,8 @@ extern "C" __declspec(dllexport) HRESULT __stdcall fm_policy(LONG* output, unsig
     if (apartment != S_OK && apartment != S_FALSE) return apartment;
     HRESULT result = S_OK;
     try {
-        output[0] = Windows::UI::ViewManagement::UISettings().AdvancedEffectsEnabled() ? 1 : 0;
-        output[1] = Windows::UI::ViewManagement::AccessibilitySettings().HighContrast() ? 1 : 0;
+        output[0] = winrt::Windows::UI::ViewManagement::UISettings().AdvancedEffectsEnabled() ? 1 : 0;
+        output[1] = winrt::Windows::UI::ViewManagement::AccessibilitySettings().HighContrast() ? 1 : 0;
     } catch (...) { result = failure(); }
     RoUninitialize(); return result;
 }

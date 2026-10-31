@@ -27,7 +27,7 @@ def build(output_dir):
         env['LIB']=';'.join(map(str,[tool/'lib/x64',sdk/'Lib'/headers.name/'ucrt/x64',sdk/'Lib'/headers.name/'um/x64']))
         env['PATH']=str(compiler.parent)+os.pathsep+env.get('PATH','')
         target=out/'flickdock_material_probe.dll'
-        command=[str(compiler),'/nologo','/std:c++17','/permissive-','/EHsc','/MT','/O2','/LD','/W4',str(source),'/link','/OUT:'+str(target),'windowsapp.lib','CoreMessaging.lib','dwmapi.lib','user32.lib','runtimeobject.lib']
+        command=[str(compiler),'/nologo','/std:c++20','/permissive-','/EHsc','/MT','/O2','/LD','/W4',str(source),'/link','/OUT:'+str(target),'windowsapp.lib','CoreMessaging.lib','dwmapi.lib','user32.lib','runtimeobject.lib']
         completed=subprocess.run(command,cwd=out,env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,timeout=180)
         (out/'compiler.log').write_text(completed.stdout,encoding='utf-8')
         report.update(compiler=str(compiler),sdk=headers.name,compiler_exit=completed.returncode)
