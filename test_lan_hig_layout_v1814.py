@@ -114,8 +114,17 @@ class LanHigLayoutTests(unittest.TestCase):
         self.assertTrue(panel.history_scroll.viewport().rect().intersects(
             last.rect().translated(last.mapTo(panel.history_scroll.viewport(),QPoint(0,0)))))
         name=last.detail.accessibleName()
-        QTest.mouseClick(last.remove_button,Qt.MouseButton.LeftButton);self.settle()
-        self.assertEqual(len(panel.history_rows),11)
+        # Both nested viewports must expose the actual target, rather than
+        # merely intersecting the last row inside a clipped history section.
+        panel.activity_scroll.ensureWidgetVisible(panel.history_scroll,0,0);self.settle()
+        panel.history_scroll.ensureWidgetVisible(last.remove_button,0,0);self.settle()
+        for area in (panel.activity_scroll,panel.history_scroll):
+            target=last.remove_button
+            self.assertTrue(area.viewport().rect().contains(target.mapTo(area.viewport(),target.rect().topLeft())))
+            self.assertTrue(area.viewport().rect().contains(target.mapTo(area.viewport(),target.rect().bottomRight())))
+        clicked=[];last.remove_button.clicked.connect(lambda:clicked.append(True))
+        QTest.mouseClick(last.remove_button,Qt.MouseButton.LeftButton,pos=last.remove_button.rect().center());self.settle()
+        self.assertEqual(len(panel.history_rows),11,dict(clicked=clicked,status=panel.status_label.text(),modal=repr(APP.activeModalWidget()),popup=repr(APP.activePopupWidget())))
         saved=json.loads(panel._history_path.read_text(encoding='utf-8'))
         self.assertEqual(len(saved),11)
         self.assertEqual([record['name'] for record in saved],[record['name'] for record in panel._history])
