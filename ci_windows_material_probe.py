@@ -155,6 +155,7 @@ def verify(build_json,output):
                     verified=bool(response['frequency_verified'] and foreground_equal and outer<2 and round_corner<2))
     try:
         report['policy']=driver.policy()
+        report['policy_call_results']=list(driver.calls)
         if report['windows_build']<22000:raise RuntimeError('Public host-backdrop support requires Windows 11 build 22000 or later')
         if not report['policy']['advanced_effects'] or report['policy']['high_contrast']:raise RuntimeError('policy-disabled: advanced effects are disabled or High Contrast is enabled; no system settings were changed')
         if not report['host_layered']:raise AssertionError('Probe did not create an actual Qt layered foreground HWND')
@@ -186,6 +187,7 @@ def verify(build_json,output):
                 evidence['measurement_stage']='baseline-ready'
                 focus_before=int(user.GetForegroundWindow() or 0);gdi_before=int(user.GetGuiResources(kernel.GetCurrentProcess(),0))
                 driver.attach(hwnd,mode);ratio=foreground.devicePixelRatioF();regions=[tuple(value*ratio for value in row[:5])+(row[5],) for row in material_rects]
+                evidence['native_info']=driver.probe_info()
                 driver.regions(regions);driver.visible(True)
                 evidence['measurement_stage']='native-material-exercised'
                 enabled0=capture(name+'-native-0',0,0);enabled1=capture(name+'-native-1',1,0)
@@ -208,9 +210,66 @@ def verify(build_json,output):
             finally:
                 try:driver.close()
                 except Exception as error:evidence['close_error']=str(error)
+                evidence['api_call_results']=list(driver.calls)
                 report['modes'].append(evidence)
         report['verified']=any(mode['verified'] for mode in report['modes'])
         report['reason']='pixel-verified-candidate-only' if report['verified'] else ('baseline-obstructed-native-material-not-exercised' if all(mode.get('measurement_stage')=='not-exercised-baseline-obstructed' for mode in report['modes']) else 'no-compatible-pixel-verified-candidate')
+        # Separate controls never change the four-mode verification above.
+        report['activation_diagnostics']=dict(product_eligible=False,cases=[])
+        passive=None
+        try:
+            from windows_material_diagnostics import ActivationDiagnostics,activation_case_record,graphics_power_diagnostics
+            activation=ActivationDiagnostics()
+            try:report['activation_diagnostics']['graphics_power']=graphics_power_diagnostics()
+            except Exception as error:report['activation_diagnostics']['graphics_power_error']=type(error).__name__+': '+str(error)
+            passive=QWidget();passive.setWindowTitle('FlickDock private diagnostic '+activation.desktop_name)
+            passive.setWindowFlags(Qt.Window|Qt.Tool|Qt.FramelessWindowHint|Qt.WindowStaysOnTopHint|Qt.WindowDoesNotAcceptFocus)
+            passive.setAttribute(Qt.WA_ShowWithoutActivating);passive.setAttribute(Qt.WA_TranslucentBackground)
+            passive.resize(2,2);passive.move(position+QPoint(-12,0));passive.show();app.processEvents()
+            diagnostic_ratio=foreground.devicePixelRatioF();diagnostic_regions=[tuple(value*diagnostic_ratio for value in row[:5])+(row[5],) for row in material_rects]
+            for diagnostic_mode,diagnostic_name in ((2,'underlay-hwnd'),(3,'system-acrylic-underlay')):
+                try:
+                    driver.attach(hwnd,diagnostic_mode);driver.regions(diagnostic_regions)
+                    native_info=driver.probe_info();owned=dict(native_info['hwnds'],passive=int(passive.winId()))
+                    for role in ('qt_foreground','passive','backplate'):
+                        prefix=diagnostic_name+'-activation-'+role
+                        case=dict(mode=diagnostic_name,role=role,product_eligible=False)
+                        try:
+                            driver.visible(False);base0=capture(prefix+'-source-0',0,0);base1=capture(prefix+'-source-1',1,0)
+                            def source_readiness(image,phase):
+                                ratio=image.devicePixelRatio()
+                                return dummy_source_evidence(lambda x,y:image.pixelColor(round(x*ratio),round(y*ratio)).getRgb()[:3],phase)
+                            readiness=dict(phase0=source_readiness(base0,0),phase1=source_readiness(base1,1))
+                            case['source_readiness']=readiness
+                            if not all(value['ready'] for value in readiness.values()):raise RuntimeError('Activation control source is obstructed; no activation attempted')
+                            driver.visible(True)
+                            # No hidden restacking after activation: if backplate
+                            # covers foreground, the raw pixel metrics say so.
+                            requested=activation.activate(role,owned);QTest.qWait(80)
+                            enabled0=capture(prefix+'-native-0',0,0);enabled1=capture(prefix+'-native-1',1,0)
+                            requested['after_settle']=activation.snapshot(owned)
+                            case.update(activation_case_record(requested,readiness,analyze(base0,base1,enabled0,enabled1),driver.probe_info(),driver.calls))
+                            driver.regions([]);empty=capture(prefix+'-empty',0,0)
+                            case['empty_mask_diff']=difference(samples(base0,(20,20,570,350),6),samples(empty,(20,20,570,350),6))
+                            case['after_empty_state']=activation.snapshot(owned)
+                            case['empty_capture_note']='The existing fm_update synchronizes underlay z-order before applying the empty mask; this state is recorded separately from the activation frame'
+                            driver.regions(diagnostic_regions)
+                        except Exception as error:case['error']=type(error).__name__+': '+str(error)
+                        finally:
+                            case['api_call_results']=list(driver.calls)
+                            report['activation_diagnostics']['cases'].append(case)
+                except Exception as error:report['activation_diagnostics'].setdefault('mode_errors',[]).append(dict(mode=diagnostic_name,error=str(error)))
+                finally:
+                    try:
+                        if driver.handle is not None:driver.visible(False)
+                    except Exception as error:report['activation_diagnostics'].setdefault('cleanup_errors',[]).append(str(error))
+                    finally:
+                        try:driver.close()
+                        except Exception as error:report['activation_diagnostics'].setdefault('cleanup_errors',[]).append(str(error))
+            report['activation_diagnostics']['resources_after_close']=driver.stats()
+        except Exception as error:report['activation_diagnostics']['blocked_reason']=type(error).__name__+': '+str(error)
+        finally:
+            if passive:passive.close();passive.deleteLater();app.processEvents()
     except Exception as error:report['reason']=type(error).__name__+': '+str(error)
     finally:
         try:driver.shutdown();report['resources_after_shutdown']=driver.stats()

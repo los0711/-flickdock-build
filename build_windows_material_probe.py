@@ -9,7 +9,7 @@ def sha(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 def build(output_dir):
     if sys.platform!='win32' or os.environ.get('GITHUB_ACTIONS')!='true':raise RuntimeError('Only the approved disposable Windows CI runner may compile this probe')
     source=Path(__file__).with_name('native_material_probe.cpp').resolve();out=Path(output_dir).resolve();out.mkdir(parents=True,exist_ok=True)
-    names=('native_material_probe.cpp','build_windows_material_probe.py','window_material_win.py','ci_windows_material_probe.py','test_windows_material_probe.py','ci_windows_desktop_fixture.py','test_windows_desktop_fixture.py')
+    names=('native_material_probe.cpp','build_windows_material_probe.py','window_material_win.py','ci_windows_material_probe.py','test_windows_material_probe.py','ci_windows_desktop_fixture.py','test_windows_desktop_fixture.py','windows_material_diagnostics.py')
     hashes={name:sha(source.with_name(name)) for name in names}
     report=dict(ok=False,source=str(source.name),source_sha256=sha(source),source_hashes=hashes,github_sha=os.environ.get('GITHUB_SHA',''),workflow_ref=os.environ.get('GITHUB_WORKFLOW_REF',''),dependencies='installed MSVC + Windows SDK only; no downloads or system installation',architecture=dict(target='x64',python_pointer_bits=struct.calcsize('P')*8,platform_machine=platform.machine(),environment={name:os.environ.get(name,'') for name in ('RUNNER_ARCH','PROCESSOR_ARCHITECTURE','PROCESSOR_ARCHITEW6432','ImageOS','ImageVersion')}))
     try:

@@ -112,6 +112,8 @@ struct Context {
     int mode = 0;
     bool owned_window = false, changed_host_attribute = false, visible = false;
     BOOL prior_host_attribute = FALSE;
+    HRESULT host_attribute_result = E_PENDING, target_result = E_PENDING, brush_result = E_PENDING;
+    HRESULT system_attribute_result = E_PENDING, frame_result = E_PENDING;
     DesktopWindowTarget target{nullptr}; ContainerVisual root{nullptr}; CompositionBackdropBrush brush{nullptr};
     std::vector<Element> elements;
     ~Context() {
@@ -159,21 +161,25 @@ extern "C" __declspec(dllexport) HRESULT __stdcall fm_create(HWND host, int mode
         if (mode == 3) {
             set_background_region(context->target_window, host, nullptr, 0);
             DWM_SYSTEMBACKDROP_TYPE backdrop = DWMSBT_TRANSIENTWINDOW;
-            check_hresult(DwmSetWindowAttribute(context->target_window, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop, sizeof(backdrop)));
+            context->system_attribute_result = DwmSetWindowAttribute(context->target_window, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop, sizeof(backdrop));
+            check_hresult(context->system_attribute_result);
             MARGINS margins{-1, -1, -1, -1};
-            check_hresult(DwmExtendFrameIntoClientArea(context->target_window, &margins));
+            context->frame_result = DwmExtendFrameIntoClientArea(context->target_window, &margins);
+            check_hresult(context->frame_result);
             context->sync_position(); *output = context.release(); ++contexts; last_error.clear(); return S_OK;
         }
         context->attribute_window = mode == 1 ? host : context->target_window;
         context->prior_host_attribute = prior_host_flag;
         BOOL enabled = TRUE;
-        check_hresult(DwmSetWindowAttribute(context->attribute_window, host_brush_attribute, &enabled, sizeof(enabled)));
+        context->host_attribute_result = DwmSetWindowAttribute(context->attribute_window, host_brush_attribute, &enabled, sizeof(enabled));
+        check_hresult(context->host_attribute_result);
         context->changed_host_attribute = true;
         auto interop = composition->compositor.as<abi_comp::ICompositorDesktopInterop>();
-        check_hresult(interop->CreateDesktopWindowTarget(context->target_window, FALSE,
-            reinterpret_cast<abi_comp::IDesktopWindowTarget**>(put_abi(context->target))));
+        context->target_result = interop->CreateDesktopWindowTarget(context->target_window, FALSE,
+            reinterpret_cast<abi_comp::IDesktopWindowTarget**>(put_abi(context->target)));
+        check_hresult(context->target_result);
         context->root = composition->compositor.CreateContainerVisual(); context->target.Root(context->root);
-        context->brush = composition->compositor.CreateHostBackdropBrush(); context->sync_position();
+        context->brush = composition->compositor.CreateHostBackdropBrush(); context->brush_result = S_OK; context->sync_position();
         *output = context.release(); ++contexts; last_error.clear(); return S_OK;
     } catch (...) { return failure(); }
 }
@@ -218,6 +224,17 @@ extern "C" __declspec(dllexport) HRESULT __stdcall fm_close(void* handle) noexce
         if (!context) return E_INVALIDARG;
         if (GetCurrentThreadId() != context->thread_id) return RPC_E_WRONG_THREAD;
         delete context; --contexts; return S_OK;
+    } catch (...) { return failure(); }
+}
+// Read-only probe diagnostics; no activation, geometry, material or policy changes.
+extern "C" __declspec(dllexport) HRESULT __stdcall fm_probe_info(void* handle, UINT_PTR* hwnds, unsigned hwnd_count, LONG* codes, unsigned code_count) noexcept {
+    try {
+        auto* context = static_cast<Context*>(handle); valid(context);
+        if (!hwnds || hwnd_count < 2 || !codes || code_count < 5) return E_INVALIDARG;
+        hwnds[0] = reinterpret_cast<UINT_PTR>(context->host); hwnds[1] = reinterpret_cast<UINT_PTR>(context->target_window);
+        codes[0] = context->host_attribute_result; codes[1] = context->target_result; codes[2] = context->brush_result;
+        codes[3] = context->system_attribute_result; codes[4] = context->frame_result;
+        return S_OK;
     } catch (...) { return failure(); }
 }
 extern "C" __declspec(dllexport) HRESULT __stdcall fm_stats(LONG* output, unsigned size) noexcept {
