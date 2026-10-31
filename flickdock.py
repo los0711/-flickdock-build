@@ -3683,8 +3683,10 @@ class ShelfManager:
             self.shortcut_error=self.hotkeys.apply(self.settings.shelf_shortcut,self.settings.overview_shortcut)
 
     def show_overview_from_transfer(self,dialog):
-        if confirmation_active(self.shelf) or self.shelf._archive_choosing:return
+        if self._quitting or confirmation_active(self.shelf) or self.shelf._archive_choosing:return
         self.reset_drag_gesture();self.edge_suppressed=False
+        self.activate_shelf(self.shelf)
+        self.shelf._explicit_hiding=False;self.shelf.opened_at=time.monotonic()
         target=QRect(getattr(self,'_overview_return_rect',QRect()))
         if target.isEmpty():target=self.shelf._expansion_rect(self.shelf.visual_geometry())
         screen=QGuiApplication.screenAt(target.center()) or QGuiApplication.primaryScreen()
@@ -3700,7 +3702,13 @@ class ShelfManager:
             self.shelf.presentation.jump({'sx':.97 if self.motion else 1,'sy':.97 if self.motion else 1,'alpha':0,'dx':0,'dy':0})
             self.shelf.show();self.shelf._raise_for_reveal()
             self.shelf.presentation.animate({'sx':1,'sy':1,'alpha':1,'dx':0,'dy':0},response=.19,damping=1)
+        if sys.platform=='darwin' and native_input_available():
+            from AppKit import NSApplication
+            # This is an explicit Back click, after the last utility window's
+            # Dock-policy teardown. Qt alone cannot activate a background app.
+            NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
         self.shelf.activateWindow();self.shelf.setFocus()
+        self._app_was_active=self.app.applicationState()==Qt.ApplicationState.ApplicationActive
 
     def reset_drag_gesture(self):
         self._drag_content_ready=False

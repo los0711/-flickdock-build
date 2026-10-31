@@ -10,7 +10,9 @@ def main():
     output=Path('transfer-navigation-native.json').resolve();trace=[];checks=[]
     with tempfile.TemporaryDirectory(prefix='flickdock-navigation-') as directory:
         os.environ['APPDATA']=directory;os.environ['XDG_CONFIG_HOME']=directory
-        from PySide6.QtCore import QTimer,Qt
+        from PySide6.QtCore import QTimer,Qt,QMimeData,QUrl
+        from PySide6.QtGui import QKeySequence
+        from PySide6.QtTest import QTest
         from PySide6.QtWidgets import QApplication
         import flickdock
         app=QApplication([]);flickdock.load_font(app)
@@ -43,11 +45,23 @@ def main():
                 wait(lambda:not manager.lan_dialog.isVisible());spin(.45);sample('after-back')
                 assert manager.shelf.isVisible() and manager.shelf.expanded,'Back closed transfer without a visible overview'
                 checks.append('back restores visible unpinned overview')
+            manager.show_lan_dialog();wait(lambda:manager.lan_dialog.isVisible());dialog=manager.lan_dialog
+            original=Path(directory)/'original.bin';original.write_bytes(b'original native paste fixture')
+            mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(original))]);app.clipboard().setMimeData(mime)
+            native=dialog.winId()
+            for mode in ('wan','lan','wan'):
+                dialog.mode_buttons[mode].click();app.processEvents()
+                assert sum(control.isChecked() for control in dialog.mode_buttons.values())==1
+                assert dialog.mode_buttons[mode].parentWidget() is dialog.mode_segment
+                QTest.keySequence(dialog.panel.drop_zone,QKeySequence(QKeySequence.StandardKey.Paste));app.processEvents()
+                assert dialog.panel._queued_paths==[str(original)] and dialog.winId()==native
+            checks.append('native segmented modes keep one window and original-file Paste')
             report=dict(ok=True,checks=checks,trace=trace,platform=sys.platform,real_native_windows=True)
         except Exception as error:
             report=dict(ok=False,checks=checks,trace=trace,platform=sys.platform,error=str(error));raise
         finally:
             timer.stop();manager.timer.stop();output.write_text(json.dumps(report,indent=2))
+            app.clipboard().clear()
             manager.quit();app.processEvents()
     return 0
 

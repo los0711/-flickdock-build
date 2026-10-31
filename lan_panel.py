@@ -11,7 +11,7 @@ import time
 from collections import deque
 
 from PySide6.QtCore import QByteArray, QEvent, QObject, QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QKeySequence
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog, QFrame, QGraphicsDropShadowEffect,
                                QHBoxLayout, QLayout, QLabel, QLineEdit, QProgressBar, QPushButton,
@@ -1457,8 +1457,24 @@ class _TransferDropRouter(QObject):
 
     def eventFilter(self, watched, event):
         kind=event.type()
-        if kind not in (QEvent.Type.DragEnter,QEvent.Type.DragMove,QEvent.Type.DragLeave,QEvent.Type.Drop):return False
+        if kind not in (QEvent.Type.ShortcutOverride,QEvent.Type.KeyPress,QEvent.Type.DragEnter,
+                        QEvent.Type.DragMove,QEvent.Type.DragLeave,QEvent.Type.Drop):return False
+        from shiboken6 import isValid
+        if not isValid(self.dialog):return False
         if not isinstance(watched,QWidget) or not (watched is self.dialog or self.dialog.isAncestorOf(watched)):return False
+        if kind in (QEvent.Type.ShortcutOverride,QEvent.Type.KeyPress):
+            if (not self.dialog.isVisible() or QApplication.activeModalWidget() is not None
+                    or not event.matches(QKeySequence.StandardKey.Paste)):return False
+            mime=QApplication.clipboard().mimeData()
+            if mime is None or not mime.hasUrls():return False
+            urls=mime.urls()
+            if not urls or any(not url.isLocalFile() for url in urls):return False
+            # Path validation/metadata stays in the existing asynchronous queue;
+            # reading a network-mounted path here would stall keyboard input.
+            if kind==QEvent.Type.KeyPress and not event.isAutoRepeat():
+                self.dialog.panel.queue_paths([url.toLocalFile() for url in urls])
+            event.accept();return True
+        if kind not in (QEvent.Type.DragEnter,QEvent.Type.DragMove,QEvent.Type.DragLeave,QEvent.Type.Drop):return False
         zone=self.dialog.panel.drop_zone
         if kind==QEvent.Type.DragLeave:
             zone.dragLeaveEvent(event);return True
@@ -1483,6 +1499,7 @@ class LanDialog(QDialog):
     dock_requested = Signal()
 
     def show(self):
+        self._navigation_generation+=1;self._navigate_after_close=None
         self.chrome.prepare_open();self._window_fade.reopen();super().show()
 
     def done(self,result):
@@ -1496,7 +1513,7 @@ class LanDialog(QDialog):
     def __init__(self, service, settings, parent=None):
         super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
         self._settings=settings;self._panels={};self._theme=settings.theme
-        self._close_prompt=None;self._closing_confirmed=False;self._navigate_after_close=None
+        self._close_prompt=None;self._closing_confirmed=False;self._navigate_after_close=None;self._navigation_generation=0
         self.finished.connect(self._finish_navigation)
         self._wan=getattr(service,'mode','lan')=='wan'
         self.setObjectName('lanDialog'); self.setWindowTitle('FlickDock · 文件互传')
@@ -1529,12 +1546,16 @@ class LanDialog(QDialog):
         self.title_label=title
         title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         title_row.addWidget(title, 1)
+        self.mode_segment=QFrame(self.title_bar);self.mode_segment.setObjectName('transferModeSegmentGroup')
+        self.mode_segment.setAccessibleName('传输方式')
+        mode_layout=QHBoxLayout(self.mode_segment);mode_layout.setContentsMargins(2,2,2,2);mode_layout.setSpacing(0)
         self.mode_group=QButtonGroup(self);self.mode_group.setExclusive(True);self.mode_buttons={}
         for mode,label in (('lan','局域网传输'),('wan','远程传输')):
-            control=_button(label,self.title_bar);control.setCheckable(True);control.setChecked((mode=='wan')==self._wan)
+            control=_button(label,self.mode_segment);control.setCheckable(True);control.setChecked((mode=='wan')==self._wan)
             control.setObjectName('transferModeSegment');self.mode_group.addButton(control);self.mode_buttons[mode]=control
             control.clicked.connect(lambda checked=False,mode=mode:self.mode_selected.emit(mode))
-            title_row.addWidget(control)
+            mode_layout.addWidget(control)
+        title_row.addWidget(self.mode_segment)
         self.back_button=_button('返回总览',self.title_bar);self.back_button.setObjectName('lanDialogBack')
         self.back_button.clicked.connect(lambda:self._navigate('overview'));title_row.addWidget(self.back_button)
         close = _CloseButton('', self.title_bar); close.setObjectName('lanDialogClose')
@@ -1562,7 +1583,15 @@ class LanDialog(QDialog):
 
     def _finish_navigation(self,*_):
         target=self._navigate_after_close;self._navigate_after_close=None
-        if target:getattr(self,target+'_requested').emit()
+        if target:
+            generation=self._navigation_generation
+            def navigate():
+                from shiboken6 import isValid
+                if isValid(self) and not self.isVisible() and generation==self._navigation_generation:
+                    getattr(self,target+'_requested').emit()
+            # WindowChrome's finished handler may still change macOS Dock
+            # policy. Complete all close handlers before activating the shelf.
+            QTimer.singleShot(0,navigate)
 
     def _active_transfers(self):
         return [(service,identifier) for service in self._panels
@@ -1659,8 +1688,10 @@ class LanDialog(QDialog):
             QPushButton#lanDialogClose,QPushButton#lanDialogBack {{ background:transparent; color:{c['secondary']}; border:0; border-radius:8px;
                                           font:12px '{font_family}'; padding:0; }}
             QPushButton#lanDialogBack {{ padding:4px 10px; }}
-            QPushButton#transferModeSegment {{background:{c['control']};color:{c['secondary']};border:0;border-radius:6px;padding:5px 10px;font:12px '{font_family}';}}
-            QPushButton#transferModeSegment:checked {{background:{'#173653' if dark else '#E8F3FF'};color:{c['link']};}}
+            QFrame#transferModeSegmentGroup {{background:{'rgba(255,255,255,10)' if dark else 'rgba(0,0,0,10)'};border:1px solid {'rgba(255,255,255,18)' if dark else 'rgba(0,0,0,18)'};border-radius:9px;}}
+            QPushButton#transferModeSegment {{background:transparent;color:{c['secondary']};border:0;border-radius:6px;padding:5px 10px;font:12px '{font_family}';}}
+            QPushButton#transferModeSegment:hover {{background:{hover};}}
+            QPushButton#transferModeSegment:checked {{background:{'rgba(255,255,255,31)' if dark else '#FFFFFF'};color:{ink};font-weight:600;}}
             QPushButton#lanDialogClose:hover {{ background:{c['red']}; color:white; }}
             QPushButton#lanDialogBack:hover {{ background:{hover}; color:{ink}; }}
         ''')

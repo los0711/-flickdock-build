@@ -49,6 +49,7 @@ RUNTIME_SOURCES=(
 )
 MAINTAINED_TESTS=(
     'test_clipboard_origin_v1823.py',
+    'test_transfer_interaction_v1823.py',
     'test_stability_v1822.py','test_resources_v1822.py','test_transfer_entry_v1822.py','test_receive_lifecycle_v1822.py','test_motion_resources_v1822.py',
     'test_display_groups_v1821.py','test_transfer_layout_v1821.py','test_interaction_scope_v1821.py','test_shared_clipboard_files_v1821.py','test_download_ranges_v1821.py','test_remote_handoff_v1821.py',
     'test_mac_permissions_v1821.py','test_shelf_live_v1821.py','test_release_notes_v1821.py','test_clipboard_fast_v1821.py','test_clipboard_preview_v1821.py','test_utility_windows_v1821.py','test_update_resume_v1821.py','test_update_signatures_v1821.py',
@@ -88,7 +89,7 @@ MAINTAINED_TESTS=(
     'test_remote_transfer_actions_v1812.py','test_wan_transfer_v1816.py',
 )
 SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
-    '.github/workflows/native-clipboard.yml','ci_clipboard_origin.py',
+    '.github/workflows/native-clipboard.yml','ci_clipboard_origin.py','ci_transfer_navigation.py',
     'FlickDock.spec','FlickDock.iss','version_info.txt','ChineseSimplified.isl','windows-network.ps1',
     'flickdock.ico','THIRD_PARTY_NOTICES.md','font_manifest.json','bundle_policy.py',
     'release_manifest.py','release_macos.py','release_signing.py','package_source.py','PUBLISHING.md','README.md','AGENTS.md','UI_REFERENCE_IMPLEMENTATION.md','HIG_DESIGN.md','.gitignore','.gitattributes',
