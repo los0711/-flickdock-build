@@ -160,7 +160,7 @@ class MaterialHandle(QObject):
     def background_color(self, color, factor=.90):
         """Native-policy fallback; use only at the single background owner."""
         c = self.capabilities()
-        return (material_background(color, factor) if not self._closed and c.supported
+        return (material_background(color, factor) if not self._closed and c.supported and self._attached
                 else QColor(color))
 
     def _notify_changed(self):

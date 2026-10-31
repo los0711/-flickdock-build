@@ -5,6 +5,7 @@ import sys
 from PySide6.QtCore import QObject, QPoint, QRect, QRectF, Qt, QEasingCurve, QVariantAnimation
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPixmap, QTransform, QRegion
 from PySide6.QtWidgets import QWidget
+from continuous_corners import continuous_rect_path, draw_continuous_rect
 
 
 def paint_surface_shadow(painter,rect,cache,blur=28.0,offset=None,color=None):
@@ -32,7 +33,7 @@ def paint_surface_shadow(painter,rect,cache,blur=28.0,offset=None,color=None):
         for i in range(18,0,-1):
             pad=spread*i/18; ink=QColor(color)
             ink.setAlpha(round(color.alpha()*.11*math.exp(-2.4*(i/18)**2)))
-            p.setBrush(ink); p.drawRoundedRect(bounds.adjusted(-pad,-pad,pad,pad),radius+pad,radius+pad)
+            p.setBrush(ink); draw_continuous_rect(p,bounds.adjusted(-pad,-pad,pad,pad),radius+pad)
         p.end()
         texture=(image,margin,round((margin+inset_x)*dpr),round((margin+inset_y)*dpr))
         cache[key]=texture
@@ -57,8 +58,7 @@ def paint_surface_shadow(painter,rect,cache,blur=28.0,offset=None,color=None):
 
 def surface_clip(rect):
     radius=16 if sys.platform=='darwin' else 10
-    path=QPainterPath(); path.addRoundedRect(rect,radius,radius)
-    return path
+    return continuous_rect_path(rect,radius)
 
 
 class SurfaceSnapshot(QWidget):
@@ -78,7 +78,7 @@ class SurfaceSnapshot(QWidget):
         self.rect_global=QRect(); self.transition_bounds=QRect(); self.mix=0
         self._shadows=OrderedDict()
         self.capture_count=0
-        self._blend=QPixmap()
+        self._blend=QPixmap();self._blend_valid=False
         self.hide()
 
     def capture_live(self,card,controls):
@@ -105,8 +105,15 @@ class SurfaceSnapshot(QWidget):
             if effect: effect.setEnabled(enabled)
             for button,visible in visibility: button.setVisible(visible)
 
-    def capture_current(self,card,controls):
-        if not self.active: return self.capture_live(card,controls)
+    def capture_current(self,card,controls,*,foreground_only=False):
+        if not self.active:
+            captured=self.capture_live(card,controls)
+            if foreground_only or getattr(self.owner,'_surface_material',None) is None:return captured
+            image=QPixmap(captured.size());image.setDevicePixelRatio(captured.devicePixelRatioF());image.fill(Qt.transparent)
+            painter=QPainter(image);painter.setRenderHint(QPainter.Antialiasing)
+            rect=QRectF(0,0,captured.deviceIndependentSize().width(),captured.deviceIndependentSize().height())
+            painter.setClipPath(surface_clip(rect));painter.fillRect(rect,self._effect().background_color())
+            painter.drawPixmap(QPoint(),captured);painter.end();return image
         width=max(1,self.rect_global.width()-28); height=max(1,self.rect_global.height()-27)
         dpr=self.owner.devicePixelRatioF()
         image=QPixmap(round(width*dpr),round(height*dpr))
@@ -116,13 +123,25 @@ class SurfaceSnapshot(QWidget):
             # An interrupted transition is composed from its two already
             # captured endpoints. QWidget.render has the same state-reset
             # hazard as drawSource when called under a scaling transform.
-            self.paint_frame(painter,QRectF(0,0,width,height))
+            rect=QRectF(0,0,width,height)
+            if self._blend_valid and not self._blend.isNull():
+                # This is the last actually painted cached/live mixture. A
+                # quick reverse must not rebuild it from a now-stale endpoint.
+                import ui_theme
+                painter.setRenderHints(QPainter.Antialiasing|QPainter.SmoothPixmapTransform)
+                painter.setClipPath(surface_clip(rect))
+                if not foreground_only:
+                    effect=self._effect()
+                    painter.fillRect(rect,effect.background_color() if effect is not None else QColor(ui_theme.color('surface')))
+                painter.drawPixmap(rect,self._blend,QRectF(self._blend.rect()))
+            else:self.paint_frame(painter,rect,background=not foreground_only)
         finally:
             painter.end()
         return image
 
     def begin(self,source,target,origin,present=True,target_rect=None):
         self.source,self.target=source,target
+        self._blend_valid=False
         self.active=True; self.mix=0; self.rect_global=QRect(origin)
         self.transition_bounds=origin.united(target_rect) if target_rect is not None else QRect(origin)
         self.setGeometry(self.owner.rect())
@@ -138,6 +157,7 @@ class SurfaceSnapshot(QWidget):
     def finish(self):
         self.active=False; self.hide()
         self.source=QPixmap(); self.target=QPixmap()
+        self._blend=QPixmap();self._weighted=QPixmap();self._blend_valid=False
 
     def _effect(self):
         return getattr(self.owner,'surface_effect',None)
@@ -177,7 +197,7 @@ class SurfaceSnapshot(QWidget):
                              effect.offset() if effect else None,
                              effect.color() if effect else None)
 
-    def paint_frame(self,painter,rect,live_draw=None,target_size=None):
+    def paint_frame(self,painter,rect,live_draw=None,target_size=None,*,background=True):
         """Paint inside MotionShadow's existing source coordinate system.
 
         Target widgets stay at their final layout size and remain visible to
@@ -189,12 +209,12 @@ class SurfaceSnapshot(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         painter.setClipPath(surface_clip(rect))
-        # Both endpoints have opaque materials. Scaled rounded snapshot corners
-        # must not punch transparent holes into the moving surface, and Qt's
-        # live drawSource can clear uncovered child regions during crossfade.
-        # One stationary-radius backing owns opacity for the entire transition.
-        import ui_theme
-        painter.fillRect(rect,QColor(ui_theme.color('surface')))
+        # The base is painted once, outside the foreground crossfade. Cached
+        # endpoints never contain a second base; a reversal preserves alpha.
+        if background:
+            import ui_theme
+            effect=self._effect()
+            painter.fillRect(rect,effect.background_color() if effect is not None else QColor(ui_theme.color('surface')))
         if self.mix<=0 and not self.source.isNull():
             painter.drawPixmap(rect,self.source,QRectF(self.source.rect()))
         elif self.mix<1 and not self.source.isNull():
@@ -208,14 +228,31 @@ class SurfaceSnapshot(QWidget):
             physical=(round(width*dpr),round(height*dpr))
             if self._blend.size().toTuple()!=physical or self._blend.devicePixelRatioF()!=dpr:
                 self._blend=QPixmap(*physical);self._blend.setDevicePixelRatio(dpr)
+            weighted=getattr(self,'_weighted',None)
+            if weighted is None or weighted.size().toTuple()!=physical or weighted.devicePixelRatioF()!=dpr:
+                weighted=self._weighted=QPixmap(*physical);weighted.setDevicePixelRatio(dpr)
             self._blend.fill(Qt.GlobalColor.transparent)
             layer=QPainter(self._blend);layer.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-            layer.setOpacity(self.mix)
-            if live_draw is not None:live_draw(layer)
-            elif not self.target.isNull():layer.drawPixmap(QRectF(0,0,width,height),self.target,QRectF(self.target.rect()))
+            # The first 3/4 is entirely cached. In the final quarter, blend
+            # toward the current live tree so arrivals/progress/input stay
+            # current and the endpoint cannot flash to a different raster.
+            live_mix=max(0.,min(1.,(self.mix-.75)/.25)) if live_draw is not None else 0.
+            if self.target.isNull() and live_draw is not None:live_mix=1.
+            # Qt applies global opacity to the *result* of Plus (including
+            # saturation), not simply to its source. Premultiply each input
+            # into a reusable scratch surface, then add at full opacity.
+            def add(weight,draw):
+                if weight<=0:return
+                weighted.fill(Qt.GlobalColor.transparent)
+                part=QPainter(weighted);part.setRenderHint(QPainter.SmoothPixmapTransform)
+                part.setOpacity(weight);draw(part);part.end()
+                layer.drawPixmap(QPoint(),weighted)
             layer.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
-            layer.setOpacity(1-self.mix)
-            layer.drawPixmap(QRectF(0,0,width,height),self.source,QRectF(self.source.rect()));layer.end()
+            if not self.target.isNull():add(self.mix*(1-live_mix),lambda p:p.drawPixmap(QRectF(0,0,width,height),self.target,QRectF(self.target.rect())))
+            if live_mix:add(self.mix*live_mix,live_draw)
+            add(1-self.mix,lambda p:p.drawPixmap(QRectF(0,0,width,height),self.source,QRectF(self.source.rect())))
+            layer.end()
+            self._blend_valid=True
             painter.drawPixmap(rect,self._blend,QRectF(self._blend.rect()))
         elif live_draw is not None:
             painter.save()
@@ -259,10 +296,12 @@ class SurfaceMorph(QObject):
         self.animation.valueChanged.connect(self._frame)
         self.animation.finished.connect(self._finish)
         self._done = None
+        self._intent=0
         self.progress=1.0
         self.active=False
 
     def stop(self, settle=True):
+        self._intent+=1
         self.animation.stop()
         self._done = None
         self.active=False
@@ -296,6 +335,9 @@ class SurfaceMorph(QObject):
         self.animation.start()
 
     def _frame(self, progress):
+        from native_ui_common import reduced_motion
+        if self.active and self.animation.state()==self.animation.State.Running and (not self.motion or reduced_motion()):
+            self._finish();return
         t=float(progress)
         self.progress=t
         a, b = self._from, self._to
@@ -307,14 +349,15 @@ class SurfaceMorph(QObject):
 
     def _finish(self):
         if not self.active:return
+        intent=self._intent;callback,self._done=self._done,None
         self.animation.stop()
         self.active=False; self.progress=1.0
         self.current = QRect(self._to)
         self.update(QRect(self.current))
+        if intent!=self._intent:return
         if self.settle:
             self.settle(QRect(self.current))
-        callback, self._done = self._done, None
-        if callback:
+        if callback and intent==self._intent:
             callback()
 
     def complete(self):

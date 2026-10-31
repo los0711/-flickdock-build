@@ -32,7 +32,7 @@ _CATEGORIES = {
 
 # Every control shares a 24-unit grid, rounded joins and the same stroke width.
 _GLYPHS = {
-    'more':'<circle cx="5" cy="12" r="1.45" fill="{c}" stroke="none"/><circle cx="12" cy="12" r="1.45" fill="{c}" stroke="none"/><circle cx="19" cy="12" r="1.45" fill="{c}" stroke="none"/>',
+    'more':'<circle cx="5" cy="12" r="1.55" fill="{c}" stroke="none"/><circle cx="12" cy="12" r="1.55" fill="{c}" stroke="none"/><circle cx="19" cy="12" r="1.55" fill="{c}" stroke="none"/>',
     'close':'<path d="M6 6l12 12M18 6L6 18"/>',
     'plus':'<path d="M12 5v14M5 12h14"/>',
     'pin':'<path d="M8 4h8l-.5 6 3.5 4H5l3.5-4L8 4zm4 10v7"/>',
@@ -307,7 +307,8 @@ def file_pixmap(path: str, size: int = 90, stack: int = 1, dpr: float | None = N
             scale = min(optical_size/image.width(),optical_size/image.height())
             w,h = image.width()*scale,image.height()*scale
             rect = QRectF((total-w)/2,(total-h)/2,w,h)
-            clip = QPainterPath(); clip.addRoundedRect(rect,5,5); p.setClipPath(clip)
+            from continuous_corners import continuous_rect_path
+            p.setClipPath(continuous_rect_path(rect,5))
             p.drawPixmap(rect,image,QRectF(image.rect())); p.end()
             return pm
     if category != 'generic':

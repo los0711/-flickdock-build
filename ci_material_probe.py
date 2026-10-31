@@ -126,9 +126,13 @@ def verify_mac(output):
     class Foreground(QWidget):
         paint_count = 0
         fallback_color = None
+        paint_contents = True
+        content_offset = (0,0)
         def paintEvent(self, event):
             self.paint_count += 1
+            if not self.paint_contents:return
             p = QPainter(self)
+            p.translate(*self.content_offset)
             if self.fallback_color is not None:
                 from continuous_corners import continuous_rect_path
                 path=continuous_rect_path(QRectF(90,70,300,200),24)
@@ -361,6 +365,70 @@ def verify_mac(output):
         if effect.superview() is not None: raise AssertionError('Native material view was not detached')
         restored = difference(roi_values(bare,inside),roi_values(detached,inside))
         if restored > 2: raise AssertionError(('Native material remained after close',restored))
+        # Exercise the same single-base compositor/controller now used by the
+        # shelf, independently of the earlier low-level native API proof.
+        # These remain dummy CI windows, never an application installation.
+        from continuous_controls import G2Frame,PanelStyle,set_g2_style
+        from flickdock_motion import MotionShadow
+        from surface_material import ShelfMaterial
+        from surface_morph import SurfaceSnapshot
+        from PySide6.QtGui import QPixmap,QTransform
+        import ui_theme
+        ui_theme.set_theme('light')
+        foreground.paint_contents=False
+        foreground.card=G2Frame(foreground);foreground.card.setGeometry(90,70,300,200)
+        set_g2_style(foreground.card,PanelStyle(16,None,None,0))
+        original_pixels=Foreground(foreground.card);original_pixels.content_offset=(-90,-70)
+        original_pixels.setGeometry(0,0,300,200)
+        foreground.surface_effect=MotionShadow(foreground.card)
+        foreground.card.setGraphicsEffect(foreground.surface_effect)
+        controller=ShelfMaterial(foreground);handle=controller.handle
+        foreground.card.show();original_pixels.show();foreground.update();QTest.qWait(120);app.processEvents()
+        if not handle.status()['visible']:raise AssertionError(('Production shelf controller did not attach',handle.status()))
+        native_shelf_view=handle.backend.view
+        frame=foreground.card.grab().toImage();ratio=frame.devicePixelRatio()
+        base_alpha=frame.pixelColor(round(225*ratio),round(155*ratio)).alpha()
+        original_red=frame.pixelColor(round(55*ratio),round(98*ratio)).getRgb()
+        if abs(base_alpha-230)>1 or original_red!=(255,0,0,255):
+            raise AssertionError(('Production shelf Qt base/foreground alpha differs',base_alpha,original_red))
+        shelf_frames=[];shelf_means=[];shelf_variance=[]
+        for phase in (1,2):
+            handle.set_visible(False)
+            background.signal_phase=phase;background.update();app.processEvents()
+            unblurred=capture_ready_source('shelf-single-base-unblurred-'+str(phase),phase)
+            baseline_energy=energy(roi_values(unblurred,QRect(275,215,90,28)))
+            if baseline_energy<=.1:
+                raise AssertionError(('Production shelf unblurred control has insufficient source contrast',baseline_energy))
+            handle.set_visible(True)
+            image=capture_ready_source('shelf-single-base-source-'+str(phase),phase)
+            shelf_frames.append(image)
+            shelf_means.append({key:mean_color(roi_values(image,roi)) for key,roi in (
+                ('left',QRect(125,215,90,28)),('right',QRect(275,215,90,28)))})
+            blurred_energy=energy(roi_values(image,QRect(275,215,90,28)))
+            ratio=blurred_energy/baseline_energy
+            shelf_variance.append(dict(phase=phase,unblurred=baseline_energy,blurred=blurred_energy,ratio=ratio))
+            if blurred_energy>2 or ratio>.25:
+                raise AssertionError(('Production shelf controller did not suppress its measured unblurred control by 75%',shelf_variance[-1]))
+        responses=[sum(abs(a-b) for a,b in zip(shelf_means[0][key],shelf_means[1][key]))/3 for key in ('left','right')]
+        if min(responses)<1:raise AssertionError(('Production shelf tint is opaque/static, not a live backdrop',responses))
+        snapshot=SurfaceSnapshot(foreground);snapshot.begin(QPixmap(),QPixmap(),QRect(foreground.x()+76,foreground.y()+63,328,227),present=False)
+        foreground.surface_effect.begin_surface_morph(snapshot)
+        geometry=foreground.geometry();snapshot.set_frame(QRect(foreground.x()+66,foreground.y()+58,308,217),.5)
+        foreground.surface_effect.set_motion(sx=1.01,sy=.99,dx=2,dy=1)
+        QTest.qWait(80);app.processEvents()
+        expected=snapshot.presentation_transform().map(__import__('surface_morph').surface_clip(snapshot.content_rect()))
+        if handle._regions[0].path!=expected or foreground.geometry()!=geometry:
+            raise AssertionError('Production shelf material moved outside the existing compositor pose/host')
+        mask_pose=capture('shelf-single-base-morph-pose')
+        foreground.surface_effect.end_surface_morph();snapshot.finish()
+        foreground.surface_effect.set_motion();QTest.qWait(80);app.processEvents()
+        result['production_shelf_controller']=dict(verified=True,scope='Actual production controller/Qt compositor in dummy native windows; not a complete app build',
+            qt_base_alpha=base_alpha,opaque_original_red=original_red,source_response=responses,
+            source_means=shelf_means,variance_controls=shelf_variance,host_geometry_unchanged=True,g2_pose_matches=True)
+        handle.close();QTest.qWait(80);app.processEvents()
+        if native_shelf_view.superview() is not None or handle.backend._observer is not None:
+            raise AssertionError('Production shelf controller did not release native view/observer')
+        result['production_shelf_controller']['released']=True
         result.update(ok=True,blur_verified=True, metrics=dict(checkerboard_variance_before=e_before,checkerboard_variance_blurred=e_after,
                       variance_ratio=e_after/e_before,outside_delta=outside_delta,corner_delta=corner_delta,
                       original_foreground_delta=[red_delta,blue_delta,black_delta],crisp_text_pixels=crisp_after,

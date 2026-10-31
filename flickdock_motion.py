@@ -1,5 +1,6 @@
 """Small, interruptible physical feedback primitives for FlickDock's Qt UI."""
 from __future__ import annotations
+from continuous_corners import continuous_rect_path, draw_continuous_rect
 
 import math
 import time
@@ -34,6 +35,7 @@ class Spring(QObject):
         self.response = .24
         self.damping = .70
         self._finished: Callable[[], None] | None = None
+        self._intent=0;self._motion_done=True
         self._last_tick = time.perf_counter()
         self._started_at = self._last_tick
         self._timer = QTimer(self)
@@ -54,7 +56,9 @@ class Spring(QObject):
         self.response = max(.06, float(response)) if motion else .13
         self.damping = max(.25, float(damping)) if motion else 1.0
         self._finished = finished
+        self._intent+=1;self._motion_done=False
         self._started_at = time.perf_counter()
+        if not motion:self._settle();return
         self._start()
 
     def jump(self, values: dict[str, float]) -> None:
@@ -71,11 +75,18 @@ class Spring(QObject):
                 self.values.setdefault(key, 0.0)
                 self._targets.setdefault(key, self.values[key])
                 self._velocities[key] = self._velocities.get(key, 0.0) + float(velocity)
-        self._start()
+            self._motion_done=False;self._start()
+        elif not self._motion_done:self._settle()
+
+    def hold(self,*keys):
+        """Freeze selected channels at their current pose, retaining others."""
+        for key in keys:
+            if key in self.values:
+                self._targets[key]=self.values[key];self._velocities[key]=0.
 
     def stop(self) -> None:
         self._timer.stop()
-        self._finished = None
+        self._finished = None;self._motion_done=True;self._intent+=1
 
     def _start(self) -> None:
         if not self._timer.isActive():
@@ -83,6 +94,9 @@ class Spring(QObject):
             self._timer.start()
 
     def _tick(self) -> None:
+        if self._motion_done:return
+        from native_ui_common import reduced_motion
+        if not self.motion or reduced_motion():self._settle();return
         now = time.perf_counter()
         dt = min(.048, max(.001, now - self._last_tick))
         self._last_tick = now
@@ -108,11 +122,22 @@ class Spring(QObject):
             self.values.update(self._targets)
             self._velocities = {k: 0.0 for k in self.values}
             self._timer.stop()
+            self._motion_done=True
         callback=None
+        intent=self._intent
         if settled:callback,self._finished=self._finished,None
         self._on_update(dict(self.values))
         if settled:self.settled.emit()
-        if callback:callback()
+        if callback and intent==self._intent:callback()
+
+    def _settle(self):
+        if self._motion_done:return
+        self._motion_done=True;intent=self._intent
+        self._timer.stop();self.values.update(self._targets)
+        self._velocities={key:0. for key in self.values}
+        callback,self._finished=self._finished,None
+        self._on_update(dict(self.values));self.settled.emit()
+        if callback and intent==self._intent:callback()
 
 
 class MotionShadow(QGraphicsDropShadowEffect):
@@ -121,6 +146,8 @@ class MotionShadow(QGraphicsDropShadowEffect):
     The widget's hit bounds stay stable. Only its painted presentation moves,
     so pointer interaction and layout don't jitter as the surface springs.
     """
+    pose_changed=Signal()
+
     def __init__(self, widget: QWidget, alpha: int = 45):
         super().__init__(widget)
         self.sx = self.sy = 1.0
@@ -137,21 +164,30 @@ class MotionShadow(QGraphicsDropShadowEffect):
         self.dx, self.dy = float(dx), float(dy)
         self.updateBoundingRect()
         self.update()
+        self.pose_changed.emit()
 
     def begin_surface_morph(self,snapshot) -> None:
         """Keep this effect as the sole compositor throughout the resize."""
         self._surface_snapshot=snapshot
         self.updateBoundingRect()
         self.update()
+        self.pose_changed.emit()
 
     def end_surface_morph(self) -> None:
         self._surface_snapshot=None
         self.updateBoundingRect()
         self.update()
+        self.pose_changed.emit()
 
     def refresh_surface_morph(self) -> None:
         if self._surface_snapshot is not None:
             self.update()
+            self.pose_changed.emit()
+
+    def background_color(self):
+        color=QColor(ui_theme.color('surface'))
+        material=getattr(self.parent().window(),'_surface_material',None)
+        return material.background_color(color) if material is not None else color
 
     def _surface_rect(self,snapshot):
         widget=self.parent()
@@ -181,10 +217,14 @@ class MotionShadow(QGraphicsDropShadowEffect):
         # the caller's scale/clip. Always composite its cached pixmap ourselves,
         # at rest as well as in motion, so intermediate and final frames share
         # exactly one transform-respecting path.
-        offset=QPoint()
-        source=self.sourcePixmap(Qt.CoordinateSystem.LogicalCoordinates,offset,
-                                 QGraphicsEffect.PixmapPadMode.NoPad)
+        offset=QPoint();source=None
         def draw_live(target):
+            nonlocal source
+            # A cached morph endpoint does not need the whole live widget tree
+            # rasterized again. Acquire it only for the final live handoff.
+            if source is None:
+                source=self.sourcePixmap(Qt.CoordinateSystem.LogicalCoordinates,offset,
+                                         QGraphicsEffect.PixmapPadMode.NoPad)
             target.drawPixmap(QPointF(offset),source)
         snapshot=self._surface_snapshot
         active=snapshot is not None and snapshot.active
@@ -195,13 +235,20 @@ class MotionShadow(QGraphicsDropShadowEffect):
         painter.translate(center.x() + self.dx, center.y() + self.dy)
         painter.scale(self.sx, self.sy)
         painter.translate(-center.x(), -center.y())
+        # A translucent base must not accumulate the shadow's interior alpha.
+        # Keep the original cached shadow outside the exact same G2 surface.
+        painter.save()
+        outside=QPainterPath();outside.setFillRule(Qt.OddEvenFill)
+        outside.addRect(super().boundingRectFor(rect).adjusted(-2,-2,2,2));outside.addPath(surface_clip(rect))
+        painter.setClipPath(outside,Qt.IntersectClip)
         paint_surface_shadow(painter,rect,self._shadow_cache,self.blurRadius(),self.offset(),self.color())
+        painter.restore()
         if active:
             snapshot.paint_frame(painter,rect,live_draw=draw_live,target_size=bounds.size())
         else:
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             painter.setClipPath(surface_clip(rect))
-            painter.fillRect(rect,QColor(ui_theme.color('surface')))
+            painter.fillRect(rect,self.background_color())
             draw_live(painter)
         painter.restore()
 
@@ -326,16 +373,17 @@ class FeedbackButton(QPushButton):
         p.setBrush(bg)
         p.setPen(Qt.PenStyle.NoPen)
         background_rect = QRectF(self.rect()).adjusted(1.5, 1.5, -1.5, -1.5)
-        p.drawRoundedRect(background_rect, 9 if flat_toolbar else self.height() / 2,
-                          9 if flat_toolbar else self.height() / 2)
+        circular=not flat_toolbar and abs(background_rect.width()-background_rect.height())<.001
+        if circular:p.drawEllipse(background_rect)
+        else:draw_continuous_rect(p,background_rect,9 if flat_toolbar else self.height()/2)
         if self.hasFocus() and self._keyboard_focus:
             focus = QColor(ui_theme.color("accent"))
             focus.setAlpha(180)
             p.setPen(QPen(focus, 1.5))
             p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawRoundedRect(QRectF(self.rect()).adjusted(2, 2, -2, -2),
-                              8 if flat_toolbar else self.height() / 2,
-                              8 if flat_toolbar else self.height() / 2)
+            focus_rect=QRectF(self.rect()).adjusted(2,2,-2,-2)
+            if circular:p.drawEllipse(focus_rect)
+            else:draw_continuous_rect(p,focus_rect,8 if flat_toolbar else self.height()/2)
         glyph_size = min(24, self.width() - 8)*(.82 if self.glyph=='copy' else .875)
         if not self.isEnabled():
             p.setOpacity(.45)
@@ -500,7 +548,7 @@ class ContentTile(QWidget):
         if self._kind in ("image", "text"):
             p.setBrush(QColor(ui_theme.color("surface")))
             p.setPen(QPen(QColor(ui_theme.color("border")), .8))
-            p.drawRoundedRect(r, 10, 10)
+            draw_continuous_rect(p,r,(10,10))
         if self._kind == "image" and not self._pixmap.isNull():
             r = r.adjusted(4, 4, -4, -4)
             image = self._pixmap
@@ -508,7 +556,7 @@ class ContentTile(QWidget):
             width, height = image.width()*scale, image.height()*scale
             dest = QRectF(center.x()-width/2, r.center().y()-height/2, width, height)
             clip = QPainterPath()
-            clip.addRoundedRect(r, 6, 6)
+            clip.addPath(continuous_rect_path(r,(6,6)))
             p.setClipPath(clip)
             p.drawPixmap(dest, image, QRectF(image.rect()))
             p.setClipping(False)
