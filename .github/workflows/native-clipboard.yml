@@ -46,10 +46,10 @@ jobs:
       - name: Retrieve the exact verified native release artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: FlickDock-macOS-${{ matrix.arch }}-ef0026d34f32d01f45db95ca3ea3e2a4851f6b81
+          name: FlickDock-macOS-${{ matrix.arch }}-85ceaa2637422326cf3d98d0d9e78c50ca8075a8
           path: qa-artifact
           repository: los0711/-flickdock-build
-          run-id: '41178019267'
+          run-id: '41178840972'
           github-token: ${{ github.token }}
       - name: Run the shipped frozen updater against the real public channel
         shell: bash
@@ -83,7 +83,7 @@ jobs:
               assert result.returncode==0 and data.get('ok') and data.get('frozen'),data
               assert data.get('version')=='1.8.23' and data.get('available_version')==target and data.get('latest_version')==target,data
               assert data.get('verified_download') is True and data.get('download_bytes',0)>0 and data.get('installer_executed') is False,data
-              data.update(verification_phase=phase,architecture=arch,native_artifact_run=41178019267,native_artifact_commit='ef0026d34f32d01f45db95ca3ea3e2a4851f6b81',native_archive_sha256=checksum,installed=False)
+              data.update(verification_phase=phase,architecture=arch,native_artifact_run=41178840972,native_artifact_commit='85ceaa2637422326cf3d98d0d9e78c50ca8075a8',native_archive_sha256=checksum,installed=False)
               output.write_text(json.dumps(data,ensure_ascii=False,indent=2)+'\n')
               print(json.dumps(data,ensure_ascii=False))
           PY
