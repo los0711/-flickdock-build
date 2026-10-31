@@ -24,14 +24,14 @@ jobs:
       - name: Verify injected backend lifecycle without OS mutation
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m unittest test_window_material_v1823 test_material_policy_fixture_v1823 -v
+        run: python -m unittest test_window_material_v1823 test_material_policy_fixture_v1823 test_continuous_corners_v1823 test_material_g2_v1823 -v
       - name: Verify native pixels with a reversible one-key fixture on this disposable runner
         run: |
           python - <<'PY'
           from pathlib import Path
           import hashlib,json,os,subprocess,sys
           target=Path('material-proof');target.mkdir()
-          sources={name:hashlib.sha256(Path(name).read_bytes()).hexdigest() for name in ('window_material.py','ci_material_probe.py','test_window_material_v1823.py','ci_material_policy_fixture.py','test_material_policy_fixture_v1823.py')}
+          sources={name:hashlib.sha256(Path(name).read_bytes()).hexdigest() for name in ('window_material.py','ci_material_probe.py','test_window_material_v1823.py','ci_material_policy_fixture.py','test_material_policy_fixture_v1823.py','continuous_corners.py','test_continuous_corners_v1823.py','test_material_g2_v1823.py')}
           (target/'producer.json').write_text(json.dumps(dict(commit=os.environ['GITHUB_SHA'],sources=sources,scope='Ephemeral CI dummy Qt windows; no application integration or user desktop'),indent=2))
           subprocess.run([sys.executable,'ci_material_policy_fixture.py','--output',str(target/'fixture.json')],check=True,timeout=60)
           PY

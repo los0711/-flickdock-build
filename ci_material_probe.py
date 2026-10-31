@@ -130,8 +130,8 @@ def verify_mac(output):
             self.paint_count += 1
             p = QPainter(self)
             if self.fallback_color is not None:
-                from PySide6.QtGui import QPainterPath
-                path=QPainterPath();path.addRoundedRect(QRectF(90,70,300,200),24,24)
+                from continuous_corners import continuous_rect_path
+                path=continuous_rect_path(QRectF(90,70,300,200),24)
                 p.fillPath(path,self.fallback_color)
             p.fillRect(115, 105, 230, 42, Qt.white)
             p.setPen(Qt.black); p.setFont(QFont('Helvetica', 18))
@@ -210,7 +210,13 @@ def verify_mac(output):
         handle = install_material(foreground)
         handle.set_theme('light')
         card = QRectF(90, 70, 300, 200)
-        handle.set_regions([MaterialRegion.rounded('actual-card', card, 24)], revision=1)
+        region=MaterialRegion.rounded('actual-card', card, 24)
+        result['corner_contract']=dict(kind='G2 two cubic Beziers per corner',
+            cubic_segments=sum(region.path.elementAt(i).isCurveTo() for i in range(region.path.elementCount())),
+            elements=region.path.elementCount())
+        if result['corner_contract']['cubic_segments']!=8:
+            raise AssertionError('Native background did not receive the shared continuous corner path')
+        handle.set_regions([region], revision=1)
         QTest.qWait(650); app.processEvents()
         result['material'] = handle.status()
         if handle.status()['attached'] and handle.capabilities().reason == 'policy-disabled':
@@ -323,6 +329,34 @@ def verify_mac(output):
         after = dict(content=int(objc.pyobjc_id(window.contentView())),delegate=int(objc.pyobjc_id(window.delegate())),
                      level=int(window.level()),geometry=foreground.geometry().getRect(),opacity=foreground.windowOpacity())
         if before != after: raise AssertionError(('Material changed native owner/host/opacity', before,after))
+        # The toast/popup reservation can contain overlapping continuous
+        # regions. Read the real AppKit mask alpha, not a simulated Qt union:
+        # Copy must retain .6 in the overlap instead of SourceOver's .84.
+        overlap_regions=[
+            MaterialRegion.rounded('overlap-a',QRectF(90,70,180,140),20,.6),
+            MaterialRegion.rounded('overlap-b',QRectF(160,110,180,140),20,.6),
+        ]
+        overlap_curves=[sum(region.path.elementAt(i).isCurveTo() for i in range(region.path.elementCount()))
+                        for region in overlap_regions]
+        if overlap_curves!=[8,8]:raise AssertionError('Overlapping native masks lost continuous cubic geometry')
+        handle.set_regions(overlap_regions,revision=3)
+        QTest.qWait(80);app.processEvents()
+        mask=effect.maskImage();raw_mask=mask.TIFFRepresentation()
+        representation=AppKit.NSBitmapImageRep.imageRepWithData_(raw_mask)
+        png=representation.representationUsingType_properties_(AppKit.NSBitmapImageFileTypePNG,{})
+        mask_image=QImage.fromData(bytes(png),'PNG')
+        if mask_image.isNull():raise AssertionError('Actual native mask could not be measured')
+        mask_path=output.with_name(output.stem+'-overlap-native-mask.png');mask_image.save(str(mask_path))
+        result['screenshots'].append(mask_path.name)
+        mw,mh=float(mask.size().width),float(mask.size().height)
+        # The center row is common to either TIFF bitmap row orientation; this
+        # measures mask alpha, while native on-screen pose checks cover axes.
+        positions=dict(first_only=(30,90),overlap=(110,90),second_only=(220,90),outside=(1,1))
+        samples={name:mask_image.pixelColor(round(x*mask_image.width()/mw),round(y*mask_image.height()/mh)).alpha()
+                 for name,(x,y) in positions.items()}
+        result['overlap_mask']=dict(alphas=samples,positions=positions,expected_alpha=153,source_cubics=overlap_curves,native_image_size=[mask_image.width(),mask_image.height()])
+        if any(abs(samples[name]-153)>1 for name in ('first_only','overlap','second_only')) or samples['outside']!=0:
+            raise AssertionError(('Native overlapping regions changed alpha or leaked outside G2 mask',samples))
         handle.close(); QTest.qWait(180); app.processEvents(); detached = capture('detached')
         if effect.superview() is not None: raise AssertionError('Native material view was not detached')
         restored = difference(roi_values(bare,inside),roi_values(detached,inside))

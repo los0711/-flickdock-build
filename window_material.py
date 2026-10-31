@@ -52,9 +52,8 @@ class MaterialRegion:
             raise ValueError('Material region coordinates must be finite and bounded')
         if not math.isfinite(radius) or radius < 0:
             raise ValueError('Material corner radius must be finite and positive')
-        path = QPainterPath()
-        if not rect.isEmpty():
-            path.addRoundedRect(rect, min(radius, rect.width()/2), min(radius, rect.height()/2))
+        from continuous_corners import continuous_rect_path
+        path = continuous_rect_path(rect,radius)
         return cls(key, path, alpha)
 
 
@@ -339,6 +338,7 @@ class CocoaMaterialBackend:
         self._visible = False
         self._theme = 'light'
         self._mask = None
+        self._mask_owner_size = None
         self._reason = 'native-api-unverified'
 
     def set_policy_callback(self, callback):
@@ -406,20 +406,24 @@ class CocoaMaterialBackend:
         if self.view is None: return
         owner = self.owner() if self.owner else None
         if owner is None or not isValid(owner): self.close(); return
-        # Clip only the background, not the QNSView or its input/shadow region.
-        allowed = QPainterPath(); allowed.addRect(QRectF(owner.rect()))
-        clipped = tuple(MaterialRegion(r.key, r.path.intersected(allowed), r.alpha)
-                        for r in regions if r.alpha > 0 and not r.path.isEmpty())
-        clipped = tuple(r for r in clipped if not r.path.isEmpty())
+        # Crop the backing image/frame, not the Bezier paths. Boolean path
+        # unions/intersections may flatten overlapping G2 curves into polygons.
+        # The image bounds safely clip partial regions without altering their
+        # original cubic control points or the Qt foreground/input window.
+        allowed = QRectF(owner.rect())
+        clipped = tuple(MaterialRegion(r.key, r.path, r.alpha) for r in regions
+                        if r.alpha > 0 and not r.path.isEmpty()
+                        and r.path.boundingRect().intersects(allowed))
         if not clipped:
-            self._regions = (); self._mask = None
+            self._regions = (); self._mask = None; self._mask_owner_size = None
             self.view.setHidden_(True); self.view.setMaskImage_(None)
             return
-        if clipped == self._regions and self._mask is not None:
+        owner_size=(owner.width(),owner.height())
+        if clipped == self._regions and self._mask is not None and owner_size==self._mask_owner_size:
             self._apply_visibility(); return
         bounds = QRectF()
         for region in clipped: bounds = bounds.united(region.path.boundingRect())
-        bounds = bounds.toAlignedRect()
+        bounds = bounds.intersected(allowed).toAlignedRect()
         if bounds.isEmpty(): return
         origin = bounds.topLeft()
         # Qt owner coordinates are top-left logical points; convertRect handles
@@ -431,12 +435,12 @@ class CocoaMaterialBackend:
             native_rect = self.native_view.convertRect_toView_(
                 ((float(bounds.x()), h-float(bounds.bottom()+1)), (float(bounds.width()), float(bounds.height()))), self.parent_view)
         kit = self.appkit
-        # Union equal-alpha paths, then overwrite low alpha with high alpha.
-        # Avoid stacked SourceOver .9 layers reintroducing near-opaque masks.
-        groups = {}
-        for region in clipped:
-            groups[region.alpha] = groups.get(region.alpha, QPainterPath()).united(region.path)
-        paths = tuple((alpha, _bezier_path(kit, path, origin)) for alpha, path in sorted(groups.items()))
+        # Copy each original path in alpha order. Equal-alpha overlap stays at
+        # that alpha, while all cubic curves and any odd-even holes survive.
+        # A geometric union would turn overlapping continuous corners into
+        # hundreds of straight segments before AppKit ever receives them.
+        paths = tuple((region.alpha, _bezier_path(kit, region.path, origin))
+                      for region in sorted(clipped,key=lambda region:region.alpha))
         def draw(_rect):
             context = kit.NSGraphicsContext.currentContext()
             kit.NSGraphicsContext.saveGraphicsState()
@@ -452,6 +456,7 @@ class CocoaMaterialBackend:
         self.view.setFrame_(native_rect)
         self.view.setMaskImage_(mask)
         self._regions, self._mask = clipped, mask
+        self._mask_owner_size = owner_size
         self._apply_visibility()
 
     def set_visible(self, visible):
@@ -462,7 +467,7 @@ class CocoaMaterialBackend:
             self.view.setHidden_(not (self._visible and self._regions and not self._reduced()))
 
     def close(self):
-        self._visible = False; self._regions = (); self._mask = None
+        self._visible = False; self._regions = (); self._mask = None; self._mask_owner_size = None
         observer, self._observer = self._observer, None
         if observer is not None:
             self._workspace.notificationCenter().removeObserver_(observer)
