@@ -66,7 +66,8 @@ def main():
             for expanded in (False,True):
                 shelf.hide_immediately();shelf.show_transient()
                 if expanded:shelf.show_contents(animate=False)
-                wait(shelf.isVisible);shelf._raise_for_reveal();shelf.rename_ref(rename_ref)
+                wait(lambda:shelf.isVisible() and shelf.presentation.values['alpha']>=.99)
+                shelf._raise_for_reveal();shelf.rename_ref(rename_ref)
                 rename=shelf._rename_dialog
                 wait(lambda:rename.isVisible() and shelf.rename_edit.hasFocus())
                 if sys.platform=='win32':
@@ -83,7 +84,11 @@ def main():
                     native=lambda widget:objc.objc_object(c_void_p=ctypes.c_void_p(int(widget.winId()))).window()
                     owner,modal=native(shelf),native(rename)
                     order=[int(window.windowNumber()) for window in AppKit.NSApplication.sharedApplication().orderedWindows()]
-                    assert int(modal.windowNumber()) in order and int(owner.windowNumber()) in order
+                    trace.append(dict(event='rename-native-order',expanded=expanded,order=order,
+                        owner=dict(number=int(owner.windowNumber()),visible=bool(owner.isVisible()),level=int(owner.level()),alpha=float(owner.alphaValue())),
+                        modal=dict(number=int(modal.windowNumber()),visible=bool(modal.isVisible()),level=int(modal.level()),alpha=float(modal.alphaValue())),
+                        shelf_alpha=shelf.presentation.values['alpha'],focus=shelf.rename_edit.hasFocus()))
+                    assert int(modal.windowNumber()) in order and int(owner.windowNumber()) in order,trace[-1]
                     assert order.index(int(modal.windowNumber()))<order.index(int(owner.windowNumber())) and modal.level()>=owner.level(),order
                     rename_order.append(dict(expanded=expanded,dialog_order=order.index(int(modal.windowNumber())),shelf_order=order.index(int(owner.windowNumber())),dialog_level=int(modal.level()),shelf_level=int(owner.level())))
                 rename.reject();wait(lambda:not rename.isVisible());assert original.exists()
