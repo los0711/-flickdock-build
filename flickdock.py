@@ -66,6 +66,7 @@ from platform_native import (data_directory, native_input_available, mouse_butto
 from account_service import AccountService
 from cloud_events import CloudEvents
 from clipboard_sync import ClipboardSync
+import clipboard_audit
 from account_panel import AccountPanel
 from shelf_sync import ShelfSync
 from sync_adapter import ShelfAdapter
@@ -575,7 +576,9 @@ class PreviewPane(QFrame):
     def copy_current(self):
         if not self.current_path: return
         if getattr(self,'_group_refs',()): self.shelf.copy_items(self._group_refs)
-        elif self.stack.currentWidget() is self.text: QApplication.clipboard().setText(self.text.toPlainText())
+        elif self.stack.currentWidget() is self.text:
+            clipboard_audit.set_text(QApplication.clipboard(),self.text.toPlainText(),module='flickdock',
+                function='PreviewPane.copy_current',trigger='copy_button',origin='user_copy')
         else: self.shelf.copy_items([self.current_path])
         self.copy_button.set_glyph("check"); self.copy_button.spring.kick({"scale":1.8})
         self._copy_feedback.start(850)
@@ -1277,7 +1280,8 @@ class ContentsPopup(QFrame):
         if not self.shelf.content.is_text(ref):
             menu.addAction('打开文件',lambda:self.shelf.open_path(ref))
             menu.addAction('在文件夹中显示',lambda:self.shelf.reveal_ref(ref))
-            menu.addAction('复制文件路径',lambda:QApplication.clipboard().setText(ref))
+            menu.addAction('复制文件路径',lambda:clipboard_audit.set_text(QApplication.clipboard(),ref,
+                module='flickdock',function='ShelfWindow.context_menu.copy_path',trigger='context_menu',origin='user_copy'))
         menu.addAction('复制所选内容',lambda:self.shelf.copy_items(refs))
         action=menu.addAction('将所选内容打包为 ZIP…',lambda:self.shelf.compress_refs(refs))
         action.setEnabled(self.shelf.archive_job is None)
@@ -2644,7 +2648,8 @@ class ShelfWindow(QWidget):
         if not refs:return
         if not refs:
             return
-        QApplication.clipboard().setMimeData(self.content.mime_for(refs))
+        clipboard_audit.set_mime(QApplication.clipboard(),self.content.mime_for(refs),module='flickdock',
+            function='ShelfWindow.copy_items',trigger='explicit_copy_action',origin='user_copy')
         self.touch()
 
     def real_paths(self, mode):
@@ -3116,6 +3121,7 @@ class ShelfManager:
         self.events.content_changed.connect(self.sync.request_refresh)
         self.events.transfer_progress.connect(self.sync.remote_progress)
         self.events.devices_changed.connect(self.account.list_devices)
+        if native_input_available():clipboard_audit.start(BASE)
         self.clipboard_sync=ClipboardSync(self.account,self.events,BASE,self.app,
             enabled=self._clipboard_runtime_enabled())
         self.sync.attach_clipboard(self.clipboard_sync)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import clipboard_audit
 import json
 import math
 import os
@@ -64,7 +65,8 @@ class _CopyCodeButton(_PressButton):
         code=''.join(current.split())
         if not (len(code) in (4,6) and code.isascii() and code.isdigit() or len(code)==8 and code.isascii() and code.isalnum()):return
         self.setText(current)
-        QApplication.clipboard().setText(code)
+        clipboard_audit.set_text(QApplication.clipboard(),code,module='lan_panel',
+            function='_CopyCodeButton._copy',trigger='code_button',origin='user_copy')
         self.setToolTip('已复制');self._feedback.start(1600)
         QToolTip.showText(self.mapToGlobal(QPoint(0,self.height()+4)),'已复制到剪贴板',self,self.rect(),1600)
         self.setAccessibleDescription('已复制到剪贴板')

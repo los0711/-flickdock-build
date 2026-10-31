@@ -7,6 +7,7 @@ from PySide6.QtCore import QObject,QRunnable,QThreadPool,QTimer,Signal,QMimeData
 from PySide6.QtGui import QImage,QPixmap,QImageReader
 from PySide6.QtWidgets import QApplication
 from platform_native import native_input_available
+import clipboard_audit
 
 MAX_BYTES=20*1024*1024
 MAX_ARCHIVE_BYTES=MAX_BYTES+1024*1024 # metadata overhead, not additional user file bytes
@@ -274,7 +275,7 @@ class ClipboardSync(QObject):
         self._view_revision=0;self.view=dict(value=self._snapshot(),phase='local',id='',revision=0,permission_required=not self._native_access)
         self._applied_version=0;self._receiving_version=0
         self.pool=QThreadPool(self);self.pool.setMaxThreadCount(2)
-        self._ignored=None;self._ignored_sequence=None;self._last_sequence=object();self._last_local_signature=object();self._seen='';self._keys=set();self._jobs={};self._pending=None;self._fetching=False;self._refresh_again=False
+        self._ignored=None;self._owned_marker=b'';self._ignored_sequence=None;self._last_sequence=object();self._last_local_signature=object();self._seen='';self._keys=set();self._jobs={};self._pending=None;self._fetching=False;self._refresh_again=False
         self.cache=Path(base)/'clipboard-cache';self.cache.mkdir(parents=True,exist_ok=True)
         self._directories=[];self._current_directory=None
         for directory in self.cache.glob('clip-*'):
@@ -289,13 +290,25 @@ class ClipboardSync(QObject):
         self.mac_poll=QTimer(self);self.mac_poll.setInterval(200);self.mac_poll.timeout.connect(self._mac_changed);self._mac_count=None
         self.change_debounce=QTimer(self);self.change_debounce.setSingleShot(True);self.change_debounce.setInterval(60)
         self.change_debounce.timeout.connect(self._changed)
-        self.clipboard.dataChanged.connect(self._schedule_change)
+        self._subscriptions=[]
+        self._subscribe(self.clipboard.dataChanged,self._schedule_change)
         self._last_local_signature=signature(self._snapshot());self._last_sequence=self._sequence()
-        account.account_changed.connect(self._account_changed)
-        events.clipboard_changed.connect(self.refresh)
+        # An earlier FlickDock process may still own the pasteboard. Starting
+        # or switching account is not permission to publish that cloud payload.
+        try:mime=self.clipboard.mimeData()
+        except (OSError,RuntimeError):mime=None
+        if mime is not None:
+            marker=bytes(mime.data(SYNC_MARKER))
+            try:
+                from uuid import UUID
+                UUID(marker.decode('ascii'))
+            except (ValueError,UnicodeError):pass
+            else:self._owned_marker=marker;self._ignored=self._last_local_signature
+        self._subscribe(account.account_changed,self._account_changed)
+        self._subscribe(events.clipboard_changed,self.refresh)
         payload=getattr(events,'clipboard_payload',None)
-        if payload is not None:payload.connect(self._pushed)
-        events.socket.connected.connect(self.refresh)
+        if payload is not None:self._subscribe(payload,self._pushed)
+        self._subscribe(events.socket.connected,self.refresh)
         from shared_clipboard_files import ClipboardFileJobs
         self.file_jobs=ClipboardFileJobs(self,base)
         if enabled:
@@ -341,11 +354,34 @@ class ClipboardSync(QObject):
             if sys.platform=='darwin' and self._is_native:self._mac_changed(initial=True);self.mac_poll.start()
         else:self.poll.stop();self.mac_poll.stop()
 
+    def _subscribe(self,signal,slot):
+        signal.connect(slot);self._subscriptions.append((signal,slot))
+
+    def _own_notification(self,sequence,value=None):
+        """Ownership is marker + payload, never native sequence alone.
+
+        OLE/Cocoa can advance their counter when rendering delayed formats of
+        our write. A real copy without our marker remains a new copy, including
+        a deliberate copy of identical content.
+        """
+        if not self._owned_marker or self._ignored is None:return False
+        try:
+            mime=self.clipboard.mimeData()
+            if mime is None or bytes(mime.data(SYNC_MARKER))!=self._owned_marker:return False
+            if signature(value if value is not None else self._snapshot())!=self._ignored:return False
+        except (OSError,RuntimeError):return False
+        self._last_sequence=sequence
+        clipboard_audit.observe(self.clipboard,module='clipboard_sync',function='_own_notification',
+            trigger='native_change',origin='cloud_receive',task_id=self._owned_marker.decode('ascii'),
+            operation='suppressed_echo',content_type=self._ignored[0],fingerprint_data=self._ignored)
+        return True
+
     def _schedule_change(self):
         if not self._active() and not self.closed:
             self._set_view(self._snapshot(),'local');return
         if self._active() and not self._applying:
             sequence=self._sequence()
+            if self._own_notification(sequence):return
             if sequence is not None:
                 if sequence==self._last_sequence:return
             elif signature(self._snapshot())==self._last_local_signature:return
@@ -441,19 +477,24 @@ class ClipboardSync(QObject):
         return ((account or {}).get('id',''),getattr(self.account,'device_id',''),getattr(self.api,'token','')) if self.account.signed_in else None
 
     def _account_changed(self,*_,force=False):
+        if self.closed and not force:return
         identity=self._session_identity()
         if not force and identity==self._identity:
             self.refresh();return
         files=getattr(self,'file_jobs',None)
         if files is not None:files.save()
-        self._identity=identity;self._ignored=None;self._local_retry=None;self._local_fence=None
+        # Native write provenance outlives a login session. Clearing it here
+        # would republish the previous account's cloud clipboard on a delayed
+        # format notification after login/permission/settings changes.
+        self._identity=identity;self._local_retry=None;self._local_fence=None
         self._pushed_head=None
         self._prepared_receive=None
         self._applied_version=0;self._receiving_version=0
         self._clock_anchor=None;self._observed_clock=0
         # A session switch is not a Copy action. Establish a native baseline so
         # a delayed notification cannot export the previous account's content.
-        self._last_local_signature=signature(self._snapshot());self._last_sequence=self._sequence()
+        if not self.closed:
+            self._last_local_signature=signature(self._snapshot());self._last_sequence=self._sequence()
         if sys.platform=='darwin' and not self.closed:self._mac_changed(initial=True)
         self._epoch+=1;self._generation+=1;self._pending=None;self._seen='';self._fetching=False;self.retry.stop()
         self._priority_flags(waiting=False,receiving=False)
@@ -498,21 +539,19 @@ class ClipboardSync(QObject):
             self._native_read_retry=(sequence,attempts)
             if attempts<=5:self.change_debounce.start(100);return
         else:self._native_read_retry=(None,0)
-        if self._ignored is not None and sig==self._ignored and (sequence is None or sequence==self._ignored_sequence):return
+        if self._own_notification(sequence,value):return
         if sequence is not None:
             if sequence==self._last_sequence:return
             self._last_sequence=sequence
         elif sig==self._last_local_signature:return
-        # A private MIME marker survives delayed Qt/Cocoa notifications. A new
-        # native copy has a different sequence and is allowed to replace it.
-        mime=self.clipboard.mimeData()
-        if (self._ignored is not None and mime and bytes(mime.data(SYNC_MARKER))==self._seen.encode('ascii')
-                and sig==self._ignored and (sequence is None or sequence==self._ignored_sequence)):return
+        clipboard_audit.observe(self.clipboard,module='clipboard_sync',function='_changed',
+            trigger='QClipboard.dataChanged',origin='external_change',operation='observed_change',
+            content_type=value[0] if value else 'empty',fingerprint_data=sig or ('empty',))
         self._current_directory=None;self.retry.stop()
         self._last_local_signature=sig
         self._local_fence=dict(mono=getattr(self,'_copy_notified_mono',time.monotonic()),at=None,floor=self._observed_clock)
         self._copy_timestamp(self._local_fence)
-        self._ignored=None;self._generation+=1;self._epoch+=1;generation=self._generation
+        self._ignored=None;self._owned_marker=b'';self._generation+=1;self._epoch+=1;generation=self._generation
         self.copy_started.emit()
         self.file_jobs.supersede()
         # Superseding a local upload prevents its late completion restoring it.
@@ -524,6 +563,9 @@ class ClipboardSync(QObject):
         self._local_retry=dict(id=str(uuid4()),sequence=None,generation=generation,staged=False,package=None,
                                prepared=False,created_at=time.time(),intent=self._local_fence,value=value,
                                feedback=self._copy_context(value))
+        clipboard_audit.observe(self.clipboard,module='clipboard_sync',function='_changed',trigger='external_change',
+            origin='external_change',task_id=self._local_retry['id'],operation='upload_created',
+            content_type=value[0],fingerprint_data=sig)
         self.file_jobs.register(self._local_retry,value)
         self._set_view(value,'uploading',self._local_retry['id'])
         self._prepare_local()
@@ -562,6 +604,10 @@ class ClipboardSync(QObject):
             self._set_view(self.view['value'],'synced' if ok else 'error',pending['id'])
         if pending.get('feedback_result') is ok:return
         pending['feedback_result']=ok
+        audit_sig=self._last_local_signature if isinstance(self._last_local_signature,tuple) else ('unknown',)
+        clipboard_audit.observe(self.clipboard,module='clipboard_sync',function='_copy_result',
+            trigger='upload_callback',origin='external_change',task_id=pending['id'],operation='upload_result',
+            result='ok' if ok else 'failed',content_type=audit_sig[0],fingerprint_data=audit_sig)
         context=dict(pending.get('feedback',{}),id=pending['id'])
         self.copy_result.emit(ok,context)
 
@@ -783,15 +829,22 @@ class ClipboardSync(QObject):
             if data.get('html'):mime.setHtml(data['html'])
         self._applying=True
         try:
-            self.clipboard.setMimeData(mime)
+            written_marker=(identity or self._seen).encode('ascii')
+            expected=signature(value)
+            clipboard_audit.set_mime(self.clipboard,mime,module='clipboard_sync',function='_apply',
+                trigger='cloud_content_verified',origin='cloud_receive',task_id=identity or self._seen,
+                content_type=kind,fingerprint_data=expected)
             actual=signature(self._snapshot())
+            native=self.clipboard.mimeData()
+            owns_new=native is not None and bytes(native.data(SYNC_MARKER))==written_marker
+            # A rejected native write must not erase the provenance of the
+            # previous still-owned clipboard. Adopt only the observed marker.
+            if owns_new:self._owned_marker=written_marker
             if kind=='image' and data.get('raw') and data.get('mime'):
-                native=self.clipboard.mimeData()
                 matches=native is not None and bytes(native.data(data['mime']))==data['raw']
-            else:matches=actual==signature(value)
+            else:matches=actual==expected
             if not matches:
-                native=self.clipboard.mimeData()
-                if native is not None and bytes(native.data(SYNC_MARKER))==(identity or self._seen).encode('ascii'):
+                if owns_new:
                     self._ignored=actual;self._last_local_signature=actual;self._ignored_sequence=self._sequence();self._last_sequence=self._ignored_sequence
                 return False
             self._local_fence=None;self._ignored=actual
@@ -806,7 +859,9 @@ class ClipboardSync(QObject):
     def _clear_remote_clipboard(self):
         previous=self._applying;self._applying=True
         try:
-            self.clipboard.clear();self._ignored=None;self._current_directory=None
+            clipboard_audit.clear(self.clipboard,module='clipboard_sync',function='_clear_remote_clipboard',
+                trigger='clear_remote',origin='internal')
+            self._ignored=None;self._owned_marker=b'';self._current_directory=None
             self._last_local_signature=signature(self._snapshot())
             self._ignored_sequence=self._sequence();self._last_sequence=self._ignored_sequence
             if sys.platform=='darwin':self._mac_changed(initial=True)
@@ -839,5 +894,7 @@ class ClipboardSync(QObject):
     def close(self):
         if self.closed:return
         self.closed=True;self.poll.stop();self.retry.stop();self.mac_poll.stop();self.change_debounce.stop();self._account_changed(force=True)
-        try:self.clipboard.dataChanged.disconnect(self._schedule_change)
-        except RuntimeError:pass
+        for signal,slot in self._subscriptions:
+            try:signal.disconnect(slot)
+            except RuntimeError:pass
+        self._subscriptions.clear()
