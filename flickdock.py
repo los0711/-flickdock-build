@@ -640,7 +640,9 @@ class FileRow(QFrame):
         self.detail_label=label(item_detail(popup.shelf,path),10,400,'secondary',self);self.detail_label.setAttribute(Qt.WA_TransparentForMouseEvents);self.detail_label.setWordWrap(False)
         names.addWidget(self.name_label);names.addWidget(self.detail_label);row.addLayout(names,1)
         from transfer_visuals import CloudStatusBadge
-        self.status_pill=CloudStatusBadge(self,glyph_size=14);self.status_pill.setFixedSize(24,24);row.addWidget(self.status_pill)
+        self.status_pill=CloudStatusBadge(self.icon_label,glyph_size=14);self.status_pill.setFixedSize(14,14)
+        self.status_pill.move(self.icon_label.width()-14,self.icon_label.height()-14)
+        self.status_pill.setAttribute(Qt.WA_TransparentForMouseEvents)
         self.remove_button=ToolbarButton('close',self,motion=popup.shelf.manager.motion);self.remove_button.setFixedSize(32,32);self.remove_button.setToolTip('从搁架移除');self.remove_button.setAccessibleName('从搁架移除 '+popup.shelf.content.title(path));self.remove_button.clicked.connect(lambda:popup.remove_path(self.path))
         policy=self.remove_button.sizePolicy();policy.setRetainSizeWhenHidden(True);self.remove_button.setSizePolicy(policy)
         row.addWidget(self.remove_button);self.remove_button.show();self.refresh_cloud_status()
@@ -2873,6 +2875,7 @@ class ShelfWindow(QWidget):
         refresh_tree(dialog)
         dialog.move(self.visual_geometry().center()-QPoint(dialog.width()//2,dialog.height()//2))
         self.rename_edit.setText(Path(ref).stem)
+        self._release_reveal_level()
         dialog.show();dialog.raise_();dialog.activateWindow()
         self.rename_edit.show()
         self.rename_edit.raise_()
@@ -2892,8 +2895,10 @@ class ShelfWindow(QWidget):
         target = src.with_name(new_name + src.suffix)
         if target == src:
             return
+        rename_dialog=getattr(self,'_rename_dialog',None)
+        feedback_parent=rename_dialog if rename_dialog is not None and rename_dialog.isVisible() else self
         if target.exists():
-            QMessageBox.warning(self, APP_NAME, "目标文件名已经存在")
+            QMessageBox.warning(feedback_parent, APP_NAME, "目标文件名已经存在")
             return
         try:
             if self.popup and self.popup.preview.media.path==ref:self.popup.preview.media.release_source()
@@ -2908,7 +2913,7 @@ class ShelfWindow(QWidget):
             self.refresh()
             self.manager.save()
         except Exception as ex:
-            QMessageBox.warning(self, APP_NAME, f"重命名失败：{ex}")
+            QMessageBox.warning(feedback_parent, APP_NAME, f"重命名失败：{ex}")
 
     def mousePressEvent(self, event):
         self.touch()

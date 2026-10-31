@@ -27,6 +27,24 @@ class OverviewPolishTests(unittest.TestCase):
         self.fixture=ws.WorkspaceTests('runTest');self.fixture.setUp();self.view=self.fixture.overview()
     def tearDown(self):self.fixture.tearDown()
 
+    def test_rename_dialog_releases_raised_shelf_and_keeps_feedback_above_owner(self):
+        shelf=self.fixture.shelf;original=self.fixture.paths[0];shelf._native_revealed=True
+        try:
+            with patch('flickdock.lower_shelf_after_reveal',return_value=True) as lower:
+                shelf.rename_ref(original);ws.flush();dialog=shelf._rename_dialog
+                lower.assert_called_once_with(shelf);self.assertFalse(shelf._native_revealed)
+            self.assertTrue(dialog.isVisible());self.assertIs(dialog.parentWidget(),shelf)
+            self.assertTrue(dialog.windowFlags() & Qt.WindowStaysOnTopHint)
+            self.assertEqual(dialog.windowModality(),Qt.WindowModal)
+            self.assertTrue(shelf.rename_edit.hasFocus());self.assertTrue(Path(original).exists())
+            collision=Path(original).with_name('already-exists'+Path(original).suffix);collision.write_text('untouched')
+            shelf.rename_edit.setText('already-exists')
+            with patch('flickdock.QMessageBox.warning') as warning:
+                shelf.commit_rename();self.assertIs(warning.call_args.args[0],dialog)
+            self.assertTrue(Path(original).exists());self.assertEqual(collision.read_text(),'untouched')
+        finally:
+            if getattr(shelf,'_rename_dialog',None):shelf._rename_dialog.reject();ws.flush()
+
     def test_even_segment_gutters_and_compact_account(self):
         p=self.view;insets(self,p.view_segment,[p.view_list,p.view_grid])
         insets(self,p.sort_segment,[p.selection_hint,*p.sort_buttons.values()])
@@ -88,6 +106,21 @@ class TransferPolishTests(unittest.TestCase):
         self.assertIn(colors(self.profile.theme)['red'],p.status_label.styleSheet())
         self.assertLessEqual(abs(p.receive_path.mapTo(p,QPoint(0,p.receive_path.height())).y()-p.send_button.mapTo(p,QPoint(0,p.send_button.height())).y()),2)
 
+    def test_active_and_recent_transfers_have_separate_aligned_groups(self):
+        p=self.panel
+        self.assertIs(p.transfers_body.parentWidget(),p.active_group)
+        self.assertIs(p.history_scroll.parentWidget(),p.recent_group)
+        self.assertEqual(p.active_group.geometry().left(),p.recent_group.geometry().left())
+        self.assertEqual(p.active_group.width(),p.recent_group.width())
+        self.assertLess(p.active_group.geometry().bottom(),p.recent_group.geometry().top())
+        for theme in ('light','dark'):
+            p.apply_theme(theme);ws.flush()
+            for group in (p.active_group,p.recent_group):
+                self.assertTrue(group.isVisible())
+                for child in group.findChildren(QWidget):
+                    if child.isVisible() and child.parentWidget() is group:
+                        self.assertTrue(group.rect().contains(child.geometry()))
+
     def test_escape_invalidates_pending_presentation_before_fade_completes(self):
         intents=[];d=self.dialog;d.closing_intent.connect(lambda:intents.append(True))
         QTest.keyClick(d,Qt.Key_Escape)
@@ -112,6 +145,23 @@ class TransferPolishTests(unittest.TestCase):
             p._history_file_ready(str(path));launch.assert_not_called()
 
 class SharedMotionTests(unittest.TestCase):
+    def test_compact_receive_code_ring_keeps_readable_digits_and_no_clipped_arc(self):
+        from lan_panel import _CodeCountdown
+        from types import SimpleNamespace
+        service=SimpleNamespace(code_identity=lambda:dict(code='12345678',online=True,refresh_remaining=120,refresh_duration=240))
+        button=QPushButton();ring=_CodeCountdown(service,button);ring.dark=True;ring.show();ws.flush()
+        try:
+            self.assertEqual((ring.width(),ring.height()),(26,26))
+            image=ring.grab().toImage();scale=image.devicePixelRatio();points=[]
+            for y in range(image.height()):
+                for x in range(image.width()):
+                    color=image.pixelColor(x,y)
+                    if color.blue()>color.red()+35 and color.blue()>color.green()+10:points.append((x/scale,y/scale))
+            self.assertTrue(points)
+            self.assertTrue(all(1<=x<=24 and 1<=y<=24 for x,y in points))
+            self.assertEqual(button.text(),'12345678');self.assertIn('120',ring.accessibleDescription())
+        finally:ring.hide();ring.deleteLater();button.deleteLater();ws.flush()
+
     def test_update_button_recomputes_real_colors_without_private_style_wrapper(self):
         with tempfile.TemporaryDirectory() as directory,patch('app_settings._startup_runtime_allowed',return_value=False):
             dialog=SettingsDialog(SettingsStore(Path(directory)));dialog.show();ws.flush()

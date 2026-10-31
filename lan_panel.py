@@ -96,7 +96,7 @@ class _CodeCountdown(QWidget):
     """Server-derived code refresh deadline, shown as a quiet circular timer."""
     def __init__(self,service,button,parent=None):
         super().__init__(parent);self.service=service;self.button=button;self.dark=False
-        self.setFixedSize(40,40);self.setAccessibleName('接收码自动刷新倒计时')
+        self.setFixedSize(26,26);self.setAccessibleName('接收码自动刷新倒计时')
         self._timer=QTimer(self);self._timer.setInterval(250);self._timer.timeout.connect(self._tick)
     def _tick(self):
         identity=self.service.code_identity()
@@ -114,7 +114,7 @@ class _CodeCountdown(QWidget):
         self.setToolTip(f'{math.ceil(remaining)} 秒后自动刷新接收码' if remaining else '正在刷新接收码' if state.get('online') else '远程服务连接中')
         self.setAccessibleDescription(self.toolTip())
         painter=QPainter(self);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        rect=QRectF(3,3,34,34);pen=QPen(QColor('#374450' if self.dark else '#DCE6EF'),2.5)
+        rect=QRectF(self.rect()).adjusted(2,2,-2,-2);pen=QPen(QColor('#374450' if self.dark else '#DCE6EF'),1.5)
         painter.setPen(pen);painter.drawEllipse(rect)
         pen.setColor(QColor('#63B3FF' if self.dark else '#0878E8'));pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         painter.setPen(pen)
@@ -785,7 +785,6 @@ class LanPanel(QFrame):
             if callable(getattr(service,'reconnect',None)):
                 self.send_code_value.clicked.connect(lambda:service.reconnect() if not service.code_identity().get('code') else None)
             self.code_countdown=_CodeCountdown(service,self.send_code_value,self.send_code)
-            self.code_countdown.setFixedSize(32,32)
             send_code_layout.addWidget(self.code_countdown)
         if self._wan and hasattr(service,'identity_changed'):
             service.identity_changed.connect(self._code_identity_changed)
@@ -828,19 +827,22 @@ class LanPanel(QFrame):
 
         self.activity_column = QFrame(self); self.activity_column.setObjectName('lanActivityColumn')
         activity = QVBoxLayout(self.activity_column); activity.setContentsMargins(20,20,20,16); activity.setSpacing(8)
+        self.active_group=QFrame(self.activity_column);self.active_group.setObjectName('lanActiveGroup')
+        active=QVBoxLayout(self.active_group);active.setContentsMargins(12,12,12,12);active.setSpacing(8)
+        activity.addWidget(self.active_group,1)
         transfer_heading = QHBoxLayout(); transfer_heading.setSpacing(8)
-        section = _label('传输', self.activity_column); section.setObjectName('lanSection')
+        section = _label('传输', self.active_group); section.setObjectName('lanSection')
         transfer_heading.addWidget(section, 1)
         self.transfer_count = _label('0 项', self.activity_column, muted=True)
         self.transfer_count.setSizePolicy(QSizePolicy.Policy.Preferred,QSizePolicy.Policy.Preferred)
         transfer_heading.addWidget(self.transfer_count)
-        activity.addLayout(transfer_heading)
-        self.transfers_body = QWidget(self.activity_column)
+        active.addLayout(transfer_heading)
+        self.transfers_body = QWidget(self.active_group)
         self.transfers_layout = QVBoxLayout(self.transfers_body)
         self.transfers_layout.setContentsMargins(3,3,3,3); self.transfers_layout.setSpacing(10)
         self.transfers_layout.addStretch(1)
         self.transfers_body.setMinimumHeight(76)
-        activity.addWidget(self.transfers_body, 1)
+        active.addWidget(self.transfers_body, 1)
         self.transfers_empty = _label('目前没有正在进行的传输', self.transfers_body, muted=True)
         self.transfers_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.transfers_empty.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Expanding)
@@ -859,11 +861,14 @@ class LanPanel(QFrame):
         self.page_label.setSizePolicy(QSizePolicy.Policy.Fixed,QSizePolicy.Policy.Preferred)
         pages.addStretch(1); pages.addWidget(self.previous_page)
         pages.addWidget(self.page_label); pages.addWidget(self.next_page)
-        activity.addLayout(pages)
+        active.addLayout(pages)
         self.previous_page.hide(); self.next_page.hide(); self.page_label.hide()
-        section = _label('最近传输', self.activity_column); section.setObjectName('lanSection')
-        activity.addWidget(section)
-        self.history_body = QFrame(self.activity_column)
+        self.recent_group=QFrame(self.activity_column);self.recent_group.setObjectName('lanRecentGroup')
+        recent=QVBoxLayout(self.recent_group);recent.setContentsMargins(12,12,12,12);recent.setSpacing(8)
+        activity.addWidget(self.recent_group)
+        section = _label('最近传输', self.recent_group); section.setObjectName('lanSection')
+        recent.addWidget(section)
+        self.history_body = QFrame(self.recent_group)
         self.history_body.setObjectName('lanHistoryGroup')
         self.history_layout = QVBoxLayout(self.history_body)
         self.history_layout.setContentsMargins(0, 0, 0, 0)
@@ -875,7 +880,7 @@ class LanPanel(QFrame):
         self.history_layout.addWidget(self.history_label)
         self.history_rows = []
         self.history_separators = []
-        self.history_scroll = QScrollArea(self.activity_column)
+        self.history_scroll = QScrollArea(self.recent_group)
         self.history_scroll.setObjectName('lanHistoryScroll')
         self.history_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.history_scroll.setWidgetResizable(True)
@@ -883,7 +888,7 @@ class LanPanel(QFrame):
         self.history_scroll.setMinimumHeight(110)
         self.history_scroll.setMaximumHeight(188)
         self.history_scroll.setWidget(self.history_body)
-        activity.addWidget(self.history_scroll)
+        recent.addWidget(self.history_scroll)
         self._render_history()
         destination = QHBoxLayout(); destination.setSpacing(8)
         destination_label=_label('接收位置：', self, muted=True)
@@ -1124,6 +1129,7 @@ class LanPanel(QFrame):
             QFrame#lanSendColumn {{ background:{faint}; border:0; border-right:1px solid {c['divider']}; }}
             QFrame#lanPayloadArea {{background:{c['surface']};border:0;border-bottom:1px solid {c['divider']};}}
             QFrame#lanActivityColumn, QFrame#lanQueueBody, QFrame#lanHistoryGroup {{ background:transparent; border:0; }}
+            QFrame#lanActiveGroup, QFrame#lanRecentGroup {{ background:{faint}; border:1px solid {border}; border-radius:8px; }}
             QFrame#lanQueueRow, QFrame#lanHistoryRow {{ background:{faint}; border:1px solid {border}; border-radius:8px; }}
             QFrame#lanHistoryDivider {{ background:transparent; border:0; max-height:0; }}
             QFrame#lanTransferRow {{ background:{c['card']}; border:1px solid {border}; border-radius:8px; }}

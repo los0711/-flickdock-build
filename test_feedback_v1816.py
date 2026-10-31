@@ -205,7 +205,8 @@ class FeedbackTests(unittest.TestCase):
         until(lambda:len(view.rows_body.findChildren(IconItem))==1)
         tile=view.rows_body.findChildren(IconItem)[0]
         self.assertLessEqual(tile.width(),180)
-        self.assertEqual(tile.height(),120)
+        from content_grid import GRID_ITEM_HEIGHT
+        self.assertEqual(tile.height(),GRID_ITEM_HEIGHT)
 
     def test_finished_update_removes_the_activity_row_immediately(self):
         with tempfile.TemporaryDirectory() as root:

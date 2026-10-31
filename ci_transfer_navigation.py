@@ -56,7 +56,36 @@ def main():
                 QTest.keySequence(dialog.panel.drop_zone,QKeySequence(QKeySequence.StandardKey.Paste));app.processEvents()
                 assert dialog.panel._queued_paths==[str(original)] and dialog.winId()==native
             checks.append('native segmented modes keep one window and original-file Paste')
+            dialog.close();wait(lambda:not dialog.isVisible())
+            shelf=manager.shelf;shelf.pinned=True;shelf.add_paths('permanent',[str(original)])
+            rename_order=[]
+            for expanded in (False,True):
+                shelf.hide_immediately();shelf.show_transient()
+                if expanded:shelf.show_contents(animate=False)
+                wait(shelf.isVisible);shelf._raise_for_reveal();shelf.rename_ref(str(original))
+                rename=shelf._rename_dialog
+                wait(lambda:rename.isVisible() and shelf.rename_edit.hasFocus())
+                if sys.platform=='win32':
+                    import ctypes
+                    user=ctypes.windll.user32;user.GetTopWindow.restype=ctypes.c_void_p
+                    user.GetWindow.argtypes=[ctypes.c_void_p,ctypes.c_uint];user.GetWindow.restype=ctypes.c_void_p
+                    order=[];handle=user.GetTopWindow(None)
+                    while handle and len(order)<10000:order.append(int(handle));handle=user.GetWindow(handle,2)
+                    owner_id,dialog_id=int(shelf.winId()),int(rename.winId())
+                    assert dialog_id in order and owner_id in order and order.index(dialog_id)<order.index(owner_id),order
+                    rename_order.append(dict(expanded=expanded,dialog_order=order.index(dialog_id),shelf_order=order.index(owner_id)))
+                else:
+                    import AppKit,objc,ctypes
+                    native=lambda widget:objc.objc_object(c_void_p=ctypes.c_void_p(int(widget.winId()))).window()
+                    owner,modal=native(shelf),native(rename)
+                    order=[int(window.windowNumber()) for window in AppKit.NSApplication.sharedApplication().orderedWindows()]
+                    assert int(modal.windowNumber()) in order and int(owner.windowNumber()) in order
+                    assert order.index(int(modal.windowNumber()))<order.index(int(owner.windowNumber())) and modal.level()>=owner.level(),order
+                    rename_order.append(dict(expanded=expanded,dialog_order=order.index(int(modal.windowNumber())),shelf_order=order.index(int(owner.windowNumber())),dialog_level=int(modal.level()),shelf_level=int(owner.level())))
+                rename.reject();wait(lambda:not rename.isVisible());assert original.exists()
+            checks.append('rename is natively above compact and overview with input focus; cancel preserves original')
             report=dict(ok=True,checks=checks,trace=trace,platform=sys.platform,real_native_windows=True)
+            report['rename_native_order']=rename_order
         except Exception as error:
             report=dict(ok=False,checks=checks,trace=trace,platform=sys.platform,error=str(error));raise
         finally:

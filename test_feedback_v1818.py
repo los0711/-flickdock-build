@@ -267,7 +267,7 @@ class FeedbackTests(unittest.TestCase):
                     panel.set_sync_status('搁架已同步。');panel.service.status_changed.emit('设备名称修改成功。')
                     panel.device_rename_buttons['other'].click();flush()
                     form=panel._rename_forms['other'];row=panel._rows_by_id['other']
-                    self.assertTrue(form.isWindow());self.assertEqual(row.height(),44)
+                    self.assertTrue(form.isWindow());self.assertEqual(row.height(),52)
                     self.assertTrue(form.screen().availableGeometry().contains(form.frameGeometry()))
                     for label in (panel.username_label,panel.sync_status_label):
                         bounds=QRect(label.mapTo(panel.profile_frame,QPoint()),label.size())

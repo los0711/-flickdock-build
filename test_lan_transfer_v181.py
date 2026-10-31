@@ -296,7 +296,8 @@ class TransferTests(unittest.TestCase):
         APP.sendEvent(panel.devices, event)
         self.assertEqual(panel.devices.currentIndex(), selected)
         panel._progress({'id': uuid4().hex, 'direction': 'send', 'peer': '电脑', 'state': 'waiting', 'code': '123456'})
-        self.assertIn('确认码 123456', list(panel._rows.values())[0]['detail'].text())
+        self.assertIn('确认码 123456', list(panel._rows.values())[0]['detail'].accessibleName())
+        self.assertEqual(panel.send_code_value.text(),'1 2 3 4 5 6')
         panel.close(); panel.deleteLater(); APP.processEvents()
 
     def test_incoming_offer_has_legible_code_file_destination_and_independent_actions(self):

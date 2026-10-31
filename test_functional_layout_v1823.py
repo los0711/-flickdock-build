@@ -31,6 +31,8 @@ class OverviewRefinementTests(unittest.TestCase):
             self.assertTrue(p.selection_bar.rect().contains(bounds))
             self.assertLess(bounds.right(),p.select_all_button.geometry().left())
         for b in (p.selection_hint,*p.sort_buttons.values()):self.assertTrue(p.sort_segment.rect().contains(b.geometry()))
+        self.assertLess(p.clear_button.geometry().right(),p.zip_button.geometry().left())
+        self.assertLess(p.zip_button.geometry().right(),p.zip_all_button.geometry().left())
         self.assertGreaterEqual(p.selection_hint.width(),p.selection_hint.fontMetrics().horizontalAdvance('默认')+20)
         self.assertEqual(p.sort_segment.geometry().left(),p.rows_layout.contentsMargins().left())
         self.assertGreater(p.count_label.geometry().left(),p.sort_segment.geometry().right())
@@ -96,6 +98,11 @@ class OverviewRefinementTests(unittest.TestCase):
                         self.assertEqual(item.height(),GRID_ITEM_HEIGHT)
                         self.assertTrue(item.rect().contains(item.status_pill.geometry()))
                         self.assertLess(item.remove_button.geometry().bottom(),item.status_pill.geometry().top())
+                    else:
+                        self.assertIs(item.status_pill.parentWidget(),item.icon_label)
+                        self.assertEqual(item.status_pill.geometry().bottomRight(),item.icon_label.rect().bottomRight())
+                        self.assertTrue(item.icon_label.rect().contains(item.status_pill.geometry()))
+                        self.assertEqual(item.status_pill.glyph_size,14)
 
     def test_default_grid_fits_three_cards_with_original_status_icons(self):
         from content_grid import IconItem

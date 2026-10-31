@@ -79,7 +79,7 @@ class DisplayTests(unittest.TestCase):
         finally:view.hide();view.deleteLater();flush()
 
     def test_interrupted_expansion_fits_sections_and_wrapped_text_without_tail(self):
-        view=SettingsDialog(self.store);view.show();flush()
+        view=SettingsDialog(self.store);view.show();view.show_settings_category('displays');flush()
         try:
             rows=list(view.display_trigger_editor.rows.values())
             with ExitStack() as overrides:
@@ -97,15 +97,16 @@ class DisplayTests(unittest.TestCase):
                             while ancestor is not view.body:
                                 self.assertTrue(ancestor.rect().contains(control.mapTo(ancestor,control.rect().bottomRight())))
                                 ancestor=ancestor.parentWidget()
-                    label=view.retention_description
-                    self.assertGreaterEqual(label.height(),label.heightForWidth(label.width()))
-                    last=view.body_layout.itemAt(view.body_layout.count()-1).widget()
-                    self.assertLessEqual(view.body.height()-last.geometry().bottom(),32)
-                    sections=[view.body_layout.itemAt(i).widget() for i in range(view.body_layout.count())]
+                    sections=[view.body_layout.itemAt(i).widget() for i in range(view.body_layout.count()) if view.body_layout.itemAt(i).widget().isVisible()]
+                    last=sections[-1]
+                    self.assertLessEqual(view.body.height(),max(view.scroll.viewport().height(),last.geometry().bottom()+32))
                     for first,second in zip(sections,sections[1:]):self.assertLess(first.geometry().bottom(),second.geometry().top())
+                    view.show_settings_category('sync');flush();label=view.retention_description
+                    self.assertTrue(label.isVisible());self.assertGreaterEqual(label.height(),label.heightForWidth(label.width()))
+                    view.show_settings_category('displays');flush()
                 for row in rows:row.set_expanded(False,animate=False)
                 for _ in range(6):flush()
-                self.assertLessEqual(view.body.height()-last.geometry().bottom(),32)
+                self.assertLessEqual(view.body.height(),max(view.scroll.viewport().height(),last.geometry().bottom()+32))
         finally:view.hide();view.deleteLater();flush()
 
     def test_all_enabled_draft_handles_receive_geometry_and_are_shown(self):

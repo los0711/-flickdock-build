@@ -194,8 +194,9 @@ class WorkspaceTests(unittest.TestCase):
         for expected in ('添加文件','设置','收起到屏幕边缘'):
             self.assertTrue(any(expected in value for value in texts),(expected,texts))
         self.shelf.collapse_contents();self.shelf.presentation_kind='drag';self.shelf._layout_header(subject.CARD_W)
-        for control in (self.shelf.account_button,self.shelf.lan_button,self.shelf.account_caption,self.shelf.lan_caption,self.shelf.footer_line):
+        for control in (self.shelf.account_button,self.shelf.account_caption,self.shelf.lan_caption):
             self.assertFalse(control.isVisible())
+        self.assertTrue(self.shelf.lan_button.isVisible());self.assertTrue(self.shelf.footer_line.isVisible())
         self.assertTrue(self.shelf.zones['permanent'].caption.isVisible())
 
     def test_view_mode_only_settings_do_not_apply_global_services(self):
@@ -315,7 +316,7 @@ class WorkspaceTests(unittest.TestCase):
                 if not item.isVisible():continue
                 self.assertTrue(popup.rows_body.rect().contains(item.geometry()),(width,item.geometry()))
                 self.assertTrue(item.rect().contains(item.remove_button.geometry()))
-                self.assertEqual(item.remove_button.size().toTuple(),(32,32))
+                self.assertEqual(item.remove_button.size().toTuple(),(28,28))
         item=next(item for item in popup.rows_body.findChildren(IconItem) if item.isVisible())
         popup.select_item(item.ref);QTest.keyClick(item,Qt.Key_Space);flush()
         self.assertNotIn(item.ref,popup.selected)

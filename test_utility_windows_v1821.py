@@ -73,6 +73,8 @@ class UtilityTests(unittest.TestCase):
             NSApplication=SimpleNamespace(sharedApplication=lambda:SimpleNamespace(setActivationPolicy_=policies.append)))
         other=LanDialog(self.service,self.store)
         dock_window_state(self.dialog,True,appkit=kit);dock_window_state(other,True,appkit=kit)
+        self.dialog.showMinimized();APP.processEvents()
+        dock_window_state(self.dialog,True,appkit=kit);self.assertEqual(policies[-1],0)
         dock_window_state(self.dialog,False,appkit=kit);self.assertEqual(policies[-1],0)
         dock_window_state(other,False,appkit=kit);self.assertEqual(policies[-1],1)
         other.deleteLater();APP.processEvents()

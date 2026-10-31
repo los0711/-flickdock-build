@@ -456,7 +456,7 @@ class TransferNameButton(QPushButton):
 class RenameDialog(QDialog):
     """A presentation-only sheet reusing the shelf's existing rename editor."""
     def __init__(self,shelf):
-        super().__init__(shelf,Qt.Dialog|Qt.FramelessWindowHint)
+        super().__init__(shelf,Qt.Dialog|Qt.FramelessWindowHint|Qt.WindowStaysOnTopHint)
         from collections import OrderedDict
         self.shelf=shelf;self._shadow_cache=OrderedDict()
         self.setAttribute(Qt.WA_TranslucentBackground);self.setWindowModality(Qt.WindowModal)
@@ -726,7 +726,7 @@ def build_overview(view,preview_type):
     select.addWidget(view.sort_segment)
     view.count_label.setParent(view.selection_bar);select.addWidget(view.count_label)
     select.addStretch(1)
-    for control in (view.zip_button,view.zip_all_button,view.clear_button):
+    for control in (view.clear_button,view.zip_button,view.zip_all_button):
         head.removeWidget(control);control.setParent(view.selection_bar);select.addWidget(control)
     select.setSpacing(4)
     view.select_all_button=button('全选',variant='secondary',parent=view.selection_bar);view.select_all_button.clicked.connect(view.toggle_select_all_visible);select.addWidget(view.select_all_button)
