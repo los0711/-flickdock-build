@@ -54,7 +54,7 @@ jobs:
       - name: Check delayed formats, input fields and shared upload regressions
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m unittest test_clipboard_origin_v1823 test_clipboard_sync_v1819 test_clipboard_fast_v1821 test_shared_clipboard_files_v1821 test_pointer_paste_v1819 -q
+        run: python -m unittest test_clipboard_origin_v1823 test_transfer_interaction_v1823 test_clipboard_sync_v1819 test_clipboard_fast_v1821 test_shared_clipboard_files_v1821 test_pointer_paste_v1819 -q
       - name: Reproduce asynchronous metadata reconciliation before framework warmup
         if: runner.os == 'macOS'
         shell: bash

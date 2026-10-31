@@ -3559,7 +3559,9 @@ class ShelfManager:
         if not dialog.isVisible():
             self._center_dialog(dialog)
         if dialog.isMinimized():dialog.showNormal()
-        elif not dialog.isVisible():dialog.show()
+        # Even a visible window may be fading closed after Back. An explicit
+        # open/mode intent must cancel that obsolete navigation without resize.
+        dialog.show()
         dialog.raise_();dialog.activateWindow()
 
     def _use_recommended_lan(self,paths,identifier):

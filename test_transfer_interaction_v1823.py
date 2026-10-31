@@ -1,5 +1,7 @@
 """Transfer mode group and Paste use real Qt input, with no native hooks."""
 import tempfile,unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 from pathlib import Path
 from PySide6.QtCore import QMimeData,QUrl,Qt,QPoint
 from PySide6.QtGui import QKeySequence
@@ -55,6 +57,31 @@ class TransferInteractionTests(unittest.TestCase):
         self.assertEqual(edit.text(),'1234');self.assertEqual(self.dialog.panel._queued_paths,[])
         paths=self.copy_files();self.dialog.hide();self.paste(self.dialog.panel.drop_zone)
         self.assertEqual(self.dialog.panel._queued_paths,[])
+
+    def test_explicit_reopen_cancels_fading_back_without_changing_window_size(self):
+        from flickdock import ShelfManager
+        seen=[];self.dialog.overview_requested.connect(lambda:seen.append('overview'))
+        manager=SimpleNamespace(shelf=SimpleNamespace(isVisible=lambda:False,_release_reveal_level=lambda:None),
+            lan_dialog=self.dialog,wan_dialog=self.dialog,_lan_selected=lambda:[],_center_dialog=lambda _:None)
+        with patch.object(self.dialog._window_fade,'enabled',return_value=True):
+            self.dialog.resize(1020,750);before=self.dialog.size();native=self.dialog.winId()
+            self.dialog.back_button.click();self.assertIsNotNone(self.dialog._window_fade.pending)
+            ShelfManager._show_transfer_dialog(manager,self.lan)
+            self.assertIsNone(self.dialog._window_fade.pending)
+            QTest.qWait(240);flush()
+            self.assertTrue(self.dialog.isVisible());self.assertEqual(seen,[])
+            self.assertEqual(self.dialog.size(),before);self.assertEqual(self.dialog.winId(),native)
+
+    def test_back_emits_only_after_all_close_handlers_have_finished(self):
+        order=[]
+        self.dialog.overview_requested.connect(lambda:order.append('overview'))
+        self.dialog.finished.connect(lambda _:order.append('finished-tail'))
+        self.dialog.back_button.click();until(lambda:'overview' in order)
+        self.assertEqual(order,['finished-tail','overview'])
+
+    def test_empty_file_url_cannot_queue_the_working_directory(self):
+        mime=QMimeData();mime.setUrls([QUrl('file:')]);APP.clipboard().setMimeData(mime)
+        self.paste(self.dialog.panel.drop_zone);self.assertEqual(self.dialog.panel._queued_paths,[])
 
 
 if __name__=='__main__':unittest.main()

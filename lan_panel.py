@@ -1469,10 +1469,12 @@ class _TransferDropRouter(QObject):
             if mime is None or not mime.hasUrls():return False
             urls=mime.urls()
             if not urls or any(not url.isLocalFile() for url in urls):return False
+            paths=[url.toLocalFile() for url in urls if url.toLocalFile()]
+            if not paths:return False
             # Path validation/metadata stays in the existing asynchronous queue;
             # reading a network-mounted path here would stall keyboard input.
             if kind==QEvent.Type.KeyPress and not event.isAutoRepeat():
-                self.dialog.panel.queue_paths([url.toLocalFile() for url in urls])
+                self.dialog.panel.queue_paths(paths)
             event.accept();return True
         if kind not in (QEvent.Type.DragEnter,QEvent.Type.DragMove,QEvent.Type.DragLeave,QEvent.Type.Drop):return False
         zone=self.dialog.panel.drop_zone
