@@ -5,13 +5,14 @@ permissions:
   contents: read
 jobs:
   native-material:
-    if: github.repository == 'los0711/-flickdock-build'
+    if: github.repository == 'los0711/-flickdock-build' && github.ref == 'refs/heads/qa/material-probe-1823-20261031'
     runs-on: windows-11-arm
     timeout-minutes: 12
     env:
       PYTHONUTF8: '1'
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
       QT_QPA_PLATFORM: windows
+      FLICKDOCK_MATERIAL_RUNNER_LABEL: windows-11-arm
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
@@ -25,7 +26,7 @@ jobs:
       - name: Compile the isolated DLL using installed Windows SDK and MSVC only
         run: python build_windows_material_probe.py --output-dir material-native
       - name: Measure real clipped blur, foreground pixels and empty host gutters
-        run: python -c "import subprocess,sys; subprocess.run([sys.executable,'ci_windows_material_probe.py','--build-json','material-native/build.json','--output','material-native/pixels.json'],check=True,timeout=60)"
+        run: python -c "import subprocess,sys; subprocess.run([sys.executable,'ci_windows_desktop_fixture.py','--build-json','material-native/build.json','--output-dir','material-native'],check=True,timeout=75)"
       - name: Retain positive or negative native evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

@@ -73,6 +73,8 @@ def verify(build_json,output):
     driver=NativeProbeLibrary(build_path.parent/build['dll'],build['dll_sha256'])
     out=Path(output).resolve();out.parent.mkdir(parents=True,exist_ok=True)
     report=dict(verified=False,backend='Clipped Windows.UI.Composition and independent DWM Acrylic candidates',dll_sha256=driver.sha256,source_sha256=build['source_sha256'],source_hashes=build['source_hashes'],github_sha=os.environ.get('GITHUB_SHA',''),windows_build=sys.getwindowsversion().build,windows_product_type=sys.getwindowsversion().product_type,modes=[])
+    from ci_windows_desktop_fixture import read_desktop_evidence
+    report['desktop_context_before_qt']=read_desktop_evidence()
     user=ctypes.WinDLL('user32',use_last_error=True);dwm=ctypes.WinDLL('dwmapi');gdi=ctypes.WinDLL('gdi32');kernel=ctypes.WinDLL('kernel32',use_last_error=True)
     report['architecture']=architecture_evidence(kernel)
     from ctypes.wintypes import RECT
@@ -124,6 +126,7 @@ def verify(build_json,output):
     QTest.qWait(150)
     report['dummy_initial_order'].update(foreground_before_show=focus_before_show,show_foreground_unchanged=int(user.GetForegroundWindow() or 0)==focus_before_show)
     hwnd=int(foreground.winId());original_geometry=foreground.geometry().getRect();original_owner=int(user.GetWindowLongPtrW(hwnd,-8));ex_style=int(user.GetWindowLongPtrW(hwnd,-20))
+    report['desktop_context_own_windows']=read_desktop_evidence((int(checker.winId()),hwnd))
     def host_region():
         region=gdi.CreateRectRgn(0,0,0,0)
         if not region:raise OSError('Cannot allocate the temporary host-region query')
