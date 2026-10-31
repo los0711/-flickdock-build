@@ -1704,8 +1704,12 @@ class SettingsDialog(QDialog):
         offered=bool(version) and state in ('available','ready','cancelled','error')
         self.update_version_label.setText('v'+str(version) if offered else '')
         self.update_version_label.setVisible(offered)
+        changed=self.update_button.property('updateAvailable')!=offered
         self.update_button.setProperty('updateAvailable',offered)
-        self.update_button.style().unpolish(self.update_button);self.update_button.style().polish(self.update_button)
+        if changed:
+            # Repolish this button in Qt without retrieving the private
+            # QStyleSheetStyle Python wrapper (mis-typed on native Cocoa).
+            self.update_button.setStyleSheet('/* FlickDock update state: refresh inherited rules */')
         self.update_status_label.setText(status)
         self.update_status_label.setAccessibleName(status + (f"，版本 {version}" if version else ""))
         self.update_status_label.setAccessibleDescription(str(error))

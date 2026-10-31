@@ -112,6 +112,24 @@ class TransferPolishTests(unittest.TestCase):
             p._history_file_ready(str(path));launch.assert_not_called()
 
 class SharedMotionTests(unittest.TestCase):
+    def test_update_button_recomputes_real_colors_without_private_style_wrapper(self):
+        with tempfile.TemporaryDirectory() as directory,patch('app_settings._startup_runtime_allowed',return_value=False):
+            dialog=SettingsDialog(SettingsStore(Path(directory)));dialog.show();ws.flush()
+            try:
+                with patch.object(dialog.update_button,'style',side_effect=AssertionError('private wrapper must not be retrieved')):
+                    for theme,expected in (('dark','#30d158'),('light','#168545')):
+                        dialog.apply_theme(theme);ws.flush();colors={}
+                        for state in ('idle','available','latest','ready','error','idle'):
+                            offered=state in ('available','ready','error')
+                            dialog.set_update_state(state,'1.8.24' if offered else '');ws.flush()
+                            rendered=dialog.update_button.grab().toImage();scale=rendered.devicePixelRatio()
+                            colors[state]=rendered.pixelColor(round(8*scale),round(dialog.update_button.height()/2*scale)).name()
+                            self.assertEqual(dialog.update_button.property('updateAvailable'),offered)
+                        self.assertEqual(colors['available'],expected)
+                        self.assertNotEqual(colors['idle'],colors['available'])
+                        self.assertEqual(colors['latest'],colors['idle'])
+            finally:dialog.hide();dialog.deleteLater();ws.flush()
+
     def test_staged_drop_accepts_immediately_but_presents_after_feedback(self):
         root=QWidget();root.resize(440,420);button=QPushButton('文件互传',root);button.setGeometry(20,360,180,34)
         calls=[]
