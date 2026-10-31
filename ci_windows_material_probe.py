@@ -33,12 +33,23 @@ def verify(build_json,output):
         if name!=Path(name).name or hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()!=digest:raise RuntimeError('Build source fingerprint differs from the executing probe: '+name)
     driver=NativeProbeLibrary(build_path.parent/build['dll'],build['dll_sha256'])
     out=Path(output).resolve();out.parent.mkdir(parents=True,exist_ok=True)
-    report=dict(verified=False,backend='Windows.UI.Composition HostBackdropBrush + rounded geometric clips',dll_sha256=driver.sha256,source_sha256=build['source_sha256'],source_hashes=build['source_hashes'],github_sha=os.environ.get('GITHUB_SHA',''),windows_build=sys.getwindowsversion().build,modes=[])
-    user=ctypes.WinDLL('user32',use_last_error=True);dwm=ctypes.WinDLL('dwmapi')
+    report=dict(verified=False,backend='Clipped Windows.UI.Composition and independent DWM Acrylic candidates',dll_sha256=driver.sha256,source_sha256=build['source_sha256'],source_hashes=build['source_hashes'],github_sha=os.environ.get('GITHUB_SHA',''),windows_build=sys.getwindowsversion().build,windows_product_type=sys.getwindowsversion().product_type,modes=[])
+    user=ctypes.WinDLL('user32',use_last_error=True);dwm=ctypes.WinDLL('dwmapi');gdi=ctypes.WinDLL('gdi32');kernel=ctypes.WinDLL('kernel32')
+    from ctypes.wintypes import RECT
     user.GetWindowLongPtrW.argtypes=[ctypes.c_void_p,ctypes.c_int];user.GetWindowLongPtrW.restype=ctypes.c_ssize_t
     user.GetForegroundWindow.argtypes=[];user.GetForegroundWindow.restype=ctypes.c_void_p
+    user.GetSystemMetrics.argtypes=[ctypes.c_int];user.GetSystemMetrics.restype=ctypes.c_int
+    user.GetWindowRgn.argtypes=[ctypes.c_void_p,ctypes.c_void_p];user.GetWindowRgn.restype=ctypes.c_int
+    user.GetGuiResources.argtypes=[ctypes.c_void_p,ctypes.c_uint];user.GetGuiResources.restype=ctypes.c_uint
+    gdi.CreateRectRgn.argtypes=[ctypes.c_int]*4;gdi.CreateRectRgn.restype=ctypes.c_void_p
+    gdi.GetRgnBox.argtypes=[ctypes.c_void_p,ctypes.POINTER(RECT)];gdi.GetRgnBox.restype=ctypes.c_int
+    gdi.DeleteObject.argtypes=[ctypes.c_void_p];gdi.DeleteObject.restype=ctypes.c_int
+    kernel.GetCurrentProcess.argtypes=[];kernel.GetCurrentProcess.restype=ctypes.c_void_p
     dwm.DwmSetWindowAttribute.argtypes=[ctypes.c_void_p,ctypes.c_uint,ctypes.c_void_p,ctypes.c_uint];dwm.DwmSetWindowAttribute.restype=ctypes.c_long
     dwm.DwmFlush.argtypes=[];dwm.DwmFlush.restype=ctypes.c_long
+    dwm.DwmIsCompositionEnabled.argtypes=[ctypes.POINTER(ctypes.c_int)];dwm.DwmIsCompositionEnabled.restype=ctypes.c_long
+    composition_enabled=ctypes.c_int();composition_hresult=dwm.DwmIsCompositionEnabled(ctypes.byref(composition_enabled))
+    report.update(remote_session=bool(user.GetSystemMetrics(0x1000)),dwm_composition_enabled=bool(composition_enabled.value),dwm_composition_hresult=composition_hresult)
     app=QApplication.instance() or QApplication(['FlickDock isolated material evidence']);app.setQuitOnLastWindowClosed(False)
     material_rects=[(80,70,260,160,30,1),(410,250,130,100,22,1)]
     class Checker(QWidget):
@@ -68,6 +79,15 @@ def verify(build_json,output):
     for widget in (checker,foreground):widget.move(position)
     checker.show();foreground.show();checker.raise_();foreground.raise_();app.processEvents();QTest.qWait(150)
     hwnd=int(foreground.winId());original_geometry=foreground.geometry().getRect();original_owner=int(user.GetWindowLongPtrW(hwnd,-8));ex_style=int(user.GetWindowLongPtrW(hwnd,-20))
+    def host_region():
+        region=gdi.CreateRectRgn(0,0,0,0)
+        if not region:raise OSError('Cannot allocate the temporary host-region query')
+        try:
+            kind=user.GetWindowRgn(hwnd,region);bounds=RECT()
+            if kind:gdi.GetRgnBox(region,ctypes.byref(bounds))
+            return dict(kind=kind,bounds=[bounds.left,bounds.top,bounds.right,bounds.bottom] if kind else None)
+        finally:gdi.DeleteObject(region)
+    original_region=host_region()
     report.update(host_ex_style=ex_style,host_layered=bool(ex_style&0x80000),host_geometry=original_geometry,host_owner=original_owner)
     def capture(label,phase,tint):
         checker.phase=phase;checker.update();foreground.tint=tint;foreground.update();app.processEvents();dwm.DwmFlush();QTest.qWait(180);app.processEvents()
@@ -83,24 +103,26 @@ def verify(build_json,output):
         response=frequency_response(b0,b1,e0,e1)
         foreground_equal=samples(base0,opaque,1)==samples(enabled0,opaque,1) and samples(base0,icon,1)==samples(enabled0,icon,1)
         outer=difference(samples(base0,outside),samples(enabled0,outside));round_corner=difference(samples(base0,corner,1),samples(enabled0,corner,1))
-        return dict(**response,foreground_pixels_identical=foreground_equal,outside_mean_abs_diff=outer,rounded_corner_mean_abs_diff=round_corner,
+        return dict(**response,baseline_mean=average(b0),material_mean=average(e0),changed_background_material_mean=average(e1),foreground_pixels_identical=foreground_equal,outside_mean_abs_diff=outer,rounded_corner_mean_abs_diff=round_corner,
                     verified=bool(response['frequency_verified'] and foreground_equal and outer<2 and round_corner<2))
     try:
         report['policy']=driver.policy()
         if report['windows_build']<22000:raise RuntimeError('Public host-backdrop support requires Windows 11 build 22000 or later')
         if not report['policy']['advanced_effects'] or report['policy']['high_contrast']:raise RuntimeError('policy-disabled: advanced effects are disabled or High Contrast is enabled; no system settings were changed')
         if not report['host_layered']:raise AssertionError('Probe did not create an actual Qt layered foreground HWND')
-        for mode,name in enumerate(('same-hwnd','child-hwnd','underlay-hwnd')):
-            evidence=dict(mode=name,verified=False)
+        for mode,name in enumerate(('same-hwnd','child-hwnd','underlay-hwnd','system-acrylic-underlay')):
+            evidence=dict(mode=name,verified=False,mask='rounded HRGN union only on an independent background HWND; binary coverage, no fractional alpha' if mode==3 else 'Composition rounded geometric clip')
             try:
                 foreground.tint=0.;foreground.update()
                 # Fresh dummy HWND only. Establish the known initial value for
                 # direct/child experiments; never do this to a product window.
-                disabled=ctypes.c_int(0);code=dwm.DwmSetWindowAttribute(hwnd,17,ctypes.byref(disabled),ctypes.sizeof(disabled))
-                if code<0:raise OSError(f'Host-backdrop flag unsupported: 0x{code&0xffffffff:08x}')
+                if mode!=3:
+                    disabled=ctypes.c_int(0);code=dwm.DwmSetWindowAttribute(hwnd,17,ctypes.byref(disabled),ctypes.sizeof(disabled))
+                    if code<0:raise OSError(f'Host-backdrop flag unsupported: 0x{code&0xffffffff:08x}')
+                elif report['windows_build']<22621:raise RuntimeError('Public system Acrylic requires Windows 11 build 22621 or later')
                 base0=capture(name+'-baseline-0',0,0);base1=capture(name+'-baseline-1',1,0)
                 if len(set(samples(base0,icon,1)))<2 or samples(base0,opaque,1)[0]!=(255,0,0):raise AssertionError('Dummy foreground capture is obstructed or unavailable')
-                focus_before=int(user.GetForegroundWindow() or 0)
+                focus_before=int(user.GetForegroundWindow() or 0);gdi_before=int(user.GetGuiResources(kernel.GetCurrentProcess(),0))
                 driver.attach(hwnd,mode);ratio=foreground.devicePixelRatioF();regions=[tuple(value*ratio for value in row[:5])+(row[5],) for row in material_rects]
                 driver.regions(regions);driver.visible(True)
                 enabled0=capture(name+'-native-0',0,0);enabled1=capture(name+'-native-1',1,0)
@@ -113,9 +135,12 @@ def verify(build_json,output):
                 evidence['native_focus_unchanged']=int(user.GetForegroundWindow() or 0)==focus_before
                 evidence['host_geometry_unchanged']=foreground.geometry().getRect()==original_geometry
                 evidence['host_owner_unchanged']=int(user.GetWindowLongPtrW(hwnd,-8))==original_owner
+                evidence['host_region_before']=original_region;evidence['host_region_after']=host_region()
+                evidence['host_region_unchanged']=evidence['host_region_after']==original_region
                 driver.visible(False);driver.close();app.processEvents();dwm.DwmFlush();QTest.qWait(50)
                 evidence['resources_after_close']=driver.stats()
-                evidence['verified']=bool(evidence['clear_tint']['verified'] and evidence['tint90']['verified'] and evidence['empty_mask_diff']<2 and evidence['native_focus_unchanged'] and evidence['host_geometry_unchanged'] and evidence['host_owner_unchanged'] and all(evidence['resources_after_close'][key]==0 for key in ('contexts','windows','visuals')))
+                evidence['gdi_objects_before']=gdi_before;evidence['gdi_objects_after_close']=int(user.GetGuiResources(kernel.GetCurrentProcess(),0))
+                evidence['verified']=bool(evidence['clear_tint']['verified'] and evidence['tint90']['verified'] and evidence['empty_mask_diff']<2 and evidence['native_focus_unchanged'] and evidence['host_geometry_unchanged'] and evidence['host_owner_unchanged'] and evidence['host_region_unchanged'] and evidence['gdi_objects_after_close']-gdi_before<=8 and all(evidence['resources_after_close'][key]==0 for key in ('contexts','windows','visuals')))
             except Exception as error:evidence['error']=type(error).__name__+': '+str(error)
             finally:
                 try:driver.close()
