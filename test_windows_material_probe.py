@@ -2,10 +2,40 @@
 import os,tempfile,unittest
 from pathlib import Path
 from unittest.mock import patch
-from ci_windows_material_probe import architecture_evidence,frequency_response
+from ci_windows_material_probe import architecture_evidence,dummy_source_evidence,frequency_response,order_dummy_windows
 
 
 class MaterialProbeTests(unittest.TestCase):
+    def test_dummy_ordering_only_touches_owned_hwnds_and_does_not_activate(self):
+        from types import SimpleNamespace
+        calls=[]
+        user=SimpleNamespace(GetForegroundWindow=lambda:999,SetWindowPos=lambda *args:calls.append(args) or 1)
+        report=order_dummy_windows(user,100,101)
+        self.assertTrue(report['foreground_unchanged']);self.assertEqual([row[0] for row in calls],[100,101])
+        self.assertEqual(calls,[(100,-1,0,0,0,0,0x213),(101,-1,0,0,0,0,0x213)])
+
+    def test_dummy_readiness_rejects_obstruction_and_wrong_background_phase(self):
+        def baseline(x,y):
+            if 100<=x<135 and 90<=y<112:return (255,0,0)
+            if 145<=x<169 and 90<=y<114:return (0,0,0) if ((145+((x-145)//2)*2)//2+y//2)%2 else (255,255,255)
+            return ((15,65,100),(240,180,70))[(x//6+y//6)%2]
+        self.assertTrue(dummy_source_evidence(baseline,0)['ready'])
+        self.assertFalse(dummy_source_evidence(baseline,1)['ready'])
+        obstructed=dummy_source_evidence(lambda x,y:(250,250,250),0)
+        self.assertFalse(obstructed['ready']);self.assertFalse(obstructed['known_source_matches']);self.assertFalse(obstructed['opaque_red_matches'])
+
+    def test_dummy_readiness_matches_real_qt_image_paint_for_both_phases(self):
+        from PySide6.QtGui import QColor,QImage,QPainter
+        for phase,palette in enumerate((((15,65,100),(240,180,70)),((80,10,130),(180,255,255)))):
+            image=QImage(620,400,QImage.Format_RGB32);painter=QPainter(image)
+            for y in range(0,400,6):
+                for x in range(0,620,6):painter.fillRect(x,y,6,6,QColor(*palette[(x//6+y//6)%2]))
+            painter.fillRect(100,90,35,22,QColor(255,0,0))
+            for y in range(90,114,2):
+                for x in range(145,169,2):painter.fillRect(x,y,2,2,QColor('black' if (x//2+y//2)%2 else 'white'))
+            painter.end()
+            self.assertTrue(dummy_source_evidence(lambda x,y:image.pixelColor(x,y).getRgb()[:3],phase)['ready'])
+
     def test_architecture_report_records_emulation_without_changing_pixel_gates(self):
         from types import SimpleNamespace
         class Query:

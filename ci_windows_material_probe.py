@@ -35,6 +35,29 @@ def architecture_evidence(kernel):
     return evidence
 
 
+def order_dummy_windows(user,checker_hwnd,foreground_hwnd):
+    """Only reorder our two dummy HWNDs, without activation or geometry edits."""
+    before=int(user.GetForegroundWindow() or 0)
+    flags=0x0001|0x0002|0x0010|0x0200  # NOSIZE | NOMOVE | NOACTIVATE | NOOWNERZORDER
+    results=[bool(user.SetWindowPos(hwnd,-1,0,0,0,0,flags)) for hwnd in (checker_hwnd,foreground_hwnd)]
+    after=int(user.GetForegroundWindow() or 0)
+    return dict(checker_topmost_ok=results[0],foreground_topmost_ok=results[1],foreground_before=before,foreground_after=after,foreground_unchanged=after==before,flags=flags)
+
+
+def dummy_source_evidence(read_pixel,phase):
+    """Recognize the unmodified dummy baseline, never a blur output."""
+    palette=(((15,65,100),(240,180,70)),((80,10,130),(180,255,255)))[phase]
+    # Cell centers avoid antialiasing/DPR edges; include mask interior and gutter.
+    points=((213,135),(219,135),(213,141),(219,141),(357,99),(363,99),(357,105),(363,105),(33,303),(39,303),(33,309),(39,309))
+    observed=[dict(point=[x,y],expected=palette[(x//6+y//6)%2],actual=tuple(read_pixel(x,y))) for x,y in points]
+    opaque=[tuple(read_pixel(x,y)) for y in range(90,112) for x in range(100,135)]
+    icon=[tuple(read_pixel(x,y)) for y in range(90,114) for x in range(145,169)]
+    icon_expected=[(0,0,0) if ((145+((x-145)//2)*2)//2+y//2)%2 else (255,255,255) for y in range(90,114) for x in range(145,169)]
+    known=all(row['actual']==row['expected'] for row in observed);red=all(value==(255,0,0) for value in opaque);black_white=icon==icon_expected
+    return dict(ready=known and red and black_white,known_source_swatches=observed,known_source_matches=known,opaque_red_matches=red,opaque_icon_matches=black_white,
+                opaque_red_first=opaque[0],opaque_icon_colors=sorted(set(icon)))
+
+
 def verify(build_json,output):
     if sys.platform!='win32' or os.environ.get('GITHUB_ACTIONS')!='true':raise RuntimeError('Restricted to the approved disposable Windows CI runner')
     os.environ['QT_QPA_PLATFORM']='windows'
@@ -54,6 +77,7 @@ def verify(build_json,output):
     report['architecture']=architecture_evidence(kernel)
     from ctypes.wintypes import RECT
     user.GetWindowLongPtrW.argtypes=[ctypes.c_void_p,ctypes.c_int];user.GetWindowLongPtrW.restype=ctypes.c_ssize_t
+    user.SetWindowPos.argtypes=[ctypes.c_void_p,ctypes.c_void_p,ctypes.c_int,ctypes.c_int,ctypes.c_int,ctypes.c_int,ctypes.c_uint];user.SetWindowPos.restype=ctypes.c_int
     user.GetForegroundWindow.argtypes=[];user.GetForegroundWindow.restype=ctypes.c_void_p
     user.GetSystemMetrics.argtypes=[ctypes.c_int];user.GetSystemMetrics.restype=ctypes.c_int
     user.GetWindowRgn.argtypes=[ctypes.c_void_p,ctypes.c_void_p];user.GetWindowRgn.restype=ctypes.c_int
@@ -89,12 +113,16 @@ def verify(build_json,output):
             painter.setPen(QPen(QColor('black'),1));painter.drawText(180,105,'OPAQUE FOREGROUND')
     checker=Checker();foreground=Foreground()
     for widget in (checker,foreground):
-        widget.setWindowFlags(Qt.Window|Qt.FramelessWindowHint|Qt.WindowDoesNotAcceptFocus)
+        widget.setWindowFlags(Qt.Window|Qt.FramelessWindowHint|Qt.WindowDoesNotAcceptFocus|Qt.WindowStaysOnTopHint)
         widget.setAttribute(Qt.WA_ShowWithoutActivating);widget.resize(620,400)
     foreground.setAttribute(Qt.WA_TranslucentBackground)
     area=app.primaryScreen().availableGeometry();position=QPoint(area.left()+30,area.top()+30)
     for widget in (checker,foreground):widget.move(position)
-    checker.show();foreground.show();checker.raise_();foreground.raise_();app.processEvents();QTest.qWait(150)
+    focus_before_show=int(user.GetForegroundWindow() or 0)
+    checker.show();foreground.show();app.processEvents()
+    report['dummy_initial_order']=order_dummy_windows(user,int(checker.winId()),int(foreground.winId()))
+    QTest.qWait(150)
+    report['dummy_initial_order'].update(foreground_before_show=focus_before_show,show_foreground_unchanged=int(user.GetForegroundWindow() or 0)==focus_before_show)
     hwnd=int(foreground.winId());original_geometry=foreground.geometry().getRect();original_owner=int(user.GetWindowLongPtrW(hwnd,-8));ex_style=int(user.GetWindowLongPtrW(hwnd,-20))
     def host_region():
         region=gdi.CreateRectRgn(0,0,0,0)
@@ -137,11 +165,26 @@ def verify(build_json,output):
                     disabled=ctypes.c_int(0);code=dwm.DwmSetWindowAttribute(hwnd,17,ctypes.byref(disabled),ctypes.sizeof(disabled))
                     if code<0:raise OSError(f'Host-backdrop flag unsupported: 0x{code&0xffffffff:08x}')
                 elif report['windows_build']<22621:raise RuntimeError('Public system Acrylic requires Windows 11 build 22621 or later')
-                base0=capture(name+'-baseline-0',0,0);base1=capture(name+'-baseline-1',1,0)
-                if len(set(samples(base0,icon,1)))<2 or samples(base0,opaque,1)[0]!=(255,0,0):raise AssertionError('Dummy foreground capture is obstructed or unavailable')
+                evidence['baseline_readiness']=[]
+                for attempt in range(3):
+                    ordering=order_dummy_windows(user,int(checker.winId()),hwnd)
+                    suffix='' if attempt==0 else '-retry'+str(attempt)
+                    base0=capture(name+'-baseline-0'+suffix,0,0);base1=capture(name+'-baseline-1'+suffix,1,0)
+                    def source_state(image,phase):
+                        ratio=image.devicePixelRatio()
+                        return dummy_source_evidence(lambda x,y:image.pixelColor(round(x*ratio),round(y*ratio)).getRgb()[:3],phase)
+                    readiness=dict(attempt=attempt+1,ordering=ordering,phase0=source_state(base0,0),phase1=source_state(base1,1))
+                    readiness['ready']=bool(ordering['checker_topmost_ok'] and ordering['foreground_topmost_ok'] and ordering['foreground_unchanged'] and readiness['phase0']['ready'] and readiness['phase1']['ready'])
+                    evidence['baseline_readiness'].append(readiness)
+                    if readiness['ready']:break
+                if not evidence['baseline_readiness'][-1]['ready']:
+                    evidence['measurement_stage']='not-exercised-baseline-obstructed'
+                    raise AssertionError('Known dummy baseline is obstructed or unavailable; native material was not exercised')
+                evidence['measurement_stage']='baseline-ready'
                 focus_before=int(user.GetForegroundWindow() or 0);gdi_before=int(user.GetGuiResources(kernel.GetCurrentProcess(),0))
                 driver.attach(hwnd,mode);ratio=foreground.devicePixelRatioF();regions=[tuple(value*ratio for value in row[:5])+(row[5],) for row in material_rects]
                 driver.regions(regions);driver.visible(True)
+                evidence['measurement_stage']='native-material-exercised'
                 enabled0=capture(name+'-native-0',0,0);enabled1=capture(name+'-native-1',1,0)
                 evidence['clear_tint']=analyze(base0,base1,enabled0,enabled1)
                 driver.visible(False);tint0=capture(name+'-tint90-baseline-0',0,.9);tint1=capture(name+'-tint90-baseline-1',1,.9)
@@ -157,14 +200,14 @@ def verify(build_json,output):
                 driver.visible(False);driver.close();app.processEvents();dwm.DwmFlush();QTest.qWait(50)
                 evidence['resources_after_close']=driver.stats()
                 evidence['gdi_objects_before']=gdi_before;evidence['gdi_objects_after_close']=int(user.GetGuiResources(kernel.GetCurrentProcess(),0))
-                evidence['verified']=bool(evidence['clear_tint']['verified'] and evidence['tint90']['verified'] and evidence['empty_mask_diff']<2 and evidence['native_focus_unchanged'] and evidence['host_geometry_unchanged'] and evidence['host_owner_unchanged'] and evidence['host_region_unchanged'] and evidence['gdi_objects_after_close']-gdi_before<=8 and all(evidence['resources_after_close'][key]==0 for key in ('contexts','windows','visuals')))
+                evidence['verified']=bool(evidence['clear_tint']['verified'] and evidence['tint90']['verified'] and evidence['empty_mask_diff']<2 and evidence['native_focus_unchanged'] and report['dummy_initial_order']['show_foreground_unchanged'] and evidence['host_geometry_unchanged'] and evidence['host_owner_unchanged'] and evidence['host_region_unchanged'] and evidence['gdi_objects_after_close']-gdi_before<=8 and all(evidence['resources_after_close'][key]==0 for key in ('contexts','windows','visuals')))
             except Exception as error:evidence['error']=type(error).__name__+': '+str(error)
             finally:
                 try:driver.close()
                 except Exception as error:evidence['close_error']=str(error)
                 report['modes'].append(evidence)
         report['verified']=any(mode['verified'] for mode in report['modes'])
-        report['reason']='pixel-verified-candidate-only' if report['verified'] else 'no-compatible-pixel-verified-candidate'
+        report['reason']='pixel-verified-candidate-only' if report['verified'] else ('baseline-obstructed-native-material-not-exercised' if all(mode.get('measurement_stage')=='not-exercised-baseline-obstructed' for mode in report['modes']) else 'no-compatible-pixel-verified-candidate')
     except Exception as error:report['reason']=type(error).__name__+': '+str(error)
     finally:
         try:driver.shutdown();report['resources_after_shutdown']=driver.stats()
