@@ -66,7 +66,7 @@ def main():
             for expanded in (False,True):
                 shelf.hide_immediately();shelf.show_transient()
                 if expanded:shelf.show_contents(animate=False)
-                wait(lambda:shelf.isVisible() and shelf.presentation.values['alpha']>=.99)
+                wait(lambda:shelf.isVisible() and shelf.presentation.values['alpha']>=.99 and not shelf.presentation._timer.isActive())
                 shelf._raise_for_reveal();shelf.rename_ref(rename_ref)
                 rename=shelf._rename_dialog
                 wait(lambda:rename.isVisible() and shelf.rename_edit.hasFocus())
@@ -80,17 +80,25 @@ def main():
                     assert dialog_id in order and owner_id in order and order.index(dialog_id)<order.index(owner_id),order
                     rename_order.append(dict(expanded=expanded,dialog_order=order.index(dialog_id),shelf_order=order.index(owner_id)))
                 else:
-                    import AppKit,objc,ctypes
+                    import AppKit,objc,ctypes,Quartz
                     native=lambda widget:objc.objc_object(c_void_p=ctypes.c_void_p(int(widget.winId()))).window()
                     owner,modal=native(shelf),native(rename)
                     order=[int(window.windowNumber()) for window in AppKit.NSApplication.sharedApplication().orderedWindows()]
+                    visible=Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionOnScreenOnly|Quartz.kCGWindowListExcludeDesktopElements,Quartz.kCGNullWindowID) or []
+                    own=[dict(number=int(info[Quartz.kCGWindowNumber]),index=index,alpha=float(info.get(Quartz.kCGWindowAlpha,0)),layer=int(info.get(Quartz.kCGWindowLayer,0)))
+                         for index,info in enumerate(visible) if int(info.get(Quartz.kCGWindowOwnerPID,-1))==os.getpid()]
+                    owner_info=next((info for info in own if info['number']==int(owner.windowNumber())),None)
+                    modal_info=next((info for info in own if info['number']==int(modal.windowNumber())),None)
                     trace.append(dict(event='rename-native-order',expanded=expanded,order=order,
+                        quartz_windows=own,modal_is_panel=bool(modal.isKindOfClass_(AppKit.NSPanel)),
                         owner=dict(number=int(owner.windowNumber()),visible=bool(owner.isVisible()),level=int(owner.level()),alpha=float(owner.alphaValue())),
                         modal=dict(number=int(modal.windowNumber()),visible=bool(modal.isVisible()),level=int(modal.level()),alpha=float(modal.alphaValue())),
                         shelf_alpha=shelf.presentation.values['alpha'],focus=shelf.rename_edit.hasFocus()))
-                    assert int(modal.windowNumber()) in order and int(owner.windowNumber()) in order,trace[-1]
-                    assert order.index(int(modal.windowNumber()))<order.index(int(owner.windowNumber())) and modal.level()>=owner.level(),order
-                    rename_order.append(dict(expanded=expanded,dialog_order=order.index(int(modal.windowNumber())),shelf_order=order.index(int(owner.windowNumber())),dialog_level=int(modal.level()),shelf_level=int(owner.level())))
+                    # AppKit orderedWindows explicitly excludes NSPanel. Qt
+                    # Dialogs are QNSPanel, so use the actual WindowServer list.
+                    assert owner_info and modal_info and owner_info['alpha']>0 and modal_info['alpha']>0,trace[-1]
+                    assert modal_info['index']<owner_info['index'] and modal.level()>=owner.level(),trace[-1]
+                    rename_order.append(dict(expanded=expanded,dialog_order=modal_info['index'],shelf_order=owner_info['index'],dialog_level=int(modal.level()),shelf_level=int(owner.level())))
                 rename.reject();wait(lambda:not rename.isVisible());assert original.exists()
             checks.append('rename is natively above compact and overview with input focus; cancel preserves original')
             report=dict(ok=True,checks=checks,trace=trace,platform=sys.platform,real_native_windows=True)
