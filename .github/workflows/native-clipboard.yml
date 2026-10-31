@@ -1,40 +1,17 @@
-name: Native clipboard verification
-
+name: Independent clipped Windows material probe
 on:
   workflow_dispatch:
-  push:
-    branches: [cloud-build]
-
 permissions:
   contents: read
-
 jobs:
-  cloud-contract:
+  native-material:
     if: github.repository == 'los0711/-flickdock-build'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-        with:
-          persist-credentials: false
-      - name: Install locked local service test dependencies
-        run: npm ci --prefix cloud --no-audit --no-fund
-      - name: Verify actual workerd, D1, R2 and signaling contracts
-        run: |
-          npm run typecheck --prefix cloud
-          npm test --prefix cloud
-  clipboard:
-    if: github.repository == 'los0711/-flickdock-build'
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [windows-latest, macos-15, macos-15-intel]
-    runs-on: ${{ matrix.runner }}
+    runs-on: windows-latest
+    timeout-minutes: 12
     env:
       PYTHONUTF8: '1'
-      FD_QA_NATIVE: '1'
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
+      QT_QPA_PLATFORM: windows
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
@@ -42,74 +19,17 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: '3.12'
-      - name: Install the reviewed Qt runtime
+      - name: Install the reviewed Qt probe runtime
         run: python -m pip install PySide6==6.12.0
-      - name: Install native macOS pasteboard bindings
-        if: runner.os == 'macOS'
-        run: python -m pip install 'pyobjc-framework-Quartz>=11,<13'
-      - name: Check clipboard source ownership and real external editor Copy
-        run: python ci_clipboard_origin.py --output clipboard-origin-native.json
-      - name: Observe actual native transfer-to-overview handoff
-        run: python ci_transfer_navigation.py
-      - name: Check delayed formats, input fields and shared upload regressions
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: python -m unittest test_clipboard_origin_v1823 test_transfer_interaction_v1823 test_clipboard_sync_v1819 test_clipboard_fast_v1821 test_shared_clipboard_files_v1821 test_pointer_paste_v1819 -q
-      - name: Reproduce asynchronous metadata reconciliation before framework warmup
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          QT_QPA_PLATFORM=offscreen python -m unittest test_motion_resources_v1822.DisplayMetadataTests -v
-          QT_QPA_PLATFORM=offscreen python -m unittest test_stability_v1822 test_resources_v1822.ResourceTests test_motion_resources_v1822.MotionTests test_motion_resources_v1822.DisplayMetadataTests test_motion_resources_v1822.MacVolumeTests test_receive_lifecycle_v1822.ReceiveLifecycleTests test_transfer_entry_v1822.EntryTests test_small_upload_lane.SmallLaneTests -q
-      - name: Inspect native volume metadata on the disposable Mac filesystem
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          python - <<'PY'
-          import json, tempfile, os, objc
-          from pathlib import Path
-          from Foundation import NSURL, NSURLVolumeIsLocalKey, NSURLVolumeURLKey
-          from file_metadata import _local_volume
-          with tempfile.TemporaryDirectory(prefix='flickdock-volume-probe-') as directory:
-              parent=Path(directory).resolve(strict=True)
-              print(json.dumps({'python_volume_flag':getattr(os,'ST_LOCAL',None),'objc_version':getattr(objc,'__version__',None),'classifier':_local_volume(str(parent/'missing.bin'))}))
-              with objc.autorelease_pool():
-                  url=NSURL.fileURLWithPath_(str(parent))
-                  for label,query in (
-                      ('single',lambda:url.getResourceValue_forKey_error_(None,NSURLVolumeIsLocalKey,None)),
-                      ('dictionary',lambda:url.resourceValuesForKeys_error_([NSURLVolumeIsLocalKey,NSURLVolumeURLKey],None))):
-                      try: print(label,repr(query()))
-                      except Exception as error: print(label,type(error).__name__,str(error))
-          PY
-      - name: Install locked local cloud test dependencies
-        run: npm ci --prefix cloud --no-audit --no-fund
-      - name: Verify actual OS copy and paste through the production cloud client
-        shell: pwsh
-        run: |
-          $env:FD_QA_PYTHON = (Get-Command python).Source
-          node cloud/test/clipboard.mjs
-      - name: Verify actual native utility windows on the disposable runner
-        run: python ci_utility_windows.py --output native-utility.json
-      - name: Ensure native installer compiler
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          if (-not (Get-Command ISCC.exe -ErrorAction SilentlyContinue) -and -not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
-            choco install innosetup --yes --no-progress
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
-      - name: Verify actual installer shutdown and replacement
-        if: runner.os == 'Windows'
-        run: python ci_installer_close.py --output native-installer-close.json
-      - name: Retain native window verification
+      - name: Compile the isolated DLL using installed Windows SDK and MSVC only
+        run: python build_windows_material_probe.py --output-dir material-native
+      - name: Measure real clipped blur, foreground pixels and empty host gutters
+        run: python -c "import subprocess,sys; subprocess.run([sys.executable,'ci_windows_material_probe.py','--build-json','material-native/build.json','--output','material-native/pixels.json'],check=True,timeout=60)"
+      - name: Retain positive or negative native evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: native-utility-${{ matrix.runner }}-${{ github.sha }}
-          path: |
-            clipboard-origin-native.json
-            clipboard-origin-native.trace.jsonl
-            transfer-navigation-native.json
-            native-utility.json
-            native-installer-close.json
+          name: material-native-${{ github.sha }}
+          path: material-native/*
+          if-no-files-found: error
           retention-days: 3
