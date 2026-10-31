@@ -125,7 +125,7 @@ class UtilityPreferenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory,patch.object(WindowChrome,'_available',return_value=QRect(0,0,1920,1080)):
             store=SettingsStore(Path(directory));settings=SettingsDialog(store);transfer=LanDialog(FakeLan(),store)
             try:
-                for view,default in ((settings,(892,632)),(transfer,(980,704))):
+                for view,default in ((settings,(892,632)),(transfer,(980,744))):
                     view.show();flush();surface=view.surface if view is settings else view.card
                     handle=id(surface);view.resize(1120,820);flush();view.hide()
                     view.show();self.assertEqual(view.size().toTuple(),default);self.assertEqual(id(surface),handle)

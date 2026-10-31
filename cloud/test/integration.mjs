@@ -86,6 +86,24 @@ try{
     assert.ok(!sql('SELECT token_hash FROM sessions').includes(alice.token));
     await request('POST','/v1/auth/login',{...credentials('alice'),password:'wrong testing password'},undefined,401);
   });
+  await check('device online flags follow authenticated sockets, isolate accounts and clear on disconnect',async()=>{
+    const connect=async owner=>{
+      const socket=new WebSocket(base.replace('http:','ws:')+'/v1/events',{headers:{Authorization:'Bearer '+owner.token}});
+      await new Promise((resolve,reject)=>{socket.once('open',resolve);socket.once('error',reject);});return socket;
+    };
+    const first=await connect(alice);let second;
+    try{
+      const get=async (token=alice.token)=>(await request('GET','/v1/devices',undefined,token)).devices;
+      let rows=await get();assert.equal(rows.find(d=>d.id===alice.device_id).online,true);assert.equal(rows.find(d=>d.id===mac.device_id).online,false);
+      const messages=[];first.on('message',data=>messages.push(JSON.parse(String(data))));
+      second=await connect(mac);rows=await get();assert.equal(rows.find(d=>d.id===mac.device_id).online,true);
+      assert.ok((await get(bob.token)).every(d=>d.online===false));
+      await new Promise(resolve=>{second.once('close',resolve);second.close();});second=undefined;
+      for(let attempt=0;attempt<30;attempt++){rows=await get();if(!rows.find(d=>d.id===mac.device_id).online)break;await sleep(25);}
+      assert.equal(rows.find(d=>d.id===mac.device_id).online,false);
+      assert.ok(messages.filter(value=>value.type==='devices').length>=2,'connect/disconnect push the existing device refresh hint');
+    }finally{first.close();second?.close();}
+  });
   await check('peer receives real upload progress before a streamed R2 part completes',async()=>{
     const sender=await request('POST','/v1/auth/register',credentials('event-progress-fixture'),undefined,201),receiver=await request('POST','/v1/auth/login',credentials('event-progress-fixture'));
     const socket=new WebSocket(base.replace('http:','ws:')+'/v1/events',{headers:{Authorization:'Bearer '+receiver.token}}),progress=[];

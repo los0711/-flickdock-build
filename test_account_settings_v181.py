@@ -44,7 +44,7 @@ class SettingsAccountTests(unittest.TestCase):
         self.store=app_settings.SettingsStore(Path(self.temp.name))
         self.dialog=app_settings.SettingsDialog(self.store)
         self.service=Service();self.panel=AccountPanel(self.service,email_binding=False)
-        self.dialog.set_account_panel(self.panel);self.dialog.resize(892,632);self.dialog.show();APP.processEvents()
+        self.dialog.set_account_panel(self.panel);self.dialog.show_settings_category('account');self.dialog.resize(892,632);self.dialog.show();APP.processEvents()
     def tearDown(self):
         self.dialog.close();self.dialog.deleteLater();APP.processEvents()
         self.runtime.stop();self.screen.stop();self.temp.cleanup()
@@ -93,6 +93,8 @@ class SettingsAccountTests(unittest.TestCase):
         self.assertGreaterEqual(len(controls),13)
         for focused in (False,True):
             for widget in controls:
+                for key,(_,cards) in self.dialog._settings_categories.items():
+                    if any(card.isAncestorOf(widget) for card in cards):self.dialog.show_settings_category(key);break
                 self.dialog.scroll.ensureWidgetVisible(widget);APP.processEvents()
                 if focused:widget.setFocus()
                 else:self.dialog.save_button.setFocus()
@@ -100,9 +102,10 @@ class SettingsAccountTests(unittest.TestCase):
                 self.wheel(widget)
                 after=widget.currentIndex() if isinstance(widget,QComboBox) else widget.value()
                 self.assertEqual(before,after,(widget.accessibleName(),focused))
-        self.dialog.scroll.verticalScrollBar().setValue(0)
-        self.wheel(self.dialog.theme_combo)
+        self.dialog.show_settings_category('displays');APP.processEvents();self.dialog.scroll.verticalScrollBar().setValue(0)
+        self.wheel(self.dialog.shake_sensitivity_spin)
         self.assertGreater(self.dialog.scroll.verticalScrollBar().value(),0)
+        self.dialog.show_settings_category('general')
         combo=self.dialog.theme_combo;before=combo.currentIndex();combo.setFocus()
         QTest.keyClick(combo,Qt.Key.Key_Down if before==0 else Qt.Key.Key_Up)
         self.assertNotEqual(combo.currentIndex(),before)
@@ -111,6 +114,7 @@ class SettingsAccountTests(unittest.TestCase):
         self.store.update(keep_empty_handle=False)
         self.assertFalse(app_settings.SettingsStore(self.store.base).keep_empty_handle)
     def test_trigger_switch_clicks_at_both_ends_and_preserves_cancel(self):
+        self.dialog.show_settings_category('displays')
         switch=self.dialog.trigger_visible_checkbox
         self.assertIsInstance(switch,app_settings.SettingsToggleSwitch)
         self.dialog.scroll.ensureWidgetVisible(switch);APP.processEvents()
@@ -126,7 +130,7 @@ class SettingsAccountTests(unittest.TestCase):
         self.assertEqual(self.store.trigger_visible,before)
         self.dialog.show();APP.processEvents()
         self.assertEqual(switch.isChecked(),before)
-        self.dialog.scroll.ensureWidgetVisible(self.dialog.startup_checkbox)
+        self.dialog.show_settings_category('general');self.dialog.scroll.ensureWidgetVisible(self.dialog.startup_checkbox)
         APP.processEvents()
         startup_bottom=self.dialog.startup_checkbox.mapTo(
             self.dialog,QPoint(0,self.dialog.startup_checkbox.height())).y()
@@ -149,8 +153,9 @@ class SettingsAccountTests(unittest.TestCase):
             def apply_theme(self,theme):self.theme=theme
         lan=Lan();self.dialog.set_lan_panel(lan)
         self.assertIs(self.dialog.account_slot_layout.itemAt(1).widget(),self.panel)
-        self.assertIs(self.dialog.body_layout.itemAt(0).widget(),self.dialog._reference_top)
-        self.assertIs(self.dialog.body_layout.itemAt(1).widget(),lan)
+        self.assertIn(self.dialog.account_slot,self.dialog._settings_categories['account'][1])
+        self.assertIn(lan,self.dialog._settings_categories['sync'][1])
+        self.assertFalse(lan.isVisible());self.dialog.show_settings_category('sync');APP.processEvents();self.assertTrue(lan.isVisible())
         self.dialog.apply_theme('dark');self.assertEqual(lan.theme,'dark')
         self.assertIs(self.dialog.set_lan_panel(None),lan);self.assertIsNone(lan.parent())
         lan.deleteLater()
@@ -162,8 +167,9 @@ class SettingsAccountTests(unittest.TestCase):
             self.assertEqual(self.panel.devices_body.objectName(),'accountDevices')
             self.assertEqual(len(self.panel.devices_body.findChildren(QWidget,'accountDeviceSeparator')),0)
             rows=list(self.panel._rows_by_id.values())
-            self.assertEqual(rows[0].geometry().top(),rows[1].geometry().top())
-            self.assertLess(rows[0].geometry().right(),rows[1].geometry().left())
+            self.assertEqual(rows[0].geometry().left(),rows[1].geometry().left())
+            self.assertEqual(rows[0].geometry().width(),rows[1].geometry().width())
+            self.assertLess(rows[0].geometry().bottom(),rows[1].geometry().top())
             for row in self.panel._rows_by_id.values():
                 self.assertTrue(self.panel.devices_body.rect().contains(row.geometry()))
             for widget in self.panel.findChildren(QWidget):

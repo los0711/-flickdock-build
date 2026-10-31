@@ -128,8 +128,8 @@ class LanDialogTests(unittest.TestCase):
         with patch('lan_panel.time.monotonic',return_value=10):panel._progress(event)
         event.update(received=4_000_000,relay_bytes=4_100_000)
         with patch('lan_panel.time.monotonic',return_value=11):panel._progress(event)
-        detail=panel._rows['turn-qa']['detail'].text()
-        self.assertIn('剩余约 8 秒',detail);self.assertIn('TURN:4.1MB',detail)
+        row=panel._rows['turn-qa']
+        self.assertIn('剩余约 8 秒',row['metrics'].accessibleName());self.assertIn('TURN:4.1MB',row['route_badge'].text())
         event.update(state='cancelled',relay_bytes=4_200_000);panel._progress(event)
         self.assertEqual(panel._history[0]['relay_bytes'],4_200_000)
         self.assertIn('TURN:4.2MB',panel.history_rows[0].title.accessibleName())

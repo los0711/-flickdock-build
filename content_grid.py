@@ -5,13 +5,26 @@ selection, a larger file icon, and small painted hover/press feedback.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, QDateTime
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QTextLayout, QTextOption
 from PySide6.QtWidgets import QMenu, QWidget, QSizePolicy
 
 from flickdock_motion import FeedbackButton, Spring
 from transfer_visuals import (CLOUD_STATUS_LABELS, cloud_status_for_ref,
                               draw_cloud_status_badge, draw_progress_badge)
+from transfer_visuals import CloudStatusBadge
+
+GRID_ITEM_MIN_WIDTH=136
+GRID_ITEM_MAX_WIDTH=176
+GRID_ITEM_HEIGHT=168
+GRID_ITEM_GAP=10
+FILE_ROW_HEIGHT=52
+
+
+def added_time_for_ref(shelf,ref,*,full=False):
+    timestamp=shelf.content.metadata.get(ref,{}).get('shelf_added_at')
+    stamp=QDateTime.fromString(str(timestamp or ''),Qt.ISODate)
+    return stamp.toLocalTime().toString('yyyy-MM-dd HH:mm:ss' if full else 'MM-dd HH:mm:ss') if stamp.isValid() else None
 
 try:
     from ui_theme import color
@@ -37,7 +50,7 @@ class IconItem(QWidget):
         self.origin = QPoint()
         self.did_drag = False
         self._selected = ref in popup.selected
-        self.setMinimumWidth(112);self.setMaximumWidth(176);self.setFixedHeight(120)
+        self.setMinimumWidth(GRID_ITEM_MIN_WIDTH);self.setMaximumWidth(GRID_ITEM_MAX_WIDTH);self.setFixedHeight(GRID_ITEM_HEIGHT)
         self.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
         self._keyboard_focus=False
         self.setMouseTracking(True)
@@ -46,6 +59,9 @@ class IconItem(QWidget):
         self.setAccessibleName(popup.shelf.content.title(ref))
         self.setAccessibleDescription("文字内容" if popup.shelf.content.is_text(ref) else "文件内容")
         self.cloud_status = 'local'
+        self.status_badge=CloudStatusBadge(self,glyph_size=14)
+        self.status_badge.setFixedSize(24,24)
+        self.status_pill=self.status_badge  # Existing status observers share this widget.
         self.refresh_cloud_status()
         self.motion = Spring(self, {"hover": 0, "down": 0, "selected": float(self._selected)},
                              lambda _: self.update(), motion=popup.shelf.manager.motion)
@@ -55,12 +71,12 @@ class IconItem(QWidget):
         self.title = popup.shelf.content.title(ref)
         from reference_widgets import ToolbarButton
         self.remove_button = ToolbarButton("close", self, motion=popup.shelf.manager.motion)
-        self.remove_button.setFixedSize(32,32)
-        self.remove_button.move(self.width()-36,4)
+        self.remove_button.setFixedSize(28,28)
+        self.remove_button.move(self.width()-32,2)
         self.remove_button.setToolTip("从搁架移除")
         self.remove_button.setAccessibleName("从搁架移除 " + self.title)
         self.remove_button.clicked.connect(lambda: self.popup.remove_path(self.ref))
-        self.remove_button.hide()
+        self.remove_button.show()
 
     def refresh_content(self):
         self.title=self.popup.shelf.content.title(self.ref)
@@ -74,7 +90,12 @@ class IconItem(QWidget):
     def refresh_cloud_status(self):
         lookup = getattr(self.popup, 'cloud_status', None)
         status = lookup(self.ref) if callable(lookup) else cloud_status_for_ref(self.popup.shelf, self.ref)
-        if status == self.cloud_status and self.toolTip(): return
+        previous_time=getattr(self,'added_time',None)
+        self.added_time=added_time_for_ref(self.popup.shelf,self.ref) or '暂无时间'
+        self.status_badge.set_status(status,getattr(self.popup.shelf.content,'transfers',{}).get(self.ref))
+        if status == self.cloud_status and self.toolTip():
+            if previous_time!=self.added_time:self.update()
+            return
         self.cloud_status = status
         self.setToolTip(CLOUD_STATUS_LABELS.get(status, CLOUD_STATUS_LABELS['local']))
         kind='文字内容' if self.popup.shelf.content.is_text(self.ref) else '文件内容'
@@ -111,7 +132,7 @@ class IconItem(QWidget):
         super().enterEvent(event)
 
     def leaveEvent(self, event):
-        self.remove_button.setVisible(self.hasFocus() and self._keyboard_focus)
+        self.remove_button.show()
         if hasattr(self.popup, 'end_hover'): self.popup.end_hover(self.ref)
         self.motion.animate({"hover": 0}, response=.14, damping=1)
         super().leaveEvent(event)
@@ -122,7 +143,7 @@ class IconItem(QWidget):
         if event.button() == Qt.MouseButton.LeftButton:
             self.origin = event.position().toPoint()
             self.did_drag = False
-            if QRectF(4,4,32,32).contains(event.position()):
+            if QRectF(4,2,28,28).contains(event.position()):
                 self.popup.select_item(self.ref,toggle=True)
                 self._pending_deselect=False
                 self._refresh_selection();event.accept();return
@@ -185,15 +206,16 @@ class IconItem(QWidget):
             super().keyPressEvent(event)
 
     def resizeEvent(self,event):
-        if hasattr(self,'remove_button'):self.remove_button.move(self.width()-36,4)
+        if hasattr(self,'remove_button'):self.remove_button.move(self.width()-32,2)
+        if hasattr(self,'status_badge'):self.status_badge.move(self.width()-33,89)
         super().resizeEvent(event)
 
     def focusInEvent(self,event):
         self._keyboard_focus=event.reason() in (Qt.TabFocusReason,Qt.BacktabFocusReason,Qt.ShortcutFocusReason)
-        self.remove_button.setVisible(self._keyboard_focus);self.update();super().focusInEvent(event)
+        self.remove_button.show();self.update();super().focusInEvent(event)
 
     def focusOutEvent(self,event):
-        self._keyboard_focus=False;self.remove_button.setVisible(self.underMouse());self.update();super().focusOutEvent(event)
+        self._keyboard_focus=False;self.remove_button.show();self.update();super().focusOutEvent(event)
 
     def contextMenuEvent(self, event):
         if hasattr(self.popup,'show_item_menu'):
@@ -245,17 +267,30 @@ class IconItem(QWidget):
             painter.setBrush(Qt.NoBrush);painter.setPen(QPen(QColor(c['blue']),1.5))
             painter.drawRoundedRect(QRectF(self.rect()).adjusted(2,2,-2,-2),c['card_radius']-1,c['card_radius']-1)
         painter.setPen(QPen(QColor('#0A84FF') if actual else ink(c['input_border']),1));painter.setBrush(QColor('#0A84FF') if actual else Qt.BrushStyle.NoBrush)
-        painter.drawRoundedRect(QRectF(12.5,12.5,14,14),4,4)
+        painter.drawRoundedRect(QRectF(12.5,8.5,14,14),4,4)
         if actual:
-            painter.setPen(QPen(QColor('white'),1.5,Qt.SolidLine,Qt.RoundCap,Qt.RoundJoin));painter.drawLine(QPointF(16,19),QPointF(18,22));painter.drawLine(QPointF(18,22),QPointF(23,16))
-        art=thumbnail(self.popup.shelf,self.ref,44);x=(self.width()-44)//2
-        lift=2*getattr(getattr(self,'_dwell_hint',None),'value',0.)
-        painter.drawPixmap(QPointF(x,13-lift),art);draw_status(painter,QRectF(x+30,43-lift,14,14),self.cloud_status)
+            painter.setPen(QPen(QColor('white'),1.5,Qt.SolidLine,Qt.RoundCap,Qt.RoundJoin));painter.drawLine(QPointF(16,15),QPointF(18,18));painter.drawLine(QPointF(18,18),QPointF(23,12))
+        area=QRectF(12,32,self.width()-24,80)
+        from PySide6.QtGui import QPainterPath,QImage,QPixmap
+        clip=QPainterPath();clip.addRoundedRect(area,6,6);painter.save();painter.setClipPath(clip)
+        painter.fillRect(area,QColor(c['preview']))
+        cached=getattr(self.popup.shelf,'preview_cache',{}).get(self.ref)
+        cache=getattr(self.popup.shelf,'image_cache',None)
+        decoded=cache.image(self.ref,256) if cache and self.popup.shelf.content.category(self.ref)=='images' else cached
+        art=QPixmap.fromImage(decoded) if isinstance(decoded,QImage) and not decoded.isNull() else decoded if isinstance(decoded,QPixmap) and not decoded.isNull() else thumbnail(self.popup.shelf,self.ref,96)
+        scale=min(area.width()/max(1,art.width()),area.height()/max(1,art.height()))
+        width,height=art.width()*scale,art.height()*scale
+        painter.drawPixmap(QRectF(area.center().x()-width/2,area.center().y()-height/2,width,height),art,QRectF(art.rect()));painter.restore()
         state=getattr(self.popup.shelf.content,'transfers',{}).get(self.ref)
-        if state:
-            draw_progress_badge(painter,QRectF(x+47,40,16,16),state)
         font=QFont(painter.font());font.setPixelSize(12);font.setWeight(QFont.DemiBold);painter.setFont(font);painter.setPen(QColor(c['text']))
-        painter.drawText(QRectF(12,66,self.width()-24,18),Qt.AlignVCenter,painter.fontMetrics().elidedText(self.title.replace('\n',' '),Qt.ElideRight,self.width()-24))
-        font.setPixelSize(10);font.setWeight(QFont.Normal);painter.setFont(font);painter.setPen(QColor(c['secondary']))
-        painter.drawText(QRectF(12,86,self.width()-24,14),Qt.AlignVCenter,item_detail(self.popup.shelf,self.ref).split(' · ')[0])
+        painter.drawText(QRectF(12,118,self.width()-24,20),Qt.AlignVCenter,painter.fontMetrics().elidedText(self.title.replace('\n',' '),Qt.ElideRight,self.width()-24))
+        font.setPixelSize(11);font.setWeight(QFont.Normal);painter.setFont(font);painter.setPen(QColor(c['secondary']))
+        from transfer_visuals import transfer_fraction
+        fraction=transfer_fraction(state) if state else None
+        detail=item_detail(self.popup.shelf,self.ref).split(' · ')[0]+(f' · {round(fraction*100)}%' if fraction is not None else '')
+        font.setPixelSize(10);painter.setFont(font)
+        time_width=painter.fontMetrics().horizontalAdvance(self.added_time)
+        detail_width=max(0,self.width()-24-time_width-6)
+        painter.drawText(QRectF(12,140,detail_width,18),Qt.AlignVCenter,painter.fontMetrics().elidedText(detail,Qt.ElideRight,detail_width))
+        painter.drawText(QRectF(self.width()-12-time_width,140,time_width,18),Qt.AlignRight|Qt.AlignVCenter,self.added_time)
         painter.end()

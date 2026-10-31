@@ -379,7 +379,7 @@ class ShelfClipboardBridge(QObject):
                     entry['last_error']=str(error or '云端共享文件提交校验失败。')
                     self.retry_at[identity]=time.monotonic()+5;self.retry.start(5001)
                 owner._persist();owner._notify_transfers();owner.debounce.start(1);return
-            entry.update(version=record['version'],sha256=raw['sha256'])
+            entry.update(version=record['version'],sha256=raw['sha256'],cloud_uploaded_at=record.get('updated_at'))
             if entry['seq']==seq and not entry.get('deleted'):entry['dirty']=False
             if entry.get('shared_clipboard')==task['id']:entry.pop('shared_clipboard',None)
             entry.pop('last_error',None);self.retry_at.pop(identity,None)

@@ -330,6 +330,8 @@ class DiskWork(QRunnable):
         self.function, self.args = function, args
 
     def run(self):
-        try: result, error = self.function(*self.args,self.cancel), None
+        try:
+            if self.cancel.is_set():raise InterruptedError('文件任务已取消。')
+            result, error = self.function(*self.args,self.cancel), None
         except Exception as problem: result,error = None,problem
         self.signals.done.emit(result,error)

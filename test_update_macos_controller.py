@@ -12,6 +12,7 @@ import threading
 import time
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 import zipfile
 
 from PySide6.QtCore import QEventLoop, QObject, QTimer, Signal, QThreadPool
@@ -80,7 +81,11 @@ class MacControllerTests(unittest.TestCase):
         APP.processEvents()
         self.temp.cleanup()
 
-    def popen(self, arguments, **options): self.events.append(('popen', arguments, options)); return object()
+    def popen(self, arguments, **options):
+        self.events.append(('popen', arguments, options))
+        receipt=Path(arguments[2]);prepared=mac_updates._read_receipt(receipt)
+        mac_updates._ack_helper_startup(prepared,receipt,pid=123)
+        return SimpleNamespace(pid=123,poll=lambda:None,terminate=lambda:None)
     def complete_and_install(self,path,manifest):
         self.client.complete(path,manifest)
         if self.controller.state=='ready':
@@ -182,6 +187,47 @@ class MacControllerTests(unittest.TestCase):
         self.client.offer(self.manifest)
         self.complete_and_install(self.zip,self.manifest)
         self.assertTrue(spin(lambda:len(self.events)==2))
+
+    def test_spawned_but_exited_helper_reports_error_and_allows_retry_without_quitting(self):
+        self.controller._popen=lambda *args,**kwargs:SimpleNamespace(pid=123,poll=lambda:1,terminate=lambda:None)
+        failures=[];self.controller.installation_failed.connect(failures.append)
+        self.authorize();self.complete_and_install(self.zip,self.manifest)
+        self.assertTrue(spin(lambda:self.controller.state=='error'))
+        self.assertTrue(failures);self.assertIn('退出码 1',failures[0]);self.assertEqual(self.events,[])
+        self.assertEqual(mac_updates.bundle_metadata(self.bundle)['CFBundleShortVersionString'],'1.7.0')
+        self.controller._popen=self.popen;self.assertTrue(self.controller.start_update())
+        self.client.offer(self.manifest);self.complete_and_install(self.zip,self.manifest)
+        self.assertTrue(spin(lambda:len(self.events)==2))
+
+    def test_cancel_cannot_start_another_helper_until_owned_process_is_reaped(self):
+        import subprocess
+        entered,release=threading.Event(),threading.Event();alive=[True]
+        def wait(timeout):
+            entered.set();release.wait(2);alive[0]=False;return 0
+        child=SimpleNamespace(pid=123,poll=lambda:None if alive[0] else 0,
+            terminate=lambda:None,kill=lambda:None,wait=wait)
+        self.controller._popen=lambda *args,**kwargs:child
+        self.authorize();self.complete_and_install(self.zip,self.manifest)
+        self.assertTrue(spin(lambda:hasattr(self.controller,'_mac_helper_startup')))
+        try:
+            self.controller.cancel();self.assertTrue(spin(entered.is_set))
+            self.assertFalse(self.controller.can_start_update)
+            self.assertFalse(self.controller.start_update());self.assertEqual(self.events,[])
+        finally:release.set()
+        self.assertTrue(spin(lambda:not self.controller.busy))
+        self.assertTrue(self.controller.can_start_update)
+
+    def test_cancel_keeps_retry_locked_when_child_exit_cannot_be_confirmed(self):
+        import subprocess
+        def wait(timeout):raise subprocess.TimeoutExpired('owned fixture',timeout)
+        child=SimpleNamespace(pid=123,poll=lambda:None,terminate=lambda:None,kill=lambda:None,wait=wait)
+        self.controller._popen=lambda *args,**kwargs:child
+        self.authorize();self.complete_and_install(self.zip,self.manifest)
+        self.assertTrue(spin(lambda:hasattr(self.controller,'_mac_helper_startup')))
+        self.controller.cancel();monitor=child._flickdock_startup_monitor
+        self.assertTrue(spin(lambda:self.controller.state=='error'))
+        self.assertTrue(self.controller.busy);self.assertFalse(self.controller.can_start_update)
+        self.assertTrue(monitor.prepared.stage.exists());self.assertEqual(self.events,[])
 
 
 if __name__=='__main__':unittest.main(verbosity=2)

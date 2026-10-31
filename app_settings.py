@@ -1360,6 +1360,7 @@ class SettingsDialog(QDialog):
         footer.addWidget(self.save_button)
         root.addLayout(footer)
         self._build_reference_layout(appearance, cloud, storage, shortcuts, startup)
+        self._build_settings_categories(appearance,shortcuts,cloud)
         self.load_values()
         self.store.changed.connect(self._sync_direction_controls)
         self.set_update_state("idle")
@@ -1390,13 +1391,15 @@ class SettingsDialog(QDialog):
         """The HTML segmented controls keep the existing combo as their model."""
         combo.hide()
         group=QFrame(self.surface);group.setObjectName('settingsSegment')
-        row=QHBoxLayout(group);row.setContentsMargins(4,4,4,4);row.setSpacing(6)
+        from native_ui_common import SEGMENT_HEIGHT,SEGMENT_INSET,SEGMENT_BUTTON_HEIGHT
+        group.setFixedHeight(SEGMENT_HEIGHT)
+        row=QHBoxLayout(group);row.setContentsMargins(SEGMENT_INSET,SEGMENT_INSET,SEGMENT_INSET,SEGMENT_INSET);row.setSpacing(0)
         from PySide6.QtWidgets import QButtonGroup
         selection=QButtonGroup(group);selection.setExclusive(True)
         buttons=[]
         for index,label in enumerate(labels):
             button=QPushButton(label,group);button.setObjectName('settingsSegmentButton')
-            button.setCheckable(True);button.setAutoDefault(False);button.setMinimumHeight(32)
+            button.setCheckable(True);button.setAutoDefault(False);button.setFixedHeight(SEGMENT_BUTTON_HEIGHT)
             selection.addButton(button,index)
             if combo is self.theme_combo or combo is self.view_combo:
                 from native_ui_common import icon
@@ -1414,6 +1417,8 @@ class SettingsDialog(QDialog):
                     tint=('#F5F5F7' if dark else '#1D1D1F') if button.isChecked() else ('#A1A1AA' if dark else '#68686D')
                     button.setIcon(icon(button.property('segmentGlyph'),tint))
         combo.currentIndexChanged.connect(synchronize);synchronize()
+        from ui_transitions import SegmentIndicator
+        group.selection_indicator=SegmentIndicator(group,buttons)
         return group
 
     def _reference_toggle(self, control, label, parent):
@@ -1572,6 +1577,69 @@ class SettingsDialog(QDialog):
         self.update_activity.setVisible(self.update_activity.active)
         self.update_notes_area.hide()
 
+    def _build_settings_categories(self,appearance,shortcuts,cloud):
+        """Reparent existing controls; changing sections never reloads preferences."""
+        updates=self._card();updates_layout=QVBoxLayout(updates)
+        updates_layout.setContentsMargins(16,16,16,16);updates_layout.setSpacing(12)
+        heading=QLabel('更新与关于',updates);heading.setObjectName('settingsSection');updates_layout.addWidget(heading)
+        version=QLabel(f'当前版本 {APP_VERSION} · 检查与安装更新请使用窗口右上角按钮。',updates)
+        version.setWordWrap(True);version.setObjectName('settingsDetail');updates_layout.addWidget(version)
+        automatic=self.automatic_updates_checkbox.parentWidget();shortcuts.layout().removeWidget(automatic)
+        updates_layout.addWidget(automatic)
+        about=self.reference_about_button;self.footer_frame.layout().removeWidget(about);updates_layout.addWidget(about)
+        for label in self.footer_frame.findChildren(QLabel):
+            if label.text()=='·':label.hide()
+        self._settings_categories={
+            'account':('账号与设备',(self.account_slot,)),
+            'general':('通用与外观',(appearance,shortcuts)),
+            'sync':('搁架与剪贴板',(cloud,)),
+            'displays':('边缘与显示器',(self.dock_card,)),
+            'updates':('更新与关于',(updates,)),
+        }
+        # Detach the old two-column containers without deleting their controls.
+        while self.body_layout.count():
+            item=self.body_layout.takeAt(0)
+            if item.widget():item.widget().hide()
+        for _,cards in self._settings_categories.values():
+            for card in cards:
+                card.setParent(self.body);card.setMinimumWidth(0);card.setMaximumWidth(16777215)
+                card.setMinimumHeight(0);card.setMaximumHeight(16777215)
+                self.body_layout.addWidget(card)
+        root=self.surface.layout();index=root.indexOf(self.scroll);root.removeWidget(self.scroll)
+        self.settings_workspace=QWidget(self.surface)
+        row=QHBoxLayout(self.settings_workspace);row.setContentsMargins(16,8,16,0);row.setSpacing(16)
+        self.settings_navigation=QFrame(self.settings_workspace);self.settings_navigation.setObjectName('settingsNavigation')
+        self.settings_navigation.setFixedWidth(152)
+        navigation=QVBoxLayout(self.settings_navigation);navigation.setContentsMargins(0,0,0,0);navigation.setSpacing(6)
+        self.settings_category_buttons={};self._settings_category_scroll={};self._active_settings_category=None
+        for key,(label,_) in self._settings_categories.items():
+            button=QPushButton(label,self.settings_navigation);button.setObjectName('settingsCategory')
+            button.setCheckable(True);button.setAutoDefault(False);button.setMinimumHeight(36)
+            button.setAccessibleName(label+'设置');button.clicked.connect(lambda _,key=key:self.show_settings_category(key))
+            self.settings_category_buttons[key]=button;navigation.addWidget(button)
+        navigation.addStretch(1);row.addWidget(self.settings_navigation);row.addWidget(self.scroll,1)
+        root.insertWidget(index,self.settings_workspace,1)
+        self.body_layout.setContentsMargins(0,2,6,8)
+        self.show_settings_category('general')
+
+    def show_settings_category(self,key):
+        if key not in self._settings_categories:return
+        previous=self._active_settings_category
+        if previous==key:
+            self.settings_category_buttons[key].setChecked(True)
+            return
+        if previous is not None:self._settings_category_scroll[previous]=self.scroll.verticalScrollBar().value()
+        self._active_settings_category=key
+        for name,(_,cards) in self._settings_categories.items():
+            self.settings_category_buttons[name].setChecked(name==key)
+            for card in cards:card.setVisible(name==key)
+        self.body_layout.invalidate();self._settings_layout_width=None
+        self._adapt_settings_layout();self._fit_settings_body()
+        def restore():
+            if self._active_settings_category!=key:return
+            self._fit_settings_body();self.scroll.verticalScrollBar().setValue(self._settings_category_scroll.get(key,0))
+        QTimer.singleShot(0,self,restore)
+
     @property
     def update_state(self):
         return self._update_state
@@ -1686,11 +1754,15 @@ class SettingsDialog(QDialog):
         self._lan_panel = widget
         if widget is not None:
             self.body_layout.insertWidget(1 if self._account_panel is not None else 0, widget)
-            widget.show()
+            widget.setVisible(not hasattr(self,'_settings_categories') or self._active_settings_category=='sync')
             for child in [widget, *widget.findChildren(QWidget)]:
                 child.installEventFilter(self)
             if hasattr(widget, "apply_theme"):
                 widget.apply_theme(self.theme_combo.currentData())
+        if hasattr(self,'_settings_categories'):
+            label,cards=self._settings_categories['sync']
+            cards=tuple(card for card in cards if card is not previous)
+            self._settings_categories['sync']=(label,cards+((widget,) if widget is not None else ()))
         return previous
 
     def eventFilter(self, watched, event):
@@ -1745,6 +1817,12 @@ class SettingsDialog(QDialog):
         if getattr(self,'_settings_layout_width',None)==width:return
         self._settings_layout_width=width
         narrow=width<700
+        if hasattr(self,'_settings_categories'):
+            dr,trigger,empty,selectors,panels,_=self._settings_adaptive
+            dr.removeWidget(empty);dr.addWidget(empty,1 if narrow else 0,0 if narrow else 1)
+            for i,panel in enumerate(panels):
+                selectors.removeWidget(panel);selectors.addWidget(panel,i if narrow else 0,0 if narrow else i)
+            self._fit_settings_top();return
         grid=self._settings_top_grid
         grid.removeWidget(self.account_slot);grid.removeWidget(self._reference_appearance)
         if narrow:
@@ -1788,6 +1866,9 @@ class SettingsDialog(QDialog):
         panel=self._account_panel or self.account_placeholder
         width=max(1,self.account_slot.width())
         left=max(panel.minimumSizeHint().height(),panel.heightForWidth(width) if panel.hasHeightForWidth() else panel.sizeHint().height())
+        if hasattr(self,'_settings_categories'):
+            self.account_slot.setFixedHeight(max(1,left))
+            self.body_layout.invalidate();self.body_layout.activate();self._fit_settings_body();return
         right=self._reference_appearance.layout().sizeHint().height()+2
         narrow=self.scroll.viewport().width()-36<700
         height=left+right+16 if narrow else max(left,right)
@@ -2159,6 +2240,8 @@ class SettingsDialog(QDialog):
         self.close_button.dark = dark
         self.close_button.update()
         from native_ui_common import icon as segment_icon
+        for group in self.findChildren(QFrame,'settingsSegment'):
+            if hasattr(group,'selection_indicator'):group.selection_indicator.set_theme(theme)
         for button in self.findChildren(QPushButton,'settingsSegmentButton'):
             if button.property('segmentGlyph'):
                 tint=('#F5F5F7' if dark else '#1D1D1F') if button.isChecked() else ('#A1A1AA' if dark else '#68686D')
@@ -2238,9 +2321,9 @@ class SettingsDialog(QDialog):
             QDialog#flickdockSettings QLabel#settingsVersion {{background:{ref_control};padding:2px 8px;border-radius:4px;}}
             QFrame#settingsCard {{background:{ref_card};border:1px solid {ref_edge};border-radius:16px;}}
             QFrame#settingsInset {{background:{'rgba(255,255,255,8)' if dark else 'rgba(0,0,0,6)'};border:1px solid {ref_edge};border-radius:12px;}}
-            QFrame#settingsSegment {{background:{'rgba(0,0,0,64)' if dark else 'rgba(240,242,247,191)'};border:1px solid {ref_edge};border-radius:12px;}}
-            QDialog#flickdockSettings QPushButton#settingsSegmentButton {{background:transparent;border:0;border-radius:8px;padding:4px 3px;font-size:12px;color:{secondary};}}
-            QDialog#flickdockSettings QPushButton#settingsSegmentButton:checked {{background:{'rgba(255,255,255,38)' if dark else '#FFFFFF'};color:{ink};font-weight:500;}}
+            QFrame#settingsSegment {{background:{'rgba(0,0,0,64)' if dark else 'rgba(240,242,247,191)'};border:1px solid {ref_edge};border-radius:8px;}}
+            QDialog#flickdockSettings QPushButton#settingsSegmentButton {{background:transparent;border:0;border-radius:5px;padding:0 6px;font-size:12px;color:{secondary};}}
+            QDialog#flickdockSettings QPushButton#settingsSegmentButton:checked {{background:transparent;color:{ink};font-weight:500;}}
             QDialog#flickdockSettings QPushButton#settingsLink {{background:transparent;border:0;padding:0;font-size:11px;color:#0A84FF;}}
             QDialog#flickdockSettings QPushButton#settingsUpdate,QDialog#flickdockSettings QPushButton#settingsSave {{background:#0A84FF;color:#FFFFFF;border:0;font-size:12px;padding:5px 12px;}}
             QDialog#flickdockSettings QPushButton#settingsClose {{border-radius:8px;padding:0;}}
@@ -2272,6 +2355,13 @@ class SettingsDialog(QDialog):
         '''
         from native_ui_common import readable_qss
         style=readable_qss(style)
+        style+=f"""
+            QFrame#settingsNavigation {{background:transparent;border:0;}}
+            QPushButton#settingsCategory {{text-align:left;padding:8px 12px;background:transparent;border:0;border-radius:8px;color:{secondary};}}
+            QPushButton#settingsCategory:hover {{background:{hover};color:{ink};}}
+            QPushButton#settingsCategory:checked {{background:{'#203D61' if dark else '#E4F0FF'};color:{'#B8D9FF' if dark else '#005FBF'};font-weight:600;}}
+            QPushButton#settingsCategory:focus-visible {{border:1px solid #5d9eeb;}}
+        """
         self.setStyleSheet(style)
         if self.license_dialog is not None:
             self.license_dialog.apply_theme(theme)

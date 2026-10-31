@@ -1,8 +1,54 @@
 """Opacity-only utility transitions, separate from the native shelf compositor."""
-from PySide6.QtCore import QCoreApplication,QEvent,QObject,QPoint,QPointF,Qt,QTimer,QVariantAnimation,QEasingCurve
+from PySide6.QtCore import QCoreApplication,QEvent,QObject,QPoint,QPointF,QRectF,Qt,QTimer,QVariantAnimation,QEasingCurve
 from PySide6.QtGui import QGuiApplication,QPainter
 from PySide6.QtWidgets import QWidget
 from shiboken6 import isValid
+
+
+class SegmentIndicator(QWidget):
+    """One painted moving selection, behind immediately usable buttons."""
+    def __init__(self,owner,buttons):
+        super().__init__(owner);self.buttons=tuple(buttons);self._rect=QRectF();self._pending=False
+        self.setAttribute(Qt.WA_TransparentForMouseEvents);self.setAttribute(Qt.WA_NoSystemBackground)
+        self.animation=QVariantAnimation(self);self.animation.setDuration(160);self.animation.setEasingCurve(exit_curve())
+        self.animation.valueChanged.connect(self._frame)
+        owner.installEventFilter(self)
+        for button in self.buttons:button.toggled.connect(lambda checked:self.schedule() if checked else None)
+        self.lower();self.show();self.schedule()
+
+    def schedule(self):
+        if isValid(self) and not self._pending:self._pending=True;QTimer.singleShot(0,self,self._move)
+
+    def _move(self):
+        if not isValid(self):return
+        self._pending=False
+        if not isValid(self.parentWidget()):return
+        self.setGeometry(self.parentWidget().rect());self.lower()
+        chosen=next((button for button in self.buttons if button.isChecked()),None)
+        if chosen is None:self.animation.stop();self._frame(QRectF());return
+        target=QRectF(chosen.geometry())
+        if self._rect==target:return
+        self.animation.stop()
+        if self._rect.isEmpty() or not self.isVisible() or not motion_allowed():self._frame(target);return
+        self.animation.setStartValue(self._rect);self.animation.setEndValue(target);self.animation.start()
+
+    def _frame(self,rect):self._rect=QRectF(rect);self.update()
+    def set_theme(self,theme):self._theme=theme;self.update()
+
+    def eventFilter(self,watched,event):
+        if event.type()==QEvent.Hide:
+            self.animation.stop();self._rect=QRectF()
+        elif event.type() in (QEvent.Show,QEvent.Resize,QEvent.LayoutRequest):self.schedule()
+        elif event.type() in (QEvent.StyleChange,QEvent.PaletteChange):self.update()
+        return False
+
+    def paintEvent(self,event):
+        if self._rect.isEmpty():return
+        from PySide6.QtGui import QColor
+        import ui_theme
+        theme=getattr(self,'_theme',ui_theme.current_theme());p=QPainter(self);p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen);p.setBrush(QColor(255,255,255,31) if theme=='dark' else QColor('white'))
+        p.drawRoundedRect(self._rect,5,5);p.end()
 
 
 def motion_allowed():

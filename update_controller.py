@@ -275,6 +275,7 @@ class UpdateController(QObject):
         self._is_busy, self._popen = is_busy or (lambda: False), popen
         self._closed, self._generation = False, 0
         self._installing = self._authorized = False
+        self._mac_helper_gate = False
         self._background_download=False
         self._jobs, self._notified = {}, set()
         self._pending_manifest = None
@@ -317,7 +318,7 @@ class UpdateController(QObject):
 
     @property
     def busy(self):
-        return bool(self._installing or self.client.busy)
+        return bool(self._installing or self._mac_helper_gate or self.client.busy)
 
     @property
     def verified_path(self):return self._verified_path
@@ -605,6 +606,7 @@ class UpdateController(QObject):
             self.installation_started.emit(str(image))
         except (OSError, ValueError, TypeError) as problem:
             self._authorized = False
+            self._installing=False
             self._retry_operation = 'install'
             self._set_state('error', error=str(problem))
             self.installation_failed.emit(str(problem))
@@ -639,14 +641,32 @@ class UpdateController(QObject):
             if self._closed or generation != self._generation or not self._authorized:
                 return
             def quit_after_spawn():
+                if self._closed or generation!=self._generation or not self._authorized:return
+                self._mac_helper_gate=False
                 self._authorized = False
+                self._installing=False
                 self.installation_started.emit(str(prepared.installed_app))
                 self._quit()
-            launch_update_helper(prepared, executable=self._installed_exe,
-                                 popen=self._popen, quit_callback=quit_after_spawn)
+            def startup_failed(message):
+                monitor=getattr(getattr(self,'_mac_helper_startup',None),'_flickdock_startup_monitor',None)
+                # Retirement owns the child even after Cancel fences its UI
+                # generation. Never start a second helper before it is reaped.
+                self._mac_helper_gate=not bool(monitor and monitor.safe_to_retry)
+                self._installing=self._mac_helper_gate
+                if self._closed:return
+                if generation!=self._generation:
+                    if self._mac_helper_gate:self._set_state('error',error=message)
+                    else:self._set_state(self._state)
+                    return
+                self._authorized=False;self._retry_operation='install'
+                self._set_state('error',error=message);self.installation_failed.emit(message)
+            self._installing=True;self._mac_helper_gate=True
+            self._mac_helper_startup=launch_update_helper(prepared, executable=self._installed_exe,
+                                 popen=self._popen, quit_callback=quit_after_spawn,failed_callback=startup_failed)
             handed_off = True
         except (OSError, ValueError, TypeError) as problem:
             self._authorized = False
+            self._installing=False;self._mac_helper_gate=False
             self._retry_operation = 'install'
             self._set_state('error', error=str(problem))
             self.installation_failed.emit(str(problem))
@@ -708,6 +728,8 @@ class UpdateController(QObject):
         self._generation += 1
         self._installing = False
         self._timer.stop()
+        monitor=getattr(getattr(self,'_mac_helper_startup',None),'_flickdock_startup_monitor',None)
+        if monitor is not None:monitor.cancel()
         self._pending_manifest, self._pending_check = None, False
         for job in self._jobs.values():
             if isinstance(job, _Verification):
@@ -732,6 +754,8 @@ class UpdateController(QObject):
         self._installing = False
         self._refreshing_before_install = False
         self._timer.stop()
+        monitor=getattr(getattr(self,'_mac_helper_startup',None),'_flickdock_startup_monitor',None)
+        if monitor is not None:monitor.cancel()
         self._pending_manifest, self._pending_check = None, False
         for job in self._jobs.values():
             if isinstance(job, _Verification):

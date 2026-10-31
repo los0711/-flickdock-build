@@ -9,7 +9,7 @@ from PySide6.QtCore import QEvent, QEventLoop, QPointF, Qt, QTimer
 from PySide6.QtGui import QFont, QFontDatabase, QImage, QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import QApplication, QFrame, QGridLayout, QVBoxLayout, QWidget
 
-from content_grid import IconItem
+from content_grid import IconItem,GRID_ITEM_MIN_WIDTH,GRID_ITEM_HEIGHT
 from flickdock_motion import Spring
 from shelf_content import ContentRepository
 
@@ -69,9 +69,9 @@ with tempfile.TemporaryDirectory(prefix='flickdock-grid-') as profile:
         grid.addWidget(item, 0, index)
     popup.show()
     wait(30)
-    assert items[0].width() >= 112 and items[0].height() == 120
+    assert items[0].width() >= GRID_ITEM_MIN_WIDTH and items[0].height() == GRID_ITEM_HEIGHT
     assert popup.rows_body.rect().contains(items[0].geometry())
-    assert items[0].remove_button.width() == 32
+    assert items[0].remove_button.width() == 28
     assert not items[0].icon.isNull() and not items[1].icon.isNull()
     mouse(items[0], QEvent.Type.MouseButtonPress)
     mouse(items[0], QEvent.Type.MouseButtonRelease, buttons=Qt.MouseButton.NoButton)
@@ -101,6 +101,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-grid-') as profile:
     wait(180)
     assert items[0]._selected and not items[1]._selected
     assert len(items[0].findChildren(Spring)) == 2, 'one item spring + one persistent remove-button spring'
-    popup.grab().save(str(Path(__file__).parent / 'v15-icon-grid.png'))
+    with tempfile.TemporaryDirectory(prefix='flickdock-icon-render-') as capture:
+        assert popup.grab().save(str(Path(capture)/'icon-grid.png'))
     popup.hide()
 print('CONTENT_GRID_OK')

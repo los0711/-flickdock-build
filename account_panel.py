@@ -99,6 +99,19 @@ class AuthStatusLabel(QLabel):
         else:self._fade.setStartValue(.2);self._fade.setEndValue(1);self._fade.start()
 
 
+class DevicePresence(QWidget):
+    def __init__(self,parent=None):
+        super().__init__(parent);self.setFixedSize(8,8);self.online=False;self.set_online(False)
+
+    def set_online(self,online):
+        self.online=online is True;message='在线' if self.online else '暂时无法确认在线状态' if online is None else '离线'
+        self.setToolTip(message);self.setAccessibleName(message);self.update()
+
+    def paintEvent(self,event):
+        p=QPainter(self);p.setRenderHint(QPainter.Antialiasing);p.setPen(Qt.NoPen)
+        p.setBrush(QColor('#30D158' if self.online else '#85858B'));p.drawEllipse(QRectF(.5,.5,7,7));p.end()
+
+
 class AccountNameLabel(QLabel):
     """Keep the full account name for assistive tech and elide its one-line view."""
     def __init__(self, parent=None):
@@ -158,9 +171,9 @@ class RemoveDeviceButton(QPushButton):
     def paintEvent(self,event):
         super().paintEvent(event)
         if self.text():return
-        color=('#64B5FF' if self.dark else '#007AFF') if self.rename else ('#FF453A' if self.dark else '#D63230')
+        color='#D1D1D6' if self.dark else '#636366'
         path=('m11.5 3.5 3 3M3 15l3.4-.7L15 5.7a1.1 1.1 0 0 0 0-1.5l-1.2-1.3a1.1 1.1 0 0 0-1.6 0L3.7 11.5 3 15' if self.rename
-              else 'M7 3H3v12h4M10 5l4 4-4 4M6 9h8')
+              else 'M3 5h12M7 3h4M5 5l.7 10h6.6L13 5M8 7v5M10 7v5')
         svg=f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 18 18"><path d="{path}" fill="none" stroke="{color}" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>'
         painter=QPainter(self)
         if not self.isEnabled():painter.setOpacity(.4)
@@ -216,6 +229,7 @@ class AccountPanel(QFrame):
     def __init__(self,service,parent=None,*,theme='light',email_binding=False):
         super().__init__(parent)
         self.service=service
+        self._cloud_connected=True
         self._fit_timer=QTimer(self);self._fit_timer.setSingleShot(True)
         self._fit_timer.timeout.connect(self._fit_signed_content)
         # Keep the argument for older app builds; the email controls are gone.
@@ -700,6 +714,11 @@ class AccountPanel(QFrame):
         self._refreshing=True;self._cancel_remove();self._update_enabled()
         self._invoke(self.service.list_devices)
 
+    def set_cloud_connected(self,connected):
+        self._cloud_connected=bool(connected)
+        for key,row in self._rows_by_id.items():
+            if hasattr(row,'_presence'):row._presence.set_online(self._devices.get(key,{}).get('online') if self._cloud_connected else False)
+
     def _devices_changed(self,devices):
         self._refreshing=False;self._revoke_pending='';self._cancel_remove()
         visible_devices=[dict(device) for device in devices
@@ -748,6 +767,7 @@ class AccountPanel(QFrame):
                     suffix='此设备' if row._current_device else '最近在线 '+timestamp.toLocalTime().toString('MM-dd HH:mm') if timestamp.isValid() else ''
                     name_label.setToolTip(name+'\n'+platform+(' · '+suffix if suffix else ''))
                     row.setAccessibleName(name+('，本机' if row._current_device else ''))
+                    row._presence.set_online(device.get('online') if self._cloud_connected else False)
                     self.device_rename_buttons[key].setAccessibleName('修改设备名称 '+name)
                     if key in self.device_buttons:self.device_buttons[key].setAccessibleName('移除设备 '+name)
                     if self._editing_device!=key:self.device_name_edits[key].setText(name)
@@ -755,20 +775,22 @@ class AccountPanel(QFrame):
                     self._device_rows.append(row);self._rows_by_id[key]=row
                     continue
                 row=QFrame(self.devices_body);row.setObjectName('accountDevice')
-                row.setMinimumHeight(44)
-                row_layout=QVBoxLayout(row);row_layout.setContentsMargins(10,5,10,5);row_layout.setSpacing(8)
+                row.setMinimumHeight(52)
+                row_layout=QVBoxLayout(row);row_layout.setContentsMargins(10,8,10,8);row_layout.setSpacing(8)
                 horizontal=QHBoxLayout();horizontal.setSpacing(5);row_layout.addLayout(horizontal)
                 glyph=AccountGlyph(row,device=True,platform=str(device.get('platform','')))
-                glyph.setFixedSize(24,24)
+                glyph.setFixedSize(20,20)
                 glyph.dark=self._dark;horizontal.addWidget(glyph)
+                identity=QWidget(row);identity_layout=QHBoxLayout(identity);identity_layout.setContentsMargins(0,0,0,0);identity_layout.setSpacing(8)
+                horizontal.addWidget(identity,1)
                 device_name=AccountNameLabel(row)
                 device_name.setText(str(device.get('name') or '未命名设备'))
                 device_name.setFixedHeight(24)
                 device_name.setObjectName('accountDeviceName')
                 device_name.setProperty('compactDeviceName',True)
-                device_name.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Fixed)
+                device_name.setSizePolicy(QSizePolicy.Policy.Preferred,QSizePolicy.Policy.Fixed)
                 device_name.setMaximumWidth(16777215)
-                horizontal.addWidget(device_name,1)
+                identity_layout.addWidget(device_name)
                 platform={'windows':'Windows','macos':'Mac','linux':'Linux'}.get(str(device.get('platform','')),'其他设备')
                 current=bool(device.get('current') or key==str(self.service.device_id))
                 row._current_device=current
@@ -776,14 +798,16 @@ class AccountPanel(QFrame):
                 suffix='此设备' if current else '最近在线 '+timestamp.toLocalTime().toString('MM-dd HH:mm') if timestamp.isValid() else ''
                 device_name.setToolTip(str(device.get('name') or '未命名设备')+'\n'+platform+(' · '+suffix if suffix else ''))
                 row.setAccessibleName(str(device.get('name') or '未命名设备')+'，'+platform+('，本机' if current else ''))
-                subtitle=AccountNameLabel(row);subtitle.setObjectName('accountCurrentDevice' if current else 'accountDeviceMeta')
+                subtitle=QLabel(row);subtitle.setObjectName('accountCurrentDevice' if current else 'accountDeviceMeta')
                 subtitle.setFixedHeight(20)
-                subtitle.setText('(本机)' if current else platform)
+                subtitle.setText('本机' if current else platform);subtitle.setAlignment(Qt.AlignCenter)
                 if current:
                     subtitle.setSizePolicy(QSizePolicy.Policy.Fixed,QSizePolicy.Policy.Fixed)
-                    subtitle.setFixedWidth(48)
-                    horizontal.addWidget(subtitle)
+                    subtitle.setFixedWidth(36)
+                    identity_layout.addWidget(subtitle)
                 else:subtitle.hide()
+                row._presence=DevicePresence(row);row._presence.set_online(device.get('online') if self._cloud_connected else False)
+                identity_layout.addWidget(row._presence);identity_layout.addStretch(1)
                 actions=QWidget(row);actions.setObjectName('accountDeviceActions')
                 action_layout=QHBoxLayout(actions);action_layout.setContentsMargins(0,0,0,0);action_layout.setSpacing(3)
                 actions.setSizePolicy(QSizePolicy.Policy.Fixed,QSizePolicy.Policy.Fixed)
@@ -802,8 +826,7 @@ class AccountPanel(QFrame):
                     def show_device_menu(point,key=key,row=row):
                         menu=QMenu(row);self._style_menu(menu);menu.addAction('修改设备名称',partial(self._edit_device_name,key));menu.exec(row.mapToGlobal(point))
                     row.customContextMenuRequested.connect(show_device_menu)
-                if not current:action_layout.insertSpacing(0,18)
-                actions.setFixedWidth(85 if not current else 32)
+                actions.setFixedWidth(67 if not current else 32)
                 horizontal.addWidget(actions,0,Qt.AlignmentFlag.AlignRight)
                 from app_settings import ReferenceModalDialog
                 rename_form=ReferenceModalDialog(self,surface_width=340,modal=True)
@@ -840,7 +863,7 @@ class AccountPanel(QFrame):
         self.devices_body.updateGeometry();self.signed_in_page.updateGeometry();self.updateGeometry()
 
     def _layout_device_rows(self):
-        columns=2 if self.devices_body.width()>=472 else 1
+        columns=1
         signature=(columns,tuple(id(row) for row in self._device_rows),self.confirm_frame.isVisible())
         if getattr(self,'_device_layout_signature',None)==signature:return
         self._device_layout_signature=signature
@@ -1010,11 +1033,11 @@ class AccountPanel(QFrame):
             QFrame#accountPanel QLabel#accountState {{font-size:11px;padding:2px 8px;border-radius:10px;}}
             QFrame#accountPanel QLabel#accountState[online="true"] {{color:#30D158;background:rgba(48,209,88,51);}}
             QFrame#accountPanel QLabel#accountDeviceName {{font-size:12px;font-weight:500;}}
-            QFrame#accountPanel QLabel#accountCurrentDevice {{font-size:11px;color:#0A84FF;}}
+            QFrame#accountPanel QLabel#accountCurrentDevice {{font-size:11px;color:#0A84FF;background:rgba(10,132,255,24);border:1px solid rgba(10,132,255,96);border-radius:4px;}}
             QFrame#accountPanel QLabel#accountSyncStatus {{font-size:12px;color:{secondary};padding:0;}}
             QFrame#accountProfile,QFrame#accountDevices {{background:transparent;border:0;}}
             QFrame#accountDevices {{border-top:1px solid {edge};}}
-            QFrame#accountDevice {{background:{'rgba(255,255,255,8)' if self._dark else 'rgba(0,0,0,6)'};border:1px solid {edge};border-radius:12px;}}
+            QFrame#accountDevice {{background:{'rgba(255,255,255,8)' if self._dark else 'rgba(0,0,0,6)'};border:1px solid {edge};border-radius:8px;}}
             QFrame#accountPanel QPushButton {{background:{control};color:{ink};border:0;padding:5px 12px;font-size:12px;}}
             QFrame#accountPanel QPushButton#accountDanger {{background:rgba(255,69,58,38);color:#FF453A;}}
             QFrame#accountPanel QPushButton#accountQuiet {{background:{control};color:{ink};border:0;padding:5px 12px;}}

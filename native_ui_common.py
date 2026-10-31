@@ -20,6 +20,11 @@ from PySide6.QtWidgets import QApplication, QAbstractButton, QHBoxLayout, QLabel
 
 WINDOWS_FONT_STACK=('HarmonyOS Sans SC','Segoe UI Variable Text','Segoe UI','Noto Sans SC','Source Han Sans SC')
 
+# A 1px frame border plus a 2px layout inset leaves an even 3px gutter.
+SEGMENT_HEIGHT=28
+SEGMENT_INSET=2
+SEGMENT_BUTTON_HEIGHT=22
+
 
 class _RoundedPopupClip(QObject):
     """Clip the opaque popup host too, including Cocoa's square backing."""

@@ -282,6 +282,9 @@ class MediaPreview(QWidget):
         self.surface.fallback = file_pixmap(value, 110)
         self.surface.update()
         self._video = Path(value).suffix.lower() in VIDEO_SUFFIXES
+        if not same:
+            self._muted=self._video
+            self._volume_changed(self.volume_slider.value())
         self._failed = False
         self._load_player(poster=self._video and self.surface.image.isNull())
 

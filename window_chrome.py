@@ -107,7 +107,7 @@ class WindowChrome(QObject):
     def __init__(self,window,title_bar,settings,key,*,surface=None):
         super().__init__(window);self.window=window;self.title=title_bar;self.surface=surface or window
         self.key=key;self.path=Path(settings.base)/'window-sizes.json';self._drag=None;self._cursor=False
-        self.default_size=QSize(892,632) if key=="settings" else QSize(980,704)
+        self.default_size=QSize(892,632) if key=="settings" else QSize(980,744)
         self._normal=window.size();self._restoring=False
         self._native_resize=False;self._native_configuring=False
         if sys.platform=='win32':

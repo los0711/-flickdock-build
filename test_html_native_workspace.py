@@ -109,7 +109,7 @@ class WorkspaceTests(unittest.TestCase):
         popup=self.overview()
         self.assertEqual((self.shelf.card.width(),self.shelf.card.height()),(1040,600))
         self.assertEqual((popup.width(),popup.height()),(1040,600))
-        self.assertEqual(popup.sidebar.width(),210);self.assertEqual(popup.preview.width(),340)
+        self.assertEqual(popup.sidebar.width(),192);self.assertEqual(popup.preview.width(),340)
         self.assertLess(popup.sidebar.geometry().right(),popup.middle.geometry().left())
         self.assertLess(popup.middle.geometry().right(),popup.preview.geometry().left())
         popup.lan_nav.click();popup.settings_nav.click();self.assertEqual(self.events,['lan','settings'])
@@ -165,9 +165,9 @@ class WorkspaceTests(unittest.TestCase):
             image=popup.preview.cloud_badge.grab().toImage()
             renderings.append(bytes(image.constBits()))
             self.assertEqual(popup.preview.cloud_badge.accessibleName(),subject.CLOUD_STATUS_LABELS[status])
-            # Real glyph artwork must be present in the circle, not just a
-            # color-only dot; every state is distinguishable without color.
-            self.assertGreater(sum(image.pixelColor(x,y).alpha()>0 for x in range(8,24) for y in range(8,24)),8,status)
+            # The preview uses the shared icon-and-text status pill. Its
+            # vector and label remain distinguishable without color alone.
+            self.assertGreater(sum(image.pixelColor(x,y).alpha()>0 for x in range(6,18) for y in range(5,17)),8,status)
         self.assertEqual(len(set(renderings)),6)
         popup.preview.show_group((self.paths[0],self.paths[1]));self.assertFalse(popup.preview.cloud_badge.isVisible())
         for enabled,hex_color in ((True,palette()['green']),(False,palette()['red'])):
@@ -281,14 +281,19 @@ class WorkspaceTests(unittest.TestCase):
 
     def test_adaptive_layout_preserves_content_preview_and_bulk_actions(self):
         popup=self.overview()
-        self.assertGreaterEqual(popup.preview.stack.height(),280)
+        self.assertGreaterEqual(popup.preview.stack.height(),176)
+        for action in (popup.preview.open_button,popup.preview.reveal_button,popup.preview.copy_selection_button,popup.preview.rename_button,popup.preview.zip_selection_button,popup.preview.remove_button):
+            self.assertTrue(popup.preview.actions_frame.rect().contains(self.bounds(action,popup.preview.actions_frame)))
+            self.assertTrue(popup.preview.rect().contains(self.bounds(action,popup.preview)))
         for width,height in ((1040,600),(800,560),(600,520),(420,500)):
             popup.resize(width,height);flush();popup._apply_responsive_layout();flush()
             self.assertTrue(popup.rect().contains(self.bounds(popup.header,popup)))
             self.assertTrue(popup.rect().contains(self.bounds(popup.scroll,popup)))
             self.assertGreaterEqual(popup.scroll.width(),200)
-            for control in (popup.search_edit,popup.cloud_selector,popup.view_segment,popup.zip_button,popup.zip_all_button,popup.clear_button,popup.bulk_more):
+            for control in (popup.search_edit,popup.cloud_selector,popup.view_segment,popup.bulk_more):
                 if control.isVisible():self.assertTrue(popup.header.rect().contains(self.bounds(control,popup.header)),(width,control.objectName(),getattr(control,'text',lambda:'')()))
+            for control in (popup.zip_button,popup.zip_all_button,popup.clear_button):
+                if control.isVisible():self.assertTrue(popup.selection_bar.rect().contains(self.bounds(control,popup.selection_bar)),(width,control.accessibleName()))
             if width>=780:
                 self.assertTrue(popup.sidebar.isVisible());self.assertTrue(popup.preview.isVisible())
                 self.assertLess(popup.middle.geometry().right(),popup.preview.geometry().left())

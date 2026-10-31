@@ -27,6 +27,7 @@ class AccountProfileLayoutTests(unittest.TestCase):
         self.service.account=dict(id='fixture',username='Roger',login_alias='id:legacy-account-identity')
         self.panel=AccountPanel(self.service)
         self.dialog.set_account_panel(self.panel)
+        self.dialog.show_settings_category('account')
         self.panel.set_sync_status('可同步内容已同步；1 项暂留本机，请检查文件大小或原文件所在位置。')
         self.dialog.show()
 
@@ -66,10 +67,20 @@ class AccountProfileLayoutTests(unittest.TestCase):
             for label in visible_labels:
                 self.assertTrue(row.rect().contains(label.mapTo(row,label.rect().bottomRight())))
             glyph=row.findChild(AccountGlyph)
-            self.assertIsNotNone(glyph);self.assertGreaterEqual(glyph.width(),24)
+            self.assertIsNotNone(glyph);self.assertEqual(glyph.width(),20)
             pixmap=glyph.grab().toImage()
             opaque=[(x,y) for x in range(pixmap.width()) for y in range(pixmap.height()) if pixmap.pixelColor(x,y).alpha()]
             self.assertTrue(opaque)
+
+    def test_presence_uses_live_server_flag_and_disconnect_clears_green_without_rebuilding(self):
+        self.service.devices[0]['online']=True;self.service.devices[1]['online']=False
+        self.service.list_devices();self.settle();rows=dict(self.panel._rows_by_id)
+        self.assertTrue(rows['current']._presence.online);self.assertFalse(rows['other']._presence.online)
+        self.service.devices[1]['online']=True;self.service.list_devices();self.settle()
+        self.assertIs(rows['other'],self.panel._rows_by_id['other']);self.assertTrue(rows['other']._presence.online)
+        self.panel.set_cloud_connected(False);self.settle()
+        self.assertFalse(any(row._presence.online for row in rows.values()))
+        self.assertTrue(all(row._presence.toolTip()=='离线' for row in rows.values()))
 
     def test_identical_device_push_keeps_rows_and_avoids_rebuilding(self):
         self.settle();rows=dict(self.panel._rows_by_id)

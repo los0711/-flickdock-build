@@ -51,8 +51,23 @@ const sha=(data:string|Uint8Array)=>createHash('sha256').update(data).digest('he
 
 export class AccountEvents extends DurableObject<Env> {
   private progressSent=new Map<string,{at:number;bytes:number}>();
+  private liveDevices(except?:WebSocket):string[]{
+    return [...new Set(this.ctx.getWebSockets().filter(socket=>socket!==except&&socket.readyState===1)
+      .map(socket=>socket.deserializeAttachment()).filter(value=>value?.device&&value.expires>Date.now()).map(value=>String(value.device)))];
+  }
+  private presenceChanged(except?:WebSocket){
+    const message=JSON.stringify({schema_version:1,type:'devices'});
+    for(const socket of this.ctx.getWebSockets()){
+      const attachment=socket.deserializeAttachment();
+      if(socket===except||socket.readyState!==1||!attachment?.expires||attachment.expires<=Date.now())continue;
+      try{socket.send(message);}catch{}
+    }
+  }
+  async webSocketClose(socket:WebSocket){try{socket.close(1000,'Disconnected');}catch{}this.presenceChanged(socket);}
+  async webSocketError(socket:WebSocket){try{socket.close(1011,'Connection lost');}catch{}this.presenceChanged(socket);}
   async fetch(request:Request):Promise<Response>{
     const url=new URL(request.url);
+    if(url.pathname==='/presence'&&request.method==='GET')return Response.json({devices:this.liveDevices()});
     if(url.pathname==='/intake')return intakeRequest(request,this.ctx,
       ()=>this.fetch(new Request('https://internal/publish',{method:'POST',body:JSON.stringify({type:'content',device:request.headers.get('X-Device-Id')||''})})));
     if(url.pathname.startsWith('/clipboard'))return clipboardRequest(request,this.ctx,this.env,
@@ -61,6 +76,7 @@ export class AccountEvents extends DurableObject<Env> {
       const pair=new WebSocketPair();const [client,server]=Object.values(pair);
       this.ctx.acceptWebSocket(server);
       server.serializeAttachment({device:request.headers.get('X-Device-Id')||'',expires:Number(request.headers.get('X-Session-Expires'))||0});
+      this.presenceChanged();
       return new Response(null,{status:101,webSocket:client});
     }
     if(url.pathname==='/revoke'&&request.method==='POST'){
@@ -377,7 +393,16 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
   }
   if(method==='GET'&&path==='/v1/devices'){
     const devices=await rows(env,'SELECT * FROM devices WHERE account_id=? ORDER BY created_at DESC LIMIT 100',owner.id);
-    return json({devices:devices.map(d=>({id:d.id,name:d.name,platform:d.platform,created_at:iso(d.created_at),last_seen_at:iso(d.last_seen_at),revoked_at:d.revoked_at?iso(d.revoked_at):null,current:d.id===owner.device_id}))});
+    let connected:string[]=[],presenceAvailable=false;
+    if(env.EVENTS)try{
+      const response=await env.EVENTS.get(env.EVENTS.idFromName(owner.id)).fetch('https://internal/presence');
+      if(!response.ok)throw new Error('Presence unavailable');
+      const value=await response.json() as {devices:unknown};
+      if(!Array.isArray(value.devices)||!value.devices.every(id=>typeof id==='string'))throw new Error('Invalid presence');
+      connected=value.devices;presenceAvailable=true;
+    }catch{console.warn('Device presence unavailable; returning device list without online flags');}
+    const online=new Set(connected);
+    return json({presence_available:presenceAvailable,devices:devices.map(d=>({id:d.id,name:d.name,platform:d.platform,created_at:iso(d.created_at),last_seen_at:iso(d.last_seen_at),revoked_at:d.revoked_at?iso(d.revoked_at):null,current:d.id===owner.device_id,online:presenceAvailable?!d.revoked_at&&online.has(d.id):undefined}))});
   }
   let match=path.match(/^\/v1\/devices\/([^/]+)$/);
   if(method==='PATCH'&&match){

@@ -7,6 +7,25 @@ from collections import deque
 import json,os,socket,struct,subprocess,sys,threading,time
 from pathlib import Path
 
+_owned_streams=set()
+_owned_lock=threading.Lock()
+
+def close_owned_streams(timeout=10):
+    """Exit barrier for every bridge, including retired/replaced sessions.
+
+    Uses only Popen objects created here; never process names or arbitrary PIDs.
+    Call after the GUI event loop returns, while daemon reapers still exist.
+    """
+    with _owned_lock:streams=tuple(_owned_streams)
+    for stream in streams:stream.shutdown()
+    deadline=time.monotonic()+timeout
+    for stream in streams:
+        process=stream._process
+        try:process.wait(timeout=max(.01,deadline-time.monotonic()))
+        except subprocess.TimeoutExpired:
+            process.kill();process.wait(timeout=3)
+    return all(stream._process.poll() is not None for stream in streams)
+
 class WebRTCStream:
     def __init__(self,on_signal,*,node=None,root=None):
         root=Path(root or getattr(sys,'_MEIPASS',Path(__file__).parent))/'p2p'
@@ -26,6 +45,7 @@ class WebRTCStream:
         self._stderr_code='UNKNOWN';self._stderr_done=threading.Event()
         self._write_closed=False;self._shutdown_started=False;self._close_lock=threading.Lock()
         self._reader_thread=threading.Thread(target=self._reader,daemon=True,name='FlickDock-WebRTC-pipe')
+        with _owned_lock:_owned_streams.add(self)
         threading.Thread(target=self._drain_stderr,daemon=True,name='FlickDock-WebRTC-diagnostics').start()
         self._reader_thread.start()
         threading.Thread(target=self._writer,daemon=True,name='FlickDock-WebRTC-writer').start()
@@ -225,3 +245,4 @@ class WebRTCStream:
                 if stream is None:continue
                 try:stream.close()
                 except OSError:pass
+            with _owned_lock:_owned_streams.discard(self)

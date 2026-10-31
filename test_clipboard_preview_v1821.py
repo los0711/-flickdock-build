@@ -1,7 +1,7 @@
 """Real shelf entry points with isolated clipboards; never reads the OS clipboard."""
 import unittest
 from unittest.mock import patch
-from PySide6.QtCore import QMimeData,QPoint,QUrl,Qt
+from PySide6.QtCore import QMimeData,QPoint,QRect,QUrl,Qt
 from PySide6.QtGui import QImage,QColor
 from PySide6.QtTest import QTest
 import test_html_native_workspace as workspace
@@ -56,17 +56,21 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(self.clip.mimeData().text(),'original 中文\nhttps://example.invalid')
         self.clip.text('new value');workspace.until(lambda:dialog.text.toPlainText()=='new value')
 
-    def test_active_transfer_moves_clipboard_above_strip_and_entire_button_clicks(self):
+    def test_active_transfer_shares_clipboard_row_without_moving_it_and_entire_button_clicks(self):
         popup=self.overview();button=popup.clipboard_button
-        before=button.mapTo(popup.middle,QPoint()).y()
+        before=button.mapTo(popup.middle,QPoint())
         ref='flickdock:transfer:upload-one'
         self.shelf.content.pending[ref]={'name':'large.bin','kind':'file'}
         self.shelf.content.transfers[ref]={'id':'upload-one','phase':'uploading','total':500000000,'received':500}
         self.shelf.transfers_updated();workspace.flush()
         self.assertTrue(popup.transfer_strip.isVisible())
-        top=button.mapTo(popup.middle,QPoint()).y()
-        self.assertLess(top,before)
-        self.assertLess(top+button.height(),popup.transfer_strip.mapTo(popup.middle,QPoint()).y())
+        position=button.mapTo(popup.middle,QPoint())
+        self.assertEqual(position,before)
+        strip=QRect(popup.transfer_strip.mapTo(popup.middle,QPoint()),popup.transfer_strip.size())
+        self.assertLess(position.x()+button.width(),strip.left())
+        self.assertLessEqual(abs(position.y()+button.height()/2-strip.center().y()),1)
+        self.shelf.content.transfers.pop(ref);self.shelf.transfers_updated();workspace.flush()
+        self.assertEqual(button.mapTo(popup.middle,QPoint()),before)
         QTest.mouseClick(button,Qt.LeftButton,pos=QPoint(2,2))
         self.assertTrue(self.manager.clipboard_preview_dialog.isVisible())
 

@@ -150,9 +150,9 @@ class SettingsFeedbackTests(unittest.TestCase):
             data=dict(id='speed',direction='send',state='transferring',total=10000,peer='Roger',name='素材.zip')
             for now,received in ((100,0),(100.6,600)):
                 with patch('lan_panel.time.monotonic',return_value=now):panel._progress(dict(data,received=received))
-            speed=panel._rows['speed']['detail'].text().split(' · ')[-1]
+            speed=panel._rows['speed']['metrics'].accessibleName().split(' · ')[0]
             with patch('lan_panel.time.monotonic',return_value=100.7):panel._progress(dict(data,received=900))
-            self.assertEqual(panel._rows['speed']['detail'].text().split(' · ')[-1],speed)
+            self.assertEqual(panel._rows['speed']['metrics'].accessibleName().split(' · ')[0],speed)
             self.assertNotIn('素材.zip',panel._rows['speed']['detail'].text())
             panel._progress(dict(data,state='complete',received=10000))
             panel._progress(dict(id='finished',direction='send',state='complete',received=100,total=100,peer='Roger',name='设计稿.zip'));flush()

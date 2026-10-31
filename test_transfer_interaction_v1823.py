@@ -33,6 +33,10 @@ class TransferInteractionTests(unittest.TestCase):
     def test_modes_share_one_container_and_keep_exactly_one_selection(self):
         segment=self.dialog.mode_segment;lan=self.dialog.mode_buttons['lan'];wan=self.dialog.mode_buttons['wan']
         self.assertIs(lan.parentWidget(),segment);self.assertIs(wan.parentWidget(),segment)
+        self.assertIs(segment.parentWidget(),self.dialog.mode_bar)
+        self.assertGreater(self.dialog.title_label.width(),self.dialog.title_label.fontMetrics().horizontalAdvance('文件互传'))
+        self.assertGreater(self.dialog.mode_bar.geometry().top(),self.dialog.title_bar.geometry().bottom())
+        self.assertGreater(self.dialog.panel_stack.geometry().top(),self.dialog.mode_bar.geometry().bottom())
         self.assertEqual(segment.layout().spacing(),0)
         native=self.dialog.winId()
         for button in (wan,wan,lan,lan,wan):

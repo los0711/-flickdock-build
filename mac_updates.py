@@ -26,7 +26,7 @@ import urllib.request
 from uuid import uuid4
 import zipfile
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, QCoreApplication, QTimer, Qt, Signal
 from update_client import (DEFAULT_ALLOWED_HOSTS, MAX_MANIFEST_BYTES, _json_object,
                            compare_versions, manifest_endpoint, trusted_url,
                            update_architecture, validate_manifest, version_tuple)
@@ -351,6 +351,51 @@ def _pid_alive(pid):
         return True
 
 
+def _retry_exit_prompt():
+    """The independent native updater owns this prompt, not the quitting GUI."""
+    import AppKit
+    app=AppKit.NSApplication.sharedApplication()
+    app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
+    alert=AppKit.NSAlert.alloc().init()
+    alert.setMessageText_('FlickDock 尚未完全退出')
+    alert.setInformativeText_('后台任务仍在结束，更新尚未替换任何文件。重试会关闭当前安装的 FlickDock 后继续安装；取消则保留原版本。')
+    alert.addButtonWithTitle_('重试退出并安装');alert.addButtonWithTitle_('取消更新')
+    return alert.runModal()==AppKit.NSAlertFirstButtonReturn
+
+
+def _request_owner_exit(prepared):
+    """Terminate only the exact installed app identified by this receipt.
+
+    Never quit by bundle name: another copy or the independent updater may
+    share that name and must remain untouched.
+    """
+    if prepared.bundle_id!=BUNDLE_ID:raise ValueError('更新进程身份无效。')
+    import AppKit
+    application=AppKit.NSRunningApplication.runningApplicationWithProcessIdentifier_(prepared.owner_pid)
+    if application is None:
+        if not _pid_alive(prepared.owner_pid):return
+        raise RuntimeError('无法确认原进程身份，未结束进程或替换应用。')
+    executable=application.executableURL()
+    expected=prepared.installed_app/'Contents/MacOS/FlickDock'
+    if executable is None or Path(str(executable.path())).resolve()!=expected:
+        raise ValueError('原进程与更新目标不一致，未结束进程。')
+    application.terminate()
+    deadline=time.monotonic()+2
+    while not application.isTerminated() and time.monotonic()<deadline:time.sleep(.1)
+    if not application.isTerminated():application.forceTerminate()
+
+
+def _wait_for_owner_exit(prepared,timeout,pid_alive,*,retry=None,request_exit=None):
+    deadline=time.monotonic()+max(0,timeout)
+    while pid_alive(prepared.owner_pid):
+        if time.monotonic()>=deadline:
+            if retry is None or not retry():
+                raise TimeoutError('FlickDock 尚未退出，已取消本次安装；原应用未替换。')
+            if request_exit is not None:request_exit(prepared)
+            deadline=time.monotonic()+max(.1,timeout)
+        time.sleep(.1)
+
+
 def install_prepared(prepared, *, installed_app=None, replace=os.replace, relaunch=None,
                      replacement_ready=None, await_readiness=None, test_only=False):
     """After-exit helper only. Tests explicitly operate on temporary fixtures."""
@@ -412,10 +457,100 @@ def install_prepared(prepared, *, installed_app=None, replace=os.replace, relaun
     return target
 
 
-def launch_update_helper(prepared, *, executable=None, popen=None, quit_callback):
-    """Launch a copy of the bundled binary in helper mode, then request quit."""
+def _ack_helper_startup(prepared,receipt,*,pid=None):
+    marker=prepared.stage/'helper-started.json'
+    payload=dict(receipt_sha256=_sha(Path(receipt)),owner_pid=prepared.owner_pid,helper_pid=os.getpid() if pid is None else pid)
+    temporary=marker.with_name('.helper-started-'+uuid4().hex+'.tmp')
+    try:
+        descriptor=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+        with os.fdopen(descriptor,'w',encoding='utf8') as stream:
+            json.dump(payload,stream);stream.flush();os.fsync(stream.fileno())
+        os.replace(temporary,marker)
+    finally:temporary.unlink(missing_ok=True)
+
+
+class _HelperRetirementSignals(QObject):
+    finished=Signal(bool)
+
+
+class _RetireHelper(QRunnable):
+    def __init__(self,prepared,process):
+        super().__init__();self.prepared=prepared;self.process=process;self.signals=_HelperRetirementSignals()
+
+    def run(self):
+        safe=False
+        try:
+            poll=getattr(self.process,'poll',None)
+            if not callable(poll):return
+            if poll() is None:
+                self.process.terminate()
+                wait=getattr(self.process,'wait',None)
+                if not callable(wait):return
+                try:wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    self.process.kill()
+                    try:wait(timeout=2)
+                    except subprocess.TimeoutExpired:return
+            safe=poll() is not None
+            if safe:self.prepared.cleanup()
+        except (OSError,RuntimeError,ValueError):pass
+        finally:self.signals.finished.emit(safe)
+
+
+class _HelperStartup(QObject):
+    """A finite asynchronous handshake. A spawned PID is not install readiness."""
+    def __init__(self,prepared,process,receipt,quit_callback,failed_callback,*,timeout=20):
+        super().__init__(QCoreApplication.instance());self.prepared=prepared;self.process=process
+        self.receipt_hash=_sha(receipt);self.quit_callback=quit_callback;self.failed_callback=failed_callback
+        self.deadline=time.monotonic()+timeout;self.done=False;self.acknowledged=False;self.safe_to_retry=False
+        self.timer=QTimer(self);self.timer.setInterval(40);self.timer.timeout.connect(self.check)
+
+    def check(self):
+        if self.done:return
+        poll=getattr(self.process,'poll',None);code=poll() if callable(poll) else None
+        if code is not None:return self.fail(f'安装助手未能启动（退出码 {code}），请重试安装。')
+        marker=self.prepared.stage/'helper-started.json'
+        try:
+            if marker.exists():
+                if marker.is_symlink() or not marker.is_file() or marker.stat().st_size>2048:raise ValueError('启动确认无效。')
+                value=json.loads(marker.read_text(encoding='utf8'))
+                if (not isinstance(value,dict) or value.get('receipt_sha256')!=self.receipt_hash or value.get('owner_pid')!=self.prepared.owner_pid
+                        or value.get('helper_pid')!=getattr(self.process,'pid',None)):raise ValueError('安装助手身份确认失败。')
+                self.done=True;self.acknowledged=True;self.timer.stop();self.quit_callback();self.deleteLater();return
+        except (OSError,ValueError,TypeError) as error:return self.fail('安装助手启动确认失败，请重试安装。')
+        if time.monotonic()>=self.deadline:self.fail('安装助手启动超时，当前版本保持运行；请重试安装。')
+
+    def fail(self,message,*,cancelled=False):
+        if self.done:return
+        self.done=True;self.timer.stop()
+        if not cancelled:_record_update_failure(self.prepared,message)
+        record=_failure_record_path(self.prepared);source=self.prepared.stage/'helper-startup.log'
+        if record is not None and not cancelled:
+            try:
+                if not source.is_symlink():
+                    with source.open('rb') as stream:data=stream.read(8192)
+                    diagnostic=record.with_name('mac-update-helper-startup.log')
+                    descriptor=os.open(diagnostic,os.O_WRONLY|os.O_CREAT|os.O_TRUNC|getattr(os,'O_NOFOLLOW',0),0o600)
+                    with os.fdopen(descriptor,'wb') as stream:stream.write(data)
+            except OSError:pass
+        self._reaper=_RetireHelper(self.prepared,self.process)
+        def retired(safe):
+            self.safe_to_retry=bool(safe)
+            detail=message if safe or cancelled else message+' 安装助手尚未确认退出，已保留运行文件；请重启电脑后重试安装。'
+            if self.failed_callback:self.failed_callback(detail)
+            self.deleteLater()
+        self._reaper.signals.finished.connect(retired,Qt.QueuedConnection)
+        QThreadPool.globalInstance().start(self._reaper)
+
+    def cancel(self):
+        if not self.done:self.fail('更新准备已取消。',cancelled=True)
+
+
+def launch_update_helper(prepared, *, executable=None, popen=None, quit_callback, failed_callback=None):
+    """Quit only after the actual helper has validated its launch receipt."""
     if popen is None and (sys.platform != 'darwin' or not getattr(sys, 'frozen', False)):
         raise ValueError('仅 macOS 正式版可以启动更新辅助进程。')
+    if QCoreApplication.instance() is None:raise ValueError('安装助手需要正在运行的更新界面。')
     _validate_prepared(prepared, verify_tree=False)
     executable = Path(executable or sys.executable).resolve(strict=True)
     if executable != prepared.installed_app / 'Contents' / 'MacOS' / 'FlickDock':
@@ -426,11 +561,20 @@ def launch_update_helper(prepared, *, executable=None, popen=None, quit_callback
     payload = {key: str(value) if isinstance(value, Path) else value for key, value in vars(prepared).items()}
     receipt.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
     receipt.chmod(0o600)
-    process = (popen or subprocess.Popen)([str(helper_executable), '--apply-mac-update', str(receipt)],
-                      cwd=str(prepared.installed_app.parent), start_new_session=True,
-                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                      shell=False)
-    quit_callback()
+    (prepared.stage/'helper-started.json').unlink(missing_ok=True)
+    log=prepared.stage/'helper-startup.log';log.unlink(missing_ok=True)
+    monitor=_HelperStartup(prepared,None,receipt,quit_callback,failed_callback)
+    try:
+        descriptor=os.open(log,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+        with os.fdopen(descriptor,'wb') as stream:
+            process = (popen or subprocess.Popen)([str(helper_executable), '--apply-mac-update', str(receipt)],
+                              cwd=str(prepared.installed_app.parent), start_new_session=True,
+                              stdin=subprocess.DEVNULL, stdout=stream, stderr=stream,shell=False)
+    except BaseException:
+        monitor.done=True;monitor.deleteLater();raise
+    monitor.process=process;monitor.timer.start()
+    process._flickdock_startup_monitor=monitor
+    monitor.check()
     return process
 
 
@@ -852,18 +996,20 @@ def _read_receipt(receipt_path):
 
 
 def run_update_helper(receipt_path, *, timeout=30, test_only=False, pid_alive=_pid_alive,
-                      replace=os.replace, relaunch=None):
+                      replace=os.replace, relaunch=None,retry_exit=None,request_exit=None):
     """Call before constructing QApplication when --apply-mac-update is present."""
     if not test_only and (sys.platform != 'darwin' or not getattr(sys, 'frozen', False)):
         raise ValueError('macOS 更新辅助进程当前不可用。')
     prepared = _read_receipt(receipt_path)
-    deadline = time.monotonic() + max(0, timeout)
-    while pid_alive(prepared.owner_pid):
-        if time.monotonic() >= deadline:
-            if not test_only:
-                _record_update_failure(prepared, '等待 FlickDock 退出超时，更新未安装。')
-            raise TimeoutError('等待 FlickDock 退出超时；原应用未替换。')
-        time.sleep(0.1)
+    _validate_prepared(prepared,verify_tree=False)
+    if not test_only:_ack_helper_startup(prepared,receipt_path)
+    try:
+        _wait_for_owner_exit(prepared,timeout,pid_alive,
+            retry=retry_exit if test_only else (retry_exit or _retry_exit_prompt),
+            request_exit=request_exit if test_only else (request_exit or _request_owner_exit))
+    except (TimeoutError,RuntimeError,ValueError):
+        if not test_only:_record_update_failure(prepared,'FlickDock 尚未退出或用户取消，原应用未替换；可重试退出并安装。')
+        raise
     if not test_only and prepared.stage.parent != prepared.installed_app.parent:
         # In /Applications, only Apple can authorize the privileged swap. The
         # GUI is always relaunched by this original, unprivileged process.

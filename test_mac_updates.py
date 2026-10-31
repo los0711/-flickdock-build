@@ -13,6 +13,7 @@ import threading
 import time
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 import zipfile
 from urllib.request import Request
 
@@ -22,6 +23,12 @@ import mac_updates as update
 
 APP = QApplication.instance() or QApplication([])
 APP.setQuitOnLastWindowClosed(False)
+
+
+def started_helper(arguments,**kwargs):
+    receipt=Path(arguments[2]);prepared=update._read_receipt(receipt)
+    update._ack_helper_startup(prepared,receipt,pid=123)
+    return SimpleNamespace(pid=123,poll=lambda:None,terminate=lambda:None)
 
 
 def spin(predicate, timeout=2):
@@ -144,7 +151,7 @@ class MacUpdateTests(unittest.TestCase):
         self.prepared.append(prepared)
         update.launch_update_helper(prepared,
                     executable=self.target / 'Contents/MacOS/FlickDock',
-                    popen=lambda *args, **kwargs: object(), quit_callback=lambda: None)
+                    popen=started_helper, quit_callback=lambda: None)
         (prepared.app_path / 'Contents/MacOS/FlickDock').write_bytes(b'\xcf\xfa\xed\xfeTAMPERED')
         marker = prepared.stage / 'replacement-ready'
         def acknowledge():
@@ -171,7 +178,7 @@ class MacUpdateTests(unittest.TestCase):
         prepared.owner_pid = 2147483647
         update.launch_update_helper(prepared,
                     executable=self.target / 'Contents/MacOS/FlickDock',
-                    popen=lambda *args, **kwargs: object(), quit_callback=lambda: None)
+                    popen=started_helper, quit_callback=lambda: None)
         original_install = update.install_prepared
         installed_owner_pids = []
         def install_with_real_guard(fresh, **kwargs):
@@ -199,7 +206,7 @@ class MacUpdateTests(unittest.TestCase):
         self.prepared.append(prepared)
         update.launch_update_helper(prepared,
                     executable=self.target / 'Contents/MacOS/FlickDock',
-                    popen=lambda *args, **kwargs: object(), quit_callback=lambda: None)
+                    popen=started_helper, quit_callback=lambda: None)
         self.zip.write_bytes(self.zip.read_bytes() + b'TAMPER')
         with self.assertRaisesRegex(ValueError, '官方索引'):
             update.run_elevated_update_helper(prepared.stage / 'update-receipt.json',
@@ -333,7 +340,7 @@ class MacUpdateTests(unittest.TestCase):
         executable = self.target / 'Contents' / 'MacOS' / 'FlickDock'
         def popen(arguments, **kwargs):
             events.append(('spawn', arguments, kwargs))
-            return object()
+            return started_helper(arguments,**kwargs)
         # Handoff must not synchronously hash all staged files on the GUI thread.
         with patch.object(update, '_tree_hash', side_effect=AssertionError('GUI tree hash')):
             update.launch_update_helper(prepared, executable=executable, popen=popen,
@@ -360,6 +367,52 @@ class MacUpdateTests(unittest.TestCase):
                 executable=self.target / 'Contents/MacOS/FlickDock', quit_callback=lambda: quits.append(True))
         self.assertEqual(quits, [])
         self.assert_old()
+
+    def test_helper_must_acknowledge_before_quit_and_rejects_wrong_pid(self):
+        for wrong in (False,True):
+            prepared=self.prepare();quits=[];errors=[]
+            process=SimpleNamespace(pid=321,poll=lambda:None,terminate=lambda:None)
+            update.launch_update_helper(prepared,executable=self.target/'Contents/MacOS/FlickDock',
+                popen=lambda *args,**kwargs:process,quit_callback=lambda:quits.append(True),failed_callback=errors.append)
+            self.assertEqual(quits,[]);monitor=process._flickdock_startup_monitor
+            update._ack_helper_startup(prepared,prepared.stage/'update-receipt.json',pid=999 if wrong else 321)
+            monitor.check();self.assertTrue(monitor.done)
+            if wrong:self.assertTrue(spin(lambda:bool(errors)))
+            self.assertEqual(bool(errors),wrong);self.assertEqual(bool(quits),not wrong);self.assert_old()
+
+    def test_early_helper_exit_timeout_and_cancellation_keep_old_app_running(self):
+        for reason in ('early','timeout','cancel'):
+            prepared=self.prepare();quits=[];errors=[];terminated=[]
+            process=SimpleNamespace(pid=123,poll=lambda:1 if reason=='early' else None,terminate=lambda:terminated.append(True))
+            update.launch_update_helper(prepared,executable=self.target/'Contents/MacOS/FlickDock',
+                popen=lambda *args,**kwargs:process,quit_callback=lambda:quits.append(True),failed_callback=errors.append)
+            monitor=process._flickdock_startup_monitor
+            if reason=='timeout':monitor.deadline=0;monitor.check()
+            elif reason=='cancel':monitor.cancel()
+            self.assertTrue(spin(lambda:bool(errors)))
+            self.assertTrue(monitor.done);self.assertEqual(quits,[]);self.assertEqual(len(errors),1)
+            self.assertEqual(bool(terminated),reason!='early');self.assert_old()
+            if prepared.stage.exists():update._ack_helper_startup(prepared,prepared.stage/'update-receipt.json',pid=123)
+            monitor.check();self.assertEqual(quits,[],'late ready must not override failure/cancel')
+
+    def test_cancel_reaps_owned_child_before_cleanup_and_never_records_user_cancellation_as_failure(self):
+        for can_reap in (False,True):
+            prepared=self.prepare();state={'code':None};events=[]
+            def wait(timeout):
+                events.append('wait')
+                if not can_reap:raise update.subprocess.TimeoutExpired('fixture',timeout)
+                state['code']=0;return 0
+            process=SimpleNamespace(pid=123,poll=lambda:state['code'],terminate=lambda:events.append('terminate'),
+                                    wait=wait,kill=lambda:events.append('kill'))
+            failures=[]
+            update.launch_update_helper(prepared,executable=self.target/'Contents/MacOS/FlickDock',
+                popen=lambda *args,**kwargs:process,quit_callback=lambda:events.append('quit'),failed_callback=failures.append)
+            monitor=process._flickdock_startup_monitor
+            with patch.object(update,'_record_update_failure') as record:
+                monitor.cancel();self.assertTrue(spin(lambda:bool(failures)));record.assert_not_called()
+            self.assertEqual(prepared.stage.exists(),not can_reap)
+            self.assertEqual(monitor.safe_to_retry,can_reap);self.assertNotIn('quit',events)
+            self.assertEqual(events[:2],['terminate','wait'])
 
     def test_async_preparation_preserves_heartbeat_and_cancel_cleans_job_only(self):
         entered, release = threading.Event(), threading.Event()

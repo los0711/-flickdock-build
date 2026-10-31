@@ -53,9 +53,9 @@ class UtilityTests(unittest.TestCase):
         self.service._transfers.clear();self.dialog.resize(1010,740);APP.processEvents()
         self.dialog.chrome.save_size()
         second=LanDialog(self.service,self.store)
-        self.assertEqual(second.size().toTuple(),(980,704))
+        self.assertEqual(second.size().toTuple(),(980,744))
         self.dialog.hide();self.dialog.show();APP.processEvents()
-        self.assertEqual(self.dialog.size().toTuple(),(980,704))
+        self.assertEqual(self.dialog.size().toTuple(),(980,744))
         self.assertEqual(second.minimumSize().toTuple(),(824,660))
         if hasattr(second.chrome,'buttons'):
             second.show();APP.processEvents()

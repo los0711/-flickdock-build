@@ -11,6 +11,8 @@ def main(binary,output):
     if sys.platform!='darwin' or os.environ.get('GITHUB_ACTIONS')!='true':
         raise RuntimeError('Requires the ephemeral native macOS CI runner')
     from app_version import APP_VERSION
+    from PySide6.QtCore import QCoreApplication
+    application=QCoreApplication.instance() or QCoreApplication(['FlickDock-native-update-QA'])
     major,minor,patch=map(int,APP_VERSION.split('.'));next_version=f'{major}.{minor}.{patch+1}'
     source=Path(binary).resolve().parents[2]
     with tempfile.TemporaryDirectory(prefix='flickdock-native-update-') as directory:
@@ -39,6 +41,10 @@ def main(binary,output):
         # injected because the test driver itself is an unfrozen interpreter.
         process=launch_update_helper(prepared,executable=target/'Contents/MacOS/FlickDock',
             popen=lambda *args,**kwargs:subprocess.Popen(*args,**kwargs,env=dict(os.environ,FLICKDOCK_CI_RUNTIME_READER='1')),quit_callback=lambda:None)
+        deadline=time.monotonic()+22
+        monitor=process._flickdock_startup_monitor
+        while not monitor.done and time.monotonic()<deadline:application.processEvents();time.sleep(.01)
+        assert monitor.acknowledged and process.poll() is None,'Native helper must acknowledge before parent shutdown'
         status=process.wait(timeout=100)
         error=prepared.stage/'install-error.txt'
         if status:raise RuntimeError(error.read_text() if error.is_file() else 'Native helper failed: '+str(status))

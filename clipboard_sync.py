@@ -493,6 +493,8 @@ class ClipboardSync(QObject):
         self._clock_anchor=None;self._observed_clock=0
         # A session switch is not a Copy action. Establish a native baseline so
         # a delayed notification cannot export the previous account's content.
+        # Shutdown is not a session switch: an OLE/pasteboard provider or an
+        # offline file stat must never hold the process alive just to baseline.
         if not self.closed:
             self._last_local_signature=signature(self._snapshot());self._last_sequence=self._sequence()
         if sys.platform=='darwin' and not self.closed:self._mac_changed(initial=True)

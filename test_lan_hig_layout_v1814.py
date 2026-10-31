@@ -138,7 +138,7 @@ class LanHigLayoutTests(unittest.TestCase):
     def test_busy_default_and_minimum_windows_keep_actions_complete_and_surface_opaque(self):
         self.load_busy_state()
         panel=self.panel
-        self.assertEqual(self.dialog.size().toTuple(),(980,704))
+        self.assertEqual(self.dialog.size().toTuple(),(980,744))
         self.assertEqual(self.dialog.minimumSize().toTuple(),(824,660))
         for size in ((980,704),(824,660)):
             for theme in ('dark','light'):

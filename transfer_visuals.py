@@ -2,7 +2,7 @@
 import math
 import time
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import QLabel, QWidget
 import ui_theme
 
@@ -23,6 +23,31 @@ _CLOUD_STATUS_DARK_COLORS = {
     'synced': '#67d7a4', 'uploading': '#75b7ff', 'pending': '#9dc5f7',
     'local': '#b6c5d8', 'paused': '#efbb70', 'error': '#ff8d97',
 }
+
+
+class FileStatusPill(QWidget):
+    """Static status feedback; no polling, animation timer or network work."""
+    labels={'synced':'已同步','uploading':'上传中','pending':'排队中','local':'仅本机','paused':'未同步','error':'同步失败'}
+    def __init__(self,parent=None):
+        super().__init__(parent);self.status=None;self.setFixedSize(70,22)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents);self.set_status('local')
+    def set_status(self,status):
+        status=status if status in self.labels else 'local'
+        if status==self.status and self.toolTip():return
+        self.status=status;self.setAccessibleName(CLOUD_STATUS_LABELS[status]);self.setToolTip(CLOUD_STATUS_LABELS[status]);self.update()
+    def paintEvent(self,event):
+        from native_ui_common import cached_svg_renderer
+        painter=QPainter(self);painter.setRenderHint(QPainter.Antialiasing)
+        tint=QColor((_CLOUD_STATUS_DARK_COLORS if ui_theme.current_theme()=='dark' else _CLOUD_STATUS_COLORS)[self.status])
+        fill=QColor(tint);fill.setAlpha(28);painter.setBrush(fill);painter.setPen(QPen(tint,1))
+        painter.drawRoundedRect(QRectF(self.rect()).adjusted(.5,.5,-.5,-.5),5,5)
+        paths={'synced':'<path d="m5 12 4 4L19 6"/>','uploading':'<path d="M12 20V4m-5 5 5-5 5 5"/>',
+            'pending':'<circle cx="4" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="20" cy="12" r="1"/>',
+            'local':'<circle cx="12" cy="12" r="3"/>','paused':'<path d="M8 5v14m8-14v14"/>','error':'<path d="m6 6 12 12M18 6 6 18"/>'}
+        svg=f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{tint.name()}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{paths[self.status]}</svg>'
+        cached_svg_renderer(svg).render(painter,QRectF(6,5,12,12))
+        font=QFont(self.font());font.setPixelSize(11);painter.setFont(font);painter.setPen(tint)
+        painter.drawText(QRectF(21,0,self.width()-24,self.height()),Qt.AlignLeft|Qt.AlignVCenter,self.labels[self.status])
 
 
 def cloud_status_for_ref(shelf, ref):
@@ -64,10 +89,11 @@ def draw_cloud_status_badge(painter, rect, status, transfer=None):
 
 
 class CloudStatusBadge(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, glyph_size=20):
         super().__init__(parent)
         self.status = 'local'
         self.transfer = None
+        self.glyph_size=glyph_size
         # Share the copy button's 32px header cell; the state ring remains a
         # restrained 20px glyph centered on exactly the same vertical axis.
         self.setFixedSize(32, 32)
@@ -85,7 +111,8 @@ class CloudStatusBadge(QWidget):
 
     def paintEvent(self, event):
         painter=QPainter(self);painter.setRenderHint(QPainter.Antialiasing)
-        draw_cloud_status_badge(painter,QRectF((self.width()-20)/2,(self.height()-20)/2,20,20),self.status,self.transfer)
+        size=self.glyph_size
+        draw_cloud_status_badge(painter,QRectF((self.width()-size)/2,(self.height()-size)/2,size,size),self.status,self.transfer)
 
 
 def transfer_fraction(state):

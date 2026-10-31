@@ -18,7 +18,7 @@ from fractions import Fraction
 from uuid import uuid4
 
 from PySide6.QtCore import (QEasingCurve, QPoint, QRect, QRectF, QSize, QEvent, Qt, QMimeData,
-                             QPropertyAnimation, QTimer, QUrl, QThreadPool)
+                             QPropertyAnimation, QTimer, QUrl, QThreadPool, QDateTime)
 from PySide6.QtGui import (QColor, QCursor, QDrag, QFont, QFontDatabase, QGuiApplication, QImage,
                            QIcon, QLinearGradient, QPainter, QPainterPath, QPalette, QPen, QPixmap, QTransform)
 from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame,
@@ -36,7 +36,7 @@ from pointer_paste import PointerPasteController,pointer_over_shelf
 from settings_edge_hint import SettingsEdgeHint
 from cloud_connectivity import CloudConnectivity
 from surface_morph import SurfaceMorph, SurfaceSnapshot
-from content_grid import IconItem
+from content_grid import IconItem,GRID_ITEM_MIN_WIDTH,GRID_ITEM_HEIGHT,GRID_ITEM_GAP,FILE_ROW_HEIGHT,added_time_for_ref
 from shake_detector import ShakeDetector, config_for_sensitivity
 from dock_geometry import trigger_rect, reveal_rect, dock_hover_rect
 from image_preview import ImagePreview
@@ -410,10 +410,13 @@ class PreviewPane(QFrame):
         if visible:
             lookup=getattr(getattr(self,'popup',None),'cloud_status',None)
             status=lookup(self.current_path) if callable(lookup) else cloud_status_for_ref(self.shelf,self.current_path)
-            self.cloud_badge.set_status(status,self.shelf.content.transfers.get(self.current_path))
+            self.cloud_badge.set_status(status)
             if hasattr(self,'status_value'):
                 from reference_widgets import css,colors
-                self.status_value.setText(CLOUD_STATUS_LABELS.get(status,'仅保存在本机'))
+                sync=getattr(self.shelf.manager,'sync',None)
+                paused=bool(sync and getattr(sync,'is_upload_paused',lambda _:False)(self.current_path))
+                self.status_value.setText('未同步' if paused else CLOUD_STATUS_LABELS.get(status,'仅保存在本机'))
+                self.upload_time_value.setText(added_time_for_ref(self.shelf,self.current_path,full=True) or '暂无时间记录')
                 token={'synced':'green','uploading':'link','pending':'link','local':'secondary','paused':'orange','error':'red'}.get(status,'secondary')
                 css(self.status_value,*[f"color:{colors(theme)[token]};background:transparent;border:0;font:11px 'HarmonyOS Sans SC';" for theme in ('dark','light')])
 
@@ -459,6 +462,8 @@ class PreviewPane(QFrame):
         self.path_label.setText('原生文字' if self.shelf.content.is_text(ref) else ref)
         self.open_button.setEnabled(not self.shelf.content.is_pending(ref))
         self.rename_button.setEnabled(not self.shelf.content.is_pending(ref) and not self.shelf.content.is_text(ref))
+        self.reveal_button.setEnabled(not self.shelf.content.is_pending(ref) and (not self.shelf.content.is_text(ref) or bool(self.shelf.content.metadata.get(ref,{}).get('pasted_text'))))
+        self.copy_selection_button.setEnabled(not self.shelf.content.is_pending(ref));self.zip_selection_button.setEnabled(not self.shelf.content.is_pending(ref))
         self.refresh_cloud_status()
         self.copy_button.set_glyph("copy")
         self.name.setText(self.shelf.content.title(ref))
@@ -529,10 +534,18 @@ class PreviewPane(QFrame):
         if getattr(self,'_group_refs',()):
             self.transfer_row.hide();self.transfer_overlay.hide();return
         state=self.shelf.content.transfers.get(self.current_path)
-        self.transfer_row.setVisible(bool(state))
+        sync=getattr(self.shelf.manager,'sync',None)
+        paused=bool(sync and getattr(sync,'is_upload_paused',lambda _:False)(self.current_path))
+        self.transfer_row.setVisible(bool(state) or paused)
+        self.transfer_progress.setVisible(bool(state));self.transfer_meta.setVisible(bool(state))
         self.transfer_overlay.setGeometry(self.stack.rect());self.transfer_overlay.setVisible(bool(state))
         if state:self.transfer_overlay.raise_();self.transfer_overlay.update()
-        if not state:self.transfer_meta.clear();return
+        if not state:
+            self.transfer_meta.clear()
+            if paused:
+                self.cancel_transfer.setText('上传云端')
+                self.cancel_transfer.setEnabled(bool(getattr(sync,'upload_enabled',True)))
+            return
         total,received=state.get('total',0),state.get('received',0)
         self.transfer_progress.setRange(0,1000 if total else 0)
         if total:self.transfer_progress.setValue(round(1000*min(1,received/total)))
@@ -548,6 +561,14 @@ class PreviewPane(QFrame):
                               else '另一台设备正在上传' if state.get('remote') and state.get('phase')!='downloading'
                               else '正在下载原文件' if state.get('phase')=='downloading'
                               else transfer_phase_label(state))
+
+    def cloud_transfer_action(self):
+        ref=self.current_path
+        if not ref:return
+        sync=getattr(self.shelf.manager,'sync',None)
+        if ref in self.shelf.content.transfers:self.shelf.cancel_transfer(ref)
+        elif sync and getattr(sync,'is_upload_paused',lambda _:False)(ref):sync.retry_upload(ref)
+        self.update_transfer_status();self.refresh_cloud_status()
 
     def show_group(self,refs):
         refs=tuple(refs)
@@ -600,10 +621,10 @@ class FileRow(QFrame):
         from reference_widgets import ThumbnailLabel,label,button,item_detail
         from reference_widgets import SelectionCheck
         self.popup,self.path=popup,path;self.setAcceptDrops(True);self.origin=QPoint();self.did_drag=False
-        self.setFixedHeight(58);self.setMouseTracking(True);self.setCursor(Qt.OpenHandCursor);self.setFocusPolicy(Qt.StrongFocus)
+        self.setFixedHeight(FILE_ROW_HEIGHT);self.setMouseTracking(True);self.setCursor(Qt.OpenHandCursor);self.setFocusPolicy(Qt.StrongFocus)
         self._keyboard_focus=False
         self.motion=Spring(self,{'highlight':0},lambda _:self.update(),motion=popup.shelf.manager.motion)
-        row=QHBoxLayout(self);row.setContentsMargins(12,8,8,8);row.setSpacing(12)
+        row=QHBoxLayout(self);row.setContentsMargins(4,6,8,6);row.setSpacing(8)
         self.selection_check=SelectionCheck(self);self.selection_check.setFixedSize(40,40);self.selection_check.setChecked(path in popup.selected)
         self.selection_check.setAccessibleName('选择 '+popup.shelf.content.title(path))
         self.selection_check.clicked.connect(lambda _:popup.select_item(self.path,toggle=True))
@@ -612,14 +633,17 @@ class FileRow(QFrame):
             'QCheckBox::indicator{width:14px;height:14px;border:1px solid #CACAD0;border-radius:4px;background:transparent;} QCheckBox::indicator:checked{background:#0A84FF;border-color:#0A84FF;}')
         row.addWidget(self.selection_check)
         self.icon_label=ThumbnailLabel(popup.shelf,path,self);self.icon_label.setAttribute(Qt.WA_TransparentForMouseEvents);row.addWidget(self.icon_label)
+        self.icon_label.status_overlay=False
         names=QVBoxLayout();names.setSpacing(2)
         self.name_label=ElidedLabel(self);self.name_label.setText(popup.shelf.content.title(path));self.name_label.setAttribute(Qt.WA_TransparentForMouseEvents)
-        css(self.name_label,"color:#F5F5F7;background:transparent;border:0;font:600 13px 'HarmonyOS Sans SC';","color:#1D1D1F;background:transparent;border:0;font:600 13px 'HarmonyOS Sans SC';")
-        self.detail_label=label(item_detail(popup.shelf,path),11,400,'secondary',self);self.detail_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+        css(self.name_label,"color:#F5F5F7;background:transparent;border:0;font:600 12px 'HarmonyOS Sans SC';","color:#1D1D1F;background:transparent;border:0;font:600 12px 'HarmonyOS Sans SC';")
+        self.detail_label=label(item_detail(popup.shelf,path),10,400,'secondary',self);self.detail_label.setAttribute(Qt.WA_TransparentForMouseEvents);self.detail_label.setWordWrap(False)
         names.addWidget(self.name_label);names.addWidget(self.detail_label);row.addLayout(names,1)
+        from transfer_visuals import CloudStatusBadge
+        self.status_pill=CloudStatusBadge(self,glyph_size=14);self.status_pill.setFixedSize(24,24);row.addWidget(self.status_pill)
         self.remove_button=ToolbarButton('close',self,motion=popup.shelf.manager.motion);self.remove_button.setFixedSize(32,32);self.remove_button.setToolTip('从搁架移除');self.remove_button.setAccessibleName('从搁架移除 '+popup.shelf.content.title(path));self.remove_button.clicked.connect(lambda:popup.remove_path(self.path))
         policy=self.remove_button.sizePolicy();policy.setRetainSizeWhenHidden(True);self.remove_button.setSizePolicy(policy)
-        row.addWidget(self.remove_button);self.remove_button.hide();self.refresh_cloud_status()
+        row.addWidget(self.remove_button);self.remove_button.show();self.refresh_cloud_status()
 
     def refresh_content(self):
         from reference_widgets import item_detail
@@ -634,6 +658,10 @@ class FileRow(QFrame):
         lookup=getattr(self.popup,'cloud_status',None)
         status=lookup(self.path) if callable(lookup) else cloud_status_for_ref(self.popup.shelf,self.path)
         self.icon_label.set_cloud_status(status)
+        self.status_pill.set_status(status,self.popup.shelf.content.transfers.get(self.path))
+        from reference_widgets import item_detail
+        state=self.popup.shelf.content.transfers.get(self.path);fraction=transfer_fraction(state) if state else None
+        self.detail_label.setText(item_detail(self.popup.shelf,self.path).split(' · ')[0]+' · '+(added_time_for_ref(self.popup.shelf,self.path) or '暂无时间')+(f' · {round(fraction*100)}%' if fraction is not None else ''))
         self.setToolTip(CLOUD_STATUS_LABELS.get(status,CLOUD_STATUS_LABELS['local']))
         self.setAccessibleDescription(CLOUD_STATUS_LABELS.get(status,CLOUD_STATUS_LABELS['local']))
 
@@ -659,7 +687,7 @@ class FileRow(QFrame):
         super().enterEvent(event)
 
     def leaveEvent(self, event):
-        self.remove_button.setVisible(self.hasFocus() and self._keyboard_focus)
+        self.remove_button.show()
         self.popup.end_hover(self.path)
         self.motion.animate({"highlight": 0.0}, response=.14, damping=1)
         super().leaveEvent(event)
@@ -720,10 +748,10 @@ class FileRow(QFrame):
 
     def focusInEvent(self,event):
         self._keyboard_focus=event.reason() in (Qt.TabFocusReason,Qt.BacktabFocusReason,Qt.ShortcutFocusReason)
-        self.remove_button.setVisible(self._keyboard_focus);self.update();super().focusInEvent(event)
+        self.remove_button.show();self.update();super().focusInEvent(event)
 
     def focusOutEvent(self,event):
-        self._keyboard_focus=False;self.remove_button.setVisible(self.underMouse());self.update();super().focusOutEvent(event)
+        self._keyboard_focus=False;self.remove_button.show();self.update();super().focusOutEvent(event)
 
 
 class ContentsPopup(QFrame):
@@ -747,7 +775,7 @@ class ContentsPopup(QFrame):
         self.rebuild();self.update_transfer_status()
         self.drop_router=OverviewDropRouter(self)
         from transfer_entry import TransferEntryRouter
-        self.transfer_entry=TransferEntryRouter(self,self.lan_nav,lambda mode,paths:self.shelf.manager.queue_transfer_paths(mode,paths))
+        self.transfer_entry=TransferEntryRouter(self,self.lan_nav,lambda mode,paths:self.shelf.manager.queue_transfer_paths(mode,paths,defer_present=True))
 
     def eventFilter(self,watched,event):
         if (watched is self.scroll.viewport() and event.type()==QEvent.Resize
@@ -767,11 +795,13 @@ class ContentsPopup(QFrame):
         condensed=self.width()<980
         self.category_segments.hide();self.category_picker.setVisible(narrow);self.bulk_more.setVisible(condensed)
         self.sidebar.setVisible(not narrow)
-        self.sidebar.setFixedWidth(176 if condensed else 210)
+        self.sidebar.setFixedWidth(164 if condensed else 192)
         self.search_edit.setVisible(self.width()>=620);self.search_edit.setFixedWidth(144 if condensed else 176)
         self.view_segment.setVisible(not narrow)
         for control in (self.zip_all_button,self.clear_button):control.setVisible(not condensed)
-        self.cloud_selector.setVisible(self.width()>=900)
+        self.cloud_selector.hide();self.network_status.hide()
+        self.header_brand.setFixedWidth((164 if condensed else 192) if not narrow else 150)
+        self.header_system.setFixedWidth((280 if condensed else 340) if not narrow else 200)
         self._position_nav_counts()
         if narrow:
             if self.body_layout.indexOf(self.preview)>=0:
@@ -783,8 +813,10 @@ class ContentsPopup(QFrame):
             self.preview.setFixedWidth(280 if condensed else 340)
         self.scroll.setMinimumWidth(0);self.scroll.setMaximumWidth(16777215)
         self._sync_body_visibility();self.update_selection_actions()
-        columns=max(1,min(4,(max(112,self.scroll.viewport().width()-24)+8)//136))
-        grid_changed=self.shelf.manager.settings.view_mode=='icons' and getattr(self,'_grid_columns',None)!=columns
+        columns=max(1,min(4,(max(GRID_ITEM_MIN_WIDTH,self.scroll.viewport().width()-24)+GRID_ITEM_GAP)//(GRID_ITEM_MIN_WIDTH+GRID_ITEM_GAP)))
+        from content_grid import GRID_ITEM_MAX_WIDTH
+        cell_width=min(GRID_ITEM_MAX_WIDTH,max(GRID_ITEM_MIN_WIDTH,(self.scroll.viewport().width()-24-(columns-1)*GRID_ITEM_GAP)//columns))
+        grid_changed=self.shelf.manager.settings.view_mode=='icons' and (getattr(self,'_grid_columns',None)!=columns or getattr(self,'_grid_cell_width',None)!=cell_width)
         if (previous!=narrow or grid_changed) and hasattr(self,'_render_signature'):
             self._render_signature=None;self.rebuild()
 
@@ -1049,20 +1081,24 @@ class ContentsPopup(QFrame):
             for ref in changed:
                 if ref in self._item_widgets:self._item_widgets[ref].refresh_content()
         elif self.shelf.manager.settings.view_mode=='icons':
-            grid=QGridLayout(); grid.setAlignment(Qt.AlignTop|Qt.AlignLeft); grid.setContentsMargins(0,0,0,0); grid.setHorizontalSpacing(8); grid.setVerticalSpacing(8)
+            grid=QGridLayout(); grid.setAlignment(Qt.AlignTop|Qt.AlignLeft); grid.setContentsMargins(0,0,0,0); grid.setHorizontalSpacing(GRID_ITEM_GAP); grid.setVerticalSpacing(GRID_ITEM_GAP)
             self.rows_layout.addLayout(grid)
-            available=max(112,self.scroll.viewport().width()-24)
-            columns=max(1,min(4,(available+8)//136))
+            available=max(GRID_ITEM_MIN_WIDTH,self.scroll.viewport().width()-24)
+            columns=max(1,min(4,(available+GRID_ITEM_GAP)//(GRID_ITEM_MIN_WIDTH+GRID_ITEM_GAP)))
             self._grid_columns=columns
-            for column in range(columns):grid.setColumnStretch(column,1)
+            from content_grid import GRID_ITEM_MAX_WIDTH
+            cell_width=min(GRID_ITEM_MAX_WIDTH,max(GRID_ITEM_MIN_WIDTH,(available-(columns-1)*GRID_ITEM_GAP)//columns))
+            self._grid_cell_width=cell_width
+            for column in range(columns):grid.setColumnMinimumWidth(column,cell_width)
             # Empty columns need real expanding cells too. Without them Qt
             # gives a one-card grid its 176px maximum and centers the layout.
             for index in range(len(refs),((len(refs)+columns-1)//columns)*columns):
-                grid.addItem(QSpacerItem(112,120,QSizePolicy.Expanding,QSizePolicy.Fixed),index//columns,index%columns)
+                grid.addItem(QSpacerItem(cell_width,GRID_ITEM_HEIGHT,QSizePolicy.Fixed,QSizePolicy.Fixed),index//columns,index%columns)
             def append(index,ref):
                 slot=self._build_slots.pop(index,None)
                 if slot is not None:grid.removeItem(slot)
                 widget=self._item_widget(ref,IconItem,changed)
+                widget.setFixedWidth(cell_width)
                 grid.addWidget(widget,index//columns,index%columns);widget.show()
         else:
             def append(index,ref):
@@ -1082,17 +1118,17 @@ class ContentsPopup(QFrame):
                 if ref in self._item_widgets:
                     append(index,ref);self._build_installed.add(ref)
                 elif row_type is IconItem:
-                    slot=QSpacerItem(112,120,QSizePolicy.Expanding,QSizePolicy.Fixed)
+                    slot=QSpacerItem(cell_width,GRID_ITEM_HEIGHT,QSizePolicy.Fixed,QSizePolicy.Fixed)
                     grid.addItem(slot,index//columns,index%columns);self._build_slots[index]=slot
                 else:
-                    slot=QSpacerItem(0,58,QSizePolicy.Minimum,QSizePolicy.Fixed)
+                    slot=QSpacerItem(0,FILE_ROW_HEIGHT,QSizePolicy.Minimum,QSizePolicy.Fixed)
                     self.rows_layout.insertItem(index,slot);self._build_slots[index]=slot
             # A scroll widget cannot infer an accurate minimum from the
             # temporary spacers until all children exist. Reserve its final
             # height now; otherwise Qt overlaps hundreds of rows inside the
             # viewport and the compositor paints every thumbnail per slice.
             rows=(len(refs)+columns-1)//columns if row_type is IconItem else len(refs)
-            height=24+rows*(120 if row_type is IconItem else 58)+max(0,rows-1)*(8 if row_type is IconItem else 6)
+            height=24+rows*(GRID_ITEM_HEIGHT if row_type is IconItem else FILE_ROW_HEIGHT)+max(0,rows-1)*(GRID_ITEM_GAP if row_type is IconItem else 6)
             self.rows_body.setMinimumHeight(max(getattr(self,'_rows_minimum',0),height))
             self.rows_layout.activate()
             positions,animate=self._layout_animation;self._layout_animation=None
@@ -1192,6 +1228,7 @@ class ContentsPopup(QFrame):
         self.zip_all_button.setEnabled(bool(self.shelf.files['permanent']) and not busy and not choosing)
         self.zip_button.setToolTip('正在打包…' if busy else '选择保存位置…' if choosing else f'将选中的 {count} 项打包为 ZIP')
         self.selection_hint.setText('默认')
+        self.selection_hint.setChecked(not self.sort_key)
         for key,control in self.sort_buttons.items():
             direction=self.sort_direction if self.sort_key==key else 0
             control.setText('时间' if key=='time' else '大小');control.set_direction(direction)
@@ -1201,7 +1238,8 @@ class ContentsPopup(QFrame):
         self.select_all_button.setText('弃选' if visible and all(ref in self.selected for ref in visible) else '全选')
         from reference_widgets import css,colors
         deselect=bool(visible and all(ref in self.selected for ref in visible))
-        css(self.select_all_button,*[f"QPushButton{{background:transparent;border:1px solid transparent;border-radius:8px;padding:4px 11px;font:12px '{FONT_FAMILY}';color:{colors(t)['red'] if deselect else colors(t)['secondary']};}} QPushButton:hover{{background:{colors(t)['hover']};}} QPushButton[keyboardFocus=\"true\"]{{border-color:{colors(t)['link']};}}" for t in ('dark','light')])
+        type_size=10 if sys.platform=='win32' else 11
+        css(self.select_all_button,*[f"QPushButton{{background:{colors(t)['control']};border:1px solid {colors(t)['border']};border-radius:7px;padding:2px 9px;font:{type_size}px '{FONT_FAMILY}';color:{colors(t)['red'] if deselect else colors(t)['secondary']};}} QPushButton:hover{{background:{colors(t)['hover']};}} QPushButton[keyboardFocus=\"true\"]{{border-color:{colors(t)['link']};}}" for t in ('dark','light')])
 
     def change_view_mode(self,key):
         if key not in ('list','icons'):return
@@ -1418,7 +1456,7 @@ class ShelfWindow(QWidget):
         self._native_revealed = False
         logo = QLabel(self.card)
         self.brand_logo=logo
-        logo.setGeometry(16, 10, 28, 28)
+        logo.setGeometry(16, 12, 28, 28)
         logo.setPixmap(app_icon().pixmap(QSize(28,28),self.devicePixelRatioF()))
         logo.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         logo.show()
@@ -1448,7 +1486,7 @@ class ShelfWindow(QWidget):
         self.lan_button.setAccessibleName('选择局域网或远程传输')
         self.lan_button.clicked.connect(self.show_transfer_menu)
         from transfer_entry import TransferEntryRouter
-        self.transfer_entry=TransferEntryRouter(self,self.lan_button,lambda mode,paths:self.manager.queue_transfer_paths(mode,paths))
+        self.transfer_entry=TransferEntryRouter(self,self.lan_button,lambda mode,paths:self.manager.queue_transfer_paths(mode,paths,defer_present=True))
         from reference_widgets import AvatarButton
         self.account_button = AvatarButton('user', self.card, motion=self.manager.motion)
         self.account_button.setToolTip('账号与设置')
@@ -1473,7 +1511,7 @@ class ShelfWindow(QWidget):
         self.rename_edit.returnPressed.connect(self.commit_rename)
         self.rename_edit.editingFinished.connect(self.commit_rename)
         self.rename_edit.hide()
-        for button in (self.cloud_button,self.network_status,self.pin_button,self.expand_button,self.menu_button,self.close_button):
+        for button in (self.network_status,self.cloud_button,self.pin_button,self.expand_button,self.menu_button,self.close_button):
             button.setProperty('flatToolbar',True)
             button.setParent(self)
         for button in (self.lan_button,self.account_button):
@@ -1506,34 +1544,31 @@ class ShelfWindow(QWidget):
         center=QRectF(self.card.geometry()).center();effect=self.surface_effect
         transform=QTransform();transform.translate(center.x()+effect.dx,center.y()+effect.dy)
         transform.scale(effect.sx,effect.sy);transform.translate(-center.x(),-center.y())
-        buttons=(self.pin_button,self.expand_button,self.menu_button,self.close_button) if expanded else (self.cloud_button,self.network_status,self.pin_button,self.expand_button,self.menu_button,self.close_button)
-        self.cloud_button.setVisible(not expanded);self.network_status.setVisible(not expanded)
+        shaking=self.presentation_kind=='drag' and not expanded
+        buttons=(self.network_status,self.cloud_button) if shaking else (self.network_status,self.cloud_button,self.pin_button,self.expand_button,self.menu_button,self.close_button)
         for index,item in enumerate(buttons):
             size=32
             x=width-16-len(buttons)*(size+6)+index*(size+6)+6
-            point=transform.map(QRectF(self.card.x()+x,self.card.y()+8,size,size).center())
+            point=transform.map(QRectF(self.card.x()+x,self.card.y()+10,size,size).center())
             item.setFixedSize(size,size);item.move(round(point.x()-size/2),round(point.y()-size/2));item.set_presentation_scale(effect.sx,effect.sy)
             item.show();item.raise_()
         self.account_button.hide()
         item=self.lan_button
         point=transform.map(QRectF(self.card.x()+10,self.card.y()+CARD_H-39,112,32).center())
         item.setFixedSize(112,32);item.move(round(point.x()-56),round(point.y()-16));item.set_presentation_scale(effect.sx,effect.sy)
-        item.setVisible(not expanded and self.presentation_kind!='drag');item.raise_()
+        item.setVisible(not expanded);item.raise_()
         for attr in ('account_caption','lan_caption','header_line','footer_line','traffic_controls'):
             item=getattr(self,attr,None)
-            if item is not None:item.setVisible(not expanded and attr in ('header_line','footer_line') and (self.presentation_kind!='drag' or attr=='header_line'))
-        if self.presentation_kind=='drag':
-            self.network_status.hide()
+            if item is not None:item.setVisible(not expanded and attr in ('header_line','footer_line'))
+        if shaking:
             for item in (self.pin_button,self.expand_button,self.menu_button,self.close_button,self.traffic_controls):item.hide()
-            center=transform.map(QRectF(self.card.x()+width-48,self.card.y()+8,32,32).center())
-            self.cloud_button.move(round(center.x()-16),round(center.y()-16));self.cloud_button.show();self.cloud_button.raise_()
         zone=self.zones.get('permanent')
         if zone:
-            x=131 if self.presentation_kind=='drag' else 242
-            y=214 if self.presentation_kind=='drag' else 230
+            x=242
+            y=230
             zone.caption.move(x,y);zone.count_arrow.move(x+49,y+10)
-            zone.clipboard_button.move(x-42,y);zone.clipboard_button.setVisible(self.presentation_kind!='drag')
-            zone.hint.move(40,180 if self.presentation_kind=='drag' else 188)
+            zone.clipboard_button.move(x-42,y);zone.clipboard_button.setVisible(not expanded)
+            zone.hint.move(40,188)
 
     def refresh_cloud_button(self):
         enabled = self.manager.settings.sync_upload_enabled and self.manager.settings.sync_receive_enabled
@@ -1568,7 +1603,7 @@ class ShelfWindow(QWidget):
                                    self._set_sync_direction(name, checked, item))
         self._menu_open = True
         try:
-            anchor=self.popup.cloud_selector if self.expanded and self.popup else self.cloud_button
+            anchor=self.cloud_button
             menu.exec(anchor.mapToGlobal(QPoint(0, anchor.height()+6)))
         finally:
             self._menu_open = False
@@ -1633,7 +1668,7 @@ class ShelfWindow(QWidget):
         snapshot=getattr(self,'_surface_snapshot',None)
         if snapshot is None:
             snapshot=self._surface_snapshot=SurfaceSnapshot(self)
-        controls=(self.cloud_button,self.network_status,self.lan_button,self.pin_button,self.expand_button,self.menu_button,self.close_button)
+        controls=(self.network_status,self.cloud_button,self.lan_button,self.pin_button,self.expand_button,self.menu_button,self.close_button)
         source=getattr(self,'_morph_from_image',None)
         if source is None: source=snapshot.capture_current(self.card,controls)
         self._morph_from_image=None
@@ -1719,12 +1754,12 @@ class ShelfWindow(QWidget):
 
     def _place_morph_controls(self,snapshot,rect):
         transform=snapshot.presentation_transform(rect)
-        buttons=(self.pin_button,self.expand_button,self.menu_button,self.close_button) if self.expanded else (self.cloud_button,self.network_status,self.pin_button,self.expand_button,self.menu_button,self.close_button)
+        buttons=(self.network_status,self.cloud_button,self.pin_button,self.expand_button,self.menu_button,self.close_button)
         size=32
         width=rect.width()-28
         for index,button in enumerate(buttons):
             x=width-16-len(buttons)*(size+6)+index*(size+6)+6
-            center=transform.map(QRectF(rect.x()+14+x-self.x(),rect.y()+15-self.y(),size,size).center())
+            center=transform.map(QRectF(rect.x()+14+x-self.x(),rect.y()+17-self.y(),size,size).center())
             button.move(round(center.x()-size/2),round(center.y()-size/2))
             button.set_presentation_scale(self.surface_effect.sx,self.surface_effect.sy)
             button.raise_()
@@ -1738,7 +1773,7 @@ class ShelfWindow(QWidget):
         if not self.geometry_morph.motion: return
         snapshot=getattr(self,'_surface_snapshot',None)
         if snapshot is None: snapshot=self._surface_snapshot=SurfaceSnapshot(self)
-        self._morph_from_image=snapshot.capture_current(self.card,(self.cloud_button,self.network_status,self.lan_button,self.pin_button,self.expand_button,self.menu_button,self.close_button))
+        self._morph_from_image=snapshot.capture_current(self.card,(self.network_status,self.cloud_button,self.lan_button,self.pin_button,self.expand_button,self.menu_button,self.close_button))
 
     def visual_geometry(self): return QRect(self.geometry_morph.current)
 
@@ -1794,7 +1829,9 @@ class ShelfWindow(QWidget):
             refs=self.files['permanent']; index=refs.index(ref)
             if path in refs: refs.remove(ref)
             else: refs[index]=path
+            added_at=self.content.metadata.pop(ref,{}).get('shelf_added_at')
             self.content.metadata[path]=result
+            if added_at:self.content.metadata[path]['shelf_added_at']=added_at
             if self.popup:
                 if ref in self.popup.selected: self.popup.selected.remove(ref); self.popup.selected.add(path)
                 if self.popup.primary_selection==ref: self.popup.primary_selection=path
@@ -1987,7 +2024,7 @@ class ShelfWindow(QWidget):
             from reference_widgets import item_detail
             item=self.popup._item_widgets.get(ref)
             if item is not None:
-                if hasattr(item,'detail_label'):item.detail_label.setText(item_detail(self,ref))
+                if hasattr(item,'detail_label'):item.refresh_cloud_status()
                 item.update()
             if self.popup.preview.current_path==ref and self.popup.preview.info.text().startswith('正在读取'):
                 self.popup.preview.info.setText(item_detail(self,ref))
@@ -1998,10 +2035,11 @@ class ShelfWindow(QWidget):
                     self.popup._size_sort_timer=timer
                 if not self.popup._size_sort_timer.isActive():self.popup._size_sort_timer.start(32)
 
-    def add_paths(self, mode, refs, *, defer_cloud=False):
+    def add_paths(self, mode, refs, *, defer_cloud=False, added_at=None):
         from shelf_intake_limit import MAX_SHELF_BYTES
         import stat
         rejected=[]
+        added_at=added_at or QDateTime.currentDateTimeUtc().toString(Qt.ISODate)
         for ref in refs:
             info=None
             if not self.content.is_text(ref):
@@ -2015,6 +2053,7 @@ class ShelfWindow(QWidget):
                 if info is not None:self.file_metadata.prime(value,info)
                 if value in self.files[mode]: self.files[mode].remove(value)
                 self.files[mode].append(value)
+                self.content.metadata.setdefault(value,{})['shelf_added_at']=added_at
         self.refresh()
         self.touch()
         if defer_cloud and hasattr(self.manager, 'save_after_intake'):
@@ -2024,9 +2063,10 @@ class ShelfWindow(QWidget):
         self.manager.update_handles()
         if rejected:getattr(self.manager,'show_oversize_notice',lambda paths:None)(rejected)
 
-    def import_paths(self,mode,refs,on_committed=None,on_failed=None,*,_checked=False):
+    def import_paths(self,mode,refs,on_committed=None,on_failed=None,*,_checked=False,_added_at=None):
         """Apply the intake policy only to external file imports, never ZIPs."""
         refs=list(refs)
+        _added_at=_added_at or QDateTime.currentDateTimeUtc().toString(Qt.ISODate)
         if not _checked:
             from shelf_intake_limit import classify
             def checked(result,error):
@@ -2035,7 +2075,7 @@ class ShelfWindow(QWidget):
                     return
                 allowed,blocked=result
                 if blocked:getattr(self.manager,'show_oversize_notice',lambda paths:None)(blocked)
-                if allowed:self.import_paths(mode,allowed,on_committed,on_failed,_checked=True)
+                if allowed:self.import_paths(mode,allowed,on_committed,on_failed,_checked=True,_added_at=_added_at)
                 elif on_failed:on_failed('超过 1 GB，请使用远程传输。')
             if any(not self.content.is_text(ref) and Path(ref).is_dir() for ref in refs):
                 epoch=self._copy_epoch;job=DiskWork(classify,refs);self._intake_limit_jobs=getattr(self,'_intake_limit_jobs',set());self._intake_limit_jobs.add(job)
@@ -2051,7 +2091,7 @@ class ShelfWindow(QWidget):
             offer=getattr(self.manager,'offer_large_intake',None)
             if offer:offer(paths)
         if self.manager.settings.capture_mode!='copy':
-            self.add_paths(mode,refs,defer_cloud=on_committed is not None)
+            self.add_paths(mode,refs,defer_cloud=on_committed is not None,added_at=_added_at)
             committed(refs)
             return
         directory=self.manager.settings.capture_dir
@@ -2062,7 +2102,7 @@ class ShelfWindow(QWidget):
             key=os.path.normcase(os.path.abspath(ref))
             if key!=owned and not key.startswith(owned+os.sep):external.append(ref)
         if not external:
-            self.add_paths(mode,refs,defer_cloud=on_committed is not None)
+            self.add_paths(mode,refs,defer_cloud=on_committed is not None,added_at=_added_at)
             committed(refs)
             return
         job=CopyFilesJob(external,directory,parent=self)
@@ -2091,7 +2131,7 @@ class ShelfWindow(QWidget):
                     self.content.metadata[new]={'capture_mode':'copy','original_name':Path(old).name,'owned_root':str(Path(directory).absolute())}
                 captured=[replacement.get(ref,ref) for ref in refs]
                 self.add_paths(mode,captured,
-                               defer_cloud=on_committed is not None)
+                               defer_cloud=on_committed is not None,added_at=_added_at)
                 committed(captured)
                 if not on_committed:self.zones[mode].pulse('drop')
             else:
@@ -2712,11 +2752,20 @@ class ShelfWindow(QWidget):
     def reveal(self, mode):
         refs = self.real_paths(mode)
         if refs:
-            subprocess.Popen(["explorer.exe", "/select,", refs[0]])
+            self.reveal_ref(refs[0])
 
     def reveal_ref(self,ref):
-        if not self.content.is_text(ref) and Path(ref).exists():
-            subprocess.Popen(['explorer.exe','/select,',ref])
+        if self.content.is_pending(ref):return
+        if self.content.is_text(ref):
+            if not self.content.metadata.get(ref,{}).get('pasted_text'):return
+            ref=self.content.materialize_pasted_text(ref,self.manager.settings.capture_dir)
+        path=Path(ref)
+        if not path.exists():return
+        if sys.platform=='win32':subprocess.Popen(['explorer.exe','/select,',str(path.resolve())])
+        elif sys.platform=='darwin':subprocess.Popen(['/usr/bin/open','-R',str(path.resolve())])
+        else:
+            from PySide6.QtGui import QDesktopServices
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve().parent)))
 
     def copy_files(self, mode):
         self.copy_items(self.files[mode])
@@ -3486,6 +3535,7 @@ class ShelfManager:
         dialog.move(area.center()-QPoint(dialog.width()//2,dialog.height()//2))
 
     def show_settings(self):
+        self._transfer_present_generation=getattr(self,'_transfer_present_generation',0)+1
         if self.update_notice is not None:
             self.update_notice.hide()
         self.reset_drag_gesture()
@@ -3500,6 +3550,9 @@ class ShelfManager:
             self.settings_dialog.update_requested.connect(self._settings_update_clicked)
             self.updates.state_changed.connect(self._render_settings_update)
             self.account_panel = AccountPanel(self.account,self.settings_dialog,theme=self.settings.theme,email_binding=False)
+            self.account_panel.set_cloud_connected(self.events.socket.isValid())
+            self.events.socket.connected.connect(lambda:self.account_panel.set_cloud_connected(True))
+            self.events.socket.disconnected.connect(lambda:self.account_panel.set_cloud_connected(False))
             self.settings_dialog.set_account_panel(self.account_panel)
             self.settings_dialog.preview_changed.connect(self.preview_dock)
             self.settings_dialog.gesture_preview_changed.connect(self.preview_shake)
@@ -3530,9 +3583,16 @@ class ShelfManager:
         dialog=self.lan_dialog or self.wan_dialog
         self._show_transfer_dialog(self.wan if dialog and dialog._wan else self.lan)
 
-    def queue_transfer_paths(self,mode,paths):
-        self._show_transfer_dialog(self.wan if mode=='wan' else self.lan)
+    def queue_transfer_paths(self,mode,paths,*,defer_present=False):
+        self._transfer_present_generation=getattr(self,'_transfer_present_generation',0)+1
+        generation=self._transfer_present_generation
+        service=self.wan if mode=='wan' else self.lan
+        self._show_transfer_dialog(service,passive=True,prepare_only=defer_present)
         self.lan_dialog.panel.queue_paths(paths)
+        if defer_present:
+            def present():
+                if not self._quitting and generation==self._transfer_present_generation:self._show_transfer_dialog(service,passive=True)
+            return present
 
     def show_lan_dialog(self):
         self._show_transfer_dialog(self.lan)
@@ -3540,15 +3600,17 @@ class ShelfManager:
     def show_wan_dialog(self):
         self._show_transfer_dialog(self.wan)
 
-    def _show_transfer_dialog(self,service):
+    def _show_transfer_dialog(self,service,*,passive=False,prepare_only=False):
+        if not prepare_only:self._transfer_present_generation=getattr(self,'_transfer_present_generation',0)+1
         if getattr(self.shelf,'isVisible',lambda:False)() and self.shelf.expanded:
             self._overview_return_rect=QRect(self.shelf.geometry_morph._to if self.shelf.geometry_morph.active else self.shelf.visual_geometry())
-        self.shelf._release_reveal_level()
+        if not prepare_only:self.shelf._release_reveal_level()
         dialog=self.lan_dialog or self.wan_dialog
         if dialog is None:
             # One independent native window; both modes retain their own panel
             # state without exposing the desktop between close/show operations.
             dialog=LanDialog(service,self.settings)
+            dialog.closing_intent.connect(lambda:setattr(self,'_transfer_present_generation',getattr(self,'_transfer_present_generation',0)+1))
             dialog.overview_requested.connect(lambda:self.show_overview_from_transfer(dialog))
             dialog.mode_selected.connect(lambda mode:self.show_wan_dialog() if mode=='wan' else self.show_lan_dialog())
             dialog.lan_recommended.connect(self._use_recommended_lan)
@@ -3556,13 +3618,15 @@ class ShelfManager:
             dialog.dock_requested.connect(lambda:self.shelf.hide_animated(explicit=True))
         dialog.set_service(service).set_paths_provider(self._lan_selected)
         self.lan_dialog=self.wan_dialog=dialog
+        if prepare_only:return
+        dialog.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating,passive)
         if not dialog.isVisible():
             self._center_dialog(dialog)
         if dialog.isMinimized():dialog.showNormal()
-        # Even a visible window may be fading closed after Back. An explicit
-        # open/mode intent must cancel that obsolete navigation without resize.
+        # Reopening also cancels an obsolete Back fade without changing size.
         dialog.show()
-        dialog.raise_();dialog.activateWindow()
+        if passive:dialog.present_dropped_files()
+        else:dialog.raise_();dialog.activateWindow()
 
     def _use_recommended_lan(self,paths,identifier):
         previous=self.lan_dialog.panel if self.lan_dialog else None
@@ -3685,6 +3749,7 @@ class ShelfManager:
             self.shortcut_error=self.hotkeys.apply(self.settings.shelf_shortcut,self.settings.overview_shortcut)
 
     def show_overview_from_transfer(self,dialog):
+        self._transfer_present_generation=getattr(self,'_transfer_present_generation',0)+1
         if self._quitting or confirmation_active(self.shelf) or self.shelf._archive_choosing:return
         self.reset_drag_gesture();self.edge_suppressed=False
         self.activate_shelf(self.shelf)
@@ -3731,6 +3796,7 @@ class ShelfManager:
         self._apply_shake_sensitivity()
 
     def show_shortcut(self):
+        self._transfer_present_generation=getattr(self,'_transfer_present_generation',0)+1
         if confirmation_active(self.shelf) or self.shelf._archive_choosing: return
         self.reset_drag_gesture()
         self.edge_suppressed = False
@@ -3752,6 +3818,7 @@ class ShelfManager:
         return bool(mouse_buttons_mask() & 1)
 
     def show_overview(self):
+        self._transfer_present_generation=getattr(self,'_transfer_present_generation',0)+1
         if confirmation_active(self.shelf) or self.shelf._archive_choosing: return
         self.reset_drag_gesture()
         self.edge_suppressed = False
@@ -3961,52 +4028,57 @@ class ShelfManager:
         self.was_down=down
 
     def quit(self):
-        if hasattr(self,'intake_notice'):self.intake_notice.hide()
-        if hasattr(self,'clipboard_notice'):self.clipboard_notice.supersede()
-        if hasattr(self,'remote_intake_notice'):self.remote_intake_notice.hide()
-        for job in getattr(self,'_large_intake_jobs',()):job.cancel.set()
-        if hasattr(self,'oversize_notice'):self.oversize_notice.hide()
-        if getattr(self,'clipboard_preview_dialog',None) is not None:self.clipboard_preview_dialog.hide()
-        if getattr(self,'mac_permissions_dialog',None) is not None:self.mac_permissions_dialog.hide()
-        if hasattr(self,'clipboard_presenter'):self.clipboard_presenter.close()
-        if self.update_dialog is not None:self.update_dialog.hide()
-        if self.update_notice is not None:
-            self.update_notice.hide()
-        if hasattr(self,'lan'):self.lan.close()
-        if hasattr(self,'wan'):self.wan.close()
+        if self._quitting:return
         self._quitting=True
-        self.pointer_paste.close();self.connectivity.close();self.settings_edge_hint.close()
-        self._intake_sync_timer.stop()
-        self.timer.stop()
-        self.update_timer.stop()
-        self.updates.close()
-        self.sync.close()
-        self.clipboard_sync.close();self.events.close();self.drop_bridge.hide();self.drop_bridge.deleteLater()
-        self.account.close()
-        self.hotkeys.close()
-        if self.settings_dialog:
-            self.settings_dialog.close()
-        if self.lan_dialog:self.lan_dialog.close()
-        if self.wan_dialog:self.wan_dialog.close()
-        self.drag_gate.close()
-        if self.outgoing_drag:
-            QDrag.cancel()
-        self.save()
-        self.tray.hide()
-        for edge in getattr(self,'edges',{'primary':self.edge}).values():edge.hide()
-        self.dock_preview.hide()
+        self._shutdown_errors=[]
+        def stop(name,action):
+            try:action()
+            except Exception as error:self._shutdown_errors.append((name,type(error).__name__))
+        # Let file jobs wind down while services close, rather than waiting
+        # until every service has already spent its own shutdown grace.
+        for shelf in self.shelves:
+            for job in tuple(shelf.copy_jobs):stop('copy_cancel',job.cancel)
+            if shelf.archive_job:stop('archive_cancel',shelf.archive_job.cancel)
+        # Cancel producers before closing windows. One failed native provider
+        # must not prevent every other service or QApplication from stopping.
+        for name in ('timer','update_timer','_intake_sync_timer'):
+            item=getattr(self,name,None)
+            if item is not None:stop(name,item.stop)
+        for job in getattr(self,'_large_intake_jobs',()):job.cancel.set()
+        for name in ('intake_notice','remote_intake_notice','oversize_notice','clipboard_preview_dialog','mac_permissions_dialog','update_dialog','update_notice'):
+            item=getattr(self,name,None)
+            if item is not None:stop(name,item.hide)
+        if hasattr(self,'clipboard_notice'):stop('clipboard_notice',self.clipboard_notice.supersede)
+        if hasattr(self,'clipboard_presenter'):stop('clipboard_presenter',self.clipboard_presenter.close)
+        for name in ('clipboard_sync','lan','wan','pointer_paste','connectivity','settings_edge_hint','updates','sync','events','account','hotkeys','drag_gate'):
+            item=getattr(self,name,None)
+            if item is not None:stop(name,item.close)
+        if hasattr(self,'drop_bridge'):
+            stop('drop_bridge',self.drop_bridge.hide);self.drop_bridge.deleteLater()
+        for dialog in {self.lan_dialog,self.wan_dialog}:
+            if dialog:
+                dialog._closing_confirmed=True
+                if dialog._close_prompt is not None:dialog._close_prompt.hide()
+                stop('transfer_window',dialog.close)
+        if self.settings_dialog:stop('settings_window',self.settings_dialog.close)
+        if self.outgoing_drag:stop('native_drag',QDrag.cancel)
+        stop('save',self.save);stop('tray',self.tray.hide)
+        for edge in getattr(self,'edges',{'primary':self.edge}).values():stop('edge',edge.hide)
+        stop('dock_preview',self.dock_preview.hide)
+        jobs=[]
         for shelf in self.shelves:
             shelf._copy_epoch+=1
             for job in getattr(shelf,'_intake_limit_jobs',()):job.cancel.set()
-            for job in tuple(shelf.copy_jobs):job.cancel();job.wait(3000)
-            if shelf.archive_job:
-                shelf.archive_job.cancel();shelf.archive_job.wait(3000)
-            shelf.resolver.close()
-            shelf.image_cache.close()
-            if shelf.popup: shelf.popup.preview.media.release_source()
-            shelf.presentation.stop()
-            shelf.geometry_morph.stop()
-            shelf.hide()
+            for job in tuple(shelf.copy_jobs):stop('copy_cancel',job.cancel);jobs.append(job)
+            if shelf.archive_job:stop('archive_cancel',shelf.archive_job.cancel);jobs.append(shelf.archive_job)
+            stop('resolver',shelf.resolver.close);stop('image_cache',shelf.image_cache.close)
+            if shelf.popup:stop('media',shelf.popup.preview.media.release_source)
+            stop('presentation',shelf.presentation.stop);stop('geometry',shelf.geometry_morph.stop);stop('shelf',shelf.hide)
+        # One total grace budget, rather than three seconds per pending file.
+        deadline=time.monotonic()+2
+        for job in jobs:
+            remaining=max(0,round((deadline-time.monotonic())*1000))
+            if remaining:stop('file_worker',lambda job=job,remaining=remaining:job.wait(remaining))
         self.app.quit()
 
 def main():
@@ -4094,6 +4166,8 @@ def main():
         manager.show_first()
         QTimer.singleShot(650, lambda: (manager.shelves[0].grab().save(str(Path.cwd() / "flickdock-preview.png")), manager.quit()))
     result = app.exec()
+    from webrtc_stream import close_owned_streams
+    close_owned_streams()
     guard.close()
     sys.exit(result)
 

@@ -24,6 +24,7 @@ registerHooks({resolve(specifier,context,next){
   return next(url,context);
 }});
 const worker=(await import('../src/index.ts')).default;
+const {AccountEvents}=await import('../src/index.ts');
 const sha=value=>createHash('sha256').update(value).digest('hex');
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no});return {promise,resolve,reject};};
 
@@ -71,6 +72,30 @@ async function race(failPut,fastUpload=false,fastMultipart=false){
   const delayed=randomUUID();assert.equal((await call('DELETE',`/v1/uploads/${delayed}`)).status,200);
   const late=await call('POST','/v1/uploads',{upload_id:delayed,item_id:randomUUID(),base_version:0,kind:'file',name:'late.bin',mime_type:'application/octet-stream',size:data.length,sha256:sha(data)});
   assert.equal(late.status,410);assert.equal(sqlite.prepare('SELECT COUNT(*) n FROM allocations').get().n,0,'A delayed init cannot reserve space after cancellation');
+  if(!failPut&&!fastUpload&&!fastMultipart){
+    const other=randomUUID(),revoked=randomUUID();
+    sqlite.prepare('INSERT INTO devices(id,account_id,name,platform,created_at,last_seen_at) VALUES(?,?,?,?,?,?)').run(other,account,'offline','macos',now,now);
+    sqlite.prepare('INSERT INTO devices(id,account_id,name,platform,created_at,last_seen_at,revoked_at) VALUES(?,?,?,?,?,?,?)').run(revoked,account,'revoked','windows',now,now,now);
+    const sockets=[];
+    const socket=(id,expires=now+86400000,state=1)=>{const value={readyState:state,messages:[],deserializeAttachment:()=>({device:id,expires}),send:body=>value.messages.push(JSON.parse(body)),close:()=>value.readyState=3};sockets.push(value);return value;};
+    const first=socket(device),second=socket(device);socket(other,now-1);socket(other,now+86400000,3);socket(revoked);
+    const hub=new AccountEvents({getWebSockets:()=>sockets},env);
+    env.EVENTS={idFromName:id=>{assert.equal(id,account);return id;},get:()=>({fetch:request=>hub.fetch(new Request(request))})};
+    let listed=await (await call('GET','/v1/devices')).json();
+    assert.equal(listed.presence_available,true);assert.equal(listed.devices.find(d=>d.id===device).online,true);
+    assert.equal(listed.devices.find(d=>d.id===other).online,false);assert.equal(listed.devices.find(d=>d.id===revoked).online,false);
+    await hub.webSocketClose(first);listed=await (await call('GET','/v1/devices')).json();
+    assert.equal(listed.devices.find(d=>d.id===device).online,true,'one remaining socket keeps a device online');
+    assert.equal(second.messages.at(-1).type,'devices');
+    await hub.webSocketError(second);listed=await (await call('GET','/v1/devices')).json();
+    assert.equal(listed.devices.find(d=>d.id===device).online,false);
+    for(const fetch of [async()=>new Response(null,{status:503}),async()=>{throw new Error('fixture unavailable');},async()=>Response.json({devices:'invalid'})]){
+      env.EVENTS.get=()=>({fetch});const response=await call('GET','/v1/devices');assert.equal(response.status,200);
+      const degraded=await response.json();assert.equal(degraded.presence_available,false);assert.equal(degraded.devices.length,3);
+      assert.ok(degraded.devices.every(d=>d.online===undefined),'unknown presence cannot fabricate online/offline flags');
+    }
+    console.log('PASS online presence handles multiple sockets, expiry, revocation and unavailable DO without losing the device list');
+  }
   sqlite.close();
 }
 await race(false);await race(true);await race(false,true);await race(true,true);await race(false,true,true);await race(true,true,true);

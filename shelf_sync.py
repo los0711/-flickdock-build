@@ -605,6 +605,17 @@ class ShelfSync(QObject):
             (e.get('paused_upload') or e.get('blocked_fingerprint')) and not e.get('deleted')
             for e in self.state.get('entries',{}).values()))
 
+    def uploaded_at_for_ref(self,ref):
+        """Return a server-confirmed revision time; never synthesize local time."""
+        entry=next((e for e in (self.state or {}).get('entries',{}).values() if e.get('ref')==ref and not e.get('deleted')),None)
+        if not entry:return None
+        value=entry.get('cloud_uploaded_at') or self._remote_heads.get(entry['id'],{}).get('updated_at')
+        if not isinstance(value,str):return None
+        from datetime import datetime
+        try:stamp=datetime.fromisoformat(value.replace('Z','+00:00'))
+        except ValueError:return None
+        return value if stamp.tzinfo is not None else None
+
     def sync_status_for_ref(self,ref):
         """Return the journal's truth for a local shelf ref, without network or disk IO."""
         if not self.state or not self.account_id or not self.service.signed_in:
@@ -1073,6 +1084,9 @@ class ShelfSync(QObject):
         ignored=self.state.get('ignored_versions',{}).get(identity,0)
         if not record.get('deleted') and isinstance(ignored,int) and record['version']<=ignored:
             callback();return
+        if entry and not record.get('deleted') and record['version']>=entry.get('version',0) and isinstance(record.get('updated_at'),str):
+            if entry.get('cloud_uploaded_at')!=record['updated_at']:
+                entry['cloud_uploaded_at']=record['updated_at'];self._persist()
         if entry and record['version'] <= entry.get('version',0): callback(); return
         # A pending removal stays queued when another device updates that item.
         if entry and entry.get('deleted') and entry.get('dirty'):
@@ -1164,7 +1178,7 @@ class ShelfSync(QObject):
                 if text is not None: ref = 'flickdock:text:'+identity
                 self._add_ref(ref,text,record['name'],remote_order=remote_order,cloud_identity=identity)
                 entries[identity] = {'id':identity,'ref':ref,'version':record['version'],
-                    'sha256':record['sha256'],'name':record['name'],'kind':record['kind'],
+                    'sha256':record['sha256'],'name':record['name'],'kind':record['kind'],'cloud_uploaded_at':record.get('updated_at'),
                     'fingerprint':fingerprint(ref,text,record['name']),'dirty':False,'deleted':False,'seq':0,
                     **({'remote_order':remote_order} if remote_order is not None else {})}
                 self.download_transfers.pop(identity,None)
@@ -1604,7 +1618,7 @@ class ShelfSync(QObject):
         pending_uploads = self.state.setdefault('pending_uploads',[])
         if transfer['upload_id'] in pending_uploads: pending_uploads.remove(transfer['upload_id'])
         if entry:
-            entry.update(version=record['version'],sha256=record['sha256'])
+            entry.update(version=record['version'],sha256=record['sha256'],cloud_uploaded_at=record.get('updated_at'))
             if entry.get('seq')==transfer['seq']:
                 entry.update(dirty=False,fingerprint=transfer['fingerprint'])
             entry.pop('pending_hash',None); entry.pop('pending_seq',None)
@@ -1688,11 +1702,13 @@ class ShelfSync(QObject):
 
     def close(self):
         if self.closed: return
-        self.local_changed(); self._persist()
         self.closed = True; self.epoch += 1
         self.small_lane.reset()
         self.service.account_changed.disconnect(self.select_account)
         self.timer.stop(); self.debounce.stop(); self.remote_poll.stop();self._cleanup_retry.stop()
         for key in tuple(self.requests): self.api.cancel(key)
         for job in tuple(self.jobs): job.cancel.set()
-        self.pool.waitForDone(3000)
+        self.pool.clear()
+        # Persist the existing journal/view, without starting fresh stat/hash
+        # work. Restart reconciles that durable view through local_changed().
+        self._persist()

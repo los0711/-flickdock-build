@@ -88,11 +88,13 @@ begin
     Wait for that process before replacing files in its existing install folder. }
   ParentHandle := OpenProcess($00100000, False, ParentId);
   if ParentHandle = 0 then Exit;
-  WaitResult := WaitForSingleObject(ParentHandle, 30000);
+  WaitResult := WaitForSingleObject(ParentHandle, 5000);
   CloseHandle(ParentHandle);
-  Result := WaitResult = 0;
-  if not Result then
-    MsgBox('FlickDock 尚未退出，请关闭后重新更新。', mbError, MB_OK);
+  { Do not abort before Restart Manager can close an unresponsive tray process.
+    It registers the actual installed EXEs from [Files], including bundled Node,
+    and provides its retry/cancel UI when Windows cannot release those files. }
+  if WaitResult <> 0 then
+    Log('FlickDock is still exiting; handing exact installed file owners to Restart Manager.');
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

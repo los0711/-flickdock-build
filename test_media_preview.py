@@ -135,7 +135,9 @@ with tempfile.TemporaryDirectory(prefix="flickdock-media-") as temporary, \
     print("PASS visible video reads a muted first frame then pauses; poster extraction never reports playback")
 
     preview.toggle_playback()
-    assert events == [True] and not preview.audio_output.muted
+    assert events == [True] and preview.audio_output.muted
+    preview.toggle_mute()
+    assert not preview.audio_output.muted
     preview.toggle_playback()
     assert events == [True, False]
     preview.seek_slider.setValue(5000)
