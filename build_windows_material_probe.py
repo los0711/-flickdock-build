@@ -1,5 +1,5 @@
 """Build only the isolated probe DLL from installed MSVC/Windows SDK files."""
-import argparse,hashlib,json,os,re,subprocess,sys
+import argparse,hashlib,json,os,platform,re,struct,subprocess,sys
 from pathlib import Path
 
 
@@ -11,13 +11,17 @@ def build(output_dir):
     source=Path(__file__).with_name('native_material_probe.cpp').resolve();out=Path(output_dir).resolve();out.mkdir(parents=True,exist_ok=True)
     names=('native_material_probe.cpp','build_windows_material_probe.py','window_material_win.py','ci_windows_material_probe.py','test_windows_material_probe.py')
     hashes={name:sha(source.with_name(name)) for name in names}
-    report=dict(ok=False,source=str(source.name),source_sha256=sha(source),source_hashes=hashes,github_sha=os.environ.get('GITHUB_SHA',''),workflow_ref=os.environ.get('GITHUB_WORKFLOW_REF',''),dependencies='installed MSVC + Windows SDK only; no downloads or system installation')
+    report=dict(ok=False,source=str(source.name),source_sha256=sha(source),source_hashes=hashes,github_sha=os.environ.get('GITHUB_SHA',''),workflow_ref=os.environ.get('GITHUB_WORKFLOW_REF',''),dependencies='installed MSVC + Windows SDK only; no downloads or system installation',architecture=dict(target='x64',python_pointer_bits=struct.calcsize('P')*8,platform_machine=platform.machine(),environment={name:os.environ.get(name,'') for name in ('RUNNER_ARCH','PROCESSOR_ARCHITECTURE','PROCESSOR_ARCHITEW6432','ImageOS','ImageVersion')}))
     try:
         program_files=Path(os.environ.get('ProgramFiles(x86)',r'C:\Program Files (x86)'))
         vswhere=program_files/'Microsoft Visual Studio/Installer/vswhere.exe'
-        install=Path(subprocess.check_output([str(vswhere),'-latest','-products','*','-requires','Microsoft.VisualStudio.Component.VC.Tools.x86.x64','-property','installationPath'],text=True,timeout=15).strip())
+        installation_path=subprocess.check_output([str(vswhere),'-latest','-products','*','-requires','Microsoft.VisualStudio.Component.VC.Tools.x86.x64','-property','installationPath'],text=True,timeout=15).strip()
+        if not installation_path:raise RuntimeError('Installed MSVC x86/x64 component not found; no automatic installation allowed')
+        install=Path(installation_path)
         versions=sorted((install/'VC/Tools/MSVC').iterdir(),key=lambda p:tuple(int(x) for x in p.name.split('.')))
         tool=versions[-1];compiler=tool/'bin/Hostx64/x64/cl.exe'
+        report['compiler']=str(compiler)
+        if not compiler.is_file():raise RuntimeError('Installed Hostx64/x64 compiler not found; no automatic installation allowed')
         sdk=program_files/'Windows Kits/10'
         sdk_versions=sorted((p for p in (sdk/'Include').iterdir() if re.fullmatch(r'10\.0\.[0-9]+\.[0-9]+',p.name) and (p/'cppwinrt/winrt/Windows.UI.Composition.h').is_file()),key=lambda p:tuple(int(x) for x in p.name.split('.')))
         headers=sdk_versions[-1]

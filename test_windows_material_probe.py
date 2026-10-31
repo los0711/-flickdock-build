@@ -2,10 +2,23 @@
 import os,tempfile,unittest
 from pathlib import Path
 from unittest.mock import patch
-from ci_windows_material_probe import frequency_response
+from ci_windows_material_probe import architecture_evidence,frequency_response
 
 
 class MaterialProbeTests(unittest.TestCase):
+    def test_architecture_report_records_emulation_without_changing_pixel_gates(self):
+        from types import SimpleNamespace
+        class Query:
+            def __call__(self,process,machine,native):
+                machine._obj.value=0x8664;native._obj.value=0xaa64;return 1
+        class CurrentProcess:
+            def __call__(self):return -1
+        with patch.dict(os.environ,{'RUNNER_ARCH':'ARM64','PROCESSOR_ARCHITECTURE':'AMD64','PROCESSOR_ARCHITEW6432':'ARM64'}):
+            report=architecture_evidence(SimpleNamespace(GetCurrentProcess=CurrentProcess(),IsWow64Process2=Query()))
+        self.assertEqual(report['is_wow64_process2'],dict(ok=True,process_machine=0x8664,native_machine=0xaa64))
+        self.assertEqual(report['environment']['RUNNER_ARCH'],'ARM64')
+        self.assertNotIn('verified',report)
+
     def test_frequency_detector_rejects_plain_transparency_and_opaque_fallback(self):
         first=[(10,20,30),(210,220,230)]*20;second=[(40,80,100),(240,240,230)]*20
         tint=lambda rows:[tuple(value*.1+255*.9 for value in row) for row in rows]

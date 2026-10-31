@@ -221,6 +221,45 @@ class MaterialTests(unittest.TestCase):
         self.assertFalse(report['reduce_transparency']['scalar_bool'])
         self.assertFalse(report['increase_contrast']['bridge_matches_native'])
 
+    def test_known_source_readiness_uses_outside_and_opaque_foreground_only(self):
+        from ci_material_probe import _known_source_readiness
+        samples=dict(outside_left=[30,55,85],outside_right=[210,180,145],
+                     foreground_red=[255,0,0],foreground_blue=[0,51,255],
+                     foreground_white=[255,255,255],foreground_black=[0,0,0],
+                     inside_left=[0,0,0],inside_right=[0,0,0])
+        self.assertTrue(_known_source_readiness(1,samples)['ready'])
+        self.assertNotIn('inside_left',_known_source_readiness(1,samples)['actual'])
+        self.assertFalse(_known_source_readiness(2,samples)['ready'])
+        black={key:[0,0,0] for key in samples}
+        self.assertFalse(_known_source_readiness(1,black)['ready'])
+        missing_foreground=dict(samples,foreground_blue=[0,0,0])
+        self.assertFalse(_known_source_readiness(1,missing_foreground)['ready'])
+        samples['outside_left'],samples['outside_right']=samples['outside_right'],samples['outside_left']
+        self.assertTrue(_known_source_readiness(2,samples)['ready'])
+
+    def test_known_source_gate_preserves_rejected_attempts_and_never_waits_for_blur(self):
+        from ci_material_probe import _await_known_source
+        expected=dict(outside_left=[30,55,85],outside_right=[210,180,145],foreground_red=[255,0,0],
+                      foreground_blue=[0,51,255],foreground_white=[255]*3,foreground_black=[0]*3)
+        elapsed=[0.];captures=[];records=[]
+        def wait(seconds):elapsed[0]+=seconds
+        def capture(attempt):
+            captures.append(attempt);elapsed[0]+=.01
+            return dict(expected) if attempt else {key:[0]*3 for key in expected}
+        accepted=_await_known_source(1,capture,lambda image:image,wait,records.append,lambda:elapsed[0])
+        self.assertEqual(captures,[0,1]);self.assertFalse(records[0]['ready']);self.assertTrue(records[1]['ready'])
+        self.assertEqual(accepted,expected);self.assertLessEqual(elapsed[0],.9)
+        # Ready source is accepted immediately even if material metrics (which
+        # this gate deliberately never reads) would later fail the blur test.
+        captures.clear();records.clear();elapsed[0]=0
+        _await_known_source(1,lambda attempt:captures.append(attempt) or expected,lambda image:image,wait,records.append,lambda:elapsed[0])
+        self.assertEqual(captures,[0]);self.assertEqual(len(records),1)
+        captures.clear();records.clear();elapsed[0]=0
+        with self.assertRaisesRegex(AssertionError,'900ms/7'):
+            _await_known_source(1,lambda attempt:captures.append(attempt) or {key:[0]*3 for key in expected},
+                                lambda image:image,wait,records.append,lambda:elapsed[0])
+        self.assertEqual(len(captures),7);self.assertEqual(len(records),7);self.assertLessEqual(elapsed[0],.9)
+
     def test_shape_budget_and_foreign_thread_updates_are_rejected_before_native(self):
         import threading
         for rect in (QRectF(float('nan'),0,10,10),QRectF(0,0,float('inf'),10),QRectF(1e20,0,10,10)):

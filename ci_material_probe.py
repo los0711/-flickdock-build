@@ -10,6 +10,40 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
+
+
+def _known_source_readiness(phase, samples):
+    """Only known *outside* source + opaque swatches; never a blur metric."""
+    dark,bright = [30.,55.,85.],[210.,180.,145.]
+    source = ({'outside_left':dark,'outside_right':bright} if phase == 1 else
+              {'outside_left':bright,'outside_right':dark} if phase == 2 else None)
+    if source is None: raise ValueError('Unknown low-frequency source phase')
+    expected = dict(source,foreground_red=[255.,0.,0.],foreground_blue=[0.,51.,255.],
+                    foreground_white=[255.,255.,255.],foreground_black=[0.,0.,0.])
+    errors = {key:max(abs(float(actual)-target) for actual,target in zip(samples[key],value))
+              for key,value in expected.items()}
+    return dict(ready=all(value<=2. for value in errors.values()),phase=phase,
+                expected=expected,actual={key:samples[key] for key in expected},max_channel_error=errors)
+
+
+def _await_known_source(phase, capture, inspect, wait, record, clock=None):
+    """Bounded source-readiness gate; no retries based on material quality."""
+    clock = clock or time.monotonic
+    start = clock();deadline = start+.9
+    for attempt in range(7):
+        remaining = deadline-clock()
+        if remaining<=0:break
+        wait(min(.08 if attempt==0 else .12,remaining))
+        if clock()>=deadline:break
+        image = capture(attempt)
+        state = _known_source_readiness(phase,inspect(image))
+        elapsed = clock()-start
+        state.update(attempt=attempt+1,elapsed_ms=round(elapsed*1000,3),within_budget=elapsed<=.9)
+        record(state)
+        if state['ready'] and state['within_budget']:return image
+        if elapsed>=.9:break
+    raise AssertionError('Known dummy source/opaque foreground not ready within 900ms/7 captures; no blur metric accepted')
 
 
 def _native_bool_readback(workspace, selector, objc):
@@ -71,7 +105,7 @@ def verify_mac(output):
     output = Path(output); output.parent.mkdir(parents=True, exist_ok=True)
     result = dict(ok=False, proof='real Cocoa material + known local checkerboard + compositor pixels',
                   qt_platform=app.platformName(), screenshots=[], native_user_desktop=False,
-                  fallback_verified=False,blur_verified=False)
+                  fallback_verified=False,blur_verified=False,source_readiness={})
     handle = background = foreground = None
     class Checkerboard(QWidget):
         signal_phase = 0
@@ -142,6 +176,19 @@ def verify_mac(output):
     def mean_color(values):
         return [sum(c[i] for c in values)/max(1,len(values)) for i in range(3)]
     def luminance(mean): return sum(mean)/3
+    def capture_ready_source(label,phase):
+        rois={'outside_left':QRect(25,215,40,28),'outside_right':QRect(430,215,40,28),
+              'foreground_red':QRect(135,163,35,8),'foreground_blue':QRect(205,163,35,8),
+              'foreground_white':QRect(120,108,20,2),'foreground_black':QRect(135,190,100,2)}
+        attempts=[];result['source_readiness'][label]=attempts
+        accepted=_await_known_source(phase,
+            lambda attempt:capture(label+'-readiness-'+str(attempt+1)),
+            lambda image:{key:mean_color(roi_values(image,roi)) for key,roi in rois.items()},
+            lambda seconds:QTest.qWait(max(1,round(seconds*1000))),attempts.append)
+        path=output.with_name(output.stem+'-'+label+'.png')
+        if not accepted.save(str(path)):raise AssertionError('Could not save accepted known-source frame')
+        result['screenshots'].append(path.name)
+        return accepted
     try:
         result['policy'] = _policy_report(AppKit,Foundation,objc)
         if not result['policy']['reduce_transparency']['bridge_matches_native']:
@@ -245,8 +292,8 @@ def verify_mac(output):
         signals=[]
         for phase in (1,2):
             background.signal_phase = phase; background.update()
-            QTest.qWait(450); app.processEvents()
-            signal_image = capture('live-source-'+str(phase))
+            app.processEvents()
+            signal_image = capture_ready_source('live-source-'+str(phase),phase)
             signals.append({name:mean_color(roi_values(signal_image,roi)) for name,roi in signal_rois.items()})
         result['live_source_signal'] = dict(means=signals, foreground_paints_before=paint_count,
             foreground_paints_after=foreground.paint_count, material_identity_unchanged=int(objc.pyobjc_id(handle.backend.view))==effect_identity,

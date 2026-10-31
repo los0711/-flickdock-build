@@ -3,7 +3,7 @@
 Screen captures are measurements only and are never used as material textures.
 No application installation, global settings changes or unreviewed DLL search.
 """
-import argparse,ctypes,hashlib,json,math,os,sys,time
+import argparse,ctypes,hashlib,json,math,os,platform,sys,time
 from pathlib import Path
 
 
@@ -17,6 +17,22 @@ def frequency_response(base0,base1,enabled0,enabled1):
     low=distance(average(enabled0),average(enabled1))/max(.001,distance(average(base0),average(base1)))
     ratio=high/max(.001,low)
     return dict(high_frequency_gain=high,low_frequency_response=low,normalized_blur_ratio=ratio,frequency_verified=bool(low>.03 and ratio<.35))
+
+
+def architecture_evidence(kernel):
+    """Raw process/OS facts; these do not relax any native pixel gate."""
+    evidence=dict(python_pointer_bits=ctypes.sizeof(ctypes.c_void_p)*8,platform_machine=platform.machine(),
+                  environment={name:os.environ.get(name,'') for name in ('RUNNER_ARCH','PROCESSOR_ARCHITECTURE','PROCESSOR_ARCHITEW6432','ImageOS','ImageVersion')})
+    try:
+        kernel.GetCurrentProcess.argtypes=[];kernel.GetCurrentProcess.restype=ctypes.c_void_p
+        query=kernel.IsWow64Process2
+        query.argtypes=[ctypes.c_void_p,ctypes.POINTER(ctypes.c_ushort),ctypes.POINTER(ctypes.c_ushort)];query.restype=ctypes.c_int
+        process_machine=ctypes.c_ushort();native_machine=ctypes.c_ushort()
+        ok=bool(query(kernel.GetCurrentProcess(),ctypes.byref(process_machine),ctypes.byref(native_machine)))
+        evidence['is_wow64_process2']=dict(ok=ok,process_machine=process_machine.value,native_machine=native_machine.value)
+        if not ok:evidence['is_wow64_process2']['error']=ctypes.get_last_error()
+    except Exception as error:evidence['is_wow64_process2']=dict(ok=False,error=type(error).__name__+': '+str(error))
+    return evidence
 
 
 def verify(build_json,output):
@@ -34,7 +50,8 @@ def verify(build_json,output):
     driver=NativeProbeLibrary(build_path.parent/build['dll'],build['dll_sha256'])
     out=Path(output).resolve();out.parent.mkdir(parents=True,exist_ok=True)
     report=dict(verified=False,backend='Clipped Windows.UI.Composition and independent DWM Acrylic candidates',dll_sha256=driver.sha256,source_sha256=build['source_sha256'],source_hashes=build['source_hashes'],github_sha=os.environ.get('GITHUB_SHA',''),windows_build=sys.getwindowsversion().build,windows_product_type=sys.getwindowsversion().product_type,modes=[])
-    user=ctypes.WinDLL('user32',use_last_error=True);dwm=ctypes.WinDLL('dwmapi');gdi=ctypes.WinDLL('gdi32');kernel=ctypes.WinDLL('kernel32')
+    user=ctypes.WinDLL('user32',use_last_error=True);dwm=ctypes.WinDLL('dwmapi');gdi=ctypes.WinDLL('gdi32');kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+    report['architecture']=architecture_evidence(kernel)
     from ctypes.wintypes import RECT
     user.GetWindowLongPtrW.argtypes=[ctypes.c_void_p,ctypes.c_int];user.GetWindowLongPtrW.restype=ctypes.c_ssize_t
     user.GetForegroundWindow.argtypes=[];user.GetForegroundWindow.restype=ctypes.c_void_p
