@@ -1,81 +1,41 @@
-name: macOS build mirror
-
+name: Isolated native macOS material probe
 on:
   workflow_dispatch:
-  push:
-    branches: [cloud-build]
-
 permissions:
   contents: read
-
-concurrency:
-  group: flickdock-macos-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
-  build:
-    # The user explicitly authorized this existing public GitHub build mirror.
-    # The canonical Gitee source repository remains private.
+  cocoa-material:
     if: github.repository == 'los0711/-flickdock-build'
-    timeout-minutes: 40
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-15
-            arch: arm64
-            python_arch: arm64
-          - runner: macos-15-intel
-            arch: x86_64
-            python_arch: x64
-    runs-on: ${{ matrix.runner }}
-    env:
-      QT_QPA_PLATFORM: offscreen
-      PYTHONUTF8: '1'
-      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+    runs-on: macos-15
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: '3.12'
-          architecture: ${{ matrix.python_arch }}
-      - name: Build and verify native application, ZIP, DMG and installer
-        run: |
-          python ci_assets.py
-          python build_macos.py --target-arch '${{ matrix.arch }}'
-      - name: Verify final functional layout, cancellation and helper handoff boundaries
-        run: |
-          build/macos-venv/bin/python -m unittest test_ui_polish_v1823 test_functional_layout_v1823 test_update_exit_v1823 test_update_macos_controller -q
-      - name: Test real cloud sync from frozen macOS client
-        run: |
-          profile="$(mktemp -d)"
-          APPDATA="$profile" XDG_CONFIG_HOME="$profile" dist/FlickDock.app/Contents/MacOS/FlickDock --verify-cloud --verify-output "../outputs/mac-cloud-${{ matrix.arch }}.json" || true
-          python -c "import json; from pathlib import Path; p=Path('../outputs/mac-cloud-${{ matrix.arch }}.json'); data=json.loads(p.read_text()); print(data); assert data['ok'] and data['frozen'],data"
-      - name: Verify transfer isolation, display metadata and finite animation lifecycle
-        run: |
-          build/macos-venv/bin/python -m unittest test_stability_v1822 test_resources_v1822.ResourceTests test_motion_resources_v1822.MotionTests test_motion_resources_v1822.DisplayMetadataTests test_motion_resources_v1822.MacVolumeTests test_receive_lifecycle_v1822.ReceiveLifecycleTests test_transfer_entry_v1822.EntryTests test_small_upload_lane.SmallLaneTests -q
-      - name: Measure verified local LAN loopback transfer
-        run: |
-          build/macos-venv/bin/python bench_lan_throughput_v183.py --size-mib 128 --output "../outputs/mac-lan-${{ matrix.arch }}.json"
-      - name: Gather verified release artifacts
+      - name: Install existing UI and native framework dependencies
+        run: python -m pip install PySide6==6.12.0 'pyobjc-framework-Quartz>=11,<13'
+      - name: Verify injected backend lifecycle without OS mutation
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest test_window_material_v1823 -v
+      - name: Verify actual native compositor pixels on dummy windows
         run: |
           python - <<'PY'
           from pathlib import Path
-          import shutil
-          source, target = Path('../outputs'), Path('ci-output')
-          target.mkdir()
-          for pattern in ('FlickDock-*-macOS-${{ matrix.arch }}.zip', 'FlickDock-*-macOS-${{ matrix.arch }}.dmg', 'FlickDock-*-macOS-${{ matrix.arch }}.pkg', 'mac-build-*-${{ matrix.arch }}.json', 'mac-cloud-${{ matrix.arch }}.json', 'mac-lan-${{ matrix.arch }}.json'):
-              files = list(source.glob(pattern))
-              assert len(files) == 1, (pattern, files)
-              for path in files:
-                  shutil.copy2(path, target / path.name)
+          import hashlib,json,os,subprocess,sys
+          target=Path('material-proof');target.mkdir()
+          sources={name:hashlib.sha256(Path(name).read_bytes()).hexdigest() for name in ('window_material.py','ci_material_probe.py','test_window_material_v1823.py')}
+          (target/'producer.json').write_text(json.dumps(dict(commit=os.environ['GITHUB_SHA'],sources=sources,scope='Ephemeral CI dummy Qt windows; no application integration or user desktop'),indent=2))
+          subprocess.run([sys.executable,'ci_material_probe.py',str(target/'material-macos.json')],check=True,timeout=45)
           PY
-      - name: Retain build artifacts for verification
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - name: Preserve raw native success or failure evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: FlickDock-macOS-${{ matrix.arch }}-${{ github.sha }}
-          path: ci-output/*
-          if-no-files-found: error
+          name: material-macos-${{ github.sha }}
+          path: material-proof/*
           retention-days: 3
+          if-no-files-found: warn
