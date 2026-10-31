@@ -94,7 +94,15 @@ class NativeLanTests(unittest.TestCase):
                          'received':106*1024**2,'total':148*1024**2})
         panel.show_offer({'id':'incoming','peer':"Roger's MacBook Pro",'count':3,
                          'names':['Design_System_v2.fig'],'total':86*1024**2,'code':'849249'})
-        APP.processEvents()
+        from PySide6.QtTest import QTest
+        previous=None;stable=0
+        for _ in range(20):
+            APP.processEvents();QTest.qWait(1)
+            geometry=(panel.activity_column.size().toTuple(),panel.activity_scroll.verticalScrollBar().maximum(),
+                      panel.history_scroll.mapTo(panel.activity_scroll.viewport(),panel.history_scroll.rect().topLeft()).toTuple())
+            stable=stable+1 if geometry==previous else 0;previous=geometry
+            if stable>=2:break
+        self.assertGreaterEqual(stable,2,'Nested transfer group layouts did not settle')
         self.assertGreaterEqual(self.dialog.card.height(),540)
         for widget in (panel.history_scroll,panel.receive_path,panel.devices,panel.send_button):
             scroll=next(area for area in (panel.send_scroll,panel.activity_scroll)

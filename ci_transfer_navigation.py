@@ -57,12 +57,16 @@ def main():
                 assert dialog.panel._queued_paths==[str(original)] and dialog.winId()==native
             checks.append('native segmented modes keep one window and original-file Paste')
             dialog.close();wait(lambda:not dialog.isVisible())
-            shelf=manager.shelf;shelf.pinned=True;shelf.add_paths('permanent',[str(original)])
+            shelf=manager.shelf;shelf.pinned=True;accepted=[]
+            shelf.import_paths('permanent',[str(original)],on_committed=lambda:accepted.append(True))
+            wait(lambda:accepted and bool(shelf.files['permanent']))
+            rename_ref=shelf.files['permanent'][-1]
+            assert Path(rename_ref).read_bytes()==original.read_bytes()
             rename_order=[]
             for expanded in (False,True):
                 shelf.hide_immediately();shelf.show_transient()
                 if expanded:shelf.show_contents(animate=False)
-                wait(shelf.isVisible);shelf._raise_for_reveal();shelf.rename_ref(str(original))
+                wait(shelf.isVisible);shelf._raise_for_reveal();shelf.rename_ref(rename_ref)
                 rename=shelf._rename_dialog
                 wait(lambda:rename.isVisible() and shelf.rename_edit.hasFocus())
                 if sys.platform=='win32':
