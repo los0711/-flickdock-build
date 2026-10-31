@@ -1,5 +1,5 @@
 """Production Qt layout/motion, disposable files and mocked file-manager launch."""
-import os,tempfile,unittest
+import os,sys,tempfile,unittest
 os.environ['QT_QPA_PLATFORM']='offscreen'
 from pathlib import Path
 from unittest.mock import patch,Mock
@@ -84,7 +84,11 @@ class TransferPolishTests(unittest.TestCase):
         self.assertEqual(p.drop_zone.width(),area.width()-40);self.assertFalse(p.send_heading_label.isVisible())
         path=Path(self.temp.name)/'file.txt';path.write_text('original')
         with patch('lan_panel.reduced_motion',return_value=False):
-            p.queue_paths([str(path)]);ws.flush();QTest.qWait(30)
+            p.queue_paths([str(path)]);ws.flush()
+            self.assertEqual(area.animation.state(),area.animation.State.Running)
+            # Inspect a real QVariantAnimation at an exact intermediate time.
+            # CI timer coalescing does not promise a paint within 30ms.
+            area.animation.setCurrentTime(50)
             self.assertGreater(area.value,0);self.assertLess(area.value,1)
             p.queue_paths([],replace=True);ws.until(lambda:area.value==0.)
             self.assertEqual(p.drop_zone.width(),area.width()-40)
@@ -134,7 +138,10 @@ class TransferPolishTests(unittest.TestCase):
         row=p.history_rows[0];self.assertFalse(row.icon.isVisible());self.assertEqual(row.detail.x(),row.contentsRect().left()+14)
         self.assertTrue(row.reveal_button.isEnabled())
         with patch.object(p.file_metadata,'request',return_value={'exists':True}),patch('subprocess.Popen') as launch:
-            row.reveal_button.click();launch.assert_called_once_with(['explorer.exe','/select,',str(path)])
+            row.reveal_button.click()
+            expected=(['explorer.exe','/select,',str(path)] if sys.platform=='win32' else
+                      ['/usr/bin/open','-R',str(path)] if sys.platform=='darwin' else ['xdg-open',str(path.parent)])
+            launch.assert_called_once_with(expected)
         self.assertEqual(path.read_text(),'original')
         with patch.object(p.file_metadata,'request',return_value=None),patch('subprocess.Popen') as launch:
             row.reveal_button.click();p.hide();ws.flush()
