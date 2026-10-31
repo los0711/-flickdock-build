@@ -194,6 +194,33 @@ class MaterialTests(unittest.TestCase):
         with patch.dict(os.environ,{'GITHUB_ACTIONS':'false'}):
             with self.assertRaisesRegex(RuntimeError,'disposable macOS'):verify_mac('must-not-write.json')
 
+    def test_native_policy_report_records_scalar_type_and_independent_bool(self):
+        from ci_material_probe import _policy_report
+        workspace=NS(accessibilityDisplayShouldReduceTransparency=lambda:True,
+                     accessibilityDisplayShouldIncreaseContrast=lambda:False)
+        kit=NS(NSWorkspace=NS(sharedWorkspace=lambda:workspace))
+        foundation=NS(NSProcessInfo=NS(processInfo=lambda:NS(operatingSystemVersionString=lambda:'Version 15 (CI fake)')))
+        def reader(owner,selector,objc):
+            self.assertIs(owner,workspace)
+            value=selector.endswith('ReduceTransparency')
+            return dict(return_encoding='B',native_return=int(value),native_bool=value)
+        report=_policy_report(kit,foundation,NS(__version__='test'),reader)
+        self.assertEqual(report['reduce_transparency']['raw_type'],'builtins.bool')
+        self.assertTrue(report['reduce_transparency']['bridge_matches_native'])
+        self.assertTrue(report['increase_contrast']['bridge_matches_native'])
+        self.assertEqual(report['increase_contrast']['native_return'],0)
+
+    def test_native_policy_report_never_trusts_truthy_tuple_or_mismatch(self):
+        from ci_material_probe import _policy_report
+        workspace=NS(accessibilityDisplayShouldReduceTransparency=lambda:(False,),
+                     accessibilityDisplayShouldIncreaseContrast=lambda:True)
+        kit=NS(NSWorkspace=NS(sharedWorkspace=lambda:workspace))
+        foundation=NS(NSProcessInfo=NS(processInfo=lambda:NS(operatingSystemVersionString=lambda:'fake')))
+        report=_policy_report(kit,foundation,NS(),lambda *args:dict(return_encoding='c',native_return=0,native_bool=False))
+        self.assertFalse(report['reduce_transparency']['bridge_matches_native'])
+        self.assertFalse(report['reduce_transparency']['scalar_bool'])
+        self.assertFalse(report['increase_contrast']['bridge_matches_native'])
+
     def test_shape_budget_and_foreign_thread_updates_are_rejected_before_native(self):
         import threading
         for rect in (QRectF(float('nan'),0,10,10),QRectF(0,0,float('inf'),10),QRectF(1e20,0,10,10)):

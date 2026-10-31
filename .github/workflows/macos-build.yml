@@ -6,7 +6,11 @@ permissions:
 jobs:
   cocoa-material:
     if: github.repository == 'los0711/-flickdock-build'
-    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
@@ -35,7 +39,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: material-macos-${{ github.sha }}
+          name: material-${{ matrix.runner }}-${{ github.sha }}
           path: material-proof/*
           retention-days: 3
           if-no-files-found: warn

@@ -12,11 +12,51 @@ from pathlib import Path
 import sys
 
 
+def _native_bool_readback(workspace, selector, objc):
+    """Independent scalar BOOL read, never modifies an accessibility setting."""
+    import ctypes
+    signature = workspace.methodSignatureForSelector_(selector)
+    encoding = bytes(signature.methodReturnType()).decode('ascii')
+    if encoding not in ('B','c','C'):
+        raise RuntimeError('Unexpected Objective-C BOOL return encoding')
+    library = ctypes.CDLL('/usr/lib/libobjc.A.dylib')
+    register = library.sel_registerName
+    register.argtypes = [ctypes.c_char_p]; register.restype = ctypes.c_void_p
+    send = library.objc_msgSend
+    send.argtypes = [ctypes.c_void_p,ctypes.c_void_p]
+    send.restype = ctypes.c_byte if encoding == 'c' else ctypes.c_ubyte
+    value = int(send(ctypes.c_void_p(int(objc.pyobjc_id(workspace))),
+                     register(selector.encode('ascii'))))
+    return dict(return_encoding=encoding,native_return=value,native_bool=bool(value))
+
+
+def _policy_report(appkit, foundation, objc, native_reader=None):
+    """Read-only raw/type/ABI evidence; no defaults writes or forced policy."""
+    reader = native_reader or _native_bool_readback
+    workspace = appkit.NSWorkspace.sharedWorkspace()
+    result = dict(os_version=str(foundation.NSProcessInfo.processInfo().operatingSystemVersionString()),
+                  pyobjc_version=str(getattr(objc,'__version__','unknown')))
+    for key,selector in (('reduce_transparency','accessibilityDisplayShouldReduceTransparency'),
+                         ('increase_contrast','accessibilityDisplayShouldIncreaseContrast')):
+        item = dict(selector=selector)
+        try:
+            raw = getattr(workspace,selector)()
+            item.update(raw_repr=repr(raw)[:120],raw_type=type(raw).__module__+'.'+type(raw).__name__,
+                        raw_bool=bool(raw),scalar_bool=isinstance(raw,(bool,int)))
+            item.update(reader(workspace,selector,objc))
+            item['bridge_matches_native'] = bool(item['scalar_bool'] and item['raw_bool']==item['native_bool'])
+        except Exception as error:
+            item.update(error_type=type(error).__name__,bridge_matches_native=False)
+        result[key] = item
+    return result
+
+
 def verify_mac(output):
     if sys.platform != 'darwin' or os.environ.get('GITHUB_ACTIONS') != 'true':
         raise RuntimeError('Native pixel proof is restricted to a disposable macOS CI runner')
     os.environ['QT_QPA_PLATFORM'] = 'cocoa'
     import AppKit
+    import Foundation
     import Quartz
     import objc
     import ctypes
@@ -30,7 +70,8 @@ def verify_mac(output):
     app.setQuitOnLastWindowClosed(False)
     output = Path(output); output.parent.mkdir(parents=True, exist_ok=True)
     result = dict(ok=False, proof='real Cocoa material + known local checkerboard + compositor pixels',
-                  qt_platform=app.platformName(), screenshots=[], native_user_desktop=False)
+                  qt_platform=app.platformName(), screenshots=[], native_user_desktop=False,
+                  fallback_verified=False,blur_verified=False)
     handle = background = foreground = None
     class Checkerboard(QWidget):
         signal_phase = 0
@@ -50,9 +91,14 @@ def verify_mac(output):
             p.end()
     class Foreground(QWidget):
         paint_count = 0
+        fallback_color = None
         def paintEvent(self, event):
             self.paint_count += 1
             p = QPainter(self)
+            if self.fallback_color is not None:
+                from PySide6.QtGui import QPainterPath
+                path=QPainterPath();path.addRoundedRect(QRectF(90,70,300,200),24,24)
+                p.fillPath(path,self.fallback_color)
             p.fillRect(115, 105, 230, 42, Qt.white)
             p.setPen(Qt.black); p.setFont(QFont('Helvetica', 18))
             p.drawText(QRect(120, 110, 220, 36), Qt.AlignLeft | Qt.AlignVCenter, 'FlickDock TEXT 123')
@@ -97,6 +143,9 @@ def verify_mac(output):
         return [sum(c[i] for c in values)/max(1,len(values)) for i in range(3)]
     def luminance(mean): return sum(mean)/3
     try:
+        result['policy'] = _policy_report(AppKit,Foundation,objc)
+        if not result['policy']['reduce_transparency']['bridge_matches_native']:
+            raise AssertionError('Reduce Transparency raw/native BOOL mismatch or unavailable; policy cannot be trusted')
         available = app.primaryScreen().availableGeometry()
         x, y = available.center().x()-260, available.center().y()-180
         flags = Qt.Window | Qt.FramelessWindowHint
@@ -117,6 +166,38 @@ def verify_mac(output):
         handle.set_regions([MaterialRegion.rounded('actual-card', card, 24)], revision=1)
         QTest.qWait(650); app.processEvents()
         result['material'] = handle.status()
+        if handle.status()['attached'] and handle.capabilities().reason == 'policy-disabled':
+            if not result['policy']['reduce_transparency']['native_bool']:
+                raise AssertionError('Backend disabled material despite native Reduce Transparency=false')
+            effect=handle.backend.view
+            if not bool(effect.isHidden()): raise AssertionError('Reduced-transparency native material remained visible')
+            fallback=handle.background_color('#FFFFFF')
+            if fallback.alpha()!=255: raise AssertionError('Reduced-transparency fallback is not opaque')
+            foreground.fallback_color=fallback;foreground.update();QTest.qWait(180);app.processEvents()
+            fallback_image=capture('policy-fallback')
+            samples=roi_values(fallback_image,QRect(275,210,90,35))
+            if min(min(c) for c in samples)<250 or energy(samples)>2:
+                raise AssertionError('Opaque fallback did not cover the actual card')
+            outside_delta=difference(roi_values(bare,QRect(25,285,55,25)),roi_values(fallback_image,QRect(25,285,55,25)))
+            corner_delta=difference(roi_values(bare,QRect(91,71,3,3)),roi_values(fallback_image,QRect(91,71,3,3)))
+            content_rois=(QRect(135,163,35,8),QRect(205,163,35,8),QRect(135,190,100,2),QRect(120,110,220,36))
+            foreground_deltas=[difference(roi_values(bare,roi),roi_values(fallback_image,roi)) for roi in content_rois]
+            if max(outside_delta,corner_delta,*foreground_deltas)>2:
+                raise AssertionError(('Policy fallback changed foreground or leaked into empty host',outside_delta,corner_delta,foreground_deltas))
+            after=dict(content=int(objc.pyobjc_id(window.contentView())),delegate=int(objc.pyobjc_id(window.delegate())),
+                       level=int(window.level()),geometry=foreground.geometry().getRect(),opacity=foreground.windowOpacity())
+            if before!=after: raise AssertionError('Policy fallback changed native foreground/host identity')
+            handle.close();foreground.fallback_color=None;foreground.update();QTest.qWait(180);app.processEvents()
+            detached=capture('policy-detached')
+            restored=difference(roi_values(bare,QRect(275,210,90,35)),roi_values(detached,QRect(275,210,90,35)))
+            if effect.superview() is not None or effect.maskImage() is not None or handle.backend._observer is not None:
+                raise AssertionError('Reduced-transparency fallback did not release native view/mask/observer')
+            if restored>2: raise AssertionError(('Policy fallback native pixels remained after detach',restored))
+            result.update(fallback_verified=True,blur_verified=False,outcome='policy-disabled',owner_unchanged=True,
+                          fallback_metrics=dict(background_alpha=fallback.alpha(),inside_variance=energy(samples),
+                            outside_delta=outside_delta,corner_delta=corner_delta,foreground_deltas=foreground_deltas,
+                            detached_delta=restored,view_hidden=True,view_detached=True,observer_removed=True))
+            raise AssertionError('OS Reduce Transparency=true: opaque fallback verified; native blur remains unverified')
         if not handle.status()['attached'] or not handle.capabilities().supported:
             raise AssertionError(('Native material did not attach', handle.status()))
         effect = handle.backend.view
@@ -199,7 +280,7 @@ def verify_mac(output):
         if effect.superview() is not None: raise AssertionError('Native material view was not detached')
         restored = difference(roi_values(bare,inside),roi_values(detached,inside))
         if restored > 2: raise AssertionError(('Native material remained after close',restored))
-        result.update(ok=True, metrics=dict(checkerboard_variance_before=e_before,checkerboard_variance_blurred=e_after,
+        result.update(ok=True,blur_verified=True, metrics=dict(checkerboard_variance_before=e_before,checkerboard_variance_blurred=e_after,
                       variance_ratio=e_after/e_before,outside_delta=outside_delta,corner_delta=corner_delta,
                       original_foreground_delta=[red_delta,blue_delta,black_delta],crisp_text_pixels=crisp_after,
                       text_delta=text_delta,retired_pose_delta=retired_delta,detached_delta=restored),owner_unchanged=True)
