@@ -242,6 +242,7 @@ class FeedbackTests(unittest.TestCase):
         fixture=_workspace.WorkspaceTests();fixture.setUp();service=LanTransferService(discovery=False)
         dialog=LanDialog(service,fixture.settings);dialog.move(300,160);dialog.show();flush()
         manager=flickdock.ShelfManager.__new__(flickdock.ShelfManager);manager.shelf=fixture.shelf
+        manager.app=APP;manager._quitting=False
         manager.motion=fixture.manager.motion
         manager.reset_drag_gesture=lambda:None
         dialog.overview_requested.connect(lambda:manager.show_overview_from_transfer(dialog))

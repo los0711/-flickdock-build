@@ -76,7 +76,7 @@ class WorkspaceTests(unittest.TestCase):
         self.settings=app_settings.SettingsStore(self.base/'profile')
         self.settings.update(theme='dark',capture_mode='reference',capture_dir=str(self.base/'saved'),view_mode='list')
         ui_theme.set_theme('dark');ui_theme.apply_application(APP,subject.FONT_FAMILY)
-        self.manager=SimpleNamespace(motion=False,settings=self.settings,save=lambda:None,update_handles=lambda:None,
+        self.manager=SimpleNamespace(app=APP,motion=False,settings=self.settings,save=lambda:None,update_handles=lambda:None,
             activate_shelf=lambda _:None,_quitting=False,outgoing_drag=False,
             show_lan_dialog=lambda:self.events.append('lan'),show_transfer_dialog=lambda:self.events.append('lan'),
             queue_transfer_paths=lambda mode,paths:self.events.append((mode,paths)),show_settings=lambda:self.events.append('settings'))

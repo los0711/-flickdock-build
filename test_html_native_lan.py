@@ -51,7 +51,7 @@ class NativeLanTests(unittest.TestCase):
         self.assertAlmostEqual(panel.send_column.width()/panel.activity_column.width(),5/7,delta=.015)
         self.assertFalse(self.dialog.isModal())
         seen=[];self.dialog.overview_requested.connect(lambda:seen.append('overview'))
-        self.dialog.back_button.click();self.assertEqual(seen,['overview'])
+        self.dialog.back_button.click();APP.processEvents();self.assertEqual(seen,['overview'])
 
     def test_real_six_digit_offer_and_service_actions_survive_redesign(self):
         panel=self.dialog.panel
