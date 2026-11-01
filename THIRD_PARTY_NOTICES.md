@@ -22,3 +22,5 @@ Media decoding uses Windows-installed codecs through Windows Media Foundation. T
 Wide-area file transfer uses the unmodified Node.js 24.12.0 runtime, node-datachannel 0.33.6 and libdatachannel 0.24.6. Node's complete notices are bundled at `p2p/runtime/Node-LICENSE.txt`. The native addon and libdatachannel are provided under MPL 2.0; corresponding source is available at https://github.com/murat-dogan/node-datachannel/tree/v0.33.6 and https://github.com/paullouisageneau/libdatachannel/tree/v0.24.6. Native transport dependencies and their license texts are retained in `licenses/WebRTC-LICENSES.txt`. These libraries are separate replaceable runtime files; FlickDock does not modify their source.
 
 Publisher signature verification uses cryptography 50.0.2 (Apache-2.0 / BSD-3-Clause). Complete licenses are included in licenses/Release-Crypto-LICENSES.txt.
+
+Windows file-manager location uses unmodified pywin32 311 COM bindings for the Windows Shell. Original wheel license files and the exact upstream wheel hash are preserved in `licenses/Windows-Shell-LICENSES.txt`. Source: https://github.com/mhammond/pywin32 . This Windows-only binding is not installed on macOS.

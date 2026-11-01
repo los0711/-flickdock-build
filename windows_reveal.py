@@ -9,9 +9,75 @@ import ntpath
 import os
 import sys
 import threading
+import time
 import weakref
 from PySide6.QtCore import QObject,QEvent,Signal,Qt,QCoreApplication
 from shiboken6 import isValid
+
+_automation=None
+
+
+def _prepare_automation():
+    # First import on the GUI entry thread: pythoncom initializes its importing
+    # thread automatically. Each daemon then owns exactly its explicit COM ref.
+    # No Shell object/query is created here, and dynamic Dispatch never makepys.
+    global _automation
+    if _automation is None:
+        import pythoncom
+        from win32com.client.dynamic import Dispatch
+        _automation=(pythoncom,Dispatch)
+    return _automation
+
+
+def _resolved(path):
+    path=os.path.realpath(os.fspath(path))
+    if path.startswith('\\\\?\\UNC\\'):path='\\\\'+path[8:]
+    elif path.startswith('\\\\?\\'):path=path[4:]
+    return ntpath.normcase(ntpath.normpath(path))
+
+
+def _select_loaded_view(path,cancel,deadline,client):
+    if cancel.is_set():return False
+    if time.monotonic()>=deadline:raise TimeoutError('文件定位已超过 6 秒。')
+    pythoncom,dispatch=client;folder=_resolved(ntpath.dirname(path));target=_resolved(path)
+    shell=document=item=selected=window=matches=None;failure=None;last_error='';called=False
+    try:
+        shell=dispatch('Shell.Application')
+        while time.monotonic()<deadline and not cancel.is_set():
+            if not called:
+                matches=[]
+                try:
+                    for index,window in enumerate(shell.Windows()):
+                        if index>=64:raise OSError('Windows Shell 窗口数量超过定位上限。')
+                        document=window.Document
+                        if _resolved(document.Folder.Self.Path)==folder:matches.append(document)
+                    if len(matches)>1:raise OSError('存在多个相同目录窗口，无法确认文件定位目标。')
+                    document=matches[0] if matches else None
+                    item=document.Folder.ParseName(ntpath.basename(path)) if document is not None else None
+                except (AttributeError,pythoncom.com_error) as problem:
+                    code=getattr(problem,'hresult',None)
+                    last_error=('HRESULT 0x'+format(int(code)&0xffffffff,'08X')) if code is not None else str(problem)
+                    document=item=None
+                if item is not None:
+                    if _resolved(item.Path)!=target:raise OSError('Windows Shell 返回的文件与请求位置不一致。')
+                    if cancel.is_set():return False
+                    # Producer action, once: select, deselect others, show, focus.
+                    called=True;document.SelectItem(item,0x1D)
+            if called:
+                selected=document.SelectedItems();count=int(selected.Count)
+                if count==1 and _resolved(selected.Item(0).Path)==target:return True
+            pythoncom.PumpWaitingMessages()
+            cancel.wait(min(.025,max(0,deadline-time.monotonic())))
+        if cancel.is_set():return False
+        raise TimeoutError('未能在 6 秒内确认文件选中。'+(' '+last_error if last_error else ''))
+    except pythoncom.com_error as problem:
+        code=int(problem.hresult)&0xffffffff
+        failure=OSError('Windows Shell 文件定位失败 (HRESULT 0x'+format(code,'08X')+')')
+    finally:
+        # COM proxies stay on this STA and are released before CoUninitialize,
+        # including failure paths. No automation proxy crosses the Qt signal.
+        shell=document=item=selected=window=matches=None
+    if failure is not None:raise failure
 
 
 def _load_api():
@@ -40,6 +106,7 @@ def select_file(path,cancel):
     if not isinstance(path,str) or '\0' in path or not ntpath.isabs(path) or not ntpath.splitdrive(path)[0]:
         raise OSError('文件位置必须是有效的 Windows 绝对路径。')
     if cancel.is_set():return False
+    client=_prepare_automation();deadline=time.monotonic()+6
     shell,ole=_load_api();pidl=ctypes.c_void_p()
     initialized=False
     code=int(ole.CoInitializeEx(None,2))&0xffffffff
@@ -52,7 +119,7 @@ def select_file(path,cancel):
         if cancel.is_set():return False
         # cidl=0: pidl identifies the absolute item, not its parent directory.
         _checked(shell.SHOpenFolderAndSelectItems(pidl,0,None,0),'SHOpenFolderAndSelectItems')
-        return True
+        return _select_loaded_view(path,cancel,deadline,client)
     finally:
         if pidl.value:ole.CoTaskMemFree(pidl)
         if initialized:ole.CoUninitialize()
@@ -119,6 +186,10 @@ class _RevealLane:
 def request_reveal(owner,path,done=None):
     """At most one active job and one latest pending request per Qt owner."""
     if not isValid(owner) or hasattr(owner,'isVisible') and not owner.isVisible():return
+    try:_prepare_automation()
+    except (ImportError,OSError) as problem:
+        if done is not None:done(OSError('文件定位组件无法加载：'+str(problem)))
+        return
     lane=getattr(owner,'_windows_reveal_lane',None)
     if lane is None:lane=_RevealLane(owner);owner._windows_reveal_lane=lane
     lane.request(os.fspath(path),done)

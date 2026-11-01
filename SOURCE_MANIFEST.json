@@ -16,13 +16,13 @@
     },
     {
       "path": ".github/workflows/macos-build.yml",
-      "size": 6089,
-      "sha256": "23486d07980bed691f307d3a0687b96a5011acec606f01b8b5a99c8f27274e32"
+      "size": 6122,
+      "sha256": "dbf460519f00f0ef2017776ced12926ec4251453a0690ac2100a0ae26e2cb471"
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 13960,
-      "sha256": "e1571609c5e36c6de1af57e7e00e9c5ffa8b6f7eb6b51d5625c1f3921fe60356"
+      "size": 14286,
+      "sha256": "c3b50cbe1a01a811edb2a6e4068b9912a5d90638d3233521aa195157b454d0cf"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -76,8 +76,8 @@
     },
     {
       "path": "FlickDock.spec",
-      "size": 3605,
-      "sha256": "a9c5a17dee4a26e2714225fb2ea6fa8a4795154485670231825e373260f3b4d0"
+      "size": 3650,
+      "sha256": "5ca95de8913f44655d199eae637f06e7d1d4f2db17bef781ec4286d55817869b"
     },
     {
       "path": "HIG_DESIGN.md",
@@ -131,8 +131,8 @@
     },
     {
       "path": "THIRD_PARTY_NOTICES.md",
-      "size": 3739,
-      "sha256": "fc898d6a3fb43cfcd3fce1862207ef9d493f98171a8af27daea8dec81cf4a5d8"
+      "size": 4052,
+      "sha256": "105634be599bfb76e7caaa2783bceb9ab469ed475770716419e5c3e1eb706a50"
     },
     {
       "path": "UI_REFERENCE_IMPLEMENTATION.md",
@@ -956,8 +956,8 @@
     },
     {
       "path": "flickdock.py",
-      "size": 245770,
-      "sha256": "13258bb3d2389edae4ebd636f9b4347a9687d96ce37b11680e99cd1c6d69d0b3"
+      "size": 245977,
+      "sha256": "d104c39bae45003fd074ef88180058948e8b8475394f43ac91d15d7a165c4e94"
     },
     {
       "path": "flickdock_icons.py",
@@ -1016,8 +1016,8 @@
     },
     {
       "path": "item_transitions.py",
-      "size": 8159,
-      "sha256": "57c1a77f0ea74c1865e8ef373226a834eac993371c57a06339513469aa5c8745"
+      "size": 9411,
+      "sha256": "1d6336f2c42aa3d9b0e646c095b51e6f1072ed2c2fdd33d82a84a0284beb2d40"
     },
     {
       "path": "lan_panel.py",
@@ -1078,6 +1078,11 @@
       "path": "licenses/WebRTC-LICENSES.txt",
       "size": 69337,
       "sha256": "055d68b56703d93b032f147cf20fd16baac2be3e223ab6773d90c666508f66db"
+    },
+    {
+      "path": "licenses/Windows-Shell-LICENSES.txt",
+      "size": 32533,
+      "sha256": "dace96a63b6a00832f952b3936e98eefed7ed38db5eb2c44ae8abe441d161905"
     },
     {
       "path": "mac_entry.py",
@@ -1211,8 +1216,8 @@
     },
     {
       "path": "qa/packaged-live/ci_packaged_windows_live.py",
-      "size": 79652,
-      "sha256": "abcdb82889ef0a0b1118dc992d2ee7794bc79ce165225b3797ccdb9dc7cafd1b"
+      "size": 79907,
+      "sha256": "a188c845e369f8259c9c8a1d017bc05c5ebbffdc7fa36ea3f147c58d004d0798"
     },
     {
       "path": "qa/packaged-live/ci_windows_reveal_probe.py",
@@ -1296,8 +1301,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 39190,
-      "sha256": "a547e13e2567d0509b189dbfdb86ab797e931404ab3009dbbb82c29b15c6e98a"
+      "size": 39315,
+      "sha256": "0f7c9b4ad7f403ebd891a8242fcea853b44b3760a977000c3ad540d89a3448c0"
     },
     {
       "path": "release_signing.py",
@@ -1306,8 +1311,8 @@
     },
     {
       "path": "requirements.txt",
-      "size": 91,
-      "sha256": "a4b8706bab24b8c9939869294bd157f399fad5065ed741f939628f1415789b66"
+      "size": 129,
+      "sha256": "74662716b0a54fb4e7f5f1be7575dc0619056c4a39d0ebcad9e55d5f94bcaf2e"
     },
     {
       "path": "runtime_cleanup.py",
@@ -1708,6 +1713,11 @@
       "path": "test_interactions_v163.py",
       "size": 8990,
       "sha256": "f303ec6595aaf5cb60b3d49091a9e4c1a472c9cc7f5dac2307b589197e4daa21"
+    },
+    {
+      "path": "test_item_reflow_occlusion_v1824.py",
+      "size": 11847,
+      "sha256": "8aa03574a2417d98714a974ffee1dde67d787b86b5b78ee3f1300f3512d34239"
     },
     {
       "path": "test_lan_dialog_v183.py",
@@ -2181,8 +2191,8 @@
     },
     {
       "path": "test_windows_reveal_v1824.py",
-      "size": 13060,
-      "sha256": "f246416f89e0546a6cf10e28ed8b68ae5b6303bee7665841037ee50d0908673f"
+      "size": 18934,
+      "sha256": "f460e50fd2bb62c7a3fc08f62c49f8c438cb984e1b2439e0b088095ecf680f15"
     },
     {
       "path": "test_zip_dialog_v162.py",
@@ -2426,8 +2436,8 @@
     },
     {
       "path": "windows_reveal.py",
-      "size": 6132,
-      "sha256": "11c89a7481bd7951100126fcba3cdc56ffcd1c7a324298697f4aca648dcb2aaa"
+      "size": 9846,
+      "sha256": "b13744077cc04b2ce3db9a3f8da77cea35fae3a1f24212e453c4c704f63f5b45"
     }
   ]
 }

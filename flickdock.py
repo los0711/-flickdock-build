@@ -1141,6 +1141,7 @@ class ContentsPopup(QFrame):
                 slot=self._build_slots.pop(index,None)
                 if slot is not None:grid.removeItem(slot)
                 widget=self._item_widget(ref,IconItem,changed)
+                widget._reflow_index=index
                 widget.setFixedWidth(cell_width)
                 grid.addWidget(widget,index//columns,index%columns);widget.show()
         else:
@@ -1148,6 +1149,7 @@ class ContentsPopup(QFrame):
                 slot=self._build_slots.pop(index,None)
                 if slot is not None:self.rows_layout.removeItem(slot)
                 widget=self._item_widget(ref,FileRow,changed)
+                widget._reflow_index=index
                 self.rows_layout.insertWidget(min(index,self.rows_layout.count()-1),widget);widget.show()
         if not same_layout:
             self.rows_layout.addStretch()
@@ -1251,6 +1253,8 @@ class ContentsPopup(QFrame):
                 self._layout_animation=None
                 positions,animate=pending
                 self.item_transitions.reflow(self._item_widgets,positions,enabled=animate)
+        if new_widgets and hasattr(self,'item_transitions'):
+            self.item_transitions.appended(new_widgets)
         token=getattr(self,'_category_entrance_token',None)
         if new_widgets and token is not None:
             self.rows_layout.activate()

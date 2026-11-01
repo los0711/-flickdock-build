@@ -93,10 +93,24 @@ class ItemTransitions(QObject):
         if not isValid(widget):return
         widget.setProperty(_BACKING_PROPERTY,previous);widget.update()
 
+    def _restack(self,widgets):
+        ordered=sorted(widgets,key=lambda widget:(getattr(widget,'_reflow_index',0),widget.y(),widget.x()))
+        for widget in reversed(ordered):widget.raise_()
+
+    def appended(self,widgets):
+        """Late construction joins only a still-running visual transaction."""
+        if self.layout_pending or not (self.moves or self.ghosts):return
+        from ui_transitions import motion_allowed
+        if not self.body.isVisible() or not motion_allowed():return
+        for widget in widgets:
+            if isValid(widget) and widget.isVisible():self._back_card(widget)
+        self._restack([record[0] for record in self._backings.values() if isValid(record[0])])
+
     def _scrolled(self,*_):
         if not self.layout_pending:self.finish()
 
     def capture(self,widgets):
+        self.timer.stop()
         self.generation+=1
         self.layout_pending=True
         positions={ref:QPoint(widget.pos()) for ref,widget in widgets.items() if isValid(widget)}
@@ -138,9 +152,8 @@ class ItemTransitions(QObject):
                 if key not in present:self._restore_backing(key)
             # New first-slot cards and old movers may share their current
             # paint rectangle. Use the final reading order consistently.
-            ordered=sorted(live,key=lambda widget:(widget.y(),widget.x()))
-            for widget in reversed(ordered):
-                self._back_card(widget);widget.raise_()
+            for widget in live:self._back_card(widget)
+            self._restack(live)
             for ref,widget in widgets.items():
                 if ref not in positions or not isValid(widget):continue
                 target=QPoint(widget.pos());origin=positions[ref]
@@ -154,9 +167,19 @@ class ItemTransitions(QObject):
         QTimer.singleShot(0,begin)
 
     def _tick(self):
+        # A timeout may already be queued when capture stops the old clock.
+        # Only the new begin may finalize its layout epoch or resume ghosts.
+        if self.layout_pending:self.timer.stop();return
         from ui_transitions import motion_allowed
         if not motion_allowed():self.finish();return
         now=time.perf_counter()
+        moving={id(row[0]) for row in self.moves.values()}
+        viewport=self.scroll.viewport()
+        for key,record in tuple(self._backings.items()):
+            widget=record[0]
+            if not isValid(widget) or (key not in moving and not viewport.rect().intersects(
+                    widget.rect().translated(widget.mapTo(viewport,QPoint())))):
+                self._restore_backing(key)
         for ref,(widget,origin,target,started) in tuple(self.moves.items()):
             if not isValid(widget):self.moves.pop(ref,None);continue
             progress=min(1,max(0,(now-started)/self.duration))

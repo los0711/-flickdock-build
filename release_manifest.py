@@ -55,6 +55,7 @@ RUNTIME_SOURCES=(
 MAINTAINED_TESTS=(
     'test_windows_reveal_v1824.py',
     'test_transfer_balance_v1824.py',
+    'test_item_reflow_occlusion_v1824.py',
     'test_native_owner_lifetime_v1824.py',
     'test_disabled_field_states_v1824.py','test_standard_control_states_v1824.py',
     'test_clipboard_loop_v1824.py','test_screen_animation_timer_v1824.py',
@@ -135,6 +136,7 @@ SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'licenses/HarmonyOS-Sans-LICENSE.txt','licenses/Python-LICENSE.txt',
     'licenses/LGPL-3.0.txt','licenses/GPL-3.0.txt','licenses/PyInstaller-COPYING.txt',
     'licenses/OpenSSL-LICENSE.txt','licenses/Cloud-Client-LICENSES.txt','licenses/Lucide-LICENSE.txt','licenses/WebRTC-LICENSES.txt','licenses/Release-Crypto-LICENSES.txt',
+    'licenses/Windows-Shell-LICENSES.txt',
     'FlickDock-mac.spec','build_macos.py','MAC_BUILD.md','CLOUD_SYNC.md','FEATURE_V180.md','FEATURE_V181.md','FEATURE_V183.md',
     'cloud_remote_probe.py','cloud_feature_probe.py','cloud/package.json','cloud/package-lock.json','cloud/tsconfig.json',
     'cloud/wrangler.jsonc','cloud/README.md','cloud/.gitignore',
@@ -175,7 +177,7 @@ ICON_FILES=tuple('assets/icons/'+name+'.svg' for name in (
     'format-rar','format-svg','format-svgz','format-txt','format-wav','format-webm',
     'format-xls','format-xlsx','format-zip',
 ))
-REQUIREMENTS=b'PySide6==6.12.0\nPyInstaller==6.22.3\npefile==2024.8.26\nkeyring==25.7.0\ncryptography==50.0.2\n'
+REQUIREMENTS=b'PySide6==6.12.0\nPyInstaller==6.22.3\npefile==2024.8.26\nkeyring==25.7.0\ncryptography==50.0.2\npywin32==311; sys_platform == "win32"\n'
 SECRET_PATTERNS=(
     re.compile(rb'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----'),
     re.compile(rb'\b(?:ghp|github_pat|gitee_pat)_[A-Za-z0-9_]{20,}\b'),

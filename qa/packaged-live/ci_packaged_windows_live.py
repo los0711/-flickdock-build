@@ -81,7 +81,8 @@ def phase(label,action,*,screens=False):
             _PROGRESS.record('after')
 
 def require_hosted():
-    if sys.platform!='win32' or os.environ.get('GITHUB_ACTIONS')!='true' or os.environ.get('RUNNER_OS')!='Windows':
+    if (sys.platform!='win32' or os.environ.get('GITHUB_ACTIONS')!='true'
+            or os.environ.get('RUNNER_OS')!='Windows' or os.environ.get('RUNNER_ENVIRONMENT')!='github-hosted'):
         raise RuntimeError('This script refuses to operate outside an ephemeral GitHub Windows runner')
 
 def digest(path):
@@ -616,6 +617,9 @@ class _UIABackend:
                     mouse.move(coords=tuple(round(a+(b-a)*index/12) for a,b in zip(destination,point)));time.sleep(.015)
                 destination=point;choice=dict(class_name='TransferDropSurface',mode=choice_mode,
                     rectangle=[bounds.left,bounds.top,bounds.right,bounds.bottom],physical_drop=list(point))
+            # Real held native drag, so the recorder can observe moving ants
+            # before release instead of inferring motion from a blue endpoint.
+            time.sleep(.35)
         finally:
             mouse.release(button='left',coords=destination);self._producer_topmost(False)
         return dict(source=list(start),destination=list(destination),os_drag=True,choice=choice)

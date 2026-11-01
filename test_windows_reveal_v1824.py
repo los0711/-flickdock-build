@@ -39,7 +39,7 @@ class API:
 
 class ShellTests(unittest.TestCase):
     def select(self,api,path=r'C:\original 中文, space\file.txt',cancel=None):
-        with patch.object(reveal,'_load_api',return_value=(api.shell,api.ole)):
+        with patch.object(reveal,'_load_api',return_value=(api.shell,api.ole)),patch.object(reveal,'_prepare_automation',return_value=('typed-client',)),patch.object(reveal,'_select_loaded_view',return_value=True):
             return reveal.select_file(path,cancel or threading.Event())
     def test_unicode_long_path_absolute_item_and_pointer_width_are_preserved(self):
         api=API();path='\\\\?\\C:\\Unicode 中文, space\\'+'x'*280+'.txt'
@@ -77,10 +77,19 @@ class ShellTests(unittest.TestCase):
         self.assertEqual(ctypes.sizeof(api.ole.CoInitializeEx.restype),4)
         self.assertEqual(ctypes.sizeof(api.shell.SHOpenFolderAndSelectItems.argtypes[1]),4)
         self.assertIs(api.shell.SHParseDisplayName.argtypes[2]._type_,ctypes.c_void_p)
+    def test_automation_prepare_only_caches_dynamic_client_without_creating_shell(self):
+        calls=[];pythoncom=SimpleNamespace();dispatch=lambda *args:calls.append(args)
+        modules={'pythoncom':pythoncom,'win32com':SimpleNamespace(),'win32com.client':SimpleNamespace(),
+                 'win32com.client.dynamic':SimpleNamespace(Dispatch=dispatch)}
+        with patch.dict('sys.modules',modules),patch.object(reveal,'_automation',None):
+            first=reveal._prepare_automation();self.assertIs(reveal._prepare_automation(),first)
+        self.assertEqual(first,(pythoncom,dispatch));self.assertEqual(calls,[])
 
 
 class RequestTests(unittest.TestCase):
-    def setUp(self):self.owner=QWidget();self.owner.show();APP.processEvents()
+    def setUp(self):
+        self.prepare=patch.object(reveal,'_prepare_automation',return_value=('typed-client',));self.prepare.start();self.addCleanup(self.prepare.stop)
+        self.owner=QWidget();self.owner.show();APP.processEvents()
     def tearDown(self):self.owner.hide();delete(self.owner);APP.processEvents()
     def test_hundred_different_clicks_keep_one_active_and_only_latest_pending(self):
         entered=threading.Event();release=threading.Event();starts=[];seen=[];gui=threading.get_ident()
@@ -95,6 +104,12 @@ class RequestTests(unittest.TestCase):
             lane=self.owner._windows_reveal_lane;self.assertEqual(len(starts),1);self.assertEqual(lane.pending['path'],'C:\\next-99.txt')
             release.set();until(lambda:lane.active is None and lane.pending is None)
         self.assertEqual(starts,['C:\\first.txt','C:\\next-99.txt']);self.assertEqual(seen,[(99,None,gui)])
+    def test_missing_automation_dependency_reports_failure_without_starting_worker(self):
+        seen=[]
+        with patch.object(reveal,'_prepare_automation',side_effect=ImportError('component missing')):
+            reveal.request_reveal(self.owner,'C:\\original.txt',seen.append)
+        self.assertEqual(len(seen),1);self.assertIsInstance(seen[0],OSError);self.assertIn('无法加载',str(seen[0]))
+        self.assertFalse(hasattr(self.owner,'_windows_reveal_lane'))
     def test_identical_clicks_share_active_request_and_last_completion(self):
         entered=threading.Event();release=threading.Event();seen=[];calls=[]
         def selected(path,cancel):calls.append(path);entered.set();release.wait(3);return True
@@ -153,6 +168,7 @@ class RequestTests(unittest.TestCase):
 from PySide6.QtWidgets import QApplication,QWidget
 import windows_reveal as w
 app=QApplication([]);owner=QWidget();owner.show()
+w._prepare_automation=lambda:None
 started=threading.Event()
 def stuck(path,cancel):started.set();threading.Event().wait(60)
 w.select_file=stuck
@@ -162,6 +178,71 @@ owner.close();app.quit();print('EXIT_WITH_HUNG_DAEMON',flush=True)
         result=subprocess.run([sys.executable,'-X','utf8','-c',script],cwd=Path(__file__).parent,
             capture_output=True,text=True,timeout=8,env=dict(os.environ,QT_QPA_PLATFORM='offscreen'))
         self.assertEqual(result.returncode,0,result.stderr);self.assertIn('EXIT_WITH_HUNG_DAEMON',result.stdout)
+
+
+class ComError(Exception):
+    def __init__(self,hresult):super().__init__('COM error');self.hresult=hresult
+
+
+class ViewTests(unittest.TestCase):
+    def setUp(self):
+        self.path=r'C:\folder 中文\target file.bin';self.clock=0.;self.calls=[];self.selected=[];self.cancelled=False;self.reads=0
+        self.cancel=SimpleNamespace(is_set=lambda:self.cancelled,wait=self.wait)
+        self.item=SimpleNamespace(Path=self.path)
+        def select(item,flags):self.calls.append((item,flags));self.selected=[item.Path]
+        def items():
+            self.reads+=1;return SimpleNamespace(Count=len(self.selected),Item=lambda i:SimpleNamespace(Path=self.selected[i]))
+        self.document=SimpleNamespace(Folder=SimpleNamespace(Self=SimpleNamespace(Path=r'C:\folder 中文'),ParseName=lambda _:self.item),
+            SelectItem=select,SelectedItems=items)
+        self.shell=SimpleNamespace(Windows=lambda:[SimpleNamespace(Document=self.document)])
+        self.pumps=[];self.client=(SimpleNamespace(com_error=ComError,PumpWaitingMessages=lambda:self.pumps.append(True)),lambda _:self.shell)
+        self.timer=patch.object(reveal.time,'monotonic',side_effect=lambda:self.clock);self.timer.start();self.addCleanup(self.timer.stop)
+    def wait(self,_):self.clock+=1
+    def run_view(self):return reveal._select_loaded_view(self.path,self.cancel,6.,self.client)
+    def test_typed_folderitem_selected_once_and_exact_state_confirmed(self):
+        self.assertTrue(self.run_view());self.assertEqual(self.calls,[(self.item,29)]);self.assertEqual(self.reads,1)
+    def test_readiness_retries_but_selection_is_never_repeated_while_confirmation_waits(self):
+        attempts=[]
+        def windows():
+            attempts.append(True)
+            if len(attempts)==1:raise ComError(-2147483638)
+            return [SimpleNamespace(Document=self.document)]
+        self.shell.Windows=windows
+        def items():
+            self.reads+=1;return SimpleNamespace(Count=1 if self.reads>=3 else 0,Item=lambda i:SimpleNamespace(Path=self.path))
+        self.document.SelectedItems=items
+        self.assertTrue(self.run_view());self.assertEqual(len(self.calls),1);self.assertEqual(len(attempts),2);self.assertEqual(self.reads,3)
+    def test_shell_acceptance_without_real_selection_is_timeout_not_success(self):
+        self.document.SelectItem=lambda item,flags:self.calls.append((item,flags))
+        with self.assertRaisesRegex(TimeoutError,'确认文件选中'):self.run_view()
+        self.assertEqual(len(self.calls),1);self.assertLessEqual(self.clock,6.)
+    def test_wrong_folder_wrong_parsed_path_and_duplicate_view_are_not_selected(self):
+        self.document.Folder.ParseName=lambda _:SimpleNamespace(Path=r'C:\folder 中文\wrong.bin')
+        with self.assertRaisesRegex(OSError,'不一致'):self.run_view()
+        self.assertEqual(self.calls,[])
+        self.document.Folder.ParseName=lambda _:self.item
+        self.shell.Windows=lambda:[SimpleNamespace(Document=self.document)]*2
+        with self.assertRaisesRegex(OSError,'多个'):self.run_view()
+        self.assertEqual(self.calls,[])
+        self.shell.Windows=lambda:[SimpleNamespace(Document=SimpleNamespace(Folder=SimpleNamespace(Self=SimpleNamespace(Path=r'C:\other'))))]
+        with self.assertRaises(TimeoutError):self.run_view()
+        self.assertEqual(self.calls,[])
+    def test_selectitem_hresult_is_visible_and_never_retried(self):
+        def fail(item,flags):self.calls.append((item,flags));raise ComError(-2147024891)
+        self.document.SelectItem=fail
+        with self.assertRaisesRegex(OSError,'0x80070005'):self.run_view()
+        self.assertEqual(len(self.calls),1)
+    def test_cancel_before_dispatch_and_during_parse_prevents_selection(self):
+        self.cancelled=True
+        with patch.dict('sys.modules',{}):self.assertFalse(self.run_view())
+        self.cancelled=False
+        def parse(_):self.cancelled=True;return self.item
+        self.document.Folder.ParseName=parse;self.assertFalse(self.run_view());self.assertEqual(self.calls,[])
+    def test_extended_path_spelling_compares_to_same_resolved_item(self):
+        original=self.path;self.path='\\\\?\\'+original
+        # The real Windows realpath resolves the prefix; avoid local filesystem
+        # lookup differences while exercising the helper's explicit prefix rule.
+        with patch.object(reveal.os.path,'realpath',side_effect=lambda value:value):self.assertTrue(self.run_view())
 
 
 class EntryTests(unittest.TestCase):

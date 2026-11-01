@@ -108,10 +108,14 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: python -m unittest test_update_inline_v171 -q
+      - name: Verify current platform file-manager and functional layout contracts before full builds
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest test_ui_polish_v1823 test_functional_layout_v1823 test_update_exit_v1823 test_update_macos_controller -q
       - name: Verify frame lifecycle, popup and real control-state paint regressions
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m unittest test_windows_reveal_v1824 test_transfer_balance_v1824 test_native_owner_lifetime_v1824 test_frame_animation_v1824 test_screen_animation_timer_v1824 test_user_popup_fixes_v1823 test_standard_control_states_v1824 test_disabled_field_states_v1824 -q
+        run: python -m unittest test_windows_reveal_v1824 test_transfer_balance_v1824 test_item_reflow_occlusion_v1824 test_native_owner_lifetime_v1824 test_frame_animation_v1824 test_screen_animation_timer_v1824 test_user_popup_fixes_v1823 test_standard_control_states_v1824 test_disabled_field_states_v1824 -q
       - name: Verify all motion paths with explicit ordinary and reduced-motion prerequisites
         shell: pwsh
         env:

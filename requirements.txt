@@ -3,3 +3,4 @@ PyInstaller==6.22.3
 pefile==2024.8.26
 keyring==25.7.0
 cryptography==50.0.2
+pywin32==311; sys_platform == "win32"
