@@ -44,8 +44,11 @@ class MacPermissionBackend:
         except (ImportError,OSError,AttributeError,RuntimeError):return 'unknown'
 
     def inspect(self,*,pointer_ok=False,peers=False):
+        # A functioning event tap is not the Input Monitoring preference.
+        # Always query the real OS grant so its displayed state can change
+        # after the user toggles it. Optional setup is handled by the UI.
         return dict(clipboard=self.clipboard(),accessibility=self.accessibility(),
-                    input='not_required' if pointer_ok else self.input(),network='observed' if peers else 'unknown',files='on_demand')
+                    input=self.input(),network='observed' if peers else 'unknown',files='on_demand')
 
     def open_settings(self,kind):
         from PySide6.QtCore import QUrl

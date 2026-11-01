@@ -47,7 +47,12 @@ jobs:
           python build_macos.py --target-arch '${{ matrix.arch }}'
       - name: Verify final functional layout, cancellation and helper handoff boundaries
         run: |
-          build/macos-venv/bin/python -m unittest test_ui_polish_v1823 test_functional_layout_v1823 test_update_exit_v1823 test_update_macos_controller -q
+          build/macos-venv/bin/python -m unittest test_ui_polish_v1823 test_functional_layout_v1823 test_update_exit_v1823 test_update_macos_controller test_update_inline_v171 -q
+      - name: Verify finite feedback, input, stack and live compositor handoff
+        run: |
+          build/macos-venv/bin/python -m unittest test_ui_followup_v1823 test_cached_surface_v1823 test_stack_spread_v1823 test_input_motion_v1823 test_content_entrance_v1823 test_transfer_drop_feedback_v1823 test_transfer_item_motion_v1823 test_popup_motion_v1823 test_drop_target_motion_v1823 -q
+          build/macos-venv/bin/python -m unittest test_clipboard_notice_motion_v1823 test_clipboard_popup_motion_v1823 test_mac_status_drop_v1823 test_mac_permissions_v1821 test_presentation_v1819.PresentationTests -q
+          build/macos-venv/bin/python test_surface_continuity_v162.py
       - name: Test real cloud sync from frozen macOS client
         run: |
           profile="$(mktemp -d)"
@@ -73,9 +78,37 @@ jobs:
                   shutil.copy2(path, target / path.name)
           PY
       - name: Retain build artifacts for verification
+        id: release_upload
+        continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: FlickDock-macOS-${{ matrix.arch }}-${{ github.sha }}
           path: ci-output/*
           if-no-files-found: error
           retention-days: 3
+      - name: Retry artifact connection after transient service or DNS failure
+        if: steps.release_upload.outcome == 'failure'
+        run: sleep 8
+      - name: Retry verified artifacts without rebuilding
+        if: steps.release_upload.outcome == 'failure'
+        id: release_upload_retry
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: FlickDock-macOS-${{ matrix.arch }}-${{ github.sha }}
+          path: ci-output/*
+          if-no-files-found: error
+          retention-days: 3
+          overwrite: true
+      - name: Wait before final bounded artifact retry
+        if: steps.release_upload_retry.outcome == 'failure'
+        run: sleep 20
+      - name: Final artifact upload attempt
+        if: steps.release_upload_retry.outcome == 'failure'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: FlickDock-macOS-${{ matrix.arch }}-${{ github.sha }}
+          path: ci-output/*
+          if-no-files-found: error
+          retention-days: 3
+          overwrite: true

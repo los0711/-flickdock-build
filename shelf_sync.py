@@ -5,6 +5,7 @@ work runs outside the GUI thread. Every callback belongs to an account epoch.
 """
 from __future__ import annotations
 import copy
+from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -180,6 +181,14 @@ class ShelfSync(QObject):
             entry=entries.get(identity)
             if identity not in live and (not entry or not entry.get('dirty') or entry.get('deleted') or entry.get('paused_upload')):
                 token.set();self._upload_tokens.pop(identity,None)
+        arrivals=self.state.get('remote_arrivals',{})
+        if len(arrivals)>4096:
+            live_arrivals=set(entries)|set(self.download_transfers)|set(self.state.get('deferred_downloads',{}))
+            live_arrivals.update(item.get('item_id') for item in self.remote_transfers)
+            live_arrivals.update(identity for identity,record in self._remote_heads.items() if not record.get('deleted'))
+            for identity in tuple(arrivals):
+                if identity not in live_arrivals:arrivals.pop(identity,None)
+                if len(arrivals)<=4096:break
         self.state['view'] = self.adapter.snapshot()
         atomic_json(self._profile(self.account_id),self.state)
 
@@ -514,7 +523,44 @@ class ShelfSync(QObject):
                     self.state.get('ignored_versions',{}).get(identity,0)>=record['version']):continue
             transfers.append(dict(id=identity,ref=entry.get('ref'),name=record.get('name',''),kind=record.get('kind','file'),
                 received=0,total=record['size'],phase='downloading',remote=True))
+        # Arrival belongs to this account's local journal, never the server's
+        # upload/rename time. Reserve it when a placeholder first becomes
+        # visible and carry it through the verified identity-to-path handoff.
+        if any(row.get('remote') for row in transfers):
+            pending_ids=[row['id'] for row in transfers if row.get('remote')]
+            before=[self.state.get('remote_arrivals',{}).get(identity) for identity in pending_ids]
+            for row in transfers:
+                if row.get('remote'):
+                    stamp=self._local_arrival_time(row['id'],persist=False)
+                    if stamp:row['shelf_added_at']=stamp
+            if before!=[self.state.get('remote_arrivals',{}).get(identity) for identity in pending_ids]:self._persist()
         self.transfers_changed.emit(transfers)
+
+    @staticmethod
+    def _valid_arrival_time(value):
+        if not isinstance(value,str):return None
+        try:stamp=datetime.fromisoformat(value.replace('Z','+00:00'))
+        except ValueError:return None
+        return value if stamp.tzinfo is not None else None
+
+    def _local_arrival_time(self,identity,*,metadata=None,persist=True):
+        """Read/reserve first local visibility; legacy unknown dates stay unknown."""
+        entry=self.state.get('entries',{}).get(identity,{})
+        local=self._valid_arrival_time(entry.get('local_received_at'))
+        if local:return local
+        arrivals=self.state.setdefault('remote_arrivals',{})
+        local=self._valid_arrival_time(arrivals.get(identity))
+        if local:return local
+        # An existing item predates this feature. Neither cloud updated_at nor
+        # reconnect time can tell us when it first arrived on this computer.
+        if entry.get('ref') and not entry.get('deleted'):
+            if metadata is None:metadata=self.adapter.snapshot().get('metadata',{})
+            return self._valid_arrival_time(metadata.get(entry['ref'],{}).get('shelf_added_at'))
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',str(identity)):return None
+        local=datetime.fromtimestamp(time.time(),timezone.utc).isoformat(timespec='milliseconds').replace('+00:00','Z')
+        arrivals[identity]=local
+        if persist:self._persist()
+        return local
 
     def _interrupt_cycle(self):
         self.epoch+=1
@@ -1094,6 +1140,7 @@ class ShelfSync(QObject):
             if record.get('deleted'): entries.pop(identity,None)
             self._persist(); callback(); return
         if record.get('deleted'):
+            self.state.get('remote_arrivals',{}).pop(identity,None)
             self.state.get('deferred_downloads',{}).pop(identity,None)
             self.download_transfers.pop(identity,None)
             self._forget_download(identity)
@@ -1144,6 +1191,7 @@ class ShelfSync(QObject):
             fence['finished']=True
             if self._receive_fences.get(identity) is fence:self._receive_fences.pop(identity,None)
             original_callback()
+        arrived_at=self._local_arrival_time(identity)
         self.download_transfers[identity]=dict(record);self._notify_transfers()
         def receive_failed(error):
             # Authentication/quota errors affect the account. One damaged file,
@@ -1176,11 +1224,13 @@ class ShelfSync(QObject):
                     self._notify_transfers();callback();return
                 if current: self._remove_ref(current['ref'])
                 if text is not None: ref = 'flickdock:text:'+identity
-                self._add_ref(ref,text,record['name'],remote_order=remote_order,cloud_identity=identity)
+                self._add_ref(ref,text,record['name'],remote_order=remote_order,cloud_identity=identity,added_at=arrived_at)
                 entries[identity] = {'id':identity,'ref':ref,'version':record['version'],
                     'sha256':record['sha256'],'name':record['name'],'kind':record['kind'],'cloud_uploaded_at':record.get('updated_at'),
                     'fingerprint':fingerprint(ref,text,record['name']),'dirty':False,'deleted':False,'seq':0,
                     **({'remote_order':remote_order} if remote_order is not None else {})}
+                if arrived_at:entries[identity]['local_received_at']=arrived_at
+                self.state.get('remote_arrivals',{}).pop(identity,None)
                 self.download_transfers.pop(identity,None)
                 self.state.get('deferred_downloads',{}).pop(identity,None)
                 self._persist(); self._notify_transfers();callback()
@@ -1417,7 +1467,7 @@ class ShelfSync(QObject):
     def _set_title(self,ref,name):
         self._change_view(lambda view:view.setdefault('metadata',{}).setdefault(ref,{}).update(title=name))
 
-    def _add_ref(self,ref,text,name,*,remote_order=None,cloud_identity=None):
+    def _add_ref(self,ref,text,name,*,remote_order=None,cloud_identity=None,added_at=None):
         def change(view):
             if cloud_identity:view.setdefault('metadata',{}).setdefault(ref,{})['_cloud_item_id']=cloud_identity
             if ref not in view['permanent']:
@@ -1430,6 +1480,7 @@ class ShelfSync(QObject):
                 view['permanent'].insert(position,ref)
             if text is not None: view.setdefault('texts',{})[ref] = text
             view.setdefault('metadata',{}).setdefault(ref,{})['title'] = name
+            if added_at:view['metadata'][ref]['shelf_added_at']=added_at
         self._change_view(change)
 
     def _push_next(self):

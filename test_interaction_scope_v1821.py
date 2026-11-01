@@ -125,7 +125,7 @@ class UtilityPreferenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory,patch.object(WindowChrome,'_available',return_value=QRect(0,0,1920,1080)):
             store=SettingsStore(Path(directory));settings=SettingsDialog(store);transfer=LanDialog(FakeLan(),store)
             try:
-                for view,default in ((settings,(892,632)),(transfer,(980,744))):
+                for view,default in ((settings,(892,632)),(transfer,(980,792))):
                     view.show();flush();surface=view.surface if view is settings else view.card
                     handle=id(surface);view.resize(1120,820);flush();view.hide()
                     view.show();self.assertEqual(view.size().toTuple(),default);self.assertEqual(id(surface),handle)
@@ -231,7 +231,7 @@ class CustomClientTests(unittest.TestCase):
             try:
                 panel.devices.setCurrentIndex(0);panel.devices.showPopup();flush()
                 view=panel.devices.view();index=panel.devices.model().index(1,0);rect=view.visualRect(index)
-                QTest.mouseClick(view.viewport(),Qt.LeftButton,pos=QPoint(rect.right()-14,rect.center().y()));flush()
+                QTest.mouseClick(view.viewport(),Qt.LeftButton,pos=panel.devices.itemDelegate().remove_rect(rect).center());flush()
                 self.assertEqual(removed,['b'*64]);self.assertEqual(panel.devices.currentData(),'a'*64)
                 self.assertTrue(view.isVisible());service.peers_changed.emit(peers[:1]);flush()
                 self.assertEqual(panel.devices.count(),1);self.assertTrue(view.isVisible())

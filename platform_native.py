@@ -216,6 +216,37 @@ def lower_shelf_after_reveal(widget, *, platform=None):
     return True
 
 
+def raise_status_drop_preview(widget, *, platform=None,appkit=None,native_window=None):
+    """Lease a high, nonactivating drag preview; ordinary reveal restores it.
+
+    The same saved ordering slot as raise_shelf_for_reveal is used, so a Hide
+    or a secondary panel restores the actual original level/Space behavior.
+    Never activate the application or make the window key/main.
+    """
+    if (platform or sys.platform)!='darwin' or not widget.isVisible():return False
+    if native_window is None and not native_input_available():return False
+    window=previous=None
+    saved_order=getattr(widget,'_flickdock_native_order',None)
+    try:
+        if appkit is None:import AppKit as appkit
+        if native_window is None:
+            import objc
+            view=objc.objc_object(c_void_p=ctypes.c_void_p(int(widget.winId())))
+            window=view.window()
+        else:window=native_window
+        if window is None:return False
+        previous=(window.level(),window.collectionBehavior())
+        if saved_order is None:widget._flickdock_native_order=previous
+        window.setCollectionBehavior_(_fullscreen_collection_behavior(window,appkit))
+        window.setLevel_(max(appkit.NSFloatingWindowLevel,appkit.NSStatusWindowLevel+1))
+        window.orderFrontRegardless();return True
+    except Exception as error:
+        if window is not None and previous is not None:_restore_native_window_order(window,previous)
+        widget._flickdock_native_order=saved_order
+        if _recoverable_native_window_error(error):return False
+        raise
+
+
 def raise_edge_target(widget, *, platform=None, above=None):
     """Keep the nonactivating edge sensor reachable in full-screen spaces."""
     platform = sys.platform if platform is None else platform

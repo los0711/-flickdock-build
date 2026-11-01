@@ -304,6 +304,100 @@ class TransferTests(unittest.TestCase):
         self.assertEqual(content.pending, {}); self.assertEqual(content.transfers, {})
         self.assertEqual(Path(other_adapter.view['permanent'][0]).read_bytes(), self.payload)
 
+    def test_remote_first_local_arrival_survives_placeholder_commit_restart_and_updates(self):
+        from sync_adapter import ShelfAdapter
+        service,adapter,engine,transfer=self.pending()
+        other_service,_,other=self.replica('device-b',hold_download_part=1)
+        content=ContentRepository()
+        shelf=SimpleNamespace(content=content,files={'permanent':[]},popup=None,archive_job=None,
+            _copy_epoch=0,copy_jobs=set(),
+            resolver=SimpleNamespace(cancel=lambda _:None),image_cache=SimpleNamespace(forget=lambda _:None),
+            preview_cache={},refresh=lambda:None,_delete_owned=lambda _:None)
+        manager=SimpleNamespace(shelf=shelf,sync=other,save=lambda:None,update_handles=lambda:None)
+        actual=ShelfAdapter(manager);other.adapter=actual
+        states=[];other.transfers_changed.connect(lambda rows:states.append(copy.deepcopy(rows)))
+        identity=transfer['id']
+        with patch('shelf_sync.time.time',return_value=1800000000):
+            until(lambda:not other.running and any(row['id']==identity for batch in states for row in batch))
+        stamp=next(row['shelf_added_at'] for row in states[-1] if row['id']==identity)
+        self.assertEqual(stamp,'2027-01-15T08:00:00.000Z')
+        self.assertEqual(other.state['remote_arrivals'][identity],stamp)
+        with patch('shelf_sync.time.time',return_value=1800000600):
+            other.remote_progress(dict(upload_id=transfer['upload_id'],received_bytes=1,total=len(self.payload),at=1))
+            self.assertEqual(states[-1][0]['shelf_added_at'],stamp)
+            other.close()
+            restarted=ShelfSync(self.root/'device-b',other_service,actual,poll_ms=600000)
+            self.engines.append(restarted);manager.sync=restarted;states=[]
+            restarted.transfers_changed.connect(lambda rows:states.append(copy.deepcopy(rows)))
+            other_service.signin('account-A')
+            until(lambda:not restarted.running and bool(states) and bool(states[-1]))
+            self.assertEqual(states[-1][0]['shelf_added_at'],stamp)
+            service.api.release();until(lambda:not engine.running and bool(self.server.account('account-A')['items']))
+            restarted.tick();until(lambda:bool(other_service.api.held))
+            self.assertEqual(states[-1][0]['shelf_added_at'],stamp)
+            other_service.api.release();until(lambda:not restarted.running and bool(shelf.files['permanent']))
+        ref=shelf.files['permanent'][0]
+        self.assertEqual(Path(ref).read_bytes(),self.payload)
+        self.assertEqual(content.metadata[ref]['shelf_added_at'],stamp)
+        self.assertEqual(restarted.state['entries'][identity]['local_received_at'],stamp)
+        self.assertNotIn(identity,restarted.state['remote_arrivals'])
+        # Rename/metadata revisions and a reconnect must not become new arrivals.
+        account=self.server.account('account-A');record=account['items'][identity]['record']
+        record.update(version=2,name='远端新名称.png',updated_at='2099-01-01T00:00:00Z')
+        account['changes'].append(dict(cursor=str(len(account['changes'])+1),record=copy.deepcopy(record)))
+        with patch('shelf_sync.time.time',return_value=1800001200):
+            restarted.set_event_stream_online(False);restarted.set_event_stream_online(True)
+            until(lambda:not restarted.running and restarted.state['entries'][identity]['version']==2)
+        self.assertEqual(content.metadata[ref]['shelf_added_at'],stamp)
+        restarted.close()
+        final=ShelfSync(self.root/'device-b',other_service,actual,poll_ms=600000)
+        self.engines.append(final);manager.sync=final;other_service.signin('account-A')
+        until(lambda:not final.running)
+        self.assertEqual(content.metadata[ref]['shelf_added_at'],stamp)
+
+    def test_arrival_time_preserves_local_intake_and_leaves_legacy_unknown_dates_unknown(self):
+        service,adapter,engine=self.replica('device-a')
+        until(lambda:not engine.running)
+        ref=str(self.source);identity='existing-local';stamp='2025-01-02T03:04:05+08:00'
+        adapter.view['permanent']=[ref];adapter.view['metadata'][ref]={'shelf_added_at':stamp}
+        engine.state['entries'][identity]=dict(id=identity,ref=ref,version=1,dirty=False)
+        self.assertEqual(engine._local_arrival_time(identity),stamp)
+        self.assertNotIn(identity,engine.state.get('remote_arrivals',{}))
+        adapter.view['metadata'][ref].clear()
+        engine.state['entries'][identity]['cloud_uploaded_at']='2099-01-01T00:00:00Z'
+        self.assertIsNone(engine._local_arrival_time(identity))
+        self.assertNotIn(identity,engine.state.get('remote_arrivals',{}))
+        engine._remote_heads[identity]=dict(id=identity,version=2,name='remote.png',size=1,kind='file')
+        rows=[];engine.transfers_changed.connect(rows.append);engine._notify_transfers()
+        self.assertNotIn('shelf_added_at',rows[-1][0])
+
+    def test_local_arrival_reservations_are_account_scoped(self):
+        service,adapter,engine=self.replica('device-a');until(lambda:not engine.running)
+        with patch('shelf_sync.time.time',return_value=1800000000):
+            first=engine._local_arrival_time('remote-pending');engine._persist()
+        service.signin('account-B');until(lambda:not engine.running)
+        with patch('shelf_sync.time.time',return_value=1800000600):
+            second=engine._local_arrival_time('remote-pending');engine._persist()
+        self.assertNotEqual(first,second)
+        service.signin('account-A');until(lambda:not engine.running)
+        self.assertEqual(engine._local_arrival_time('remote-pending'),first)
+
+    def test_arrival_progress_does_not_repeat_snapshot_or_persist_and_old_reservations_are_bounded(self):
+        service,adapter,engine=self.replica('device-a');until(lambda:not engine.running)
+        engine.remote_transfers=[dict(item_id='active-remote',upload_id='pending-upload',device_id='device-b',
+            name='remote.png',size=100,received_bytes=1,kind='file')]
+        with patch.object(engine,'_persist',wraps=engine._persist) as persist,patch.object(adapter,'snapshot',wraps=adapter.snapshot) as snapshot:
+            engine._notify_transfers()
+            self.assertEqual(persist.call_count,1);self.assertEqual(snapshot.call_count,1)
+            stamp=engine.state['remote_arrivals']['active-remote']
+            for received in range(2,12):
+                engine.remote_transfers[0]['received_bytes']=received;engine._notify_transfers()
+            self.assertEqual(persist.call_count,1);self.assertEqual(snapshot.call_count,1)
+        engine.state['remote_arrivals'].update((f'old-{i}',stamp) for i in range(4100))
+        engine._persist()
+        self.assertEqual(len(engine.state['remote_arrivals']),4096)
+        self.assertEqual(engine.state['remote_arrivals']['active-remote'],stamp)
+
     def test_remote_cancel_removes_placeholder_and_origin_does_not_resurrect(self):
         service, adapter, engine, transfer = self.pending(); uid = transfer['upload_id']
         other_service, other_adapter, other = self.replica('device-b'); rows = []

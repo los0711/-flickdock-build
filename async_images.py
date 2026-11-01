@@ -161,8 +161,8 @@ class ImageCache(QObject):
             width, height = image.width() * scale, image.height() * scale
             from PySide6.QtCore import QRectF
             rect = QRectF((size - width) / 2, (size - height) / 2, width, height)
-            clip = QPainterPath()
-            clip.addRoundedRect(rect, 5, 5)
+            from surface_morph import rounded_rect_path,draw_rounded_rect
+            clip = rounded_rect_path(rect,5)
             painter.setClipPath(clip)
             painter.drawImage(rect, image)
             painter.end()

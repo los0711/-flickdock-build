@@ -96,7 +96,7 @@ class ItemTransitions(QObject):
         def begin():
             if not isValid(self) or generation!=self.generation:return
             self.layout_pending=False
-            if not enabled:self.finish();return
+            if not enabled or not motion_allowed():self.finish();return
             now=time.perf_counter()
             viewport=self.scroll.viewport()
             for ref,widget in widgets.items():
@@ -111,6 +111,8 @@ class ItemTransitions(QObject):
         QTimer.singleShot(0,begin)
 
     def _tick(self):
+        from ui_transitions import motion_allowed
+        if not motion_allowed():self.finish();return
         now=time.perf_counter()
         for ref,(widget,origin,target,started) in tuple(self.moves.items()):
             if not isValid(widget):self.moves.pop(ref,None);continue

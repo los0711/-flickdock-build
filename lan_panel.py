@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog, QF
                                QListView, QMenu, QScrollArea, QSizePolicy, QStyle, QStyledItemDelegate,
                                QStyleOptionButton, QStylePainter, QToolTip, QVBoxLayout, QGridLayout, QWidget, QStackedWidget, QButtonGroup)
 
+
 from flickdock_icons import draw_glyph
 from platform_native import remove_host_window_shadow
 from native_ui_common import colors as ui_colors, icon as ui_icon, reference_font, reduced_motion, SEGMENT_HEIGHT, SEGMENT_BUTTON_HEIGHT
@@ -75,16 +76,24 @@ class _CopyCodeButton(_PressButton):
 class _StatusLabel(QLabel):
     """Inline errors occupy space only while there is something to report."""
     def __init__(self,text='',parent=None):
-        super().__init__(text,parent);self.setTextFormat(Qt.TextFormat.PlainText)
+        super().__init__('',parent);self._full_text='';self.setTextFormat(Qt.TextFormat.PlainText);self.setText(text)
 
     def setText(self, value):
-        super().setText(str(value))
-        self.setVisible(bool(value))
+        self._full_text=str(value);self.setVisible(bool(value))
+        self.setToolTip(self._full_text);self.setAccessibleName(self._full_text)
         if hasattr(self,'_theme'):
             c=ui_colors(self._theme);message=str(value)
             token='red' if any(word in message for word in ('失败','错误','无法','未连接','中断','断开')) else 'green' if '就绪' in message or message.startswith('已连接') else 'secondary'
             self.setStyleSheet(f'QLabel{{color:{c[token]};background:transparent;border:0;padding:0;font-size:12px;}}')
-            self.setToolTip(message)
+        self._render_text()
+
+    def text(self):return self._full_text
+
+    def _render_text(self):
+        QLabel.setText(self,self.fontMetrics().elidedText(self._full_text,Qt.TextElideMode.ElideRight,max(0,self.contentsRect().width())))
+
+    def resizeEvent(self,event):
+        super().resizeEvent(event);self._render_text()
 
     def set_theme(self,theme):self._theme=theme;self.setText(self.text())
 
@@ -145,6 +154,7 @@ def _remaining(value):
 def _motion_allowed():
     """Honor platform accessibility settings and low-performance sessions."""
     disabled = {'1', 'true', 'yes', 'on'}
+    if reduced_motion():return False
     if (os.environ.get('FLICKDOCK_REDUCE_MOTION', '').lower() in disabled
             or os.environ.get('FLICKDOCK_LOW_PERFORMANCE', '').lower() in disabled):
         return False
@@ -203,6 +213,8 @@ class _ScanIndicator(QWidget):
         self.update()
 
     def _advance(self):
+        if not self._scanning or not self.isVisible() or not _motion_allowed():
+            self._timer.stop();self._phase=0;self.update();return
         self._phase = (self._phase + 1) % 12
         self.update()
 
@@ -246,18 +258,30 @@ class _DevicesCombo(QComboBox):
         dark=bool(getattr(self.itemDelegate(),'dark',False))
         popup.setStyleSheet('QFrame{background:'+('#242426' if dark else '#FFFFFF')+';border:1px solid '+('#424248' if dark else '#D4D4D8')+';border-radius:10px;}')
         super().showPopup()
+        self.view().viewport().setMouseTracking(True)
         self.view().viewport().installEventFilter(self)
 
     def eventFilter(self,watched,event):
         if watched is self.view().viewport() and getattr(self,'removable',False):
+            delegate=self.itemDelegate()
+            if event.type()==QEvent.Leave:
+                delegate.remove_hover_id=None;watched.update()
+            if event.type()==QEvent.MouseMove:
+                index=self.view().indexAt(event.position().toPoint())
+                identifier=index.data(Qt.UserRole) if index.isValid() and _DeviceDelegate.remove_rect(self.view().visualRect(index)).contains(event.position().toPoint()) else None
+                if identifier!=getattr(delegate,'remove_hover_id',None):delegate.remove_hover_id=identifier;watched.update()
+                if identifier:return True
             if event.type() in (QEvent.MouseButtonPress,QEvent.MouseButtonRelease,QEvent.MouseButtonDblClick):
                 index=self.view().indexAt(event.position().toPoint())
-                if index.isValid() and self.view().visualRect(index).adjusted(self.view().visualRect(index).width()-34,0,-4,0).contains(event.position().toPoint()):
-                    if event.type()==QEvent.MouseButtonPress:self._remove_pressed=index.data(Qt.UserRole)
-                    elif event.type()==QEvent.MouseButtonRelease:
-                        identifier=index.data(Qt.UserRole)
-                        if identifier and identifier==getattr(self,'_remove_pressed',None):self.remove_requested.emit(identifier)
-                        self._remove_pressed=None
+                hit=bool(index.isValid() and _DeviceDelegate.remove_rect(self.view().visualRect(index)).contains(event.position().toPoint()))
+                pressed=getattr(self,'_remove_pressed',None)
+                if event.type()==QEvent.MouseButtonRelease and pressed:
+                    self._remove_pressed=None
+                    if hit and index.data(Qt.UserRole)==pressed:self.remove_requested.emit(pressed)
+                    watched.update();return True
+                if hit:
+                    if event.type()==QEvent.MouseButtonPress and event.button()==Qt.LeftButton:self._remove_pressed=index.data(Qt.UserRole)
+                    watched.update()
                     return True
         return super().eventFilter(watched,event)
 
@@ -291,6 +315,10 @@ class _DeviceDelegate(QStyledItemDelegate):
     def sizeHint(self, option, index):
         return QSize(max(230, option.rect.width()), 56)
 
+    @staticmethod
+    def remove_rect(rect):
+        return QRect(rect.right()-43,rect.center().y()-14,28,28)
+
     def paint(self, painter, option, index):
         painter.save(); painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         selected = bool(option.state & QStyle.StateFlag.State_Selected)
@@ -309,13 +337,16 @@ class _DeviceDelegate(QStyledItemDelegate):
         primary = '#edf2fa' if self.dark else '#172537'
         secondary = '#a4b3c7' if self.dark else '#74849a'
         removable=getattr(self,'removable',False)
-        width = max(20, option.rect.width()-(112 if removable else 82))
+        width = max(20, option.rect.width()-(124 if removable else 82))
         online=index.data(Qt.ItemDataRole.UserRole+2)
         if online is not None:
             painter.setPen(Qt.PenStyle.NoPen);painter.setBrush(QColor('#30D158' if online else '#8E8E93'))
-            painter.drawEllipse(QRectF(option.rect.right()-(52 if removable else 22),option.rect.center().y()-4,8,8))
+            painter.drawEllipse(QRectF(option.rect.right()-(64 if removable else 22),option.rect.center().y()-4,8,8))
         if removable:
-            ui_icon('close',secondary).paint(painter,QRect(option.rect.right()-27,option.rect.center().y()-9,18,18))
+            if index.data(Qt.UserRole)==getattr(self,'remove_hover_id',None):
+                painter.setPen(Qt.PenStyle.NoPen);painter.setBrush(QColor('#663638' if self.dark else '#FFE6E5'))
+                painter.drawRoundedRect(QRectF(self.remove_rect(option.rect)),6,6)
+            ui_icon('close',secondary).paint(painter,self.remove_rect(option.rect).adjusted(6,6,-6,-6))
         painter.setFont(option.font)
         painter.setPen(QColor(primary))
         painter.drawText(QRectF(option.rect.left()+49,option.rect.top()+8,width,20),
@@ -334,10 +365,12 @@ class _DeviceDelegate(QStyledItemDelegate):
 class _DropIllustration(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent); self.setFixedSize(28, 28); self.dark = False
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
 
     def paintEvent(self, event):
         painter=QPainter(self);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        ui_icon('file', '#64D2FF' if self.dark else '#0A84FF').paint(painter, self.rect().adjusted(2,2,-2,-2))
+        from drop_target_motion import draw_drop_glyph
+        draw_drop_glyph(painter,QRectF(self.rect()).adjusted(2,2,-2,-2),getattr(self.parentWidget(),'drop_motion',None),dark=self.dark)
 
 
 class _PagerButton(QPushButton):
@@ -372,49 +405,52 @@ class _DropZone(QFrame):
         self.setAccessibleName('选择要发送的文件；也可拖入文件或文件夹')
         self._active = False
         self._hovered=False
-        self._ants_timer=QTimer(self);self._ants_timer.setInterval(33)
-        self._ants_timer.timeout.connect(self.update)
+        from drop_target_motion import DropTargetMotion
+        self.drop_motion=DropTargetMotion(self,lambda:QRectF(self.rect()).adjusted(1,1,-1,-1),
+                                          changed=self._drop_visual_changed)
+        self._ants_timer=self.drop_motion.timer
         layout = QVBoxLayout(self); layout.setContentsMargins(16, 16, 16, 16); layout.setSpacing(10)
         layout.addStretch(1)
         illustration = _DropIllustration(self)
         self.illustration = illustration
         layout.addWidget(illustration, 0, Qt.AlignmentFlag.AlignHCenter)
         self.title = _label('拖入文件/文件夹，或点击添加', self); self.title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.title.setObjectName('lanDropTitle'); layout.addWidget(self.title)
+        self.title.setObjectName('lanDropTitle');self.title.setAttribute(Qt.WA_TransparentForMouseEvents);layout.addWidget(self.title)
         self.hint = _label('', self, muted=True)
         self.hint.setObjectName('lanDropHint')
+        self.hint.setAttribute(Qt.WA_TransparentForMouseEvents)
         self.hint.setAlignment(Qt.AlignmentFlag.AlignCenter); layout.addWidget(self.hint)
         self.hint.hide()
         layout.addStretch(1)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
     def border_path(self):
-        rect=QRectF(self.rect()).adjusted(1,1,-1,-1)
-        path=QPainterPath();path.addRoundedRect(rect,min(12,rect.width()/2,rect.height()/2),min(12,rect.width()/2,rect.height()/2))
-        return path
+        from drop_target_motion import target_path
+        return target_path(QRectF(self.rect()).adjusted(1,1,-1,-1))
+
+    def _drop_visual_changed(self):
+        motion=getattr(self,'drop_motion',None)
+        if motion is None:return
+        self._hovered=motion.hovered
+        if hasattr(self,'illustration'):self.illustration.update()
+
+    def set_drag_active(self,active):
+        self._active=bool(active);self.setProperty('dragActive',self._active)
+        self.drop_motion.set_drag_active(self._active)
 
     def paintEvent(self,event):
         painter=QPainter(self);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        dark=self.illustration.dark;active=self._active or self._hovered
-        path=self.border_path()
-        painter.fillPath(path,QColor(10,132,255,13) if active else QColor(255,255,255,7) if dark else QColor(0,0,0,5))
-        width=1.2;pen=QPen(QColor('#0A84FF') if active else QColor(255,255,255,55) if dark else QColor(0,0,0,48),width)
-        # Divide the closed path into whole cycles. The closing corner gets
-        # exactly the same dash/gap as the straight edges, at every width/DPR.
-        length=path.length();cycle=length/max(1,round(length/8))
-        pen.setDashPattern([cycle*.52/width,cycle*.48/width])
-        pen.setCapStyle(Qt.PenCapStyle.FlatCap);pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        if self._active and not reduced_motion():pen.setDashOffset((time.perf_counter()*12/width)%(cycle/width))
-        painter.setPen(pen);painter.setBrush(Qt.BrushStyle.NoBrush);painter.drawPath(path)
+        from drop_target_motion import paint_target
+        paint_target(painter,QRectF(self.rect()).adjusted(1,1,-1,-1),self.drop_motion,dark=self.illustration.dark)
 
     def enterEvent(self,event):
-        self._hovered=True;self.update();super().enterEvent(event)
+        super().enterEvent(event)
 
     def leaveEvent(self,event):
-        self._hovered=False;self.update();super().leaveEvent(event)
+        super().leaveEvent(event)
 
     def hideEvent(self,event):
-        self._ants_timer.stop();super().hideEvent(event)
+        self._active=False;self.setProperty('dragActive',False);self.drop_motion.stop();super().hideEvent(event)
 
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
@@ -438,10 +474,7 @@ class _DropZone(QFrame):
 
     def dragEnterEvent(self, event):
         if self._paths(event):
-            self._active = True; self.setProperty('dragActive', True); self.style().unpolish(self); self.style().polish(self)
-            self.illustration.update()
-            if not reduced_motion():self._ants_timer.start()
-            self.update()
+            self.set_drag_active(True)
             event.setDropAction(Qt.DropAction.CopyAction); event.accept()
         else: event.ignore()
 
@@ -450,9 +483,7 @@ class _DropZone(QFrame):
         else: event.ignore()
 
     def dragLeaveEvent(self, event):
-        self._active = False; self.setProperty('dragActive', False); self.style().unpolish(self); self.style().polish(self)
-        self.illustration.update()
-        self._ants_timer.stop();self.update()
+        self.set_drag_active(False)
         event.accept()
 
     def dropEvent(self, event):
@@ -520,16 +551,26 @@ class _PayloadArea(QFrame):
         if not changed:self._layout();return
         self.animation.stop()
         if not self.isVisible() or reduced_motion():self._frame(target);return
+        # Reversing before the old clock advances can have start == end.
+        # Qt then emits no valueChanged; apply current visibility intent now.
+        self._layout()
         self.animation.setStartValue(self.value);self.animation.setEndValue(target);self.animation.start()
 
-    def _frame(self,value):self.value=float(value);self._layout()
+    def _frame(self,value):
+        if self.animation.state()==self.animation.State.Running and reduced_motion():
+            self.animation.stop();value=float(self.filled)
+        self.value=float(value);self._layout()
 
     def _layout(self):
         if self.drop_zone is None:return
         full=max(1,self.width()-40)
         compact=min(full,max(160,self.panel.send_column.width()-40))
         width=round(full+(compact-full)*self.value)
-        self.drop_zone.setGeometry(20,12,width,116)
+        # _DropZone's standalone preset is 120px. Match this band's 116px
+        # content height explicitly: a fixed minimum otherwise silently makes
+        # the lower gutter 8px while the upper gutter remains 12px.
+        self.drop_zone.setFixedHeight(self.height()-24)
+        self.drop_zone.setGeometry(20,12,width,self.height()-24)
         self.queue_column.setGeometry(20+width+16,12,max(0,full-width-16),116)
         self.queue_column.setVisible(self.filled and full-width>16)
 
@@ -579,12 +620,12 @@ class _OfferIcon(QWidget):
 
 
 class _HistoryRemoveButton(QPushButton):
-    def __init__(self, parent=None, *, glyph='close'):
+    def __init__(self, parent=None, *, glyph='close', size=28):
         super().__init__(parent)
         self.glyph=glyph
         self.dark = False
         self.setObjectName('lanHistoryRemove')
-        self.setFixedSize(34, 24)
+        self.setFixedSize(size,size)
         self.setText('')
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAutoDefault(False)
@@ -594,7 +635,7 @@ class _HistoryRemoveButton(QPushButton):
 
     def paintEvent(self, event):
         super().paintEvent(event)
-        painter=QPainter(self);ui_icon(self.glyph,ui_colors('dark' if self.dark else 'light')['secondary']).paint(painter,self.rect().adjusted(9,4,-9,-4))
+        painter=QPainter(self);ui_icon(self.glyph,ui_colors('dark' if self.dark else 'light')['secondary']).paint(painter,QRect((self.width()-14)//2,(self.height()-14)//2,14,14))
 
 
 class _HistoryRow(QFrame):
@@ -617,8 +658,8 @@ class _HistoryRow(QFrame):
         if isinstance(count, int) and count > 0:
             name = f'{name} · {count} 项'
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(14, 5, 10, 5)
-        layout.setSpacing(10)
+        layout.setContentsMargins(14, 5, 11, 5)
+        layout.setSpacing(6)
         self.icon = _HistoryIcon(direction, self)
         self.icon.state=state
         self.icon.hide()
@@ -828,13 +869,17 @@ class LanPanel(QFrame):
         self.activity_column = QFrame(self); self.activity_column.setObjectName('lanActivityColumn')
         activity = QVBoxLayout(self.activity_column); activity.setContentsMargins(20,20,20,16); activity.setSpacing(8)
         self.active_group=QFrame(self.activity_column);self.active_group.setObjectName('lanActiveGroup')
+        self.active_group.setMinimumHeight(176)
         active=QVBoxLayout(self.active_group);active.setContentsMargins(12,12,12,12);active.setSpacing(8)
         activity.addWidget(self.active_group,1)
         transfer_heading = QHBoxLayout(); transfer_heading.setSpacing(8)
         section = _label('传输', self.active_group); section.setObjectName('lanSection')
         transfer_heading.addWidget(section, 1)
-        self.transfer_count = _label('0 项', self.activity_column, muted=True)
-        self.transfer_count.setSizePolicy(QSizePolicy.Policy.Preferred,QSizePolicy.Policy.Preferred)
+        self.transfer_count = _label('0', self.active_group)
+        self.transfer_count.setObjectName('lanTransferCount');self.transfer_count.setAlignment(Qt.AlignCenter)
+        self.transfer_count.setFixedHeight(22);self.transfer_count.setMinimumWidth(26)
+        self.transfer_count.setSizePolicy(QSizePolicy.Policy.Minimum,QSizePolicy.Policy.Fixed)
+        self.transfer_count.setAccessibleName('0 项进行中')
         transfer_heading.addWidget(self.transfer_count)
         active.addLayout(transfer_heading)
         self.transfers_body = QWidget(self.active_group)
@@ -864,10 +909,16 @@ class LanPanel(QFrame):
         active.addLayout(pages)
         self.previous_page.hide(); self.next_page.hide(); self.page_label.hide()
         self.recent_group=QFrame(self.activity_column);self.recent_group.setObjectName('lanRecentGroup')
+        self.recent_group.setMinimumHeight(176)
         recent=QVBoxLayout(self.recent_group);recent.setContentsMargins(12,12,12,12);recent.setSpacing(8)
-        activity.addWidget(self.recent_group)
+        activity.addWidget(self.recent_group,1)
         section = _label('最近传输', self.recent_group); section.setObjectName('lanSection')
-        recent.addWidget(section)
+        history_heading=QHBoxLayout();history_heading.setContentsMargins(0,0,0,0);history_heading.addWidget(section,1)
+        self.clear_history=_button('清除',self.recent_group);self.clear_history.setObjectName('lanTextButton')
+        self.clear_history.setAccessibleName('清除最近传输记录');self.clear_history.setToolTip('只清除记录，保留文件')
+        policy=self.clear_history.sizePolicy();policy.setRetainSizeWhenHidden(True);self.clear_history.setSizePolicy(policy)
+        self.clear_history.clicked.connect(self._clear_history_records);history_heading.addWidget(self.clear_history)
+        recent.addLayout(history_heading)
         self.history_body = QFrame(self.recent_group)
         self.history_body.setObjectName('lanHistoryGroup')
         self.history_layout = QVBoxLayout(self.history_body)
@@ -886,9 +937,12 @@ class LanPanel(QFrame):
         self.history_scroll.setWidgetResizable(True)
         self.history_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.history_scroll.setMinimumHeight(110)
-        self.history_scroll.setMaximumHeight(188)
+        self.history_scroll.setMaximumHeight(16777215)
         self.history_scroll.setWidget(self.history_body)
-        recent.addWidget(self.history_scroll)
+        recent.addWidget(self.history_scroll,1)
+        from transfer_item_motion import TransferItemMotion
+        self.queue_motion=TransferItemMotion(self,self.queue_scroll.viewport())
+        self.history_motion=TransferItemMotion(self,self.history_scroll.viewport())
         self._render_history()
         destination = QHBoxLayout(); destination.setSpacing(8)
         destination_label=_label('接收位置：', self, muted=True)
@@ -910,6 +964,10 @@ class LanPanel(QFrame):
         self.activity_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         activity.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         self.activity_scroll.setWidget(self.activity_column);columns.addWidget(self.activity_scroll,7)
+        self._activity_balance_timer=QTimer(self);self._activity_balance_timer.setSingleShot(True)
+        self._activity_balance_timer.timeout.connect(self._balance_activity_groups)
+        self.active_group.installEventFilter(self);self.recent_group.installEventFilter(self)
+        self._activity_balance_timer.start(0)
         layout.addLayout(columns, 1)
         self.status_label = _StatusLabel('', self)
         self.status_label.hide()
@@ -926,6 +984,18 @@ class LanPanel(QFrame):
         self._explicit_queue=False  # Initial empty rendering is not a user-cleared queue.
 
     def set_paths_provider(self, callback): self._paths_provider = callback
+
+    def _balance_activity_groups(self):
+        # Two equal flex tracks, including when an incoming offer raises the
+        # natural minimum. The outer activity viewport scrolls on short screens.
+        height=max(176,self.active_group.layout().sizeHint().height()+2,self.recent_group.layout().minimumSize().height()+2)
+        for group in (self.active_group,self.recent_group):
+            if group.minimumHeight()!=height:group.setMinimumHeight(height)
+
+    def eventFilter(self,watched,event):
+        if watched in (getattr(self,'active_group',None),getattr(self,'recent_group',None)) and event.type()==QEvent.LayoutRequest:
+            self._activity_balance_timer.start(0)
+        return super().eventFilter(watched,event)
 
     def _load_history(self):
         if not self._history_path: return []
@@ -957,14 +1027,16 @@ class LanPanel(QFrame):
         finally:
             if temporary.exists(): temporary.unlink()
 
-    def _render_history(self):
+    def _render_history(self, *, preserve_motion=False):
+        self.clear_history.setVisible(bool(self._history))
+        if not preserve_motion:self.history_motion.cancel()
         for widget in self.history_rows:
             self.history_layout.removeWidget(widget)
-            widget.deleteLater()
+            widget.hide();widget.deleteLater()
         self.history_rows.clear()
         for separator in self.history_separators:
             self.history_layout.removeWidget(separator)
-            separator.deleteLater()
+            separator.hide();separator.deleteLater()
         self.history_separators.clear()
         self.history_label.setVisible(not self._history)
         for index, record in enumerate(self._history[:12]):
@@ -975,13 +1047,14 @@ class LanPanel(QFrame):
                 self.history_layout.addWidget(separator)
                 self.history_separators.append(separator)
             widget = _HistoryRow(record, self.history_body)
+            widget.record_identity=id(record)
             widget.icon.dark = self._dark
             widget.remove_button.dark = self._dark
             widget.reveal_button.dark = self._dark
             widget.reveal_requested.connect(lambda record=record:self._reveal_history(record))
             widget.remove_requested.connect(lambda i=index: self._delete_history_record(i))
             self.history_layout.addWidget(widget)
-            self.history_rows.append(widget)
+            self.history_rows.append(widget);widget.show()
 
     def _reveal_history(self,record):
         paths=record.get('paths')
@@ -1025,7 +1098,24 @@ class LanPanel(QFrame):
             self._history.insert(index, record)
             self.status_label.setText('无法删除传输记录，请检查保存位置。')
             return
-        self._render_history()
+        if self._history_reveal_pending and self._history_reveal_pending[0] is record:self._history_reveal_pending=None
+        positions=self.history_motion.capture({widget.record_identity:widget for widget in self.history_rows})
+        self.history_motion.remove({id(record):self.history_rows[index]},positions,style='slide')
+        self._render_history(preserve_motion=True);self.history_layout.activate()
+        self.history_motion.reflow({widget.record_identity:widget for widget in self.history_rows},positions)
+
+    def _clear_history_records(self):
+        if not self._history:return
+        records=self._history;self._history=[]
+        try:self._save_history()
+        except OSError:
+            self._history=records;self.status_label.setText('无法清除传输记录，请检查保存位置。');return
+        self._history_reveal_pending=None
+        widgets={widget.record_identity:widget for widget in self.history_rows}
+        positions=self.history_motion.capture(widgets)
+        self.history_motion.remove(widgets,positions,style='slide',stagger=True)
+        self._render_history(preserve_motion=True);self.history_layout.activate()
+        self.history_motion.reflow({},positions)
 
     def queue_paths(self, paths, *, replace=False):
         self._explicit_queue=True
@@ -1036,6 +1126,10 @@ class LanPanel(QFrame):
             path = Path(value)
             if str(path) not in present:self._queued_paths.append(str(path));present.add(str(path))
         if previous==self._queued_paths and getattr(self,'_queue_rendered',False):return
+        removed={value:widget for value,widget in self._queue_row_map.items() if value not in self._queued_paths}
+        animate_removal=bool(removed or self.queue_motion.moves or self.queue_motion.ghosts or self.queue_motion.pending)
+        positions=self.queue_motion.capture(self._queue_row_map) if animate_removal else {}
+        if removed:self.queue_motion.remove(removed,positions,style='shrink')
         self._queue_rendered=True
         count = len(self._queued_paths)
         self.drop_zone.title.setText('拖入文件/文件夹，或点击添加')
@@ -1047,16 +1141,18 @@ class LanPanel(QFrame):
         for value in list(self._queue_row_map):
             if value not in wanted:
                 widget=self._queue_row_map.pop(value);self._queue_labels.pop(value,None)
-                self.queue_layout.removeWidget(widget);widget.deleteLater()
+                self.queue_layout.removeWidget(widget);widget.hide();widget.deleteLater()
         for value in self._queued_paths:
             if value in self._queue_row_map:continue
             row=QFrame(self.queue_body);row.setObjectName('lanQueueRow')
+            from transfer_drop_feedback import ScaleFade
+            row.entrance=ScaleFade(row,viewport=self.queue_scroll.viewport())
             row.setFixedHeight(36)
-            line=QHBoxLayout(row);line.setContentsMargins(12,7,12,7);line.setSpacing(8)
+            line=QHBoxLayout(row);line.setContentsMargins(12,4,5,4);line.setSpacing(8)
             path=Path(value);name=_ElidedLabel(path.name,row);line.addWidget(name,1)
             size=_label('读取信息中…',row,muted=True);size.setWordWrap(False);size.setSizePolicy(QSizePolicy.Policy.Fixed,QSizePolicy.Policy.Preferred)
             line.addWidget(size)
-            remove=_HistoryRemoveButton(row);remove.setAccessibleName('移除待发送文件 '+path.name);remove.setToolTip('移出待发送队列')
+            remove=_HistoryRemoveButton(row,size=24);remove.setAccessibleName('移除待发送文件 '+path.name);remove.setToolTip('移出待发送队列')
             remove.clicked.connect(lambda _,ref=value:self.queue_paths([path for path in self._queued_paths if path!=ref],replace=True));line.addWidget(remove)
             self._queue_row_map[value]=row;self._queue_labels[value]=size
             self._queue_info_ready(value);added.append(value)
@@ -1067,6 +1163,8 @@ class LanPanel(QFrame):
         self.queue_scroll.setFixedHeight(min(84, rows*42+4))
         self.queue_scroll.setVisible(bool(count))
         self.queue_area.set_filled(bool(count))
+        for value in added:self._queue_row_map[value].entrance.arm()
+        if animate_removal:self.queue_motion.reflow(self._queue_row_map,positions)
 
     def _queue_info_ready(self,ref):
         label=self._queue_labels.get(ref)
@@ -1124,6 +1222,7 @@ class LanPanel(QFrame):
             QFrame#lanPanel {{ background:transparent; border:0; }}
             QFrame#lanPanel QLabel {{ color:{color}; background:transparent; border:0; font-size:12px; }}
             QFrame#lanPanel QLabel#lanSection {{ font-size:12px; font-weight:700; }}
+            QFrame#lanPanel QLabel#lanTransferCount {{ background:{c['control']};border:1px solid {border};border-radius:7px;padding:0 7px;color:{color};font-size:11px;font-weight:600; }}
             QFrame#lanPanel QLabel#lanMuted {{ color:{muted}; }}
             QFrame#lanPanel QLabel#lanStatus {{ color:{c['red']}; font-size:11px; padding:2px 20px; }}
             QFrame#lanSendColumn {{ background:{faint}; border:0; border-right:1px solid {c['divider']}; }}
@@ -1161,7 +1260,7 @@ class LanPanel(QFrame):
             QFrame#lanPanel QLabel#lanHistoryState[statusKind="cancelled"] {{ color:{c['orange']};border-color:{c['orange']}; }}
             QFrame#lanPanel QLabel#lanHistoryState[statusKind="failed"] {{ color:{c['red']};border-color:{c['red']}; }}
             QFrame#lanPanel QLabel#lanHistoryState[statusKind="other"] {{ color:{muted}; }}
-            QFrame#lanPanel QPushButton#lanHistoryRemove {{ background:transparent; border:0; border-radius:6px; color:{c['muted']}; padding:0; font-size:12px; }}
+            QFrame#lanPanel QPushButton#lanHistoryRemove {{ background:{c['control']}; border:1px solid {border}; border-radius:6px; color:{c['muted']}; padding:0; font-size:12px; }}
             QFrame#lanPanel QPushButton#lanHistoryRemove:hover {{ background:{c['hover']}; color:{color}; }}
             QFrame#lanDropZone {{ background:transparent; border:0; }}
             QFrame#lanDropZone QLabel#lanDropTitle {{ font-size:12px; font-weight:500; color:{color}; }}
@@ -1199,8 +1298,8 @@ class LanPanel(QFrame):
             QFrame#lanPanel QLabel#lanHistoryState {{font-size:10px;}}
             QFrame#lanPanel QPushButton, QFrame#lanPanel QComboBox {{font-size:13px;}}
             QFrame#lanPanel QLineEdit {{font-size:12px;}}
-            QScrollArea#lanSendScroll, QScrollArea#lanQueueScroll, QScrollArea#lanHistoryScroll {{background:transparent;border:0;}}
-            QScrollArea#lanQueueScroll > QWidget > QWidget, QScrollArea#lanHistoryScroll > QWidget > QWidget {{background:transparent;}}
+            QScrollArea#lanSendScroll, QScrollArea#lanQueueScroll, QScrollArea#lanHistoryScroll, QScrollArea#lanActivityScroll {{background:transparent;border:0;}}
+            QScrollArea#lanQueueScroll > QWidget > QWidget, QScrollArea#lanHistoryScroll > QWidget > QWidget, QScrollArea#lanActivityScroll > QWidget > QWidget {{background:transparent;}}
             QScrollBar:vertical {{background:transparent;width:6px;margin:2px 0;}}
             QScrollBar::handle:vertical {{background:{c['input_border']};border-radius:3px;min-height:24px;}}
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{height:0;}}
@@ -1208,7 +1307,10 @@ class LanPanel(QFrame):
         '''
         from native_ui_common import readable_qss
         style=readable_qss(style)
+        from input_focus import focus_qss,install_focus_tree
+        style+=focus_qss('QFrame#lanPanel',c['input_border'])
         self.setStyleSheet(style)
+        install_focus_tree(self,theme=lambda:self._applied_theme)
         for row in self._rows.values():
             row['cancel'].dark = self._dark; row['cancel'].update()
             if row.get('offer_icon'):
@@ -1383,7 +1485,7 @@ class LanPanel(QFrame):
         visible = rows[first:first+2]
         for row in rows: row['frame'].setVisible(row in visible)
         self.transfers_empty.setVisible(not rows)
-        self.transfer_count.setText(f"{sum(not row.get('finished') for row in rows)} 项进行中")
+        count=len(rows);self.transfer_count.setText(str(count));self.transfer_count.setAccessibleName(f'{count} 项进行中')
         self.previous_page.setVisible(pages > 1)
         self.next_page.setVisible(pages > 1)
         self.page_label.setVisible(pages > 1)
@@ -1631,13 +1733,13 @@ class _TransferDropRouter(QObject):
             zone.dragLeaveEvent(event);return True
         paths=zone._paths(event)
         if not paths:
-            zone._active=False;zone._ants_timer.stop();zone.update();event.ignore();return True
+            zone.set_drag_active(False);event.ignore();return True
         if kind==QEvent.Type.Drop:
             zone.dragLeaveEvent(event);self.dialog.panel.queue_paths(paths)
+            point=watched.mapTo(self.dialog,event.position().toPoint())
+            self.dialog.drop_feedback.play(paths,point,point)
         else:
-            zone._active=True
-            if not reduced_motion():zone._ants_timer.start()
-            zone.update()
+            zone.set_drag_active(True)
         event.setDropAction(Qt.DropAction.CopyAction);event.accept();return True
 
 
@@ -1670,6 +1772,7 @@ class LanDialog(QDialog):
             if lower_shelf_after_reveal(self):self._drop_order_raised=False
 
     def hideEvent(self,event):
+        self.drop_feedback.cancel()
         if hasattr(self,'_drop_order_timer'):self._drop_order_timer.stop()
         self._release_drop_order()
         super().hideEvent(event)
@@ -1695,7 +1798,7 @@ class LanDialog(QDialog):
         self._wan=getattr(service,'mode','lan')=='wan'
         self.setObjectName('lanDialog'); self.setWindowTitle('FlickDock · 文件互传')
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setModal(False); self.resize(980, 744); self.setMinimumSize(824, 660)
+        self.setModal(False); self.resize(980, 792); self.setMinimumSize(824, 660)
         root = QVBoxLayout(self); root.setContentsMargins(22, 22, 22, 22)
         self.card = QFrame(self); self.card.setObjectName('lanDialogCard')
         from collections import OrderedDict
@@ -1725,25 +1828,29 @@ class LanDialog(QDialog):
         title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         title_row.addWidget(title)
         self.mode_bar=QFrame(self.card);self.mode_bar.setObjectName('transferModeBar')
-        self.mode_bar.setFixedHeight(48)
-        mode_row=QHBoxLayout(self.mode_bar);mode_row.setContentsMargins(20,8,20,8);mode_row.setSpacing(12)
+        self.mode_bar.setFixedHeight(50)
+        mode_row=QVBoxLayout(self.mode_bar);mode_row.setContentsMargins(20,8,20,8);mode_row.setSpacing(4)
         self.mode_segment=QFrame(self.mode_bar);self.mode_segment.setObjectName('transferModeSegmentGroup')
-        self.mode_segment.setFixedSize(218,SEGMENT_HEIGHT)
+        self.mode_segment.setFixedHeight(34)
+        self.mode_segment.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
         self.mode_segment.setAccessibleName('传输方式')
         mode_layout=QHBoxLayout(self.mode_segment);mode_layout.setContentsMargins(2,2,2,2);mode_layout.setSpacing(0)
         self.mode_group=QButtonGroup(self);self.mode_group.setExclusive(True);self.mode_buttons={}
         for mode,label in (('lan','局域网传输'),('wan','远程传输')):
             control=_button(label,self.mode_segment);control.setCheckable(True);control.setChecked((mode=='wan')==self._wan)
-            control.setFixedHeight(SEGMENT_BUTTON_HEIGHT)
+            control.setFixedHeight(28)
+            control.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
             control.setObjectName('transferModeSegment');self.mode_group.addButton(control);self.mode_buttons[mode]=control
             control.clicked.connect(lambda checked=False,mode=mode:self.mode_selected.emit(mode))
-            mode_layout.addWidget(control)
+            mode_layout.addWidget(control,1)
         from ui_transitions import SegmentIndicator
         self.mode_indicator=SegmentIndicator(self.mode_segment,self.mode_buttons.values())
         self.mode_indicator.set_theme(self._theme)
         mode_row.addWidget(self.mode_segment);self.mode_row=mode_row
         self.back_button=_button('返回总览',self.title_bar);self.back_button.setObjectName('lanDialogBack')
-        self.back_button.clicked.connect(lambda:self._navigate('overview'));title_row.addWidget(self.back_button);title_row.addStretch(1)
+        self.back_button.setFixedHeight(28)
+        self.back_button.clicked.connect(lambda:self._navigate('overview'));title_row.addWidget(self.back_button)
+        self.status_title_layout=title_row
         close = _CloseButton('', self.title_bar); close.setObjectName('lanDialogClose')
         self.close_button=close
         close.setAutoDefault(False);close.setDefault(False);close.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -1764,15 +1871,20 @@ class LanDialog(QDialog):
         self.drop_router=_TransferDropRouter(self)
         from window_chrome import WindowChrome
         self.chrome=WindowChrome(self,self.title_bar,settings,'transfer',surface=self.card)
+        from transfer_drop_feedback import DropFeedback
+        self.drop_feedback=DropFeedback(self)
 
     def _mount_mode_status(self):
         for panel in self._panels.values():
-            label=panel.status_label;self.mode_row.removeWidget(label)
+            label=panel.status_label;self.status_title_layout.removeWidget(label)
             if panel is not self.panel:
                 label.setParent(panel);label.hide()
         label=self.panel.status_label;self.panel.layout().removeWidget(label)
-        label.setParent(self.mode_bar);label.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Preferred)
-        self.mode_row.addWidget(label,1);label.set_theme(self._theme);label.show()
+        label.setParent(self.title_bar)
+        policy=QSizePolicy(QSizePolicy.Ignored,QSizePolicy.Fixed);policy.setRetainSizeWhenHidden(True);label.setSizePolicy(policy)
+        label.setMinimumWidth(0);label.setFixedHeight(20);label.setAlignment(Qt.AlignLeft|Qt.AlignVCenter)
+        self.status_title_layout.insertWidget(self.status_title_layout.indexOf(self.back_button)+1,label,1)
+        label.set_theme(self._theme);label.show()
 
     def _navigate(self, target):
         self._navigate_after_close=target
@@ -1892,7 +2004,7 @@ class LanDialog(QDialog):
             QLabel#lanDialogTitle {{ color:{ink}; font:700 15px '{font_family}'; background:transparent; border:0; }}
             QPushButton#lanDialogClose,QPushButton#lanDialogBack {{ background:transparent; color:{c['secondary']}; border:0; border-radius:8px;
                                           font:12px '{font_family}'; padding:0; }}
-            QPushButton#lanDialogBack {{background:{c['control']};border:1px solid {c['border']};padding:4px 10px;min-height:24px;}}
+            QPushButton#lanDialogBack {{background:{c['control']};border:1px solid {c['border']};padding:0 10px;min-height:0;}}
             QFrame#transferModeSegmentGroup {{background:{'rgba(255,255,255,10)' if dark else 'rgba(0,0,0,10)'};border:1px solid {'rgba(255,255,255,18)' if dark else 'rgba(0,0,0,18)'};border-radius:9px;}}
             QPushButton#transferModeSegment {{background:transparent;color:{c['secondary']};border:0;border-radius:5px;padding:0 10px;font:11px '{font_family}';}}
             QPushButton#transferModeSegment:hover {{background:{hover};}}

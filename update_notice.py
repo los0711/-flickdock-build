@@ -2,7 +2,7 @@
 from __future__ import annotations
 import sys
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, Signal,QEvent,QRectF
+from PySide6.QtCore import Qt, Signal,QEvent,QRectF
 from PySide6.QtGui import QColor, QCursor, QGuiApplication,QPainter
 from PySide6.QtWidgets import (QFrame, QGraphicsDropShadowEffect, QHBoxLayout,
                                QLabel, QPushButton, QVBoxLayout, QWidget,QScrollArea,QApplication,QProgressBar)
@@ -88,9 +88,8 @@ class UpdateNotice(QWidget):
         actions.addWidget(self.update_button)
         content.addLayout(actions)
 
-        self._appearance = QPropertyAnimation(self, b"windowOpacity", self)
-        self._appearance.setDuration(170)
-        self._appearance.setEasingCurve(QEasingCurve.Type.OutCubic)
+        from ui_transitions import WindowFade
+        self._window_fade=WindowFade(self)
         self.apply_theme(theme)
 
     def apply_theme(self, theme):
@@ -116,6 +115,8 @@ class UpdateNotice(QWidget):
         """)
 
     def dismiss(self):
+        from ui_transitions import close_snapshot
+        close_snapshot(self)
         self.dismissed.emit();self.hide()
 
     def set_state(self,state,version='',received=0,total=0,error='',**details):
@@ -196,6 +197,8 @@ class UpdateNotice(QWidget):
         version = str(version).strip()[:32]
         if not version:
             return
+        from ui_transitions import finish_closing_snapshot
+        finish_closing_snapshot(self);self._window_fade.reopen()
         self.version_label.setText(f"v{version} 已发布")
         self.title.setText(f"发现新版本 FlickDock v{version}")
         self.update_button.setAccessibleName(f"立即更新到 {version}")

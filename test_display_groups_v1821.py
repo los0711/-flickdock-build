@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch,Mock
 from PySide6.QtCore import Qt,QPoint,QRect
+from PySide6.QtWidgets import QLabel
 from PySide6.QtTest import QTest
 from test_html_native_workspace import APP,flush
 from app_settings import SettingsStore,SettingsDialog
@@ -109,6 +110,34 @@ class DisplayTests(unittest.TestCase):
                 self.assertLessEqual(view.body.height(),max(view.scroll.viewport().height(),last.geometry().bottom()+32))
         finally:view.hide();view.deleteLater();flush()
 
+    def test_display_selector_frames_keep_spacing_in_both_themes_and_narrow_windows(self):
+        view=SettingsDialog(self.store);view.show();view.show_settings_category('displays');flush()
+        try:
+            rows=list(view.display_trigger_editor.rows.values())
+            for row in rows:row.set_expanded(True,animate=False)
+            for theme in ('light','dark'):
+                view.apply_theme(theme)
+                for size in ((700,500),(892,632),(1100,760)):
+                    view.resize(*size)
+                    for _ in range(6):flush()
+                    for row in rows:
+                        for panel,control in ((row.edge_panel,row.edge),(row.color_panel,row.color_button)):
+                            self.assertEqual(panel.objectName(),'displayTriggerField')
+                            self.assertIs(control.parentWidget(),panel)
+                            self.assertGreaterEqual(control.y(),10)
+                            self.assertGreaterEqual(panel.height()-control.geometry().bottom()-1,10)
+                            self.assertTrue(panel.rect().contains(control.geometry()))
+                            for label in panel.findChildren(QLabel):
+                                self.assertGreaterEqual(label.height(),label.fontMetrics().height())
+                                self.assertGreaterEqual(label.width(),label.fontMetrics().horizontalAdvance(label.text()))
+                            self.assertTrue(row.details.rect().contains(QRect(panel.mapTo(row.details,QPoint()),panel.size())))
+                        if size[0]==700:self.assertLess(row.edge_panel.geometry().bottom(),row.color_panel.geometry().top())
+                        if size[0]==1100:self.assertLess(row.edge_panel.geometry().right(),row.color_panel.geometry().left())
+                        fields_bottom=max(panel.geometry().bottom() for panel in row.field_panels)
+                        self.assertGreaterEqual(row.panels[0].geometry().top()-fields_bottom-1,14)
+                    self.assertTrue(view.surface.rect().contains(QRect(view.save_button.mapTo(view.surface,QPoint()),view.save_button.size())))
+        finally:view.hide();view.deleteLater();flush()
+
     def test_all_enabled_draft_handles_receive_geometry_and_are_shown(self):
         from flickdock import ShelfManager,DockHandle
         from dock_geometry import trigger_rect
@@ -128,6 +157,7 @@ class DisplayTests(unittest.TestCase):
         for edge in manager.edges.values():self.assertTrue(edge.visible)
         self.assertEqual(manager.edges[display_id(self.second)].rect.left(),-1280)
         ShelfManager.preview_dock(manager,None);self.assertFalse(manager.edges[display_id(self.second)].visible)
+
 
 
 if __name__=='__main__':unittest.main()

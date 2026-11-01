@@ -1,6 +1,6 @@
 """One guided entry for actual macOS grants, without broad or automatic permission changes."""
 from PySide6.QtCore import Qt,QTimer
-from PySide6.QtWidgets import QLabel,QPushButton,QHBoxLayout,QVBoxLayout,QFrame
+from PySide6.QtWidgets import QApplication,QLabel,QPushButton,QHBoxLayout,QVBoxLayout,QFrame
 from app_settings import ReferenceModalDialog,SettingsCloseButton
 from native_ui_common import colors
 from mac_permissions import MacPermissionBackend
@@ -12,7 +12,7 @@ class MacPermissionsDialog(ReferenceModalDialog):
           ('input','输入监控','仅在系统仍阻止跨应用按键监听时需要。'),
           ('network','本地网络','用于发现附近设备及局域网互传。'),
           ('files','文件与文件夹','在选择需要读取的文件、接收目录时按需授权。'))
-    LABELS={'allowed':'已允许','legacy':'系统无需单独授权','denied':'未允许','ask':'需要设为始终允许',
+    LABELS={'allowed':'已开启','legacy':'系统无需单独授权','denied':'未开启','ask':'需要设为始终允许',
             'default':'尚未设置','unknown':'需在系统中确认','not_required':'当前监听已可用',
             'observed':'已发现附近设备','on_demand':'按所选文件授权'}
     def __init__(self,manager,parent=None,*,backend=None):
@@ -33,6 +33,14 @@ class MacPermissionsDialog(ReferenceModalDialog):
         actions.addStretch();self.setup_button=QPushButton('检查并设置',self.body);self.setup_button.setAutoDefault(False);self.setup_button.clicked.connect(self.advance);actions.addWidget(self.setup_button);self.body_layout.addLayout(actions)
         self._theme=None;self.apply_theme()
         self.timer=QTimer(self);self.timer.setInterval(2000);self.timer.timeout.connect(self.refresh);self.refresh()
+        app=QApplication.instance()
+        if app is not None:app.applicationStateChanged.connect(self._application_state_changed)
+
+    def _application_state_changed(self,state):
+        if state==Qt.ApplicationActive and self.isVisible():
+            # Read afresh on return from System Settings, without waiting for
+            # a polling tick or trusting the fact that Settings was opened.
+            QTimer.singleShot(0,self,self.refresh)
 
     def apply_theme(self):
         self._theme=self.manager.settings.theme;c=colors(self._theme);self.set_surface_theme(self._theme);self.close_button.dark=self._theme=='dark'
@@ -46,11 +54,23 @@ class MacPermissionsDialog(ReferenceModalDialog):
         if client:client.recheck_native_access(force=True)
         lan=getattr(self.manager,'lan',None)
         available=bool(pointer and pointer.backend and pointer.backend.available)
+        self._pointer_available=available
         self.states=self.backend.inspect(pointer_ok=available,peers=bool(lan and lan.peers()))
         for kind,(label,button) in self.rows.items():
             state=self.states[kind];label.setText(self.LABELS.get(state,'待检测'))
             if state=='unknown' and kind!='network':label.setText('无法检测，请查看系统设置')
+            c=colors(self.manager.settings.theme)
+            tint=c['green'] if state in ('allowed','legacy','not_required','observed') else c['red'] if state in ('denied','ask','default') else c['secondary']
+            label.setStyleSheet(f'color:{tint};background:transparent;border:0;')
             button.setText('查看设置' if state in ('allowed','legacy','not_required','observed') else '设置')
+        if available and self.states['input']=='denied':
+            self.rows['input'][0].setText('未开启 · 当前功能可用')
+        guided_denied=bool(('accessibility' in self._guided or 'input' in self._guided) and not available and any(self.states[k]=='denied' for k in ('accessibility','input')))
+        if guided_denied:
+            self.hint.setText('当前进程尚未获得相应权限。若系统开关已开启，请关闭并重新打开 FlickDock；仍未生效时，检查授权的是当前安装位置的 FlickDock，而非旧版本。')
+        elif getattr(self,'_guided_denied',False):
+            self.hint.setText('跨应用粘贴监听已恢复。' if available else '权限状态已更新，请检查尚未允许的项目。')
+        self._guided_denied=guided_denied
         pending=(pointer is not None and not available and self.states['accessibility']=='allowed'
                 and self.states['input'] in ('allowed','legacy'))
         if getattr(self,'_listener_pending',False) and not pending:
@@ -60,7 +80,7 @@ class MacPermissionsDialog(ReferenceModalDialog):
                 and self.states['input'] in ('allowed','legacy')):
             self.rows['input'][0].setText('权限已允许，监听待恢复')
             self.hint.setText('权限已允许，但跨应用粘贴监听尚未恢复。可重新检测；若系统要求，请关闭并重新打开 FlickDock。')
-        if all(self.states[k] in ('allowed','legacy','not_required') for k in ('clipboard','accessibility','input')):
+        if all(self.states[k] in ('allowed','legacy','not_required') or k=='input' and available for k in ('clipboard','accessibility','input')):
             self.setup_button.setText('检查其他权限' if 'network' not in self._guided else '完成')
         else:self.setup_button.setText('继续设置' if self._guided else '检查并设置')
 
@@ -78,6 +98,7 @@ class MacPermissionsDialog(ReferenceModalDialog):
     def advance(self):
         self.refresh()
         for kind in ('clipboard','accessibility','input'):
+            if kind=='input' and self._pointer_available:continue
             if self.states[kind] not in ('allowed','legacy','not_required'):self.request(kind);return
         if 'network' not in self._guided and self.states['network']!='observed':self.request('network');return
         self.close()

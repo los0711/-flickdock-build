@@ -5,7 +5,8 @@ import tempfile,unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock,patch
-from PySide6.QtCore import QEvent,QPoint,QRect,Qt,QObject
+from PySide6.QtCore import QEvent,QPoint,QPointF,QRect,Qt,QObject
+from PySide6.QtGui import QEnterEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QToolTip
 from test_html_native_workspace import APP,flush,until
@@ -230,17 +231,20 @@ class FeedbackTests(unittest.TestCase):
                 return count
             for kind in ('dock','drag'):
                 shelf.presentation_kind=kind
-                APP.sendEvent(zone,QEvent(QEvent.Leave));flush();normal=blue_pixels()
-                APP.sendEvent(zone,QEvent(QEvent.Enter));flush()
+                motion=zone.icon.drop_motion
+                APP.sendEvent(zone,QEvent(QEvent.Leave));until(lambda:motion.value<.001);normal=blue_pixels()
+                point=zone.icon.mapTo(zone,zone.icon.empty_drop_rect().center().toPoint())
+                APP.sendEvent(zone,QEnterEvent(QPointF(point),QPointF(zone.mapTo(zone.window(),point)),QPointF(zone.mapToGlobal(point))))
+                self.assertTrue(motion.hovered);until(lambda:motion.value>.999)
                 self.assertNotIn('#0A84FF',zone.styleSheet())
                 self.assertGreater(blue_pixels(),normal+15)
                 self.assertIsNone(shelf.popup)
-                APP.sendEvent(zone,QEvent(QEvent.Leave));flush();self.assertEqual(blue_pixels(),normal)
+                APP.sendEvent(zone,QEvent(QEvent.Leave));until(lambda:motion.value<.001);self.assertEqual(blue_pixels(),normal)
         finally:fixture.tearDown()
 
     def test_return_from_transfer_keeps_same_card_bounds_without_morph_or_edge_reveal(self):
         fixture=_workspace.WorkspaceTests();fixture.setUp();service=LanTransferService(discovery=False)
-        dialog=LanDialog(service,fixture.settings);dialog.move(300,160);dialog.show();flush()
+        dialog=LanDialog(service,fixture.settings);dialog.show();flush();dialog.move(300,160);flush()
         manager=flickdock.ShelfManager.__new__(flickdock.ShelfManager);manager.shelf=fixture.shelf
         manager.app=APP;manager._quitting=False
         manager.motion=fixture.manager.motion
@@ -248,7 +252,12 @@ class FeedbackTests(unittest.TestCase):
         dialog.overview_requested.connect(lambda:manager.show_overview_from_transfer(dialog))
         previous=QRect(200,100,1148,707)
         manager._overview_return_rect=previous
-        expected=previous.adjusted(14,7,-14,-20)
+        # Back keeps the overview size and uses the transfer card the user just
+        # moved, rather than the overview's old saved position.
+        anchor=dialog.card.mapToGlobal(QPoint())
+        target=QRect(anchor,previous.size())
+        self.assertTrue(_workspace.Screen().availableGeometry().contains(target))
+        expected=target.adjusted(14,7,-14,-20)
         try:
             with patch.object(fixture.shelf,'show_transient',side_effect=AssertionError('Edge reveal called')):
                 QTest.mouseClick(dialog.back_button,Qt.LeftButton);flush()

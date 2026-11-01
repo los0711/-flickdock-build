@@ -56,11 +56,16 @@ with tempfile.TemporaryDirectory(prefix='flickdock-continuity-') as tmp:
     shadow_delta=max(abs(a-b) for a,b in zip(before,after) if a<80 and b<80)
     assert edge_delta<=1 and shadow_delta<=5,(edge_delta,shadow_delta,before,after)
     rect=shelf.visual_geometry();transform=snapshot.presentation_transform(rect)
-    for index,button in enumerate((shelf.pin_button,shelf.expand_button,shelf.menu_button,shelf.close_button)):
-        center=transform.map(QRectF(rect.x()+rect.width()-176+index*38-shelf.x(),
-                                    rect.y()+15-shelf.y(),32,32).center())
+    # All six are the same live controls in compact and overview. The previous
+    # four-control fixture predated the network/cloud shared header contract.
+    controls=(shelf.network_status,shelf.cloud_button,shelf.pin_button,shelf.expand_button,shelf.menu_button,shelf.close_button)
+    for index,button in enumerate(controls):
+        x=rect.width()-28-16-len(controls)*38+index*38+6
+        center=transform.map(QRectF(rect.x()+14+x-shelf.x(),
+                                    rect.y()+17-shelf.y(),32,32).center())
         assert abs(button.x()+16-center.x())<=.51 and abs(button.y()+16-center.y())<=.51
-        assert button._presentation_scale==(.96,.93)
+        scale=(button.sx,button.sy) if button is shelf.network_status else button._presentation_scale
+        assert scale==(.96,.93)
     widths=[];heights=[]
     for ms in range(231):
         morph._frame(morph.animation.easingCurve().valueForProgress(ms/230))

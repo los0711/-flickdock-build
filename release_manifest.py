@@ -31,6 +31,9 @@ class ReleaseError(ValueError):
 VERSION_RE=re.compile(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z')
 HASH_RE=re.compile(r'[0-9a-f]{64}\Z')
 RUNTIME_SOURCES=(
+    'mac_status_drop.py','ci_mac_status_drop.py',
+    'clipboard_notice_motion.py','clipboard_popup_motion.py',
+    'input_focus.py','toggle_motion.py','content_entrance.py','transfer_drop_feedback.py','transfer_item_motion.py','drop_target_motion.py',
     'flickdock.py','app_settings.py','async_images.py','capture_files.py',
     'download_writer.py','file_metadata.py','transfer_entry.py','gui_watchdog.py',
     'confirm_clear.py','content_grid.py','content_resolver.py','content_stack.py',
@@ -48,6 +51,14 @@ RUNTIME_SOURCES=(
     'wan_transfer.py','webrtc_stream.py','nearby_transport.py','verify_wan.py','windows_network.py',
 )
 MAINTAINED_TESTS=(
+    'test_dynamic_reduce_motion_v1823.py','test_dynamic_reduce_surfaces_v1823.py','test_menu_dynamic_reduce_v1823.py',
+
+    'test_mac_status_drop_v1823.py',
+    'test_clipboard_notice_motion_v1823.py','test_clipboard_popup_motion_v1823.py',
+    'test_drop_target_motion_v1823.py',
+    'test_popup_motion_v1823.py','test_transfer_item_motion_v1823.py',
+    'test_cached_surface_v1823.py',
+    'test_ui_followup_v1823.py','test_stack_spread_v1823.py','test_input_motion_v1823.py','test_content_entrance_v1823.py','test_transfer_drop_feedback_v1823.py',
     'test_settings_categories_v1823.py','test_update_exit_v1823.py','test_functional_layout_v1823.py','test_ui_polish_v1823.py',
     'test_clipboard_origin_v1823.py',
     'test_transfer_interaction_v1823.py',
@@ -90,6 +101,7 @@ MAINTAINED_TESTS=(
     'test_remote_transfer_actions_v1812.py','test_wan_transfer_v1816.py',
 )
 SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
+
     '.github/workflows/native-clipboard.yml','ci_clipboard_origin.py','ci_transfer_navigation.py',
     'FlickDock.spec','FlickDock.iss','version_info.txt','ChineseSimplified.isl','windows-network.ps1',
     'flickdock.ico','THIRD_PARTY_NOTICES.md','font_manifest.json','bundle_policy.py',

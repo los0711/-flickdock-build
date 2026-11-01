@@ -82,13 +82,15 @@ try:
                 assert opaque_pixels(single, 98, 122) > 1500 * ratio * ratio
                 assert color_at(single, 70, 101).name() == ui_theme.color("surface")
                 multi = drag_pixmap(repository, refs, dpr=ratio)
-                assert bytes(multi.toImage().constBits()) != bytes(single.toImage().constBits())
+                multi_image=multi.toImage();single_image=single.toImage()
+                assert bytes(multi_image.constBits()) != bytes(single_image.constBits())
                 actual = drag_pixmap(repository, [refs[1]], dpr=ratio)
                 assert color_at(actual, 70, 50).name() == "#31b67c"
                 cached_result = drag_pixmap(repository, [refs[1]], {refs[1]: cached}, dpr=ratio)
                 assert color_at(cached_result, 70, 50).name() == "#8157c2"
                 empty = drag_pixmap(repository, [], dpr=ratio)
-                assert all(value == 0 for value in bytes(empty.toImage().constBits()))
+                empty_image=empty.toImage()
+                assert all(value == 0 for value in bytes(empty_image.constBits()))
         print("PASS colorful single/multiple stack, real/cached thumbnails and transparent edges at four DPI scales")
         print("PASS white/dark filename backgrounds are opaque and label pixels remain in a 140×124 DIP canvas")
 

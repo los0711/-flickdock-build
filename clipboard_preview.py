@@ -1,8 +1,8 @@
 """Two small views of the same current clipboard; no second clipboard watcher."""
 from pathlib import Path
-from PySide6.QtCore import QObject,Signal,QThreadPool,QBuffer,QIODevice,QSize,Qt,QRectF
-from PySide6.QtGui import QImage,QImageReader,QPainter,QPainterPath,QColor,QPen
-from PySide6.QtWidgets import QPushButton,QLabel,QHBoxLayout,QPlainTextEdit,QStackedWidget
+from PySide6.QtCore import QObject,Signal,QThreadPool,QBuffer,QIODevice,QSize,Qt,QRectF,QPoint
+from PySide6.QtGui import QImage,QImageReader,QPainter,QPainterPath,QColor,QPen,QPixmap
+from PySide6.QtWidgets import QPushButton,QLabel,QHBoxLayout,QPlainTextEdit,QStackedWidget,QDialog,QWidget
 from app_settings import ReferenceModalDialog,SettingsCloseButton
 from native_ui_common import colors,icon
 from sync_files import DiskWork
@@ -75,8 +75,16 @@ class ClipboardButton(QPushButton):
         self.setAccessibleName('放大查看剪贴板');self.clicked.connect(self._open);self.refresh()
 
     def _open(self):
+        dialog=getattr(self.manager,'clipboard_preview_dialog',None)
+        needs_permission=bool(self.presenter is not None and self.presenter.state.get('permission_required'))
+        if not needs_permission and dialog is not None and getattr(dialog,'owner_window',None) is self.window() and dialog._popup_motion.source is self and dialog._popup_motion.target:
+            dialog.dismiss();return
         action=getattr(self.manager,'show_clipboard_preview',None)
-        if action:action()
+        if action:
+            from inspect import signature
+            try:signature(action).bind(self)
+            except (TypeError,ValueError):action()
+            else:action(self)
 
     def refresh(self):
         presenter=getattr(self.manager,'clipboard_presenter',None)
@@ -123,11 +131,62 @@ class ClipboardPreview(ReferenceModalDialog):
         self.body_layout.addLayout(head)
         self.content=QStackedWidget(self.body);self.content.setMinimumHeight(260);self.body_layout.addWidget(self.content)
         self.text=QPlainTextEdit(self.content);self.text.setReadOnly(True);self.content.addWidget(self.text)
+        from input_focus import install_focus
+        install_focus(self.text,theme=lambda:self.manager.settings.theme)
         from image_preview import ImagePreview
         self.image=ImagePreview(self.content);self.content.addWidget(self.image)
         self.info=QLabel(self.content);self.info.setWordWrap(True);self.info.setAlignment(Qt.AlignCenter);self.content.addWidget(self.info)
         self.status=QLabel(self.body);self.body_layout.addWidget(self.status)
+        # Retain the original content/scroll tree, but lay its surface out at
+        # one final size inside a larger fixed native presentation reservation.
+        from shiboken6 import delete
+        self.layout().removeWidget(self.surface);delete(self.layout())
+        self._window_fade.automatic=False;self.removeEventFilter(self._window_fade)
+        from clipboard_popup_motion import ClipboardPopupMotion
+        self._popup_motion=ClipboardPopupMotion(self);self._closing_result=QDialog.Rejected
         self.presenter.changed.connect(self.refresh);self.refresh()
+
+    @property
+    def owner_window(self):return self._popup_motion.owner
+
+    def open_from(self,source=None):
+        if source is None:
+            shelf=self.manager.shelf;popup=getattr(shelf,'popup',None)
+            source=getattr(popup,'clipboard_button',None) if shelf.expanded and popup is not None else shelf.zones['permanent'].clipboard_button
+        self._popup_motion.open(source)
+
+    def show(self):self.open_from()
+
+    def _show_host(self):QDialog.show(self)
+
+    def _complete_close(self):
+        self.presenter._large_requested=False;QDialog.done(self,self._closing_result)
+
+    def dismiss(self,*,immediate=False):self._popup_motion.dismiss(immediate=immediate)
+
+    def contains_global(self,point):return self._popup_motion.contains_global(point)
+
+    def done(self,result):
+        self._closing_result=result;self.dismiss()
+
+    def adjustSize(self):
+        if not hasattr(self,'_popup_motion'):return super().adjustSize()
+        self._layout_surface()
+
+    def _layout_surface(self):
+        if self.surface.layout():self.surface.layout().activate()
+        self.body_layout.activate()
+
+    def _capture_surface(self):
+        self._layout_surface();dpr=self.devicePixelRatioF()
+        image=QPixmap(round(self.surface.width()*dpr),round(self.surface.height()*dpr));image.setDevicePixelRatio(dpr);image.fill(Qt.transparent)
+        p=QPainter(image);p.setRenderHint(QPainter.Antialiasing)
+        rect=QRectF(self.surface.rect()).adjusted(.5,.5,-.5,-.5)
+        p.setBrush(QColor('#1C1C1E' if self._surface_dark else '#FFFFFF'))
+        import sys
+        radius=16 if sys.platform=='darwin' else 10
+        p.setPen(QPen(QColor(255,255,255,20) if self._surface_dark else QColor(0,0,0,23),1));p.drawRoundedRect(rect,radius,radius)
+        self.surface.render(p,QPoint(),renderFlags=QWidget.DrawChildren);p.end();return image
 
     def refresh(self):
         model=self.presenter;value=model.state.get('value');phase=model.state.get('phase','local')
@@ -147,9 +206,19 @@ class ClipboardPreview(ReferenceModalDialog):
         else:
             self.info.setText('正在准备图片预览…' if value[0]=='image' else '\n'.join(Path(path).name for path in value[1]))
             self.content.setCurrentWidget(self.info)
+        if hasattr(self,'_popup_motion'):self._popup_motion.refresh_snapshot()
 
     def showEvent(self,event):
-        self.presenter.request_large();self.refresh();super().showEvent(event)
+        self.presenter.request_large();self.refresh();QDialog.showEvent(self,event)
+        owner=self.owner_window
+        if owner is not None and self.windowHandle() and owner.windowHandle():self.windowHandle().setTransientParent(owner.windowHandle())
+        from platform_native import remove_host_window_shadow
+        remove_host_window_shadow(self)
+
+    def paintEvent(self,event):
+        if hasattr(self,'_popup_motion') and self._popup_motion.transitioning:
+            painter=QPainter(self);self._popup_motion.paint(painter);painter.end()
+        else:super().paintEvent(event)
 
     def closeEvent(self,event):
-        self.presenter._large_requested=False;super().closeEvent(event)
+        event.ignore();self.done(QDialog.Rejected)

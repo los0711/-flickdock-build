@@ -10,15 +10,15 @@ def main():
     output=Path('transfer-navigation-native.json').resolve();trace=[];checks=[]
     with tempfile.TemporaryDirectory(prefix='flickdock-navigation-') as directory:
         os.environ['APPDATA']=directory;os.environ['XDG_CONFIG_HOME']=directory
-        from PySide6.QtCore import QTimer,Qt,QMimeData,QUrl
-        from PySide6.QtGui import QKeySequence
+        from PySide6.QtCore import QTimer,Qt,QMimeData,QUrl,QPoint,QRect
+        from PySide6.QtGui import QKeySequence,QGuiApplication
         from PySide6.QtTest import QTest
         from PySide6.QtWidgets import QApplication
         import flickdock
         app=QApplication([]);flickdock.load_font(app)
         manager=flickdock.ShelfManager(app,cocoa_smoke=True);manager.timer.start(20)
         manager.shelf.pinned=False
-        started=time.monotonic()
+        started=time.monotonic();back_locations=[]
         def sample(event='frame'):
             row=dict(ms=round((time.monotonic()-started)*1000),event=event,
                 app_state=app.applicationState().name,shelf_visible=manager.shelf.isVisible(),
@@ -40,10 +40,21 @@ def main():
             for _ in range(2):
                 manager.show_overview();wait(lambda:manager.shelf.isVisible() and manager.shelf.expanded)
                 manager.show_lan_dialog();wait(lambda:manager.lan_dialog.isVisible())
+                dialog=manager.lan_dialog
+                area=dialog.screen().availableGeometry()
+                dialog.move(area.topLeft()+QPoint(40,50));spin(.04)
+                expected=QRect(manager._overview_return_rect)
+                expected.moveTopLeft(dialog.card.mapToGlobal(QPoint()))
+                expected.setSize(expected.size().boundedTo(area.size()))
+                expected.moveLeft(max(area.left(),min(expected.left(),area.right()-expected.width()+1)))
+                expected.moveTop(max(area.top(),min(expected.top(),area.bottom()-expected.height()+1)))
                 manager.shelf.hide_immediately();spin(.05);sample('before-back')
                 manager.lan_dialog.back_button.click()
                 wait(lambda:not manager.lan_dialog.isVisible());spin(.45);sample('after-back')
                 assert manager.shelf.isVisible() and manager.shelf.expanded,'Back closed transfer without a visible overview'
+                actual=manager.shelf.visual_geometry()
+                assert actual==expected,dict(actual=actual.getRect(),expected=expected.getRect())
+                back_locations.append(dict(actual=actual.getRect(),expected=expected.getRect()))
                 checks.append('back restores visible unpinned overview')
             manager.show_lan_dialog();wait(lambda:manager.lan_dialog.isVisible());dialog=manager.lan_dialog
             original=Path(directory)/'original.bin';original.write_bytes(b'original native paste fixture')
@@ -111,6 +122,7 @@ def main():
             checks.append('rename is natively above compact and overview with input focus; cancel preserves original')
             report=dict(ok=True,checks=checks,trace=trace,platform=sys.platform,real_native_windows=True)
             report['rename_native_order']=rename_order
+            report['back_locations']=back_locations
         except Exception as error:
             report=dict(ok=False,checks=checks,trace=trace,platform=sys.platform,error=str(error));raise
         finally:

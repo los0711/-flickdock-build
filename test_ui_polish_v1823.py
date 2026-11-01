@@ -79,6 +79,17 @@ class TransferPolishTests(unittest.TestCase):
         self.dialog=LanDialog(FakeLan(),self.profile);self.dialog.show();ws.flush();self.panel=self.dialog.panel
     def tearDown(self):self.dialog.hide();self.dialog.deleteLater();ws.flush();self.temp.cleanup()
 
+    def test_drop_band_outer_gutters_and_queue_remove_three_sided_insets_are_equal(self):
+        p=self.panel;path=Path(self.temp.name)/'margin.txt';path.write_text('original')
+        for filled in (False,True):
+            p.queue_paths([str(path)] if filled else [],replace=True);p.queue_area.animation.setCurrentTime(200);ws.flush()
+            box=p.drop_zone.geometry()
+            self.assertEqual(box.top(),p.queue_area.height()-box.bottom()-1)
+            if filled:
+                row=p.queue_rows[0];button=row.layout().itemAt(row.layout().count()-1).widget()
+                sides=(button.y(),row.height()-button.geometry().bottom()-1,row.width()-button.geometry().right()-1)
+                self.assertLessEqual(max(sides)-min(sides),1,sides)
+
     def test_drop_band_empty_full_width_then_compact_and_reversible(self):
         p=self.panel;area=p.queue_area
         self.assertEqual(p.drop_zone.width(),area.width()-40);self.assertFalse(p.send_heading_label.isVisible())
@@ -100,9 +111,12 @@ class TransferPolishTests(unittest.TestCase):
 
     def test_mode_segment_status_and_destination_alignment(self):
         d=self.dialog;p=self.panel;insets(self,d.mode_segment,list(d.mode_buttons.values()))
-        self.assertIs(p.status_label.parentWidget(),d.mode_bar)
-        self.assertTrue(p.status_label.isVisible());self.assertEqual(d.mode_segment.width(),218)
-        self.assertLess(d.mode_segment.geometry().right(),p.status_label.geometry().left())
+        self.assertIs(p.status_label.parentWidget(),d.title_bar)
+        self.assertTrue(p.status_label.isVisible())
+        self.assertEqual(d.mode_segment.width(),d.mode_bar.contentsRect().width()-40)
+        self.assertEqual(d.mode_segment.height(),34)
+        self.assertGreater(p.status_label.x(),d.back_button.geometry().right())
+        self.assertLessEqual(abs(p.status_label.geometry().center().y()-d.back_button.geometry().center().y()),1)
         p.status_label.setText('远程互传已就绪。')
         from native_ui_common import colors
         self.assertIn(colors(self.profile.theme)['green'],p.status_label.styleSheet())

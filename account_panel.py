@@ -9,7 +9,7 @@ from account_service import valid_new_password
 from native_ui_common import reference_font, icon as ui_icon, colors as ui_colors
 
 from PySide6.QtCore import QByteArray, QDateTime, QEvent, QRect, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter, QLinearGradient
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMenu, QToolButton,
                                QPushButton, QSizePolicy, QVBoxLayout, QWidget, QLayout)
@@ -75,6 +75,12 @@ class AuthStatusLabel(QLabel):
         self._opacity=QGraphicsOpacityEffect(self);self.setGraphicsEffect(self._opacity)
         self._fade=QPropertyAnimation(self._opacity,b'opacity',self);self._fade.setDuration(180)
         self._fade.setEasingCurve(QEasingCurve.OutCubic)
+        self._fade.valueChanged.connect(self._reduce_fade)
+
+    def _reduce_fade(self,value):
+        from native_ui_common import reduced_motion
+        if self._fade.state()==self._fade.State.Running and reduced_motion():
+            self._fade.stop();self._opacity.setOpacity(1.)
 
     def _fit_height(self):
         height=self.heightForWidth(self.width())
@@ -171,7 +177,7 @@ class RemoveDeviceButton(QPushButton):
     def paintEvent(self,event):
         super().paintEvent(event)
         if self.text():return
-        color='#D1D1D6' if self.dark else '#636366'
+        color=('#D1D1D6' if self.dark else '#636366') if self.rename else ('#FF453A' if self.dark else '#D92D20')
         path=('m11.5 3.5 3 3M3 15l3.4-.7L15 5.7a1.1 1.1 0 0 0 0-1.5l-1.2-1.3a1.1 1.1 0 0 0-1.6 0L3.7 11.5 3 15' if self.rename
               else 'M3 5h12M7 3h4M5 5l.7 10h6.6L13 5M8 7v5M10 7v5')
         svg=f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 18 18"><path d="{path}" fill="none" stroke="{color}" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>'
@@ -192,9 +198,7 @@ class AccountGlyph(QWidget):
     def paintEvent(self,event):
         painter=QPainter(self);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         if not self.device:
-            gradient=QLinearGradient(0,self.height(),self.width(),0)
-            gradient.setColorAt(0,QColor('#0A84FF'));gradient.setColorAt(1,QColor('#BF5AF2'))
-            painter.setPen(Qt.PenStyle.NoPen);painter.setBrush(gradient);painter.drawEllipse(QRectF(self.rect()).adjusted(.5,.5,-.5,-.5))
+            painter.setPen(Qt.PenStyle.NoPen);painter.setBrush(QColor('#737373' if self.dark else '#858585'));painter.drawEllipse(QRectF(self.rect()).adjusted(.5,.5,-.5,-.5))
             font=self.font();font.setPixelSize(14);font.setWeight(QFont.Weight.Bold);painter.setFont(font)
             painter.setPen(QColor('#FFFFFF'))
             if self.initial:painter.drawText(self.rect(),Qt.AlignmentFlag.AlignCenter,self.initial)
@@ -615,20 +619,31 @@ class AccountPanel(QFrame):
         effect=label.graphicsEffect()
         if effect is None:effect=QGraphicsOpacityEffect(label);label.setGraphicsEffect(effect)
         effect.setOpacity(1.)
+        feedback_text=label.text()
+        previous=self._feedback_animations.pop(label,None)
+        if previous is not None:previous.stop();previous.deleteLater()
         timer=self._feedback_timers.get(label)
-        if timer:timer.stop()
+        if timer:timer.stop();timer.deleteLater()
         timer=QTimer(self);timer.setSingleShot(True);self._feedback_timers[label]=timer
         def fade():
-            from ui_transitions import motion_allowed
+            from ui_transitions import motion_allowed,exit_curve
+            if label.text()!=feedback_text:return
             animation=QVariantAnimation(label);animation.setDuration(180 if motion_allowed() else 0)
+            animation.setEasingCurve(exit_curve())
             self._feedback_animations[label]=animation
             animation.setStartValue(1.);animation.setEndValue(0.)
-            animation.valueChanged.connect(effect.setOpacity)
             def finish():
+                if self._feedback_animations.get(label) is not animation:return
                 self._feedback_animations.pop(label,None)
-                label.clear();label.hide();effect.setOpacity(1.);animation.deleteLater()
+                if label.text()==feedback_text:label.clear();label.hide()
+                effect.setOpacity(1.);animation.deleteLater()
                 if password and self.password_dialog.isVisible():self._fit_auth_form(self.password_dialog)
                 self._queue_fit()
+            def frame(value):
+                if animation.state()==animation.State.Running and (not motion_allowed() or label.text()!=feedback_text):
+                    animation.stop();finish();return
+                effect.setOpacity(value)
+            animation.valueChanged.connect(frame)
             animation.finished.connect(finish);animation.start()
         timer.timeout.connect(fade);timer.start(2400)
 
@@ -835,6 +850,8 @@ class AccountPanel(QFrame):
                 rename_form.body_layout.addWidget(_label('修改设备名称',rename_form.body))
                 rename_layout=QHBoxLayout();rename_layout.setSpacing(6)
                 edit=QLineEdit(rename_form.body);edit.setText(str(device.get('name') or ''))
+                from input_focus import install_focus
+                install_focus(edit,theme=lambda:'dark' if self._dark else 'light',radius=12)
                 edit.setMaxLength(80);edit.setMinimumWidth(0);edit.setMinimumHeight(34)
                 edit.setAccessibleName('新的设备名称')
                 cancel=_button('取消',rename_form)
@@ -1093,7 +1110,10 @@ class AccountPanel(QFrame):
         style=readable_qss(style)
         if sys.platform=='win32':
             style+='\nQFrame#accountPanel QLabel#accountState {font-size:12px;}'
+        from input_focus import focus_qss,install_focus_tree
+        style+=focus_qss('QFrame#accountPanel',edge)+focus_qss('QDialog#accountModal',edge)
         self.setStyleSheet(style)
+        install_focus_tree(self,theme=lambda:'dark' if self._dark else 'light',radius=12)
         for form in self._rename_forms.values():form.setStyleSheet(style)
         for row in self._device_rows:
             for name in row.findChildren(AccountNameLabel):

@@ -23,6 +23,7 @@ from shiboken6 import isValid
 
 from confirm_clear import ClearConfirmOverlay, confirmation_active
 from surface_morph import SurfaceSnapshot
+from ui_transitions import _ClosingSnapshot
 
 
 class Screen:
@@ -146,6 +147,14 @@ with tempfile.TemporaryDirectory(prefix='flickdock-clear-lifecycle-v163-') as te
                 if errors: outer.quit(); return
                 assert not shelf.files['permanent'] and not confirmation_active(shelf)
                 result['after_clear_red_pixels'] = red_pixels(shelf.grab())
+                ghosts=[ghost for ghost in shelf.findChildren(_ClosingSnapshot) if ghost.isVisible()]
+                result['exit_ghosts']=len(ghosts)
+                assert len(ghosts)<=1 and all(ghost.testAttribute(Qt.WA_TransparentForMouseEvents) and not shelf.card.isAncestorOf(ghost) for ghost in ghosts)
+                # The new exit is a finite sibling ghost. It may remain on
+                # screen, but must never contaminate the live card's cache.
+                probe=SurfaceSnapshot(shelf)
+                result['after_clear_card_red_pixels']=red_pixels(probe.capture_live(shelf.card,(shelf.pin_button,shelf.expand_button,shelf.menu_button,shelf.close_button)))
+                probe.deleteLater()
                 if name=='immediate_resize':
                     shelf.collapse_contents()
                     run_for(45)
@@ -160,7 +169,9 @@ with tempfile.TemporaryDirectory(prefix='flickdock-clear-lifecycle-v163-') as te
             result['settled_red_pixels'] = red_pixels(shelf.grab())
             result['overlay_objects_remaining'] = len(shelf.findChildren(ClearConfirmOverlay))
             if evidence_dir: shelf.grab().save(str(Path(evidence_dir)/f'{"before" if baseline else "after"}-{name}-cleared.png'))
-            assert result['after_clear_red_pixels'] == 0 and result['settled_red_pixels'] == 0, result
+            assert result['after_clear_card_red_pixels']==0 and result['settled_red_pixels']==0, result
+            assert result['after_clear_red_pixels']==0 or result['exit_ghosts']==1,result
+            assert not any(ghost.isVisible() for ghost in shelf.findChildren(_ClosingSnapshot)),result
             assert result.get('during_resize_red_pixels', 0) == 0, result
             assert result['overlay_objects_remaining'] == 0, result
             assert all(Path(path).is_file() for path in originals)

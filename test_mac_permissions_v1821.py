@@ -40,11 +40,13 @@ class PermissionTests(unittest.TestCase):
         self.assertTrue(backend.request('clipboard'));board.pasteboardItems.assert_called_once()
         self.assertEqual(backend.clipboard(),'ask');self.assertEqual(opened,['x-apple.systempreferences:com.apple.preference.security?Privacy_Pasteboard'])
 
-    def test_working_pointer_tap_does_not_request_extra_input_monitoring(self):
+    def test_working_pointer_tap_does_not_replace_the_real_input_grant(self):
         board,kit=self.board(2);quartz=SimpleNamespace(CGPreflightListenEventAccess=Mock(return_value=False))
         backend=MacPermissionBackend(appkit=kit,quartz=quartz,ax=SimpleNamespace(AXIsProcessTrusted=lambda:True))
         states=backend.inspect(pointer_ok=True,peers=False)
-        self.assertEqual(states['input'],'not_required');quartz.CGPreflightListenEventAccess.assert_not_called()
+        self.assertEqual(states['input'],'denied');quartz.CGPreflightListenEventAccess.assert_called_once()
+        quartz.CGPreflightListenEventAccess.return_value=True
+        self.assertEqual(backend.inspect(pointer_ok=True)['input'],'allowed')
         self.assertEqual(states['network'],'unknown');self.assertEqual(states['files'],'on_demand')
 
 
@@ -86,6 +88,47 @@ class ClipboardPermissionTests(unittest.TestCase):
 
 
 class PermissionUITests(unittest.TestCase):
+    def test_guided_denial_hint_clears_when_current_process_permission_and_tap_recover(self):
+        states=dict(clipboard='legacy',accessibility='denied',input='denied',network='unknown',files='on_demand')
+        backend=SimpleNamespace(inspect=lambda **_:dict(states),request=lambda kind:True)
+        owner=QWidget();pointer=SimpleNamespace(backend=SimpleNamespace(available=False),retry_native=Mock())
+        manager=SimpleNamespace(shelf=owner,settings=SimpleNamespace(theme='dark'),pointer_paste=pointer,lan=None)
+        dialog=MacPermissionsDialog(manager,backend=backend)
+        try:
+            dialog.show();flush();dialog.request('accessibility')
+            self.assertIn('尚未获得',dialog.hint.text());self.assertFalse(dialog._listener_pending)
+            states['accessibility']='allowed';pointer.backend.available=True
+            APP.applicationStateChanged.emit(Qt.ApplicationActive);flush()
+            self.assertEqual(dialog.states['accessibility'],'allowed');self.assertFalse(dialog._listener_pending)
+            self.assertIn('已恢复',dialog.hint.text());self.assertNotIn('旧版本',dialog.hint.text())
+        finally:dialog.hide();dialog.deleteLater();owner.deleteLater();flush()
+
+    def test_return_from_settings_rechecks_native_grants_and_updates_both_theme_colors(self):
+        grants={'ax':False,'input':False};queries=[]
+        backend=MacPermissionBackend(
+            appkit=SimpleNamespace(NSPasteboard=SimpleNamespace(generalPasteboard=lambda:object())),
+            ax=SimpleNamespace(AXIsProcessTrusted=lambda:queries.append('ax') or grants['ax']),
+            quartz=SimpleNamespace(CGPreflightListenEventAccess=lambda:queries.append('input') or grants['input']))
+        owner=QWidget();pointer=SimpleNamespace(backend=SimpleNamespace(available=True),retry_native=Mock())
+        manager=SimpleNamespace(shelf=owner,settings=SimpleNamespace(theme='dark'),pointer_paste=pointer,lan=None)
+        from native_ui_common import colors
+        dialog=MacPermissionsDialog(manager,backend=backend)
+        try:
+            dialog.show();flush();dialog.timer.stop()
+            self.assertEqual(dialog.states['input'],'denied')
+            for kind in ('accessibility','input'):self.assertIn(colors('dark')['red'],dialog.rows[kind][0].styleSheet())
+            before=len(queries);grants.update(ax=True,input=True)
+            dialog._application_state_changed(Qt.ApplicationActive);flush()
+            self.assertGreater(len(queries),before)
+            for theme in ('dark','light'):
+                manager.settings.theme=theme;dialog.refresh()
+                for kind in ('accessibility','input'):
+                    self.assertEqual(dialog.states[kind],'allowed');self.assertEqual(dialog.rows[kind][0].text(),'已开启')
+                    self.assertIn(colors(theme)['green'],dialog.rows[kind][0].styleSheet())
+            dialog.hide();flush();self.assertFalse(dialog.timer.isActive());before=len(queries)
+            dialog._application_state_changed(Qt.ApplicationActive);flush();self.assertEqual(len(queries),before)
+        finally:dialog.hide();dialog.deleteLater();owner.deleteLater();flush()
+
     def test_guided_steps_recheck_real_state_and_never_mark_unknown_network_allowed(self):
         states=dict(clipboard='ask',accessibility='denied',input='denied',network='unknown',files='on_demand')
         calls=[];backend=SimpleNamespace(inspect=lambda **_:dict(states),request=lambda kind:calls.append(kind) or True)

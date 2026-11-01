@@ -54,10 +54,28 @@ def contrast_colors(first,second):
 
 
 def brightest_pixel(image,rect):
+    ratio=image.devicePixelRatio()
+    rect=QRect(round(rect.x()*ratio),round(rect.y()*ratio),round(rect.width()*ratio),round(rect.height()*ratio))
     rect=rect.intersected(image.rect())
     return max((image.pixelColor(x,y) for x in range(rect.left(),rect.right()+1)
                 for y in range(rect.top(),rect.bottom()+1)),
                key=lambda color:sum(color.getRgb()[:3]))
+
+
+def logical_pixel(image,x,y=None):
+    point=x if y is None else QPoint(x,y)
+    ratio=image.devicePixelRatio()
+    return image.pixelColor(round(point.x()*ratio),round(point.y()*ratio))
+
+
+def composed_image(widget):
+    """Read the visible window compositor, including its single base owner."""
+    owner=widget.window();image=owner.grab().toImage();ratio=image.devicePixelRatio()
+    position=widget.mapTo(owner,QPoint())
+    result=image.copy(QRect(round(position.x()*ratio),round(position.y()*ratio),
+        round(widget.width()*ratio),round(widget.height()*ratio)))
+    result.setDevicePixelRatio(ratio)
+    return result
 
 
 class Screen:
@@ -249,32 +267,32 @@ class WorkspaceTests(unittest.TestCase):
         for theme in ('light','dark'):
             self.settings.update(theme=theme);ui_theme.set_theme(theme);ui_theme.apply_application(APP,subject.FONT_FAMILY)
             refresh_tree(self.shelf);popup._render_signature=None;popup.rebuild();popup.set_category('all');flush()
-            selected=popup.category_buttons['all'];image=selected.grab().toImage()
-            check('selected category',brightest_pixel(image,QRect(35,8,45,18)),image.pixelColor(6,selected.height()//2))
+            selected=popup.category_buttons['all'];image=composed_image(selected)
+            check('selected category',brightest_pixel(image,QRect(35,8,45,18)),logical_pixel(image,6,selected.height()//2))
             badge=popup.nav_counts['all'];position=badge.geometry()
             check('selected count',brightest_pixel(image,position.adjusted(2,3,-2,-3)),
-                  image.pixelColor(position.center().x(),position.top()+3))
-            other=popup.category_buttons['uploading'];other_image=popup.grab().toImage();other_badge=popup.nav_counts['uploading'];position=other_badge.geometry()
+                  logical_pixel(image,position.center().x(),position.top()+3))
+            other=popup.category_buttons['uploading'];other_image=composed_image(popup);other_badge=popup.nav_counts['uploading'];position=other_badge.geometry()
             check('unselected transfer count',other_badge.palette().color(QPalette.WindowText),
-                  other_image.pixelColor(other.mapTo(popup,QPoint(position.center().x(),position.top()+3))))
+                  logical_pixel(other_image,other.mapTo(popup,QPoint(position.center().x(),position.top()+3))))
             # Exercise real QMenu selection drawing; palette() alone does not
             # resolve the QSS :selected foreground/background state.
             menu=subject.AnimatedMenu();subject.style_menu(menu);action=menu.addAction('选择菜单项目')
             menu.popup(QPoint(0,0));menu.setActiveAction(action);flush();rect=menu.actionGeometry(action);image=menu.grab().toImage()
             check('selected menu item',brightest_pixel(image,QRect(rect.x()+14,rect.y()+4,85,rect.height()-8)),
-                  image.pixelColor(rect.right()-12,rect.center().y()))
+                  logical_pixel(image,rect.right()-12,rect.center().y()))
             menu.close();menu.deleteLater();flush()
-            unselected_mode=popup.view_grid;image=popup.grab().toImage()
+            unselected_mode=popup.view_grid;image=composed_image(popup)
             check('unselected view toggle',unselected_mode.palette().color(QPalette.ButtonText),
-                  image.pixelColor(popup.view_segment.mapTo(popup,QPoint(unselected_mode.geometry().center().x(),3))))
+                  logical_pixel(image,popup.view_segment.mapTo(popup,QPoint(unselected_mode.geometry().center().x(),3))))
             popup.update_transfer_status();popup.preview.show_path(ref,force=True);flush()
             for name,label in (('footer percent',popup.strip_rows[0][2]),('preview percent',popup.preview.transfer_meta)):
                 self.assertTrue(label.isVisible(),name)
-                image=popup.grab().toImage();position=label.mapTo(popup,QPoint())
-                check(name,label.palette().color(QPalette.WindowText),image.pixelColor(position+QPoint(1,1)))
+                image=composed_image(popup);position=label.mapTo(popup,QPoint())
+                check(name,label.palette().color(QPalette.WindowText),logical_pixel(image,position+QPoint(1,1)))
             popup.set_category('uploading');flush();label=popup.transfer_eta
-            self.assertTrue(label.isVisible());image=popup.grab().toImage();position=label.mapTo(popup,QPoint())
-            check('transfer summary percent',label.palette().color(QPalette.WindowText),image.pixelColor(position+QPoint(1,1)))
+            self.assertTrue(label.isVisible());image=composed_image(popup);position=label.mapTo(popup,QPoint())
+            check('transfer summary percent',label.palette().color(QPalette.WindowText),logical_pixel(image,position+QPoint(1,1)))
         if os.environ.get('FLICKDOCK_CAPTURE_WORKSPACE'):
             import json
             output=Path(__file__).resolve().parents[2]/'outputs/hig-redesign/component-contrast-QA.json'

@@ -14,7 +14,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from PySide6.QtCore import QObject, QCoreApplication, QEvent, QPoint, QRectF, Qt, Signal
+from PySide6.QtCore import QObject, QCoreApplication, QEvent, QPoint, QRectF, QThreadPool, QTimer, Qt, Signal
 from PySide6.QtGui import QFont, QFontDatabase
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QFrame, QLabel, QLineEdit, QVBoxLayout
@@ -149,6 +149,8 @@ class InlineUpdates(unittest.TestCase):
         arguments,options=self.events[0][1:]
         self.assertIn('/DIR='+str(self.installed.parent),arguments)
         self.assertIn('/FDParentPid='+str(os.getpid()),arguments)
+        self.assertIn('/SILENT',arguments)
+        self.assertNotIn('/SUPPRESSMSGBOXES',arguments)
         self.assertFalse(options['shell'])
         self.assertEqual(top,{id(w) for w in APP.topLevelWidgets()})
         self.assertEqual(self.store.path.read_bytes(),saved)
@@ -324,6 +326,369 @@ class InlineUpdates(unittest.TestCase):
             controller.open();self.assertEqual(controller.state,'error')
             self.assertEqual(before,{id(w) for w in APP.topLevelWidgets()})
         finally:controller.close()
+
+
+class RecordedInstaller:
+    """No OS process: controllable lifetime for Windows handoff regressions."""
+    def __init__(self, code=None, fail_after=None, refuse_retirement=False):
+        self.code = code
+        self.fail_after = fail_after
+        self.started = time.monotonic()
+        self.refuse_retirement = refuse_retirement
+        self.terminated = self.killed = 0
+
+    def poll(self):
+        if self.fail_after is not None and time.monotonic()-self.started >= self.fail_after:
+            self.code = 8
+        return self.code
+
+    def terminate(self):
+        self.terminated += 1
+        if self.refuse_retirement:
+            raise OSError('recorded process refused retirement')
+        self.code = -15
+
+    def kill(self):
+        self.killed += 1
+        self.code = -9
+
+    def wait(self, timeout=None):
+        if self.poll() is None:
+            raise subject.subprocess.TimeoutExpired('recorded installer', timeout)
+        return self.code
+
+
+class WindowsStartupTests(unittest.TestCase):
+    """Actual inline entry, recorded Popen only, disposable settings/profile."""
+    def setUp(self):
+        self.fixture = InlineUpdates()
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.tearDown)
+        self.controller = self.fixture.controller
+        self.controller.platform = 'win32'
+        self.gui_thread = threading.get_ident()
+        self.quit_threads = []
+        self.failed = []
+        self.leases = []
+        self.controller._quit = lambda: self.quit_threads.append(threading.get_ident())
+        self.controller.installation_failed.connect(
+            lambda message: self.failed.append((message, threading.get_ident())))
+        real = subject.verify_installer
+        def verified(*args, **kwargs):
+            lease = real(*args, **kwargs)
+            self.leases.append(lease)
+            return lease
+        self.verification = patch.object(subject, 'verify_installer', verified)
+        self.verification.start()
+        self.addCleanup(self.verification.stop)
+
+    def start(self, launcher):
+        self.controller._popen = launcher
+        self.fixture.offer()
+        self.fixture.begin_download()
+        self.fixture.complete_and_install(self.fixture.path, self.fixture.manifest)
+
+    def test_slow_spawn_keeps_gui_alive_and_duplicate_actions_spawn_once(self):
+        entered = threading.Event()
+        returned = threading.Event()
+        calls, beats = [], []
+        child = RecordedInstaller()
+        def spawn(args, **options):
+            calls.append((args, options, threading.get_ident()))
+            self.assertIsNotNone(self.leases[0].reader)
+            entered.set()
+            time.sleep(.25)
+            returned.set()
+            return child
+        timer = QTimer()
+        timer.setInterval(5)
+        timer.timeout.connect(lambda: beats.append(time.perf_counter()))
+        timer.start()
+        try:
+            self.start(spawn)
+            self.assertTrue(wait(entered.is_set))
+            before = len(beats)
+            for _ in range(12):
+                self.controller.activate()
+                self.controller.start_update()
+                APP.processEvents()
+            self.assertTrue(wait(lambda: len(beats) >= before+12))
+            self.assertFalse(returned.is_set(), 'heartbeat ran during process creation')
+            self.assertEqual(self.quit_threads, [])
+            self.assertTrue(wait(lambda: bool(self.quit_threads)))
+        finally:
+            timer.stop()
+        self.assertEqual(len(calls), 1)
+        self.assertNotEqual(calls[0][2], self.gui_thread)
+        self.assertEqual(self.quit_threads, [self.gui_thread])
+        self.assertIn('/SILENT', calls[0][0])
+        self.assertNotIn('/SUPPRESSMSGBOXES', calls[0][0])
+        self.assertFalse(calls[0][1]['shell'])
+        self.assertTrue(all(lease.reader is None for lease in self.leases))
+        self.assertEqual(child.terminated, 0)
+        self.assertEqual(self.fixture.path.read_bytes(), self.fixture.body)
+        self.assertLess(max(b-a for a, b in zip(beats, beats[1:])), .15)
+
+    def test_spawn_exception_reports_on_gui_and_retry_keeps_existing_version_alive(self):
+        def denied(*args, **kwargs):
+            raise OSError('recorded spawn denied')
+        self.start(denied)
+        self.assertTrue(wait(lambda: self.controller.state == 'error'))
+        self.assertEqual(self.quit_threads, [])
+        self.assertIn('recorded spawn denied', self.failed[-1][0])
+        self.assertEqual(self.failed[-1][1], self.gui_thread)
+        self.assertTrue(self.controller.can_start_update)
+        self.assertEqual(self.controller.retry_operation, 'install')
+        self.assertTrue(all(lease.reader is None for lease in self.leases))
+        self.controller._popen = lambda *args, **kwargs: RecordedInstaller()
+        self.fixture.begin_download()
+        self.fixture.complete_and_install(self.fixture.path, self.fixture.manifest)
+        self.assertTrue(wait(lambda: bool(self.quit_threads)))
+        self.assertEqual(self.quit_threads, [self.gui_thread])
+
+    def test_immediate_and_shortly_delayed_nonzero_exit_report_without_quitting(self):
+        for delay in (0, .04):
+            with self.subTest(delay=delay):
+                child = RecordedInstaller(code=8 if delay == 0 else None,
+                                          fail_after=delay if delay else None)
+                def spawn(*args, **kwargs):
+                    child.started = time.monotonic()
+                    return child
+                if delay == 0:
+                    self.start(spawn)
+                else:
+                    self.controller._popen = spawn
+                    self.fixture.begin_download()
+                    self.fixture.complete_and_install(self.fixture.path, self.fixture.manifest)
+                self.assertTrue(wait(lambda: self.controller.state == 'error'))
+                self.assertEqual(self.quit_threads, [])
+                self.assertIn('退出码 8', self.failed[-1][0])
+                self.assertTrue(self.controller.can_start_update)
+                self.assertFalse(self.controller.busy)
+                self.assertTrue(all(lease.reader is None for lease in self.leases))
+
+    def test_cancel_before_spawn_releases_lease_and_starts_no_process(self):
+        deferred, calls = [], []
+        pool = QThreadPool.globalInstance()
+        real_start = pool.start
+        def start(job, *args, **kwargs):
+            if isinstance(job, subject._InstallerLaunch):
+                deferred.append(job)
+            else:
+                real_start(job, *args, **kwargs)
+        with patch.object(pool, 'start', start):
+            self.start(lambda *args, **kwargs: calls.append(args))
+            self.assertTrue(wait(lambda: bool(deferred)))
+            self.assertIsNotNone(self.leases[0].reader)
+            self.assertTrue(self.controller.cancel())
+        real_start(deferred[0])
+        self.assertTrue(wait(lambda: not self.controller._jobs))
+        self.assertEqual(calls, [])
+        self.assertEqual(self.quit_threads, [])
+        self.assertEqual(self.failed, [])
+        self.assertEqual(self.controller.state, 'cancelled')
+        self.assertFalse(self.controller.busy)
+        self.assertIsNone(self.leases[0].reader)
+
+    def check_cancel_during_spawn(self, close=False):
+        entered, release = threading.Event(), threading.Event()
+        child = RecordedInstaller()
+        calls = []
+        def spawn(*args, **kwargs):
+            calls.append(args)
+            entered.set()
+            release.wait(2)
+            return child
+        self.addCleanup(release.set)
+        self.start(spawn)
+        self.assertTrue(wait(entered.is_set))
+        start = time.perf_counter()
+        self.controller.close() if close else self.controller.cancel()
+        self.assertLess(time.perf_counter()-start, .1)
+        self.assertEqual(self.quit_threads, [])
+        self.assertTrue(self.controller.busy, 'do not permit a second installer before retirement')
+        self.controller.activate()
+        self.controller.start_update()
+        self.assertEqual(len(calls), 1)
+        release.set()
+        self.assertTrue(wait(lambda: not self.controller._jobs))
+        self.assertEqual(child.terminated, 1)
+        self.assertEqual(self.quit_threads, [])
+        self.assertEqual(self.failed, [])
+        self.assertFalse(self.controller.busy)
+        self.assertIsNone(self.leases[0].reader)
+
+    def test_cancel_during_spawn_does_not_quit_and_retires_only_owned_process(self):
+        self.check_cancel_during_spawn()
+
+    def test_close_during_spawn_does_not_quit_and_retires_only_owned_process(self):
+        self.check_cancel_during_spawn(close=True)
+
+    def check_queued_late_result(self, close=False):
+        entered = threading.Event()
+        emitted = threading.Event()
+        child = RecordedInstaller()
+        def spawn(*args, **kwargs):
+            entered.set()
+            return child
+        self.start(spawn)
+        self.assertTrue(wait(entered.is_set))
+        job = next(iter(self.controller._jobs.values()))
+        job.signals.finished.connect(lambda *args: emitted.set(), Qt.ConnectionType.DirectConnection)
+        # Deliberately hold GUI delivery until the success result is queued.
+        self.assertTrue(emitted.wait(2))
+        self.assertEqual(self.quit_threads, [])
+        self.controller.close() if close else self.controller.cancel()
+        self.assertTrue(wait(lambda: not self.controller._jobs))
+        self.assertEqual(child.terminated, 1)
+        self.assertEqual(self.quit_threads, [])
+        self.assertEqual(self.failed, [])
+        self.assertFalse(self.controller.busy)
+
+    def test_cancel_after_worker_result_queued_cannot_quit_or_revive_old_intent(self):
+        self.check_queued_late_result()
+
+    def test_close_after_worker_result_queued_cannot_quit_or_revive_old_intent(self):
+        self.check_queued_late_result(close=True)
+
+    def test_close_after_queued_result_retires_without_any_further_gui_events(self):
+        entered, emitted = threading.Event(), threading.Event()
+        child = RecordedInstaller()
+        def spawn(*args, **kwargs):
+            entered.set()
+            return child
+        self.start(spawn)
+        self.assertTrue(wait(entered.is_set))
+        job = next(iter(self.controller._jobs.values()))
+        job.signals.finished.connect(lambda *args: emitted.set(), Qt.ConnectionType.DirectConnection)
+        self.assertTrue(emitted.wait(2))
+        start = time.perf_counter()
+        self.controller.close()
+        self.assertLess(time.perf_counter()-start, .1)
+        # Model app.exec() having returned: do not process one GUI event here.
+        self.assertTrue(job.retired.wait(2))
+        self.assertIsNotNone(child.poll())
+        self.assertEqual(child.terminated, 1)
+        self.assertEqual(child.killed, 0)
+        self.assertEqual(self.quit_threads, [])
+        self.assertIsNone(job.verified.reader)
+        self.assertTrue(wait(lambda: not self.controller._jobs))  # cleanup only
+        self.assertEqual(child.terminated, 1, 'late GUI delivery must not retire twice')
+
+    def test_accepted_handoff_claims_before_quit_closes_controller(self):
+        child = RecordedInstaller()
+        claimed = []
+        def quit_and_close():
+            claimed.append(not self.controller._jobs)
+            self.quit_threads.append(threading.get_ident())
+            self.controller.close()
+        self.controller._quit = quit_and_close
+        self.start(lambda *args, **kwargs: child)
+        self.assertTrue(wait(lambda: bool(self.quit_threads)))
+        self.assertEqual(claimed, [True])
+        self.assertTrue(self.controller._closed)
+        time.sleep(.2)  # normal quit does not retire the accepted installer
+        self.assertIsNone(child.poll())
+        self.assertEqual(child.terminated, 0)
+        self.assertEqual(self.quit_threads, [self.gui_thread])
+
+    def test_cancel_from_started_signal_cannot_call_quit(self):
+        child = RecordedInstaller()
+        self.controller.installation_started.connect(lambda _path: self.controller.cancel())
+        self.start(lambda *args, **kwargs: child)
+        self.assertTrue(wait(lambda: child.terminated == 1 and not self.controller._jobs))
+        self.assertEqual(self.quit_threads, [])
+
+    def test_unconfirmed_retirement_blocks_duplicate_installer_and_reports_error(self):
+        entered, release = threading.Event(), threading.Event()
+        child = RecordedInstaller(refuse_retirement=True)
+        def spawn(*args, **kwargs):
+            entered.set()
+            release.wait(2)
+            return child
+        self.addCleanup(release.set)
+        self.start(spawn)
+        self.assertTrue(wait(entered.is_set))
+        self.controller.cancel()
+        release.set()
+        self.assertTrue(wait(lambda: not self.controller._jobs))
+        self.assertTrue(self.controller.busy)
+        self.assertFalse(self.controller.can_start_update)
+        self.assertIn('尚未确认退出', self.failed[-1][0])
+        self.assertEqual(self.quit_threads, [])
+
+    def test_worker_revalidates_target_and_closes_lease_on_error(self):
+        deferred = []
+        pool = QThreadPool.globalInstance()
+        real_start = pool.start
+        def start(job, *args, **kwargs):
+            if isinstance(job, subject._InstallerLaunch):
+                deferred.append(job)
+            else:
+                real_start(job, *args, **kwargs)
+        calls = []
+        with patch.object(pool, 'start', start):
+            self.start(lambda *args, **kwargs: calls.append(args))
+            self.assertTrue(wait(lambda: bool(deferred)))
+        self.fixture.installed.unlink()
+        real_start(deferred[0])
+        self.assertTrue(wait(lambda: self.controller.state == 'error'))
+        self.assertEqual(calls, [])
+        self.assertEqual(self.quit_threads, [])
+        self.assertIsNone(self.leases[0].reader)
+
+    def test_standalone_signature_keeps_native_errors_visible_and_rejects_failed_start(self):
+        with self.assertRaises(ValueError):
+            subject.launch_installer(None, installed_exe=self.fixture.installed,
+                                     quit_callback=lambda: None)
+        calls, quit_calls = [], []
+        options = dict(current_version='1.7.0', updates_dir=self.fixture.store.base/'updates',
+                       installed_exe=self.fixture.installed,
+                       quit_callback=lambda: quit_calls.append(True), parent_pid=123)
+        def spawn(args, **kwargs):
+            calls.append(args)
+            return RecordedInstaller(code=8)
+        with self.assertRaisesRegex(OSError, '退出码 8'):
+            subject.install_update(self.fixture.path, self.fixture.manifest, popen=spawn, **options)
+        self.assertEqual(quit_calls, [])
+        self.assertIn('/FDParentPid=123', calls[0])
+        self.assertNotIn('/SUPPRESSMSGBOXES', calls[0])
+        self.assertIsNone(self.leases[0].reader)
+        child = RecordedInstaller(code=0)
+        result = subject.install_update(self.fixture.path, self.fixture.manifest,
+            popen=lambda *args, **kwargs: child, **options)
+        self.assertIs(result, child)
+        self.assertEqual(quit_calls, [True])
+
+    def test_lease_close_error_reports_failure_and_retires_child_without_quitting(self):
+        deferred = []
+        pool = QThreadPool.globalInstance()
+        real_start = pool.start
+        def start(job, *args, **kwargs):
+            if isinstance(job, subject._InstallerLaunch):
+                deferred.append(job)
+            else:
+                real_start(job, *args, **kwargs)
+        child = RecordedInstaller()
+        with patch.object(pool, 'start', start):
+            self.start(lambda *args, **kwargs: child)
+            self.assertTrue(wait(lambda: bool(deferred)))
+        lease = self.leases[0]
+        reader = lease.reader
+        class CloseErrorReader:
+            def fileno(self):
+                return reader.fileno()
+            def close(self):
+                reader.close()
+                raise OSError('recorded lease close error')
+        lease.reader = CloseErrorReader()
+        real_start(deferred[0])
+        self.assertTrue(wait(lambda: self.controller.state == 'error'))
+        self.assertIsNone(lease.reader)
+        self.assertEqual(child.terminated, 1)
+        self.assertEqual(self.quit_threads, [])
+        self.assertFalse(self.controller.busy)
+        self.assertIn('recorded lease close error', self.failed[-1][0])
 
 
 if __name__=='__main__':

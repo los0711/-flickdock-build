@@ -50,12 +50,28 @@ class PresentationTests(unittest.TestCase):
         for motion in (True,False):
             self.shelf.hide_immediately();self.manager.motion=motion;self.shelf.presentation.motion=motion
             flickdock.ShelfManager.show_overview_from_transfer(self.manager,dialog)
-            target=self.manager._overview_return_rect
+            target=QRect(self.manager._overview_return_rect)
+            target.moveTopLeft(dialog.card.mapToGlobal(QPoint()))
             self.assertEqual(self.shelf.visual_geometry(),target)
             values=self.shelf.presentation.values
-            self.assertEqual((values['dx'],values['dy'],values['alpha']),(0,0,0))
-            self.assertEqual(values['sx'],.97 if motion else 1)
-            until(lambda:not self.shelf.presentation._timer.isActive())
+            self.assertEqual((values['dx'],values['dy']),(0,0))
+            if motion:
+                self.assertEqual((values['sx'],values['sy'],values['alpha']),(.97,.97,0))
+                self.assertTrue(self.shelf.presentation._timer.isActive())
+                samples=[];original=self.shelf.presentation._on_update
+                self.shelf.presentation._on_update=lambda values:(original(values),samples.append(dict(values)))
+                try:until(lambda:not self.shelf.presentation._timer.isActive())
+                finally:self.shelf.presentation._on_update=original
+                self.assertTrue(any(0<frame['alpha']<1 and .97<frame['sx']<1 for frame in samples))
+                self.assertTrue(all(frame['dx']==frame['dy']==0 for frame in samples))
+            else:
+                # Disabled motion completes synchronously; no invisible first
+                # frame or continuing animation clock may survive this call.
+                self.assertEqual(values,dict(sx=1,sy=1,alpha=1,dx=0,dy=0))
+                self.assertFalse(self.shelf.presentation._timer.isActive())
+                QTest.qWait(32)
+                self.assertEqual(self.shelf.presentation.values,values)
+            self.assertEqual(self.shelf.presentation.values,dict(sx=1,sy=1,alpha=1,dx=0,dy=0))
             self.assertEqual(self.shelf.visual_geometry(),target);self.assertTrue(self.shelf.expanded)
         dialog.deleteLater()
 
@@ -91,13 +107,25 @@ class PresentationTests(unittest.TestCase):
                             target=shown[0][1];host=QRect(self.shelf.geometry())
                             self.assertEqual(self.shelf.presentation.values,preview_start)
                             self.assertFalse(self.shelf.geometry_morph.active);morph.assert_not_called()
-                            samples.clear()
-                            until(lambda:not self.shelf.presentation._timer.isActive())
-                            self.assertTrue(samples)
-                            self.assertTrue(all(native==host and visual==target and values['dx']==0 for native,visual,values in samples))
-                            self.assertEqual(self.shelf.presentation.values,dict(sx=1,sy=1,alpha=1,dx=0,dy=0))
                             if reduced:
-                                self.assertTrue(all(values['sx']==values['sy']==1 and values['dy']==0 for _,_,values in samples))
+                                # The preference is already enabled: settle in
+                                # this event, with no later frame or idle clock.
+                                self.assertEqual(self.shelf.presentation.values,dict(sx=1,sy=1,alpha=1,dx=0,dy=0))
+                                self.assertFalse(self.shelf.presentation._timer.isActive())
+                                self.assertTrue(samples)
+                                self.assertEqual(samples[-1],(host,target,dict(sx=1,sy=1,alpha=1,dx=0,dy=0)))
+                                count=len(samples);QTest.qWait(32)
+                                self.assertEqual(len(samples),count)
+                            else:
+                                self.assertEqual((preview_start['sx'],preview_start['sy'],preview_start['alpha']),(.97,.97,0))
+                                self.assertTrue(self.shelf.presentation._timer.isActive())
+                                samples.clear()
+                                until(lambda:not self.shelf.presentation._timer.isActive())
+                                self.assertTrue(samples)
+                                self.assertTrue(any(0<values['alpha']<1 and .97<values['sx']<1 for _,_,values in samples))
+                                self.assertTrue(all(native==host and visual==target and values['dx']==0 for native,visual,values in samples))
+                            self.assertEqual(self.shelf.presentation.values,dict(sx=1,sy=1,alpha=1,dx=0,dy=0))
+                            self.assertEqual(self.shelf.geometry(),host);self.assertEqual(self.shelf.visual_geometry(),target)
                     finally:self.shelf.presentation._on_update=original
 
 

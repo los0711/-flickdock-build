@@ -93,10 +93,11 @@ def drag_pixmap(repository, refs, preview_cache=None, dpr=None) -> QPixmap:
                        QRectF(artwork.rect()))
     painter.setPen(Qt.PenStyle.NoPen)
     painter.setBrush(QColor(7, 15, 28, 32 if ui_theme.current_theme() == "dark" else 22))
-    painter.drawRoundedRect(pill.translated(0, 1.5), 9, 9)
+    from surface_morph import rounded_rect_path,draw_rounded_rect
+    draw_rounded_rect(painter,pill.translated(0,1.5),9)
     painter.setBrush(QColor(ui_theme.color("surface")))
     painter.setPen(QPen(QColor(ui_theme.color("border")), .8))
-    painter.drawRoundedRect(pill, 9, 9)
+    draw_rounded_rect(painter,pill,9)
     painter.setFont(font)
     painter.setPen(QColor(ui_theme.color("text")))
     painter.drawText(pill.adjusted(_LABEL_PADDING, 0, -_LABEL_PADDING, 0),

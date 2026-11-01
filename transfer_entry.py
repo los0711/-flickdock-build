@@ -47,6 +47,9 @@ class TransferEntryRouter(QObject):
         super().__init__(root);self.root=root;self.button=button;self.deliver=deliver
         self.surface=TransferDropSurface(root);self._dropping=False
         self._pending_present=None
+        self._intent_generation=0;self._hover_generation=0
+        from transfer_drop_feedback import DropFeedback
+        self.drop_feedback=DropFeedback(root)
         from ui_transitions import exit_curve
         self.entrance=QVariantAnimation(self);self.entrance.setDuration(160);self.entrance.setEasingCurve(exit_curve())
         self.entrance.valueChanged.connect(self._enter)
@@ -54,28 +57,49 @@ class TransferEntryRouter(QObject):
         self.feedback=QVariantAnimation(self);self.feedback.setDuration(160)
         self.feedback.setStartValue(1.);self.feedback.setEndValue(0.)
         self.feedback.setEasingCurve(exit_curve())
-        self.feedback.valueChanged.connect(self._press);self.feedback.finished.connect(self._finish_drop)
+        self.feedback.valueChanged.connect(self._press)
         button.setAcceptDrops(True)
         # Do not install another application-wide Python event filter. The
         # overview's existing drop router delegates only drag events here.
         for target in {root,button,self.surface,button.parentWidget()}:
             if target is not None:target.installEventFilter(self)
 
-    def _press(self,value):self.surface.press=float(value);self.surface.update()
-    def _enter(self,value):self.surface.enter=float(value);self.surface.update()
+    def _press(self,value):
+        if self.feedback.state()==self.feedback.State.Running and reduced_motion():
+            self.feedback.stop();value=self.feedback.endValue()
+        self.surface.press=float(value);self.surface.update()
+    def _enter(self,value):
+        if self.entrance.state()==self.entrance.State.Running and reduced_motion():
+            self.entrance.stop();value=self.entrance.endValue()
+        self.surface.enter=float(value);self.surface.update()
 
     def _highlight(self,enabled):
         self.button.setProperty('transferDropActive',bool(enabled))
         self.button.style().unpolish(self.button);self.button.style().polish(self.button);self.button.update()
 
-    def _finish_drop(self):
-        callback=self._pending_present;self._pending_present=None;self.reset()
+    def _finish_drop(self,generation=None):
+        if generation is not None and generation!=self._intent_generation:return
+        pending=self._pending_present;self._pending_present=None
+        callback=pending[1] if pending and pending[0]==self._intent_generation else None
+        self.reset()
         if callable(callback):callback()
 
     def reset(self):
-        self.leave.stop();self.feedback.stop();self.entrance.stop();self._pending_present=None
+        self._intent_generation+=1
+        self.leave.stop();self.feedback.stop();self.entrance.stop();self.drop_feedback.cancel();self._pending_present=None
         self.surface.hide();self.surface.active=None;self._highlight(False)
         self.surface.press=0.;self._dropping=False
+
+    def _shelf(self):return self.root if hasattr(self.root,'_set_stack_spread') else getattr(self.root,'shelf',None)
+
+    def _spread(self,value):
+        shelf=self._shelf()
+        if callable(getattr(shelf,'_set_stack_spread',None)):shelf._set_stack_spread(value)
+
+    def _restore_spread(self,generation):
+        if not isValid(self.root) or generation!=self._hover_generation or not self.root.isVisible():return
+        shelf=self._shelf()
+        if callable(getattr(shelf,'_restore_stack_spread',None)):shelf._restore_stack_spread()
 
     def _show(self):
         origin=self.button.mapTo(self.root,QPoint())
@@ -89,10 +113,21 @@ class TransferEntryRouter(QObject):
     def eventFilter(self,watched,event):
         if not isValid(self.root):return False
         kind=event.type()
-        if watched is self.root and kind in (QEvent.Hide,QEvent.Close):self.reset();return False
+        if watched is self.root and kind in (QEvent.Hide,QEvent.Close):
+            self._hover_generation+=1;self.reset();self._spread(False);return False
+        if watched in (self.button,self.surface) and kind in (QEvent.Enter,QEvent.Leave):
+            self._hover_generation+=1
+            if kind==QEvent.Enter:self._spread(False)
+            else:
+                generation=self._hover_generation
+                QTimer.singleShot(0,self,lambda:self._restore_spread(generation))
+        if watched is self.root and kind==QEvent.Leave:
+            self._hover_generation+=1;self._spread(False)
         if kind not in (QEvent.DragEnter,QEvent.DragMove,QEvent.DragLeave,QEvent.Drop):return False
         if not isinstance(watched,QWidget) or not (watched is self.root or self.root.isAncestorOf(watched)):return False
         if kind==QEvent.DragLeave:
+            if watched is self.root:
+                self._hover_generation+=1;self._spread(False)
             if self.surface.isVisible() and not self._dropping:self.leave.start(60)
             return False
         if not self.button.isVisible() or not original_paths(event.mimeData()):return False
@@ -101,16 +136,24 @@ class TransferEntryRouter(QObject):
         inside=entry.contains(point) or self.surface.isVisible() and self.surface.geometry().contains(point)
         if not inside:
             if self.surface.isVisible():self.reset()
+            self._spread(self.root.rect().contains(point))
             return False
+        self._spread(False)
         self.leave.stop()
         if not self.surface.isVisible():self._show()
         self.surface.active=self.surface.target(self.surface.mapFrom(self.root,point));self.surface.update()
         if kind==QEvent.Drop:
             mode=self.surface.active
             if mode is None:self.reset();event.ignore();return True
-            paths=original_paths(event.mimeData());self._dropping=True
-            event.acceptProposedAction();self._pending_present=self.deliver(mode,paths)
-            if not reduced_motion():self.entrance.stop();self._enter(1.);self.feedback.start()
+            paths=original_paths(event.mimeData());self._dropping=True;self._intent_generation+=1
+            event.acceptProposedAction();callback=self.deliver(mode,paths)
+            self._pending_present=(self._intent_generation,callback)
+            if not reduced_motion():
+                self.entrance.stop();self._enter(1.);self.feedback.start()
+                index=('lan','wan').index(mode)
+                target=self.surface.mapTo(self.root,QPoint(self.surface.width()//2,35+68*index))
+                generation=self._intent_generation
+                self.drop_feedback.play(paths,point,target,lambda:self._finish_drop(generation))
             else:self._finish_drop()
             return True
         event.acceptProposedAction();return True

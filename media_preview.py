@@ -5,6 +5,7 @@ an explicit button press. Each source owns a separate player generation so
 late native callbacks cannot repaint a different item.
 """
 from __future__ import annotations
+from surface_morph import rounded_rect_path,draw_rounded_rect
 
 import os
 from pathlib import Path
@@ -86,12 +87,12 @@ class _MediaButton(QPushButton):
         background.setAlphaF(.65 + .35 * self.spring.values["hover"])
         p.setBrush(background)
         p.setPen(Qt.PenStyle.NoPen)
-        p.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 10, 10)
+        draw_rounded_rect(p,QRectF(self.rect()).adjusted(1, 1, -1, -1),(10,10))
         from native_ui_common import keyboard_focus_visible
         if keyboard_focus_visible(self):
             p.setPen(QPen(QColor(ui_theme.color("accent")), 1.4))
             p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawRoundedRect(QRectF(self.rect()).adjusted(1.6, 1.6, -1.6, -1.6), 9, 9)
+            draw_rounded_rect(p,QRectF(self.rect()).adjusted(1.6, 1.6, -1.6, -1.6),(9,9))
         if not self.isEnabled():
             p.setOpacity(.4)
         color = QColor(ui_theme.color("icon"))
@@ -145,7 +146,7 @@ class _VideoSurface(QWidget):
         p.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.SmoothPixmapTransform)
         bounds = QRectF(self.rect()).adjusted(1, 1, -1, -1)
         clipping = QPainterPath()
-        clipping.addRoundedRect(bounds, 12, 12)
+        clipping.addPath(rounded_rect_path(bounds,(12,12)))
         p.setClipPath(clipping)
         p.fillRect(bounds, QColor("#11161e"))
         if not self.image.isNull():

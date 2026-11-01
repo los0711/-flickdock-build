@@ -9,6 +9,7 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Qt, Signal
 from PySide6.QtWidgets import QApplication
@@ -118,9 +119,9 @@ class VerifiedInstaller:
         self.identity = _identity(os.fstat(reader.fileno()))
 
     def close(self):
-        if self.reader is not None:
-            self.reader.close()
-            self.reader = None
+        reader, self.reader = self.reader, None
+        if reader is not None:
+            reader.close()
 
     def __del__(self):
         self.close()
@@ -161,9 +162,8 @@ def verify_installer(path, manifest, *, current_version, updates_dir,
         raise
 
 
-def launch_installer(verified, *, installed_exe, quit_callback, popen=None,
-                     parent_pid=None):
-    """Spawn only a still-valid lease; quit only after successful process creation."""
+def _spawn_installer(verified, *, installed_exe, popen=None, parent_pid=None):
+    """Create the installer while its verified read lease is still held."""
     if not isinstance(verified, VerifiedInstaller) or verified.reader is None:
         raise ValueError('安装包尚未通过校验。')
     executable = Path(installed_exe).resolve(strict=True)
@@ -183,15 +183,70 @@ def launch_installer(verified, *, installed_exe, quit_callback, popen=None,
         raise ValueError('安装包在校验后已变化，请重新下载。')
     # Keep the native installer's real progress visible after the application
     # exits. /SILENT skips setup choices while preserving its progress window.
-    arguments = [str(path), '/SILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-',
+    # Error/retry dialogs must remain available after the application exits.
+    arguments = [str(path), '/SILENT', '/NORESTART', '/SP-',
                  '/CLOSEAPPLICATIONS', '/DIR=' + str(executable.parent),
                  '/FDOnlineUpdate=1', '/FDParentPid=' + str(os.getpid() if parent_pid is None else int(parent_pid)),
                  '/LOG=' + str(path.parent / 'install.log')]
     options = dict(cwd=str(executable.parent), shell=False)
     if os.name == 'nt':
         options['creationflags'] = subprocess.CREATE_NO_WINDOW
-    process = launcher(arguments, **options)
-    verified.close()
+    return launcher(arguments, **options)
+
+
+def _check_installer_startup(process, cancelled=None):
+    """Catch immediate startup failures, not later installation outcomes."""
+    poll = getattr(process, 'poll', None)
+    deadline = time.monotonic() + .15
+    while True:
+        if cancelled is not None and cancelled.is_set():
+            raise InterruptedError('更新准备已取消。')
+        # Keep the injected recorder contract used by standalone callers/tests.
+        code = poll() if callable(poll) else None
+        if code is not None:
+            if code != 0:
+                raise OSError(f'安装程序启动失败（退出码 {code}），当前版本保持运行；请重试安装。')
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not callable(poll):
+            return
+        if cancelled is None:
+            time.sleep(min(.01, remaining))
+        else:
+            cancelled.wait(min(.01, remaining))
+
+
+def _retire_installer(process):
+    """Reap only this handoff's process; never use process names or other PIDs."""
+    poll = getattr(process, 'poll', None)
+    if not callable(poll):
+        return True  # Injected process recorders own no operating-system child.
+    try:
+        if poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2)
+        return poll() is not None
+    except (OSError, RuntimeError, ValueError, TypeError, AttributeError, subprocess.TimeoutExpired):
+        try:
+            return poll() is not None
+        except (OSError, RuntimeError, ValueError):
+            return False
+
+
+def launch_installer(verified, *, installed_exe, quit_callback, popen=None,
+                     parent_pid=None):
+    """Synchronous handoff for worker callers; always release the read lease."""
+    try:
+        process = _spawn_installer(verified, installed_exe=installed_exe,
+                                   popen=popen, parent_pid=parent_pid)
+        _check_installer_startup(process)
+    finally:
+        if isinstance(verified, VerifiedInstaller):
+            verified.close()
     quit_callback()
     return process
 
@@ -201,8 +256,8 @@ def install_update(path, manifest, *, current_version, updates_dir, installed_ex
                    parent_pid=None):
     """Standalone synchronous entry for callers already running on a worker.
 
-    The controller instead runs verify_installer on QThreadPool and hands its
-    lease to launch_installer on the GUI thread, keeping the quit callback there.
+    The controller runs both verification and process creation on QThreadPool,
+    and receives their queued results before invoking its GUI quit callback.
     """
     verified = verify_installer(path, manifest, current_version=current_version,
                                 updates_dir=updates_dir, allowed_hosts=allowed_hosts)
@@ -245,6 +300,88 @@ class _MacDmgVerification(_Verification):
         self.signals.finished.emit(self.generation, result, error)
 
 
+class _InstallerSignals(QObject):
+    finished = Signal(int, object, str)
+    retired = Signal(int)
+
+
+class _InstallerLaunch(QRunnable):
+    def __init__(self, generation, verified, options):
+        super().__init__()
+        self.generation, self.verified, self.options = generation, verified, options
+        self.path = str(verified.path)
+        self.cancelled = threading.Event()
+        self.safe_to_retry = True
+        self.process = None
+        self._ownership = threading.Lock()
+        self._finished = self._claimed = self._retiring = False
+        self.retired = threading.Event()
+        self.signals = _InstallerSignals()
+
+    def cancel(self):
+        self.cancelled.set()
+        with self._ownership:
+            if (not self._finished or self._claimed or self._retiring
+                    or self.process is None):
+                return
+            self._retiring = True
+            retirement = _InstallerRetirement(self, self.process)
+        # In particular, close() may be immediately followed by app.quit().
+        # Child ownership must not depend on another GUI callback being read.
+        QThreadPool.globalInstance().start(retirement)
+
+    def claim(self):
+        """The GUI commits a successful handoff immediately before quitting."""
+        with self._ownership:
+            if self.cancelled.is_set() or self._retiring or not self._finished:
+                return False
+            self._claimed = True
+            return True
+
+    def _retire(self, process, *, notify=True):
+        safe = _retire_installer(process)
+        with self._ownership:
+            self.safe_to_retry = safe
+            self.retired.set()
+        if notify:
+            self.signals.retired.emit(self.generation)
+
+    def run(self):
+        process, error = None, ''
+        try:
+            if self.cancelled.is_set():
+                raise InterruptedError('更新准备已取消。')
+            process = _spawn_installer(self.verified, **self.options)
+            with self._ownership:
+                self.process = process
+                self.safe_to_retry = False
+            _check_installer_startup(process, self.cancelled)
+        except (OSError, ValueError, TypeError, RuntimeError) as problem:
+            error = str(problem)
+        finally:
+            try:
+                self.verified.close()
+            except (OSError, ValueError) as problem:
+                error = error or str(problem)
+        with self._ownership:
+            self._finished = True
+            retire = process is not None and (bool(error) or self.cancelled.is_set())
+            if retire:
+                self._retiring = True
+        if retire:
+            self._retire(process, notify=False)
+        self.signals.finished.emit(self.generation, process, error)
+
+
+class _InstallerRetirement(QRunnable):
+    def __init__(self, owner, process):
+        super().__init__()
+        self.owner, self.process = owner, process
+
+    def run(self):
+        self.owner._retire(self.process)
+
+
 class _DisposeMacPrepared(QRunnable):
     def __init__(self, prepared):
         super().__init__()
@@ -276,6 +413,7 @@ class UpdateController(QObject):
         self._closed, self._generation = False, 0
         self._installing = self._authorized = False
         self._mac_helper_gate = False
+        self._win_launch_gate = False
         self._background_download=False
         self._jobs, self._notified = {}, set()
         self._pending_manifest = None
@@ -318,7 +456,7 @@ class UpdateController(QObject):
 
     @property
     def busy(self):
-        return bool(self._installing or self._mac_helper_gate or self.client.busy)
+        return bool(self._installing or self._mac_helper_gate or self._win_launch_gate or self.client.busy)
 
     @property
     def verified_path(self):return self._verified_path
@@ -387,7 +525,7 @@ class UpdateController(QObject):
     def check_automatically(self):
         if not getattr(self.settings,'automatic_updates',True):return False
         if self._state=='ready' and self._verified_path:return True
-        if self._closed or self._installing:
+        if self._closed or self._installing or self._win_launch_gate:
             return False
         if self._busy() or self.client.busy:
             self._pending_check = True
@@ -680,33 +818,75 @@ class UpdateController(QObject):
             if result is not None:
                 result.close()
             return
-        self._installing = False
         if error:
+            self._installing = False
             self._authorized = False
             self._verified_path = ''
             self._retry_operation = 'download'
             self._set_state('error', error=error)
             self.installation_failed.emit(error)
             return
-        try:
-            path = str(result.path)
-            self._set_state('installing')
-            if self._closed or generation != self._generation or not self._authorized:
-                return
-            def quit_after_spawn():
-                self._authorized = False
-                self.installation_started.emit(path)
-                self._quit()
-            launch_installer(result, installed_exe=self._installed_exe,
-                              quit_callback=quit_after_spawn, popen=self._popen)
-        except (OSError, ValueError, TypeError) as problem:
-            self._authorized = False
-            self._retry_operation = 'install'
-            self._set_state('error', error=str(problem))
-            self.installation_failed.emit(str(problem))
-        finally:
-            if result is not None:
-                result.close()
+        # Transfer the still-locked lease to the worker. Process creation can
+        # block in Windows/antivirus and must not stall the settings GUI.
+        job = _InstallerLaunch(generation, result,
+                               dict(installed_exe=self._installed_exe, popen=self._popen))
+        self._jobs[generation] = job
+        self._win_launch_gate = True
+        job.signals.finished.connect(self._windows_launched, Qt.ConnectionType.QueuedConnection)
+        job.signals.retired.connect(self._windows_retired, Qt.ConnectionType.QueuedConnection)
+        self._set_state('installing')
+        if self._closed or generation != self._generation or not self._authorized:
+            job.cancel()
+        QThreadPool.globalInstance().start(job)
+
+    def _windows_launched(self, generation, process, error):
+        job = self._jobs.get(generation)
+        if job is None:
+            return
+        current = not self._closed and generation == self._generation and self._authorized
+        if not error and not current:
+            job.cancel()
+            if job.retired.is_set():
+                self._windows_retired(generation)
+            return
+        if error:
+            self._jobs.pop(generation, None)
+        self._win_launch_gate = bool(error and not job.safe_to_retry)
+        self._installing = self._win_launch_gate
+        if not current:
+            if not self._closed and self._win_launch_gate:
+                self._windows_launch_error('安装程序尚未确认退出，请关闭安装程序后重新打开 FlickDock 再试。')
+            return
+        self._authorized = False
+        if error:
+            self._windows_launch_error(error)
+            return
+        self._installing = True
+        self.installation_started.emit(job.path)
+        if not self._closed and generation == self._generation and job.claim():
+            self._jobs.pop(generation, None)
+            self._quit()
+        else:
+            # A signal handler can cancel synchronously before the quit call.
+            self._win_launch_gate = True
+            job.cancel()
+            if job.retired.is_set():
+                self._windows_retired(generation)
+
+    def _windows_launch_error(self, message):
+        self._authorized = False
+        self._retry_operation = 'install'
+        self._set_state('error', error=message)
+        self.installation_failed.emit(message)
+
+    def _windows_retired(self, generation):
+        job = self._jobs.pop(generation, None)
+        if job is None:
+            return
+        self._win_launch_gate = not job.safe_to_retry
+        self._installing = self._win_launch_gate
+        if not self._closed and self._win_launch_gate:
+            self._windows_launch_error('安装程序尚未确认退出，请关闭安装程序后重新打开 FlickDock 再试。')
 
     def _cancelled(self, manual=False):
         if not self._closed:

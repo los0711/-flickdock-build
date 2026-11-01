@@ -147,7 +147,7 @@ class LanHigLayoutTests(unittest.TestCase):
     def test_busy_default_and_minimum_windows_keep_actions_complete_and_surface_opaque(self):
         self.load_busy_state()
         panel=self.panel
-        self.assertEqual(self.dialog.size().toTuple(),(980,744))
+        self.assertEqual(self.dialog.size().toTuple(),(980,792))
         self.assertEqual(self.dialog.minimumSize().toTuple(),(824,660))
         for size in ((980,704),(824,660)):
             for theme in ('dark','light'):
@@ -185,7 +185,7 @@ class LanHigLayoutTests(unittest.TestCase):
                     center=illustration.mapTo(panel.drop_zone,illustration.rect().center())
                     self.assertLessEqual(abs(center.x()-panel.drop_zone.rect().center().x()),1)
                     image=self.dialog.grab().toImage()
-                    self.assertEqual(image.pixelColor(25,image.height()//2).alpha(),255)
+                    self.assertEqual(image.pixelColor(round(25*image.devicePixelRatio()),image.height()//2).alpha(),255)
                     if os.environ.get('FLICKDOCK_CAPTURE_HIG_LAN'):
                         destination=Path(__file__).resolve().parents[2]/'outputs'/'hig-redesign'
                         destination.mkdir(parents=True,exist_ok=True)

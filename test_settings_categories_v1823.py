@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 from PySide6.QtCore import QPoint,QRect,Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QLineEdit
+from PySide6.QtWidgets import QLineEdit,QFrame,QPushButton
 import app_settings
 from test_html_native_workspace import APP,flush
 from account_panel import AccountPanel
@@ -68,5 +68,30 @@ class SettingsCategoryTests(unittest.TestCase):
                 self.assertLess(nav.mapTo(d,QPoint(nav.width(),0)).x(),d.scroll.mapTo(d,QPoint()).x())
                 self.assertTrue(d.surface.rect().contains(QRect(d.save_button.mapTo(d.surface,QPoint()),d.save_button.size())))
                 self.assertGreater(d.scroll.viewport().width(),360)
+
+    def test_settings_segments_gain_height_without_changing_overview_metrics(self):
+        from native_ui_common import SEGMENT_HEIGHT,SEGMENT_BUTTON_HEIGHT
+        self.assertEqual((SEGMENT_HEIGHT,SEGMENT_BUTTON_HEIGHT),(28,22))
+        d=self.dialog
+        for theme in ('light','dark'):
+            d.apply_theme(theme)
+            for size in ((740,560),(1040,780)):
+                d.resize(*size)
+                for category in ('general','sync'):
+                    d.show_settings_category(category);flush()
+                    groups=[frame for frame in d.findChildren(QFrame,'settingsSegment') if frame.isVisible()]
+                    self.assertEqual(len(groups),2 if category=='general' else 1)
+                    for frame in groups:
+                        frame.layout().activate();buttons=frame.findChildren(QPushButton,'settingsSegmentButton')
+                        self.assertEqual(frame.height(),32)
+                        self.assertEqual(buttons[0].x(),3)
+                        self.assertEqual(frame.width()-buttons[-1].geometry().right()-1,3)
+                        for button in buttons:
+                            self.assertEqual(button.height(),26)
+                            self.assertEqual(button.y(),3)
+                            self.assertEqual(frame.height()-button.geometry().bottom()-1,3)
+                            self.assertGreaterEqual(button.contentsRect().height(),button.fontMetrics().height())
+                        for _ in range(2):buttons[-1].click();flush()
+                        self.assertEqual(sum(button.isChecked() for button in buttons),1)
 
 if __name__=='__main__':unittest.main()

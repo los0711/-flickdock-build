@@ -4,7 +4,8 @@ os.environ['QT_QPA_PLATFORM']='offscreen'
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
-from PySide6.QtCore import QPoint,QRect,Qt
+from PySide6.QtCore import QPoint,QPointF,QRect,Qt,QEvent
+from PySide6.QtGui import QMouseEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QPushButton
 from app_settings import SettingsStore,SettingsDialog
@@ -53,9 +54,9 @@ class UtilityTests(unittest.TestCase):
         self.service._transfers.clear();self.dialog.resize(1010,740);APP.processEvents()
         self.dialog.chrome.save_size()
         second=LanDialog(self.service,self.store)
-        self.assertEqual(second.size().toTuple(),(980,744))
+        self.assertEqual(second.size().toTuple(),(980,792))
         self.dialog.hide();self.dialog.show();APP.processEvents()
-        self.assertEqual(self.dialog.size().toTuple(),(980,744))
+        self.assertEqual(self.dialog.size().toTuple(),(980,792))
         self.assertEqual(second.minimumSize().toTuple(),(824,660))
         if hasattr(second.chrome,'buttons'):
             second.show();APP.processEvents()
@@ -84,7 +85,10 @@ class UtilityTests(unittest.TestCase):
         before=window.size();point=surface.rect().bottomRight()-QPoint(1,1)
         with patch('window_chrome.native_input_available',return_value=False):
             QTest.mousePress(surface,Qt.LeftButton,pos=point)
-            QTest.mouseMove(surface,point+QPoint(40,30));QTest.mouseRelease(surface,Qt.LeftButton,pos=point+QPoint(40,30))
+            end=point+QPoint(40,30)
+            APP.sendEvent(surface,QMouseEvent(QEvent.MouseMove,QPointF(end),QPointF(surface.mapTo(surface.window(),end)),
+                QPointF(surface.mapToGlobal(end)),Qt.NoButton,Qt.LeftButton,Qt.NoModifier))
+            QTest.mouseRelease(surface,Qt.LeftButton,pos=end)
         APP.processEvents()
         self.assertGreater(window.width(),before.width());self.assertGreater(window.height(),before.height())
         self.assertGreaterEqual(window.width(),window.minimumWidth());self.assertGreaterEqual(window.height(),window.minimumHeight())
@@ -116,7 +120,9 @@ class SharedUpdateTests(unittest.TestCase):
             view.show_result(False,dict(point=area.center().toTuple(),fullscreen=True))
             self.assertEqual(view.message.text(),'复制同步失败')
             self.assertEqual(view.x(),area.right()-view.width()-15)
-            self.assertEqual(view.y(),area.top()+16);view.timer.start(20)
+            self.assertEqual(view.y(),area.top()+16)
+            for entry in view.motion.active:entry['deadline']=time.monotonic()+.02
+            view._schedule_expiry()
             deadline=time.monotonic()+1
             while view.isVisible() and time.monotonic()<deadline:QTest.qWait(10)
             self.assertFalse(view.isVisible())

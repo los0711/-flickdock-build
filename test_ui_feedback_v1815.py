@@ -48,7 +48,10 @@ class FeedbackTests(unittest.TestCase):
             start=QPoint(3,3)
             end=QPoint(view.rows_body.width()-3,min(visible.bottom()-2,max(cell.geometry().bottom() for cell in cells)+15))
             QTest.mousePress(view.rows_body,Qt.LeftButton,pos=start)
-            QTest.mouseMove(view.rows_body,end);QTest.mouseRelease(view.rows_body,Qt.LeftButton,pos=end);flush()
+            APP.sendEvent(view.rows_body,QMouseEvent(QEvent.MouseMove,QPointF(end),
+                QPointF(view.rows_body.mapTo(view.rows_body.window(),end)),QPointF(view.rows_body.mapToGlobal(end)),
+                Qt.NoButton,Qt.LeftButton,Qt.NoModifier))
+            QTest.mouseRelease(view.rows_body,Qt.LeftButton,pos=end);flush()
             rectangle=QRect(start,end).normalized().intersected(visible)
             expected={cell.path for cell in cells if rectangle.intersects(cell.geometry())}
             self.assertTrue(expected);self.assertEqual(view.selected,expected,mode)

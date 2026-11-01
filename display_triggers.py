@@ -66,12 +66,20 @@ class DisplayGroup(QFrame):
         self.arrow=QPushButton(self.header);self.arrow.setFixedSize(28,28);self.arrow.setAutoDefault(False);self.arrow.setObjectName('settingsLink');self.arrow.setAccessibleName(name+'展开或收起参数');line.addWidget(self.arrow)
         self.header.activated.connect(lambda:self.set_expanded(not self.expanded));self.arrow.clicked.connect(lambda:self.set_expanded(not self.expanded))
         box.addWidget(self.header)
-        self.details=QWidget(self);details=QVBoxLayout(self.details);details.setContentsMargins(0,0,0,0);details.setSpacing(10)
-        top=QHBoxLayout();top.setSpacing(12);top.addWidget(QLabel('停靠在',self.details))
-        self.edge=SettingsComboBox(self.details)
+        self.details=QWidget(self);details=QVBoxLayout(self.details);details.setContentsMargins(0,4,0,0);details.setSpacing(14)
+        self.field_grid=QGridLayout();self.field_grid.setContentsMargins(0,0,0,0);self.field_grid.setHorizontalSpacing(12);self.field_grid.setVerticalSpacing(10)
+        self.edge_panel=QFrame(self.details);self.edge_panel.setObjectName('displayTriggerField')
+        edge_row=QHBoxLayout(self.edge_panel);edge_row.setContentsMargins(12,10,12,10);edge_row.setSpacing(8)
+        edge_label=QLabel('停靠在',self.edge_panel);edge_row.addWidget(edge_label,1)
+        self.edge=SettingsComboBox(self.edge_panel)
         for label,key in (('左侧','left'),('右侧','right'),('顶部','top'),('底部','bottom')):self.edge.addItem(label,key)
-        self.edge.setMinimumWidth(78);top.addWidget(self.edge);top.addStretch();top.addWidget(QLabel('标记颜色',self.details))
-        self.color_button=QPushButton(self.details);self.color_button.setAutoDefault(False);self.color_button.setFixedSize(108,28);self.color_button.clicked.connect(self.pick_color);top.addWidget(self.color_button);details.addLayout(top)
+        self.edge.setMinimumWidth(78);self.edge.setFixedHeight(28);edge_label.setBuddy(self.edge);edge_row.addWidget(self.edge)
+        self.color_panel=QFrame(self.details);self.color_panel.setObjectName('displayTriggerField')
+        color_row=QHBoxLayout(self.color_panel);color_row.setContentsMargins(12,10,12,10);color_row.setSpacing(8)
+        color_label=QLabel('标记颜色',self.color_panel);color_row.addWidget(color_label,1)
+        self.color_button=QPushButton(self.color_panel);self.color_button.setAutoDefault(False);self.color_button.setFixedSize(108,28);self.color_button.clicked.connect(self.pick_color)
+        color_label.setBuddy(self.color_button);color_row.addWidget(self.color_button)
+        self.field_panels=(self.edge_panel,self.color_panel);details.addLayout(self.field_grid)
         self.grid=QGridLayout();self.grid.setSpacing(12);self.panels=[]
         for key,label,unit in (('position','边缘位置',' %'),('length','触发条长度',' px'),('thickness','触发条厚度',' px'),('opacity','不透明度',' %')):
             panel=QWidget(self.details);col=QVBoxLayout(panel);col.setContentsMargins(0,0,0,0);col.setSpacing(8);row=QHBoxLayout();row.addWidget(QLabel(label,panel),1)
@@ -108,6 +116,9 @@ class DisplayGroup(QFrame):
         if color.isValid():self.color=color.name();self._update_color();self.changed.emit()
 
     def _expand_frame(self,value):
+        from ui_transitions import motion_allowed
+        if self.animation.state()==self.animation.State.Running and not motion_allowed():
+            self.animation.stop();self._expanded_end();return
         self.details.setMaximumHeight(round(value));self._height_timer.start(0)
 
     def _expanded_end(self):
@@ -145,6 +156,7 @@ class DisplayGroup(QFrame):
         columns=1 if self.width()<480 else 2
         if getattr(self,'_columns',None)==columns:return
         self._columns=columns
+        for i,panel in enumerate(self.field_panels):self.field_grid.removeWidget(panel);self.field_grid.addWidget(panel,i//columns,i%columns)
         for i,panel in enumerate(self.panels):self.grid.removeWidget(panel);self.grid.addWidget(panel,i//columns,i%columns)
         if hasattr(self,'_height_timer'):self._height_timer.start(0)
 
@@ -153,6 +165,8 @@ class DisplayGroup(QFrame):
         for control in (self.toggle,self.edge,*self.controls.values()):control.dark=self.dark;control.update()
         from native_ui_common import icon
         self.arrow.setIcon(icon('chevron-down' if self.expanded else 'chevron-right','#A1A1AA' if self.dark else '#68686D'))
+        from input_focus import install_focus_tree
+        install_focus_tree(self,theme=lambda:'dark' if self.dark else 'light')
 
 
 class DisplayTriggerEditor(QWidget):

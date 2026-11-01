@@ -5,6 +5,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import QLabel, QWidget
 import ui_theme
+from surface_morph import rounded_rect_path,draw_rounded_rect
 
 
 CLOUD_STATUS_LABELS = {
@@ -40,7 +41,7 @@ class FileStatusPill(QWidget):
         painter=QPainter(self);painter.setRenderHint(QPainter.Antialiasing)
         tint=QColor((_CLOUD_STATUS_DARK_COLORS if ui_theme.current_theme()=='dark' else _CLOUD_STATUS_COLORS)[self.status])
         fill=QColor(tint);fill.setAlpha(28);painter.setBrush(fill);painter.setPen(QPen(tint,1))
-        painter.drawRoundedRect(QRectF(self.rect()).adjusted(.5,.5,-.5,-.5),5,5)
+        draw_rounded_rect(painter,QRectF(self.rect()).adjusted(.5,.5,-.5,-.5),5)
         paths={'synced':'<path d="m5 12 4 4L19 6"/>','uploading':'<path d="M12 20V4m-5 5 5-5 5 5"/>',
             'pending':'<circle cx="4" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="20" cy="12" r="1"/>',
             'local':'<circle cx="12" cy="12" r="3"/>','paused':'<path d="M8 5v14m8-14v14"/>','error':'<path d="m6 6 12 12M18 6 6 18"/>'}

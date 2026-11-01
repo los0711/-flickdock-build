@@ -3,12 +3,13 @@
 Only presentation lives here. Content, drag MIME, disk work and network services
 continue to be owned by the existing shelf and panel classes.
 """
+from surface_morph import rounded_rect_path,draw_rounded_rect
 from pathlib import Path
 import sys
 import re
 
 from PySide6.QtCore import QObject, QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QVariantAnimation
-from PySide6.QtGui import QColor, QFont, QIcon, QPalette, QImage, QPainter, QPainterPath, QPen, QPixmap, QLinearGradient
+from PySide6.QtGui import QColor, QFont, QIcon, QPalette, QImage, QPainter, QPainterPath, QPen, QPixmap, QLinearGradient, QTransform
 from PySide6.QtWidgets import (QLabel, QPushButton, QWidget, QFrame, QHBoxLayout,
     QVBoxLayout, QGridLayout, QScrollArea, QLineEdit, QProgressBar, QButtonGroup, QSizePolicy,
     QStackedWidget, QPlainTextEdit, QCheckBox, QApplication, QDialog, QRubberBand)
@@ -84,7 +85,10 @@ class IconTextButton(QPushButton):
         if not hasattr(self,'_icon_animation'):
             self._icon_animation=QVariantAnimation(self)
             self._icon_animation.setEasingCurve(exit_curve())
-            def changed(value):self._icon_value=value;self.update()
+            def changed(value):
+                if self._icon_animation.state()==self._icon_animation.State.Running and not motion_allowed():
+                    self._icon_animation.stop();value=self._icon_target if self.isEnabled() else QPointF()
+                self._icon_value=value;self.update()
             self._icon_animation.valueChanged.connect(changed)
         self._icon_animation.stop();self._icon_animation.setDuration(100 if target.y() else 170)
         self._icon_animation.setStartValue(current);self._icon_animation.setEndValue(target);self._icon_animation.start()
@@ -125,6 +129,14 @@ class IconTextButton(QPushButton):
             art.paint(painter,rect,Qt.AlignCenter,QIcon.Normal if self.isEnabled() else QIcon.Disabled)
             painter.restore();return
         size=self.iconSize();gap=6;left=bool(self.property('leftAligned'))
+        indicator=getattr(self,'selection_indicator',None)
+        covered=bool(indicator is not None and indicator._rect.contains(QRectF(self.geometry()).center()))
+        if indicator is not None:
+            cache_key=(ui_theme.current_theme(),covered)
+            if getattr(self,'_category_art_key',None)!=cache_key:
+                self._category_art_key=cache_key
+                self._category_art=icon(self._reference_icon[0],'#FFFFFF' if covered else palette()['secondary'])
+            art=self._category_art
         space=self.width()-(56 if left else 16)-size.width()-gap
         text=painter.fontMetrics().elidedText(words,Qt.ElideRight,max(1,space))
         width=painter.fontMetrics().horizontalAdvance(text)+size.width()+gap
@@ -132,10 +144,35 @@ class IconTextButton(QPushButton):
         mode=QIcon.Mode.Normal if self.isEnabled() else QIcon.Mode.Disabled
         art.paint(painter,QRect(round(x),round((self.height()-size.height())/2),size.width(),size.height()),Qt.AlignCenter,mode)
         c=palette();variant=self.property('referenceVariant')
-        tint=('#FFFFFF' if self.isChecked() and left else c['text'] if self.isChecked() else
+        tint=('#FFFFFF' if covered else c['secondary']) if indicator is not None else ('#FFFFFF' if self.isChecked() and left else c['text'] if self.isChecked() else
               '#FFFFFF' if variant=='primary' else c['red'] if variant=='danger' else c['text'] if variant=='secondary' else c['secondary'])
         painter.setPen(QColor(tint if self.isEnabled() else c['muted']))
         painter.drawText(QRectF(x+size.width()+gap,0,self.width()-x-size.width()-gap-8,self.height()),Qt.AlignLeft|Qt.AlignVCenter,text)
+
+
+class CategoryCount(QLabel):
+    """Keep count text readable as the blue selection moves underneath it."""
+    def paintEvent(self,event):
+        control=self.parentWidget();indicator=getattr(control,'selection_indicator',None)
+        covered=bool(indicator is not None and indicator._rect.contains(QRectF(control.geometry()).center()))
+        p=QPainter(self);p.setFont(self.font());c=palette()
+        p.setPen(QColor('#FFFFFF' if covered else c['link'] if getattr(self,'category','')=='uploading' else c['muted']))
+        p.drawText(self.rect(),Qt.AlignCenter,self.text());p.end()
+
+
+from ui_transitions import SegmentIndicator
+
+class SidebarIndicator(SegmentIndicator):
+    def _frame(self,rect):
+        super()._frame(rect)
+        for control in self.buttons:
+            control.update()
+            for count in control.findChildren(CategoryCount):count.update()
+
+    def paintEvent(self,event):
+        if self._rect.isEmpty():return
+        p=QPainter(self);p.setRenderHint(QPainter.Antialiasing);p.setPen(Qt.NoPen);p.setBrush(QColor(palette()['action']))
+        draw_rounded_rect(p,self._rect,(12,12));p.end()
 
 
 class SortButton(IconTextButton):
@@ -152,7 +189,10 @@ class SortButton(IconTextButton):
         if not hasattr(self,'_sort_animation'):
             self._sort_animation=QVariantAnimation(self);self._sort_animation.setDuration(140)
             self._sort_animation.setEasingCurve(exit_curve())
-            def changed(value):self._sort_value=value;self.update()
+            def changed(value):
+                if self._sort_animation.state()==self._sort_animation.State.Running and not motion_allowed():
+                    self._sort_animation.stop();value=QPointF(float(self.direction==1),float(self.direction==2))
+                self._sort_value=value;self.update()
             self._sort_animation.valueChanged.connect(changed)
         self._sort_animation.stop();self._sort_animation.setStartValue(getattr(self,'_sort_value',QPointF()))
         self._sort_animation.setEndValue(target);self._sort_animation.start()
@@ -212,11 +252,11 @@ class ToolbarButton(FeedbackButton):
         p.translate(center);p.scale(v['scale']*self._presentation_scale[0],v['scale']*self._presentation_scale[1]);p.translate(-center)
         if self.property('framed'):
             p.setPen(QPen(ink(c['border']),1));p.setBrush(ink(c['control']))
-            p.drawRoundedRect(QRectF(self.rect()).adjusted(.5,.5,-.5,-.5),8,8)
+            draw_rounded_rect(p,QRectF(self.rect()).adjusted(.5,.5,-.5,-.5),(8,8))
         if self.isChecked() or v['hover']>.01 or v['down']>.01:
             fill=ink(c['selected'] if self.isChecked() else c['hover'])
             if not self.isChecked():fill.setAlphaF(fill.alphaF()*min(1,v['hover']+v['down']))
-            p.setPen(Qt.NoPen);p.setBrush(fill);p.drawRoundedRect(QRectF(self.rect()).adjusted(1,1,-1,-1),8,8)
+            p.setPen(Qt.NoPen);p.setBrush(fill);draw_rounded_rect(p,QRectF(self.rect()).adjusted(1,1,-1,-1),(8,8))
         if not self.isEnabled():p.setOpacity(.4)
         name={'pin-filled':'pin','check':'check'}.get(self.glyph,self.glyph)
         tint=self._glyph_tint or (c['blue'] if self.isChecked() else c['secondary'])
@@ -230,7 +270,7 @@ class ToolbarButton(FeedbackButton):
         p.restore()
         if self.hasFocus() and self._keyboard_focus:
             p.setPen(QPen(QColor(c['blue']),1.5));p.setBrush(Qt.NoBrush)
-            p.drawRoundedRect(QRectF(self.rect()).adjusted(2,2,-2,-2),7,7)
+            draw_rounded_rect(p,QRectF(self.rect()).adjusted(2,2,-2,-2),(7,7))
         p.end()
 
 
@@ -246,10 +286,10 @@ class CloudSelector(QPushButton):
         p=QPainter(self);p.setRenderHint(QPainter.Antialiasing);c=palette()
         enabled=self.shelf.manager.settings.sync_upload_enabled and self.shelf.manager.settings.sync_receive_enabled
         if self.underMouse():
-            p.setBrush(ink(c['hover']));p.setPen(Qt.NoPen);p.drawRoundedRect(QRectF(self.rect()).adjusted(1,1,-1,-1),8,8)
+            p.setBrush(ink(c['hover']));p.setPen(Qt.NoPen);draw_rounded_rect(p,QRectF(self.rect()).adjusted(1,1,-1,-1),(8,8))
         icon('cloud',c['green'] if enabled else c['red']).paint(p,QRect(8,8,16,16))
         if keyboard_focus_visible(self):
-            p.setPen(QPen(QColor(c['link']),1.5));p.setBrush(Qt.NoBrush);p.drawRoundedRect(QRectF(self.rect()).adjusted(2,2,-2,-2),12,12)
+            p.setPen(QPen(QColor(c['link']),1.5));p.setBrush(Qt.NoBrush);draw_rounded_rect(p,QRectF(self.rect()).adjusted(2,2,-2,-2),(12,12))
         p.end()
 
 
@@ -283,12 +323,12 @@ class LanButton(ToolbarButton):
     def paintEvent(self,event):
         p=QPainter(self);p.setRenderHint(QPainter.Antialiasing);c=palette()
         if self.underMouse() or self.property('transferDropActive'):
-            p.setPen(Qt.NoPen);p.setBrush(ink(c['hover']));p.drawRoundedRect(QRectF(self.rect()).adjusted(1,1,-1,-1),8,8)
+            p.setPen(Qt.NoPen);p.setBrush(ink(c['hover']));draw_rounded_rect(p,QRectF(self.rect()).adjusted(1,1,-1,-1),(8,8))
         icon('nearby',c['link']).paint(p,QRect(7,(self.height()-16)//2,16,16))
         f=self.font();f.setPixelSize(13 if sys.platform=='win32' else 12);p.setFont(f);p.setPen(QColor(c['text']))
         p.drawText(QRectF(29,0,self.width()-33,self.height()),Qt.AlignLeft|Qt.AlignVCenter,'文件互传')
         if keyboard_focus_visible(self):
-            p.setPen(QPen(QColor(c['link']),1.5));p.setBrush(Qt.NoBrush);p.drawRoundedRect(QRectF(self.rect()).adjusted(2,2,-2,-2),7,7)
+            p.setPen(QPen(QColor(c['link']),1.5));p.setBrush(Qt.NoBrush);draw_rounded_rect(p,QRectF(self.rect()).adjusted(2,2,-2,-2),(7,7))
         p.end()
 
 
@@ -301,7 +341,7 @@ class AvatarButton(ToolbarButton):
             p.setPen(QColor('white'));f=p.font();f.setPixelSize(11);f.setBold(True);p.setFont(f);p.drawText(self.rect(),Qt.AlignCenter,initial)
         else:icon('user',c['secondary']).paint(p,QRect((self.width()-16)//2,(self.height()-16)//2,16,16))
         if self.hasFocus() and self._keyboard_focus:
-            p.setPen(QPen(QColor(c['blue']),1.5));p.setBrush(Qt.NoBrush);p.drawRoundedRect(QRectF(self.rect()).adjusted(2,2,-2,-2),7,7)
+            p.setPen(QPen(QColor(c['blue']),1.5));p.setBrush(Qt.NoBrush);draw_rounded_rect(p,QRectF(self.rect()).adjusted(2,2,-2,-2),(7,7))
         p.end()
 
 
@@ -312,7 +352,7 @@ class TransferNavButton(IconTextButton):
         option=QStyleOptionButton();self.initStyleOption(option);option.text='';option.icon=QIcon()
         p=QStylePainter(self);p.drawControl(QStyle.CE_PushButton,option);p.setRenderHint(QPainter.Antialiasing)
         if self.property('transferDropActive'):
-            p.setPen(QPen(QColor(palette()['link']),1));p.setBrush(ink(palette()['hover']));p.drawRoundedRect(QRectF(self.rect()).adjusted(.5,.5,-.5,-.5),8,8)
+            p.setPen(QPen(QColor(palette()['link']),1));p.setBrush(ink(palette()['hover']));draw_rounded_rect(p,QRectF(self.rect()).adjusted(.5,.5,-.5,-.5),(8,8))
         c=palette();p.setFont(self.font());p.setPen(QColor(c['secondary']))
         icon('nearby',c['secondary']).paint(p,QRect(12,(self.height()-16)//2,16,16))
         p.drawText(QRectF(36,0,max(0,self.width()-66),self.height()),Qt.AlignLeft|Qt.AlignVCenter,self.text())
@@ -333,7 +373,7 @@ class ProfileButton(QPushButton):
     def paintEvent(self,event):
         p=QPainter(self);p.setRenderHint(QPainter.Antialiasing);c=palette()
         p.setPen(QPen(ink(c['border']),1));p.setBrush(ink(c['hover']) if self.underMouse() else Qt.NoBrush)
-        p.drawRoundedRect(QRectF(self.rect()).adjusted(.5,1.5,-.5,-1.5),10,10)
+        draw_rounded_rect(p,QRectF(self.rect()).adjusted(.5,1.5,-.5,-1.5),(10,10))
         avatar=QRectF(8,(self.height()-24)/2,24,24)
         p.setBrush(QColor(c['action']) if self.connected else ink(c['control']));p.setPen(Qt.NoPen);p.drawEllipse(avatar)
         f=p.font();f.setPixelSize(13 if sys.platform=='win32' else 11);f.setBold(True);p.setFont(f);p.setPen(QColor('white'))
@@ -345,7 +385,7 @@ class ProfileButton(QPushButton):
             f.setPixelSize(10);f.setBold(False);p.setFont(f);p.setPen(QColor(c['secondary']));p.drawText(QRectF(40,block_top+18,self.width()-70,12),Qt.AlignLeft|Qt.AlignVCenter,p.fontMetrics().elidedText(self.status,Qt.ElideRight,self.width()-70))
         icon('right',c['muted']).paint(p,QRect(self.width()-24,(self.height()-12)//2,12,12))
         if keyboard_focus_visible(self):
-            p.setPen(QPen(QColor(c['link']),1.5));p.setBrush(Qt.NoBrush);p.drawRoundedRect(QRectF(self.rect()).adjusted(2,2,-2,-2),8,8)
+            p.setPen(QPen(QColor(c['link']),1.5));p.setBrush(Qt.NoBrush);draw_rounded_rect(p,QRectF(self.rect()).adjusted(2,2,-2,-2),(8,8))
         p.end()
 
 
@@ -368,7 +408,7 @@ class SelectionCheck(QCheckBox):
         p.translate((self.width()-15)/2,(self.height()-15)/2)
         p.setBrush(QColor('#0A84FF') if self.isChecked() else Qt.NoBrush)
         p.setPen(QPen(QColor('#0A84FF') if self.isChecked() else ink(palette()['input_border']),1))
-        p.drawRoundedRect(QRectF(.5,.5,14,14),4,4)
+        draw_rounded_rect(p,QRectF(.5,.5,14,14),(4,4))
         if self.isChecked():
             p.setPen(QPen(QColor('white'),1.5,Qt.SolidLine,Qt.RoundCap,Qt.RoundJoin));p.drawLine(QPointF(4,7),QPointF(6,10));p.drawLine(QPointF(6,10),QPointF(11,4.5))
         p.end()
@@ -470,8 +510,10 @@ class RenameDialog(QDialog):
         close=ToolbarButton('close',self.card,motion=shelf.manager.motion);close.setFixedSize(32,32);close.clicked.connect(self.reject);header.addWidget(close);form.addLayout(header)
         form.addWidget(label('输入新的文件名，扩展名保持不变。',12,400,'secondary',self.card))
         edit=shelf.rename_edit;edit.setParent(self.card);edit.setFixedHeight(34)
-        css(edit,"QLineEdit{background:#242426;color:#F5F5F7;border:1px solid #3F3F46;border-radius:8px;padding:7px 10px;font:12px 'HarmonyOS Sans SC';} QLineEdit:focus{border-color:#0A84FF;}",
-            "QLineEdit{background:#FFFFFF;color:#1D1D1F;border:1px solid #D4D4D8;border-radius:8px;padding:7px 10px;font:12px 'HarmonyOS Sans SC';} QLineEdit:focus{border-color:#0A84FF;}")
+        css(edit,"QLineEdit{background:#242426;color:#F5F5F7;border:1px solid #3F3F46;border-radius:8px;padding:7px 10px;font:12px 'HarmonyOS Sans SC';}",
+            "QLineEdit{background:#FFFFFF;color:#1D1D1F;border:1px solid #D4D4D8;border-radius:8px;padding:7px 10px;font:12px 'HarmonyOS Sans SC';}")
+        from input_focus import install_focus
+        install_focus(edit,theme=ui_theme.current_theme)
         form.addWidget(edit);actions=QHBoxLayout();actions.addStretch(1)
         cancel=button('取消',variant='secondary',parent=self.card);cancel.clicked.connect(self.reject)
         self.confirm=button('确定',variant='primary',parent=self.card);self.confirm.clicked.connect(self._commit)
@@ -479,6 +521,12 @@ class RenameDialog(QDialog):
         edit.editingFinished.disconnect(shelf.commit_rename)
         edit.returnPressed.connect(self.accept)
         self.rejected.connect(edit.hide)
+        from ui_transitions import WindowFade
+        self._window_fade=WindowFade(self)
+
+    def done(self,result):
+        if self._window_fade.defer_done(result,super().done):return
+        super().done(result)
 
     def _commit(self):
         self.shelf.commit_rename();self.accept()
@@ -528,7 +576,7 @@ def thumbnail(shelf,ref,size=40):
     backgrounds={'images':'#26364A','video':'#202344','audio':'#7E22CE','text':'#4A3D28','links':'#164354'}
     ext=Path(shelf.content.title(ref)).suffix.lower()
     bg=backgrounds.get(category,'#3B3B3F' if ext=='.zip' else '#593140' if ext=='.pdf' else '#263A55')
-    p.setPen(QPen(QColor(255,255,255,38),1));p.setBrush(QColor(bg));p.drawRoundedRect(rect,size*.25,size*.25)
+    p.setPen(QPen(QColor(255,255,255,38),1));p.setBrush(QColor(bg));draw_rounded_rect(p,rect,(size*.25,size*.25))
     cached=getattr(shelf,'preview_cache',{}).get(ref)
     actual=category=='images' or ext in ('.lnk','.exe','.app') or cached is not None and not cached.isNull()
     if actual:
@@ -538,7 +586,7 @@ def thumbnail(shelf,ref,size=40):
         decoded=cache.image(ref,128) if cache and category=='images' else cached
         if decoded is not None and not decoded.isNull():
             art=QPixmap.fromImage(decoded) if isinstance(decoded,QImage) else decoded
-        clip=QPainterPath();clip.addRoundedRect(rect,9,9);p.setClipPath(clip)
+        clip=rounded_rect_path(rect,size*.25);p.setClipPath(clip)
         scale=min((size-2)/max(1,art.width()),(size-2)/max(1,art.height()))
         width,height=art.width()*scale,art.height()*scale
         p.drawPixmap(QRectF((size-width)/2,(size-height)/2,width,height),art,QRectF(art.rect()));p.setClipping(False)
@@ -559,7 +607,7 @@ def thumbnail(shelf,ref,size=40):
         cache=getattr(shelf,'file_metadata',None);info=cache.request(ref) if cache is not None and not ext else None
         name=ext.lstrip('.').upper() or ('DIR' if info and info['is_dir'] or cache is None and Path(ref).is_dir() else 'FILE')
         color='#B52B47' if name=='PDF' else '#466B99' if name=='ZIP' else palette()['action']
-        p.setPen(Qt.NoPen);p.setBrush(QColor(color));p.drawRoundedRect(QRectF(size*.12,size*.34,size*.76,size*.33),3,3)
+        p.setPen(Qt.NoPen);p.setBrush(QColor(color));draw_rounded_rect(p,QRectF(size*.12,size*.34,size*.76,size*.33),(3,3))
         font=QFont();font.setPixelSize(max(8,round(size*.23)));font.setWeight(QFont.Bold);p.setFont(font);p.setPen(QColor('white'))
         p.drawText(QRectF(size*.1,size*.3,size*.8,size*.4),Qt.AlignCenter,name[:4])
     p.end();return pm
@@ -583,36 +631,125 @@ class MiniStack(StackTile):
     def __init__(self,shelf,parent=None,motion=True):
         super().__init__(parent,motion)
         self.shelf=shelf
+        self._mini_cards={};self._mini_exit_cards={};self._mini_exit_from={};self._mini_exit_to={}
+        self._mini_theme=None;self._mini_dpr=0
+        self._mini_directory_revision=()
+        from drop_target_motion import DropTargetMotion
+        self.drop_motion=DropTargetMotion(self,self.empty_drop_rect,radius=16,pointer_source=parent or self,
+                                          enabled=lambda:not self.refs)
+        for cache in (getattr(shelf,'file_metadata',None),getattr(shelf,'image_cache',None)):
+            if cache is not None:cache.ready.connect(self._mini_content_ready)
 
-    def paintEvent(self,event):
-        p=QPainter(self);p.setRenderHints(QPainter.Antialiasing|QPainter.SmoothPixmapTransform)
-        if not self.refs:
-            r=QRectF((self.width()-176)/2,28,176,128)
-            active=self._hovered or bool(getattr(self.parent(),'drop_highlight',False))
-            color=palette()['link'] if active else palette()['border']
-            p.setPen(QPen(ink(color),1,Qt.DashLine));p.setBrush(ink(palette()['card']));p.drawRoundedRect(r,16,16)
-            icon('upload',palette()['secondary']).paint(p,QRect(round(r.center().x()-12),round(r.center().y()-31),24,24))
-            f=p.font()
-            f.setPixelSize(13);p.setFont(f);p.setPen(QColor(palette()['text']));p.drawText(r.adjusted(0,34,0,0),Qt.AlignCenter,'点击选择文件');p.end();return
-        c=palette();v=self.spring.values
-        center=QPointF(self.width()/2,self.height()/2)
-        p.translate(center.x(),center.y()+v['y']);p.scale(v['sx'],v['sy']);p.translate(-center)
-        refs=list(reversed(self.refs));transforms=((0,1,0,1),(-7,.95,-2,.9),(-14,.9,2.2,.75),(-20,.85,-1.5,.58),(-26,.8,1,.4))
-        for idx in reversed(range(len(refs))):
-            ref=refs[idx];dy,scale,angle,opacity=transforms[idx]
-            p.save();p.setOpacity(opacity);p.translate(center.x(),center.y()+dy);p.rotate(angle);p.scale(scale,scale);p.translate(-96,-64)
-            if idx==0:p.translate(0,-18*(1-self.arrival))
-            p.setPen(QPen(QColor(255,255,255,38) if ui_theme.current_theme()=='dark' else QColor(0,0,0,26),1))
-            p.setBrush(QColor('#242426' if ui_theme.current_theme()=='dark' else '#FFFFFF'));p.drawRoundedRect(QRectF(.5,.5,191,127),16,16)
+    def _mini_content_ready(self,ref):
+        if ref in self.refs or any(self.shelf.content.metadata.get(item,{}).get('preview_image')==ref for item in self.refs):
+            self._cache_mini_cards();self.update()
+
+    def empty_drop_rect(self):return QRectF((self.width()-176)/2,28,176,128)
+
+    def set_hover(self,value):
+        super().set_hover(value)
+        if hasattr(self,'drop_motion'):
+            self.drop_motion.set_drag_active(bool(getattr(self.parent(),'drop_highlight',False)))
+
+    def hideEvent(self,event):
+        self.drop_motion.stop();super().hideEvent(event)
+
+    def _directory_revision(self):
+        sizes=getattr(self.shelf,'_directory_sizes',{})
+        return tuple((ref,sizes.get(ref)) for ref in self.refs)
+
+    def _mini_poses(self):
+        transforms=((0,1,0,1),(-7,.95,-2,.9),(-14,.9,2.2,.75),(-20,.85,-1.5,.58),(-26,.8,1,.4))
+        return {ref:(*transforms[len(self.refs)-1-index],len(self.refs)-1-index) for index,ref in enumerate(self.refs)}
+
+    def _mini_frames(self):
+        if self.removal.state()!=self.removal.State.Running or not self._mini_exit_from:return self._mini_poses()
+        frames={};progress=self._exit_progress
+        for ref in dict.fromkeys((*self._mini_exit_from,*self._mini_exit_to)):
+            old=self._mini_exit_from.get(ref);new=self._mini_exit_to.get(ref)
+            if old is None:
+                frames[ref]=(*new[:3],new[3]*progress,new[4])
+            elif new is None:
+                frames[ref]=(old[0]-3*progress,old[1],old[2],old[3]*(1-progress),old[4])
+            else:frames[ref]=tuple(a+(b-a)*progress for a,b in zip(old,new))
+        return frames
+
+    def _mini_transform(self,ref,pose):
+        dy,scale,angle,_opacity,depth=pose;center=QPointF(self.width()/2,self.height()/2);v=self.spring.values
+        transform=QTransform();transform.translate(center.x(),center.y()+v['y']);transform.scale(v['sx'],v['sy']);transform.translate(-center.x(),-center.y())
+        transform.translate(center.x()-depth*4*self.spread,center.y()+dy-depth*self.spread)
+        transform.rotate(angle-depth*.8*self.spread);transform.scale(scale,scale);transform.translate(-96,-64)
+        if self.refs and ref==self.refs[-1]:transform.translate(0,-18*(1-self.arrival))
+        return transform
+
+    def stack_hit_path(self):
+        """Current visible card shapes in this widget's local coordinates."""
+        path=QPainterPath()
+        card=QPainterPath();card.addPath(rounded_rect_path(QRectF(.5,.5,191,127),(16,16)))
+        for ref,pose in self._mini_frames().items():
+            if ref in self.refs and pose[3]>.05:path=path.united(self._mini_transform(ref,pose).map(card))
+        clip=QPainterPath();clip.addRect(QRectF(self.rect()))
+        return path.intersected(clip)
+
+    def stack_hit_rect(self):return self.stack_hit_path().boundingRect()
+
+    def hit_stack(self,point):return self.stack_hit_path().contains(QPointF(point))
+
+    def _remove_finished(self):
+        self._mini_exit_cards={};self._mini_exit_from={};self._mini_exit_to={}
+        super()._remove_finished()
+
+    def set_stack(self,repository,refs,preview_cache=None):
+        old_refs=self.refs
+        old_frames=self._mini_frames()
+        old_cards=dict(self._mini_exit_cards);old_cards.update(self._mini_cards)
+        super().set_stack(repository,refs,preview_cache)
+        self.drop_motion.refresh()
+        if not self.refs:self.drop_motion.set_drag_active(bool(getattr(self.parent(),'drop_highlight',False)))
+        self._cache_mini_cards()
+        if old_refs!=self.refs and self.removal.state()==self.removal.State.Running:
+            self._mini_exit_from=old_frames;self._mini_exit_to=self._mini_poses()
+            self._mini_exit_cards={ref:card for ref,card in old_cards.items() if ref in old_frames}
+
+    def _cache_mini_cards(self):
+        """Static card content is prepared only on data/theme/DPR changes."""
+        self._mini_theme=ui_theme.current_theme();self._mini_dpr=self.devicePixelRatioF();cards={}
+        c=palette()
+        for ref in self.refs:
+            card=QPixmap(round(192*self._mini_dpr),round(128*self._mini_dpr));card.setDevicePixelRatio(self._mini_dpr);card.fill(Qt.transparent)
+            p=QPainter(card);p.setRenderHints(QPainter.Antialiasing|QPainter.SmoothPixmapTransform)
+            p.setPen(QPen(QColor(255,255,255,38) if self._mini_theme=='dark' else QColor(0,0,0,26),1))
+            p.setBrush(QColor('#242426' if self._mini_theme=='dark' else '#FFFFFF'));draw_rounded_rect(p,QRectF(.5,.5,191,127),(16,16))
             p.drawPixmap(14,14,thumbnail(self.shelf,ref,40))
-            draw_status(p,QRectF(40,40,16,16),getattr(self.shelf.manager,'sync',None).sync_status_for_ref(ref) if hasattr(getattr(self.shelf.manager,'sync',None),'sync_status_for_ref') else 'local')
             title=self.shelf.content.title(ref);f=QFont(self.font());f.setPixelSize(13 if sys.platform=='win32' else 12);f.setWeight(QFont.DemiBold);p.setFont(f);p.setPen(QColor(c['text']))
             p.drawText(QRectF(14,77,164,20),Qt.AlignVCenter,p.fontMetrics().elidedText(title,Qt.ElideRight,164))
             f.setPixelSize(12 if sys.platform=='win32' else 10);f.setWeight(QFont.Normal);p.setFont(f);p.setPen(QColor(c['secondary']));p.drawText(QRectF(14,99,164,18),Qt.AlignVCenter,item_detail(self.shelf,ref).split(' · ')[0])
             ext=Path(title).suffix.lstrip('.').upper() or ('TEXT' if self.shelf.content.is_text(ref) else 'FILE')
-            p.drawText(QRectF(100,14,78,18),Qt.AlignRight|Qt.AlignVCenter,ext[:7])
+            p.drawText(QRectF(100,14,78,18),Qt.AlignRight|Qt.AlignVCenter,ext[:7]);p.end();cards[ref]=card
+        self._mini_cards=cards
+        self._mini_directory_revision=self._directory_revision()
+
+    def paintEvent(self,event):
+        p=QPainter(self);p.setRenderHints(QPainter.Antialiasing|QPainter.SmoothPixmapTransform)
+        if not self.refs:
+            from drop_target_motion import paint_target,draw_drop_glyph
+            r=self.empty_drop_rect();dark=ui_theme.current_theme()=='dark'
+            paint_target(p,r,self.drop_motion,dark=dark,radius=16,base_fill=ink(palette()['card']))
+            draw_drop_glyph(p,QRectF(r.center().x()-12,r.center().y()-31,24,24),self.drop_motion,dark=dark)
+            f=p.font()
+            f.setPixelSize(13);p.setFont(f);p.setPen(QColor(palette()['text']));p.drawText(r.adjusted(0,34,0,0),Qt.AlignCenter,'点击选择文件')
+            if self.removal.state()!=self.removal.State.Running:p.end();return
+        if (self._mini_theme!=ui_theme.current_theme() or self._mini_dpr!=self.devicePixelRatioF()
+                or self._mini_directory_revision!=self._directory_revision()):self._cache_mini_cards()
+        for ref,pose in self._mini_frames().items():
+            card=self._mini_cards.get(ref) or self._mini_exit_cards.get(ref)
+            if card is None:continue
+            p.save();p.setOpacity(pose[3]);p.setTransform(self._mini_transform(ref,pose),True)
+            front=bool(self.refs and ref==self.refs[-1])
+            p.drawPixmap(0,0,card)
+            draw_status(p,QRectF(40,40,16,16),getattr(self.shelf.manager,'sync',None).sync_status_for_ref(ref) if hasattr(getattr(self.shelf.manager,'sync',None),'sync_status_for_ref') else 'local')
             state=getattr(self.repository,'transfers',{}).get(ref)
-            if idx==0 and state:
+            if front and state:
                 from transfer_visuals import draw_progress_badge
                 draw_progress_badge(p,QRectF(162,40,16,16),state)
             p.restore()
@@ -645,6 +782,8 @@ def build_overview(view,preview_type):
     view.search_edit.setAccessibleName('搜索搁架内容');view.search_edit.textChanged.connect(lambda _:view.rebuild())
     css(view.search_edit,"QLineEdit{background:#28282A;color:#F5F5F7;border:1px solid #3B3B3F;border-radius:8px;padding:4px 10px;font:12px 'HarmonyOS Sans SC';}",
         "QLineEdit{background:#F0F0F2;color:#1D1D1F;border:1px solid #D4D4D8;border-radius:8px;padding:4px 10px;font:12px 'HarmonyOS Sans SC';}")
+    from input_focus import install_focus
+    install_focus(view.search_edit,theme=ui_theme.current_theme)
     head.addWidget(view.search_edit)
     view.view_segment=QFrame(view.header);view.view_segment.setFixedSize(72,SEGMENT_HEIGHT)
     css(view.view_segment,'QFrame{background:rgba(255,255,255,10);border:1px solid rgba(255,255,255,18);border-radius:9px;}',
@@ -683,11 +822,13 @@ def build_overview(view,preview_type):
     for key,title in view.CATEGORIES:
         control=button(title,glyphs[key],parent=view.sidebar);control.setCheckable(True);control.setFixedHeight(34)
         control.setProperty('leftAligned',True)
-        css(control,"QPushButton{background:transparent;color:#A1A1AA;border:0;border-radius:12px;text-align:left;padding:6px 12px;font:500 12px 'HarmonyOS Sans SC';} QPushButton:hover{background:rgba(255,255,255,15);} QPushButton:checked{background:#0062CC;color:white;font-weight:600;}",
-            "QPushButton{background:transparent;color:#515154;border:0;border-radius:12px;text-align:left;padding:6px 12px;font:500 12px 'HarmonyOS Sans SC';} QPushButton:hover{background:rgba(0,0,0,12);} QPushButton:checked{background:#0062CC;color:white;font-weight:600;}")
+        css(control,"QPushButton{background:transparent;color:#A1A1AA;border:0;border-radius:12px;text-align:left;padding:6px 12px;font:500 12px 'HarmonyOS Sans SC';} QPushButton:hover{background:rgba(255,255,255,15);} QPushButton:checked{background:transparent;color:white;font-weight:600;}",
+            "QPushButton{background:transparent;color:#515154;border:0;border-radius:12px;text-align:left;padding:6px 12px;font:500 12px 'HarmonyOS Sans SC';} QPushButton:hover{background:rgba(0,0,0,12);} QPushButton:checked{background:transparent;color:white;font-weight:600;}")
         control.clicked.connect(lambda checked=False,key=key:view.set_category(key));view.category_group.addButton(control);side.addWidget(control)
-        count=label('',11,400,'muted',control);count.setAlignment(Qt.AlignCenter);count.setGeometry(145,7,28,20);count.setAttribute(Qt.WA_TransparentForMouseEvents)
+        count=CategoryCount(control);count.category=key;count.setAlignment(Qt.AlignCenter);count.setGeometry(145,7,28,20);count.setAttribute(Qt.WA_TransparentForMouseEvents)
         view.nav_counts[key]=count;view.category_buttons[key]=control;view.sidebar_buttons[key]=control
+    view.category_indicator=SidebarIndicator(view.sidebar,view.category_buttons.values())
+    for control in view.category_buttons.values():control.selection_indicator=view.category_indicator
     view.transfer_badge=view.nav_counts['uploading']
     side.addStretch(1)
     view.wan_nav=button('远程传输','web','secondary',view.sidebar);view.wan_nav.hide()
@@ -848,6 +989,8 @@ def build_preview(view,elided_type,image_type,media_type,content_type):
     view.text=QPlainTextEdit(view);view.text.setReadOnly(True);view.text.setAcceptDrops(False);view.text.viewport().setAcceptDrops(False)
     css(view.text,"QPlainTextEdit{background:#242426;color:#F5F5F7;border:0;border-radius:12px;padding:14px;font:13px 'HarmonyOS Sans SC';}",
         "QPlainTextEdit{background:#FFFFFF;color:#1D1D1F;border:0;border-radius:12px;padding:14px;font:13px 'HarmonyOS Sans SC';}")
+    from input_focus import install_focus
+    install_focus(view.text,theme=ui_theme.current_theme,radius=12)
     view.image=image_type(view);view.image.set_loader(view.shelf.image_cache);view.image.source_ready.connect(view._image_source_ready)
     view.media=media_type(view,motion=view.shelf.manager.motion);view.media.frame_ready.connect(view._poster_ready);view.media.playing_changed.connect(view._playing_changed)
     for item in (view.icon,view.text,view.image,view.media):view.stack.addWidget(item)
@@ -870,6 +1013,10 @@ def build_preview(view,elided_type,image_type,media_type,content_type):
     upload_time.addWidget(view.upload_time_value,1);box.addLayout(upload_time)
     view.actions_frame=QWidget(view);actions=QGridLayout(view.actions_frame);actions.setSpacing(8);actions.setContentsMargins(16,0,16,16)
     view.open_button=button('打开',variant='primary',parent=content);view.rename_button=button('重命名文件',variant='secondary',parent=content)
+    # This primary action needs visible pointer/down feedback without changing
+    # its geometry, click target, or the other primary buttons in the app.
+    css(view.open_button,*[source+f" QPushButton:enabled:hover{{background:{QColor(colors(theme)['action']).lighter(118).name()};}} QPushButton:enabled:pressed{{background:{QColor(colors(theme)['action']).darker(118).name()};}}"
+        for theme,source in zip(('dark','light'),view.open_button._reference_style)])
     view.open_button.clicked.connect(lambda:view.current_path and view.shelf.open_path(view.current_path));view.rename_button.clicked.connect(lambda:view.current_path and view.shelf.rename_ref(view.current_path))
     view.reveal_button=button('在文件夹中显示',variant='secondary',parent=content);view.reveal_button.clicked.connect(lambda:view.current_path and view.shelf.reveal_ref(view.current_path))
     def selected_refs():return view.popup.chosen_refs() or ([view.current_path] if view.current_path else [])

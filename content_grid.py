@@ -4,6 +4,7 @@ The item's data and drag MIME remain owned by the shelf. This view only adds
 selection, a larger file icon, and small painted hover/press feedback.
 """
 from __future__ import annotations
+from surface_morph import rounded_rect_path,draw_rounded_rect
 
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, QDateTime
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QTextLayout, QTextOption
@@ -23,6 +24,9 @@ FILE_ROW_HEIGHT=52
 
 def added_time_for_ref(shelf,ref,*,full=False):
     timestamp=shelf.content.metadata.get(ref,{}).get('shelf_added_at')
+    transfer=getattr(shelf.content,'transfers',{}).get(ref,{})
+    if transfer.get('remote') and transfer.get('shelf_added_at'):
+        timestamp=transfer['shelf_added_at']
     stamp=QDateTime.fromString(str(timestamp or ''),Qt.ISODate)
     return stamp.toLocalTime().toString('yyyy-MM-dd HH:mm:ss' if full else 'MM-dd HH:mm:ss') if stamp.isValid() else None
 
@@ -185,8 +189,9 @@ class IconItem(QWidget):
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            self.popup.shelf.open_path(self.ref)
-            self.popup.shelf.touch()
+            # Qt replaces the second press with MouseButtonDblClick. Treat it
+            # as that press; the matching release toggles selection normally.
+            self.mousePressEvent(event);event.accept();return
         super().mouseDoubleClickEvent(event)
 
     def keyPressEvent(self, event):
@@ -220,8 +225,10 @@ class IconItem(QWidget):
     def contextMenuEvent(self, event):
         if hasattr(self.popup,'show_item_menu'):
             self.popup.show_item_menu(self.ref,event.globalPos());event.accept();return
+        from native_ui_common import rounded_popup
         menu = QMenu(self)
         menu.setStyleSheet(f"QMenu {{background:{color('surface')};color:{color('text')};border:1px solid {color('border')};border-radius:10px;padding:5px;}} QMenu::item {{padding:8px 16px;border-radius:6px;}} QMenu::item:selected {{background:{color('hover')};}}")
+        rounded_popup(menu,10)
         menu.addAction("复制文字" if self.popup.shelf.content.is_text(self.ref) else "复制文件",
                        lambda: self.popup.shelf.copy_items(self._chosen()))
         menu.addAction("从搁架移除", lambda: self.popup.remove_path(self.ref))
@@ -262,17 +269,17 @@ class IconItem(QWidget):
         painter.translate(-center.x(), -center.y())
         painter.setBrush(ink(c['selected'] if actual else c['card_hover'] if v['hover']>.3 else c['card']))
         painter.setPen(QPen(ink(c['selected_border'] if actual else c['border']),1))
-        painter.drawRoundedRect(QRectF(self.rect()).adjusted(.5,.5,-.5,-.5),c['card_radius'],c['card_radius'])
+        draw_rounded_rect(painter,QRectF(self.rect()).adjusted(.5,.5,-.5,-.5),(c['card_radius'],c['card_radius']))
         if self.hasFocus() and self._keyboard_focus:
             painter.setBrush(Qt.NoBrush);painter.setPen(QPen(QColor(c['blue']),1.5))
-            painter.drawRoundedRect(QRectF(self.rect()).adjusted(2,2,-2,-2),c['card_radius']-1,c['card_radius']-1)
+            draw_rounded_rect(painter,QRectF(self.rect()).adjusted(2,2,-2,-2),(c['card_radius']-1,c['card_radius']-1))
         painter.setPen(QPen(QColor('#0A84FF') if actual else ink(c['input_border']),1));painter.setBrush(QColor('#0A84FF') if actual else Qt.BrushStyle.NoBrush)
-        painter.drawRoundedRect(QRectF(12.5,8.5,14,14),4,4)
+        draw_rounded_rect(painter,QRectF(12.5,8.5,14,14),(4,4))
         if actual:
             painter.setPen(QPen(QColor('white'),1.5,Qt.SolidLine,Qt.RoundCap,Qt.RoundJoin));painter.drawLine(QPointF(16,15),QPointF(18,18));painter.drawLine(QPointF(18,18),QPointF(23,12))
         area=QRectF(12,32,self.width()-24,80)
         from PySide6.QtGui import QPainterPath,QImage,QPixmap
-        clip=QPainterPath();clip.addRoundedRect(area,6,6);painter.save();painter.setClipPath(clip)
+        clip=QPainterPath();clip.addPath(rounded_rect_path(area,(6,6)));painter.save();painter.setClipPath(clip)
         painter.fillRect(area,QColor(c['preview']))
         cached=getattr(self.popup.shelf,'preview_cache',{}).get(self.ref)
         cache=getattr(self.popup.shelf,'image_cache',None)

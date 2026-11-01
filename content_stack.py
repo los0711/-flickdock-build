@@ -1,4 +1,5 @@
 """Latest-first, five-card content artwork shared by compact and drag previews."""
+from surface_morph import rounded_rect_path,draw_rounded_rect
 from pathlib import Path
 from PySide6.QtCore import QRectF, Qt, QVariantAnimation, QEasingCurve, QAbstractAnimation
 from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap
@@ -44,17 +45,17 @@ def stack_pixmap(repository, refs, size=110, *, dpr=None, preview_cache=None, ar
             p.rotate(7*(1-arrival));p.scale(.94+.06*arrival,.94+.06*arrival);p.translate(-card.center())
             p.setOpacity(max(0,min(1,.35+.65*arrival)))
         p.setPen(Qt.PenStyle.NoPen);p.setBrush(QColor(16,30,50,24))
-        p.drawRoundedRect(card.translated(0,2),8,8)
-        p.setBrush(QColor(colors[index]));p.drawRoundedRect(card,8,8)
+        draw_rounded_rect(p,card.translated(0,2),(8,8))
+        p.setBrush(QColor(colors[index]));draw_rounded_rect(p,card,(8,8))
         p.setBrush(Qt.BrushStyle.NoBrush);p.setPen(QPen(QColor(255,255,255,45),.7))
-        p.drawRoundedRect(card.adjusted(.4,.4,-.4,-.4),8,8)
+        draw_rounded_rect(p,card.adjusted(.4,.4,-.4,-.4),(8,8))
         if depth==0:
             kind=repository.category(ref)
             cached=(preview_cache or {}).get(ref)
             actual=kind=='images' or (cached is not None and not cached.isNull()) or bool(repository.metadata.get(ref,{}).get('preview_image'))
             if actual:
                 image=front_art if front_art is not None else QPixmap.fromImage(cached) if isinstance(cached,QImage) and not cached.isNull() else repository.item_pixmap(ref,90,dpr=ratio)
-                clip=QPainterPath();clip.addRoundedRect(card.adjusted(4,4,-4,-4),5,5);p.setClipPath(clip)
+                clip=QPainterPath();clip.addPath(rounded_rect_path(card.adjusted(4,4,-4,-4),(5,5)));p.setClipPath(clip)
                 available=card.adjusted(4,4,-4,-4)
                 logical=image.deviceIndependentSize()
                 scale=min(available.width()/max(1,logical.width()),available.height()/max(1,logical.height()))
@@ -78,6 +79,11 @@ class StackTile(ContentTile):
     def __init__(self,parent=None,motion=True):
         super().__init__(parent,motion)
         self.repository=None;self.refs=();self.preview_cache={};self.arrival=1.0
+        self.spread=0.0;self._spread_requested=False
+        from ui_transitions import exit_curve
+        self.spread_animation=QVariantAnimation(self);self.spread_animation.setDuration(160)
+        self.spread_animation.setEasingCurve(exit_curve())
+        self.spread_animation.valueChanged.connect(self._spread_frame)
         self._stack_cache=QPixmap();self._stack_dpr=0
         self._front_art=None
         self._seen_cloud_arrivals={}
@@ -97,10 +103,65 @@ class StackTile(ContentTile):
         self.landing.valueChanged.connect(self._arrive)
         self.landing.finished.connect(self._landing_finished)
 
+    def _spread_frame(self,value):
+        from native_ui_common import reduced_motion
+        if self.spread_animation.state()==QAbstractAnimation.Running and (not self.motion or reduced_motion()):
+            self.spread_animation.stop();value=float(self._spread_requested and len(self.refs)>1 and self.isVisible())
+        self.spread=float(value);self.update()
+
+    def set_spread(self,active):
+        """Window-level hover/drop intent; a single card never fans out."""
+        self._spread_requested=bool(active)
+        self._retarget_spread()
+
+    def _retarget_spread(self):
+        from native_ui_common import reduced_motion
+        target=float(self._spread_requested and len(self.refs)>1 and self.isVisible())
+        if (self.spread_animation.state()==QAbstractAnimation.Running
+                and self.spread_animation.endValue()==target):return
+        self.spread_animation.stop()
+        if not self.motion or reduced_motion() or not self.isVisible() or self.spread==target:
+            self._spread_frame(target);return
+        # Reversing starts from the actual presented fraction, never an endpoint.
+        self.spread_animation.setStartValue(self.spread);self.spread_animation.setEndValue(target)
+        self.spread_animation.start()
+
+    def hideEvent(self,event):
+        self.spread_animation.stop();self._spread_requested=False;self._spread_frame(0.0)
+        super().hideEvent(event)
+
+    def showEvent(self,event):
+        super().showEvent(event);self._retarget_spread()
+
+    def _composed_stack(self):
+        """Animate pre-rendered layers; no metadata reads or decoding per frame."""
+        ratio=self._stack_cache.devicePixelRatioF() or self.devicePixelRatioF()
+        result=QPixmap(round(128*ratio),round(128*ratio));result.setDevicePixelRatio(ratio);result.fill(Qt.transparent)
+        layers=self._exit_layers() if self.removal.state()==QAbstractAnimation.Running else self._layers
+        painter=QPainter(result);painter.setRenderHints(QPainter.Antialiasing|QPainter.SmoothPixmapTransform)
+        for ref,layer in layers.items():
+            depth=len(self.refs)-1-self.refs.index(ref) if ref in self.refs else max(1,len(layers)-1-list(layers).index(ref))
+            painter.save();painter.translate(-depth*3.0*self.spread,-depth*1.8*self.spread)
+            pivot=QRectF(27*1.28,8*1.28,62*1.28,74*1.28).center()
+            painter.translate(pivot);painter.rotate(-depth*.8*self.spread);painter.translate(-pivot)
+            if self.refs and ref==self.refs[-1]:
+                if self.landing.state()==QAbstractAnimation.Running:
+                    value=self.arrival;painter.translate(0,-18*(1-value)*1.28)
+                    painter.translate(pivot);painter.rotate(7*(1-value));painter.scale(.94+.06*value,.94+.06*value);painter.translate(-pivot)
+                    painter.setOpacity(max(0,min(1,.35+.65*value)))
+            painter.drawPixmap(0,0,layer);painter.restore()
+        painter.end();return result
+
     def _arrive(self,value):
+        from native_ui_common import reduced_motion
+        if self.landing.state()==QAbstractAnimation.Running and (not self.motion or reduced_motion()):
+            self.landing.stop();self._landing_finished();return
         self.arrival=float(value);self.update()
 
     def _remove_frame(self,value):
+        from native_ui_common import reduced_motion
+        if self.removal.state()==QAbstractAnimation.Running and (not self.motion or reduced_motion()):
+            self.removal.stop();self._remove_finished();return
         self._exit_progress=float(value);self.update()
 
     def _remove_finished(self):
@@ -219,9 +280,9 @@ class StackTile(ContentTile):
                 self._front_art=document_pixmap(value,100,dpr=ratio)
         self._stack_cache=stack_pixmap(repository,new_refs,128,dpr=ratio,preview_cache=self.preview_cache,front_art=self._front_art)
         self._stack_dpr=ratio
+        self._layers={ref:stack_pixmap(repository,new_refs,128,dpr=ratio,preview_cache=self.preview_cache,
+            front_art=self._front_art,layer_ref=ref) for ref in new_refs}
         if animate:
-            self._layers={ref:stack_pixmap(repository,new_refs,128,dpr=ratio,preview_cache=self.preview_cache,
-                front_art=self._front_art,layer_ref=ref) for ref in new_refs}
             if previous!=new_refs and (removed or self.removal.state()==QAbstractAnimation.Running):
                 self.removal.stop();self.landing.stop();self.arrival=1.0
                 self._exit_from=old_layers;self._exit_to=self._layers
@@ -236,16 +297,17 @@ class StackTile(ContentTile):
             self.landing.stop();self.landing.setStartValue(min(.8,start));self.landing.setEndValue(1.0);self.landing.start()
         elif not new_refs:
             self.landing.stop();self.arrival=1
+        self._retarget_spread()
 
     def paintEvent(self,event):
         original_kind=self._kind
         if self.removal.state()==QAbstractAnimation.Running:
             # Even the last card fades over the immediate empty state.
-            self._pixmap=self._exit_pixmap();self._kind='file'
+            self._pixmap=self._composed_stack();self._kind='file'
         elif self.repository is not None and self.refs:
             ratio=self.devicePixelRatioF()
-            if self.landing.state()==QAbstractAnimation.State.Running:
-                self._pixmap=stack_pixmap(self.repository,self.refs,128,dpr=ratio,preview_cache=self.preview_cache,arrival=self.arrival,front_art=self._front_art)
+            if self.landing.state()==QAbstractAnimation.State.Running or self.spread>0:
+                self._pixmap=self._composed_stack()
             else:
                 if ratio!=self._stack_dpr:
                     self._stack_cache=stack_pixmap(self.repository,self.refs,128,dpr=ratio,preview_cache=self.preview_cache)

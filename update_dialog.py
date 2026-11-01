@@ -144,6 +144,8 @@ class UpdateDialog(QDialog):
         self.release_notes=QPlainTextEdit(self.notes_card)
         self.release_notes.setObjectName('updateNotes');self.release_notes.setReadOnly(True)
         self.release_notes.setUndoRedoEnabled(False);self.release_notes.setAccessibleName('更新说明')
+        from input_focus import install_focus
+        install_focus(self.release_notes,theme=lambda:getattr(self,'_focus_theme','light'))
         self.release_notes.document().setDocumentMargin(0)
         self.release_notes.setMinimumHeight(40);self.release_notes.setMaximumHeight(112)
         notes.addWidget(self.release_notes)
@@ -446,6 +448,7 @@ class UpdateDialog(QDialog):
         self.set_state("cancelled")
 
     def apply_theme(self, theme):
+        self._focus_theme=theme
         dark=theme=='dark';c=ui_colors(theme)
         family=reference_font().family()
         font=QFont(family);font.setPixelSize(12);self.setFont(font)

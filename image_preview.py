@@ -1,4 +1,5 @@
 """Raster and SVG/SVGZ preview; vector sources stay vectors at every scale."""
+from surface_morph import rounded_rect_path,draw_rounded_rect
 import gzip
 from pathlib import Path
 from PySide6.QtCore import QByteArray, QRectF, Qt, Signal
@@ -99,14 +100,14 @@ class ImagePreview(QWidget):
         bounds = QRectF(self.rect()).adjusted(1, 1, -1, -1)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor('#242426' if ui_theme.current_theme()=='dark' else '#FFFFFF'))
-        painter.drawRoundedRect(bounds, 12, 12)
+        draw_rounded_rect(painter,bounds,(12,12))
         available = bounds
         natural = self.renderer.viewBoxF().size() if self.renderer else self.image.size() if self.image is not None else None
         if natural is not None and natural.width() > 0 and natural.height() > 0:
             factor = min(available.width()/natural.width(), available.height()/natural.height())
             width, height = natural.width()*factor, natural.height()*factor
             target = QRectF(available.center().x()-width/2, available.center().y()-height/2, width, height)
-            clip = QPainterPath(); clip.addRoundedRect(available, 12, 12); painter.setClipPath(clip)
+            clip = QPainterPath(); clip.addPath(rounded_rect_path(available,(12,12))); painter.setClipPath(clip)
             if self.renderer: self.renderer.render(painter, target)
             else: painter.drawImage(target, self.image)
         painter.end()

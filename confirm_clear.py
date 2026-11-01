@@ -178,6 +178,8 @@ class ClearConfirmOverlay(QWidget):
         self.apply_theme(self._theme)
         self.hide()
         self._layout_overlay()
+        from ui_transitions import WindowFade
+        self._window_fade=WindowFade(self)
 
     @property
     def minimum_host_size(self):
@@ -264,6 +266,8 @@ class ClearConfirmOverlay(QWidget):
                 or not isValid(self.owner) or not isValid(self.card)
                 or not self.owner.isVisible() or confirmation_active(self.owner)):
             return False
+        from ui_transitions import finish_closing_snapshot
+        finish_closing_snapshot(self);self._window_fade.reopen()
         self.result = False
         self.active = True
         self._previous_focus = QApplication.focusWidget()
@@ -330,6 +334,9 @@ class ClearConfirmOverlay(QWidget):
             self.card.setProperty(MODAL_PROPERTY, False)
         self._scope_owned = False
         previous_geometry = QRect(self.geometry())
+        if self._owner_alive and self._card_alive:
+            from ui_transitions import close_snapshot
+            close_snapshot(self)
         self.hide()
         if self._owner_alive and isValid(self.owner):
             self.owner.update(previous_geometry)

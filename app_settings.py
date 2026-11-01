@@ -31,6 +31,16 @@ from platform_startup import (StartupManager, CallbackBackend,
 from platform_native import remove_host_window_shadow
 from surface_morph import paint_surface_shadow
 from native_ui_common import reference_font, rounded_popup
+from ui_transitions import SegmentIndicator
+
+
+class _SettingsNavigationIndicator(SegmentIndicator):
+    """A single blue selection plane; buttons remain immediate hit targets."""
+    def paintEvent(self,event):
+        if self._rect.isEmpty():return
+        painter=QPainter(self);painter.setRenderHint(QPainter.Antialiasing);painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor('#203D61' if getattr(self,'_theme','light')=='dark' else '#E4F0FF'))
+        painter.drawRoundedRect(self._rect,8,8)
 
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -327,6 +337,8 @@ class SettingsToggleSwitch(SettingsCheckBox):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setMinimumHeight(38)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        from toggle_motion import ToggleMotion
+        self._toggle_motion=ToggleMotion(self)
 
     def sizeHint(self):
         base = super().sizeHint()
@@ -349,9 +361,11 @@ class SettingsToggleSwitch(SettingsCheckBox):
         # bounds so neither edge disappears at fractional display scale.
         track = QRectF(self.width()-44, (self.height()-22)/2, 38, 22)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#30D158") if self.isChecked() else QColor(142,142,147,82))
+        position=self._toggle_motion.value
+        start,end=QColor(142,142,147,82),QColor('#30D158')
+        painter.setBrush(QColor(*(round(a+(b-a)*position) for a,b in zip(start.getRgb(),end.getRgb()))))
         painter.drawRoundedRect(track, 11, 11)
-        knob_x = track.right()-20 if self.isChecked() else track.left()+2
+        knob_x = track.left()+2+16*position
         painter.setBrush(QColor("#ffffff"))
         painter.drawEllipse(QRectF(knob_x, track.top()+2, 18, 18))
         from native_ui_common import keyboard_focus_visible
@@ -812,6 +826,9 @@ class SettingsStore(QObject):
 
 class ThirdPartyDialog(QDialog):
     """An offline, selectable reader for the application's bundled licenses."""
+    def show(self):
+        self._window_fade.reopen();super().show()
+
     def __init__(self, parent=None, theme="light"):
         super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.WindowTitleHint | Qt.WindowType.WindowCloseButtonHint)
         self.setObjectName("flickdockLicenses")
@@ -853,6 +870,13 @@ class ThirdPartyDialog(QDialog):
         self.document_combo.currentIndexChanged.connect(self._load_document)
         self._load_document()
         self.apply_theme(theme)
+        from ui_transitions import WindowFade
+        self._window_fade=WindowFade(self)
+
+
+    def done(self,result):
+        if self._window_fade.defer_done(result,self.done):return
+        super().done(result)
 
     def _load_document(self):
         path = Path(self.document_combo.currentData())
@@ -882,6 +906,8 @@ class ThirdPartyDialog(QDialog):
             QDialog#flickdockLicenses QComboBox::down-arrow {{image:none;}}
             QDialog#flickdockLicenses QPushButton:hover {{background:{hover};}}
         """)
+        from input_focus import install_focus_tree
+        install_focus_tree(self,theme=theme,radius=10)
 
 
 class ModalScrollArea(QScrollArea):
@@ -973,17 +999,18 @@ class ReferenceModalDialog(QDialog):
         return super().eventFilter(watched,event)
 
     def set_surface_theme(self, theme):
-        self._surface_dark=theme=='dark';self.update()
+        self._surface_dark=theme=='dark'
+        self.update()
 
     def paintEvent(self, event):
         painter=QPainter(self);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect=QRectF(self.surface.geometry())
+        radius=16 if sys.platform=='darwin' else 10
         color=QColor(0,0,0,107) if self._surface_dark else QColor(18,31,53,41)
         paint_surface_shadow(painter,rect,self._shadow_cache,20,QPoint(0,4),color)
         fill=QColor('#1C1C1E' if self._surface_dark else '#FFFFFF')
         painter.setBrush(fill)
         painter.setPen(QPen(QColor(255,255,255,20) if self._surface_dark else QColor(0,0,0,23),1))
-        radius=16 if sys.platform=='darwin' else 10
         painter.drawRoundedRect(rect.adjusted(.5,.5,-.5,-.5),radius,radius)
 
     def showEvent(self, event):
@@ -1391,15 +1418,16 @@ class SettingsDialog(QDialog):
         """The HTML segmented controls keep the existing combo as their model."""
         combo.hide()
         group=QFrame(self.surface);group.setObjectName('settingsSegment')
-        from native_ui_common import SEGMENT_HEIGHT,SEGMENT_INSET,SEGMENT_BUTTON_HEIGHT
-        group.setFixedHeight(SEGMENT_HEIGHT)
-        row=QHBoxLayout(group);row.setContentsMargins(SEGMENT_INSET,SEGMENT_INSET,SEGMENT_INSET,SEGMENT_INSET);row.setSpacing(0)
+        # Settings have a little more vertical room than the overview toolbar.
+        # The frame's 1px border plus this 2px inset keep an even 3px gutter.
+        group.setFixedHeight(32)
+        row=QHBoxLayout(group);row.setContentsMargins(2,2,2,2);row.setSpacing(0)
         from PySide6.QtWidgets import QButtonGroup
         selection=QButtonGroup(group);selection.setExclusive(True)
         buttons=[]
         for index,label in enumerate(labels):
             button=QPushButton(label,group);button.setObjectName('settingsSegmentButton')
-            button.setCheckable(True);button.setAutoDefault(False);button.setFixedHeight(SEGMENT_BUTTON_HEIGHT)
+            button.setCheckable(True);button.setAutoDefault(False);button.setFixedHeight(26)
             selection.addButton(button,index)
             if combo is self.theme_combo or combo is self.view_combo:
                 from native_ui_common import icon
@@ -1547,6 +1575,7 @@ class SettingsDialog(QDialog):
             cl.addWidget(self._reference_toggle(control,label,cloud))
         self.retention_description=QLabel('云端文件保存时间\n小于 100 MB：上传成功后保留 24 小时。\n100 MB 及以上：上传成功后保留 2 小时。\n从完整上传成功时计时；到期仅清理云端副本，本机原文件和已下载的文件不受影响。',cloud)
         self.retention_description.setObjectName('settingsDetail');self.retention_description.setWordWrap(True)
+        self.retention_description.setProperty('cloudRetentionNote',True)
         self.retention_description.setTextFormat(Qt.PlainText);cl.addWidget(self.retention_description)
         self._empty_layout(storage.layout());storage.hide()
         cl.addWidget(self._reference_segment(self.capture_mode_combo,('快捷方式','复制到保存位置')))
@@ -1615,20 +1644,25 @@ class SettingsDialog(QDialog):
         for key,(label,_) in self._settings_categories.items():
             button=QPushButton(label,self.settings_navigation);button.setObjectName('settingsCategory')
             button.setCheckable(True);button.setAutoDefault(False);button.setMinimumHeight(36)
-            button.setAccessibleName(label+'设置');button.clicked.connect(lambda _,key=key:self.show_settings_category(key))
+            button.setAccessibleName(label+'设置');button.clicked.connect(lambda _,key=key:self.show_settings_category(key,animate=True))
             self.settings_category_buttons[key]=button;navigation.addWidget(button)
         navigation.addStretch(1);row.addWidget(self.settings_navigation);row.addWidget(self.scroll,1)
+        self.settings_navigation_indicator=_SettingsNavigationIndicator(self.settings_navigation,self.settings_category_buttons.values())
+        self.settings_navigation_indicator.set_theme(self.theme_combo.currentData())
+        from content_entrance import ContentEntrance
+        self._settings_content_entrance=ContentEntrance(self.body)
         root.insertWidget(index,self.settings_workspace,1)
         self.body_layout.setContentsMargins(0,2,6,8)
         self.show_settings_category('general')
 
-    def show_settings_category(self,key):
+    def show_settings_category(self,key,*,animate=False):
         if key not in self._settings_categories:return
         previous=self._active_settings_category
         if previous==key:
             self.settings_category_buttons[key].setChecked(True)
             return
         if previous is not None:self._settings_category_scroll[previous]=self.scroll.verticalScrollBar().value()
+        self._settings_content_entrance.cancel()
         self._active_settings_category=key
         for name,(_,cards) in self._settings_categories.items():
             self.settings_category_buttons[name].setChecked(name==key)
@@ -1638,7 +1672,29 @@ class SettingsDialog(QDialog):
         def restore():
             if self._active_settings_category!=key:return
             self._fit_settings_body();self.scroll.verticalScrollBar().setValue(self._settings_category_scroll.get(key,0))
+            if animate:self._settings_content_entrance.reveal(self._settings_entrance_items(key),self.scroll.viewport())
         QTimer.singleShot(0,self,restore)
+
+    def _settings_entrance_items(self,key):
+        items=[]
+        def visit(layout):
+            if layout is None:return
+            for index in range(layout.count()):
+                item=layout.itemAt(index);widget=item.widget()
+                if widget is not None:
+                    if not widget.isVisible():continue
+                    if widget is self._account_panel:
+                        profile=getattr(widget,'profile_frame',None)
+                        if profile is None:items.append(widget)
+                        else:
+                            items.append(profile);items.extend(getattr(widget,'_rows_by_id',{}).values())
+                            status=getattr(widget,'status_label',None)
+                            if status is not None:items.append(status)
+                    elif widget is getattr(self,'display_trigger_editor',None):items.extend(widget.rows.values())
+                    else:items.append(widget)
+                elif item.layout() is not None:visit(item.layout())
+        for card in self._settings_categories[key][1]:visit(card.layout())
+        return items
 
     @property
     def update_state(self):
@@ -1737,13 +1793,11 @@ class SettingsDialog(QDialog):
         self.update_notes_area.hide()
 
     def paintEvent(self,event):
-        from surface_morph import paint_surface_shadow
         painter=QPainter(self)
         painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
         painter.fillRect(event.rect(),Qt.GlobalColor.transparent)
         painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
-        paint_surface_shadow(painter,QRectF(self.surface.geometry()),self._shadow_cache,
-            blur=14,offset=QPointF(0,3),color=QColor(15,28,48,60))
+        paint_surface_shadow(painter,QRectF(self.surface.geometry()),self._shadow_cache,blur=14,offset=QPointF(0,3),color=QColor(15,28,48,60))
         painter.end()
 
     def set_lan_panel(self, widget):
@@ -1803,12 +1857,14 @@ class SettingsDialog(QDialog):
             dialog=ReferenceModalDialog(self,surface_width=500,modal=True)
             dialog.setWindowTitle('FlickDock 更新记录');self._release_history_dialog=dialog
             header=QHBoxLayout();header.addWidget(QLabel('版本更新记录',dialog.body),1)
-            close=SettingsCloseButton(dialog.body);close.clicked.connect(dialog.reject);header.addWidget(close)
+            close=SettingsCloseButton(dialog.body);dialog.history_close_button=close;close.clicked.connect(dialog.reject);header.addWidget(close)
             dialog.body_layout.addLayout(header)
             label=QLabel(history_text(),dialog.body);label.setWordWrap(True)
             label.setTextFormat(Qt.TextFormat.PlainText);label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             dialog.body_layout.addWidget(label)
         theme=self.theme_combo.currentData();dialog.set_surface_theme(theme)
+        from native_ui_common import colors
+        c=colors(theme)
         ink='#F5F5F7' if theme=='dark' else '#1D1D1F'
         dialog.setStyleSheet(f'QLabel{{color:{ink};background:transparent;font-size:12px;}}')
         dialog.show();dialog.raise_()
@@ -2356,6 +2412,8 @@ class SettingsDialog(QDialog):
             QDialog#flickdockSettings QPushButton#settingsUpdate[updateAvailable="true"]:hover {{background:{'#43DC6A' if dark else '#12733C'};}}
             QDialog#flickdockSettings QPushButton#settingsLink {{color:{semantic['link']};}}
             QWidget#settingsToggleOption {{background:{semantic['card']};border:1px solid {semantic['border']};border-radius:8px;}}
+            QFrame#displayTriggerField {{background:{semantic['card']};border:1px solid {semantic['border']};border-radius:8px;}}
+            QDialog#flickdockSettings QLabel#settingsDetail[cloudRetentionNote="true"] {{background:{semantic['card']};border:1px solid {semantic['border']};border-radius:8px;padding:10px 12px;}}
         '''
         from native_ui_common import readable_qss
         style=readable_qss(style)
@@ -2363,10 +2421,14 @@ class SettingsDialog(QDialog):
             QFrame#settingsNavigation {{background:transparent;border:0;}}
             QPushButton#settingsCategory {{text-align:left;padding:8px 12px;background:transparent;border:0;border-radius:8px;color:{secondary};}}
             QPushButton#settingsCategory:hover {{background:{hover};color:{ink};}}
-            QPushButton#settingsCategory:checked {{background:{'#203D61' if dark else '#E4F0FF'};color:{'#B8D9FF' if dark else '#005FBF'};font-weight:600;}}
+            QPushButton#settingsCategory:checked,QPushButton#settingsCategory:checked:hover {{background:transparent;color:{'#B8D9FF' if dark else '#005FBF'};font-weight:600;}}
             QPushButton#settingsCategory:focus-visible {{border:1px solid #5d9eeb;}}
         """
+        from input_focus import focus_qss,install_focus_tree
+        style+=focus_qss('QDialog#flickdockSettings',edge)
         self.setStyleSheet(style)
+        install_focus_tree(self,theme=lambda:self.theme_combo.currentData(),radius=8)
+        if hasattr(self,'settings_navigation_indicator'):self.settings_navigation_indicator.set_theme(theme)
         if self.license_dialog is not None:
             self.license_dialog.apply_theme(theme)
         if self.author_dialog is not None:

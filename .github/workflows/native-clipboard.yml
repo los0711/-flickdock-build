@@ -54,7 +54,7 @@ jobs:
       - name: Check delayed formats, input fields and shared upload regressions
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m unittest test_clipboard_origin_v1823 test_transfer_interaction_v1823 test_clipboard_sync_v1819 test_clipboard_fast_v1821 test_shared_clipboard_files_v1821 test_pointer_paste_v1819 -q
+        run: python -m unittest test_clipboard_origin_v1823 test_transfer_interaction_v1823 test_clipboard_sync_v1819 test_clipboard_fast_v1821 test_shared_clipboard_files_v1821 test_pointer_paste_v1819 test_update_inline_v171 -q
       - name: Reproduce asynchronous metadata reconciliation before framework warmup
         if: runner.os == 'macOS'
         shell: bash
@@ -90,6 +90,9 @@ jobs:
           node cloud/test/clipboard.mjs
       - name: Verify actual native utility windows on the disposable runner
         run: python ci_utility_windows.py --output native-utility.json
+      - name: Verify native Cocoa status item menu and local-file destination methods
+        if: runner.os == 'macOS'
+        run: python -c "import subprocess,sys; subprocess.run([sys.executable,'ci_mac_status_drop.py','native-status-drop.json'],check=True,timeout=25)"
       - name: Ensure native installer compiler
         if: runner.os == 'Windows'
         shell: pwsh
@@ -112,4 +115,5 @@ jobs:
             transfer-navigation-native.json
             native-utility.json
             native-installer-close.json
+            native-status-drop.json
           retention-days: 3

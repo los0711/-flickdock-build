@@ -134,7 +134,8 @@ class FeedbackTests(unittest.TestCase):
             finally:dialog.close();dialog.deleteLater();flush()
 
     def test_empty_overview_has_centered_clickable_drop_box(self):
-        from PySide6.QtCore import QEvent,QSize
+        from PySide6.QtCore import QEvent,QSize,QPointF
+        from PySide6.QtGui import QEnterEvent
         self.shelf.files['permanent']=[]
         view=self.fixture.overview();flush()
         self.assertEqual(view.title.text(),'FlickDock');self.assertEqual(view.count_label.text(),'0 项')
@@ -143,7 +144,9 @@ class FeedbackTests(unittest.TestCase):
         self.assertLessEqual(abs(box.geometry().center().x()-view.empty_state.rect().center().x()),1)
         with patch.object(self.shelf,'pick_files') as choose:
             QTest.mouseClick(box,Qt.LeftButton);choose.assert_called_once_with('permanent')
-        APP.sendEvent(box,QEvent(QEvent.Enter));self.assertTrue(box._hovered)
+        point=box.rect().center()
+        APP.sendEvent(box,QEnterEvent(QPointF(point),QPointF(box.mapTo(box.window(),point)),QPointF(box.mapToGlobal(point))))
+        self.assertTrue(box._hovered)
         APP.sendEvent(box,QEvent(QEvent.Leave));self.assertFalse(box._hovered)
 
     def test_incoming_cloud_upload_appears_in_an_already_open_overview_and_preview(self):
@@ -164,10 +167,12 @@ class FeedbackTests(unittest.TestCase):
         self.assertFalse(self.shelf.content.mime_for([ref]).hasUrls())
 
     def test_dock_drop_zone_blue_border_follows_hover_without_opening_overview(self):
-        from PySide6.QtCore import QEvent
+        from PySide6.QtCore import QEvent,QPointF
+        from PySide6.QtGui import QEnterEvent
         zone=self.shelf.zones['permanent'] if hasattr(self.shelf,'zones') else self.shelf.drop_zone
         self.shelf.presentation_kind='dock'
-        APP.sendEvent(zone,QEvent(QEvent.Enter));flush()
+        point=zone.rect().center()
+        APP.sendEvent(zone,QEnterEvent(QPointF(point),QPointF(zone.mapTo(zone.window(),point)),QPointF(zone.mapToGlobal(point))));flush()
         self.assertNotIn('#0A84FF',zone.styleSheet());self.assertTrue(zone.icon._hovered);self.assertIsNone(self.shelf.popup)
         APP.sendEvent(zone,QEvent(QEvent.Leave));flush()
         self.assertNotIn('#0A84FF',zone.styleSheet())

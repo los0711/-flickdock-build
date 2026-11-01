@@ -9,6 +9,7 @@ from __future__ import annotations
 import sys
 import os
 import threading
+from time import perf_counter
 from collections import OrderedDict
 from pathlib import Path
 
@@ -76,10 +77,22 @@ def readable_qss(source):
     return source+'\n/* flickdock-readable-type */'
 
 
+_motion_preference_cache=(None,0.,False)
+
+
 def reduced_motion():
-    """Read the platform preference without starting native hooks or prompts."""
+    """Share one OS read across a frame's controllers, never an idle timer."""
     if any(os.environ.get(key,'').lower() in ('1','true','yes','on')
            for key in ('FLICKDOCK_REDUCE_MOTION','FLICKDOCK_LOW_PERFORMANCE')):return True
+    global _motion_preference_cache
+    platform,at,value=_motion_preference_cache;now=perf_counter()
+    if platform==sys.platform and 0<=now-at<.004:return value
+    value=_read_reduced_motion();_motion_preference_cache=(sys.platform,now,value)
+    return value
+
+
+def _read_reduced_motion():
+    """Query the platform preference without native hooks or prompts."""
     if sys.platform == 'darwin':
         try:
             from AppKit import NSWorkspace
@@ -238,7 +251,7 @@ _SVG_BODY = {
     'pin': '<path d="M16 3l5 5-4 1-4 4 1 5-8-8 5 1 4-4 1-4z"/><path d="M9 15l-6 6"/>',
     'expand': '<path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>',
     'collapse': '<path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/>',
-    'more': '<path d="M5 12h.01M12 12h.01M19 12h.01"/>',
+    'more': '<circle cx="5" cy="12" r="1.55" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.55" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.55" fill="currentColor" stroke="none"/>',
     'dock': '<path d="M13 5l7 7-7 7M5 5l7 7-7 7"/>',
     'nearby': '<path d="M18 8V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h8M10 15v4M7 19h5"/><rect width="6" height="10" x="16" y="12" rx="2"/>',
     'settings': '<circle cx="12" cy="12" r="3"/><path stroke-linecap="round" d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>',
@@ -306,7 +319,7 @@ class _SourceIconEngine(QIconEngine):
                 attributes = 'viewBox="0 0 16 16" fill="currentColor" stroke="none"'
             else:
                 attributes = ('viewBox="0 0 24 24" fill="' + ('currentColor' if key == 'pin' else 'none')
-                              + '" stroke="currentColor" stroke-width="' + ('2.2' if key == 'more' else '1.8')
+                              + '" stroke="currentColor" stroke-width="1.8'
                               + '" stroke-linecap="round" stroke-linejoin="round"')
             if name == 'left':
                 body = '<g transform="translate(24 0) scale(-1 1)">' + body + '</g>'
@@ -427,7 +440,7 @@ class UiSwitch(QAbstractButton):
 
     def _toggle(self, checked):
         self._motion.stop()
-        if reduced_motion():
+        if reduced_motion() or not self.isVisible():
             self._animate(1.0 if checked else 0.0)
             return
         self._motion.setStartValue(self._position)
@@ -435,8 +448,21 @@ class UiSwitch(QAbstractButton):
         self._motion.start()
 
     def _animate(self, value):
+        if self._motion.state()==self._motion.State.Running and reduced_motion():
+            self._motion.stop();value=float(self.isChecked())
         self._position = float(value)
         self.update()
+
+    def hideEvent(self,event):
+        self._motion.stop();self._animate(float(self.isChecked()));super().hideEvent(event)
+
+    def showEvent(self,event):
+        self._motion.stop();self._animate(float(self.isChecked()));super().showEvent(event)
+
+    def changeEvent(self,event):
+        if event.type()==QEvent.EnabledChange and not self.isEnabled() and hasattr(self,'_motion'):
+            self._motion.stop();self._animate(float(self.isChecked()))
+        super().changeEvent(event)
 
     def paintEvent(self, event):
         painter = QPainter(self)

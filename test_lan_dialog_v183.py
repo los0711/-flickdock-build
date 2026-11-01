@@ -282,7 +282,8 @@ class LanDialogTests(unittest.TestCase):
             panel._progress({'id':f'send-{number}','direction':'send','peer':'测试设备',
                 'state':'waiting','code':'123456'})
         APP.processEvents()
-        self.assertEqual(panel.transfer_count.text(),'4 项进行中')
+        self.assertEqual(panel.transfer_count.text(),'4')
+        self.assertEqual(panel.transfer_count.accessibleName(),'4 项进行中')
         self.assertEqual(panel.page_label.text(),'1 / 2')
         self.assertGreaterEqual(panel.page_label.width(),40)
         self.assertLess(panel.previous_page.geometry().right(),panel.page_label.geometry().left())

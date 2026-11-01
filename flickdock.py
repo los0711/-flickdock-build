@@ -1,5 +1,6 @@
 """FlickDock: one persistent Windows shelf for files, images and text."""
 from __future__ import annotations
+from surface_morph import rounded_rect_path,draw_rounded_rect
 
 import ctypes
 import json
@@ -167,6 +168,18 @@ class AnimatedMenu(QMenu):
         self.fade = QPropertyAnimation(self, b"windowOpacity", self)
         self.fade.setDuration(120)
         self.fade.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.fade.valueChanged.connect(self._fade_frame)
+
+    def _fade_frame(self, _value):
+        from native_ui_common import reduced_motion
+        if self.fade.state()==self.fade.State.Running and reduced_motion():
+            self.fade.stop()
+            self.setWindowOpacity(1)
+
+    def hideEvent(self, event):
+        self.fade.stop()
+        self.setWindowOpacity(1)
+        super().hideEvent(event)
 
     def showEvent(self, event):
         self.fade.stop()
@@ -182,7 +195,6 @@ class AnimatedMenu(QMenu):
 
 def style_menu(menu: QMenu) -> None:
     from native_ui_common import rounded_popup
-    rounded_popup(menu, 10)
     palette = menu.palette()
     palette.setColor(QPalette.ColorRole.Window, QColor(ui_theme.color("surface")))
     palette.setColor(QPalette.ColorRole.Base, QColor(ui_theme.color("surface")))
@@ -198,6 +210,7 @@ def style_menu(menu: QMenu) -> None:
                        f"QMenu::item:selected{{background:{c['action']};color:#FFFFFF;}}"
                        f"QMenu::item:disabled{{color:{c['muted']};}} QMenu::separator{{height:1px;background:{c['divider']};margin:5px 10px;}}")
     css(menu,*sources)
+    rounded_popup(menu,10)
 
 
 def ui_style(text):
@@ -234,6 +247,7 @@ class DropZone(QFrame):
         from reference_widgets import css
         css(self.caption,"color:#F5F5F7;font:600 12px 'HarmonyOS Sans SC';background:rgba(255,255,255,28);border:0;border-radius:8px;padding-right:12px;",
             "color:#1D1D1F;font:600 12px 'HarmonyOS Sans SC';background:rgba(0,0,0,15);border:0;border-radius:8px;padding-right:12px;")
+        None
 
     def _apply_style(self):
         from reference_widgets import css
@@ -270,6 +284,8 @@ class DropZone(QFrame):
     def dragEnterEvent(self, event):
         self._click_armed=False
         if self.shelf.accepts_content_drop(event):
+            self.shelf._drag_stack_active=True
+            self.shelf._set_stack_spread(True)
             self._pill_hovered = False
             self._pill_timer.stop()
             self._style_caption(False)
@@ -285,6 +301,8 @@ class DropZone(QFrame):
 
     def dragMoveEvent(self, event):
         if self.shelf.accepts_content_drop(event):
+            self.shelf._drag_stack_active=True
+            self.shelf._set_stack_spread(True)
             self.shelf.touch(passive_drag=True)
             event.setDropAction(Qt.DropAction.CopyAction)
             event.accept()
@@ -294,23 +312,28 @@ class DropZone(QFrame):
     def dragLeaveEvent(self, event):
         self.drop_highlight = False
         self.icon.set_hover(False)
+        self.shelf._drag_stack_active=False
+        self.shelf._set_stack_spread(False)
         self._apply_style()
 
     def dropEvent(self, event):
         self.drop_highlight = False
         self.icon.set_hover(False)
+        self.shelf._drag_stack_active=False
         if self.shelf.accepts_content_drop(event) and self.shelf.receive_mime(self.mode, event.mimeData()):
             event.setDropAction(Qt.DropAction.CopyAction)
             event.accept()
         else:
             event.ignore()
         self._apply_style()
+        self.shelf._restore_stack_spread(self.mapToGlobal(event.position().toPoint()))
 
     def enterEvent(self, event):
         self.shelf.touch()
         self._pointer_hovered=True;self._apply_style()
         self.feedback.animate({"hover": 1.0}, response=.14, damping=1.0)
         self.icon.set_hover(True)
+        self.shelf._restore_stack_spread(event.globalPosition().toPoint())
         super().enterEvent(event)
 
     def leaveEvent(self, event):
@@ -320,6 +343,7 @@ class DropZone(QFrame):
         self._style_caption(False)
         self.feedback.animate({"hover": 0.0}, response=.14, damping=1.0)
         self.icon.set_hover(False)
+        self.shelf._set_stack_spread(bool(getattr(self.shelf,'_drag_stack_active',False)))
         super().leaveEvent(event)
 
     def hideEvent(self, event):
@@ -343,6 +367,7 @@ class DropZone(QFrame):
 
     def mouseMoveEvent(self, event):
         self.shelf.touch()
+        self.shelf._restore_stack_spread(self.mapToGlobal(event.position().toPoint()))
         self._track_pill_hover(event.position().toPoint(), event.buttons())
         if not self.shelf.intake_blocks_overview() and self._click_armed and event.buttons() & Qt.MouseButton.LeftButton and self.paths and not self.did_drag and (event.position().toPoint() - self.origin).manhattanLength() > 8:
             self.did_drag = True
@@ -675,10 +700,10 @@ class FileRow(QFrame):
         p=QPainter(self);p.setRenderHint(QPainter.Antialiasing)
         p.setBrush(ink(c['selected'] if chosen else c['card_hover'] if self.motion.values['highlight']>.3 else c['card']))
         p.setPen(QPen(ink(c['selected_border'] if chosen else c['border']),1))
-        p.drawRoundedRect(QRectF(self.rect()).adjusted(.5,.5,-.5,-.5),c['card_radius'],c['card_radius'])
+        draw_rounded_rect(p,QRectF(self.rect()).adjusted(.5,.5,-.5,-.5),(c['card_radius'],c['card_radius']))
         if self.hasFocus() and self._keyboard_focus:
             p.setBrush(Qt.NoBrush);p.setPen(QPen(QColor(c['blue']),1.5))
-            p.drawRoundedRect(QRectF(self.rect()).adjusted(2,2,-2,-2),c['card_radius']-1,c['card_radius']-1)
+            draw_rounded_rect(p,QRectF(self.rect()).adjusted(2,2,-2,-2),(c['card_radius']-1,c['card_radius']-1))
         p.end()
 
     def enterEvent(self, event):
@@ -719,8 +744,8 @@ class FileRow(QFrame):
         super().mouseMoveEvent(event)
 
     def mouseDoubleClickEvent(self, event):
-        self.popup.shelf.open_path(self.path)
-        self.popup.shelf.touch()
+        if event.button()==Qt.MouseButton.LeftButton:
+            self.mousePressEvent(event);event.accept();return
         super().mouseDoubleClickEvent(event)
 
     def mouseReleaseEvent(self,event):
@@ -1004,6 +1029,11 @@ class ContentsPopup(QFrame):
 
     def set_category(self,key):
         if key not in self.category_buttons: return
+        changed=key!=self.category
+        if changed:
+            from content_entrance import ContentEntrance
+            if not hasattr(self,'_category_entrance'):self._category_entrance=ContentEntrance(self)
+            self._category_entrance.cancel();self._category_entrance_token=None
         self.category=key; self.hovered_ref=None;self._narrow_preview=False
         for name,button in self.sidebar_buttons.items():button.setChecked(name==key)
         self.category_picker.setText(next(label for item,label in self.CATEGORIES if item==key))
@@ -1012,6 +1042,9 @@ class ContentsPopup(QFrame):
         self.selected.intersection_update(self.visible_refs())
         if self.primary_selection not in self.selected: self.primary_selection=None
         self.rebuild(); self.update_transfer_status(); self.shelf.touch()
+        if changed:
+            self.rows_layout.activate()
+            self._category_entrance_token=self._category_entrance.reveal(self._item_widgets.values(),self.scroll.viewport())
 
     def _clear_layout(self,layout):
         while layout.count():
@@ -1040,6 +1073,8 @@ class ContentsPopup(QFrame):
         changed={row[0] for row in signature[4] if previous_metadata.get(row[0])!=row[1:]}
         # Metadata/progress cannot retire the live tree or disturb a focused row.
         if not same_layout:
+            if hasattr(self,'_category_entrance'):
+                self._category_entrance.cancel();self._category_entrance_token=None
             self._build_timer.stop()
             self._build_epoch=getattr(self,'_build_epoch',0)+1
             self._rows_minimum=getattr(self,'_rows_minimum',self.rows_body.minimumHeight())
@@ -1188,12 +1223,13 @@ class ContentsPopup(QFrame):
 
     def _append_batch(self,initial=False):
         if not initial and (self.shelf.content_transition_active() or not self.isVisible()): return
-        start=time.perf_counter(); count=0
+        start=time.perf_counter(); count=0;new_widgets=[]
         while self._build_cursor<len(self._build_refs):
             index=self._build_cursor
             ref=self._build_refs[index];self._build_cursor+=1
             if ref in self._build_installed:continue
             self._build_append(index,ref);self._build_installed.add(ref);count+=1
+            new_widgets.append(self._item_widgets[ref])
             # One bounded construction slice per paint, instead of repainting
             # the complete composited surface after every one or two rows.
             if count>=(4 if initial else 6) or time.perf_counter()-start>=(.003 if initial else .008): break
@@ -1209,6 +1245,10 @@ class ContentsPopup(QFrame):
                 self._layout_animation=None
                 positions,animate=pending
                 self.item_transitions.reflow(self._item_widgets,positions,enabled=animate)
+        token=getattr(self,'_category_entrance_token',None)
+        if new_widgets and token is not None:
+            self.rows_layout.activate()
+            self._category_entrance.batch(new_widgets,token=token)
 
     def resume_content(self):
         if self.shelf.content_transition_active() or not self.isVisible(): return
@@ -1312,11 +1352,14 @@ class ContentsPopup(QFrame):
         if ref in self.shelf.content.transfers:
             phase=self.shelf.content.transfers[ref].get('phase')
             menu.addAction('取消复制' if phase=='copying' else '取消下载' if phase=='downloading' else '取消上传',lambda:self.shelf.cancel_transfer(ref))
+        transfer_refs=[item for item in self.shelf.display_refs() if item in self.selected] or [ref]
+        self.shelf.add_transfer_actions(menu,transfer_refs)
         if self.shelf.content.is_pending(ref):
             self.shelf._menu_open=True
             try:menu.exec(position)
             finally:self.shelf._menu_open=False;menu.deleteLater();self.shelf.touch()
             return
+        menu.addSeparator()
         if not self.shelf.content.is_text(ref):
             menu.addAction('打开文件',lambda:self.shelf.open_path(ref))
             menu.addAction('在文件夹中显示',lambda:self.shelf.reveal_ref(ref))
@@ -1510,6 +1553,7 @@ class ShelfWindow(QWidget):
         set_ui_style(self.status_label, "color:#8490a0;font:11px 'HarmonyOS Sans SC';background:transparent;")
         self.rename_edit = QLineEdit(self.card)
         set_ui_style(self.rename_edit, "QLineEdit {background:white;color:#313741;border:1px solid #72aff3;border-radius:8px;padding:3px 6px;font:11px 'HarmonyOS Sans SC';}")
+        None
         self.rename_edit.returnPressed.connect(self.commit_rename)
         self.rename_edit.editingFinished.connect(self.commit_rename)
         self.rename_edit.hide()
@@ -1525,6 +1569,7 @@ class ShelfWindow(QWidget):
         if sys.platform=='darwin':
             css(self.card,'QFrame#shelfCard{background:#1C1C1E;border:1px solid rgba(255,255,255,20);border-radius:16px;}',
                 'QFrame#shelfCard{background:#FFFFFF;border:1px solid rgba(0,0,0,23);border-radius:16px;}')
+        None
         self.header_line=QFrame(self.card);self.header_line.setGeometry(1,48,CARD_W-2,1)
         self.footer_line=QFrame(self.card);self.footer_line.setGeometry(1,269,CARD_W-2,1)
         for line in (self.header_line,self.footer_line):css(line,'background:rgba(255,255,255,15);border:0;','background:rgba(0,0,0,15);border:0;')
@@ -1776,6 +1821,7 @@ class ShelfWindow(QWidget):
         snapshot=getattr(self,'_surface_snapshot',None)
         if snapshot is None: snapshot=self._surface_snapshot=SurfaceSnapshot(self)
         self._morph_from_image=snapshot.capture_current(self.card,(self.network_status,self.cloud_button,self.lan_button,self.pin_button,self.expand_button,self.menu_button,self.close_button))
+
 
     def visual_geometry(self): return QRect(self.geometry_morph.current)
 
@@ -2340,8 +2386,25 @@ class ShelfWindow(QWidget):
         zone.icon.set_hover(active)
         zone._apply_style()
 
+    def _set_stack_spread(self,active):
+        """Local artwork feedback without changing the native surface."""
+        active=bool(active) and not self.expanded
+        for zone in self.zones.values():
+            zone.icon.set_spread(active)
+
+    def _restore_stack_spread(self,position=None):
+        """Pointer hover hits the cards; an external drag uses the full panel."""
+        position=QCursor.pos() if position is None else position
+        active=bool(getattr(self,'_drag_stack_active',False))
+        if not active:
+            active=any(zone.isVisible() and zone.icon.hit_stack(zone.icon.mapFromGlobal(position))
+                       for zone in self.zones.values())
+        self._set_stack_spread(active)
+
     def dragEnterEvent(self, event):
         if self.accepts_content_drop(event):
+            self._drag_stack_active=True
+            self._set_stack_spread(True)
             self.active_mode = "permanent"
             self._highlight_content_drop(True)
             self.touch(passive_drag=True)
@@ -2352,6 +2415,8 @@ class ShelfWindow(QWidget):
 
     def dragMoveEvent(self, event):
         if self.accepts_content_drop(event):
+            self._drag_stack_active=True
+            self._set_stack_spread(True)
             self.touch(passive_drag=True)
             event.setDropAction(Qt.DropAction.CopyAction)
             event.accept()
@@ -2360,15 +2425,19 @@ class ShelfWindow(QWidget):
 
     def dragLeaveEvent(self, event):
         self._highlight_content_drop(False)
+        self._drag_stack_active=False
+        self._set_stack_spread(False)
         event.accept()
 
     def dropEvent(self, event):
         self._highlight_content_drop(False)
+        self._drag_stack_active=False
         if self.accepts_content_drop(event) and self.receive_mime("permanent", event.mimeData()):
             event.setDropAction(Qt.DropAction.CopyAction)
             event.accept()
         else:
             event.ignore()
+        self._restore_stack_spread(self.mapToGlobal(event.position().toPoint()))
 
     def _finish_intake(self,epoch=None):
         if not self.incoming_drop or (epoch is not None and epoch!=self._intake_epoch):
@@ -2449,7 +2518,7 @@ class ShelfWindow(QWidget):
         elif not was_visible:
             self._apply_geometry(rect)
         if not was_visible:
-            self.presentation.jump({"sx": .95 if self.manager.motion else 1, "sy": .91 if self.manager.motion else 1,
+            self.presentation.jump({"sx": .97 if self.manager.motion else 1, "sy": .97 if self.manager.motion else 1,
                                     "alpha": 0, "dx": offset.x() if self.manager.motion else 0, "dy": offset.y() if self.manager.motion else 0})
         # A visible surface may still be morphing from a different width.
         # Keep controls on its current bounds until each geometry frame lands.
@@ -2463,7 +2532,12 @@ class ShelfWindow(QWidget):
         remove_host_window_shadow(self)
         self._raise_for_reveal()
         self.touch()
-        self.presentation.animate({"sx": 1, "sy": 1, "alpha": 1, "dx": 0, "dy": 0}, response=.24, damping=.72)
+        self.presentation.animate({"sx": 1, "sy": 1, "alpha": 1, "dx": 0, "dy": 0}, response=.28 if kind=='dock' else .24, damping=.72)
+        if kind=='dock' and not was_visible:
+            # One fresh impulse gives ~1% presentation overshoot. Native host
+            # bounds remain fixed; a quick hover-return keeps its current
+            # velocity rather than accumulating another kick.
+            self.presentation.kick({'sx':1.35,'sy':1.35})
         self.manager.update_handles()
 
     def _raise_for_reveal(self):
@@ -2541,6 +2615,7 @@ class ShelfWindow(QWidget):
     def hide_animated(self, explicit=True):
         if not self.isVisible() or self.visible_state == "hiding" or (self.pinned and not explicit):
             return
+        self._dismiss_clipboard_preview(immediate=False)
         self._cancel_intake()
         self._explicit_hiding = explicit
         if explicit:
@@ -2552,20 +2627,25 @@ class ShelfWindow(QWidget):
         if self.presentation_kind=='dock' and not self.expanded and self.manager.motion:self._toolbar_entrance.conceal()
         self.manager.update_handles()
         docked = self.presentation_kind == "dock"
-        if self.manager.motion:
-            self.presentation.kick({"sx": .35, "sy": -.55})
+        edge=getattr(self.manager,'edge',None)
+        if not docked and callable(getattr(edge,'screen_area',None)):
+            compact=self._dock_target_rect()
+            default=self._expansion_rect(compact) if self.expanded else compact
+            docked=(self.visual_geometry().topLeft()-default.topLeft()).manhattanLength()<=2
+        if not docked:self.presentation.hold('dx','dy')
         def finish():
             if self.visible_state == "hiding":
                 self.hide_immediately()
                 self.manager.update_handles()
                 self.manager.save()
-        offset={'right':QPoint(32,0),'left':QPoint(-32,0),'top':QPoint(0,-24),'bottom':QPoint(0,24)}[self._dock_edge()] if docked else QPoint(0,8)
-        self.presentation.animate({"dx": offset.x() if self.manager.motion else 0,
-                                   "dy": offset.y() if self.manager.motion else 0,
-                                   "sx": .96 if self.manager.motion else 1, "sy": .92 if self.manager.motion else 1, "alpha": 0},
+        offset={'right':QPoint(32,0),'left':QPoint(-32,0),'top':QPoint(0,-24),'bottom':QPoint(0,24)}[self._dock_edge()] if docked else None
+        self.presentation.animate({"dx": (offset.x() if offset is not None else self.presentation.values.get('dx',0)) if self.manager.motion else 0,
+                                   "dy": (offset.y() if offset is not None else self.presentation.values.get('dy',0)) if self.manager.motion else 0,
+                                   "sx": .96 if self.manager.motion else 1, "sy": .96 if self.manager.motion else 1, "alpha": 0},
                                   finish, response=.17, damping=.84)
 
     def hide_immediately(self):
+        self._dismiss_clipboard_preview()
         self._cancel_intake()
         self.presentation.stop()
         self.geometry_morph.stop(settle=False)
@@ -2587,6 +2667,8 @@ class ShelfWindow(QWidget):
 
     def hover_region_contains(self,point):
         if not self.isVisible(): return False
+        clipboard=getattr(self.manager,'clipboard_preview_dialog',None)
+        if clipboard is not None and getattr(clipboard,'owner_window',None) is self and clipboard.contains_global(point):return True
         rect=self.visual_geometry()
         # Spring motion moves the visual bounds under a stationary pointer.
         # Keep the edge-to-shelf hover bridge tied to the settled target.
@@ -2600,6 +2682,10 @@ class ShelfWindow(QWidget):
                                  trigger,self._dock_edge())
         return rect.contains(point)
 
+    def _dismiss_clipboard_preview(self,*,immediate=True):
+        clipboard=getattr(self.manager,'clipboard_preview_dialog',None)
+        if clipboard is not None and getattr(clipboard,'owner_window',None) is self:clipboard.dismiss(immediate=immediate)
+
     def intake_blocks_overview(self):
         return self.presentation_kind=='drag' and (self.incoming_drop or self.visible_state=='hiding')
 
@@ -2612,6 +2698,7 @@ class ShelfWindow(QWidget):
 
     def _show_contents(self,mode,target,*,animate=True):
         if self.property('flickdockConfirmationActive'): return
+        self._set_stack_spread(False)
         if animate:self._capture_morph_source()
         self._transition_preparing=animate
         self.visible_state = "floating"
@@ -2655,6 +2742,7 @@ class ShelfWindow(QWidget):
         if self.popup:
             self.popup.hide()
         self.zones["permanent"].show()
+        self._set_stack_spread(self.underMouse())
         self.status_label.show()
         self.expand_button.set_glyph("expand")
         right = self.geometry_morph.current.x() + self.geometry_morph.current.width()
@@ -2700,6 +2788,27 @@ class ShelfWindow(QWidget):
     def show_transfer_menu(self):
         self.manager.show_transfer_dialog()
 
+    def transfer_paths_for_refs(self,refs):
+        paths=[]
+        for ref in refs:
+            if self.content.is_pending(ref):continue
+            path=self.content.metadata.get(ref,{}).get('text_file') if self.content.is_text(ref) else ref
+            if isinstance(path,str) and Path(path).is_absolute() and path not in paths:paths.append(path)
+        return paths
+
+    def add_transfer_actions(self,menu,refs):
+        # Snapshot only logical references. No stat/hash/native icon provider
+        # in a context-menu callback; the existing queue validates asynchronously.
+        refs=tuple(refs);ready=lambda:bool(refs) and all(self.transfer_paths_for_refs([ref]) for ref in refs)
+        enabled=ready()
+        for transport,title in (('lan','使用局域网传输'),('wan','使用远程传输')):
+            def send(checked=False,transport=transport):
+                if not ready():return
+                paths=self.transfer_paths_for_refs(refs)
+                if paths:self.manager.queue_transfer_paths(transport,paths)
+            action=menu.addAction(title,send);action.setEnabled(enabled)
+            if not enabled:action.setToolTip('所选内容全部下载或准备完成后可发送')
+
     def show_menu(self, mode=None, pos=None):
         if confirmation_active(self):return
         self.touch()
@@ -2722,12 +2831,15 @@ class ShelfWindow(QWidget):
         menu.addAction("添加文件…", lambda: self.pick_files("permanent"))
         menu.addAction("粘贴剪贴板内容", lambda: self.paste_clipboard("permanent"))
         if not refs:
+            if self.display_refs():
+                menu.addSeparator();self.add_transfer_actions(menu,self.display_refs())
             return
         menu.addSeparator()
         if not self.expanded:menu.addAction("内容总览", self.show_contents)
         only_text = all(self.content.is_text(ref) for ref in refs)
         menu.addAction("复制文字" if only_text else "复制内容", lambda: self.copy_files("permanent"))
         menu.addAction('打包全部为 ZIP…',lambda:self.compress_refs(list(self.files['permanent'])))
+        self.add_transfer_actions(menu,self.display_refs())
         menu.addSeparator()
         menu.addAction("清空搁架…", self.confirm_clear_all)
 
@@ -2736,20 +2848,23 @@ class ShelfWindow(QWidget):
         if self.content.is_text(ref):
             if self.content.metadata.get(ref,{}).get('pasted_text'):
                 path=self.content.materialize_pasted_text(ref,self.manager.settings.capture_dir)
-                from PySide6.QtGui import QDesktopServices
-                QDesktopServices.openUrl(QUrl.fromLocalFile(path));return
+                self._open_external_url(QUrl.fromLocalFile(path));return
             if self.content.category(ref)=='links':
-                from PySide6.QtGui import QDesktopServices
-                QDesktopServices.openUrl(QUrl(self.content.text(ref))); return
+                self._open_external_url(QUrl(self.content.text(ref)));return
             self.copy_items([ref])
             if self.popup:
                 self.popup.preview.copy_button.set_glyph("check")
                 QTimer.singleShot(850, lambda: self.popup.preview.copy_button.set_glyph("copy"))
         elif Path(ref).exists():
-            from PySide6.QtGui import QDesktopServices
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(ref).resolve())))
+            self._open_external_url(QUrl.fromLocalFile(str(Path(ref).resolve())))
         else:
             QMessageBox.warning(self, APP_NAME, f"找不到文件：\n{ref}")
+
+    def _open_external_url(self,url):
+        from PySide6.QtGui import QDesktopServices
+        opened=QDesktopServices.openUrl(url)
+        if opened:self.hide_animated(explicit=True)
+        return bool(opened)
 
     def reveal(self, mode):
         refs = self.real_paths(mode)
@@ -2876,6 +2991,7 @@ class ShelfWindow(QWidget):
         dialog.move(self.visual_geometry().center()-QPoint(dialog.width()//2,dialog.height()//2))
         self.rename_edit.setText(Path(ref).stem)
         self._release_reveal_level()
+        dialog._window_fade.reopen()
         dialog.show();dialog.raise_();dialog.activateWindow()
         self.rename_edit.show()
         self.rename_edit.raise_()
@@ -2962,7 +3078,13 @@ class ShelfWindow(QWidget):
 
     def enterEvent(self, event):
         self.touch()
+        self._restore_stack_spread(event.globalPosition().toPoint())
         super().enterEvent(event)
+
+    def leaveEvent(self,event):
+        self._drag_stack_active=False
+        self._set_stack_spread(False)
+        super().leaveEvent(event)
 
     def contextMenuEvent(self, event):
         self.show_menu(pos=event.globalPos())
@@ -3053,7 +3175,7 @@ class DockHandle(QWidget):
         if values['trigger_visible']:
             tint=QColor(values['dock_color']);tint.setAlpha(round(255*values['dock_opacity']/100*self.appearance.values['alpha']))
             painter.setBrush(tint);painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawRoundedRect(QRectF(self.rect()).adjusted(.5,.5,-.5,-.5),3,3)
+            draw_rounded_rect(painter,QRectF(self.rect()).adjusted(.5,.5,-.5,-.5),(3,3))
         painter.end()
 
     def enterEvent(self,event):
@@ -3244,6 +3366,10 @@ class ShelfManager:
         if (not self.cocoa_smoke and sys.platform == 'darwin'
                 and getattr(sys, 'frozen', False)):
             QTimer.singleShot(1000, self._show_previous_mac_update_failure)
+        self.status_drop=None
+        if not self.cocoa_smoke and sys.platform=='darwin' and native_input_available():
+            from mac_status_drop import MacStatusDrop
+            self.status_drop=MacStatusDrop(self.tray,self._status_drag_entered,self._status_drag_exited,self._status_drag_dropped,parent=self.app)
 
     def _show_previous_mac_update_failure(self):
         if self._quitting:
@@ -3280,7 +3406,7 @@ class ShelfManager:
                 and not self.cocoa_smoke and self.app.platformName() not in ('offscreen','minimal'))
 
     def _clipboard_copy_started(self):
-        if hasattr(self,'clipboard_notice'):self.clipboard_notice.supersede()
+        if hasattr(self,'clipboard_notice'):self.clipboard_notice.supersede(clear_visible=False)
 
     def _clipboard_copy_result(self,ok,context):
         if self._quitting or not self._clipboard_runtime_enabled():return
@@ -3290,15 +3416,14 @@ class ShelfManager:
             self.clipboard_notice=ClipboardNotice(self)
         self.clipboard_notice.schedule_result(ok,context)
 
-    def show_clipboard_preview(self):
+    def show_clipboard_preview(self,source=None):
         if self._quitting:return
         if self.clipboard_presenter.state.get('permission_required'):
             self.show_mac_permissions();return
         if self.clipboard_preview_dialog is None:
             from clipboard_preview import ClipboardPreview
             self.clipboard_preview_dialog=ClipboardPreview(self)
-        self.clipboard_preview_dialog.refresh();self.clipboard_preview_dialog.show()
-        self.clipboard_preview_dialog.raise_();self.clipboard_preview_dialog.activateWindow()
+        self.clipboard_preview_dialog.open_from(source)
 
     def show_mac_permissions(self):
         if self._quitting or sys.platform!='darwin' or not native_input_available():return
@@ -3457,14 +3582,49 @@ class ShelfManager:
             QMessageBox.information(self.shelf,'联网修复','未完成管理员授权，请重新选择“修复网络访问”后确认系统提示。')
 
     def tray_activated(self, reason):
-        if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            self.show_first()
+        if reason not in (QSystemTrayIcon.ActivationReason.Trigger,QSystemTrayIcon.ActivationReason.DoubleClick):return
+        # AppKit opens an assigned NSStatusItem menu itself. Reopening it from
+        # activated would duplicate the native tracking loop. Windows needs an
+        # explicit left-click popup; neither platform implicitly reveals files.
+        if sys.platform=='darwin':return
+        menu=self.tray.contextMenu()
+        if menu is not None and not menu.isVisible():menu.popup(QCursor.pos())
 
     def show_first(self):
         if hasattr(self,'shelf') and confirmation_active(self.shelf): return
         if not self.shelves:
             self._create_shelf({})
         self.active_shelf.show_transient()
+
+    def _status_drag_entered(self,position):
+        if self._quitting or self.outgoing_drag or self.settings_open() or QApplication.activeModalWidget() is not None:return False
+        shelf=self.shelf
+        if confirmation_active(shelf):return False
+        self.reset_drag_gesture()
+        if shelf.expanded:shelf.hide_immediately()
+        shelf.show_transient(position,reason='drag')
+        self.auto_shown=shelf;self._status_drag_shelf=shelf
+        shelf._highlight_content_drop(True);shelf._drag_stack_active=True;shelf._set_stack_spread(True)
+        receiver=getattr(self,'status_drop',None)
+        if receiver is not None:receiver.keep_preview_on_top(shelf)
+        return True
+
+    def _status_drag_exited(self):
+        shelf=getattr(self,'_status_drag_shelf',None);self._status_drag_shelf=None
+        if shelf is not None:
+            shelf._highlight_content_drop(False);shelf._drag_stack_active=False;shelf._set_stack_spread(False)
+
+    def _status_drag_dropped(self,paths,position):
+        if self._quitting or self.outgoing_drag or self.settings_open() or QApplication.activeModalWidget() is not None:return False
+        shelf=getattr(self,'_status_drag_shelf',None)
+        if shelf is None or not shelf.isVisible():
+            if not self._status_drag_entered(position):return False
+            shelf=self._status_drag_shelf
+        mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(path) for path in paths])
+        accepted=shelf.receive_mime('permanent',mime)
+        receiver=getattr(self,'status_drop',None)
+        if accepted and receiver is not None:receiver.keep_preview_on_top(shelf)
+        return bool(accepted)
 
     def show_docked(self):
         if self.settings_open():self.settings_edge_hint.show_hint();return
@@ -3761,7 +3921,11 @@ class ShelfManager:
         self.shelf._explicit_hiding=False;self.shelf.opened_at=time.monotonic()
         target=QRect(getattr(self,'_overview_return_rect',QRect()))
         if target.isEmpty():target=self.shelf._expansion_rect(self.shelf.visual_geometry())
-        screen=QGuiApplication.screenAt(target.center()) or QGuiApplication.primaryScreen()
+        # Back belongs to the window the user just moved/used, not the edge
+        # trigger or the shelf's position before entering transfers.
+        surface=getattr(dialog,'card',dialog)
+        target.moveTopLeft(surface.mapToGlobal(QPoint()))
+        screen=QGuiApplication.screenAt(dialog.card.mapToGlobal(dialog.card.rect().center())) or QGuiApplication.primaryScreen()
         if screen:
             area=screen.availableGeometry()
             target.setSize(target.size().boundedTo(area.size()))
@@ -4039,6 +4203,7 @@ class ShelfManager:
         def stop(name,action):
             try:action()
             except Exception as error:self._shutdown_errors.append((name,type(error).__name__))
+        if getattr(self,'status_drop',None) is not None:stop('status_drop',self.status_drop.close)
         # Let file jobs wind down while services close, rather than waiting
         # until every service has already spent its own shutdown grace.
         for shelf in self.shelves:

@@ -4,6 +4,7 @@ from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
 from dock_geometry import trigger_rect
+from surface_morph import rounded_rect_path,draw_rounded_rect
 import ui_theme
 
 
@@ -67,11 +68,11 @@ class DockPreview(QWidget):
         p.setBrush(tint)
         outline = QColor(self.values['dock_color']);outline.setAlpha(255)
         p.setPen(QPen(outline, 1.5, Qt.PenStyle.DashLine))
-        p.drawRoundedRect(target.adjusted(.75, .75, -.75, -.75), 3, 3)
+        draw_rounded_rect(p,target.adjusted(.75,.75,-.75,-.75),3)
         badge = QRectF(self.badge_rect.translated(-origin))
         p.setPen(QPen(QColor(ui_theme.color('border')), 1))
         p.setBrush(QColor(ui_theme.color('surface')))
-        p.drawRoundedRect(badge.adjusted(.5, .5, -.5, -.5), 10, 10)
+        draw_rounded_rect(p,badge.adjusted(.5,.5,-.5,-.5),10)
         p.setPen(QColor(ui_theme.color('text')))
         p.drawText(badge, Qt.AlignmentFlag.AlignCenter, self.caption)
         p.end()

@@ -13,7 +13,9 @@ from shelf_content import ContentRepository
 app=QApplication([])
 QFontDatabase.addApplicationFont(str(Path(__file__).parent/'fonts/HarmonyOS_Sans_SC_Regular.ttf'))
 app.setFont(QFont('HarmonyOS Sans SC',11))
-def pixels(pm):return bytes(pm.toImage().constBits())
+def pixels(pm):
+    image=pm.toImage()
+    return bytes(image.constBits())
 with tempfile.TemporaryDirectory() as directory:
     root=Path(directory);repo=ContentRepository()
     refs=[]

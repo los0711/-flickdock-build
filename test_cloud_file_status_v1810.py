@@ -69,7 +69,8 @@ for status in ('pending', 'uploading', 'synced', 'local', 'paused', 'error'):
     images.append(hashlib.sha256(bytes(image.bits())).hexdigest())
 assert len(set(images)) == len(images), 'each upload state needs distinguishable artwork'
 badge.set_status('uploading',dict(received=50,total=100,phase='uploading'))
-progress_artwork=hashlib.sha256(bytes(badge.grab().toImage().bits())).hexdigest()
+progress_image=badge.grab().toImage()
+progress_artwork=hashlib.sha256(bytes(progress_image.bits())).hexdigest()
 assert progress_artwork not in images, 'upload progress should arc around the same status mark'
 
 preview = SimpleNamespace(current_path=ref, _group_refs=(), cloud_badge=CloudStatusBadge(), shelf=shelf)
