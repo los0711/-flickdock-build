@@ -21,8 +21,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 11717,
-      "sha256": "5c62627a5fc0e048523974c3d59fdb832b91f84c10a5f85c07fca69cef394900"
+      "size": 11774,
+      "sha256": "023d805df3220ff7715f121937b72a7469ddb4a4b8b23a8afe5ddcf914bec407"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -1200,19 +1200,29 @@
       "sha256": "2b198085f9d8a7b957bd9678772b85d4d83433f4e27abc44eedf1d4cdee2fb06"
     },
     {
+      "path": "qa/packaged-live/BATCH2.md",
+      "size": 2924,
+      "sha256": "6a085d7d2a9060ff1b17dd754969e43e09d573ba2a37501a3895d9f8990ba00d"
+    },
+    {
       "path": "qa/packaged-live/ci_exact_installer.py",
       "size": 22095,
       "sha256": "e58f7467bff468bae625deede55d95e3871e3cd2af6c37c8c12981c1b923ffe7"
     },
     {
       "path": "qa/packaged-live/ci_packaged_windows_live.py",
-      "size": 74694,
-      "sha256": "b7c3b0726c41329afac3c2054201d0f9cb17130d81802e94286a179c27422b9b"
+      "size": 77078,
+      "sha256": "248d925240bc81bccebfb8f2a11c3dd51a273dbf9609d064ec67016441597ac5"
     },
     {
       "path": "qa/packaged-live/gateway.mjs",
       "size": 3811,
       "sha256": "e83edb1261dd99c216fc425c58d92408bcb0221f1dcccc5fbcd7dfc3aa6e2d49"
+    },
+    {
+      "path": "qa/packaged-live/native_batch2.py",
+      "size": 22804,
+      "sha256": "97162bad8dbdb32f04e0932da660356a14451057e99029b2316d0ff0cc943482"
     },
     {
       "path": "qa/packaged-live/native_editor.py",
@@ -1226,8 +1236,8 @@
     },
     {
       "path": "qa/packaged-live/test_harness_bounds.py",
-      "size": 6163,
-      "sha256": "ead54c912c4ac30186dbabb76b51c75d30c250803a8001f987ccff692c6122a8"
+      "size": 7592,
+      "sha256": "867ff127c0f40ee65d2f42fa4cf3c9b78802a395c3f7f3e48f50bcc0f43c5d3e"
     },
     {
       "path": "qa/packaged-live/test_harness_extras.py",
@@ -1235,9 +1245,19 @@
       "sha256": "1630bfd274590a198ddaaa8a8eba9bddf394c288c4bad3b69afb9d1a53a5515a"
     },
     {
+      "path": "qa/packaged-live/test_native_batch2.py",
+      "size": 11601,
+      "sha256": "7878a09bfb91b2978c674ce2621a783dba3152a98af0af6e0352ed9eb748a647"
+    },
+    {
       "path": "qa/packaged-live/ui-actions.json",
       "size": 3762,
       "sha256": "cdc698121e5e5a709c512fe98e3e973f1cbfc64af208db544c1e6a01316a8f65"
+    },
+    {
+      "path": "qa/packaged-live/ui-batch2-actions.json",
+      "size": 1795,
+      "sha256": "acdf086692ce253cb2ddea1f3cc824365af432a46090b1d13c9570eee26b8b8b"
     },
     {
       "path": "qa/packaged-live/ui-extra-actions.json",
@@ -1271,8 +1291,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 38850,
-      "sha256": "ec02746efdacd5765b34843a7429b57b02210cb549b2f0872a348222e8eba536"
+      "size": 39008,
+      "sha256": "9fd9f3d86ed10e5bc75255c4162c85b44df8219f0c91cd5c06619094c83914af"
     },
     {
       "path": "release_signing.py",

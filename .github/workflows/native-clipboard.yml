@@ -195,7 +195,7 @@ jobs:
         run: |
           $nativeExe = (Resolve-Path 'dist/FlickDock/FlickDock.exe').Path
           $nativeHash = (Get-FileHash -LiteralPath $nativeExe -Algorithm SHA256).Hash.ToLowerInvariant()
-          python qa/packaged-live/ci_packaged_windows_live.py --exe $nativeExe --sha256 $nativeHash --root $PWD --output build/normal-native-qa --actions qa/packaged-live/ui-actions.json --extra-actions qa/packaged-live/ui-extra-actions.json
+          python qa/packaged-live/ci_packaged_windows_live.py --exe $nativeExe --sha256 $nativeHash --root $PWD --output build/normal-native-qa --actions qa/packaged-live/ui-actions.json --extra-actions qa/packaged-live/ui-extra-actions.json --batch2-actions qa/packaged-live/ui-batch2-actions.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Ensure native installer compiler for same-byte validation
         shell: pwsh

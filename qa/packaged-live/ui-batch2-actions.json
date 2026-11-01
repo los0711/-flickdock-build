@@ -1,0 +1,9 @@
+[
+  {"id":"batch2-history-folder-before-clear","kind":"batch2","recipe":"history-folder","group":5,"duration":3.0,"ordering":"Run after core tests, before history-delete-one/history-clear-stagger and their remote counterparts. Requires original synthetic record0 in BOTH modes. Returns overview."},
+  {"id":"batch2-selection-grid-list","kind":"batch2","recipe":"selection-grid-list","group":1,"duration":3.0,"ordering":"After original baseline/extra1 actions and before any shelf deletion; fixture selection must be empty. Returns overview grid, no selection."},
+  {"id":"batch2-detail-feedback-rename","kind":"batch2","recipe":"detail-feedback-rename","group":1,"duration":3.0,"ordering":"After selection-grid-list; original-text.txt must exist. Press Open then release outside; cancel Rename."},
+  {"id":"batch2-context-transfer","kind":"batch2","recipe":"context-transfer","group":12,"duration":4.0,"ordering":"Before grid-delete-width; all four originals required. Clears each queue physically; tests overview single and mini all in BOTH modes. Does not send."},
+  {"id":"batch2-settings-theme","kind":"batch2","recipe":"settings-theme","group":6,"duration":3.0,"ordering":"Before empty-last; restores initial theme through visible UI, does not change network/autostart/update settings."},
+  {"id":"batch2-grid-delete-width","kind":"batch2","recipe":"grid-delete-width","group":1,"duration":2.0,"ordering":"After context-transfer AND history-folder; removes only tiny.bin shelf reference. Verifies source hashes and survivor card widths."},
+  {"id":"batch2-empty-zones-last","kind":"batch2","recipe":"empty-zones-last","group":9,"duration":3.0,"ordering":"MUST BE LAST after all shelf-content actions. Confirms shelf clear; hover overview/mini/transfer empty zones. Source bytes remain."}
+]

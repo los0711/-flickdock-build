@@ -21,6 +21,26 @@ def explorer_folder_matches(window,folder):
     return any(tab.element_info.name==folder for tab in window.descendants(control_type='TabItem'))
 
 
+def pasted_original_ready(path,size,expected):
+    # Explorer reserves the final size before it finishes writing and releases
+    # its exclusive handle. Existence/size alone are not paste completion.
+    try:return path.stat().st_size==size and digest(path)==expected
+    except (FileNotFoundError,PermissionError):return False
+
+
+def compose_actions(base,extra,batch2):
+    actions=[*base,*extra]
+    if batch2:
+        history=[row for row in batch2 if row.get('recipe')=='history-folder']
+        assert len(history)==1,'One pre-clear history recipe is required'
+        positions=[index for index,row in enumerate(actions) if row['id']=='transfer-open']
+        assert len(positions)==1,'History recipe requires original overview entry'
+        actions[positions[0]:positions[0]]=history
+        actions.extend(row for row in batch2 if row.get('recipe')!='history-folder')
+        assert actions[-1]['recipe']=='empty-zones-last','Destructive fixture cleanup must remain last'
+    return actions
+
+
 class Progress:
     """Payload-free stages plus independent desktop diagnostics, never UIA."""
     def __init__(self,out):
@@ -130,6 +150,18 @@ def retain_diagnostics(output,profile,cloud):
             (output/'synthetic-gateway-stats.json').write_text(json.dumps(saved,indent=2));status['gateway_rows']=len(safe)
         except Exception as error:errors.append('gateway:'+type(error).__name__)
     if profile is not None:
+        try:
+            raw=read(profile.parent/'batch2-events.jsonl',4*1024*1024);safe=[]
+            for line in (raw or '').splitlines()[-2048:]:
+                row=json.loads(line)
+                item={key:row[key] for key in ('step','recipe','role','class_name') if code(row.get(key))}
+                if number(row.get('t')):item['t']=row['t']
+                for key,length in (('bounds',4),('point',2)):
+                    values=row.get(key)
+                    if isinstance(values,list) and len(values)==length and all(type(v) is int and abs(v)<2**31 for v in values):item[key]=values
+                safe.append(item)
+            (output/'synthetic-batch2-progress.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in safe));status['batch2_rows']=len(safe)
+        except Exception as error:errors.append('batch2:'+type(error).__name__)
         try:
             raw=read(profile.parent/'native-input-ownership.jsonl',1024*1024);safe=[]
             for line in (raw or '').splitlines()[-2048:]:
@@ -622,6 +654,10 @@ class _UIABackend:
             click('收起到屏幕边缘');hidden('搁架文件预览');mark('manual-close-finished')
         else:raise ValueError('Unsupported bounded extra recipe')
         return dict(recipe=recipe,events=events,normal_exe_patched=False,manual_visual_review='required')
+    def batch2(self,recipe):
+        require_hosted()
+        from native_batch2 import run
+        return run(self,recipe)
     def command(self,action,**values):
         self.sequence+=1;path=self.base/'editor-command.json';temporary=path.with_suffix('.tmp')
         temporary.write_text(json.dumps(dict(id=self.sequence,action=action,**values)))
@@ -670,8 +706,8 @@ class _UIABackend:
             from pywinauto.keyboard import send_keys
             start=time.perf_counter();send_keys('^v',pause=.02)
             result=destination/Path(source).name
-            wait(lambda:result.exists() and result.stat().st_size==Path(source).stat().st_size,label='native Explorer file Paste')
-            if digest(result)!=digest(source):raise AssertionError('Actual Explorer paste changed original bytes')
+            expected=digest(source);size=Path(source).stat().st_size
+            wait(lambda:pasted_original_ready(result,size,expected),seconds=25,label='native Explorer file Paste completed, unlocked and original bytes verified')
             return (time.perf_counter()-start)*1000
         finally:ctypes.windll.user32.PostMessageW(explorer.handle,0x0010,0,0)
     def setting(self,name,value):
@@ -740,6 +776,7 @@ class Driver(_UIABackend):
     def focus_window(self,title):return self._rpc('focus_window',title=title)
     def drag_files(self,target_name,*,target_prefix=False):return self._rpc('drag_files',seconds=24,target_name=target_name,target_prefix=target_prefix)
     def ui_extra(self,recipe):return self._rpc('ui_extra',seconds=40,recipe=recipe)
+    def batch2(self,recipe):return self._rpc('batch2',seconds=75,recipe=recipe)
     def paste_file_in_explorer(self,source):return self._rpc('paste_file_in_explorer',seconds=45,source=str(source))
     def close(self):
         if self._worker.poll() is None:
@@ -751,7 +788,7 @@ class Driver(_UIABackend):
 
 def uia_worker():
     require_hosted();backend=_UIABackend(int(sys.argv[2]),int(sys.argv[3]),Path(sys.argv[4]))
-    allowed={'windows','find','click','tree','hotkey','hover','focus_window','paste_file_in_explorer','drag_files','ui_extra'}
+    allowed={'windows','find','click','tree','hotkey','hover','focus_window','paste_file_in_explorer','drag_files','ui_extra','batch2'}
     def bounds(control):
         rect=control.rectangle();return [rect.left,rect.top,rect.right,rect.bottom]
     for line in sys.stdin:
@@ -804,6 +841,7 @@ def main():
     parser.add_argument('--sha256',required=True);parser.add_argument('--root',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True);parser.add_argument('--actions',type=Path)
     parser.add_argument('--extra-actions',type=Path)
+    parser.add_argument('--batch2-actions',type=Path)
     args=parser.parse_args();require_hosted()
     sys.path.insert(0,str(args.root.resolve()))
     if not re.fullmatch(r'[0-9a-f]{64}',args.sha256) or digest(args.exe)!=args.sha256:raise AssertionError('Wrong immutable frozen executable')
@@ -959,7 +997,9 @@ def main():
             recorder.run('07-close-settings',lambda:driver.click('关闭设置'))
             recorder.run('08-reopen-overview',lambda:driver.hotkey('^%+{SPACE}'))
             actions=json.loads(args.actions.read_text(encoding='utf8')) if args.actions else []
-            if args.extra_actions:actions+=json.loads(args.extra_actions.read_text(encoding='utf8'))
+            extras=json.loads(args.extra_actions.read_text(encoding='utf8')) if args.extra_actions else []
+            batch2=json.loads(args.batch2_actions.read_text(encoding='utf8')) if args.batch2_actions else []
+            actions=compose_actions(actions,extras,batch2)
             for index,step in enumerate(actions):
                 if application.poll() is not None:raise AssertionError('Frozen app exited during native UI flow')
                 def execute(step=step):
@@ -967,6 +1007,7 @@ def main():
                     if step['kind']=='hotkey':return driver.hotkey(step['keys'])
                     if step['kind']=='focus_window':return driver.focus_window(step['title'])
                     if step['kind']=='ui_extra':return driver.ui_extra(step['recipe'])
+                    if step['kind']=='batch2':return driver.batch2(step['recipe'])
                     if step['kind']=='drag':
                         result=driver.drag_files(step['target'],target_prefix=step.get('target_prefix',False))
                         for name in step.get('expected_controls',[]):
@@ -978,7 +1019,7 @@ def main():
                     if step['kind']=='image_copy':return driver.click('Copy original image',pid=producer.pid)
                     raise ValueError('Unsupported native action')
                 result=recorder.run(f'flow-{index:02}-{step["id"]}',execute,duration=step.get('duration',.9))
-                if step['kind']=='ui_extra':(args.output/f'flow-{index:02}-extra-events.json').write_text(json.dumps(result,indent=2))
+                if step['kind'] in ('ui_extra','batch2'):(args.output/f'flow-{index:02}-extra-events.json').write_text(json.dumps(result,indent=2))
                 (args.output/f'flow-{index:02}-accessibility.json').write_text(json.dumps(driver.tree(),ensure_ascii=False,indent=2))
             report.update(ok=True,native_input=True,real_system_clipboard=True,local_workerd=True,tls_verification=True,
                 actual_service_requests=cloud.stats()['rows'],screen_segments=[dict(label=row['label'],distinct_pixels=row['distinct_pixels']) for row in recorder.segments])

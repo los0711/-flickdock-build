@@ -113,6 +113,8 @@ SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'qa/packaged-live/gateway.mjs','qa/packaged-live/verify_frozen_source.py','qa/packaged-live/ui-actions.json',
     'qa/packaged-live/test_harness_bounds.py',
     'qa/packaged-live/test_harness_extras.py','qa/packaged-live/ui-extra-actions.json',
+    'qa/packaged-live/native_batch2.py','qa/packaged-live/test_native_batch2.py',
+    'qa/packaged-live/ui-batch2-actions.json','qa/packaged-live/BATCH2.md',
     'qa/packaged-live/reuse_frozen.py',
     'qa/packaged-live/ci_exact_installer.py',
 
