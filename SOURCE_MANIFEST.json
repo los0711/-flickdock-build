@@ -1490,8 +1490,8 @@
     },
     {
       "path": "test_event_stream_wiring_v1810.py",
-      "size": 3190,
-      "sha256": "f94d9c2a482ec59d3fde3dbd8bc667d1f923314fac477de56f05e9862521834f"
+      "size": 3752,
+      "sha256": "c7e40f3d5c02ef49e0a41c9a4a306b9fcca779d0c21c833e7cc5e5d34d9bb9b8"
     },
     {
       "path": "test_expand_flash_v165.py",

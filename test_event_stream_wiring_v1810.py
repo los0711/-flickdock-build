@@ -26,18 +26,28 @@ class EventStreamWiringTests(unittest.TestCase):
         from PySide6.QtCore import QObject,Signal
         class Account(QObject):
             account_changed=Signal(object)
-        account=Account();stream=CloudEvents(account,enabled=False);engine=ShelfSync.__new__(ShelfSync);QObject.__init__(engine)
-        identifier=str(uuid4());engine.closed=False;engine.account_id='fixture';engine.receive_enabled=True;engine.upload_enabled=False
-        engine._live_upload_progress={};engine._remote_heads={};engine.remote_transfers=[dict(upload_id=identifier,item_id='item',size=1000000,received_bytes=0,device_id='sender')]
-        engine.service=SimpleNamespace(device_id='receiver');engine.state={'entries':{}};engine.download_transfers={}
-        gets=[];engine.request_refresh=lambda:gets.append(True);seen=[];engine.transfers_changed.connect(seen.append)
-        stream.transfer_progress.connect(engine.remote_progress)
-        try:
-            for received in (100000,300000,700000):stream._message(json.dumps(dict(schema_version=1,type='progress',upload_id=identifier,received_bytes=received,total=1000000,at=received)))
-            self.assertEqual([row[0]['received'] for row in seen],[100000,300000,700000]);self.assertEqual(gets,[])
-            stream._message(json.dumps(dict(schema_version=1,type='progress',upload_id=identifier,received_bytes=2000000,total=1000000,at=800000)))
-            self.assertEqual(len(seen),3)
-        finally:stream.close();stream.deleteLater();engine.deleteLater();APP.processEvents()
+        with tempfile.TemporaryDirectory(prefix='flickdock-live-progress-') as folder:
+            account=Account();account.api=object();account.device_id='receiver'
+            stream=CloudEvents(account,enabled=False)
+            adapter=SimpleNamespace(snapshot=lambda:dict(permanent=[],texts={},metadata={}))
+            # Exercise the real initialized journal, including first-arrival
+            # persistence. Bypassing __init__ omitted ownership and lane state.
+            engine=ShelfSync(folder,account,adapter)
+            identifier=str(uuid4());engine.account_id='fixture';engine.upload_enabled=False
+            engine.remote_transfers=[dict(upload_id=identifier,item_id='item',size=1000000,received_bytes=0,device_id='sender')]
+            engine.state={'entries':{}}
+            gets=[];engine.request_refresh=lambda:gets.append(True);seen=[];engine.transfers_changed.connect(seen.append)
+            stream.transfer_progress.connect(engine.remote_progress)
+            try:
+                for received in (100000,300000,700000):stream._message(json.dumps(dict(schema_version=1,type='progress',upload_id=identifier,received_bytes=received,total=1000000,at=received)))
+                self.assertEqual([row[0]['received'] for row in seen],[100000,300000,700000]);self.assertEqual(gets,[])
+                arrivals=[row[0]['shelf_added_at'] for row in seen]
+                self.assertEqual(len(set(arrivals)),1)
+                journal=json.loads(engine._profile('fixture').read_text(encoding='utf8'))
+                self.assertEqual(journal['remote_arrivals']['item'],arrivals[0])
+                stream._message(json.dumps(dict(schema_version=1,type='progress',upload_id=identifier,received_bytes=2000000,total=1000000,at=800000)))
+                self.assertEqual(len(seen),3)
+            finally:stream.close();engine.close();stream.deleteLater();engine.deleteLater();APP.processEvents()
 
     def test_connected_and_disconnected_change_sync_poll_policy(self):
         with tempfile.TemporaryDirectory(prefix='flickdock-events-') as folder, \
