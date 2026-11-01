@@ -91,7 +91,7 @@ class InlineUpdates(unittest.TestCase):
         self.path.parent.mkdir(parents=True);self.path.write_bytes(self.body)
         self.controller=subject.UpdateController('1.7.0',self.store.base,settings=self.store,client=self.client,
             installed_exe=self.installed,quit_callback=lambda:self.events.append(('quit',)),
-            popen=self.popen,defer_ms=20)
+            popen=self.popen,defer_ms=20,platform='win32')
         self.controller.state_changed.connect(lambda state,p:self.dialog.set_update_state(state,**p))
         self.dialog.update_requested.connect(self.controller.activate)
         self.dialog.set_update_state(self.controller.state,**self.controller.state_payload)
@@ -147,7 +147,7 @@ class InlineUpdates(unittest.TestCase):
         self.assertTrue(wait(lambda:len(self.events)==2))
         self.assertEqual([e[0] for e in self.events],['popen','quit'])
         arguments,options=self.events[0][1:]
-        self.assertIn('/DIR='+str(self.installed.parent),arguments)
+        self.assertIn('/DIR='+str(self.installed.resolve(strict=True).parent),arguments)
         self.assertIn('/FDParentPid='+str(os.getpid()),arguments)
         self.assertIn('/SILENT',arguments)
         self.assertNotIn('/SUPPRESSMSGBOXES',arguments)

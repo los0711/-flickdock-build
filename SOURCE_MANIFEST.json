@@ -10,13 +10,13 @@
     },
     {
       "path": ".github/workflows/macos-build.yml",
-      "size": 5680,
-      "sha256": "f02ec0a7e315faa622705c265d1909f4ca6a0bce1872639fe04c92c74b7eed87"
+      "size": 5733,
+      "sha256": "8db27598b0abff5be7d9e22ea0fddfd405d5328ad90791c3dc3ad7bccd2a9223"
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 5866,
-      "sha256": "bead5c9b1f067354ace78c00351823de08110b62a126f2a04c409a98e1950aea"
+      "size": 5910,
+      "sha256": "1fed7ee87441250ef0a5be11d818682d04616c12665e6f474787ddabb8b180c4"
     },
     {
       "path": ".gitignore",
@@ -1960,8 +1960,8 @@
     },
     {
       "path": "test_update_inline_v171.py",
-      "size": 35546,
-      "sha256": "1f7a1fafa501396fb8c0a814ca6db0c41fd4c3f09f8b10bcd8cebe630d178a87"
+      "size": 35584,
+      "sha256": "79b95818a3ee0b554cb9d093eba5c93789a112e6a303e56e068d24db6a86f742"
     },
     {
       "path": "test_update_macos.py",
