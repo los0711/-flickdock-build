@@ -19,6 +19,23 @@ class TransferDropSurface(QWidget):
     def __init__(self,parent):
         super().__init__(parent);self.active=None;self.press=0.;self.enter=1.;self.setAcceptDrops(True)
         self.setAttribute(Qt.WA_ShowWithoutActivating);self.hide()
+        from drop_target_motion import DropTargetMotion
+        # Only the active chooser region shares this one screen-paced clock.
+        # The existing chooser fill/press/entrance and native drop stay intact.
+        self.drop_motion=DropTargetMotion(self,self._active_rect,radius=7,enabled=lambda:self.active in ('lan','wan'))
+
+    def _active_rect(self):
+        if self.active not in ('lan','wan'):return QRectF()
+        return QRectF(4,4+('lan','wan').index(self.active)*68,self.width()-8,62)
+
+    def set_active(self,mode):
+        self.active=mode if mode in ('lan','wan') else None
+        if self.active is None or reduced_motion():self.stop_ants()
+        else:self.drop_motion.set_drag_active(True);self.drop_motion.refresh()
+        self.update()
+
+    def stop_ants(self):
+        self.drop_motion.stop()
 
     def target(self,point):
         if not self.rect().contains(point):return None
@@ -35,7 +52,8 @@ class TransferDropSurface(QWidget):
             p.setBrush(QColor(c['surface']));p.setPen(QPen(QColor('#56565C' if c['text']=='#F5F5F7' else '#B7BDC6'),1));p.drawRoundedRect(rect,8,8)
             if selected:
                 fill=QColor(c['link']);fill.setAlpha(24);p.setBrush(fill)
-                pen=QPen(QColor(c['link']),1.4,Qt.DashLine);pen.setDashPattern([4,3]);p.setPen(pen)
+                pen=QPen(QColor(c['link']),1.4,Qt.DashLine);pen.setDashPattern([4,3])
+                pen.setDashOffset(self.drop_motion.phase/pen.widthF());p.setPen(pen)
                 p.drawRoundedRect(rect.adjusted(1,1,-1,-1),7,7)
             icon(glyph,c['link'] if selected else c['secondary']).paint(p,QRect(16,27+i*68,16,16))
             p.setPen(QColor(c['text'] if selected else c['secondary']))
@@ -88,7 +106,7 @@ class TransferEntryRouter(QObject):
     def reset(self):
         self._intent_generation+=1
         self.leave.stop();self.feedback.stop();self.entrance.stop();self.drop_feedback.cancel();self._pending_present=None
-        self.surface.hide();self.surface.active=None;self._highlight(False)
+        self.surface.hide();self.surface.set_active(None);self._highlight(False)
         self.surface.press=0.;self._dropping=False
 
     def _shelf(self):return self.root if hasattr(self.root,'_set_stack_spread') else getattr(self.root,'shelf',None)
@@ -120,6 +138,7 @@ class TransferEntryRouter(QObject):
             self._hover_generation+=1
             if kind==QEvent.Enter:self._spread(False)
             else:
+                if watched is self.surface:self.surface.stop_ants()
                 generation=self._hover_generation
                 QTimer.singleShot(0,self,lambda:self._restore_spread(generation))
         if watched is self.root and kind==QEvent.Leave:
@@ -127,6 +146,7 @@ class TransferEntryRouter(QObject):
         if kind not in (QEvent.DragEnter,QEvent.DragMove,QEvent.DragLeave,QEvent.Drop):return False
         if not isinstance(watched,QWidget) or not (watched is self.root or self.root.isAncestorOf(watched)):return False
         if kind==QEvent.DragLeave:
+            self.surface.stop_ants()
             if watched is self.root:
                 self._hover_generation+=1;self._spread(False)
             if self.surface.isVisible() and not self._dropping:self.leave.start(60)
@@ -142,11 +162,12 @@ class TransferEntryRouter(QObject):
         self._spread(False)
         self.leave.stop()
         if not self.surface.isVisible():self._show()
-        self.surface.active=self.surface.target(self.surface.mapFrom(self.root,point));self.surface.update()
+        self.surface.set_active(self.surface.target(self.surface.mapFrom(self.root,point)))
         if kind==QEvent.Drop:
             mode=self.surface.active
             if mode is None:self.reset();event.ignore();return True
             paths=original_paths(event.mimeData());self._dropping=True;self._intent_generation+=1
+            self.surface.stop_ants()
             event.acceptProposedAction();callback=self.deliver(mode,paths)
             self._pending_present=(self._intent_generation,callback)
             if not reduced_motion():

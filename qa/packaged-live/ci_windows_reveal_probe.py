@@ -8,7 +8,7 @@ from __future__ import annotations
 import argparse,ctypes,hashlib,json,os,subprocess,sys,tempfile,threading,time,traceback
 from pathlib import Path
 
-MODES=('absolute-zero','parent-child-one','absolute-zero-sta-pump')
+MODES=('absolute-zero','parent-child-one','absolute-zero-sta-pump','folder-view-select')
 
 
 def require_hosted():
@@ -46,6 +46,48 @@ def snapshot(shell,folder,target,before):
     return rows
 
 
+def select_loaded_view(target,state,lock,started):
+    """Producer-only candidate: one official view selection, never observer."""
+    import pythoncom
+    from win32com.client import Dispatch
+    shell=Dispatch('Shell.Application')  # This STA owns its own COM proxy.
+    expected_folder=os.path.normcase(str(target.parent.resolve()))
+    expected_item=os.path.normcase(str(target.resolve()))
+    deadline=time.monotonic()+6
+    while time.monotonic()<deadline:
+        matches=[];item=None
+        try:
+            for index,window in enumerate(shell.Windows()):
+                if index>=64:raise RuntimeError('Producer Shell enumeration exceeds bound')
+                document=window.Document
+                if os.path.normcase(os.path.realpath(document.Folder.Self.Path))==expected_folder:
+                    matches.append((window,document))
+            if len(matches)==1:item=matches[0][1].Folder.ParseName(target.name)
+        except Exception as error:
+            # Explorer registers a document before its folder view is ready.
+            # Retain readiness failures; never retry/catch SelectItem itself.
+            row=dict(type=type(error).__name__,message=str(error))
+            if hasattr(error,'hresult'):row['hresult']=f'0x{int(error.hresult)&0xffffffff:08X}'
+            with lock:state['view_readiness_errors']=(state.get('view_readiness_errors',[])+[row])[-8:]
+            matches=[]
+        if len(matches)>1:raise RuntimeError('More than one exact producer folder view')
+        if matches:
+            window,document=matches[0]
+            if item is not None:
+                if os.path.normcase(os.path.realpath(item.Path))!=expected_item:
+                    raise RuntimeError('ParseName returned a different item; selection refused')
+                with lock:
+                    state['view_selection']=dict(producer=True,observer=False,method='ShellFolderView.SelectItem',
+                        flags=0x1D,folder=str(target.parent),target=str(target),hwnd=int(window.HWND),
+                        before_selected_count=int(document.SelectedItems().Count),calls=0,
+                        elapsed=time.perf_counter()-started)
+                document.SelectItem(item,0x1D)
+                with lock:state['view_selection'].update(calls=1,automation_return='void',returned_elapsed=time.perf_counter()-started)
+                return
+        pythoncom.PumpWaitingMessages();time.sleep(.025)
+    raise TimeoutError('Producer exact folder/FolderItem was not ready within 6 seconds')
+
+
 def _native_call(mode,target,release,returned,done,state,lock):
     shell=ctypes.WinDLL('shell32',use_last_error=True);ole=ctypes.WinDLL('ole32',use_last_error=True)
     ptr=ctypes.c_void_p;uint=ctypes.c_uint32;hr=ctypes.c_int32
@@ -79,8 +121,11 @@ def _native_call(mode,target,release,returned,done,state,lock):
             result('SHOpenFolderAndSelectItems',shell.SHOpenFolderAndSelectItems(parent,1,children,0))
         else:result('SHOpenFolderAndSelectItems',shell.SHOpenFolderAndSelectItems(item,0,None,0))
         returned.set()
+        if mode=='folder-view-select':select_loaded_view(target,state,lock,started)
     except Exception as error:
-        with lock:state.update(error=type(error).__name__+': '+str(error),traceback=traceback.format_exc())
+        with lock:
+            state.update(error=type(error).__name__+': '+str(error),traceback=traceback.format_exc())
+            if hasattr(error,'hresult'):state['automation_error_hresult']=f'0x{int(error.hresult)&0xffffffff:08X}'
         returned.set()
     finally:
         if parent.value:ole.CoTaskMemFree(parent)
@@ -166,6 +211,8 @@ def main():
     fixture=Path(tempfile.mkdtemp(prefix='flickdock-shell-probe-',dir=runner)).resolve()
     report=dict(ok=False,scope='Official Shell API independent diagnostic; no normal EXE validation',
                 fixture=str(fixture),source_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),cases=[])
+    report['runner_image']={name:os.environ.get(name,'') for name in ('ImageOS','ImageVersion','RUNNER_OS')}
+    report['windows_version']=sys.getwindowsversion()._asdict() if hasattr(sys.getwindowsversion(),'_asdict') else str(sys.getwindowsversion())
     for mode in MODES:
         folder=fixture/mode/'Unicode 空格目录';folder.mkdir(parents=True)
         for name in ('aaa other.bin','目标 tiny 样本.bin','zzz other.bin'):(folder/name).write_bytes(b'original bytes '+name.encode('utf8'))

@@ -12,6 +12,7 @@ import ctypes
 from ctypes import wintypes
 import hashlib
 import json
+import ntpath
 import os
 from pathlib import Path
 import re
@@ -186,9 +187,12 @@ def wait_for(action, seconds, label):
 
 def exe_install_entry(log, exe):
     """Require the actual EXE file entry to say it was installed, not skipped."""
+    expected = ntpath.normcase(ntpath.normpath(str(exe)))
     for block in re.split(r'-- File entry --', log):
-        if ('Dest filename: ' + str(exe)).lower() in block.lower():
-            return block if 'Successfully installed the file.' in block else None
+        for line in block.splitlines():
+            matched = re.search(r'\bDest filename:\s*(.*?)\s*$', line, re.I)
+            if matched and ntpath.normcase(ntpath.normpath(matched.group(1))) == expected:
+                return block if 'Successfully installed the file.' in block else None
     return None
 
 

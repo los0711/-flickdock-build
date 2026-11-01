@@ -4,9 +4,20 @@ from __future__ import annotations
 import time
 
 from PySide6.QtCore import QEvent, QEasingCurve, QObject, QPoint, QPointF, Qt, QTimer
-from PySide6.QtGui import QPainter
+from PySide6.QtGui import QColor,QPainter
 from PySide6.QtWidgets import QWidget
 from shiboken6 import isValid
+
+_BACKING_PROPERTY='_flickdock_reflow_backing'
+
+
+def paint_card_backing(widget,painter,rect,radii):
+    """Occlude sibling ink only inside the original antialiased card path."""
+    if not widget.property(_BACKING_PROPERTY):return
+    import ui_theme
+    from surface_morph import draw_rounded_rect
+    painter.save();painter.setPen(Qt.NoPen);painter.setBrush(QColor(ui_theme.color('surface')))
+    draw_rounded_rect(painter,rect,radii);painter.restore()
 
 
 def _curve(kind):
@@ -44,6 +55,7 @@ class ItemTransitions(QObject):
         self.scroll,self.body=scroll,body
         self.fade=_curve('out');self.move=_curve('move')
         self.ghosts=[];self.moves={};self.generation=0
+        self._backings={}
         self.layout_pending=False
         self.overlay=_Exits(self)
         body.destroyed.connect(self.overlay.deleteLater)
@@ -54,12 +66,32 @@ class ItemTransitions(QObject):
         scroll.verticalScrollBar().valueChanged.connect(self._scrolled)
         scroll.horizontalScrollBar().valueChanged.connect(self._scrolled)
         scroll.viewport().installEventFilter(self)
+        self._lifecycle_hosts=tuple(dict.fromkeys((scroll.parentWidget(),scroll.window())))
+        for host in self._lifecycle_hosts:
+            if host is not None:host.installEventFilter(self)
         scroll.verticalScrollBar().sliderPressed.connect(self.finish)
         scroll.horizontalScrollBar().sliderPressed.connect(self.finish)
 
     def eventFilter(self,watched,event):
-        if event.type()==QEvent.Wheel:self.finish()
+        if (event.type()==QEvent.Wheel or watched in self._lifecycle_hosts
+                and event.type() in (QEvent.Hide,QEvent.Close)):self.finish()
         return super().eventFilter(watched,event)
+
+    def _back_card(self,widget):
+        """Precompose the transparent card over its unchanged overview surface.
+
+        Moving translucent QWidget siblings otherwise show each other's text.
+        Keep normal paint/hover/selection live; no snapshot replaces the card.
+        """
+        key=id(widget)
+        if key in self._backings:return
+        self._backings[key]=(widget,widget.property(_BACKING_PROPERTY))
+        widget.setProperty(_BACKING_PROPERTY,True);widget.update()
+
+    def _restore_backing(self,key):
+        widget,previous=self._backings.pop(key)
+        if not isValid(widget):return
+        widget.setProperty(_BACKING_PROPERTY,previous);widget.update()
 
     def _scrolled(self,*_):
         if not self.layout_pending:self.finish()
@@ -99,6 +131,16 @@ class ItemTransitions(QObject):
             if not enabled or not motion_allowed():self.finish();return
             now=time.perf_counter()
             viewport=self.scroll.viewport()
+            live=[widget for widget in widgets.values() if isValid(widget)
+                  and viewport.rect().intersects(widget.rect().translated(widget.mapTo(viewport,QPoint())))]
+            present={id(widget) for widget in live}
+            for key in tuple(self._backings):
+                if key not in present:self._restore_backing(key)
+            # New first-slot cards and old movers may share their current
+            # paint rectangle. Use the final reading order consistently.
+            ordered=sorted(live,key=lambda widget:(widget.y(),widget.x()))
+            for widget in reversed(ordered):
+                self._back_card(widget);widget.raise_()
             for ref,widget in widgets.items():
                 if ref not in positions or not isValid(widget):continue
                 target=QPoint(widget.pos());origin=positions[ref]
@@ -108,6 +150,7 @@ class ItemTransitions(QObject):
                 self.moves[ref]=(widget,origin,target,now)
                 widget.move(origin)
             if self.moves or self.ghosts:self.timer.start()
+            else:self.finish()
         QTimer.singleShot(0,begin)
 
     def _tick(self):
@@ -124,9 +167,11 @@ class ItemTransitions(QObject):
         self.ghosts=[ghost for ghost in self.ghosts if now-ghost[2]<self.duration]
         if self.ghosts:self.overlay.update()
         else:self.overlay.hide()
-        if not self.moves and not self.ghosts:self.timer.stop()
+        if not self.moves and not self.ghosts:self.finish()
 
     def finish(self,*_):
+        self.generation+=1;self.layout_pending=False
         for widget,origin,target,started in self.moves.values():
             if isValid(widget):widget.move(target)
         self.moves.clear();self.ghosts.clear();self.timer.stop();self.overlay.hide()
+        for key in tuple(self._backings):self._restore_backing(key)

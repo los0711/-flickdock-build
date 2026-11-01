@@ -2,7 +2,7 @@
 import tempfile,unittest,threading,time
 from unittest.mock import patch
 from pathlib import Path
-from PySide6.QtCore import QPoint,QPointF,QMimeData,QUrl,Qt
+from PySide6.QtCore import QPoint,QPointF,QMimeData,QUrl,Qt,QTimer
 from PySide6.QtGui import QDragEnterEvent,QDragMoveEvent,QDropEvent,QDragLeaveEvent
 from PySide6.QtWidgets import QWidget,QPushButton
 from test_html_native_workspace import APP,flush,until
@@ -14,6 +14,62 @@ from wan_transfer import WanTransferService
 
 
 class EntryTests(unittest.TestCase):
+    def chooser(self):
+        root=QWidget();root.resize(440,420);button=QPushButton('文件互传',root);button.setGeometry(20,360,180,34)
+        calls=[];router=TransferEntryRouter(root,button,lambda mode,paths:calls.append((mode,paths)))
+        root.show();flush();data=QMimeData();data.setUrls([QUrl.fromLocalFile('/not-mounted/original.bin')])
+        APP.sendEvent(button,QDragEnterEvent(QPoint(30,20),Qt.CopyAction,data,Qt.LeftButton,Qt.NoModifier))
+        APP.sendEvent(router.surface,QDragEnterEvent(QPoint(60,25),Qt.CopyAction,data,Qt.LeftButton,Qt.NoModifier))
+        router.entrance.setCurrentTime(160)
+        return root,router,data,calls
+
+    def test_selected_chooser_ants_change_real_border_pixels_without_changing_other_region(self):
+        with patch('native_ui_common.reduced_motion',return_value=False),patch('transfer_entry.reduced_motion',return_value=False):
+            root,router,data,calls=self.chooser()
+            try:
+                surface=router.surface
+                for y,selected_border,other_border in ((25,4,72),(95,72,4)):
+                    APP.sendEvent(surface,QDragMoveEvent(QPoint(60,y),Qt.CopyAction,data,Qt.LeftButton,Qt.NoModifier))
+                    motion=surface.drop_motion;self.assertTrue(motion.timer.isActive());geometry=surface.geometry()
+                    motion.phase=0.;first=surface.grab().toImage();motion.phase=2.5;second=surface.grab().toImage()
+                    selected_changes=sum(first.pixelColor(x,selected_border)!=second.pixelColor(x,selected_border) for x in range(15,surface.width()-15))
+                    other_changes=sum(first.pixelColor(x,other_border)!=second.pixelColor(x,other_border) for x in range(15,surface.width()-15))
+                    self.assertGreater(selected_changes,8);self.assertEqual(other_changes,0);self.assertEqual(surface.geometry(),geometry)
+                self.assertEqual(calls,[])
+            finally:root.hide();root.deleteLater();flush()
+
+    def test_chooser_leaving_gap_hidden_and_reduced_motion_stop_one_finite_clock(self):
+        with patch('native_ui_common.reduced_motion',return_value=False),patch('transfer_entry.reduced_motion',return_value=False):
+            root,router,data,calls=self.chooser()
+            try:
+                surface=router.surface
+                def move(point):APP.sendEvent(surface,QDragMoveEvent(point,Qt.CopyAction,data,Qt.LeftButton,Qt.NoModifier))
+                move(QPoint(60,25));motion=surface.drop_motion;identity=motion.timer.timerId();self.assertEqual(len(motion.findChildren(QTimer)),1)
+                for _ in range(8):move(QPoint(62,25));self.assertEqual(motion.timer.timerId(),identity)
+                move(QPoint(60,95));self.assertEqual(surface.active,'wan');self.assertEqual(motion.timer.timerId(),identity)
+                APP.sendEvent(surface,QDragLeaveEvent());self.assertFalse(motion.timer.isActive())
+                phase=motion.phase;motion._tick();self.assertEqual(motion.phase,phase)
+                APP.sendEvent(surface,QDragEnterEvent(QPoint(60,25),Qt.CopyAction,data,Qt.LeftButton,Qt.NoModifier))
+                move(QPoint(60,25));self.assertTrue(motion.timer.isActive())
+                move(QPoint(60,69));self.assertIsNone(surface.active);self.assertFalse(motion.timer.isActive())
+                move(QPoint(60,25))
+                with patch('native_ui_common.reduced_motion',return_value=True):
+                    motion._tick();self.assertFalse(motion.timer.isActive());phase=motion.phase;motion._tick();self.assertEqual(motion.phase,phase)
+                move(QPoint(60,95));root.hide();flush();self.assertFalse(motion.timer.isActive())
+            finally:root.hide();root.deleteLater();flush()
+
+    def test_chooser_drop_stops_ants_while_preserving_original_delivery_and_arc(self):
+        with patch('native_ui_common.reduced_motion',return_value=False),patch('transfer_entry.reduced_motion',return_value=False):
+            root,router,data,calls=self.chooser()
+            try:
+                surface=router.surface
+                APP.sendEvent(surface,QDragMoveEvent(QPoint(60,95),Qt.CopyAction,data,Qt.LeftButton,Qt.NoModifier))
+                self.assertTrue(surface.drop_motion.timer.isActive())
+                event=QDropEvent(QPointF(60,95),Qt.CopyAction,data,Qt.LeftButton,Qt.NoModifier)
+                APP.sendEvent(surface,event);self.assertTrue(event.isAccepted());self.assertFalse(surface.drop_motion.timer.isActive())
+                self.assertEqual(calls,[('wan',['/not-mounted/original.bin'])]);self.assertTrue(router.drop_feedback.isVisible())
+            finally:root.hide();root.deleteLater();flush()
+
     def test_mode_transition_captures_the_painted_old_page_not_an_empty_surface(self):
         with tempfile.TemporaryDirectory() as directory:
             base=Path(directory);lan=FakeLan();wan=WanTransferService(base/'wan',enabled=False)

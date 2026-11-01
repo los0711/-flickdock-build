@@ -701,9 +701,12 @@ class FileRow(QFrame):
         c=palette();chosen=self.path in self.popup.selected
         self.selection_check.blockSignals(True);self.selection_check.setChecked(chosen);self.selection_check.blockSignals(False)
         p=QPainter(self);p.setRenderHint(QPainter.Antialiasing)
+        from item_transitions import paint_card_backing
+        card_rect=QRectF(self.rect()).adjusted(.5,.5,-.5,-.5)
+        paint_card_backing(self,p,card_rect,(c['card_radius'],c['card_radius']))
         p.setBrush(ink(c['selected'] if chosen else c['card_hover'] if self.motion.values['highlight']>.3 else c['card']))
         p.setPen(QPen(ink(c['selected_border'] if chosen else c['border']),1))
-        draw_rounded_rect(p,QRectF(self.rect()).adjusted(.5,.5,-.5,-.5),(c['card_radius'],c['card_radius']))
+        draw_rounded_rect(p,card_rect,(c['card_radius'],c['card_radius']))
         if self.hasFocus() and self._keyboard_focus:
             p.setBrush(Qt.NoBrush);p.setPen(QPen(QColor(c['blue']),1.5))
             draw_rounded_rect(p,QRectF(self.rect()).adjusted(2,2,-2,-2),(c['card_radius']-1,c['card_radius']-1))

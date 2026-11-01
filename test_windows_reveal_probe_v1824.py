@@ -56,6 +56,48 @@ class ProbeTests(unittest.TestCase):
         api=API(open_hr=0x80070005);state=self.run_native('parent-child-one',api)
         self.assertIn('0x80070005',state['error']);self.assertNotIn('selection_observed',state)
         self.assertEqual(api.names().count('free'),2);self.assertEqual(api.names().count('uninit'),1)
+    def test_fourth_mode_producer_uses_exact_parsed_folderitem_once_with_official_flags(self):
+        with tempfile.TemporaryDirectory() as td:
+            folder=Path(td);target=folder/'Unicode 空格.bin';target.write_bytes(b'original')
+            item=SimpleNamespace(Path=str(target));calls=[];names=[]
+            def parse(name):names.append(name);return item
+            doc=SimpleNamespace(Folder=SimpleNamespace(Self=SimpleNamespace(Path=str(folder)),ParseName=parse),
+                SelectedItems=lambda:SimpleNamespace(Count=0),SelectItem=lambda value,flags:calls.append((value,flags)))
+            shell=SimpleNamespace(Windows=lambda:[SimpleNamespace(HWND=7,Document=doc)])
+            state={}
+            modules={'pythoncom':SimpleNamespace(PumpWaitingMessages=lambda:None),
+                     'win32com':SimpleNamespace(),'win32com.client':SimpleNamespace(Dispatch=lambda _:shell)}
+            with patch.dict('sys.modules',modules):probe.select_loaded_view(target,state,threading.Lock(),0.)
+            self.assertEqual(names,[target.name]);self.assertEqual(calls,[(item,0x1D)])
+            self.assertEqual(state['view_selection']['calls'],1);self.assertTrue(state['view_selection']['producer']);self.assertFalse(state['view_selection']['observer'])
+            self.assertNotIn('selection_observed',state)
+    def test_fourth_mode_refuses_an_item_not_in_the_exact_requested_location(self):
+        with tempfile.TemporaryDirectory() as td:
+            folder=Path(td);target=folder/'requested.bin';calls=[]
+            doc=SimpleNamespace(Folder=SimpleNamespace(Self=SimpleNamespace(Path=str(folder)),ParseName=lambda _:SimpleNamespace(Path=str(folder/'wrong.bin'))),
+                SelectItem=lambda *args:calls.append(args))
+            shell=SimpleNamespace(Windows=lambda:[SimpleNamespace(HWND=7,Document=doc)])
+            modules={'pythoncom':SimpleNamespace(PumpWaitingMessages=lambda:None),
+                     'win32com':SimpleNamespace(),'win32com.client':SimpleNamespace(Dispatch=lambda _:shell)}
+            with patch.dict('sys.modules',modules),self.assertRaisesRegex(RuntimeError,'different item'):
+                probe.select_loaded_view(target,{},threading.Lock(),0.)
+            self.assertEqual(calls,[])
+    def test_fourth_mode_retries_only_loading_view_and_records_the_readiness_error(self):
+        with tempfile.TemporaryDirectory() as td:
+            folder=Path(td);target=folder/'requested.bin';calls=[];attempts=[]
+            doc=SimpleNamespace(Folder=SimpleNamespace(Self=SimpleNamespace(Path=str(folder)),ParseName=lambda _:SimpleNamespace(Path=str(target))),
+                SelectedItems=lambda:SimpleNamespace(Count=0),SelectItem=lambda *args:calls.append(args))
+            def windows():
+                attempts.append(True)
+                if len(attempts)==1:raise RuntimeError('view still loading')
+                return [SimpleNamespace(HWND=7,Document=doc)]
+            shell=SimpleNamespace(Windows=windows);state={}
+            modules={'pythoncom':SimpleNamespace(PumpWaitingMessages=lambda:None),
+                     'win32com':SimpleNamespace(),'win32com.client':SimpleNamespace(Dispatch=lambda _:shell)}
+            with patch.dict('sys.modules',modules),patch.object(probe.time,'sleep'):
+                probe.select_loaded_view(target,state,threading.Lock(),0.)
+            self.assertEqual(len(calls),1);self.assertEqual(len(attempts),2)
+            self.assertEqual(state['view_readiness_errors'][0]['message'],'view still loading')
     def test_snapshot_reads_exact_folder_and_never_selects_or_exports_foreign_folder(self):
         with tempfile.TemporaryDirectory() as td:
             folder=Path(td)/'Unicode 空格目录';folder.mkdir();target=folder/'目标 tiny 样本.bin';target.write_bytes(b'original')

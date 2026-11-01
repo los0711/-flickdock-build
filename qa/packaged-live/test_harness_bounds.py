@@ -15,6 +15,17 @@ class FakeWorker:
     def wait(self,timeout):return 0
 
 class BoundTests(unittest.TestCase):
+    def test_installer_requires_exact_executable_entry_not_successful_suffix(self):
+        spec=importlib.util.spec_from_file_location('exact_installer_qa',Path(__file__).with_name('ci_exact_installer.py'))
+        installer=importlib.util.module_from_spec(spec);spec.loader.exec_module(installer)
+        target=r'C:\Own Trial\FlickDock.exe'
+        suffix='-- File entry --\n2026-11-01 Dest filename: '+target+'.config\nSuccessfully installed the file.\n'
+        self.assertIsNone(installer.exe_install_entry(suffix,target))
+        exact='-- File entry --\n2026-11-01 Dest filename: '+target.upper()+'\nSuccessfully installed the file.\n'
+        self.assertIsNotNone(installer.exe_install_entry(suffix+exact,target))
+        skipped=exact.replace('Successfully installed the file.','Same version, skipped.')
+        self.assertIsNone(installer.exe_install_entry(skipped,target))
+
     def test_recording_retains_post_input_paints_when_uia_action_exceeds_minimum(self):
         self.assertEqual(qa.post_action_capture_seconds(.9,1.2),.45)
         self.assertEqual(qa.post_action_capture_seconds(3.,19.),.45)
