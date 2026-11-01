@@ -26,8 +26,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 14451,
-      "sha256": "7ce4dd0f9519d250ca07195eab7ffd5aa916e565803463f0dc5926bbcf454694"
+      "size": 16814,
+      "sha256": "ccae78d620df3dca4c4017765bb0d6eb9d19f47c8f5184ca252ed3670d2e7bd5"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
