@@ -41,7 +41,8 @@ class FinalMotionTests(unittest.TestCase):
         self.root=Control('FlickDock','Window','ShelfWindow',rectangle=(0,0,1000,700))
         self.mouse=types.SimpleNamespace(move=Mock(),click=Mock(),press=Mock(),release=Mock())
         self.api=types.SimpleNamespace(GetForegroundWindow=Mock(return_value=90),
-            GetAncestor=Mock(side_effect=lambda h,flag:h),WindowFromPoint=Mock(return_value=90))
+            GetAncestor=Mock(side_effect=lambda h,flag:h),WindowFromPoint=Mock(return_value=90),
+            GetSystemMetrics=Mock(side_effect=lambda index:{0:1920,1:1080,76:0,77:0,78:1920,79:1080}[index]))
         self.backend=types.SimpleNamespace(pid=123,producer_pid=456,base=self.base,
             windows=Mock(side_effect=lambda pid=None:[self.root]),hotkey=Mock(),
             _producer_topmost=Mock(),_assert_pointer_owner=Mock(),
@@ -227,7 +228,7 @@ class FinalMotionTests(unittest.TestCase):
         producer=Control('Synthetic external editor','Window','QWidget',rectangle=(20,20,500,280));producer.handle=98
         original=list(producer.box)
         self.backend.windows.side_effect=lambda pid=None:[producer] if pid==456 else [self.root]
-        self.api.GetSystemMetrics=Mock(side_effect=lambda index:(1280,720)[index]);self.api.SetWindowPos=Mock(return_value=1)
+        self.api.GetSystemMetrics=Mock(side_effect=lambda index:{0:1280,1:720,76:0,77:0,78:1280,79:720}[index]);self.api.SetWindowPos=Mock(return_value=1)
         self.backend._assert_pointer_owner.side_effect=lambda point,pid:True if point[0]>1032 else (_ for _ in ()).throw(RuntimeError('covered'))
         point=self.runner.leave_point()
         self.assertTrue(qa.FinalMotion.outside(point,[list(self.root.box)]))
@@ -243,10 +244,33 @@ class FinalMotionTests(unittest.TestCase):
         producer=Control('Synthetic external editor','Window','QWidget',rectangle=(20,20,500,280));producer.handle=98
         self.root.box=(0,0,1280,720)
         self.backend.windows.side_effect=lambda pid=None:[producer] if pid==456 else [self.root]
-        self.api.GetSystemMetrics=Mock(side_effect=lambda index:(1280,720)[index]);self.api.SetWindowPos=Mock()
+        self.api.GetSystemMetrics=Mock(side_effect=lambda index:{0:1280,1:720,76:0,77:0,78:1280,79:720}[index]);self.api.SetWindowPos=Mock()
         self.backend._assert_pointer_owner.side_effect=RuntimeError('covered')
         with self.assertRaisesRegex(AssertionError,'No exposed owned producer point'):self.runner.leave_point()
         self.api.SetWindowPos.assert_not_called();self.mouse.move.assert_not_called()
+
+    def test_leave_point_intersects_partly_offscreen_producer_before_sampling(self):
+        # Actual ed57 native run: the disposable producer extended below the
+        # 1024x768 desktop; its .9 sample y773 cannot physically be reached.
+        producer=Control('Synthetic external editor','Window','QWidget',rectangle=(8,539,488,799))
+        self.root.box=(-6,7,1040,658)
+        self.backend.windows.side_effect=lambda pid=None:[producer] if pid==456 else [self.root]
+        self.api.GetSystemMetrics=Mock(side_effect=lambda index:{0:1024,1:768,76:0,77:0,78:1024,79:768}[index])
+        self.api.SetWindowPos=Mock(return_value=1)
+        point=self.runner.leave_point()
+        self.assertGreater(point[1],690);self.assertLess(point[1],768)
+        self.assertNotEqual(point,(56,773));self.api.SetWindowPos.assert_not_called()
+        queried=[call.args[0] for call in self.backend._assert_pointer_owner.call_args_list]
+        self.assertTrue(all(0<=p[0]<1024 and 0<=p[1]<768 for p in queried))
+
+    def test_wholly_offscreen_producer_never_passes_unreachable_owned_point(self):
+        producer=Control('Synthetic external editor','Window','QWidget',rectangle=(1300,1100,1780,1360));producer.handle=98
+        self.backend.windows.side_effect=lambda pid=None:[producer] if pid==456 else [self.root]
+        self.api.SetWindowPos=Mock(return_value=1)
+        self.api.GetSystemMetrics=Mock(side_effect=lambda index:{0:1280,1:720,76:-1280,77:-200,78:2560,79:920}[index])
+        point=self.runner.leave_point()
+        self.assertTrue(-1280<=point[0]<1280 and -200<=point[1]<720)
+        self.api.SetWindowPos.assert_called()
 
     def test_each_placement_covers_overview_and_mini_and_restores_original_pin_mode(self):
         for placement in qa.PLACEMENTS:

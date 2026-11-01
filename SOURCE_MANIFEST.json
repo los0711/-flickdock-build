@@ -26,8 +26,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 14485,
-      "sha256": "14bbfab1cc97b3149282613274258601645447c562ce6b447b8310a4442af237"
+      "size": 14550,
+      "sha256": "329d45e46f5830a7c0bc1c411de43ac4a0d90fcc22d98d7aef1a54a69d14deef"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -961,8 +961,8 @@
     },
     {
       "path": "flickdock.py",
-      "size": 245977,
-      "sha256": "d104c39bae45003fd074ef88180058948e8b8475394f43ac91d15d7a165c4e94"
+      "size": 245989,
+      "sha256": "27821befca0866204e8921f0323e35c14b54e6276d97ab874ce7cb684cf4d311"
     },
     {
       "path": "flickdock_icons.py",
@@ -1231,8 +1231,8 @@
     },
     {
       "path": "qa/packaged-live/ci_packaged_windows_live.py",
-      "size": 87232,
-      "sha256": "de131e1fcd170442871193db5f43e2efa5afeea0efb9a9a01c8999fc90525d04"
+      "size": 90074,
+      "sha256": "a16cc59f1faba378a55c32105c63aeb81f5d9262af40e13878a66554c6723fc7"
     },
     {
       "path": "qa/packaged-live/ci_windows_reveal_probe.py",
@@ -1250,19 +1250,34 @@
       "sha256": "2739ec22a22c892a5f93e3baf47a96ebb8191dc5dbfd1b8780aebb87e3accfc0"
     },
     {
+      "path": "qa/packaged-live/native_batch3.py",
+      "size": 17258,
+      "sha256": "30bef68058ce9f72cfe45cb8f7a475c6a7784e9f8f909282ed1710a025b36e6c"
+    },
+    {
       "path": "qa/packaged-live/native_editor.py",
       "size": 2891,
       "sha256": "c25cf81f7197594c4582870209c6aa217ab028207aa379891ded232dc5ba99b9"
     },
     {
       "path": "qa/packaged-live/native_final_motion.py",
-      "size": 18757,
-      "sha256": "c867c4dc9938794372dbecc20695d57d186888970113e76298f01ff3a7d15b50"
+      "size": 19724,
+      "sha256": "1ac0eb2c4adb1ec08b1adceb729d4ba6c999bceaaff617ba84f8aa0bf422d238"
+    },
+    {
+      "path": "qa/packaged-live/native_shake.py",
+      "size": 10451,
+      "sha256": "d5a2054ee763d5ceb269065fb6e40c8a15cf3c140f4c5f63d9a637a3d9619165"
     },
     {
       "path": "qa/packaged-live/reuse_frozen.py",
       "size": 4304,
       "sha256": "4958d3e3df6998e6e10f5097d3c2600962fd0635c3be6b07685a9728f89c8674"
+    },
+    {
+      "path": "qa/packaged-live/seed_recent_peer.py",
+      "size": 11983,
+      "sha256": "0a9f4581b778b13ce2d2ae90c9fec7dbc3adc766eb7244ddc44457df48596f21"
     },
     {
       "path": "qa/packaged-live/test_harness_bounds.py",
@@ -1275,14 +1290,34 @@
       "sha256": "66d868dd5066200e924311ba209b3e904d784d18e4474ba1eeff6105b64873c1"
     },
     {
+      "path": "qa/packaged-live/test_harness_supplements.py",
+      "size": 2068,
+      "sha256": "52044000ca92a735ccd39fd45fe485a95c45b7506b6e8e345bb81e426e9628bd"
+    },
+    {
       "path": "qa/packaged-live/test_native_batch2.py",
       "size": 17984,
       "sha256": "b19e860f2b10bbc6b3f091f6b1095ffbb0c9a435e34bdcd242c2ed9c8b1a1ae8"
     },
     {
+      "path": "qa/packaged-live/test_native_batch3.py",
+      "size": 13276,
+      "sha256": "01662c40543ee2bc07d3c6c4a2f30a572aef0890b55981ec4c3803aa90be85cd"
+    },
+    {
       "path": "qa/packaged-live/test_native_final_motion.py",
-      "size": 18656,
-      "sha256": "34e1ad0563724472c30b45963e211dfc230ee5cc216fda1d2e3d3d909b836916"
+      "size": 20457,
+      "sha256": "c1aa2a36afb480c8bfb30aeb3d6589d01ee97878de409fd9ba468ce8c27e94c8"
+    },
+    {
+      "path": "qa/packaged-live/test_native_shake.py",
+      "size": 12433,
+      "sha256": "a475035ea2abfa54d641137a4dba518b6c1408a3e22abaf8d0a1bd1f59b09389"
+    },
+    {
+      "path": "qa/packaged-live/test_seed_recent_peer.py",
+      "size": 9123,
+      "sha256": "499a7a0cdcabbb4c6dce799612ac1e45a6a69ae4ce1994587f8a6e22e319bfcb"
     },
     {
       "path": "qa/packaged-live/ui-actions.json",
@@ -1295,9 +1330,19 @@
       "sha256": "acdf086692ce253cb2ddea1f3cc824365af432a46090b1d13c9570eee26b8b8b"
     },
     {
+      "path": "qa/packaged-live/ui-batch3-actions.json",
+      "size": 1043,
+      "sha256": "c3407dda39e286a20ccca02f3b3b235918aafbcc8516bb47951148f0e734d16b"
+    },
+    {
       "path": "qa/packaged-live/ui-extra-actions.json",
       "size": 1073,
       "sha256": "5af1410d0e041aca3c9b013d7319c577abd3a37df4aee4456d1023892bd9045b"
+    },
+    {
+      "path": "qa/packaged-live/ui-supplement-actions.json",
+      "size": 438,
+      "sha256": "7fea35d9b9f8b95bb510d0bed4be1c9ab02412f1387b82aa389883aab92e0c5b"
     },
     {
       "path": "qa/packaged-live/verify_frozen_source.py",
@@ -1331,8 +1376,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 39675,
-      "sha256": "5fc111d762f0e81a67fa3ea056e3043a83c1de90b881624dc1fcf57ea57ce59d"
+      "size": 40065,
+      "sha256": "7eac4f97af5dbaf5cf4acfd1cfa96f204a8d741e9af8e72f4c5f9eecf7bb8a53"
     },
     {
       "path": "release_signing.py",
@@ -1826,8 +1871,8 @@
     },
     {
       "path": "test_morph_snapshot_content_v1824.py",
-      "size": 6502,
-      "sha256": "4741013371018edcfcaa65665c149c2c1ea9830bafec6468ed08f319ae8d20ad"
+      "size": 9522,
+      "sha256": "3cef3fd6340ecb1a28be89051dd5aaa63c21831ee7f272612c137c9f3d7860a6"
     },
     {
       "path": "test_motion_resources_v1822.py",

@@ -1,0 +1,5 @@
+[
+  {"id":"batch3-tray-menu-only","kind":"batch3","recipe":"tray-menu-only","group":12,"duration":2.0,"ordering":"After ordinary/extra content recipes, before empty-zones-last. Uses actual tooltip and Explorer ancestry/pointer owner. Only physical tray click and menu Escape; no Show shelf Invoke. Returns overview."},
+  {"id":"batch3-recent-device-delete","kind":"batch3","recipe":"recent-device-delete","group":5,"duration":2.0,"ordering":"After all recent-device-dependent transfer tests, before empty-zones-last. Requires real local-signaling recent-only offline peer Native QA recent offline plus one surviving peer; do not add this fixture by editing live app state. Returns overview."},
+  {"id":"batch3-open-original-text","kind":"batch3","recipe":"open-original-text","group":12,"duration":2.0,"ordering":"Before empty-zones-last and while original-text.txt remains in shelf. Actual Open must launch observed passive native editor with full original path. Never types in or closes the editor; returns overview via existing hotkey."}
+]

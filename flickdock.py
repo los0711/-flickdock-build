@@ -1822,7 +1822,7 @@ class ShelfWindow(QWidget):
             button.raise_()
         if not self.expanded:
             button=self.lan_button
-            center=transform.map(QRectF(rect.x()+24-self.x(),rect.y()+7+CARD_H-39-self.y(),112,32).center())
+            center=transform.map(QRectF(rect.x()+24-self.x(),rect.y()+7+(rect.height()-27)-39-self.y(),112,32).center())
             button.move(round(center.x()-56),round(center.y()-16))
             button.set_presentation_scale(self.surface_effect.sx,self.surface_effect.sy);button.raise_()
 

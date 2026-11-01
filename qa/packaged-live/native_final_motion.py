@@ -215,11 +215,23 @@ class FinalMotion(Batch2):
 
     def leave_point(self):
         owned=[bounds(w) for w in self.b.windows()]
+        api=self.b._input_api()
+        # A UIA window rectangle may extend below/off the desktop after a
+        # nonactivating move. WindowFromPoint alone can still report that
+        # producer for an unreachable coordinate. Sample only the intersection
+        # with the real Win32 virtual desktop; keep GetCursorPos exact below.
+        left,top,width,height=(int(api.GetSystemMetrics(i)) for i in (76,77,78,79))
+        if width<=0 or height<=0:raise AssertionError('Cannot observe real native desktop bounds')
+        desktop=[left,top,left+width,top+height]
+        self.mark('native-physical-desktop-bounds',bounds=desktop)
         # Only move to an exposed point of the disposable producer. Never
         # click/activate it, move over another application, or guess a screen
         # corner that can still be inside a preallocated transparent host.
         for window in self.b.windows(self.b.producer_pid):
-            r=bounds(window)
+            original=bounds(window)
+            r=[max(original[0],desktop[0]),max(original[1],desktop[1]),
+               min(original[2],desktop[2]),min(original[3],desktop[3])]
+            if r[2]<=r[0] or r[3]<=r[1]:continue
             for rx,ry in ((.1,.08),(.5,.08),(.9,.08),(.1,.9),(.9,.9)):
                 point=(round(r[0]+(r[2]-r[0])*rx),round(r[1]+(r[3]-r[1])*ry))
                 if not self.outside(point,owned):continue
@@ -230,13 +242,13 @@ class FinalMotion(Batch2):
         # Move ONLY that owned disposable window into a real free edge
         # strip, without activation or z-order changes. Its geometry is restored
         # after the recipe. Never move FlickDock to make the leave assertion pass.
-        api=self.b._input_api();width=api.GetSystemMetrics(0);height=api.GetSystemMetrics(1)
         # Probe all four actual screen corners first. Inset variants avoid a
         # taskbar occupying the outer strip; WindowFromPoint must still confirm
         # the producer owns the chosen point. Do not infer taskbar geometry.
         candidates=tuple(point for inset in (12,32,52,72) for point in
-            ((inset,inset),(width-inset-1,inset),(inset,height-inset-1),(width-inset-1,height-inset-1)))
-        candidates=tuple(p for p in candidates if self.outside(p,owned))
+            ((left+inset,top+inset),(left+width-inset-1,top+inset),
+             (left+inset,top+height-inset-1),(left+width-inset-1,top+height-inset-1)))
+        candidates=tuple(p for p in candidates if left<=p[0]<left+width and top<=p[1]<top+height and self.outside(p,owned))
         producers=self.b.windows(self.b.producer_pid)
         if not candidates or len(producers)!=1:
             raise AssertionError('No exposed owned producer point outside all actual shelf/popup hosts')
@@ -247,7 +259,8 @@ class FinalMotion(Batch2):
         r=bounds(window);w,h=r[2]-r[0],r[3]-r[1]
         for point in candidates:
             if time.monotonic()>=self.deadline:raise AssertionError(f'Final motion {self.budget_seconds} s deadline before producer move')
-            x=max(0,min(point[0]-w//2,max(0,width-w)));y=max(0,min(point[1]-h//2,max(0,height-h)))
+            x=max(left,min(point[0]-w//2,max(left,left+width-w)))
+            y=max(top,min(point[1]-h//2,max(top,top+height-h)))
             self.mark('before:owned-producer-nonactivating-move',bounds=r,target=[x,y,x+w,y+h],foreground=self.foreground())
             # NOSIZE | NOZORDER | NOACTIVATE: never resize the producer or app.
             if not api.SetWindowPos(window.handle,0,x,y,0,0,0x0015):
@@ -294,6 +307,7 @@ class FinalMotion(Batch2):
                   host=host_before,popup=popup_before,foreground=foreground)
         self.mouse.move(coords=point)
         actual_cursor=self.cursor()
+        self.mark('actual:observed-leave-cursor',intended=list(point),cursor=actual_cursor)
         if actual_cursor!=list(point):raise AssertionError('Physical leave did not reach its actual owned screen point')
         self.b._assert_pointer_owner(point,self.b.producer_pid)
         self.mark('actual:mouse-only-real-leave',cursor=actual_cursor)

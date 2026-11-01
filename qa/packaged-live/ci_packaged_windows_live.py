@@ -28,7 +28,7 @@ def pasted_original_ready(path,size,expected):
     except (FileNotFoundError,PermissionError):return False
 
 
-def compose_actions(base,extra,batch2):
+def compose_actions(base,extra,batch2,supplements=()):
     actions=[*base,*extra]
     if batch2:
         history=[row for row in batch2 if row.get('recipe')=='history-folder']
@@ -36,8 +36,11 @@ def compose_actions(base,extra,batch2):
         positions=[index for index,row in enumerate(actions) if row['id']=='transfer-open']
         assert len(positions)==1,'History recipe requires original overview entry'
         actions[positions[0]:positions[0]]=history
-        actions.extend(row for row in batch2 if row.get('recipe')!='history-folder')
+        actions.extend(row for row in batch2 if row.get('recipe') not in ('history-folder','empty-zones-last'))
+        actions.extend(supplements)
+        actions.extend(row for row in batch2 if row.get('recipe')=='empty-zones-last')
         assert actions[-1]['recipe']=='empty-zones-last','Destructive fixture cleanup must remain last'
+    elif supplements:raise AssertionError('Supplemental real-input routes require the original intact fixture and last cleanup')
     return actions
 
 
@@ -174,11 +177,24 @@ def retain_diagnostics(output,profile,cloud):
         except Exception as error:errors.append('gateway:'+type(error).__name__)
     if profile is not None:
         try:
+            raw=read(profile.parent/'recent-seed-proof.json',256*1024)
+            if raw:
+                proof=safe_motion_diagnostic(json.loads(raw))
+                (output/'synthetic-recent-seed-proof.json').write_text(json.dumps(proof,indent=2))
+                status['recent_seed_ok']=proof.get('ok') is True
+        except Exception as error:errors.append('recent-seed:'+type(error).__name__)
+        try:
             raw=read(profile.parent/'final-motion-events.jsonl',4*1024*1024)
             rows=[safe_motion_diagnostic(json.loads(line)) for line in (raw or '').splitlines()[-2048:]]
             (output/'synthetic-final-motion-events.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in rows))
             status['final_motion_rows']=len(rows)
         except Exception as error:errors.append('final-motion:'+type(error).__name__)
+        try:
+            raw=read(profile.parent/'batch3-events.jsonl',4*1024*1024)
+            rows=[safe_motion_diagnostic(json.loads(line)) for line in (raw or '').splitlines()[-2048:]]
+            (output/'synthetic-batch3-progress.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in rows))
+            status['batch3_rows']=len(rows)
+        except Exception as error:errors.append('batch3:'+type(error).__name__)
         try:
             raw=read(profile.parent/'batch2-events.jsonl',4*1024*1024);safe=[]
             for line in (raw or '').splitlines()[-2048:]:
@@ -365,6 +381,17 @@ class LocalCloud:
             check=True,capture_output=True,timeout=15,creationflags=subprocess.CREATE_NO_WINDOW)
         private.unlink()
         self.session=session
+    def seed_recent(self,base):
+        proof=base.parent/'recent-seed-proof.json'
+        result=subprocess.run([sys.executable,str(self.qa_root/'seed_recent_peer.py'),
+            '--origin',self.origin,'--profile',str(base),'--proof',str(proof)],
+            capture_output=True,text=True,timeout=30,creationflags=subprocess.CREATE_NO_WINDOW)
+        if result.returncode:
+            raise RuntimeError('Real prelaunch recent-peer fixture failed; retained bounded proof, exit '+str(result.returncode))
+        receipt=json.loads(result.stdout)
+        if receipt.get('ok') is not True or receipt.get('online') is not False or receipt.get('consent_confirmed') is not True:
+            raise AssertionError('Real prelaunch recent-peer fixture did not prove offline accepted history')
+        return receipt
     def stats(self):return json_request(self.control,'GET','/stats')
     def command(self,path):
         with urlopen(self.control+path,timeout=5) as response:response.read()
@@ -744,6 +771,14 @@ class _UIABackend:
         require_hosted()
         from native_batch2 import run
         return run(self,recipe)
+    def batch3(self,recipe):
+        require_hosted()
+        from native_batch3 import run
+        return run(self,recipe)
+    def shake(self,recipe):
+        require_hosted()
+        from native_shake import run
+        return run(self,recipe)
     def final_motion(self,recipe,placement='default-edge'):
         require_hosted()
         from native_final_motion import run
@@ -866,6 +901,8 @@ class Driver(_UIABackend):
     def drag_files(self,target_name,*,target_prefix=False):return self._rpc('drag_files',seconds=24,target_name=target_name,target_prefix=target_prefix)
     def ui_extra(self,recipe):return self._rpc('ui_extra',seconds=40,recipe=recipe)
     def batch2(self,recipe):return self._rpc('batch2',seconds=75,recipe=recipe)
+    def batch3(self,recipe):return self._rpc('batch3',seconds=55,recipe=recipe)
+    def shake(self,recipe):return self._rpc('shake',seconds=45,recipe=recipe)
     def final_motion(self,recipe,placement='default-edge'):return self._rpc('final_motion',seconds=50,recipe=recipe,placement=placement)
     def paste_file_in_explorer(self,source):return self._rpc('paste_file_in_explorer',seconds=45,source=str(source))
     def close(self):
@@ -878,7 +915,7 @@ class Driver(_UIABackend):
 
 def uia_worker():
     require_hosted();backend=_UIABackend(int(sys.argv[2]),int(sys.argv[3]),Path(sys.argv[4]))
-    allowed={'windows','find','click','tree','hotkey','hover','focus_window','paste_file_in_explorer','drag_files','ui_extra','batch2','final_motion'}
+    allowed={'windows','find','click','tree','hotkey','hover','focus_window','paste_file_in_explorer','drag_files','ui_extra','batch2','batch3','shake','final_motion'}
     def bounds(control):
         rect=control.rectangle();return [rect.left,rect.top,rect.right,rect.bottom]
     for line in sys.stdin:
@@ -932,6 +969,7 @@ def main():
     parser.add_argument('--output',type=Path,required=True);parser.add_argument('--actions',type=Path)
     parser.add_argument('--extra-actions',type=Path)
     parser.add_argument('--batch2-actions',type=Path)
+    parser.add_argument('--supplement-actions',type=Path)
     args=parser.parse_args();require_hosted()
     sys.path.insert(0,str(args.root.resolve()))
     if not re.fullmatch(r'[0-9a-f]{64}',args.sha256) or digest(args.exe)!=args.sha256:raise AssertionError('Wrong immutable frozen executable')
@@ -950,6 +988,7 @@ def main():
             cloud=LocalCloud(args.root,base,qa_root)
             phase('local-cloud-start',cloud.start,screens=True)
             phase('local-synthetic-session',lambda:cloud.seed_session(profile),screens=True)
+            phase('local-real-signaling-recent-fixture',lambda:cloud.seed_recent(profile),screens=True)
             phase('runner-client-area-animation',animation_preference.enable)
             environment=dict(os.environ,APPDATA=str(base),LOCALAPPDATA=str(base/'local'),QT_QPA_PLATFORM='windows',QT_ACCESSIBILITY='1')
             if any(environment.get(key,'').lower() in ('1','true','yes','on') for key in ('FLICKDOCK_REDUCE_MOTION','FLICKDOCK_LOW_PERFORMANCE')):
@@ -1111,7 +1150,8 @@ def main():
             actions=json.loads(args.actions.read_text(encoding='utf8')) if args.actions else []
             extras=json.loads(args.extra_actions.read_text(encoding='utf8')) if args.extra_actions else []
             batch2=json.loads(args.batch2_actions.read_text(encoding='utf8')) if args.batch2_actions else []
-            actions=compose_actions(actions,extras,batch2)
+            supplements=json.loads(args.supplement_actions.read_text(encoding='utf8')) if args.supplement_actions else []
+            actions=compose_actions(actions,extras,batch2,supplements)
             for index,step in enumerate(actions):
                 if application.poll() is not None:raise AssertionError('Frozen app exited during native UI flow')
                 def execute(step=step):
@@ -1120,6 +1160,8 @@ def main():
                     if step['kind']=='focus_window':return driver.focus_window(step['title'])
                     if step['kind']=='ui_extra':return driver.ui_extra(step['recipe'])
                     if step['kind']=='batch2':return driver.batch2(step['recipe'])
+                    if step['kind']=='batch3':return driver.batch3(step['recipe'])
+                    if step['kind']=='shake':return driver.shake(step['recipe'])
                     if step['kind']=='final_motion':return driver.final_motion(step['recipe'],step.get('placement','default-edge'))
                     if step['kind']=='drag':
                         result=driver.drag_files(step['target'],target_prefix=step.get('target_prefix',False))
@@ -1132,7 +1174,7 @@ def main():
                     if step['kind']=='image_copy':return driver.click('Copy original image',pid=producer.pid)
                     raise ValueError('Unsupported native action')
                 result=recorder.run(f'flow-{index:02}-{step["id"]}',execute,duration=step.get('duration',.9))
-                if step['kind'] in ('ui_extra','batch2','final_motion'):(args.output/f'flow-{index:02}-extra-events.json').write_text(json.dumps(result,indent=2))
+                if step['kind'] in ('ui_extra','batch2','batch3','shake','final_motion'):(args.output/f'flow-{index:02}-extra-events.json').write_text(json.dumps(result,indent=2))
                 (args.output/f'flow-{index:02}-accessibility.json').write_text(json.dumps(driver.tree(),ensure_ascii=False,indent=2))
             def real_notice_stack():
                 driver.click('Synthetic external editor',pid=producer.pid)

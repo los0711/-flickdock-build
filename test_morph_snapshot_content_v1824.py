@@ -92,6 +92,47 @@ class MorphSnapshotContentTests(unittest.TestCase):
             self.assertTrue(effect.isEnabled())
         self.assertTrue(shelf.updatesEnabled());self.assertTrue(shelf.card.updatesEnabled())
 
+    def test_footer_tracks_current_surface_bottom_during_collapse_and_stays_hidden_during_expand(self):
+        shelf=self.shelf;native=QRect(shelf.geometry());header=self.header_rects()
+        shelf.show_contents();shelf.geometry_morph.animation.pause();shelf.presentation.stop()
+        for progress in (0.,.2,.5,.75,.9,1.):
+            with self.subTest(expand_progress=progress):
+                shelf.geometry_morph._frame(progress);ws.flush()
+                self.assertTrue(shelf.lan_button.isHidden())
+                self.assertEqual(self.header_rects(),header);self.assertEqual(shelf.geometry(),native)
+        shelf.geometry_morph.complete();shelf.collapse_contents()
+        shelf.geometry_morph.animation.pause();shelf.presentation.stop()
+        for progress in (0.,.2,.5,.75,.9,1.):
+            with self.subTest(collapse_progress=progress):
+                shelf.geometry_morph._frame(progress);ws.flush();rect=shelf.visual_geometry()
+                actual=QRect(shelf.lan_button.mapToGlobal(QPoint()),shelf.lan_button.size())
+                # Same compact endpoint insets, applied to the *current* body:
+                # 14 px native inset + 10 px card inset on the left; bottom
+                # 20 px native/shadow margin + 7 px card inset.
+                self.assertEqual(actual,QRect(rect.x()+24,rect.bottom()-58,112,32))
+                self.assertEqual(rect.bottom()-actual.bottom(),27)
+                self.assertEqual(self.header_rects(),header);self.assertEqual(shelf.geometry(),native)
+        shelf.geometry_morph.complete();ws.flush()
+
+    def test_collapsing_footer_is_actually_painted_at_the_moving_bottom_strip(self):
+        shelf=self.shelf;shelf.show_contents();shelf.geometry_morph.complete();ws.flush()
+        shelf.collapse_contents();shelf.geometry_morph.animation.pause();shelf.presentation.stop()
+        for progress in (0.,.25,.5,.75):
+            with self.subTest(progress=progress):
+                shelf.geometry_morph._frame(progress);ws.flush();rect=shelf.visual_geometry()
+                expected=QRect(rect.x()-shelf.x()+24,rect.bottom()-shelf.y()-58,112,32)
+                visible=shelf.grab().toImage();ratio=visible.devicePixelRatioF()
+                crop=QRect(round(expected.x()*ratio),round(expected.y()*ratio),round(expected.width()*ratio),round(expected.height()*ratio))
+                try:
+                    shelf.lan_button.hide();ws.flush();hidden=shelf.grab().toImage()
+                finally:shelf.lan_button.show();ws.flush()
+                on=visible.copy(crop).convertToFormat(QImage.Format.Format_RGBA8888)
+                off=hidden.copy(crop).convertToFormat(QImage.Format.Format_RGBA8888)
+                one=bytes(on.constBits());two=bytes(off.constBits())
+                changed=sum(max(abs(a-b) for a,b in zip(one[i:i+4],two[i:i+4]))>8 for i in range(0,len(one),4))
+                self.assertGreater(changed,20,'Live footer ink was absent from the current visual bottom strip')
+        shelf.geometry_morph.complete();ws.flush()
+
     def test_failed_offscreen_render_restores_visibility_effect_and_original_updates_policy(self):
         shelf=self.shelf;snapshot=SurfaceSnapshot(shelf);visibility=[not c.isHidden() for c in self.controls()]
         for suppressed in (False,True):

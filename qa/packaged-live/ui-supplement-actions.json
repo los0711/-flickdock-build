@@ -1,0 +1,6 @@
+[
+  {"id":"batch3-tray-menu-only","kind":"batch3","recipe":"tray-menu-only","group":12,"duration":2.0},
+  {"id":"batch3-recent-device-delete","kind":"batch3","recipe":"recent-device-delete","group":5,"duration":2.0},
+  {"id":"batch3-open-original-text","kind":"batch3","recipe":"open-original-text","group":13,"duration":2.0},
+  {"id":"actual-external-file-shake","kind":"shake","recipe":"external-file-shake","group":8,"duration":2.0}
+]
