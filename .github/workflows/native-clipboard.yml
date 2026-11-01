@@ -193,7 +193,23 @@ jobs:
           $nativeHash = (Get-FileHash -LiteralPath $nativeExe -Algorithm SHA256).Hash.ToLowerInvariant()
           python qa/packaged-live/ci_packaged_windows_live.py --exe $nativeExe --sha256 $nativeHash --root $PWD --output build/normal-native-qa --actions qa/packaged-live/ui-actions.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Preserve actual QA pixels and exact tested executable
+      - name: Ensure native installer compiler for same-byte validation
+        shell: pwsh
+        run: |
+          if (-not (Get-Command ISCC.exe -ErrorAction SilentlyContinue) -and -not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Verify exact production installer with a real old process and relaunch
+        env:
+          FD_QA_NATIVE: '1'
+        shell: pwsh
+        run: |
+          $nativeExe = (Resolve-Path 'dist/FlickDock/FlickDock.exe').Path
+          $nativeHash = (Get-FileHash -LiteralPath $nativeExe -Algorithm SHA256).Hash.ToLowerInvariant()
+          python qa/packaged-live/ci_exact_installer.py --root $PWD --exe $nativeExe --sha256 $nativeHash --normal-report build/normal-native-qa/normal-frozen-native-report.json --output build/exact-installer
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Preserve actual QA pixels and exact tested executable and installer
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -202,6 +218,7 @@ jobs:
             build/normal-native-qa/
             build/normal-source-verification.json
             build/reused-frozen-receipt.json
+            build/exact-installer/
             dist/FlickDock/
           if-no-files-found: error
           retention-days: 3

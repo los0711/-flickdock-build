@@ -15,7 +15,10 @@ function localTarget(path){
 }
 function forward(req,res,row){
   if(req.destroyed){row.cancelled=true;return;}
-  const upstream=http.request(localTarget(req.url),{method:req.method,headers:req.headers},answer=>{
+  // TLS terminates here. The actual upstream is the isolated loopback server;
+  // preserving the public Host on plain HTTP would rightly trigger its HTTPS
+  // guard. Use the real loopback authority; never weaken the service guard.
+  const upstream=http.request(localTarget(req.url),{method:req.method,headers:{...req.headers,host:origin.host}},answer=>{
     row.status=answer.statusCode;row.first_byte=performance.now();
     res.writeHead(answer.statusCode,answer.headers);answer.pipe(res);
     answer.on('end',()=>{row.finished=performance.now();});
@@ -33,7 +36,7 @@ const gateway=https.createServer({key:await readFile(config.key),cert:await read
   forward(req,res,row);
 });
 gateway.on('upgrade',(req,socket,head)=>{
-  const request=http.request(localTarget(req.url),{method:req.method,headers:req.headers});
+  const request=http.request(localTarget(req.url),{method:req.method,headers:{...req.headers,host:origin.host}});
   request.on('upgrade',(res,upstream,upstreamHead)=>{
     socket.write('HTTP/1.1 101 Switching Protocols\r\n'+Object.entries(res.headers).map(([k,v])=>`${k}: ${v}\r\n`).join('')+'\r\n');
     if(head.length)upstream.write(head);if(upstreamHead.length)socket.write(upstreamHead);

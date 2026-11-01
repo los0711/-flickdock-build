@@ -14,8 +14,8 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-from PySide6.QtCore import QCoreApplication, QEvent, QPoint, QRect, Qt
-from PySide6.QtGui import QColor, QFocusEvent, QPalette
+from PySide6.QtCore import QCoreApplication, QEvent, QPoint, QRect, QRectF, Qt
+from PySide6.QtGui import QColor, QFocusEvent, QPalette, QImage, QPainter
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QPushButton
 
@@ -277,6 +277,11 @@ class WorkspaceTests(unittest.TestCase):
         for theme in ('light','dark'):
             self.settings.update(theme=theme);ui_theme.set_theme(theme);ui_theme.apply_application(APP,subject.FONT_FAMILY)
             refresh_tree(self.shelf);popup._render_signature=None;popup.rebuild();popup.set_category('all');flush()
+            # This check describes selected/all and unselected/uploading at
+            # rest. Moving half-covered ink has its separate frame test.
+            until(lambda:not popup.category_indicator._pending
+                  and popup.category_indicator.animation.state()==popup.category_indicator.animation.State.Stopped
+                  and popup.category_indicator._rect==QRectF(popup.category_buttons['all'].geometry()))
             selected=popup.category_buttons['all'];image=composed_image(selected)
             check('selected category',brightest_pixel(image,QRect(35,8,45,18)),logical_pixel(image,6,selected.height()//2))
             badge=popup.nav_counts['all'];position=badge.geometry()
@@ -284,8 +289,31 @@ class WorkspaceTests(unittest.TestCase):
                   logical_pixel(image,position.center().x(),position.top()+3))
             other=popup.category_buttons['uploading'];other_image=composed_image(popup);other_badge=popup.nav_counts['uploading'];position=other_badge.geometry()
             count_background=logical_pixel(other_image,other.mapTo(popup,QPoint(position.center().x(),position.top()+3)))
-            count_bounds=QRect(other_badge.mapTo(popup,QPoint()),other_badge.size()).adjusted(2,3,-2,-3)
-            check('unselected transfer count',highest_contrast_pixel(other_image,count_bounds,count_background),count_background)
+            # WCAG 1.4.3 uses the authored ink/background, not the fainter
+            # antialiased edge pixel. Also prove the real custom painter uses
+            # that ink: palette() alone is insufficient for CategoryCount.
+            count_ink=QColor(palette()['link'])
+            check('unselected transfer count',count_ink,count_background)
+            text=other_badge.text();ratio=other_badge.devicePixelRatioF()
+            mask=QImage(round(other_badge.width()*ratio),round(other_badge.height()*ratio),QImage.Format_ARGB32)
+            mask.setDevicePixelRatio(ratio)
+            mask.setDotsPerMeterX(round(other_badge.logicalDpiX()/.0254));mask.setDotsPerMeterY(round(other_badge.logicalDpiY()/.0254))
+            mask.fill(Qt.transparent);p=QPainter(mask);p.setFont(other_badge.font());p.setPen(Qt.white)
+            p.drawText(other_badge.rect(),Qt.AlignCenter,text);p.end()
+            samples=[(x,y,mask.pixelColor(x,y).alpha()) for y in range(mask.height()) for x in range(mask.width())]
+            peak=max((alpha for _x,_y,alpha in samples),default=0)
+            points=[(x,y,alpha/255.) for x,y,alpha in samples if alpha>=max(1,round(peak*.9))]
+            metrics=dict(theme=theme,text=text,font=other_badge.font().toString(),size=(other_badge.width(),other_badge.height()),
+                dpr=ratio,dpi=(other_badge.logicalDpiX(),other_badge.logicalDpiY()),peak_alpha=peak)
+            self.assertTrue(points,metrics)
+            other_badge.setText('');background=composed_image(popup)
+            other_badge.setText(text);actual=composed_image(popup);at=other_badge.mapTo(popup,QPoint())
+            for x,y,coverage in points:
+                sx=round(at.x()*ratio)+x;sy=round(at.y()*ratio)+y
+                base=background.pixelColor(sx,sy);pixel=actual.pixelColor(sx,sy)
+                expected=tuple(round(a*coverage+b*(1-coverage)) for a,b in zip(count_ink.getRgb()[:3],base.getRgb()[:3]))
+                self.assertLessEqual(max(abs(a-b) for a,b in zip(pixel.getRgb()[:3],expected)),28,
+                    ('unselected transfer count painted ink',pixel.name(),expected,coverage,metrics))
             # Exercise real QMenu selection drawing; palette() alone does not
             # resolve the QSS :selected foreground/background state.
             menu=subject.AnimatedMenu();subject.style_menu(menu);action=menu.addAction('选择菜单项目')

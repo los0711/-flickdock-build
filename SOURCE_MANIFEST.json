@@ -21,8 +21,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 10338,
-      "sha256": "7a138657db0fb18ad285dad81a75b98d6b0ca151bdce5de141472ac2edaaaf82"
+      "size": 11392,
+      "sha256": "ee87242f1eeec843d9a6b09a0b13ab98684af1386626718824e472934052529c"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -1200,14 +1200,19 @@
       "sha256": "2b198085f9d8a7b957bd9678772b85d4d83433f4e27abc44eedf1d4cdee2fb06"
     },
     {
+      "path": "qa/packaged-live/ci_exact_installer.py",
+      "size": 22095,
+      "sha256": "e58f7467bff468bae625deede55d95e3871e3cd2af6c37c8c12981c1b923ffe7"
+    },
+    {
       "path": "qa/packaged-live/ci_packaged_windows_live.py",
       "size": 62985,
       "sha256": "09a7bdfcea1035aba954992e278feb41ce7372d0908c1e268db740c08dc640f7"
     },
     {
       "path": "qa/packaged-live/gateway.mjs",
-      "size": 3533,
-      "sha256": "65b3683c0dd35ca0b7ab2ef6cbad017d0092d4205de3af8225f7c333f88d58c5"
+      "size": 3811,
+      "sha256": "e83edb1261dd99c216fc425c58d92408bcb0221f1dcccc5fbcd7dfc3aa6e2d49"
     },
     {
       "path": "qa/packaged-live/native_editor.py",
@@ -1256,8 +1261,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 38673,
-      "sha256": "2e51b124397162a86051cf0a37f3a6848449985a7e1d0cc0d92180f3abf365a2"
+      "size": 38719,
+      "sha256": "57f4b2d0e0b3a0fde3ab0ca06d5a32dea55c5eb6f3d7557d4ac3fdf9c0e33c3b"
     },
     {
       "path": "release_signing.py",
@@ -1631,8 +1636,8 @@
     },
     {
       "path": "test_html_native_workspace.py",
-      "size": 27437,
-      "sha256": "a76d5af0fba77489ac1328f385bc5505ae8309164f8c3fef740eea623e0ea102"
+      "size": 29788,
+      "sha256": "800a67b5313cea343545f42d524497cd3be18d0380e5d5421d38e2d6a1b19d8e"
     },
     {
       "path": "test_input_motion_v1823.py",
