@@ -1221,8 +1221,8 @@
     },
     {
       "path": "qa/packaged-live/native_batch2.py",
-      "size": 22804,
-      "sha256": "97162bad8dbdb32f04e0932da660356a14451057e99029b2316d0ff0cc943482"
+      "size": 22882,
+      "sha256": "1a0fc5199f60c1afe2f118ef2ad4af72352eb97a06c54ca89ad03921e1ecd5fe"
     },
     {
       "path": "qa/packaged-live/native_editor.py",
@@ -1246,8 +1246,8 @@
     },
     {
       "path": "qa/packaged-live/test_native_batch2.py",
-      "size": 11601,
-      "sha256": "7878a09bfb91b2978c674ce2621a783dba3152a98af0af6e0352ed9eb748a647"
+      "size": 12440,
+      "sha256": "1204493f5459a5d60b8489e9668d979cf32b1142cd5a5c3f60b3261514a32eeb"
     },
     {
       "path": "qa/packaged-live/ui-actions.json",

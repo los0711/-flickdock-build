@@ -33,8 +33,9 @@ SELECTORS={
  'cancel':('取消','Button',None),
  'list_check':('选择 original-text.txt','CheckBox','SelectionCheck'),
  'transfer_nav':('文件互传','Button','TransferNavButton'),
- 'lan':('局域网传输','CheckBox','QPushButton'),
- 'wan':('远程传输','CheckBox','QPushButton'),
+ # Actual normal Windows UIA tree, run 41268257366 (not the Qt base class).
+ 'lan':('局域网传输','CheckBox','_PressButton'),
+ 'wan':('远程传输','CheckBox','_PressButton'),
  'queue_clear':('清除','Button',None),
  'back':('返回总览','Button',None),
  'history_folder':('在文件夹中显示 Completed synthetic 0.bin','Button','_HistoryRemoveButton'),

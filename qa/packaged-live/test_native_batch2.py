@@ -55,6 +55,18 @@ class Batch2Tests(unittest.TestCase):
   Control('图标视图','CheckBox','IconTextButton',self.root);Control('图标视图','CheckBox','IconTextButton',self.root)
   with self.assertRaisesRegex(AssertionError,'Ambiguous'):self.runner.resolve('grid')
   self.mouse.click.assert_not_called()
+ def test_modes_match_actual_normal_windows_uia_class_not_qt_base_class(self):
+  # Recorded exact name/role/class from run41268257366 failure-accessibility;
+  # all checks retain an actual transfer-window scope and uniqueness.
+  transfer=Control('FlickDock · 文件互传','Window','LanDialog')
+  self.backend.windows.side_effect=lambda:[self.root,transfer]
+  for key,name in (('lan','局域网传输'),('wan','远程传输')):
+   mode=Control(name,'CheckBox','_PressButton',transfer)
+   Control(name,'CheckBox','QPushButton',self.root)
+   self.assertIs(self.runner.resolve(key,'transfer'),mode)
+   self.assertEqual(qa.SELECTORS[key],(name,'CheckBox','_PressButton'))
+  duplicate=Control('局域网传输','CheckBox','_PressButton',transfer)
+  with self.assertRaisesRegex(AssertionError,'Ambiguous'):self.runner.resolve('lan','transfer')
  def test_physical_click_guard_and_deleted_wrapper_are_safe(self):
   control=Control('Synthetic delete',parent=self.root)
   self.mouse.click.side_effect=lambda **_:setattr(control,'rectangle',Mock(side_effect=RuntimeError('native object removed')))
