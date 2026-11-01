@@ -49,8 +49,17 @@ def _select_loaded_view(path,cancel,deadline,client):
                 try:
                     for index,window in enumerate(shell.Windows()):
                         if index>=64:raise OSError('Windows Shell 窗口数量超过定位上限。')
-                        document=window.Document
-                        if _resolved(document.Folder.Self.Path)==folder:matches.append(document)
+                        try:
+                            document=window.Document
+                            location=document.Folder.Self.Path
+                            if isinstance(location,str) and location and _resolved(location)==folder:matches.append(document)
+                        except (AttributeError,pythoncom.com_error) as problem:
+                            # Shell.Windows may include non-folder documents or
+                            # unrelated views that are still loading. Preserve
+                            # already matched views and keep scanning this pass.
+                            code=getattr(problem,'hresult',None)
+                            last_error=('HRESULT 0x'+format(int(code)&0xffffffff,'08X')) if code is not None else str(problem)
+                            continue
                     if len(matches)>1:raise OSError('存在多个相同目录窗口，无法确认文件定位目标。')
                     document=matches[0] if matches else None
                     item=document.Folder.ParseName(ntpath.basename(path)) if document is not None else None

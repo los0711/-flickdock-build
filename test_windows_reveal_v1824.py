@@ -232,6 +232,34 @@ class ViewTests(unittest.TestCase):
         self.document.SelectItem=fail
         with self.assertRaisesRegex(OSError,'0x80070005'):self.run_view()
         self.assertEqual(len(self.calls),1)
+    def test_nonfolder_document_before_or_after_exact_match_cannot_discard_it(self):
+        good=SimpleNamespace(Document=self.document);bad=SimpleNamespace(Document=SimpleNamespace())
+        for windows in ((bad,good),(good,bad)):
+            with self.subTest(order=windows):
+                self.calls.clear();self.selected.clear();self.clock=0.
+                self.shell.Windows=lambda:windows
+                self.assertTrue(self.run_view());self.assertEqual(self.calls,[(self.item,29)])
+    def test_transient_com_document_before_or_after_exact_match_cannot_discard_it(self):
+        class Loading:
+            @property
+            def Document(self):raise ComError(-2147483638)
+        good=SimpleNamespace(Document=self.document);bad=Loading()
+        for windows in ((bad,good),(good,bad)):
+            with self.subTest(order=windows):
+                self.calls.clear();self.selected.clear();self.clock=0.
+                self.shell.Windows=lambda:windows
+                self.assertTrue(self.run_view());self.assertEqual(self.calls,[(self.item,29)])
+    def test_no_ready_folder_retains_last_com_error_without_selecting(self):
+        class Loading:
+            @property
+            def Document(self):raise ComError(-2147483638)
+        self.shell.Windows=lambda:[Loading()]
+        with self.assertRaisesRegex(TimeoutError,'0x8000000A'):self.run_view()
+        self.assertEqual(self.calls,[])
+    def test_sixty_four_document_scan_limit_still_rejects_unbounded_enumeration(self):
+        self.shell.Windows=lambda:[SimpleNamespace(Document=SimpleNamespace())]*65
+        with self.assertRaisesRegex(OSError,'数量超过'):self.run_view()
+        self.assertEqual(self.calls,[])
     def test_cancel_before_dispatch_and_during_parse_prevents_selection(self):
         self.cancelled=True
         with patch.dict('sys.modules',{}):self.assertFalse(self.run_view())

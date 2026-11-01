@@ -29,12 +29,16 @@ FONT_KEEP = {'harmonyos_sans_sc_regular.ttf'}
 # unversioned ICU imports are satisfied by the OS, not by Poppler ICU 78.
 SYSTEM_ONLY = {'icuuc.dll'}
 RUNTIME_ROOTS = {'python3.dll', 'python312.dll'}
+# pywin32 loads these by name from Python. They have no guaranteed PE import
+# edge from an analysed .pyd, so ordinary dependency closure alone drops COM.
+WINDOWS_SHELL_ROOTS = {'pythoncom312.dll', 'pywintypes312.dll'}
 REQUIRED_DYNAMIC_ROOTS = {
     'qt6core.dll','qt6gui.dll','qt6widgets.dll','qt6network.dll','qt6websockets.dll','qt6svg.dll','qt6multimedia.dll',
     'qwindows.dll','qoffscreen.dll','qsvgicon.dll','windowsmediaplugin.dll',
     'qcertonlybackend.dll','qschannelbackend.dll','qnetworklistmanager.dll',
     'qgif.dll','qico.dll','qjpeg.dll','qsvg.dll','qtiff.dll','qwebp.dll',
 }
+REQUIRED_DYNAMIC_ROOTS |= WINDOWS_SHELL_ROOTS
 REQUIRED_PLUGIN_PATHS = {
     f'pyside6/plugins/{group}/{name}'
     for group,names in PLUGIN_ALLOWLIST.items()
@@ -116,6 +120,8 @@ def filter_bundle(binaries,datas):
         name = Path(entry[1]).name.lower()
         if name.endswith('.pyd') or name in RUNTIME_ROOTS:
             roots.add(index);root_reasons[index]='Python runtime or analysed extension module'
+        elif name in WINDOWS_SHELL_ROOTS:
+            roots.add(index);root_reasons[index]='runtime-loaded Windows Shell COM binding'
         elif '/plugins/' in '/'+_normal(entry[0]):
             roots.add(index);root_reasons[index]='selected runtime-loaded Qt plugin'
         elif _normal(entry[0]).startswith('p2p/') and name in ('node.exe','node_datachannel.node'):

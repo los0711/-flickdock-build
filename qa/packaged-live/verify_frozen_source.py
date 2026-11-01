@@ -27,5 +27,14 @@ if args.after_build:
     provenance['normal-flickdock-entry']=compile((root/'flickdock.py').read_bytes(),entry.co_filename,'exec',dont_inherit=True,optimize=0)==entry
     assert provenance and all(provenance.values()),provenance
     result=json.loads(out.read_text());result.update(compiled=provenance,after=True,exe_sha256=hashlib.sha256(exe.read_bytes()).hexdigest())
+    # The COM loader is Python code; a correct PYZ alone does not prove its
+    # runtime-loaded DLL survived PE dependency trimming.
+    bindings={}
+    for name in ('pythoncom312.dll','pywintypes312.dll'):
+        matches=[path for path in exe.parent.rglob(name) if path.is_file()]
+        assert len(matches)==1,('Required frozen Shell binding is missing or ambiguous',name)
+        path=matches[0]
+        bindings[name]=dict(path=path.relative_to(exe.parent).as_posix(),bytes=path.stat().st_size,sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+    result['windows_shell_bindings']=bindings
     out.write_text(json.dumps(result,indent=2))
 print('Reviewed source / frozen normal entry verification passed')

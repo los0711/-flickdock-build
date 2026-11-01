@@ -216,6 +216,8 @@ jobs:
         run: |
           python -m unittest discover -s qa/packaged-live -p test_harness_bounds.py -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest test_windows_shell_bundle_v1824 -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python qa/packaged-live/verify_frozen_source.py --before-build
       - name: Build actual native executable with the production entry
         if: github.event.inputs.reuse_normal_run == ''
@@ -269,6 +271,7 @@ jobs:
             build/normal-source-verification.json
             build/reused-frozen-receipt.json
             build/exact-installer/
+            package-audit-analysis.json
             dist/FlickDock/
           if-no-files-found: error
           retention-days: 3

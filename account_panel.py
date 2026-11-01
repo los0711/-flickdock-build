@@ -675,8 +675,9 @@ class AccountPanel(QFrame):
         online=signed and not self._busy
         if self.account_state_label.property('online')!=online:
             self.account_state_label.setProperty('online',online)
-            self.account_state_label.style().unpolish(self.account_state_label)
-            self.account_state_label.style().polish(self.account_state_label)
+            # Let Qt refresh inherited selectors without materializing its
+            # private QStyleSheetStyle wrapper through Python on Cocoa.
+            self.account_state_label.setStyleSheet('/* FlickDock account state: refresh inherited rules */')
         for widget in (self.username_edit,self.password_edit,self.submit_button,self.login_tab,self.register_tab):
             widget.setEnabled(not self._busy)
         self.logout_button.setEnabled(signed and not self._busy)

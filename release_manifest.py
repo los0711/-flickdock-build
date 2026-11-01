@@ -56,6 +56,7 @@ MAINTAINED_TESTS=(
     'test_windows_reveal_v1824.py',
     'test_transfer_balance_v1824.py',
     'test_item_reflow_occlusion_v1824.py',
+    'test_windows_shell_bundle_v1824.py',
     'test_native_owner_lifetime_v1824.py',
     'test_disabled_field_states_v1824.py','test_standard_control_states_v1824.py',
     'test_clipboard_loop_v1824.py','test_screen_animation_timer_v1824.py',

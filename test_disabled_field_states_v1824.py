@@ -5,8 +5,8 @@ from unittest.mock import patch
 os.environ['QT_QPA_PLATFORM']='offscreen'
 if os.environ.get('FLICKDOCK_FIELD_BASELINE'):sys.path.insert(0,os.environ['FLICKDOCK_FIELD_BASELINE'])
 from PySide6.QtCore import QObject,Signal,Qt,QRect,QPoint
-from PySide6.QtGui import QKeySequence
-from PySide6.QtWidgets import QLineEdit,QKeySequenceEdit,QWidget,QVBoxLayout
+from PySide6.QtGui import QKeySequence,QPalette
+from PySide6.QtWidgets import QLineEdit,QKeySequenceEdit,QWidget,QVBoxLayout,QLabel,QWidgetItem
 from PySide6.QtTest import QTest
 import test_html_native_workspace as ws
 from test_html_native_lan import FakeLan
@@ -57,6 +57,37 @@ class DisabledFieldTests(unittest.TestCase):
    service.busy=False;service.busy_changed.emit(False);panel.username_edit.setFocus(Qt.TabFocusReason);QTest.keyClicks(panel.username_edit,'z');self.assertNotEqual(panel.username_edit.text(),'fixture')
    self.different_when_disabled(panel.password_edit);QTest.keyClicks(panel.password_edit,'blocked');self.assertEqual(panel.password_edit.text(),'');panel.password_edit.setEnabled(True);panel.password_edit.setFocus(Qt.TabFocusReason);QTest.keyClicks(panel.password_edit,'local-value');self.assertEqual(panel.password_edit.text(),'local-value')
    panel.close_auth();ws.flush()
+ def _account_state_refresh_pixels(self):
+  def green_pixels(image):
+   return sum(image.pixelColor(x,y).green()>image.pixelColor(x,y).red()+20 and
+              image.pixelColor(x,y).green()>image.pixelColor(x,y).blue()+10
+              for y in range(image.height()) for x in range(image.width()))
+  for theme in ('light','dark'):
+   service=Account();panel=AccountPanel(service,theme=theme);self.windows.append(panel)
+   panel.setFixedSize(640,480);panel.show();ws.flush()
+   service.account={'id':'fixture-account','username':'Fixture'};service.signed_in=True
+   service.account_changed.emit(service.account);ws.flush()
+   label=panel.account_state_label;self.assertTrue(label.isVisible());self.assertTrue(label.property('online'))
+   panel.username_edit.setText('preserved fixture input');size=panel.username_label.size();outer=panel.size();rules=panel.styleSheet()
+   online=self.image(label);self.assertGreater(green_pixels(online),8)
+   ink=label.palette().color(QPalette.WindowText);self.assertGreater(ink.green(),ink.red()+20)
+   service.busy=True;service.busy_changed.emit(True);ws.flush()
+   self.assertFalse(label.property('online'));self.assertEqual(label.text(),'处理中…')
+   self.assertEqual(green_pixels(self.image(label)),0)
+   self.assertFalse(panel.username_edit.isEnabled());self.assertEqual(panel.username_edit.text(),'preserved fixture input')
+   self.assertEqual(panel.username_label.size(),size);self.assertEqual(label.height(),24);self.assertEqual(panel.size(),outer);self.assertEqual(panel.styleSheet(),rules)
+   service.busy=False;service.busy_changed.emit(False);ws.flush()
+   self.assertTrue(label.property('online'));self.assertEqual(label.text(),'已登录')
+   self.assertEqual(self.image(label),online)
+   self.assertTrue(panel.username_edit.isEnabled());self.assertEqual(panel.username_edit.text(),'preserved fixture input')
+   self.assertEqual(panel.username_label.size(),size);self.assertEqual(label.height(),24);self.assertEqual(panel.size(),outer);self.assertEqual(panel.styleSheet(),rules)
+ def test_account_state_refresh_survives_wrong_private_style_wrapper(self):
+  owner=QWidget();self.windows.append(owner);wrong=QWidgetItem(owner)
+  with patch.object(QLabel,'style',return_value=wrong) as getter:
+   self._account_state_refresh_pixels();getter.assert_not_called()
+ def test_account_state_refresh_never_materializes_throwing_private_style_wrapper(self):
+  with patch.object(QLabel,'style',side_effect=RuntimeError('private style wrapper unavailable')) as getter:
+   self._account_state_refresh_pixels();getter.assert_not_called()
  def test_remote_code_and_devices_disabled_are_distinct_and_readonly_stays_enabled(self):
   for theme in ('light','dark'):
    service=FakeLan();service.mode='wan';store=SettingsStore(Path(self.temp.name)/('wan-'+theme));store.update(theme=theme);w=LanDialog(service,store);self.windows.append(w);w.show();ws.flush();p=w.panel
