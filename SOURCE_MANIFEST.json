@@ -651,8 +651,8 @@
     },
     {
       "path": "clipboard_popup_motion.py",
-      "size": 14404,
-      "sha256": "613c60a5d6988a38d3e2db5fb6f606317b56423648e4cebf6e18907fd8ee279c"
+      "size": 14438,
+      "sha256": "26f13bce8c4e58a4fd127df88867fbefbbf8cf6afe8551c98114c853a7be9e29"
     },
     {
       "path": "clipboard_preview.py",
@@ -1281,8 +1281,8 @@
     },
     {
       "path": "shared_clipboard_files.py",
-      "size": 26734,
-      "sha256": "b5867045822d74b87b2973e467794f1a4987136abaf4f3d9f82a8d61f0ae4690"
+      "size": 26761,
+      "sha256": "78a8ae7d7d7cfc37d45b662481151905c272785ab51cf4510acacb8415baae4f"
     },
     {
       "path": "shelf_content.py",
@@ -1931,8 +1931,8 @@
     },
     {
       "path": "test_sync_switch_lifecycle_v1824.py",
-      "size": 8567,
-      "sha256": "fc62825aca8d8ed47a6e9a710efbed519e80d5ce8a7b3f1bd1e1c674f164ec2b"
+      "size": 8898,
+      "sha256": "59281cab07cb265077aa4522e1977258d83ba140e45d04bf1aec380ca10c68fb"
     },
     {
       "path": "test_sync_timeout_recovery.py",

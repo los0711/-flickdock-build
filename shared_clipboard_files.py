@@ -117,7 +117,7 @@ class ClipboardFileJobs(QObject):
     def reset(self,*,load=False):
         self.save();self.retry.stop();self.tasks={};self.journal=None
         identity=self.client._identity
-        if not identity or not uuid(identity[0]):return
+        if not identity or not uuid(identity[0]) or not self.client.enabled:return
         self.journal=self.base/(identity[0]+'.json')
         if not load or self.client.closed:return
         try:

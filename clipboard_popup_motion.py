@@ -6,7 +6,7 @@ per presentation; no root graphics effect, global input hook or clipboard I/O.
 from collections import OrderedDict
 import sys
 from PySide6.QtCore import QCoreApplication,QEvent,QObject,QPoint,QRect,QRectF,Qt,QVariantAnimation,QSignalBlocker,QTimer,QEasingCurve
-from PySide6.QtGui import QColor,QGuiApplication,QPainter,QPainterPath,QPainterPathStroker,QPixmap
+from PySide6.QtGui import QColor,QGuiApplication,QPainter,QPainterPath,QPainterPathStroker,QPixmap,QContextMenuEvent
 from PySide6.QtWidgets import QApplication,QWidget
 from shiboken6 import isValid
 from ui_transitions import exit_curve,motion_allowed
@@ -167,7 +167,7 @@ class ClipboardPopupMotion(QObject):
         kind=event.type()
         if self._swallow_context and kind==QEvent.MouseButtonPress:
             self._finish_pointer_swallow()
-        if self._swallow_context and kind==QEvent.ContextMenu and event.reason()==event.Mouse:
+        if self._swallow_context and kind==QEvent.ContextMenu and event.reason()==QContextMenuEvent.Mouse:
             # A native right-button release may post its context request after
             # the popup has hidden. Consume that request, never a new click.
             self._finish_pointer_swallow();event.accept();return True
@@ -190,7 +190,7 @@ class ClipboardPopupMotion(QObject):
                 # Consume both halves, even if the exit ends before release.
                 # Content is a view, never a text selection/image gesture or
                 # a click which falls through onto the underlying shelf.
-                self._swallow_button=event.button();self._release_timer.start();self.dismiss();event.accept();return True
+                self._swallow_button=event.button();self._release_timer.start(1500);self.dismiss();event.accept();return True
             # Outside clicks retain their original target/action.
             if not self.source_rect.contains(point):self.dismiss()
         elif self.presenting and kind in (QEvent.Wheel,QEvent.ContextMenu) and isinstance(watched,QWidget):

@@ -52,10 +52,15 @@ class SharedSwitchTests(unittest.TestCase):
 
     def test_reenable_does_not_publish_cancelled_journal_as_global_latest(self):
         f=self.f;path,identity,entry=self.held_entry()
+        journal=f.client.file_jobs.journal
         f.engine.set_directions(False,False);f.client.set_enabled(False);settle()
+        import json
+        saved=json.loads(journal.read_text(encoding='utf-8'))
+        self.assertTrue(any(row['id']==identity and entry['id'] in row.get('releases',{}) for row in saved['tasks']))
         before=len(f.peer.calls);f.client.set_enabled(True);settle()
         self.assertFalse(any(m in ('POST','PUT') and '/v1/clipboard' in p and not p.endswith('/release')
             for m,p,d in f.peer.calls[before:]),f.peer.calls[before:])
+        self.assertTrue(any(p.endswith('/release') for m,p,d in f.peer.calls[before:]))
         self.assertTrue(path.exists());self.assertTrue(Path(f.clip.mimeData().urls()[0].toLocalFile()).samefile(path))
         f.clip.text('new copy after enable');until(lambda:f.peer.head and f.peer.head.get('kind')=='text')
         self.assertEqual(f.client.view['value'][1]['text'],'new copy after enable')
