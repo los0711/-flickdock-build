@@ -80,7 +80,18 @@ jobs:
       - name: Verify frame lifecycle, popup and real control-state paint regressions
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m unittest test_transfer_balance_v1824 test_native_owner_lifetime_v1824 test_frame_animation_v1824 test_screen_animation_timer_v1824 test_user_popup_fixes_v1823 test_standard_control_states_v1824 test_disabled_field_states_v1824 -q
+        run: python -m unittest test_windows_reveal_v1824 test_transfer_balance_v1824 test_native_owner_lifetime_v1824 test_frame_animation_v1824 test_screen_animation_timer_v1824 test_user_popup_fixes_v1823 test_standard_control_states_v1824 test_disabled_field_states_v1824 -q
+      - name: Verify all motion paths with explicit ordinary and reduced-motion prerequisites
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python -m unittest test_ui_followup_v1823 test_cached_surface_v1823 test_stack_spread_v1823 test_input_motion_v1823 test_content_entrance_v1823 test_transfer_drop_feedback_v1823 test_transfer_item_motion_v1823 test_popup_motion_v1823 test_drop_target_motion_v1823 -q
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest test_clipboard_notice_motion_v1823 test_clipboard_popup_motion_v1823 test_mac_status_drop_v1823 test_mac_permissions_v1821 test_presentation_v1819.PresentationTests -q
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python test_surface_continuity_v162.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Reproduce asynchronous metadata reconciliation before framework warmup
         if: runner.os == 'macOS'
         shell: bash

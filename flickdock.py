@@ -2879,13 +2879,19 @@ class ShelfWindow(QWidget):
             self.reveal_ref(refs[0])
 
     def reveal_ref(self,ref):
+        original_ref=ref
         if self.content.is_pending(ref):return
         if self.content.is_text(ref):
             if not self.content.metadata.get(ref,{}).get('pasted_text'):return
             ref=self.content.materialize_pasted_text(ref,self.manager.settings.capture_dir)
         path=Path(ref)
         if not path.exists():return
-        if sys.platform=='win32':subprocess.Popen(['explorer.exe','/select,',str(path.resolve())])
+        if sys.platform=='win32':
+            from windows_reveal import request_reveal
+            def done(error):
+                if error and self.popup and self.popup.preview.current_path==original_ref:
+                    self.popup.preview.info.setText('无法打开文件所在位置：'+str(error))
+            request_reveal(self,str(path.resolve()),done)
         elif sys.platform=='darwin':subprocess.Popen(['/usr/bin/open','-R',str(path.resolve())])
         else:
             from PySide6.QtGui import QDesktopServices

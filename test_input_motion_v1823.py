@@ -76,7 +76,7 @@ class InputMotionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root,patch('app_settings._startup_runtime_allowed',return_value=False):
             dialog=SettingsDialog(SettingsStore(Path(root)));dialog.show();flush()
             indicator=dialog.settings_navigation_indicator
-            with patch('ui_transitions.motion_allowed',return_value=True):
+            with patch('ui_transitions.motion_allowed',return_value=True),patch('native_ui_common.reduced_motion',return_value=False):
                 dialog.settings_category_buttons['sync'].click();flush();indicator.animation.setCurrentTime(55)
                 current=indicator._rect
                 dialog.settings_category_buttons['account'].click();flush()
@@ -127,7 +127,7 @@ class InputMotionTests(unittest.TestCase):
         host.hide();host.deleteLater();flush()
 
     def test_settings_right_items_enter_only_on_user_category_click_and_release_effects(self):
-        with tempfile.TemporaryDirectory() as root,patch('app_settings._startup_runtime_allowed',return_value=False),patch('content_entrance.motion_allowed',return_value=True):
+        with tempfile.TemporaryDirectory() as root,patch('app_settings._startup_runtime_allowed',return_value=False),patch('content_entrance.motion_allowed',return_value=True),patch('native_ui_common.reduced_motion',return_value=False):
             dialog=SettingsDialog(SettingsStore(Path(root)));dialog.show();flush()
             entrance=dialog._settings_content_entrance
             dialog.show_settings_category('sync');flush();self.assertEqual(entrance.active_count,0)

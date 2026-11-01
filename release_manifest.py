@@ -50,9 +50,10 @@ RUNTIME_SOURCES=(
     'account_store.py','cloud_api.py','cloud_config.py','cloud_events.py','account_service.py','account_panel.py',
     'shelf_sync.py','shared_clipboard_files.py','sync_files.py','sync_adapter.py','verify_cloud.py','shortcut_preview.py',
     'lan_transfer.py','lan_panel.py','transfer_visuals.py','owned_files.py','verify_transfers.py',
-    'wan_transfer.py','webrtc_stream.py','nearby_transport.py','verify_wan.py','windows_network.py',
+    'wan_transfer.py','webrtc_stream.py','nearby_transport.py','verify_wan.py','windows_network.py','windows_reveal.py',
 )
 MAINTAINED_TESTS=(
+    'test_windows_reveal_v1824.py',
     'test_transfer_balance_v1824.py',
     'test_native_owner_lifetime_v1824.py',
     'test_disabled_field_states_v1824.py','test_standard_control_states_v1824.py',

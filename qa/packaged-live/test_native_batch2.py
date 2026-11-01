@@ -128,15 +128,21 @@ class Batch2Tests(unittest.TestCase):
   empty=Control('empty','Border','OverviewEmptyDropZone',self.root);safe=Control('设置',parent=self.root,bounds=(25,140,100,170))
   self.runner.resolve=Mock(return_value=empty);self.runner.input=Mock();self.runner.hover_leave('empty_overview','overview')
   self.mouse.move.assert_called_once_with(coords=(62,155))
- def explorer_fixture(self,*,wrong_active_address=False,wrong_selected=False):
+ def explorer_fixture(self,*,wrong_active_address=False,wrong_selected=False,wrong_folder=False,
+                      tab_name='files',tab_selected=True,extra_tab=False,no_selection=False,
+                      wrong_selected_dir=False,existing=False,multiple_selection=False):
   expected=(self.base/'files').resolve();folder=Control('folder',parent=self.root)
   old=Control('Old unrelated folder','Window','CabinetWClass');old.handle=210
   new=Control('File Explorer','Window','CabinetWClass');new.handle=321
   Control('Address: '+str(expected if not wrong_active_address else self.base/'other'),'ToolBar','ToolbarWindow32',new)
-  active=[False];desktop=types.SimpleNamespace(windows=lambda **_:[old,*([new] if active[0] else [])])
+  tab=Control(tab_name,'TabItem','TabItem',new);tab.iface_selection_item=types.SimpleNamespace(CurrentIsSelected=tab_selected)
+  if extra_tab:
+   other=Control('other','TabItem','TabItem',new);other.iface_selection_item=types.SimpleNamespace(CurrentIsSelected=False)
+  active=[existing];desktop=types.SimpleNamespace(windows=lambda **_:[old,*([new] if active[0] else [])])
   self.runner.input=Mock(side_effect=lambda *_:active.__setitem__(0,True))
-  selected_items=types.SimpleNamespace(Count=1,Item=lambda index:types.SimpleNamespace(Path=str(expected/('other.bin' if wrong_selected else 'tiny.bin'))))
-  document=types.SimpleNamespace(Folder=types.SimpleNamespace(Self=types.SimpleNamespace(Path=str(expected))),SelectedItems=lambda:selected_items)
+  selected_path=(self.base/'other'/'tiny.bin') if wrong_selected_dir else expected/('other.bin' if wrong_selected else 'tiny.bin')
+  selected_items=types.SimpleNamespace(Count=0 if no_selection else 2 if multiple_selection else 1,Item=lambda index:types.SimpleNamespace(Path=str(selected_path)))
+  document=types.SimpleNamespace(Folder=types.SimpleNamespace(Self=types.SimpleNamespace(Path=str(self.base/'other' if wrong_folder else expected))),SelectedItems=lambda:selected_items)
   shell=types.SimpleNamespace(Windows=lambda:[types.SimpleNamespace(HWND=321,Document=document)])
   keys=Mock(side_effect=lambda *_a,**_k:active.__setitem__(0,False))
   new.set_focus=Mock(side_effect=lambda:self.api.GetForegroundWindow.configure_mock(return_value=321))
@@ -151,15 +157,23 @@ class Batch2Tests(unittest.TestCase):
   with patch.dict(sys.modules,modules):self.runner.reveal(folder)
   keys.assert_called_once_with('%{F4}',pause=.02);new.set_focus.assert_called_once()
   self.assertEqual(self.runner.events[-1]['handle'],321);self.backend._assert_foreground.assert_called_once_with(999)
- def test_history_reveal_wrong_active_tab_or_selected_file_fails_without_closing_any_window(self):
-  for kwargs in ({'wrong_active_address':True},{'wrong_selected':True}):
+ def test_history_reveal_bad_tab_selection_full_path_or_old_window_fails_without_closing_any_window(self):
+  for kwargs in ({'tab_name':'other'},{'tab_selected':False},{'extra_tab':True},{'no_selection':True},
+                 {'wrong_selected':True},{'wrong_folder':True},{'wrong_selected_dir':True},{'existing':True},{'multiple_selection':True}):
    with self.subTest(kwargs=kwargs):
     folder,old,new,keys,modules=self.explorer_fixture(**kwargs)
     with patch.dict(sys.modules,modules),self.assertRaisesRegex(AssertionError,'unique Explorer'):self.runner.reveal(folder)
     keys.assert_not_called();new.set_focus.assert_not_called()
- def test_failed_address_match_still_records_real_com_path_selected_file_and_active_tab_without_input(self):
+ def test_toolbar_name_is_not_path_proof_active_single_tab_and_com_paths_are_both_required(self):
   folder,old,new,keys,modules=self.explorer_fixture(wrong_active_address=True)
-  tab=Control('files','TabItem','TabItem',new);tab.iface_selection_item=types.SimpleNamespace(CurrentIsSelected=True)
+  with patch.dict(sys.modules,modules):self.runner.reveal(folder)
+  keys.assert_called_once_with('%{F4}',pause=.02)
+  row=json.loads((self.base/'batch2-explorer-diagnostics.jsonl').read_text(encoding='utf8').splitlines()[-1])
+  current=next(w for w in row['windows'] if w['handle']==321)
+  self.assertFalse(current['address'][0]['name_matches_full_expected'])
+  self.assertTrue(current['tabs'][0]['selected']);self.assertEqual(row['documents'][0]['selected_count'],1)
+ def test_rejected_multi_tab_still_records_real_com_path_and_active_tab_without_input(self):
+  folder,old,new,keys,modules=self.explorer_fixture(wrong_active_address=True)
   secret=Control('private-other-tab','TabItem','TabItem',new);secret.iface_selection_item=types.SimpleNamespace(CurrentIsSelected=False)
   with patch.dict(sys.modules,modules),self.assertRaisesRegex(AssertionError,'unique Explorer'):self.runner.reveal(folder)
   row=json.loads((self.base/'batch2-explorer-diagnostics.jsonl').read_text(encoding='utf8').splitlines()[-1])

@@ -18,7 +18,7 @@ class MotionTests(unittest.TestCase):
         root.show();flush();bounds=[control.geometry() for control in controls]
         effect=ToolbarEntrance(root,lambda:controls)
         try:
-            with patch('ui_transitions.motion_allowed',return_value=True):
+            with patch('ui_transitions.motion_allowed',return_value=True),patch('native_ui_common.reduced_motion',return_value=False):
                 effect.reveal(reset=True);effect.animation.setCurrentTime(90)
                 progress=effect.progress;effect.conceal()
                 self.assertAlmostEqual(effect.animation.startValue(),progress)
@@ -36,7 +36,7 @@ class MotionTests(unittest.TestCase):
     def test_dwell_hint_is_once_finite_and_hidden_or_reduced_motion_cancels(self):
         owner=QWidget();owner.show();flush();effect=DwellHint(owner)
         try:
-            with patch('ui_transitions.motion_allowed',return_value=True):
+            with patch('ui_transitions.motion_allowed',return_value=True),patch('native_ui_common.reduced_motion',return_value=False):
                 effect.enter();self.assertTrue(effect.wait.isSingleShot())
                 effect.wait.stop();effect._start();effect.animation.setCurrentTime(120)
                 self.assertGreater(effect.value,0)

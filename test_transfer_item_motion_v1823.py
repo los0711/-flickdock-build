@@ -19,6 +19,8 @@ def synthetic_move(widget,point):
 
 class TransferRemovalTests(unittest.TestCase):
     def setUp(self):
+        shared=patch('native_ui_common.reduced_motion',return_value=False)
+        shared.start();self.addCleanup(shared.stop)
         self.temp=tempfile.TemporaryDirectory();self.base=Path(self.temp.name)
         self.service=FakeLan();self.dialog=LanDialog(self.service,SettingsStore(self.base/'settings'))
         self.available=patch('window_chrome.WindowChrome._available',return_value=QRect(0,0,1600,1000));self.available.start()
@@ -308,7 +310,7 @@ class TransferEffectPixelTests(unittest.TestCase):
         survivor=_Solid('#00ff00',viewport);survivor.setGeometry(100,0,80,30);survivor.show()
         if borrowed:survivor.entrance=ScaleFade(survivor)
         flush();controller=TransferItemMotion(self.root,viewport)
-        with patch('transfer_item_motion.motion_allowed',return_value=True):
+        with patch('transfer_item_motion.motion_allowed',return_value=True),patch('native_ui_common.reduced_motion',return_value=False):
             positions=controller.capture({'removed':removed,'survivor':survivor})
             controller.remove({'removed':removed},positions,style='shrink')
             removed.hide();survivor.setGeometry(0,0,80,30) # Final layout committed before animation.

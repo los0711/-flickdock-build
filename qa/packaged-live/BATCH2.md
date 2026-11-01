@@ -26,10 +26,14 @@ not mistake “original four included” for “all sent.” The parent must kee
 fixture small enough that all fixture cards are visible; it must not add/remove
 items concurrently during this visual batch.
 
-Folder reveal requires a new Explorer HWND, the current visible address toolbar's
-complete unique synthetic folder, Shell COM `Document.Folder.Self.Path`, and
+Folder reveal requires a new Explorer HWND, exactly one visible TabItem named
+for the fixture folder with its actual SelectionItem pattern selected,
+Shell COM `Document.Folder.Self.Path`, and
 `SelectedItems` with the complete tiny.bin path. A matching caption, inactive tab,
-or filename without an extension is insufficient. Only that positively verified
+or filename without an extension is insufficient. Actual run60 showed that the
+address toolbar Name does not contain the full path; it remains diagnostic only.
+Multiple visible tabs, no selection, wrong complete folder/file, or an old HWND
+must fail. Only that positively verified
 new window is focused and closed by actual Alt+F4; no process termination or
 global Explorer close is permitted. A missing record/path/address remains a
 bounded QA failure.

@@ -123,7 +123,7 @@ class ActualPopupTests(unittest.TestCase):
         from app_settings import SettingsDialog
         dialog=SettingsDialog(self.settings)
         try:
-            with patch.object(dialog._window_fade,'enabled',return_value=True):
+            with patch.object(dialog._window_fade,'enabled',return_value=True),patch('native_ui_common.reduced_motion',return_value=False):
                 dialog.show();dialog._window_fade.animation.pause();geometry=dialog.geometry()
                 dialog.set_update_state('checking');flush();self.assertFalse(dialog.update_activity.isHidden())
                 bar=dialog.update_activity;top=bar.mapTo(dialog,QPoint()).y()
@@ -151,7 +151,7 @@ class ActualPopupTests(unittest.TestCase):
         from app_settings import ThirdPartyDialog
         dialog=ThirdPartyDialog(theme='dark');flags=dialog.windowFlags()
         try:
-            with patch.object(dialog._window_fade,'enabled',return_value=True):
+            with patch.object(dialog._window_fade,'enabled',return_value=True),patch('native_ui_common.reduced_motion',return_value=False):
                 dialog.show();self.assertFalse(dialog.isModal());self.assertTrue(dialog.license_text.isReadOnly())
                 self.assertTrue(flags&Qt.WindowTitleHint);self.assertTrue(flags&Qt.WindowCloseButtonHint)
                 self.assertIsNotNone(getattr(dialog.license_text,'_input_focus_motion',None))

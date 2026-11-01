@@ -19,6 +19,8 @@ def mime(paths):
 
 class EntryFeedbackTests(unittest.TestCase):
     def setUp(self):
+        shared=patch('native_ui_common.reduced_motion',return_value=False)
+        shared.start();self.addCleanup(shared.stop)
         self.root=QWidget();self.root.resize(440,420)
         self.root._set_stack_spread=Mock();self.root._restore_stack_spread=Mock()
         self.button=QPushButton('互传',self.root);self.button.setGeometry(20,360,180,34)
@@ -95,6 +97,8 @@ class EntryFeedbackTests(unittest.TestCase):
 
 class WindowFeedbackTests(unittest.TestCase):
     def setUp(self):
+        shared=patch('native_ui_common.reduced_motion',return_value=False)
+        shared.start();self.addCleanup(shared.stop)
         self.temp=tempfile.TemporaryDirectory();self.root=Path(self.temp.name)
         self.service=FakeLan();self.dialog=LanDialog(self.service,SettingsStore(self.root/'settings'))
         self.motion=patch('transfer_drop_feedback.motion_allowed',return_value=True);self.motion.start()
@@ -186,7 +190,7 @@ class ShelfEntryIntegrationTests(unittest.TestCase):
         manager._show_transfer_dialog=lambda service,**kwargs:ShelfManager._show_transfer_dialog(manager,service,**kwargs)
         manager.queue_transfer_paths=lambda mode,paths,**kwargs:ShelfManager.queue_transfer_paths(manager,mode,paths,**kwargs)
         try:
-            with patch('transfer_drop_feedback.motion_allowed',return_value=True),patch('transfer_entry.reduced_motion',return_value=False),patch('platform_native.raise_shelf_for_reveal',return_value=False):
+            with patch('transfer_drop_feedback.motion_allowed',return_value=True),patch('transfer_entry.reduced_motion',return_value=False),patch('native_ui_common.reduced_motion',return_value=False),patch('platform_native.raise_shelf_for_reveal',return_value=False):
                 fixture.shelf.presentation_kind='dock';fixture.shelf._layout_header(fixture.shelf.card.width());flush()
                 for mode,make_router in (('lan',lambda:fixture.shelf.transfer_entry),('wan',lambda:fixture.overview().transfer_entry)):
                     router=make_router()

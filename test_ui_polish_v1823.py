@@ -66,7 +66,7 @@ class OverviewPolishTests(unittest.TestCase):
 
     def test_segment_retargets_then_stops_when_hidden(self):
         p=self.view
-        with patch('ui_transitions.motion_allowed',return_value=True):
+        with patch('ui_transitions.motion_allowed',return_value=True),patch('native_ui_common.reduced_motion',return_value=False):
             p.cycle_sort('time');ws.flush();QTest.qWait(20);p.cycle_sort('size');ws.flush()
             ws.until(lambda:p.sort_indicator.animation.state()==p.sort_indicator.animation.State.Stopped)
             self.assertEqual(p.sort_indicator._rect.toRect(),p.sort_buttons['size'].geometry())
@@ -151,19 +151,20 @@ class TransferPolishTests(unittest.TestCase):
         p._completed(dict(id='received',direction='receive',paths=[str(path)]));ws.flush()
         row=p.history_rows[0];self.assertFalse(row.icon.isVisible());self.assertEqual(row.detail.x(),row.contentsRect().left()+14)
         self.assertTrue(row.reveal_button.isEnabled())
-        with patch.object(p.file_metadata,'request',return_value={'exists':True}),patch('subprocess.Popen') as launch:
+        with patch.object(p.file_metadata,'request',return_value={'exists':True}),patch('subprocess.Popen') as launch,patch('windows_reveal.request_reveal') as select,patch('lan_panel.QDesktopServices.openUrl',return_value=True) as desktop:
             row.reveal_button.click()
-            expected=(['explorer.exe','/select,',str(path)] if sys.platform=='win32' else
-                      ['/usr/bin/open','-R',str(path)] if sys.platform=='darwin' else ['xdg-open',str(path.parent)])
-            launch.assert_called_once_with(expected)
+            if sys.platform=='win32':
+                self.assertEqual(select.call_args.args[:2],(p,str(path)));launch.assert_not_called()
+            elif sys.platform=='darwin':launch.assert_called_once_with(['/usr/bin/open','-R',str(path)])
+            else:self.assertEqual(desktop.call_args.args[0].toLocalFile(),str(path.parent));launch.assert_not_called()
         self.assertEqual(path.read_text(),'original')
-        with patch.object(p.file_metadata,'request',return_value=None),patch('subprocess.Popen') as launch:
+        with patch.object(p.file_metadata,'request',return_value=None),patch('subprocess.Popen') as launch,patch('windows_reveal.request_reveal') as select:
             row.reveal_button.click();p.hide();ws.flush()
-            p._history_file_ready(str(path));launch.assert_not_called()
+            p._history_file_ready(str(path));launch.assert_not_called();select.assert_not_called()
         p.show();ws.flush()
-        with patch.object(p.file_metadata,'request',return_value=None),patch('subprocess.Popen') as launch:
+        with patch.object(p.file_metadata,'request',return_value=None),patch('subprocess.Popen') as launch,patch('windows_reveal.request_reveal') as select:
             p.history_rows[0].reveal_button.click();p._delete_history_record(0)
-            p._history_file_ready(str(path));launch.assert_not_called()
+            p._history_file_ready(str(path));launch.assert_not_called();select.assert_not_called()
 
 class SharedMotionTests(unittest.TestCase):
     def test_compact_receive_code_ring_keeps_readable_digits_and_no_clipped_arc(self):

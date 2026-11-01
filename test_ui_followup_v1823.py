@@ -13,6 +13,10 @@ from content_grid import added_time_for_ref
 
 class FollowupTests(unittest.TestCase):
     def setUp(self):
+        # Ordinary motion tests need both the local intent and shared clock
+        # enabled, independently of the host OS accessibility preference.
+        shared=patch('native_ui_common.reduced_motion',return_value=False)
+        shared.start();self.addCleanup(shared.stop)
         self.fixture=ws.WorkspaceTests('runTest');self.fixture.setUp();self.shelf=self.fixture.shelf
     def tearDown(self):self.fixture.tearDown()
 

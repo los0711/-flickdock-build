@@ -56,7 +56,7 @@ class DropTargetTests(unittest.TestCase):
             with patch('drop_target_motion.perf_counter',return_value=20.),patch('native_ui_common.reduced_motion',return_value=False):
                 motion.pointer_at(motion.rect().center());motion._tick(20.05)
                 value=motion.value;self.assertGreater(value,0);self.assertLess(value,1)
-            with patch('drop_target_motion.perf_counter',return_value=20.05):
+            with patch('drop_target_motion.perf_counter',return_value=20.05),patch('native_ui_common.reduced_motion',return_value=False):
                 motion.pointer_at(QPointF(-10,-10));self.assertEqual(motion._from,value)
                 frozen=motion.phase;motion._tick(20.3);self.assertEqual(motion.phase,frozen)
                 self.assertEqual(motion.value,0);self.assertFalse(motion.timer.isActive())

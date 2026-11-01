@@ -12,6 +12,8 @@ from flickdock import ShelfManager
 
 class ClipboardPopupTests(unittest.TestCase):
     def setUp(self):
+        shared=patch('native_ui_common.reduced_motion',return_value=False)
+        shared.start();self.addCleanup(shared.stop)
         self.fixture=PreviewTests('test_each_failed_retry_has_error_state_but_notice_remains_deduplicated');self.fixture.setUp()
         self.manager=self.fixture.manager;self.shelf=self.fixture.shelf;self.manager.motion=True
         self.manager.show_clipboard_preview=lambda source=None:ShelfManager.show_clipboard_preview(self.manager,source)

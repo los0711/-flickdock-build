@@ -1132,7 +1132,13 @@ class LanPanel(QFrame):
         if not info.get('exists'):self.status_label.setText('文件已移动或删除，无法定位。');return
         try:
             import subprocess
-            if sys.platform=='win32':subprocess.Popen(['explorer.exe','/select,',path])
+            if sys.platform=='win32':
+                from windows_reveal import request_reveal
+                record=pending[0];self._history_native_reveal_record=record
+                def done(error):
+                    if any(row is record for row in self._history):
+                        self.status_label.setText('无法打开文件所在位置：'+str(error) if error else '')
+                request_reveal(self,path,done);return
             elif sys.platform=='darwin':subprocess.Popen(['/usr/bin/open','-R',path])
             else:QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path).parent)))
             self.status_label.clear()
@@ -1158,6 +1164,9 @@ class LanPanel(QFrame):
             self.status_label.setText('无法删除传输记录，请检查保存位置。')
             return
         if self._history_reveal_pending and self._history_reveal_pending[0] is record:self._history_reveal_pending=None
+        if getattr(self,'_history_native_reveal_record',None) is record:
+            from windows_reveal import cancel_reveal
+            cancel_reveal(self);self._history_native_reveal_record=None
         positions=self.history_motion.capture({widget.record_identity:widget for widget in self.history_rows})
         self.history_motion.remove({id(record):self.history_rows[index]},positions,style='slide')
         self._render_history(preserve_motion=True);self.history_layout.activate()
@@ -1170,6 +1179,9 @@ class LanPanel(QFrame):
         except OSError:
             self._history=records;self.status_label.setText('无法清除传输记录，请检查保存位置。');return
         self._history_reveal_pending=None
+        if getattr(self,'_history_native_reveal_record',None) is not None:
+            from windows_reveal import cancel_reveal
+            cancel_reveal(self);self._history_native_reveal_record=None
         widgets={widget.record_identity:widget for widget in self.history_rows}
         positions=self.history_motion.capture(widgets)
         self.history_motion.remove(widgets,positions,style='slide',stagger=True)

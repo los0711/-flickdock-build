@@ -19,7 +19,7 @@ def alpha_row(widget,global_y,left,right):
         row.append(image.pixelColor(px,py).alpha() if 0<=px<image.width() and 0<=py<image.height() else 0)
     return row
 
-with tempfile.TemporaryDirectory(prefix='flickdock-continuity-') as tmp:
+with tempfile.TemporaryDirectory(prefix='flickdock-continuity-') as tmp,patch('native_ui_common.reduced_motion',return_value=False):
     os.environ['APPDATA']=tmp
     import flickdock as subject
     from app_settings import SettingsStore

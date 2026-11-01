@@ -336,17 +336,19 @@ class Batch2:
             matches=[]
             for window in desktop.windows(class_name='CabinetWClass'):
                 if not window.is_visible() or window.handle in before:continue
-                # COM may enumerate inactive tabs with the same frame HWND.
-                # Require the current frame's address toolbar as well as the
-                # Shell document/selected full path. Hidden extensions and a
-                # matching background tab alone cannot satisfy this check.
-                if not any((c.element_info.name or '').rstrip('\\/').casefold().endswith(str(expected).casefold())
-                           for c in window.descendants(control_type='ToolBar') if c.is_visible()):continue
+                # Actual run60 disproved the full-path toolbar Name assumption.
+                # Require exactly one real visible tab, currently selected and
+                # named for this fixture. COM still proves the complete folder
+                # AND selected file paths; a background/multi-tab match fails.
+                tabs=[c for c in window.descendants(control_type='TabItem') if c.is_visible()]
+                if (len(tabs)!=1 or tabs[0].element_info.name!=expected.name or
+                        not bool(tabs[0].iface_selection_item.CurrentIsSelected)):continue
                 for item in shell.Windows():
                     if int(item.HWND)!=window.handle:continue
                     document=item.Document
                     if os.path.normcase(os.path.realpath(document.Folder.Self.Path))!=os.path.normcase(str(expected)):continue
                     selected_items=document.SelectedItems()
+                    if int(selected_items.Count)!=1:continue
                     paths=[os.path.normcase(os.path.realpath(selected_items.Item(index).Path)) for index in range(selected_items.Count)]
                     if paths==[os.path.normcase(str(expected/'tiny.bin'))]:matches.append(window)
             if len(matches)>1:raise AssertionError('Multiple new Explorer windows show exact selected fixture')

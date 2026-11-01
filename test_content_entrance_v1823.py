@@ -11,6 +11,8 @@ from content_entrance import ContentEntrance
 
 class ContentEntranceTests(unittest.TestCase):
     def setUp(self):
+        shared=patch('native_ui_common.reduced_motion',return_value=False)
+        shared.start();self.addCleanup(shared.stop)
         self.root=QWidget();self.root.resize(400,320)
         self.scroll=QScrollArea(self.root);self.scroll.setGeometry(0,0,380,300)
         self.body=QWidget();self.body.resize(350,42000);self.scroll.setWidget(self.body)
