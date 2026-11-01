@@ -391,13 +391,15 @@ class WindowsStartupTests(unittest.TestCase):
     def test_slow_spawn_keeps_gui_alive_and_duplicate_actions_spawn_once(self):
         entered = threading.Event()
         returned = threading.Event()
+        release = threading.Event()
         calls, beats = [], []
         child = RecordedInstaller()
         def spawn(args, **options):
             calls.append((args, options, threading.get_ident()))
             self.assertIsNotNone(self.leases[0].reader)
             entered.set()
-            time.sleep(.25)
+            if not release.wait(3):
+                raise RuntimeError('recorded process creation was not released')
             returned.set()
             return child
         timer = QTimer()
@@ -415,8 +417,10 @@ class WindowsStartupTests(unittest.TestCase):
             self.assertTrue(wait(lambda: len(beats) >= before+12))
             self.assertFalse(returned.is_set(), 'heartbeat ran during process creation')
             self.assertEqual(self.quit_threads, [])
+            release.set()
             self.assertTrue(wait(lambda: bool(self.quit_threads)))
         finally:
+            release.set()
             timer.stop()
         self.assertEqual(len(calls), 1)
         self.assertNotEqual(calls[0][2], self.gui_thread)

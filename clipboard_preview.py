@@ -119,7 +119,7 @@ class ClipboardButton(QPushButton):
 
 class ClipboardPreview(ReferenceModalDialog):
     def __init__(self,manager):
-        super().__init__(manager.shelf,surface_width=600,modal=False)
+        super().__init__(manager.shelf,surface_width=420,modal=False)
         self.setWindowFlag(Qt.WindowStaysOnTopHint,True)
         self.manager=manager;self.presenter=manager.clipboard_presenter
         self.setWindowTitle('FlickDock · 剪贴板预览')
@@ -129,12 +129,13 @@ class ClipboardPreview(ReferenceModalDialog):
         self.close_button.setAccessibleName('关闭剪贴板预览');self.close_button.setToolTip('关闭剪贴板预览')
         self.close_button.clicked.connect(self.close);head.addWidget(self.close_button)
         self.body_layout.addLayout(head)
-        self.content=QStackedWidget(self.body);self.content.setMinimumHeight(260);self.body_layout.addWidget(self.content)
-        self.text=QPlainTextEdit(self.content);self.text.setReadOnly(True);self.content.addWidget(self.text)
+        self.content=QStackedWidget(self.body);self.content.setMinimumHeight(160);self.body_layout.addWidget(self.content)
+        self.text=QPlainTextEdit(self.content);self.text.setReadOnly(True);self.text.setTextInteractionFlags(Qt.NoTextInteraction)
+        self.text.setFocusPolicy(Qt.NoFocus);self.text.setContextMenuPolicy(Qt.NoContextMenu);self.content.addWidget(self.text)
         from input_focus import install_focus
         install_focus(self.text,theme=lambda:self.manager.settings.theme)
         from image_preview import ImagePreview
-        self.image=ImagePreview(self.content);self.content.addWidget(self.image)
+        self.image=ImagePreview(self.content);self.image.setFocusPolicy(Qt.NoFocus);self.image.setContextMenuPolicy(Qt.NoContextMenu);self.content.addWidget(self.image)
         self.info=QLabel(self.content);self.info.setWordWrap(True);self.info.setAlignment(Qt.AlignCenter);self.content.addWidget(self.info)
         self.status=QLabel(self.body);self.body_layout.addWidget(self.status)
         # Retain the original content/scroll tree, but lay its surface out at

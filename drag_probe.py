@@ -164,9 +164,8 @@ class ContentDragGate:
         self._timeout.setTimerType(Qt.TimerType.PreciseTimer)
         self._timeout.setSingleShot(True)
         self._timeout.timeout.connect(self._finish_probe)
-        self._follow = QTimer(self.probe)
-        self._follow.setTimerType(Qt.TimerType.PreciseTimer)
-        self._follow.setInterval(16)
+        from native_ui_common import ScreenAnimationTimer
+        self._follow = ScreenAnimationTimer(self.probe)
         self._follow.timeout.connect(self._follow_pointer)
 
     @property

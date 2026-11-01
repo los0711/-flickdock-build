@@ -247,8 +247,8 @@ class UpdateActivityBar(QWidget):
         self.fraction = None
         self.dark = False
         self._clock = QElapsedTimer()
-        self._timer = QTimer(self)
-        self._timer.setInterval(16)
+        from native_ui_common import ScreenAnimationTimer
+        self._timer = ScreenAnimationTimer(self)
         self._timer.timeout.connect(self.update)
         self.hide()
 
@@ -1271,6 +1271,8 @@ class SettingsDialog(QDialog):
         cloud_layout.addWidget(cloud_heading)
         self.sync_upload_checkbox = SettingsToggleSwitch("上传本机搁架到云端", cloud)
         self.sync_receive_checkbox = SettingsToggleSwitch("接收云端与其他设备内容", cloud)
+        self.sync_upload_checkbox.setToolTip('控制本机搁架的上传；云剪贴板由下方独立开关控制。')
+        self.sync_receive_checkbox.setToolTip('控制搁架接收；已下载文件保留，云剪贴板由下方独立开关控制。')
         self.clipboard_sync_checkbox = SettingsToggleSwitch("云剪贴板同步", cloud)
         self.clipboard_sync_checkbox.setAccessibleName('云剪贴板同步')
         self.clipboard_sync_checkbox.setToolTip('自动同步小于 20 MB 的文本、链接、图片或单个文件，仅限同账号设备；可在这里关闭。')

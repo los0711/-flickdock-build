@@ -38,9 +38,8 @@ class Spring(QObject):
         self._intent=0;self._motion_done=True
         self._last_tick = time.perf_counter()
         self._started_at = self._last_tick
-        self._timer = QTimer(self)
-        self._timer.setTimerType(Qt.TimerType.PreciseTimer)
-        self._timer.setInterval(16)
+        from native_ui_common import ScreenAnimationTimer
+        self._timer = ScreenAnimationTimer(self)
         self._timer.timeout.connect(self._tick)
 
     def animate(self, target: dict[str, float], finished: Callable[[], None] | None = None,

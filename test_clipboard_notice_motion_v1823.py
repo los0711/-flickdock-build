@@ -97,6 +97,21 @@ class ClipboardNoticeTests(unittest.TestCase):
         self.assertTrue(self.notice.isVisible());self.assertTrue(self.manager._clipboard_runtime_enabled())
         self.notice.disable_success();self.assertTrue(self.notice.isVisible())
 
+    def test_cloud_clipboard_disabled_blocks_queued_and_direct_success_notices(self):
+        self.notice.schedule_result(True,dict(value=('text',{'text':'already committed'})))
+        self.manager.settings.clipboard_sync_enabled=False
+        # Simulate a queued delivery racing a settings-store change, even if a
+        # stale manager callback incorrectly still claims runtime is enabled.
+        self.notice._deliver_result();self.notice._result_timer.stop()
+        self.assertFalse(self.notice.isVisible());self.assertFalse(self.notice.motion.active)
+        self.notice.show_result(True,dict(value=('text',{'text':'late success'})))
+        self.notice.schedule_result(True,dict(value=('text',{'text':'late queued success'})))
+        self.assertFalse(self.notice.motion.active);self.assertIsNone(self.notice._pending_result)
+        self.manager.settings.clipboard_sync_enabled=True
+        self.notice.schedule_result(True,dict(value=('text',{'text':'fresh successful copy'})))
+        self.notice._deliver_result();self.notice._result_timer.stop();self.finish()
+        self.assertTrue(self.notice.isVisible());self.assertEqual(self.notice.preview.text(),'fresh successful copy')
+
     def test_old_expiry_or_success_switch_does_not_cancel_a_new_pending_failure(self):
         for disabling in (False,True):
             self.show('old success');self.finish()

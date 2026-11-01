@@ -47,8 +47,8 @@ class ItemTransitions(QObject):
         self.layout_pending=False
         self.overlay=_Exits(self)
         body.destroyed.connect(self.overlay.deleteLater)
-        self.timer=QTimer(self);self.timer.setTimerType(Qt.PreciseTimer)
-        self.timer.setInterval(16);self.timer.timeout.connect(self._tick)
+        from native_ui_common import ScreenAnimationTimer
+        self.timer=ScreenAnimationTimer(self);self.timer.timeout.connect(self._tick)
         # Scroll is an immediate user operation. Never drag old pixels along
         # with it, or animate to positions from a previous viewport size.
         scroll.verticalScrollBar().valueChanged.connect(self._scrolled)

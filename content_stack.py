@@ -81,7 +81,7 @@ class StackTile(ContentTile):
         self.repository=None;self.refs=();self.preview_cache={};self.arrival=1.0
         self.spread=0.0;self._spread_requested=False
         from ui_transitions import exit_curve
-        self.spread_animation=QVariantAnimation(self);self.spread_animation.setDuration(160)
+        self.spread_animation=QVariantAnimation(self);self.spread_animation.setDuration(220)
         self.spread_animation.setEasingCurve(exit_curve())
         self.spread_animation.valueChanged.connect(self._spread_frame)
         self._stack_cache=QPixmap();self._stack_dpr=0

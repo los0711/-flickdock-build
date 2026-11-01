@@ -42,11 +42,11 @@ class StackSpreadTests(unittest.TestCase):
         with patch('native_ui_common.reduced_motion',return_value=False),patch('reference_widgets.thumbnail',side_effect=AssertionError('Frame requested a thumbnail')),patch('reference_widgets.item_detail',side_effect=AssertionError('Frame read file details')),patch('content_stack.stack_pixmap',side_effect=AssertionError('Frame rebuilt artwork')):
             tile.set_spread(True);tile.spread_animation.pause()
             tile.spread_animation.setCurrentTime(70);middle=pixels(tile)
-            tile.spread_animation.setCurrentTime(160);opened=pixels(tile)
+            tile.spread_animation.setCurrentTime(tile.spread_animation.duration());opened=pixels(tile)
             self.assertNotEqual(closed,middle);self.assertNotEqual(middle,opened)
             self.assertEqual(tile.spread,1)
             self.assertEqual({ref:card.cacheKey() for ref,card in tile._mini_cards.items()},keys)
-            tile.set_spread(False);tile.spread_animation.setCurrentTime(160)
+            tile.set_spread(False);tile.spread_animation.setCurrentTime(tile.spread_animation.duration())
             self.assertEqual(tile.spread,0);self.assertEqual(pixels(tile),closed)
 
     def test_reversal_keeps_presented_fraction_and_hidden_resets(self):
@@ -137,8 +137,8 @@ class StackSpreadTests(unittest.TestCase):
                 self.assertEqual(tile.spread_animation.state(),tile.spread_animation.State.Stopped)
             tile.set_stack(self.shelf.content,self.paths[:2]);tile.landing.stop();tile.arrival=1
             self.assertEqual(tile.spread_animation.state(),tile.spread_animation.State.Running)
-            tile.spread_animation.setCurrentTime(160);self.assertEqual(tile.spread,1)
-            tile.set_stack(self.shelf.content,self.paths[:1]);tile.removal.setCurrentTime(200);tile.spread_animation.setCurrentTime(160)
+            tile.spread_animation.setCurrentTime(tile.spread_animation.duration());self.assertEqual(tile.spread,1)
+            tile.set_stack(self.shelf.content,self.paths[:1]);tile.removal.setCurrentTime(200);tile.spread_animation.setCurrentTime(tile.spread_animation.duration())
             self.assertEqual(tile.spread,0)
 
     def test_reduced_motion_and_colored_stack_use_the_same_api(self):

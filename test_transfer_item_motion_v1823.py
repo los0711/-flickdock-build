@@ -117,7 +117,9 @@ class TransferRemovalTests(unittest.TestCase):
         self.panel._history_reveal_pending=(pending,self.paths[0]);old_rows[0].remove_button.click()
         self.assertEqual(self.panel._history,records[1:]);self.assertIsNone(self.panel._history_reveal_pending)
         self.assertEqual(len(json.loads(self.panel._history_path.read_text())),3)
-        self.assertTrue(all(not row.isVisible() for row in old_rows));flush()
+        self.assertFalse(old_rows[0].isVisible())
+        self.assertEqual(self.panel.history_rows,old_rows[1:])
+        self.assertTrue(all(row.isVisible() for row in old_rows[1:]));flush()
         motion=self.panel.history_motion;self.assertEqual(len(motion.ghosts),1);self.assertEqual(motion.ghosts[0]['style'],'slide')
         survivor=self.panel.history_rows[0];self.assertEqual(survivor.record_identity,id(records[1]));self.assertTrue(motion.moves)
         effect=survivor.graphicsEffect();self.assertEqual(QPointF(survivor.mapTo(self.panel,QPoint()))+effect.motion_offset,QPointF(old))
@@ -149,6 +151,35 @@ class TransferRemovalTests(unittest.TestCase):
         self.assertEqual(json.loads(self.panel._history_path.read_text()),[])
         self.assertLessEqual(len(motion.ghosts),6);motion.animation.setCurrentTime(motion.duration);flush()
         self.assertFalse(motion.moves);self.assertFalse(motion.ghosts);self.assertFalse(motion.layer.isVisible())
+
+    def test_history_survivors_keep_objects_text_group_height_and_bottom_scroll_anchor(self):
+        from wan_transfer import WanTransferService
+        wan=WanTransferService(self.base/'wan',enabled=False)
+        try:
+            for service in (self.service,wan):
+                self.panel=self.dialog.set_service(service);self.history(12);p=self.panel;flush()
+                bar=p.history_scroll.verticalScrollBar();bar.setValue(bar.maximum());flush()
+                before=list(p.history_rows);texts=[(w.detail.accessibleName(),w.title.accessibleName()) for w in before]
+                geometry=p.recent_group.geometry();first=before[0];first.remove_button.click();flush()
+                for _ in range(4):flush()
+                self.assertEqual(p.history_rows,before[1:])
+                self.assertEqual([(w.detail.accessibleName(),w.title.accessibleName()) for w in p.history_rows],texts[1:])
+                self.assertEqual(p.recent_group.geometry(),geometry)
+                self.assertEqual(bar.value(),bar.maximum())
+                # Reused buttons resolve their live record identity, never an
+                # obsolete index captured before the previous row disappeared.
+                p.history_rows[2].remove_button.click();flush()
+                self.assertEqual(p.history_rows,before[1:3]+before[4:])
+        finally:wan.close();wan.deleteLater();flush()
+
+    def test_clear_staggers_every_visible_history_row_beyond_five(self):
+        with patch('window_chrome.WindowChrome._available',return_value=QRect(0,0,1600,1600)):
+            self.dialog.resize(1250,1400);flush();self.history(12)
+            self.panel.clear_history.click();flush();motion=self.panel.history_motion
+            delays=[ghost['delay'] for ghost in motion.ghosts]
+            self.assertGreater(len(delays),5)
+            self.assertEqual(delays,list(range(0,len(delays)*24,24)))
+            self.assertEqual(motion.animation.duration(),motion.duration+delays[-1])
 
     def test_failed_history_save_retains_record_and_does_not_start_animation(self):
         records=self.history();rows=list(self.panel.history_rows)

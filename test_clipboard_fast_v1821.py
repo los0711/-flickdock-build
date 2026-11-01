@@ -129,9 +129,9 @@ class ClipboardFastTests(unittest.TestCase):
     def test_temporarily_unreadable_native_copy_keeps_sequence_for_retry(self):
         sender=self.clients[0];until(lambda:not sender._fetching)
         sender._sequence=lambda:12;sender._last_sequence=11
-        self.clips[0].text('delayed native rendering')
         original=self.clips[0].mimeData
         with patch.object(self.clips[0],'mimeData',return_value=None):
+            self.clips[0].text('delayed native rendering')
             sender._changed()
             self.assertEqual(sender._last_sequence,11);self.assertTrue(sender.change_debounce.isActive())
         sender._changed()

@@ -707,6 +707,19 @@ class _HistoryRow(QFrame):
         self.remove_button.clicked.connect(self.remove_requested.emit)
         layout.addWidget(self.remove_button, 0, Qt.AlignmentFlag.AlignVCenter)
 
+    def update_record(self,record):
+        peer=record['peer'].strip() or '未知设备';state=record['state']
+        name=record['name'].strip() or '文件传输';count=record.get('count')
+        if isinstance(count,int) and count>0:name=f'{name} · {count} 项'
+        error=str(record.get('error') or '')[:600]
+        transport=(' · '+_turn_usage(record.get('relay_bytes')) if record.get('route')=='relay' or record.get('relay_bytes',0)>0 else ' · P2P' if record.get('route')=='direct' else '')
+        self.detail.setText(name);self.title.setText((error or peer+' · '+record['when'])+transport)
+        self.title.setToolTip(error);self.setAccessibleDescription(error)
+        self.state.setText('已完成' if state=='完成' else state);self.when.setText(record['when'])
+        self.reveal_button.setEnabled(bool(record.get('paths')))
+        self.reveal_button.setToolTip('在文件夹中显示' if record.get('paths') else '此记录没有保存文件位置')
+        self.reveal_button.setAccessibleName('在文件夹中显示 '+name)
+
 
 class LanPanel(QFrame):
     """Overview's transfer surface. start() remains the owner's explicit decision.
@@ -1030,31 +1043,46 @@ class LanPanel(QFrame):
     def _render_history(self, *, preserve_motion=False):
         self.clear_history.setVisible(bool(self._history))
         if not preserve_motion:self.history_motion.cancel()
-        for widget in self.history_rows:
-            self.history_layout.removeWidget(widget)
-            widget.hide();widget.deleteLater()
-        self.history_rows.clear()
-        for separator in self.history_separators:
-            self.history_layout.removeWidget(separator)
-            separator.hide();separator.deleteLater()
-        self.history_separators.clear()
+        rows={widget.record_identity:widget for widget in self.history_rows}
+        separators=getattr(self,'_history_separator_map',{})
+        records=self._history[:12];wanted={id(record) for record in records}
+        for key,widget in rows.items():
+            if key not in wanted:
+                self.history_layout.removeWidget(widget);widget.hide();widget.deleteLater()
+        separator_keys={id(record) for record in records[1:]}
+        for key,separator in tuple(separators.items()):
+            if key not in separator_keys:
+                self.history_layout.removeWidget(separator);separator.hide();separator.deleteLater();del separators[key]
+        current=[];ordered=[]
         self.history_label.setVisible(not self._history)
-        for index, record in enumerate(self._history[:12]):
+        for index,record in enumerate(records):
+            key=id(record)
             if index:
-                separator = QFrame(self.history_body)
-                separator.setObjectName('lanHistoryDivider')
-                separator.setFixedHeight(1)
-                self.history_layout.addWidget(separator)
-                self.history_separators.append(separator)
-            widget = _HistoryRow(record, self.history_body)
-            widget.record_identity=id(record)
-            widget.icon.dark = self._dark
-            widget.remove_button.dark = self._dark
-            widget.reveal_button.dark = self._dark
-            widget.reveal_requested.connect(lambda record=record:self._reveal_history(record))
-            widget.remove_requested.connect(lambda i=index: self._delete_history_record(i))
-            self.history_layout.addWidget(widget)
-            self.history_rows.append(widget);widget.show()
+                separator=separators.get(key)
+                if separator is None:
+                    separator=QFrame(self.history_body);separator.setObjectName('lanHistoryDivider');separator.setFixedHeight(1)
+                    separators[key]=separator
+                ordered.append(separator)
+            widget=rows.get(key)
+            if widget is None:
+                widget=_HistoryRow(record,self.history_body);widget.record_identity=key
+                widget.icon.dark=self._dark;widget.remove_button.dark=self._dark;widget.reveal_button.dark=self._dark
+                widget.reveal_requested.connect(lambda record=record:self._reveal_history(record))
+                widget.remove_requested.connect(lambda record=record:self._delete_history_identity(record))
+                widget.ensurePolished();widget.layout().activate()
+            elif getattr(widget,'_history_record_snapshot',None)!=record:widget.update_record(record)
+            widget._history_record_snapshot=dict(record)
+            ordered.append(widget);current.append(widget)
+        for index,widget in enumerate(ordered,1):
+            if self.history_layout.indexOf(widget)!=index:self.history_layout.insertWidget(index,widget)
+            if widget.isHidden():widget.show()
+        self.history_rows=current;self._history_separator_map=separators
+        self.history_separators=[separators[id(record)] for record in records[1:]]
+        self.history_layout.activate();self.history_body.updateGeometry()
+
+    def _delete_history_identity(self,record):
+        index=next((index for index,current in enumerate(self._history) if current is record),-1)
+        if index>=0:self._delete_history_record(index)
 
     def _reveal_history(self,record):
         paths=record.get('paths')
@@ -1831,6 +1859,7 @@ class LanDialog(QDialog):
         self.mode_bar.setFixedHeight(50)
         mode_row=QVBoxLayout(self.mode_bar);mode_row.setContentsMargins(20,8,20,8);mode_row.setSpacing(4)
         self.mode_segment=QFrame(self.mode_bar);self.mode_segment.setObjectName('transferModeSegmentGroup')
+        self.mode_segment.setProperty('brandSegment',True)
         self.mode_segment.setFixedHeight(34)
         self.mode_segment.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
         self.mode_segment.setAccessibleName('传输方式')
@@ -2007,8 +2036,8 @@ class LanDialog(QDialog):
             QPushButton#lanDialogBack {{background:{c['control']};border:1px solid {c['border']};padding:0 10px;min-height:0;}}
             QFrame#transferModeSegmentGroup {{background:{'rgba(255,255,255,10)' if dark else 'rgba(0,0,0,10)'};border:1px solid {'rgba(255,255,255,18)' if dark else 'rgba(0,0,0,18)'};border-radius:9px;}}
             QPushButton#transferModeSegment {{background:transparent;color:{c['secondary']};border:0;border-radius:5px;padding:0 10px;font:11px '{font_family}';}}
-            QPushButton#transferModeSegment:hover {{background:{hover};}}
-            QPushButton#transferModeSegment:checked {{background:transparent;color:{ink};font-weight:600;}}
+            QPushButton#transferModeSegment:!checked:hover {{background:{'rgba(255,255,255,8)' if dark else 'rgba(0,0,0,5)'};color:{ink};}}
+            QPushButton#transferModeSegment:checked {{background:transparent;color:{c['link']};font-weight:600;}}
             QPushButton#lanDialogClose:hover {{ background:{c['red']}; color:white; }}
             QPushButton#lanDialogBack:hover {{ background:{hover}; color:{ink}; }}
         ''')

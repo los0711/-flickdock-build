@@ -113,7 +113,7 @@ class TransferItemMotion(QObject):
         for key,widget in widgets.items():
             rect=positions.get(key)
             if rect is None or not isValid(widget) or not widget.isVisible():continue
-            delay=min(sum(1 for ghost in self.ghosts if ghost.get('batch')==self.generation)*24,96) if stagger else 0
+            delay=sum(1 for ghost in self.ghosts if ghost.get('batch')==self.generation)*24 if stagger else 0
             self.ghosts.append(dict(pixmap=widget.grab(),rect=QRectF(rect),clip=QRectF(clip),style=style,alpha=1.,scale=1.,delay=delay,batch=self.generation))
         self.ghosts=self.ghosts[-self.max_ghosts:]
 

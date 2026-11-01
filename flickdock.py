@@ -1904,11 +1904,15 @@ class ShelfWindow(QWidget):
         count=len(self.display_refs())
         if not count or confirmation_active(self): return False
         self.geometry_morph.complete()
-        dialog=ClearConfirmOverlay(self.card,count,font_family=FONT_FAMILY,theme=self.manager.settings.theme)
+        dialog=getattr(self,'_clear_overlay',None)
+        if dialog is None:
+            dialog=ClearConfirmOverlay(self.card,count,font_family=FONT_FAMILY,theme=self.manager.settings.theme)
+            self._clear_overlay=dialog
+        else:dialog.configure(count,font_family=FONT_FAMILY,theme=self.manager.settings.theme)
         self._clear_confirmation=dialog
         self.touch()
         try: confirmed=dialog.exec()
-        finally:self._clear_confirmation=None;dialog.deleteLater();self.touch()
+        finally:self._clear_confirmation=None;self.touch()
         if confirmed: self.remove_all('permanent')
         return confirmed
 

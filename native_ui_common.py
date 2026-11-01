@@ -13,7 +13,7 @@ from time import perf_counter
 from collections import OrderedDict
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QEasingCurve, QEvent, QObject, QPointF, QRectF, QSize, Qt, QVariantAnimation, QTranslator
+from PySide6.QtCore import QByteArray, QEasingCurve, QEvent, QObject, QPointF, QRectF, QSize, Qt, QVariantAnimation, QTranslator, QTimer
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QIconEngine, QPainter, QPainterPath, QPen, QPixmap, QRegion
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QApplication, QAbstractButton, QHBoxLayout, QLabel, QPushButton, QWidget
@@ -25,6 +25,80 @@ WINDOWS_FONT_STACK=('HarmonyOS Sans SC','Segoe UI Variable Text','Segoe UI','Not
 SEGMENT_HEIGHT=28
 SEGMENT_INSET=2
 SEGMENT_BUTTON_HEIGHT=22
+
+
+class ScreenAnimationTimer(QTimer):
+    """Raster feedback follows its window's screen, not a fixed 60 Hz cap.
+
+    Qt coalesces QWidget updates at presentation. Integer timer resolution is
+    rounded down so a 144/165/240 Hz screen isn't artificially under-driven.
+    This is a wake cadence, not a claim that DWM/Cocoa presents every wake.
+    Existing owners still stop their finite clocks when hidden or settled.
+    """
+    def __init__(self,parent,anchor=None):
+        super().__init__(parent);self.anchor=anchor;self._screen=None;self._handle=None
+        self._watched=();self._bind_pending=False;self._started_once=False
+        self.setTimerType(Qt.PreciseTimer);self.setInterval(16)
+        self._watch_owner()
+        from PySide6.QtGui import QGuiApplication
+        app=QGuiApplication.instance()
+        if app is not None:
+            app.screenAdded.connect(self._queue_bind);app.screenRemoved.connect(self._queue_bind)
+
+    def _watch_owner(self):
+        from shiboken6 import isValid
+        widget=self.anchor or self.parent()
+        while widget is not None and not isinstance(widget,QWidget):widget=widget.parent()
+        wanted=tuple(dict.fromkeys((widget,widget.window()))) if widget is not None and isValid(widget) else ()
+        if wanted!=self._watched:
+            for old in self._watched:
+                if isValid(old):old.removeEventFilter(self)
+            self._watched=wanted
+            for current in wanted:current.installEventFilter(self)
+        return widget
+
+    def _queue_bind(self,*_):
+        if not self._started_once or self._bind_pending:return
+        self._bind_pending=True;QTimer.singleShot(0,self,self._late_bind)
+
+    def _late_bind(self):
+        self._bind_pending=False;self._bind()
+
+    def eventFilter(self,watched,event):
+        if (event.type() in (QEvent.Show,QEvent.WinIdChange,QEvent.ParentChange,QEvent.PlatformSurface)
+                or self._handle is None and event.type()==QEvent.Move):self._queue_bind()
+        return False
+
+    def _bind(self,*_):
+        from PySide6.QtGui import QGuiApplication
+        from shiboken6 import isValid
+        widget=self._watch_owner()
+        handle=widget.window().windowHandle() if widget is not None and isValid(widget) else None
+        if handle is not self._handle:
+            if self._handle is not None and isValid(self._handle):
+                try:self._handle.screenChanged.disconnect(self._bind)
+                except (RuntimeError,TypeError):pass
+            self._handle=handle
+            if handle is not None:handle.screenChanged.connect(self._bind)
+        screen=handle.screen() if handle is not None else widget.screen() if widget is not None and isValid(widget) else QGuiApplication.primaryScreen()
+        if screen is not self._screen:
+            if self._screen is not None and isValid(self._screen):
+                try:self._screen.refreshRateChanged.disconnect(self._repace)
+                except (RuntimeError,TypeError):pass
+            self._screen=screen
+            if screen is not None:screen.refreshRateChanged.connect(self._repace)
+        self._repace()
+
+    def _repace(self,*_):
+        import math
+        from shiboken6 import isValid
+        hz=self._screen.refreshRate() if self._screen is not None and isValid(self._screen) else 60.
+        if not math.isfinite(hz) or hz<=0:hz=60.
+        interval=max(1,math.floor(1000./hz))
+        if interval!=self.interval():self.setInterval(interval)
+
+    def start(self,*_):
+        self._started_once=True;self._bind();super().start()
 
 
 class _RoundedPopupClip(QObject):

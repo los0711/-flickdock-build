@@ -33,7 +33,7 @@ class ClipboardFileJobs(QObject):
         self.reset(load=True)
 
     def valid(self,task):
-        return (not self.client.closed and self.client.account.signed_in
+        return (self.client.enabled and not self.client.closed and self.client.account.signed_in
                 and task.get('_session')==self.client._identity
                 and self.tasks.get(task.get('id')) is task
                 and time.time()-task['created_at']<86400)
@@ -77,6 +77,18 @@ class ClipboardFileJobs(QObject):
     def supersede(self):
         for identity,task in tuple(self.tasks.items()):
             if not self.held(task) and not task.get('releases'):self.tasks.pop(identity,None)
+        self.save()
+
+    def suspend(self):
+        """Stop this protocol without abandoning durable server hold cleanup."""
+        self.retry.stop()
+        for task in self.tasks.values():
+            # A holder now falls back to its shelf's independent upload. On
+            # re-enable only release these old references; never restage the
+            # old clipboard just because its journal was reloaded.
+            holders=task.setdefault('holders',{})
+            task.setdefault('releases',{}).update({identity:True for identity in holders})
+            holders.clear();task['_probes']=0;task.get('_hold_tokens',{}).clear()
         self.save()
 
     def expire(self):
@@ -182,6 +194,8 @@ class ClipboardFileJobs(QObject):
         task['_file_retry_at']=time.monotonic()+5;self.retry.start(5001)
 
     def _retry(self):
+        if not self.client.enabled or self.client.closed:
+            self.retry.stop();return
         later=False
         for task in tuple(self.tasks.values()):
             if self.valid(task) and task.get('releases'):
@@ -196,8 +210,9 @@ class ClipboardFileJobs(QObject):
             else:self._restore(task)
         if later:self.retry.start(1000)
 
-    def claim(self,ref,item_id,callback):
+    def claim(self,ref,item_id,callback,*,guard=None):
         """Return whether matching is in progress; acknowledge a real hold."""
+        if guard is not None and not guard():return False
         try:stamp=file_stamp(ref)
         except OSError:return False
         if stamp is None:return False
@@ -206,7 +221,7 @@ class ClipboardFileJobs(QObject):
         if not candidates:return False
         exact=next((task for task in candidates if os.path.normcase(os.path.abspath(ref))==
                     os.path.normcase(os.path.abspath(task['file_source'])) and task['source_stat']==stamp),None)
-        if exact:self._hold(exact,ref,item_id,callback);return True
+        if exact:self._hold(exact,ref,item_id,callback,guard=guard);return True
         prepared=[task for task in candidates if (task.get('package') or {}).get('raw_file')]
         if not prepared:return False
         for task in prepared:task['_probes']=task.get('_probes',0)+1
@@ -218,33 +233,45 @@ class ClipboardFileJobs(QObject):
                     value.update(chunk)
             return value.hexdigest() if file_stamp(ref)==stamp else None
         def matched(value):
+            if guard is not None and not guard():
+                for row in prepared:row['_probes']=max(0,row.get('_probes',0)-1)
+                return
             task=next((row for row in prepared if self.valid(row) and row['package']['raw_file']['sha256']==value),None)
             # Register a real local consumer before removing the temporary
             # hashing fence, so a newer copy cannot cancel this file task.
-            if task:self._hold(task,ref,item_id,callback)
+            if task:self._hold(task,ref,item_id,callback,guard=guard)
             for row in prepared:row['_probes']=max(0,row.get('_probes',0)-1)
             if task is None:callback(None)
         job=self.client._work(digest,matched);job._shared_probe=True
         return True
 
-    def _hold(self,task,ref,item_id,callback):
+    def _hold(self,task,ref,item_id,callback,*,guard=None,token=None):
+        if not self.valid(task) or guard is not None and not guard():return
+        tokens=task.setdefault('_hold_tokens',{})
+        if token is None:token=object();tokens[item_id]=token
+        elif tokens.get(item_id) is not token:return
+        def retry_hold():
+            if (not self.valid(task) or tokens.get(item_id) is not token
+                    or guard is not None and not guard()):return
+            if item_id in task['holders']:self._hold(task,ref,item_id,callback,guard=guard,token=token)
+            else:callback(None)
         task['holders'][item_id]=ref;self.save()
         if item_id in task.get('releases',{}):
-            QTimer.singleShot(1000,self,lambda:self._hold(task,ref,item_id,callback)
-                              if self.valid(task) and item_id in task['holders'] else callback(None))
+            QTimer.singleShot(1000,self,retry_hold)
             return
         if task.get('_journal_error'):
-            task['holders'].pop(item_id,None);callback(None);return
+            task['holders'].pop(item_id,None);tokens.pop(item_id,None);callback(None);return
         def held(result,error):
+            if (not self.valid(task) or tokens.get(item_id) is not token
+                    or guard is not None and not guard()):return
             if error and getattr(error,'status',0) not in (400,401,403,404,410,426):
                 task['_hold_error']=str(error)
                 # The server may already have reserved the id. Retry this
                 # idempotent hold; do not start a second payload on uncertainty.
-                QTimer.singleShot(5000,self,lambda:self._hold(task,ref,item_id,callback)
-                                  if self.valid(task) and item_id in task['holders'] else callback(None))
+                QTimer.singleShot(5000,self,retry_hold)
                 return
             if error or not isinstance(result,dict) or not result.get('retained') or not result.get('shared_files'):
-                task['holders'].pop(item_id,None);self.save();callback(None);return
+                task['holders'].pop(item_id,None);tokens.pop(item_id,None);self.save();callback(None);return
             if not self.valid(task):return
             task.pop('_hold_error',None)
             task['shared_files']=True;self.save();callback(task)
@@ -255,8 +282,17 @@ class ClipboardFileJobs(QObject):
         task=self.tasks.get(identity)
         if task is None or item_id not in task.get('holders',{}) and item_id not in task.get('releases',{}):return
         first=item_id not in task.get('releases',{})
-        if first:task['holders'].pop(item_id,None)
+        if first:
+            task['holders'].pop(item_id,None);task.get('_hold_tokens',{}).pop(item_id,None)
         task.setdefault('releases',{})[item_id]=True;self.save()
+        if not self.held(task) and self.client._pending is not task:
+            # Stop an old payload as soon as its final shelf consumer leaves,
+            # while preserving the idempotent release control request below.
+            for key in tuple(task.get('_keys',set())-task.get('_release_keys',set())):
+                self.client._keys.discard(key);self.client.api.cancel(key)
+            job=task.get('_job')
+            if job is not None:job.cancelled.set()
+        if not self.client.enabled or self.client.closed:return
         inflight=task.setdefault('_release_inflight',set())
         if item_id in inflight or task.get('_release_retry',{}).get(item_id,0)>time.monotonic():
             self.retry.start(5001);return
@@ -291,6 +327,8 @@ class ShelfClipboardBridge(QObject):
 
     def reset(self):
         self.linking.clear();self.probing.clear();self.retry_at.clear();self.misses.clear();self.retry.stop()
+        # ShelfSync sets its new directions just after resetting this bridge.
+        QTimer.singleShot(0,self,self.reconcile)
 
     def _match_key(self,entry):
         candidates=tuple(sorted((identity,(task.get('package') or {}).get('raw_file',{}).get('sha256',''),
@@ -302,13 +340,15 @@ class ShelfClipboardBridge(QObject):
         if not self.owner.closed:self.owner._notify_transfers();self.reconcile()
 
     def _active(self):
-        return (not self.owner.closed and self.owner.state is not None and self.owner.service.signed_in
+        return (self.client.enabled and not self.client.closed and not self.owner.closed and self.owner.upload_enabled and self.owner.state is not None and self.owner.service.signed_in
                 and self.owner.account_id==(self.client._identity or ('',))[0])
 
     def reconcile(self):
-        if not self._active():return
+        if not self._active():
+            self._detach_paused();return
         owner=self.owner;entries=owner.state['entries'];state=owner.state
-        self.linking={identity:epoch for identity,epoch in self.linking.items() if epoch==owner.epoch}
+        self.linking={identity:stamp for identity,stamp in self.linking.items()
+                      if stamp==(owner.epoch,self.client._epoch)}
         for entry in tuple(entries.values()):
             identity=entry['id'];shared=entry.get('shared_clipboard')
             if entry.get('deleted') or entry.get('paused_upload') or not entry.get('dirty'):
@@ -329,22 +369,44 @@ class ShelfClipboardBridge(QObject):
                     or self.retry_at.get(identity,0)>time.monotonic()):continue
             match_key=self._match_key(entry)
             if self.misses.get(identity)==match_key:continue
-            self.probing.add(identity);seq=entry['seq']
-            def claimed(task,entry=entry,identity=identity,seq=seq,state=state,match_key=match_key):
+            self.probing.add(identity);seq=entry['seq'];epoch=owner.epoch;client_epoch=self.client._epoch
+            def valid_claim(entry=entry,identity=identity,seq=seq,state=state,epoch=epoch,client_epoch=client_epoch):
+                return (self._active() and owner.epoch==epoch and self.client._epoch==client_epoch and owner.state is state
+                        and state['entries'].get(identity) is entry and entry['seq']==seq
+                        and not entry.get('deleted') and not entry.get('paused_upload'))
+            def claimed(task,entry=entry,identity=identity,seq=seq,state=state,match_key=match_key,epoch=epoch,client_epoch=client_epoch):
+                if owner.epoch!=epoch or self.client._epoch!=client_epoch:return
                 self.probing.discard(identity)
-                valid=(self._active() and owner.state is state and state['entries'].get(identity) is entry
+                valid=(self._active() and owner.epoch==epoch and owner.state is state and state['entries'].get(identity) is entry
                        and entry['seq']==seq and not entry.get('deleted') and not entry.get('paused_upload'))
                 if task and valid:entry['shared_clipboard']=task['id'];owner._persist()
                 elif task:self.files.release(task['id'],identity)
                 elif valid:self.misses[identity]=match_key
                 owner._notify_transfers();owner.debounce.start(1)
                 if task and valid and task.get('_file_phase')=='ready':self._link(entry,task)
-            if not self.files.claim(entry['ref'],identity,claimed):
+            if not self.files.claim(entry['ref'],identity,claimed,guard=valid_claim):
                 self.probing.discard(identity);self.misses[identity]=match_key
 
-    def waiting(self,entry):return entry['id'] in self.probing or bool(entry.get('shared_clipboard'))
+    def _detach_paused(self):
+        owner=self.owner
+        if (owner.closed or owner.state is None or
+                owner.account_id!=(self.client._identity or ('',))[0]):return
+        if self.client.enabled and owner.upload_enabled:return
+        changed=False
+        for entry in owner.state['entries'].values():
+            identity=entry['id'];shared=entry.pop('shared_clipboard',None)
+            if shared or identity in self.probing:changed=True
+            for task in tuple(self.files.tasks.values()):
+                if identity in task.get('holders',{}):self.files.release(task['id'],identity)
+        self.linking.clear();self.probing.clear();self.retry_at.clear();self.misses.clear();self.retry.stop()
+        if changed:
+            owner._persist();owner._notify_transfers()
+            if owner.upload_enabled and owner.service.signed_in:owner.debounce.start(1)
+
+    def waiting(self,entry):return self._active() and (entry['id'] in self.probing or bool(entry.get('shared_clipboard')))
 
     def progress(self,entry):
+        if not self._active():return None
         task=self.files.tasks.get(entry.get('shared_clipboard'))
         if task is None:return None
         raw=(task.get('package') or {}).get('raw_file') or {}
@@ -353,6 +415,7 @@ class ShelfClipboardBridge(QObject):
                     message=task.get('_file_error',''))
 
     def _link(self,entry,task):
+        if not self._active():return
         identity=entry['id'];owner=self.owner
         if identity in self.linking or self.retry_at.get(identity,0)>time.monotonic():return
         raw=(task.get('package') or {}).get('raw_file')
@@ -362,11 +425,11 @@ class ShelfClipboardBridge(QObject):
             # The immutable clipboard snapshot must never be committed as the
             # shelf's new file after its local source changed during upload.
             owner.local_changed();return
-        seq=entry['seq'];version=entry.get('version',0);self.linking[identity]=owner.epoch
+        seq=entry['seq'];version=entry.get('version',0);stamp=(owner.epoch,self.client._epoch);self.linking[identity]=stamp
         receipt=entry.get('intake_id') or str(uuid4());state=owner.state;epoch=owner.epoch
         def linked(result,error):
-            self.linking.pop(identity,None)
-            if owner.closed or state is not owner.state or owner.epoch!=epoch:return
+            if self.linking.get(identity)==stamp:self.linking.pop(identity,None)
+            if not self._active() or state is not owner.state or (owner.epoch,self.client._epoch)!=stamp:return
             record=(result or {}).get('record') if isinstance(result,dict) else None
             if error or not isinstance(result,dict) or result.get('instant') is not True or not isinstance(record,dict) or (
                     record.get('id')!=identity or record.get('version')!=version+1

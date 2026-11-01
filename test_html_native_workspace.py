@@ -139,7 +139,9 @@ class WorkspaceTests(unittest.TestCase):
             text_width=control.fontMetrics().horizontalAdvance(control.text())
             icon_width=control.iconSize().width()+4 if not control.icon().isNull() else 0
             self.assertGreaterEqual(control.width(),text_width+icon_width+10,control.text())
-            self.assertGreaterEqual(control.height(),control.fontMetrics().height()+4,control.text())
+            content_height=max(control.fontMetrics().height() if control.text() else 0,
+                               control.iconSize().height() if not control.icon().isNull() else 0)
+            self.assertGreaterEqual(control.height(),content_height+4,control.accessibleName())
         for control in (popup.lan_nav,popup.settings_nav):
             image=control.grab().toImage();ratio=image.devicePixelRatio()
             # The text after the 16px icon must start at the left inset,

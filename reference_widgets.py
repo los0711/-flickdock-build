@@ -677,8 +677,8 @@ class MiniStack(StackTile):
     def _mini_transform(self,ref,pose):
         dy,scale,angle,_opacity,depth=pose;center=QPointF(self.width()/2,self.height()/2);v=self.spring.values
         transform=QTransform();transform.translate(center.x(),center.y()+v['y']);transform.scale(v['sx'],v['sy']);transform.translate(-center.x(),-center.y())
-        transform.translate(center.x()-depth*4*self.spread,center.y()+dy-depth*self.spread)
-        transform.rotate(angle-depth*.8*self.spread);transform.scale(scale,scale);transform.translate(-96,-64)
+        transform.translate(center.x()-depth*5.25*self.spread,center.y()+dy+(3-depth*1.25)*self.spread)
+        transform.rotate(angle+(1.3 if depth==0 else -depth*1.05)*self.spread);transform.scale(scale,scale);transform.translate(-96,-64)
         if self.refs and ref==self.refs[-1]:transform.translate(0,-18*(1-self.arrival))
         return transform
 

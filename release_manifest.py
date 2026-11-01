@@ -51,6 +51,8 @@ RUNTIME_SOURCES=(
     'wan_transfer.py','webrtc_stream.py','nearby_transport.py','verify_wan.py','windows_network.py',
 )
 MAINTAINED_TESTS=(
+    'test_clipboard_loop_v1824.py','test_screen_animation_timer_v1824.py',
+    'test_sync_switch_lifecycle_v1824.py','test_user_popup_fixes_v1823.py',
     'test_dynamic_reduce_motion_v1823.py','test_dynamic_reduce_surfaces_v1823.py','test_menu_dynamic_reduce_v1823.py',
 
     'test_mac_status_drop_v1823.py',
@@ -101,6 +103,9 @@ MAINTAINED_TESTS=(
     'test_remote_transfer_actions_v1812.py','test_wan_transfer_v1816.py',
 )
 SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
+    '.github/workflows/packaged-windows-live.yml',
+    'qa/packaged-live/ci_packaged_windows_live.py','qa/packaged-live/native_editor.py',
+    'qa/packaged-live/gateway.mjs','qa/packaged-live/verify_frozen_source.py','qa/packaged-live/ui-actions.json',
 
     '.github/workflows/native-clipboard.yml','ci_clipboard_origin.py','ci_transfer_navigation.py',
     'FlickDock.spec','FlickDock.iss','version_info.txt','ChineseSimplified.isl','windows-network.ps1',

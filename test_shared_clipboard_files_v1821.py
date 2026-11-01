@@ -147,6 +147,30 @@ class SharedFilesTests(unittest.TestCase):
         self.assertEqual(len(self.peer.puts),1);self.assertEqual(self.peer.payload_bytes,path.stat().st_size)
         self.assertEqual(len(self.peer.objects),1);self.assertEqual(self.peer.objects[identity]['bytes'],path.read_bytes())
 
+    def test_upload_disabled_does_not_start_clipboard_shelf_retain_or_link(self):
+        path=self.source();identity=self.copy(path);until(lambda:identity in self.peer.held)
+        self.peer.finish(identity);until(lambda:self.client._pending is None)
+        self.engine.set_directions(False,False);before=len(self.peer.calls)
+        entry=self.add(path);flush()
+        self.assertTrue(entry['dirty']);self.assertNotIn('shared_clipboard',entry)
+        self.assertFalse(any('/retain' in row[1] or row[1]=='/v1/uploads' for row in self.peer.calls[before:]))
+
+    def test_late_retain_reply_cannot_bypass_disabled_shelf_upload(self):
+        path=self.source();identity=self.copy(path);until(lambda:identity in self.peer.held)
+        self.peer.finish(identity);until(lambda:self.client._pending is None)
+        original=self.peer.request;delayed=[]
+        def request(method,path,callback,**options):
+            if path.endswith('/retain'):
+                return original(method,path,lambda result,error:delayed.append(lambda:callback(result,error)),**options)
+            return original(method,path,callback,**options)
+        with patch.object(self.peer,'request',side_effect=request):
+            entry=self.add(path);until(lambda:bool(delayed))
+            self.engine.set_directions(False,False);before=len(self.peer.calls)
+            delayed.pop()();flush()
+        self.assertTrue(entry['dirty']);self.assertNotIn('shared_clipboard',entry)
+        self.assertFalse(any(row[1]=='/v1/uploads' for row in self.peer.calls[before:]))
+        self.assertEqual(self.peer.items,{})
+
     def test_completed_copy_links_without_second_payload_and_survives_clipboard_replace(self):
         path=self.source();identity=self.copy(path);until(lambda:identity in self.peer.held)
         self.peer.finish(identity);until(lambda:self.client._pending is None)

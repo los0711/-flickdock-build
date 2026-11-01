@@ -18,7 +18,8 @@ class DropTargetMotion(QObject):
         self.changed=changed;self.hovered=False;self.dragged=False;self.value=0.;self.phase=0.
         self._from=0.;self._target=0.;self._started=perf_counter();self._last=self._started;self._point=None;self._reduced=False
         from ui_transitions import exit_curve
-        self.curve=exit_curve();self.timer=QTimer(self);self.timer.setInterval(16);self.timer.timeout.connect(self._tick)
+        from native_ui_common import ScreenAnimationTimer
+        self.curve=exit_curve();self.timer=ScreenAnimationTimer(self);self.timer.timeout.connect(self._tick)
         owner.installEventFilter(self)
         if self.pointer_source is not owner:self.pointer_source.installEventFilter(self)
         self.pointer_source.setMouseTracking(True)

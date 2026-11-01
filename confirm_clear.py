@@ -6,13 +6,14 @@ those presentation caches from capturing confirmation pixels.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QEventLoop, QPoint, QRect, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QEventLoop, QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal, QVariantAnimation
 from PySide6.QtGui import QColor, QFont, QPainter
 from PySide6.QtWidgets import (QApplication, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel,
                                QPushButton, QSizePolicy, QVBoxLayout, QWidget)
 from shiboken6 import isValid
 from native_ui_common import colors as ui_colors
 from flickdock_icons import draw_glyph
+from ui_transitions import WindowFade, exit_curve, motion_allowed
 
 
 MODAL_PROPERTY = "flickdockConfirmationActive"
@@ -74,6 +75,50 @@ class _TrashMark(QLabel):
         draw_glyph(painter,'trash',self.rect().adjusted(12,12,-12,-12),'#B8BAC2',1.8)
 
 
+class _PanelFade(WindowFade):
+    """Only the panel scales; the full-size scrim has a separate alpha."""
+    def _frame(self, value):
+        super()._frame(value)
+        owner=self.window.parentWidget()
+        if owner is not None:owner.update()
+
+
+class ClearExitGhost(QWidget):
+    """An immediate logical close with independently fading scrim and panel."""
+    def __init__(self, overlay):
+        super().__init__(overlay.owner)
+        self.setGeometry(overlay.geometry());self.snapshot=overlay.presentation.grab()
+        self.scrim_alpha=overlay._window_fade.alpha;self.radius=ui_colors(overlay._theme)['radius'];self.mix=0.
+        self.setAttribute(Qt.WA_TransparentForMouseEvents);self.setAttribute(Qt.WA_NoSystemBackground);self.setFocusPolicy(Qt.NoFocus)
+        self.animation=QVariantAnimation(self);self.animation.setDuration(160);self.animation.setEasingCurve(exit_curve())
+        self.animation.valueChanged.connect(self._frame);self.animation.finished.connect(self.finish)
+        self.parentWidget().installEventFilter(self);overlay.card.installEventFilter(self)
+        self.show();self.raise_();self.animation.setStartValue(0.);self.animation.setEndValue(1.);self.animation.start()
+
+    def _frame(self, value):
+        if not motion_allowed():self.finish();return
+        self.mix=float(value);self.update()
+
+    def finish(self):
+        if not isValid(self):return
+        if isValid(self.animation):self.animation.stop()
+        self.hide();self.snapshot=None;self.deleteLater()
+
+    def eventFilter(self, watched, event):
+        if not isValid(self.animation):return False
+        if event.type() in (QEvent.Hide,QEvent.Close,QEvent.Move,QEvent.Resize):self.finish()
+        return False
+
+    def paintEvent(self, event):
+        if self.snapshot is None:return
+        p=QPainter(self);p.setRenderHint(QPainter.Antialiasing);p.setRenderHint(QPainter.SmoothPixmapTransform)
+        p.setPen(Qt.NoPen);p.setBrush(QColor(0,0,0,round(128*self.scrim_alpha*(1-self.mix))))
+        p.drawRoundedRect(QRectF(self.rect()),self.radius,self.radius)
+        p.setOpacity(1-self.mix);center=QRectF(self.rect()).center()
+        p.translate(center);p.scale(1-.03*self.mix,1-.03*self.mix);p.translate(-center)
+        p.drawPixmap(QPoint(),self.snapshot);p.end()
+
+
 class ClearConfirmOverlay(QWidget):
     """ClearConfirmOverlay(card,count,...).exec() -> bool.
 
@@ -112,7 +157,9 @@ class ClearConfirmOverlay(QWidget):
         self._theme = "dark" if theme == "dark" else "light"
         family = font_family or card.font().family()
 
-        self.panel = QFrame(self)
+        self.presentation=QWidget(self)
+        self.presentation.setAttribute(Qt.WA_NoSystemBackground)
+        self.panel = QFrame(self.presentation)
         self.panel.setObjectName("clearConfirmPanel")
         shadow = QGraphicsDropShadowEffect(self.panel)
         shadow.setBlurRadius(20)
@@ -178,8 +225,16 @@ class ClearConfirmOverlay(QWidget):
         self.apply_theme(self._theme)
         self.hide()
         self._layout_overlay()
-        from ui_transitions import WindowFade
-        self._window_fade=WindowFade(self)
+        self._window_fade=_PanelFade(self.presentation,automatic=False)
+
+    def configure(self, count, *, font_family=None, theme=None):
+        """Refresh the cached confirmation without replacing its widget tree."""
+        self.count=max(0,int(count));self.title.setText(f"清空全部 {self.count} 个项目？")
+        if font_family:
+            for widget in (self.title,self.description,self.cancel_button,self.delete_button):
+                font=widget.font();font.setFamily(font_family);widget.setFont(font)
+        if theme is not None:self.apply_theme(theme)
+        self._layout_overlay()
 
     @property
     def minimum_host_size(self):
@@ -207,6 +262,7 @@ class ClearConfirmOverlay(QWidget):
         if not self._owner_alive or not self._card_alive or not isValid(self.owner) or not isValid(self.card):
             return
         self.setGeometry(QRect(self.card.mapTo(self.owner, QPoint()), self.card.size()))
+        self.presentation.setGeometry(self.rect())
         hint = self.panel.layout().sizeHint()
         preferred = 340
         width = min(preferred, max(1, self.width() - 36))
@@ -219,7 +275,7 @@ class ClearConfirmOverlay(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(0,0,0,128))
+        painter.setBrush(QColor(0,0,0,round(128*self._window_fade.alpha)))
         radius=ui_colors(self._theme)['radius']
         painter.drawRoundedRect(self.rect(), radius, radius)
 
@@ -278,6 +334,9 @@ class ClearConfirmOverlay(QWidget):
         self._layout_overlay()
         self.show()
         self.raise_()
+        if self._window_fade.enabled():
+            self._window_fade.alpha=.78;self._window_fade.scale=.97;self._window_fade._start(1.)
+        else:self._window_fade.settle_visual()
         self.cancel_button.setFocus(Qt.FocusReason.OtherFocusReason)
         self._focus_timer.start(0)
         return True
@@ -334,9 +393,10 @@ class ClearConfirmOverlay(QWidget):
             self.card.setProperty(MODAL_PROPERTY, False)
         self._scope_owned = False
         previous_geometry = QRect(self.geometry())
-        if self._owner_alive and self._card_alive:
-            from ui_transitions import close_snapshot
-            close_snapshot(self)
+        if (self._owner_alive and self._card_alive and isValid(self.owner) and isValid(self.card)):
+            from ui_transitions import finish_closing_snapshot
+            finish_closing_snapshot(self)
+            if self.isVisible() and self.owner.isVisible() and motion_allowed():self._closing_snapshot=ClearExitGhost(self)
         self.hide()
         if self._owner_alive and isValid(self.owner):
             self.owner.update(previous_geometry)

@@ -18,6 +18,10 @@ class ClipboardPopupMotion(QObject):
         self.progress=0.;self.target=0.;self.presenting=False;self.transitioning=False
         self.source_rect=QRectF();self.target_rect=QRectF();self.host_rect=QRect()
         self.source_image=QPixmap();self.target_image=QPixmap();self._shadows=OrderedDict();self._app_filter=False;self._anchors=[];self.intent=0
+        self._swallow_button=Qt.NoButton
+        self._swallow_context=False
+        self._release_timer=QTimer(self);self._release_timer.setSingleShot(True);self._release_timer.setInterval(1500)
+        self._release_timer.timeout.connect(self._finish_pointer_swallow)
         self.animation=QVariantAnimation(self);self.animation.setEasingCurve(exit_curve())
         # A geometry-only ~0.8% rebound. Alpha is clamped before that rebound;
         # one progress value still owns both directions and reversals.
@@ -38,10 +42,14 @@ class ClipboardPopupMotion(QObject):
             if widget is not None and isValid(widget):
                 widget.removeEventFilter(self)
             QObject.disconnect(connection)
-        if self._app_filter:
+        if self._app_filter and self._swallow_button==Qt.NoButton and not self._swallow_context:
             app=QApplication.instance()
             if app is not None:app.removeEventFilter(self)
-        self._app_filter=False
+            self._app_filter=False
+
+    def _finish_pointer_swallow(self):
+        self._swallow_button=Qt.NoButton;self._swallow_context=False;self._release_timer.stop()
+        if not self.presenting:self._unbind()
 
     def _bind(self,source):
         self._unbind();self.source=source
@@ -157,16 +165,36 @@ class ClipboardPopupMotion(QObject):
     def eventFilter(self,watched,event):
         if QCoreApplication.closingDown() or not isValid(self.window):return False
         kind=event.type()
+        if self._swallow_context and kind==QEvent.MouseButtonPress:
+            self._finish_pointer_swallow()
+        if self._swallow_context and kind==QEvent.ContextMenu and event.reason()==event.Mouse:
+            # A native right-button release may post its context request after
+            # the popup has hidden. Consume that request, never a new click.
+            self._finish_pointer_swallow();event.accept();return True
+        if self._swallow_button!=Qt.NoButton and kind==QEvent.MouseButtonRelease and event.button()==self._swallow_button:
+            if self._swallow_button==Qt.RightButton:
+                self._swallow_button=Qt.NoButton;self._swallow_context=True
+                self._release_timer.start(QApplication.doubleClickInterval())
+            else:self._finish_pointer_swallow()
+            event.accept();return True
+        if self._swallow_button!=Qt.NoButton and kind in (QEvent.MouseButtonDblClick,QEvent.ContextMenu):
+            event.accept();return True
         if watched is self.window and kind==QEvent.Hide:self.hidden()
         elif watched is self.window and kind==QEvent.WindowDeactivate and self.presenting:
             epoch=self.intent;QTimer.singleShot(0,self,lambda:self._deactivated(epoch))
         elif self.presenting and watched in (self.owner,self.source) and kind in (QEvent.Hide,QEvent.Close,QEvent.DeferredDelete):self.dismiss(immediate=True)
         elif self.presenting and watched is self.owner and (kind in (QEvent.Move,QEvent.Resize) or (kind==QEvent.WindowStateChange and self.owner.isMinimized())):self.dismiss(immediate=True)
-        elif self.presenting and kind==QEvent.MouseButtonPress and isinstance(watched,QWidget):
+        elif self.presenting and kind in (QEvent.MouseButtonPress,QEvent.MouseButtonDblClick) and isinstance(watched,QWidget):
             point=event.globalPosition().toPoint()
-            # Only this application's Qt events are observed. No desktop/global
-            # mouse hook; the original event still reaches its real receiver.
-            if not self.current_rect().contains(point) and not self.source_rect.contains(point):self.dismiss()
+            if self.current_rect().contains(point):
+                # Consume both halves, even if the exit ends before release.
+                # Content is a view, never a text selection/image gesture or
+                # a click which falls through onto the underlying shelf.
+                self._swallow_button=event.button();self._release_timer.start();self.dismiss();event.accept();return True
+            # Outside clicks retain their original target/action.
+            if not self.source_rect.contains(point):self.dismiss()
+        elif self.presenting and kind in (QEvent.Wheel,QEvent.ContextMenu) and isinstance(watched,QWidget):
+            if watched is self.window or self.window.isAncestorOf(watched):event.accept();return True
         return False
 
     def _deactivated(self,epoch):

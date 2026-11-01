@@ -65,11 +65,13 @@ class OriginTests(unittest.TestCase):
         self.assertEqual(self.puts(),2);self.assertEqual(self.starts[1],0)
         self.assertEqual([clip.writes for clip in self.clips],[2,2])
 
-    def test_real_copy_of_identical_content_without_marker_is_not_swallowed(self):
+    def test_copy_of_identical_current_cloud_content_keeps_native_copy_without_uploading_again(self):
         self.clips[0].text('same');until(lambda:self.clips[1].mimeData().text()=='same');self.settle()
         previous=self.hub.head['id'];self.clips[1].text('same')
-        until(lambda:self.hub.head['id']!=previous);self.settle()
-        self.assertEqual(self.puts(),2);self.assertFalse(self.clips[1].mimeData().hasFormat(SYNC_MARKER))
+        self.settle()
+        self.assertEqual(self.hub.head['id'],previous);self.assertEqual(self.puts(),1)
+        self.assertEqual(self.clips[1].mimeData().text(),'same')
+        self.assertFalse(self.clips[1].mimeData().hasFormat(SYNC_MARKER))
 
     def test_account_switch_cannot_export_previous_accounts_cloud_payload(self):
         self.clips[0].text('old account cloud content');until(lambda:self.clips[1].mimeData().hasFormat(SYNC_MARKER));self.settle()

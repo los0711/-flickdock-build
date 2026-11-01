@@ -107,15 +107,21 @@ class ClipboardNotice(QWidget):
         self.motion.remove(lambda entry:entry['ok'],animate=False)
 
     def schedule_result(self,ok,context):
+        if not self._permitted(ok):return
         self._pending_result=(ok,dict(context));self._result_timer.start()
+
+    def _permitted(self,ok):
+        return (not getattr(self.manager,'_quitting',False)
+                and getattr(self.manager.settings,'clipboard_sync_enabled',True)
+                and getattr(self.manager,'_clipboard_runtime_enabled',lambda:True)()
+                and (not ok or getattr(self.manager.settings,'clipboard_success_notice',True)))
 
     def _deliver_result(self):
         result,self._pending_result=self._pending_result,None
-        if (result is not None and not getattr(self.manager,'_quitting',False)
-                and getattr(self.manager,'_clipboard_runtime_enabled',lambda:True)()
-                and (not result[0] or getattr(self.manager.settings,'clipboard_success_notice',True))):self.show_result(*result)
+        if result is not None and self._permitted(result[0]):self.show_result(*result)
 
     def show_result(self,ok,context):
+        if not self._permitted(ok):return
         from native_ui_common import colors,reduced_motion,icon
         c=colors(self.manager.settings.theme);self.generation+=1;token=self.generation
         card=self._acquire_card();self._use_card(card)
@@ -149,6 +155,8 @@ class ClipboardNotice(QWidget):
             if not isValid(self):return
             self._job=None;self._job_token=None
             entry=next((entry for entry in self.motion.active if entry['token']==token),None)
+            if entry is not None and not self._permitted(entry['ok']):
+                self.supersede();return
             if entry is not None and self.isVisible() and not job.cancel.is_set() and not error:
                 image,size=result
                 if isinstance(image,QImage) and not image.isNull():entry['card'].symbol.setPixmap(QPixmap.fromImage(image))

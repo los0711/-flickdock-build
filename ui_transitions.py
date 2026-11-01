@@ -52,7 +52,10 @@ class SegmentIndicator(QWidget):
         from PySide6.QtGui import QColor
         import ui_theme
         theme=getattr(self,'_theme',ui_theme.current_theme());p=QPainter(self);p.setRenderHint(QPainter.Antialiasing)
-        p.setPen(Qt.NoPen);p.setBrush(QColor(255,255,255,31) if theme=='dark' else QColor('white'))
+        p.setPen(Qt.NoPen)
+        if self.parentWidget().property('brandSegment'):
+            p.setBrush(QColor(10,132,255,52) if theme=='dark' else QColor('#DCEEFF'))
+        else:p.setBrush(QColor(255,255,255,31) if theme=='dark' else QColor('white'))
         p.drawRoundedRect(self._rect,5,5);p.end()
 
 
