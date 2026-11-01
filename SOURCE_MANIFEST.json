@@ -1206,8 +1206,8 @@
     },
     {
       "path": "qa/packaged-live/ci_packaged_windows_live.py",
-      "size": 62985,
-      "sha256": "09a7bdfcea1035aba954992e278feb41ce7372d0908c1e268db740c08dc640f7"
+      "size": 64895,
+      "sha256": "ce8937bb54f8fa94dffd619eada7c9305f171eb8053d146dd5c651f5f4061629"
     },
     {
       "path": "qa/packaged-live/gateway.mjs",
@@ -1226,13 +1226,13 @@
     },
     {
       "path": "qa/packaged-live/test_harness_bounds.py",
-      "size": 2537,
-      "sha256": "d9ee441ad328921eec388ce45439635087c26ceaa9a5fcd0082409e98e35d442"
+      "size": 4676,
+      "sha256": "3ce99dd3e0ca980a141932b27196581e42245711dfda7acadf05d6014b99ee52"
     },
     {
       "path": "qa/packaged-live/ui-actions.json",
-      "size": 3744,
-      "sha256": "5ea95cc1bd2faf2107ae933d316b3c8b207f08ffbefc2c44aa084cff5a2d39d8"
+      "size": 3762,
+      "sha256": "cdc698121e5e5a709c512fe98e3e973f1cbfc64af208db544c1e6a01316a8f65"
     },
     {
       "path": "qa/packaged-live/verify_frozen_source.py",
@@ -1986,8 +1986,8 @@
     },
     {
       "path": "test_transfer_entry_v1822.py",
-      "size": 6943,
-      "sha256": "f3a273f5b04dcd3a54bb2849eeda43f8e1f012fb08dc7c4f3d47cecdf5f8170a"
+      "size": 7024,
+      "sha256": "76cadf330dbc856d51ed366e4ddda7e810ee0d44345f513a8e0dd363817bae49"
     },
     {
       "path": "test_transfer_interaction_v1823.py",

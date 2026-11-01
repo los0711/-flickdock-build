@@ -124,6 +124,17 @@ def retain_diagnostics(output,profile,cloud):
         except Exception as error:errors.append('gateway:'+type(error).__name__)
     if profile is not None:
         try:
+            raw=read(profile.parent/'native-input-ownership.jsonl',1024*1024);safe=[]
+            for line in (raw or '').splitlines()[-2048:]:
+                row=json.loads(line)
+                item={key:row[key] for key in ('expected_pid','foreground_pid') if number(row.get(key))}
+                for key in ('producer','pointer_owner_verified','no_activate','style_unavailable'):
+                    if type(row.get(key)) is bool:item[key]=row[key]
+                if row.get('operation')=='mouse_target':item['operation']='mouse_target'
+                safe.append(item)
+            (output/'synthetic-input-ownership.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in safe));status['input_rows']=len(safe)
+        except Exception as error:errors.append('input:'+type(error).__name__)
+        try:
             raw=read(profile/'diagnostics/clipboard-writes.jsonl',2*1024*1024);safe=[]
             for line in (raw or '').splitlines()[-2048:]:
                 try:row=json.loads(line)
@@ -282,7 +293,7 @@ class LocalCloud:
         with urlopen(self.control+path,timeout=5) as response:response.read()
     def publish_shelf(self):
         import uuid
-        identity=str(uuid.uuid4());body=b'Synthetic remote shelf object\n';checksum=hashlib.sha256(body).hexdigest()
+        identity=str(uuid.uuid4());body=('Synthetic remote shelf object '+identity+'\n').encode();checksum=hashlib.sha256(body).hexdigest()
         result=json_request(self.origin,'POST','/v1/uploads',dict(item_id=identity,base_version=0,kind='text',name='Actual local peer item',
             mime_type='text/plain',size=len(body),sha256=checksum,fast_upload=True),self.peer['token'])
         binary_request(self.origin,'PUT',f'/v1/uploads/{result["upload_id"]}/parts/0',body,self.peer['token'],{'X-Content-SHA256':checksum})
@@ -393,7 +404,7 @@ class _UIABackend:
         for window in self.windows():
             for control in [window,*window.descendants()]:
                 try:
-                    rect=control.rectangle();rows.append(dict(name=control.element_info.name,role=control.element_info.control_type,
+                    rect=control.rectangle();rows.append(dict(name=control.element_info.name,role=control.element_info.control_type,class_name=control.element_info.class_name,
                         rectangle=[rect.left,rect.top,rect.right,rect.bottom],visible=control.is_visible(),enabled=control.is_enabled()))
                 except Exception:pass
         return rows
@@ -435,9 +446,25 @@ class _UIABackend:
         if actual!=pid:raise RuntimeError(f'HARNESS_INPUT_OWNERSHIP: foreground PID {actual}, expected {pid}; no input sent')
     def _prepare_control(self,control,pid):
         if pid not in (self.pid,self.producer_pid):raise ValueError('Input may target only the two owned QA processes')
-        self._producer_topmost(pid==self.producer_pid);control.top_level_parent().set_focus()
+        self._producer_topmost(pid==self.producer_pid)
+        # The shelf deliberately permits mouse interaction without activating
+        # its Tool window. Foreground ownership is essential for keyboard input,
+        # not for a pointer whose actual hit target has already been checked.
+        if pid==self.producer_pid:control.top_level_parent().set_focus()
         rect=control.rectangle();point=((rect.left+rect.right)//2,(rect.top+rect.bottom)//2)
-        self._assert_pointer_owner(point,pid);self._assert_foreground(pid)
+        self._assert_pointer_owner(point,pid)
+        if pid==self.producer_pid:self._assert_foreground(pid)
+        api=self._input_api()
+        row=dict(operation='mouse_target',expected_pid=pid,
+                 foreground_pid=self._window_pid(api.GetForegroundWindow()),
+                 producer=pid==self.producer_pid,pointer_owner_verified=True)
+        try:
+            import ctypes
+            from ctypes import wintypes
+            query=api.GetWindowLongW;query.argtypes=[wintypes.HWND,ctypes.c_int];query.restype=wintypes.LONG
+            row['no_activate']=bool(query(control.top_level_parent().handle,-20)&0x08000000)
+        except (AttributeError,TypeError):row['style_unavailable']=True
+        with (self.base/'native-input-ownership.jsonl').open('a',encoding='utf8') as stream:stream.write(json.dumps(row)+'\n')
         return point
     def click(self,name,*,pid=None,prefix=False):
         control=wait(lambda:self.find(name,pid=pid,prefix=prefix),seconds=6,label='native accessible control '+name)

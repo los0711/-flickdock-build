@@ -22,7 +22,8 @@ class EntryTests(unittest.TestCase):
                 from PySide6.QtCore import QRect
                 old=dialog.panel;area=QRect(old.drop_zone.mapTo(dialog.panel_stack,QPoint()),old.drop_zone.size())
                 before=dialog.panel_stack.grab().toImage().copy(area)
-                with patch('ui_transitions.motion_allowed',return_value=True):dialog.set_service(wan)
+                with patch('ui_transitions.motion_allowed',return_value=True),patch('native_ui_common.reduced_motion',return_value=False):
+                    dialog.set_service(wan)
                 self.assertFalse(dialog._page_fade.snapshot.isNull())
                 self.assertEqual(dialog._page_fade.snapshot.toImage().copy(area),before)
                 until(lambda:not dialog._page_fade.isVisible())
