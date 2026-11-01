@@ -3,7 +3,7 @@ import os,tempfile,unittest
 os.environ['QT_QPA_PLATFORM']='offscreen'
 from pathlib import Path
 from unittest.mock import patch
-from PySide6.QtCore import QEvent,Qt,QAbstractAnimation
+from PySide6.QtCore import QEvent,QRectF,Qt,QAbstractAnimation
 from PySide6.QtGui import QFocusEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication,QWidget,QVBoxLayout,QLineEdit,QSpinBox,QKeySequenceEdit,QToolButton
@@ -78,10 +78,20 @@ class InputMotionTests(unittest.TestCase):
             indicator=dialog.settings_navigation_indicator
             with patch('ui_transitions.motion_allowed',return_value=True),patch('native_ui_common.reduced_motion',return_value=False):
                 dialog.settings_category_buttons['sync'].click();flush();indicator.animation.setCurrentTime(55)
-                current=indicator._rect
-                dialog.settings_category_buttons['account'].click();flush()
-                self.assertTrue(dialog.settings_category_buttons['account'].isChecked())
-                self.assertEqual(indicator.animation.startValue(),current)
+                self.assertEqual(indicator.animation.state(),QAbstractAnimation.Running)
+                interrupted=[];stop=indicator.animation.stop
+                def capture_interruption():
+                    # The live clock can advance before the queued retarget.
+                    interrupted.append((QRectF(indicator._rect),indicator.animation.state()))
+                    return stop()
+                with patch.object(indicator.animation,'stop',side_effect=capture_interruption):
+                    dialog.settings_category_buttons['account'].click()
+                    self.assertTrue(dialog.settings_category_buttons['account'].isChecked())
+                    flush()
+                self.assertEqual(len(interrupted),1)
+                self.assertEqual(interrupted[0][1],QAbstractAnimation.Running)
+                self.assertEqual(indicator.animation.startValue(),interrupted[0][0])
+                self.assertEqual(indicator.animation.state(),QAbstractAnimation.Running)
                 self.assertEqual(sum(b.isChecked() for b in dialog.settings_category_buttons.values()),1)
                 dialog.apply_theme('dark');self.assertEqual(indicator._theme,'dark')
                 dialog.hide();flush();self.assertEqual(indicator.animation.state(),QAbstractAnimation.Stopped)

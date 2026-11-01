@@ -119,6 +119,7 @@ SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'qa/packaged-live/ui-batch2-actions.json','qa/packaged-live/BATCH2.md',
     'qa/packaged-live/reuse_frozen.py',
     'qa/packaged-live/ci_exact_installer.py',
+    'qa/packaged-live/ci_windows_reveal_probe.py','test_windows_reveal_probe_v1824.py',
 
     '.github/workflows/native-clipboard.yml','ci_clipboard_origin.py','ci_transfer_navigation.py',
     'FlickDock.spec','FlickDock.iss','version_info.txt','ChineseSimplified.isl','windows-network.ps1',

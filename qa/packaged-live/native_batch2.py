@@ -154,6 +154,45 @@ class Batch2:
         time.sleep(.28);self.mark('after:'+kind,target=before['name'],input_bounds=before['bounds'],point=list(point))
 
     def click(self,key,scope='overview'):self.input(self.resolve(key,scope))
+    def body_point(self,control):
+        """Physical file body, intersected with every actual UIA ancestor.
+
+        Qt may report an IconItem visible when its lower half lies behind the
+        scroll viewport/footer. Never use the entire card's centre unchecked.
+        The safe icon area excludes its top selection/delete strip; the list
+        area excludes the selection checkbox and right-side delete button.
+        Fully clipped bodies fail before sending input; no implicit Select or
+        checkbox click substitutes for testing the actual file body.
+        """
+        original=bounds(control);left,top,right,bottom=original
+        width,height=right-left,bottom-top
+        cls=control.element_info.class_name
+        if cls=='IconItem':
+            safe=(.22,.22,.78,.64);preferred=(.5,.35)
+        elif cls=='FileRow':
+            safe=(.28,.20,.68,.80);preferred=(.5,.5)
+        else:raise AssertionError('File body class must be an actual IconItem or FileRow')
+        clipped=[round(left+width*safe[0]),round(top+height*safe[1]),
+                 round(left+width*safe[2]),round(top+height*safe[3])]
+        chain=[];ancestor=control
+        for index in range(32):
+            r=bounds(ancestor)
+            if not ancestor.is_visible() or r[2]<=r[0] or r[3]<=r[1]:
+                raise AssertionError('File body has an invisible or empty native ancestor')
+            clipped=[max(clipped[0],r[0]),max(clipped[1],r[1]),min(clipped[2],r[2]),min(clipped[3],r[3])]
+            chain.append(dict(class_name=ancestor.element_info.class_name,role=ancestor.element_info.control_type,bounds=r))
+            if ancestor.element_info.control_type=='Window':break
+            ancestor=ancestor.parent()
+            if ancestor is None:raise AssertionError('File body native ancestor chain did not reach its window')
+        else:raise AssertionError('File body native ancestor chain exceeded bounded depth')
+        if clipped[2]-clipped[0]<8 or clipped[3]-clipped[1]<8:
+            self.mark('file-body-fully-clipped',control,clipped_body=clipped,ancestors=chain)
+            raise AssertionError('File body is fully clipped; physical scroll is required before input')
+        target=centre(control,preferred)
+        point=(max(clipped[0]+2,min(target[0],clipped[2]-3)),max(clipped[1]+2,min(target[1],clipped[3]-3)))
+        self.mark('visible-file-body',control,point=list(point),clipped_body=clipped,ancestors=chain)
+        return point
+
     def ancestor(self,c,cls):
         for _ in range(24):
             if c.element_info.class_name==cls:return c
@@ -203,12 +242,12 @@ class Batch2:
         self.mark('double-click-interval',seconds=.07)
         before=self.b._window_pid(self.b._input_api().GetForegroundWindow())
         for kind,value in (('click',True),('click',False),('double',False)):
-            c=self.resolve('grid_text');self.input(c,kind=kind,point=centre(c,(.5,.55)));self.package_enabled(value)
+            c=self.resolve('grid_text');self.input(c,kind=kind,point=self.body_point(c));self.package_enabled(value)
         if self.scope('overview') is None or self.b._window_pid(self.b._input_api().GetForegroundWindow())!=before:
             raise AssertionError('Grid body clicks opened/activated another application')
         self.click('list')
         for kind,value in (('click',1),('click',0),('double',0)):
-            check=self.resolve('list_check');row=self.ancestor(check,'FileRow');self.input(row,kind=kind)
+            check=self.resolve('list_check');row=self.ancestor(check,'FileRow');self.input(row,kind=kind,point=self.body_point(row))
             check=self.resolve('list_check')
             if selected(check)!=value:raise AssertionError('List body did not toggle the actual checkbox')
             self.mark('list-selection',check,value=value)
@@ -217,7 +256,7 @@ class Batch2:
         self.click('grid')
 
     def detail(self):
-        self.overview();self.click('grid');c=self.resolve('grid_text');self.input(c,point=centre(c,(.5,.55)))
+        self.overview();self.click('grid');c=self.resolve('grid_text');self.input(c,point=self.body_point(c))
         foreground=self.b._window_pid(self.b._input_api().GetForegroundWindow())
         c=self.resolve('open');self.input(c,kind='hover');time.sleep(.15)
         point=centre(c);r=bounds(c);outside=(r[0]-8,point[1]);window=c.top_level_parent()
@@ -244,7 +283,7 @@ class Batch2:
     def context(self):
         self.overview();self.click('grid')
         for mode in ('lan','wan'):
-            c=self.resolve('grid_text');self.input(c,kind='right',point=centre(c,(.5,.55)))
+            c=self.resolve('grid_text');self.input(c,kind='right',point=self.body_point(c))
             self.menu_action(mode);self.queue(['original-text.txt']);self.click('queue_clear','transfer');self.click('back','transfer')
         # Mini's menu sends its entire shelf, including any real peer fixture
         # objects already received by core QA. Record exact queue; don't assert

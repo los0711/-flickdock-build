@@ -206,16 +206,28 @@ class FollowupTests(unittest.TestCase):
 
     def test_manual_hide_holds_translation_velocity_during_an_unfinished_entrance(self):
         from types import SimpleNamespace
-        from PySide6.QtTest import QTest
+        import flickdock_motion
         shelf=self.shelf;manager=self.fixture.manager
         manager.edge=SimpleNamespace(screen_area=lambda:QRect(0,0,1920,1080),geometry=lambda:QRect(1912,300,8,90))
         manager.motion=True;shelf.presentation.motion=True;shelf.pinned=False;shelf.hide_immediately()
-        shelf._show_at(QPoint(120,160),'manual',QPoint(20,10));QTest.qWait(48)
-        pose=(shelf.presentation.values['dx'],shelf.presentation.values['dy'])
-        self.assertGreater(sum(abs(shelf.presentation._velocities[k]) for k in ('dx','dy')),0)
-        shelf.hide_animated(explicit=False)
-        for _ in range(3):
-            QTest.qWait(16)
-            self.assertEqual((shelf.presentation.values['dx'],shelf.presentation.values['dy']),pose)
+        spring=shelf.presentation
+        # Exercise real integration at known times; a busy host may deliver
+        # no tick in qWait(48), or deliver one beyond the finite deadline.
+        with patch.object(flickdock_motion.time,'perf_counter',return_value=10.):
+            shelf._show_at(QPoint(120,160),'manual',QPoint(20,10))
+            self.assertTrue(spring._timer.isActive());spring._timer.stop()
+        for elapsed in (.016,.032,.048):
+            with patch.object(flickdock_motion.time,'perf_counter',return_value=10.+elapsed):spring._tick()
+        pose=(spring.values['dx'],spring.values['dy'])
+        self.assertNotEqual(pose,(20,10));self.assertFalse(spring._motion_done)
+        self.assertGreater(sum(abs(spring._velocities[k]) for k in ('dx','dy')),0)
+        with patch.object(flickdock_motion.time,'perf_counter',return_value=10.048):
+            shelf.hide_animated(explicit=False)
+            self.assertTrue(spring._timer.isActive());spring._timer.stop()
+        self.assertEqual(shelf.visible_state,'hiding');alpha=spring.values['alpha']
+        for elapsed in (.064,.080,.096):
+            with patch.object(flickdock_motion.time,'perf_counter',return_value=10.+elapsed):spring._tick()
+            self.assertEqual((spring.values['dx'],spring.values['dy']),pose)
+        self.assertLess(spring.values['alpha'],alpha)
 
 if __name__=='__main__':unittest.main()

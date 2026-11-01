@@ -15,6 +15,11 @@ class FakeWorker:
     def wait(self,timeout):return 0
 
 class BoundTests(unittest.TestCase):
+    def test_recording_retains_post_input_paints_when_uia_action_exceeds_minimum(self):
+        self.assertEqual(qa.post_action_capture_seconds(.9,1.2),.45)
+        self.assertEqual(qa.post_action_capture_seconds(3.,19.),.45)
+        self.assertEqual(qa.post_action_capture_seconds(3.,1.),2.)
+
     def test_extra_history_precedes_original_transfer_entry_and_empty_cleanup_is_last(self):
         folder=Path(__file__).parent
         plans=[json.loads((folder/name).read_text(encoding='utf8')) for name in ('ui-actions.json','ui-extra-actions.json','ui-batch2-actions.json')]

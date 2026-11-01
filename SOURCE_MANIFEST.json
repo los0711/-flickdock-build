@@ -21,8 +21,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 12715,
-      "sha256": "8e6548bb377fae5af662fae81d694f476a5489b5f31ff3c83964e53bece03cf6"
+      "size": 13960,
+      "sha256": "e1571609c5e36c6de1af57e7e00e9c5ffa8b6f7eb6b51d5625c1f3921fe60356"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -1211,8 +1211,13 @@
     },
     {
       "path": "qa/packaged-live/ci_packaged_windows_live.py",
-      "size": 79014,
-      "sha256": "effc69ec7e62dc9a4e49260e15530d65c2185386b56e1f0ad6af1369af9108fe"
+      "size": 79652,
+      "sha256": "abcdb82889ef0a0b1118dc992d2ee7794bc79ce165225b3797ccdb9dc7cafd1b"
+    },
+    {
+      "path": "qa/packaged-live/ci_windows_reveal_probe.py",
+      "size": 11676,
+      "sha256": "da4c6fc0c6b848727c11577608337430e75669721508cd0e0357a236454d7193"
     },
     {
       "path": "qa/packaged-live/gateway.mjs",
@@ -1221,8 +1226,8 @@
     },
     {
       "path": "qa/packaged-live/native_batch2.py",
-      "size": 28749,
-      "sha256": "5f0ac96471a619da414727629d3e3c5d543470ad847a3d167d544b4a741a5e43"
+      "size": 31234,
+      "sha256": "2739ec22a22c892a5f93e3baf47a96ebb8191dc5dbfd1b8780aebb87e3accfc0"
     },
     {
       "path": "qa/packaged-live/native_editor.py",
@@ -1236,8 +1241,8 @@
     },
     {
       "path": "qa/packaged-live/test_harness_bounds.py",
-      "size": 7592,
-      "sha256": "867ff127c0f40ee65d2f42fa4cf3c9b78802a395c3f7f3e48f50bcc0f43c5d3e"
+      "size": 7886,
+      "sha256": "c82a7bf6c245f3d67c504ff0b20d658533dfa965ce2758959cb4d877337216fd"
     },
     {
       "path": "qa/packaged-live/test_harness_extras.py",
@@ -1246,8 +1251,8 @@
     },
     {
       "path": "qa/packaged-live/test_native_batch2.py",
-      "size": 16237,
-      "sha256": "67f2834c9ebc2b4dd770b2703db3797109f866f4afa2c1874249e7298ad104f6"
+      "size": 17984,
+      "sha256": "b19e860f2b10bbc6b3f091f6b1095ffbb0c9a435e34bdcd242c2ed9c8b1a1ae8"
     },
     {
       "path": "qa/packaged-live/ui-actions.json",
@@ -1291,8 +1296,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 39102,
-      "sha256": "6d280268c3eaae11e6663203074c69f5bea8c9053bbedbb4953c59f4870481c4"
+      "size": 39190,
+      "sha256": "a547e13e2567d0509b189dbfdb86ab797e931404ab3009dbbb82c29b15c6e98a"
     },
     {
       "path": "release_signing.py",
@@ -1671,8 +1676,8 @@
     },
     {
       "path": "test_input_motion_v1823.py",
-      "size": 12065,
-      "sha256": "072c959713eaa24ad10725b32deffbda79d9fe28d02464d86f87f326ea90fa85"
+      "size": 12786,
+      "sha256": "3069a47f76a8057efc2b9a8c1d23b71e55da433eeedec4661e7b06b2f2cb14b2"
     },
     {
       "path": "test_intake_entry_v164.py",
@@ -2061,8 +2066,8 @@
     },
     {
       "path": "test_ui_followup_v1823.py",
-      "size": 14955,
-      "sha256": "de70eed0ae336b099862d74e1e8c6fd2084ed9a8a694529692d868e1aaa89fd1"
+      "size": 15841,
+      "sha256": "747b03f6cd6c7f12b9ec2658f084b94f92dcc5eacad8d040b72f781a835a48dc"
     },
     {
       "path": "test_ui_polish_v1823.py",
@@ -2168,6 +2173,11 @@
       "path": "test_windows_network_v1818.py",
       "size": 2826,
       "sha256": "259fa2c58d5d29e83be0b52fc5772ae631754e0f66c145e1d843adc968b91163"
+    },
+    {
+      "path": "test_windows_reveal_probe_v1824.py",
+      "size": 5200,
+      "sha256": "c182d8613fb930baa73978cf1c9f23efd836d01603792148f0ec7f10cd6c6a0d"
     },
     {
       "path": "test_windows_reveal_v1824.py",

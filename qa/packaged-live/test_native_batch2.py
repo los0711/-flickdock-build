@@ -78,10 +78,35 @@ class Batch2Tests(unittest.TestCase):
   control=Control('Open',parent=self.root);self.api.WindowFromPoint.return_value=999
   with self.assertRaisesRegex(AssertionError,'Native root'):self.runner.input(control)
   self.mouse.click.assert_not_called()
+ def test_partly_visible_card_body_intersects_actual_ancestor_viewport_above_footer(self):
+  self.root.box=(21,7,1001,711)
+  viewport=Control('','Custom','QWidget',self.root,bounds=(247,131,659,582))
+  content=Control('','Custom','QWidget',viewport,bounds=(247,131,659,850))
+  card=Control('original-text.txt','Group','IconItem',content,bounds=(247,498,381,666))
+  point=self.runner.body_point(card)
+  self.assertEqual(point,(314,557));self.assertGreater(point[1],498+32)
+  self.assertLess(point[1],582);self.assertNotEqual(point,qa.centre(card,(.5,.55)))
+  self.assertEqual(self.runner.events[-1]['clipped_body'],[276,535,352,582])
+  self.assertEqual(self.runner.events[-1]['ancestors'][2]['bounds'],[247,131,659,582])
+ def test_fully_clipped_card_or_header_only_sliver_never_clicks_footer_or_checkbox(self):
+  self.root.box=(21,7,1001,711)
+  viewport=Control('','Custom','QWidget',self.root,bounds=(247,131,659,582))
+  for top in (590,570):
+   with self.subTest(top=top):
+    card=Control('original-text.txt','Group','IconItem',viewport,bounds=(247,top,381,top+168))
+    with self.assertRaisesRegex(AssertionError,'fully clipped'):self.runner.body_point(card)
+  self.mouse.click.assert_not_called();self.mouse.double_click.assert_not_called()
+ def test_partly_visible_list_row_uses_body_away_from_checkbox_and_delete(self):
+  self.root.box=(21,7,1001,711)
+  viewport=Control('','Custom','QWidget',self.root,bounds=(247,131,659,582))
+  row=Control('','Group','FileRow',viewport,bounds=(247,560,659,618))
+  point=self.runner.body_point(row)
+  self.assertGreater(point[0],247+40);self.assertLess(point[0],659-32);self.assertLess(point[1],582)
  def test_cancelled_open_always_releases_physical_button_on_motion_error(self):
   control=Control('打开',parent=self.root)
+  card=Control('original-text.txt','Group','IconItem',self.root)
   self.runner.overview=Mock();self.runner.click=Mock();self.runner.input=Mock();self.runner.guard=Mock()
-  self.runner.resolve=Mock(return_value=control);self.mouse.move.side_effect=RuntimeError('synthetic OS input failure')
+  self.runner.resolve=Mock(side_effect=lambda key:card if key=='grid_text' else control);self.mouse.move.side_effect=RuntimeError('synthetic OS input failure')
   with self.assertRaisesRegex(RuntimeError,'synthetic OS'):self.runner.detail()
   self.mouse.press.assert_called_once();self.mouse.release.assert_called_once_with(button='left',coords=(2,40))
  def test_checkbox_state_is_only_read(self):

@@ -390,6 +390,11 @@ class LocalCloud:
         if hasattr(self,'log'):self.log.close()
         if errors:raise RuntimeError('Runner QA cleanup incomplete: '+','.join(errors))
 
+def post_action_capture_seconds(minimum_duration,action_duration):
+    """QA recorder tail, not an application animation clock or FPS setting."""
+    return max(.45,float(minimum_duration)-float(action_duration))
+
+
 class Recorder:
     """Capture actual desktop; no manual QVariantAnimation/setCurrentTime use."""
     def __init__(self,out):self.out=out;self.out.mkdir(parents=True,exist_ok=True);self.segments=[]
@@ -423,7 +428,13 @@ class Recorder:
         if failure:raise RuntimeError('Actual desktop capture unavailable: '+str(failure))
         action_start=time.perf_counter()-epoch[0]
         started=time.perf_counter();result=None;action_error=None
-        try:result=action();time.sleep(max(0,duration-(time.perf_counter()-started)))
+        try:
+            result=action()
+            action_finished=time.perf_counter()-epoch[0]
+            # UIA enumeration can consume the whole minimum segment before
+            # physical input is finally delivered. Always retain the actual
+            # post-input paints; an unchanged first PNG is not a motion pass.
+            time.sleep(post_action_capture_seconds(duration,time.perf_counter()-started))
         except Exception as error:action_error=error
         finally:stop.set();thread.join(15)
         if thread.is_alive() or failure:raise RuntimeError('Actual frame capture did not complete')
@@ -438,6 +449,7 @@ class Recorder:
         contact.save(folder/'contact-sheet.png')
         receipt=dict(label=label,elapsed=time.perf_counter()-started,frames=frames,distinct_pixels=len(saved),
             action_after_first_frame=True,action_after_capture_t=action_start,
+            action_returned_at_capture_t=action_finished if action_error is None else None,
             sampling='Uncapped real capture loop; capture/encoding time limits samples, NOT an app FPS measurement',
             manual_visual_review='required',actual_normal_exe=True)
         (folder/'timeline.json').write_text(json.dumps(receipt,indent=2));self.segments.append(receipt)
