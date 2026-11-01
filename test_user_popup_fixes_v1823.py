@@ -20,9 +20,13 @@ class ConfirmFixTests(unittest.TestCase):
   self.owner=QWidget();self.owner.resize(850,610);self.owner.setStyleSheet('background:rgb(80,80,80);')
   self.card=QFrame(self.owner);self.card.setGeometry(10,10,830,590);self.card.setStyleSheet('background:rgb(80,80,80);');self.owner.show();flush()
   self.enabled=patch.object(WindowFade,'enabled',return_value=True);self.enabled.start();self.allowed=patch('ui_transitions.motion_allowed',return_value=True);self.allowed.start()
+  # These pixel/ghost cases explicitly exercise animation. Both the imported
+  # owner gate and shared frame driver must agree, irrespective of runner OS.
+  self.confirm_allowed=patch('confirm_clear.motion_allowed',return_value=True);self.confirm_allowed.start()
+  self.preference=patch('native_ui_common.reduced_motion',return_value=False);self.preference.start()
   self.dialog=ClearConfirmOverlay(self.card,3,theme='dark')
  def tearDown(self):
-  self.dialog.cancel();self.owner.hide();self.owner.deleteLater();flush();self.allowed.stop();self.enabled.stop()
+  self.dialog.cancel();self.owner.hide();self.owner.deleteLater();flush();self.preference.stop();self.confirm_allowed.stop();self.allowed.stop();self.enabled.stop()
  def edge(self,widget):
   im=self.owner.grab().toImage();point=widget.mapTo(self.owner,QPoint(3,widget.height()//2));ratio=im.devicePixelRatio();return im.pixelColor(round(point.x()*ratio),round(point.y()*ratio)).red()
  def test_scrim_covers_full_card_from_first_frame_and_never_scales_with_panel(self):

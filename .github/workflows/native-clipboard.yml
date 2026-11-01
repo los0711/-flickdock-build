@@ -2,15 +2,29 @@ name: Native clipboard verification
 
 on:
   workflow_dispatch:
+    inputs:
+      cloud_contract:
+        description: Re-run unchanged service contracts
+        type: boolean
+        default: true
+      normal_frozen:
+        description: Build and verify normal frozen Windows executable
+        type: boolean
+        default: true
+      reuse_normal_run:
+        description: Existing exact-source normal dist artifact run, optional
+        type: string
+        default: ''
   push:
     branches: [cloud-build]
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   cloud-contract:
-    if: github.repository == 'los0711/-flickdock-build'
+    if: github.repository == 'los0711/-flickdock-build' && github.event.inputs.cloud_contract != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -127,7 +141,7 @@ jobs:
           retention-days: 3
 
   frozen-normal-entry:
-    if: github.repository == 'los0711/-flickdock-build'
+    if: github.repository == 'los0711/-flickdock-build' && github.event.inputs.normal_frozen != 'false'
     runs-on: windows-latest
     timeout-minutes: 35
     env:
@@ -154,12 +168,22 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python qa/packaged-live/verify_frozen_source.py --before-build
       - name: Build actual native executable with the production entry
+        if: github.event.inputs.reuse_normal_run == ''
         run: |
           python ci_assets.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python p2p_assets.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m PyInstaller --noconfirm --clean FlickDock.spec
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python qa/packaged-live/verify_frozen_source.py --after-build
+      - name: Reuse and verify immutable normal executable for QA-only changes
+        if: github.event.inputs.reuse_normal_run != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REUSE_NORMAL_RUN: ${{ inputs.reuse_normal_run }}
+        run: |
+          python qa/packaged-live/reuse_frozen.py --run $env:REUSE_NORMAL_RUN
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python qa/packaged-live/verify_frozen_source.py --after-build
       - name: Normal frozen process, external native Copy/Paste, policy switches and actual screen frames
@@ -177,6 +201,7 @@ jobs:
           path: |
             build/normal-native-qa/
             build/normal-source-verification.json
+            build/reused-frozen-receipt.json
             dist/FlickDock/
           if-no-files-found: error
           retention-days: 3

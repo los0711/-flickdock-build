@@ -111,6 +111,7 @@ SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'qa/packaged-live/ci_packaged_windows_live.py','qa/packaged-live/native_editor.py',
     'qa/packaged-live/gateway.mjs','qa/packaged-live/verify_frozen_source.py','qa/packaged-live/ui-actions.json',
     'qa/packaged-live/test_harness_bounds.py',
+    'qa/packaged-live/reuse_frozen.py',
 
     '.github/workflows/native-clipboard.yml','ci_clipboard_origin.py','ci_transfer_navigation.py',
     'FlickDock.spec','FlickDock.iss','version_info.txt','ChineseSimplified.isl','windows-network.ps1',

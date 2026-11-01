@@ -21,8 +21,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 9206,
-      "sha256": "d4f642e123750774f543430e3da3f557634eb72e3e206ccb72530a9b2e70dbf1"
+      "size": 10338,
+      "sha256": "7a138657db0fb18ad285dad81a75b98d6b0ca151bdce5de141472ac2edaaaf82"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -1201,8 +1201,8 @@
     },
     {
       "path": "qa/packaged-live/ci_packaged_windows_live.py",
-      "size": 55251,
-      "sha256": "041ba7e03902ca7683c096a2ce4726f4204cbccbc8e17da03a727ddcc2cdcaf8"
+      "size": 62985,
+      "sha256": "09a7bdfcea1035aba954992e278feb41ce7372d0908c1e268db740c08dc640f7"
     },
     {
       "path": "qa/packaged-live/gateway.mjs",
@@ -1213,6 +1213,11 @@
       "path": "qa/packaged-live/native_editor.py",
       "size": 2891,
       "sha256": "c25cf81f7197594c4582870209c6aa217ab028207aa379891ded232dc5ba99b9"
+    },
+    {
+      "path": "qa/packaged-live/reuse_frozen.py",
+      "size": 4304,
+      "sha256": "4958d3e3df6998e6e10f5097d3c2600962fd0635c3be6b07685a9728f89c8674"
     },
     {
       "path": "qa/packaged-live/test_harness_bounds.py",
@@ -1251,8 +1256,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 38633,
-      "sha256": "7ee4d92f18447fa07883c8949511c8fbbb1cb702249655545f31e7a8c363d699"
+      "size": 38673,
+      "sha256": "2e51b124397162a86051cf0a37f3a6848449985a7e1d0cc0d92180f3abf365a2"
     },
     {
       "path": "release_signing.py",
@@ -1591,8 +1596,8 @@
     },
     {
       "path": "test_frame_animation_v1824.py",
-      "size": 15547,
-      "sha256": "0ff9b3701c4d27738cded85601dfc6c31c546a197b7b926c352667088ef6734e"
+      "size": 16690,
+      "sha256": "32434e8187f576af682aa38baa92db84d4802bf952d0fdce35102bd625735766"
     },
     {
       "path": "test_functional_layout_v1823.py",
@@ -2071,8 +2076,8 @@
     },
     {
       "path": "test_user_popup_fixes_v1823.py",
-      "size": 9244,
-      "sha256": "79279b979c3d28b86a70c097fccd3c19e08c059fc5e79d72820962c17bb91de8"
+      "size": 9660,
+      "sha256": "3096e541a5478e30516d9e1c8982252cd3c31bb7d06069bcea15a00cf5179f2d"
     },
     {
       "path": "test_utility_windows_v1821.py",

@@ -10,6 +10,30 @@ from frame_animation import FrameAnimation
 from native_ui_common import ScreenAnimationTimer
 
 
+def text_coverage(widget,is_badge):
+    """Use the widget's real font/device metrics, including antialiased ink.
+
+    A small macOS glyph need not contain a pixel with alpha > 230. Compare
+    its strongest strokes to their coverage-composited expected color instead
+    of requiring a fully opaque raster sample that the font never produces.
+    """
+    text=widget.text();ratio=widget.devicePixelRatioF()
+    mask=QImage(round(widget.width()*ratio),round(widget.height()*ratio),QImage.Format_ARGB32)
+    mask.setDevicePixelRatio(ratio)
+    mask.setDotsPerMeterX(round(widget.logicalDpiX()/.0254))
+    mask.setDotsPerMeterY(round(widget.logicalDpiY()/.0254))
+    mask.fill(Qt.transparent);p=QPainter(mask);p.setFont(widget.font());p.setPen(Qt.white)
+    if is_badge:p.drawText(widget.rect(),Qt.AlignCenter,text)
+    else:p.drawText(QRectF(34,0,widget.width()-42,widget.height()),Qt.AlignLeft|Qt.AlignVCenter,text)
+    p.end()
+    samples=[(x,y,mask.pixelColor(x,y).alpha()) for y in range(mask.height()) for x in range(mask.width())]
+    peak=max((alpha for _x,_y,alpha in samples),default=0)
+    points=[(x,y,alpha/255.) for x,y,alpha in samples if alpha>=max(1,round(peak*.9))]
+    metrics=dict(text=text,font=widget.font().toString(),size=(widget.width(),widget.height()),
+                 dpr=ratio,dpi=(widget.logicalDpiX(),widget.logicalDpiY()),mask_dpi=(mask.logicalDpiX(),mask.logicalDpiY()),peak_alpha=peak)
+    return points,metrics
+
+
 class FrameAnimationTests(unittest.TestCase):
     def setUp(self):
         self.reduce=patch('frame_animation.reduced_motion',return_value=False);self.reduce.start();self.owned=[]
@@ -155,6 +179,7 @@ class FrameAnimationTests(unittest.TestCase):
         owner.close();self.assertTrue(owner.isVisible());self.assertEqual(a.state(),a.State.Running)
         a.setCurrentTime(100);self.assertFalse(owner._flickdock_frame_clock.timer.isActive())
 
+    @patch('native_ui_common.reduced_motion',new=lambda:False)
     def test_account_and_menu_opacity_migrations_interpolate_actual_properties(self):
         from account_panel import AuthStatusLabel
         from flickdock import AnimatedMenu,style_menu
@@ -185,18 +210,14 @@ class FrameAnimationTests(unittest.TestCase):
                 indicator=popup.category_indicator;indicator.animation.stop();control=popup.category_buttons['uploading']
                 badge=popup.nav_counts['uploading'];ratio=badge.devicePixelRatioF()
                 for widget,is_badge in ((badge,True),(control,False)):
-                    text=widget.text();mask=QImage(round(widget.width()*ratio),round(widget.height()*ratio),QImage.Format_ARGB32)
-                    mask.setDevicePixelRatio(ratio);mask.fill(Qt.transparent);p=QPainter(mask);p.setFont(widget.font());p.setPen(Qt.white)
-                    if is_badge:p.drawText(widget.rect(),Qt.AlignCenter,text)
-                    else:p.drawText(QRectF(34,0,widget.width()-42,widget.height()),Qt.AlignLeft|Qt.AlignVCenter,text)
-                    p.end();points=[(x,y) for y in range(mask.height()) for x in range(mask.width()) if mask.pixelColor(x,y).alpha()>230]
-                    self.assertTrue(points)
+                    text=widget.text();points,metrics=text_coverage(widget,is_badge)
+                    self.assertTrue(points,metrics)
                     for offset in (0,4,9,14,20,23,29,35):
                         rect=QRectF(control.geometry());rect.moveTop(control.y()-offset);indicator._frame(rect)
                         widget.setText('' if is_badge else ' ');background=composed_image(popup)
                         widget.setText(text);actual=composed_image(popup);at=widget.mapTo(popup,QPoint())
                         path=_category_ink_path(control,badge.pos() if is_badge else QPoint())
-                        for x,y in points:
+                        for x,y,coverage in points:
                             local=QPointF((x+.5)/ratio,(y+.5)/ratio)
                             # Contrast applies to solid surfaces, not the one
                             # antialiased boundary pixel of the moving clip.
@@ -205,8 +226,9 @@ class FrameAnimationTests(unittest.TestCase):
                             ink=QColor('#FFFFFF' if path.contains(local) else palette()['link'] if is_badge else palette()['secondary'])
                             sx=round(at.x()*ratio)+x;sy=round(at.y()*ratio)+y;base=background.pixelColor(sx,sy);pixel=actual.pixelColor(sx,sy)
                             self.assertGreaterEqual(contrast_colors(ink,base),4.5,(theme,is_badge,offset,ink.name(),base.name()))
-                            self.assertLessEqual(max(abs(a-b) for a,b in zip(pixel.getRgb()[:3],ink.getRgb()[:3])),28,
-                                                 (theme,is_badge,offset,local,pixel.name(),ink.name()))
+                            expected=tuple(round(a*coverage+b*(1-coverage)) for a,b in zip(ink.getRgb()[:3],base.getRgb()[:3]))
+                            self.assertLessEqual(max(abs(a-b) for a,b in zip(pixel.getRgb()[:3],expected)),28,
+                                                 (theme,is_badge,offset,local,pixel.name(),expected,coverage,metrics))
                             checked+=1
             self.assertGreater(checked,100)
         finally:fixture.tearDown()

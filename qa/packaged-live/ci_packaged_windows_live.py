@@ -96,6 +96,71 @@ def producer_corner(width,height,target,screen_width,screen_height):
     if not safe:raise RuntimeError('No unobscured drag destination on disposable display')
     return max(safe,key=lambda xy:(xy[0]+width/2-target[0])**2+(xy[1]+height/2-target[1])**2)
 
+
+def retain_diagnostics(output,profile,cloud):
+    """Failure-safe allowlist export; never copy a private profile or raw log."""
+    status={};errors=[]
+    def number(value):return type(value) in (int,float) and value==value and 0<=value<=2**53
+    def code(value):return isinstance(value,str) and re.fullmatch(r'[A-Za-z0-9_.:-]{0,90}',value)
+    def read(path,limit):
+        if path.is_symlink() or not path.is_file() or path.stat().st_size>limit:return None
+        return path.read_text(encoding='utf8')
+    if cloud is not None:
+        try:
+            raw=cloud.stats();safe=[]
+            for row in raw.get('rows',[])[-4096:]:
+                if not isinstance(row,dict):continue
+                item={key:value for key,value in row.items() if key in ('index','started','status','first_byte','finished') and number(value)}
+                if row.get('method') in ('GET','POST','PUT','DELETE','PATCH','HEAD','OPTIONS'):item['method']=row['method']
+                path=str(row.get('path','')).split('?')[0]
+                path=re.sub(r'[0-9a-f]{8}-[0-9a-f-]{27,}',':id',path,flags=re.I)
+                item['path']=path if re.fullmatch(r'/(?:v1|api|updates|health)(?:/[A-Za-z0-9_:.-]{1,80})*',path) else 'UNRECOGNIZED_ROUTE'
+                for key in ('held','cancelled'):
+                    if type(row.get(key)) is bool:item[key]=row[key]
+                if code(row.get('error')):item['error']=row['error']
+                safe.append(item)
+            saved=dict(rows=safe,total_rows=len(raw.get('rows',[])),held=raw.get('held') if type(raw.get('held')) is int else None)
+            (output/'synthetic-gateway-stats.json').write_text(json.dumps(saved,indent=2));status['gateway_rows']=len(safe)
+        except Exception as error:errors.append('gateway:'+type(error).__name__)
+    if profile is not None:
+        try:
+            raw=read(profile/'diagnostics/clipboard-writes.jsonl',2*1024*1024);safe=[]
+            for line in (raw or '').splitlines()[-2048:]:
+                try:row=json.loads(line)
+                except ValueError:continue
+                if not isinstance(row,dict):continue
+                item={key:value for key,value in row.items() if key in ('module','function','trigger','origin','content_type','operation','result') and code(value)}
+                if isinstance(row.get('time'),str) and re.fullmatch(r'[0-9T:+.Z-]{1,40}',row['time']):item['time']=row['time']
+                if isinstance(row.get('fingerprint'),str) and re.fullmatch(r'[a-f0-9]{64}',row['fingerprint']):item['fingerprint']=row['fingerprint']
+                if isinstance(row.get('task_id'),str) and re.fullmatch(r'[a-f0-9-]{36}',row['task_id']):item['task_id']=row['task_id']
+                for key in ('pid','dropped'):
+                    if number(row.get(key)):item[key]=row[key]
+                if type(row.get('duplicate')) is bool:item['duplicate']=row['duplicate']
+                safe.append(item)
+            (output/'synthetic-clipboard-provenance.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in safe));status['audit_rows']=len(safe)
+        except Exception as error:errors.append('audit:'+type(error).__name__)
+        try:
+            raw=read(profile/'network-diagnostics.json',65536);rows=json.loads(raw) if raw else [];safe=[]
+            for row in rows[-64:] if isinstance(rows,list) else []:
+                if not isinstance(row,dict):continue
+                item={key:value for key,value in row.items() if key in ('component','phase','code','platform','version') and code(value)}
+                for key in ('at','status'):
+                    if number(row.get(key)):item[key]=row[key]
+                detail=row.get('details',{});values={}
+                if isinstance(detail,dict):
+                    for key in ('received_size','expected_size','network_error','errno'):
+                        if number(detail.get(key)):values[key]=detail[key]
+                    for key in ('hash_matches','reply_finished','header_digest_valid'):
+                        if type(detail.get(key)) is bool:values[key]=detail[key]
+                    for key in ('phase','cause','location','response_length'):
+                        if code(detail.get(key)):values[key]=detail[key]
+                if values:item['details']=values
+                safe.append(item)
+            (output/'synthetic-network-diagnostics.json').write_text(json.dumps(safe,indent=2));status['network_rows']=len(safe)
+        except Exception as error:errors.append('network:'+type(error).__name__)
+    if errors:status['errors']=errors
+    return status
+
 class DeferredProfile:
     """Children and credential store close before Windows removes their files."""
     def __init__(self):self.directory=tempfile.TemporaryDirectory(prefix='flickdock-frozen-normal-ci-')
@@ -302,10 +367,11 @@ class Recorder:
         saved=[frame for frame in frames if frame['file']]
         if not saved:raise AssertionError('No actual native desktop pixels captured')
         selected=[saved[round(index*(len(saved)-1)/7)] for index in range(8)]
-        contact=Image.new('RGB',(960,8*210),'#dddddd');draw=ImageDraw.Draw(contact)
+        contact=Image.new('RGB',(1000,4*400),'#dddddd');draw=ImageDraw.Draw(contact)
         for index,frame in enumerate(selected):
-            picture=Image.open(folder/frame['file']);picture.thumbnail((960,188));contact.paste(picture,(0,index*210+22))
-            draw.text((4,index*210+3),f'{label} t={frame["t"]:.4f}s',fill='black')
+            left=(index%2)*500;top=(index//2)*400
+            picture=Image.open(folder/frame['file']);picture.thumbnail((500,375));contact.paste(picture,(left,top+22))
+            draw.text((left+4,top+3),f'{label} t={frame["t"]:.4f}s',fill='black')
         contact.save(folder/'contact-sheet.png')
         receipt=dict(label=label,elapsed=time.perf_counter()-started,frames=frames,distinct_pixels=len(saved),
             action_after_first_frame=True,action_after_capture_t=action_start,
@@ -338,21 +404,63 @@ class _UIABackend:
                 actual=control.element_info.name or ''
                 if (actual.startswith(name) if prefix else actual==name) and control.is_visible() and control.is_enabled():matches.append(control)
         return matches[0] if matches else None
+    def _input_api(self):
+        import ctypes
+        from ctypes import wintypes
+        api=ctypes.windll.user32
+        declarations={'GetForegroundWindow':([],wintypes.HWND),
+            'WindowFromPoint':([wintypes.POINT],wintypes.HWND),
+            'GetWindowThreadProcessId':([wintypes.HWND,ctypes.POINTER(wintypes.DWORD)],wintypes.DWORD),
+            'GetCursorPos':([ctypes.POINTER(wintypes.POINT)],wintypes.BOOL),
+            'SetWindowPos':([wintypes.HWND,wintypes.HWND,ctypes.c_int,ctypes.c_int,ctypes.c_int,ctypes.c_int,wintypes.UINT],wintypes.BOOL)}
+        for name,(arguments,result) in declarations.items():
+            function=getattr(api,name)
+            if isinstance(function,ctypes._CFuncPtr):function.argtypes=arguments;function.restype=result
+        return api
+    def _window_pid(self,handle):
+        import ctypes
+        value=ctypes.c_ulong();self._input_api().GetWindowThreadProcessId(handle,ctypes.byref(value));return value.value
+    def _producer_topmost(self,enabled):
+        require_hosted();api=self._input_api()
+        for window in self.windows(self.producer_pid):
+            if self._window_pid(window.handle)!=self.producer_pid:raise RuntimeError('HARNESS_INPUT_OWNERSHIP: producer HWND changed owner')
+            if not api.SetWindowPos(window.handle,-1 if enabled else -2,0,0,0,0,0x0013):
+                raise OSError('HARNESS_INPUT_OWNERSHIP: cannot adjust own producer z-order')
+    def _assert_pointer_owner(self,point,pid):
+        from ctypes import wintypes
+        actual=self._window_pid(self._input_api().WindowFromPoint(wintypes.POINT(*point)))
+        if actual!=pid:raise RuntimeError(f'HARNESS_INPUT_OWNERSHIP: pointer target PID {actual}, expected {pid}; no input sent')
+    def _assert_foreground(self,pid):
+        actual=self._window_pid(self._input_api().GetForegroundWindow())
+        if actual!=pid:raise RuntimeError(f'HARNESS_INPUT_OWNERSHIP: foreground PID {actual}, expected {pid}; no input sent')
+    def _prepare_control(self,control,pid):
+        if pid not in (self.pid,self.producer_pid):raise ValueError('Input may target only the two owned QA processes')
+        self._producer_topmost(pid==self.producer_pid);control.top_level_parent().set_focus()
+        rect=control.rectangle();point=((rect.left+rect.right)//2,(rect.top+rect.bottom)//2)
+        self._assert_pointer_owner(point,pid);self._assert_foreground(pid)
+        return point
     def click(self,name,*,pid=None,prefix=False):
         control=wait(lambda:self.find(name,pid=pid,prefix=prefix),seconds=6,label='native accessible control '+name)
         # Physical input through the OS. No invoke() callback shortcut.
+        self._prepare_control(control,pid or self.pid)
         control.click_input();return control
-    def hotkey(self,keys):
+    def hotkey(self,keys,*,pid=None):
         from pywinauto.keyboard import send_keys
+        if keys in ('^%+{SPACE}','^%{SPACE}'):
+            self._producer_topmost(False)
+        else:
+            expected=pid or self.pid;self._assert_foreground(expected)
         send_keys(keys,pause=.02)
+    def hover(self,name,*,prefix=False):
+        from pywinauto import mouse
+        control=wait(lambda:self.find(name,prefix=prefix),seconds=6,label='native hover target')
+        point=self._prepare_control(control,self.pid);mouse.move(coords=point);self._assert_pointer_owner(point,self.pid)
     def focus_window(self,title):
-        import ctypes
+        self._producer_topmost(False)
         target=wait(lambda:next((w for w in self.windows() if w.element_info.name==title),None),
                     seconds=6,label='actual native window '+title)
         target.set_focus()
-        foreground=ctypes.windll.user32.GetForegroundWindow();pid=ctypes.c_ulong()
-        ctypes.windll.user32.GetWindowThreadProcessId(foreground,ctypes.byref(pid))
-        if pid.value!=self.pid:raise AssertionError('Native window focus did not reach frozen app')
+        self._assert_foreground(self.pid)
         return True
     def drag_files(self,target_name,*,target_prefix=False):
         require_hosted()
@@ -378,14 +486,15 @@ class _UIABackend:
         window.set_focus()
         source=wait(lambda:self.find('Drag original files',pid=self.producer_pid),seconds=6,label='placed external native drag source')
         rectangle=source.rectangle();start=(int((rectangle.left+rectangle.right)/2),int((rectangle.top+rectangle.bottom)/2))
-        mouse.move(coords=start)
+        self._prepare_control(source,self.producer_pid);mouse.move(coords=start)
         try:
             mouse.press(button='left',coords=start)
             # OS motion enters a real QDrag loop in the independent producer.
             # Do not call application drag/drop handlers or UIA invoke().
             for index in range(1,19):
                 mouse.move(coords=tuple(round(a+(b-a)*index/18) for a,b in zip(start,destination)));time.sleep(.015)
-        finally:mouse.release(button='left',coords=destination)
+        finally:
+            mouse.release(button='left',coords=destination);self._producer_topmost(False)
         return dict(source=list(start),destination=list(destination),os_drag=True)
     def command(self,action,**values):
         self.sequence+=1;path=self.base/'editor-command.json';temporary=path.with_suffix('.tmp')
@@ -396,16 +505,18 @@ class _UIABackend:
         wait(acknowledged,label='external producer command')
     def text_copy(self,value):
         self.command('text',text=value);self.click('Synthetic external editor',pid=self.producer_pid)
-        self.hotkey('^a');self.hotkey('^c')
+        self.hotkey('^a',pid=self.producer_pid);self.hotkey('^c',pid=self.producer_pid)
+        if self.inspect()['text']!=value:raise RuntimeError('HARNESS_INPUT_OWNERSHIP: external native Copy did not produce the requested synthetic text')
     def inspect(self):
         self.command('inspect');return json.loads((self.base/'native-result.json').read_text())
     def paste_text(self):
         self.command('text',text='');self.click('Synthetic external editor',pid=self.producer_pid)
-        self.hotkey('^v');self.command('read_editor')
+        self.hotkey('^v',pid=self.producer_pid);self.command('read_editor')
         return json.loads((self.base/'paste-result.json').read_text())['text']
     def paste_file_in_explorer(self,source):
         from pywinauto import Desktop
         import ctypes
+        self._producer_topmost(False)
         destination=self.base/('native-paste-'+os.urandom(5).hex());destination.mkdir()
         # Explorer can reuse its desktop process; own only this unique folder
         # window, never terminate the global shell/other tests' Explorer process.
@@ -416,7 +527,9 @@ class _UIABackend:
             return None
         explorer=wait(target,label='unique native Explorer paste destination')
         try:
-            explorer.set_focus();start=time.perf_counter();self.hotkey('^v')
+            explorer.set_focus();self._assert_foreground(self._window_pid(explorer.handle))
+            from pywinauto.keyboard import send_keys
+            start=time.perf_counter();send_keys('^v',pause=.02)
             result=destination/Path(source).name
             wait(lambda:result.exists() and result.stat().st_size==Path(source).stat().st_size,label='native Explorer file Paste')
             if digest(result)!=digest(source):raise AssertionError('Actual Explorer paste changed original bytes')
@@ -483,7 +596,8 @@ class Driver(_UIABackend):
     def click(self,name,*,pid=None,prefix=False):
         result=self._rpc('click',name=name,pid=pid,prefix=prefix)
         return _RemoteControl(result) if result else None
-    def hotkey(self,keys):return self._rpc('hotkey',keys=keys)
+    def hotkey(self,keys,*,pid=None):return self._rpc('hotkey',keys=keys,pid=pid)
+    def hover(self,name,*,prefix=False):return self._rpc('hover',name=name,prefix=prefix)
     def focus_window(self,title):return self._rpc('focus_window',title=title)
     def drag_files(self,target_name,*,target_prefix=False):return self._rpc('drag_files',seconds=24,target_name=target_name,target_prefix=target_prefix)
     def paste_file_in_explorer(self,source):return self._rpc('paste_file_in_explorer',seconds=45,source=str(source))
@@ -497,7 +611,7 @@ class Driver(_UIABackend):
 
 def uia_worker():
     require_hosted();backend=_UIABackend(int(sys.argv[2]),int(sys.argv[3]),Path(sys.argv[4]))
-    allowed={'windows','find','click','tree','hotkey','focus_window','paste_file_in_explorer','drag_files'}
+    allowed={'windows','find','click','tree','hotkey','hover','focus_window','paste_file_in_explorer','drag_files'}
     def bounds(control):
         rect=control.rectangle();return [rect.left,rect.top,rect.right,rect.bottom]
     for line in sys.stdin:
@@ -536,7 +650,8 @@ def synthetic_profile(base):
         dock_edge='right',dock_position=20,dock_length=160,dock_thickness=8,trigger_visible=True,keep_empty_handle=True)
     (profile/'settings.json').write_text(json.dumps(settings))
     refs=[str(path) for path in (image,text,small,data)];now=time.time()
-    (profile/'shelves.json').write_text(json.dumps(dict(version=6,shelf=dict(permanent=refs,texts={},metadata={ref:{'added_at':now-index} for index,ref in enumerate(refs)},pinned=True))))
+    metadata={ref:{'shelf_added_at':datetime.datetime.fromtimestamp(now-index,datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')} for index,ref in enumerate(refs)}
+    (profile/'shelves.json').write_text(json.dumps(dict(version=6,shelf=dict(permanent=refs,texts={},metadata=metadata,pinned=True))))
     for mode in ('lan','wan'):
         records=[dict(name=f'Completed synthetic {index}.bin',peer='Local QA peer',state='完成',direction='send',when='11-01 12:30',paths=[str(small)]) for index in range(12)]
         (profile/(mode+'_history.json')).write_text(json.dumps(records))
@@ -608,7 +723,7 @@ def main():
             assert json_request(cloud.origin,'GET','/v1/clipboard',token=cloud.session['token'])['clipboard']['id']==head['id']
             report['checks'].append('Actual external native text copy/reassertion: one real local-service head, no repeated POST')
             driver.command('text',text='typing without copy')
-            driver.click('Synthetic external editor',pid=producer.pid);driver.hotkey('{END}ordinary-input')
+            driver.click('Synthetic external editor',pid=producer.pid);driver.hotkey('{END}ordinary-input',pid=producer.pid)
             idle_before=sum(row['method']=='POST' and row['path']=='/v1/clipboard' for row in cloud.stats()['rows'])
             time.sleep(2)
             assert driver.inspect()['text']==unique,'Typing changed the native clipboard without Copy'
@@ -710,8 +825,7 @@ def main():
                             wait(lambda name=name:driver.find(name),seconds=8,label='actual dropped file queued: '+name)
                         return result
                     if step['kind']=='hover':
-                        control=wait(lambda:driver.find(step['name'],prefix=step.get('prefix',False)),label='hover control')
-                        rect=control.rectangle();from pywinauto import mouse;mouse.move(coords=(rect.mid_point().x,rect.mid_point().y));return
+                        return driver.hover(step['name'],prefix=step.get('prefix',False))
                     if step['kind']=='file_copy':return driver.click('Copy original file',pid=producer.pid)
                     if step['kind']=='image_copy':return driver.click('Copy original image',pid=producer.pid)
                     raise ValueError('Unsupported native action')
@@ -719,10 +833,6 @@ def main():
                 (args.output/f'flow-{index:02}-accessibility.json').write_text(json.dumps(driver.tree(),ensure_ascii=False,indent=2))
             report.update(ok=True,native_input=True,real_system_clipboard=True,local_workerd=True,tls_verification=True,
                 actual_service_requests=cloud.stats()['rows'],screen_segments=[dict(label=row['label'],distinct_pixels=row['distinct_pixels']) for row in recorder.segments])
-            # Retain only bounded payload-free synthetic provenance, never the
-            # session/key/cert/profile or arbitrary application log directory.
-            audit=profile/'diagnostics/clipboard-writes.jsonl'
-            if audit.exists() and audit.stat().st_size<=2*1024*1024:(args.output/'synthetic-clipboard-provenance.jsonl').write_bytes(audit.read_bytes())
     except Exception as error:
         report['error']=type(error).__name__+': '+str(error);report['traceback']=traceback.format_exc()
         _PROGRESS.record('exception')
@@ -733,6 +843,7 @@ def main():
         raise
     finally:
         _PROGRESS.record('before','cleanup')
+        report['retained_diagnostics']=retain_diagnostics(args.output,profile if 'profile' in locals() else None,cloud)
         if 'driver' in locals():
             try:phase('cleanup-automation-worker',driver.close)
             except Exception as error:report['automation_cleanup_error']=type(error).__name__;report['ok']=False
@@ -755,7 +866,7 @@ def main():
         if 'screen_segments' in report:
             coverage['1']['actual_steps']=['list/grid segments','time/size/default sort']
             coverage['3']['actual_steps']=['LAN/WAN mode and Back flows if all ui-actions completed']
-            coverage['4']['actual_steps']=['OS drag from independent producer into both LAN/WAN targets and native Paste; original file paths retained']
+            coverage['4']['actual_steps']=['OS drag from independent producer into both LAN/WAN targets and native Paste; four original-name queue controls appear; underlying path/integrity acceptance remains separate']
             coverage['5']['actual_steps']=['12 synthetic persisted history rows: delete/clear actual UI']
             coverage['7']['actual_steps']=['actual clear-confirm and settings category frames']
             coverage['8']['actual_steps']=['direct LAN/WAN OS file drop with actual feedback/row frames; preview transfer-zone drops remain unverified']
