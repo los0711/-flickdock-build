@@ -1206,8 +1206,8 @@
     },
     {
       "path": "qa/packaged-live/ci_packaged_windows_live.py",
-      "size": 65295,
-      "sha256": "4ab90e3bb11616aa559dda42c730978233fa7692a6c70d54de9b38ccd7c1299d"
+      "size": 65486,
+      "sha256": "025d971bc6b5ccf63f0e73101a88d29e49e4af7f6c430bb8d44afe1ba728e35b"
     },
     {
       "path": "qa/packaged-live/gateway.mjs",

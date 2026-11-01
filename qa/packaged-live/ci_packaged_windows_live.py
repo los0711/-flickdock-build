@@ -408,12 +408,13 @@ class _UIABackend:
                         rectangle=[rect.left,rect.top,rect.right,rect.bottom],visible=control.is_visible(),enabled=control.is_enabled()))
                 except Exception:pass
         return rows
-    def find(self,name,*,pid=None,prefix=False):
+    def find(self,name,*,pid=None,prefix=False,roles=None):
         matches=[]
         for window in self.windows(pid):
             for control in [window,*window.descendants()]:
                 actual=control.element_info.name or ''
-                if (actual.startswith(name) if prefix else actual==name) and control.is_visible() and control.is_enabled():matches.append(control)
+                if ((actual.startswith(name) if prefix else actual==name) and control.is_visible() and control.is_enabled()
+                        and (roles is None or control.element_info.control_type in roles)):matches.append(control)
         return matches[0] if matches else None
     def _input_api(self):
         import ctypes
@@ -470,8 +471,8 @@ class _UIABackend:
         except (AttributeError,TypeError):row['style_unavailable']=True
         with (self.base/'native-input-ownership.jsonl').open('a',encoding='utf8') as stream:stream.write(json.dumps(row)+'\n')
         return point
-    def click(self,name,*,pid=None,prefix=False):
-        control=wait(lambda:self.find(name,pid=pid,prefix=prefix),seconds=6,label='native accessible control '+name)
+    def click(self,name,*,pid=None,prefix=False,roles=None):
+        control=wait(lambda:self.find(name,pid=pid,prefix=prefix,roles=roles),seconds=6,label='native accessible control '+name)
         # Physical input through the OS. No invoke() callback shortcut.
         self._prepare_control(control,pid or self.pid)
         control.click_input()
@@ -573,7 +574,7 @@ class _UIABackend:
     def setting(self,name,value):
         settings=self.base/'FlickDock/settings.json'
         def current():return json.loads(settings.read_text())[name]
-        if current()!=value:self.click({'clipboard_sync_enabled':'云剪贴板同步','sync_upload_enabled':'上传本机搁架到云端','sync_receive_enabled':'接收云端与其他设备内容'}[name])
+        if current()!=value:self.click({'clipboard_sync_enabled':'云剪贴板同步','sync_upload_enabled':'上传本机搁架到云端','sync_receive_enabled':'接收云端与其他设备内容'}[name],roles=['CheckBox'])
         wait(lambda:current()==value,label='persisted native settings '+name)
 
 
@@ -625,11 +626,11 @@ class Driver(_UIABackend):
         raise TimeoutError('HARNESS_AUTOMATION_REQUEST_TIMEOUT: '+operation+' exceeded '+str(seconds)+' seconds; application responsiveness not established')
     def windows(self,pid=None):return self._rpc('windows',pid=pid)
     def tree(self):return self._rpc('tree',seconds=8)
-    def find(self,name,*,pid=None,prefix=False):
-        result=self._rpc('find',name=name,pid=pid,prefix=prefix)
+    def find(self,name,*,pid=None,prefix=False,roles=None):
+        result=self._rpc('find',name=name,pid=pid,prefix=prefix,roles=roles)
         return _RemoteControl(result) if result else None
-    def click(self,name,*,pid=None,prefix=False):
-        result=self._rpc('click',name=name,pid=pid,prefix=prefix)
+    def click(self,name,*,pid=None,prefix=False,roles=None):
+        result=self._rpc('click',name=name,pid=pid,prefix=prefix,roles=roles)
         return _RemoteControl(result) if result else None
     def hotkey(self,keys,*,pid=None):return self._rpc('hotkey',keys=keys,pid=pid)
     def hover(self,name,*,prefix=False):return self._rpc('hover',name=name,prefix=prefix)
