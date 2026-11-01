@@ -54,9 +54,15 @@ jobs:
       - name: Check delayed formats, input fields and shared upload regressions
         env:
           QT_QPA_PLATFORM: offscreen
-        run: |
-          python -m unittest test_clipboard_origin_v1823 test_clipboard_loop_v1824 test_sync_switch_lifecycle_v1824 test_transfer_interaction_v1823 test_clipboard_sync_v1819 test_clipboard_fast_v1821 test_shared_clipboard_files_v1821 test_pointer_paste_v1819 -q
-          python -m unittest test_update_inline_v171 -q
+        run: python -m unittest test_clipboard_origin_v1823 test_clipboard_loop_v1824 test_sync_switch_lifecycle_v1824 test_transfer_interaction_v1823 test_clipboard_sync_v1819 test_clipboard_fast_v1821 test_shared_clipboard_files_v1821 test_pointer_paste_v1819 -q
+      - name: Verify independent updater handoff regressions
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest test_update_inline_v171 -q
+      - name: Verify frame lifecycle, popup and real control-state paint regressions
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest test_frame_animation_v1824 test_screen_animation_timer_v1824 test_user_popup_fixes_v1823 test_standard_control_states_v1824 test_disabled_field_states_v1824 -q
       - name: Reproduce asynchronous metadata reconciliation before framework warmup
         if: runner.os == 'macOS'
         shell: bash
@@ -138,16 +144,23 @@ jobs:
       - name: Install reviewed runtime and isolated external QA driver
         run: |
           python -m pip install -r requirements.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m pip install pywinauto==0.6.9 mss==10.1.0 Pillow==11.3.0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm ci --prefix cloud --no-audit --no-fund
       - name: Check explicit reviewed source manifest
         run: |
+          python -m unittest discover -s qa/packaged-live -p test_harness_bounds.py -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python qa/packaged-live/verify_frozen_source.py --before-build
       - name: Build actual native executable with the production entry
         run: |
           python ci_assets.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python p2p_assets.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m PyInstaller --noconfirm --clean FlickDock.spec
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python qa/packaged-live/verify_frozen_source.py --after-build
       - name: Normal frozen process, external native Copy/Paste, policy switches and actual screen frames
         shell: pwsh

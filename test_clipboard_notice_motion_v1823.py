@@ -7,6 +7,7 @@ from PySide6.QtCore import Qt,QVariantAnimation,QTimer
 from PySide6.QtGui import QColor,QImage,QPixmap
 from test_html_native_workspace import APP,flush,until
 from intake_notice import ClipboardNotice
+from native_ui_common import ScreenAnimationTimer
 
 
 class ClipboardNoticeTests(unittest.TestCase):
@@ -63,9 +64,15 @@ class ClipboardNoticeTests(unittest.TestCase):
         for index in range(100):self.show(str(index))
         self.assertLessEqual(len(self.notice.motion.active),3);self.assertLessEqual(len(self.notice.motion.ghosts),1)
         self.assertLessEqual(len(self.notice._cards),4);self.assertEqual(len(self.notice.findChildren(QVariantAnimation)),1)
-        self.assertEqual(len(self.notice.findChildren(QTimer)),2);self.assertEqual(self.notice.preview.text(),'99')
+        clocks=self.notice.findChildren(ScreenAnimationTimer)
+        self.assertEqual(len(clocks),1,'All notification timelines share one finite display clock')
+        self.assertEqual(set(self.notice.findChildren(QTimer))-set(clocks),{self.notice.timer,self.notice._result_timer})
+        self.assertFalse(clocks[0].isActive(),'Paused timelines must not poll')
+        self.assertEqual(QVariantAnimation.state(self.notice.animation),QVariantAnimation.Stopped,'No second native animation timer')
+        self.assertEqual(self.notice.preview.text(),'99')
         self.assertFalse([widget for widget in set(APP.topLevelWidgets())-before if widget is not self.notice])
         self.finish();self.assertFalse(self.notice.motion.ghosts);self.assertEqual([e['card'].preview.text() for e in self.notice.motion.active],['97','98','99'])
+        self.assertFalse(clocks[0].isActive());self.assertFalse(self.notice._flickdock_frame_clock.members)
 
     def test_supersede_cancels_pending_result_without_dismissing_completed_success(self):
         self.show('committed');self.finish()

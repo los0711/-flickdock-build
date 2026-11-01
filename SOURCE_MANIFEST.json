@@ -16,18 +16,18 @@
     },
     {
       "path": ".github/workflows/macos-build.yml",
-      "size": 5907,
-      "sha256": "a2a64561d5f965558b44a5f3b5a86401fa46861db278527955efb71e8713bc2f"
+      "size": 6002,
+      "sha256": "d4b67bf529c2062ed283bc2e98cd78ab6f1c468698ad4a2b1ee46931f43bd2fb"
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 8329,
-      "sha256": "fd43d6eb7842066ddaed0eb9b612c174b0048f263129a7d5eeac15e708ce1b62"
+      "size": 9206,
+      "sha256": "d4f642e123750774f543430e3da3f557634eb72e3e206ccb72530a9b2e70dbf1"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
-      "size": 2383,
-      "sha256": "cb6c58a4dea789369607be5379b8f9d12e048053e42b0e3e31fbc8a6f8062bf8"
+      "size": 2818,
+      "sha256": "d2e73a4d0acc30b58ee5184b1e29d896ffa2ff1f904a732d15dbbe4898c17942"
     },
     {
       "path": ".gitignore",
@@ -141,8 +141,8 @@
     },
     {
       "path": "account_panel.py",
-      "size": 74336,
-      "sha256": "91291020065568dc41a8f146ea9367418f7f414a52b13f2f967bc06b049a3ecb"
+      "size": 74594,
+      "sha256": "d175dda83f7187d9f94b6b43b882e5ab502f86c0d234870f8f77b5cb624bdbd3"
     },
     {
       "path": "account_service.py",
@@ -156,8 +156,8 @@
     },
     {
       "path": "app_settings.py",
-      "size": 140031,
-      "sha256": "bca2e4d15b4d350fd18be69942a5fd7406c2cf36bb8baac2713bbf1e26866ec5"
+      "size": 141581,
+      "sha256": "a5b94ea048fa2c7b90cb087da9d86fac94e7e187b5f64ccce3e696d399f42099"
     },
     {
       "path": "app_version.py",
@@ -646,13 +646,13 @@
     },
     {
       "path": "clipboard_notice_motion.py",
-      "size": 3439,
-      "sha256": "7471ffb80dfd6c35f99de0523ceb00b9cc891acb837e6a920c5bff9099520476"
+      "size": 3485,
+      "sha256": "2103e5853c656fa838bb6d9b1c03a5106e0dcab582d2682f4d7409e7e1942263"
     },
     {
       "path": "clipboard_popup_motion.py",
-      "size": 14438,
-      "sha256": "26f13bce8c4e58a4fd127df88867fbefbbf8cf6afe8551c98114c853a7be9e29"
+      "size": 14484,
+      "sha256": "026567fab37c99a6ee23b86bb7a0ec49b45652b47786fa00540adb003634ed2c"
     },
     {
       "path": "clipboard_preview.py",
@@ -871,13 +871,13 @@
     },
     {
       "path": "confirm_clear.py",
-      "size": 19048,
-      "sha256": "238056d1e3e3534d34188c532504f9d8188b8c394b09d2d65284cd9ee9fd316c"
+      "size": 19093,
+      "sha256": "627300662e6f232674499c80021443d5792d9742d6e2ea7c4a0d76dd6f303eba"
     },
     {
       "path": "content_entrance.py",
-      "size": 6847,
-      "sha256": "ea6ee883aa73d9029eae4999eb3dbaa7fd8fc278671ba5eb78879b62dff5ecbb"
+      "size": 6893,
+      "sha256": "b41d677c4f5eec93bde6d165dbc032f1bcab5bc703eafa4b31080d2c39cdd142"
     },
     {
       "path": "content_grid.py",
@@ -891,13 +891,18 @@
     },
     {
       "path": "content_stack.py",
-      "size": 18739,
-      "sha256": "22a2203e27c8daa1a8237485c7156e27f2b82a3067662c5463af1121ad7d8c47"
+      "size": 18784,
+      "sha256": "2240caf6a702c3e0b18dd2c7cd71ff2d69f3c395eef1562b33c10d60d53e1205"
+    },
+    {
+      "path": "control_states.py",
+      "size": 1238,
+      "sha256": "70cb318fb6311f168e6c319268dc85705fba58f29be598e3ab487e8afb6c49e9"
     },
     {
       "path": "display_triggers.py",
-      "size": 15068,
-      "sha256": "68c06502d04bbeef11c823fa6c65a3fd396698c7f3e64f8ab1b44d858026aa81"
+      "size": 15114,
+      "sha256": "59bf72d2c81141765a0257191e5092ecf923b24af9f6e293b7850fc483eccf44"
     },
     {
       "path": "dock_geometry.py",
@@ -951,8 +956,8 @@
     },
     {
       "path": "flickdock.py",
-      "size": 244744,
-      "sha256": "84d07250904a91d60c558843502affbe881165df0e3e8012dff12a2822ed4cd3"
+      "size": 244812,
+      "sha256": "27f5bc331eecb7421ff0faa90c8b5390c32d8e7cf8a7fe23f8f2254f6574b82f"
     },
     {
       "path": "flickdock_icons.py",
@@ -975,6 +980,11 @@
       "sha256": "2deabf97eaf17958dc24746b922779d9913008526daf1c853903547505a8f9ca"
     },
     {
+      "path": "frame_animation.py",
+      "size": 9918,
+      "sha256": "f96d717a4be4c405b454f71ad90b237a4ed06280ec04c1b76f0e9e402f978889"
+    },
+    {
       "path": "global_hotkeys.py",
       "size": 11750,
       "sha256": "523638eb7dbfecb4c9c85650dbb8a7d09c02287e515d93fc5a32bfcd9d9dfb07"
@@ -991,8 +1001,8 @@
     },
     {
       "path": "input_focus.py",
-      "size": 7815,
-      "sha256": "858da9dfa265f339fcc64c812d2f5f2cd17b858d8672fb5de74d8d28a33476e5"
+      "size": 7861,
+      "sha256": "05908eef2ee61216eac01c5486b18ca76d5e9bf25b6a5869db2cb379369ca072"
     },
     {
       "path": "instance_guard.py",
@@ -1011,8 +1021,8 @@
     },
     {
       "path": "lan_panel.py",
-      "size": 123979,
-      "sha256": "818c477042d034aff11ed6b0ad74148a98d8453107a2dc9d958e482da1c32345"
+      "size": 124938,
+      "sha256": "c56a9ad246e60d227da7e47d43decf9c9bc0f768bb1608e007d5d95fad979bcb"
     },
     {
       "path": "lan_transfer.py",
@@ -1101,8 +1111,8 @@
     },
     {
       "path": "native_ui_common.py",
-      "size": 33951,
-      "sha256": "6a6eba06a6f011abad881cdef1d2cf55518f71ca8e2695a777adf5cc95d69fe3"
+      "size": 33980,
+      "sha256": "425d1f18c0d0a4fc534c6462b40c0a8b76f7682cb91ebc09d6b1f4d8e5b65a0a"
     },
     {
       "path": "nearby_transport.py",
@@ -1191,8 +1201,8 @@
     },
     {
       "path": "qa/packaged-live/ci_packaged_windows_live.py",
-      "size": 32013,
-      "sha256": "1b1bd37473d69eff70e0832888906783db28f811b50be7c78546b64320ec0675"
+      "size": 45870,
+      "sha256": "31f123adb04f64fcfad7cfa7cfe52786caf4d86454ff622a88ab045184f26220"
     },
     {
       "path": "qa/packaged-live/gateway.mjs",
@@ -1205,9 +1215,14 @@
       "sha256": "c25cf81f7197594c4582870209c6aa217ab028207aa379891ded232dc5ba99b9"
     },
     {
+      "path": "qa/packaged-live/test_harness_bounds.py",
+      "size": 2537,
+      "sha256": "d9ee441ad328921eec388ce45439635087c26ceaa9a5fcd0082409e98e35d442"
+    },
+    {
       "path": "qa/packaged-live/ui-actions.json",
-      "size": 2645,
-      "sha256": "413c46178f5bbcac8bfcb6c9c66fe2e79d0dedd4e2ccc917bfa546b1457dbf3b"
+      "size": 2936,
+      "sha256": "7f1c2435569d9a745376a86a26c2c29bef5c7a41f35fe8af311c4b6f602e77d2"
     },
     {
       "path": "qa/packaged-live/verify_frozen_source.py",
@@ -1216,8 +1231,8 @@
     },
     {
       "path": "reference_widgets.py",
-      "size": 76098,
-      "sha256": "03a3a92390e17dd6ef14a0c2db34123a2744139c5399ec7a99f6130652e06d1c"
+      "size": 77003,
+      "sha256": "f5108af433dcd40f573d7bd9f58d539199e1877b7d291f586ac0e641fdbb3f0a"
     },
     {
       "path": "release_dpr_v165.py",
@@ -1236,8 +1251,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 38415,
-      "sha256": "32294d52eb9e2de25ae88128410c77e7b27e7b6afbfd06166d723ea42f78bb50"
+      "size": 38633,
+      "sha256": "7ee4d92f18447fa07883c8949511c8fbbb1cb702249655545f31e7a8c363d699"
     },
     {
       "path": "release_signing.py",
@@ -1311,8 +1326,8 @@
     },
     {
       "path": "surface_morph.py",
-      "size": 17150,
-      "sha256": "ffea4f4ad206f9e8111fa3576d094f9cc15cf3833fff2aab9bcc8274ed3ec7c7"
+      "size": 17195,
+      "sha256": "f042087cafb378d9d082669fc205181f78fba7b7ed0abaf0a552d73085cb407f"
     },
     {
       "path": "sync_adapter.py",
@@ -1396,13 +1411,13 @@
     },
     {
       "path": "test_clipboard_loop_v1824.py",
-      "size": 10340,
-      "sha256": "407af0c11c2247a27fdbd12864eb394841b81e5125b4686e03a10325eff5dbde"
+      "size": 10682,
+      "sha256": "60268371d5cc4f3a698a9da693d84e4515940e8b4566e215e82b2a34751e7c6f"
     },
     {
       "path": "test_clipboard_notice_motion_v1823.py",
-      "size": 13756,
-      "sha256": "bd0bb474a63c1221e920420d22bb0db0d95dde5b285cddaf364f1a383da90057"
+      "size": 14354,
+      "sha256": "4dc1d6224ab4b28686a41a28e7cf48fbcd5aec70184f8d5973e4741c21595f85"
     },
     {
       "path": "test_clipboard_origin_v1823.py",
@@ -1490,6 +1505,11 @@
       "sha256": "db53ae90a70e02e374721335890820ab6e5c2a403f443b23823e656d406a79ef"
     },
     {
+      "path": "test_disabled_field_states_v1824.py",
+      "size": 8649,
+      "sha256": "435fa7f4c009eedc34961184e43dbce28d2c38ffc634d0873c9ee1f3e46425ba"
+    },
+    {
       "path": "test_display_groups_v1821.py",
       "size": 12194,
       "sha256": "013a61e71982d45c9fc1d771c2c90834da55c55fbcfb6a7c0ce676a5b92b345d"
@@ -1570,6 +1590,11 @@
       "sha256": "2abc6d5dcf2f891c365bbb35b2bdb59586515feccc962cf08f8d80255363abf3"
     },
     {
+      "path": "test_frame_animation_v1824.py",
+      "size": 15547,
+      "sha256": "0ff9b3701c4d27738cded85601dfc6c31c546a197b7b926c352667088ef6734e"
+    },
+    {
       "path": "test_functional_layout_v1823.py",
       "size": 17896,
       "sha256": "2eff621b6dd00cabb83f505cf58956b78dd877b0f266bf1c5b50e71122b39203"
@@ -1601,8 +1626,8 @@
     },
     {
       "path": "test_html_native_workspace.py",
-      "size": 26788,
-      "sha256": "1c5914472dfb8c144878df590bd1a8e1c50005ddace55c4f969c9b3897783bce"
+      "size": 27437,
+      "sha256": "a76d5af0fba77489ac1328f385bc5505ae8309164f8c3fef740eea623e0ea102"
     },
     {
       "path": "test_input_motion_v1823.py",
@@ -1885,6 +1910,11 @@
       "sha256": "d4f4dd45f2e89a441f44062d1eace2b41d4b1c8a28242517183888382b886a68"
     },
     {
+      "path": "test_standard_control_states_v1824.py",
+      "size": 5304,
+      "sha256": "f6680ea4a5b3e8ab37f2c7e193b3faa480160aff139b70ea451c422f773429e7"
+    },
+    {
       "path": "test_stream_upload_v1816.py",
       "size": 5298,
       "sha256": "40020de0908b42a29b4f7704df36a36e17ab8f4543ec2a32208b9b4849620e1d"
@@ -2096,23 +2126,23 @@
     },
     {
       "path": "toggle_motion.py",
-      "size": 1774,
-      "sha256": "adcaedb6844ddf879849f44ebd133db080350ce24708113ae8018f559c98af51"
+      "size": 1819,
+      "sha256": "7a557e1981f3813f6885f42620b38da2708dd5a5c1af6a1cb0400ed4659d4a9a"
     },
     {
       "path": "transfer_drop_feedback.py",
-      "size": 6351,
-      "sha256": "f0c357333182877f6232b3f3afd61e470f79be5148926bbad35623a72943037e"
+      "size": 6397,
+      "sha256": "f1b7330c22f2ec0d799e304ecf47dbe5bb7c24f5e683aa3dab68f4fa9250fc9b"
     },
     {
       "path": "transfer_entry.py",
-      "size": 9029,
-      "sha256": "e4f34fdaaf1264c96fa2b9888db963663e531f4dcb84fafc1c942373c6a9af82"
+      "size": 9075,
+      "sha256": "c1e55cea535f8b63051fbd81f780e7989249cba652371b70bc791867cb4f93fe"
     },
     {
       "path": "transfer_item_motion.py",
-      "size": 9826,
-      "sha256": "9651f3d2069f3e89cdc1cc4043614356f3c291660df5455a6f264383949f201d"
+      "size": 9872,
+      "sha256": "fe2da71af9a1c4261cbefef891d6b4e0bd49158c08453d463343f03a5152f6e2"
     },
     {
       "path": "transfer_priority.py",
@@ -2131,8 +2161,8 @@
     },
     {
       "path": "ui_transitions.py",
-      "size": 16982,
-      "sha256": "d17a3bc008ddad141065620b3293969e4e1ebcce1c051eb7d4b59f5f30d4547d"
+      "size": 17028,
+      "sha256": "251b4c7c17f72747cebe9fcbe9cd27e6110bf0b91dcf916456fb2cd8bd4c907e"
     },
     {
       "path": "update_client.py",
@@ -2146,8 +2176,8 @@
     },
     {
       "path": "update_dialog.py",
-      "size": 28885,
-      "sha256": "33b9d38d2842885149f1aee2e3a7fe3334f26d05734851cd5ac23b7dbc413c6f"
+      "size": 29390,
+      "sha256": "df3a84080bccddd39547f4cb8bea1ba953a7a6d75cfacc04ea68567ffcc03c9e"
     },
     {
       "path": "update_download.py",

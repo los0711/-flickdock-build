@@ -4,7 +4,8 @@ Capture before the immediate data/layout mutation, then reflow the surviving
 widgets. One bounded clock owns cached ghosts and temporary survivor offsets;
 no timer or callback changes files, records, selection or layout geometry.
 """
-from PySide6.QtCore import QCoreApplication,QEvent,QObject,QPoint,QPointF,QRect,QRectF,Qt,QTimer,QVariantAnimation,QEasingCurve
+from PySide6.QtCore import QCoreApplication,QEvent,QObject,QPoint,QPointF,QRect,QRectF,Qt,QTimer,QEasingCurve
+from frame_animation import FrameAnimation as QVariantAnimation
 from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import QGraphicsEffect,QWidget
 from shiboken6 import isValid

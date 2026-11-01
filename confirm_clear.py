@@ -6,7 +6,8 @@ those presentation caches from capturing confirmation pixels.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QEventLoop, QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal, QVariantAnimation
+from PySide6.QtCore import QEvent, QEventLoop, QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal
+from frame_animation import FrameAnimation as QVariantAnimation
 from PySide6.QtGui import QColor, QFont, QPainter
 from PySide6.QtWidgets import (QApplication, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel,
                                QPushButton, QSizePolicy, QVBoxLayout, QWidget)

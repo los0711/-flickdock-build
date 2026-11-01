@@ -11,6 +11,47 @@ from pathlib import Path
 from urllib.request import Request,urlopen
 
 DOMAINS=('flickdock-cloud.roger000416.workers.dev','flickdock-site.roger000416.workers.dev')
+_PROGRESS=None
+
+
+class Progress:
+    """Payload-free stages plus independent desktop diagnostics, never UIA."""
+    def __init__(self,out):
+        self.out=out;self.lock=threading.Lock();self.phase='startup';self.started=time.monotonic();self.stopped=threading.Event()
+        self.path=out/'qa-phases.jsonl';self.shots=out/'phase-screen';self.shots.mkdir(exist_ok=True)
+        self.thread=threading.Thread(target=self._heartbeat,daemon=True);self.thread.start()
+    def record(self,event,phase=None,**details):
+        with self.lock:
+            if phase is not None:self.phase=phase;self.started=time.monotonic()
+            row=dict(event=event,phase=self.phase,elapsed_s=round(time.monotonic()-self.started,3),mono=time.monotonic(),**details)
+            with self.path.open('a',encoding='utf8') as stream:stream.write(json.dumps(row)+'\n')
+        print('QA_STAGE '+json.dumps(row),flush=True)
+    def _heartbeat(self):
+        while not self.stopped.wait(10):self.record('heartbeat')
+    def screenshot(self,label):
+        require_hosted()
+        errors=[]
+        def capture():
+            try:
+                import mss
+                from PIL import Image
+                with mss.mss() as screen:
+                    shot=screen.grab(screen.monitors[1]);Image.frombytes('RGB',shot.size,shot.rgb).save(self.shots/(label+'.png'),compress_level=1)
+            except Exception as error:errors.append(type(error).__name__)
+        task=threading.Thread(target=capture,daemon=True);task.start();task.join(3)
+        if task.is_alive() or errors:self.record('screenshot_unavailable')
+    def close(self):self.stopped.set();self.thread.join(1)
+
+
+def phase(label,action,*,screens=False):
+    if _PROGRESS is not None:
+        _PROGRESS.record('before',label)
+        if screens:_PROGRESS.screenshot(label+'-before')
+    try:return action()
+    finally:
+        if _PROGRESS is not None:
+            if screens:_PROGRESS.screenshot(label+'-after')
+            _PROGRESS.record('after')
 
 def require_hosted():
     if sys.platform!='win32' or os.environ.get('GITHUB_ACTIONS')!='true' or os.environ.get('RUNNER_OS')!='Windows':
@@ -85,12 +126,12 @@ class LocalCloud:
             return line if re.fullmatch(r'http://127\.0\.0\.1:\d+',line) else None
         self.origin=wait(ready,seconds=90,label='actual local workerd startup')
         key,cert,self.thumbprint=certificate(self.folder)
-        subprocess.run(['certutil','-user','-addstore','Root',str(cert)],check=True,capture_output=True)
+        subprocess.run(['certutil','-user','-addstore','Root',str(cert)],check=True,capture_output=True,timeout=15)
         self.hosts=Path(os.environ['SystemRoot'])/'System32/drivers/etc/hosts'
         self.hosts_before=self.hosts.read_bytes()
         self.hosts_after=self.hosts_before+b'\r\n# FlickDock ephemeral local QA\r\n'+''.join('127.0.0.1 '+domain+'\r\n' for domain in DOMAINS).encode()
         self.hosts.write_bytes(self.hosts_after)
-        subprocess.run(['ipconfig','/flushdns'],check=True,capture_output=True)
+        subprocess.run(['ipconfig','/flushdns'],check=True,capture_output=True,timeout=10)
         config=dict(origin=self.origin,key=str(key),cert=str(cert),ready=str(self.folder/'gateway-ready.json'))
         config_file=self.folder/'gateway-config.json';config_file.write_text(json.dumps(config))
         proxy=subprocess.Popen(['node',str(self.qa_root/'gateway.mjs'),str(config_file)],stdout=self.log,stderr=self.log,
@@ -111,9 +152,12 @@ class LocalCloud:
         return json_request(self.origin,'POST','/v1/auth/'+('login' if login else 'register'),
             dict(username=name,challenge_id=value['challenge_id'],auth_key=key,device_name='Native QA peer' if login else 'Frozen Windows QA',platform='windows'))
     def seed_session(self,base):
-        from account_store import SessionStore
         name='live-'+os.urandom(8).hex();session=self.sign(name);self.peer=self.sign(name,True)
-        self.store=SessionStore(base,'https://'+DOMAINS[0]);self.store.save(session)
+        self.store=base
+        private=self.folder/'synthetic-session-private.json';private.write_text(json.dumps(session))
+        subprocess.run([sys.executable,str(Path(__file__).resolve()),'--credential-worker','save',str(self.root),str(base),str(private)],
+            check=True,capture_output=True,timeout=15,creationflags=subprocess.CREATE_NO_WINDOW)
+        private.unlink()
         self.session=session
     def stats(self):return json_request(self.control,'GET','/stats')
     def command(self,path):
@@ -127,45 +171,65 @@ class LocalCloud:
         json_request(self.origin,'POST',f'/v1/uploads/{result["upload_id"]}/commit',{},self.peer['token'])
         return identity
     def close(self):
+        errors=[]
         for process in reversed(self.processes):
             if process.poll() is None:
                 # qa-server owns Wrangler/workerd descendants. Kill only this
                 # explicitly-created PID tree; never taskkill /IM node.exe.
-                subprocess.run(['taskkill','/PID',str(process.pid),'/T','/F'],capture_output=True,timeout=15)
-                try:process.wait(8)
-                except subprocess.TimeoutExpired:process.kill();process.wait(5)
-        if self.store is not None:self.store.clear()
+                try:
+                    subprocess.run(['taskkill','/PID',str(process.pid),'/T','/F'],capture_output=True,timeout=15)
+                    try:process.wait(8)
+                    except subprocess.TimeoutExpired:process.kill();process.wait(5)
+                except Exception as error:errors.append('owned_process:'+type(error).__name__)
+        if self.store is not None:
+            try:
+                subprocess.run([sys.executable,str(Path(__file__).resolve()),'--credential-worker','clear',str(self.root),str(self.store)],
+                    check=True,capture_output=True,timeout=15,creationflags=subprocess.CREATE_NO_WINDOW)
+            except Exception as error:errors.append('synthetic_credential:'+type(error).__name__)
         if self.hosts is not None:
-            if self.hosts.read_bytes()!=self.hosts_after:raise RuntimeError('Runner hosts changed outside QA; refusing to overwrite unexpected changes')
-            self.hosts.write_bytes(self.hosts_before)
-            subprocess.run(['ipconfig','/flushdns'],capture_output=True)
-        if self.thumbprint:subprocess.run(['certutil','-user','-delstore','Root',self.thumbprint],check=True,capture_output=True)
+            try:
+                if self.hosts.read_bytes()!=self.hosts_after:raise RuntimeError('Runner hosts changed outside QA; refusing to overwrite unexpected changes')
+                self.hosts.write_bytes(self.hosts_before)
+                subprocess.run(['ipconfig','/flushdns'],capture_output=True,timeout=10)
+            except Exception as error:errors.append('hosts_restore:'+type(error).__name__)
+        if self.thumbprint:
+            try:subprocess.run(['certutil','-user','-delstore','Root',self.thumbprint],check=True,capture_output=True,timeout=15)
+            except Exception as error:errors.append('test_ca_restore:'+type(error).__name__)
         if hasattr(self,'log'):self.log.close()
+        if errors:raise RuntimeError('Runner QA cleanup incomplete: '+','.join(errors))
 
 class Recorder:
     """Capture actual desktop; no manual QVariantAnimation/setCurrentTime use."""
     def __init__(self,out):self.out=out;self.out.mkdir(parents=True,exist_ok=True);self.segments=[]
     def run(self,label,action,duration=.9):
         require_hosted()
+        if _PROGRESS is not None:
+            _PROGRESS.record('before',label);_PROGRESS.screenshot(label+'-before')
         import mss
         from PIL import Image,ImageDraw
         folder=self.out/label;folder.mkdir();frames=[];failure=[];ready=threading.Event();stop=threading.Event()
+        epoch=[None]
         # Sampling is QA-only. No app FPS override/cap or fake animation clock.
         def capture():
             try:
                 with mss.mss() as grabber:
-                    monitor=grabber.monitors[1];ready.set();last=None;start=time.perf_counter()
+                    monitor=grabber.monitors[1];last=None;start=time.perf_counter();epoch[0]=start
                     while not stop.is_set():
-                        timestamp=time.perf_counter()-start;raw=grabber.grab(monitor)
+                        raw=grabber.grab(monitor);timestamp=time.perf_counter()-start
                         body=raw.rgb;checksum=hashlib.sha256(body).hexdigest()
                         filename=None
                         if checksum!=last:
                             filename=f'{len(frames):05}.png'
                             Image.frombytes('RGB',raw.size,body).save(folder/filename,compress_level=1)
                         frames.append(dict(t=timestamp,sha256=checksum,file=filename));last=checksum
+                        ready.set()
             except Exception as error:failure.append(type(error).__name__);ready.set()
-        thread=threading.Thread(target=capture,daemon=True);thread.start();ready.wait(5)
+        thread=threading.Thread(target=capture,daemon=True);thread.start()
+        if not ready.wait(5):
+            stop.set();thread.join(3)
+            raise RuntimeError('Actual desktop first frame was not available before action')
         if failure:raise RuntimeError('Actual desktop capture unavailable: '+str(failure))
+        action_start=time.perf_counter()-epoch[0]
         started=time.perf_counter();result=None;action_error=None
         try:result=action();time.sleep(max(0,duration-(time.perf_counter()-started)))
         except Exception as error:action_error=error
@@ -180,13 +244,16 @@ class Recorder:
             draw.text((4,index*210+3),f'{label} t={frame["t"]:.4f}s',fill='black')
         contact.save(folder/'contact-sheet.png')
         receipt=dict(label=label,elapsed=time.perf_counter()-started,frames=frames,distinct_pixels=len(saved),
+            action_after_first_frame=True,action_after_capture_t=action_start,
             sampling='Uncapped real capture loop; capture/encoding time limits samples, NOT an app FPS measurement',
             manual_visual_review='required',actual_normal_exe=True)
         (folder/'timeline.json').write_text(json.dumps(receipt,indent=2));self.segments.append(receipt)
+        if _PROGRESS is not None:
+            _PROGRESS.screenshot(label+'-after');_PROGRESS.record('after')
         if action_error is not None:raise action_error
         return result
 
-class Driver:
+class _UIABackend:
     def __init__(self,pid,producer_pid,base):
         from pywinauto import Desktop
         self.desktop=Desktop(backend='uia');self.pid=pid;self.producer_pid=producer_pid;self.base=base;self.sequence=0
@@ -208,12 +275,21 @@ class Driver:
                 if (actual.startswith(name) if prefix else actual==name) and control.is_visible() and control.is_enabled():matches.append(control)
         return matches[0] if matches else None
     def click(self,name,*,pid=None,prefix=False):
-        control=wait(lambda:self.find(name,pid=pid,prefix=prefix),label='native accessible control '+name)
+        control=wait(lambda:self.find(name,pid=pid,prefix=prefix),seconds=6,label='native accessible control '+name)
         # Physical input through the OS. No invoke() callback shortcut.
         control.click_input();return control
     def hotkey(self,keys):
         from pywinauto.keyboard import send_keys
         send_keys(keys,pause=.02)
+    def focus_window(self,title):
+        import ctypes
+        target=wait(lambda:next((w for w in self.windows() if w.element_info.name==title),None),
+                    seconds=6,label='actual native window '+title)
+        target.set_focus()
+        foreground=ctypes.windll.user32.GetForegroundWindow();pid=ctypes.c_ulong()
+        ctypes.windll.user32.GetWindowThreadProcessId(foreground,ctypes.byref(pid))
+        if pid.value!=self.pid:raise AssertionError('Native window focus did not reach frozen app')
+        return True
     def command(self,action,**values):
         self.sequence+=1;path=self.base/'editor-command.json';temporary=path.with_suffix('.tmp')
         temporary.write_text(json.dumps(dict(id=self.sequence,action=action,**values)));temporary.replace(path)
@@ -255,6 +331,100 @@ class Driver:
         if current()!=value:self.click({'clipboard_sync_enabled':'云剪贴板同步','sync_upload_enabled':'上传本机搁架到云端','sync_receive_enabled':'接收云端与其他设备内容'}[name])
         wait(lambda:current()==value,label='persisted native settings '+name)
 
+
+class _RemoteControl:
+    def __init__(self,rectangle):self.bounds=rectangle
+    def rectangle(self):
+        from types import SimpleNamespace
+        left,top,right,bottom=self.bounds
+        return SimpleNamespace(left=left,top=top,right=right,bottom=bottom,
+            mid_point=lambda:SimpleNamespace(x=(left+right)//2,y=(top+bottom)//2))
+
+
+class Driver(_UIABackend):
+    """UIA COM never runs in the controller/report/cleanup process.
+
+    A provider may ignore Python's polling deadline while FindAll/rectangle is
+    inside COM. One scoped worker process makes that wait actually bounded and
+    allows the original harness error/frames to survive a provider hang.
+    """
+    def __init__(self,pid,producer_pid,base):
+        require_hosted();self.pid=pid;self.producer_pid=producer_pid;self.base=base;self.sequence=0
+        self._responses=queue.Queue();self._rpc_id=0;self._provider_failed=False
+        self._worker_stderr=(base/'uia-worker-private.stderr').open('wb')
+        self._worker=subprocess.Popen([sys.executable,str(Path(__file__).resolve()),'--uia-worker',str(pid),str(producer_pid),str(base)],
+            stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=self._worker_stderr,text=True,encoding='utf8',creationflags=subprocess.CREATE_NO_WINDOW)
+        def receive():
+            for line in self._worker.stdout:
+                try:self._responses.put(json.loads(line))
+                except ValueError:continue
+        threading.Thread(target=receive,daemon=True).start()
+    def _rpc(self,operation,*,seconds=12,**values):
+        if self._provider_failed or self._worker.poll() is not None:raise RuntimeError('UIA worker already unavailable; refusing repeated diagnostic COM calls')
+        if _PROGRESS is not None:_PROGRESS.record('automation_before',operation=operation)
+        self._rpc_id+=1;identity=self._rpc_id
+        self._worker.stdin.write(json.dumps(dict(id=identity,operation=operation,values=values))+'\n');self._worker.stdin.flush()
+        deadline=time.monotonic()+seconds
+        while time.monotonic()<deadline:
+            try:result=self._responses.get(timeout=min(.2,max(.001,deadline-time.monotonic())))
+            except queue.Empty:
+                if self._worker.poll() is not None:raise RuntimeError('UIA worker exited during '+operation)
+                continue
+            if result.get('id')!=identity:continue
+            if result.get('error'):raise RuntimeError('UIA '+operation+': '+result['error'])
+            if _PROGRESS is not None:_PROGRESS.record('automation_after',operation=operation)
+            return result.get('result')
+        self._provider_failed=True;self._worker.terminate()
+        try:self._worker.wait(3)
+        except subprocess.TimeoutExpired:self._worker.kill();self._worker.wait(3)
+        raise TimeoutError('HARNESS_AUTOMATION_REQUEST_TIMEOUT: '+operation+' exceeded '+str(seconds)+' seconds; application responsiveness not established')
+    def windows(self,pid=None):return self._rpc('windows',pid=pid)
+    def tree(self):return self._rpc('tree',seconds=8)
+    def find(self,name,*,pid=None,prefix=False):
+        result=self._rpc('find',name=name,pid=pid,prefix=prefix)
+        return _RemoteControl(result) if result else None
+    def click(self,name,*,pid=None,prefix=False):
+        result=self._rpc('click',name=name,pid=pid,prefix=prefix)
+        return _RemoteControl(result) if result else None
+    def hotkey(self,keys):return self._rpc('hotkey',keys=keys)
+    def focus_window(self,title):return self._rpc('focus_window',title=title)
+    def paste_file_in_explorer(self,source):return self._rpc('paste_file_in_explorer',seconds=45,source=str(source))
+    def close(self):
+        if self._worker.poll() is None:
+            self._worker.terminate()
+            try:self._worker.wait(3)
+            except subprocess.TimeoutExpired:self._worker.kill();self._worker.wait(3)
+        self._worker.stdin.close();self._worker.stdout.close();self._worker_stderr.close()
+
+
+def uia_worker():
+    require_hosted();backend=_UIABackend(int(sys.argv[2]),int(sys.argv[3]),Path(sys.argv[4]))
+    allowed={'windows','find','click','tree','hotkey','focus_window','paste_file_in_explorer'}
+    def bounds(control):
+        rect=control.rectangle();return [rect.left,rect.top,rect.right,rect.bottom]
+    for line in sys.stdin:
+        command=json.loads(line);response={'id':command['id']}
+        try:
+            operation=command['operation']
+            if operation not in allowed:raise ValueError('Unknown UIA operation')
+            result=getattr(backend,operation)(**command.get('values',{}))
+            if operation in ('find','click'):result=bounds(result) if result else None
+            elif operation=='windows':result=[bounds(control) for control in result]
+            response['result']=result
+        except Exception as error:response['error']=type(error).__name__+': '+str(error)
+        print(json.dumps(response),flush=True)
+    return 0
+
+
+def credential_worker():
+    require_hosted();action,root,base=sys.argv[2:5];sys.path.insert(0,root)
+    from account_store import SessionStore
+    store=SessionStore(base,'https://'+DOMAINS[0])
+    if action=='save':store.save(json.loads(Path(sys.argv[5]).read_text()))
+    elif action=='clear':store.clear()
+    else:raise ValueError('Unknown credential worker operation')
+    print('Synthetic runner credential operation completed',flush=True);return 0
+
 def synthetic_profile(base):
     from PIL import Image
     profile=base/'FlickDock';profile.mkdir();files=base/'files';files.mkdir()
@@ -276,6 +446,7 @@ def synthetic_profile(base):
     return profile,refs
 
 def main():
+    global _PROGRESS
     parser=argparse.ArgumentParser();parser.add_argument('--exe',type=Path,required=True)
     parser.add_argument('--sha256',required=True);parser.add_argument('--root',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True);parser.add_argument('--actions',type=Path)
@@ -283,6 +454,10 @@ def main():
     sys.path.insert(0,str(args.root.resolve()))
     if not re.fullmatch(r'[0-9a-f]{64}',args.sha256) or digest(args.exe)!=args.sha256:raise AssertionError('Wrong immutable frozen executable')
     args.output.mkdir(parents=True,exist_ok=True);qa_root=Path(__file__).resolve().parent
+    _PROGRESS=Progress(args.output)
+    import faulthandler
+    stacks=(args.output/'qa-controller-stacks.log').open('w')
+    faulthandler.dump_traceback_later(60,repeat=True,file=stacks)
     report=dict(ok=False,completion_eligible=False,exe_sha256=args.sha256,normal_entry=True,verify_switches=False,cocoa_smoke=False,
         production_entry_imported=False,frozen_executable_patched=False,public_cloud=False,physical_cross_device=False,installer_executed=False,
         all_15_groups_verified=False,manual_visual_review='required',checks=[],unverified=['Real public cloud latency/P95','Physical Windows↔Mac clipboard','GPU/AMD/VMware','Mac permissions/statusbar/update installation','Native installer update chain'])
@@ -290,7 +465,9 @@ def main():
     try:
         with temporary_profile as temporary:
             base=Path(temporary);profile,refs=synthetic_profile(base)
-            cloud=LocalCloud(args.root,base,qa_root);cloud.start();cloud.seed_session(profile)
+            cloud=LocalCloud(args.root,base,qa_root)
+            phase('local-cloud-start',cloud.start,screens=True)
+            phase('local-synthetic-session',lambda:cloud.seed_session(profile),screens=True)
             environment=dict(os.environ,APPDATA=str(base),LOCALAPPDATA=str(base/'local'),QT_QPA_PLATFORM='windows',QT_ACCESSIBILITY='1')
             # Avoid inheriting a CI proxy that would bypass local DNS/fixture.
             for key in tuple(environment):
@@ -300,13 +477,15 @@ def main():
             streams.extend((stdout,stderr))
             application=subprocess.Popen([str(args.exe.resolve())],cwd=base,env=environment,stdout=stdout,stderr=stderr);children.append(application)
             producer=subprocess.Popen([sys.executable,str(qa_root/'native_editor.py'),str(base)],env=environment,stdout=stdout,stderr=stderr);children.append(producer)
-            driver=Driver(application.pid,producer.pid,base);recorder=Recorder(args.output/'frames')
-            wait(lambda:driver.windows(producer.pid),label='separate native producer')
+            driver=phase('automation-worker-start',lambda:Driver(application.pid,producer.pid,base));recorder=Recorder(args.output/'frames')
+            phase('external-producer-window',lambda:wait(lambda:driver.windows(producer.pid),label='separate native producer'),screens=True)
             # A real global shortcut goes through the shipped native hotkey path.
             recorder.run('01-normal-overview-open',lambda:driver.hotkey('^%+{SPACE}'))
-            wait(lambda:driver.find('搜索搁架内容'),label='actual normal frozen overview')
+            phase('normal-overview-accessibility',lambda:wait(lambda:driver.find('搜索搁架内容'),label='actual normal frozen overview'),screens=True)
             report['checks'].append('Normal frozen entry created real manager/tray/overview; no early verification return')
-            (args.output/'initial-accessibility.json').write_text(json.dumps(driver.tree(),ensure_ascii=False,indent=2))
+            assert not any(row['method'] in ('POST','PUT') and row['path'].startswith('/v1/uploads')
+                           for row in cloud.stats()['rows']),'Startup with shelf upload disabled wrote shelf data'
+            phase('initial-accessibility-tree',lambda:(args.output/'initial-accessibility.json').write_text(json.dumps(driver.tree(),ensure_ascii=False,indent=2)),screens=True)
             def copy_and_committed(text):
                 before=len(cloud.stats()['rows']);driver.text_copy(text)
                 def ready():
@@ -327,6 +506,13 @@ def main():
             assert after_posts==before_posts,'Same native content produced another upload task'
             assert json_request(cloud.origin,'GET','/v1/clipboard',token=cloud.session['token'])['clipboard']['id']==head['id']
             report['checks'].append('Actual external native text copy/reassertion: one real local-service head, no repeated POST')
+            driver.command('text',text='typing without copy')
+            driver.click('Synthetic external editor',pid=producer.pid);driver.hotkey('{END}ordinary-input')
+            idle_before=sum(row['method']=='POST' and row['path']=='/v1/clipboard' for row in cloud.stats()['rows'])
+            time.sleep(2)
+            assert driver.inspect()['text']==unique,'Typing changed the native clipboard without Copy'
+            assert sum(row['method']=='POST' and row['path']=='/v1/clipboard' for row in cloud.stats()['rows'])==idle_before
+            report['checks'].append('External ordinary typing and idle interval preserve clipboard/head without new upload')
             recorder.run('03-settings-open',lambda:driver.click('设置'))
             driver.click('搁架与剪贴板设置')
             # Receive policy is tested against a real committed remote object,
@@ -340,6 +526,11 @@ def main():
             recorder.run('04a-enable-shelf-receive',lambda:driver.setting('sync_receive_enabled',True))
             wait(lambda:remote in state().get('entries',{}),label='normal frozen receive resumes actual workerd item')
             recorder.run('04b-disable-shelf-receive',lambda:driver.setting('sync_receive_enabled',False))
+            remote_after_off=cloud.publish_shelf();time.sleep(.7)
+            assert remote_after_off not in state().get('entries',{}),'Receive-off after active session still accepted a new remote item'
+            driver.setting('sync_receive_enabled',True)
+            wait(lambda:remote_after_off in state().get('entries',{}),label='receive re-enable catches new item after active disable')
+            driver.setting('sync_receive_enabled',False)
             report['checks'].append('Actual receive switch blocks remote item, then enabled state resumes real local-workerd item')
             recorder.run('04-disable-cloud-clipboard',lambda:driver.setting('clipboard_sync_enabled',False))
             before=cloud.stats()['rows'];driver.text_copy('local only after disabling '+os.urandom(4).hex());time.sleep(.6)
@@ -372,6 +563,23 @@ def main():
             wait(image_ready,label='actual native original PNG committed by frozen client')
             assert driver.inspect()['image']
             report['checks'].append('Separate-process original PNG present in actual native clipboard')
+            # The shelf upload switch must control actual requests, independently
+            # of the clipboard switch and the separately-tested receive policy.
+            driver.setting('clipboard_sync_enabled',False);cloud.command('/hold')
+            upload_start=len(cloud.stats()['rows'])
+            recorder.run('06a-enable-shelf-upload',lambda:driver.setting('sync_upload_enabled',True))
+            wait(lambda:any(row['method']=='POST' and row['path']=='/v1/uploads' for row in cloud.stats()['rows'][upload_start:]),
+                 label='normal frozen shelf upload request')
+            recorder.run('06b-disable-shelf-upload',lambda:driver.setting('sync_upload_enabled',False))
+            cloud.command('/release');time.sleep(.7)
+            stopped=len(cloud.stats()['rows']);time.sleep(.7)
+            assert not any(row['method'] in ('POST','PUT') and row['path'].startswith('/v1/uploads')
+                           for row in cloud.stats()['rows'][stopped:]),'Disabled shelf upload resumed network writes'
+            recorder.run('06c-resume-shelf-upload',lambda:driver.setting('sync_upload_enabled',True))
+            wait(lambda:any(row['method']=='POST' and row['path'].startswith('/v1/uploads/') and row['path'].endswith('/commit')
+                            for row in cloud.stats()['rows'][stopped:]),label='real resumed shelf upload commit')
+            driver.setting('sync_upload_enabled',False)
+            report['checks'].append('Actual shelf upload off cancels/stops writes; enabling resumes a real local-workerd commit')
             recorder.run('07-close-settings',lambda:driver.click('关闭设置'))
             recorder.run('08-reopen-overview',lambda:driver.hotkey('^%+{SPACE}'))
             actions=json.loads(args.actions.read_text(encoding='utf8')) if args.actions else []
@@ -380,6 +588,7 @@ def main():
                 def execute(step=step):
                     if step['kind']=='click':return driver.click(step['name'],prefix=step.get('prefix',False))
                     if step['kind']=='hotkey':return driver.hotkey(step['keys'])
+                    if step['kind']=='focus_window':return driver.focus_window(step['title'])
                     if step['kind']=='hover':
                         control=wait(lambda:driver.find(step['name'],prefix=step.get('prefix',False)),label='hover control')
                         rect=control.rectangle();from pywinauto import mouse;mouse.move(coords=(rect.mid_point().x,rect.mid_point().y));return
@@ -396,22 +605,28 @@ def main():
             if audit.exists() and audit.stat().st_size<=2*1024*1024:(args.output/'synthetic-clipboard-provenance.jsonl').write_bytes(audit.read_bytes())
     except Exception as error:
         report['error']=type(error).__name__+': '+str(error);report['traceback']=traceback.format_exc()
-        if 'driver' in locals():
-            try:(args.output/'failure-accessibility.json').write_text(json.dumps(driver.tree(),ensure_ascii=False,indent=2))
+        _PROGRESS.record('exception')
+        _PROGRESS.screenshot('failure-no-uia')
+        if 'driver' in locals() and not driver._provider_failed:
+            try:phase('bounded-failure-accessibility',lambda:(args.output/'failure-accessibility.json').write_text(json.dumps(driver.tree(),ensure_ascii=False,indent=2)))
             except Exception:pass
         raise
     finally:
+        _PROGRESS.record('before','cleanup')
+        if 'driver' in locals():
+            try:phase('cleanup-automation-worker',driver.close)
+            except Exception as error:report['automation_cleanup_error']=type(error).__name__;report['ok']=False
         for child in reversed(children):
             if child.poll() is None:
                 child.terminate()
                 try:child.wait(8)
                 except subprocess.TimeoutExpired:child.kill();child.wait(5)
         if cloud is not None:
-            try:cloud.close()
+            try:phase('cleanup-local-cloud',cloud.close)
             except Exception as error:report['cleanup_error']=type(error).__name__+': '+str(error);report['ok']=False
         for stream in streams:stream.close()
         try:temporary_profile.cleanup()
-        except OSError as error:report['profile_cleanup_error']=type(error).__name__;report['ok']=False
+        except Exception as error:report['profile_cleanup_error']=type(error).__name__;report['ok']=False
         (args.output/'normal-frozen-native-report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
         coverage={str(index):dict(status='not_fully_verified',completion_eligible=False,reason='Raw actual normal-EXE steps require visual review and remaining platform/flow checks') for index in range(1,16)}
         if 'screen_segments' in report:
@@ -425,6 +640,9 @@ def main():
         (args.output/'completion-gate.json').write_text(json.dumps(dict(implementation_complete=False,
             all_requested_changes_complete=False,publication_authorized=False,exe_sha256=args.sha256,
             reason='Native core flow is not complete 15-group visual, platform and installer acceptance; actual frames require review'),indent=2))
+        _PROGRESS.record('done');_PROGRESS.close();faulthandler.cancel_dump_traceback_later();stacks.close()
     return 0 if report['ok'] else 1
 
-if __name__=='__main__':raise SystemExit(main())
+if __name__=='__main__':
+    worker=sys.argv[1] if len(sys.argv)>1 else ''
+    raise SystemExit(uia_worker() if worker=='--uia-worker' else credential_worker() if worker=='--credential-worker' else main())

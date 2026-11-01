@@ -10,7 +10,8 @@ import sys
 import time
 from collections import deque
 
-from PySide6.QtCore import QByteArray, QEvent, QObject, QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal, QVariantAnimation, QUrl
+from PySide6.QtCore import QByteArray, QEvent, QObject, QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal, QUrl
+from frame_animation import FrameAnimation as QVariantAnimation
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QKeySequence, QIcon, QTransform, QDesktopServices
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog, QFrame, QGraphicsDropShadowEffect,
@@ -252,12 +253,25 @@ class _DevicesCombo(QComboBox):
 
     def showPopup(self):
         popup=self.view().window()
-        popup.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground,False)
-        popup.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint,True)
-        popup.setAutoFillBackground(True)
+        from native_ui_common import rounded_popup
+        rounded_popup(popup,10)
+        if not hasattr(popup,'_device_corner_sync'):
+            class _CornerSync(QObject):
+                def __init__(self,popup):
+                    super().__init__(popup);self.popup=popup
+                    self.timer=QTimer(self);self.timer.setSingleShot(True)
+                    self.timer.timeout.connect(lambda:rounded_popup(self.popup,10))
+                    popup.installEventFilter(self)
+                def eventFilter(self,watched,event):
+                    # Qt's private container can clear its mask after Resize.
+                    if event.type() in (QEvent.Resize,QEvent.Show):self.timer.start(0)
+                    elif event.type()==QEvent.Hide:self.timer.stop()
+                    return False
+            popup._device_corner_sync=_CornerSync(popup)
         dark=bool(getattr(self.itemDelegate(),'dark',False))
         popup.setStyleSheet('QFrame{background:'+('#242426' if dark else '#FFFFFF')+';border:1px solid '+('#424248' if dark else '#D4D4D8')+';border-radius:10px;}')
         super().showPopup()
+        rounded_popup(popup,10)
         self.view().viewport().setMouseTracking(True)
         self.view().viewport().installEventFilter(self)
 
@@ -290,7 +304,7 @@ class _DevicesCombo(QComboBox):
     def paintEvent(self, event):
         super().paintEvent(event)
         painter=QPainter(self)
-        color = ui_colors('dark' if self.window().property('uiTheme') == 'dark' else 'light')['secondary']
+        color = ui_colors('dark' if self.window().property('uiTheme') == 'dark' else 'light')['secondary' if self.isEnabled() else 'muted']
         ui_icon('chevron', color).paint(painter, self.width()-25, (self.height()-14)//2, 14, 14)
         online=self.currentData(Qt.ItemDataRole.UserRole+2)
         if online is not None:
@@ -635,7 +649,9 @@ class _HistoryRemoveButton(QPushButton):
 
     def paintEvent(self, event):
         super().paintEvent(event)
-        painter=QPainter(self);ui_icon(self.glyph,ui_colors('dark' if self.dark else 'light')['secondary']).paint(painter,QRect((self.width()-14)//2,(self.height()-14)//2,14,14))
+        painter=QPainter(self)
+        if not self.isEnabled():painter.setOpacity(.4)
+        ui_icon(self.glyph,ui_colors('dark' if self.dark else 'light')['secondary']).paint(painter,QRect((self.width()-14)//2,(self.height()-14)//2,14,14))
 
 
 class _HistoryRow(QFrame):
@@ -1337,6 +1353,8 @@ class LanPanel(QFrame):
         style=readable_qss(style)
         from input_focus import focus_qss,install_focus_tree
         style+=focus_qss('QFrame#lanPanel',c['input_border'])
+        from control_states import disabled_fields_qss
+        style+=disabled_fields_qss('QFrame#lanPanel',c)
         self.setStyleSheet(style)
         install_focus_tree(self,theme=lambda:self._applied_theme)
         for row in self._rows.values():

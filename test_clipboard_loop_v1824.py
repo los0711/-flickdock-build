@@ -54,6 +54,12 @@ class ClipboardLoopTests(unittest.TestCase):
         client.copy_started.connect(lambda:starts.append(True))
         clip.text('one actual logical content')
         until(lambda:hub.head is not None and client._pending is None)
+        # The first commit's changefeed can still be confirming its head after
+        # pending is cleared. Drain that original fetch before measuring new
+        # copy events; keep the strict zero-additional-requests assertion below.
+        flush()
+        until(lambda:not client._fetching and not client._refresh_again)
+        flush()
         identity=hub.head['id'];before=len(hub.calls)
         for _ in range(15):clip.reannounce();self.settle(.07)
         self.assertEqual(hub.head['id'],identity)

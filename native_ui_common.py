@@ -13,7 +13,7 @@ from time import perf_counter
 from collections import OrderedDict
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QEasingCurve, QEvent, QObject, QPointF, QRectF, QSize, Qt, QVariantAnimation, QTranslator, QTimer
+from PySide6.QtCore import QByteArray, QEasingCurve, QEvent, QObject, QPointF, QRectF, QSize, Qt, QTranslator, QTimer
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QIconEngine, QPainter, QPainterPath, QPen, QPixmap, QRegion
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QApplication, QAbstractButton, QHBoxLayout, QLabel, QPushButton, QWidget
@@ -504,7 +504,8 @@ class UiSwitch(QAbstractButton):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._position = 1.0 if checked else 0.0
-        self._motion = QVariantAnimation(self)
+        from frame_animation import FrameAnimation
+        self._motion = FrameAnimation(self)
         self._motion.setDuration(240)
         curve = QEasingCurve(QEasingCurve.Type.BezierSpline)
         curve.addCubicBezierSegment(QPointF(0.22, 1), QPointF(0.36, 1), QPointF(1, 1))

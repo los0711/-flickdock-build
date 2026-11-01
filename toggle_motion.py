@@ -1,5 +1,6 @@
 """Finite, interruptible switch travel; no idle timer or global event filter."""
-from PySide6.QtCore import QCoreApplication, QEvent, QObject, QVariantAnimation
+from PySide6.QtCore import QCoreApplication, QEvent, QObject
+from frame_animation import FrameAnimation as QVariantAnimation
 from shiboken6 import isValid
 
 

@@ -1,6 +1,7 @@
 """Child-only transfer feedback; data submission never waits for these clocks."""
 from pathlib import Path
-from PySide6.QtCore import QEvent,QPoint,QPointF,QRect,QRectF,Qt,QTimer,QVariantAnimation
+from PySide6.QtCore import QEvent,QPoint,QPointF,QRect,QRectF,Qt,QTimer
+from frame_animation import FrameAnimation as QVariantAnimation
 from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import QWidget,QGraphicsEffect
 from shiboken6 import isValid

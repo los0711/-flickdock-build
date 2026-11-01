@@ -29,16 +29,23 @@ jobs:
       - name: Install reviewed runtime and isolated external QA driver
         run: |
           python -m pip install -r requirements.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m pip install pywinauto==0.6.9 mss==10.1.0 Pillow==11.3.0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm ci --prefix cloud --no-audit --no-fund
       - name: Check explicit reviewed source manifest
         run: |
+          python -m unittest discover -s qa/packaged-live -p test_harness_bounds.py -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python qa/packaged-live/verify_frozen_source.py --before-build
       - name: Build actual native executable with the production entry
         run: |
           python ci_assets.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python p2p_assets.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m PyInstaller --noconfirm --clean FlickDock.spec
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python qa/packaged-live/verify_frozen_source.py --after-build
       - name: Normal frozen process, external native Copy/Paste, policy switches and actual screen frames
         shell: pwsh

@@ -1,0 +1,76 @@
+"""Disabled ink is distinct while Qt interaction/readonly contracts stay intact."""
+import os,sys,tempfile,unittest
+from pathlib import Path
+from unittest.mock import patch
+os.environ['QT_QPA_PLATFORM']='offscreen'
+if os.environ.get('FLICKDOCK_FIELD_BASELINE'):sys.path.insert(0,os.environ['FLICKDOCK_FIELD_BASELINE'])
+from PySide6.QtCore import QObject,Signal,Qt,QRect,QPoint
+from PySide6.QtGui import QKeySequence
+from PySide6.QtWidgets import QLineEdit,QKeySequenceEdit,QWidget,QVBoxLayout
+from PySide6.QtTest import QTest
+import test_html_native_workspace as ws
+from test_html_native_lan import FakeLan
+from app_settings import SettingsStore,SettingsDialog,SettingsToggleSwitch
+from account_panel import AccountPanel
+from lan_panel import LanDialog
+from native_ui_common import UiSwitch
+
+class Account(QObject):
+ account_changed=Signal(object);status_changed=Signal(str);busy_changed=Signal(bool);devices_changed=Signal(list);password_changed=Signal()
+ def __init__(self):super().__init__();self.busy=False;self.account=None;self.signed_in=False;self.device_id='fixture';self.devices=[]
+ def list_devices(self):self.devices_changed.emit([])
+ def login(self,*a):pass
+ def register(self,*a):pass
+
+class DisabledFieldTests(unittest.TestCase):
+ def setUp(self):
+  self.temp=tempfile.TemporaryDirectory();self.windows=[]
+  self.native=patch('app_settings._startup_runtime_allowed',return_value=False);self.native.start()
+  self.screen=patch('window_chrome.WindowChrome._available',return_value=QRect(0,0,1920,1200));self.screen.start()
+  self.reduce=patch('native_ui_common.reduced_motion',return_value=True);self.reduce.start()
+ def tearDown(self):
+  for w in self.windows:w.hide();w.deleteLater()
+  ws.flush();self.reduce.stop();self.screen.stop();self.native.stop();self.temp.cleanup()
+ def image(self,w):w.clearFocus();ws.flush();return w.grab().toImage()
+ def different_when_disabled(self,w):
+  self.assertTrue(w.isVisible());w.setEnabled(True);size=w.size();hint=w.minimumSizeHint();before=self.image(w)
+  w.setEnabled(False);after=self.image(w);self.assertNotEqual(before,after,type(w).__name__);self.assertEqual(w.size(),size);self.assertEqual(w.minimumSizeHint(),hint)
+ def settings(self,theme):
+  store=SettingsStore(Path(self.temp.name)/theme);store.update(theme=theme);w=SettingsDialog(store);self.windows.append(w);w.show();ws.flush();return w
+ def test_settings_each_disabled_input_class_has_ink_and_cannot_edit_then_reenables(self):
+  for theme in ('light','dark'):
+   s=self.settings(theme);s.show_settings_category('sync');ws.flush();line=s.folder_edit;line.setText('fixture')
+   self.different_when_disabled(line);old=line.text();QTest.keyClicks(line,'blocked');self.assertEqual(line.text(),old);line.setEnabled(True);line.setFocus(Qt.TabFocusReason);QTest.keyClicks(line,'z');self.assertNotEqual(line.text(),old)
+   s.show_settings_category('displays');ws.flush();row=next(iter(s.display_trigger_editor.rows.values()));row.set_expanded(True,animate=False);ws.flush()
+   combo=row.edge;self.different_when_disabled(combo);old=combo.currentIndex();QTest.keyClick(combo,Qt.Key_Down);self.assertEqual(combo.currentIndex(),old);combo.setEnabled(True);combo.setFocus(Qt.TabFocusReason);QTest.keyClick(combo,Qt.Key_Down);self.assertNotEqual(combo.currentIndex(),old)
+   spin=row.controls['position'];self.different_when_disabled(spin);old=spin.value();QTest.keyClick(spin,Qt.Key_Up);self.assertEqual(spin.value(),old);spin.setEnabled(True);spin.setFocus(Qt.TabFocusReason);QTest.keyClick(spin,Qt.Key_Up);self.assertNotEqual(spin.value(),old)
+   slider=row.sliders['position'];self.different_when_disabled(slider);old=slider.value();QTest.keyClick(slider,Qt.Key_Right);self.assertEqual(slider.value(),old);slider.setEnabled(True);slider.setFocus(Qt.TabFocusReason);QTest.keyClick(slider,Qt.Key_Right);self.assertNotEqual(slider.value(),old)
+   s.show_settings_category('general');ws.flush();shortcut=next(w for w in s.findChildren(QKeySequenceEdit) if w.isVisible());shortcut.setKeySequence(QKeySequence('Ctrl+1'))
+   self.different_when_disabled(shortcut);old=shortcut.keySequence();shortcut.setFocus(Qt.TabFocusReason);self.assertFalse(shortcut.hasFocus());QTest.keyClick(ws.APP.focusWidget() or shortcut.window(),Qt.Key_9,Qt.ControlModifier);self.assertEqual(shortcut.keySequence(),old);shortcut.setEnabled(True);shortcut.setFocus(Qt.TabFocusReason);QTest.keyClick(shortcut,Qt.Key_9,Qt.ControlModifier);QTest.keyClick(shortcut,Qt.Key_Tab);self.assertNotEqual(shortcut.keySequence(),old)
+ def test_real_account_busy_disables_visibly_without_changing_username_and_can_resume(self):
+  for theme in ('light','dark'):
+   s=self.settings(theme);service=Account();panel=AccountPanel(service,theme=theme);s.set_account_panel(panel);s.show_settings_category('account');ws.flush();panel.show_auth();ws.flush();panel.username_edit.setText('fixture')
+   before=self.image(panel.username_edit);size=panel.username_edit.size();service.busy=True;service.busy_changed.emit(True);ws.flush()
+   self.assertFalse(panel.username_edit.isEnabled());self.assertNotEqual(before,self.image(panel.username_edit));QTest.keyClicks(panel.username_edit,'blocked');self.assertEqual(panel.username_edit.text(),'fixture');self.assertEqual(panel.username_edit.size(),size)
+   service.busy=False;service.busy_changed.emit(False);panel.username_edit.setFocus(Qt.TabFocusReason);QTest.keyClicks(panel.username_edit,'z');self.assertNotEqual(panel.username_edit.text(),'fixture')
+   self.different_when_disabled(panel.password_edit);QTest.keyClicks(panel.password_edit,'blocked');self.assertEqual(panel.password_edit.text(),'');panel.password_edit.setEnabled(True);panel.password_edit.setFocus(Qt.TabFocusReason);QTest.keyClicks(panel.password_edit,'local-value');self.assertEqual(panel.password_edit.text(),'local-value')
+   panel.close_auth();ws.flush()
+ def test_remote_code_and_devices_disabled_are_distinct_and_readonly_stays_enabled(self):
+  for theme in ('light','dark'):
+   service=FakeLan();service.mode='wan';store=SettingsStore(Path(self.temp.name)/('wan-'+theme));store.update(theme=theme);w=LanDialog(service,store);self.windows.append(w);w.show();ws.flush();p=w.panel
+   code=p.peer_code_input;code.setText('1234');self.different_when_disabled(code);QTest.keyClicks(code,'5');self.assertEqual(code.text(),'1234');code.setEnabled(True);code.setFocus(Qt.TabFocusReason);QTest.keyClick(code,Qt.Key_End);QTest.keyClicks(code,'5');self.assertEqual(code.text(),'12345')
+   p.devices.clear();p.devices.addItem('A','a');p.devices.addItem('B','b');p.devices.setCurrentIndex(0);self.different_when_disabled(p.devices);QTest.keyClick(p.devices,Qt.Key_Down);self.assertEqual(p.devices.currentIndex(),0);p.devices.setEnabled(True);p.devices.setFocus(Qt.TabFocusReason);QTest.keyClick(p.devices,Qt.Key_Down);self.assertEqual(p.devices.currentIndex(),1)
+   path=p.receive_path;self.assertTrue(path.isReadOnly());self.assertTrue(path.isEnabled());value=path.text();before=self.image(path);QTest.keyClicks(path,'blocked');self.assertEqual(path.text(),value);self.assertTrue(path.isEnabled());self.assertEqual(self.image(path),before)
+ def test_history_folder_without_saved_path_is_visibly_disabled_and_never_activates(self):
+  for theme in ('light','dark'):
+   store=SettingsStore(Path(self.temp.name)/('history-'+theme));store.update(theme=theme);w=LanDialog(FakeLan(),store);self.windows.append(w);w.show();ws.flush();p=w.panel
+   p._history=[dict(name='fixture.txt',peer='Mac',state='完成',direction='send',when='10:30',paths=[])];p._render_history();ws.flush();button=p.history_rows[0].reveal_button;self.assertFalse(button.isEnabled());disabled=self.image(button);size=button.size();events=[];button.clicked.connect(lambda:events.append(True));QTest.keyClick(button,Qt.Key_Space);self.assertEqual(events,[])
+   button.setEnabled(True);self.assertNotEqual(disabled,self.image(button));button.setFocus(Qt.TabFocusReason);QTest.keyClick(button,Qt.Key_Space);self.assertEqual(events,[True]);self.assertEqual(button.size(),size)
+ def test_existing_switch_disabled_states_are_distinct_from_off_and_block_activation(self):
+  host=QWidget();layout=QVBoxLayout(host);self.windows.append(host);controls=[SettingsToggleSwitch('Fixture'),UiSwitch()]
+  for control in controls:layout.addWidget(control)
+  host.show();ws.flush()
+  for control in controls:
+   control.setChecked(False);self.different_when_disabled(control);QTest.keyClick(control,Qt.Key_Space);self.assertFalse(control.isChecked());control.setEnabled(True);control.setFocus(Qt.TabFocusReason);QTest.keyClick(control,Qt.Key_Space);self.assertTrue(control.isChecked())
+
+if __name__=='__main__':unittest.main(verbosity=2)

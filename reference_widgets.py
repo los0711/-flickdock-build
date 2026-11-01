@@ -8,7 +8,8 @@ from pathlib import Path
 import sys
 import re
 
-from PySide6.QtCore import QObject, QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QVariantAnimation
+from PySide6.QtCore import QObject, QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer
+from frame_animation import FrameAnimation as QVariantAnimation
 from PySide6.QtGui import QColor, QFont, QIcon, QPalette, QImage, QPainter, QPainterPath, QPen, QPixmap, QLinearGradient, QTransform
 from PySide6.QtWidgets import (QLabel, QPushButton, QWidget, QFrame, QHBoxLayout,
     QVBoxLayout, QGridLayout, QScrollArea, QLineEdit, QProgressBar, QButtonGroup, QSizePolicy,
@@ -130,33 +131,52 @@ class IconTextButton(QPushButton):
             painter.restore();return
         size=self.iconSize();gap=6;left=bool(self.property('leftAligned'))
         indicator=getattr(self,'selection_indicator',None)
-        covered=bool(indicator is not None and indicator._rect.contains(QRectF(self.geometry()).center()))
         if indicator is not None:
-            cache_key=(ui_theme.current_theme(),covered)
+            cache_key=(ui_theme.current_theme(),self._reference_icon[0])
             if getattr(self,'_category_art_key',None)!=cache_key:
                 self._category_art_key=cache_key
-                self._category_art=icon(self._reference_icon[0],'#FFFFFF' if covered else palette()['secondary'])
+                self._category_art=icon(self._reference_icon[0],palette()['secondary'])
+                self._category_selected_art=icon(self._reference_icon[0],'#FFFFFF')
             art=self._category_art
         space=self.width()-(56 if left else 16)-size.width()-gap
         text=painter.fontMetrics().elidedText(words,Qt.ElideRight,max(1,space))
         width=painter.fontMetrics().horizontalAdvance(text)+size.width()+gap
         x=12 if left else (self.width()-width)/2
         mode=QIcon.Mode.Normal if self.isEnabled() else QIcon.Mode.Disabled
-        art.paint(painter,QRect(round(x),round((self.height()-size.height())/2),size.width(),size.height()),Qt.AlignCenter,mode)
+        art_rect=QRect(round(x),round((self.height()-size.height())/2),size.width(),size.height())
+        art.paint(painter,art_rect,Qt.AlignCenter,mode)
         c=palette();variant=self.property('referenceVariant')
-        tint=('#FFFFFF' if covered else c['secondary']) if indicator is not None else ('#FFFFFF' if self.isChecked() and left else c['text'] if self.isChecked() else
+        tint=c['secondary'] if indicator is not None else ('#FFFFFF' if self.isChecked() and left else c['text'] if self.isChecked() else
               '#FFFFFF' if variant=='primary' else c['red'] if variant=='danger' else c['text'] if variant=='secondary' else c['secondary'])
         painter.setPen(QColor(tint if self.isEnabled() else c['muted']))
-        painter.drawText(QRectF(x+size.width()+gap,0,self.width()-x-size.width()-gap-8,self.height()),Qt.AlignLeft|Qt.AlignVCenter,text)
+        text_rect=QRectF(x+size.width()+gap,0,self.width()-x-size.width()-gap-8,self.height())
+        painter.drawText(text_rect,Qt.AlignLeft|Qt.AlignVCenter,text)
+        if indicator is not None and self.isEnabled():
+            painter.save();painter.setClipPath(_category_ink_path(self))
+            self._category_selected_art.paint(painter,art_rect,Qt.AlignCenter,mode)
+            painter.setPen(Qt.white);painter.drawText(text_rect,Qt.AlignLeft|Qt.AlignVCenter,text);painter.restore()
+
+
+def _category_ink_path(control,offset=QPoint()):
+    """Map the actual moving blue surface to text coordinates, including corners.
+
+    A center-point tint flips too late while a highlight only half-covers text.
+    Two clipped ink passes keep both sides readable without rebuilding QSS.
+    """
+    indicator=getattr(control,'selection_indicator',None)
+    if indicator is None:return QPainterPath()
+    path=rounded_rect_path(indicator._rect,(12,12))
+    path.translate(-control.x()-offset.x(),-control.y()-offset.y());return path
 
 
 class CategoryCount(QLabel):
     """Keep count text readable as the blue selection moves underneath it."""
     def paintEvent(self,event):
-        control=self.parentWidget();indicator=getattr(control,'selection_indicator',None)
-        covered=bool(indicator is not None and indicator._rect.contains(QRectF(control.geometry()).center()))
+        control=self.parentWidget()
         p=QPainter(self);p.setFont(self.font());c=palette()
-        p.setPen(QColor('#FFFFFF' if covered else c['link'] if getattr(self,'category','')=='uploading' else c['muted']))
+        p.setPen(QColor(c['link'] if getattr(self,'category','')=='uploading' else c['muted']))
+        p.drawText(self.rect(),Qt.AlignCenter,self.text())
+        p.setClipPath(_category_ink_path(control,self.pos()));p.setPen(Qt.white)
         p.drawText(self.rect(),Qt.AlignCenter,self.text());p.end()
 
 
@@ -630,6 +650,7 @@ class ThumbnailLabel(TransferIconLabel):
 class MiniStack(StackTile):
     def __init__(self,shelf,parent=None,motion=True):
         super().__init__(parent,motion)
+        self.setAccessibleName('搁架文件预览')
         self.shelf=shelf
         self._mini_cards={};self._mini_exit_cards={};self._mini_exit_from={};self._mini_exit_to={}
         self._mini_theme=None;self._mini_dpr=0

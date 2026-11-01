@@ -1,7 +1,8 @@
 """Latest-first, five-card content artwork shared by compact and drag previews."""
 from surface_morph import rounded_rect_path,draw_rounded_rect
 from pathlib import Path
-from PySide6.QtCore import QRectF, Qt, QVariantAnimation, QEasingCurve, QAbstractAnimation
+from PySide6.QtCore import QRectF, Qt, QEasingCurve, QAbstractAnimation
+from frame_animation import FrameAnimation as QVariantAnimation
 from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap
 from flickdock_icons import content_color, device_pixel_ratio, document_pixmap
 from flickdock_motion import ContentTile

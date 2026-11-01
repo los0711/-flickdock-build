@@ -475,7 +475,11 @@ class UpdateDialog(QDialog):
             QDialog#flickdockUpdate QPushButton:pressed {{background:{c['selected']};}}
             QDialog#flickdockUpdate QPushButton#updatePrimary {{background:{c['action']};color:white;font-weight:700;}}
             QDialog#flickdockUpdate QPushButton#updatePrimary:hover {{background:{c['action_hover']};}}
+            QDialog#flickdockUpdate QPushButton#updatePrimary:pressed {{background:{QColor(c['action_hover']).darker(112).name()};color:white;}}
             QDialog#flickdockUpdate QPushButton:disabled {{background:{c['control']};color:{c['muted']};}}
+            QDialog#flickdockUpdate QPushButton#updatePrimary:disabled {{background:{c['control']};color:{c['muted']};}}
+            QDialog#flickdockUpdate QPushButton[keyboardFocus="true"]:focus {{border:1px solid {c['link']};}}
+            QDialog#flickdockUpdate QPushButton#updatePrimary[keyboardFocus="true"]:focus {{border:1px solid {c['on_action']};}}
             QDialog#flickdockUpdate QPushButton#updateSkip {{background:transparent;border:0;color:{c['secondary']};padding:0;}}
             QDialog#flickdockUpdate QPushButton#updateClose {{background:transparent;border:0;border-radius:8px;padding:0;}}
             QDialog#flickdockUpdate QPushButton#updateClose:hover {{background:{c['hover']};}}

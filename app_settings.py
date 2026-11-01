@@ -30,7 +30,7 @@ from platform_startup import (StartupManager, CallbackBackend,
                               write_startup_value as _platform_write_startup)
 from platform_native import remove_host_window_shadow
 from surface_morph import paint_surface_shadow
-from native_ui_common import reference_font, rounded_popup
+from native_ui_common import reference_font, rounded_popup, colors as control_colors
 from ui_transitions import SegmentIndicator
 
 
@@ -179,7 +179,8 @@ class SettingsComboBox(QComboBox):
         super().paintEvent(event)
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pen = QPen(QColor("#b9c6d9" if self.dark else "#66778e"), 1.7)
+        color=control_colors('dark' if self.dark else 'light')['muted'] if not self.isEnabled() else ("#b9c6d9" if self.dark else "#66778e")
+        pen = QPen(QColor(color), 1.7)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         p.setPen(pen)
         x, y = self.width() - 16, self.height() // 2
@@ -214,7 +215,8 @@ class SettingsSpinBox(QSpinBox):
             return
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pen = QPen(QColor("#b9c6d9" if self.dark else "#66778e"), 1.5)
+        color=control_colors('dark' if self.dark else 'light')['muted'] if not self.isEnabled() else ("#b9c6d9" if self.dark else "#66778e")
+        pen = QPen(QColor(color), 1.5)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         p.setPen(pen)
         x = self.width() - 12
@@ -2410,8 +2412,13 @@ class SettingsDialog(QDialog):
             QDialog#flickdockSettings QPushButton[keyboardFocus="true"] {{border:1px solid {semantic['link']};}}
             QDialog#flickdockSettings QPushButton#settingsUpdate,QDialog#flickdockSettings QPushButton#settingsSave {{background:{semantic['action']};color:{semantic['on_action']};}}
             QDialog#flickdockSettings QPushButton#settingsUpdate:hover,QDialog#flickdockSettings QPushButton#settingsSave:hover,QDialog#flickdockSettings QPushButton#settingsSave:pressed {{background:{semantic['action_hover']};color:{semantic['on_action']};}}
+            QDialog#flickdockSettings QPushButton#settingsUpdate:pressed,QDialog#flickdockSettings QPushButton#settingsSave:pressed {{background:{QColor(semantic['action_hover']).darker(112).name()};color:{semantic['on_action']};}}
             QDialog#flickdockSettings QPushButton#settingsUpdate[updateAvailable="true"] {{background:{'#30D158' if dark else '#168545'};color:{'#102318' if dark else '#FFFFFF'};}}
             QDialog#flickdockSettings QPushButton#settingsUpdate[updateAvailable="true"]:hover {{background:{'#43DC6A' if dark else '#12733C'};}}
+            QDialog#flickdockSettings QPushButton#settingsUpdate[updateAvailable="true"]:pressed {{background:{'#22A945' if dark else '#0F6335'};}}
+            QDialog#flickdockSettings QPushButton#settingsUpdate:disabled,QDialog#flickdockSettings QPushButton#settingsSave:disabled,QDialog#flickdockSettings QPushButton#settingsUpdate[updateAvailable="true"]:disabled {{background:{semantic['control']};color:{semantic['muted']};}}
+            QDialog#flickdockSettings QPushButton#settingsUpdate[keyboardFocus="true"]:focus,QDialog#flickdockSettings QPushButton#settingsSave[keyboardFocus="true"]:focus {{border-color:{semantic['on_action']};}}
+            QDialog#flickdockSettings QPushButton#settingsUpdate[updateAvailable="true"][keyboardFocus="true"]:focus {{border-color:{'#102318' if dark else '#FFFFFF'};}}
             QDialog#flickdockSettings QPushButton#settingsLink {{color:{semantic['link']};}}
             QWidget#settingsToggleOption {{background:{semantic['card']};border:1px solid {semantic['border']};border-radius:8px;}}
             QFrame#displayTriggerField {{background:{semantic['card']};border:1px solid {semantic['border']};border-radius:8px;}}
@@ -2428,6 +2435,9 @@ class SettingsDialog(QDialog):
         """
         from input_focus import focus_qss,install_focus_tree
         style+=focus_qss('QDialog#flickdockSettings',edge)
+        from control_states import disabled_fields_qss
+        style+=disabled_fields_qss('QDialog#flickdockSettings',semantic,
+            fields=('QLineEdit','QComboBox','QSpinBox','QKeySequenceEdit'),internal=('QSpinBox','QKeySequenceEdit'),sliders=True)
         self.setStyleSheet(style)
         install_focus_tree(self,theme=lambda:self.theme_combo.currentData(),radius=8)
         if hasattr(self,'settings_navigation_indicator'):self.settings_navigation_indicator.set_theme(theme)

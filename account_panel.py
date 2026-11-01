@@ -71,9 +71,11 @@ class AuthStatusLabel(QLabel):
         self.setObjectName('accountMuted');self.setTextFormat(Qt.PlainText);self.setWordWrap(True)
         self.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Fixed)
         from PySide6.QtWidgets import QGraphicsOpacityEffect
-        from PySide6.QtCore import QPropertyAnimation,QEasingCurve
+        from PySide6.QtCore import QEasingCurve
+        from frame_animation import FrameAnimation
         self._opacity=QGraphicsOpacityEffect(self);self.setGraphicsEffect(self._opacity)
-        self._fade=QPropertyAnimation(self._opacity,b'opacity',self);self._fade.setDuration(180)
+        self._fade=FrameAnimation(self);self._fade.setDuration(180)
+        self._fade.valueChanged.connect(self._opacity.setOpacity)
         self._fade.setEasingCurve(QEasingCurve.OutCubic)
         self._fade.valueChanged.connect(self._reduce_fade)
 
@@ -102,7 +104,7 @@ class AuthStatusLabel(QLabel):
         from native_ui_common import reduced_motion
         self._fade.stop()
         if reduced_motion():self._opacity.setOpacity(1)
-        else:self._fade.setStartValue(.2);self._fade.setEndValue(1);self._fade.start()
+        else:self._fade.setStartValue(.2);self._fade.setEndValue(1.);self._fade.start()
 
 
 class DevicePresence(QWidget):
@@ -614,7 +616,7 @@ class AccountPanel(QFrame):
         self._queue_fit()
 
     def _transient_feedback(self,label,*,password=False):
-        from PySide6.QtCore import QVariantAnimation
+        from frame_animation import FrameAnimation as QVariantAnimation
         from PySide6.QtWidgets import QGraphicsOpacityEffect
         effect=label.graphicsEffect()
         if effect is None:effect=QGraphicsOpacityEffect(label);label.setGraphicsEffect(effect)
@@ -1112,6 +1114,8 @@ class AccountPanel(QFrame):
             style+='\nQFrame#accountPanel QLabel#accountState {font-size:12px;}'
         from input_focus import focus_qss,install_focus_tree
         style+=focus_qss('QFrame#accountPanel',edge)+focus_qss('QDialog#accountModal',edge)
+        from control_states import disabled_fields_qss
+        style+=disabled_fields_qss(('QFrame#accountPanel','QDialog#accountModal'),semantic,fields=('QLineEdit',))
         self.setStyleSheet(style)
         install_focus_tree(self,theme=lambda:'dark' if self._dark else 'light',radius=12)
         for form in self._rename_forms.values():form.setStyleSheet(style)

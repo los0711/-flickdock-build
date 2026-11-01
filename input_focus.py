@@ -7,7 +7,8 @@ The overlay never accepts input and only paints while focused or fading.
 from __future__ import annotations
 from surface_morph import rounded_rect_path,draw_rounded_rect
 import re
-from PySide6.QtCore import QCoreApplication,QEvent,QObject,QRectF,Qt,QVariantAnimation
+from PySide6.QtCore import QCoreApplication,QEvent,QObject,QRectF,Qt
+from frame_animation import FrameAnimation as QVariantAnimation
 from PySide6.QtGui import QColor,QPainter,QPen
 from PySide6.QtWidgets import (QWidget,QLineEdit,QPlainTextEdit,QTextEdit,
                               QAbstractSpinBox,QKeySequenceEdit,QApplication)

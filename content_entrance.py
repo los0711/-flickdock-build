@@ -4,7 +4,8 @@ Use reveal(items, viewport) after a category's new layout is ready. Incremental
 builders may token=arm(viewport), then batch(new_widgets, token=token) after each
 layout slice. Normal metadata refreshes must not arm a category entrance.
 """
-from PySide6.QtCore import QCoreApplication,QEvent,QObject,QPoint,QRect,Qt,QVariantAnimation,QEasingCurve
+from PySide6.QtCore import QCoreApplication,QEvent,QObject,QPoint,QRect,Qt,QEasingCurve
+from frame_animation import FrameAnimation as QVariantAnimation
 from PySide6.QtWidgets import QWidget,QGraphicsEffect,QAbstractScrollArea
 from shiboken6 import isValid
 from ui_transitions import exit_curve,motion_allowed

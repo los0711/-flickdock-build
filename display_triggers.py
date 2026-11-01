@@ -1,7 +1,8 @@
 """Per-display trigger drafts keyed by stable OS identity, never screen order."""
 from __future__ import annotations
 import hashlib,re
-from PySide6.QtCore import Qt,Signal,QVariantAnimation,QEasingCurve,QTimer
+from PySide6.QtCore import Qt,Signal,QEasingCurve,QTimer
+from frame_animation import FrameAnimation as QVariantAnimation
 from PySide6.QtGui import QGuiApplication,QColor,QIcon,QPainter,QPixmap,QPen
 from PySide6.QtWidgets import QWidget,QFrame,QVBoxLayout,QHBoxLayout,QGridLayout,QLabel,QPushButton,QColorDialog,QAbstractSpinBox
 

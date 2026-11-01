@@ -5,7 +5,8 @@ per presentation; no root graphics effect, global input hook or clipboard I/O.
 """
 from collections import OrderedDict
 import sys
-from PySide6.QtCore import QCoreApplication,QEvent,QObject,QPoint,QRect,QRectF,Qt,QVariantAnimation,QSignalBlocker,QTimer,QEasingCurve
+from PySide6.QtCore import QCoreApplication,QEvent,QObject,QPoint,QRect,QRectF,Qt,QSignalBlocker,QTimer,QEasingCurve
+from frame_animation import FrameAnimation as QVariantAnimation
 from PySide6.QtGui import QColor,QGuiApplication,QPainter,QPainterPath,QPainterPathStroker,QPixmap,QContextMenuEvent
 from PySide6.QtWidgets import QApplication,QWidget
 from shiboken6 import isValid

@@ -62,6 +62,14 @@ def brightest_pixel(image,rect):
                key=lambda color:sum(color.getRgb()[:3]))
 
 
+def highest_contrast_pixel(image,rect,background):
+    """Sample actual custom-painted ink; QPalette can describe another pose."""
+    ratio=image.devicePixelRatio()
+    rect=QRect(round(rect.x()*ratio),round(rect.y()*ratio),round(rect.width()*ratio),round(rect.height()*ratio)).intersected(image.rect())
+    return max((image.pixelColor(x,y) for x in range(rect.left(),rect.right()+1)
+                for y in range(rect.top(),rect.bottom()+1)),key=lambda color:contrast_colors(color,background))
+
+
 def logical_pixel(image,x,y=None):
     point=x if y is None else QPoint(x,y)
     ratio=image.devicePixelRatio()
@@ -275,8 +283,9 @@ class WorkspaceTests(unittest.TestCase):
             check('selected count',brightest_pixel(image,position.adjusted(2,3,-2,-3)),
                   logical_pixel(image,position.center().x(),position.top()+3))
             other=popup.category_buttons['uploading'];other_image=composed_image(popup);other_badge=popup.nav_counts['uploading'];position=other_badge.geometry()
-            check('unselected transfer count',other_badge.palette().color(QPalette.WindowText),
-                  logical_pixel(other_image,other.mapTo(popup,QPoint(position.center().x(),position.top()+3))))
+            count_background=logical_pixel(other_image,other.mapTo(popup,QPoint(position.center().x(),position.top()+3)))
+            count_bounds=QRect(other_badge.mapTo(popup,QPoint()),other_badge.size()).adjusted(2,3,-2,-3)
+            check('unselected transfer count',highest_contrast_pixel(other_image,count_bounds,count_background),count_background)
             # Exercise real QMenu selection drawing; palette() alone does not
             # resolve the QSS :selected foreground/background state.
             menu=subject.AnimatedMenu();subject.style_menu(menu);action=menu.addAction('选择菜单项目')

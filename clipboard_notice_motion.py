@@ -1,5 +1,6 @@
 """One finite clock for a bounded, overlapping notification canvas."""
-from PySide6.QtCore import QObject,QVariantAnimation
+from PySide6.QtCore import QObject
+from frame_animation import FrameAnimation as QVariantAnimation
 from ui_transitions import exit_curve
 
 

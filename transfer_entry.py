@@ -1,5 +1,6 @@
 """A child-surface drop chooser; never a second native popup or shelf import."""
-from PySide6.QtCore import QObject,QEvent,QPoint,QRect,QRectF,Qt,QTimer,QVariantAnimation,QEasingCurve
+from PySide6.QtCore import QObject,QEvent,QPoint,QRect,QRectF,Qt,QTimer,QEasingCurve
+from frame_animation import FrameAnimation as QVariantAnimation
 from PySide6.QtGui import QColor,QPainter,QPen
 from PySide6.QtWidgets import QApplication,QWidget
 from shiboken6 import isValid

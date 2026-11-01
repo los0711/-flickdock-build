@@ -19,7 +19,7 @@ from fractions import Fraction
 from uuid import uuid4
 
 from PySide6.QtCore import (QEasingCurve, QPoint, QRect, QRectF, QSize, QEvent, Qt, QMimeData,
-                             QPropertyAnimation, QTimer, QUrl, QThreadPool, QDateTime)
+                             QTimer, QUrl, QThreadPool, QDateTime)
 from PySide6.QtGui import (QColor, QCursor, QDrag, QFont, QFontDatabase, QGuiApplication, QImage,
                            QIcon, QLinearGradient, QPainter, QPainterPath, QPalette, QPen, QPixmap, QTransform)
 from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame,
@@ -165,7 +165,9 @@ def text_snippet(path: str, limit: int = 240) -> str | None:
 class AnimatedMenu(QMenu):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.fade = QPropertyAnimation(self, b"windowOpacity", self)
+        from frame_animation import FrameAnimation
+        self.fade = FrameAnimation(self)
+        self.fade.valueChanged.connect(self.setWindowOpacity)
         self.fade.setDuration(120)
         self.fade.setEasingCurve(QEasingCurve.Type.OutCubic)
         self.fade.valueChanged.connect(self._fade_frame)
@@ -189,7 +191,7 @@ class AnimatedMenu(QMenu):
         self.setWindowOpacity(.25)
         super().showEvent(event)
         self.fade.setStartValue(.25)
-        self.fade.setEndValue(1)
+        self.fade.setEndValue(1.)
         self.fade.start()
 
 

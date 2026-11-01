@@ -2,7 +2,8 @@
 from collections import OrderedDict
 import math
 import sys
-from PySide6.QtCore import QObject, QPoint, QRect, QRectF, Qt, QEasingCurve, QVariantAnimation
+from PySide6.QtCore import QObject, QPoint, QRect, QRectF, Qt, QEasingCurve
+from frame_animation import FrameAnimation as QVariantAnimation
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPixmap, QTransform, QRegion
 from PySide6.QtWidgets import QWidget
 

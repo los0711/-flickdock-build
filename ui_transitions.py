@@ -1,5 +1,6 @@
 """Finite utility transitions, separate from the native shelf compositor."""
-from PySide6.QtCore import QCoreApplication,QEvent,QObject,QPoint,QPointF,QRectF,Qt,QTimer,QVariantAnimation,QEasingCurve
+from PySide6.QtCore import QCoreApplication,QEvent,QObject,QPoint,QPointF,QRectF,Qt,QTimer,QEasingCurve
+from frame_animation import FrameAnimation as QVariantAnimation
 from PySide6.QtGui import QGuiApplication,QPainter
 from PySide6.QtWidgets import QWidget,QGraphicsEffect
 from shiboken6 import isValid
