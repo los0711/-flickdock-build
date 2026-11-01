@@ -80,7 +80,7 @@ jobs:
       - name: Verify frame lifecycle, popup and real control-state paint regressions
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m unittest test_native_owner_lifetime_v1824 test_frame_animation_v1824 test_screen_animation_timer_v1824 test_user_popup_fixes_v1823 test_standard_control_states_v1824 test_disabled_field_states_v1824 -q
+        run: python -m unittest test_transfer_balance_v1824 test_native_owner_lifetime_v1824 test_frame_animation_v1824 test_screen_animation_timer_v1824 test_user_popup_fixes_v1823 test_standard_control_states_v1824 test_disabled_field_states_v1824 -q
       - name: Reproduce asynchronous metadata reconciliation before framework warmup
         if: runner.os == 'macOS'
         shell: bash

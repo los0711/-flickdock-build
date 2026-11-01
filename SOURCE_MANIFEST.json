@@ -16,13 +16,13 @@
     },
     {
       "path": ".github/workflows/macos-build.yml",
-      "size": 6035,
-      "sha256": "a6d8854bd88097f72164ab1384750da61a3713e32a51bd5094a3328ded08b9ac"
+      "size": 6063,
+      "sha256": "03a865dbd682a6f87a5444d15476c49e45c490b82936f0e6e953c3c60e40f6e8"
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 11774,
-      "sha256": "023d805df3220ff7715f121937b72a7469ddb4a4b8b23a8afe5ddcf914bec407"
+      "size": 11802,
+      "sha256": "463f2aadd0adcdca7038143b705bea153ae4c8ca112a04e40667c258699d9a2d"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -1021,8 +1021,8 @@
     },
     {
       "path": "lan_panel.py",
-      "size": 124938,
-      "sha256": "c56a9ad246e60d227da7e47d43decf9c9bc0f768bb1608e007d5d95fad979bcb"
+      "size": 125852,
+      "sha256": "00949b5fad9368a042b290803680f5ee1c88cfbe4f862b6e91e68945b5937bac"
     },
     {
       "path": "lan_transfer.py",
@@ -1211,8 +1211,8 @@
     },
     {
       "path": "qa/packaged-live/ci_packaged_windows_live.py",
-      "size": 77078,
-      "sha256": "248d925240bc81bccebfb8f2a11c3dd51a273dbf9609d064ec67016441597ac5"
+      "size": 79014,
+      "sha256": "effc69ec7e62dc9a4e49260e15530d65c2185386b56e1f0ad6af1369af9108fe"
     },
     {
       "path": "qa/packaged-live/gateway.mjs",
@@ -1221,8 +1221,8 @@
     },
     {
       "path": "qa/packaged-live/native_batch2.py",
-      "size": 22882,
-      "sha256": "1a0fc5199f60c1afe2f118ef2ad4af72352eb97a06c54ca89ad03921e1ecd5fe"
+      "size": 28632,
+      "sha256": "f883cbb01a48fc5b00a3f56853212c0d94b06b3aa69e888655c4b66e6e909392"
     },
     {
       "path": "qa/packaged-live/native_editor.py",
@@ -1246,8 +1246,8 @@
     },
     {
       "path": "qa/packaged-live/test_native_batch2.py",
-      "size": 12440,
-      "sha256": "1204493f5459a5d60b8489e9668d979cf32b1142cd5a5c3f60b3261514a32eeb"
+      "size": 14900,
+      "sha256": "302966453cb051f40460a8ab428ace4a4d36f68835bcc1c81e3154be517a46d8"
     },
     {
       "path": "qa/packaged-live/ui-actions.json",
@@ -1291,8 +1291,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 39008,
-      "sha256": "9fd9f3d86ed10e5bc75255c4162c85b44df8219f0c91cd5c06619094c83914af"
+      "size": 39046,
+      "sha256": "14090f05e1b6c7f648c6ee3f9a7516a18515a29f3eebc43f44abdcbc0b31c1dc"
     },
     {
       "path": "release_signing.py",
@@ -2013,6 +2013,11 @@
       "path": "test_sync_timeout_recovery.py",
       "size": 4071,
       "sha256": "3ca993b9de849a1eb34e44446a394708d6659ef20076618ced931a52142a775c"
+    },
+    {
+      "path": "test_transfer_balance_v1824.py",
+      "size": 7338,
+      "sha256": "de7f5fcdda01e562805ecf20b3bd1d4c35d8ccdd33b3072d25849b41520748d3"
     },
     {
       "path": "test_transfer_drop_feedback_v1823.py",

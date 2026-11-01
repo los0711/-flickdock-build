@@ -163,6 +163,15 @@ def retain_diagnostics(output,profile,cloud):
             (output/'synthetic-batch2-progress.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in safe));status['batch2_rows']=len(safe)
         except Exception as error:errors.append('batch2:'+type(error).__name__)
         try:
+            raw=read(profile.parent/'batch2-explorer-diagnostics.jsonl',2*1024*1024)
+            # native_batch2 writes a bounded, privacy-filtered synthetic-shell
+            # schema. No profile files, credentials or raw Explorer logs enter
+            # the artifact; external names/locations are already digests.
+            rows=[json.loads(line) for line in (raw or '').splitlines()[-8:]]
+            (output/'synthetic-explorer-observations.json').write_text(json.dumps(rows,ensure_ascii=False,indent=2))
+            status['explorer_observations']=len(rows)
+        except Exception as error:errors.append('explorer:'+type(error).__name__)
+        try:
             raw=read(profile.parent/'native-input-ownership.jsonl',1024*1024);safe=[]
             for line in (raw or '').splitlines()[-2048:]:
                 row=json.loads(line)
@@ -330,14 +339,18 @@ class LocalCloud:
     def stats(self):return json_request(self.control,'GET','/stats')
     def command(self,path):
         with urlopen(self.control+path,timeout=5) as response:response.read()
-    def publish_shelf(self):
+    def publish_shelf(self,name='Actual local peer item'):
         import uuid
         identity=str(uuid.uuid4());body=('Synthetic remote shelf object '+identity+'\n').encode();checksum=hashlib.sha256(body).hexdigest()
-        result=json_request(self.origin,'POST','/v1/uploads',dict(item_id=identity,base_version=0,kind='text',name='Actual local peer item',
+        result=json_request(self.origin,'POST','/v1/uploads',dict(item_id=identity,base_version=0,kind='text',name=name,
             mime_type='text/plain',size=len(body),sha256=checksum,fast_upload=True),self.peer['token'])
         binary_request(self.origin,'PUT',f'/v1/uploads/{result["upload_id"]}/parts/0',body,self.peer['token'],{'X-Content-SHA256':checksum})
-        json_request(self.origin,'POST',f'/v1/uploads/{result["upload_id"]}/commit',{},self.peer['token'])
+        committed=json_request(self.origin,'POST',f'/v1/uploads/{result["upload_id"]}/commit',{},self.peer['token'])
+        if not hasattr(self,'shelf_versions'):self.shelf_versions={}
+        self.shelf_versions[identity]=committed['record']['version']
         return identity
+    def delete_peer_shelf(self,identity):
+        return json_request(self.origin,'DELETE','/v1/items/'+identity,dict(base_version=self.shelf_versions[identity]),self.peer['token'])
     def publish_clipboard(self,text):
         import uuid
         previous=json_request(self.origin,'GET','/v1/clipboard',token=self.peer['token']).get('clipboard') or {}
@@ -994,8 +1007,20 @@ def main():
                             for row in cloud.stats()['rows'][stopped:]),label='real resumed shelf upload commit')
             driver.setting('sync_upload_enabled',False)
             report['checks'].append('Actual shelf upload off cancels/stops writes; enabling resumes a real local-workerd commit')
+            driver.setting('sync_receive_enabled',True)
             recorder.run('07-close-settings',lambda:driver.click('关闭设置'))
             recorder.run('08-reopen-overview',lambda:driver.hotkey('^%+{SPACE}'))
+            live_name='live-peer-'+os.urandom(6).hex()+'.txt'
+            def live_add():
+                identity=cloud.publish_shelf(live_name)
+                wait(lambda:driver.find(live_name,roles=['Group']) is not None,label='real peer item appears in already open normal overview')
+                return identity
+            live_identity=recorder.run('08a-open-overview-live-peer-add',live_add,duration=1.2)
+            def live_remove():
+                cloud.delete_peer_shelf(live_identity)
+                wait(lambda:driver.find(live_name,roles=['Group']) is None,label='real peer deletion updates already open normal overview')
+            recorder.run('08b-open-overview-live-peer-remove',live_remove,duration=1.2)
+            report['checks'].append('Already open normal overview receives real peer add/delete without reopening; raw transition frames retained')
             actions=json.loads(args.actions.read_text(encoding='utf8')) if args.actions else []
             extras=json.loads(args.extra_actions.read_text(encoding='utf8')) if args.extra_actions else []
             batch2=json.loads(args.batch2_actions.read_text(encoding='utf8')) if args.batch2_actions else []

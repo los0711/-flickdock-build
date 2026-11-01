@@ -157,6 +157,31 @@ class Batch2Tests(unittest.TestCase):
     folder,old,new,keys,modules=self.explorer_fixture(**kwargs)
     with patch.dict(sys.modules,modules),self.assertRaisesRegex(AssertionError,'unique Explorer'):self.runner.reveal(folder)
     keys.assert_not_called();new.set_focus.assert_not_called()
+ def test_failed_address_match_still_records_real_com_path_selected_file_and_active_tab_without_input(self):
+  folder,old,new,keys,modules=self.explorer_fixture(wrong_active_address=True)
+  tab=Control('files','TabItem','TabItem',new);tab.iface_selection_item=types.SimpleNamespace(CurrentIsSelected=True)
+  secret=Control('private-other-tab','TabItem','TabItem',new);secret.iface_selection_item=types.SimpleNamespace(CurrentIsSelected=False)
+  with patch.dict(sys.modules,modules),self.assertRaisesRegex(AssertionError,'unique Explorer'):self.runner.reveal(folder)
+  row=json.loads((self.base/'batch2-explorer-diagnostics.jsonl').read_text(encoding='utf8').splitlines()[-1])
+  self.assertEqual(row['documents'][0]['folder'],str((self.base/'files').resolve()))
+  self.assertEqual(row['documents'][0]['selected_paths'],[str((self.base/'files'/'tiny.bin').resolve())])
+  current=next(w for w in row['windows'] if w['handle']==321)
+  self.assertEqual(current['tabs'][0]['name'],'files');self.assertTrue(current['tabs'][0]['selected'])
+  self.assertTrue(current['tabs'][1]['name'].startswith('sha256:'));self.assertNotIn('private-other-tab',json.dumps(row))
+  self.assertTrue(current['known_fixture_folder']);self.assertEqual(current['address'][0]['name'],'Address: '+str(self.base/'other'))
+  keys.assert_not_called();self.mouse.click.assert_not_called()
+ def test_explorer_observation_limits_and_redacts_unrelated_paths_without_any_input(self):
+  unrelated=Control('private-folder','Window','CabinetWClass');unrelated.handle=321
+  Control(r'Address: X:\private\folder','ToolBar','ToolbarWindow32',unrelated)
+  desktop=types.SimpleNamespace(windows=lambda **_:[unrelated]*20)
+  documents=[types.SimpleNamespace(HWND=321,Document=types.SimpleNamespace(
+   Folder=types.SimpleNamespace(Self=types.SimpleNamespace(Path=r'X:\private\folder')),
+   SelectedItems=lambda:types.SimpleNamespace(Count=1,Item=lambda i:types.SimpleNamespace(Path=r'X:\private\secret.txt'))))]*20
+  self.runner.observe_explorer(desktop,types.SimpleNamespace(Windows=lambda:documents),(self.base/'files').resolve(),set())
+  raw=(self.base/'batch2-explorer-diagnostics.jsonl').read_text(encoding='utf8');row=json.loads(raw)
+  self.assertEqual(len(row['windows']),8);self.assertEqual(len(row['documents']),12)
+  self.assertNotIn('private',raw);self.assertNotIn('secret.txt',raw)
+  self.mouse.click.assert_not_called();self.mouse.press.assert_not_called();self.backend.hotkey.assert_not_called()
  def test_unknown_recipe_has_no_input_and_plan_has_ordering(self):
   with self.assertRaisesRegex(ValueError,'Unknown'):self.runner.run('anything')
   self.mouse.click.assert_not_called()

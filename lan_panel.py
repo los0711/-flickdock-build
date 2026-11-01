@@ -32,6 +32,12 @@ def _label(value='', parent=None, *, muted=False):
     return label
 
 
+class _ActivityGroup(QFrame):
+    """Equal flex track; live content minimum is measured by its owner."""
+    def hasHeightForWidth(self):return False
+    def heightForWidth(self,width):return self.minimumHeight()
+
+
 class _PressButton(QPushButton):
     def paintEvent(self,event):
         painter=QStylePainter(self)
@@ -897,8 +903,9 @@ class LanPanel(QFrame):
 
         self.activity_column = QFrame(self); self.activity_column.setObjectName('lanActivityColumn')
         activity = QVBoxLayout(self.activity_column); activity.setContentsMargins(20,20,20,16); activity.setSpacing(8)
-        self.active_group=QFrame(self.activity_column);self.active_group.setObjectName('lanActiveGroup')
+        self.active_group=_ActivityGroup(self.activity_column);self.active_group.setObjectName('lanActiveGroup')
         self.active_group.setMinimumHeight(176)
+        self.active_group.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Ignored)
         active=QVBoxLayout(self.active_group);active.setContentsMargins(12,12,12,12);active.setSpacing(8)
         activity.addWidget(self.active_group,1)
         transfer_heading = QHBoxLayout(); transfer_heading.setSpacing(8)
@@ -937,8 +944,12 @@ class LanPanel(QFrame):
         pages.addWidget(self.page_label); pages.addWidget(self.next_page)
         active.addLayout(pages)
         self.previous_page.hide(); self.next_page.hide(); self.page_label.hide()
-        self.recent_group=QFrame(self.activity_column);self.recent_group.setObjectName('lanRecentGroup')
+        self.recent_group=_ActivityGroup(self.activity_column);self.recent_group.setObjectName('lanRecentGroup')
         self.recent_group.setMinimumHeight(176)
+        # The history viewport's preferred height grows with saved rows. Both
+        # tracks use the explicit shared minimum and equal stretch instead;
+        # live offer content can still raise that minimum in the balancer.
+        self.recent_group.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Ignored)
         recent=QVBoxLayout(self.recent_group);recent.setContentsMargins(12,12,12,12);recent.setSpacing(8)
         activity.addWidget(self.recent_group,1)
         section = _label('最近传输', self.recent_group); section.setObjectName('lanSection')
@@ -1017,13 +1028,17 @@ class LanPanel(QFrame):
     def _balance_activity_groups(self):
         # Two equal flex tracks, including when an incoming offer raises the
         # natural minimum. The outer activity viewport scrolls on short screens.
-        height=max(176,self.active_group.layout().sizeHint().height()+2,self.recent_group.layout().minimumSize().height()+2)
+        active_layout=self.active_group.layout()
+        natural=max(active_layout.sizeHint().height(),active_layout.totalHeightForWidth(self.active_group.contentsRect().width()))
+        height=max(176,natural+2,self.recent_group.layout().minimumSize().height()+2)
         for group in (self.active_group,self.recent_group):
             if group.minimumHeight()!=height:group.setMinimumHeight(height)
 
     def eventFilter(self,watched,event):
-        if watched in (getattr(self,'active_group',None),getattr(self,'recent_group',None)) and event.type()==QEvent.LayoutRequest:
-            self._activity_balance_timer.start(0)
+        if watched in (getattr(self,'active_group',None),getattr(self,'recent_group',None)):
+            if (event.type()==QEvent.LayoutRequest or event.type()==QEvent.Resize
+                    and event.size().width()!=event.oldSize().width()):
+                self._activity_balance_timer.start(0)
         return super().eventFilter(watched,event)
 
     def _load_history(self):

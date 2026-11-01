@@ -8,6 +8,7 @@ import ctypes
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -350,7 +351,8 @@ class Batch2:
                     if paths==[os.path.normcase(str(expected/'tiny.bin'))]:matches.append(window)
             if len(matches)>1:raise AssertionError('Multiple new Explorer windows show exact selected fixture')
             return matches[0] if matches else None
-        explorer=self.wait(actual,'new unique Explorer full fixture path and selected tiny.bin',seconds=10)
+        try:explorer=self.wait(actual,'new unique Explorer full fixture path and selected tiny.bin',seconds=10)
+        finally:self.observe_explorer(desktop,shell,expected,before)
         self.mark('validated-explorer-reveal',explorer,handle=int(explorer.handle),selected='tiny.bin')
         api=self.b._input_api();explorer_pid=self.b._window_pid(explorer.handle)
         if explorer_pid==self.b.pid or explorer.handle in before:raise AssertionError('Explorer ownership guard failed')
@@ -361,6 +363,81 @@ class Batch2:
             raise AssertionError('Validated Explorer is not actual foreground native root')
         send_keys('%{F4}',pause=.02)
         self.wait(lambda:not any(w.handle==explorer.handle for w in desktop.windows(class_name='CabinetWClass')),'validated Explorer closed')
+
+    def observe_explorer(self,desktop,shell,expected,before):
+        """Failure-safe, bounded, read-only evidence; never changes matching.
+
+        Synthetic paths under this disposable profile may be recorded in full.
+        Any other directory/name/value is replaced by a digest, so a shell
+        background window cannot export arbitrary file names or locations.
+        The existing outer 75s UIA-worker deadline also bounds stuck COM calls.
+        """
+        observed=dict(recipe=self.recipe,t=round(time.monotonic()-self.started,4),
+                      expected_folder=str(expected),expected_file=str(expected/'tiny.bin'),windows=[],documents=[])
+        trusted_handles=set()
+        def safe(value,*,trusted=False):
+            text=str(value or '')[:1024]
+            # Fixture display names and shell chrome carry no user content.
+            if text in ('files','File Explorer','文件资源管理器','tiny.bin','original-image','original-text',*ORIGINALS):return text
+            markers=(str(self.b.base).casefold(),str(self.b.base.resolve()).casefold())
+            if any(marker in text.casefold() for marker in markers):return text
+            # A matching Shell document may be an inactive tab. Even on that
+            # HWND do not expose arbitrary other tab names or control text.
+            # Permit only known fixture/chrome wording, never generic strings.
+            if trusted and re.fullmatch(r'(?:Address|地址)[:：]?\s*files|(?:Search|搜索)\s+files',text,re.I):return text
+            return 'sha256:'+hashlib.sha256(text.encode('utf8')).hexdigest()[:20]
+        def read_state(c,attribute):
+            try:return bool(getattr(c.iface_selection_item,attribute))
+            except Exception as error:return dict(unavailable=type(error).__name__)
+        try:
+            # Read every bounded shell document even when the old matcher
+            # would reject its address toolbar before querying COM.
+            for index,item in enumerate(shell.Windows()):
+                if index>=12:break
+                row={}
+                try:
+                    row['handle']=int(item.HWND);document=item.Document
+                    location=document.Folder.Self.Path;row['folder']=safe(location)
+                    row['folder_matches_expected']=os.path.normcase(os.path.realpath(location))==os.path.normcase(str(expected))
+                    if row['folder_matches_expected']:
+                        trusted_handles.add(row['handle'])
+                    selected_items=document.SelectedItems();row['selected_count']=int(selected_items.Count)
+                    selected_paths=[selected_items.Item(i).Path for i in range(min(24,row['selected_count']))]
+                    row['selected_paths']=[safe(path) for path in selected_paths]
+                    row['selected_matches_expected']=row['selected_count']==1 and [os.path.normcase(os.path.realpath(path)) for path in selected_paths]==[os.path.normcase(str(expected/'tiny.bin'))]
+                except Exception as error:row['query_error']=type(error).__name__
+                observed['documents'].append(row)
+            for index,window in enumerate(desktop.windows(class_name='CabinetWClass')):
+                if index>=8:break
+                trusted=window.handle in trusted_handles
+                row=dict(handle=int(window.handle),was_present_before=window.handle in before,
+                         known_fixture_folder=trusted,visible=bool(window.is_visible()),bounds=bounds(window),title=safe(window.element_info.name,trusted=trusted),
+                         tabs=[],address=[],items=[])
+                try:
+                    row['pid']=self.b._window_pid(window.handle)
+                    api=self.b._input_api();row['foreground_root']=int(api.GetAncestor(api.GetForegroundWindow(),2))
+                except Exception as error:row['native_query_error']=type(error).__name__
+                for c in window.descendants():
+                    info=c.element_info;role=info.control_type
+                    item=dict(name=safe(info.name,trusted=trusted),role=role,class_name=info.class_name,visible=bool(c.is_visible()),bounds=bounds(c))
+                    if role=='TabItem' and len(row['tabs'])<8:
+                        item['name']=safe(info.name)
+                        item['selected']=read_state(c,'CurrentIsSelected');row['tabs'].append(item)
+                    elif role in ('ToolBar','Edit') and len(row['address'])<20:
+                        item['name_matches_full_expected']=str(info.name or '').rstrip('\\/').casefold().endswith(str(expected).casefold())
+                        try:item['value']=safe(c.iface_value.CurrentValue,trusted=trusted)
+                        except Exception as error:item['value_unavailable']=type(error).__name__
+                        row['address'].append(item)
+                    elif role in ('ListItem','DataItem') and len(row['items'])<24:
+                        item['selected']=read_state(c,'CurrentIsSelected');row['items'].append(item)
+                observed['windows'].append(row)
+        except Exception as error:observed['observation_error']=type(error).__name__
+        # Only this small, already-sanitized synthetic shell observation is
+        # retained. It intentionally records failed criteria rather than
+        # falling back to a title, a guessed path, or a different Explorer.
+        with (self.b.base/'batch2-explorer-diagnostics.jsonl').open('a',encoding='utf8') as stream:
+            stream.write(json.dumps(observed,ensure_ascii=False)+'\n')
+        self.mark('explorer-readonly-observation',windows=len(observed['windows']),documents=len(observed['documents']))
 
     def run(self,recipe):
         if recipe not in RECIPES:raise ValueError('Unknown batch2 recipe')
