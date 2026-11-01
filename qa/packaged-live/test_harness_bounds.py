@@ -15,6 +15,28 @@ class FakeWorker:
     def wait(self,timeout):return 0
 
 class BoundTests(unittest.TestCase):
+    def test_final_motion_uses_existing_isolated_worker_with_hard_deadline(self):
+        driver=qa.Driver.__new__(qa.Driver)
+        from unittest.mock import Mock
+        driver._rpc=Mock(return_value={'events':[]})
+        self.assertEqual(driver.final_motion('host-real-leave-close','manual-position'),{'events':[]})
+        driver._rpc.assert_called_once_with('final_motion',seconds=25,recipe='host-real-leave-close',placement='manual-position')
+
+    def test_motion_diagnostics_keep_raw_geometry_and_times_without_text(self):
+        raw=dict(recipe='header-fixed-expand',name='private clipboard text',error='private response',before={'cloud':dict(bounds=[-80,10,20,42],monotonic=123.25)},observations=[dict(host_visible=False,popup_visible=True,foreground=dict(pid=17,hwnd=88))])
+        safe=qa.safe_motion_diagnostic(raw)
+        self.assertNotIn('name',safe);self.assertNotIn('error',safe)
+        self.assertEqual(safe['before'],raw['before']);self.assertEqual(safe['observations'],raw['observations'])
+
+    def test_prior_ready_head_or_different_payload_cannot_prove_new_copy_commit(self):
+        value='synthetic fixture';inline=qa.inline_clipboard(value)
+        head=dict(id='new-copy',kind='text',ready=True,inline=inline['body'],size=inline['size'],sha256=inline['sha256'])
+        self.assertTrue(qa.exact_ready_text_head(head,value,'previous'))
+        self.assertFalse(qa.exact_ready_text_head(head,value,'new-copy'))
+        self.assertFalse(qa.exact_ready_text_head(head,'different','previous'))
+        for change in (dict(ready=False),dict(id=''),dict(size=1),dict(sha256='0'*64),dict(inline='corrupt')):
+            self.assertFalse(qa.exact_ready_text_head(dict(head,**change),value,'previous'))
+
     def test_installer_requires_exact_executable_entry_not_successful_suffix(self):
         spec=importlib.util.spec_from_file_location('exact_installer_qa',Path(__file__).with_name('ci_exact_installer.py'))
         installer=importlib.util.module_from_spec(spec);spec.loader.exec_module(installer)
@@ -150,6 +172,46 @@ class PointerOwnershipTests(unittest.TestCase):
         driver=qa.Driver.__new__(qa.Driver);receipt=dict(point=[20,30],input_sent=True)
         driver._rpc=lambda *args,**kwargs:receipt
         self.assertIs(driver.click('delete row'),receipt)
+
+    def focus_fixture(self,*,labels=True,covered=False,other_root=False):
+        events=[];backend=qa._UIABackend.__new__(qa._UIABackend);backend.pid=101;backend.producer_pid=202
+        def control(role,cls,area):
+            return SimpleNamespace(element_info=SimpleNamespace(control_type=role,class_name=cls),
+                is_visible=lambda:True,is_enabled=lambda:True,
+                rectangle=lambda:SimpleNamespace(left=area[0],top=area[1],right=area[2],bottom=area[3]))
+        status=control('Text','_StatusLabel',[282,44,814,64]);back=control('Button','_PressButton',[176,40,270,68])
+        header=control('Group','_DialogTitleBar',[44,30,978,78])
+        header.descendants=lambda:([status] if labels else [])+[back]+([control('Edit','QLineEdit',[282,44,814,64])] if covered else [])
+        window=control('Window','LanDialog',[21,7,1001,711]);window.handle=404
+        window.element_info.name='FlickDock · 文件互传';window.descendants=lambda:[header]
+        window.set_focus=lambda:(_ for _ in ()).throw(AssertionError('must use a real nonfunctional header click'))
+        backend.windows=lambda:[window];backend._producer_topmost=lambda value:events.append(('producer_topmost',value))
+        backend._assert_pointer_owner=lambda point,pid:events.append(('pointer_owner',point,pid))
+        backend._input_api=lambda:SimpleNamespace(WindowFromPoint=lambda _:303,GetAncestor=lambda *_:405 if other_root else 404)
+        backend._assert_foreground=lambda pid:events.append(('foreground',pid))
+        physical=lambda **values:events.append(('physical',values))
+        return backend,events,physical
+
+    def test_focus_for_paste_uses_real_verified_header_text_then_strict_foreground(self):
+        backend,events,physical=self.focus_fixture()
+        with patch.dict('sys.modules',{'pywinauto':SimpleNamespace(mouse=SimpleNamespace(click=physical))}):
+            self.assertTrue(backend.focus_window('FlickDock · 文件互传'))
+        self.assertEqual(events,[('producer_topmost',False),('pointer_owner',(548,54),101),
+            ('physical',dict(button='left',coords=(548,54))),('foreground',101)])
+
+    def test_focus_for_paste_refuses_missing_or_interactive_covered_header_without_input(self):
+        for values in (dict(labels=False),dict(covered=True),dict(other_root=True)):
+            backend,events,physical=self.focus_fixture(**values)
+            with patch.dict('sys.modules',{'pywinauto':SimpleNamespace(mouse=SimpleNamespace(click=physical))}):
+                with self.assertRaisesRegex(RuntimeError,'HARNESS_'):backend.focus_window('FlickDock · 文件互传')
+            self.assertFalse(any(event[0]=='physical' for event in events))
+
+    def test_focus_for_paste_does_not_hide_real_activation_failure_or_click_twice(self):
+        backend,events,physical=self.focus_fixture()
+        backend._assert_foreground=lambda pid:(_ for _ in ()).throw(RuntimeError('actual foreground is still producer'))
+        with patch.dict('sys.modules',{'pywinauto':SimpleNamespace(mouse=SimpleNamespace(click=physical))}):
+            with self.assertRaisesRegex(RuntimeError,'still producer'):backend.focus_window('FlickDock · 文件互传')
+        self.assertEqual(sum(event[0]=='physical' for event in events),1)
 
     def test_occluded_pointer_target_is_rejected_even_for_nonactivating_app(self):
         backend=qa._UIABackend.__new__(qa._UIABackend);backend.pid=101;backend.producer_pid=202

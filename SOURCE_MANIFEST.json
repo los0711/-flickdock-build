@@ -1210,14 +1210,19 @@
       "sha256": "8c19cc2e02c09bd8023b4a4b01153a5c3f36f09dae4e749dbf568ca3b2b4c082"
     },
     {
+      "path": "qa/packaged-live/FINAL_MOTION.md",
+      "size": 5104,
+      "sha256": "1eba422d282954a59a7ad505529612740b893d85437ed3c7f1fdcf786e73384c"
+    },
+    {
       "path": "qa/packaged-live/ci_exact_installer.py",
       "size": 22311,
       "sha256": "7862e547f2269ff9cb848d90b1822a646e9fcaedf1a901c617cdc11c6d4b9899"
     },
     {
       "path": "qa/packaged-live/ci_packaged_windows_live.py",
-      "size": 80005,
-      "sha256": "fb766ad5b1e00d0c52169136321c6e826640c0c9f693f393157cc73cab4e4066"
+      "size": 86843,
+      "sha256": "72c3aeaf9a9de07eb4a9b10753c69c866e885195163b4c79b1866caa28043072"
     },
     {
       "path": "qa/packaged-live/ci_windows_reveal_probe.py",
@@ -1240,19 +1245,24 @@
       "sha256": "c25cf81f7197594c4582870209c6aa217ab028207aa379891ded232dc5ba99b9"
     },
     {
+      "path": "qa/packaged-live/native_final_motion.py",
+      "size": 17630,
+      "sha256": "a633cf708889e9dd1d130d3c2e6604a711915167e195750fae93d95aa5c619f2"
+    },
+    {
       "path": "qa/packaged-live/reuse_frozen.py",
       "size": 4304,
       "sha256": "4958d3e3df6998e6e10f5097d3c2600962fd0635c3be6b07685a9728f89c8674"
     },
     {
       "path": "qa/packaged-live/test_harness_bounds.py",
-      "size": 11356,
-      "sha256": "248a2572e9c3c89b0c4ccd19ea02f169187129119d2d22ad3a3a89c434e4fd19"
+      "size": 16337,
+      "sha256": "4f66617c304973024d6dc16f63d8337d690a8703df6912ad7b72aa3078039847"
     },
     {
       "path": "qa/packaged-live/test_harness_extras.py",
-      "size": 8597,
-      "sha256": "1630bfd274590a198ddaaa8a8eba9bddf394c288c4bad3b69afb9d1a53a5515a"
+      "size": 8876,
+      "sha256": "66d868dd5066200e924311ba209b3e904d784d18e4474ba1eeff6105b64873c1"
     },
     {
       "path": "qa/packaged-live/test_native_batch2.py",
@@ -1260,9 +1270,14 @@
       "sha256": "b19e860f2b10bbc6b3f091f6b1095ffbb0c9a435e34bdcd242c2ed9c8b1a1ae8"
     },
     {
+      "path": "qa/packaged-live/test_native_final_motion.py",
+      "size": 16450,
+      "sha256": "73830b6e2523de437b826e290b708fdd35cefbf44ba8978b15aaf6c6e5251efb"
+    },
+    {
       "path": "qa/packaged-live/ui-actions.json",
-      "size": 3762,
-      "sha256": "cdc698121e5e5a709c512fe98e3e973f1cbfc64af208db544c1e6a01316a8f65"
+      "size": 3878,
+      "sha256": "bd27c2110b4e006930a53ea2780693408f99e37f88bd530167abcba32288f831"
     },
     {
       "path": "qa/packaged-live/ui-batch2-actions.json",
@@ -1271,8 +1286,8 @@
     },
     {
       "path": "qa/packaged-live/ui-extra-actions.json",
-      "size": 781,
-      "sha256": "a88ae5647571d79abc26cd75135b13e579a3cb3b7b3186cb66e5f11928e9fb22"
+      "size": 1073,
+      "sha256": "5af1410d0e041aca3c9b013d7319c577abd3a37df4aee4456d1023892bd9045b"
     },
     {
       "path": "qa/packaged-live/verify_frozen_source.py",
@@ -1301,8 +1316,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 39357,
-      "sha256": "b232a7300a77daa65f7337380445fda110798d83b6636211abf8f66c7896beb8"
+      "size": 39486,
+      "sha256": "5882d2fc1fa424a957b1083d4b201cd951d6269b1452fea1cc7331f36294a5a6"
     },
     {
       "path": "release_signing.py",

@@ -115,6 +115,28 @@ def inline_clipboard(text):
     return dict(kind='text',body=base64.b64encode(body).decode('ascii'),size=len(body),sha256=hashlib.sha256(body).hexdigest())
 
 
+def exact_ready_text_head(head,text,previous_id=None):
+    """A prior ready head must never count as a new synthetic native copy."""
+    expected=inline_clipboard(text)
+    return (isinstance(head,dict) and head.get('ready') is True
+            and isinstance(head.get('id'),str) and bool(head['id']) and head['id']!=previous_id
+            and head.get('kind')=='text' and head.get('size')==expected['size']
+            and head.get('sha256')==expected['sha256'] and head.get('inline')==expected['body'])
+
+
+def safe_motion_diagnostic(value,depth=0):
+    """Retain geometry/timing while omitting control text and error payloads."""
+    if depth>8:return None
+    if isinstance(value,dict):
+        return {key:safe_motion_diagnostic(item,depth+1) for key,item in list(value.items())[:64]
+                if re.fullmatch(r'[A-Za-z0-9_.:-]{1,90}',str(key)) and key not in ('name','target','error')}
+    if isinstance(value,list):return [safe_motion_diagnostic(item,depth+1) for item in value[:256]]
+    if value is None or type(value) is bool:return value
+    if type(value) in (int,float):return value if value==value and abs(value)<=2**53 else None
+    if isinstance(value,str):return value if re.fullmatch(r'[A-Za-z0-9_.: -]{0,90}',value) else 'redacted'
+    return None
+
+
 def producer_corner(width,height,target,screen_width,screen_height):
     """Place only the disposable producer away from the real drop point."""
     candidates=((8,8),(screen_width-width-8,8),(8,screen_height-height-48),
@@ -151,6 +173,12 @@ def retain_diagnostics(output,profile,cloud):
             (output/'synthetic-gateway-stats.json').write_text(json.dumps(saved,indent=2));status['gateway_rows']=len(safe)
         except Exception as error:errors.append('gateway:'+type(error).__name__)
     if profile is not None:
+        try:
+            raw=read(profile.parent/'final-motion-events.jsonl',4*1024*1024)
+            rows=[safe_motion_diagnostic(json.loads(line)) for line in (raw or '').splitlines()[-2048:]]
+            (output/'synthetic-final-motion-events.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in rows))
+            status['final_motion_rows']=len(rows)
+        except Exception as error:errors.append('final-motion:'+type(error).__name__)
         try:
             raw=read(profile.parent/'batch2-events.jsonl',4*1024*1024);safe=[]
             for line in (raw or '').splitlines()[-2048:]:
@@ -568,10 +596,37 @@ class _UIABackend:
         control=wait(lambda:self.find(name,prefix=prefix),seconds=6,label='native hover target')
         point=self._prepare_control(control,self.pid);mouse.move(coords=point);self._assert_pointer_owner(point,self.pid)
     def focus_window(self,title):
+        import ctypes
+        from ctypes import wintypes
+        from pywinauto import mouse
         self._producer_topmost(False)
         target=wait(lambda:next((w for w in self.windows() if w.element_info.name==title),None),
                     seconds=6,label='actual native window '+title)
-        target.set_focus()
+        # Windows may refuse UIA set_focus while the external producer owns
+        # the foreground. Activate only through actual, nonfunctional header
+        # text; never use the file drop zone or an interactive caption button.
+        headers=[c for c in target.descendants() if c.is_visible()
+                 and c.element_info.class_name=='_DialogTitleBar']
+        if len(headers)!=1:raise RuntimeError('HARNESS_FOCUS_TARGET: unique visible native title bar required; no input sent')
+        header=headers[0];area=header.rectangle();children=header.descendants()
+        blocked=[c.rectangle() for c in children if c.is_visible() and c.element_info.control_type
+                 in ('Button','CheckBox','RadioButton','Edit','ComboBox','Slider','Spinner','MenuItem')]
+        labels=[c for c in children if c.is_visible() and c.is_enabled()
+                and c.element_info.control_type=='Text' and c.element_info.class_name in ('_StatusLabel','QLabel')]
+        labels.sort(key=lambda c:c.element_info.class_name!='_StatusLabel')
+        point=None
+        for label in labels:
+            r=label.rectangle();candidate=((r.left+r.right)//2,(r.top+r.bottom)//2);x,y=candidate
+            if (area.left+8<=x<area.right-8 and area.top+8<=y<area.bottom-8
+                    and not any(r.left<=x<r.right and r.top<=y<r.bottom for r in blocked)):
+                point=candidate;break
+        if point is None:raise RuntimeError('HARNESS_FOCUS_TARGET: no safe nonfunctional header text; no input sent')
+        self._assert_pointer_owner(point,self.pid)
+        api=self._input_api();ancestor=api.GetAncestor
+        if isinstance(ancestor,ctypes._CFuncPtr):ancestor.argtypes=[wintypes.HWND,wintypes.UINT];ancestor.restype=wintypes.HWND
+        if int(ancestor(api.WindowFromPoint(wintypes.POINT(*point)),2) or 0)!=int(target.handle):
+            raise RuntimeError('HARNESS_INPUT_OWNERSHIP: header point is not on the requested native window; no input sent')
+        mouse.click(button='left',coords=point)
         self._assert_foreground(self.pid)
         return True
     def drag_files(self,target_name,*,target_prefix=False,choice_mode=None):
@@ -689,6 +744,10 @@ class _UIABackend:
         require_hosted()
         from native_batch2 import run
         return run(self,recipe)
+    def final_motion(self,recipe,placement='default-edge'):
+        require_hosted()
+        from native_final_motion import run
+        return run(self,recipe,placement=placement)
     def command(self,action,**values):
         self.sequence+=1;path=self.base/'editor-command.json';temporary=path.with_suffix('.tmp')
         temporary.write_text(json.dumps(dict(id=self.sequence,action=action,**values)))
@@ -807,6 +866,7 @@ class Driver(_UIABackend):
     def drag_files(self,target_name,*,target_prefix=False):return self._rpc('drag_files',seconds=24,target_name=target_name,target_prefix=target_prefix)
     def ui_extra(self,recipe):return self._rpc('ui_extra',seconds=40,recipe=recipe)
     def batch2(self,recipe):return self._rpc('batch2',seconds=75,recipe=recipe)
+    def final_motion(self,recipe,placement='default-edge'):return self._rpc('final_motion',seconds=25,recipe=recipe,placement=placement)
     def paste_file_in_explorer(self,source):return self._rpc('paste_file_in_explorer',seconds=45,source=str(source))
     def close(self):
         if self._worker.poll() is None:
@@ -818,7 +878,7 @@ class Driver(_UIABackend):
 
 def uia_worker():
     require_hosted();backend=_UIABackend(int(sys.argv[2]),int(sys.argv[3]),Path(sys.argv[4]))
-    allowed={'windows','find','click','tree','hotkey','hover','focus_window','paste_file_in_explorer','drag_files','ui_extra','batch2'}
+    allowed={'windows','find','click','tree','hotkey','hover','focus_window','paste_file_in_explorer','drag_files','ui_extra','batch2','final_motion'}
     def bounds(control):
         rect=control.rectangle();return [rect.left,rect.top,rect.right,rect.bottom]
     for line in sys.stdin:
@@ -911,11 +971,17 @@ def main():
             assert not any(row['method'] in ('POST','PUT') and row['path'].startswith('/v1/uploads')
                            for row in cloud.stats()['rows']),'Startup with shelf upload disabled wrote shelf data'
             phase('initial-accessibility-tree',lambda:(args.output/'initial-accessibility.json').write_text(json.dumps(driver.tree(),ensure_ascii=False,indent=2)),screens=True)
-            def copy_and_committed(text):
-                before=len(cloud.stats()['rows']);driver.text_copy(text)
+            def copy_and_committed(text,*,already_focused=False):
+                previous=json_request(cloud.origin,'GET','/v1/clipboard',token=cloud.session['token']).get('clipboard')
+                previous_id=previous.get('id') if isinstance(previous,dict) else None
+                before=len(cloud.stats()['rows'])
+                if already_focused:
+                    driver.command('text',text=text)
+                    driver.hotkey('^a',pid=producer.pid);driver.hotkey('^c',pid=producer.pid)
+                else:driver.text_copy(text)
                 def ready():
                     head=json_request(cloud.origin,'GET','/v1/clipboard',token=cloud.session['token']).get('clipboard')
-                    return head if head and head.get('ready') else None
+                    return head if exact_ready_text_head(head,text,previous_id) else None
                 head=wait(ready,label='real local service clipboard commit')
                 return before,head
             unique='synthetic native copy '+os.urandom(6).hex()
@@ -1025,6 +1091,10 @@ def main():
             driver.setting('sync_upload_enabled',False)
             report['checks'].append('Actual shelf upload off cancels/stops writes; enabling resumes a real local-workerd commit')
             driver.setting('sync_receive_enabled',True)
+            # Clipboard was deliberately disabled to isolate the shelf-upload
+            # switch experiment. Restore normal enabled behavior through the
+            # actual persisted UI before later real-copy/notice scenarios.
+            recorder.run('06d-restore-clipboard-sync',lambda:driver.setting('clipboard_sync_enabled',True))
             recorder.run('07-close-settings',lambda:driver.click('关闭设置'))
             recorder.run('08-reopen-overview',lambda:driver.hotkey('^%+{SPACE}'))
             live_name='live-peer-'+os.urandom(6).hex()+'.txt'
@@ -1050,6 +1120,7 @@ def main():
                     if step['kind']=='focus_window':return driver.focus_window(step['title'])
                     if step['kind']=='ui_extra':return driver.ui_extra(step['recipe'])
                     if step['kind']=='batch2':return driver.batch2(step['recipe'])
+                    if step['kind']=='final_motion':return driver.final_motion(step['recipe'],step.get('placement','default-edge'))
                     if step['kind']=='drag':
                         result=driver.drag_files(step['target'],target_prefix=step.get('target_prefix',False))
                         for name in step.get('expected_controls',[]):
@@ -1061,8 +1132,28 @@ def main():
                     if step['kind']=='image_copy':return driver.click('Copy original image',pid=producer.pid)
                     raise ValueError('Unsupported native action')
                 result=recorder.run(f'flow-{index:02}-{step["id"]}',execute,duration=step.get('duration',.9))
-                if step['kind'] in ('ui_extra','batch2'):(args.output/f'flow-{index:02}-extra-events.json').write_text(json.dumps(result,indent=2))
+                if step['kind'] in ('ui_extra','batch2','final_motion'):(args.output/f'flow-{index:02}-extra-events.json').write_text(json.dumps(result,indent=2))
                 (args.output/f'flow-{index:02}-accessibility.json').write_text(json.dumps(driver.tree(),ensure_ascii=False,indent=2))
+            def real_notice_stack():
+                driver.click('Synthetic external editor',pid=producer.pid)
+                before=sum(row['method']=='POST' and row['path']=='/v1/clipboard' for row in cloud.stats()['rows'])
+                commits=[]
+                for label in ('first','second'):
+                    text='synthetic notice '+label+' '+os.urandom(6).hex()
+                    _,head=copy_and_committed(text,already_focused=True)
+                    commits.append(dict(id=head['id'],sha256=head['sha256'],committed_capture_time=time.monotonic()))
+                # Preserve actual overlap, expiry fade and the remaining-card
+                # position; UIA child labels are hidden cached artwork.
+                time.sleep(3.1)
+                after=sum(row['method']=='POST' and row['path']=='/v1/clipboard' for row in cloud.stats()['rows'])
+                assert after-before==2,'Distinct actual copies produced extra upload tasks during notice expiry'
+                latest=json_request(cloud.origin,'GET','/v1/clipboard',token=cloud.session['token'])['clipboard']
+                assert latest['id']==commits[-1]['id'],'Idle notice expiry replaced the latest real head'
+                assert driver.inspect()['text']==text,'Native clipboard changed during notification expiry'
+                return dict(commits=commits,post_delta=after-before,observer_generated_notice=False,
+                            manual_overlap_and_fade_review='required')
+            report['notice_stack']=recorder.run('final-real-distinct-notice-stack',real_notice_stack,duration=4.)
+            report['checks'].append('Two distinct external native copies each commit their exact payload once; notice expiry creates no extra POST or clipboard write')
             report.update(ok=True,native_input=True,real_system_clipboard=True,local_workerd=True,tls_verification=True,
                 actual_service_requests=cloud.stats()['rows'],screen_segments=[dict(label=row['label'],distinct_pixels=row['distinct_pixels']) for row in recorder.segments])
     except Exception as error:

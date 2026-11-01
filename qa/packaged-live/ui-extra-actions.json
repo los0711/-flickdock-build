@@ -4,6 +4,8 @@
   {"id":"extra-mini-clipboard-close-routes","kind":"ui_extra","recipe":"mini-clipboard-close-routes","duration":3.5,"group":11},
   {"id":"extra-choice-lan","kind":"ui_extra","recipe":"choice-lan","duration":4.0,"group":8},
   {"id":"extra-choice-wan","kind":"ui_extra","recipe":"choice-wan","duration":4.0,"group":8},
+  {"id":"final-real-leave-default","kind":"final_motion","recipe":"host-real-leave-close","placement":"default-edge","duration":4.5,"group":13},
+  {"id":"final-real-leave-manual","kind":"final_motion","recipe":"host-real-leave-close","placement":"manual-position","duration":4.5,"group":13},
   {"id":"extra-default-edge-close","kind":"ui_extra","recipe":"default-edge-close","duration":2.0,"group":13},
   {"id":"extra-manual-position-close","kind":"ui_extra","recipe":"manual-position-close","duration":2.0,"group":13}
 ]

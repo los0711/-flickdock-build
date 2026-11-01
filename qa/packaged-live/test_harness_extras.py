@@ -82,9 +82,12 @@ class Extras(unittest.TestCase):
   driver._rpc.assert_called_once_with('ui_extra',seconds=40,recipe='choice-lan')
   value=self.backend()
   with self.assertRaisesRegex(ValueError,'Unsupported bounded extra recipe'):value.ui_extra('not-a-recipe')
- def test_plan_is_seven_bounded_recipes_no_success_claim(self):
-  actions=json.loads(Path(__file__).with_name('ui-extra-actions.json').read_text());self.assertEqual(len(actions),7)
-  self.assertEqual(len({a['recipe'] for a in actions}),7);self.assertTrue(all(a['kind']=='ui_extra' for a in actions))
+ def test_plan_has_seven_original_recipes_and_two_real_leave_placements_without_success_claim(self):
+  actions=json.loads(Path(__file__).with_name('ui-extra-actions.json').read_text());self.assertEqual(len(actions),9)
+  original=[a for a in actions if a['kind']=='ui_extra'];self.assertEqual(len(original),7)
+  self.assertEqual(len({a['recipe'] for a in original}),7)
+  final=[a for a in actions if a['kind']=='final_motion']
+  self.assertEqual({(a['recipe'],a['placement']) for a in final},{('host-real-leave-close','default-edge'),('host-real-leave-close','manual-position')})
   self.assertTrue(all('passed' not in a for a in actions))
  def test_default_close_uses_real_edge_hover_and_waits_for_hidden_preview(self):
   value=self.backend();visible=[True];value.click=Mock(side_effect=lambda name,**kwargs:visible.__setitem__(0,False))

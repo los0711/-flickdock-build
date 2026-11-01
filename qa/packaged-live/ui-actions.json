@@ -35,5 +35,6 @@
   {"id":"mini-native-shortcut","kind":"hotkey","keys":"^%{SPACE}","group":2},
   {"id":"mini-stack-hover-fan","kind":"hover","name":"搁架文件预览","group":8},
   {"id":"mini-stack-transfer-hover-fold","kind":"hover","name":"选择局域网或远程传输","group":8},
-  {"id":"mini-expand-overview","kind":"click","name":"展开详情","group":2}
+  {"id":"mini-expand-overview","kind":"click","name":"展开详情","group":2},
+  {"id":"final-header-fixed-expand","kind":"final_motion","recipe":"header-fixed-expand","group":2,"duration":2.0}
 ]
