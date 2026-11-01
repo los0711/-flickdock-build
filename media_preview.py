@@ -243,14 +243,18 @@ class MediaPreview(QWidget):
     def apply_theme(self, theme=None):
         ink, secondary = ui_theme.color("text"), ui_theme.color("secondary")
         edge, accent = ui_theme.color("border"), ui_theme.color("accent")
-        self.setStyleSheet(f"""
+        style=f"""
             QWidget#mediaPreview {{background:transparent;}}
             QWidget#mediaPreview QLabel {{background:transparent;color:{secondary};font-size:12px;}}
             QWidget#mediaPreview QSlider::groove:horizontal {{height:4px;background:{edge};border-radius:2px;}}
             QWidget#mediaPreview QSlider::sub-page:horizontal {{background:{accent};border-radius:2px;}}
             QWidget#mediaPreview QSlider::handle:horizontal {{width:11px;margin:-4px 0;border-radius:5px;background:{ink};}}
             QWidget#mediaPreview QSlider::handle:horizontal:focus {{border:1px solid {accent};}}
-        """)
+        """
+        from control_states import disabled_fields_qss
+        from native_ui_common import colors
+        style+=disabled_fields_qss('QWidget#mediaPreview',colors(ui_theme.current_theme()),fields=(),sliders=True)
+        self.setStyleSheet(style)
         self.update()
 
     def set_source(self, path):

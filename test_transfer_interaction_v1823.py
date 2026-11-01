@@ -67,7 +67,10 @@ class TransferInteractionTests(unittest.TestCase):
         seen=[];self.dialog.overview_requested.connect(lambda:seen.append('overview'))
         manager=SimpleNamespace(shelf=SimpleNamespace(isVisible=lambda:False,_release_reveal_level=lambda:None),
             lan_dialog=self.dialog,wan_dialog=self.dialog,_lan_selected=lambda:[],_center_dialog=lambda _:None)
-        with patch.object(self.dialog._window_fade,'enabled',return_value=True):
+        # Exercise an in-flight animated close, independently of the runner's
+        # OS reduced-motion preference. Dynamic reduce is tested separately.
+        with patch.object(self.dialog._window_fade,'enabled',return_value=True), \
+                patch('native_ui_common.reduced_motion',return_value=False):
             self.dialog.resize(1020,750);before=self.dialog.size();native=self.dialog.winId()
             self.dialog.back_button.click();self.assertIsNotNone(self.dialog._window_fade.pending)
             ShelfManager._show_transfer_dialog(manager,self.lan)

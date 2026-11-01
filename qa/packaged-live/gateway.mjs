@@ -26,7 +26,7 @@ function forward(req,res,row){
 }
 const gateway=https.createServer({key:await readFile(config.key),cert:await readFile(config.cert)},(req,res)=>{
   const row={index:rows.length,method:req.method,path:route(req.url),started:performance.now()};rows.push(row);
-  if(hold&&req.method==='PUT'&&req.url.startsWith('/v1/clipboard/')){
+  if(hold&&req.method==='PUT'&&(req.url.startsWith('/v1/clipboard/')||req.url.startsWith('/v1/uploads/'))){
     if(held.length>=4){row.status=503;res.writeHead(503);res.end();return;}
     row.held=true;req.pause();held.push([req,res,row]);return;
   }

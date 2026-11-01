@@ -1106,8 +1106,8 @@
     },
     {
       "path": "media_preview.py",
-      "size": 25661,
-      "sha256": "77659197921568c91fe861dc8fbfc7764c7fec80bb52bb3c9b21b8effa067574"
+      "size": 25895,
+      "sha256": "d5afe86c6a80f4863d5bf80dbe09175878e7973cbca7ca73739584fd85a945be"
     },
     {
       "path": "native_ui_common.py",
@@ -1201,13 +1201,13 @@
     },
     {
       "path": "qa/packaged-live/ci_packaged_windows_live.py",
-      "size": 45870,
-      "sha256": "31f123adb04f64fcfad7cfa7cfe52786caf4d86454ff622a88ab045184f26220"
+      "size": 55251,
+      "sha256": "041ba7e03902ca7683c096a2ce4726f4204cbccbc8e17da03a727ddcc2cdcaf8"
     },
     {
       "path": "qa/packaged-live/gateway.mjs",
-      "size": 3495,
-      "sha256": "15e068b51dc8d2e0e49ca77fda7953c7ccaf13dbb6b904b1e2f06b94e887c847"
+      "size": 3533,
+      "sha256": "65b3683c0dd35ca0b7ab2ef6cbad017d0092d4205de3af8225f7c333f88d58c5"
     },
     {
       "path": "qa/packaged-live/native_editor.py",
@@ -1221,8 +1221,8 @@
     },
     {
       "path": "qa/packaged-live/ui-actions.json",
-      "size": 2936,
-      "sha256": "7f1c2435569d9a745376a86a26c2c29bef5c7a41f35fe8af311c4b6f602e77d2"
+      "size": 3744,
+      "sha256": "5ea95cc1bd2faf2107ae933d316b3c8b207f08ffbefc2c44aa084cff5a2d39d8"
     },
     {
       "path": "qa/packaged-live/verify_frozen_source.py",
@@ -1506,8 +1506,8 @@
     },
     {
       "path": "test_disabled_field_states_v1824.py",
-      "size": 8649,
-      "sha256": "435fa7f4c009eedc34961184e43dbce28d2c38ffc634d0873c9ee1f3e46425ba"
+      "size": 10322,
+      "sha256": "7835f0d9a90f13e5639ebca5954ec015adcd44e0064771d5bed949da97c78213"
     },
     {
       "path": "test_display_groups_v1821.py",
@@ -1981,8 +1981,8 @@
     },
     {
       "path": "test_transfer_interaction_v1823.py",
-      "size": 5709,
-      "sha256": "453090ab6e6d1f6324374ede463eff9ebaf14ef8922dfabc1e64fbdbc4d8d808"
+      "size": 5943,
+      "sha256": "c6d6cf46481dd997e4217ddfb21fb459f8f6620eeb28e9ea1272456a5bf5c65b"
     },
     {
       "path": "test_transfer_item_motion_v1823.py",

@@ -6,7 +6,7 @@ the public Cloudflare deployment or a physical second device. All credentials,
 keys, fixtures and system changes belong to the disposable runner.
 """
 from __future__ import annotations
-import argparse,datetime,hashlib,http.client,json,os,queue,re,socket,ssl,subprocess,sys,tempfile,threading,time,traceback
+import argparse,base64,datetime,hashlib,http.client,json,os,queue,re,socket,ssl,struct,subprocess,sys,tempfile,threading,time,traceback
 from pathlib import Path
 from urllib.request import Request,urlopen
 
@@ -79,12 +79,61 @@ def binary_request(origin,method,path,body,token,headers=None):
     request=Request(origin+path,data=body,method=method,headers={'Authorization':'Bearer '+token,**(headers or {})})
     with urlopen(request,timeout=20) as response:return json.loads(response.read())
 
+
+def inline_clipboard(text):
+    """Wire fixture only, independently encode the documented FDCLIP2 format."""
+    raw=text.encode('utf8');body=b'FDCLIP2\0'+struct.pack('!I',len(raw))+raw
+    if len(body)>32768:raise ValueError('Synthetic inline fixture too large')
+    return dict(kind='text',body=base64.b64encode(body).decode('ascii'),size=len(body),sha256=hashlib.sha256(body).hexdigest())
+
+
+def producer_corner(width,height,target,screen_width,screen_height):
+    """Place only the disposable producer away from the real drop point."""
+    candidates=((8,8),(screen_width-width-8,8),(8,screen_height-height-48),
+                (screen_width-width-8,screen_height-height-48))
+    safe=[(x,y) for x,y in candidates if x>=0 and y>=0 and
+          not (x<=target[0]<x+width and y<=target[1]<y+height)]
+    if not safe:raise RuntimeError('No unobscured drag destination on disposable display')
+    return max(safe,key=lambda xy:(xy[0]+width/2-target[0])**2+(xy[1]+height/2-target[1])**2)
+
 class DeferredProfile:
     """Children and credential store close before Windows removes their files."""
     def __init__(self):self.directory=tempfile.TemporaryDirectory(prefix='flickdock-frozen-normal-ci-')
     def __enter__(self):return self.directory.name
     def __exit__(self,*_):pass
     def cleanup(self):self.directory.cleanup()
+
+
+class ClientAreaAnimation:
+    """Read/temporarily enable/restore a real OS preference on hosted CI only."""
+    def __init__(self):self.initial=None;self.qa=None;self.restored=None
+    def _spi(self):
+        import ctypes
+        from ctypes import wintypes
+        function=ctypes.WinDLL('user32',use_last_error=True).SystemParametersInfoW
+        function.argtypes=[wintypes.UINT,wintypes.UINT,ctypes.c_void_p,wintypes.UINT];function.restype=wintypes.BOOL
+        return function
+    def read(self):
+        import ctypes
+        value=ctypes.c_int()
+        if not self._spi()(0x1042,0,ctypes.byref(value),0):raise OSError('Cannot read runner ClientAreaAnimation')
+        return bool(value.value)
+    def write(self,value):
+        import ctypes
+        # Microsoft SPI_SETCLIENTAREAANIMATION takes the BOOL as pvParam,
+        # unlike GET which takes a pointer. Flags=0 avoids profile persistence.
+        # https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-systemparametersinfow
+        if not self._spi()(0x1043,0,ctypes.c_void_p(int(value)),0):raise OSError('Cannot set runner ClientAreaAnimation')
+    def enable(self):
+        require_hosted();self.initial=self.read()
+        if not self.initial:self.write(True)
+        self.qa=self.read()
+        if not self.qa:raise AssertionError('Real runner ClientAreaAnimation remained disabled')
+    def restore(self):
+        if self.initial is None:return
+        require_hosted();self.write(self.initial);self.restored=self.read()
+        if self.restored!=self.initial:raise AssertionError('Runner ClientAreaAnimation did not restore')
+    def snapshot(self):return dict(initial=self.initial,qa=self.qa,restored=self.restored,scope='actual OS preference; ephemeral Windows runner only')
 
 def certificate(folder):
     from cryptography import x509
@@ -126,7 +175,11 @@ class LocalCloud:
             return line if re.fullmatch(r'http://127\.0\.0\.1:\d+',line) else None
         self.origin=wait(ready,seconds=90,label='actual local workerd startup')
         key,cert,self.thumbprint=certificate(self.folder)
-        subprocess.run(['certutil','-user','-addstore','Root',str(cert)],check=True,capture_output=True,timeout=15)
+        # CurrentUser trust import can open a confirmation UI and stall. This
+        # administrator-owned disposable runner uses its machine Root store;
+        # only this generated certificate is removed during finally cleanup.
+        require_hosted()
+        subprocess.run(['certutil','-f','-addstore','Root',str(cert)],check=True,capture_output=True,timeout=15)
         self.hosts=Path(os.environ['SystemRoot'])/'System32/drivers/etc/hosts'
         self.hosts_before=self.hosts.read_bytes()
         self.hosts_after=self.hosts_before+b'\r\n# FlickDock ephemeral local QA\r\n'+''.join('127.0.0.1 '+domain+'\r\n' for domain in DOMAINS).encode()
@@ -170,6 +223,15 @@ class LocalCloud:
         binary_request(self.origin,'PUT',f'/v1/uploads/{result["upload_id"]}/parts/0',body,self.peer['token'],{'X-Content-SHA256':checksum})
         json_request(self.origin,'POST',f'/v1/uploads/{result["upload_id"]}/commit',{},self.peer['token'])
         return identity
+    def publish_clipboard(self,text):
+        import uuid
+        previous=json_request(self.origin,'GET','/v1/clipboard',token=self.peer['token']).get('clipboard') or {}
+        self.peer_sequence=getattr(self,'peer_sequence',0)+1
+        intent=dict(id=str(uuid.uuid4()),protocol=2,sequence=self.peer_sequence,
+                    copied_at=max(int(time.time()*1000),previous.get('copied_at',0)+1),inline=inline_clipboard(text))
+        head=json_request(self.origin,'POST','/v1/clipboard',intent,self.peer['token'])['clipboard']
+        if not head.get('ready') or head.get('id')!=intent['id']:raise AssertionError('Real peer inline clipboard did not commit')
+        return head
     def close(self):
         errors=[]
         for process in reversed(self.processes):
@@ -193,7 +255,9 @@ class LocalCloud:
                 subprocess.run(['ipconfig','/flushdns'],capture_output=True,timeout=10)
             except Exception as error:errors.append('hosts_restore:'+type(error).__name__)
         if self.thumbprint:
-            try:subprocess.run(['certutil','-user','-delstore','Root',self.thumbprint],check=True,capture_output=True,timeout=15)
+            try:
+                require_hosted()
+                subprocess.run(['certutil','-delstore','Root',self.thumbprint],check=True,capture_output=True,timeout=15)
             except Exception as error:errors.append('test_ca_restore:'+type(error).__name__)
         if hasattr(self,'log'):self.log.close()
         if errors:raise RuntimeError('Runner QA cleanup incomplete: '+','.join(errors))
@@ -290,6 +354,39 @@ class _UIABackend:
         ctypes.windll.user32.GetWindowThreadProcessId(foreground,ctypes.byref(pid))
         if pid.value!=self.pid:raise AssertionError('Native window focus did not reach frozen app')
         return True
+    def drag_files(self,target_name,*,target_prefix=False):
+        require_hosted()
+        import ctypes
+        from ctypes import wintypes
+        from pywinauto import mouse
+        target=wait(lambda:self.find(target_name,prefix=target_prefix),seconds=6,label='real native drop target')
+        source=wait(lambda:self.find('Drag original files',pid=self.producer_pid),seconds=6,label='external native drag source')
+        rectangle=target.rectangle();destination=(int((rectangle.left+rectangle.right)/2),int((rectangle.top+rectangle.bottom)/2))
+        window=source.top_level_parent();bounds=window.rectangle();api=ctypes.windll.user32
+        owner=ctypes.c_ulong();api.GetWindowThreadProcessId(window.handle,ctypes.byref(owner))
+        if owner.value!=self.producer_pid:raise AssertionError('Refusing to move a window outside the disposable producer')
+        width,height=api.GetSystemMetrics(0),api.GetSystemMetrics(1)
+        if rectangle.right<=rectangle.left or rectangle.bottom<=rectangle.top or not (0<=destination[0]<width and 0<=destination[1]<height):
+            raise RuntimeError('Native drop target is outside the disposable primary display')
+        position=producer_corner(bounds.right-bounds.left,bounds.bottom-bounds.top,destination,width,height)
+        api.SetWindowPos.argtypes=[wintypes.HWND,wintypes.HWND,ctypes.c_int,ctypes.c_int,ctypes.c_int,ctypes.c_int,ctypes.c_uint]
+        api.SetWindowPos.restype=wintypes.BOOL
+        if not api.SetWindowPos(window.handle,None,*position,0,0,0x0015):raise OSError('Cannot place disposable producer for native drag')
+        actual=window.rectangle()
+        if actual.left<=destination[0]<actual.right and actual.top<=destination[1]<actual.bottom:
+            raise RuntimeError('Disposable producer would cover the native drop destination')
+        window.set_focus()
+        source=wait(lambda:self.find('Drag original files',pid=self.producer_pid),seconds=6,label='placed external native drag source')
+        rectangle=source.rectangle();start=(int((rectangle.left+rectangle.right)/2),int((rectangle.top+rectangle.bottom)/2))
+        mouse.move(coords=start)
+        try:
+            mouse.press(button='left',coords=start)
+            # OS motion enters a real QDrag loop in the independent producer.
+            # Do not call application drag/drop handlers or UIA invoke().
+            for index in range(1,19):
+                mouse.move(coords=tuple(round(a+(b-a)*index/18) for a,b in zip(start,destination)));time.sleep(.015)
+        finally:mouse.release(button='left',coords=destination)
+        return dict(source=list(start),destination=list(destination),os_drag=True)
     def command(self,action,**values):
         self.sequence+=1;path=self.base/'editor-command.json';temporary=path.with_suffix('.tmp')
         temporary.write_text(json.dumps(dict(id=self.sequence,action=action,**values)));temporary.replace(path)
@@ -388,6 +485,7 @@ class Driver(_UIABackend):
         return _RemoteControl(result) if result else None
     def hotkey(self,keys):return self._rpc('hotkey',keys=keys)
     def focus_window(self,title):return self._rpc('focus_window',title=title)
+    def drag_files(self,target_name,*,target_prefix=False):return self._rpc('drag_files',seconds=24,target_name=target_name,target_prefix=target_prefix)
     def paste_file_in_explorer(self,source):return self._rpc('paste_file_in_explorer',seconds=45,source=str(source))
     def close(self):
         if self._worker.poll() is None:
@@ -399,7 +497,7 @@ class Driver(_UIABackend):
 
 def uia_worker():
     require_hosted();backend=_UIABackend(int(sys.argv[2]),int(sys.argv[3]),Path(sys.argv[4]))
-    allowed={'windows','find','click','tree','hotkey','focus_window','paste_file_in_explorer'}
+    allowed={'windows','find','click','tree','hotkey','focus_window','paste_file_in_explorer','drag_files'}
     def bounds(control):
         rect=control.rectangle();return [rect.left,rect.top,rect.right,rect.bottom]
     for line in sys.stdin:
@@ -461,14 +559,17 @@ def main():
     report=dict(ok=False,completion_eligible=False,exe_sha256=args.sha256,normal_entry=True,verify_switches=False,cocoa_smoke=False,
         production_entry_imported=False,frozen_executable_patched=False,public_cloud=False,physical_cross_device=False,installer_executed=False,
         all_15_groups_verified=False,manual_visual_review='required',checks=[],unverified=['Real public cloud latency/P95','Physical Windows↔Mac clipboard','GPU/AMD/VMware','Mac permissions/statusbar/update installation','Native installer update chain'])
-    children=[];cloud=None;streams=[];temporary_profile=DeferredProfile()
+    children=[];cloud=None;streams=[];temporary_profile=DeferredProfile();animation_preference=ClientAreaAnimation()
     try:
         with temporary_profile as temporary:
             base=Path(temporary);profile,refs=synthetic_profile(base)
             cloud=LocalCloud(args.root,base,qa_root)
             phase('local-cloud-start',cloud.start,screens=True)
             phase('local-synthetic-session',lambda:cloud.seed_session(profile),screens=True)
+            phase('runner-client-area-animation',animation_preference.enable)
             environment=dict(os.environ,APPDATA=str(base),LOCALAPPDATA=str(base/'local'),QT_QPA_PLATFORM='windows',QT_ACCESSIBILITY='1')
+            if any(environment.get(key,'').lower() in ('1','true','yes','on') for key in ('FLICKDOCK_REDUCE_MOTION','FLICKDOCK_LOW_PERFORMANCE')):
+                raise AssertionError('Runner inherited an application reduced-motion override; native animation QA cannot proceed')
             # Avoid inheriting a CI proxy that would bypass local DNS/fixture.
             for key in tuple(environment):
                 if key.upper() in ('HTTP_PROXY','HTTPS_PROXY','ALL_PROXY'):environment.pop(key)
@@ -513,6 +614,19 @@ def main():
             assert driver.inspect()['text']==unique,'Typing changed the native clipboard without Copy'
             assert sum(row['method']=='POST' and row['path']=='/v1/clipboard' for row in cloud.stats()['rows'])==idle_before
             report['checks'].append('External ordinary typing and idle interval preserve clipboard/head without new upload')
+            def receive_peer_clipboard():
+                text='synthetic peer receive '+os.urandom(6).hex()
+                posts=sum(row['method']=='POST' and row['path']=='/v1/clipboard' for row in cloud.stats()['rows'])
+                remote_head=cloud.publish_clipboard(text)
+                wait(lambda:driver.inspect()['text']==text,label='real peer clipboard written into native frozen client clipboard')
+                for _ in range(3):assert driver.paste_text()==text,'Real received clipboard could not be pasted repeatedly'
+                # Include the 5s retry boundary; no new copy is performed.
+                time.sleep(5.2)
+                assert sum(row['method']=='POST' and row['path']=='/v1/clipboard' for row in cloud.stats()['rows'])==posts,'Remote clipboard echoed into a new upload task'
+                assert json_request(cloud.origin,'GET','/v1/clipboard',token=cloud.session['token'])['clipboard']['id']==remote_head['id'],'Received clipboard replaced itself while idle'
+                assert driver.inspect()['text']==text
+            recorder.run('02c-native-peer-receive-and-no-echo',receive_peer_clipboard)
+            report['checks'].append('Real local-workerd peer inline receive writes native clipboard; repeated OS Paste and idle retry boundary produce no echo POST')
             recorder.run('03-settings-open',lambda:driver.click('设置'))
             driver.click('搁架与剪贴板设置')
             # Receive policy is tested against a real committed remote object,
@@ -570,6 +684,7 @@ def main():
             recorder.run('06a-enable-shelf-upload',lambda:driver.setting('sync_upload_enabled',True))
             wait(lambda:any(row['method']=='POST' and row['path']=='/v1/uploads' for row in cloud.stats()['rows'][upload_start:]),
                  label='normal frozen shelf upload request')
+            wait(lambda:cloud.stats()['held']>0,label='real frozen shelf body PUT held before disabling upload')
             recorder.run('06b-disable-shelf-upload',lambda:driver.setting('sync_upload_enabled',False))
             cloud.command('/release');time.sleep(.7)
             stopped=len(cloud.stats()['rows']);time.sleep(.7)
@@ -589,6 +704,11 @@ def main():
                     if step['kind']=='click':return driver.click(step['name'],prefix=step.get('prefix',False))
                     if step['kind']=='hotkey':return driver.hotkey(step['keys'])
                     if step['kind']=='focus_window':return driver.focus_window(step['title'])
+                    if step['kind']=='drag':
+                        result=driver.drag_files(step['target'],target_prefix=step.get('target_prefix',False))
+                        for name in step.get('expected_controls',[]):
+                            wait(lambda name=name:driver.find(name),seconds=8,label='actual dropped file queued: '+name)
+                        return result
                     if step['kind']=='hover':
                         control=wait(lambda:driver.find(step['name'],prefix=step.get('prefix',False)),label='hover control')
                         rect=control.rectangle();from pywinauto import mouse;mouse.move(coords=(rect.mid_point().x,rect.mid_point().y));return
@@ -624,6 +744,9 @@ def main():
         if cloud is not None:
             try:phase('cleanup-local-cloud',cloud.close)
             except Exception as error:report['cleanup_error']=type(error).__name__+': '+str(error);report['ok']=False
+        try:phase('cleanup-runner-client-area-animation',animation_preference.restore)
+        except Exception as error:report['animation_preference_restore_error']=type(error).__name__+': '+str(error);report['ok']=False
+        report['client_area_animation']=animation_preference.snapshot()
         for stream in streams:stream.close()
         try:temporary_profile.cleanup()
         except Exception as error:report['profile_cleanup_error']=type(error).__name__;report['ok']=False
@@ -632,8 +755,10 @@ def main():
         if 'screen_segments' in report:
             coverage['1']['actual_steps']=['list/grid segments','time/size/default sort']
             coverage['3']['actual_steps']=['LAN/WAN mode and Back flows if all ui-actions completed']
+            coverage['4']['actual_steps']=['OS drag from independent producer into both LAN/WAN targets and native Paste; original file paths retained']
             coverage['5']['actual_steps']=['12 synthetic persisted history rows: delete/clear actual UI']
             coverage['7']['actual_steps']=['actual clear-confirm and settings category frames']
+            coverage['8']['actual_steps']=['direct LAN/WAN OS file drop with actual feedback/row frames; preview transfer-zone drops remain unverified']
             coverage['10']['actual_steps']=['actual queue/history removal frames']
             coverage['11']['actual_steps']=['normal EXE clipboard popup and result producer frames']
         (args.output/'coverage-15-groups.json').write_text(json.dumps(coverage,ensure_ascii=False,indent=2))

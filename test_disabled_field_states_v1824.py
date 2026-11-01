@@ -14,6 +14,8 @@ from app_settings import SettingsStore,SettingsDialog,SettingsToggleSwitch
 from account_panel import AccountPanel
 from lan_panel import LanDialog
 from native_ui_common import UiSwitch
+from media_preview import MediaPreview
+import ui_theme
 
 class Account(QObject):
  account_changed=Signal(object);status_changed=Signal(str);busy_changed=Signal(bool);devices_changed=Signal(list);password_changed=Signal()
@@ -72,5 +74,21 @@ class DisabledFieldTests(unittest.TestCase):
   host.show();ws.flush()
   for control in controls:
    control.setChecked(False);self.different_when_disabled(control);QTest.keyClick(control,Qt.Key_Space);self.assertFalse(control.isChecked());control.setEnabled(True);control.setFocus(Qt.TabFocusReason);QTest.keyClick(control,Qt.Key_Space);self.assertTrue(control.isChecked())
+ def test_media_seek_and_volume_disabled_ink_and_keyboard_without_native_player(self):
+  class RecordedPlayer:
+   def __init__(self):self.positions=[]
+   def isSeekable(self):return True
+   def setPosition(self,value):self.positions.append(value)
+  for theme in ('light','dark'):
+   ui_theme.set_theme(theme);host=QWidget();layout=QVBoxLayout(host);m=MediaPreview(motion=False);layout.addWidget(m);self.windows.append(host);host.resize(400,340);host.show();ws.flush()
+   self.assertFalse(m.seek_slider.isEnabled());self.assertIsNone(m.player)
+   path=Path(self.temp.name)/(theme+'-synthetic.bin');path.write_bytes(b'local synthetic marker, never decoded');m.path=str(path)
+   player=RecordedPlayer();m.player=player;m.seek_slider.setRange(0,1000);m.seek_slider.setValue(100);player.positions.clear()
+   try:
+    self.different_when_disabled(m.seek_slider);QTest.keyClick(m.seek_slider,Qt.Key_Right);self.assertEqual(m.seek_slider.value(),100);self.assertEqual(player.positions,[])
+    m.seek_slider.setEnabled(True);m.seek_slider.setFocus(Qt.TabFocusReason);QTest.keyClick(m.seek_slider,Qt.Key_Right);self.assertEqual(player.positions,[m.seek_slider.value()]);self.assertGreater(m.seek_slider.value(),100)
+    old=m.volume_slider.value();self.different_when_disabled(m.volume_slider);QTest.keyClick(m.volume_slider,Qt.Key_Right);self.assertEqual(m.volume_slider.value(),old)
+    m.volume_slider.setEnabled(True);m.volume_slider.setFocus(Qt.TabFocusReason);QTest.keyClick(m.volume_slider,Qt.Key_Right);self.assertGreater(m.volume_slider.value(),old);self.assertIsNone(m.audio_output)
+   finally:m.player=None;m.path=''
 
 if __name__=='__main__':unittest.main(verbosity=2)
