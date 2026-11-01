@@ -16,13 +16,18 @@
     },
     {
       "path": ".github/workflows/macos-build.yml",
-      "size": 6122,
-      "sha256": "dbf460519f00f0ef2017776ced12926ec4251453a0690ac2100a0ae26e2cb471"
+      "size": 6156,
+      "sha256": "4fd95ea7458edeb6941bffdcdd884fff10debbe2458aaa57daf9bb73ca0d2df3"
+    },
+    {
+      "path": ".github/workflows/macos-intel-motion-diagnostic.yml",
+      "size": 2605,
+      "sha256": "5e3c49b3b5a121eda8ab7f273b3aca2a87473f62f653f4614c64a9da8245d528"
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 14451,
-      "sha256": "7ce4dd0f9519d250ca07195eab7ffd5aa916e565803463f0dc5926bbcf454694"
+      "size": 14485,
+      "sha256": "14bbfab1cc97b3149282613274258601645447c562ce6b447b8310a4442af237"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -1205,6 +1210,11 @@
       "sha256": "2b198085f9d8a7b957bd9678772b85d4d83433f4e27abc44eedf1d4cdee2fb06"
     },
     {
+      "path": "qa/macos_motion_diagnostic_v1824.py",
+      "size": 9061,
+      "sha256": "f056f843b0a7d31d4ef3d553ec14833a743a633dda8b57af053e7cdef5788549"
+    },
+    {
       "path": "qa/packaged-live/BATCH2.md",
       "size": 3158,
       "sha256": "8c19cc2e02c09bd8023b4a4b01153a5c3f36f09dae4e749dbf568ca3b2b4c082"
@@ -1221,8 +1231,8 @@
     },
     {
       "path": "qa/packaged-live/ci_packaged_windows_live.py",
-      "size": 86843,
-      "sha256": "72c3aeaf9a9de07eb4a9b10753c69c866e885195163b4c79b1866caa28043072"
+      "size": 87232,
+      "sha256": "de131e1fcd170442871193db5f43e2efa5afeea0efb9a9a01c8999fc90525d04"
     },
     {
       "path": "qa/packaged-live/ci_windows_reveal_probe.py",
@@ -1246,8 +1256,8 @@
     },
     {
       "path": "qa/packaged-live/native_final_motion.py",
-      "size": 17630,
-      "sha256": "a633cf708889e9dd1d130d3c2e6604a711915167e195750fae93d95aa5c619f2"
+      "size": 18757,
+      "sha256": "c867c4dc9938794372dbecc20695d57d186888970113e76298f01ff3a7d15b50"
     },
     {
       "path": "qa/packaged-live/reuse_frozen.py",
@@ -1257,7 +1267,7 @@
     {
       "path": "qa/packaged-live/test_harness_bounds.py",
       "size": 16337,
-      "sha256": "4f66617c304973024d6dc16f63d8337d690a8703df6912ad7b72aa3078039847"
+      "sha256": "c2b9e98047e6d5e942867cc6fa65cc9ca2e0a2acd545dbc1266b0cc75bf9e5d6"
     },
     {
       "path": "qa/packaged-live/test_harness_extras.py",
@@ -1271,8 +1281,8 @@
     },
     {
       "path": "qa/packaged-live/test_native_final_motion.py",
-      "size": 16450,
-      "sha256": "73830b6e2523de437b826e290b708fdd35cefbf44ba8978b15aaf6c6e5251efb"
+      "size": 18656,
+      "sha256": "34e1ad0563724472c30b45963e211dfc230ee5cc216fda1d2e3d3d909b836916"
     },
     {
       "path": "qa/packaged-live/ui-actions.json",
@@ -1293,6 +1303,11 @@
       "path": "qa/packaged-live/verify_frozen_source.py",
       "size": 2822,
       "sha256": "484fb6080c5a90a253951a0095d3328c97e0d6fdc1945957ce354079d461f1bc"
+    },
+    {
+      "path": "qa/test_macos_motion_diagnostic_v1824.py",
+      "size": 6634,
+      "sha256": "7a62a49794c552361c0414cf53a4e1aec9a92fcf6806f20e560db086b6c505af"
     },
     {
       "path": "reference_widgets.py",
@@ -1316,8 +1331,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 39486,
-      "sha256": "5882d2fc1fa424a957b1083d4b201cd951d6269b1452fea1cc7331f36294a5a6"
+      "size": 39675,
+      "sha256": "5fc111d762f0e81a67fa3ea056e3043a83c1de90b881624dc1fcf57ea57ce59d"
     },
     {
       "path": "release_signing.py",
@@ -1391,8 +1406,8 @@
     },
     {
       "path": "surface_morph.py",
-      "size": 17195,
-      "sha256": "f042087cafb378d9d082669fc205181f78fba7b7ed0abaf0a552d73085cb407f"
+      "size": 17785,
+      "sha256": "f2ef41cb041394c28879dba7ca290ef7e9edb2477fefb5db8397d43ef72cdab6"
     },
     {
       "path": "sync_adapter.py",
@@ -1808,6 +1823,11 @@
       "path": "test_morph_clock_v164.py",
       "size": 15930,
       "sha256": "a5547c1c089dea44cbb880da49f240818ad427f789812407e3f2991fbbed6bdd"
+    },
+    {
+      "path": "test_morph_snapshot_content_v1824.py",
+      "size": 6502,
+      "sha256": "4741013371018edcfcaa65665c149c2c1ea9830bafec6468ed08f319ae8d20ad"
     },
     {
       "path": "test_motion_resources_v1822.py",

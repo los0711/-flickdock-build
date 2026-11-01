@@ -1,0 +1,61 @@
+name: Intel ordered motion crash diagnostic
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Baseline first; GC tracing is diagnostic and cannot replace a failed baseline
+        type: choice
+        options: [baseline, gc-trace]
+        default: baseline
+      collect_after_test:
+        description: Explicit GC treatment for gc-trace only, never baseline
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  ordered-117:
+    if: github.repository == 'los0711/-flickdock-build'
+    runs-on: macos-15-intel
+    timeout-minutes: 15
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: '1'
+      PYTHONFAULTHANDLER: '1'
+      PYTHONUNBUFFERED: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+      FD_DIAGNOSTIC_MODE: ${{ inputs.mode }}
+      FD_DIAGNOSTIC_COLLECT: ${{ inputs.collect_after_test }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12.10'
+          architecture: x64
+      - name: Install the original Intel source-test dependencies without rebuilding the app
+        run: |
+          python -m venv build/macos-venv
+          build/macos-venv/bin/python -m pip install 'PySide6==6.12.0' 'PyInstaller==6.22.3' 'keyring==25.7.0' 'pyobjc-core==13.0' 'pyobjc-framework-Cocoa==13.0' 'pyobjc-framework-Quartz==12.2.2' 'cffi==2.1.1' 'pycparser==3.12'
+          OPENSSL_STATIC=1 build/macos-venv/bin/python -m pip install --force-reinstall --no-cache-dir --no-binary=cryptography 'cryptography==50.0.2'
+          build/macos-venv/bin/python -m pip freeze > build/intel-motion-pip-freeze.txt
+          python ci_assets.py
+      - name: Run the unchanged ordered 117-test process with crash diagnostics
+        run: |
+          args=()
+          if [ "$FD_DIAGNOSTIC_COLLECT" = "true" ]; then args+=(--collect-after-test); fi
+          build/macos-venv/bin/python -X faulthandler -u qa/macos_motion_diagnostic_v1824.py --mode "$FD_DIAGNOSTIC_MODE" --output build/intel-motion-diagnostic "${args[@]}"
+      - name: Preserve actual failure, environment, order and exact-PID crash reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: intel-motion-${{ inputs.mode }}-${{ github.sha }}
+          path: |
+            build/intel-motion-diagnostic/
+            build/intel-motion-pip-freeze.txt
+          if-no-files-found: error
+          retention-days: 3

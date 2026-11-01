@@ -20,7 +20,7 @@ class BoundTests(unittest.TestCase):
         from unittest.mock import Mock
         driver._rpc=Mock(return_value={'events':[]})
         self.assertEqual(driver.final_motion('host-real-leave-close','manual-position'),{'events':[]})
-        driver._rpc.assert_called_once_with('final_motion',seconds=25,recipe='host-real-leave-close',placement='manual-position')
+        driver._rpc.assert_called_once_with('final_motion',seconds=50,recipe='host-real-leave-close',placement='manual-position')
 
     def test_motion_diagnostics_keep_raw_geometry_and_times_without_text(self):
         raw=dict(recipe='header-fixed-expand',name='private clipboard text',error='private response',before={'cloud':dict(bounds=[-80,10,20,42],monotonic=123.25)},observations=[dict(host_visible=False,popup_visible=True,foreground=dict(pid=17,hwnd=88))])

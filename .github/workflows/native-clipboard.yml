@@ -121,7 +121,7 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          python -m unittest test_ui_followup_v1823 test_cached_surface_v1823 test_stack_spread_v1823 test_input_motion_v1823 test_content_entrance_v1823 test_transfer_drop_feedback_v1823 test_transfer_item_motion_v1823 test_popup_motion_v1823 test_drop_target_motion_v1823 -q
+          python -m unittest test_ui_followup_v1823 test_cached_surface_v1823 test_stack_spread_v1823 test_input_motion_v1823 test_content_entrance_v1823 test_transfer_drop_feedback_v1823 test_transfer_item_motion_v1823 test_popup_motion_v1823 test_drop_target_motion_v1823 test_morph_snapshot_content_v1824 -q
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m unittest test_clipboard_notice_motion_v1823 test_clipboard_popup_motion_v1823 test_mac_status_drop_v1823 test_mac_permissions_v1821 test_presentation_v1819.PresentationTests -q
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

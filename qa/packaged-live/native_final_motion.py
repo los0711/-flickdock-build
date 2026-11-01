@@ -37,7 +37,7 @@ class FinalMotion(Batch2):
     def __init__(self,backend):
         require_hosted()
         super().__init__(backend)
-        self.deadline=self.started+20
+        self.budget_seconds=20;self.deadline=self.started+self.budget_seconds
         self._producer_geometry=None
 
     def mark(self,step,control=None,**values):
@@ -76,7 +76,7 @@ class FinalMotion(Batch2):
         return self.wait(lambda:self.named(key),'visible scoped '+key)
 
     def input(self,control,*,kind='click',point=None):
-        if time.monotonic()>=self.deadline:raise AssertionError('Final motion 20 s deadline before input')
+        if time.monotonic()>=self.deadline:raise AssertionError(f'Final motion {self.budget_seconds} s deadline before input')
         point=point or centre(control);self.guard(control,point)
         before=self.mark('before:'+kind,control,point=list(point))
         if kind=='hover':self.mouse.move(coords=point)
@@ -151,10 +151,24 @@ class FinalMotion(Batch2):
                 if failure is None:raise
 
     def popup(self):
-        rows=[w for w in self.b.windows() if w.element_info.name=='FlickDock · 剪贴板预览'
-              and w.element_info.control_type=='Window' and w.element_info.class_name=='ClipboardPreview']
+        # UIA can expose an owned native dialog beneath its ShelfWindow rather
+        # than as a Desktop.windows root. Match the same strict visible window
+        # in both locations, deduplicating its observed native identity.
+        rows={}
+        for root in self.b.windows():
+            for w in [root,*root.descendants()]:
+                info=w.element_info
+                if (info.name!='FlickDock · 剪贴板预览' or info.control_type!='Window'
+                        or info.class_name!='ClipboardPreview' or not w.is_visible()):continue
+                handle=int(w.handle or 0)
+                if handle:identity=('hwnd',handle)
+                else:
+                    runtime=getattr(info,'runtime_id',None)
+                    if not runtime:raise AssertionError('Actual clipboard popup has no observable window identity')
+                    identity=('runtime',tuple(runtime))
+                rows.setdefault(identity,w)
         if len(rows)>1:raise AssertionError('Duplicate actual clipboard preview hosts')
-        return rows[0] if rows else None
+        return next(iter(rows.values()),None)
 
     def hide_explicitly(self):
         control=self.named('close')
@@ -232,7 +246,7 @@ class FinalMotion(Batch2):
         if self._producer_geometry is None:self._producer_geometry=(window.handle,bounds(window))
         r=bounds(window);w,h=r[2]-r[0],r[3]-r[1]
         for point in candidates:
-            if time.monotonic()>=self.deadline:raise AssertionError('Final motion 20 s deadline before producer move')
+            if time.monotonic()>=self.deadline:raise AssertionError(f'Final motion {self.budget_seconds} s deadline before producer move')
             x=max(0,min(point[0]-w//2,max(0,width-w)));y=max(0,min(point[1]-h//2,max(0,height-h)))
             self.mark('before:owned-producer-nonactivating-move',bounds=r,target=[x,y,x+w,y+h],foreground=self.foreground())
             # NOSIZE | NOZORDER | NOACTIVATE: never resize the producer or app.
@@ -323,7 +337,11 @@ class FinalMotion(Batch2):
 def run(backend,recipe,*,placement='default-edge'):
     if recipe not in RECIPES:raise ValueError('Unsupported final motion recipe')
     runner=FinalMotion(backend);runner.recipe=recipe
-    runner.mark('recipe-start',placement=placement,soft_deadline_seconds=20)
+    if recipe=='host-real-leave-close':
+        # Two real modes plus measured UIA queries need a bounded overall
+        # budget. Individual popup/physical-leave deadlines remain unchanged.
+        runner.budget_seconds=45;runner.deadline=runner.started+runner.budget_seconds
+    runner.mark('recipe-start',placement=placement,soft_deadline_seconds=runner.budget_seconds)
     if recipe=='header-fixed-expand':runner.header_fixed_expand()
     else:runner.host_real_leave_close(placement)
     runner.originals_unchanged()

@@ -53,6 +53,7 @@ RUNTIME_SOURCES=(
     'wan_transfer.py','webrtc_stream.py','nearby_transport.py','verify_wan.py','windows_network.py','windows_reveal.py',
 )
 MAINTAINED_TESTS=(
+    'test_morph_snapshot_content_v1824.py',
     'test_windows_reveal_v1824.py',
     'test_transfer_balance_v1824.py',
     'test_item_reflow_occlusion_v1824.py',
@@ -112,6 +113,8 @@ MAINTAINED_TESTS=(
     'test_remote_transfer_actions_v1812.py','test_wan_transfer_v1816.py',
 )
 SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
+    '.github/workflows/macos-intel-motion-diagnostic.yml',
+    'qa/macos_motion_diagnostic_v1824.py','qa/test_macos_motion_diagnostic_v1824.py',
     '.github/workflows/packaged-windows-live.yml',
     'qa/packaged-live/ci_packaged_windows_live.py','qa/packaged-live/native_editor.py',
     'qa/packaged-live/gateway.mjs','qa/packaged-live/verify_frozen_source.py','qa/packaged-live/ui-actions.json',

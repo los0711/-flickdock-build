@@ -96,9 +96,16 @@ class SurfaceSnapshot(QWidget):
         visibility=[(button,not button.isHidden()) for button in controls]
         effect=card.graphicsEffect()
         enabled=effect.isEnabled() if effect else False
+        host=card.window();updates_enabled=host.updatesEnabled()
         for button,_ in visibility: button.hide()
         if effect: effect.setEnabled(False)
         try:
+            # A surface transaction suppresses native repaints while preparing
+            # both endpoint trees. Qt also suppresses disabled descendants in
+            # QWidget.render(), yielding a background-only snapshot. Permit
+            # this synchronous offscreen render, then restore the barrier
+            # before returning; no event loop or native paint is dispatched.
+            if not updates_enabled:host.setUpdatesEnabled(True)
             card.ensurePolished()
             for child in card.findChildren(QWidget):
                 if child.layout(): child.layout().activate()
@@ -108,11 +115,12 @@ class SurfaceSnapshot(QWidget):
             painter=QPainter(image)
             # Styled translucent windows already paint their background in
             # DrawChildren. DrawWindowBackground would apply it a second time.
-            card.render(painter,QPoint(),QRegion(),QWidget.RenderFlag.DrawChildren)
-            painter.end()
+            try:card.render(painter,QPoint(),QRegion(),QWidget.RenderFlag.DrawChildren)
+            finally:painter.end()
             self.capture_count+=1
             return image
         finally:
+            if not updates_enabled:host.setUpdatesEnabled(False)
             if effect: effect.setEnabled(enabled)
             for button,visible in visibility: button.setVisible(visible)
 

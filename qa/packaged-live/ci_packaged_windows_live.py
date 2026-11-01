@@ -866,7 +866,7 @@ class Driver(_UIABackend):
     def drag_files(self,target_name,*,target_prefix=False):return self._rpc('drag_files',seconds=24,target_name=target_name,target_prefix=target_prefix)
     def ui_extra(self,recipe):return self._rpc('ui_extra',seconds=40,recipe=recipe)
     def batch2(self,recipe):return self._rpc('batch2',seconds=75,recipe=recipe)
-    def final_motion(self,recipe,placement='default-edge'):return self._rpc('final_motion',seconds=25,recipe=recipe,placement=placement)
+    def final_motion(self,recipe,placement='default-edge'):return self._rpc('final_motion',seconds=50,recipe=recipe,placement=placement)
     def paste_file_in_explorer(self,source):return self._rpc('paste_file_in_explorer',seconds=45,source=str(source))
     def close(self):
         if self._worker.poll() is None:
@@ -1142,6 +1142,11 @@ def main():
                     text='synthetic notice '+label+' '+os.urandom(6).hex()
                     _,head=copy_and_committed(text,already_focused=True)
                     commits.append(dict(id=head['id'],sha256=head['sha256'],committed_capture_time=time.monotonic()))
+                    if label=='first':
+                        canvas=wait(lambda:next((row for row in driver.tree()
+                            if row['class_name']=='ClipboardNotice' and row['visible']),None),
+                            seconds=4,label='actual first notice canvas before the second Copy')
+                        commits[-1]['actual_notice_bounds']=canvas['rectangle']
                 # Preserve actual overlap, expiry fade and the remaining-card
                 # position; UIA child labels are hidden cached artwork.
                 time.sleep(3.1)

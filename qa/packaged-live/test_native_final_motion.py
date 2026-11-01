@@ -155,6 +155,29 @@ class FinalMotionTests(unittest.TestCase):
         current.append(Control('FlickDock · 剪贴板预览','Window','ClipboardPreview'))
         with self.assertRaisesRegex(AssertionError,'Duplicate'):self.runner.popup()
 
+    def test_popup_can_be_an_actual_visible_owned_descendant_not_a_desktop_root(self):
+        popup=Control('FlickDock · 剪贴板预览','Window','ClipboardPreview',self.root);popup.handle=91
+        self.assertIs(self.runner.popup(),popup)
+        popup.visible=False;self.assertIsNone(self.runner.popup())
+        popup.visible=True;popup.element_info.control_type='Group';self.assertIsNone(self.runner.popup())
+
+    def test_same_actual_popup_in_root_and_descendants_is_not_two_windows(self):
+        popup=Control('FlickDock · 剪贴板预览','Window','ClipboardPreview',self.root);popup.handle=91
+        self.backend.windows.side_effect=lambda pid=None:[self.root,popup]
+        self.assertIs(self.runner.popup(),popup)
+        other=Control('FlickDock · 剪贴板预览','Window','ClipboardPreview',self.root);other.handle=92
+        with self.assertRaisesRegex(AssertionError,'Duplicate'):self.runner.popup()
+
+    def test_popup_without_hwnd_uses_observed_runtime_identity_and_stays_visible_strict(self):
+        popup=Control('FlickDock · 剪贴板预览','Window','ClipboardPreview',self.root);popup.handle=0
+        popup.element_info.runtime_id=[42,100,9]
+        self.assertIs(self.runner.popup(),popup)
+        popup.visible=False;self.assertIsNone(self.runner.popup())
+
+    def test_popup_without_observable_identity_cannot_be_claimed_visible(self):
+        popup=Control('FlickDock · 剪贴板预览','Window','ClipboardPreview',self.root);popup.handle=0
+        with self.assertRaisesRegex(AssertionError,'no observable window identity'):self.runner.popup()
+
     def test_real_leave_phase_only_moves_mouse_and_requires_both_real_hosts_hidden(self):
         popup,_=self.popup_fixture()
         def move(**_):self.root.visible=False;popup.visible=False
@@ -253,6 +276,16 @@ class FinalMotionTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError,'20 s deadline'):self.runner.input(controls['expand'])
         self.mouse.click.assert_not_called()
         with self.assertRaisesRegex(AssertionError,'bounded wait'):self.runner.wait(lambda:False,'expired')
+
+    def test_two_mode_leave_recipe_expands_only_its_total_overall_budget(self):
+        self.assertEqual(self.runner.budget_seconds,20)
+        self.runner.host_real_leave_close=Mock()
+        with patch.object(qa,'FinalMotion',return_value=self.runner):
+            qa.run(self.backend,'host-real-leave-close',placement='default-edge')
+        self.runner.host_real_leave_close.assert_called_once_with('default-edge')
+        self.assertEqual(self.runner.budget_seconds,45)
+        self.assertEqual(self.runner.deadline,self.runner.started+45)
+        self.assertEqual(self.runner.events[0]['soft_deadline_seconds'],45)
 
 
 if __name__=='__main__':unittest.main()
