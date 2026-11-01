@@ -106,14 +106,50 @@ class PointerOwnershipTests(unittest.TestCase):
 
     def test_external_editor_click_requires_actual_foreground_before_following_keyboard(self):
         backend=qa._UIABackend.__new__(qa._UIABackend);backend.pid=101;backend.producer_pid=202;events=[]
-        control=SimpleNamespace(click_input=lambda:events.append('physical_click'))
+        control=SimpleNamespace()
         backend.find=lambda *args,**kwargs:control
-        backend._prepare_control=lambda target,pid:events.append(('pointer_verified',pid))
+        def prepare(target,pid):events.append(('pointer_verified',pid));return (20,30)
+        backend._prepare_control=prepare
         backend._assert_foreground=lambda pid:events.append(('foreground_verified',pid))
-        self.assertIs(backend.click('editor',pid=202),control)
-        self.assertEqual(events,[('pointer_verified',202),'physical_click',('foreground_verified',202)])
-        backend._assert_foreground=lambda pid:(_ for _ in ()).throw(RuntimeError('actual keyboard foreground unavailable'))
-        with self.assertRaisesRegex(RuntimeError,'actual keyboard foreground unavailable'):backend.click('editor',pid=202)
+        physical=lambda **values:events.append(('physical_click',values))
+        with patch.dict('sys.modules',{'pywinauto':SimpleNamespace(mouse=SimpleNamespace(click=physical))}):
+            self.assertEqual(backend.click('editor',pid=202),dict(point=[20,30],input_sent=True))
+            self.assertEqual(events,[('pointer_verified',202),('physical_click',dict(button='left',coords=(20,30))),('foreground_verified',202)])
+            backend._assert_foreground=lambda pid:(_ for _ in ()).throw(RuntimeError('actual keyboard foreground unavailable'))
+            with self.assertRaisesRegex(RuntimeError,'actual keyboard foreground unavailable'):backend.click('editor',pid=202)
+
+    def test_click_deleted_control_is_never_read_after_one_physical_input(self):
+        backend=qa._UIABackend.__new__(qa._UIABackend);backend.pid=101;backend.producer_pid=202
+        state=dict(deleted=False,reads=0,inputs=[])
+        class TransientControl:
+            def rectangle(self):
+                if state['deleted']:raise RuntimeError('provider target has been deleted')
+                state['reads']+=1;return SimpleNamespace(left=10,top=20,right=30,bottom=40)
+            def click_input(self):raise AssertionError('must use the already verified physical point')
+        control=TransientControl();backend.find=lambda *args,**kwargs:control
+        def prepare(target,pid):
+            rect=target.rectangle();self.assertEqual(pid,101);return ((rect.left+rect.right)//2,(rect.top+rect.bottom)//2)
+        backend._prepare_control=prepare
+        def physical(**values):state['inputs'].append(values);state['deleted']=True
+        with patch.dict('sys.modules',{'pywinauto':SimpleNamespace(mouse=SimpleNamespace(click=physical))}):
+            receipt=backend.click('delete row')
+        self.assertEqual(state['reads'],1);self.assertEqual(state['inputs'],[dict(button='left',coords=(20,30))])
+        self.assertEqual(json.loads(json.dumps(receipt)),dict(point=[20,30],input_sent=True))
+
+    def test_click_worker_receipt_does_not_serialize_a_deleted_provider(self):
+        class Backend:
+            def __init__(self,*args):pass
+            def click(self,**values):return dict(point=[20,30],input_sent=True)
+        stdout=io.StringIO()
+        command=dict(id=1,operation='click',values=dict(name='delete row'))
+        with patch.object(qa,'require_hosted'),patch.object(qa,'_UIABackend',Backend),patch.object(qa.sys,'argv',['qa','--uia-worker','101','202','owned']),patch.object(qa.sys,'stdin',io.StringIO(json.dumps(command)+'\n')),patch.object(qa.sys,'stdout',stdout):
+            self.assertEqual(qa.uia_worker(),0)
+        self.assertEqual(json.loads(stdout.getvalue()),dict(id=1,result=dict(point=[20,30],input_sent=True)))
+
+    def test_remote_click_returns_plain_receipt_without_control_wrapper(self):
+        driver=qa.Driver.__new__(qa.Driver);receipt=dict(point=[20,30],input_sent=True)
+        driver._rpc=lambda *args,**kwargs:receipt
+        self.assertIs(driver.click('delete row'),receipt)
 
     def test_occluded_pointer_target_is_rejected_even_for_nonactivating_app(self):
         backend=qa._UIABackend.__new__(qa._UIABackend);backend.pid=101;backend.producer_pid=202

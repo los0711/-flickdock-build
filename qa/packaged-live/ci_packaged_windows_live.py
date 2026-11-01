@@ -546,14 +546,16 @@ class _UIABackend:
         with (self.base/'native-input-ownership.jsonl').open('a',encoding='utf8') as stream:stream.write(json.dumps(row)+'\n')
         return point
     def click(self,name,*,pid=None,prefix=False,roles=None):
+        from pywinauto import mouse
         control=wait(lambda:self.find(name,pid=pid,prefix=prefix,roles=roles),seconds=6,label='native accessible control '+name)
         # Physical input through the OS. No invoke() callback shortcut.
-        self._prepare_control(control,pid or self.pid)
-        control.click_input()
+        point=self._prepare_control(control,pid or self.pid)
+        mouse.click(button='left',coords=point)
         # The real click itself activates a normal external editor. Verify its
         # resulting foreground before any following Ctrl+C/V, not before click.
         if pid==self.producer_pid:self._assert_foreground(pid)
-        return control
+        # The click may delete its target. Never query that provider again.
+        return dict(point=list(point),input_sent=True)
     def hotkey(self,keys,*,pid=None):
         from pywinauto.keyboard import send_keys
         if keys in ('^%+{SPACE}','^%{SPACE}'):
@@ -798,8 +800,7 @@ class Driver(_UIABackend):
         result=self._rpc('find',name=name,pid=pid,prefix=prefix,roles=roles)
         return _RemoteControl(result) if result else None
     def click(self,name,*,pid=None,prefix=False,roles=None):
-        result=self._rpc('click',name=name,pid=pid,prefix=prefix,roles=roles)
-        return _RemoteControl(result) if result else None
+        return self._rpc('click',name=name,pid=pid,prefix=prefix,roles=roles)
     def hotkey(self,keys,*,pid=None):return self._rpc('hotkey',keys=keys,pid=pid)
     def hover(self,name,*,prefix=False):return self._rpc('hover',name=name,prefix=prefix)
     def focus_window(self,title):return self._rpc('focus_window',title=title)
@@ -826,7 +827,7 @@ def uia_worker():
             operation=command['operation']
             if operation not in allowed:raise ValueError('Unknown UIA operation')
             result=getattr(backend,operation)(**command.get('values',{}))
-            if operation in ('find','click'):result=bounds(result) if result else None
+            if operation=='find':result=bounds(result) if result else None
             elif operation=='windows':result=[bounds(control) for control in result]
             response['result']=result
         except Exception as error:response['error']=type(error).__name__+': '+str(error)

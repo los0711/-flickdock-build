@@ -1216,8 +1216,8 @@
     },
     {
       "path": "qa/packaged-live/ci_packaged_windows_live.py",
-      "size": 79907,
-      "sha256": "a188c845e369f8259c9c8a1d017bc05c5ebbffdc7fa36ea3f147c58d004d0798"
+      "size": 80005,
+      "sha256": "fb766ad5b1e00d0c52169136321c6e826640c0c9f693f393157cc73cab4e4066"
     },
     {
       "path": "qa/packaged-live/ci_windows_reveal_probe.py",
@@ -1246,8 +1246,8 @@
     },
     {
       "path": "qa/packaged-live/test_harness_bounds.py",
-      "size": 8772,
-      "sha256": "c863173811cb51bbd3bb76ce488c6f47d3313e0e543f8931638f9cee2be45022"
+      "size": 11356,
+      "sha256": "248a2572e9c3c89b0c4ccd19ea02f169187129119d2d22ad3a3a89c434e4fd19"
     },
     {
       "path": "qa/packaged-live/test_harness_extras.py",
