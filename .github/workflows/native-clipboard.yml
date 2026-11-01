@@ -3,6 +3,10 @@ name: Native clipboard verification
 on:
   workflow_dispatch:
     inputs:
+      native_checks:
+        description: Run platform checks, disable only when identical runtime and maintained tests were already checked
+        type: boolean
+        default: true
       cloud_contract:
         description: Re-run unchanged service contracts
         type: boolean
@@ -38,7 +42,7 @@ jobs:
           npm run typecheck --prefix cloud
           npm test --prefix cloud
   clipboard:
-    if: github.repository == 'los0711/-flickdock-build'
+    if: github.repository == 'los0711/-flickdock-build' && github.event.inputs.native_checks != 'false'
     timeout-minutes: 15
     strategy:
       fail-fast: false

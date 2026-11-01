@@ -442,7 +442,13 @@ class _UIABackend:
         actual=self._window_pid(self._input_api().WindowFromPoint(wintypes.POINT(*point)))
         if actual!=pid:raise RuntimeError(f'HARNESS_INPUT_OWNERSHIP: pointer target PID {actual}, expected {pid}; no input sent')
     def _assert_foreground(self,pid):
-        actual=self._window_pid(self._input_api().GetForegroundWindow())
+        # Windows may briefly report a null foreground during real activation.
+        # Wait for the actual owner; never substitute an intended target.
+        deadline=time.monotonic()+1.5
+        while True:
+            actual=self._window_pid(self._input_api().GetForegroundWindow())
+            if actual==pid or time.monotonic()>=deadline:break
+            time.sleep(.02)
         if actual!=pid:raise RuntimeError(f'HARNESS_INPUT_OWNERSHIP: foreground PID {actual}, expected {pid}; no input sent')
     def _prepare_control(self,control,pid):
         if pid not in (self.pid,self.producer_pid):raise ValueError('Input may target only the two owned QA processes')
@@ -450,10 +456,8 @@ class _UIABackend:
         # The shelf deliberately permits mouse interaction without activating
         # its Tool window. Foreground ownership is essential for keyboard input,
         # not for a pointer whose actual hit target has already been checked.
-        if pid==self.producer_pid:control.top_level_parent().set_focus()
         rect=control.rectangle();point=((rect.left+rect.right)//2,(rect.top+rect.bottom)//2)
         self._assert_pointer_owner(point,pid)
-        if pid==self.producer_pid:self._assert_foreground(pid)
         api=self._input_api()
         row=dict(operation='mouse_target',expected_pid=pid,
                  foreground_pid=self._window_pid(api.GetForegroundWindow()),
@@ -470,7 +474,11 @@ class _UIABackend:
         control=wait(lambda:self.find(name,pid=pid,prefix=prefix),seconds=6,label='native accessible control '+name)
         # Physical input through the OS. No invoke() callback shortcut.
         self._prepare_control(control,pid or self.pid)
-        control.click_input();return control
+        control.click_input()
+        # The real click itself activates a normal external editor. Verify its
+        # resulting foreground before any following Ctrl+C/V, not before click.
+        if pid==self.producer_pid:self._assert_foreground(pid)
+        return control
     def hotkey(self,keys,*,pid=None):
         from pywinauto.keyboard import send_keys
         if keys in ('^%+{SPACE}','^%{SPACE}'):

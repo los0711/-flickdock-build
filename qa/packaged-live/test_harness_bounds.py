@@ -40,7 +40,7 @@ class BoundTests(unittest.TestCase):
         self.assertFalse(driver._provider_failed);self.assertEqual(driver._worker.terminated,0)
 
 class PointerOwnershipTests(unittest.TestCase):
-    def test_nonactivating_app_mouse_target_works_but_producer_requires_foreground(self):
+    def test_nonactivating_app_pointer_and_external_click_activation_are_distinct(self):
         with tempfile.TemporaryDirectory() as directory:
             backend=qa._UIABackend.__new__(qa._UIABackend);backend.base=Path(directory)
             backend.pid=101;backend.producer_pid=202;events=[]
@@ -56,9 +56,18 @@ class PointerOwnershipTests(unittest.TestCase):
             self.assertEqual(backend._prepare_control(control,101),(20,30))
             self.assertNotIn(('source_focus',True),events)
             self.assertEqual(backend._prepare_control(control,202),(20,30))
-            self.assertIn(('source_focus',True),events)
-            backend._assert_foreground=lambda _:(_ for _ in ()).throw(RuntimeError('wrong source keyboard owner'))
-            with self.assertRaisesRegex(RuntimeError,'wrong source keyboard owner'):backend._prepare_control(control,202)
+            self.assertNotIn(('source_focus',True),events)
+
+    def test_external_editor_click_requires_actual_foreground_before_following_keyboard(self):
+        backend=qa._UIABackend.__new__(qa._UIABackend);backend.pid=101;backend.producer_pid=202;events=[]
+        control=SimpleNamespace(click_input=lambda:events.append('physical_click'))
+        backend.find=lambda *args,**kwargs:control
+        backend._prepare_control=lambda target,pid:events.append(('pointer_verified',pid))
+        backend._assert_foreground=lambda pid:events.append(('foreground_verified',pid))
+        self.assertIs(backend.click('editor',pid=202),control)
+        self.assertEqual(events,[('pointer_verified',202),'physical_click',('foreground_verified',202)])
+        backend._assert_foreground=lambda pid:(_ for _ in ()).throw(RuntimeError('actual keyboard foreground unavailable'))
+        with self.assertRaisesRegex(RuntimeError,'actual keyboard foreground unavailable'):backend.click('editor',pid=202)
 
     def test_occluded_pointer_target_is_rejected_even_for_nonactivating_app(self):
         backend=qa._UIABackend.__new__(qa._UIABackend);backend.pid=101;backend.producer_pid=202

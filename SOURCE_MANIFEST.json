@@ -21,8 +21,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 11392,
-      "sha256": "ee87242f1eeec843d9a6b09a0b13ab98684af1386626718824e472934052529c"
+      "size": 11629,
+      "sha256": "5758bd064af4b174690f85dd02c2cd9391ae8509d9790d359773c0ebc54d575a"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -1206,8 +1206,8 @@
     },
     {
       "path": "qa/packaged-live/ci_packaged_windows_live.py",
-      "size": 64895,
-      "sha256": "ce8937bb54f8fa94dffd619eada7c9305f171eb8053d146dd5c651f5f4061629"
+      "size": 65295,
+      "sha256": "4ab90e3bb11616aa559dda42c730978233fa7692a6c70d54de9b38ccd7c1299d"
     },
     {
       "path": "qa/packaged-live/gateway.mjs",
@@ -1226,8 +1226,8 @@
     },
     {
       "path": "qa/packaged-live/test_harness_bounds.py",
-      "size": 4676,
-      "sha256": "3ce99dd3e0ca980a141932b27196581e42245711dfda7acadf05d6014b99ee52"
+      "size": 5373,
+      "sha256": "7ad191dc402830da3992b7f13fee068201386339185084eab48168d7f5f93eb9"
     },
     {
       "path": "qa/packaged-live/ui-actions.json",
