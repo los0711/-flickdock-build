@@ -112,6 +112,9 @@ MAINTAINED_TESTS=(
     'test_remote_transfer_actions_v1812.py','test_wan_transfer_v1816.py',
 )
 SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
+    '.github/workflows/macos-intel-motion-diagnostic.yml',
+    'qa/macos_motion_diagnostic_v1824.py',
+    'qa/test_macos_motion_diagnostic_v1824.py',
     '.github/workflows/packaged-windows-live.yml',
     'qa/packaged-live/ci_packaged_windows_live.py','qa/packaged-live/native_editor.py',
     'qa/packaged-live/gateway.mjs','qa/packaged-live/verify_frozen_source.py','qa/packaged-live/ui-actions.json',

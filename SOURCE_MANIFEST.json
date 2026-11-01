@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.24",
-  "purpose": "Normal frozen QA only; not approved for trial delivery or website publication",
+  "purpose": "Intel QA-only crash diagnostic on unchanged D8 runtime; no release",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -18,6 +18,11 @@
       "path": ".github/workflows/macos-build.yml",
       "size": 6122,
       "sha256": "dbf460519f00f0ef2017776ced12926ec4251453a0690ac2100a0ae26e2cb471"
+    },
+    {
+      "path": ".github/workflows/macos-intel-motion-diagnostic.yml",
+      "size": 2605,
+      "sha256": "5e3c49b3b5a121eda8ab7f273b3aca2a87473f62f653f4614c64a9da8245d528"
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
@@ -1205,6 +1210,11 @@
       "sha256": "2b198085f9d8a7b957bd9678772b85d4d83433f4e27abc44eedf1d4cdee2fb06"
     },
     {
+      "path": "qa/macos_motion_diagnostic_v1824.py",
+      "size": 9061,
+      "sha256": "f056f843b0a7d31d4ef3d553ec14833a743a633dda8b57af053e7cdef5788549"
+    },
+    {
       "path": "qa/packaged-live/BATCH2.md",
       "size": 3158,
       "sha256": "8c19cc2e02c09bd8023b4a4b01153a5c3f36f09dae4e749dbf568ca3b2b4c082"
@@ -1295,6 +1305,11 @@
       "sha256": "484fb6080c5a90a253951a0095d3328c97e0d6fdc1945957ce354079d461f1bc"
     },
     {
+      "path": "qa/test_macos_motion_diagnostic_v1824.py",
+      "size": 6634,
+      "sha256": "7a62a49794c552361c0414cf53a4e1aec9a92fcf6806f20e560db086b6c505af"
+    },
+    {
       "path": "reference_widgets.py",
       "size": 77003,
       "sha256": "f5108af433dcd40f573d7bd9f58d539199e1877b7d291f586ac0e641fdbb3f0a"
@@ -1316,8 +1331,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 39486,
-      "sha256": "5882d2fc1fa424a957b1083d4b201cd951d6269b1452fea1cc7331f36294a5a6"
+      "size": 40214,
+      "sha256": "a5ae3f9e8ffc7005a7084eb1358975980f63ed5d0dcfc06920cc4c6f64e7624f"
     },
     {
       "path": "release_signing.py",
