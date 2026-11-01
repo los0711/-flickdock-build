@@ -583,7 +583,7 @@ class _UIABackend:
     def setting(self,name,value):
         settings=self.base/'FlickDock/settings.json'
         def current():return json.loads(settings.read_text())[name]
-        if current()!=value:self.click({'clipboard_sync_enabled':'云剪贴板同步','sync_upload_enabled':'上传本机搁架到云端','sync_receive_enabled':'接收云端与其他设备内容'}[name],roles=['CheckBox'])
+        if current()!=value:self.click({'clipboard_sync_enabled':'云剪贴板同步（小于 20 MB）','sync_upload_enabled':'上传本机搁架到云端','sync_receive_enabled':'接收云端与其他设备内容'}[name],roles=['CheckBox'])
         wait(lambda:current()==value,label='persisted native settings '+name)
 
 
