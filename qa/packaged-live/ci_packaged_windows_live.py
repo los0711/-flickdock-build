@@ -534,7 +534,16 @@ class _UIABackend:
         return dict(source=list(start),destination=list(destination),os_drag=True)
     def command(self,action,**values):
         self.sequence+=1;path=self.base/'editor-command.json';temporary=path.with_suffix('.tmp')
-        temporary.write_text(json.dumps(dict(id=self.sequence,action=action,**values)));temporary.replace(path)
+        temporary.write_text(json.dumps(dict(id=self.sequence,action=action,**values)))
+        # The independent producer briefly reads this mailbox on Windows.
+        # Publishing the same command ID after a transient sharing lock must
+        # not create another copy/input event or expose partial JSON.
+        deadline=time.monotonic()+2
+        while True:
+            try:temporary.replace(path);break
+            except PermissionError:
+                if time.monotonic()>=deadline:raise RuntimeError('HARNESS_CONTROL_FILE_BUSY: external editor mailbox could not be published')
+                time.sleep(.005)
         def acknowledged():
             try:return json.loads((self.base/'editor-ack.json').read_text())['id']==self.sequence
             except (OSError,ValueError):return False
