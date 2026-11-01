@@ -80,7 +80,7 @@ jobs:
       - name: Verify frame lifecycle, popup and real control-state paint regressions
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m unittest test_frame_animation_v1824 test_screen_animation_timer_v1824 test_user_popup_fixes_v1823 test_standard_control_states_v1824 test_disabled_field_states_v1824 -q
+        run: python -m unittest test_native_owner_lifetime_v1824 test_frame_animation_v1824 test_screen_animation_timer_v1824 test_user_popup_fixes_v1823 test_standard_control_states_v1824 test_disabled_field_states_v1824 -q
       - name: Reproduce asynchronous metadata reconciliation before framework warmup
         if: runner.os == 'macOS'
         shell: bash
@@ -195,7 +195,7 @@ jobs:
         run: |
           $nativeExe = (Resolve-Path 'dist/FlickDock/FlickDock.exe').Path
           $nativeHash = (Get-FileHash -LiteralPath $nativeExe -Algorithm SHA256).Hash.ToLowerInvariant()
-          python qa/packaged-live/ci_packaged_windows_live.py --exe $nativeExe --sha256 $nativeHash --root $PWD --output build/normal-native-qa --actions qa/packaged-live/ui-actions.json
+          python qa/packaged-live/ci_packaged_windows_live.py --exe $nativeExe --sha256 $nativeHash --root $PWD --output build/normal-native-qa --actions qa/packaged-live/ui-actions.json --extra-actions qa/packaged-live/ui-extra-actions.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Ensure native installer compiler for same-byte validation
         shell: pwsh

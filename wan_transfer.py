@@ -3,7 +3,7 @@
 The LAN file protocol is reused over a framed ordered DTLS DataChannel.
 Stable device credentials and signaling are separate from cloud login.
 """
-import hashlib,json,os,re,secrets,shutil,socket,sys,threading,time
+import hashlib,json,os,re,secrets,shutil,socket,sys,threading,time,weakref
 from pathlib import Path
 from uuid import uuid4
 from PySide6.QtCore import QTimer,QUrl,Signal
@@ -13,7 +13,28 @@ from lan_transfer import LanTransferService,_Transfer,_validate_manifest
 from selection_archive import _is_link
 from webrtc_stream import WebRTCStream
 from cloud_config import DEFAULT_CLOUD_URL,CLOUD_ORIGINS
+from shiboken6 import isValid
 SIGNAL_ORIGINS=CLOUD_ORIGINS
+
+
+class _NativeDelivery:
+    """Retire pipe-to-Qt delivery independently of the QObject's lifetime."""
+    def __init__(self,owner):
+        self.owner=weakref.ref(owner);self.lock=threading.RLock();self.closed=False
+    def close(self,*_):
+        with self.lock:self.closed=True
+    def emit(self,value):
+        with self.lock:
+            owner=self.owner()
+            if self.closed or owner is None or not isValid(owner):return False
+            try:owner._native.emit(value)
+            except RuntimeError:
+                # QObject destruction can begin while Qt's emission releases
+                # the GIL. Only a proven invalid owner is a retired callback;
+                # live delivery failures must retain their original traceback.
+                if not isValid(owner):return False
+                raise
+            return True
 
 def _turn_http_proxy(port):
     # Match Qt's existing destination-specific proxy/bypass selection. Proxy
@@ -43,6 +64,8 @@ class WanTransferService(LanTransferService):
         self.allow_test_origin=allow_test_origin
         self._qa_force_relay=bool(qa_force_relay and os.environ.get('QT_QPA_PLATFORM')=='offscreen')
         self._credential='';self._pending={};self._outbox={};self._connected=False;self._closing=False
+        self._native_delivery=_NativeDelivery(self)
+        self.destroyed.connect(self._native_delivery.close)
         self._origins=SIGNAL_ORIGINS if origin==DEFAULT_CLOUD_URL else (origin,)
         self._origin_index=0;self._connect_attempt=0;self._connection_error='';self._manual_retry_at=0.
         try:
@@ -361,6 +384,7 @@ class WanTransferService(LanTransferService):
         except (OSError,ValueError,KeyError,TypeError):self.status_changed.emit('远程连接状态无效，请重新连接。')
 
     def _begin(self,identifier,state,value):
+        if self._closing:return
         previous=state.get('bridge')
         if state.get('done') and state['role']=='send':return
         if value.get('relayAttempt') and previous and previous.opened.is_set() and not previous.closed:return
@@ -381,7 +405,8 @@ class WanTransferService(LanTransferService):
                 if host not in ('stun.cloudflare.com','turn.cloudflare.com'):continue
                 if scheme=='stun':urls.append(url)
                 else:urls.append(dict(hostname=host,port=int(port),username=server['username'],password=server['credential'],relayType='TurnTls' if scheme=='turns' else 'TurnTcp' if transport=='tcp' else 'TurnUdp'))
-        try:bridge=WebRTCStream(lambda event:self._native.emit(dict(id=identifier,generation=generation,event=event)),node=self.node)
+        delivery=self._native_delivery
+        try:bridge=WebRTCStream(lambda event:delivery.emit(dict(id=identifier,generation=generation,event=event)),node=self.node)
         except (OSError,RuntimeError) as error:
             self._begin_failed(identifier,state,'远程传输组件启动失败，请检查安装完整性和系统权限。',
                                'COMPONENT_'+type(error).__name__.upper());return
@@ -404,6 +429,7 @@ class WanTransferService(LanTransferService):
             self.status_changed.emit('直连暂未成功，正在尝试中继…')
             self._send_signal(dict(type='relay',id=identifier,generation=generation))
     def _handle_native(self,value):
+        if self._closing:return
         identifier=value['id'];state=self._pending.get(identifier)
         if not state or state.get('generation')!=value['generation']:return
         event=value['event'];kind=event.get('type')
@@ -565,8 +591,9 @@ class WanTransferService(LanTransferService):
         super()._notify(transfer,state,**extra)
         if state in ('error','cancelled'):self._command.emit(dict(_retire=True,id=transfer.transfer_id))
     def close(self):
+        self._closing=True;self._native_delivery.close()
         self.retirement_timer.stop()
-        self._closing=True;self.retry.stop();self.poll.stop();self.code_timer.stop();self.connect_timeout.stop();self.bind_retry.stop()
+        self.retry.stop();self.poll.stop();self.code_timer.stop();self.connect_timeout.stop();self.bind_retry.stop()
         if self._bind_key and self.account_service:self.account_service.api.cancel(self._bind_key)
         self.socket.abort();super().close()
         for state in self._pending.values():

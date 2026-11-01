@@ -94,7 +94,7 @@ class TransferPolishTests(unittest.TestCase):
         p=self.panel;area=p.queue_area
         self.assertEqual(p.drop_zone.width(),area.width()-40);self.assertFalse(p.send_heading_label.isVisible())
         path=Path(self.temp.name)/'file.txt';path.write_text('original')
-        with patch('lan_panel.reduced_motion',return_value=False):
+        with patch('lan_panel.reduced_motion',return_value=False),patch('native_ui_common.reduced_motion',return_value=False):
             p.queue_paths([str(path)]);ws.flush()
             self.assertEqual(area.animation.state(),area.animation.State.Running)
             # Inspect a real QVariantAnimation at an exact intermediate time.
@@ -208,7 +208,7 @@ class SharedMotionTests(unittest.TestCase):
         router=TransferEntryRouter(root,button,stage);root.show();ws.flush()
         mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(Path(tempfile.gettempdir())/'original.txt'))])
         try:
-            with patch('transfer_entry.reduced_motion',return_value=False):
+            with patch('transfer_entry.reduced_motion',return_value=False),patch('native_ui_common.reduced_motion',return_value=False):
                 ws.APP.sendEvent(button,QDragEnterEvent(QPoint(20,20),Qt.CopyAction,mime,Qt.LeftButton,Qt.NoModifier))
                 self.assertTrue(button.property('transferDropActive'));self.assertEqual(router.surface.height(),138)
                 drop=QDropEvent(QPoint(30,25),Qt.CopyAction,mime,Qt.LeftButton,Qt.NoModifier)

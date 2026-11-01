@@ -40,6 +40,16 @@ class BoundTests(unittest.TestCase):
         self.assertFalse(driver._provider_failed);self.assertEqual(driver._worker.terminated,0)
 
 class PointerOwnershipTests(unittest.TestCase):
+    def test_unique_explorer_destination_uses_native_tab_when_frame_title_is_generic(self):
+        folder='native-paste-unique-synthetic'
+        def window(title,tabs=(),visible=True):
+            return SimpleNamespace(is_visible=lambda:visible,element_info=SimpleNamespace(name=title),
+                descendants=lambda control_type:[SimpleNamespace(element_info=SimpleNamespace(name=name)) for name in tabs])
+        self.assertTrue(qa.explorer_folder_matches(window(folder),folder))
+        self.assertTrue(qa.explorer_folder_matches(window('File Explorer',['Home',folder]),folder))
+        self.assertFalse(qa.explorer_folder_matches(window('File Explorer',['Home','other-folder']),folder))
+        self.assertFalse(qa.explorer_folder_matches(window(folder,visible=False),folder))
+
     def test_nonactivating_app_pointer_and_external_click_activation_are_distinct(self):
         with tempfile.TemporaryDirectory() as directory:
             backend=qa._UIABackend.__new__(qa._UIABackend);backend.base=Path(directory)

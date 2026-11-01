@@ -53,6 +53,7 @@ RUNTIME_SOURCES=(
     'wan_transfer.py','webrtc_stream.py','nearby_transport.py','verify_wan.py','windows_network.py',
 )
 MAINTAINED_TESTS=(
+    'test_native_owner_lifetime_v1824.py',
     'test_disabled_field_states_v1824.py','test_standard_control_states_v1824.py',
     'test_clipboard_loop_v1824.py','test_screen_animation_timer_v1824.py',
     'test_frame_animation_v1824.py',
@@ -111,6 +112,7 @@ SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'qa/packaged-live/ci_packaged_windows_live.py','qa/packaged-live/native_editor.py',
     'qa/packaged-live/gateway.mjs','qa/packaged-live/verify_frozen_source.py','qa/packaged-live/ui-actions.json',
     'qa/packaged-live/test_harness_bounds.py',
+    'qa/packaged-live/test_harness_extras.py','qa/packaged-live/ui-extra-actions.json',
     'qa/packaged-live/reuse_frozen.py',
     'qa/packaged-live/ci_exact_installer.py',
 

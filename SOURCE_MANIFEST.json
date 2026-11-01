@@ -16,13 +16,13 @@
     },
     {
       "path": ".github/workflows/macos-build.yml",
-      "size": 6002,
-      "sha256": "d4b67bf529c2062ed283bc2e98cd78ab6f1c468698ad4a2b1ee46931f43bd2fb"
+      "size": 6035,
+      "sha256": "a6d8854bd88097f72164ab1384750da61a3713e32a51bd5094a3328ded08b9ac"
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 11629,
-      "sha256": "5758bd064af4b174690f85dd02c2cd9391ae8509d9790d359773c0ebc54d575a"
+      "size": 11717,
+      "sha256": "5c62627a5fc0e048523974c3d59fdb832b91f84c10a5f85c07fca69cef394900"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -956,8 +956,8 @@
     },
     {
       "path": "flickdock.py",
-      "size": 244812,
-      "sha256": "27f5bc331eecb7421ff0faa90c8b5390c32d8e7cf8a7fe23f8f2254f6574b82f"
+      "size": 245304,
+      "sha256": "5f57753dbe4449ef78097520cd9e5dd9e7acbf913db3954be0ceb47fef62bf1a"
     },
     {
       "path": "flickdock_icons.py",
@@ -1206,8 +1206,8 @@
     },
     {
       "path": "qa/packaged-live/ci_packaged_windows_live.py",
-      "size": 66014,
-      "sha256": "97323daf05bf8eefb5f5527b9b78d451bb4fdceebcdcbac26a15663c7c312fb1"
+      "size": 74694,
+      "sha256": "b7c3b0726c41329afac3c2054201d0f9cb17130d81802e94286a179c27422b9b"
     },
     {
       "path": "qa/packaged-live/gateway.mjs",
@@ -1226,13 +1226,23 @@
     },
     {
       "path": "qa/packaged-live/test_harness_bounds.py",
-      "size": 5373,
-      "sha256": "7ad191dc402830da3992b7f13fee068201386339185084eab48168d7f5f93eb9"
+      "size": 6163,
+      "sha256": "ead54c912c4ac30186dbabb76b51c75d30c250803a8001f987ccff692c6122a8"
+    },
+    {
+      "path": "qa/packaged-live/test_harness_extras.py",
+      "size": 8597,
+      "sha256": "1630bfd274590a198ddaaa8a8eba9bddf394c288c4bad3b69afb9d1a53a5515a"
     },
     {
       "path": "qa/packaged-live/ui-actions.json",
       "size": 3762,
       "sha256": "cdc698121e5e5a709c512fe98e3e973f1cbfc64af208db544c1e6a01316a8f65"
+    },
+    {
+      "path": "qa/packaged-live/ui-extra-actions.json",
+      "size": 781,
+      "sha256": "a88ae5647571d79abc26cd75135b13e579a3cb3b7b3186cb66e5f11928e9fb22"
     },
     {
       "path": "qa/packaged-live/verify_frozen_source.py",
@@ -1261,8 +1271,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 38719,
-      "sha256": "57f4b2d0e0b3a0fde3ab0ca06d5a32dea55c5eb6f3d7557d4ac3fdf9c0e33c3b"
+      "size": 38850,
+      "sha256": "ec02746efdacd5765b34843a7429b57b02210cb549b2f0872a348222e8eba536"
     },
     {
       "path": "release_signing.py",
@@ -1760,6 +1770,11 @@
       "sha256": "0359948b7b6f4030794b905c5431d8d1445455df7ff6f27cc76bfc40edabf925"
     },
     {
+      "path": "test_native_owner_lifetime_v1824.py",
+      "size": 6130,
+      "sha256": "8a0b76c02c5a5e75e1884bded71fa31250bbc296f71cd49b06d143d7e5b1ada2"
+    },
+    {
       "path": "test_nearby_transport_v1818.py",
       "size": 8415,
       "sha256": "ff5d4ca01623f3065e1103e3083e88d09a3b8bd70595d5fbcaa083f486a66ca6"
@@ -2026,8 +2041,8 @@
     },
     {
       "path": "test_ui_polish_v1823.py",
-      "size": 14762,
-      "sha256": "e32777f4fce9fee7026096581288dae43203941ddf2aa0733d3ce1468bb84114"
+      "size": 14882,
+      "sha256": "d4a72d02a20cffef3fdca0dcf670f1daf044d9f6f3727497f0c1b335ef6b69c4"
     },
     {
       "path": "test_update_client_v170.py",
@@ -2231,8 +2246,8 @@
     },
     {
       "path": "wan_transfer.py",
-      "size": 39349,
-      "sha256": "786c48c21d0573389f3e2baf9656d8e0e79cba4827d608c27b418c8617f3fbc5"
+      "size": 40483,
+      "sha256": "6c51ff933d5a58a6ab71a4b6ace96682b787c34672d6b302539c7194cf5b57d8"
     },
     {
       "path": "webrtc_stream.py",

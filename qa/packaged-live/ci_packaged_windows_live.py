@@ -14,6 +14,13 @@ DOMAINS=('flickdock-cloud.roger000416.workers.dev','flickdock-site.roger000416.w
 _PROGRESS=None
 
 
+def explorer_folder_matches(window,folder):
+    """Recognize one unique synthetic folder in legacy or tabbed Explorer."""
+    if not window.is_visible():return False
+    if window.element_info.name==folder:return True
+    return any(tab.element_info.name==folder for tab in window.descendants(control_type='TabItem'))
+
+
 class Progress:
     """Payload-free stages plus independent desktop diagnostics, never UIA."""
     def __init__(self,out):
@@ -416,6 +423,15 @@ class _UIABackend:
                 if ((actual.startswith(name) if prefix else actual==name) and control.is_visible() and control.is_enabled()
                         and (roles is None or control.element_info.control_type in roles)):matches.append(control)
         return matches[0] if matches else None
+    def find_class(self,name):
+        # TransferDropSurface draws its labels; it has no named child buttons.
+        # Require an actual exposed UIA class rather than inventing label names.
+        for window in self.windows():
+            for control in window.descendants():
+                if control.element_info.class_name==name and control.is_visible():
+                    rectangle=control.rectangle()
+                    if rectangle.right>rectangle.left and rectangle.bottom>rectangle.top:return control
+        return None
     def _input_api(self):
         import ctypes
         from ctypes import wintypes
@@ -498,7 +514,7 @@ class _UIABackend:
         target.set_focus()
         self._assert_foreground(self.pid)
         return True
-    def drag_files(self,target_name,*,target_prefix=False):
+    def drag_files(self,target_name,*,target_prefix=False,choice_mode=None):
         require_hosted()
         import ctypes
         from ctypes import wintypes
@@ -522,16 +538,90 @@ class _UIABackend:
         window.set_focus()
         source=wait(lambda:self.find('Drag original files',pid=self.producer_pid),seconds=6,label='placed external native drag source')
         rectangle=source.rectangle();start=(int((rectangle.left+rectangle.right)/2),int((rectangle.top+rectangle.bottom)/2))
-        self._prepare_control(source,self.producer_pid);mouse.move(coords=start)
+        self._prepare_control(source,self.producer_pid);mouse.move(coords=start);choice=None
         try:
             mouse.press(button='left',coords=start)
             # OS motion enters a real QDrag loop in the independent producer.
             # Do not call application drag/drop handlers or UIA invoke().
             for index in range(1,19):
                 mouse.move(coords=tuple(round(a+(b-a)*index/18) for a,b in zip(start,destination)));time.sleep(.015)
+            if choice_mode is not None:
+                if choice_mode not in ('lan','wan'):raise ValueError('Invalid actual chooser mode')
+                surface=wait(lambda:self.find_class('TransferDropSurface'),seconds=6,
+                             label='actual exposed TransferDropSurface; labels are painted, not named controls')
+                bounds=surface.rectangle();time.sleep(.22)
+                # target() has two 64px areas in a 138px surface. The quarter
+                # centres remain safely inside their respective areas at any DPI.
+                vertical=.25 if choice_mode=='lan' else .75
+                point=(round((bounds.left+bounds.right)/2),round(bounds.top+(bounds.bottom-bounds.top)*vertical))
+                self._assert_pointer_owner(point,self.pid)
+                for index in range(1,13):
+                    mouse.move(coords=tuple(round(a+(b-a)*index/12) for a,b in zip(destination,point)));time.sleep(.015)
+                destination=point;choice=dict(class_name='TransferDropSurface',mode=choice_mode,
+                    rectangle=[bounds.left,bounds.top,bounds.right,bounds.bottom],physical_drop=list(point))
         finally:
             mouse.release(button='left',coords=destination);self._producer_topmost(False)
-        return dict(source=list(start),destination=list(destination),os_drag=True)
+        return dict(source=list(start),destination=list(destination),os_drag=True,choice=choice)
+
+    def ui_extra(self,recipe):
+        require_hosted()
+        from pywinauto import mouse
+        started=time.monotonic();events=[]
+        def mark(name,**values):events.append(dict(step=name,t=round(time.monotonic()-started,4),**values))
+        def click(name,roles=('Button',)):self.click(name,roles=roles);time.sleep(.28);mark(name)
+        def hidden(name):wait(lambda:self.find(name) is None,seconds=5,label='actual hidden '+name)
+        def header_point():
+            control=wait(lambda:self.find('云端网络',prefix=True) or self.find('正在检查云端网络…'),seconds=6,label='actual mini network glyph')
+            rectangle=control.rectangle();scale=(rectangle.bottom-rectangle.top)/32
+            # _layout_header leaves blank space before its first shared glyph.
+            return (round(rectangle.left-12*scale),round((rectangle.top+rectangle.bottom)/2))
+        if recipe=='overview-focus-filter':
+            click('搜索搁架内容',('Edit',));click('图片',('CheckBox',));click('全部',('CheckBox',))
+        elif recipe=='queue-multiple-remove':
+            click('文件互传');click('局域网传输',('CheckBox',))
+            result=self.drag_files('选择要发送的文件；也可拖入文件或文件夹');mark('real-four-file-drop',**result)
+            wait(lambda:self.find('移除待发送文件 original-text.txt'),seconds=8,label='native multi-file queue')
+            click('移除待发送文件 original-text.txt');hidden('移除待发送文件 original-text.txt')
+            for name in ('original-image.png','tiny.bin','original-8MiB.bin'):
+                if self.find('移除待发送文件 '+name) is None:raise AssertionError('Another queued file disappeared during single remove')
+            mark('three-real-survivors');click('清除');click('返回总览')
+        elif recipe in ('choice-lan','choice-wan'):
+            mode=recipe.removeprefix('choice-');self.hotkey('^%{SPACE}');time.sleep(.35)
+            result=self.drag_files('选择局域网或远程传输',choice_mode=mode);mark('real-chooser-drop',**result)
+            for name in ('original-image.png','original-text.txt','tiny.bin','original-8MiB.bin'):
+                wait(lambda name=name:self.find('移除待发送文件 '+name),seconds=8,label='chooser dropped original file '+name)
+            click('清除');click('返回总览')
+        elif recipe=='mini-clipboard-close-routes':
+            self.hotkey('^%{SPACE}');time.sleep(.35);mark('mini-before-open')
+            click('放大查看剪贴板');click('剪贴板预览',('Text',));hidden('关闭剪贴板预览');mark('internal-close-finished')
+            click('放大查看剪贴板');click('关闭剪贴板预览');hidden('关闭剪贴板预览');mark('x-close-finished')
+            click('放大查看剪贴板')
+            source=wait(lambda:self.find('Synthetic external editor',pid=self.producer_pid),seconds=6,label='owned outside blank caption')
+            self._producer_topmost(True);window=source.top_level_parent();rectangle=window.rectangle()
+            point=(rectangle.left+80,rectangle.top+15)
+            try:
+                self._assert_pointer_owner(point,self.producer_pid);mouse.click(button='left',coords=point)
+                self._assert_foreground(self.producer_pid);time.sleep(.3)
+            finally:self._producer_topmost(False)
+            hidden('关闭剪贴板预览');mark('outside-owned-blank-close-finished',physical_point=list(point),route='outside activation/caption click; owner-blank branch not separately asserted')
+        elif recipe=='default-edge-close':
+            if self.find('收起到屏幕边缘'):click('收起到屏幕边缘')
+            self.hover('FlickDock edge');time.sleep(.35)
+            wait(lambda:self.find('搁架文件预览'),seconds=6,label='real dock-triggered mini')
+            mark('actual-edge-preview');click('收起到屏幕边缘');hidden('搁架文件预览');mark('default-close-finished')
+        elif recipe=='manual-position-close':
+            self.hotkey('^%{SPACE}');time.sleep(.35);point=header_point();button=self.find('收起到屏幕边缘');before=button.rectangle()
+            self._producer_topmost(False);self._assert_pointer_owner(point,self.pid);destination=(point[0]-100,point[1]+50)
+            try:
+                mouse.press(button='left',coords=point)
+                for index in range(1,13):mouse.move(coords=tuple(round(a+(b-a)*index/12) for a,b in zip(point,destination)));time.sleep(.015)
+            finally:mouse.release(button='left',coords=destination)
+            time.sleep(.2);after=self.find('收起到屏幕边缘').rectangle()
+            if abs(after.left-before.left)+abs(after.top-before.top)<40:raise RuntimeError('HARNESS_NATIVE_MOVE: actual mini header did not move')
+            mark('actual-header-move',before=[before.left,before.top,before.right,before.bottom],after=[after.left,after.top,after.right,after.bottom])
+            click('收起到屏幕边缘');hidden('搁架文件预览');mark('manual-close-finished')
+        else:raise ValueError('Unsupported bounded extra recipe')
+        return dict(recipe=recipe,events=events,normal_exe_patched=False,manual_visual_review='required')
     def command(self,action,**values):
         self.sequence+=1;path=self.base/'editor-command.json';temporary=path.with_suffix('.tmp')
         temporary.write_text(json.dumps(dict(id=self.sequence,action=action,**values)))
@@ -568,7 +658,11 @@ class _UIABackend:
         subprocess.Popen(['explorer.exe',str(destination)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         def target():
             for window in Desktop(backend='uia').windows(class_name='CabinetWClass'):
-                if window.is_visible() and window.element_info.name==destination.name:return window
+                # Windows 11's tabbed Explorer can expose the frame as
+                # "File Explorer" while the actual folder name belongs to the
+                # selected tab. Match that native tab too; never fall back to
+                # the first global Explorer window or guess screen coordinates.
+                if explorer_folder_matches(window,destination.name):return window
             return None
         explorer=wait(target,label='unique native Explorer paste destination')
         try:
@@ -645,6 +739,7 @@ class Driver(_UIABackend):
     def hover(self,name,*,prefix=False):return self._rpc('hover',name=name,prefix=prefix)
     def focus_window(self,title):return self._rpc('focus_window',title=title)
     def drag_files(self,target_name,*,target_prefix=False):return self._rpc('drag_files',seconds=24,target_name=target_name,target_prefix=target_prefix)
+    def ui_extra(self,recipe):return self._rpc('ui_extra',seconds=40,recipe=recipe)
     def paste_file_in_explorer(self,source):return self._rpc('paste_file_in_explorer',seconds=45,source=str(source))
     def close(self):
         if self._worker.poll() is None:
@@ -656,7 +751,7 @@ class Driver(_UIABackend):
 
 def uia_worker():
     require_hosted();backend=_UIABackend(int(sys.argv[2]),int(sys.argv[3]),Path(sys.argv[4]))
-    allowed={'windows','find','click','tree','hotkey','hover','focus_window','paste_file_in_explorer','drag_files'}
+    allowed={'windows','find','click','tree','hotkey','hover','focus_window','paste_file_in_explorer','drag_files','ui_extra'}
     def bounds(control):
         rect=control.rectangle();return [rect.left,rect.top,rect.right,rect.bottom]
     for line in sys.stdin:
@@ -708,6 +803,7 @@ def main():
     parser=argparse.ArgumentParser();parser.add_argument('--exe',type=Path,required=True)
     parser.add_argument('--sha256',required=True);parser.add_argument('--root',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True);parser.add_argument('--actions',type=Path)
+    parser.add_argument('--extra-actions',type=Path)
     args=parser.parse_args();require_hosted()
     sys.path.insert(0,str(args.root.resolve()))
     if not re.fullmatch(r'[0-9a-f]{64}',args.sha256) or digest(args.exe)!=args.sha256:raise AssertionError('Wrong immutable frozen executable')
@@ -810,7 +906,12 @@ def main():
             before=cloud.stats()['rows'];driver.text_copy('local only after disabling '+os.urandom(4).hex());time.sleep(.6)
             assert not any(row['path'].startswith('/v1/clipboard') for row in cloud.stats()['rows'][len(before):]),'Disabled clipboard still requested cloud data'
             assert 'local only after disabling' in driver.inspect()['text']
-            report['checks'].append('Actual persisted off switch blocks clipboard network work while native copy remains usable')
+            local_only=driver.inspect()['text']
+            cloud.publish_clipboard('synthetic remote content while receiver disabled '+os.urandom(5).hex());time.sleep(.7)
+            assert driver.inspect()['text']==local_only,'Disabled clipboard still applied remote content to native clipboard'
+            assert not any(row['path'].startswith('/v1/clipboard') for row in cloud.stats()['rows'][len(before):]),'Disabled clipboard reacted to remote push with cloud requests'
+            assert driver.find('复制已同步') is None,'Disabled clipboard still displayed a success notice'
+            report['checks'].append('Actual persisted off switch blocks local clipboard requests, remote native writes and success notices while native copy remains usable')
             # Resume by actual UI control, then exercise original-file local
             # pasteability while the service intentionally stalls the body PUT.
             driver.setting('clipboard_sync_enabled',True);cloud.command('/hold')
@@ -858,12 +959,14 @@ def main():
             recorder.run('07-close-settings',lambda:driver.click('关闭设置'))
             recorder.run('08-reopen-overview',lambda:driver.hotkey('^%+{SPACE}'))
             actions=json.loads(args.actions.read_text(encoding='utf8')) if args.actions else []
+            if args.extra_actions:actions+=json.loads(args.extra_actions.read_text(encoding='utf8'))
             for index,step in enumerate(actions):
                 if application.poll() is not None:raise AssertionError('Frozen app exited during native UI flow')
                 def execute(step=step):
                     if step['kind']=='click':return driver.click(step['name'],prefix=step.get('prefix',False))
                     if step['kind']=='hotkey':return driver.hotkey(step['keys'])
                     if step['kind']=='focus_window':return driver.focus_window(step['title'])
+                    if step['kind']=='ui_extra':return driver.ui_extra(step['recipe'])
                     if step['kind']=='drag':
                         result=driver.drag_files(step['target'],target_prefix=step.get('target_prefix',False))
                         for name in step.get('expected_controls',[]):
@@ -874,7 +977,8 @@ def main():
                     if step['kind']=='file_copy':return driver.click('Copy original file',pid=producer.pid)
                     if step['kind']=='image_copy':return driver.click('Copy original image',pid=producer.pid)
                     raise ValueError('Unsupported native action')
-                recorder.run(f'flow-{index:02}-{step["id"]}',execute,duration=step.get('duration',.9))
+                result=recorder.run(f'flow-{index:02}-{step["id"]}',execute,duration=step.get('duration',.9))
+                if step['kind']=='ui_extra':(args.output/f'flow-{index:02}-extra-events.json').write_text(json.dumps(result,indent=2))
                 (args.output/f'flow-{index:02}-accessibility.json').write_text(json.dumps(driver.tree(),ensure_ascii=False,indent=2))
             report.update(ok=True,native_input=True,real_system_clipboard=True,local_workerd=True,tls_verification=True,
                 actual_service_requests=cloud.stats()['rows'],screen_segments=[dict(label=row['label'],distinct_pixels=row['distinct_pixels']) for row in recorder.segments])

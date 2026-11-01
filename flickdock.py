@@ -17,6 +17,7 @@ from dataclasses import replace
 from pathlib import Path
 from fractions import Fraction
 from uuid import uuid4
+from shiboken6 import isValid
 
 from PySide6.QtCore import (QEasingCurve, QPoint, QRect, QRectF, QSize, QEvent, Qt, QMimeData,
                              QTimer, QUrl, QThreadPool, QDateTime)
@@ -3838,11 +3839,14 @@ class ShelfManager:
         job.signals.done.connect(ready);QThreadPool.globalInstance().start(job,-1)
 
     def _refresh_displays(self,*_):
+        if self._quitting:return
         from display_triggers import display_id
-        screens=QGuiApplication.screens();wanted={display_id(screen):screen for screen in screens}
+        screens=[screen for screen in QGuiApplication.screens() if isValid(screen)]
+        wanted={display_id(screen):screen for screen in screens}
         for key in list(self.edges):
             if key not in wanted:
-                edge=self.edges.pop(key);edge.hide();edge.deleteLater()
+                edge=self.edges.pop(key)
+                if isValid(edge):edge.hide();edge.deleteLater()
         for key,screen in wanted.items():
             if key not in self.edges:
                 self.edges[key]=DockHandle(self,screen)
@@ -3854,7 +3858,12 @@ class ShelfManager:
         if hasattr(self,'shelf'):self.update_handles()
 
     def _position_edges(self,*_):
-        for edge in self.edges.values():edge.position_at_edge()
+        if self._quitting:return
+        # A geometry signal can precede screenRemoved (or arrive as Qt tears
+        # displays down). Reconcile live handles before dereferencing a screen.
+        if any(not isValid(edge) or not isValid(edge.display) for edge in self.edges.values()):
+            self._refresh_displays();return
+        for edge in tuple(self.edges.values()):edge.position_at_edge()
 
     def dock_values(self):
         return {key:value for key,value in self.edge.values().items() if key!='enabled'}
