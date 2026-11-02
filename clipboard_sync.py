@@ -1,6 +1,6 @@
 """Silent, account-wide latest clipboard. Reading never consumes the content."""
 from __future__ import annotations
-import base64,errno,hashlib,json,os,shutil,struct,sys,tempfile,threading,time,zipfile
+import base64,errno,hashlib,json,os,re,shutil,struct,sys,tempfile,threading,time,zipfile
 from dataclasses import dataclass,field
 from pathlib import Path,PurePosixPath
 from uuid import uuid4
@@ -485,13 +485,10 @@ class ClipboardSync(QObject):
         self._ignored=None;self._owned_marker=b'';self._last_sequence=object();self._last_local_signature=object();self._seen='';self._keys=set();self._jobs={};self._pending=None;self._fetching=False;self._refresh_again=False
         self.cache=Path(base)/'clipboard-cache';self.cache.mkdir(parents=True,exist_ok=True)
         self._directories=[];self._current_directory=None
-        for directory in self.cache.glob('clip-*'):
-            if not directory.is_dir() or directory.is_symlink() or directory.is_junction():continue
-            try:
-                lease=json.loads((directory/'.lease.json').read_text(encoding='utf8'))
-                if lease.get('flickdock_clipboard')==1 and isinstance(lease.get('created_at'),(int,float)):
-                    self._directories.append((directory,lease['created_at']))
-            except (OSError,ValueError,AttributeError):pass
+        from clipboard_cleanup import ClipboardCleanup
+        self._cleanup_runner=ClipboardCleanup(self);self._cleanup_epoch=0;self._cleanup_requested=False
+        self._cleanup_inventory=True;self._cleanup_inventory_failed=False;self._cleanup_cursor='';self._cleanup_retry_at=0.;self._cleanup_status=None
+        self._cleanup_paused={};self._cleanup_fatal_recheck=0.
         self.poll=QTimer(self);self.poll.setInterval(30000);self.poll.timeout.connect(self._tick)
         self.retry=QTimer(self);self.retry.setSingleShot(True);self.retry.setInterval(5000);self.retry.timeout.connect(self._retry)
         self.mac_poll=QTimer(self);self.mac_poll.setInterval(200);self.mac_poll.timeout.connect(self._mac_changed);self._mac_count=None
@@ -535,6 +532,7 @@ class ClipboardSync(QObject):
         self._subscribe(events.socket.connected,self.refresh)
         from shared_clipboard_files import ClipboardFileJobs
         self.file_jobs=ClipboardFileJobs(self,base)
+        self._subscribe(self.file_jobs.changed,self._invalidate_cleanup)
         if enabled:
             QTimer.singleShot(0,self._cleanup)
             self.poll.start()
@@ -705,7 +703,9 @@ class ClipboardSync(QObject):
 
     def _snapshot(self):
         self._snapshot_known_empty=False
+        self._cleanup_sample=None
         if not self._native_accessible():return None
+        sequence=self._sequence();notice=getattr(self,'_notification_serial',0)
         if self._native_reader is not None:
             if not self._native_current():return None
             self._snapshot_known_empty=self._native_sample.get('known_empty') is True
@@ -714,6 +714,8 @@ class ClipboardSync(QObject):
         try:
             value=snapshot(self.clipboard,baseline_state=state)
             self._snapshot_known_empty=state.get('known_empty') is True
+            if self._sequence()==sequence and getattr(self,'_notification_serial',0)==notice:
+                self._cleanup_sample=(sequence,notice,value,self._snapshot_known_empty)
             return value
         except (OSError,RuntimeError):return None
 
@@ -735,6 +737,8 @@ class ClipboardSync(QObject):
                     intent=dict(self._local_fence))
             else:self._suspended_intent=None
         self.enabled=enabled;self.change_debounce.stop()
+        if enabled:
+            self._cleanup_inventory=True;self._cleanup_cursor='';self._cleanup_paused.clear()
         if not enabled:self.file_jobs.suspend()
         self._account_changed(force=True)
         if enabled:
@@ -781,6 +785,7 @@ class ClipboardSync(QObject):
 
     def _schedule_change(self):
         if self.closed:return
+        self._invalidate_cleanup()
         self._notification_serial=getattr(self,'_notification_serial',0)+1
         if not self._active():
             if not self.change_debounce.isActive():self.change_debounce.start()
@@ -987,8 +992,11 @@ class ClipboardSync(QObject):
 
     def _account_changed(self,*_,force=False):
         if self.closed and not force:return
+        self._invalidate_cleanup()
         identity=self._session_identity()
         accessible=self._native_accessible()
+        if identity!=self._identity:
+            self._cleanup_inventory=True;self._cleanup_cursor='';self._cleanup_paused.clear()
         baseline=self._baseline_pending
         private_receive_fence=(self._local_fence if identity==self._identity and not self.closed
             and self.enabled and accessible and baseline is not None
@@ -1085,6 +1093,7 @@ class ClipboardSync(QObject):
         if self._active():QTimer.singleShot(0,self.refresh)
 
     def _directory(self):
+        self._invalidate_cleanup()
         path=Path(tempfile.mkdtemp(prefix='clip-',dir=self.cache));created=time.time()
         try:(path/'.lease.json').write_text(json.dumps({'flickdock_clipboard':1,'created_at':created}),encoding='utf8')
         except OSError:
@@ -1696,6 +1705,7 @@ class ClipboardSync(QObject):
             if owns_new:self._ignored=actual
             self._last_sequence=self._sequence()
             self._last_local_signature=actual
+            self._cleanup_sample=(self._last_sequence,getattr(self,'_notification_serial',0),actual_value,False)
             if self._native_reader is not None:
                 sequence=self._sequence()
                 self._native_sample=dict(status='ready',valid=True,value=actual_value,marker=actual_marker,
@@ -1719,40 +1729,126 @@ class ClipboardSync(QObject):
         finally:self._applying=previous
 
     def _cleanup(self):
-        # Native applications may still hold the last file clipboard's paths
-        # after Paste. Retain local downloads for a day, never delete originals.
-        if self.closed:return
-        # An unreadable pasteboard is not an empty one. Its native file URLs
-        # must stay usable across a denied permission, including after restart.
-        if not self._native_accessible(force=True):return
-        now=time.time();keep=[]
+        from clipboard_cleanup_worker import BATCH_SIZE,RETENTION_SECONDS,RETRY_SECONDS,FATAL_RECHECK_SECONDS,NAME
+        if self.closed or not self.enabled or not self._native_accessible(force=True):return
+        if self._cleanup_runner.active is not None:self._cleanup_requested=True;return
+        if time.monotonic()<self._cleanup_retry_at:return
+        if self._cleanup_paused and time.monotonic()>=self._cleanup_fatal_recheck:
+            self._cleanup_inventory=True;self._cleanup_cursor='';self._cleanup_fatal_recheck=time.monotonic()+FATAL_RECHECK_SECONDS
         protected=self.file_jobs.protected_directories()
-        # Most completions have nothing to expire. Never ask another app to
-        # render text/images merely because an HTTP or disk job completed.
-        if not any(now-created>=86400 and directory not in protected and
-                   directory!=self._current_directory for directory,created in self._directories):return
+        if self._current_directory is not None:protected.add(self._current_directory)
+        targets=[dict(name=path.name,created=created) for path,created in self._directories
+                 if path.parent==self.cache and NAME.fullmatch(path.name) and path not in protected
+                 and self._cleanup_paused.get(path.name,(None,))[0]!=created and time.time()-created>=RETENTION_SECONDS][:BATCH_SIZE]
+        if not targets and not self._cleanup_inventory:self._cleanup_requested=False;return
+        value=None;ready=False
         if self._native_reader is not None:
-            if not self._ensure_native(self._cleanup,'cleanup'):return
-            value=self._native_sample.get('value')
-            native_paths=[Path(path).resolve() for path in value[1]] if value and value[0]=='files' else []
+            if self._native_current():value=self._native_sample.get('value');ready=True
+            elif self._current_empty_receive():ready=True
+            else:self._ensure_native(self._cleanup,'cleanup')
         else:
-            try:
-                mime=self.clipboard.mimeData()
-                if mime is None:return
-                native_paths=[Path(url.toLocalFile()).resolve() for url in mime.urls() if url.isLocalFile()] if mime.hasUrls() else []
-            except (OSError,RuntimeError):return
-        for directory,created in self._directories:
-            if directory in protected or directory==self._current_directory:keep.append((directory,created));continue
-            if now-created<86400:keep.append((directory,created));continue
-            if any(path.is_relative_to(directory.resolve()) for path in native_paths):
-                keep.append((directory,created));continue
-            if directory.resolve().is_relative_to(self.cache.resolve()) and not directory.is_symlink() and not directory.is_junction():
-                self._work(lambda _,path=directory:shutil.rmtree(path,ignore_errors=True),lambda _:None,
-                    failure=lambda error:None)
-        self._directories=keep
+            sample=getattr(self,'_cleanup_sample',None)
+            if sample and sample[:2]==(self._sequence(),getattr(self,'_notification_serial',0)):
+                _,_,value,empty=sample;ready=value is not None or empty
+        references=list(value[1]) if value and value[0]=='files' else []
+        if not ready and not self._cleanup_inventory:return
+        if len(references)>BATCH_SIZE or len(protected)>BATCH_SIZE:
+            self._cleanup_status=dict(status='deferred',code='REFERENCE_LIMIT');self._cleanup_retry_at=time.monotonic()+RETRY_SECONDS;return
+        fence=self._cleanup_fence();self._cleanup_requested=False
+        request=dict(mode='plan',cache=str(self.cache.absolute()),targets=[] if self._cleanup_inventory else targets,
+            references=references,protected=[str(path.absolute()) for path in protected],inventory=self._cleanup_inventory,cursor=self._cleanup_cursor,cache_stamp=None)
+        def completed(result):
+            self._record_cleanup_status({key:result[key] for key in ('status','code') if key in result})
+            if self.closed:return
+            if result.get('status')!='ready':
+                if result.get('status')=='deferred' and result.get('code')=='CANCELLED':self._resume_cleanup();return
+                self._cleanup_retry_at=time.monotonic()+(FATAL_RECHECK_SECONDS if result.get('code')=='UNSAFE' else RETRY_SECONDS);return
+            if result.get('mode')!='plan' or not self._cleanup_result(result):
+                self._cleanup_status=dict(status='failed',code='INVALID_RESULT');self._cleanup_retry_at=time.monotonic()+RETRY_SECONDS;return
+            # A stale inventory cannot replace a record created after dispatch.
+            if fence!=self._cleanup_fence():self._cleanup_requested=True;self._resume_cleanup();return
+            self._cleanup_requested=False
+            absent=set(result['deleted']);expected={item['name']:item['created'] for item in request['targets']}
+            known={path:created for path,created in self._directories if not(path.name in absent and expected.get(path.name)==created)}
+            for item in result['records']:
+                known[self.cache/item['name']]=item['created']
+                paused=self._cleanup_paused.get(item['name'])
+                if paused is not None and paused!=self._cleanup_record_generation(item):self._cleanup_paused.pop(item['name'])
+            self._directories=list(known.items())
+            self._pause_unsafe_cleanup(result['errors'],result['records'])
+            if request['inventory']:
+                self._cleanup_inventory_failed|=any(item['code']not in ('UNSAFE','UNSUPPORTED') for item in result['errors'])
+                self._cleanup_inventory=result['more'] or self._cleanup_inventory_failed;self._cleanup_cursor=result['cursor']
+                if not result['more']:self._cleanup_inventory_failed=False
+            candidates=[item for item in result['candidates'] if item['name']not in self._cleanup_paused]
+            if not ready or not candidates:
+                self._cleanup_retry_at=time.monotonic()+RETRY_SECONDS if ready or result['errors'] else 0.
+                if result['errors']:self._record_cleanup_status(dict(status='failed',code=result['errors'][0]['code']))
+                return
+            if not self.enabled or not self._native_accessible(force=True) or fence!=self._cleanup_fence():return
+            delete=dict(request,mode='delete',targets=candidates,inventory=False,cursor='',cache_stamp=result['cache_stamp'])
+            def deleted(outcome):
+                self._cleanup_retry_at=time.monotonic()+RETRY_SECONDS
+                if self.closed:return
+                if outcome.get('status')!='ready' or not self._cleanup_result(outcome):
+                    if outcome.get('status')=='deferred' and outcome.get('code')=='CANCELLED':self._cleanup_retry_at=0.;self._resume_cleanup();return
+                    self._record_cleanup_status(dict(status='failed',code=outcome.get('code','INVALID_RESULT')));return
+                if fence!=self._cleanup_fence():self._cleanup_status=dict(status='deferred',code='STALE');self._cleanup_retry_at=0.;self._resume_cleanup();return
+                self._pause_unsafe_cleanup(outcome['errors'],candidates)
+                removed=set(outcome['deleted']);expected={item['name']:item['created'] for item in candidates}
+                self._directories=[(path,created) for path,created in self._directories if not(path.name in removed and expected.get(path.name)==created)]
+                self._record_cleanup_status(dict(status='failed' if outcome['errors'] else 'ready',code=outcome['errors'][0]['code'] if outcome['errors'] else 'COMPLETE'))
+            self._cleanup_runner.submit(delete,deleted)
+        self._cleanup_runner.submit(request,completed)
+
+    def _cleanup_fence(self):
+        protected=self.file_jobs.protected_directories()
+        return (self._cleanup_epoch,self._session_identity(),self._sequence(),getattr(self,'_notification_serial',0),
+            self._current_directory,frozenset(protected),self.enabled,self.closed)
+
+    @staticmethod
+    def _cleanup_result(result):
+        from clipboard_cleanup_worker import BATCH_SIZE,NAME,number
+        for key in ('records','candidates','errors','deleted'):
+            if not isinstance(result.get(key),list) or len(result[key])>BATCH_SIZE:return False
+        if type(result.get('more'))is not bool or not isinstance(result.get('cursor'),str) or len(result['cursor'])>128:return False
+        if not isinstance(result.get('cache_stamp'),list) or len(result['cache_stamp'])!=2 or any(type(x)is not int or x<0 for x in result['cache_stamp']):return False
+        if result['cache_stamp'][1]<=0:return False
+        if any(not isinstance(item,dict) or not NAME.fullmatch(str(item.get('name',''))) or not number(item.get('created')) for item in result['records']+result['candidates']):return False
+        if any(not isinstance(item.get('stamp'),list) or len(item['stamp'])!=2 or any(type(x)is not int or x<0 for x in item['stamp'])
+               or item['stamp'][1]<=0 or not isinstance(item.get('lease_sha256'),str) or not re.fullmatch('[0-9a-f]{64}',item['lease_sha256']) for item in result['records']+result['candidates']):return False
+        if any(not isinstance(name,str) or not NAME.fullmatch(name) for name in result['deleted']):return False
+        if any(not isinstance(item,dict) or not NAME.fullmatch(str(item.get('name',''))) or item.get('code')not in ('UNSAFE','STALE','UNSUPPORTED','ACCESS_DENIED','IO') for item in result['errors']):return False
+        return True
+
+    def _invalidate_cleanup(self,*_):
+        self._cleanup_epoch+=1;self._cleanup_requested=True;self._cleanup_runner.cancel()
+
+    def _resume_cleanup(self):
+        if self._cleanup_requested and not self.closed and self.enabled:
+            self._cleanup_requested=False;QTimer.singleShot(0,self._cleanup)
+
+    def _record_cleanup_status(self,status):
+        self._cleanup_status=status
+        if status.get('status')=='failed':
+            clipboard_audit.observe(self.clipboard,module='clipboard_sync',function='_cleanup',trigger='cache_cleanup',origin='internal',
+                operation='cleanup_failed',result=status.get('code','IO'),content_type='cache',fingerprint_data=('cleanup',status.get('code','IO')))
+
+    @staticmethod
+    def _cleanup_record_generation(record):return (record.get('created'),tuple(record.get('stamp',())),record.get('lease_sha256'))
+
+    def _pause_unsafe_cleanup(self,errors,records):
+        from clipboard_cleanup_worker import FATAL_RECHECK_SECONDS
+        by_name={item['name']:item for item in records}
+        for item in errors:
+            if item['code']in ('UNSAFE','UNSUPPORTED'):
+                fallback=dict(created=next((created for path,created in self._directories if path.name==item['name']),None))
+                self._cleanup_paused[item['name']]=self._cleanup_record_generation(by_name.get(item['name'],fallback))
+                self._cleanup_fatal_recheck=time.monotonic()+FATAL_RECHECK_SECONDS
 
     def close(self):
         if self.closed:return
+        self._cleanup_runner.close()
         self.closed=True;self.poll.stop();self.retry.stop();self.mac_poll.stop();self.change_debounce.stop();self._account_changed(force=True)
         for signal,slot in self._subscriptions:
             try:signal.disconnect(slot)

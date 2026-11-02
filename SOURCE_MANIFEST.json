@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "QA-only complete native text materialization stage timings; runtime identical to909b, no installer or release",
+  "purpose": "Reviewed isolated durable clipboard cache cleanup checkpoint; verification only, no installer or release",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -16,8 +16,8 @@
     },
     {
       "path": ".github/workflows/macos-build.yml",
-      "size": 7583,
-      "sha256": "c1f7f0071609255d1bd2734089e918b04a886eaa20c1a6a89613cc9653b1ba02"
+      "size": 7647,
+      "sha256": "b526d863b4ddc0a436d9ff19a7ea0adab9559677ec83b5b5afd146688d771e86"
     },
     {
       "path": ".github/workflows/macos-intel-motion-diagnostic.yml",
@@ -26,8 +26,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 26756,
-      "sha256": "2f5ef6bda26fc53b5d972e532b183a84c54f69b0a105be4d53cfe3c0f5a93938"
+      "size": 26826,
+      "sha256": "304a8aa4f75dd7fef3fc05dd7cf0369a663e69baeddbb3a080c36137a21c898f"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -650,6 +650,16 @@
       "sha256": "d713d9f68bc359544034d858e5e858bf4b5705e1e8bdfb39c0d3d23df1ae26b4"
     },
     {
+      "path": "clipboard_cleanup.py",
+      "size": 7815,
+      "sha256": "569d3066bf9936a2cd92386b7a8d64efbe014a2f523f611097b86c9d11ba4ea6"
+    },
+    {
+      "path": "clipboard_cleanup_worker.py",
+      "size": 24784,
+      "sha256": "83cc47f11b2f7af10d5e6f554949d2e8283998a6f040decfdc03c66f0e41971b"
+    },
+    {
       "path": "clipboard_notice_motion.py",
       "size": 3485,
       "sha256": "2103e5853c656fa838bb6d9b1c03a5106e0dcab582d2682f4d7409e7e1942263"
@@ -666,8 +676,8 @@
     },
     {
       "path": "clipboard_sync.py",
-      "size": 106153,
-      "sha256": "d95666e5bd0057c5619e43ea7aaac1d07a3b4b630723d4fba6a8afcda8b6fc9b"
+      "size": 114270,
+      "sha256": "6eb2e683b3ce24c892307bb02dc78043f7ffcfd70f67d33f690ce40d42adb306"
     },
     {
       "path": "cloud/.gitignore",
@@ -976,8 +986,8 @@
     },
     {
       "path": "flickdock.py",
-      "size": 248818,
-      "sha256": "fc1fd604db159a53991b21ec73a1c20d76402d1f2da32f9c5ce4421ade13754e"
+      "size": 249061,
+      "sha256": "ce607a1d1bcf3876040111a06f022e8a591e868963d18e69a0c010a9e0076614"
     },
     {
       "path": "flickdock_icons.py",
@@ -1106,8 +1116,8 @@
     },
     {
       "path": "mac_entry.py",
-      "size": 16754,
-      "sha256": "8196691388570b26319cd48aa677f87c922be35485296a7221022fcf086e40fc"
+      "size": 16982,
+      "sha256": "ca335b2bfcfef4e6d2c9be863ee83a0487e75f8b1ab38946f64f48b9cab7e715"
     },
     {
       "path": "mac_permissions.py",
@@ -1223,6 +1233,11 @@
       "path": "pointer_paste.py",
       "size": 11351,
       "sha256": "2b198085f9d8a7b957bd9678772b85d4d83433f4e27abc44eedf1d4cdee2fb06"
+    },
+    {
+      "path": "qa/clipboard_cleanup_synthetic.py",
+      "size": 4462,
+      "sha256": "852629bb6a513d4e84c6d8dc22d28a6d03fa0341a4d9d526db70122aa3fac5ec"
     },
     {
       "path": "qa/macos_motion_diagnostic_v1824.py",
@@ -1516,8 +1531,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 43744,
-      "sha256": "4eaff268f1e7c26cae3d73b52e1fc2b24c9ab9b064c28dacbc79f7ba5eabaac7"
+      "size": 43925,
+      "sha256": "08fc5663eaa0c78cc8cf651f60cd37cbef8688bcafaeff5cf6474a72f7eee000"
     },
     {
       "path": "release_signing.py",
@@ -1700,14 +1715,24 @@
       "sha256": "46c4bd28b188101c9481eabb2d97f64390b00ba237cc1bce355deb233f56824f"
     },
     {
+      "path": "test_clipboard_cleanup_entry_v1825.py",
+      "size": 2637,
+      "sha256": "eb8a9001231b741bcfd5bad714a545649f02645fdc7a33b4debbde76a5292854"
+    },
+    {
+      "path": "test_clipboard_cleanup_v1825.py",
+      "size": 20003,
+      "sha256": "bac833a3b3ce6774d73c578666ccf6d4fc7710ed5a2261923982b710c1f4afaf"
+    },
+    {
       "path": "test_clipboard_empty_bootstrap_v1825.py",
       "size": 16810,
       "sha256": "8a3e894e5d199a536147d978b44049a7017bc8052ba58d730572d27d78fe0d18"
     },
     {
       "path": "test_clipboard_empty_receive_v1825.py",
-      "size": 8636,
-      "sha256": "37247fa1b37113b8ae5217b6fdb236c85ca4140f901c2c68c60a473474fb7d95"
+      "size": 10092,
+      "sha256": "7544cc28c2b33adf62142577a506c89e3fd6a9cacae8d62d2cd74f0d692f6142"
     },
     {
       "path": "test_clipboard_fast_v1821.py",

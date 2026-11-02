@@ -2,6 +2,11 @@
 from __future__ import annotations
 import sys
 
+if '--clipboard-cleaner' in sys.argv[1:]:
+    if sys.argv[1]!='--clipboard-cleaner':raise SystemExit(2)
+    from clipboard_cleanup_worker import main as _clipboard_cleaner_main
+    raise SystemExit(_clipboard_cleaner_main(sys.argv[2:]))
+
 # A windowed frozen child must read the native clipboard without importing Qt,
 # constructing the app, taking the instance lock or opening account storage.
 if len(sys.argv)>1 and sys.argv[1]=='--clipboard-reader':

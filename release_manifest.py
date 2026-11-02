@@ -35,6 +35,7 @@ RUNTIME_SOURCES=(
     'shelf_payload_gate.py',
     'win_clipboard_cache.py',
     'win_clipboard_native.py','win_clipboard_io.py','win_owned_process.py',
+    'clipboard_cleanup.py','clipboard_cleanup_worker.py',
     'control_states.py',
     'frame_animation.py',
     'mac_status_drop.py','ci_mac_status_drop.py',
@@ -57,6 +58,7 @@ RUNTIME_SOURCES=(
     'wan_transfer.py','webrtc_stream.py','nearby_transport.py','verify_wan.py','windows_network.py','windows_reveal.py',
 )
 MAINTAINED_TESTS=(
+    'test_clipboard_cleanup_v1825.py','test_clipboard_cleanup_entry_v1825.py',
     'test_native_text_single_pass_v1825.py',
     'test_native_text_budget_v1825.py',
     'test_verify_clipboard_commit_v1825.py',
@@ -147,6 +149,7 @@ MAINTAINED_TESTS=(
     'test_remote_transfer_actions_v1812.py','test_wan_transfer_v1816.py',
 )
 SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
+    'qa/clipboard_cleanup_synthetic.py',
     'qa/packaged-live/test_uia_startup.py',
     'qa/native_text_profile.py',
     'qa/packaged-live/native_image_observation.py',

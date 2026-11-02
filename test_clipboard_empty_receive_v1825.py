@@ -1,6 +1,7 @@
 """Fresh metadata authority for virgin Windows reception; owned providers only."""
 import unittest
 import time
+import json
 from dataclasses import replace
 from uuid import uuid4
 from unittest.mock import patch
@@ -148,16 +149,38 @@ class CurrentEmptyReceiveTests(unittest.TestCase):
 
     def test_expired_cache_cleanup_request_survives_zero_reader_retirement(self):
         client = self.start()
+        until(lambda: client._cleanup_runner.active is None)
         expired = client._directory()
         (expired / 'owned-obsolete.bin').write_bytes(b'owned expired cache')
-        client._directories = [(expired, time.time() - 2 * 86400)]
+        created = time.time() - 2 * 86400
+        (expired / '.lease.json').write_text(json.dumps(dict(flickdock_clipboard=1, created_at=created)))
+        client._directories = [(expired, created)]
+        # Exercise this fresh request rather than the startup no-work backoff.
+        client._cleanup_retry_at = 0.
+        # A fresh empty metadata proof now avoids the old unnecessary read.
+        # Preserve the real retiring-reader race by making that first probe busy.
+        self.provider.busy = True
         client._cleanup()
+        until(lambda: 'cleanup' in client._native_waiters)
         self.assertIn('cleanup', client._native_waiters)
         token = client._native_read_token
         old_callback = self.reader.active[token][0]
+        self.provider.busy = False
         self.peer.head = self.head()
         client._pushed(dict(clipboard=self.peer.head))
-        until(lambda: self.clip.writes == 1 and not expired.exists() and not client._jobs)
+        try:
+            until(lambda: self.clip.writes == 1 and not expired.exists() and not client._jobs)
+        except AssertionError:
+            operation = client._cleanup_runner.active
+            print(json.dumps(dict(case='retiring_zero_cleanup', writes=self.clip.writes,
+                cache_exists=expired.exists(), native_waiters=sorted(client._native_waiters),
+                cleanup_status=client._cleanup_status, cleanup_requested=client._cleanup_requested,
+                cleanup_inventory=client._cleanup_inventory, tracked=len(client._directories),
+                retry_in=max(0, client._cleanup_retry_at-time.monotonic()),
+                operation_result=operation.result if operation is not None else None,
+                operation_done=operation.done.is_set() if operation is not None else None,
+                native_sample_current=client._native_current(), worker_jobs=len(client._jobs))))
+            raise
         self.assertNotIn('cleanup', client._native_waiters)
         sample = client._native_sample
         old_callback(dict(status='unknown', valid=False, sequence_before=0, sequence_after=0), None)
