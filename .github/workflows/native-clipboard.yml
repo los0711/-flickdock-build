@@ -26,7 +26,7 @@ on:
       normal_actions_scope:
         description: Full acceptance or isolated native observation (never installer acceptance)
         type: choice
-        options: [full, tray-observation, recent-observation, writer-observation]
+        options: [full, tray-observation, recent-observation, writer-observation, receive-first-observation]
         default: full
       reveal_probe:
         description: Run the isolated Windows Shell selection diagnostic
@@ -196,6 +196,9 @@ jobs:
           $diagnostics = Join-Path $PWD 'build/native-motion-diagnostics'
           New-Item -ItemType Directory -Force -Path $diagnostics | Out-Null
           function Invoke-MotionCheck([string]$name, [string[]]$arguments) {
+            if ($arguments.Count -ge 3 -and $arguments[0] -eq '-m' -and $arguments[1] -eq 'unittest') {
+              $arguments = @('qt_unittest.py') + $arguments[2..($arguments.Count - 1)]
+            }
             $stdout = Join-Path $diagnostics ($name + '.stdout.log')
             $stderr = Join-Path $diagnostics ($name + '.stderr.log')
             $started = (Get-Date).ToUniversalTime().ToString('o')
@@ -213,9 +216,9 @@ jobs:
           }
           Invoke-MotionCheck 'download-terminal' @('-m', 'unittest', 'test_download_terminal_v1824', '-v')
           Invoke-MotionCheck 'clipboard-reenable' @('-m', 'unittest', 'test_clipboard_reenable_v1825', '-v')
-          Invoke-MotionCheck 'cleanroom-native-worker' @('-m', 'unittest', 'test_win_clipboard_io_v1825', 'test_win_clipboard_cache_v1825', 'test_clipboard_native_read_v1825', 'test_clipboard_worker_outcomes_v1825', 'test_clipboard_reader_entry_v1825', 'test_clipboard_audit_source_v1825', 'test_clipboard_local_original_v1825', '-v')
-          Invoke-MotionCheck 'bootstrap-and-stage-ownership' @('-m', 'unittest', 'test_clipboard_empty_bootstrap_v1825', 'test_native_read_retry_v1825', 'test_native_image_fidelity_v1825', 'test_shelf_stage_store_v1825.CanonicalStageTests', 'test_shelf_payload_gate_v1825', '-v')
-          Invoke-MotionCheck 'cleanroom-popup-lifecycle' @('-m', 'unittest', 'test_popup_subscription_v1825', 'test_clipboard_popup_native_events_v1825', 'test_modal_owner_lifecycle_v1825', 'test_secondary_window_handoff_v1825', 'test_morph_text_scale_v1825', 'test_card_style_ownership_v1825', '-v')
+          Invoke-MotionCheck 'cleanroom-native-worker' @('-m', 'unittest', 'test_win_clipboard_io_v1825', 'test_win_clipboard_cache_v1825', 'test_clipboard_native_read_v1825', 'test_clipboard_worker_outcomes_v1825', 'test_clipboard_reader_entry_v1825', 'test_clipboard_audit_source_v1825', 'test_clipboard_local_original_v1825', 'test_clipboard_presenter_lifecycle_v1825', '-v')
+          Invoke-MotionCheck 'bootstrap-and-stage-ownership' @('-m', 'unittest', 'test_clipboard_empty_bootstrap_v1825', 'test_clipboard_empty_receive_v1825', 'test_native_read_retry_v1825', 'test_native_image_fidelity_v1825', 'test_shelf_stage_store_v1825.CanonicalStageTests', 'test_shelf_payload_gate_v1825', '-v')
+          Invoke-MotionCheck 'cleanroom-popup-lifecycle' @('-m', 'unittest', 'test_popup_subscription_v1825', 'test_clipboard_popup_native_events_v1825', 'test_modal_owner_lifecycle_v1825', 'test_secondary_window_handoff_v1825', 'test_chrome_event_scope_v1825', 'test_morph_text_scale_v1825', 'test_card_style_ownership_v1825', '-v')
           Invoke-MotionCheck 'shelf-control-transport' @('-m', 'unittest', 'test_shelf_control_transport_v1825', '-v')
           Invoke-MotionCheck 'clipboard-size-and-multipart' @('-m', 'unittest', 'test_clipboard_size_contract_v1825', 'test_clipboard_multipart_v1825', '-v')
           Invoke-MotionCheck 'motion-components' @('-m', 'unittest', 'test_ui_followup_v1823', 'test_cached_surface_v1823', 'test_stack_spread_v1823', 'test_input_motion_v1823', 'test_content_entrance_v1823', 'test_transfer_drop_feedback_v1823', 'test_transfer_item_motion_v1823', 'test_popup_motion_v1823', 'test_drop_target_motion_v1823', 'test_morph_snapshot_content_v1824', '-v')
@@ -376,12 +379,16 @@ jobs:
             python qa/packaged-live/ci_packaged_windows_live.py --exe $nativeExe --sha256 $nativeHash --root $PWD --output build/normal-native-qa --actions qa/packaged-live/ui-recent-observation.json
           } elseif ($env:NORMAL_ACTIONS_SCOPE -eq 'writer-observation') {
             python qa/packaged-live/ci_packaged_windows_live.py --exe $nativeExe --sha256 $nativeHash --root $PWD --output build/normal-native-qa --writer-observation
+          } elseif ($env:NORMAL_ACTIONS_SCOPE -eq 'receive-first-observation') {
+            python -m unittest discover -s qa/packaged-live -p test_receive_first_gate.py -v
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            python qa/packaged-live/ci_packaged_windows_live.py --exe $nativeExe --sha256 $nativeHash --root $PWD --output build/normal-native-qa --receive-first
           } else {
             python qa/packaged-live/ci_packaged_windows_live.py --exe $nativeExe --sha256 $nativeHash --root $PWD --output build/normal-native-qa --actions qa/packaged-live/ui-actions.json --extra-actions qa/packaged-live/ui-extra-actions.json --batch2-actions qa/packaged-live/ui-batch2-actions.json --supplement-actions qa/packaged-live/ui-supplement-actions.json
           }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Ensure native installer compiler for same-byte validation
-        if: github.event.inputs.installer_acceptance == 'true' && github.event.inputs.normal_actions_scope != 'tray-observation' && github.event.inputs.normal_actions_scope != 'recent-observation' && github.event.inputs.normal_actions_scope != 'writer-observation'
+        if: github.event.inputs.installer_acceptance == 'true' && github.event.inputs.normal_actions_scope == 'full'
         shell: pwsh
         run: |
           if (-not (Get-Command ISCC.exe -ErrorAction SilentlyContinue) -and -not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
@@ -389,7 +396,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
       - name: Verify exact production installer with a real old process and relaunch
-        if: github.event.inputs.installer_acceptance == 'true' && github.event.inputs.normal_actions_scope != 'tray-observation' && github.event.inputs.normal_actions_scope != 'recent-observation' && github.event.inputs.normal_actions_scope != 'writer-observation'
+        if: github.event.inputs.installer_acceptance == 'true' && github.event.inputs.normal_actions_scope == 'full'
         env:
           FD_QA_NATIVE: '1'
         shell: pwsh

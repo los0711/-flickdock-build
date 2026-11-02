@@ -12,6 +12,9 @@ root,platform,args=sys.argv[1],sys.argv[2],__import__('json').loads(sys.argv[3])
 from pathlib import Path
 sys.path.insert(0,str(Path(root).parent))
 from win_clipboard_native import parse_cache_arguments
+# Load platform-sensitive stdlib dependencies on the actual host before the
+# dispatch-only test changes sys.platform to exercise the Windows entry.
+import win_clipboard_cache
 sys.platform=platform
 sys.argv=[root,*args]
 poison=types.ModuleType('surface_morph')
@@ -42,7 +45,8 @@ runpy.run_path(root,run_name='__main__')
 
     def test_private_cache_arguments_reach_pure_helper_without_gui(self):
         nonce='a'*32
-        root=Path(tempfile.gettempdir())/'FlickDock-native-originals-v1'/nonce
+        from win_clipboard_cache import cache_base
+        root=cache_base()/nonce
         args=['--clipboard-reader','--native-cache-root',str(root),
               '--native-cache-token',nonce,'--native-cache-instance','b'*32]
         result=self.run_entry('win32',args)

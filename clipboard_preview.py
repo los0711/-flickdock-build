@@ -65,12 +65,14 @@ class ClipboardPresenter(QObject):
         if self.closed:return
         generation=self.generation;job=DiskWork(read_clip_text,content);self.jobs.add(job)
         def ready(value,error):
-            self.jobs.discard(job)
-            if self.closed or generation!=self.generation:return
-            if error or value is None:
-                if not job.cancel.is_set():self.text_error='无法读取剪贴板预览';self.changed.emit()
-                return
-            self.text_preview,self.text_truncated=value;self.changed.emit()
+            try:
+                self.jobs.discard(job)
+                if self.closed or generation!=self.generation:return
+                if error or value is None:
+                    if not job.cancel.is_set():self.text_error='无法读取剪贴板预览';self.changed.emit()
+                    return
+                self.text_preview,self.text_truncated=value;self.changed.emit()
+            finally:self._retire_decode(job,ready)
         job.signals.done.connect(ready);self.pool.start(job,-1)
 
     def _decode(self,size):
@@ -80,12 +82,22 @@ class ClipboardPresenter(QObject):
         self._decoding.add(key)
         job=DiskWork(read_clip_image,value,size);self.jobs.add(job)
         def ready(image,error):
-            self.jobs.discard(job);self._decoding.discard(key)
-            if self.closed or generation!=self.generation or error or not isinstance(image,QImage):return
-            if size==40:self.thumbnail=image
-            else:self.large=image
-            self.changed.emit()
+            try:
+                self.jobs.discard(job);self._decoding.discard(key)
+                if self.closed or generation!=self.generation or error or not isinstance(image,QImage):return
+                if size==40:self.thumbnail=image
+                else:self.large=image
+                self.changed.emit()
+            finally:self._retire_decode(job,ready)
         job.signals.done.connect(ready);self.pool.start(job,-1)
+
+    @staticmethod
+    def _retire_decode(job,callback):
+        # The signal owns the callback and its closure owns the runnable.
+        # Retire both edges after delivery, including stale/closed failures,
+        # so completed decode inputs cannot retain a full original's lease.
+        try:job.signals.done.disconnect(callback)
+        finally:job.args=()
 
     def request_large(self):
         self._large_requested=True

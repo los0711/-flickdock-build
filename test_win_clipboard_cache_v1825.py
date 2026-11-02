@@ -1,14 +1,93 @@
 """Owned TEMP original-cache contract, no native clipboard or user source IO."""
-import gc,hashlib,json,mmap,os,struct,subprocess,sys,tempfile,time,unittest
+import gc,hashlib,json,mmap,os,struct,subprocess,sys,tempfile,threading,time,unittest
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 from unittest.mock import patch
 import win_clipboard_cache as cache
 
+class TempBaseAliasTests(unittest.TestCase):
+    def setUp(self):
+        from test_win_clipboard_io_v1825 import ensure_owned_process_temp
+        ensure_owned_process_temp()
+        self.temp=tempfile.TemporaryDirectory(prefix='fd-cache-temp-alias-')
+        self.addCleanup(self.temp.cleanup)
+        self.anchor=Path(self.temp.name).resolve(strict=True)
+        self.target=self.anchor/'real-temp';self.target.mkdir()
+        self.alias=self.anchor/'temp-alias'
+        if os.name=='nt':
+            environment=dict(os.environ,FD_QA_ALIAS=str(self.alias),FD_QA_TARGET=str(self.target))
+            subprocess.run(['powershell','-NoProfile','-NonInteractive','-Command',
+                'New-Item -ItemType Junction -Path $env:FD_QA_ALIAS -Target $env:FD_QA_TARGET | Out-Null'],
+                env=environment,check=True,capture_output=True,timeout=15)
+        else:self.alias.symlink_to(self.target,target_is_directory=True)
+        # Method-local aliases intentionally nest inside this fallback. Keep
+        # it installed through worker retirement, so tearDown cannot sweep
+        # the actual application namespace under the user's OS TEMP root.
+        self.fallback=self.anchor/'fallback-system-temp';self.fallback.mkdir()
+        self._fallback_patch=patch.object(cache.tempfile,'gettempdir',return_value=str(self.fallback))
+        self._fallback_patch.start();self.addCleanup(self._cleanup_owned_alias)
+    def _cleanup_owned_alias(self):
+        gc.collect();cache.schedule_cleanup();self.assertTrue(cache._IDLE.wait(2))
+        if self.alias.is_symlink():self.alias.unlink()
+        else:self.alias.rmdir()
+        self._fallback_patch.stop()
+    def test_trusted_os_temp_alias_is_canonicalized_before_namespace(self):
+        with patch.object(cache.tempfile,'gettempdir',return_value=str(self.alias)):
+            cap=cache.CacheCapability();sink=cache.CacheSink(cap.root,cap.token,cap.instance)
+            sink.write('image',[b'original-bytes'],mime='image/png');sink.close()
+            self.assertEqual(cache.cache_base(),self.target/'FlickDock-native-originals-v1')
+            content=cap.adopt(sink.descriptor('image',14,hashlib.sha256(b'original-bytes').hexdigest()))
+            self.assertEqual(Path(content.parts[0]['path']).read_bytes(),b'original-bytes')
+            del content,cap
+            self.assertTrue(cache._IDLE.wait(2))
+    def test_link_inside_private_namespace_is_still_rejected(self):
+        with patch.object(cache.tempfile,'gettempdir',return_value=str(self.anchor)):
+            # The same real alias is untrusted when used as the namespace.
+            with patch.object(cache,'cache_base',return_value=self.alias):
+                cap=cache.CacheCapability();sink=cache.CacheSink(cap.root,cap.token,cap.instance)
+                with self.assertRaisesRegex(ValueError,'Unsafe owned cache root'):
+                    sink.write('image',[b'never-write'],mime='image/png')
+                self.assertEqual(list(self.target.iterdir()),[])
+            with self.assertRaisesRegex(ValueError,'Unsafe owned cache root'):
+                cache._no_links(self.alias/('a'*32))
+
+class TempAliasIsolationTests(unittest.TestCase):
+    def test_alias_fixture_cleanup_never_reaches_the_default_cache_namespace(self):
+        # Poison before resolving/statting any unowned default directory.
+        # Run the actual fixture lifecycle, including its worker cleanup;
+        # patching only the test method would miss this regression.
+        from test_win_clipboard_io_v1825 import ensure_owned_process_temp
+        process_root=ensure_owned_process_temp()
+        for method in ('test_trusted_os_temp_alias_is_canonicalized_before_namespace',
+                       'test_link_inside_private_namespace_is_still_rejected'):
+            with self.subTest(method=method):
+                case=TempBaseAliasTests(method);original=cache.cache_base;unowned=[];after_case=[False];observed=threading.Event()
+                def owned_base():
+                    base=Path(cache.tempfile.gettempdir()).absolute()
+                    allowed=process_root if after_case[0] else case.anchor
+                    if not base.is_relative_to(allowed):
+                        unowned.append('default_cache_namespace')
+                        raise PermissionError('Poisoned unowned cache namespace')
+                    if after_case[0]:observed.set()
+                    return original()
+                with patch.object(cache,'cache_base',side_effect=owned_base):
+                    result=unittest.TestResult();case.run(result)
+                    self.assertTrue(result.wasSuccessful(),(result.errors,result.failures))
+                    after_case[0]=True
+                    # An idle notification can occur between two queued
+                    # wakes. Even a later release must still resolve inside
+                    # the process-owned root after the fixture has returned.
+                    for _ in range(2):
+                        gc.collect();observed.clear();cache.schedule_cleanup()
+                        self.assertTrue(observed.wait(2));self.assertTrue(cache._IDLE.wait(2))
+                    self.assertEqual(unowned,[],'Fixture cleanup escaped its owned temporary root')
+
 class OriginalCacheTests(unittest.TestCase):
     def setUp(self):
+        from test_win_clipboard_io_v1825 import ensure_owned_process_temp
+        ensure_owned_process_temp()
         self.temp=tempfile.TemporaryDirectory(prefix='flickdock-owned-cache-test-')
-        self.base=Path(self.temp.name)/'private';self.patch=patch.object(cache,'cache_base',return_value=self.base);self.patch.start()
+        self.base=Path(self.temp.name).resolve(strict=True)/'private';self.patch=patch.object(cache,'cache_base',return_value=self.base);self.patch.start()
     def tearDown(self):
         gc.collect();cache.schedule_cleanup();self.assertTrue(cache._IDLE.wait(2))
         self.patch.stop();self.temp.cleanup()
@@ -162,6 +241,14 @@ class OriginalCacheTests(unittest.TestCase):
         self.assertEqual(json.loads(marker.read_text())['instance'],'c'*32);self.assertTrue((cap.root/'image.bin').exists())
 
 class OwnedChildCacheTests(unittest.TestCase):
+    def setUp(self):
+        from test_win_clipboard_io_v1825 import ensure_owned_process_temp
+        ensure_owned_process_temp();self.readers=[]
+    def tearDown(self):
+        from test_win_clipboard_io_v1825 import until
+        for reader in self.readers:reader.close()
+        until(lambda:all(reader._active is None for reader in self.readers))
+        self.readers.clear();gc.collect();cache.schedule_cleanup();self.assertTrue(cache._IDLE.wait(2))
     def test_retire_io_failure_rejects_only_this_sample_and_next_copy_still_spawns(self):
         import io
         from test_win_clipboard_io_v1825 import until,text_result,frame
@@ -178,7 +265,7 @@ class OwnedChildCacheTests(unittest.TestCase):
                 if len(calls)==1:raise OSError(28,'private temporary path')
         def factory(*a,**k):calls.append(True);return Process()
         with patch('win_clipboard_io.CacheCapability',side_effect=lambda **k:Capability()):
-            reader=WindowsClipboardReader(process_factory=factory);results=[]
+            reader=WindowsClipboardReader(process_factory=factory);self.readers.append(reader);results=[]
             try:
                 reader.read(lambda value,error:results.append(value));until(lambda:len(results)==1)
                 self.assertEqual(results[0]['code'],'CACHE_UNAVAILABLE');self.assertFalse(results[0]['valid']);self.assertIsNone(reader._quarantined)
@@ -216,7 +303,7 @@ finally:sink.close()
         for unused in range(MAX_BYTES//262144):expected.update(b'R'*262144)
         expected.update(b'R')
         beats=[];timer=QTimer();timer.setInterval(5);timer.timeout.connect(lambda:beats.append(True));timer.start()
-        reader=WindowsClipboardReader(deadline_ms=3000,command=[sys.executable,'-c',code],process_factory=subprocess.Popen);results=[]
+        reader=WindowsClipboardReader(deadline_ms=3000,command=[sys.executable,'-c',code],process_factory=subprocess.Popen);self.readers.append(reader);results=[]
         try:
             reader.read(lambda value,error:results.append(value));until(lambda:bool(results),6)
             result=results[0];self.assertTrue(result['valid']);self.assertFalse(result['sync_eligible']);self.assertEqual(result['sequence'],314)

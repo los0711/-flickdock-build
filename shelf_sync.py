@@ -5,6 +5,7 @@ work runs outside the GUI thread. Every callback belongs to an account epoch.
 """
 from __future__ import annotations
 import copy
+from functools import partial
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -21,19 +22,29 @@ from account_store import atomic_json
 from selection_archive import _source_reader
 from small_upload_lane import SmallUploadLane
 from shelf_payload_gate import ShelfPayloadGate
-from shelf_stage_store import ShelfStageStore, StageResourceError, canonical_path, owned_stage_path, validate_owned_outbox, ResourceCleanupWork
+from shelf_stage_store import ShelfStageStore, StageResourceError, canonical_path, owned_stage_path, validate_owned_outbox, ResourceCleanupWork, register_materialization, remove_unreferenced, checked_materialization
 from sync_files import (DiskWork, DIRECTORY_MIME, assemble_parts, fingerprint, read_part, read_utf8, safe_name,
-                        stage_item, unpack_directory,MAX_FILE_BYTES)
+                        stage_item, unpack_directory,MAX_FILE_BYTES,StageCleanupError)
 
 
 def _stage_owned_admission(function, args, cancel):
     """Reject an unsafe managed directory before the original worker copies."""
-    validate_owned_outbox(Path(args[3]))
-    return function(*args,cancel)
+    outbox=Path(args[3]);validate_owned_outbox(outbox);allocated=[]
+    def register(target):
+        register_materialization(outbox,target);allocated.append(target)
+    try:return function(*args,cancel,on_allocate=register)
+    except StageCleanupError:raise
+    except BaseException:
+        if allocated:
+            try:remove_unreferenced(outbox,frozenset(),allocated[0],threading.Event())
+            except Exception as cleanup_error:raise StageCleanupError(allocated[0]) from cleanup_error
+        raise
 
 
 def _verify_staged(transfer, cancel):
     """Recheck a durable snapshot after a restart before trusting its journal."""
+    path=Path(transfer['path'])
+    if path.name.endswith('.owned.blob'):checked_materialization(path.parent,path)
     digest = hashlib.sha256(); size = 0
     with Path(transfer['path']).open('rb') as stream:
         while chunk := stream.read(1024*1024):
@@ -661,6 +672,7 @@ class ShelfSync(QObject):
 
     def retry_upload(self,ref):
         if not self.state:return
+        self.stage_store.retry_restore(self.account_id,self.state)
         for entry in self.state.get('entries',{}).values():
             if entry.get('ref')==ref:
                 active=self.transfer or {}
@@ -792,7 +804,10 @@ class ShelfSync(QObject):
 
     def _work(self, function, args, callback):
         epoch = self.epoch
-        job = DiskWork(_stage_owned_admission,function,args) if function is stage_item else DiskWork(function,*args)
+        materialization=(self.stage_store.reserve(self.account_id) if function is stage_item else None)
+        allocation=self.stage_store.materializations[materialization]['path'] if materialization is not None else None
+        release_allocation=self.stage_store.acquire(allocation) if allocation is not None else None
+        job = DiskWork(_stage_owned_admission,partial(function,_target=allocation),args) if function is stage_item else DiskWork(function,*args)
         self.jobs.add(job);lane=self._lane_context
         owner=lane.get('id') if lane is not None else None
         if function is stage_item or function.__name__ in ('_verify_staged','read_part','hash_part'):
@@ -805,11 +820,13 @@ class ShelfSync(QObject):
             try:terminal(result,error)
             finally:
                 if release:release()
+                if release_allocation:release_allocation()
         def terminal(result,error):
             self.jobs.discard(job);self._job_owners.pop(job,None)
+            if materialization is not None:self.stage_store.staged(materialization,result,error)
             if self.closed or epoch != self.epoch or token is not None and token.is_set():
                 if function is stage_item and isinstance(result,dict) and result.get('path'):
-                    Path(result['path']).unlink(missing_ok=True)
+                    self.stage_store.discard_unbound(materialization)
                 return
             if lane is not None:self.small_lane.run(lane,callback,result,error)
             else:callback(result,error)
@@ -1608,7 +1625,7 @@ class ShelfSync(QObject):
         if self._pending_removal() is not None:
             self._retire_uploads(); return
         lane_ids=set(self.small_lane.tasks)
-        pending = next((e for e in self.state['entries'].values() if e['id'] not in lane_ids and (e['id'] in resumes or not self.stage_store.cleanup_blocked_for(self.account_id)) and not self.payload_gate.waiting(e) and (not self.clipboard_bridge or not self.clipboard_bridge.waiting(e)) and self.small_lane.retry_at.get(e['id'],0)<=time.monotonic() and e.get('dirty') and not e.get('paused_upload') and
+        pending = next((e for e in self.state['entries'].values() if e['id'] not in lane_ids and (e['id'] in resumes or not self.stage_store.budget_full(self.account_id)) and not self.payload_gate.waiting(e) and (not self.clipboard_bridge or not self.clipboard_bridge.waiting(e)) and self.small_lane.retry_at.get(e['id'],0)<=time.monotonic() and e.get('dirty') and not e.get('paused_upload') and
                         ((e.get('deleted') and e.get('version',0)==0 and not self.state.get('pending_uploads')) or (not e.get('deleted') and
                         e.get('blocked_fingerprint') != e.get('fingerprint')))),None)
         if pending is None:
@@ -1644,14 +1661,12 @@ class ShelfSync(QObject):
             self.small_lane.kick()
             def verified(result,error):
                 if error:
-                    if canonical_path(resume['path']) and not isinstance(error,ValueError):self._stage_resource_failed(resume,error);return
+                    if isinstance(error,StageResourceError) or canonical_path(resume['path']) and not isinstance(error,ValueError):self._stage_resource_failed(resume,error);return
                     self._forget_resume(identity); self._persist(); self._retire_uploads(); return
                 self._bind_staged(result,self._resume_upload)
             self._work(_verify_staged,(resume,),verified); return
         self._announce_intakes()
         snapshot = dict(pending); self.transfer = snapshot
-        self._notify_transfers()
-        self.small_lane.kick()
         def staged(result,error):
             if error:
                 self._end_intake(snapshot)
@@ -1661,10 +1676,12 @@ class ShelfSync(QObject):
                 self._persist(); self.status_changed.emit(str(error)); self._push_next(); return
             snapshot.update(result)
             if not self._resume_matches(snapshot):
-                Path(snapshot['path']).unlink(missing_ok=True); self._push_next(); return
+                self.stage_store.discard_snapshot(snapshot); self._push_next(); return
             self.state.setdefault('resumable_uploads',{})[identity] = snapshot
             self._persist(); self._notify_transfers(); self._bind_staged(snapshot,self._initialize_upload)
         self._work(stage_item,(pending['ref'],text,pending['name'],self.root/self.account_id/'outbox'),staged)
+        self._notify_transfers()
+        self.small_lane.kick()
 
     def _stage_resource_failed(self,snapshot,error):
         entry=self.state['entries'].get(snapshot['id'])

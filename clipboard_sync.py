@@ -40,6 +40,14 @@ class _CompletedEmptyBootstrap:
     proof_serial:int
 
 
+@dataclass(frozen=True)
+class _CurrentEmptyReceive:
+    """One fresh empty check for one verified head, never a value sample."""
+    fence:tuple=field(repr=False)
+    head:tuple
+    issuer:object=field(repr=False,compare=False)
+
+
 class _FilePaths(list):
     """One sequence-bound native/worker snapshot, never a path-only cache."""
     def __init__(self,paths,fingerprint,source_stat=None):
@@ -455,6 +463,7 @@ class ClipboardSync(QObject):
         self._native_sample=None;self._native_read_token=None;self._native_read_sequence=None
         self._native_waiters={};self._native_generation=0;self._native_failures=(None,0,0.)
         self._baseline_epoch=0;self._empty_bootstrap=None
+        self._empty_receive_issuer=object();self._empty_receive_authority=None
         self._native_retry=QTimer(self);self._native_retry.setSingleShot(True)
         self._native_retry.timeout.connect(self._start_native_read)
         self.enabled=enabled;self.closed=False;self._epoch=0;self._generation=0;self._applying=False
@@ -574,6 +583,61 @@ class ClipboardSync(QObject):
         sample=self._native_sample
         return bool(sample and sample.get('valid') is True and _valid_windows_sequence(sample.get('sequence'))
                     and sample.get('sequence')==self._sequence())
+
+    def _empty_receive_fence(self):
+        return (self._session_identity(),self._baseline_epoch,self._epoch,self._generation,
+                getattr(self,'_notification_serial',0),self._last_sequence,self._last_local_signature,
+                self._copy_clock,getattr(self,'_copy_notified_mono',None),self._observed_ready_head)
+
+    def _empty_receive_unchanged(self,fence):
+        return (self._active() and not self._needs_security_baseline and self._baseline_pending is None
+                and self._pending is None and self._local_retry is None and self._local_fence is None
+                and type(self._sequence()) is int and self._sequence()==0
+                and self._last_sequence==0 and self._last_local_signature is None
+                and self._empty_receive_fence()==fence)
+
+    def _current_empty_receive(self,head=None):
+        # Metadata readiness permits fetching a head, not writing after an
+        # asynchronous download. Only the final confirmed head gets a fresh,
+        # single-use authority; historical bootstrap proof is never reused.
+        self._empty_receive_authority=None
+        if self._native_reader is None:return None
+        fence=self._empty_receive_fence()
+        if not self._empty_receive_unchanged(fence):return None
+        from win_clipboard_native import empty_proof_scope,consume_empty_proof
+        context=object()
+        with empty_proof_scope(context):
+            try:state=_windows_clipboard_metadata()
+            except (OSError,RuntimeError):return None
+            if (not isinstance(state,dict) or state.get('sequence_before')!=0
+                    or state.get('sequence_after')!=0 or state.get('format_count')!=0
+                    or not self._empty_receive_unchanged(fence)
+                    or not consume_empty_proof(state.get('empty_proof'),context,0)):return None
+        if not self._empty_receive_unchanged(fence):return None
+        if head is None:return True
+        binding=(head['id'],head_version(head),head['kind'],head['size'],head['sha256'])
+        authority=_CurrentEmptyReceive(fence,binding,self._empty_receive_issuer)
+        self._empty_receive_authority=authority
+        return authority
+
+    def _consume_current_empty_receive(self,authority,identity):
+        if (type(authority)is not _CurrentEmptyReceive or authority is not self._empty_receive_authority
+                or authority.issuer is not self._empty_receive_issuer):return False
+        self._empty_receive_authority=None
+        return authority.head[0]==identity and self._empty_receive_unchanged(authority.fence)
+
+    def _retire_empty_native_read(self):
+        cleanup=self._native_waiters.get('cleanup')
+        self._cancel_native_read()
+        if cleanup is not None and cleanup[0]==self._session_identity():
+            # Cleanup is a semantic request, unlike a superseded baseline or
+            # change sample. Resume it against the post-write native value.
+            self._native_waiters['cleanup']=cleanup
+            def resume():
+                if self._native_waiters.get('cleanup') is not cleanup:return
+                self._native_waiters.pop('cleanup')
+                if self.enabled and not self.closed and cleanup[0]==self._session_identity():cleanup[1]()
+            QTimer.singleShot(0,resume)
 
     def _ensure_native(self,callback,key):
         if self._native_reader is None or self._native_current():return True
@@ -1434,7 +1498,9 @@ class ClipboardSync(QObject):
 
     def refresh(self):
         if not self._active():return
-        if not self._ensure_native(self.refresh,'refresh'):return
+        if (self._native_reader is not None and not self._native_current()
+                and not self._current_empty_receive()
+                and not self._ensure_native(self.refresh,'refresh')):return
         if self._pending:
             self._refresh_again=True;return
         if self._fetching:self._refresh_again=True;return
@@ -1495,15 +1561,21 @@ class ClipboardSync(QObject):
                     if error:
                         self._finish_refresh();self.retry.start();return
                     if generation!=self._generation:self._finish_refresh();return
-                    if isinstance(current,dict) and current.get('id')==identity and current.get('ready'):
+                    if (isinstance(current,dict) and current.get('id')==identity and current.get('ready')
+                            and (head_version(current),current.get('kind'),current.get('size'),current.get('sha256'))
+                            ==(head_version(head),kind,size,sha)):
                         if self._local_fence is not None:
                             fence=self._copy_timestamp(self._local_fence)
                             if fence is None or current.get('copied_at',current.get('at',0))<=fence:
                                 cached=self._prepared_receive
                                 if cached and cached[0][0]==identity:self._prepared_receive=None
                                 self._finish_refresh();return
-                        if not self._ensure_native(self.refresh,'refresh'):
-                            self._finish_refresh();return
+                        empty_authority=None
+                        if self._native_reader is not None and not self._native_current():
+                            empty_authority=self._current_empty_receive(head)
+                            if empty_authority is None:
+                                self._ensure_native(self.refresh,'refresh')
+                                self._finish_refresh();return
                         sequence=self._sequence()
                         native_value=self._snapshot();native_sig=signature(native_value)
                         if (sequence!=self._last_sequence or self._sequence()!=sequence
@@ -1511,12 +1583,14 @@ class ClipboardSync(QObject):
                             self._schedule_change()
                         else:
                             equal=native_sig==signature(value)
-                            if equal or self._apply(value,directory,identity=identity):
+                            if equal or self._apply(value,directory,identity=identity,empty_authority=empty_authority):
                                 self._seen=identity
                                 self._applied_version=max(self._applied_version,head_version(head))
                                 self._remember_head(identity,self._last_local_signature)
                                 self._set_view(native_value if equal else value,'synced',identity)
                                 self._prepared_receive=None
+                            elif empty_authority is not None and not self._empty_receive_unchanged(empty_authority.fence):
+                                self._schedule_change()
                             else:self._set_view(value,'error',identity);self.retry.start(5000)
                     else:self._refresh_again=True
                     self._finish_refresh()
@@ -1544,7 +1618,7 @@ class ClipboardSync(QObject):
         if self._refresh_again:
             self._refresh_again=False;QTimer.singleShot(0,self.refresh)
 
-    def _apply(self,value,directory,*,identity=None):
+    def _apply(self,value,directory,*,identity=None,empty_authority=None):
         if not self._native_accessible(force=True):return False
         kind,data=value;mime=QMimeData()
         mime.setData(SYNC_MARKER,(identity or self._seen).encode('ascii'))
@@ -1555,6 +1629,12 @@ class ClipboardSync(QObject):
         else:
             mime.setText(data['text'])
             if data.get('html'):mime.setHtml(data['html'])
+        if empty_authority is not None:
+            if not self._consume_current_empty_receive(empty_authority,identity):return False
+            # Retire zero-counter helper completions before our positive native
+            # write, so a late unknown result cannot erase its verified sample.
+            self._retire_empty_native_read()
+            if not self._empty_receive_unchanged(empty_authority.fence):return False
         self._applying=True
         try:
             written_marker=(identity or self._seen).encode('ascii')

@@ -14,6 +14,7 @@ from window_chrome import dock_window_state,WindowChrome
 from test_html_native_lan import APP,FakeLan
 import test_update_inline_v171 as update_fixture
 from update_dialog import UpdateDialog
+from test_html_native_workspace import until
 
 
 class UtilityTests(unittest.TestCase):
@@ -30,25 +31,27 @@ class UtilityTests(unittest.TestCase):
         dock_window_state(self.dialog,False)
         self.dialog.close();self.dialog.deleteLater();APP.processEvents();self.temp.cleanup();self.screen.stop()
 
-    def test_close_and_escape_cancel_keep_transfer_confirm_cancels(self):
-        self.dialog.close();APP.processEvents()
-        self.assertTrue(self.dialog.isVisible());self.assertTrue(self.dialog._close_prompt.isVisible())
-        self.dialog.close_cancel_button.click();APP.processEvents()
-        self.assertTrue(self.dialog.isVisible());self.assertEqual(self.service.calls,[])
-        self.dialog.reject();APP.processEvents();self.assertTrue(self.dialog.isVisible())
-        self.dialog.close_confirm_button.click();APP.processEvents()
-        self.assertIn(('cancel','active'),self.service.calls);self.assertFalse(self.dialog.isVisible())
+    def test_close_and_escape_hide_view_without_cancelling_active_transport(self):
+        # The latest retained contract supersedes the old interrupt-on-close
+        # prompt: a view has no ownership of the transport's lifetime.
+        for close in (self.dialog.close,self.dialog.reject):
+            self.dialog.show();APP.processEvents();close()
+            until(lambda:not self.dialog.isVisible())
+            self.assertEqual(self.service.calls,[])
+            self.assertTrue(self.service._transfers['active'].active)
 
-    def test_navigation_cancel_minimize_and_mode_do_not_cancel(self):
+    def test_navigation_minimize_and_mode_do_not_cancel(self):
         seen=[];self.dialog.overview_requested.connect(lambda:seen.append('overview'))
-        self.dialog.back_button.click();self.dialog.close_cancel_button.click();APP.processEvents()
-        self.assertEqual(seen,[]);self.assertTrue(self.dialog.isVisible())
+        self.dialog.back_button.click();until(lambda:seen==['overview'])
+        self.assertFalse(self.dialog.isVisible());self.assertEqual(self.service.calls,[])
+        self.dialog.show();APP.processEvents()
         self.dialog.showMinimized();APP.processEvents();self.assertEqual(self.service.calls,[])
         self.dialog.showNormal();APP.processEvents()
         other=FakeLan();self.dialog.set_service(other)
         self.assertIs(self.dialog.panel.service,other);self.assertEqual(self.service.calls,[])
-        self.dialog.close();self.dialog.close_confirm_button.click();APP.processEvents()
-        self.assertEqual(seen,[]);self.assertIn(('cancel','active'),self.service.calls)
+        self.dialog.close();until(lambda:not self.dialog.isVisible())
+        self.assertEqual(seen,['overview']);self.assertEqual(self.service.calls,[])
+        self.assertTrue(self.service._transfers['active'].active)
 
     def test_reopen_resets_default_before_show_and_controls_use_full_bounds(self):
         self.service._transfers.clear();self.dialog.resize(1010,740);APP.processEvents()

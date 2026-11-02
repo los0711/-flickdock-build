@@ -30,6 +30,14 @@ def spin(predicate, seconds=3):
     return False
 
 
+def close_fixture(engine):
+    # Production close is asynchronous: cancelled readers and already-authorized
+    # GC retain ownership until actual terminal. TEMP must outlive those jobs.
+    engine.close()
+    assert spin(lambda:not engine.jobs), 'Owned fixture workers/GC did not finish before TEMP removal'
+    assert not engine.stage_store.retiring
+
+
 class Cloud(QObject):
     def __init__(self):
         super().__init__()
@@ -186,7 +194,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-directions-') as directory:
     assert sum(method=='DELETE' for method,path in cloud.calls)==delete_count
     assert engine.set_directions(True,True)
     assert spin(lambda:cloud.items[local_id][0]['deleted'])
-    engine.close()
+    close_fixture(engine)
 print('PASS independent directions, queued local edits, receive resume and delete resume')
 
 
@@ -200,7 +208,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-fast-receive-') as directory:
     assert spin(lambda:original in adapter.view['texts'].values(),10)
     assert any(path.endswith('/content') for method,path in cloud.calls)
     assert any('/parts/0' in path for method,path in cloud.calls)
-    engine.close()
+    close_fixture(engine)
 print('PASS fast single-part remote content is accepted and verified')
 
 
@@ -218,7 +226,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-directions-inflight-') as dir
     cloud.hold_upload=False
     engine.set_directions(True,False)
     assert spin(lambda:len(cloud.items)==1 and not engine.running)
-    engine.close()
+    close_fixture(engine)
 print('PASS disabling upload cancels its in-flight request and resumes the journal later')
 
 
@@ -233,7 +241,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-directions-hint-') as directo
     cloud.held_pulls.pop(0)()
     assert spin(lambda:sum(path.startswith('/v1/sync/changes?') for method,path in cloud.calls)>=2
                 and not engine.running)
-    engine.close()
+    close_fixture(engine)
 print('PASS receive-only change hint while pull is running triggers another pull')
 
 
@@ -271,7 +279,7 @@ for failed, next_enabled in (('pull',(True,False)),('upload',(False,True))):
             assert any(method=='GET' and path.startswith('/v1/items/'+remote_id+'/parts/') for method,path in cloud.calls)
             assert deadline>time.monotonic(), 'receive completed before the original upload retry was due'
             assert sum(method=='POST' and path=='/v1/uploads' for method,path in cloud.calls)==posts
-        engine.close()
+        close_fixture(engine)
     print('PASS '+failed+' backoff does not block the other direction')
 
 
@@ -299,5 +307,5 @@ with tempfile.TemporaryDirectory(prefix='flickdock-directions-conflict-') as dir
     engine.set_directions(True,True)
     assert spin(lambda:'冲突的云端内容' in adapter.view['texts'].values() and
                 '本机再次编辑' in adapter.view['texts'].values())
-    engine.close()
+    close_fixture(engine)
 print('PASS receive-off version conflict pauses uploads and reconciles when enabled')

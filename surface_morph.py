@@ -79,6 +79,7 @@ class SurfaceSnapshot(QWidget):
     pointer/keyboard feedback and rapid reversals remain live above the image.
     The source tree is restored at the endpoint for full-resolution SVG/text.
     """
+    cached_handoff_progress=.75
     def __init__(self,owner):
         super().__init__(owner)
         self.owner=owner
@@ -208,11 +209,12 @@ class SurfaceSnapshot(QWidget):
         """Paint inside MotionShadow's existing source coordinate system.
 
         Target widgets stay at their final layout size and remain visible to
-        Qt. The source fades away over that live target. At progress one this
+        Qt. A complementary clip hands the old content to the target without
+        laying out two sets of text in the same pixels. At progress one this
         is already the exact drawSource path used after end_surface_morph().
         No widget visibility, native geometry or raster changes at completion.
         """
-        live_mix=max(0.,min(1.,(self.mix-.75)/.25)) if live_draw is not None else 0.
+        live_mix=max(0.,min(1.,(self.mix-self.cached_handoff_progress)/(1.-self.cached_handoff_progress))) if live_draw is not None else 0.
         if self.target.isNull() and live_draw is not None:live_mix=1.
         # draw_live acquires the effect's cached source pixmap when used. Its
         # closure then retains that exact painted frame for a rapid reverse;
@@ -242,22 +244,64 @@ class SurfaceSnapshot(QWidget):
         painter.fillRect(rect,QColor(ui_theme.color('surface')))
         if progress<=0 and not self.source.isNull():
             painter.drawPixmap(self._fitted_rect(rect,self.source.deviceIndependentSize()),self.source,QRectF(self.source.rect()))
-        else:
-            # The application surfaces are opaque. SourceOver on their common
-            # opaque material gives the same endpoint crossfade without the
-            # old per-frame full-DPR blend/weighted fills, copies and Plus pass.
-            # Content newly exposed outside the compact endpoint belongs to
-            # the target; it must not contain an enlarged compact title.
-            live_mix=max(0.,min(1.,(progress-.75)/.25)) if live_draw is not None else 0.
-            if self.target.isNull() and live_draw is not None:live_mix=1.
-            if live_mix:self._draw_live(painter,rect,live_draw,target_size)
-            if not self.target.isNull() and live_mix<1.:
-                painter.setOpacity(1.-live_mix)
-                painter.drawPixmap(self._fitted_rect(rect,self.target.deviceIndependentSize()),self.target,QRectF(self.target.rect()))
-                painter.setOpacity(1.)
-            if progress<1. and not self.source.isNull():
-                painter.setOpacity(1.-progress)
+        elif self.target.isNull() and live_draw is None:
+            # A missing target is not a reason to erase the last real content.
+            if not self.source.isNull():
                 painter.drawPixmap(self._fitted_rect(rect,self.source.deviceIndependentSize()),self.source,QRectF(self.source.rect()))
+        elif self.source.isNull() or progress>=self.cached_handoff_progress:
+            self._draw_target(painter,rect,progress,live_draw,target_size)
+        else:
+            # Newly exposed target content and retiring source content outside
+            # their shared footprint remain visible. Only that intersection
+            # fades through the common material, never two unrelated layouts
+            # through one another. This avoids a wipe cutting a large preview
+            # or title in half during the normal differently-sized morph.
+            source_rect=self._fitted_rect(rect,self.source.deviceIndependentSize())
+            logical=target_size if target_size is not None else self.target.deviceIndependentSize()
+            target_rect=self._fitted_rect(rect,logical)
+            common=source_rect.intersected(target_rect)
+            handoff=max(0.,min(1.,progress/self.cached_handoff_progress))
+            if source_rect==target_rect:
+                # No outside content can survive a fade-through when both
+                # footprints coincide. A complementary clip keeps real ink
+                # visible without alpha blending or a background-only frame.
+                keep=QRectF(source_rect.left()+source_rect.width()*handoff,source_rect.top(),
+                            source_rect.width()*(1.-handoff),source_rect.height())
+                target_clip=QPainterPath();target_clip.addRect(rect)
+                old_clip=QPainterPath();old_clip.addRect(keep)
+                painter.save();painter.setClipPath(target_clip.subtracted(old_clip),Qt.ClipOperation.IntersectClip)
+                self._draw_target(painter,rect,progress,live_draw,target_size);painter.restore()
+                painter.save();painter.setClipRect(keep,Qt.ClipOperation.IntersectClip)
+                painter.drawPixmap(source_rect,self.source,QRectF(self.source.rect()))
+                painter.restore()
+            else:
+                common_clip=QPainterPath();common_clip.addRect(common)
+                for destination,source in ((target_rect,False),(source_rect,True)):
+                    outside=QPainterPath();outside.addRect(destination)
+                    painter.save();painter.setClipPath(outside.subtracted(common_clip),Qt.ClipOperation.IntersectClip)
+                    if source:
+                        painter.setOpacity(1.-handoff)
+                        painter.drawPixmap(source_rect,self.source,QRectF(self.source.rect()))
+                    else:self._draw_target(painter,rect,progress,live_draw,target_size)
+                    painter.restore()
+                painter.save();painter.setClipRect(common,Qt.ClipOperation.IntersectClip)
+                if handoff<.5:
+                    painter.setOpacity(1.-handoff*2.)
+                    painter.drawPixmap(source_rect,self.source,QRectF(self.source.rect()))
+                else:
+                    self._draw_target(painter,rect,progress,live_draw,target_size,handoff*2.-1.)
+                painter.restore()
+        painter.restore()
+
+    def _draw_target(self,painter,rect,progress,live_draw,target_size,opacity=1.):
+        painter.save()
+        live_mix=max(0.,min(1.,(progress-self.cached_handoff_progress)/(1.-self.cached_handoff_progress))) if live_draw is not None else 0.
+        if self.target.isNull() and live_draw is not None:live_mix=1.
+        if live_mix:
+            painter.setOpacity(opacity);self._draw_live(painter,rect,live_draw,target_size)
+        if not self.target.isNull() and live_mix<1.:
+            painter.setOpacity(opacity*(1.-live_mix))
+            painter.drawPixmap(self._fitted_rect(rect,self.target.deviceIndependentSize()),self.target,QRectF(self.target.rect()))
         painter.restore()
 
     def _draw_live(self,painter,rect,live_draw,target_size):

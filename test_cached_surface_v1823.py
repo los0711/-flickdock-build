@@ -16,12 +16,14 @@ class CachedSurfaceTests(unittest.TestCase):
                     p=QPixmap(round(120*dpr),round(80*dpr));p.setDevicePixelRatio(dpr);p.fill(QColor(color));return p
                 snapshot.begin(pixmap('red'),pixmap('green'),QRect(0,0,148,107),present=False);calls=[]
                 def live(p):calls.append(1);p.fillRect(QRectF(0,0,120,80),QColor('blue'))
-                def render(mix):
+                def render(mix,x=60):
                     snapshot.mix=mix;target=pixmap('transparent');p=QPainter(target)
                     snapshot.paint_frame(p,QRectF(0,0,120,80),live,QSizeF(120,80));p.end()
-                    return target.toImage().pixelColor(round(60*dpr),round(40*dpr))
-                c=render(.5);self.assertEqual(len(calls),0)
-                self.assertLessEqual(abs(c.red()-128),2,c.getRgb());self.assertLessEqual(abs(c.green()-64),2)
+                    return target.toImage().pixelColor(round(x*dpr),round(40*dpr))
+                # The cached endpoints hand off complementary regions; a
+                # yellow mixed pixel here would restore the actual ghosting.
+                self.assertEqual(render(.5,100),QColor('red'))
+                self.assertEqual(render(.5,30),QColor('green'));self.assertEqual(len(calls),0)
                 previous=0
                 for mix in (.75,.80,.90,.99,1.):
                     c=render(mix);self.assertGreaterEqual(c.blue(),previous);previous=c.blue()

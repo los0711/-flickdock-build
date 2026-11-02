@@ -110,14 +110,34 @@ class NativeProviderTests(unittest.TestCase):
             with patch.object(native,fn,side_effect=checked):self.assertEqual(capture(p)['status'],'ready')
             self.assertEqual(seen,[False]);self.assertEqual(p.closed,1)
 
+_OWNED_PROCESS_TEMP=None
+
+def ensure_owned_process_temp():
+    """Keep even late cleanup wakes inside this QA process's private TEMP.
+
+    A daemon's idle flag is not proof that a second wake is absent. Never
+    restore a case's fallback to the user's cache root after just one wait.
+    The strong owner and cached gettempdir remain until process shutdown.
+    """
+    global _OWNED_PROCESS_TEMP
+    if _OWNED_PROCESS_TEMP is None:
+        _OWNED_PROCESS_TEMP=tempfile.TemporaryDirectory(prefix='flickdock-qa-process-')
+        root=Path(_OWNED_PROCESS_TEMP.name).resolve(strict=True)
+        for name in ('TEMP','TMP','TMPDIR'):os.environ[name]=str(root)
+        tempfile.tempdir=str(root)
+    return Path(_OWNED_PROCESS_TEMP.name).resolve(strict=True)
+
 class ProcessLifecycleTests(unittest.TestCase):
     def setUp(self):
+        ensure_owned_process_temp()
         self.temp=tempfile.TemporaryDirectory(prefix='flickdock-owned-reader-fixture-');self.root=Path(self.temp.name);self.readers=[]
         self.data=self.root/'frame.bin';self.data.write_bytes(frame(text_result()))
         self.child=self.root/'child.py';self.child.write_text('import sys,time,os\nfrom pathlib import Path\nmode=sys.argv[1]\nif mode=="hang":time.sleep(30)\nelif mode=="closehang":os.close(1);time.sleep(30)\nelif mode=="bad":sys.stdout.buffer.write(b"invalid")\nelif mode=="oversize":sys.stdout.buffer.write(b"x"*2048)\nelif mode=="fail":sys.exit(9)\nelse:sys.stdout.buffer.write(Path(sys.argv[2]).read_bytes());sys.stdout.buffer.flush()\n',encoding='utf8')
     def tearDown(self):
         for reader in self.readers:reader.close()
-        until(lambda:all(r._active is None for r in self.readers));self.temp.cleanup()
+        until(lambda:all(r._active is None for r in self.readers))
+        import gc,win_clipboard_cache as cache
+        gc.collect();cache.schedule_cleanup();self.assertTrue(cache._IDLE.wait(2));self.temp.cleanup()
     def reader(self,mode='ok',deadline=200):
         r=WindowsClipboardReader(command=[sys.executable,str(self.child),mode,str(self.data)],deadline_ms=deadline,process_factory=lambda *a,**k:subprocess.Popen(*a,**k));self.readers.append(r);return r
     def test_real_child_pipe_decodes_off_ui_and_callbacks_once(self):

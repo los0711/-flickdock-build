@@ -109,9 +109,18 @@ def fingerprint(ref, text=None, name=''):
         return 'missing:'+name
 
 
-def stage_item(ref, text, name, directory, cancel, limit=MAX_FILE_BYTES):
+class StageCleanupError(ValueError):
+    """A newly allocated cache generation still owns bytes or its intent."""
+    def __init__(self,target):
+        self.target=str(target)
+        super().__init__('同步缓存清理未完成，缓存已保留，请检查权限后重试。')
+
+
+def stage_item(ref, text, name, directory, cancel, limit=MAX_FILE_BYTES, *, on_allocate=None, _target=None):
     directory = Path(directory); directory.mkdir(parents=True, exist_ok=True)
-    target = directory / (uuid4().hex + '.blob')
+    target = Path(_target) if _target is not None else directory/(uuid4().hex+('.owned.blob' if on_allocate else '.blob'))
+    if _target is not None and on_allocate is None:raise ValueError('无效的同步缓存分配。')
+    if on_allocate is not None:on_allocate(target)
     try:
         if cancel.is_set():raise InterruptedError()
         mime = mimetypes.guess_type(name)[0] or 'application/octet-stream'
@@ -176,7 +185,8 @@ def stage_item(ref, text, name, directory, cancel, limit=MAX_FILE_BYTES):
             result.update(chunk_hashes=chunk_hashes,chunk_bytes=STAGED_CHUNK_BYTES)
         return result
     except BaseException:
-        target.unlink(missing_ok=True)
+        try:target.unlink(missing_ok=True)
+        except OSError as cleanup_error:raise StageCleanupError(target) from cleanup_error
         raise
 
 

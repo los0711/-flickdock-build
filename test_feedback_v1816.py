@@ -125,7 +125,14 @@ class FeedbackTests(unittest.TestCase):
                     buttons=segment.findChildren(QPushButton,'settingsSegmentButton')
                     for button in buttons:
                         for _ in range(2):
-                            QTest.mouseClick(button,Qt.LeftButton);flush()
+                            # The capture-mode segment now correctly asks for
+                            # consent. This selection test must supply that
+                            # user choice rather than wait in its modal loop.
+                            before_mode=dialog.capture_mode_combo.currentData()
+                            with patch.object(app_settings.QMessageBox,'question',return_value=app_settings.QMessageBox.StandardButton.Yes) as consent:
+                                QTest.mouseClick(button,Qt.LeftButton);flush()
+                            if dialog.capture_mode_combo.currentData()=='copy' and before_mode!='copy':consent.assert_called_once()
+                            else:consent.assert_not_called()
                             self.assertEqual(sum(item.isChecked() for item in buttons),1)
                             self.assertTrue(button.isChecked())
                     if any(item.property('segmentGlyph')=='grid' for item in buttons):

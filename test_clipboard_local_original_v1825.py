@@ -21,13 +21,20 @@ from clipboard_preview import ClipboardPresenter,ClipboardPreview
 
 class LocalOriginalTests(unittest.TestCase):
     def setUp(self):
+        from test_win_clipboard_io_v1825 import ensure_owned_process_temp
+        ensure_owned_process_temp()
         self.f=native_tests.NativeReadTests('test_first_copy_from_known_empty_is_async_and_still_uploads_once');self.f.setUp()
-        self.cache_temp=tempfile.TemporaryDirectory(prefix='fd-owned-consumer-',ignore_cleanup_errors=True);self.base=Path(self.cache_temp.name)/'owned-originals';self.base_patch=patch.object(cache,'cache_base',return_value=self.base);self.base_patch.start()
+        self.cache_temp=tempfile.TemporaryDirectory(prefix='fd-owned-consumer-',ignore_cleanup_errors=True);self.base=Path(self.cache_temp.name).resolve(strict=True)/'owned-originals';self.base_patch=patch.object(cache,'cache_base',return_value=self.base);self.base_patch.start()
         self.model=ClipboardPresenter(self.f.client);self.results=[];self.f.client.copy_result.connect(lambda ok,ctx:self.results.append(ok))
     def tearDown(self):
         self.model.close();until(lambda:not self.model.jobs);self.model.state={}
-        self.f.client._native_sample=None;self.f.client.view={};gc.collect();cache.schedule_cleanup();self.assertTrue(cache._IDLE.wait(2))
-        self.base_patch.stop();self.f.tearDown();self.cache_temp.cleanup()
+        self.f.client._native_sample=None;self.f.client.view={}
+        self.f.tearDown()
+        # The fixture owns these QObjects. Finished jobs/signals can retain
+        # their original-content arguments until their Qt owners are deleted.
+        self.model.deleteLater();self.f.client.deleteLater();flush()
+        gc.collect();cache.schedule_cleanup();self.assertTrue(cache._IDLE.wait(2))
+        self.base_patch.stop();self.cache_temp.cleanup()
     def inject(self,result):
         self.original_native=('local-provider-original',object());self.f.clip.value=self.original_native
         self.f.clip.sequence=result['sequence_after'];self.f.clip.dataChanged.emit()

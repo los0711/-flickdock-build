@@ -17,6 +17,18 @@ OWNED_CHILD_GRACE_SECONDS=8
 OWNED_CHILD_KILL_SECONDS=5
 
 
+class _ReceiveFirstComplete(Exception):
+    """End this isolated QA scope while retaining the common cleanup gates."""
+
+
+def require_virgin_empty_metadata(state):
+    if (not isinstance(state,dict) or state.get('clipboard_modified') is not False
+            or state.get('opened') is not True or state.get('closed') is not True
+            or any(type(state.get(key))is not int or state[key]!=0
+                   for key in ('sequence_before','sequence_after','format_count'))):
+        raise AssertionError('RECEIVE_FIRST_REQUIRES_FRESH_EMPTY_RUNNER: never clear or preseed clipboard to pass')
+
+
 def cleanup_owned_children(children):
     """Finish every owned child even if one OS process operation fails."""
     failures=[]
@@ -1156,9 +1168,12 @@ def main():
     parser.add_argument('--batch2-actions',type=Path)
     parser.add_argument('--supplement-actions',type=Path)
     parser.add_argument('--writer-observation',action='store_true')
+    parser.add_argument('--receive-first',action='store_true')
     args=parser.parse_args();require_hosted()
     if args.writer_observation and any((args.actions,args.extra_actions,args.batch2_actions,args.supplement_actions)):
         raise ValueError('Writer observation cannot be combined with full GUI acceptance actions')
+    if args.receive_first and any((args.writer_observation,args.actions,args.extra_actions,args.batch2_actions,args.supplement_actions)):
+        raise ValueError('Receive-first requires its own fresh desktop and cannot qualify normal first-copy/installer acceptance')
     sys.path.insert(0,str(args.root.resolve()))
     if not re.fullmatch(r'[0-9a-f]{64}',args.sha256) or digest(args.exe)!=args.sha256:raise AssertionError('Wrong immutable frozen executable')
     args.output.mkdir(parents=True,exist_ok=True);qa_root=Path(__file__).resolve().parent
@@ -1193,6 +1208,7 @@ def main():
             reader_observer=HostedNativeReaderObservation(
                 Path(os.environ['RUNNER_TEMP'])/(OBSERVER_PREFIX+observer_nonce),observer_nonce,producer_profile=profile)
             report['native_reader_before_app_start']=reader_observer.before_app_start()
+            if args.receive_first:require_virgin_empty_metadata(report['native_reader_before_app_start'])
             application=subprocess.Popen([str(args.exe.resolve())],cwd=base,env=environment,stdout=stdout,stderr=stderr);children.append(application)
             producer=subprocess.Popen([sys.executable,str(qa_root/'native_editor.py'),str(base)],env=environment,stdout=stdout,stderr=stderr);children.append(producer)
             driver=phase('automation-worker-start',lambda:Driver(application.pid,producer.pid,base));recorder=Recorder(args.output/'frames')
@@ -1204,6 +1220,24 @@ def main():
             assert not any(row['method'] in ('POST','PUT') and row['path'].startswith('/v1/uploads')
                            for row in cloud.stats()['rows']),'Startup with shelf upload disabled wrote shelf data'
             phase('initial-accessibility-tree',lambda:(args.output/'initial-accessibility.json').write_text(json.dumps(driver.tree(),ensure_ascii=False,indent=2)),screens=True)
+            if args.receive_first:
+                def receive_before_any_local_copy():
+                    text='synthetic virgin peer receive '+os.urandom(6).hex()
+                    posts=sum(row['method']=='POST' and row['path']=='/v1/clipboard' for row in cloud.stats()['rows'])
+                    head=cloud.publish_clipboard(text)
+                    wait(lambda:driver.inspect()['text']==text,label='virgin native clipboard receives without prior local Copy')
+                    for unused in range(3):assert driver.paste_text()==text,'Virgin received text is not natively pasteable'
+                    time.sleep(5.2)
+                    assert driver.inspect()['text']==text
+                    assert sum(row['method']=='POST' and row['path']=='/v1/clipboard' for row in cloud.stats()['rows'])==posts,'Virgin receive echoed an upload'
+                    assert json_request(cloud.origin,'GET','/v1/clipboard',token=cloud.session['token'])['clipboard']['id']==head['id']
+                    return dict(received=True,repeated_native_pastes=3,echo_posts=0,local_copy_performed=False)
+                report['receive_first']=recorder.run('virgin-native-receive-without-local-copy',receive_before_any_local_copy)
+                report.update(ok=True,observation_only=True,installer_acceptance=False,native_input=True,
+                    real_system_clipboard=True,local_workerd=True,tls_verification=True,
+                    actual_service_requests=cloud.stats()['rows'],screen_segments=[dict(label=row['label'],distinct_pixels=row['distinct_pixels']) for row in recorder.segments])
+                report['checks'].append('Fresh native seq0/Count0 receives peer text and repeated OS Paste with no preceding Copy or echo POST')
+                raise _ReceiveFirstComplete()
             def copy_and_committed(text,*,already_focused=False):
                 previous=json_request(cloud.origin,'GET','/v1/clipboard',token=cloud.session['token']).get('clipboard')
                 previous_id=previous.get('id') if isinstance(previous,dict) else None
@@ -1435,6 +1469,9 @@ def main():
                 report['checks'].append('Two distinct external native copies each commit their exact payload once; notice expiry creates no extra POST or clipboard write')
                 report.update(ok=True,native_input=True,real_system_clipboard=True,local_workerd=True,tls_verification=True,
                     actual_service_requests=cloud.stats()['rows'],screen_segments=[dict(label=row['label'],distinct_pixels=row['distinct_pixels']) for row in recorder.segments])
+    except _ReceiveFirstComplete:
+        if not args.receive_first or report.get('receive_first',{}).get('received') is not True:
+            raise AssertionError('Invalid receive-first QA completion')
     except Exception as error:
         report['error']=type(error).__name__+': '+str(error);report['traceback']=traceback.format_exc()
         if reader_observer is not None and 'recorder' in locals() and recorder.segments and recorder.segments[-1]['label']=='02-native-text-copy':
@@ -1491,7 +1528,7 @@ def main():
             driver=locals().get('driver'),cloud=cloud,error=profile_cleanup_failure,base=locals().get('base'))
         (args.output/'normal-frozen-native-report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
         coverage={str(index):dict(status='not_fully_verified',completion_eligible=False,reason='Raw actual normal-EXE steps require visual review and remaining platform/flow checks') for index in range(1,16)}
-        if 'screen_segments' in report:
+        if 'screen_segments' in report and not report.get('observation_only'):
             coverage['1']['actual_steps']=['list/grid segments','time/size/default sort']
             coverage['3']['actual_steps']=['LAN/WAN mode and Back flows if all ui-actions completed']
             coverage['4']['actual_steps']=['OS drag from independent producer into both LAN/WAN targets and native Paste; four original-name queue controls appear; underlying path/integrity acceptance remains separate']

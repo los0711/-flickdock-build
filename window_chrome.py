@@ -10,6 +10,8 @@ from shiboken6 import isValid
 
 _dock_windows=weakref.WeakSet()
 _chromes=weakref.WeakSet()
+_POINTER_EVENTS=frozenset((QEvent.MouseButtonPress,QEvent.MouseButtonDblClick,QEvent.MouseMove,QEvent.MouseButtonRelease))
+_WINDOW_EVENTS=frozenset((QEvent.Show,QEvent.WinIdChange,QEvent.WindowStateChange,QEvent.Resize,QEvent.Hide))
 
 
 def ensure_native_resize(window):
@@ -168,8 +170,12 @@ class WindowChrome(QObject):
         return edges
 
     def eventFilter(self,watched,event):
+        kind=event.type()
+        # An application filter sees every paint/layout/timer event, including
+        # unrelated windows. Only pointer hit testing needs a widget's window.
+        if kind not in _POINTER_EVENTS and kind not in _WINDOW_EVENTS:return False
         if QCoreApplication.closingDown() or not isValid(self.window):return False
-        w=self.window;kind=event.type()
+        w=self.window
         if watched is w:
             if kind in (QEvent.Show,QEvent.WinIdChange,QEvent.WindowStateChange) and not self._native_configuring:
                 self._native_configuring=True
@@ -183,8 +189,8 @@ class WindowChrome(QObject):
             elif kind==QEvent.WindowStateChange:
                 dock_window_state(w,w.isVisible() or w.isMinimized())
             elif kind==QEvent.Show:dock_window_state(w,True)
+        if kind not in _POINTER_EVENTS:return False
         if not isinstance(watched,QWidget) or watched.window() is not w:return False
-        if kind not in (QEvent.MouseButtonPress,QEvent.MouseButtonDblClick,QEvent.MouseMove,QEvent.MouseButtonRelease):return False
         global_point=event.globalPosition().toPoint();point=w.mapFromGlobal(global_point)
         edges=self._edges(point)
         if kind==QEvent.MouseMove:

@@ -54,6 +54,43 @@ class MorphSnapshotContentTests(unittest.TestCase):
                    round((rect.width()-36)*dpr),round((rect.height()-90)*dpr))
         return colored_body(image,body)
 
+    def readable_body_pixels(self):
+        # The empty shelf has real neutral instruction text, not a saturated
+        # file thumbnail. Exclude the fixed header and common dark material;
+        # count bright body text or colored preview/action ink at full DPR.
+        shelf=self.shelf;rect=shelf.visual_geometry();image=shelf.grab().toImage();dpr=image.devicePixelRatioF()
+        body=QRect(round((rect.x()-shelf.x()+18)*dpr),round((rect.y()-shelf.y()+62)*dpr),
+                   round((rect.width()-36)*dpr),round((rect.height()-90)*dpr))
+        image=image.copy(body).convertToFormat(QImage.Format.Format_RGBA8888);raw=bytes(image.constBits())
+        return sum(a>=180 and (max(r,g,b)-min(r,g,b)>40 or min(r,g,b)>85)
+                   for r,g,b,a in zip(raw[0::4],raw[1::4],raw[2::4],raw[3::4]))
+
+    def test_real_empty_single_multiple_text_and_image_bodies_survive_the_exact_handoff_point(self):
+        shelf=self.shelf;files=list(shelf.files['permanent'])
+        text=shelf.content.add_text('Actual handoff text\nSecond readable line')
+        image=self.fixture.base/'actual-handoff.png';pixels=QImage(64,64,QImage.Format.Format_RGB32)
+        pixels.fill(0xff2277cc);self.assertTrue(pixels.save(str(image)))
+        self.body_coverage=[]
+        scenarios=(('empty',[]),('single',files[:1]),('multiple',files),('text',[text]),('image',[str(image)]))
+        samples=(0.,.1,.2,.3,.374,.375,.376,.4,.5,.65,.75,.9,1.)
+        for name,refs in scenarios:
+            shelf.geometry_morph.complete()
+            if shelf.expanded:shelf.collapse_contents();shelf.geometry_morph.complete()
+            shelf.files['permanent']=list(refs);shelf.refresh();ws.flush()
+            shelf.show_contents();shelf.geometry_morph.animation.pause();shelf.presentation.stop()
+            native=QRect(shelf.geometry());header=self.header_rects()
+            for direction in ('expand','collapse'):
+                if direction=='collapse':
+                    shelf.geometry_morph.complete();shelf.collapse_contents();shelf.geometry_morph.animation.pause();shelf.presentation.stop()
+                for progress in samples:
+                    with self.subTest(scenario=name,direction=direction,progress=progress):
+                        shelf.geometry_morph._frame(progress);ws.flush();count=self.readable_body_pixels()
+                        self.body_coverage.append(dict(scenario=name,direction=direction,progress=progress,body_ink_pixels=count))
+                        self.assertGreater(count,50,'Actual body content faded entirely into the panel material')
+                        self.assertEqual(shelf.geometry(),native)
+                        self.assertEqual(self.header_rects(),header)
+                shelf.geometry_morph.complete();ws.flush()
+
     def test_real_compact_and_overview_endpoints_and_every_sampled_morph_body_have_content(self):
         shelf=self.shelf;native=QRect(shelf.geometry());header=self.header_rects()
         shelf.show_contents();shelf.geometry_morph.animation.pause();shelf.presentation.stop()

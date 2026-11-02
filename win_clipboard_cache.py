@@ -35,7 +35,11 @@ def _record_failure(phase,error):
         if type(value)is int:diagnostic[name]=value
     _LAST_CLEANUP_ERROR=diagnostic
 
-def cache_base():return Path(tempfile.gettempdir())/'FlickDock-native-originals-v1'
+def cache_base():
+    # OS temp roots may contain a system alias (/var on macOS). Resolve only
+    # that trusted base; private namespaces and returned capabilities must
+    # still pass _no_links without following any of their links.
+    return Path(tempfile.gettempdir()).resolve(strict=True)/'FlickDock-native-originals-v1'
 
 def _no_links(path):
     for item in (path,*path.parents):

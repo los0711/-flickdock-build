@@ -47,19 +47,19 @@ jobs:
           python build_macos.py --target-arch '${{ matrix.arch }}'
       - name: Verify final functional layout, cancellation and helper handoff boundaries
         run: |
-          build/macos-venv/bin/python -m unittest test_ui_polish_v1823 test_functional_layout_v1823 test_update_exit_v1823 test_update_macos_controller -q
-          build/macos-venv/bin/python -m unittest test_update_inline_v171 -q
+          build/macos-venv/bin/python qt_unittest.py test_ui_polish_v1823 test_functional_layout_v1823 test_update_exit_v1823 test_update_macos_controller -q
+          build/macos-venv/bin/python qt_unittest.py test_update_inline_v171 -q
       - name: Verify finite feedback, input, stack and live compositor handoff
         run: |
-          build/macos-venv/bin/python -m unittest test_win_clipboard_io_v1825 test_win_clipboard_cache_v1825 test_clipboard_native_read_v1825 test_clipboard_worker_outcomes_v1825 test_clipboard_reader_entry_v1825 test_clipboard_audit_source_v1825 test_clipboard_local_original_v1825 -v
-          build/macos-venv/bin/python -m unittest test_clipboard_empty_bootstrap_v1825 test_native_read_retry_v1825 test_native_image_fidelity_v1825 test_shelf_stage_store_v1825.CanonicalStageTests test_shelf_payload_gate_v1825 -v
-          build/macos-venv/bin/python -m unittest test_popup_subscription_v1825 test_clipboard_popup_native_events_v1825 test_modal_owner_lifecycle_v1825 test_secondary_window_handoff_v1825 test_morph_text_scale_v1825 test_card_style_ownership_v1825 -v
-          build/macos-venv/bin/python -m unittest test_shelf_control_transport_v1825 -v
-          build/macos-venv/bin/python -m unittest test_clipboard_reenable_v1825 -v
-          build/macos-venv/bin/python -m unittest test_clipboard_size_contract_v1825 test_clipboard_multipart_v1825 -v
-          build/macos-venv/bin/python -m unittest test_windows_reveal_v1824 test_transfer_balance_v1824 test_item_reflow_occlusion_v1824 test_native_owner_lifetime_v1824 test_frame_animation_v1824 test_screen_animation_timer_v1824 test_clipboard_loop_v1824 test_sync_switch_lifecycle_v1824 test_user_popup_fixes_v1823 test_standard_control_states_v1824 test_disabled_field_states_v1824 -q
-          build/macos-venv/bin/python -m unittest test_ui_followup_v1823 test_cached_surface_v1823 test_stack_spread_v1823 test_input_motion_v1823 test_content_entrance_v1823 test_transfer_drop_feedback_v1823 test_transfer_item_motion_v1823 test_popup_motion_v1823 test_drop_target_motion_v1823 test_morph_snapshot_content_v1824 -q
-          build/macos-venv/bin/python -m unittest test_clipboard_notice_motion_v1823 test_clipboard_popup_motion_v1823 test_mac_status_drop_v1823 test_mac_permissions_v1821 test_presentation_v1819.PresentationTests -q
+          build/macos-venv/bin/python qt_unittest.py test_win_clipboard_io_v1825 test_win_clipboard_cache_v1825 test_clipboard_native_read_v1825 test_clipboard_worker_outcomes_v1825 test_clipboard_reader_entry_v1825 test_clipboard_audit_source_v1825 test_clipboard_local_original_v1825 test_clipboard_presenter_lifecycle_v1825 -v
+          build/macos-venv/bin/python qt_unittest.py test_clipboard_empty_bootstrap_v1825 test_clipboard_empty_receive_v1825 test_native_read_retry_v1825 test_native_image_fidelity_v1825 test_shelf_stage_store_v1825.CanonicalStageTests test_shelf_payload_gate_v1825 -v
+          build/macos-venv/bin/python qt_unittest.py test_popup_subscription_v1825 test_clipboard_popup_native_events_v1825 test_modal_owner_lifecycle_v1825 test_secondary_window_handoff_v1825 test_chrome_event_scope_v1825 test_morph_text_scale_v1825 test_card_style_ownership_v1825 -v
+          build/macos-venv/bin/python qt_unittest.py test_shelf_control_transport_v1825 -v
+          build/macos-venv/bin/python qt_unittest.py test_clipboard_reenable_v1825 -v
+          build/macos-venv/bin/python qt_unittest.py test_clipboard_size_contract_v1825 test_clipboard_multipart_v1825 -v
+          build/macos-venv/bin/python qt_unittest.py test_windows_reveal_v1824 test_transfer_balance_v1824 test_item_reflow_occlusion_v1824 test_native_owner_lifetime_v1824 test_frame_animation_v1824 test_screen_animation_timer_v1824 test_clipboard_loop_v1824 test_sync_switch_lifecycle_v1824 test_user_popup_fixes_v1823 test_standard_control_states_v1824 test_disabled_field_states_v1824 -q
+          build/macos-venv/bin/python qt_unittest.py test_ui_followup_v1823 test_cached_surface_v1823 test_stack_spread_v1823 test_input_motion_v1823 test_content_entrance_v1823 test_transfer_drop_feedback_v1823 test_transfer_item_motion_v1823 test_popup_motion_v1823 test_drop_target_motion_v1823 test_morph_snapshot_content_v1824 -q
+          build/macos-venv/bin/python qt_unittest.py test_clipboard_notice_motion_v1823 test_clipboard_popup_motion_v1823 test_mac_status_drop_v1823 test_mac_permissions_v1821 test_presentation_v1819.PresentationTests -q
           build/macos-venv/bin/python test_surface_continuity_v162.py
       - name: Test real cloud sync from frozen macOS client
         run: |
@@ -68,7 +68,7 @@ jobs:
           python -c "import json; from pathlib import Path; p=Path('../outputs/mac-cloud-${{ matrix.arch }}.json'); data=json.loads(p.read_text()); print(data); assert data['ok'] and data['frozen'],data"
       - name: Verify transfer isolation, display metadata and finite animation lifecycle
         run: |
-          build/macos-venv/bin/python -m unittest test_stability_v1822 test_resources_v1822.ResourceTests test_motion_resources_v1822.MotionTests test_motion_resources_v1822.DisplayMetadataTests test_motion_resources_v1822.MacVolumeTests test_receive_lifecycle_v1822.ReceiveLifecycleTests test_transfer_entry_v1822.EntryTests test_small_upload_lane.SmallLaneTests -q
+          build/macos-venv/bin/python qt_unittest.py test_stability_v1822 test_resources_v1822.ResourceTests test_motion_resources_v1822.MotionTests test_motion_resources_v1822.DisplayMetadataTests test_motion_resources_v1822.MacVolumeTests test_receive_lifecycle_v1822.ReceiveLifecycleTests test_transfer_entry_v1822.EntryTests test_small_upload_lane.SmallLaneTests -q
       - name: Measure verified local LAN loopback transfer
         run: |
           build/macos-venv/bin/python bench_lan_throughput_v183.py --size-mib 128 --output "../outputs/mac-lan-${{ matrix.arch }}.json"
