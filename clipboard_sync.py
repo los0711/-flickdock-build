@@ -9,8 +9,9 @@ from PySide6.QtWidgets import QApplication
 from platform_native import native_input_available
 import clipboard_audit
 
-MAX_BYTES=20*1024*1024
+MAX_BYTES=100*1024*1024
 MAX_ARCHIVE_BYTES=MAX_BYTES+1024*1024 # metadata overhead, not additional user file bytes
+MULTIPART_THRESHOLD=24*1024*1024
 SYNC_MARKER='application/x-flickdock-cloud-clipboard'
 TEXT_MAGIC=b'FDCLIP2\0'
 
@@ -35,12 +36,13 @@ def inline_text(value):
 def text_value(raw):
     if raw.startswith(TEXT_MAGIC):
         offset=len(TEXT_MAGIC)+4
-        if len(raw)<offset or len(raw)-offset>=MAX_BYTES:raise ValueError('clipboard limit')
+        if len(raw)<offset or len(raw)-offset>MAX_BYTES:raise ValueError('clipboard limit')
         size=struct.unpack('!I',raw[len(TEXT_MAGIC):offset])[0]
         if size>len(raw)-offset:raise ValueError('invalid text')
         data=dict(text=raw[offset:offset+size].decode('utf8'),html=raw[offset+size:].decode('utf8'))
     else:data=json.loads(raw.decode('utf8'))
     if not isinstance(data,dict) or not isinstance(data.get('text'),str) or not isinstance(data.get('html',''),str):raise ValueError('invalid text')
+    if not raw.startswith(TEXT_MAGIC) and len(data['text'].encode('utf8'))+len(data.get('html','').encode('utf8'))>MAX_BYTES:raise ValueError('clipboard limit')
     return ('text',data)
 
 
@@ -99,25 +101,29 @@ def signature(value):
     return (kind,data['text'],data.get('html',''))
 
 
-def package(value,directory,cancel=None):
+def package(value,directory,cancel=None,*,diagnostics=None):
     """Worker-only file/image encoding. ZIP uses no compression or base64."""
     cancel=cancel or threading.Event();path=Path(directory)/'content.bin'
+    def too_large():
+        if diagnostics is not None:diagnostics['policy_skip']='oversize'
+        return None
     if value is None:return None
     kind,data=value;raw_file=None
     if kind=='text':
         text=data['text'].encode('utf8');html=data.get('html','').encode('utf8')
-        if len(text)+len(html)>=MAX_BYTES:return None
+        if len(text)+len(html)>MAX_BYTES:return too_large()
         # No JSON escaping inflation for control characters, line endings or
         # near-limit text. The original UTF-8 and HTML remain lossless.
         blob=TEXT_MAGIC+struct.pack('!I',len(text))+text+html
         path.write_bytes(blob)
     elif kind=='image':
         if 'raw' in data:
-            if len(data['raw'])>=MAX_BYTES:return None
+            if len(data['raw'])>MAX_BYTES:return too_large()
             path.write_bytes(data['raw'])
         else:
             buffer=QBuffer();buffer.open(QIODevice.OpenModeFlag.WriteOnly)
-            if not data['image'].save(buffer,'PNG') or buffer.size()>=MAX_BYTES:return None
+            if not data['image'].save(buffer,'PNG'):return None
+            if buffer.size()>MAX_BYTES:return too_large()
             path.write_bytes(bytes(buffer.data()))
     else:
         entries=[];total=0;roots=set()
@@ -136,7 +142,7 @@ def package(value,directory,cancel=None):
                 if child.is_dir():entries.append((child,name+'/'));continue
                 if not child.is_file():return None
                 total+=child.stat().st_size
-                if total>=MAX_BYTES:return None
+                if total>MAX_BYTES:return too_large()
                 entries.append((child,name))
         written=0
         with zipfile.ZipFile(path,'w',compression=zipfile.ZIP_STORED) as archive:
@@ -150,11 +156,11 @@ def package(value,directory,cancel=None):
                         if cancel.is_set():return None
                         written+=len(chunk)
                         copied+=len(chunk)
-                        if written>=MAX_BYTES:return None
+                        if written>MAX_BYTES:return too_large()
                         target.write(chunk);raw_hash.update(chunk)
                 after=child.stat()
                 if copied!=before.st_size or (before.st_size,before.st_mtime_ns)!=(after.st_size,after.st_mtime_ns):return None
-                if path.stat().st_size>=MAX_ARCHIVE_BYTES:return None
+                if path.stat().st_size>MAX_ARCHIVE_BYTES:return too_large()
                 raw_file=dict(name=child.name,size=copied,sha256=raw_hash.hexdigest(),
                     source=str(child.absolute()),stat=[before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns])
         if raw_file and raw_file['size']:
@@ -165,14 +171,15 @@ def package(value,directory,cancel=None):
                 stream.seek(offset+raw_file['size']);suffix=stream.read()
             raw_file.update(offset=offset,prefix=base64.b64encode(prefix).decode('ascii'),suffix=base64.b64encode(suffix).decode('ascii'))
     size=path.stat().st_size
-    if not 0<size<(MAX_ARCHIVE_BYTES if kind in ('files','text') else MAX_BYTES):return None
+    if size>(MAX_ARCHIVE_BYTES if kind in ('files','text') else MAX_BYTES):return too_large()
+    if size<=0:return None
     with path.open('rb') as stream:digest=hashlib.file_digest(stream,'sha256').hexdigest()
     return dict(kind=kind,path=str(path),size=size,sha256=digest,**({'raw_file':raw_file} if raw_file and raw_file.get('offset') else {}))
 
 
 def unpack(kind,path,directory):
     path=Path(path)
-    if path.stat().st_size>=(MAX_ARCHIVE_BYTES if kind in ('files','text') else MAX_BYTES):raise ValueError('clipboard limit')
+    if path.stat().st_size>(MAX_ARCHIVE_BYTES if kind in ('files','text') else MAX_BYTES):raise ValueError('clipboard limit')
     if kind=='text':
         return text_value(path.read_bytes())
     if kind=='image':
@@ -194,7 +201,7 @@ def unpack(kind,path,directory):
             folded=name.rstrip('/').casefold()
             if folded in seen:raise ValueError('duplicate name')
             seen.add(folded);total+=item.file_size
-            if total>=MAX_BYTES:raise ValueError('clipboard limit')
+            if total>MAX_BYTES:raise ValueError('clipboard limit')
             portable=[]
             for index,part in enumerate(parts):
                 prefix=parts[:index+1]
@@ -239,7 +246,7 @@ class ClipboardSync(QObject):
     copy_result=Signal(bool,dict)
     copy_started=Signal()
     # Keep original image bytes as a shared Python object, rather than copying
-    # a potentially 20 MB value through QVariantMap for each status update.
+    # a potentially 100 MiB value through QVariantMap for each status update.
     view_changed=Signal(object)
     native_access_changed=Signal()
 
@@ -261,13 +268,27 @@ class ClipboardSync(QObject):
         if receiving is not None:self._content_fetching=receiving
         if before!=self._priority_active():self.activity_changed.emit(self._priority_active())
 
-    def __init__(self,account,events,base,parent=None,*,enabled=True,clipboard=None):
+    def __init__(self,account,events,base,parent=None,*,enabled=True,clipboard=None,independent_transport=False):
         super().__init__(parent);self.account=account;self.api=account.api;self.clipboard=clipboard or QApplication.clipboard()
+        self._owned_api=False
+        if independent_transport:
+            from cloud_api import CloudApi
+            if isinstance(account.api,CloudApi):
+                # Qt's HighPriority only orders requests waiting in one
+                # manager. It cannot preempt six occupied HTTP/1 connections.
+                # Keep clipboard control/body traffic in its own bounded
+                # manager, preserving the same URL/auth/validation protocol.
+                self.api=CloudApi(account.api.origin,self,allow_test_http=account.api._allow_test_http)
+                self.api.token=account.api.token
+                self.api.diagnostics_dir=account.api.diagnostics_dir
+                self._owned_api=True
+        self._transport_origin=self.api.origin if self._owned_api else None
         self._is_native=clipboard is None or clipboard is QApplication.clipboard()
         self._sequence=native_sequence if self._is_native else lambda:None
         self.enabled=enabled;self.closed=False;self._epoch=0;self._generation=0;self._applying=False
         self._native_access=self._native_accessible()
         self._clock_anchor=None;self._observed_clock=0;self._local_fence=None;self._local_retry=None
+        self._suspended_intent=None;self._baseline_pending=None;self._baseline_guard=None;self._needs_security_baseline=not self._native_access
         self._clock_path=Path(base)/'clipboard-clock.json';self._copy_clock=0
         try:self._copy_clock=int(json.loads(self._clock_path.read_text(encoding='utf8'))['sequence'])
         except (OSError,ValueError,KeyError,TypeError):pass
@@ -276,7 +297,7 @@ class ClipboardSync(QObject):
         self._prepared_receive=None
         self._accepted_signature=None;self._accepted_head='';self._observed_ready_head=''
         self._reading_notification=False
-        self._view_revision=0;self.view=dict(value=self._snapshot(),phase='local',id='',revision=0,permission_required=not self._native_access)
+        self._view_revision=0;self.view=dict(value=None,phase='local',id='',revision=0,permission_required=not self._native_access)
         self._applied_version=0;self._receiving_version=0
         self.pool=QThreadPool(self);self.pool.setMaxThreadCount(2)
         self._ignored=None;self._owned_marker=b'';self._ignored_sequence=None;self._last_sequence=object();self._last_local_signature=object();self._seen='';self._keys=set();self._jobs={};self._pending=None;self._fetching=False;self._refresh_again=False
@@ -295,8 +316,23 @@ class ClipboardSync(QObject):
         self.change_debounce=QTimer(self);self.change_debounce.setSingleShot(True);self.change_debounce.setInterval(60)
         self.change_debounce.timeout.connect(self._changed)
         self._subscriptions=[]
+        if self._owned_api:
+            self._subscribe(account.api.origin_changed,self._primary_origin_changed)
+            self._subscribe(self.api.unauthorized,self._transport_unauthorized)
+            self._subscribe(self.api.origin_changed,self._transport_origin_changed)
         self._subscribe(self.clipboard.dataChanged,self._schedule_change)
-        self._last_local_signature=signature(self._snapshot());self._last_sequence=self._sequence()
+        read_started=time.monotonic();notified_before=getattr(self,'_copy_notified_mono',None)
+        sequence=self._sequence();baseline=self._snapshot();sig=signature(baseline)
+        stable=self._sequence()==sequence
+        self.view['value']=baseline;self._last_local_signature=sig;self._last_sequence=sequence
+        if stable:
+            if sig is not None:self._baseline_guard=(self._identity,sig)
+        else:
+            notified=getattr(self,'_copy_notified_mono',None)
+            observed=notified if notified is not None and notified!=notified_before else read_started
+            self._copy_notified_mono=observed
+            self._baseline_pending=(self._identity,sig,False,observed)
+            self.change_debounce.start()
         # An earlier FlickDock process may still own the pasteboard. Starting
         # or switching account is not permission to publish that cloud payload.
         try:mime=self.clipboard.mimeData()
@@ -307,7 +343,8 @@ class ClipboardSync(QObject):
                 from uuid import UUID
                 UUID(marker.decode('ascii'))
             except (ValueError,UnicodeError):pass
-            else:self._owned_marker=marker;self._ignored=self._last_local_signature
+            else:
+                if stable and self._sequence()==sequence:self._owned_marker=marker;self._ignored=self._last_local_signature
         self._subscribe(account.account_changed,self._account_changed)
         self._subscribe(events.clipboard_changed,self.refresh)
         payload=getattr(events,'clipboard_payload',None)
@@ -352,6 +389,12 @@ class ClipboardSync(QObject):
     def set_enabled(self,enabled):
         enabled=bool(enabled)
         if self.closed or self.enabled==enabled:return
+        if not enabled:
+            if (self._local_fence is not None and self._last_local_signature is not None
+                    and self._identity==self._session_identity() and self._native_accessible()):
+                self._suspended_intent=dict(session=self._identity,signature=self._last_local_signature,
+                    intent=dict(self._local_fence))
+            else:self._suspended_intent=None
         self.enabled=enabled;self.change_debounce.stop()
         if not enabled:self.file_jobs.suspend()
         self._account_changed(force=True)
@@ -362,6 +405,15 @@ class ClipboardSync(QObject):
         # Shared shelf consumers must leave the cancelled clipboard task and
         # use their independently enabled shelf upload, never remain waiting.
         self.file_jobs.changed.emit()
+
+    def _resume_local_intent(self,value,sig):
+        proof=self._suspended_intent;self._suspended_intent=None
+        if self._baseline_guard and self._baseline_guard!=(self._identity,sig):self._baseline_guard=None
+        if (not proof or proof['session']!=self._identity or sig!=proof['signature']
+                or value is None or not self._native_accessible()):return
+        # This proves only receive ordering, never cloud upload eligibility.
+        # Even an oversized/unfinished image must remain normally pasteable.
+        self._local_fence=dict(proof['intent'])
 
     def _subscribe(self,signal,slot):
         signal.connect(slot);self._subscriptions.append((signal,slot))
@@ -410,6 +462,7 @@ class ClipboardSync(QObject):
         No time window, input hook or network lookup is needed for an echo.
         """
         if sig is None or sig!=self._last_local_signature:return False
+        if self._baseline_guard==(self._identity,sig):return True
         pending=self._pending or self._local_retry
         if pending is not None:
             return self._observed_ready_head in (pending.get('basis_head',''),pending['id'])
@@ -417,6 +470,7 @@ class ClipboardSync(QObject):
                     self._observed_ready_head==self._accepted_head)
 
     def _remember_head(self,identity,sig):
+        self._baseline_guard=None;self._baseline_pending=None;self._needs_security_baseline=False
         self._accepted_head=identity;self._observed_ready_head=identity
         self._accepted_signature=sig
 
@@ -486,6 +540,11 @@ class ClipboardSync(QObject):
 
     def _request(self,method,path,callback,_task=None,**kwargs):
         if not self._active():return None
+        if self._owned_api:
+            # AccountService assigns credentials before announcing the new
+            # session. Do not send an old task under those new credentials.
+            if self._session_identity()!=self._identity:return None
+            self.api.token=self.account.api.token
         epoch=self._epoch;identity=self._identity;holder=[];completed=False;started=time.monotonic()
         def done(result,error):
             nonlocal completed
@@ -506,19 +565,58 @@ class ClipboardSync(QObject):
 
     def _session_identity(self):
         account=getattr(self.account,'account',None)
-        return ((account or {}).get('id',''),getattr(self.account,'device_id',''),getattr(self.api,'token','')) if self.account.signed_in else None
+        return ((account or {}).get('id',''),getattr(self.account,'device_id',''),getattr(self.account.api,'token','')) if self.account.signed_in else None
+
+    def _primary_origin_changed(self,origin):
+        if not self.closed and self._owned_api:
+            self.api.origin=str(origin);self._transport_origin=self.api.origin
+
+    def _transport_origin_changed(self,origin):
+        from cloud_api import CLOUD_ORIGINS
+        previous=self._transport_origin;origin=str(origin)
+        # Only relay the existing transport's real allowlisted fallback, never
+        # turn a loosely emitted signal into a new authenticated origin.
+        if (not self._owned_api or not self._active() or self._identity!=self._session_identity()
+                or self.api.token!=self.account.api.token or previous not in CLOUD_ORIGINS
+                or origin!=CLOUD_ORIGINS[(CLOUD_ORIGINS.index(previous)+1)%len(CLOUD_ORIGINS)]
+                or self.api.origin!=origin):return
+        primary=self.account.api
+        if primary.origin!=previous:
+            # A newer primary choice wins over a delayed clipboard fallback.
+            self._primary_origin_changed(primary.origin);return
+        self._transport_origin=origin
+        primary.origin=origin
+        primary.origin_changed.emit(origin)
+
+    def _transport_unauthorized(self):
+        # CloudApi already checks each reply's auth_token against its token.
+        # Also bind that token to the still-active primary session: a cancelled
+        # old reply may already have received 401 headers during account change.
+        if (self._owned_api and self._active() and self._identity==self._session_identity()
+                and self.api.token and self.api.token==self.account.api.token):
+            self.account.api.unauthorized.emit()
 
     def _account_changed(self,*_,force=False):
         if self.closed and not force:return
         identity=self._session_identity()
+        accessible=self._native_accessible()
+        if identity!=self._identity or not accessible:self._needs_security_baseline=True
+        security_boundary=identity!=self._identity or self._needs_security_baseline
+        if self._owned_api:
+            # Update before cancelling keys; CloudApi cancellation can finish a
+            # reply synchronously, including a response with old 401 headers.
+            self.api.token=self.account.api.token if self._active() else ''
+            self._primary_origin_changed(self.account.api.origin)
         if not force and identity==self._identity:
             self.refresh();return
         files=getattr(self,'file_jobs',None)
         if files is not None:files.save()
+        if self.closed or security_boundary or not accessible:
+            self._suspended_intent=None;self._baseline_guard=None
         # Native write provenance outlives a login session. Clearing it here
         # would republish the previous account's cloud clipboard on a delayed
         # format notification after login/permission/settings changes.
-        self._identity=identity;self._local_retry=None;self._local_fence=None
+        self._identity=identity;self._local_retry=None;self._local_fence=None;self._baseline_pending=None
         self._pushed_head=None
         self._prepared_receive=None
         self._accepted_signature=None;self._accepted_head='';self._observed_ready_head=''
@@ -529,9 +627,17 @@ class ClipboardSync(QObject):
         # Shutdown is not a session switch: an OLE/pasteboard provider or an
         # offline file stat must never hold the process alive just to baseline.
         baseline=self.view.get('value') if not self.closed else None
+        stable=True;baseline_sig=None
         if not self.closed and self.enabled:
-            baseline=self._snapshot()
-            self._last_local_signature=signature(baseline);self._last_sequence=self._sequence()
+            read_started=time.monotonic();notified_before=getattr(self,'_copy_notified_mono',None)
+            sequence=self._sequence();baseline=self._snapshot();baseline_sig=signature(baseline)
+            stable=self._sequence()==sequence
+            if stable:self._last_local_signature=baseline_sig;self._last_sequence=sequence
+            else:
+                self._last_sequence=sequence
+                notified=getattr(self,'_copy_notified_mono',None)
+                observed=notified if notified is not None and notified!=notified_before else read_started
+                self._copy_notified_mono=observed
         if sys.platform=='darwin' and not self.closed:self._mac_changed(initial=True)
         self._epoch+=1;self._generation+=1;self._pending=None;self._seen='';self._fetching=False;self.retry.stop()
         self._priority_flags(waiting=False,receiving=False)
@@ -541,6 +647,22 @@ class ClipboardSync(QObject):
         if files is not None:
             # The old account's journal was saved before switching identity.
             files.journal=None;files.tasks={};files.reset(load=not self.closed and self.enabled)
+        if not self.closed and self.enabled:
+            if stable:
+                self._resume_local_intent(baseline,baseline_sig)
+                if security_boundary and baseline_sig is not None:
+                    self._baseline_guard=(identity,baseline_sig);self._needs_security_baseline=False
+                elif security_boundary:
+                    # Disabled/temporarily unreadable sessions have not yet
+                    # established a safe baseline. Carry that fact to the next
+                    # native event instead of exporting old delayed formats.
+                    self._baseline_pending=(identity,None,True,read_started)
+            else:
+                # Do not pair an old delayed sample with the new native counter.
+                # A same-content format notification is still a login baseline;
+                # a genuinely different copy is handled by the normal reader.
+                self._baseline_pending=(self._identity,baseline_sig,security_boundary,observed)
+                self.change_debounce.start()
         if not self.closed:self._set_view(baseline,'local')
         if self._active():QTimer.singleShot(0,self.refresh)
 
@@ -551,9 +673,9 @@ class ClipboardSync(QObject):
             shutil.rmtree(path,ignore_errors=True);raise
         self._directories.append((path,created));return path
 
-    def _work(self,action,callback):
+    def _work(self,action,callback,*,priority=1):
         job=_Job(action);self._jobs[job]=callback;job.signals.finished.connect(self._finished,Qt.ConnectionType.QueuedConnection)
-        self.pool.start(job,1)
+        self.pool.start(job,priority)
         return job
 
     def _finished(self,job,result):
@@ -586,10 +708,38 @@ class ClipboardSync(QObject):
             self._native_read_retry=(sequence,attempts)
             if attempts<=5:self.change_debounce.start(100);return
         else:self._native_read_retry=(None,0)
+        baseline=self._baseline_pending
+        if baseline is not None and baseline[0]==self._identity:
+            self._baseline_pending=None
+            if sig==baseline[1] or baseline[1] is None and baseline[2]:
+                if baseline[2] and sig is None:self._baseline_pending=baseline
+                self._last_sequence=sequence;self._last_local_signature=sig
+                self._resume_local_intent(value,sig);self._set_view(value,'local')
+                if sig is not None:self._baseline_guard=(self._identity,sig)
+                if baseline[2] and sig is not None:
+                    self._needs_security_baseline=False
+                    if baseline[1] is None:
+                        # Unknown account-baseline data is never exported. A
+                        # real native change during that read still protects
+                        # the current payload from an older peer; newer peers
+                        # remain ordered by the observed notification time.
+                        self._local_fence=dict(mono=max(baseline[3],getattr(self,'_copy_notified_mono',baseline[3])),
+                            at=None,floor=self._observed_clock)
+                        self._copy_timestamp(self._local_fence)
+                if self._prepared_receive:QTimer.singleShot(0,self.refresh)
+                return
+            self._suspended_intent=None
         if self._own_notification(sequence,value):
             if self._prepared_receive:QTimer.singleShot(0,self.refresh)
             return
         if self._same_local_content(sig):
+            if self._baseline_guard==(self._identity,sig) and self._local_fence is None:
+                # A security-baseline reassertion cannot safely be exported,
+                # but must not let an older in-flight receive erase its MIME.
+                # Keep the first observed time; format noise never advances it.
+                self._local_fence=dict(mono=getattr(self,'_copy_notified_mono',time.monotonic()),
+                    at=None,floor=self._observed_clock)
+                self._copy_timestamp(self._local_fence)
             self._last_sequence=self._sequence()
             if self._prepared_receive:QTimer.singleShot(0,self.refresh)
             return
@@ -602,6 +752,7 @@ class ClipboardSync(QObject):
             content_type=value[0] if value else 'empty',fingerprint_data=sig or ('empty',))
         self._current_directory=None;self.retry.stop()
         self._last_local_signature=sig
+        self._suspended_intent=None;self._baseline_guard=None;self._needs_security_baseline=False
         self._local_fence=dict(mono=getattr(self,'_copy_notified_mono',time.monotonic()),at=None,floor=self._observed_clock)
         self._copy_timestamp(self._local_fence)
         self._ignored=None;self._owned_marker=b'';self._generation+=1;self._epoch+=1;generation=self._generation
@@ -672,10 +823,18 @@ class ClipboardSync(QObject):
         except OSError:
             self._copy_result(pending,False);self._pending=None;self.retry.start();return
         self._local_retry=None;self._pending=pending
+        diagnostics={}
         def prepared(result):
             if not self._valid_task(pending):return
             if result is None:
-                self.file_jobs.update(pending,'unavailable');self._copy_result(pending,False);self._clear_task(pending);return
+                self.file_jobs.update(pending,'unavailable')
+                if diagnostics.get('policy_skip')=='oversize':
+                    self._baseline_guard=(self._identity,self._last_local_signature)
+                    self._set_view(self.view.get('value'),'local',pending['id'])
+                else:self._copy_result(pending,False)
+                self._clear_task(pending)
+                if self._refresh_again:QTimer.singleShot(0,self.refresh)
+                return
             pending['package']=result;pending['prepared']=True;self.file_jobs.prepared(pending);self._stage(pending)
         value=pending.pop('value');quick=inline_text(value)
         if quick is not None:prepared(quick);return
@@ -683,7 +842,7 @@ class ClipboardSync(QObject):
         except OSError:
             self._copy_result(pending,False)
             pending['value']=value;self._local_retry=pending;self._pending=None;self.retry.start();return
-        pending['_job']=self._work(lambda cancel:package(value,directory,cancel),prepared)
+        pending['_job']=self._work(lambda cancel:package(value,directory,cancel,diagnostics=diagnostics),prepared,priority=2)
 
     def _stage(self,pending):
         if not self._valid_task(pending):return
@@ -704,6 +863,7 @@ class ClipboardSync(QObject):
                 return
             ready=result.get('clipboard',{}) if isinstance(result,dict) else {}
             pending['shared_files']=bool(isinstance(result,dict) and result.get('shared_files'))
+            pending['multipart_v1']=result.get('multipart_v1') if isinstance(result,dict) else None
             item=pending['package']
             if (ready.get('id')==pending['id'] and ready.get('ready') and
                     ready.get('sha256')==item['sha256'] and ready.get('size')==item['size']):
@@ -736,7 +896,7 @@ class ClipboardSync(QObject):
                 pending['materializing']=False
                 if path:item['path']=path;self._upload(pending)
                 else:self._priority_flags(waiting=True);self.retry.start()
-            self._work(materialize,materialized);return
+            self._work(materialize,materialized,priority=2);return
         pending['uploading']=True
         self.file_jobs.update(pending,'uploading')
         def uploaded(result,error):
@@ -750,6 +910,8 @@ class ClipboardSync(QObject):
             self._task_ready(pending,head)
         headers={'X-Clipboard-Kind':item['kind'],'X-Content-SHA256':item['sha256']};options={}
         raw_file=item.get('raw_file') if pending.get('shared_files') else None
+        if item['size']>MULTIPART_THRESHOLD:
+            self._upload_multipart(pending,raw_file,uploaded);return
         if raw_file:
             descriptor={key:raw_file[key] for key in ('name','size','sha256','prefix','suffix')}
             headers['X-Clipboard-Raw-File']=json.dumps(descriptor,separators=(',',':'),ensure_ascii=True)
@@ -760,6 +922,99 @@ class ClipboardSync(QObject):
             self.file_jobs.update(pending,'verifying' if sent>=total else 'uploading',count)
         self._request('PUT',f'/v1/clipboard/{pending["id"]}/content',uploaded,source=item['path'],headers=headers,
                       progress=progress,_task=pending,**options)
+
+    def _upload_multipart(self,pending,raw_file,uploaded):
+        """Bounded authenticated parts; only the verified commit is success."""
+        from cloud_api import CloudError
+        capability=pending.get('multipart_v1');item=pending['package']
+        if (not isinstance(capability,dict) or capability.get('part_size') not in (1024*1024,4*1024*1024)
+                or capability.get('threshold')!=MULTIPART_THRESHOLD
+                or type(capability.get('max_bytes')) is not int or capability['max_bytes']<MAX_BYTES
+                or type(capability.get('max_archive_bytes')) is not int or capability['max_archive_bytes']<MAX_ARCHIVE_BYTES):
+            self._stop_upload(pending,CloudError('云端尚未支持大容量剪贴板，请稍后重新复制。',code='CLIPBOARD_MULTIPART_UNAVAILABLE'));return
+        token=object();pending['_multipart_token']=token
+        body_size=raw_file['size'] if raw_file else item['size']
+        base_offset=raw_file['offset'] if raw_file else 0
+        path=f'/v1/clipboard/{pending["id"]}/upload'
+        data=dict(kind=item['kind'],size=body_size,sha256=item['sha256'])
+        if raw_file:data['raw_file']={name:raw_file[name] for name in ('name','size','sha256','prefix','suffix')}
+        def active():return self._valid_task(pending) and pending.get('_multipart_token') is token and pending.get('uploading')
+        def fail(error):
+            if active():
+                if getattr(error,'status',0) in (400,413,426) or getattr(error,'code','') in ('CLIPBOARD_INTEGRITY','CLIPBOARD_LIMIT','CLIPBOARD_PART_CONFLICT','CLIPBOARD_MULTIPART_INVALID','CLIPBOARD_SOURCE_CHANGED'):
+                    self._stop_upload(pending,error);return
+                pending['_multipart_token']=None;uploaded(None,error)
+        def initialized(result,error):
+            if not active():return
+            if error:fail(error);return
+            try:
+                upload_id=result['upload_id'];part_size=result['part_size'];count=result['part_count'];index=result['next_part']
+                valid_id=isinstance(upload_id,str) and str(__import__('uuid').UUID(upload_id))==upload_id
+                if (not valid_id or result.get('multipart_v1') is not True or part_size!=capability['part_size']
+                        or type(count) is not int or count!=(body_size+part_size-1)//part_size
+                        or type(index) is not int or not 0<=index<=count):raise ValueError('invalid multipart status')
+            except (KeyError,TypeError,ValueError,AttributeError):
+                fail(CloudError('剪贴板分片状态校验失败。',code='CLIPBOARD_MULTIPART_INVALID'));return
+            endpoint=path+'/'+upload_id
+            def next_part(index):
+                if not active():return
+                sent=min(body_size,index*part_size)
+                self.file_jobs.update(pending,'verifying' if index==count else 'uploading',sent)
+                if index==count:
+                    def committed(result,error):
+                        if not active():return
+                        if error:fail(error);return
+                        pending['_multipart_token']=None;uploaded(result,None)
+                    self._request('POST',endpoint+'/commit',committed,data={},_task=pending);return
+                length=min(part_size,body_size-sent);offset=base_offset+sent
+                def hash_part(cancel):
+                    digest=hashlib.sha256();remaining=length
+                    try:
+                        with Path(item['path']).open('rb') as stream:
+                            if os.fstat(stream.fileno()).st_size!=item['size']:return {'error':'changed'}
+                            stream.seek(offset)
+                            while remaining:
+                                if cancel.is_set():return None
+                                chunk=stream.read(min(256*1024,remaining))
+                                if not chunk:return {'error':'changed'}
+                                digest.update(chunk);remaining-=len(chunk)
+                    except FileNotFoundError:return {'error':'changed'}
+                    except OSError:return {'error':'io'}
+                    return {'digest':digest.hexdigest()}
+                def hashed(result):
+                    if not active():return
+                    if isinstance(result,dict) and result.get('error')=='changed':
+                        fail(CloudError('剪贴板上传快照已改变，请重新复制。',code='CLIPBOARD_SOURCE_CHANGED'));return
+                    if not isinstance(result,dict) or not result.get('digest'):
+                        fail(CloudError('剪贴板缓存暂时无法读取，稍后会重试。',code='CLIPBOARD_CACHE_IO'));return
+                    digest=result['digest']
+                    def progressed(value,total):
+                        if active():self.file_jobs.update(pending,'uploading',sent+min(length,max(0,value)))
+                    def accepted(result,error):
+                        if not active():return
+                        if error:fail(error);return
+                        if not isinstance(result,dict) or type(result.get('next_part')) is not int or result['next_part']!=index+1:
+                            fail(CloudError('剪贴板分片回执校验失败。',code='CLIPBOARD_MULTIPART_INVALID'));return
+                        next_part(index+1)
+                    self._request('PUT',endpoint+'/parts/'+str(index),accepted,source=item['path'],
+                        source_offset=offset,source_size=length,headers={'X-Content-SHA256':digest},
+                        progress=progressed,_task=pending)
+                pending['_job']=self._work(hash_part,hashed,priority=2 if self._pending is pending else 1)
+            next_part(index)
+        self._request('POST',path,initialized,data=data,_task=pending)
+
+    def _stop_upload(self,pending,error):
+        """A permanent protocol limit is not a retryable network interruption."""
+        if not self._valid_task(pending):return
+        pending['uploading']=False;pending['_multipart_token']=None
+        pending['_clipboard_terminal']=str(getattr(error,'code','') or 'UPLOAD_UNAVAILABLE')[:64]
+        if self._pending is pending and pending.get('signature')==self._last_local_signature:
+            self._baseline_guard=(self._identity,self._last_local_signature)
+        self.file_jobs.update(pending,'unavailable',error=error)
+        self._copy_result(pending,False)
+        if self._pending is pending:self.retry.stop()
+        self._clear_task(pending)
+        if self._refresh_again:QTimer.singleShot(0,self.refresh)
 
     def _retry(self):
         if not self._active():return
@@ -816,7 +1071,10 @@ class ClipboardSync(QObject):
             if type(head.get('version')) is int and head['version']<=self._applied_version:self._finish_refresh();return
             if self._local_fence is not None:
                 fence=self._copy_timestamp(self._local_fence)
-                if fence is None or head.get('copied_at',head.get('at',0))<=fence:self._finish_refresh();return
+                if fence is None or head.get('copied_at',head.get('at',0))<=fence:
+                    cached=self._prepared_receive
+                    if cached and cached[0][0]==identity:self._prepared_receive=None
+                    self._finish_refresh();return
             if not head.get('ready'):
                 # Pending/failed/oversize copies never erase a usable native
                 # clipboard. Expiry is owned by the cache lease, not polling.
@@ -824,7 +1082,7 @@ class ClipboardSync(QObject):
                     self._applied_version=max(self._applied_version,head['version'])
                 self._finish_refresh();return
             kind,size,sha=head.get('kind'),head.get('size'),head.get('sha256')
-            if kind not in ('text','image','files') or type(size) is not int or not 0<size<(MAX_ARCHIVE_BYTES if kind in ('files','text') else MAX_BYTES) or not isinstance(sha,str) or len(sha)!=64:self._finish_refresh();return
+            if kind not in ('text','image','files') or type(size) is not int or not 0<size<=(MAX_ARCHIVE_BYTES if kind in ('files','text') else MAX_BYTES) or not isinstance(sha,str) or len(sha)!=64:self._finish_refresh();return
             self._observed_ready_head=identity
             is_inline=kind=='text' and isinstance(head.get('inline'),str) and size<=32768
             cached=self._prepared_receive
@@ -845,6 +1103,12 @@ class ClipboardSync(QObject):
                         self._finish_refresh();self.retry.start();return
                     if generation!=self._generation:self._finish_refresh();return
                     if isinstance(current,dict) and current.get('id')==identity and current.get('ready'):
+                        if self._local_fence is not None:
+                            fence=self._copy_timestamp(self._local_fence)
+                            if fence is None or current.get('copied_at',current.get('at',0))<=fence:
+                                cached=self._prepared_receive
+                                if cached and cached[0][0]==identity:self._prepared_receive=None
+                                self._finish_refresh();return
                         sequence=self._sequence()
                         native_value=self._snapshot();native_sig=signature(native_value)
                         if (sequence!=self._last_sequence or self._sequence()!=sequence
@@ -865,7 +1129,7 @@ class ClipboardSync(QObject):
             def downloaded(result,error):
                 if error:self._finish_refresh();self.retry.start();return
                 if generation!=self._generation:self._finish_refresh();return
-                self._work(lambda _:unpack(kind,path,directory),prepared)
+                self._work(lambda _:unpack(kind,path,directory),prepared,priority=2)
             if cached:prepared(cached[1])
             elif is_inline:
                 try:value=unpack_inline(head)
@@ -968,3 +1232,4 @@ class ClipboardSync(QObject):
             try:signal.disconnect(slot)
             except RuntimeError:pass
         self._subscriptions.clear()
+        if self._owned_api:self.api.close()

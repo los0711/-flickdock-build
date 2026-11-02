@@ -40,10 +40,32 @@ try{
   const peer=peers.peers.find(row=>row.id===sb.id);assert.equal(peer.account_device,true);assert.equal(peer.lan_id,'b'.repeat(32));assert.equal(peer.name,'Mac');
   const spec=()=>({type:'request',id:randomBytes(16).toString('hex'),token:randomBytes(32).toString('hex'),digest:'d'.repeat(64),total:'12',count:1,names:['original.txt']});
   const request={...spec(),peer:sb.id};sa.send(request);
-  assert.equal((await sb.wait(row=>row.type==='request'&&row.id===request.id)).peer.id,sa.id);
-  console.log('PASS same-account first transfer without code, canonical name, badge and LAN identity');
+  const authorized=await sb.wait(row=>row.type==='request'&&row.id===request.id);
+  assert.equal(authorized.peer.id,sa.id);
+  assert.deepEqual(authorized.account_authorization,{receiver_device:b.device_id,nonce:sb.nonce});
   const unrelated={...spec(),peer:sb.id};sc.send(unrelated);
   assert.match((await sc.wait(row=>row.type==='error'&&row.id===unrelated.id)).message,/首次传输/);
+  // A forged client-side same-account label is never an authorization.
+  const code=sb.messages.find(row=>row.type==='identity').code;
+  const outside={...spec(),code,account_device:true,account_authorization:authorized.account_authorization};sc.send(outside);
+  const untrusted=await sb.wait(row=>row.type==='request'&&row.id===outside.id);
+  assert.equal(untrusted.account_authorization,undefined);
+  sb.send({type:'accept',id:outside.id,auto_account:true});
+  assert.match((await sb.wait(row=>row.type==='error'&&row.id===outside.id)).message,/授权已变化/);
+  sb.send({type:'accept',id:outside.id});await sb.wait(row=>row.type==='begin'&&row.id===outside.id);
+  // Revocation/logout between offer and acceptance must be checked again,
+  // including replay: never cache the authorization in the transfer Session.
+  sa.send({type:'account_logout'});await sa.wait(row=>row.type==='peers'&&row.peers.length===0);
+  const after=sb.messages.length;sb.send({type:'hello',name:'Mac',platform:'macos'});
+  const replayed=await sb.wait(row=>row.type==='request'&&row.id===request.id,after);
+  assert.equal(replayed.account_authorization,undefined);
+  sb.send({type:'accept',id:request.id,auto_account:true});
+  assert.match((await sb.wait(row=>row.type==='error'&&row.id===request.id)).message,/授权已变化/);
+  // Restore the authenticated binding for the existing account/presence cases.
+  await api('POST','/v1/wan/account',a.token,{credential:sa.credential,lan_id:'a'.repeat(32),nonce:sa.nonce});
+  sb.send({type:'accept',id:request.id,auto_account:true});
+  await sb.wait(row=>row.type==='begin'&&row.id===request.id);
+  console.log('PASS same-account first transfer without code, canonical name, badge and LAN identity');
   sb.socket.close();await new Promise(resolve=>sb.socket.once('close',resolve));
   const offline=await sa.wait(row=>row.type==='peers'&&row.peers.some(peer=>peer.id===sb.id&&!peer.online));assert(offline);
   const denied={...spec(),peer:sb.id};sa.send(denied);assert.match((await sa.wait(row=>row.type==='error'&&row.id===denied.id)).message,/不在线/);

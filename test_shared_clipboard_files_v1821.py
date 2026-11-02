@@ -180,10 +180,10 @@ class SharedFilesTests(unittest.TestCase):
 
     def test_attach_before_preparation_and_newer_copy_does_not_cancel_shelf_payload(self):
         path=self.source();gate=threading.Event()
-        def held_package(value,directory,cancel):
+        def held_package(value,directory,cancel,*,diagnostics=None):
             while not gate.wait(.005):
                 if cancel.is_set():return None
-            return package(value,directory,cancel)
+            return package(value,directory,cancel,diagnostics=diagnostics)
         try:
             with patch('clipboard_sync.package',side_effect=held_package):
                 identity=self.copy(path);entry=self.add(path)

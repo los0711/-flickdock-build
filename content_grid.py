@@ -205,7 +205,7 @@ class IconItem(QWidget):
             if hasattr(self.popup,'select_item'):self.popup.select_item(self.ref,toggle=True)
             self._refresh_selection();event.accept()
         elif event.key() == Qt.Key.Key_Delete:
-            self.popup.remove_path(self.ref)
+            self.popup.remove_selected(self.ref)
             event.accept()
         else:
             super().keyPressEvent(event)

@@ -77,6 +77,9 @@ class ScopeGates(unittest.TestCase):
             block=workflow.split('- name: '+name,1)[1].split('- name:',1)[0]
             guard=next(line for line in block.splitlines() if line.strip().startswith('if:'))
             self.assertIn("normal_actions_scope != 'writer-observation'",guard)
+            self.assertIn("installer_acceptance == 'true'",guard)
+        inputs=workflow.split('      installer_acceptance:',1)[1].split('      reuse_normal_run:',1)[0]
+        self.assertIn('type: boolean',inputs);self.assertIn('default: false',inputs)
 
 
 if __name__=='__main__':unittest.main()

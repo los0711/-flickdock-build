@@ -376,9 +376,12 @@ class _DeviceDelegate(QStyledItemDelegate):
         secondary_font = painter.font()
         secondary_font.setPointSizeF(max(8, secondary_font.pointSizeF() - 1))
         painter.setFont(secondary_font)
-        painter.drawText(QRectF(option.rect.left()+49,option.rect.top()+29,width,18),
+        same_account=bool(index.data(Qt.ItemDataRole.UserRole+3))
+        if same_account:ui_icon('cloud','#0A84FF').paint(painter,QRect(option.rect.left()+49,option.rect.top()+31,14,14))
+        inset=20 if same_account else 0
+        painter.drawText(QRectF(option.rect.left()+49+inset,option.rect.top()+29,width-inset,18),
                          Qt.AlignmentFlag.AlignVCenter,
-                         painter.fontMetrics().elidedText(host,Qt.TextElideMode.ElideRight,width))
+                         painter.fontMetrics().elidedText(host,Qt.TextElideMode.ElideRight,width-inset))
         painter.restore()
 
 
@@ -660,6 +663,23 @@ class _HistoryRemoveButton(QPushButton):
         ui_icon(self.glyph,ui_colors('dark' if self.dark else 'light')['secondary']).paint(painter,QRect((self.width()-14)//2,(self.height()-14)//2,14,14))
 
 
+def _file_type_preview(parent,name,*,directory=False):
+    """Same bounded, format-based artwork as shelf/drop feedback, no Shell IO."""
+    label=QLabel(parent);label.setFixedSize(20,24)
+    label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    _update_file_type_preview(label,name,directory=directory)
+    return label
+
+
+def _update_file_type_preview(label,name,*,directory=False):
+    from flickdock_icons import document_pixmap
+    suffix='folder' if directory else Path(str(name)).suffix.lstrip('.') or 'file'
+    if label.property('fileType')==suffix:return
+    label.setProperty('fileType',suffix)
+    label.setPixmap(document_pixmap(suffix,20,dpr=label.devicePixelRatioF()))
+    label.setAccessibleName('文件类型 '+suffix.upper())
+
+
 class _HistoryRow(QFrame):
     remove_requested = Signal()
     reveal_requested = Signal()
@@ -685,6 +705,9 @@ class _HistoryRow(QFrame):
         self.icon = _HistoryIcon(direction, self)
         self.icon.state=state
         self.icon.hide()
+        paths=record.get('paths') or []
+        self.file_preview=_file_type_preview(self,paths[0] if paths else record.get('name',''))
+        layout.addWidget(self.file_preview)
         lines = QVBoxLayout()
         lines.setSpacing(1)
         self.title = _ElidedLabel(title, self)
@@ -1220,7 +1243,8 @@ class LanPanel(QFrame):
             row.entrance=ScaleFade(row,viewport=self.queue_scroll.viewport())
             row.setFixedHeight(36)
             line=QHBoxLayout(row);line.setContentsMargins(12,4,5,4);line.setSpacing(8)
-            path=Path(value);name=_ElidedLabel(path.name,row);line.addWidget(name,1)
+            path=Path(value);row.file_preview=_file_type_preview(row,value);line.addWidget(row.file_preview)
+            name=_ElidedLabel(path.name,row);line.addWidget(name,1)
             size=_label('读取信息中…',row,muted=True);size.setWordWrap(False);size.setSizePolicy(QSizePolicy.Policy.Fixed,QSizePolicy.Policy.Preferred)
             line.addWidget(size)
             remove=_HistoryRemoveButton(row,size=24);remove.setAccessibleName('移除待发送文件 '+path.name);remove.setToolTip('移出待发送队列')
@@ -1242,6 +1266,8 @@ class LanPanel(QFrame):
         if label is None:return
         info=self.file_metadata.request(ref)
         if info is None:return
+        row=self._queue_row_map.get(ref)
+        if row is not None:_update_file_type_preview(row.file_preview,ref,directory=info['is_dir'])
         label.setText('文件夹' if info['is_dir'] else _size(info['size']) if info['exists'] else '无法读取文件信息')
 
     def _queue_info_deferred(self,ref):
@@ -1409,7 +1435,10 @@ class LanPanel(QFrame):
                 name=str(peer.get('name') or '未命名设备')
                 index=self.devices.findData(peer['id'])
                 if index<0:self.devices.addItem('',peer['id']);index=self.devices.count()-1
-                self.devices.setItemText(index,('同账号 · ' if peer.get('account_device') else '')+name)
+                self.devices.setItemText(index,name)
+                same_account=bool(peer.get('account_device'))
+                self.devices.setItemIcon(index,ui_icon('cloud','#0A84FF') if same_account else QIcon())
+                self.devices.setItemData(index,('同账号设备，' if same_account else '')+('在线' if peer.get('online') else '离线'),Qt.ItemDataRole.AccessibleDescriptionRole)
                 self.devices.setItemData(index,'在线' if peer.get('online') else '离线',Qt.ItemDataRole.ToolTipRole)
                 self.devices.setItemData(index,peer.get('platform','unknown'),Qt.ItemDataRole.UserRole+1)
                 self.devices.setItemData(index,bool(peer.get('online')),Qt.ItemDataRole.UserRole+2)
@@ -1576,6 +1605,9 @@ class LanPanel(QFrame):
         row = self._row(identifier, offer['peer'], 'receive')
         row['history_name'] = str((offer.get('names') or [''])[0])
         row['history_count'] = int(offer['count'])
+        if offer.get('automatic'):
+            row['detail'].setText('同账号已授权，正在建立连接…')
+            return
         names = '、'.join(str(name) for name in offer.get('names', [])[:3])
         if len(offer.get('names', [])) > 3: names += ' 等'
         confirmation=str(offer.get('device_code') or offer.get('code') or '').strip()
@@ -1860,13 +1892,13 @@ class LanDialog(QDialog):
         super().done(result)
 
     def reject(self):
-        if not self._closing_confirmed and self._active_transfers():self.close()
-        else:super().reject()
+        super().reject()
 
     def __init__(self, service, settings, parent=None):
         super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
         self._settings=settings;self._panels={};self._theme=settings.theme
-        self._close_prompt=None;self._closing_confirmed=False;self._navigate_after_close=None;self._navigation_generation=0
+        self._navigate_after_close=None;self._navigation_generation=0
+        self.finished.connect(self._discard_closed_drafts)
         self.finished.connect(self._finish_navigation)
         self._wan=getattr(service,'mode','lan')=='wan'
         self.setObjectName('lanDialog'); self.setWindowTitle('FlickDock · 文件互传')
@@ -1982,29 +2014,13 @@ class LanDialog(QDialog):
                 if getattr(transfer,'active',False)]
 
     def closeEvent(self,event):
+        # Closing a view does not own the lifetime of active transport jobs.
+        # The explicit per-file cancel controls still cancel those jobs.
         self.closing_intent.emit()
-        if self._closing_confirmed or not self._active_transfers():
-            super().closeEvent(event);return
-        event.ignore()
-        if self._close_prompt is None:
-            from app_settings import ReferenceModalDialog
-            prompt=ReferenceModalDialog(self,surface_width=340,modal=True)
-            prompt.setWindowTitle('关闭传输窗口');prompt.set_surface_theme(self._theme)
-            text=_label('关闭将中断正在进行的传输，是否关闭？',prompt.body)
-            text.setStyleSheet('color:'+ui_colors(self._theme)['text']+';font-size:13px;')
-            prompt.body_layout.addWidget(text)
-            actions=QHBoxLayout();actions.addStretch()
-            cancel=_button('取消',prompt.body);confirm=_button('确定',prompt.body)
-            actions.addWidget(cancel);actions.addWidget(confirm);prompt.body_layout.addLayout(actions)
-            cancel.clicked.connect(prompt.reject)
-            def cancel_close():self._navigate_after_close=None
-            prompt.rejected.connect(cancel_close)
-            def confirmed():
-                for service,identifier in self._active_transfers():service.cancel(identifier)
-                self._closing_confirmed=True;prompt.accept();self.close()
-            confirm.clicked.connect(confirmed)
-            self.close_cancel_button=cancel;self.close_confirm_button=confirm;self._close_prompt=prompt
-        self._close_prompt.show();self._close_prompt.raise_();self._close_prompt.activateWindow()
+        super().closeEvent(event)
+
+    def _discard_closed_drafts(self,*_):
+        for panel in self._panels.values():panel.queue_paths([],replace=True)
 
     def set_service(self,service):
         """Swap only the content, keeping one native surface and shadow alive."""
@@ -2053,7 +2069,6 @@ class LanDialog(QDialog):
         self.title_icon.setPixmap(ui_icon('web' if self._wan else 'nearby',c['cyan'] if self._theme=='dark' else c['blue']).pixmap(16,16))
 
     def showEvent(self, event):
-        self._closing_confirmed=False
         super().showEvent(event)
         remove_host_window_shadow(self)
         if self._wan and callable(getattr(self.panel.service,'check_code',None)):

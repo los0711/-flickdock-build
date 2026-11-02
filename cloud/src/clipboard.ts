@@ -1,10 +1,11 @@
-import {fileEnvelope,envelopeSize,registerClipboardFile,releaseClipboardFile,archiveBody,type FileEnvelope} from './shared-file';
+import {fileEnvelope,envelopeSize,registerClipboardFile,releaseClipboardFile,archiveBody,CLIPBOARD_MAX_BYTES,CLIPBOARD_MAX_ARCHIVE_BYTES,type FileEnvelope} from './shared-file';
+import {multipartRequest,multipartContent,sweepMultiparts,MULTIPART_V1} from './clipboard-multipart';
 /** One account-wide, non-consuming clipboard slot. Bodies stay in private R2. */
 type Env={DB:D1Database;FILES:R2Bucket};
-type Head={id:string;version:number;account:string;device:string;ready:boolean;expired?:boolean;kind?:string;size?:number;sha256?:string;at:number;copied_at?:number;sequence?:number;object_key?:string;allocation_id?:string;inline?:string;upload_id?:string;raw_file?:FileEnvelope};
+export type Head={id:string;version:number;account:string;device:string;ready:boolean;expired?:boolean;kind?:string;size?:number;sha256?:string;at:number;copied_at?:number;sequence?:number;object_key?:string;allocation_id?:string;inline?:string;upload_id?:string;raw_file?:FileEnvelope;multipart_v1?:{part_size:number;part_count:number}};
 type Hold={device:string;items:string[];expires:number};
-const MAX=20*1024*1024,UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
-const json=(value:object,status=200)=>Response.json({schema_version:1,server_time:Date.now(),...value},{status,headers:{'Cache-Control':'no-store'}});
+const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
+const json=(value:object,status=200)=>Response.json({schema_version:1,server_time:Date.now(),multipart_v1:MULTIPART_V1,...value},{status,headers:{'Cache-Control':'no-store'}});
 const fail=(status:number,code:string)=>json({error:{code,message:'Clipboard content unavailable'}},status);
 const key=(head:Head)=>head.object_key||`clipboard/${head.account}/${head.id}`;
 const allocation=(head:Head)=>head.allocation_id||'clipboard:'+head.id;
@@ -46,7 +47,7 @@ async function retire(ctx:DurableObjectState,env:Env,head:Head){
   }catch{await schedule(ctx,Date.now()+60000);}
 }
 
-export async function clipboardAlarm(ctx:DurableObjectState,env:Env){
+export async function clipboardAlarm(ctx:DurableObjectState,env:Env,spend?:(kind:'A'|'B',count?:number)=>Promise<void>){
   const holds=await ctx.storage.list<Hold>({prefix:'clipboard-hold:',limit:128});
   for(const [entry,hold] of holds)if(hold.expires<=Date.now())await ctx.storage.delete(entry);
   const heldHeads=await ctx.storage.list<Head>({prefix:'clipboard-held-head:',limit:128});
@@ -93,12 +94,16 @@ export async function clipboardAlarm(ctx:DurableObjectState,env:Env){
   for(const attempt of (await ctx.storage.list<Head>({prefix:'clipboard-attempt:',limit:30})).values())deadlines.push(attempt.at+600000);
   for(const hold of (await ctx.storage.list<Hold>({prefix:'clipboard-hold:',limit:128})).values())deadlines.push(hold.expires);
   if(deadlines.length)await ctx.storage.setAlarm(Math.max(Date.now()+1000,Math.min(...deadlines)));
+  // Run after pending expiry and the general alarm write: a stale intent is
+  // now visible, and a multipart deadline must not be overwritten by 24h head.
+  await sweepMultiparts(ctx,env,spend);
 }
 
 export async function clipboardRequest(request:Request,ctx:DurableObjectState,env:Env,
-    spend:(kind:'A'|'B')=>Promise<void>,notify:(device:string,head?:Head)=>Promise<unknown>):Promise<Response>{
+    spend:(kind:'A'|'B',count?:number)=>Promise<void>,notify:(device:string,head?:Head)=>Promise<unknown>):Promise<Response>{
   const path=new URL(request.url).pathname,account=request.headers.get('X-Clipboard-Account')||'',device=request.headers.get('X-Clipboard-Device')||'';
   if(!UUID.test(account)||!UUID.test(device))return fail(401,'UNAUTHORIZED');
+  const multipart=await multipartRequest(request,ctx,env,spend,notify,retire);if(multipart)return multipart;
   const holdMatch=path.match(/^\/clipboard\/([a-f0-9-]{36})\/(retain|release|shared)$/);
   if(holdMatch&&UUID.test(holdMatch[1])){
     const id=holdMatch[1],operation=holdMatch[2];
@@ -226,11 +231,11 @@ export async function clipboardRequest(request:Request,ctx:DurableObjectState,en
       if(previous)ctx.waitUntil(retire(ctx,env,previous));
       ctx.waitUntil(notify(device,ready));return json({clipboard:ready},201);
     }
-    await schedule(ctx,Date.now()+600000);
+    ctx.waitUntil(sweepMultiparts(ctx,env,spend));await schedule(ctx,Date.now()+600000);
     return json({clipboard:head,shared_files:true},201);
   }
   let head=await ctx.storage.get<Head>('clipboard-head');
-  if(head&&!head.expired&&Date.now()-head.at>=86400000){await clipboardAlarm(ctx,env);head=await ctx.storage.get<Head>('clipboard-head');}
+  if(head&&!head.expired&&Date.now()-head.at>=86400000){await clipboardAlarm(ctx,env,spend);head=await ctx.storage.get<Head>('clipboard-head');}
   // Pre-v2 clients cannot decode the new lossless text envelope. Do not let
   // them download and cache it again on every poll while awaiting upgrade.
   // This is capability negotiation only; account/device auth stays above.
@@ -248,6 +253,7 @@ export async function clipboardRequest(request:Request,ctx:DurableObjectState,en
       return new Response(blob,{headers:{'Content-Type':'application/octet-stream','Content-Length':String(head.size),
         'X-Content-SHA256':head.sha256!,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
     }
+    if(head.multipart_v1)return multipartContent(ctx,env,head,spend);
     await spend('B');const object=await env.FILES.get(key(head));
     if(!object)return fail(404,'CLIPBOARD_MISSING');
     return new Response(head.raw_file?archiveBody(object.body,head.raw_file):object.body,{headers:{'Content-Type':'application/octet-stream','Content-Length':String(head.size),
@@ -264,7 +270,7 @@ export async function clipboardRequest(request:Request,ctx:DurableObjectState,en
   if(!head||head.id!==id||head.account!==account)return fail(409,'CLIPBOARD_REPLACED');
   if(head.device!==device)return fail(403,'CLIPBOARD_OWNER');
   const size=Number(request.headers.get('Content-Length')),kind=request.headers.get('X-Clipboard-Kind')||'',sha256=request.headers.get('X-Content-SHA256')||'';
-  if(!Number.isSafeInteger(size)||size<1||size>=(['files','text'].includes(kind)?MAX+1024*1024:MAX)||!['text','image','files'].includes(kind)||!/^[a-f0-9]{64}$/.test(sha256)||!request.body)return fail(413,'CLIPBOARD_LIMIT');
+  if(!Number.isSafeInteger(size)||size<1||size>(['files','text'].includes(kind)?CLIPBOARD_MAX_ARCHIVE_BYTES:CLIPBOARD_MAX_BYTES)||!['text','image','files'].includes(kind)||!/^[a-f0-9]{64}$/.test(sha256)||!request.body)return fail(413,'CLIPBOARD_LIMIT');
   let rawFile:FileEnvelope|undefined;
   try{rawFile=fileEnvelope(request,kind,size);}catch{return fail(400,'CLIPBOARD_RAW_FILE_INVALID');}
   const current=async()=>{const latest=await ctx.storage.get<Head>('clipboard-pending');return latest?.id===id||await retained(ctx,id);};

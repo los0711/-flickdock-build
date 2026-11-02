@@ -213,7 +213,7 @@ class AccountService(QObject):
     @staticmethod
     def _auth_message(error):
         # Server error text must never echo a password, proof, or provider data.
-        return {'INVALID_CREDENTIALS':'账号或密码不正确。','USERNAME_TAKEN':'这个账号已被使用。',
+        known={'INVALID_CREDENTIALS':'账号或密码不正确。','USERNAME_TAKEN':'这个账号已被使用。',
                 'INVALID_CHALLENGE':'登录验证已过期，请重试。','AUTH_NOT_CONFIGURED':'账号服务暂未开放，请稍后重试。',
                 'USERNAME_MIGRATION_REQUIRED':'账号索引正在更新，请稍后重试。',
                 'INVALID_OLD_PASSWORD':'原密码不正确，请重新输入。',
@@ -223,7 +223,19 @@ class AccountService(QObject):
                 'INVALID_EMAIL':'邮箱地址格式无效，请重新输入。',
                 'INVALID_CODE':'验证码无效或已过期，请重新获取。',
                 'RATE_LIMITED':'操作过于频繁，请稍后重试。','INVALID_USERNAME':'账号格式无效，请重新输入。',
-                'cancelled':'账号操作已取消。'}.get(getattr(error,'code',''),'账号操作失败，请检查网络后重试。')
+                'cancelled':'账号操作已取消。'}
+        code=getattr(error,'code','');status=getattr(error,'status',0)
+        if code in known:return known[code]
+        if status==401:return '登录已失效，请重新登录。'
+        if status==403:return '当前账号或设备没有此操作权限。'
+        if status==429:return '账号请求过于频繁，请稍后重试。'
+        if isinstance(status,int) and 500<=status<=599:return f'账号服务暂时异常（HTTP {status}），请稍后重试。'
+        if status==409:return '账号资料已变化，请刷新后重试。'
+        if isinstance(status,int) and 400<=status<=499:return f'账号请求未被接受（HTTP {status}），请检查输入后重试。'
+        if code in ('NETWORK_TIMEOUT','CONNECTION_TIMEOUT','READ_TIMEOUT'):return '连接账号服务超时，请稍后重试。'
+        if code=='NETWORK_UNREACHABLE':return '无法连接账号服务，请检查网络或系统代理。'
+        # Do not echo raw server messages, passwords, proof or provider HTML.
+        return '账号操作未能完成，请稍后重试。'
 
     def _challenge_done(self,epoch,result,error):
         if not self._auth_live(epoch):return

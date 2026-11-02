@@ -71,7 +71,7 @@ export class AccountEvents extends DurableObject<Env> {
     if(url.pathname==='/intake')return intakeRequest(request,this.ctx,
       ()=>this.fetch(new Request('https://internal/publish',{method:'POST',body:JSON.stringify({type:'content',device:request.headers.get('X-Device-Id')||''})})));
     if(url.pathname.startsWith('/clipboard'))return clipboardRequest(request,this.ctx,this.env,
-      kind=>budget(this.env,kind,1),(device,clipboard)=>this.fetch(new Request('https://internal/publish',{method:'POST',body:JSON.stringify({type:'clipboard',device,clipboard})})));
+      (kind,count=1)=>budget(this.env,kind,count),(device,clipboard)=>this.fetch(new Request('https://internal/publish',{method:'POST',body:JSON.stringify({type:'clipboard',device,clipboard})})));
     if(url.pathname==='/connect'&&request.headers.get('Upgrade')?.toLowerCase()==='websocket'){
       const pair=new WebSocketPair();const [client,server]=Object.values(pair);
       this.ctx.acceptWebSocket(server);
@@ -110,7 +110,7 @@ export class AccountEvents extends DurableObject<Env> {
     }
     return new Response(null,{status:404});
   }
-  async alarm(){await clipboardAlarm(this.ctx,this.env);}
+  async alarm(){await clipboardAlarm(this.ctx,this.env,(kind,count=1)=>budget(this.env,kind,count));}
 }
 
 function announce(env:Env,ctx:ExecutionContext,owner:Row,type:'content'|'devices'){

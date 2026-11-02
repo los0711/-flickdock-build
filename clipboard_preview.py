@@ -117,6 +117,17 @@ class ClipboardButton(QPushButton):
         p.end()
 
 
+class _PreviewContent(QStackedWidget):
+    def sizeHint(self):
+        # A never-shown stacked page can retain a stale QWidgetItem hint.
+        # Read each real page before reserving the fixed animation host, so
+        # late image decode cannot introduce a scrollbar at the live handoff.
+        result=super().sizeHint()
+        for index in range(self.count()):
+            result=result.expandedTo(self.widget(index).sizeHint())
+        return result
+
+
 class ClipboardPreview(ReferenceModalDialog):
     def __init__(self,manager):
         super().__init__(manager.shelf,surface_width=420,modal=False)
@@ -129,7 +140,7 @@ class ClipboardPreview(ReferenceModalDialog):
         self.close_button.setAccessibleName('关闭剪贴板预览');self.close_button.setToolTip('关闭剪贴板预览')
         self.close_button.clicked.connect(self.close);head.addWidget(self.close_button)
         self.body_layout.addLayout(head)
-        self.content=QStackedWidget(self.body);self.content.setMinimumHeight(160);self.body_layout.addWidget(self.content)
+        self.content=_PreviewContent(self.body);self.content.setMinimumHeight(160);self.body_layout.addWidget(self.content)
         self.text=QPlainTextEdit(self.content);self.text.setReadOnly(True);self.text.setTextInteractionFlags(Qt.NoTextInteraction)
         self.text.setFocusPolicy(Qt.NoFocus);self.text.setContextMenuPolicy(Qt.NoContextMenu);self.content.addWidget(self.text)
         from input_focus import install_focus
@@ -138,6 +149,10 @@ class ClipboardPreview(ReferenceModalDialog):
         self.image=ImagePreview(self.content);self.image.setFocusPolicy(Qt.NoFocus);self.image.setContextMenuPolicy(Qt.NoContextMenu);self.content.addWidget(self.image)
         self.info=QLabel(self.content);self.info.setWordWrap(True);self.info.setAlignment(Qt.AlignCenter);self.content.addWidget(self.info)
         self.status=QLabel(self.body);self.body_layout.addWidget(self.status)
+        self.sync_limit_note=QLabel('仅支持同步 100 MB 以内的剪贴板内容。\n超过 100 MB 的内容不会同步给其他设备。',self.body)
+        self.sync_limit_note.setWordWrap(True);self.sync_limit_note.setTextFormat(Qt.PlainText)
+        self.sync_limit_note.setTextInteractionFlags(Qt.NoTextInteraction);self.sync_limit_note.setFocusPolicy(Qt.NoFocus)
+        self.body_layout.addWidget(self.sync_limit_note)
         # Retain the original content/scroll tree, but lay its surface out at
         # one final size inside a larger fixed native presentation reservation.
         from shiboken6 import delete
@@ -195,6 +210,7 @@ class ClipboardPreview(ReferenceModalDialog):
         self.close_button.dark=self.manager.settings.theme=='dark'
         self.setStyleSheet(f"QDialog{{background:transparent;}} QLabel{{background:transparent;color:{c['text']};font-size:12px;}} QPlainTextEdit{{background:{c['card']};color:{c['text']};border:1px solid {c['border']};border-radius:8px;padding:10px;}} QPushButton#settingsClose{{background:transparent;border:0;border-radius:8px;padding:0;}} QPushButton#settingsClose:hover{{background:{c['hover']};}} QPushButton#settingsClose:pressed{{background:{c['control']};}}")
         self.badge.set_status(phase);self.status.setText(CLOUD_STATUS_LABELS.get(phase,'仅保存在本机'))
+        self.sync_limit_note.setStyleSheet(f"color:{c['secondary']};font-size:11px;background:transparent;")
         if not value:self.info.setText('剪贴板暂无可预览内容');self.content.setCurrentWidget(self.info)
         elif value[0]=='text':
             text=value[1]['text']

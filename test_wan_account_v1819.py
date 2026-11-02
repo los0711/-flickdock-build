@@ -4,7 +4,7 @@ os.environ['QT_QPA_PLATFORM']='offscreen'
 import json,tempfile,unittest
 from pathlib import Path
 from unittest.mock import Mock
-from PySide6.QtCore import QObject,Signal
+from PySide6.QtCore import QObject,Signal,Qt
 from PySide6.QtWidgets import QApplication
 from wan_transfer import WanTransferService
 from lan_panel import LanDialog
@@ -59,7 +59,9 @@ class AccountTransferTests(unittest.TestCase):
             panel=dialog.panel;panel.queue_paths([source]);panel._recommend_lan()
             self.assertEqual(received,[([str(source)],'c'*32)])
             self.assertEqual(panel._queued_paths,[str(source)])
-            self.assertIn('同账号',panel.devices.itemText(0))
+            self.assertEqual(panel.devices.itemText(0),'Mac')
+            self.assertTrue(panel.devices.itemData(0,Qt.ItemDataRole.UserRole+3))
+            self.assertFalse(panel.devices.itemIcon(0).isNull())
         finally:dialog.close();dialog.deleteLater();APP.processEvents()
 
 if __name__=='__main__':unittest.main()

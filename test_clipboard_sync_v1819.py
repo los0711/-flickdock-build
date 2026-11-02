@@ -106,10 +106,12 @@ class ClipboardTests(unittest.TestCase):
         until(lambda:self.clips[1].mimeData().text()=='latest')
         previous=self.hub.head['id']
         previous_fence=self.clients[0]._local_fence
-        self.clips[0].text('x'*MAX_BYTES)
-        until(lambda:self.clients[0]._local_fence is not previous_fence and self.clients[0]._pending is None)
+        oversized='x'*65537
+        with patch('clipboard_sync.MAX_BYTES',65536):
+            self.clips[0].text(oversized)
+            until(lambda:self.clients[0]._local_fence is not previous_fence and self.clients[0]._pending is None)
         self.assertEqual(self.hub.head['id'],previous)
-        self.assertEqual(self.clips[0].mimeData().text(),'x'*MAX_BYTES)
+        self.assertEqual(self.clips[0].mimeData().text(),oversized)
         self.assertEqual(self.clips[1].mimeData().text(),'latest')
         self.assertTrue(self.hub.head['ready'])
 
@@ -135,11 +137,12 @@ class ClipboardTests(unittest.TestCase):
         client=ClipboardSync(account,Events(),base,enabled=True,clipboard=Clipboard());self.clients.append(client)
         until(lambda:not old.exists());self.assertTrue((unmarked/'keep').exists())
 
-    def test_a_file_just_below_20m_keeps_its_bytes_despite_archive_headers(self):
-        source=self.base/'near-limit.bin';source.write_bytes(b'x'*(MAX_BYTES-1));out=self.base/'pack';out.mkdir()
-        item=package(('files',[str(source)]),out);self.assertIsNotNone(item)
-        extracted=unpack('files',item['path'],out)[1][0]
-        self.assertEqual(Path(extracted).read_bytes(),source.read_bytes())
+    def test_near_limit_file_keeps_its_bytes_despite_archive_headers(self):
+        source=self.base/'near-limit.bin';source.write_bytes(b'x'*4095);out=self.base/'pack';out.mkdir()
+        with patch('clipboard_sync.MAX_BYTES',4096):
+            item=package(('files',[str(source)]),out);self.assertIsNotNone(item)
+            extracted=unpack('files',item['path'],out)[1][0]
+            self.assertEqual(Path(extracted).read_bytes(),source.read_bytes())
 
     def test_old_pending_copy_is_not_replayed_after_a_long_sleep(self):
         client=self.clients[0];client._pending=dict(id='old',created_at=time.time()-90000,staged=False,prepared=False)
@@ -204,9 +207,10 @@ class ClipboardTests(unittest.TestCase):
         self.assertEqual(path.read_bytes(),b'keep pasteable')
 
     def test_near_limit_control_text_is_not_inflated_by_json_escaping(self):
-        folder=self.base/'control';folder.mkdir();text='\x00'*(MAX_BYTES-1)
-        item=package(('text',dict(text=text,html='')),folder)
-        self.assertIsNotNone(item);self.assertEqual(unpack('text',item['path'],folder)[1]['text'],text)
+        folder=self.base/'control';folder.mkdir();text='\x00'*4096
+        with patch('clipboard_sync.MAX_BYTES',4096):
+            item=package(('text',dict(text=text,html='')),folder)
+            self.assertIsNotNone(item);self.assertEqual(unpack('text',item['path'],folder)[1]['text'],text)
 
     def test_receive_cache_failure_releases_fetch_and_retries_without_changing_native_copy(self):
         client=self.clients[0]

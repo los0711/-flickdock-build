@@ -62,6 +62,36 @@ class WriterObservationTests(unittest.TestCase):
         self.assertFalse((profile/'cloud-shelves').exists())
         with self.assertRaisesRegex(AssertionError,'TEMP anchor'):qa.reject_links(Path(tempfile.gettempdir()).parent,Path(tempfile.gettempdir()))
 
+    def test_short_name_alias_control_rejects_old_mixed_spelling_but_accepts_checked_canonical_profile(self):
+        base=Path(tempfile.gettempdir()).absolute();short=base/'RUNNER~1';long=base/'RunnerLongName'
+        profile=short/'flickdock-frozen-normal-ci-alias'/'FlickDock';canonical=long/profile.relative_to(short)
+        checks=[];events=[]
+        def resolve(path,*args,**kwargs):return long/path.relative_to(short) if path.is_relative_to(short) else path
+        def linked(path):checks.append(path);return False
+        with patch.object(qa,'require_hosted'),patch.object(qa.tempfile,'gettempdir',return_value=str(short)),patch.object(Path,'resolve',resolve),patch.object(Path,'is_symlink',linked):
+            # The previous code compared raw profile against resolved TEMP.
+            with self.assertRaisesRegex(AssertionError,'escaped TEMP'):qa.reject_links(profile,short.resolve())
+            actual,anchor=qa.guarded_profile(profile,emit=lambda **row:events.append(row))
+            self.assertEqual((actual,anchor),(canonical,long));self.assertIn(profile,checks)
+            self.assertEqual(qa.guarded_profile(canonical),(canonical,long))
+        self.assertTrue(events[0]['temp_spelling_changed']);self.assertTrue(events[0]['short_name_component'])
+        self.assertTrue(events[0]['canonical_within_temp']);self.assertNotIn(str(short),str(events))
+
+    def test_resolve_into_temp_never_admits_original_external_or_symlink_path(self):
+        base=Path(tempfile.gettempdir()).absolute();short=base/'RUNNER~1';long=base/'RunnerLongName'
+        external=base/'outside'/'flickdock-frozen-normal-ci-link'/'FlickDock'
+        profile=short/'flickdock-frozen-normal-ci-link'/'FlickDock'
+        def resolve(path,*args,**kwargs):
+            if path==short:return long
+            if path in (profile,external):return long/'flickdock-frozen-normal-ci-link'/'FlickDock'
+            return path
+        with patch.object(qa,'require_hosted'),patch.object(qa.tempfile,'gettempdir',return_value=str(short)),patch.object(Path,'resolve',resolve):
+            with self.assertRaisesRegex(AssertionError,'escaped TEMP'):qa.guarded_profile(external)
+            with patch.object(Path,'is_symlink',lambda path:path==profile):
+                with self.assertRaisesRegex(AssertionError,'link or junction'):qa.guarded_profile(profile)
+            with patch.object(Path,'is_junction',lambda path:path==short,create=True):
+                with self.assertRaisesRegex(AssertionError,'link or junction'):qa.guarded_profile(profile)
+
     def test_exact_acl_restore_runs_on_body_error_and_exports_no_private_values(self):
         with tempfile.TemporaryDirectory() as folder:
             parent=Path(folder);private=object();backend=SimpleNamespace(snapshot=Mock(return_value=private),deny=Mock(),restore=Mock())
@@ -122,7 +152,8 @@ class WriterObservationTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'PermissionError') as failure:
                 qa.observe(profile,cloud,driver,lambda **row:events.append(row))
         self.assertNotIn('secret',str(failure.exception));self.assertNotIn('secret',str(events))
-        self.assertEqual(events[0]['errno'],13);driver.setting.assert_called_once_with('sync_receive_enabled',False)
+        self.assertEqual(next(row for row in events if row['phase']=='observation-failed')['errno'],13)
+        driver.setting.assert_called_once_with('sync_receive_enabled',False)
         driver.click.assert_called_once_with('关闭设置')
 
     def test_preflight_permission_failure_is_sanitized_before_original_setting_is_known(self):

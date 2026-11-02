@@ -35,13 +35,35 @@ def reject_links(path,anchor):
     else:raise AssertionError('Synthetic cache has no expected TEMP ancestor')
 
 
-def guarded_profile(profile):
-    require_hosted();profile=Path(profile).absolute();temporary=Path(tempfile.gettempdir()).resolve()
+def guarded_profile(profile,*,emit=lambda **values:None):
+    require_hosted();profile=Path(profile).absolute();lexical_temp=Path(tempfile.gettempdir()).absolute()
     if profile.name!='FlickDock' or not profile.parent.name.startswith('flickdock-frozen-normal-ci-'):
         raise AssertionError('Not the exact disposable frozen-client profile')
-    reject_links(profile,temporary)
-    if profile.resolve()!=profile:raise AssertionError('Synthetic profile path changed on resolution')
-    return profile,temporary
+    lexical_inside=profile.is_relative_to(lexical_temp)
+    if lexical_inside:
+        # Check the original spelling before following resolution. A short
+        # Windows filename is not a reparse point; a real symlink still fails.
+        reject_links(profile,lexical_temp)
+        temporary=lexical_temp.resolve()
+    else:
+        # Subsequent fixture checks receive the already canonical profile.
+        # Validate the trusted TEMP spelling itself before resolving its alias.
+        reject_links(lexical_temp,lexical_temp)
+        temporary=lexical_temp.resolve()
+        if not profile.is_relative_to(temporary):
+            emit(phase='temp-path-guard',raw_within_lexical_temp=False,raw_within_canonical_temp=False)
+            raise AssertionError('Synthetic cache escaped TEMP anchor')
+        reject_links(profile,temporary)
+    canonical=profile.resolve()
+    canonical_inside=canonical.is_relative_to(temporary)
+    emit(phase='temp-path-guard',raw_within_lexical_temp=lexical_inside,
+         raw_within_canonical_temp=profile.is_relative_to(temporary),
+         temp_spelling_changed=lexical_temp!=temporary,profile_spelling_changed=profile!=canonical,
+         short_name_component=any(re.search(r'~[0-9]+(?:\.|$)',part) is not None for part in (*profile.parts,*lexical_temp.parts)),
+         canonical_within_temp=canonical_inside,original_ancestry_links_checked=True)
+    if not canonical_inside:raise AssertionError('Resolved synthetic cache escaped TEMP anchor')
+    reject_links(canonical,temporary)
+    return canonical,temporary
 
 
 def fixture_parent(profile,cloud,identity):
@@ -141,7 +163,7 @@ def observe(profile,cloud,driver,emit):
     try:
         # All preflight IO belongs inside the same payload-free error boundary.
         # Do not attempt preference cleanup until the original bool is verified.
-        profile,_=guarded_profile(profile)
+        profile,_=guarded_profile(profile,emit=emit)
         settings=profile/'settings.json'
         if settings.is_symlink() or settings.stat().st_size>65536:raise AssertionError('Unsafe synthetic settings')
         value=json.loads(settings.read_text(encoding='utf8'))['sync_receive_enabled']

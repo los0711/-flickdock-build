@@ -896,7 +896,7 @@ class _UIABackend:
     def setting(self,name,value):
         settings=self.base/'FlickDock/settings.json'
         def current():return json.loads(settings.read_text())[name]
-        if current()!=value:self.click({'clipboard_sync_enabled':'云剪贴板同步（小于 20 MB）','sync_upload_enabled':'上传本机搁架到云端','sync_receive_enabled':'接收云端与其他设备内容'}[name],roles=['CheckBox'])
+        if current()!=value:self.click({'clipboard_sync_enabled':'云剪贴板同步（100 MB 以内）','sync_upload_enabled':'上传本机搁架到云端','sync_receive_enabled':'接收云端与其他设备内容'}[name],roles=['CheckBox'])
         wait(lambda:current()==value,label='persisted native settings '+name)
 
 
@@ -1163,7 +1163,29 @@ def main():
             driver.setting('clipboard_sync_enabled',False);cloud.command('/release');time.sleep(.6)
             assert driver.inspect()['files'] and Path(driver.inspect()['files'][0]).samefile(refs[-1])
             report['checks'].append('Disable during real in-flight PUT preserves native original payload')
-            driver.setting('clipboard_sync_enabled',True)
+            def reenable_keeps_original():
+                reenable_start=len(cloud.stats()['rows'])
+                driver.setting('clipboard_sync_enabled',True)
+                wait(lambda:any(row.get('method')=='GET' and row.get('path')=='/v1/clipboard'
+                                and row.get('status')==200 and row.get('finished') is not None
+                                for row in cloud.stats()['rows'][reenable_start:]),
+                     label='actual head refresh after clipboard re-enable')
+                # The gateway finishing is not the Qt client's receive/apply
+                # acknowledgement. Observe native payload across the ensuing
+                # idle window too, rather than sample just before a late apply.
+                until=time.monotonic()+1.2;samples=0
+                while time.monotonic()<until:
+                    reenabled=driver.inspect();samples+=1
+                    assert reenabled['files'] and Path(reenabled['files'][0]).samefile(refs[-1]), \
+                        'Re-enabling clipboard replaced a newer native original with the older cloud head'
+                    time.sleep(.05)
+                reenabled=driver.inspect();samples+=1
+                assert reenabled['files'] and Path(reenabled['files'][0]).samefile(refs[-1]), \
+                    'Re-enabling clipboard replaced the newer native original after the observation window'
+                assert samples>=2,'HARNESS_REENABLE_OBSERVATION: no actual idle-window sample was collected'
+                return dict(native_original_preserved=True,observed_samples=samples)
+            report['reenable_original']=recorder.run('05b-reenable-keeps-native-original',reenable_keeps_original,duration=1.2)
+            report['checks'].append('Re-enable refresh keeps the newer native original file after cancellation; older cloud head cannot replace it')
             image_expected=hashlib.sha256(Path(refs[0]).read_bytes()).hexdigest()
             recorder.run('06-native-original-image-copy',lambda:driver.click('Copy original image',pid=producer.pid))
             def image_ready():
@@ -1257,10 +1279,14 @@ def main():
                         _,head=copy_and_committed(text,already_focused=True)
                         commits.append(dict(id=head['id'],sha256=head['sha256'],committed_capture_time=time.monotonic()))
                         if label=='first':
-                            canvas=wait(lambda:next((row for row in driver.tree()
-                                if row['class_name']=='ClipboardNotice' and row['visible']),None),
-                                seconds=4,label='actual first notice canvas before the second Copy')
-                            commits[-1]['actual_notice_bounds']=canvas['rectangle']
+                            # The production result is debounced by 160ms.
+                            # A UIA tree roundtrip here consumed the first
+                            # card's lifetime. Keep actual copy/commit checks,
+                            # let the real card enter, and retain full pixels.
+                            time.sleep(.28)
+                    inter_commit_seconds=commits[1]['committed_capture_time']-commits[0]['committed_capture_time']
+                    assert 0<inter_commit_seconds<1.5,('HARNESS_NOTICE_COPY_CADENCE: distinct native commits were '
+                        f'{inter_commit_seconds:.3f}s apart; overlapping notice coverage is not established')
                     # Preserve actual overlap, expiry fade and the remaining-card
                     # position; UIA child labels are hidden cached artwork.
                     time.sleep(3.1)
@@ -1269,7 +1295,8 @@ def main():
                     latest=json_request(cloud.origin,'GET','/v1/clipboard',token=cloud.session['token'])['clipboard']
                     assert latest['id']==commits[-1]['id'],'Idle notice expiry replaced the latest real head'
                     assert driver.inspect()['text']==text,'Native clipboard changed during notification expiry'
-                    return dict(commits=commits,post_delta=after-before,observer_generated_notice=False,
+                    return dict(commits=commits,inter_commit_seconds=inter_commit_seconds,
+                                post_delta=after-before,observer_generated_notice=False,
                                 manual_overlap_and_fade_review='required')
                 report['notice_stack']=recorder.run('final-real-distinct-notice-stack',real_notice_stack,duration=4.)
                 report['checks'].append('Two distinct external native copies each commit their exact payload once; notice expiry creates no extra POST or clipboard write')

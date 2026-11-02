@@ -45,7 +45,8 @@ class ClipboardFileJobs(QObject):
         if not self.journal or not value or value[0]!='files' or len(value[1])!=1:return
         try:stamp=file_stamp(value[1][0])
         except OSError:return
-        if stamp is None or not 0<stamp[2]<20*1024*1024:return
+        from clipboard_sync import MAX_BYTES
+        if stamp is None or not 0<stamp[2]<=MAX_BYTES:return
         task.update(file_source=str(Path(value[1][0]).absolute()),source_stat=stamp,holders={},
                     _file_phase='preparing',_file_received=0,_session=self.client._identity)
         self.tasks[task['id']]=task;self.save();self.changed.emit()
@@ -103,7 +104,7 @@ class ClipboardFileJobs(QObject):
     def save(self):
         if self.journal is None:return
         fields=('id','sequence','staged','prepared','created_at','package','intent','file_source',
-                'source_stat','holders','releases','shared_files','_file_phase','_file_received')
+                'source_stat','holders','releases','shared_files','_file_phase','_file_received','_clipboard_terminal')
         rows=[{key:task.get(key) for key in fields} for task in self.tasks.values()]
         try:
             self.journal.parent.mkdir(parents=True,exist_ok=True)
@@ -154,6 +155,8 @@ class ClipboardFileJobs(QObject):
         if not self.valid(task):return
         for identity in tuple(task.get('releases',{})):self.release(task['id'],identity)
         if task.get('releases') and not self.held(task):return
+        if task.get('_clipboard_terminal') or not self._within_limits(task):
+            self.update(task,'unavailable');return
         item=task.get('package')
         if not item:
             try:
@@ -187,6 +190,18 @@ class ClipboardFileJobs(QObject):
                 else:self.update(task,'unavailable')
             self.client._request('GET',f'/v1/clipboard/{task["id"]}/shared',status,_task=task)
         task['_job']=self.client._work(verify,verified)
+
+    @staticmethod
+    def _within_limits(task):
+        from clipboard_sync import MAX_BYTES,MAX_ARCHIVE_BYTES
+        stamp=task.get('source_stat');item=task.get('package')
+        if not isinstance(stamp,list) or len(stamp)!=4 or type(stamp[2]) is not int or not 0<stamp[2]<=MAX_BYTES:return False
+        if item is None:return True
+        if not isinstance(item,dict) or item.get('kind')!='files':return False
+        raw=item.get('raw_file')
+        return (type(item.get('size')) is int and 0<item['size']<=MAX_ARCHIVE_BYTES
+                and isinstance(raw,dict) and type(raw.get('size')) is int
+                and 0<raw['size']<=MAX_BYTES and raw['size']==stamp[2])
 
     def fail(self,task,error):
         if not self.valid(task):return

@@ -6,7 +6,7 @@ Stable device credentials and signaling are separate from cloud login.
 import hashlib,json,os,re,secrets,shutil,socket,sys,threading,time,weakref
 from pathlib import Path
 from uuid import uuid4
-from PySide6.QtCore import QTimer,QUrl,Signal
+from PySide6.QtCore import QTimer,QUrl,Signal,QThreadPool
 from PySide6.QtNetwork import QNetworkRequest,QNetworkProxy,QNetworkProxyFactory,QNetworkProxyQuery
 from PySide6.QtWebSockets import QWebSocket
 from lan_transfer import LanTransferService,_Transfer,_validate_manifest
@@ -61,6 +61,9 @@ class WanTransferService(LanTransferService):
         self.account_service=None;self.lan_id='';self.nearby_peers_provider=lambda:[]
         self._bind_epoch=0;self._bind_key=None;self._bound_identity=None;self._pending_identity=None
         self._account_nonce='';self._account_ack=False
+        self.automatic_receive_directory=None
+        self._accept_pool=QThreadPool(self);self._accept_pool.setMaxThreadCount(1)
+        self._accept_jobs=set()
         self.allow_test_origin=allow_test_origin
         self._qa_force_relay=bool(qa_force_relay and os.environ.get('QT_QPA_PLATFORM')=='offscreen')
         self._credential='';self._pending={};self._outbox={};self._connected=False;self._closing=False
@@ -104,6 +107,9 @@ class WanTransferService(LanTransferService):
 
     def _account_changed(self,*_,force=False):
         identity=self._account_identity()
+        for identifier,state in list(self._pending.items()):
+            if (state.get('accept_mode')=='auto_account' and state.get('accept_identity')!=identity
+                    and not state.get('bridge')):self.cancel(identifier)
         if not force and identity is not None and identity in (self._bound_identity,self._pending_identity):return
         self._bind_epoch+=1;self.bind_retry.stop();self._bound_identity=None
         if self._bind_key and self.account_service:self.account_service.api.cancel(self._bind_key)
@@ -123,6 +129,8 @@ class WanTransferService(LanTransferService):
                 if getattr(error,'status',0)!=401:self.bind_retry.start()
                 return
             self._bound_identity=identity;self._send_signal(dict(type='recent'))
+            for identifier,state in list(self._pending.items()):
+                if state.get('accept_mode')=='auto_account' and not state.get('bridge'):self._send_auto_accept(identifier,state)
         key=self.account_service.api.request('POST','/v1/wan/account',done,
             data={'credential':self._credential,'lan_id':self.lan_id,'nonce':self._account_nonce},timeout_ms=12000)
         if self._bind_key is pending:self._bind_key=key
@@ -268,7 +276,8 @@ class WanTransferService(LanTransferService):
             elif state['role']=='send' and state.get('prepare') and not state.get('prepared_ok'):
                 self._send_signal(state['prepare'])
             elif state['role']=='receive' and state.get('destination'):
-                self._send_signal(dict(type='accept',id=identifier))
+                if state.get('accept_mode')=='auto_account':self._send_auto_accept(identifier,state)
+                else:self._send_signal(dict(type='accept',id=identifier))
     def _request_retry(self,identifier,state):
         if state.get('retry_inflight'):return
         if self._send_signal(dict(type='retry',id=identifier)):state['retry_inflight']=True
@@ -341,7 +350,10 @@ class WanTransferService(LanTransferService):
                 self._pending[identifier]=dict(role='receive',peer=peer,token=value['token'],digest=value['digest'],total=total,count=value['count'],names=value['names'],ready=threading.Event(),generation=0)
                 device_code=str(value.get('deviceCode') or '')
                 if not re.fullmatch('[23456789A-HJ-NP-Z]{8}',device_code):device_code=''
-                self.offer_received.emit(dict(id=identifier,peer=peer['name'],host='远程',code='',device_code=device_code,total=total,count=value['count'],names=value['names']))
+                offer=dict(id=identifier,peer=peer['name'],host='远程',code='',device_code=device_code,total=total,count=value['count'],names=value['names'])
+                authorization=value.get('account_authorization')
+                if self._can_auto_receive(authorization):self._auto_receive(identifier,authorization,offer)
+                else:self.offer_received.emit(offer)
                 return
             if not state:return
             if kind=='prepared':
@@ -543,6 +555,50 @@ class WanTransferService(LanTransferService):
             self._command.emit(dict(_retire=True,id=transfer.transfer_id))
             raise ValueError('收到的文件清单与已确认的请求不符。')
         transfer.peer=state['peer']['name'];transfer.destination=state['destination'];transfer.accepted.set()
+    def _can_auto_receive(self,authorization,*,require_connection=True):
+        identity=self._account_identity()
+        return (self.enabled and (self._connected or not require_connection) and not self._closing and isinstance(authorization,dict)
+            and identity is not None and identity==self._bound_identity
+            and self._account_ack and re.fullmatch('[a-f0-9]{32}',self._account_nonce) is not None
+            and authorization.get('receiver_device')==identity[0]
+            and authorization.get('nonce')==self._account_nonce and callable(self.automatic_receive_directory))
+
+    def _auto_receive(self,identifier,authorization,offer):
+        from sync_files import DiskWork
+        state=self._pending[identifier];identity=self._account_identity()
+        try:destination=self.automatic_receive_directory()
+        except (OSError,ValueError):self.offer_received.emit(offer);return
+        state.update(accept_mode='auto_account',accept_identity=identity,automatic_offer=dict(offer))
+        def validate(cancel):
+            if cancel.is_set():raise InterruptedError()
+            path=Path(destination).expanduser().resolve(strict=True)
+            if not path.is_dir() or _is_link(path):raise ValueError('接收位置不可用，请重新选择。')
+            if shutil.disk_usage(path).free<state['total']+1024*1024:raise ValueError('接收位置的可用空间不足。')
+            return path
+        job=DiskWork(validate);self._accept_jobs.add(job);state['accept_job']=job
+        def ready(path,error):
+            self._accept_jobs.discard(job)
+            state.pop('accept_job',None)
+            if (self._closing or self._pending.get(identifier) is not state or state.get('error')
+                    or self._account_identity()!=identity):return
+            if error:
+                for key in ('accept_mode','accept_identity','automatic_offer'):state.pop(key,None)
+                self.offer_received.emit(offer);return
+            state['destination']=path
+            self._send_auto_accept(identifier,state)
+        job.signals.done.connect(ready);self._accept_pool.start(job)
+
+    def _send_auto_accept(self,identifier,state):
+        if (not self.enabled or not self._connected or self._closing or state.get('error') or not state.get('destination')
+                or self._pending.get(identifier) is not state or state.get('accept_identity')!=self._account_identity()
+                or self._bound_identity!=self._account_identity()):return False
+        # Retain this provenance through reconnect. The server revalidates both
+        # sessions/revocations on every automatic accept, including lost ACKs.
+        sent=self._send_signal(dict(type='accept',id=identifier,auto_account=True))
+        if sent and not state.get('auto_announced'):
+            state['auto_announced']=True;self.offer_received.emit(dict(state['automatic_offer'],automatic=True))
+        return bool(sent)
+
     def accept(self,identifier,destination):
         state=self._pending.get(identifier)
         if not state or state['role']!='receive' or state.get('destination'):return False
@@ -554,6 +610,7 @@ class WanTransferService(LanTransferService):
         active=bool(self._transfers.get(identifier) and self._transfers[identifier].active)
         state=self._pending.get(identifier)
         if state:
+            if state.get('accept_job'):state['accept_job'].cancel.set()
             state['error']='已取消传输。';state['ready'].set()
             if not remote:self._command.emit(dict(type='cancel',id=identifier))
             if state.get('bridge'):state['bridge'].shutdown()
@@ -591,6 +648,7 @@ class WanTransferService(LanTransferService):
         super()._notify(transfer,state,**extra)
         if state in ('error','cancelled'):self._command.emit(dict(_retire=True,id=transfer.transfer_id))
     def close(self):
+        for job in self._accept_jobs:job.cancel.set()
         self._closing=True;self._native_delivery.close()
         self.retirement_timer.stop()
         self.retry.stop();self.poll.stop();self.code_timer.stop();self.connect_timeout.stop();self.bind_retry.stop()

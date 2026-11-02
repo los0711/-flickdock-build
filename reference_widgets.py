@@ -374,7 +374,7 @@ class TransferNavButton(IconTextButton):
         if self.property('transferDropActive'):
             p.setPen(QPen(QColor(palette()['link']),1));p.setBrush(ink(palette()['hover']));draw_rounded_rect(p,QRectF(self.rect()).adjusted(.5,.5,-.5,-.5),(8,8))
         c=palette();p.setFont(self.font());p.setPen(QColor(c['secondary']))
-        icon('nearby',c['secondary']).paint(p,QRect(12,(self.height()-16)//2,16,16))
+        icon('nearby',c['link']).paint(p,QRect(12,(self.height()-16)//2,16,16))
         p.drawText(QRectF(36,0,max(0,self.width()-66),self.height()),Qt.AlignLeft|Qt.AlignVCenter,self.text())
         icon('right',c['secondary']).paint(p,QRect(self.width()-24,(self.height()-12)//2,12,12))
         p.end()
@@ -528,7 +528,7 @@ class RenameDialog(QDialog):
         form=QVBoxLayout(self.card);form.setContentsMargins(20,20,20,20);form.setSpacing(16)
         header=QHBoxLayout();header.addWidget(label('重命名文件',14,600,parent=self.card),1)
         close=ToolbarButton('close',self.card,motion=shelf.manager.motion);close.setFixedSize(32,32);close.clicked.connect(self.reject);header.addWidget(close);form.addLayout(header)
-        form.addWidget(label('输入新的文件名，扩展名保持不变。',12,400,'secondary',self.card))
+        form.addWidget(label('输入新的文件名；修改扩展名时需要确认。',12,400,'secondary',self.card))
         edit=shelf.rename_edit;edit.setParent(self.card);edit.setFixedHeight(34)
         css(edit,"QLineEdit{background:#242426;color:#F5F5F7;border:1px solid #3F3F46;border-radius:8px;padding:7px 10px;font:12px 'HarmonyOS Sans SC';}",
             "QLineEdit{background:#FFFFFF;color:#1D1D1F;border:1px solid #D4D4D8;border-radius:8px;padding:7px 10px;font:12px 'HarmonyOS Sans SC';}")
@@ -539,7 +539,7 @@ class RenameDialog(QDialog):
         self.confirm=button('确定',variant='primary',parent=self.card);self.confirm.clicked.connect(self._commit)
         actions.addWidget(cancel);actions.addWidget(self.confirm);form.addLayout(actions);layout.addWidget(self.card)
         edit.editingFinished.disconnect(shelf.commit_rename)
-        edit.returnPressed.connect(self.accept)
+        edit.returnPressed.connect(self._commit)
         self.rejected.connect(edit.hide)
         from ui_transitions import WindowFade
         self._window_fade=WindowFade(self)
@@ -549,7 +549,7 @@ class RenameDialog(QDialog):
         super().done(result)
 
     def _commit(self):
-        self.shelf.commit_rename();self.accept()
+        if self.shelf.commit_rename():self.accept()
 
     def paintEvent(self,event):
         from surface_morph import paint_surface_shadow
@@ -1041,7 +1041,7 @@ def build_preview(view,elided_type,image_type,media_type,content_type):
     view.open_button.clicked.connect(lambda:view.current_path and view.shelf.open_path(view.current_path));view.rename_button.clicked.connect(lambda:view.current_path and view.shelf.rename_ref(view.current_path))
     view.reveal_button=button('在文件夹中显示',variant='secondary',parent=content);view.reveal_button.clicked.connect(lambda:view.current_path and view.shelf.reveal_ref(view.current_path))
     def selected_refs():return view.popup.chosen_refs() or ([view.current_path] if view.current_path else [])
-    view.copy_selection_button=button('复制所选','copy',variant='secondary',parent=content);view.copy_selection_button.clicked.connect(lambda:view.shelf.copy_items(selected_refs()))
+    view.copy_selection_button=button('复制路径','copy',variant='secondary',parent=content);view.copy_selection_button.clicked.connect(view.copy_path)
     view.zip_selection_button=button('打包为 ZIP...',variant='secondary',parent=content);view.zip_selection_button.clicked.connect(lambda:view.shelf.compress_refs(selected_refs()))
     view.remove_button=button('移出搁架','trash',variant='danger',parent=content);view.remove_button.clicked.connect(lambda:view.current_path and view.popup.remove_path(view.current_path))
     view.remove_button._reference_icon=('trash','red');view.remove_button.setIcon(icon('trash',palette()['red']))

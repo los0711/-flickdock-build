@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QFram
                                QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QLineEdit, QPushButton,
                                QVBoxLayout, QGridLayout, QKeySequenceEdit, QScrollArea, QWidget, QSizePolicy,
                                QAbstractSpinBox, QPlainTextEdit, QSlider, QSpinBox, QColorDialog, QStyledItemDelegate, QLayout)
-from PySide6.QtWidgets import QStyle, QStyleOptionButton, QProxyStyle, QListView
+from PySide6.QtWidgets import QStyle, QStyleOptionButton, QProxyStyle, QListView, QMessageBox
 from PySide6.QtSvg import QSvgRenderer
 
 from app_version import APP_VERSION
@@ -1277,7 +1277,7 @@ class SettingsDialog(QDialog):
         self.sync_receive_checkbox.setToolTip('控制搁架接收；已下载文件保留，云剪贴板由下方独立开关控制。')
         self.clipboard_sync_checkbox = SettingsToggleSwitch("云剪贴板同步", cloud)
         self.clipboard_sync_checkbox.setAccessibleName('云剪贴板同步')
-        self.clipboard_sync_checkbox.setToolTip('自动同步小于 20 MB 的文本、链接、图片或单个文件，仅限同账号设备；可在这里关闭。')
+        self.clipboard_sync_checkbox.setToolTip('自动同步 100 MB 以内的文本、链接、图片或单个文件，仅限同账号设备；超过的内容不会同步。')
         self.clipboard_sync_checkbox.toggled.connect(self._clipboard_sync_changed)
         self.clipboard_success_checkbox=SettingsToggleSwitch('剪贴板同步成功提示',cloud)
         self.clipboard_success_checkbox.toggled.connect(self._clipboard_success_changed)
@@ -1305,6 +1305,7 @@ class SettingsDialog(QDialog):
         self.capture_mode_combo.addItem("复制到保存位置", "copy")
         self.capture_mode_combo.setMinimumWidth(190)
         self.capture_mode_combo.setAccessibleName("放入文件的方式")
+        self.capture_mode_combo.activated.connect(self._confirm_capture_mode)
         capture_row.addWidget(self.capture_mode_combo)
         storage_layout.addLayout(capture_row)
         storage_layout.addWidget(QLabel("内容保存位置", storage))
@@ -1429,6 +1430,13 @@ class SettingsDialog(QDialog):
         from PySide6.QtWidgets import QButtonGroup
         selection=QButtonGroup(group);selection.setExclusive(True)
         buttons=[]
+        def activate(index):
+            combo.setCurrentIndex(index)
+            # The visible segment is the user's input surface; retain the
+            # combo's distinction between user activation and loadValues().
+            # In particular, copy-mode confirmation must not be bypassed by
+            # clicking this segment instead of the hidden combo model.
+            combo.activated.emit(index)
         for index,label in enumerate(labels):
             button=QPushButton(label,group);button.setObjectName('settingsSegmentButton')
             button.setCheckable(True);button.setAutoDefault(False);button.setFixedHeight(26)
@@ -1438,7 +1446,7 @@ class SettingsDialog(QDialog):
                 glyph=('sun' if index==0 else 'moon') if combo is self.theme_combo else ('list' if index==0 else 'grid')
                 button.setProperty('segmentGlyph',glyph);button.setIcon(icon(glyph,'#68686D'))
                 button.setIconSize(QSize(15,15))
-            button.clicked.connect(lambda _checked=False,i=index:combo.setCurrentIndex(i))
+            button.clicked.connect(lambda _checked=False,i=index:activate(i))
             row.addWidget(button,1);buttons.append(button)
         def synchronize(*_):
             from native_ui_common import icon
@@ -1574,10 +1582,10 @@ class SettingsDialog(QDialog):
         cl.setAlignment(Qt.AlignmentFlag.AlignTop)
         ch=QLabel('云同步与存储',cloud);ch.setObjectName('settingsSection');cl.addWidget(ch)
         for control,label in ((self.sync_upload_checkbox,'上传本机搁架到云端'),(self.sync_receive_checkbox,'接收云端与其他设备内容'),
-                              (self.clipboard_sync_checkbox,'云剪贴板同步（小于 20 MB）'),
+                              (self.clipboard_sync_checkbox,'云剪贴板同步（100 MB 以内）'),
                               (self.clipboard_success_checkbox,'剪贴板同步成功提示')):
             cl.addWidget(self._reference_toggle(control,label,cloud))
-        self.retention_description=QLabel('云端文件保存时间\n小于 100 MB：上传成功后保留 24 小时。\n100 MB 及以上：上传成功后保留 2 小时。\n从完整上传成功时计时；到期仅清理云端副本，本机原文件和已下载的文件不受影响。',cloud)
+        self.retention_description=QLabel('搁架云端文件保存时间（R2）\n小于 100 MB：上传成功后保留 24 小时。\n100 MB 及以上：上传成功后保留 2 小时。\n仅在使用 R2 云端同步时适用，从完整上传成功时计时；到期不删除本机原文件或已接收的本地副本。',cloud)
         self.retention_description.setObjectName('settingsDetail');self.retention_description.setWordWrap(True)
         self.retention_description.setProperty('cloudRetentionNote',True)
         self.retention_description.setTextFormat(Qt.PlainText);cl.addWidget(self.retention_description)
@@ -2178,6 +2186,7 @@ class SettingsDialog(QDialog):
         self.error_label.hide()
         self.apply_theme(self.store.theme)
         self._loading_values = False
+        self._capture_choice=self.capture_mode_combo.currentData()
         self._emit_preview()
         self._emit_gesture_preview()
 
@@ -2246,6 +2255,18 @@ class SettingsDialog(QDialog):
         chosen = QFileDialog.getExistingDirectory(self, "选择内容保存位置", self.folder_edit.text() or str(self.store.capture_dir))
         if chosen:
             self.folder_edit.setText(chosen)
+
+    def _confirm_capture_mode(self,index):
+        if getattr(self,'_loading_values',False):return
+        previous=getattr(self,'_capture_choice',self.store.capture_mode)
+        current=self.capture_mode_combo.currentData()
+        if current=='copy' and previous!='copy':
+            reply=QMessageBox.question(self,'FlickDock',
+                '复制文件可能增加磁盘占用、内存使用及处理时间，可能影响大量文件操作的性能。是否切换到复制项目模式？',
+                QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.Cancel,QMessageBox.StandardButton.Cancel)
+            if reply!=QMessageBox.StandardButton.Yes:
+                self.capture_mode_combo.setCurrentIndex(self.capture_mode_combo.findData(previous));return
+        self._capture_choice=current
 
     def save(self):
         try:

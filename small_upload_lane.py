@@ -1,4 +1,4 @@
-"""One bounded small-item upload beside the journal's existing bulk cycle.
+"""Bounded independent uploads beside the journal's existing main cycle.
 
 The owner retains the protocol, journal and account epoch. Callbacks execute
 serially on Qt's thread with their own transfer context, never on worker threads.
@@ -15,18 +15,41 @@ SMALL_BYTES = 4*1024*1024
 class SmallUploadLane:
     def __init__(self, owner):
         self.owner = owner
-        self.active = None
+        self.tasks = {}
+        self.capacity = 2  # Plus the main cycle: at most three file uploads.
         self.retry_at = {}
         self.retry=QTimer(owner);self.retry.setSingleShot(True);self.retry.timeout.connect(self.kick)
         self.retry.setTimerType(Qt.TimerType.PreciseTimer)
 
+    @property
+    def active(self):
+        return next(iter(self.tasks.values()),None)
+
+    @active.setter
+    def active(self,value):
+        # Compatibility for journal/lifecycle fixtures; production cancels by ID.
+        self.tasks.clear()
+        if value is not None:self.tasks[value['id']]=value
+
+    def owns(self,token):
+        return token is not None and self.tasks.get(token['id']) is token
+
+    def discard(self,identity):
+        self.tasks.pop(identity,None)
+        self.retry_at.pop(identity,None)
+
+    def defer(self,identity,delay):
+        self.retry_at[identity]=time.monotonic()+delay
+        future=[value for value in self.retry_at.values() if value>time.monotonic()]
+        if future:self.retry.start(max(1,round((min(future)-time.monotonic())*1000)+1))
+
     def reset(self):
-        self.active = None
+        self.tasks.clear()
         self.retry_at.clear()
         self.retry.stop()
 
     def run(self, token, callback, *args):
-        if token is not self.active:
+        if not self.owns(token):
             return
         owner = self.owner
         previous, context = owner.transfer, owner._lane_context
@@ -36,14 +59,16 @@ class SmallUploadLane:
         finally:
             owner.transfer, owner._lane_context = previous, context
 
-    def finish(self, error=None):
+    def finish(self, error=None, *, token=None):
         owner = self.owner
-        token = self.active
-        if token is None:
+        token = token or owner._lane_context
+        if not self.owns(token):
             return
-        self.active = None
+        self.tasks.pop(token['id'])
         if error:
-            self.retry_at[token['id']] = time.monotonic()+30
+            self.defer(token['id'],30)
+            entry=(owner.state or {}).get('entries',{}).get(token['id'])
+            if entry is not None:entry['last_error']=owner._upload_error_summary(error)
             owner._refresh_again = True
         else:self.retry_at.pop(token['id'],None)
         future=[value for value in self.retry_at.values() if value>time.monotonic()]
@@ -57,8 +82,7 @@ class SmallUploadLane:
     def _continue(self):
         owner=self.owner
         if owner.closed or owner._clipboard_priority:return
-        if owner.running and owner.transfer is None and self.active is None:owner._push_next()
-        else:self.kick()
+        self.kick()
 
     def eligible(self, entry, texts):
         bridge=getattr(self.owner,'clipboard_bridge',None)
@@ -70,6 +94,18 @@ class SmallUploadLane:
             return False
         text = texts.get(entry['ref'])
         try:
+            # New objects have no concurrent-version reconciliation side
+            # effects. Larger files/directories can use the same isolated
+            # slots only when the transport streams both whole files and
+            # ranges; never multiply large Python request buffers. Directory
+            # preparation stays in the owner's bounded disk worker pool.
+            api=self.owner.api
+            streaming=(getattr(api,'supports_file_upload',False)
+                       and getattr(api,'supports_file_slices',False))
+            if text is None and streaming:
+                # Admission is on Qt's thread. The bounded stage_item worker
+                # owns validation; even stat can block on a disconnected share.
+                return True
             return (len(text.encode('utf-8')) <= SMALL_BYTES if text is not None
                     else Path(entry['ref']).is_file()
                     and Path(entry['ref']).stat().st_size <= SMALL_BYTES)
@@ -78,35 +114,37 @@ class SmallUploadLane:
 
     def kick(self):
         owner = self.owner
-        if (self.active or owner.closed or not owner.running or not owner.transfer
+        if (owner.closed or not owner.running
                 or owner._lane_context or owner._clipboard_priority
                 or not owner.upload_enabled or not owner.service.signed_in
+                or owner._main_cycle_phase not in ('upload','upload_tail')
                 or owner._retry_paused() or owner._paused('quota_not_before')):
             return
-        bulk = owner.transfer
-        try:
-            size = bulk.get('size')
-            if size is None:
-                source = Path(bulk['ref'])
-                size = source.stat().st_size if source.is_file() else SMALL_BYTES+1
-            if size <= SMALL_BYTES:
-                return
-        except (OSError, KeyError):
+        if owner.transfer is None:
+            # No transfer also describes cleanup/receive requests in flight.
+            # Only the main cycle's explicit upload-tail boundary is idle:
+            # use its free slot even when both auxiliary PUTs are still held.
+            if owner._main_cycle_phase=='upload_tail':owner._push_next()
             return
+        if len(self.tasks)>=self.capacity:return
+        bulk = owner.transfer or {}
+        # A slow small-file commit must not serialize all other small files.
         texts = owner.adapter.snapshot().get('texts', {})
         resumes = owner.state.setdefault('resumable_uploads', {})
         entry = next((item for item in owner.state['entries'].values()
-                      if item['id'] != bulk['id']
+                      if item['id'] != bulk.get('id') and item['id'] not in self.tasks
                       and self.eligible(item, texts)), None)
         if entry is None:
             return
         saved=resumes.get(entry['id'])
-        token = self.active = dict(saved or entry)
+        token = dict(saved or entry)
+        self.tasks[token['id']]=token
+        QTimer.singleShot(0,owner,self.kick)
         if saved:
             from shelf_sync import _verify_staged
             def verified(result,error):
                 if error:
-                    owner._forget_resume(token['id']);self.finish(error);return
+                    owner._forget_resume(token['id']);self.finish(error,token=token);return
                 resumes[token['id']]=token
                 owner._resume_upload(token)
             self.run(token,owner._work,_verify_staged,(token,),verified)
@@ -114,12 +152,24 @@ class SmallUploadLane:
 
         def staged(result, error):
             if error:
-                self.finish(error)
+                if isinstance(error,ValueError):
+                    # A rejected archive/size is not a transient request.
+                    # Match the main slot's unchanged-revision fence instead
+                    # of repeatedly scanning the same invalid directory.
+                    owner._end_intake(token)
+                    current=owner.state['entries'].get(token['id'])
+                    if current and current.get('seq')==token.get('seq'):
+                        current.update(blocked_fingerprint=token['fingerprint'],
+                                       last_error=owner._upload_error_summary(error))
+                    owner.status_changed.emit(owner._upload_error_summary(error))
+                    self.finish(token=token)
+                    QTimer.singleShot(0,owner,owner._retire_abandoned_uploads)
+                else:self.finish(error,token=token)
                 return
             token.update(result)
             if not owner._resume_matches(token):
                 Path(token['path']).unlink(missing_ok=True)
-                self.finish()
+                self.finish(token=token)
                 return
             resumes[token['id']] = token
             owner._persist()

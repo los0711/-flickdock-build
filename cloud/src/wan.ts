@@ -58,7 +58,11 @@ export class WanHub extends DurableObject<WanEnv>{
     if(!seat?.account_active||seat.auth_nonce!==value.nonce)return null;
     const valid=await this.env.DB.prepare('SELECT 1 valid FROM sessions s JOIN devices d ON d.id=s.device_id WHERE s.token_hash=? AND s.account_id=? AND s.device_id=? AND s.expires_at>? AND d.revoked_at IS NULL')
       .bind(value.session,value.account,value.device,Date.now()).first();
-    return valid?value:null;
+    return valid&&this.bindingIntent(id,value)?value:null;
+  }
+  private bindingIntent(id:string,value:Binding){
+    const seat=this.socket(id)?.deserializeAttachment() as Seat|undefined;
+    return !!(seat?.account_active&&seat.auth_nonce===value.nonce&&seat.account===value.account);
   }
   private async accountPeers(id:string):Promise<Device[]>{
     const self=await this.binding(id);if(!self)return [];
@@ -258,12 +262,29 @@ export class WanHub extends DurableObject<WanEnv>{
       const socket=this.socket(id);if(socket)this.send(socket,{id:value.id,generation:value.generation,...message});
     }
   }
+  private async accountPair(value:Session){
+    // Re-evaluate current sessions/revocation and account intent. Never persist
+    // or trust a sender's account_device field, history, name, IP or LAN ID.
+    const sender=await this.binding(value.sender.id),receiver=await this.binding(value.receiver.id);
+    if(!sender||!receiver||sender.account!==receiver.account||sender.device===receiver.device
+        ||!this.bindingIntent(value.sender.id,sender)||!this.bindingIntent(value.receiver.id,receiver))return null;
+    return {sender,receiver};
+  }
+  private async accountAuthorization(value:Session){
+    const pair=await this.accountPair(value);
+    return pair?{receiver_device:pair.receiver.device,nonce:pair.receiver.nonce}:null;
+  }
+  private async offer(socket:WebSocket,value:Session){
+    const authorization=await this.accountAuthorization(value);
+    return this.send(socket,{type:'request',id:value.id,peer:value.sender,deviceCode:value.sender_code||'',token:value.token,
+      digest:value.digest,total:value.total,count:value.count,names:value.names,...(authorization?{account_authorization:authorization}:{})});
+  }
   private async replay(socket:WebSocket,value:Session){
     const seat=socket.deserializeAttachment() as Seat;
     if(value.accepted){
       this.send(socket,{type:'resumed',id:value.id,accepted:true,generation:value.generation,settled:value.done.length===2});
     }else if(seat.id===value.receiver.id){
-      this.send(socket,{type:'request',id:value.id,peer:value.sender,deviceCode:value.sender_code||'',token:value.token,digest:value.digest,total:value.total,count:value.count,names:value.names});
+      await this.offer(socket,value);
     }else this.send(socket,{type:'waiting',id:value.id,peer:value.receiver});
   }
   private async removeSession(value:Session){
@@ -408,15 +429,19 @@ export class WanHub extends DurableObject<WanEnv>{
           await tx.delete('pairing:'+request.id);return null;
         });
         if(already){await this.replay(socket,already);return;}
-        if(!this.send(recipient,{type:'request',id:value.id,peer:value.sender,deviceCode:value.sender_code,token:value.token,digest:value.digest,total:value.total,count:value.count,names:value.names}))throw new Error('对方设备不在线，无法发送。');
+        if(!await this.offer(recipient,value))throw new Error('对方设备不在线，无法发送。');
         this.send(socket,{type:'waiting',id:value.id,peer:receiver});if(request.code&&!request.prepared&&!custom)await this.code(recipient);return;
       }
       const value=await this.session(request.id,seat),other=value.sender.id===seat.id?value.receiver.id:value.sender.id;
       if(request.type==='accept'){
         if(seat.id!==value.receiver.id)throw new Error('无法接受此请求。');
+        const automatic=request.auto_account===true?await this.accountPair(value):null;
+        if(request.auto_account===true&&!automatic)throw new Error('设备授权已变化，请手动确认后重试。');
         if(value.accepted){await this.replay(socket,value);return;}
         const accepted=await this.ctx.storage.transaction(async tx=>{
           const latest=await tx.get<Session>('session:'+value.id);if(!latest)throw new Error('传输请求已失效。');
+          if(automatic&&(!this.bindingIntent(value.sender.id,automatic.sender)
+              ||!this.bindingIntent(value.receiver.id,automatic.receiver)))throw new Error('设备授权已变化，请手动确认后重试。');
           if(latest.accepted)return latest;
           if(latest.custom){
             const row=await tx.get<CodeRow>('code:'+latest.custom.code);

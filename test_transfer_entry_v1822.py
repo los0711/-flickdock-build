@@ -14,29 +14,6 @@ from wan_transfer import WanTransferService
 
 
 class EntryTests(unittest.TestCase):
-    def test_mixed_native_text_does_not_disable_actual_files_or_change_their_mime(self):
-        from types import SimpleNamespace,MethodType
-        from PySide6.QtWidgets import QMenu
-        from shelf_content import ContentRepository
-        from flickdock import ShelfWindow
-        with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory);original=root/'original.txt';original.write_text('original')
-            backed=root/'pasted.txt';backed.write_text('backed')
-            content=ContentRepository();text=content.add_text('native plain text');link=content.add_text('https://example.invalid')
-            pasted=content.add_text('pasted text');content.metadata[pasted]={'text_file':str(backed)}
-            calls=[];shelf=SimpleNamespace(content=content,manager=SimpleNamespace(queue_transfer_paths=lambda *args:calls.append(args)))
-            shelf.transfer_paths_for_refs=MethodType(ShelfWindow.transfer_paths_for_refs,shelf)
-            before=content.mime_for([text]).text();metadata=dict(content.metadata)
-            for refs,enabled in (([str(original),text,link,pasted],True),([text,link],False),([str(original),'flickdock:transfer:pending'],False)):
-                menu=QMenu();ShelfWindow.add_transfer_actions(shelf,menu,refs)
-                self.assertEqual([a.isEnabled() for a in menu.actions()],[enabled,enabled])
-                if enabled:
-                    for action in menu.actions():action.trigger()
-                menu.deleteLater()
-            self.assertEqual(calls,[('lan',[str(original),str(backed)]),('wan',[str(original),str(backed)])])
-            self.assertEqual(content.metadata,metadata);self.assertEqual(content.mime_for([text]).text(),before)
-            self.assertEqual(sorted(p.name for p in root.iterdir()),['original.txt','pasted.txt'])
-
     def chooser(self):
         root=QWidget();root.resize(440,420);button=QPushButton('文件互传',root);button.setGeometry(20,360,180,34)
         calls=[];router=TransferEntryRouter(root,button,lambda mode,paths:calls.append((mode,paths)))

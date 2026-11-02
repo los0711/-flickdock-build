@@ -491,7 +491,8 @@ class PreviewPane(QFrame):
         self.open_button.setEnabled(not self.shelf.content.is_pending(ref))
         self.rename_button.setEnabled(not self.shelf.content.is_pending(ref) and not self.shelf.content.is_text(ref))
         self.reveal_button.setEnabled(not self.shelf.content.is_pending(ref) and (not self.shelf.content.is_text(ref) or bool(self.shelf.content.metadata.get(ref,{}).get('pasted_text'))))
-        self.copy_selection_button.setEnabled(not self.shelf.content.is_pending(ref));self.zip_selection_button.setEnabled(not self.shelf.content.is_pending(ref))
+        actual_path=self.shelf.content.metadata.get(ref,{}).get('text_file') if self.shelf.content.is_text(ref) else ref
+        self.copy_selection_button.setEnabled(not self.shelf.content.is_pending(ref) and bool(actual_path));self.zip_selection_button.setEnabled(not self.shelf.content.is_pending(ref))
         self.refresh_cloud_status()
         self.copy_button.set_glyph("copy")
         self.name.setText(self.shelf.content.title(ref))
@@ -621,6 +622,15 @@ class PreviewPane(QFrame):
         ref=self.current_path
         if ref in self.shelf.files['permanent']:
             self.show_path(ref,force=True)
+
+    def copy_path(self):
+        ref=self.current_path
+        if not ref or self.shelf.content.is_pending(ref):return
+        path=self.shelf.content.metadata.get(ref,{}).get('text_file') if self.shelf.content.is_text(ref) else ref
+        if not path:return
+        clipboard_audit.set_text(QApplication.clipboard(),os.path.abspath(path),module='flickdock',
+            function='PreviewPane.copy_path',trigger='copy_path_button',origin='user_copy')
+        self.shelf.touch()
 
     def copy_current(self):
         if not self.current_path: return
@@ -774,7 +784,7 @@ class FileRow(QFrame):
         elif event.key() == Qt.Key.Key_Space:
             self.popup.select_item(self.path,toggle=True);event.accept()
         elif event.key() == Qt.Key.Key_Delete:
-            self.popup.remove_path(self.path)
+            self.popup.remove_selected(self.path)
             event.accept()
         else:
             super().keyPressEvent(event)
@@ -1413,6 +1423,10 @@ class ContentsPopup(QFrame):
         self.preview.refresh_cloud_status()
 
     def remove_path(self,ref): self.shelf.remove_path('permanent',ref)
+
+    def remove_selected(self,fallback=None):
+        refs=self.chosen_refs() or ([fallback] if fallback else [])
+        for ref in tuple(refs):self.remove_path(ref)
 
     def leaveEvent(self,event):
         self.hovered_ref=None; self.restore_selected_preview(); super().leaveEvent(event)
@@ -3017,14 +3031,14 @@ class ShelfWindow(QWidget):
         from reference_widgets import refresh_tree
         refresh_tree(dialog)
         dialog.move(self.visual_geometry().center()-QPoint(dialog.width()//2,dialog.height()//2))
-        self.rename_edit.setText(Path(ref).stem)
+        self.rename_edit.setText(Path(ref).name)
         self._release_reveal_level()
         dialog._window_fade.reopen()
         dialog.show();dialog.raise_();dialog.activateWindow()
         self.rename_edit.show()
         self.rename_edit.raise_()
         self.rename_edit.setFocus()
-        self.rename_edit.selectAll()
+        self.rename_edit.setSelection(0,len(Path(ref).stem))
         self.touch()
 
     def commit_rename(self):
@@ -3032,18 +3046,22 @@ class ShelfWindow(QWidget):
         if not self.rename_edit.isVisible() or ref not in self.files['permanent']:
             return
         new_name = self.rename_edit.text().strip()
-        self.rename_edit.hide()
         if not new_name or any(c in new_name for c in '<>:"/\\|?*'):
-            return
+            return False
         src = Path(ref)
-        target = src.with_name(new_name + src.suffix)
+        target = src.with_name(new_name)
         if target == src:
-            return
+            return True
         rename_dialog=getattr(self,'_rename_dialog',None)
         feedback_parent=rename_dialog if rename_dialog is not None and rename_dialog.isVisible() else self
+        if target.suffix.casefold()!=src.suffix.casefold():
+            result=QMessageBox.question(feedback_parent,APP_NAME,
+                '修改文件扩展名可能导致文件无法正常打开，请确认是否继续。',
+                QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.Cancel,QMessageBox.StandardButton.Cancel)
+            if result!=QMessageBox.StandardButton.Yes:return False
         if target.exists():
             QMessageBox.warning(feedback_parent, APP_NAME, "目标文件名已经存在")
-            return
+            return False
         try:
             if self.popup and self.popup.preview.media.path==ref:self.popup.preview.media.release_source()
             src.rename(target)
@@ -3056,8 +3074,11 @@ class ShelfWindow(QWidget):
                 self.popup.preview.current_path=None
             self.refresh()
             self.manager.save()
+            self.rename_edit.hide()
+            return True
         except Exception as ex:
             QMessageBox.warning(feedback_parent, APP_NAME, f"重命名失败：{ex}")
+            return False
 
     def mousePressEvent(self, event):
         self.touch()
@@ -3327,7 +3348,7 @@ class ShelfManager:
         self.events.devices_changed.connect(self.account.list_devices)
         if native_input_available():clipboard_audit.start(BASE)
         self.clipboard_sync=ClipboardSync(self.account,self.events,BASE,self.app,
-            enabled=self._clipboard_runtime_enabled())
+            enabled=self._clipboard_runtime_enabled(),independent_transport=True)
         self.sync.attach_clipboard(self.clipboard_sync)
         self.clipboard_sync.activity_changed.connect(self.sync.set_clipboard_priority)
         self.clipboard_sync.copy_result.connect(self._clipboard_copy_result)
@@ -3355,6 +3376,7 @@ class ShelfManager:
         self.wan=WanTransferService(BASE,self.app,device_name=self.account.device_name,
             enabled=not self.cocoa_smoke and self.app.platformName() not in ('offscreen','minimal'))
         self.wan.attach_account(self.account,lan_id=self.lan.device_id,nearby_peers=self.lan.peers)
+        self.wan.automatic_receive_directory=lambda:self.settings.lan_receive_dir
         self.lan.peers_changed.connect(lambda _:self.wan.peers_changed.emit(self.wan.peers()))
         self.wan.offer_received.connect(self._wan_offer)
         self.wan.start()
@@ -3471,7 +3493,7 @@ class ShelfManager:
             if self._clipboard_intro.isVisible():return True
             self._clipboard_intro.deleteLater();self._clipboard_intro=None
         intro=UpdateNotice(shelf,theme=self.settings.theme);self._clipboard_intro=intro
-        intro.show_version('云剪贴板','复制的文本、链接、图片或单个文件（小于 20 MB）会自动加密传输到云端，'
+        intro.show_version('云剪贴板','复制的文本、链接、图片或单个文件（100 MB 以内）会自动加密传输到云端，'
                            '并同步到同账号已绑定设备。云端仅保留最新内容，保留 24 小时；粘贴不会删除内容。'
                            '\n\n默认开启，可随时在“设置 → 云剪贴板同步”关闭。')
         intro.title.setText('云剪贴板已默认开启')

@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 from unittest.mock import patch
 
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
@@ -26,6 +27,28 @@ app.setFont(QFont('HarmonyOS Sans SC', 11))
 def flush():
     app.processEvents()
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
+def until(predicate):
+    deadline=time.monotonic()+2
+    while not predicate() and time.monotonic()<deadline:
+        flush();QTest.qWait(5)
+    assert predicate(), 'Settings transition did not settle'
+
+
+def open_category(dialog,key):
+    button=dialog.settings_category_buttons[key]
+    assert button.isVisible() and button.isEnabled()
+    QTest.mouseClick(button,Qt.MouseButton.LeftButton);flush()
+    until(lambda:dialog._settings_content_entrance.active_count==0)
+    assert dialog._active_settings_category==key and button.isChecked()
+
+
+def expose(dialog,widget):
+    assert widget.isVisible() and widget.isEnabled(), (widget.objectName(),widget.accessibleName())
+    dialog.scroll.ensureWidgetVisible(widget,8,8);flush()
+    centre=widget.mapTo(dialog.scroll.viewport(),widget.rect().center())
+    assert dialog.scroll.viewport().rect().contains(centre)
 
 
 def assert_rejected(store, **value):
@@ -112,6 +135,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-settings-v163-') as temporary
     assert dialog.shake_sensitivity_spin.value() == 87
     dialog.shake_sensitivity_spin.setValue(23)
     assert dialog.shake_sensitivity_slider.value() == 23
+    open_category(dialog,'displays');expose(dialog,dialog.shake_sensitivity_reset_button)
     QTest.mouseClick(dialog.shake_sensitivity_reset_button, Qt.MouseButton.LeftButton)
     assert dialog.shake_sensitivity_spin.value() == dialog.shake_sensitivity_slider.value() == 50
     dialog.shake_sensitivity_spin.setValue(73)
@@ -135,27 +159,35 @@ with tempfile.TemporaryDirectory(prefix='flickdock-settings-v163-') as temporary
     for theme in ('light', 'dark'):
         dialog.theme_combo.setCurrentIndex(dialog.theme_combo.findData(theme))
         dialog.resize(560, 520); flush()
-        assert dialog.scroll.verticalScrollBar().maximum() > 0
         assert dialog.rect().contains(dialog.save_button.geometry())
         assert dialog.shake_sensitivity_reset_button.dark == (theme == 'dark')
-        for checkbox in dialog.findChildren(QCheckBox):
-            assert isinstance(checkbox, subject.SettingsCheckBox)
-            if isinstance(checkbox, subject.SettingsToggleSwitch):
+        visited=set();all_checkboxes=set(dialog.findChildren(QCheckBox))
+        for category in dialog.settings_category_buttons:
+            open_category(dialog,category)
+            if category=='displays':assert dialog.scroll.verticalScrollBar().maximum()>0
+            for checkbox in dialog.findChildren(QCheckBox):
+                if not checkbox.isVisible():continue
+                assert checkbox not in visited, 'A checkbox appeared in multiple categories'
+                visited.add(checkbox);assert isinstance(checkbox,subject.SettingsCheckBox)
+                expose(dialog,checkbox)
+                assert checkbox.isEnabled(), checkbox.accessibleName()
+                if isinstance(checkbox,subject.SettingsToggleSwitch):
+                    checkbox.setChecked(True)
+                    until(lambda:checkbox._toggle_motion.value==1.)
+                    image=checkbox.grab().toImage();ratio=image.devicePixelRatio()
+                    left=image.pixelColor(round((checkbox.width()-40)*ratio),round(checkbox.height()*ratio/2))
+                    knob=image.pixelColor(round((checkbox.width()-17)*ratio),round(checkbox.height()*ratio/2))
+                    assert left.green()>180 and left.red()<100 and left.blue()<130 and min(knob.red(),knob.green(),knob.blue())>245
+                    before=checkbox.isChecked()
+                    QTest.mouseClick(checkbox,Qt.MouseButton.LeftButton,pos=QPoint(checkbox.width()-18,checkbox.height()//2))
+                    assert checkbox.isChecked()!=before,(checkbox.text(),checkbox.accessibleName(),checkbox.isVisible(),checkbox.isEnabled())
+                else:assert_tick_visible(checkbox)
                 checkbox.setChecked(True)
-                image=checkbox.grab().toImage();ratio=image.devicePixelRatio()
-                left=image.pixelColor(round((checkbox.width()-40)*ratio),round(checkbox.height()*ratio/2))
-                knob=image.pixelColor(round((checkbox.width()-17)*ratio),round(checkbox.height()*ratio/2))
-                assert left.green()>180 and left.red()<100 and left.blue()<130 and min(knob.red(),knob.green(),knob.blue())>245
-                before=checkbox.isChecked()
-                dialog.scroll.ensureWidgetVisible(checkbox,8,8);flush()
-                QTest.mouseClick(checkbox,Qt.MouseButton.LeftButton,
-                                 pos=QPoint(checkbox.width()-18,checkbox.height()//2))
-                assert checkbox.isChecked()!=before,(checkbox.text(),checkbox.accessibleName(),checkbox.isVisible(),checkbox.isEnabled())
-            else:
-                assert_tick_visible(checkbox)
-            checkbox.setChecked(True)
-        dialog.scroll.ensureWidgetVisible(dialog.shake_sensitivity_reset_button)
-        flush()
+        # Every actual checkbox is available in one current category. Hidden
+        # combo/slider models are not pointer input surfaces and are not clicked.
+        assert visited==all_checkboxes, [(w.objectName(),w.accessibleName(),w.text()) for w in all_checkboxes-visited]
+        print('PASS category checkbox coverage',theme,'visible',len(visited))
+        open_category(dialog,'displays');expose(dialog,dialog.shake_sensitivity_reset_button)
         spin = dialog.shake_sensitivity_spin
         assert spin.width() >= spin.fontMetrics().horizontalAdvance('100')+30
         assert dialog.capture_mode_combo.font().family() == 'HarmonyOS Sans SC'

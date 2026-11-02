@@ -29,6 +29,21 @@ class ClipboardPopupTests(unittest.TestCase):
         self.assertTrue(dialog.isVisible());return source,dialog,dialog._popup_motion
     def land(self,motion):motion.animation.setCurrentTime(motion.animation.duration());ws.flush()
 
+    def test_sync_limit_note_fits_and_click_closes_without_upload_or_host_action(self):
+        for overview in (False,True):
+            source,dialog,motion=self.open(overview=overview);self.land(motion)
+            note=dialog.sync_limit_note
+            self.assertIn('100 MB 以内',note.text());self.assertIn('不会同步给其他设备',note.text())
+            self.assertTrue(note.isVisible());self.assertTrue(note.wordWrap())
+            self.assertEqual(note.textInteractionFlags(),Qt.NoTextInteraction)
+            rect=QRect(note.mapTo(dialog.surface,QPoint()),note.size())
+            self.assertTrue(dialog.surface.rect().contains(rect))
+            writes=[call for call in self.fixture.hub.calls if call[0]!='GET']
+            QTest.mouseClick(note,Qt.LeftButton);self.assertEqual(motion.target,0)
+            self.land(motion);self.assertFalse(dialog.isVisible())
+            self.assertEqual([call for call in self.fixture.hub.calls if call[0]!='GET'],writes)
+            self.assertEqual(self.fixture.clip.mimeData().text(),'original clipboard text 中文')
+
     def test_real_source_to_content_pixels_and_fixed_native_geometry(self):
         source,dialog,motion=self.open();geometry=QRect(dialog.geometry());native=dialog.winId()
         self.assertEqual(motion.source_rect,QRectF(QRect(source.mapToGlobal(QPoint()),source.size())))
@@ -113,6 +128,7 @@ class ClipboardPopupTests(unittest.TestCase):
         for theme in ('dark','light'):
             self.manager.settings.update(theme=theme)
             source,dialog,motion=self.open();motion.animation.pause();motion.animation.setCurrentTime(80)
+            geometry=QRect(dialog.geometry());surface_size=dialog.surface.size();native=dialog.winId()
             ws.until(lambda:not self.fixture.model.large.isNull())
             self.assertIs(dialog.content.currentWidget(),dialog.image)
             self.assertEqual(dialog.image.image.pixelColor(30,30),image.pixelColor(30,30))
@@ -122,6 +138,10 @@ class ClipboardPopupTests(unittest.TestCase):
             dpr=dialog.devicePixelRatioF();rect=dialog.surface.geometry().adjusted(12,12,-12,-12)
             crop=QRect(round(rect.x()*dpr),round(rect.y()*dpr),round(rect.width()*dpr),round(rect.height()*dpr))
             self.assertEqual(snapshot.copy(crop),live.copy(crop))
+            self.assertEqual(dialog.geometry(),geometry);self.assertEqual(dialog.surface.size(),surface_size)
+            self.assertEqual(dialog.winId(),native);self.assertEqual(dialog.scroll.verticalScrollBar().maximum(),0)
+            note_rect=QRect(dialog.sync_limit_note.mapTo(dialog.scroll.viewport(),QPoint()),dialog.sync_limit_note.size())
+            self.assertTrue(dialog.scroll.viewport().rect().contains(note_rect))
             self.assertEqual(bytes(self.fixture.clip.mimeData().data('image/png')),original)
             self.assertEqual(path.read_bytes(),original);dialog.dismiss(immediate=True)
 
