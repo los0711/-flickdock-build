@@ -38,8 +38,8 @@ class OverviewPolishTests(unittest.TestCase):
             self.assertEqual(dialog.windowModality(),Qt.WindowModal)
             self.assertTrue(shelf.rename_edit.hasFocus());self.assertTrue(Path(original).exists())
             collision=Path(original).with_name('already-exists'+Path(original).suffix);collision.write_text('untouched')
-            shelf.rename_edit.setText('already-exists')
-            with patch('flickdock.QMessageBox.warning') as warning:
+            shelf.rename_edit.setText(collision.name)
+            with patch('flickdock.QMessageBox.question',side_effect=AssertionError('The collision fixture must preserve the extension')),patch('flickdock.QMessageBox.warning') as warning:
                 shelf.commit_rename();self.assertIs(warning.call_args.args[0],dialog)
             self.assertTrue(Path(original).exists());self.assertEqual(collision.read_text(),'untouched')
         finally:
@@ -145,11 +145,14 @@ class TransferPolishTests(unittest.TestCase):
         self.assertTrue(intents)
         ws.until(lambda:not d.isVisible())
 
-    def test_history_has_no_leading_icon_and_reveals_only_real_record_paths(self):
+    def test_history_has_format_preview_without_status_icon_and_reveals_only_real_record_paths(self):
         p=self.panel;path=Path(self.temp.name)/'original.txt';path.write_text('original')
         p._progress(dict(id='received',name=path.name,peer='Peer',direction='receive',state='complete',total=8,received=8))
         p._completed(dict(id='received',direction='receive',paths=[str(path)]));ws.flush()
-        row=p.history_rows[0];self.assertFalse(row.icon.isVisible());self.assertEqual(row.detail.x(),row.contentsRect().left()+14)
+        row=p.history_rows[0];self.assertFalse(row.icon.isVisible())
+        self.assertTrue(row.file_preview.isVisible());self.assertEqual(row.file_preview.property('fileType'),'txt')
+        self.assertEqual(row.file_preview.x(),row.contentsRect().left()+14)
+        self.assertEqual(row.detail.x(),row.file_preview.geometry().right()+1+row.layout().spacing())
         self.assertTrue(row.reveal_button.isEnabled())
         with patch.object(p.file_metadata,'request',return_value={'exists':True}),patch('subprocess.Popen') as launch,patch('windows_reveal.request_reveal') as select,patch('lan_panel.QDesktopServices.openUrl',return_value=True) as desktop:
             row.reveal_button.click()

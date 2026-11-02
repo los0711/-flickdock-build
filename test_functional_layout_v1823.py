@@ -48,8 +48,12 @@ class OverviewRefinementTests(unittest.TestCase):
             preview.detail_scroll.ensureWidgetVisible(button,0,4);workspace.flush()
             self.assertTrue(button.isVisible())
             with patch.object(self.fixture.shelf,name) as action:button.click();action.assert_called_once_with(ref)
-        for button,name in ((preview.copy_selection_button,'copy_items'),(preview.zip_selection_button,'compress_refs')):
-            with patch.object(self.fixture.shelf,name) as action:button.click();action.assert_called_once_with([ref])
+        self.assertEqual(preview.copy_selection_button.text(),'复制路径')
+        preview.copy_selection_button.click()
+        self.assertEqual(workspace.APP.clipboard().text(),str(Path(ref).absolute()))
+        self.assertFalse(workspace.APP.clipboard().mimeData().hasUrls())
+        with patch.object(self.fixture.shelf,'compress_refs') as action:
+            preview.zip_selection_button.click();action.assert_called_once_with([ref])
         self.assertEqual(preview.remove_button._reference_icon,('trash','red'))
         preview.remove_button.click();workspace.flush()
         self.assertNotIn(ref,self.fixture.shelf.files['permanent']);self.assertTrue(Path(ref).is_file())

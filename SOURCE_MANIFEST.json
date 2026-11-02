@@ -26,8 +26,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 18420,
-      "sha256": "1d345a9574aac95eee9a511a4c47bd3ba4d1bbfe2d3b77dd70f10c2dd2876eaa"
+      "size": 18445,
+      "sha256": "281b25f08899f98fb3b5aed7f7c06b8665496f17fdd8932e7dc82faacaf28f87"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -1811,8 +1811,8 @@
     },
     {
       "path": "test_functional_layout_v1823.py",
-      "size": 18096,
-      "sha256": "74c05720ee34e83f0ceae5dcb50d0a5bea98157ace0c380afeb56be2c1f16c10"
+      "size": 18298,
+      "sha256": "4a1b7f6d159747d4e7ead8614945049ead81632002ed0b98f0cec5dbadc80ad4"
     },
     {
       "path": "test_gesture_entry_v165.py",
@@ -2256,8 +2256,8 @@
     },
     {
       "path": "test_ui_polish_v1823.py",
-      "size": 15319,
-      "sha256": "7dc4c09184a8efa0b055ad2678d2c414f9d66aa77040d9aed8597c9b97bdaf3d"
+      "size": 15688,
+      "sha256": "a1bc5e4cec41f13e2533a8ee01cb2f16141a39bb0d96a423a1d7c8b310322c38"
     },
     {
       "path": "test_update_client_v170.py",

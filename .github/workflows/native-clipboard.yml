@@ -227,6 +227,7 @@ jobs:
     timeout-minutes: 35
     env:
       PYTHONUTF8: '1'
+      FD_QA_NATIVE: '1'
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
       WRANGLER_SEND_METRICS: 'false'
     steps:
