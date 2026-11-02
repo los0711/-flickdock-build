@@ -241,12 +241,37 @@ class Batch3(Batch2):
         # a guessed global coordinate. All clipping ancestors must contain it.
         if rectangle[2]-rectangle[0]<120 or rectangle[3]-rectangle[1]<28:
             raise AssertionError('Recent native row is too small for its actual remove target')
-        for ancestor in self.ancestry(row):
+        chain=self.ancestry(row)
+        for ancestor in chain:
             if ancestor.element_info.control_type=='Window':break
             r=bounds(ancestor)
             if not ancestor.is_visible() or not (r[0]<=point[0]<r[2] and r[1]<=point[1]<r[3]):
+                self.observe_recent_clip(point,chain)
                 raise AssertionError('Recent remove target is clipped by actual native popup ancestor')
         return point
+
+    def observe_recent_clip(self,point,chain):
+        """Passive bounded geometry; never change the rejected input target."""
+        def technical(control):
+            info=control.element_info;r=bounds(control)
+            return dict(role=info.control_type,class_name=info.class_name,bounds=r,
+                        visible=bool(control.is_visible()),handle=int(control.handle or 0),
+                        pid=int(getattr(info,'process_id',0) or 0),
+                        contains=r[0]<=point[0]<r[2] and r[1]<=point[1]<r[3])
+        # Record the provider chain before any further observation can fail.
+        try:
+            self.mark('recent-clipping-ancestry',point=list(point),
+                      ancestors=[technical(c) for c in chain[:24]])
+            api=self.b._input_api();hit=int(api.WindowFromPoint(point) or 0)
+            root=int(api.GetAncestor(hit,2) or 0) if hit else 0
+            self.mark('recent-clipping-native-hit',point=list(point),hit=hit,root=root,
+                      hit_pid=self.b._window_pid(hit) if hit else 0,
+                      root_pid=self.b._window_pid(root) if root else 0)
+            hosts=[technical(c) for c in self.b.windows()[:24]
+                   if c.element_info.class_name=='QComboBoxPrivateContainer']
+            self.mark('recent-clipping-native-popup-hosts',hosts=hosts)
+        except Exception as error:
+            self.mark('recent-clipping-observation-failed',error_type=type(error).__name__)
 
     def recent(self):
         self.transfer('wan');root=self.scope('transfer')

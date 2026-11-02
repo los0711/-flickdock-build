@@ -213,6 +213,27 @@ class Batch3Tests(unittest.TestCase):
         self.assertEqual(self.runner.popup_rows(),[row,survivor]);view.element_info.class_name='OtherList'
         self.assertEqual(self.runner.popup_rows(),[])
 
+    def test_recent_clipping_diagnostic_preserves_refusal_and_has_no_names_or_input(self):
+        popup,view,row,_=self.recent_fixture();popup.element_info.class_name='QComboBoxPrivateContainer'
+        combo=Control('private user text','ComboBox','_DevicesCombo',rectangle=(100,50,500,90))
+        view.owner=combo
+        with self.assertRaisesRegex(AssertionError,'clipped'):self.runner.row_remove_point(row)
+        ancestry=next(e for e in self.runner.events if e['step']=='recent-clipping-ancestry')
+        self.assertEqual([r['class_name'] for r in ancestry['ancestors']],['','QListView','_DevicesCombo'])
+        self.assertEqual([r['contains'] for r in ancestry['ancestors']],[True,True,False])
+        hosts=next(e for e in self.runner.events if e['step']=='recent-clipping-native-popup-hosts')
+        self.assertEqual(hosts['hosts'][0]['bounds'],[100,100,500,350])
+        self.assertNotIn('private user text',str(self.runner.events))
+        self.assertFalse(any('name' in r for r in ancestry['ancestors']))
+        self.mouse.move.assert_not_called();self.mouse.click.assert_not_called()
+
+    def test_recent_clipping_observer_failure_never_hides_original_refusal(self):
+        _,view,row,_=self.recent_fixture();view.box=(100,100,455,350)
+        self.api.WindowFromPoint.side_effect=RuntimeError('private payload')
+        with self.assertRaisesRegex(AssertionError,'clipped'):self.runner.row_remove_point(row)
+        self.assertEqual(self.runner.events[-1]['error_type'],'RuntimeError')
+        self.assertNotIn('private payload',str(self.runner.events));self.mouse.click.assert_not_called()
+
     def drive_recent(self,close_whole_popup=False):
         popup,view,row,survivor=self.recent_fixture()
         combo=Control('Native QA peer','ComboBox','_DevicesCombo',self.root)

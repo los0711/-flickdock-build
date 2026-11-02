@@ -1,0 +1,3 @@
+[
+  {"id":"diagnostic-recent-device-delete","kind":"batch3","recipe":"recent-device-delete","group":5,"duration":2.0,"scope":"Isolated actual recent-device dropdown observation after original native clipboard/core setup; not complete 15-group or installer acceptance."}
+]
