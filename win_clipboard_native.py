@@ -15,6 +15,14 @@ MAX_HEADER=16384
 MAX_WIRE=MAX_BYTES+MAX_HEADER+2048
 MAGIC=b'FDCR1\0'
 SYNC_MARKER='application/x-flickdock-cloud-clipboard'
+IMAGE_FORMAT_PREFERENCE=(
+    # A native alias can be rendered from decoded pixels even when an exact
+    # encoded original is also offered. Keep explicit MIME bytes first, in
+    # the same order as the original Qt clipboard snapshot path.
+    ('image/png','image/png'),('image/jpeg','image/jpeg'),('image/webp','image/webp'),
+    ('image/bmp','image/bmp'),('image/tiff','image/tiff'),
+    ('PNG','image/png'),('JFIF','image/jpeg'),('WebP','image/webp'),('TIFF','image/tiff'),
+)
 class TooLarge(Exception):pass
 class Unsupported(Exception):pass
 
@@ -263,7 +271,7 @@ def capture(provider=None,limit=MAX_BYTES,*,cache=None):
                 marker=p.read(SYNC_MARKER,1024).rstrip(b'\0') if p.available(SYNC_MARKER) else b''
                 if p.available(15):copied=('files',p.file())
                 else:
-                    for name,mime in (('PNG','image/png'),('image/png','image/png'),('JFIF','image/jpeg'),('image/jpeg','image/jpeg'),('WebP','image/webp'),('image/webp','image/webp'),('image/bmp','image/bmp'),('TIFF','image/tiff'),('image/tiff','image/tiff')):
+                    for name,mime in IMAGE_FORMAT_PREFERENCE:
                         if p.available(name):copied=('image',(read(name,limit),mime));break
                     if copied is None and (p.available(17) or p.available(8)):copied=('dib',read(17 if p.available(17) else 8,limit))
                     if copied is None and p.available(13):copied=('text',(read(13,2*limit+2),read('HTML Format',limit+65536) if p.available('HTML Format') else None))

@@ -5,6 +5,8 @@ import unittest
 from unittest.mock import patch
 from test_small_upload_lane import APP, Api, Service, Adapter, spin
 from shelf_sync import ShelfSync
+from shelf_payload_gate import ShelfPayloadGate
+from shelf_stage_store import ShelfStageStore
 from cloud_api import CloudError
 
 
@@ -202,7 +204,7 @@ class ConcurrentUploads(unittest.TestCase):
         from types import SimpleNamespace
         from small_upload_lane import SmallUploadLane
         owner=QObject();owner.api=SimpleNamespace(supports_file_upload=True,supports_file_slices=True)
-        owner.clipboard_bridge=None;lane=SmallUploadLane(owner)
+        owner.clipboard_bridge=None;owner.payload_gate=ShelfPayloadGate(owner);owner.state={};owner.account_id=None;owner.stage_store=ShelfStageStore(owner);lane=SmallUploadLane(owner)
         entry=dict(id='admission',ref='//unavailable-host/share/tree',name='tree',version=0,
                    dirty=True,fingerprint='known-view-stamp',kind='file')
         with patch('small_upload_lane.Path.is_file',side_effect=AssertionError('GUI is_file')) as files,\
@@ -221,7 +223,7 @@ class ConcurrentUploads(unittest.TestCase):
             with large.open('wb') as stream:stream.truncate(5*1024*1024)
             tree=root/'tree';tree.mkdir()
             owner=QObject();owner.clipboard_bridge=None
-            owner.api=SimpleNamespace();lane=SmallUploadLane(owner)
+            owner.api=SimpleNamespace();owner.payload_gate=ShelfPayloadGate(owner);owner.state={};owner.account_id=None;owner.stage_store=ShelfStageStore(owner);lane=SmallUploadLane(owner)
             entry=dict(id='admission',ref=str(large),name='large.bin',version=0,
                        dirty=True,fingerprint='stamp',kind='file')
             try:

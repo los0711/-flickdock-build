@@ -25,6 +25,17 @@ def until(condition,timeout=8):
     raise AssertionError('Qt operation timed out')
 
 
+def make_retry_deadlines_due(engine):
+    """Advance the fixture's account and per-item admission clocks together.
+
+    This only replaces the script's existing not_before=0 time simulation;
+    it does not cancel jobs, invalidate owners, fabricate replies or skip IO.
+    """
+    engine.state['not_before']=0
+    for identity in tuple(engine.small_lane.retry_at):
+        engine.small_lane.retry_at[identity]=0
+
+
 class Server:
     def __init__(self): self.accounts={};self.uploads={};self.hold=False;self.held=[]
     def account(self,token): return self.accounts.setdefault(token,{'items':{},'changes':[]})
@@ -235,9 +246,9 @@ with tempfile.TemporaryDirectory(prefix='flickdock-resume-v180-') as temp:
     import json
     persisted=json.loads(engine._profile('resume-A').read_text(encoding='utf8'))
     assert persisted['resumable_uploads'][identity]['upload_id']==upload_id
-    engine.state['not_before']=0;engine.close();assert stage.exists()
+    make_retry_deadlines_due(engine);engine.close();assert stage.exists()
     engine=ShelfSync(root/'client',service,adapter,poll_ms=600000);service.signin('resume-A')
-    until(lambda:not engine.running and bool(server.account('resume-A')['items']))
+    until(lambda:not engine.running and not engine.jobs and bool(server.account('resume-A')['items']))
     assert server.account('resume-A')['items'][identity]['data']==payload
     assert sum(m=='POST' and p=='/v1/uploads' for _,m,p in server.calls)==1
     assert sum(m=='PUT' and p==f'/v1/uploads/{upload_id}/parts/1' for _,m,p in server.calls)==1
@@ -260,8 +271,8 @@ with tempfile.TemporaryDirectory(prefix='flickdock-resume-v180-') as temp:
     service.signin('quota-B');until(lambda:not engine.running)
     assert not server.account('quota-B')['items'] and stage.exists()
     assert not any(token=='quota-B' and f'/uploads/{uid}' in path for token,_,path in server.calls)
-    service.signin('quota-A');engine.state['not_before']=0;engine.tick()
-    until(lambda:not engine.running and bool(server.account('quota-A')['items']))
+    service.signin('quota-A');make_retry_deadlines_due(engine);engine.tick()
+    until(lambda:not engine.running and not engine.jobs and bool(server.account('quota-A')['items']))
     assert not stage.exists();engine.close()
     print('PASS persisted retry_after and account-isolated upload continuation')
 
@@ -279,8 +290,8 @@ with tempfile.TemporaryDirectory(prefix='flickdock-resume-v180-') as temp:
         elif mutation=='expired':server.uploads[old]['state']='garbage'
         else:stage.write_bytes(b'x'*transfer['size'])
         before=len(server.calls)
-        engine.state['not_before']=0;engine.tick()
-        until(lambda:not engine.running and old not in server.uploads)
+        make_retry_deadlines_due(engine);engine.tick()
+        until(lambda:not engine.running and not engine.jobs and old not in server.uploads)
         account=server.account('case-'+mutation)
         if mutation=='expired':
             assert engine.state['entries'][transfer['id']].get('paused_upload')
@@ -289,7 +300,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-resume-v180-') as temp:
             # Expiry and a manually cancelled upload with an expired receipt
             # are indistinguishable. Only an explicit retry may re-upload it.
             engine.retry_upload(str(source))
-            until(lambda:not engine.running and bool(account['items']))
+            until(lambda:not engine.running and not engine.jobs and bool(account['items']))
             assert old not in server.uploads and len(server.uploads)>=1
         if mutation=='delete':assert not account['items']
         else:
@@ -305,8 +316,8 @@ with tempfile.TemporaryDirectory(prefix='flickdock-resume-v180-') as temp:
     until(lambda:not engine.running and bool(server.account('commit-A')['items']))
     transfer=next(iter(engine.state['resumable_uploads'].values()));stage=Path(transfer['path'])
     assert stage.exists()
-    engine.state['not_before']=0;engine.tick()
-    until(lambda:not engine.running and not engine.state['resumable_uploads'])
+    make_retry_deadlines_due(engine);engine.tick()
+    until(lambda:not engine.running and not engine.jobs and not engine.state['resumable_uploads'])
     assert len(server.account('commit-A')['items'])==1 and not stage.exists()
     assert len(server.account('commit-A')['changes'])==1
     engine.close();print('PASS committed revision with lost reply retires journal without duplicate')
@@ -318,7 +329,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-resume-v180-') as temp:
     transfer=next(iter(engine.state['resumable_uploads'].values()))
     valid_stage=Path(transfer['path']);outside=root/'keep-original.blob';outside.write_bytes(payload)
     transfer['path']=str(outside)
-    engine.state['not_before']=0;engine.tick()
+    make_retry_deadlines_due(engine);engine.tick()
     until(lambda:not engine.running)
     assert outside.read_bytes()==payload
     engine.close();valid_stage.unlink(missing_ok=True)
@@ -344,7 +355,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-download-resume-v180-') as te
         part0=target.with_name('.'+target.name+'.chunk-0');part1=target.with_name('.'+target.name+'.chunk-1')
         assert part0.read_bytes()==payload[:65536] and part1.exists() and len(cached['hashes'])>=2
         if corrupt:part0.write_bytes(b'x'*65536)
-        engine.state['not_before']=0;engine.close()
+        make_retry_deadlines_due(engine);engine.close()
         assert part0.exists() and part1.exists()
         engine=ShelfSync(base,service,adapter,poll_ms=600000);service.signin(account)
         until(lambda:not engine.running and len(adapter.view['permanent'])==1)
@@ -363,7 +374,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-download-resume-v180-') as te
     until(lambda:not engine.running and bool(engine.state.get('downloads')))
     old_target=engine._download_target(record);old_part=old_target.with_name('.'+old_target.name+'.chunk-0')
     seed(account,identity,2,payload+b'new revision')
-    engine.state['not_before']=0;engine.tick()
+    make_retry_deadlines_due(engine);engine.tick()
     until(lambda:not engine.running and len(adapter.view['permanent'])==1 and not old_part.exists())
     assert Path(adapter.view['permanent'][0]).read_bytes()==payload+b'new revision'
     assert engine.state['cursor']=='2' and engine.state['entries'][identity]['version']==2
@@ -379,7 +390,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-download-resume-v180-') as te
     service.signin('download-B');until(lambda:not engine.running and bool(adapter.view['permanent']))
     assert Path(adapter.view['permanent'][0]).read_bytes()==payload+b'belongs to B'
     assert part0.exists()
-    service.signin(account);engine.state['not_before']=0;engine.tick()
+    service.signin(account);make_retry_deadlines_due(engine);engine.tick()
     until(lambda:not engine.running and bool(adapter.view['permanent']))
     assert Path(adapter.view['permanent'][0]).read_bytes()==payload
     engine.close();print('PASS account-isolated cached download chunks')
@@ -438,9 +449,9 @@ with tempfile.TemporaryDirectory(prefix='flickdock-priority-delete-v180-') as te
     until(lambda:not engine.running and len(server.uploads)==1 and bool(engine.state.get('resumable_uploads')))
     transfer=next(iter(engine.state['resumable_uploads'].values()));uid=transfer['upload_id'];stage=Path(transfer['path'])
     assert len(uid)==36 and 'chunk_size' not in transfer and stage.read_bytes()==payload
-    engine.state['not_before']=0;engine.close()
+    make_retry_deadlines_due(engine);engine.close()
     engine=ShelfSync(root/'lost-init',service,adapter,poll_ms=600000);service.signin('lost-init')
-    until(lambda:not engine.running and bool(server.account('lost-init')['items']))
+    until(lambda:not engine.running and not engine.jobs and bool(server.account('lost-init')['items']))
     assert len(server.uploads)==1 and uid in server.uploads
     assert next(iter(server.account('lost-init')['items'].values()))['data']==payload
     assert not stage.exists();engine.close()
@@ -472,7 +483,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-recovery-v180-') as temp:
     engine=ShelfSync(root/'verifying',service,adapter,poll_ms=600000);server.fail_verifying=True;service.signin('verifying')
     until(lambda:not engine.running and any(u['state']=='verifying' for u in server.uploads.values()))
     transfer=next(iter(engine.state['resumable_uploads'].values()));uid=transfer['upload_id']
-    engine.state['not_before']=0;engine.tick()
+    make_retry_deadlines_due(engine);engine.tick()
     until(lambda:not engine.running and bool(server.account('verifying')['items']))
     assert server.uploads[uid]['state']=='committed' and next(iter(server.account('verifying')['items'].values()))['data']==payload
     assert sum(m=='POST' and p=='/v1/uploads' for _,m,p in server.calls)==1

@@ -245,14 +245,32 @@ for failed, next_enabled in (('pull',(True,False)),('upload',(False,True))):
         engine=ShelfSync(directory,service,adapter,poll_ms=600000)
         engine.set_directions(failed=='upload',failed=='pull')
         service.account_changed.emit({'id':'direction-account'})
-        assert spin(lambda:not engine.running and engine.state and engine.state.get('not_before',0)>time.time())
-        assert engine.state['retry_direction']==('receive' if failed=='pull' else 'upload')
+        if failed=='pull':
+            assert spin(lambda:not engine.running and engine.state and engine.state.get('not_before',0)>time.time())
+            assert engine.state['retry_direction']=='receive'
+        else:
+            assert spin(lambda:not engine.running and bool(engine.small_lane.retry_at))
+            identity=next(iter(engine.small_lane.retry_at));deadline=engine.small_lane.retry_at[identity]
+            assert deadline>time.monotonic() and engine.transfer is None and not engine.small_lane.tasks
+            staged=engine.state['resumable_uploads'][identity];entry=engine.state['entries'][identity]
+            assert Path(staged['path']).read_bytes()==adapter.view['texts'][entry['ref']].encode('utf8')
+            assert entry['last_error']=='同步请求超时，请检查网络。'
+            seen=[];engine.transfers_changed.connect(lambda rows:seen.append(rows));engine._notify_transfers()
+            row=next(row for row in seen[-1] if row['id']==identity)
+            assert row['phase']=='retrying' and row['message']==entry['last_error']
+            assert not engine._retry_paused()
+            posts=sum(method=='POST' and path=='/v1/uploads' for method,path in cloud.calls)
+            remote_id=uuid4().hex;remote_text='上传仍退避时可正常接收的原始文字';cloud.add(remote_id,remote_text)
         engine.set_directions(*next_enabled)
         if failed=='pull':
             assert spin(lambda:len(cloud.items)==1 and not engine.running)
         else:
             assert spin(lambda:any(path.startswith('/v1/sync/changes') for method,path in cloud.calls)
                         and not engine.running)
+            assert spin(lambda:remote_text in adapter.view['texts'].values() and not engine.running)
+            assert any(method=='GET' and path.startswith('/v1/items/'+remote_id+'/parts/') for method,path in cloud.calls)
+            assert deadline>time.monotonic(), 'receive completed before the original upload retry was due'
+            assert sum(method=='POST' and path=='/v1/uploads' for method,path in cloud.calls)==posts
         engine.close()
     print('PASS '+failed+' backoff does not block the other direction')
 

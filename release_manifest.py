@@ -31,6 +31,8 @@ class ReleaseError(ValueError):
 VERSION_RE=re.compile(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z')
 HASH_RE=re.compile(r'[0-9a-f]{64}\Z')
 RUNTIME_SOURCES=(
+    'shelf_stage_store.py',
+    'shelf_payload_gate.py',
     'win_clipboard_cache.py',
     'win_clipboard_native.py','win_clipboard_io.py','win_owned_process.py',
     'control_states.py',
@@ -55,7 +57,11 @@ RUNTIME_SOURCES=(
     'wan_transfer.py','webrtc_stream.py','nearby_transport.py','verify_wan.py','windows_network.py','windows_reveal.py',
 )
 MAINTAINED_TESTS=(
+    'test_native_read_retry_v1825.py',
+    'test_native_image_fidelity_v1825.py',
+    'test_shelf_stage_store_v1825.py',
     'test_clipboard_empty_bootstrap_v1825.py',
+    'test_shelf_payload_gate_v1825.py',
     'test_clipboard_local_original_v1825.py',
     'test_clipboard_audit_source_v1825.py','test_win_clipboard_cache_v1825.py',
     'test_popup_subscription_v1825.py',
@@ -136,8 +142,7 @@ SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'qa/packaged-live/native_image_observation.py',
     'qa/packaged-live/test_native_image_observation.py',
     'qa/packaged-live/test_image_observation_handoff.py',
-    'qa/packaged-live/native_reader_observation.py',
-    'qa/packaged-live/test_native_reader_observation.py',
+    'qa/packaged-live/native_reader_observation.py','qa/packaged-live/test_native_reader_observation.py',
     'qa/packaged-live/test_reader_observation_handoff.py',
     'qa/packaged-live/native_reader_job_gate.py','qa/packaged-live/test_native_reader_job_gate.py',
     'qa/packaged-live/ui-tray-observation.json',

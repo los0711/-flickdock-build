@@ -85,6 +85,8 @@ class SmallUploadLane:
         self.kick()
 
     def eligible(self, entry, texts):
+        if entry['id'] not in (self.owner.state or {}).get('resumable_uploads',{}) and self.owner.stage_store.cleanup_blocked_for(self.owner.account_id):return False
+        if self.owner.payload_gate.waiting(entry):return False
         bridge=getattr(self.owner,'clipboard_bridge',None)
         if bridge and bridge.waiting(entry):return False
         if (entry.get('version', 0) != 0 or entry.get('deleted')
@@ -144,9 +146,11 @@ class SmallUploadLane:
             from shelf_sync import _verify_staged
             def verified(result,error):
                 if error:
+                    from shelf_stage_store import canonical_path
+                    if canonical_path(token['path']) and not isinstance(error,ValueError):owner._stage_resource_failed(token,error);return
                     owner._forget_resume(token['id']);self.finish(error,token=token);return
                 resumes[token['id']]=token
-                owner._resume_upload(token)
+                owner._bind_staged(token,owner._resume_upload)
             self.run(token,owner._work,_verify_staged,(token,),verified)
             return
 
@@ -174,7 +178,7 @@ class SmallUploadLane:
             resumes[token['id']] = token
             owner._persist()
             owner._notify_transfers()
-            owner._initialize_upload(token)
+            owner._bind_staged(token,owner._initialize_upload)
 
         self.run(token, owner._work, stage_item,
                  (entry['ref'], texts.get(entry['ref']), entry['name'],

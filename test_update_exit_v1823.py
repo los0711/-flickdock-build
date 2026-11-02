@@ -15,22 +15,35 @@ from lan_panel import LanDialog
 class UpdateExitTests(unittest.TestCase):
     def test_sync_shutdown_cancels_work_before_persist_without_scanning_files(self):
         import threading
+        from PySide6.QtCore import QObject
         from shelf_sync import ShelfSync
+        from shelf_payload_gate import ShelfPayloadGate
+        from shelf_stage_store import ShelfStageStore
         cancel=threading.Event();events=[]
         service=SimpleNamespace(account_changed=SimpleNamespace(disconnect=lambda slot:events.append('disconnect')))
-        item=SimpleNamespace(closed=False,epoch=0,small_lane=SimpleNamespace(reset=lambda:events.append('lane')),
+        item=QObject()
+        attributes=dict(closed=False,epoch=0,small_lane=SimpleNamespace(reset=lambda:events.append('lane')),
             service=service,select_account=lambda:None,requests={'request'},api=SimpleNamespace(cancel=lambda key:events.append(key)),
-            jobs=[SimpleNamespace(cancel=cancel)],pool=SimpleNamespace(clear=lambda:events.append('clear')),
+            jobs=[SimpleNamespace(cancel=cancel)],pool=SimpleNamespace(clear=Mock()),
             local_changed=Mock(side_effect=AssertionError('shutdown must not scan files')))
+        for name,value in attributes.items():setattr(item,name,value)
+        item.payload_gate=ShelfPayloadGate(item);item.stage_store=ShelfStageStore(item)
+        item.stage_store.stamps['owned-fixture']=1
         for name in ('timer','debounce','remote_poll','_cleanup_retry'):
             setattr(item,name,SimpleNamespace(stop=lambda:events.append('stop')))
         def persist():
-            self.assertTrue(cancel.is_set());self.assertTrue(item.closed);self.assertIn('clear',events)
+            self.assertTrue(cancel.is_set());self.assertTrue(item.closed)
+            # Queued jobs must deliver terminal callbacks to release leases;
+            # cancelling work must not discard the pool's completion path.
+            item.pool.clear.assert_not_called()
+            self.assertEqual(item.stage_store.stamps,{})
             events.append('persist')
         item._persist=persist
         ShelfSync.close(item);ShelfSync.close(item)
         item.local_changed.assert_not_called();self.assertEqual(events.count('persist'),1)
         self.assertEqual(item.epoch,1)
+        item.pool.clear.assert_not_called();self.assertEqual(len(item.jobs),1)
+        item.deleteLater();flush()
 
     def test_cancelled_queued_disk_job_does_no_file_io(self):
         from sync_files import DiskWork

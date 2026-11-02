@@ -20,8 +20,16 @@ from PySide6.QtCore import QObject, QThreadPool, QTimer, Qt, Signal
 from account_store import atomic_json
 from selection_archive import _source_reader
 from small_upload_lane import SmallUploadLane
+from shelf_payload_gate import ShelfPayloadGate
+from shelf_stage_store import ShelfStageStore, StageResourceError, canonical_path, owned_stage_path, validate_owned_outbox, ResourceCleanupWork
 from sync_files import (DiskWork, DIRECTORY_MIME, assemble_parts, fingerprint, read_part, read_utf8, safe_name,
                         stage_item, unpack_directory,MAX_FILE_BYTES)
+
+
+def _stage_owned_admission(function, args, cancel):
+    """Reject an unsafe managed directory before the original worker copies."""
+    validate_owned_outbox(Path(args[3]))
+    return function(*args,cancel)
 
 
 def _verify_staged(transfer, cancel):
@@ -108,6 +116,8 @@ class ShelfSync(QObject):
         self._part_cache={}
         self._lane_context=None
         self.small_lane=SmallUploadLane(self)
+        self.payload_gate=ShelfPayloadGate(self)
+        self.stage_store=ShelfStageStore(self)
         self.clipboard_bridge=None
         self._refresh_again=False
         self._cycle_direction='receive'
@@ -192,6 +202,7 @@ class ShelfSync(QObject):
                 if len(arrivals)<=4096:break
         self.state['view'] = self.adapter.snapshot()
         atomic_json(self._profile(self.account_id),self.state)
+        self.stage_store.committed(self.account_id,self.state)
 
     def _persist_progress(self):
         # Resume checks the server boundary; a short journal lag is safe and
@@ -218,6 +229,8 @@ class ShelfSync(QObject):
         self.epoch += 1; self.timer.stop(); self.debounce.stop(); self.remote_poll.stop()
         self.catching_up=True
         self.small_lane.reset()
+        self.payload_gate.reset()
+        self.stage_store.stamps.clear()
         self._intake_announced=set()
         self.running = False; self.transfer = None
         self._refresh_again=False
@@ -227,7 +240,8 @@ class ShelfSync(QObject):
         self.download_transfers.clear()
         self._part_cache.clear();self._progress_persisted=0.0
         self._cleanup_inflight.clear();self._cleanup_retry.stop()
-        for job in tuple(self.jobs): job.cancel.set()
+        for job in tuple(self.jobs):
+            if not isinstance(job,ResourceCleanupWork):job.cancel.set()
         for key in tuple(self.requests): self.api.cancel(key)
         self.requests.clear()
         self._snapshot_owner()
@@ -268,6 +282,10 @@ class ShelfSync(QObject):
             name = self.adapter.title(ref)
             fp = fingerprint(ref,text,name)
             entry = by_ref.get(ref)
+            staged=self.state.get('resumable_uploads',{}).get((entry or {}).get('id'))
+            if (fp.startswith('missing:') and staged and entry.get('dirty')
+                    and all(entry.get(k)==staged.get(k) for k in ('id','ref','seq','fingerprint','name','kind','version'))):
+                fp=entry['fingerprint']
             if entry is None:
                 identity = str(uuid4())
                 entry = {'id':identity,'ref':ref,'version':0,'seq':0}
@@ -307,6 +325,12 @@ class ShelfSync(QObject):
             pending=self.state.setdefault('pending_uploads',[])
             if identifier not in pending:pending.append(identifier)
 
+    @staticmethod
+    def _ensure_intake(entry):
+        if not entry.get('intake_id'):
+            entry.update(intake_id=str(uuid4()),intake_seq=entry['seq'])
+        return entry['intake_id']
+
     def _announce_intakes(self):
         if not self.upload_enabled or not self.account_id or not self.service.signed_in:return
         if self._retry_paused() or self._paused('quota_not_before'):return
@@ -316,9 +340,7 @@ class ShelfSync(QObject):
         for entry in self.state.get('entries',{}).values():
             if (not entry.get('dirty') or entry.get('deleted') or entry.get('paused_upload')
                 or entry.get('blocked_fingerprint')==entry.get('fingerprint')):continue
-            if not entry.get('intake_id'):
-                entry.update(intake_id=str(uuid4()),intake_seq=entry['seq'])
-            identifier=entry['intake_id']
+            identifier=self._ensure_intake(entry)
             if identifier in announced:continue
             size=0
             try:
@@ -572,13 +594,16 @@ class ShelfSync(QObject):
         if self.clipboard_bridge:self.clipboard_bridge.reset()
         self._receive_fences.clear()
         self.small_lane.reset()
+        self.payload_gate.reset()
+        self.stage_store.stamps.clear()
         self.running=False;self.transfer=None
         self._part_cache.clear()
         self._cleanup_inflight.clear();self._cleanup_retry.stop()
         self._intake_announced=set()
         for key in tuple(self.requests):self.api.cancel(key)
         self.requests.clear()
-        for job in tuple(self.jobs):job.cancel.set()
+        for job in tuple(self.jobs):
+            if not isinstance(job,ResourceCleanupWork):job.cancel.set()
 
     def _cancel_upload_owner(self,identity):
         token=self._upload_tokens.pop(identity,None)
@@ -728,9 +753,17 @@ class ShelfSync(QObject):
             owner=next((key for key,value in (self.state or {}).get('resumable_uploads',{}).items()
                         if value.get('upload_id')==upload_id),owner)
         token=self._upload_tokens.setdefault(owner,threading.Event()) if owner else None
+        payload=(self.state or {}).get('resumable_uploads',{}).get(owner) if owner and str(method).upper()!='DELETE' and path.startswith('/v1/uploads') else None
         def done(result,error):
             if holder:self.requests.discard(holder[0]);self._request_owners.pop(holder[0],None)
             if self.closed or epoch != self.epoch or token is not None and token.is_set(): return
+            if payload is not None and (self.state or {}).get('resumable_uploads',{}).get(owner) is not payload:
+                # The old revision can lose its journal while its response is
+                # still in flight. Retire only that exact scheduling slot;
+                # never leave a ghost lane or touch a replacement revision.
+                if lane is not None and self.small_lane.owns(lane):self.small_lane.finish(token=lane)
+                elif self.transfer is payload:self.transfer=None;self._push_next()
+                return
             if lane is not None:
                 # Protocol callbacks can stop the main cycle on conflicts;
                 # the small lane defers reconciliation without stopping bulk.
@@ -744,18 +777,35 @@ class ShelfSync(QObject):
                     return
                 self.small_lane.run(lane,callback,result,error)
             else:callback(result,error)
-        key = self.api.request(method,path,done,**kwargs)
+        release=self.stage_store.acquire(kwargs['source']) if kwargs.get('source') else None
+        terminal=done
+        def finished(result,error):
+            try:terminal(result,error)
+            finally:
+                if release:release()
+        try:key = self.api.request(method,path,finished,**kwargs)
+        except BaseException:
+            if release:release()
+            raise
         holder.append(key); self.requests.add(key);self._request_owners[key]=owner
         return key
 
     def _work(self, function, args, callback):
-        epoch = self.epoch; job = DiskWork(function,*args); self.jobs.add(job);lane=self._lane_context
+        epoch = self.epoch
+        job = DiskWork(_stage_owned_admission,function,args) if function is stage_item else DiskWork(function,*args)
+        self.jobs.add(job);lane=self._lane_context
         owner=lane.get('id') if lane is not None else None
         if function is stage_item or function.__name__ in ('_verify_staged','read_part','hash_part'):
             owner=(self.transfer or {}).get('id',owner)
         token=self._upload_tokens.setdefault(owner,threading.Event()) if owner else None
         self._job_owners[job]=owner
+        source=(args[0].get('path') if function.__name__=='_verify_staged' else args[0] if function.__name__ in ('read_part','hash_part') else None)
+        release=self.stage_store.acquire(source) if source else None
         def done(result,error):
+            try:terminal(result,error)
+            finally:
+                if release:release()
+        def terminal(result,error):
             self.jobs.discard(job);self._job_owners.pop(job,None)
             if self.closed or epoch != self.epoch or token is not None and token.is_set():
                 if function is stage_item and isinstance(result,dict) and result.get('path'):
@@ -957,9 +1007,7 @@ class ShelfSync(QObject):
         try:
             path = Path(transfer['path'])
             directory = self.root/self.account_id/'outbox'
-            return (not directory.is_symlink() and not directory.parent.is_symlink()
-                    and not path.is_symlink() and re.fullmatch(r'[0-9a-f]{32}\.blob',path.name) is not None
-                    and path.resolve().parent == directory.resolve())
+            return owned_stage_path(path,directory)
         except (KeyError,TypeError,ValueError,OSError): return False
 
     def _resume_matches(self, transfer):
@@ -970,8 +1018,9 @@ class ShelfSync(QObject):
         if (transfer.get('upload_id') and (entry.get('pending_hash') != transfer.get('sha256')
                 or entry.get('pending_seq') != transfer.get('seq'))): return False
         try:
-            return (self._owned_stage(transfer) and Path(transfer['path']).is_file()
-                    and Path(transfer['path']).stat().st_size == transfer['size']
+            return (self._owned_stage(transfer)
+                    and (canonical_path(transfer['path']) or (Path(transfer['path']).is_file()
+                         and Path(transfer['path']).stat().st_size == transfer['size']))
                     and isinstance(transfer['size'],int) and 0 <= transfer['size'] <= MAX_FILE_BYTES
                     and re.fullmatch(r'[0-9a-f]{64}',str(transfer['sha256'])) is not None)
         except (KeyError,TypeError,OSError): return False
@@ -979,9 +1028,9 @@ class ShelfSync(QObject):
     def _forget_resume(self, identity, *, completed=False):
         transfer = self.state.setdefault('resumable_uploads',{}).pop(identity,None)
         if not isinstance(transfer,dict): return
+        self.payload_gate.release(transfer)
         if self._owned_stage(transfer):
-            try: Path(transfer['path']).unlink(missing_ok=True)
-            except OSError: pass
+            self.stage_store.retire(self.account_id,transfer)
         upload_id = transfer.get('upload_id')
         pending = self.state.setdefault('pending_uploads',[])
         if completed and upload_id in pending: pending.remove(upload_id)
@@ -1559,7 +1608,7 @@ class ShelfSync(QObject):
         if self._pending_removal() is not None:
             self._retire_uploads(); return
         lane_ids=set(self.small_lane.tasks)
-        pending = next((e for e in self.state['entries'].values() if e['id'] not in lane_ids and (not self.clipboard_bridge or not self.clipboard_bridge.waiting(e)) and self.small_lane.retry_at.get(e['id'],0)<=time.monotonic() and e.get('dirty') and not e.get('paused_upload') and
+        pending = next((e for e in self.state['entries'].values() if e['id'] not in lane_ids and (e['id'] in resumes or not self.stage_store.cleanup_blocked_for(self.account_id)) and not self.payload_gate.waiting(e) and (not self.clipboard_bridge or not self.clipboard_bridge.waiting(e)) and self.small_lane.retry_at.get(e['id'],0)<=time.monotonic() and e.get('dirty') and not e.get('paused_upload') and
                         ((e.get('deleted') and e.get('version',0)==0 and not self.state.get('pending_uploads')) or (not e.get('deleted') and
                         e.get('blocked_fingerprint') != e.get('fingerprint')))),None)
         if pending is None:
@@ -1595,8 +1644,9 @@ class ShelfSync(QObject):
             self.small_lane.kick()
             def verified(result,error):
                 if error:
+                    if canonical_path(resume['path']) and not isinstance(error,ValueError):self._stage_resource_failed(resume,error);return
                     self._forget_resume(identity); self._persist(); self._retire_uploads(); return
-                self._resume_upload(result)
+                self._bind_staged(result,self._resume_upload)
             self._work(_verify_staged,(resume,),verified); return
         self._announce_intakes()
         snapshot = dict(pending); self.transfer = snapshot
@@ -1613,17 +1663,43 @@ class ShelfSync(QObject):
             if not self._resume_matches(snapshot):
                 Path(snapshot['path']).unlink(missing_ok=True); self._push_next(); return
             self.state.setdefault('resumable_uploads',{})[identity] = snapshot
-            self._persist(); self._notify_transfers(); self._initialize_upload(snapshot)
+            self._persist(); self._notify_transfers(); self._bind_staged(snapshot,self._initialize_upload)
         self._work(stage_item,(pending['ref'],text,pending['name'],self.root/self.account_id/'outbox'),staged)
+
+    def _stage_resource_failed(self,snapshot,error):
+        entry=self.state['entries'].get(snapshot['id'])
+        if entry and entry.get('seq')==snapshot.get('seq'):
+            entry.update(blocked_fingerprint=snapshot['fingerprint'],last_error=str(StageResourceError()))
+        self._persist();self.status_changed.emit(str(StageResourceError()))
+        if self._lane_context is not None:self.small_lane.finish()
+        else:self.transfer=None;self._push_next()
+
+    def _bind_staged(self,snapshot,callback):
+        if not snapshot.get('upload_id') and not snapshot.get('intake_id'):
+            entry=self.state['entries'][snapshot['id']]
+            snapshot.update(intake_id=self._ensure_intake(entry),intake_seq=entry['seq'])
+            self._persist();self._announce_intakes()
+        epoch=self.epoch;lane=self._lane_context
+        token=self._upload_tokens.setdefault(snapshot['id'],threading.Event())
+        def bound(result,error):
+            if self.closed or epoch!=self.epoch or token.is_set():return
+            if self.state.get('resumable_uploads',{}).get(snapshot['id']) is not snapshot:return
+            def consume():
+                if error:self._stage_resource_failed(snapshot,error)
+                else:callback(snapshot)
+            if lane is not None:self.small_lane.run(lane,consume)
+            else:consume()
+        self.stage_store.bind(snapshot,bound)
 
     def _initialize_upload(self, snapshot):
         identity = snapshot['id']
         if not self._resume_matches(snapshot):
             self._forget_resume(identity); self._persist(); self._retire_uploads(); return
+        if not self.payload_gate.admit(snapshot):self._yield_duplicate_payload();return
         if snapshot.get('upload_id'):
             # A device can return after the server's cancellation receipt has
             # expired. Never silently recreate an old, unacknowledged UUID.
-            try:old=time.time()-Path(snapshot['path']).stat().st_mtime>3*86400
+            try:old=time.time()-(self.stage_store.age(snapshot) if canonical_path(snapshot['path']) else Path(snapshot['path']).stat().st_mtime)>3*86400
             except OSError:old=True
             if old:
                 from cloud_api import CloudError
@@ -1665,9 +1741,14 @@ class ShelfSync(QObject):
             'name':snapshot['name'],'mime_type':snapshot['mime_type'],'size':snapshot['size'],'sha256':snapshot['sha256'],
             'fast_upload':True,'fast_multipart':True})
 
+    def _yield_duplicate_payload(self):
+        if self._lane_context is not None:self.small_lane.finish();return
+        self.transfer=None;self._push_next()
+
     def _resume_upload(self, transfer):
         if not self._resume_matches(transfer):
             self._forget_resume(transfer['id']); self._persist(); self._retire_uploads(); return
+        if not self.payload_gate.admit(transfer):self._yield_duplicate_payload();return
         if not transfer.get('upload_id') or 'chunk_size' not in transfer:
             self._initialize_upload(transfer); return
         def status(result,error):
@@ -1799,11 +1880,15 @@ class ShelfSync(QObject):
         if self.closed: return
         self.closed = True; self.epoch += 1
         self.small_lane.reset()
+        self.payload_gate.reset()
+        self.stage_store.stamps.clear()
         self.service.account_changed.disconnect(self.select_account)
         self.timer.stop(); self.debounce.stop(); self.remote_poll.stop();self._cleanup_retry.stop()
         for key in tuple(self.requests): self.api.cancel(key)
-        for job in tuple(self.jobs): job.cancel.set()
-        self.pool.clear()
+        for job in tuple(self.jobs):
+            if not isinstance(job,ResourceCleanupWork):job.cancel.set()
+        # Cancelled queued jobs must still run their terminal callbacks and
+        # release owned staged-file leases; clearing the pool drops callbacks.
         # Persist the existing journal/view, without starting fresh stat/hash
         # work. Restart reconciles that durable view through local_changed().
         self._persist()

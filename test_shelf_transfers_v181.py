@@ -235,7 +235,7 @@ class TransferTests(unittest.TestCase):
         service, adapter, engine, transfer = self.pending()
         identifier, uid, stage = transfer['id'], transfer['upload_id'], Path(transfer['path'])
         self.assertTrue(engine.cancel_upload(str(self.source)))
-        until(lambda: not engine.running and uid not in self.server.uploads)
+        until(lambda: not engine.running and not engine.jobs and uid not in self.server.uploads)
         self.assertEqual(adapter.view['permanent'], [str(self.source)])
         self.assertTrue(engine.state['entries'][identifier]['paused_upload']); self.assertFalse(stage.exists())
         self.assertTrue(self.source.exists()); self.assertIn(('account-A', uid), self.server.receipts)
@@ -250,7 +250,7 @@ class TransferTests(unittest.TestCase):
     def test_explicit_retry_uses_fresh_upload_and_clears_progress(self):
         service, adapter, engine, transfer = self.pending(); uid = transfer['upload_id']; states = []
         engine.transfers_changed.connect(states.append)
-        engine.cancel_upload(str(self.source)); until(lambda: not engine.running and uid not in self.server.uploads)
+        engine.cancel_upload(str(self.source)); until(lambda: not engine.running and not engine.jobs and uid not in self.server.uploads)
         service.api.release(); engine.retry_upload(str(self.source))
         until(lambda: not engine.running and bool(self.server.account('account-A')['items']))
         record = self.server.account('account-A')['items'][transfer['id']]
@@ -279,7 +279,7 @@ class TransferTests(unittest.TestCase):
         service, adapter, engine, transfer = self.pending(); uid = transfer['upload_id']
         engine.state['not_before'] = time.time() + 86400
         adapter.view['permanent'].clear(); engine.local_changed()
-        until(lambda: not engine.running and uid not in self.server.uploads)
+        until(lambda: not engine.running and not engine.jobs and uid not in self.server.uploads)
         self.assertEqual(adapter.view['permanent'], []); self.assertTrue(self.source.exists())
         self.assertFalse(self.server.account('account-A')['items']); self.assertFalse(Path(transfer['path']).exists())
 
@@ -467,11 +467,14 @@ class TransferTests(unittest.TestCase):
         # even the terminal receipt is gone, so the authoritative reply is404.
         self.server.dispatch('account-A','DELETE','/v1/uploads/'+uid,None,None)
         self.server.receipts.discard(('account-A',uid))
-        stale=time.time()-8*86400;os.utime(stage,(stale,stale))
+        # Advance this fixture's wall clock; shared inode mtime is not a
+        # per-snapshot reservation timestamp after canonical byte reuse.
+        clock=patch('shelf_sync.time.time',return_value=time.time()+8*86400)
+        clock.start();self.addCleanup(clock.stop)
         before=len(self.server.calls)
         restarted=ShelfSync(self.root/'device-a',service,adapter,poll_ms=600000)
         self.engines.append(restarted);service.signin('account-A')
-        until(lambda:not restarted.running and restarted.state['entries'][identifier].get('paused_upload'))
+        until(lambda:not restarted.running and not restarted.jobs and restarted.state['entries'][identifier].get('paused_upload'))
         calls=self.server.calls[before:]
         self.assertTrue(any(method=='GET' and path=='/v1/uploads/'+uid for _,method,path in calls))
         self.assertFalse(any(method=='POST' and path=='/v1/uploads' for _,method,path in calls),
@@ -493,11 +496,14 @@ class TransferTests(unittest.TestCase):
         self.assertNotIn('chunk_size',transfer);engine.close()
         # No initialization reply was journaled, and any cancel receipt could
         # have expired while this origin stayed offline. Its old UUID is unsafe.
-        stale=time.time()-8*86400;os.utime(stage,(stale,stale));service.api.release()
+        # Advance this fixture's wall clock; shared inode mtime is not a
+        # per-snapshot reservation timestamp after canonical byte reuse.
+        clock=patch('shelf_sync.time.time',return_value=time.time()+8*86400)
+        clock.start();self.addCleanup(clock.stop);service.api.release()
         before=len(self.server.calls)
         restarted=ShelfSync(self.root/'device-a',service,adapter,poll_ms=600000)
         self.engines.append(restarted);service.signin('account-A')
-        until(lambda:not restarted.running and restarted.state['entries'][identifier].get('paused_upload'))
+        until(lambda:not restarted.running and not restarted.jobs and restarted.state['entries'][identifier].get('paused_upload'))
         self.assertFalse(any(method=='POST' and path=='/v1/uploads' for _,method,path in self.server.calls[before:]))
         self.assertFalse(self.server.uploads);self.assertFalse(self.server.account('account-A')['items'])
         self.assertFalse(stage.exists());self.assertEqual(self.source.read_bytes(),self.payload)

@@ -103,8 +103,10 @@ class SharedSwitchTests(unittest.TestCase):
         f=self.f;path=f.source();identity=f.copy(path);until(lambda:identity in f.peer.held)
         f.peer.finish(identity);until(lambda:f.client._pending is None)
         duplicate=f.base/'duplicate.bin';duplicate.write_bytes(path.read_bytes());callbacks=[]
-        def delayed_work(action,callback):
-            callbacks.append(callback);return SimpleNamespace(cancelled=threading.Event())
+        def delayed_work(action,callback,*,failure=None,cancelled=None):
+            self.assertTrue(callable(failure));self.assertTrue(callable(cancelled))
+            callbacks.append(callback)
+            return SimpleNamespace(cancelled=threading.Event(),failure=failure,on_cancel=cancelled)
         with patch.object(f.client,'_work',side_effect=delayed_work):
             entry=f.add(duplicate);until(lambda:len(callbacks)==1)
             owner_epoch=f.engine.epoch

@@ -613,9 +613,9 @@ class ClipboardSync(QObject):
                 clipboard_audit.observe(self.clipboard,module='clipboard_sync',function='_start_native_read',
                     trigger='native_reader',origin='internal',operation='native_read_error',result=outcome.status,
                     content_type='native',fingerprint_data=('native_read',outcome.status))
-            count=count+1 if previous==sequence else 1
-            self._native_failures=(sequence,count,time.monotonic())
-            if count<3:self._native_retry.start(250*2**(count-1))
+            next_count=count+1 if previous==sequence else 1
+            self._native_failures=(sequence,next_count,time.monotonic())
+            if next_count<3:self._native_retry.start(250*2**(next_count-1))
         token=self._native_reader.read(ready)
         if self._native_read_token is sentinel:self._native_read_token=token
 

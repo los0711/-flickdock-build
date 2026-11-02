@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "Failure-only PNG/image/png exact-byte observation of unchanged63ff EXE; no installer/release",
+  "purpose": "Reviewed clipboard image fidelity/retry and owned shared shelf stages; fresh native/build validation; virgin receive-first pending; no installer/release",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -16,8 +16,8 @@
     },
     {
       "path": ".github/workflows/macos-build.yml",
-      "size": 7106,
-      "sha256": "2532c3073742e47b8d548ee2f9f58a34d24384008883dae552742df402096773"
+      "size": 7338,
+      "sha256": "263e7ca4b1c62b58c950297f4d4bd8d58ac444378f4ccf954ac7550882dc07da"
     },
     {
       "path": ".github/workflows/macos-intel-motion-diagnostic.yml",
@@ -26,8 +26,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 24538,
-      "sha256": "7c449b4a08d3bce8242605f147550bc105c88b0c0484cc52c85f857c136b251f"
+      "size": 24819,
+      "sha256": "29485b5e4022494ef3d90123374c9e85cfacf8ad69e50eb7998b90043eeaec41"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -666,8 +666,8 @@
     },
     {
       "path": "clipboard_sync.py",
-      "size": 100256,
-      "sha256": "41c2812a89b4f473a77bb9bc285af401c79adfeab31b0d0e5e2559304f68f3f1"
+      "size": 100276,
+      "sha256": "ea467e0d19342b4c2ff59a6183f38122c8b448fb007fb508fd2c9776d66cb9a8"
     },
     {
       "path": "cloud/.gitignore",
@@ -1496,8 +1496,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 43023,
-      "sha256": "9943c19f4ae1c7625e4cac4c3f578cac496e460af4c7e33b96953286dad5e5aa"
+      "size": 43241,
+      "sha256": "315ed368977721df11ca3b732a9aaf450a58faeb1457fabfa6eb8794ac798d9f"
     },
     {
       "path": "release_signing.py",
@@ -1555,9 +1555,19 @@
       "sha256": "6b92f29931696f22afe567030724411fa6d70f74f4f4040480cc03402a54b389"
     },
     {
+      "path": "shelf_payload_gate.py",
+      "size": 3769,
+      "sha256": "4c0aff6f4115e98161534ee185b9ef43d196eed243aa8b95352c9e5b84752648"
+    },
+    {
+      "path": "shelf_stage_store.py",
+      "size": 20877,
+      "sha256": "84a5e5f97d3aa2f2140540dab9e2c0f3c35c7f2d260b4abca554017772e2ab7a"
+    },
+    {
       "path": "shelf_sync.py",
-      "size": 110212,
-      "sha256": "4828edba07c65fb3def65b8b0fa593baa4fc1628fe389c0e9dfc52f67de61456"
+      "size": 115163,
+      "sha256": "56d5ad164f9f52920be1394b1f070deb8aeaa25f29bbe375608a8c04dcfdc6cb"
     },
     {
       "path": "shortcut_preview.py",
@@ -1566,8 +1576,8 @@
     },
     {
       "path": "small_upload_lane.py",
-      "size": 8024,
-      "sha256": "74b2c7dfc1db3789ea34c1f531846c8157291e924de3bebaebc12f4760b56093"
+      "size": 8495,
+      "sha256": "0caa9414229f37fe7f079b9056cf8a4def534308ace070f4a981317daae348fe"
     },
     {
       "path": "surface_morph.py",
@@ -1781,8 +1791,8 @@
     },
     {
       "path": "test_concurrent_uploads_v1825.py",
-      "size": 32763,
-      "sha256": "d08583d8267fe8d3eaceb0d8af473ab3dc1a734cba2cc968c46cdac145b18f89"
+      "size": 33099,
+      "sha256": "1acb8c68f93e464b1bfa72edd8b1d1ab36e391a7740371ea4a5bc1f828904c4a"
     },
     {
       "path": "test_confirm_clear_v161.py",
@@ -2090,9 +2100,19 @@
       "sha256": "0359948b7b6f4030794b905c5431d8d1445455df7ff6f27cc76bfc40edabf925"
     },
     {
+      "path": "test_native_image_fidelity_v1825.py",
+      "size": 8318,
+      "sha256": "80dc47b78d68afaf6b2e79c944f432093fb475f974c3288b7dfac53d529ba73c"
+    },
+    {
       "path": "test_native_owner_lifetime_v1824.py",
       "size": 6130,
       "sha256": "8a0b76c02c5a5e75e1884bded71fa31250bbc296f71cd49b06d143d7e5b1ada2"
+    },
+    {
+      "path": "test_native_read_retry_v1825.py",
+      "size": 6968,
+      "sha256": "df952c98fe8be47a824715822366dfc68fad5fc3b16fd741ae7c0a6e2c58eb00"
     },
     {
       "path": "test_nearby_transport_v1818.py",
@@ -2245,19 +2265,29 @@
       "sha256": "c8b7b2591182994fb0044e573de20acdb45c91627b55dfaad11f12f6a233a956"
     },
     {
+      "path": "test_shelf_payload_gate_v1825.py",
+      "size": 19065,
+      "sha256": "68fad3158fc8c8403352fc43f904309c6bfce7871d2d4e79e27b2a1aa75549bd"
+    },
+    {
       "path": "test_shelf_raise_v1810.py",
       "size": 3238,
       "sha256": "c448314d68c0ccac584305aca6fd794f5e9df0830f18d10615089b37bfa7e51a"
     },
     {
+      "path": "test_shelf_stage_store_v1825.py",
+      "size": 39707,
+      "sha256": "d286af7bc9da440de28237f267a0d8f39ad0f165e576999645142ac156ac16d4"
+    },
+    {
       "path": "test_shelf_sync_v180.py",
-      "size": 37975,
-      "sha256": "ca1e69be7a6029afeb7b66fee6f71d3f92581df79f0b3994ab58bd38a97e9d58"
+      "size": 38549,
+      "sha256": "92582913db1ca8e55527673a4eb80a0ddb5af8a5bb7cd414d9f6265944f1f397"
     },
     {
       "path": "test_shelf_transfers_v181.py",
-      "size": 46994,
-      "sha256": "405632aba1572ca2ce0209eee800bc3743886dd23caff693a34609dea714b718"
+      "size": 47518,
+      "sha256": "b469c6a0d7614651af94a0830a705243a4990fc1838d873ec801841082624657"
     },
     {
       "path": "test_small_upload_lane.py",
@@ -2301,8 +2331,8 @@
     },
     {
       "path": "test_sync_directions.py",
-      "size": 14488,
-      "sha256": "34d895f3c97cadd0901417496abea5a6c6c2d3975d7829ae74632aaf4da50213"
+      "size": 16057,
+      "sha256": "2ff712ca8312c885705bec2d44166e7fe623ee91df18f5d225138b70138b825c"
     },
     {
       "path": "test_sync_receive_priority.py",
@@ -2326,8 +2356,8 @@
     },
     {
       "path": "test_sync_switch_lifecycle_v1824.py",
-      "size": 8898,
-      "sha256": "59281cab07cb265077aa4522e1977258d83ba140e45d04bf1aec380ca10c68fb"
+      "size": 9060,
+      "sha256": "6e6251f5682318ea94157e00717de0dbcbb4c0880d0535851965bdf7b1d62296"
     },
     {
       "path": "test_sync_timeout_recovery.py",
@@ -2406,8 +2436,8 @@
     },
     {
       "path": "test_update_exit_v1823.py",
-      "size": 7685,
-      "sha256": "ca62332e2344a5445ca4048e4f327d490e12f541e9e0bd81248333caa9bde1a2"
+      "size": 8383,
+      "sha256": "6237696fef017286d648a7b23daa6d4ef29461a8176440fe44d9664dee58be25"
     },
     {
       "path": "test_update_inline_v171.py",
@@ -2756,8 +2786,8 @@
     },
     {
       "path": "win_clipboard_native.py",
-      "size": 23590,
-      "sha256": "4fd676c7b0211c6ed8241efdb65448b2b0c7020457a6c6399d962c2e6b81deb1"
+      "size": 23871,
+      "sha256": "f25e9dc3d74eb847bef93a49734758054411858d33b1297ef988635c04e3d16a"
     },
     {
       "path": "win_owned_process.py",
