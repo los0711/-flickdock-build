@@ -133,6 +133,9 @@ MAINTAINED_TESTS=(
     'test_remote_transfer_actions_v1812.py','test_wan_transfer_v1816.py',
 )
 SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
+    'qa/packaged-live/native_image_observation.py',
+    'qa/packaged-live/test_native_image_observation.py',
+    'qa/packaged-live/test_image_observation_handoff.py',
     'qa/packaged-live/native_reader_observation.py',
     'qa/packaged-live/test_native_reader_observation.py',
     'qa/packaged-live/test_reader_observation_handoff.py',

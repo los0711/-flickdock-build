@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "Reviewed raw Windows sequence-wrapper correction; fresh normal EXE only; canonical staging candidate excluded; no installer/release",
+  "purpose": "Failure-only PNG/image/png exact-byte observation of unchanged63ff EXE; no installer/release",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -26,8 +26,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 24223,
-      "sha256": "e8d129dd276c1f5b20d4d6f03495fee0454b3e45754351c8d632acc51582e6fe"
+      "size": 24538,
+      "sha256": "7c449b4a08d3bce8242605f147550bc105c88b0c0484cc52c85f857c136b251f"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -1246,8 +1246,8 @@
     },
     {
       "path": "qa/packaged-live/ci_packaged_windows_live.py",
-      "size": 106384,
-      "sha256": "4b967659b31c97d80ad20a8d0568d899b8fa79d3e89e28a41d8fa6abe932d178"
+      "size": 107364,
+      "sha256": "bf904845fc898a37aa87fa875e5751e3f855442bccf9f917bf69e5944850a5cb"
     },
     {
       "path": "qa/packaged-live/ci_windows_reveal_probe.py",
@@ -1283,6 +1283,11 @@
       "path": "qa/packaged-live/native_final_motion.py",
       "size": 20156,
       "sha256": "22d787a113de0c75bde9f3c8820d2b2805018f521ddd587789117eb5df41dbfc"
+    },
+    {
+      "path": "qa/packaged-live/native_image_observation.py",
+      "size": 12679,
+      "sha256": "56789617d36ecf4e954ac385331d29c55655dddac41099716a398619a0e3e856"
     },
     {
       "path": "qa/packaged-live/native_reader_job_gate.py",
@@ -1340,6 +1345,11 @@
       "sha256": "52044000ca92a735ccd39fd45fe485a95c45b7506b6e8e345bb81e426e9628bd"
     },
     {
+      "path": "qa/packaged-live/test_image_observation_handoff.py",
+      "size": 4393,
+      "sha256": "9acee7620a55662351f15247c5a3d16860b6f04a60a7724fda0c21494ce219e0"
+    },
+    {
       "path": "qa/packaged-live/test_native_batch2.py",
       "size": 18669,
       "sha256": "7bd1084938ac364d1a65891ec5d1888cd72c26ee0dd4ef4f75c01f5dc7c47aaf"
@@ -1358,6 +1368,11 @@
       "path": "qa/packaged-live/test_native_final_motion.py",
       "size": 22942,
       "sha256": "83e3035a5a51789505645d39b2b78befc8ac43add01b02c6740599f620992f6d"
+    },
+    {
+      "path": "qa/packaged-live/test_native_image_observation.py",
+      "size": 17213,
+      "sha256": "a2324a89d0c44828a9d78118f93d3b8ba2e88fbeabcba3e19ba17c09355f8989"
     },
     {
       "path": "qa/packaged-live/test_native_reader_job_gate.py",
@@ -1481,8 +1496,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 42853,
-      "sha256": "4e03f86732e699e370365756c75dac29200ced134a781997b7cff09eabf9e311"
+      "size": 43023,
+      "sha256": "9943c19f4ae1c7625e4cac4c3f578cac496e460af4c7e33b96953286dad5e5aa"
     },
     {
       "path": "release_signing.py",

@@ -49,6 +49,23 @@ def record_failed_native_copy(observer,segments,expected,exe,sha,producer,report
     report['native_reader_failure_observation']=observation
 
 
+def wait_original_png(ready,observer,exe,sha,producer,original,expected,report):
+    """Keep the exact original-image assertion and observe only its failure."""
+    try:return wait(ready,label='actual native original PNG committed by frozen client')
+    except AssertionError:
+        if observer is not None:
+            try:
+                from native_image_observation import after_native_image_failure
+                report['native_image_failure_observation']=after_native_image_failure(
+                    observer,exe,sha,producer,original,expected)
+            except Exception as error:
+                kind=type(error).__name__
+                report['native_image_observation_error']={
+                    'observation_only':True,'normal_acceptance':False,'original_failure_preserved':True,
+                    'type':kind if kind in ('AssertionError','RuntimeError','ValueError','OSError','TimeoutError') else 'Exception'}
+        raise
+
+
 def explorer_folder_matches(window,folder):
     """Recognize one unique synthetic folder in legacy or tabbed Explorer."""
     if not window.is_visible():return False
@@ -1307,7 +1324,7 @@ def main():
             def image_ready():
                 current=json_request(cloud.origin,'GET','/v1/clipboard',token=cloud.session['token']).get('clipboard') or {}
                 return current.get('kind')=='image' and current.get('ready') and current.get('sha256')==image_expected
-            wait(image_ready,label='actual native original PNG committed by frozen client')
+            wait_original_png(image_ready,reader_observer,args.exe,args.sha256,producer,refs[0],image_expected,report)
             assert driver.inspect()['image']
             report['checks'].append('Separate-process original PNG present in actual native clipboard')
             # The shelf upload switch must control actual requests, independently
