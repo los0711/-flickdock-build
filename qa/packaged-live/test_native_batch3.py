@@ -87,6 +87,53 @@ class Batch3Tests(unittest.TestCase):
         self.assertEqual(self.runner.system_tray_targets(),[icon]);icon.visible=False
         self.assertEqual(self.runner.system_tray_targets(),[])
 
+    def test_passive_tray_inventory_redacts_private_names_and_does_not_authorize_unknown_root(self):
+        root,notify,icon=self.tray_fixture()
+        hidden=Control('Hidden icon menu','Button','Button',notify)
+        hidden.element_info.automation_id='SystemTrayChevron'
+        private=Control('private.account@example.invalid - secret document.txt','Button','Button',notify)
+        private.element_info.automation_id='private account label'
+        unknown=Control('private window title','Window','NewExplorerShellRoot')
+        Control(icon.element_info.name,'Button','Button',unknown)
+        self.runner.desktop.return_value.windows.return_value.append(unknown)
+        self.runner.observe_system_tray()
+        record=self.runner.events[-1];raw=json.dumps(record,ensure_ascii=False)
+        self.assertEqual(record['step'],'passive-system-tray-inventory')
+        self.assertFalse(record['actual_native_input']);self.assertEqual(len(record['roots']),2)
+        self.assertIn('Hidden icon menu',raw);self.assertIn('SystemTrayChevron',raw)
+        self.assertIn('NewExplorerShellRoot',raw)
+        self.assertNotIn('private.account',raw);self.assertNotIn('secret document',raw)
+        self.assertNotIn('private window title',raw);self.assertNotIn('private account label',raw)
+        # The actual artifact exporter applies this second allowlist. Technical
+        # IDs and fixed English captions must survive without changing it.
+        spec=importlib.util.spec_from_file_location('normal_qa_export',DIRECTORY/'ci_packaged_windows_live.py')
+        exporter=importlib.util.module_from_spec(spec);spec.loader.exec_module(exporter)
+        exported=json.dumps(exporter.safe_motion_diagnostic(record))
+        self.assertIn('SystemTrayChevron',exported);self.assertIn('Hidden icon menu',exported)
+        self.assertNotIn('private.account',exported)
+        self.assertEqual(self.runner.system_tray_targets(),[icon])
+        with self.assertRaisesRegex(AssertionError,'ancestry'):self.runner.tray_input(unknown.children[0])
+        self.mouse.click.assert_not_called();self.mouse.move.assert_not_called()
+
+    def test_passive_inventory_bounds_roots_and_children(self):
+        roots=[]
+        for index in range(30):
+            root=Control('Taskbar','Window','Shell_TrayWnd');roots.append(root)
+            for child in range(120):Control('private-'+str(child),parent=root)
+        self.runner.desktop.return_value.windows.return_value=roots
+        self.runner.observe_system_tray();record=self.runner.events[-1]
+        self.assertEqual(len(record['roots']),24);self.assertTrue(record['truncated'])
+        self.assertEqual(sum(len(row['children']) for row in record['roots']),288)
+        self.assertTrue(all(len(row['children'])<=96 for row in record['roots']))
+        self.mouse.click.assert_not_called()
+
+    def test_passive_inventory_failure_is_recorded_and_never_sends_input(self):
+        self.runner.desktop.return_value.windows.side_effect=RuntimeError('private provider message')
+        self.runner.observe_system_tray();row=self.runner.events[-1]
+        self.assertEqual(row['query_error'],'RuntimeError')
+        self.assertNotIn('private provider message',json.dumps(row))
+        self.mouse.click.assert_not_called()
+
     def test_tray_click_one_real_input_then_no_deleted_provider_access(self):
         root,notify,icon=self.tray_fixture()
         self.mouse.click.side_effect=lambda **_:setattr(icon,'rectangle',Mock(side_effect=RuntimeError('deleted provider')))

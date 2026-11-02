@@ -5,6 +5,7 @@ The outer RPC/Recorder owns a hard process timeout and full-screen capture.
 Receipts identify actual actions; visual approval still requires raw frames.
 """
 import ctypes
+import hashlib
 import json
 import ntpath
 import os
@@ -22,6 +23,10 @@ TRAY_ROOTS=('Shell_TrayWnd','Shell_SecondaryTrayWnd','NotifyIconOverflowWindow',
             'TopLevelWindowForOverflowXamlIsland')
 OVERFLOW_NAMES=('Show hidden icons','显示隐藏的图标')
 TRAY_ACTIONS=('显示搁架','粘贴到搁架','设置…','检查更新…','退出 FlickDock')
+TRAY_DIAGNOSTIC_NAMES=frozenset((*OVERFLOW_NAMES,'Hidden icon menu','System tray overflow window',
+    'System tray','Notification Chevron','Notification area','Overflow notification area','Taskbar',
+    'System tray icons','System tray overflow menu','System tray overflow','Notification Center',
+    '隐藏图标菜单','系统托盘','通知区域','任务栏'))
 
 
 def require_hosted():
@@ -104,6 +109,55 @@ class Batch3(Batch2):
                 if key not in seen:seen.add(key);rows.append(control)
         return rows
 
+    def observe_system_tray(self):
+        """Passive, bounded evidence only; never authorizes an input target.
+
+        Full arbitrary UIA names may contain document/account text. Preserve
+        only the exact app tooltip and fixed system captions; hash the rest.
+        Class/automation IDs, rectangles and actual process identity locate a
+        changed Windows shell without guessing a point or loosening guards.
+        The existing hard RPC process deadline also bounds stalled UIA calls.
+        """
+        require_hosted();records=[];total=0;truncated=False
+        expected=ntpath.normcase(ntpath.join(os.environ['WINDIR'],'explorer.exe'))
+        def safe_name(value):
+            value=str(value or '')
+            if TRAY_NAME.fullmatch(value):return dict(name_kind='exact-flickdock-tray-tooltip')
+            if value in TRAY_DIAGNOSTIC_NAMES:return dict(system_caption=value)
+            return dict(name_sha256=hashlib.sha256(value.encode('utf8')).hexdigest()[:20],name_length=len(value))
+        def identifier(value):
+            value=str(value or '')
+            if re.fullmatch(r'[A-Za-z0-9_.:-]{0,90}',value):return value
+            return 'sha256:'+hashlib.sha256(value.encode('utf8')).hexdigest()[:20]
+        def inspect(control):
+            info=control.element_info
+            row=dict(role=identifier(info.control_type),class_name=identifier(info.class_name),
+                automation_id=identifier(getattr(info,'automation_id','')),**safe_name(info.name))
+            for key,read in (('visible',control.is_visible),('enabled',control.is_enabled),('bounds',lambda:bounds(control))):
+                try:row[key]=read()
+                except Exception as error:row[key+'_error']=type(error).__name__
+            return row
+        try:
+            for index,root in enumerate(self.desktop().windows()):
+                if index>=24:truncated=True;break
+                row=inspect(root);row.update(index=index,children=[])
+                try:
+                    pid=int(root.element_info.process_id);image=self.process_image(pid)
+                    row['pid']=pid;row['system_explorer']=ntpath.normcase(image)==expected
+                except Exception as error:row['process_query_error']=type(error).__name__
+                self.mark('passive-system-tray-root',root_observation={key:value for key,value in row.items() if key!='children'},actual_native_input=False)
+                # Record unsupported Explorer shell roots, too, without adding
+                # them to TRAY_ROOTS or treating them as click permissions.
+                if row['class_name'] in TRAY_ROOTS or row.get('system_explorer'):
+                    for child_index,control in enumerate(root.descendants()):
+                        if child_index>=96 or total>=288:row['children_truncated']=True;truncated=True;break
+                        row['children'].append(inspect(control));total+=1
+                records.append(row)
+        except Exception as error:
+            self.mark('passive-system-tray-inventory',roots=records,truncated=truncated,
+                query_error=type(error).__name__,actual_native_input=False);return
+        self.mark('passive-system-tray-inventory',roots=records,truncated=truncated,actual_native_input=False)
+
     def tray_input(self,control):
         # Explorer is the sole allowed extra input owner, only for a positively
         # identified tray/notification descendant on the disposable runner.
@@ -145,7 +199,9 @@ class Batch3(Batch2):
         controls=self.system_tray_targets()
         if not controls:
             overflow=self.unique(self.system_tray_targets(overflow=True),'visible overflow button')
-            if overflow is None:raise AssertionError('No actual visible tray icon or native overflow button; no guessed input sent')
+            if overflow is None:
+                self.observe_system_tray()
+                raise AssertionError('No actual visible tray icon or native overflow button; passive inventory retained, no guessed input sent')
             self.tray_input(overflow)
             controls=self.wait(lambda:self.system_tray_targets(),'exact actual FlickDock tray tooltip',seconds=3)
         self.tray_input(self.unique(controls,'FlickDock tray tooltip'))

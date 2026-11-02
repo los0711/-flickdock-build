@@ -1,0 +1,3 @@
+[
+  {"id":"diagnostic-tray-menu-only","kind":"batch3","recipe":"tray-menu-only","group":12,"duration":2.0,"scope":"Isolated actual tray observation after original native clipboard/core setup; not complete 15-group or installer acceptance."}
+]
