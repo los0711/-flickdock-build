@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "Reviewed bootstrap EmptyProof fresh normal Windows validation; Shelf canonical WIP excluded; no release or installer",
+  "purpose": "Reviewed raw Windows sequence-wrapper correction; fresh normal EXE only; canonical staging candidate excluded; no installer/release",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -666,8 +666,8 @@
     },
     {
       "path": "clipboard_sync.py",
-      "size": 100118,
-      "sha256": "e8c7e82c848a174cf3157884b9453761f4d8967db740bc86b5735844e8a6edad"
+      "size": 100256,
+      "sha256": "41c2812a89b4f473a77bb9bc285af401c79adfeab31b0d0e5e2559304f68f3f1"
     },
     {
       "path": "cloud/.gitignore",
@@ -1651,8 +1651,8 @@
     },
     {
       "path": "test_clipboard_empty_bootstrap_v1825.py",
-      "size": 13733,
-      "sha256": "816775f68c76748d09b8adc19347a7ee8ae153baa654f791c811e5a57930840b"
+      "size": 16810,
+      "sha256": "8a3e894e5d199a536147d978b44049a7017bc8052ba58d730572d27d78fe0d18"
     },
     {
       "path": "test_clipboard_fast_v1821.py",

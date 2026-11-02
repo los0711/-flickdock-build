@@ -155,7 +155,9 @@ def native_sequence():
             sequence=ctypes.windll.user32.GetClipboardSequenceNumber
             sequence.argtypes=[];sequence.restype=ctypes.c_uint32
             value=int(sequence())
-            return value if value else None
+            # Preserve the raw DWORD: zero alone proves no usable value, but
+            # a separate successful metadata check may prove an empty baseline.
+            return value
     except (ImportError,OSError,RuntimeError,AttributeError):pass
     return None
 

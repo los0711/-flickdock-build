@@ -1,5 +1,6 @@
 """Trusted metadata-empty bootstrap, fake native providers and local peer only."""
-import tempfile,time,unittest
+import ctypes,tempfile,time,unittest
+from types import SimpleNamespace,ModuleType
 from dataclasses import FrozenInstanceError,replace
 from unittest.mock import patch
 from uuid import uuid4
@@ -9,6 +10,8 @@ from test_clipboard_native_read_v1825 import NativeClipboard,Reader
 from test_clipboard_sync_v1819 import Events
 from test_shared_clipboard_files_v1821 import Peer
 from test_html_native_workspace import APP,flush,until
+
+_PRODUCTION_NATIVE_SEQUENCE=sync.native_sequence
 
 class MetadataProvider:
     def __init__(self,clip):self.clip=clip;self.busy=False;self.count_error=None;self.close_error=None;self.force_count=None;self.after_close=None;self.reads=0;self.closes=0;self.counts=0
@@ -40,6 +43,12 @@ class EmptyProofFactoryTests(unittest.TestCase):
         with native.empty_proof_scope(context):
             proof=native.native_metadata(self.provider)['empty_proof'];self.clip.copy('after exclusive empty check')
             self.assertTrue(native.consume_empty_proof(proof,context,self.clip.sequence))
+    def test_unavailable_counter_cannot_borrow_a_zero_empty_proof(self):
+        context=object()
+        with native.empty_proof_scope(context):
+            proof=native.native_metadata(self.provider)['empty_proof']
+            self.assertFalse(native.consume_empty_proof(proof,context,None))
+            self.assertTrue(native.consume_empty_proof(proof,context,0))
     def test_forgery_cached_old_scope_and_newer_metadata_serial_are_rejected(self):
         one=object()
         with native.empty_proof_scope(one):
@@ -164,5 +173,40 @@ class EmptyBootstrapFlowTests(unittest.TestCase):
             previous=client._empty_bootstrap;setattr(self.peer,field,value);self.peer.account_changed.emit(self.peer.account)
             self.assertIsNot(client._empty_bootstrap,previous);self.assertGreater(client._baseline_epoch,previous.epoch)
         self.assertEqual(self.posts(),0)
+
+class ProductionSequenceBootstrapTests(EmptyBootstrapFlowTests):
+    """Same user flows through the real wrapper, only fake the native API."""
+    def setUp(self):
+        super().setUp()
+        self.patches[1].stop()
+        self.assertIs(sync.native_sequence,_PRODUCTION_NATIVE_SEQUENCE)
+        sequence=unittest.mock.Mock(side_effect=lambda:self.clip.sequence)
+        additions=[patch.object(sync,'native_input_available',return_value=True),patch.object(sync.sys,'platform','win32'),
+            patch.object(ctypes,'windll',SimpleNamespace(user32=SimpleNamespace(GetClipboardSequenceNumber=sequence)),create=True)]
+        for item in additions:item.start()
+        self.patches.extend(additions)
+
+class ProductionSequenceBoundaryTests(unittest.TestCase):
+    def test_exact_native_wrapper_preserves_zero_and_unsigned_dword(self):
+        for value in (0,1,0x7fffffff,0x80000000,0xffffffff):
+            with self.subTest(value=value):
+                function=ctypes.CFUNCTYPE(ctypes.c_uint32)(lambda:value)
+                with patch.object(sync,'native_input_available',return_value=True),patch.object(sync.sys,'platform','win32'),patch.object(ctypes,'windll',SimpleNamespace(user32=SimpleNamespace(GetClipboardSequenceNumber=function)),create=True):
+                    self.assertEqual(_PRODUCTION_NATIVE_SEQUENCE(),value)
+        self.assertFalse(sync._valid_windows_sequence(0))
+        self.assertTrue(sync._valid_windows_sequence(0xffffffff))
+    def test_api_error_and_unavailable_native_input_remain_none(self):
+        function=unittest.mock.Mock(side_effect=OSError(5,'synthetic API failure'))
+        with patch.object(sync.sys,'platform','win32'),patch.object(ctypes,'windll',SimpleNamespace(user32=SimpleNamespace(GetClipboardSequenceNumber=function)),create=True):
+            with patch.object(sync,'native_input_available',return_value=False):self.assertIsNone(_PRODUCTION_NATIVE_SEQUENCE())
+            function.assert_not_called()
+            with patch.object(sync,'native_input_available',return_value=True):self.assertIsNone(_PRODUCTION_NATIVE_SEQUENCE())
+        function.assert_called_once()
+    def test_mac_counter_zero_and_positive_are_unchanged(self):
+        appkit=ModuleType('AppKit')
+        for value in (0,51):
+            appkit.NSPasteboard=SimpleNamespace(generalPasteboard=lambda:SimpleNamespace(changeCount=lambda:value))
+            with patch.object(sync,'native_input_available',return_value=True),patch.object(sync.sys,'platform','darwin'),patch.dict('sys.modules',{'AppKit':appkit}):
+                self.assertEqual(_PRODUCTION_NATIVE_SEQUENCE(),value)
 
 if __name__=='__main__':unittest.main(verbosity=2)
