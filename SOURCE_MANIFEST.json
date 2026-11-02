@@ -1631,8 +1631,8 @@
     },
     {
       "path": "test_clipboard_reenable_v1825.py",
-      "size": 28119,
-      "sha256": "118420ac096373d55db6982f9c6982eaa80ad72075f3f39d471f8af099f49422"
+      "size": 28302,
+      "sha256": "838b56ce7b5900c66cbf31de975f2c697b53573af8ee914b8b67e6778c3b7916"
     },
     {
       "path": "test_clipboard_size_contract_v1825.py",
@@ -2316,8 +2316,8 @@
     },
     {
       "path": "test_user_popup_fixes_v1823.py",
-      "size": 9660,
-      "sha256": "3096e541a5478e30516d9e1c8982252cd3c31bb7d06069bcea15a00cf5179f2d"
+      "size": 11099,
+      "sha256": "91d7c5d3fa5bcfe81aa9611631b997c5b298e85f7b3f6d87bd27c3c5d7887cda"
     },
     {
       "path": "test_utility_windows_v1821.py",

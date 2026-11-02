@@ -341,8 +341,10 @@ class ReenableTests(unittest.TestCase):
         return starts,original
     def test_actual_signedout_empty_login_first_text_copy_uploads_once(self):
         starts,original=self._empty_login()
+        until(lambda:self.peer.head is not None and self.peer.head.get('ready') is True and self.client._pending is None)
         self.assertEqual(starts,[True]);self.assertEqual(sum(m=='POST' for m,p,o in self.peer.calls),1)
         self.assertIs(self.clip.mimeData(),original);self.assertIsNone(self.client._pending)
+        self.assertEqual(self.client.view['phase'],'synced')
     def test_actual_signedout_empty_login_first_file_copy_uploads_once(self):
         starts,original=self._empty_login('file')
         until(lambda:bool(self.peer.held))

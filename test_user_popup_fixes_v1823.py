@@ -6,7 +6,7 @@ os.environ['QT_QPA_PLATFORM']='offscreen'
 if os.environ.get('FLICKDOCK_POPUP_BASELINE'):sys.path.insert(0,os.environ['FLICKDOCK_POPUP_BASELINE'])
 from PySide6.QtCore import QObject,Signal,Qt,QPoint,QTimer,QEvent
 from PySide6.QtGui import QImage,QColor,QContextMenuEvent
-from PySide6.QtWidgets import QWidget,QFrame,QPushButton
+from PySide6.QtWidgets import QWidget,QFrame,QPushButton,QStackedWidget
 from PySide6.QtTest import QTest
 from shiboken6 import isValid
 import test_html_native_workspace as ws
@@ -76,7 +76,25 @@ class ClipboardClickFixTests(unittest.TestCase):
   source=self.shelf.zones['permanent'].clipboard_button;self.manager.show_clipboard_preview(source);d=self.manager.clipboard_preview_dialog;m=d._popup_motion;m.animation.setCurrentTime(m.animation.duration());flush();return d,m
  def finish(self,m):m.animation.setCurrentTime(m.animation.duration());flush()
  def test_preview_is_smaller_and_original_text_is_noninteractive(self):
-  d,m=self.open();self.assertLessEqual(m.target_rect.width(),420);self.assertLess(m.target_rect.height(),330)
+  d,m=self.open()
+  geometry={'target':(m.target_rect.width(),m.target_rect.height()),
+   'body_hint':(d.body_layout.sizeHint().width(),d.body_layout.sizeHint().height()),
+   'margins':d.body_layout.getContentsMargins(),'spacing':d.body_layout.spacing(),
+   'head_hint':d.body_layout.itemAt(0).layout().sizeHint().height(),
+   'title_height':d.title.height(),'badge_height':d.badge.height(),'close_height':d.close_button.height(),
+   'content_height':d.content.height(),'content_hint':d.content.sizeHint().height(),
+   'text_hint':d.text.sizeHint().height(),'status_height':d.status.height(),
+   'note_height':d.sync_limit_note.height(),'note_hint':d.sync_limit_note.sizeHint().height(),
+   'note_wrapped_height':d.sync_limit_note.heightForWidth(d.sync_limit_note.width()),
+   'root_items':[(d.body_layout.itemAt(i).geometry().height(),d.body_layout.itemAt(i).sizeHint().height(),d.body_layout.itemAt(i).minimumSize().height()) for i in range(d.body_layout.count())],
+   'body_hfw':d.body_layout.totalHeightForWidth(d.surface.width()),
+   'text_minimum_hint':d.text.minimumSizeHint().height(),
+   'stack_base_hint':QStackedWidget.sizeHint(d.content).height(),
+   'note_width':d.sync_limit_note.width(),
+   'note_font':(d.sync_limit_note.font().pixelSize(),d.sync_limit_note.font().pointSizeF()),
+   'note_line_spacing':d.sync_limit_note.fontMetrics().lineSpacing(),
+   'scroll_max':d.scroll.verticalScrollBar().maximum()}
+  self.assertLessEqual(m.target_rect.width(),420,geometry);self.assertLess(m.target_rect.height(),330,geometry)
   self.assertEqual(d.text.textInteractionFlags(),Qt.NoTextInteraction);self.assertEqual(d.text.focusPolicy(),Qt.NoFocus);self.assertEqual(d.text.toPlainText(),'unaltered preview text')
  def test_every_internal_text_label_badge_image_file_and_x_click_closes_without_interaction(self):
   for target in ('title','badge','status','text','image','info','close_button'):
