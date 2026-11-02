@@ -222,7 +222,8 @@ def _chunks(raw,start=0,end=None):
     end=len(raw) if end is None else end
     for offset in range(start,end,NATIVE_COPY_CHUNK_BYTES):yield raw[offset:min(end,offset+NATIVE_COPY_CHUNK_BYTES)]
 
-def _text_parts(raw,html,limit,*,cancel=None,encoding='utf-16-le'):
+def _text_parts(raw,html,limit,*,cancel=None,encoding='utf-16-le',part_digests=None):
+    if part_digests is not None and type(part_digests)is not dict:raise TypeError('Raw digest output must be a dictionary')
     if encoding=='utf-16-le':
         if len(raw)%2:raise Unsupported()
         end=raw.find(b'\0\0')
@@ -236,8 +237,14 @@ def _text_parts(raw,html,limit,*,cancel=None,encoding='utf-16-le'):
     # decoded copy which will be discarded just above the cloud threshold.
     too_large=end//2>limit if encoding=='utf-16-le' else end>limit
     decoder=codecs.getincrementaldecoder(encoding)('strict');text=[];size=0;digest=hashlib.sha256()
+    raw_text=hashlib.sha256() if part_digests is not None else None
+    def hash_span(sha,value,start,stop):
+        for chunk in _chunks(value,start,stop):
+            if cancel is not None and cancel.is_set():raise InterruptedError('Original analysis cancelled')
+            sha.update(chunk)
     for chunk in _chunks(raw,0,end):
         if cancel is not None and cancel.is_set():raise InterruptedError('Original analysis cancelled')
+        if raw_text is not None:raw_text.update(chunk)
         part=decoder.decode(chunk);encoded=part.encode('utf8');size+=len(encoded);digest.update(encoded)
         if not too_large:
             if size<=limit:text.append(part)
@@ -246,21 +253,33 @@ def _text_parts(raw,html,limit,*,cancel=None,encoding='utf-16-le'):
     if not too_large:
         if size<=limit:text.append(final)
         else:text.clear();too_large=True
+    # The logical text ends before its native NUL. Raw integrity also covers
+    # the terminator and every byte after it, without decoding that padding.
+    if raw_text is not None:hash_span(raw_text,raw,end,len(raw))
     html_value='';html_size=0;html_digest=hashlib.sha256()
+    raw_html=None
     if html is not None:
         fields={k.decode():int(v) for k,v in re.findall(rb'(StartHTML|EndHTML|StartFragment|EndFragment):\s*(-?\d+)',html[:4096])}
         a,b=fields.get('StartHTML',-1),fields.get('EndHTML',-1)
         if not 0<=a<=b<=len(html):a,b=fields.get('StartFragment',-1),fields.get('EndFragment',-1)
         if not 0<=a<=b<=len(html):raise Unsupported()
+        if part_digests is not None:
+            raw_html=hashlib.sha256();hash_span(raw_html,html,0,a)
         html_decoder=codecs.getincrementaldecoder('utf8')('strict');pieces=[]
         for chunk in _chunks(html,a,b):
             if cancel is not None and cancel.is_set():raise InterruptedError('Original analysis cancelled')
+            if raw_html is not None:raw_html.update(chunk)
             part=html_decoder.decode(chunk);html_size+=len(chunk);html_digest.update(chunk)
             if not too_large and size+html_size<=limit:pieces.append(part)
             else:pieces.clear();too_large=True
         part=html_decoder.decode(b'',final=True)
         if not too_large:pieces.append(part);html_value=''.join(pieces)
+        if raw_html is not None:hash_span(raw_html,html,b,len(html))
     fingerprint=hashlib.sha256(struct.pack('<QQ',size,html_size)+digest.digest()+html_digest.digest()).hexdigest()
+    if part_digests is not None:
+        # Publish no partial digest if decoding, cancellation or IO failed.
+        part_digests['text']=raw_text.hexdigest()
+        if raw_html is not None:part_digests['html']=raw_html.hexdigest()
     return (None if too_large else dict(text=''.join(text),html=html_value)),size+html_size,fingerprint,end+(2 if encoding=='utf-16-le' else 0)
 
 def capture(provider=None,limit=MAX_BYTES,*,cache=None):

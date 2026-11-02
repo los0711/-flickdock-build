@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "Reviewed portable lock classification, bounded text analysis, private-baseline local protection and exact Copy QA; verification only, no installer or release",
+  "purpose": "Complete raw text/HTML integrity fused with strict decoding; verification only, no installer or release",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -16,8 +16,8 @@
     },
     {
       "path": ".github/workflows/macos-build.yml",
-      "size": 7548,
-      "sha256": "1b4197acf755b9dd39b9a2e64335cdeaf07cf2fce4819885209b98a489545ea9"
+      "size": 7583,
+      "sha256": "c1f7f0071609255d1bd2734089e918b04a886eaa20c1a6a89613cc9653b1ba02"
     },
     {
       "path": ".github/workflows/macos-intel-motion-diagnostic.yml",
@@ -26,8 +26,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 25347,
-      "sha256": "6b8487819a771448027b77d8e67a3fd9e9f9e12f3b3b43ff71d81f2f6b632cf3"
+      "size": 25385,
+      "sha256": "f7216ba6f04198fcaf8c262255670b88718c3054b7cc706e8721a3a00e2bc3dc"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -1506,8 +1506,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 43619,
-      "sha256": "b478f2a084a0fcdf7b1e66e50eb52f9937d674b45dd8425231420c5d88a7f674"
+      "size": 43665,
+      "sha256": "6e39c76b0aad9e895d3a47786da260c1857c7d27c057b095949b909537c938fc"
     },
     {
       "path": "release_signing.py",
@@ -2148,6 +2148,11 @@
       "path": "test_native_text_budget_v1825.py",
       "size": 2694,
       "sha256": "5d001bae28d9475ec87e8050e15f7d402c951cc9926a93de0f94d682ced59d8b"
+    },
+    {
+      "path": "test_native_text_single_pass_v1825.py",
+      "size": 7226,
+      "sha256": "5bc7e6cfbb250a07d7e840d35630615c5bc0c70816a6f352b6dabc8f5dec2847"
     },
     {
       "path": "test_nearby_transport_v1818.py",
@@ -2821,8 +2826,8 @@
     },
     {
       "path": "win_clipboard_cache.py",
-      "size": 17697,
-      "sha256": "9fcbe400ec6a78a076b3b9516005e750710d70aa56cff8ef3790db6e79020b2e"
+      "size": 18144,
+      "sha256": "36803d1b0b8596f12e3007baf5673be5e6eb42152805481705d79a2c5ad0bdcc"
     },
     {
       "path": "win_clipboard_io.py",
@@ -2831,8 +2836,8 @@
     },
     {
       "path": "win_clipboard_native.py",
-      "size": 24361,
-      "sha256": "a405754837b7ba07841d6639b8b44b1dddc63732f2f58e9a49626a16f1e86f82"
+      "size": 25555,
+      "sha256": "080db011c3f0f437e8d0419b66ebbf9471a30579ed3bb2a3b8226eeae4687d9d"
     },
     {
       "path": "win_owned_process.py",

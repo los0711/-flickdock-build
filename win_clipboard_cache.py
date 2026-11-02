@@ -193,12 +193,13 @@ class CacheCapability:
                 if name not in _NAMES or name in names or type(length)is not int or length<0 or not isinstance(digest,str) or not re.fullmatch('[0-9a-f]{64}',digest):raise ValueError('Invalid local original part')
                 names.add(name);path=self.root/(name+'.bin');_no_links(path)
                 if not path.is_file() or path.stat().st_size!=length:raise ValueError('Local original size mismatch')
-                sha=hashlib.sha256()
-                with path.open('rb') as source:
-                    for chunk in iter(lambda:source.read(ORIGINAL_CHUNK_BYTES),b''):
-                        if self.cancel is not None and self.cancel.is_set():raise InterruptedError('Owned cache verification cancelled')
-                        sha.update(chunk)
-                if sha.hexdigest()!=digest:raise ValueError('Local original hash mismatch')
+                if kind!='text' or name not in ('text','html'):
+                    sha=hashlib.sha256()
+                    with path.open('rb') as source:
+                        for chunk in iter(lambda:source.read(ORIGINAL_CHUNK_BYTES),b''):
+                            if self.cancel is not None and self.cancel.is_set():raise InterruptedError('Owned cache verification cancelled')
+                            sha.update(chunk)
+                    if sha.hexdigest()!=digest:raise ValueError('Local original hash mismatch')
                 mime=part.get('mime');encoding=part.get('encoding')
                 if name=='image' and mime not in ('image/png','image/jpeg','image/webp','image/bmp','image/tiff'):raise ValueError('Invalid local image format')
                 if name=='text' and encoding not in ('utf-16-le','utf-8'):raise ValueError('Invalid local text encoding')
@@ -222,7 +223,11 @@ class CacheCapability:
                         if name not in by_name:return None
                         source=stack.enter_context(open(by_name[name]['path'],'rb'))
                         return stack.enter_context(mmap.mmap(source.fileno(),0,access=mmap.ACCESS_READ)) if by_name[name]['size'] else b''
-                    ignored,actual_size,expected,end=_text_parts(mapped('text'),mapped('html'),0,cancel=self.cancel,encoding=by_name['text']['encoding'])
+                    # Hash the same original chunks used by strict decoding;
+                    # avoid reading a large text twice merely to adopt it.
+                    part_digests={}
+                    ignored,actual_size,expected,end=_text_parts(mapped('text'),mapped('html'),0,cancel=self.cancel,encoding=by_name['text']['encoding'],part_digests=part_digests)
+                    if any(part_digests[name]!=part['sha256'] for name,part in by_name.items()):raise ValueError('Local original hash mismatch')
             if expected!=fingerprint or actual_size!=size:raise ValueError('Local original identity mismatch')
             return LocalNativeContent(kind,tuple(verified),(kind,fingerprint),size,'too_large',self)
         except Exception:self.lock.close();self.lock=None;raise
