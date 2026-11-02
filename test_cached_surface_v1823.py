@@ -21,7 +21,7 @@ class CachedSurfaceTests(unittest.TestCase):
                     snapshot.paint_frame(p,QRectF(0,0,120,80),live,QSizeF(120,80));p.end()
                     return target.toImage().pixelColor(round(60*dpr),round(40*dpr))
                 c=render(.5);self.assertEqual(len(calls),0)
-                self.assertLessEqual(abs(c.red()-128),2,(c.getRgb(),snapshot._blend.toImage().pixelColor(60,40).getRgb()));self.assertLessEqual(abs(c.green()-64),2)
+                self.assertLessEqual(abs(c.red()-128),2,c.getRgb());self.assertLessEqual(abs(c.green()-64),2)
                 previous=0
                 for mix in (.75,.80,.90,.99,1.):
                     c=render(mix);self.assertGreaterEqual(c.blue(),previous);previous=c.blue()
@@ -31,7 +31,10 @@ class CachedSurfaceTests(unittest.TestCase):
                 captured=snapshot.capture_current(owner,()).toImage()
                 self.assertEqual(captured.pixelColor(captured.width()//2,captured.height()//2),painted)
                 snapshot.finish();self.assertTrue(snapshot.source.isNull());self.assertTrue(snapshot.target.isNull())
-                self.assertTrue(snapshot._blend.isNull());self.assertTrue(snapshot._weighted.isNull())
+                self.assertTrue(snapshot.source.isNull());self.assertTrue(snapshot.target.isNull())
+                self.assertIsNone(snapshot._last_paint)
+                for retired in ('_blend','_weighted','_blend_valid'):
+                    self.assertFalse(hasattr(snapshot,retired))
                 owner.deleteLater();ws.flush()
 
 if __name__=='__main__':unittest.main()

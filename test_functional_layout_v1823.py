@@ -60,15 +60,18 @@ class OverviewRefinementTests(unittest.TestCase):
 
     def test_reveal_uses_platform_file_manager_without_shell_interpolation(self):
         shelf=self.fixture.shelf;ref=self.fixture.paths[0]
-        with patch('flickdock.subprocess.Popen') as process:
+        with patch('flickdock.subprocess.Popen') as process,patch.object(shelf,'hide_animated') as hide:
             with patch('flickdock.sys.platform','darwin'):shelf.reveal_ref(ref)
             process.assert_called_once_with(['/usr/bin/open','-R',str(Path(ref).resolve())])
-        with patch('flickdock.subprocess.Popen') as process,patch('windows_reveal.request_reveal') as native:
+            hide.assert_called_once_with(explicit=True)
+        with patch('flickdock.subprocess.Popen') as process,patch('windows_reveal.request_reveal') as native,patch.object(shelf,'hide_animated') as hide:
             with patch('flickdock.sys.platform','win32'):shelf.reveal_ref(ref)
             native.assert_called_once()
             owner,path,done=native.call_args.args
             self.assertIs(owner,shelf);self.assertEqual(path,str(Path(ref).resolve()))
             self.assertTrue(callable(done));process.assert_not_called()
+            hide.assert_not_called()
+            done(None);hide.assert_called_once_with(explicit=True)
 
     def test_cancelled_upload_becomes_unsynced_and_resume_calls_existing_task(self):
         from types import SimpleNamespace

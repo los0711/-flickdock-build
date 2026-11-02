@@ -7,7 +7,7 @@ from collections import OrderedDict
 import sys
 from PySide6.QtCore import QCoreApplication,QEvent,QObject,QPoint,QRect,QRectF,Qt,QSignalBlocker,QTimer,QEasingCurve
 from frame_animation import FrameAnimation as QVariantAnimation
-from PySide6.QtGui import QColor,QGuiApplication,QPainter,QPainterPath,QPainterPathStroker,QPixmap,QContextMenuEvent
+from PySide6.QtGui import QColor,QGuiApplication,QPainter,QPainterPath,QPainterPathStroker,QPixmap,QContextMenuEvent,QCursor
 from PySide6.QtWidgets import QApplication,QWidget
 from shiboken6 import isValid
 from ui_transitions import exit_curve,motion_allowed
@@ -28,7 +28,8 @@ class ClipboardPopupMotion(QObject):
         # one progress value still owns both directions and reversals.
         self._geometry_curve=QEasingCurve(QEasingCurve.OutBack);self._geometry_curve.setOvershoot(.5)
         self.animation.valueChanged.connect(self._frame);self.animation.finished.connect(self._finished)
-        window.installEventFilter(self)
+        # The presentation-scoped application filter also receives host events.
+        # A second host filter would deliver Hide/deactivation twice.
 
     def _allowed(self):return bool(getattr(self.window.manager,'motion',True) and motion_allowed())
 
@@ -187,6 +188,16 @@ class ClipboardPopupMotion(QObject):
         elif self.presenting and watched is self.owner and (kind in (QEvent.Move,QEvent.Resize) or (kind==QEvent.WindowStateChange and self.owner.isMinimized())):self.dismiss(immediate=True)
         elif self.presenting and kind in (QEvent.MouseButtonPress,QEvent.MouseButtonDblClick) and isinstance(watched,QWidget):
             point=event.globalPosition().toPoint()
+            if (self.source_rect.contains(point) and self.source is not None and isValid(self.source)
+                    and (watched is self.source or watched is self.window or self.window.isAncestorOf(watched))):
+                # The fixed native host also covers the small source button.
+                # Windows can deliver that click to its transparent reservation
+                # instead of the underlying QPushButton. Resolve the same toggle
+                # here and consume its release, rather than requiring another click.
+                self._swallow_button=event.button();self._release_timer.start(1500)
+                if self.target:self.dismiss()
+                elif event.button()==Qt.LeftButton:self.open(self.source)
+                event.accept();return True
             if self.current_rect().contains(point):
                 # Consume both halves, even if the exit ends before release.
                 # Content is a view, never a text selection/image gesture or
@@ -200,6 +211,12 @@ class ClipboardPopupMotion(QObject):
 
     def _deactivated(self,epoch):
         if not self.presenting or self.intent!=epoch or QApplication.activeWindow() is self.window:return
+        # Activating the source window precedes its native mouse press. Let
+        # the existing click filter decide: source toggles, blank closes, and
+        # underlying actions still run. Closing here races that same click
+        # into a reopen. Activation of another app/window still dismisses.
+        if (QApplication.activeWindow() is self.owner and QApplication.mouseButtons()!=Qt.NoButton
+                and self.source_rect.contains(QCursor.pos())):return
         popup=QApplication.activePopupWidget()
         while popup is not None:
             if popup is self.window:return

@@ -213,6 +213,9 @@ jobs:
           }
           Invoke-MotionCheck 'download-terminal' @('-m', 'unittest', 'test_download_terminal_v1824', '-v')
           Invoke-MotionCheck 'clipboard-reenable' @('-m', 'unittest', 'test_clipboard_reenable_v1825', '-v')
+          Invoke-MotionCheck 'cleanroom-native-worker' @('-m', 'unittest', 'test_win_clipboard_io_v1825', 'test_win_clipboard_cache_v1825', 'test_clipboard_native_read_v1825', 'test_clipboard_worker_outcomes_v1825', 'test_clipboard_reader_entry_v1825', 'test_clipboard_audit_source_v1825', 'test_clipboard_local_original_v1825', '-v')
+          Invoke-MotionCheck 'cleanroom-popup-lifecycle' @('-m', 'unittest', 'test_popup_subscription_v1825', 'test_clipboard_popup_native_events_v1825', 'test_modal_owner_lifecycle_v1825', 'test_secondary_window_handoff_v1825', 'test_morph_text_scale_v1825', 'test_card_style_ownership_v1825', '-v')
+          Invoke-MotionCheck 'shelf-control-transport' @('-m', 'unittest', 'test_shelf_control_transport_v1825', '-v')
           Invoke-MotionCheck 'clipboard-size-and-multipart' @('-m', 'unittest', 'test_clipboard_size_contract_v1825', 'test_clipboard_multipart_v1825', '-v')
           Invoke-MotionCheck 'motion-components' @('-m', 'unittest', 'test_ui_followup_v1823', 'test_cached_surface_v1823', 'test_stack_spread_v1823', 'test_input_motion_v1823', 'test_content_entrance_v1823', 'test_transfer_drop_feedback_v1823', 'test_transfer_item_motion_v1823', 'test_popup_motion_v1823', 'test_drop_target_motion_v1823', 'test_morph_snapshot_content_v1824', '-v')
           Invoke-MotionCheck 'motion-notices-permissions' @('-m', 'unittest', 'test_clipboard_notice_motion_v1823', 'test_clipboard_popup_motion_v1823', 'test_mac_status_drop_v1823', 'test_mac_permissions_v1821', 'test_presentation_v1819.PresentationTests', '-v')
@@ -311,6 +314,27 @@ jobs:
           python -m unittest test_windows_shell_bundle_v1824 -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python qa/packaged-live/verify_frozen_source.py --before-build
+      - name: Verify hosted real protected-helper Job and forced parent exit
+        shell: pwsh
+        run: |
+          python -m unittest discover -s qa/packaged-live -p test_native_reader_job_gate.py -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $fixtureNonce = [Guid]::NewGuid().ToString('N')
+          $fixtureProfile = Join-Path $env:RUNNER_TEMP ('flickdock-reader-job-' + $fixtureNonce)
+          $fixtureExit = 1
+          try {
+            python qa/packaged-live/native_reader_job_gate.py --profile $fixtureProfile --nonce $fixtureNonce
+            $fixtureExit = $LASTEXITCODE
+          } finally {
+            New-Item -ItemType Directory -Force -Path build/native-reader-job | Out-Null
+            foreach ($fixtureName in @('report.json', 'parent-ready.json', 'parent-error.json')) {
+              $fixtureEvidence = Join-Path $fixtureProfile $fixtureName
+              if (Test-Path -LiteralPath $fixtureEvidence) {
+                Copy-Item -LiteralPath $fixtureEvidence -Destination (Join-Path 'build/native-reader-job' $fixtureName)
+              }
+            }
+          }
+          if ($fixtureExit -ne 0) { exit $fixtureExit }
       - name: Build actual native executable with the production entry
         if: github.event.inputs.reuse_normal_run == ''
         run: |
@@ -372,6 +396,7 @@ jobs:
           name: normal-frozen-windows-${{ github.sha }}
           path: |
             build/normal-native-qa/
+            build/native-reader-job/
             build/normal-source-verification.json
             build/reused-frozen-receipt.json
             build/exact-installer/

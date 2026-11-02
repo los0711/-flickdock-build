@@ -1,5 +1,17 @@
 """FlickDock: one persistent Windows shelf for files, images and text."""
 from __future__ import annotations
+import sys
+
+# A windowed frozen child must read the native clipboard without importing Qt,
+# constructing the app, taking the instance lock or opening account storage.
+if len(sys.argv)>1 and sys.argv[1]=='--clipboard-reader':
+    if sys.platform!='win32':
+        raise SystemExit(2)
+    from win_clipboard_native import main as _clipboard_reader_main
+    # One pure helper parser owns its private cache capability arguments.
+    # Never fall through into the GUI for malformed helper invocations.
+    raise SystemExit(_clipboard_reader_main(sys.argv[2:]))
+
 from surface_morph import rounded_rect_path,draw_rounded_rect
 
 import ctypes
@@ -9,7 +21,6 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import time
 import zipfile
 from contextlib import contextmanager
@@ -1510,7 +1521,6 @@ class ShelfWindow(QWidget):
         self.card = QFrame(self)
         self.card.setObjectName("shelfCard")
         self.card.setGeometry(14, 7, CARD_W, CARD_H)
-        set_ui_style(self.card, "QFrame#shelfCard {background:#ffffff;border:0;border-radius:24px;}")
         # The native host remains transparent; this is the card's rounded
         # shadow, confined to the reserved animation surface margins.
         self.surface_effect = MotionShadow(self.card, alpha=42)
@@ -2918,13 +2928,19 @@ class ShelfWindow(QWidget):
         if sys.platform=='win32':
             from windows_reveal import request_reveal
             def done(error):
+                if not error:
+                    self.hide_animated(explicit=True)
+                    return
                 if error and self.popup and self.popup.preview.current_path==original_ref:
                     self.popup.preview.info.setText('无法打开文件所在位置：'+str(error))
             request_reveal(self,str(path.resolve()),done)
-        elif sys.platform=='darwin':subprocess.Popen(['/usr/bin/open','-R',str(path.resolve())])
+        elif sys.platform=='darwin':
+            subprocess.Popen(['/usr/bin/open','-R',str(path.resolve())])
+            self.hide_animated(explicit=True)
         else:
             from PySide6.QtGui import QDesktopServices
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve().parent)))
+            if QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve().parent))):
+                self.hide_animated(explicit=True)
 
     def copy_files(self, mode):
         self.copy_items(self.files[mode])
@@ -3478,8 +3494,10 @@ class ShelfManager:
     def show_mac_permissions(self):
         if self._quitting or sys.platform!='darwin' or not native_input_available():return
         from mac_permissions_ui import MacPermissionsDialog
+        owner=self.settings_dialog if self.settings_open() else self.shelf
         if getattr(self,'mac_permissions_dialog',None) is None:
-            self.mac_permissions_dialog=MacPermissionsDialog(self,self.settings_dialog if self.settings_open() else self.shelf)
+            self.mac_permissions_dialog=MacPermissionsDialog(self,owner)
+        else:self.mac_permissions_dialog.bind_owner(owner)
         self._center_dialog(self.mac_permissions_dialog);self.mac_permissions_dialog.show()
         self.mac_permissions_dialog.raise_();self.mac_permissions_dialog.activateWindow()
 
@@ -3550,6 +3568,9 @@ class ShelfManager:
         self.updates.activate()
 
     def show_update_dialog(self):
+        for shelf in getattr(self,'shelves',(self.shelf,)):
+            shelf._dismiss_clipboard_preview()
+            shelf._release_reveal_level()
         if self.update_dialog is None:
             from update_dialog import UpdateDialog
             self.update_dialog=UpdateDialog(APP_VERSION,theme=self.settings.theme)

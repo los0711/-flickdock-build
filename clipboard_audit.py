@@ -64,9 +64,10 @@ class ClipboardAudit:
         add(parts);return digest.hexdigest()
 
     def record(self, mime=None, *, module, function, trigger, origin, task_id='', operation='write', result='ok',
-               content_type=None, fingerprint_data=None):
+               content_type=None, fingerprint_data=None, description=None):
         try:
             if fingerprint_data is not None:kind,fingerprint=content_type,self.fingerprint(fingerprint_data)
+            elif description is not None:kind,fingerprint=description
             else:kind,fingerprint=self.describe(mime)
             # Task identifiers come from server/local UUIDs; never accept a payload as an ID.
             from uuid import UUID
@@ -84,7 +85,12 @@ class ClipboardAudit:
                 self._queue.append(event);self._condition.notify()
         except Exception:
             # Diagnostics must never break the system's original Copy/Paste operation.
-            pass
+            self.note_failure()
+
+    def note_failure(self):
+        # Preserve native Copy/Paste while exposing a lost diagnostic through
+        # the existing bounded loss counter, never a private exception message.
+        with self._condition:self.dropped+=1
 
     def _run(self):
         while True:
@@ -129,28 +135,42 @@ def observe(clipboard, **context):
         except Exception:pass
 
 
-def set_mime(clipboard, mime, **context):
+def _known_write(action, mime_factory, context):
+    """Trace our attempted payload, not whichever provider owns it afterwards.
+
+    QClipboard takes ownership of a submitted QMimeData. Fingerprint it before
+    submission, then record the writer API's result without reading it back.
+    This is provenance of a write, not verification that a remote sync succeeded.
+    """
+    audit=_audit
+    if audit is not None and context.get('fingerprint_data') is None:
+        try:context['description']=audit.describe(mime_factory())
+        except Exception:
+            context.update(content_type='unknown',fingerprint_data=('write_payload_unavailable',))
+    def record(result):
+        if audit is not None:
+            try:audit.record(None,**dict(context,result=result))
+            except Exception:audit.note_failure()
     try:
-        clipboard.setMimeData(mime)
+        action()
     except Exception:
-        observe(clipboard,**context,result='failed');raise
-    else:observe(clipboard,**context)
+        record('failed');raise
+    else:record('ok')
+
+
+def set_mime(clipboard, mime, **context):
+    _known_write(lambda:clipboard.setMimeData(mime),lambda:mime,context)
 
 
 def set_text(clipboard, text, **context):
-    try:
-        clipboard.setText(text)
-    except Exception:
-        observe(clipboard,**context,result='failed');raise
-    else:observe(clipboard,**context)
+    def payload():
+        from PySide6.QtCore import QMimeData
+        mime=QMimeData();mime.setText(text);return mime
+    _known_write(lambda:clipboard.setText(text),payload,context)
 
 
 def clear(clipboard, **context):
-    try:
-        clipboard.clear()
-    except Exception:
-        observe(clipboard,**context,result='failed');raise
-    else:observe(clipboard,**context)
+    _known_write(clipboard.clear,lambda:None,context)
 
 
 atexit.register(stop)

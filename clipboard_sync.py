@@ -1,6 +1,7 @@
 """Silent, account-wide latest clipboard. Reading never consumes the content."""
 from __future__ import annotations
-import base64,hashlib,json,os,shutil,struct,sys,tempfile,threading,time,zipfile
+import base64,errno,hashlib,json,os,shutil,struct,sys,tempfile,threading,time,zipfile
+from dataclasses import dataclass
 from pathlib import Path,PurePosixPath
 from uuid import uuid4
 from PySide6.QtCore import QObject,QRunnable,QThreadPool,QTimer,Signal,QMimeData,QUrl,QBuffer,QIODevice,Qt
@@ -14,6 +15,85 @@ MAX_ARCHIVE_BYTES=MAX_BYTES+1024*1024 # metadata overhead, not additional user f
 MULTIPART_THRESHOLD=24*1024*1024
 SYNC_MARKER='application/x-flickdock-cloud-clipboard'
 TEXT_MAGIC=b'FDCLIP2\0'
+
+
+def _windows_clipboard_reader(clipboard,parent):
+    if sys.platform!='win32' or not native_input_available() or clipboard is not QApplication.clipboard():return None
+    from win_clipboard_io import WindowsClipboardReader
+    return WindowsClipboardReader(parent)
+
+
+def _windows_clipboard_metadata():
+    from win_clipboard_io import native_metadata
+    return native_metadata()
+
+
+class _FilePaths(list):
+    """One sequence-bound native/worker snapshot, never a path-only cache."""
+    def __init__(self,paths,fingerprint,source_stat=None):
+        super().__init__(paths);self.fingerprint=fingerprint;self.source_stat=source_stat
+
+
+def _prepared_file_paths(paths):
+    # Called only by unpack's existing disk worker, after closing the output.
+    return _FilePaths(paths,signature(('files',paths)))
+
+
+@dataclass(frozen=True)
+class NativeReadOutcome:
+    status:str
+    sample:object=None
+
+
+def native_read_outcome(result,error,sequence):
+    """One validated result boundary; malformed ready is never a silent exit."""
+    if error or not isinstance(result,dict):return NativeReadOutcome('unknown')
+    status=result.get('status')
+    if status not in ('ready','unknown','changed','overlimit'):return NativeReadOutcome('invalid')
+    before,after=result.get('sequence_before'),result.get('sequence_after')
+    if status=='changed':return NativeReadOutcome('changed')
+    if status=='unknown':return NativeReadOutcome('unknown')
+    if not _valid_windows_sequence(before) or not _valid_windows_sequence(after):return NativeReadOutcome('invalid')
+    if before!=after or after!=sequence:return NativeReadOutcome('changed')
+    if status=='overlimit':return NativeReadOutcome('overlimit')
+    if result.get('valid') is not True or type(result.get('known_empty')) is not bool:return NativeReadOutcome('invalid')
+    value=result.get('value');marker=result.get('marker',b'');eligible=result.get('sync_eligible',True)
+    if type(eligible) is not bool:return NativeReadOutcome('invalid')
+    if not isinstance(marker,bytes) or len(marker)>1024:return NativeReadOutcome('invalid')
+    content=result.get('local_content')
+    if content is not None:
+        from win_clipboard_cache import LocalNativeContent
+        if (not isinstance(content,LocalNativeContent) or content.kind not in ('text','image')
+                or content.sync_policy!='too_large' or eligible or value is not None or result['known_empty']
+                or result.get('signature')!=content.fingerprint):return NativeReadOutcome('invalid')
+        value=(content.kind,dict(local_content=content))
+    elif value is None:
+        if result['known_empty'] is not True:return NativeReadOutcome('invalid')
+    else:
+        if result['known_empty'] or not isinstance(value,(tuple,list)) or len(value)!=2:return NativeReadOutcome('invalid')
+        kind,data=value
+        if kind=='text':
+            if not isinstance(data,dict) or not isinstance(data.get('text'),str) or not isinstance(data.get('html',''),str):return NativeReadOutcome('invalid')
+        elif kind=='image':
+            if (not isinstance(data,dict) or not isinstance(data.get('raw'),bytes) or not data['raw']
+                    or data.get('mime') not in ('image/png','image/jpeg','image/webp','image/bmp','image/tiff')):return NativeReadOutcome('invalid')
+        elif kind=='files':
+            fingerprint=result.get('signature');stamp=result.get('source_stat')
+            if (not isinstance(data,(tuple,list)) or len(data)!=1 or not isinstance(data[0],str)
+                    or not isinstance(fingerprint,(tuple,list)) or len(fingerprint)!=2 or fingerprint[0]!='files'
+                    or not isinstance(fingerprint[1],(tuple,list)) or len(fingerprint[1])!=1
+                    or not isinstance(fingerprint[1][0],(tuple,list)) or len(fingerprint[1][0])!=3
+                    or fingerprint[1][0][0]!=os.path.normcase(os.path.abspath(data[0]))
+                    or type(fingerprint[1][0][1]) is not int or fingerprint[1][0][1]<0
+                    or type(fingerprint[1][0][2]) is not int
+                    or not isinstance(stamp,(tuple,list)) or len(stamp)!=4 or any(type(x) is not int for x in stamp)
+                    or tuple(stamp[2:])!=tuple(fingerprint[1][0][1:])):return NativeReadOutcome('invalid')
+            fingerprint=('files',tuple(tuple(row) for row in fingerprint[1]))
+            value=('files',_FilePaths(data,fingerprint,list(stamp)))
+        else:return NativeReadOutcome('invalid')
+    sample=dict(status='ready',valid=True,value=value,known_empty=result['known_empty'],
+        marker=marker,sequence=after,sequence_before=before,sequence_after=after,sync_eligible=eligible)
+    return NativeReadOutcome('empty' if result['known_empty'] else 'ready',sample)
 
 
 def head_version(head):
@@ -60,9 +140,15 @@ def native_sequence():
             return int(NSPasteboard.generalPasteboard().changeCount())
         if sys.platform=='win32':
             import ctypes
-            return int(ctypes.windll.user32.GetClipboardSequenceNumber())
+            sequence=ctypes.windll.user32.GetClipboardSequenceNumber
+            sequence.argtypes=[];sequence.restype=ctypes.c_uint32
+            value=int(sequence())
+            return value if value else None
     except (ImportError,OSError,RuntimeError,AttributeError):pass
     return None
+
+
+def _valid_windows_sequence(value):return type(value) is int and 0<value<=0xffffffff
 
 
 def snapshot(clipboard,*,baseline_state=None):
@@ -88,11 +174,14 @@ def snapshot(clipboard,*,baseline_state=None):
 def signature(value):
     if value is None:return None
     kind,data=value
+    if kind in ('text','image') and data.get('local_content') is not None:
+        return data['local_content'].fingerprint
     if kind=='image':
         if 'raw' in data:return (kind,hashlib.sha256(data['raw']).digest())
         image=data['image'].convertToFormat(QImage.Format.Format_RGBA8888)
         return (kind,image.width(),image.height(),hashlib.sha256(image.constBits()).digest())
     if kind=='files':
+        if isinstance(data,_FilePaths):return data.fingerprint
         versions=[]
         for path in data:
             canonical=os.path.normcase(os.path.abspath(path))
@@ -225,21 +314,83 @@ def unpack(kind,path,directory):
                     count+=len(chunk)
                     if count>item.file_size:raise ValueError('invalid size')
                     output.write(chunk)
-    return (kind,[str(root/name) for name in roots])
+    return (kind,_prepared_file_paths([str(root/name) for name in roots]))
 
 
 class _Signals(QObject):finished=Signal(object,object)
 
 
+class WorkerFailure(RuntimeError):
+    """A stable public category; never retains an exception's private message."""
+    def __init__(self,kind):
+        self.kind=kind
+        self.code={'io':'CLIPBOARD_WORKER_IO','integrity':'CLIPBOARD_WORKER_INTEGRITY',
+                   'bug':'CLIPBOARD_WORKER_ERROR','missing':'CLIPBOARD_SOURCE_MISSING',
+                   'access':'CLIPBOARD_ACCESS_DENIED','storage':'CLIPBOARD_STORAGE_FULL','paused':'CLIPBOARD_WORKER_PAUSED',
+                   'changed':'CLIPBOARD_SOURCE_CHANGED'}[kind]
+        self.retryable=kind in ('io','bug')
+        super().__init__({'io':'剪贴板文件暂时无法读取。','integrity':'剪贴板内容校验失败。',
+                          'bug':'剪贴板后台处理失败。','missing':'剪贴板源文件已不存在，请重新复制。',
+                          'access':'无法访问剪贴板文件，请检查权限。','storage':'无法保存剪贴板，请检查磁盘空间。',
+                          'paused':'多次处理失败已暂停，请重新复制。','changed':'剪贴板源文件已改变，请重新复制。'}[kind])
+
+    @classmethod
+    def from_exception(cls,error,operation):
+        if isinstance(error,FileNotFoundError):return cls('missing')
+        if isinstance(error,PermissionError):
+            if getattr(error,'winerror',None) in (32,33):return cls('io')
+            return cls('access' if error.errno in (errno.EACCES,errno.EPERM) or getattr(error,'winerror',None)==5 else 'io')
+        if isinstance(error,OSError):
+            if error.errno in (errno.ENOSPC,errno.EDQUOT,errno.EROFS):return cls('storage')
+            return cls('io')
+        if isinstance(error,zipfile.BadZipFile) or isinstance(error,ValueError) and operation=='unpack':return cls('integrity')
+        return cls('bug')
+
+
+WORKER_RETRY_LIMIT=3
+
+
+def worker_retry_allowed(state,error):
+    """The sole retry decision for a worker failure, shared by all holders."""
+    previous=state.get('_worker_recovery',{})
+    count=min(previous.get('attempts',0)+1,16) if previous.get('code')==error.code else 1
+    state['_worker_recovery']=dict(code=error.code,attempts=count)
+    # An unclassified IO interruption may recover after reconnecting/mounting
+    # a drive. Limit its frequency, not its ability to recover automatically.
+    return error.kind=='io' or error.retryable and count<WORKER_RETRY_LIMIT
+
+
+def worker_retry_delay(state):
+    attempts=state.get('_worker_recovery',{}).get('attempts',1)
+    return min(30000,5000*2**min(3,max(0,attempts-1)))
+
+
+@dataclass(frozen=True)
+class WorkerOutcome:
+    status:str
+    value:object=None
+    error:object=None
+    reason:str=''
+
+
 class _Job(QRunnable):
-    def __init__(self,action):
-        super().__init__();self.action=action;self.cancelled=threading.Event();self.signals=_Signals()
+    def __init__(self,action,policy=None,operation='generic'):
+        super().__init__();self.action=action;self.policy=policy;self.operation=operation
+        self.cancelled=threading.Event();self.signals=_Signals()
     def run(self):
-        result=None
         try:
-            if not self.cancelled.is_set():result=self.action(self.cancelled)
-        except (OSError,ValueError,RuntimeError,zipfile.BadZipFile):pass
-        self.signals.finished.emit(self,result)
+            if self.cancelled.is_set():outcome=WorkerOutcome('cancelled')
+            else:
+                result=self.action(self.cancelled)
+                if self.cancelled.is_set():outcome=WorkerOutcome('cancelled')
+                elif result is None and self.policy and self.policy.get('policy_skip')=='oversize':
+                    outcome=WorkerOutcome('skipped',reason='oversize')
+                else:outcome=WorkerOutcome('ready',value=result)
+        except InterruptedError:
+            outcome=WorkerOutcome('cancelled') if self.cancelled.is_set() else WorkerOutcome('failed',error=WorkerFailure('io'))
+        except Exception as error:outcome=WorkerOutcome('failed',error=WorkerFailure.from_exception(error,self.operation))
+        if self.cancelled.is_set():outcome=WorkerOutcome('cancelled')
+        self.signals.finished.emit(self,outcome)
 
 
 class ClipboardSync(QObject):
@@ -286,22 +437,29 @@ class ClipboardSync(QObject):
         self._transport_origin=self.api.origin if self._owned_api else None
         self._is_native=clipboard is None or clipboard is QApplication.clipboard()
         self._sequence=native_sequence if self._is_native else lambda:None
+        self._native_reader=_windows_clipboard_reader(self.clipboard,self)
+        self._native_sample=None;self._native_read_token=None;self._native_read_sequence=None
+        self._native_waiters={};self._native_generation=0;self._native_failures=(None,0,0.)
+        self._native_retry=QTimer(self);self._native_retry.setSingleShot(True)
+        self._native_retry.timeout.connect(self._start_native_read)
+        if self._native_reader is not None:self._sample_empty_native_metadata()
         self.enabled=enabled;self.closed=False;self._epoch=0;self._generation=0;self._applying=False
         self._native_access=self._native_accessible()
         self._clock_anchor=None;self._observed_clock=0;self._local_fence=None;self._local_retry=None
-        self._suspended_intent=None;self._baseline_pending=None;self._baseline_guard=None;self._needs_security_baseline=not self._native_access
+        self._suspended_intent=None;self._baseline_pending=None;self._baseline_guard=None;self._needs_security_baseline=not self._native_access or self._native_reader is not None and not self._native_sample
         self._clock_path=Path(base)/'clipboard-clock.json';self._copy_clock=0
         try:self._copy_clock=int(json.loads(self._clock_path.read_text(encoding='utf8'))['sequence'])
         except (OSError,ValueError,KeyError,TypeError):pass
         self._identity=self._session_identity()
         self._pushed_head=None
         self._prepared_receive=None
+        self._receive_worker_recovery=None
         self._accepted_signature=None;self._accepted_head='';self._observed_ready_head=''
         self._reading_notification=False
         self._view_revision=0;self.view=dict(value=None,phase='local',id='',revision=0,permission_required=not self._native_access)
         self._applied_version=0;self._receiving_version=0
         self.pool=QThreadPool(self);self.pool.setMaxThreadCount(2)
-        self._ignored=None;self._owned_marker=b'';self._ignored_sequence=None;self._last_sequence=object();self._last_local_signature=object();self._seen='';self._keys=set();self._jobs={};self._pending=None;self._fetching=False;self._refresh_again=False
+        self._ignored=None;self._owned_marker=b'';self._last_sequence=object();self._last_local_signature=object();self._seen='';self._keys=set();self._jobs={};self._pending=None;self._fetching=False;self._refresh_again=False
         self.cache=Path(base)/'clipboard-cache';self.cache.mkdir(parents=True,exist_ok=True)
         self._directories=[];self._current_directory=None
         for directory in self.cache.glob('clip-*'):
@@ -337,7 +495,7 @@ class ClipboardSync(QObject):
             self.change_debounce.start()
         # An earlier FlickDock process may still own the pasteboard. Starting
         # or switching account is not permission to publish that cloud payload.
-        try:mime=self.clipboard.mimeData()
+        try:mime=self.clipboard.mimeData() if self._native_reader is None else None
         except (OSError,RuntimeError):mime=None
         if mime is not None:
             marker=bytes(mime.data(SYNC_MARKER))
@@ -359,6 +517,71 @@ class ClipboardSync(QObject):
             self.poll.start()
             if sys.platform=='darwin' and self._is_native:self._mac_changed(initial=True);self.mac_poll.start()
             QTimer.singleShot(0,self.refresh)
+            if self._native_reader is not None and not self._native_current():self._account_changed(force=True)
+
+    def _sample_empty_native_metadata(self):
+        """No OLE/GetClipboardData: a busy clipboard remains unknown."""
+        try:state=_windows_clipboard_metadata()
+        except (OSError,RuntimeError):return
+        if (isinstance(state,dict) and state.get('status')=='ready' and state.get('valid') is True
+                and _valid_windows_sequence(state.get('sequence_after')) and state.get('known_empty') is True
+                and state.get('sequence_before')==state.get('sequence_after')==self._sequence()):
+            self._native_sample=dict(status='ready',valid=True,value=None,marker=b'',known_empty=True,
+                sequence=state['sequence_after'])
+
+    def _native_current(self):
+        sample=self._native_sample
+        return bool(sample and sample.get('valid') is True and _valid_windows_sequence(sample.get('sequence'))
+                    and sample.get('sequence')==self._sequence())
+
+    def _ensure_native(self,callback,key):
+        if self._native_reader is None or self._native_current():return True
+        self._native_waiters[key]=(self._session_identity(),callback)
+        self._start_native_read();return False
+
+    def _start_native_read(self):
+        if self.closed or self._native_reader is None or not self._native_waiters:return
+        sequence=self._sequence()
+        if self._native_read_token is not None:
+            if sequence==self._native_read_sequence:return
+            self._native_reader.cancel(self._native_read_token);self._native_read_token=None
+            self._native_generation+=1
+        previous,count,stamp=self._native_failures
+        if previous==sequence and count>=3 and time.monotonic()-stamp<30:return
+        generation=self._native_generation;session=self._session_identity()
+        self._native_read_sequence=sequence
+        sentinel=object();self._native_read_token=sentinel
+        def ready(result,error):
+            if self.closed or generation!=self._native_generation or session!=self._session_identity():return
+            self._native_read_token=None
+            outcome=native_read_outcome(result,error,self._sequence())
+            if outcome.status in ('ready','empty'):
+                self._native_sample=outcome.sample;self._native_failures=(None,0,0.)
+                waiters,self._native_waiters=self._native_waiters,{}
+                # A login baseline must finish before a received cloud head can
+                # compare/write. A real copy is processed before remote refresh.
+                for key in sorted(waiters,key=lambda key:({'baseline':0,'change':1,'refresh':2}.get(key,3))):
+                    identity,callback=waiters[key]
+                    if not self.closed and identity==self._session_identity():callback()
+                return
+            self._native_sample=None
+            current=self._sequence()
+            if outcome.status=='changed' or current!=sequence:
+                self._native_failures=(None,0,0.);self._native_retry.start(1);return
+            if outcome.status in ('unknown','invalid'):
+                clipboard_audit.observe(self.clipboard,module='clipboard_sync',function='_start_native_read',
+                    trigger='native_reader',origin='internal',operation='native_read_error',result=outcome.status,
+                    content_type='native',fingerprint_data=('native_read',outcome.status))
+            count=count+1 if previous==sequence else 1
+            self._native_failures=(sequence,count,time.monotonic())
+            if count<3:self._native_retry.start(250*2**(count-1))
+        token=self._native_reader.read(ready)
+        if self._native_read_token is sentinel:self._native_read_token=token
+
+    def _cancel_native_read(self):
+        self._native_generation+=1;self._native_retry.stop();self._native_waiters.clear()
+        if self._native_read_token is not None:self._native_reader.cancel(self._native_read_token)
+        self._native_read_token=None;self._native_failures=(None,0,0.)
 
     def _mac_changed(self,initial=False):
         if not self.enabled or self.closed:return
@@ -378,6 +601,10 @@ class ClipboardSync(QObject):
     def _snapshot(self):
         self._snapshot_known_empty=False
         if not self._native_accessible():return None
+        if self._native_reader is not None:
+            if not self._native_current():return None
+            self._snapshot_known_empty=self._native_sample.get('known_empty') is True
+            return self._native_sample.get('value')
         state={}
         try:
             value=snapshot(self.clipboard,baseline_state=state)
@@ -434,8 +661,11 @@ class ClipboardSync(QObject):
         """
         if not self._owned_marker or self._ignored is None:return False
         try:
-            mime=self.clipboard.mimeData()
-            if mime is None or bytes(mime.data(SYNC_MARKER))!=self._owned_marker:return False
+            if self._native_reader is not None:
+                if not self._native_current() or self._native_sample.get('marker')!=self._owned_marker:return False
+            else:
+                mime=self.clipboard.mimeData()
+                if mime is None or bytes(mime.data(SYNC_MARKER))!=self._owned_marker:return False
             if signature(value if value is not None else self._snapshot())!=self._ignored:return False
         except (OSError,RuntimeError):return False
         self._last_sequence=sequence
@@ -526,10 +756,44 @@ class ClipboardSync(QObject):
         for job in self._jobs:
             if not getattr(job,'_shared_probe',False) and not any(task.get('_job') is job for task in retained):job.cancelled.set()
 
-    def _task_error(self,pending,error):
+    def _task_error(self,pending,error,*,retry_ms=5000):
         self._copy_result(pending,False)
-        if getattr(self,'file_jobs',None) is not None:self.file_jobs.fail(pending,error)
-        if self._pending is pending and pending.get('generation',self._generation)==self._generation:self._priority_flags(waiting=True);self.retry.start()
+        if getattr(self,'file_jobs',None) is not None:self.file_jobs.fail(pending,error,retry_ms=retry_ms)
+        if self._pending is pending and pending.get('generation',self._generation)==self._generation:self._priority_flags(waiting=True);self.retry.start(retry_ms)
+
+    def _worker_task_failed(self,pending,error,*,local_value=None):
+        if not self._valid_task(pending):return
+        if not worker_retry_allowed(pending,error):
+            if error.retryable:error=WorkerFailure('paused')
+            self._stop_upload(pending,error);self._worker_error_view(pending['id'],error);return
+        if local_value is not None:
+            if self._pending is not pending and self._local_retry is not pending:
+                # A newer copy may already own the clipboard. The old task's
+                # shelf holders keep its retry, never reclaim the primary slot.
+                self.file_jobs.fail(pending,error,retry_ms=worker_retry_delay(pending));return
+            pending['value']=local_value;self._local_retry=pending
+            # Waiting preparation has exactly one owner. It is not an active
+            # payload and must yield bulk priority until _retry promotes it.
+            self._copy_result(pending,False)
+            self.file_jobs.fail(pending,error,retry_ms=worker_retry_delay(pending))
+            self._clear_task(pending);self.retry.start(worker_retry_delay(pending))
+        else:self._task_error(pending,error,retry_ms=worker_retry_delay(pending))
+        self._worker_error_view(pending['id'],error)
+
+    def _worker_error_view(self,identity,error):
+        if not self._active() or self.view.get('id')!=identity:return
+        self.view.update(error_code=error.code,error_message=str(error));self.view_changed.emit(dict(self.view))
+
+    def _receive_worker_failed(self,identity,generation,error):
+        if generation!=self._generation or not self._active():return
+        recovery=self._receive_worker_recovery
+        if not recovery or recovery['id']!=identity:
+            recovery=self._receive_worker_recovery={'id':identity}
+        retry=worker_retry_allowed(recovery,error);recovery['terminal']=not retry
+        if not retry and error.retryable:error=WorkerFailure('paused')
+        self._set_view(self.view.get('value'),'error',identity);self._worker_error_view(identity,error)
+        self._finish_refresh()
+        if retry:self.retry.start(worker_retry_delay(recovery))
 
     def _task_ready(self,pending,head):
         item=pending['package']
@@ -554,13 +818,18 @@ class ClipboardSync(QObject):
             if self._session_identity()!=self._identity:return None
             self.api.token=self.account.api.token
         epoch=self._epoch;identity=self._identity;holder=[];completed=False;started=time.monotonic()
+        attempt=_task.get('_file_attempt') if _task is not None and not path.endswith(('/retain','/release')) else None
+        def current_attempt():return attempt is None or _task.get('_file_attempt') is attempt
+        if attempt is not None and 'progress' in kwargs:
+            progress=kwargs['progress']
+            kwargs['progress']=lambda *args:progress(*args) if current_attempt() else None
         def done(result,error):
             nonlocal completed
             completed=True
             if holder:self._keys.discard(holder[0])
             if holder and _task is not None:_task.setdefault('_keys',set()).discard(holder[0])
             if holder and _task is not None:_task.setdefault('_release_keys',set()).discard(holder[0])
-            if self.enabled and not self.closed and identity==self._identity and (epoch==self._epoch or _task is not None and self._valid_task(_task)):
+            if current_attempt() and self.enabled and not self.closed and identity==self._identity and (epoch==self._epoch or _task is not None and self._valid_task(_task)):
                 self._calibrate(result,started);callback(result,error)
         key=self.api.request(method,path,done,timeout_ms=300000 if path.endswith('/content') else 12000,
                              priority='normal' if _task is not None and _task is not self._pending else 'high',**kwargs)
@@ -607,6 +876,8 @@ class ClipboardSync(QObject):
     def _account_changed(self,*_,force=False):
         if self.closed and not force:return
         identity=self._session_identity()
+        if self._native_reader is not None and (self.closed or not self.enabled or identity!=self._identity):self._cancel_native_read()
+        if self._native_reader is not None and not self.closed and not self._native_current():self._sample_empty_native_metadata()
         accessible=self._native_accessible()
         if identity!=self._identity or not accessible:self._needs_security_baseline=True
         security_boundary=identity!=self._identity or self._needs_security_baseline
@@ -627,6 +898,7 @@ class ClipboardSync(QObject):
         self._identity=identity;self._local_retry=None;self._local_fence=None;self._baseline_pending=None
         self._pushed_head=None
         self._prepared_receive=None
+        self._receive_worker_recovery=None
         self._accepted_signature=None;self._accepted_head='';self._observed_ready_head=''
         self._applied_version=0;self._receiving_version=0
         self._clock_anchor=None;self._observed_clock=0
@@ -679,6 +951,8 @@ class ClipboardSync(QObject):
                 self._baseline_pending=(self._identity,baseline_sig,security_boundary,observed)
                 self.change_debounce.start()
         if not self.closed:self._set_view(baseline,'local')
+        if not self.closed and self.enabled and self._native_reader is not None:
+            self._ensure_native(lambda:self._account_changed(force=True),'baseline')
         if self._active():QTimer.singleShot(0,self.refresh)
 
     def _directory(self):
@@ -688,18 +962,40 @@ class ClipboardSync(QObject):
             shutil.rmtree(path,ignore_errors=True);raise
         self._directories.append((path,created));return path
 
-    def _work(self,action,callback,*,priority=1):
-        job=_Job(action);self._jobs[job]=callback;job.signals.finished.connect(self._finished,Qt.ConnectionType.QueuedConnection)
+    def _work(self,action,callback,*,priority=1,failure=None,policy=None,cancelled=None,operation='generic',_task=None):
+        if _task is not None:
+            attempt=_task.get('_file_attempt')
+            def guarded(handler):
+                return (lambda *args:handler(*args) if self._valid_task(_task) and _task.get('_file_attempt') is attempt else None) if handler else None
+            callback,failure,cancelled=map(guarded,(callback,failure,cancelled))
+        job=_Job(action,policy,operation);self._jobs[job]=(callback,failure,cancelled)
+        job.signals.finished.connect(self._finished,Qt.ConnectionType.QueuedConnection)
         self.pool.start(job,priority)
         return job
 
-    def _finished(self,job,result):
-        callback=self._jobs.pop(job,None)
-        if callback and self.enabled and not self.closed and not job.cancelled.is_set():callback(result)
-        self._cleanup()
+    def _worker_failure(self,error,*,function='_finished'):
+        clipboard_audit.observe(self.clipboard,module='clipboard_sync',function=function,
+            trigger='disk_worker',origin='internal',operation='worker_failed',result=error.code,
+            content_type=error.kind,fingerprint_data=('worker',error.code))
+
+    def _finished(self,job,outcome):
+        callbacks=self._jobs.pop(job,None)
+        try:
+            if callbacks:
+                callback,failure,cancelled=callbacks
+                if outcome.status=='cancelled' or job.cancelled.is_set():
+                    if cancelled:cancelled()
+                elif self.enabled and not self.closed:
+                    if outcome.status=='failed':
+                        self._worker_failure(outcome.error)
+                        if failure:failure(outcome.error)
+                        else:callback(None)
+                    else:callback(outcome.value)
+        finally:self._cleanup()
 
     def _changed(self):
         if self.closed or self._applying:return
+        if not self._ensure_native(self._changed,'change'):return
         if not self._active():
             self._set_view(self._snapshot(),'local');return
         if self._reading_notification:
@@ -780,6 +1076,14 @@ class ClipboardSync(QObject):
         self._local_retry=None
         self._prepared_receive=None
         if value is None:self._set_view(None,'local');self._pending=None;return
+        if (self._native_reader is not None and self._native_current()
+                and self._native_sample.get('value') is value and self._native_sample.get('sync_eligible') is False):
+            # The cloud policy never removes a usable local native value.
+            # Preserve its receive-order fence and original preview, without
+            # creating a reservation, upload, or a synthetic success/failure.
+            self._baseline_guard=(self._identity,sig);self._set_view(value,'local',str(uuid4()))
+            if self._refresh_again:QTimer.singleShot(0,self.refresh)
+            return
         self._local_retry=dict(id=str(uuid4()),sequence=None,generation=generation,staged=False,package=None,
                                prepared=False,created_at=time.time(),intent=self._local_fence,value=value,
                                feedback=self._copy_context(value),signature=sig,basis_head=self._observed_ready_head)
@@ -834,31 +1138,36 @@ class ClipboardSync(QObject):
     def _prepare_local(self):
         pending=self._local_retry
         if not pending or not self._active():return
+        if not self.file_jobs.begin(pending):return
+        self._local_retry=None;self._pending=pending
         try:
             if pending['sequence'] is None:pending['sequence']=self._next_sequence()
-        except OSError:
-            self._copy_result(pending,False);self._pending=None;self.retry.start();return
-        self._local_retry=None;self._pending=pending
+        except OSError as error:
+            failure=WorkerFailure.from_exception(error,'prepare');self._worker_failure(failure,function='_prepare_local')
+            self._worker_task_failed(pending,failure,local_value=pending['value']);return
         diagnostics={}
         def prepared(result):
             if not self._valid_task(pending):return
             if result is None:
-                self.file_jobs.update(pending,'unavailable')
                 if diagnostics.get('policy_skip')=='oversize':
+                    self.file_jobs.update(pending,'unavailable')
                     self._baseline_guard=(self._identity,self._last_local_signature)
                     self._set_view(self.view.get('value'),'local',pending['id'])
-                else:self._copy_result(pending,False)
+                else:
+                    self._worker_task_failed(pending,WorkerFailure('bug'),local_value=value);return
                 self._clear_task(pending)
                 if self._refresh_again:QTimer.singleShot(0,self.refresh)
                 return
+            pending.pop('_worker_recovery',None)
             pending['package']=result;pending['prepared']=True;self.file_jobs.prepared(pending);self._stage(pending)
         value=pending.pop('value');quick=inline_text(value)
         if quick is not None:prepared(quick);return
         try:directory=self._directory()
-        except OSError:
-            self._copy_result(pending,False)
-            pending['value']=value;self._local_retry=pending;self._pending=None;self.retry.start();return
-        pending['_job']=self._work(lambda cancel:package(value,directory,cancel,diagnostics=diagnostics),prepared,priority=2)
+        except OSError as error:
+            failure=WorkerFailure.from_exception(error,'prepare');self._worker_failure(failure,function='_prepare_local')
+            self._worker_task_failed(pending,failure,local_value=value);return
+        pending['_job']=self._work(lambda cancel:package(value,directory,cancel,diagnostics=diagnostics),prepared,
+            priority=2,policy=diagnostics,failure=lambda error:self._worker_task_failed(pending,error,local_value=value),_task=pending)
 
     def _stage(self,pending):
         if not self._valid_task(pending):return
@@ -901,8 +1210,9 @@ class ClipboardSync(QObject):
             if pending.get('materializing'):return
             pending['materializing']=True
             try:directory=self._directory()
-            except OSError:
-                pending['materializing']=False;self._priority_flags(waiting=True);self.retry.start();return
+            except OSError as error:
+                failure=WorkerFailure.from_exception(error,'materialize');self._worker_failure(failure,function='_upload')
+                pending['materializing']=False;self._worker_task_failed(pending,failure);return
             def materialize(cancel):
                 if cancel.is_set():return None
                 path=directory/'content.bin';path.write_bytes(base64.b64decode(item['inline']['body'],validate=True))
@@ -910,9 +1220,11 @@ class ClipboardSync(QObject):
             def materialized(path):
                 if not self._valid_task(pending):return
                 pending['materializing']=False
-                if path:item['path']=path;self._upload(pending)
+                if path:pending.pop('_worker_recovery',None);item['path']=path;self._upload(pending)
                 else:self._priority_flags(waiting=True);self.retry.start()
-            self._work(materialize,materialized,priority=2);return
+            def materialize_failed(error):
+                pending['materializing']=False;self._worker_task_failed(pending,error)
+            self._work(materialize,materialized,priority=2,failure=materialize_failed,_task=pending);return
         pending['uploading']=True
         self.file_jobs.update(pending,'uploading')
         def uploaded(result,error):
@@ -957,6 +1269,9 @@ class ClipboardSync(QObject):
         def active():return self._valid_task(pending) and pending.get('_multipart_token') is token and pending.get('uploading')
         def fail(error):
             if active():
+                if isinstance(error,WorkerFailure):
+                    pending['_multipart_token']=None;pending['uploading']=False
+                    self._worker_task_failed(pending,error);return
                 if getattr(error,'status',0) in (400,413,426) or getattr(error,'code','') in ('CLIPBOARD_INTEGRITY','CLIPBOARD_LIMIT','CLIPBOARD_PART_CONFLICT','CLIPBOARD_MULTIPART_INVALID','CLIPBOARD_SOURCE_CHANGED'):
                     self._stop_upload(pending,error);return
                 pending['_multipart_token']=None;uploaded(None,error)
@@ -995,15 +1310,15 @@ class ClipboardSync(QObject):
                                 if not chunk:return {'error':'changed'}
                                 digest.update(chunk);remaining-=len(chunk)
                     except FileNotFoundError:return {'error':'changed'}
-                    except OSError:return {'error':'io'}
                     return {'digest':digest.hexdigest()}
                 def hashed(result):
                     if not active():return
                     if isinstance(result,dict) and result.get('error')=='changed':
-                        fail(CloudError('剪贴板上传快照已改变，请重新复制。',code='CLIPBOARD_SOURCE_CHANGED'));return
+                        fail(WorkerFailure('changed'));return
                     if not isinstance(result,dict) or not result.get('digest'):
-                        fail(CloudError('剪贴板缓存暂时无法读取，稍后会重试。',code='CLIPBOARD_CACHE_IO'));return
+                        fail(WorkerFailure('bug'));return
                     digest=result['digest']
+                    pending.pop('_worker_recovery',None)
                     def progressed(value,total):
                         if active():self.file_jobs.update(pending,'uploading',sent+min(length,max(0,value)))
                     def accepted(result,error):
@@ -1015,7 +1330,8 @@ class ClipboardSync(QObject):
                     self._request('PUT',endpoint+'/parts/'+str(index),accepted,source=item['path'],
                         source_offset=offset,source_size=length,headers={'X-Content-SHA256':digest},
                         progress=progressed,_task=pending)
-                pending['_job']=self._work(hash_part,hashed,priority=2 if self._pending is pending else 1)
+                pending['_job']=self._work(hash_part,hashed,priority=2 if self._pending is pending else 1,
+                    failure=fail,_task=pending)
             next_part(index)
         self._request('POST',path,initialized,data=data,_task=pending)
 
@@ -1030,14 +1346,18 @@ class ClipboardSync(QObject):
         self._copy_result(pending,False)
         if self._pending is pending:self.retry.stop()
         self._clear_task(pending)
+        if self._local_retry is pending:self._local_retry=None
         if self._refresh_again:QTimer.singleShot(0,self.refresh)
 
     def _retry(self):
         if not self._active():return
+        pending=self._local_retry or self._pending
+        if pending:
+            self._priority_flags(waiting=False)
+            if self.view.get('id')==pending['id']:self._set_view(self.view['value'],'uploading',pending['id'])
         if self._local_retry:self._prepare_local();return
         if self._pending:
-            self._priority_flags(waiting=False)
-            if self.view.get('id')==self._pending['id']:self._set_view(self.view['value'],'uploading',self._pending['id'])
+            if not self.file_jobs.begin(self._pending):return
             if self._pending['staged']:self._upload(self._pending)
             else:self._stage(self._pending)
         else:self.refresh()
@@ -1063,6 +1383,7 @@ class ClipboardSync(QObject):
 
     def refresh(self):
         if not self._active():return
+        if not self._ensure_native(self.refresh,'refresh'):return
         if self._pending:
             self._refresh_again=True;return
         if self._fetching:self._refresh_again=True;return
@@ -1079,6 +1400,9 @@ class ClipboardSync(QObject):
             if not isinstance(head,dict) or generation!=self._generation:self._finish_refresh();return
             identity=head.get('id','')
             if not isinstance(identity,str) or len(identity)!=36 or any(c not in '0123456789abcdef-' for c in identity):self._finish_refresh();return
+            recovery=self._receive_worker_recovery
+            if recovery and recovery['id']!=identity:self._receive_worker_recovery=None
+            elif recovery and recovery.get('terminal'):self._finish_refresh();return
             # Even a pending newer copy changes what "same as current cloud"
             # means. Otherwise a deliberate local recopy of A while B is being
             # uploaded gets swallowed and the older B later overwrites it.
@@ -1104,14 +1428,16 @@ class ClipboardSync(QObject):
             cached=self._prepared_receive
             if cached and cached[0]!=(identity,kind,size,sha):self._prepared_receive=None;cached=None
             try:directory=cached[2] if cached else self.cache if is_inline else self._directory()
-            except OSError:
-                self._finish_refresh();self.retry.start();return
+            except OSError as error:
+                failure=WorkerFailure.from_exception(error,'receive');self._worker_failure(failure,function='refresh')
+                self._receive_worker_failed(identity,generation,failure);return
             path=directory/'download.bin';self._fetching=True
             self._receiving_version=head_version(head)
             self._priority_flags(receiving=True)
             def prepared(value):
                 if generation!=self._generation:self._finish_refresh();return
-                if value is None:self._finish_refresh();self.retry.start();return
+                if value is None:self._receive_worker_failed(identity,generation,WorkerFailure('bug'));return
+                self._receive_worker_recovery=None
                 self._prepared_receive=((identity,kind,size,sha),value,directory)
                 def confirmed(result,error):
                     current=result.get('clipboard') if isinstance(result,dict) else None
@@ -1125,6 +1451,8 @@ class ClipboardSync(QObject):
                                 cached=self._prepared_receive
                                 if cached and cached[0][0]==identity:self._prepared_receive=None
                                 self._finish_refresh();return
+                        if not self._ensure_native(self.refresh,'refresh'):
+                            self._finish_refresh();return
                         sequence=self._sequence()
                         native_value=self._snapshot();native_sig=signature(native_value)
                         if (sequence!=self._last_sequence or self._sequence()!=sequence
@@ -1145,12 +1473,14 @@ class ClipboardSync(QObject):
             def downloaded(result,error):
                 if error:self._finish_refresh();self.retry.start();return
                 if generation!=self._generation:self._finish_refresh();return
-                self._work(lambda _:unpack(kind,path,directory),prepared,priority=2)
+                self._work(lambda _:unpack(kind,path,directory),prepared,priority=2,operation='unpack',
+                    failure=lambda error:self._receive_worker_failed(identity,generation,error))
             if cached:prepared(cached[1])
             elif is_inline:
                 try:value=unpack_inline(head)
-                except (ValueError,TypeError,UnicodeError):
-                    self._finish_refresh();self.retry.start();return
+                except (ValueError,TypeError,UnicodeError) as error:
+                    failure=WorkerFailure.from_exception(error,'unpack');self._worker_failure(failure,function='refresh')
+                    self._receive_worker_failed(identity,generation,failure);return
                 prepared(value)
             else:self._request('GET',f'/v1/clipboard/{identity}/content',downloaded,destination=path,expected={'size':size,'sha256':sha})
         if self._pushed_head:
@@ -1181,9 +1511,32 @@ class ClipboardSync(QObject):
             clipboard_audit.set_mime(self.clipboard,mime,module='clipboard_sync',function='_apply',
                 trigger='cloud_content_verified',origin='cloud_receive',task_id=identity or self._seen,
                 content_type=kind,fingerprint_data=expected)
-            actual=signature(self._snapshot())
-            native=self.clipboard.mimeData()
-            owns_new=native is not None and bytes(native.data(SYNC_MARKER))==written_marker
+            # Reading the system IDataObject after setMimeData can synchronously
+            # render another application's delayed clipboard on the GUI thread.
+            # Verify our actual submitted MIME while it remains locally owned;
+            # never query a foreign provider merely to decide a failed write.
+            native=None
+            if self._native_reader is not None:
+                owns_new=bool(self.clipboard.ownsClipboard())
+                if not owns_new:return False
+                native=mime
+            else:
+                native=self.clipboard.mimeData()
+                owns_new=native is mime
+                if not owns_new:return False
+            if kind=='files':
+                paths=[url.toLocalFile() for url in native.urls() if url.isLocalFile()]
+                canonical=lambda path:os.path.normcase(os.path.abspath(path))
+                if list(map(canonical,paths))!=list(map(canonical,data)) or len(paths)!=len(native.urls()):return False
+                # The worker/native reader already obtained the file metadata.
+                # Querying these paths again could block on a disconnected UNC
+                # source; verification here concerns the exact submitted URLs.
+                actual_value=value;actual=expected
+            else:
+                local=type('_LocalMime',(),{'mimeData':lambda _:native})()
+                actual_value=snapshot(local);actual=signature(actual_value)
+            actual_marker=bytes(native.data(SYNC_MARKER))
+            owns_new=actual_marker==written_marker
             # A rejected native write must not erase the provenance of the
             # previous still-owned clipboard. Adopt only the observed marker.
             if owns_new:self._owned_marker=written_marker
@@ -1192,11 +1545,16 @@ class ClipboardSync(QObject):
             else:matches=actual==expected
             if not matches:
                 if owns_new:
-                    self._ignored=actual;self._last_local_signature=actual;self._ignored_sequence=self._sequence();self._last_sequence=self._ignored_sequence
+                    self._ignored=actual;self._last_local_signature=actual;self._last_sequence=self._sequence()
                 return False
-            self._local_fence=None;self._ignored=actual
-            self._ignored_sequence=self._sequence();self._last_sequence=self._ignored_sequence
-            self._last_local_signature=self._ignored
+            self._local_fence=None
+            if owns_new:self._ignored=actual
+            self._last_sequence=self._sequence()
+            self._last_local_signature=actual
+            if self._native_reader is not None:
+                sequence=self._sequence()
+                self._native_sample=dict(status='ready',valid=True,value=actual_value,marker=actual_marker,
+                    known_empty=False,sequence=sequence,sequence_before=sequence,sequence_after=sequence)
             self._current_directory=directory
             if sys.platform=='darwin':self._mac_changed(initial=True)
             return True
@@ -1209,8 +1567,9 @@ class ClipboardSync(QObject):
             clipboard_audit.clear(self.clipboard,module='clipboard_sync',function='_clear_remote_clipboard',
                 trigger='clear_remote',origin='internal')
             self._ignored=None;self._owned_marker=b'';self._current_directory=None
-            self._last_local_signature=signature(self._snapshot())
-            self._ignored_sequence=self._sequence();self._last_sequence=self._ignored_sequence
+            self._last_local_signature=None if self._native_reader is not None else signature(self._snapshot())
+            if self._native_reader is not None:self._native_sample=None
+            self._last_sequence=self._sequence()
             if sys.platform=='darwin':self._mac_changed(initial=True)
         finally:self._applying=previous
 
@@ -1227,18 +1586,24 @@ class ClipboardSync(QObject):
         # render text/images merely because an HTTP or disk job completed.
         if not any(now-created>=86400 and directory not in protected and
                    directory!=self._current_directory for directory,created in self._directories):return
-        try:
-            mime=self.clipboard.mimeData()
-            if mime is None:return
-            native_paths=[Path(url.toLocalFile()).resolve() for url in mime.urls() if url.isLocalFile()] if mime.hasUrls() else []
-        except (OSError,RuntimeError):return
+        if self._native_reader is not None:
+            if not self._ensure_native(self._cleanup,'cleanup'):return
+            value=self._native_sample.get('value')
+            native_paths=[Path(path).resolve() for path in value[1]] if value and value[0]=='files' else []
+        else:
+            try:
+                mime=self.clipboard.mimeData()
+                if mime is None:return
+                native_paths=[Path(url.toLocalFile()).resolve() for url in mime.urls() if url.isLocalFile()] if mime.hasUrls() else []
+            except (OSError,RuntimeError):return
         for directory,created in self._directories:
             if directory in protected or directory==self._current_directory:keep.append((directory,created));continue
             if now-created<86400:keep.append((directory,created));continue
             if any(path.is_relative_to(directory.resolve()) for path in native_paths):
                 keep.append((directory,created));continue
             if directory.resolve().is_relative_to(self.cache.resolve()) and not directory.is_symlink() and not directory.is_junction():
-                self._work(lambda _,path=directory:shutil.rmtree(path,ignore_errors=True),lambda _:None)
+                self._work(lambda _,path=directory:shutil.rmtree(path,ignore_errors=True),lambda _:None,
+                    failure=lambda error:None)
         self._directories=keep
 
     def close(self):
@@ -1248,4 +1613,5 @@ class ClipboardSync(QObject):
             try:signal.disconnect(slot)
             except RuntimeError:pass
         self._subscriptions.clear()
+        if self._native_reader is not None:self._native_reader.close()
         if self._owned_api:self.api.close()

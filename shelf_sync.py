@@ -84,7 +84,7 @@ class ShelfSync(QObject):
         self.applying = False; self.requests = set(); self.jobs = set()
         self._request_owners={};self._job_owners={};self._upload_tokens={}
         self.pool = QThreadPool(self); self.pool.setMaxThreadCount(2)
-        self.retry_ms = 15000; self.transfer = None
+        self.transfer = None
         self.cleanup_attempts = {}
         self._cleanup_inflight = set()
         self._cleanup_retry=QTimer(self);self._cleanup_retry.setSingleShot(True)

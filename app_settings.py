@@ -938,6 +938,7 @@ class ReferenceModalDialog(QDialog):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAutoFillBackground(False)
         self.setModal(modal)
+        self._modal_owner_ref=None
         self._surface_dark=False
         self._shadow_cache=OrderedDict()
         self._natural_surface_width=surface_width
@@ -968,7 +969,21 @@ class ReferenceModalDialog(QDialog):
         super().done(result)
 
     def show(self):
+        owner=self.parentWidget().window() if self.parentWidget() else None
+        if self.isModal() and owner is not None and owner is not self and not owner.isVisible():
+            return
         self._window_fade.reopen();super().show()
+
+    def _track_modal_owner(self,owner):
+        from shiboken6 import isValid
+        previous=self._modal_owner_ref() if self._modal_owner_ref is not None else None
+        target=owner if self.isModal() and owner is not self else None
+        if previous is target:return
+        if previous is not None and isValid(previous):previous.removeEventFilter(self)
+        self._modal_owner_ref=None
+        if target is not None:
+            import weakref
+            self._modal_owner_ref=weakref.ref(target);target.installEventFilter(self)
 
     def _available_geometry(self):
         owner=self.parentWidget().window() if self.parentWidget() else None
@@ -994,6 +1009,14 @@ class ReferenceModalDialog(QDialog):
         if self.size()!=size:self.resize(size)
 
     def eventFilter(self,watched,event):
+        owner=self._modal_owner_ref() if self._modal_owner_ref is not None else None
+        if (watched is owner and event.type()==QEvent.Type.Hide and self.isModal()
+                and not watched.isVisible() and self.isVisible()):
+            # The owner is already ordered out: retire the modal immediately,
+            # rather than leaving it active for an invisible parent's fade.
+            # QDialog.done emits a real rejection; Hide resets WindowFade's
+            # pending callback/effect so it cannot close a subsequent reopen.
+            QDialog.done(self,QDialog.DialogCode.Rejected)
         if watched is self.body and event.type()==QEvent.Type.LayoutRequest and not self._fit_timer.isActive():
             self._fit_timer.start(0)
         if event.type()==QEvent.Type.FocusIn and isinstance(watched,(QLineEdit,QPushButton)):
@@ -1018,6 +1041,9 @@ class ReferenceModalDialog(QDialog):
     def showEvent(self, event):
         self.adjustSize();self.scroll.verticalScrollBar().setValue(0)
         owner=self.parentWidget().window() if self.parentWidget() else None
+        self._track_modal_owner(owner)
+        if self.isModal() and owner is not None and owner is not self and not owner.isVisible():
+            QDialog.done(self,QDialog.DialogCode.Rejected);return
         if owner is not None and owner is not self:
             owner.winId();self.winId()
             if self.windowHandle() and owner.windowHandle():

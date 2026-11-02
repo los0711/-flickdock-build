@@ -31,6 +31,8 @@ class ReleaseError(ValueError):
 VERSION_RE=re.compile(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z')
 HASH_RE=re.compile(r'[0-9a-f]{64}\Z')
 RUNTIME_SOURCES=(
+    'win_clipboard_cache.py',
+    'win_clipboard_native.py','win_clipboard_io.py','win_owned_process.py',
     'control_states.py',
     'frame_animation.py',
     'mac_status_drop.py','ci_mac_status_drop.py',
@@ -53,6 +55,16 @@ RUNTIME_SOURCES=(
     'wan_transfer.py','webrtc_stream.py','nearby_transport.py','verify_wan.py','windows_network.py','windows_reveal.py',
 )
 MAINTAINED_TESTS=(
+    'test_clipboard_local_original_v1825.py',
+    'test_clipboard_audit_source_v1825.py','test_win_clipboard_cache_v1825.py',
+    'test_popup_subscription_v1825.py',
+    'test_win_clipboard_io_v1825.py','test_clipboard_native_read_v1825.py','test_clipboard_worker_outcomes_v1825.py',
+    'test_card_style_ownership_v1825.py',
+    'test_clipboard_reader_entry_v1825.py',
+    'test_morph_text_scale_v1825.py',
+    'test_modal_owner_lifecycle_v1825.py','test_secondary_window_handoff_v1825.py',
+    'test_shelf_control_transport_v1825.py',
+    'test_clipboard_popup_native_events_v1825.py',
     'test_clipboard_multipart_v1825.py',
     'test_clipboard_reenable_v1825.py',
     'test_clipboard_size_contract_v1825.py',
@@ -120,6 +132,7 @@ MAINTAINED_TESTS=(
     'test_remote_transfer_actions_v1812.py','test_wan_transfer_v1816.py',
 )
 SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
+    'qa/packaged-live/native_reader_job_gate.py','qa/packaged-live/test_native_reader_job_gate.py',
     'qa/packaged-live/ui-tray-observation.json',
     'qa/packaged-live/ui-recent-observation.json',
     'qa/packaged-live/test_writer_scope_gates.py',

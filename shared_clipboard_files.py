@@ -41,10 +41,30 @@ class ClipboardFileJobs(QObject):
     @staticmethod
     def held(task):return bool(task.get('holders') or task.get('_probes'))
 
+    def begin(self,task):
+        """One payload attempt owns preparation through the final receipt."""
+        if self.tasks.get(task.get('id')) is not task:return True
+        if task.get('_file_attempt') is not None:return False
+        task['_file_attempt']=object();return True
+
+    @staticmethod
+    def finish(task):task.pop('_file_attempt',None)
+
     def register(self,task,value):
         if not self.journal or not value or value[0]!='files' or len(value[1])!=1:return
-        try:stamp=file_stamp(value[1][0])
-        except OSError:return
+        from clipboard_sync import _FilePaths
+        paths=value[1]
+        if isinstance(paths,_FilePaths) and paths.source_stat is not None:
+            # Only the native reader's sequence-checked sample carries this
+            # metadata. Do not stat a potentially blocked UNC/cloud path on
+            # the GUI thread after the child already checked its identity.
+            stamp=paths.source_stat;fingerprint=paths.fingerprint
+            if (not isinstance(stamp,(tuple,list)) or len(stamp)!=4 or any(type(x) is not int for x in stamp)
+                    or fingerprint!=('files',((os.path.normcase(os.path.abspath(paths[0])),stamp[2],stamp[3]),))):return
+            stamp=list(stamp)
+        else:
+            try:stamp=file_stamp(paths[0])
+            except OSError:return
         from clipboard_sync import MAX_BYTES
         if stamp is None or not 0<stamp[2]<=MAX_BYTES:return
         task.update(file_source=str(Path(value[1][0]).absolute()),source_stat=stamp,holders={},
@@ -62,6 +82,7 @@ class ClipboardFileJobs(QObject):
 
     def update(self,task,phase,received=None,error=None):
         if not self.valid(task):return
+        if phase in ('ready','unavailable'):self.finish(task)
         previous=task.get('_file_phase')
         task['_file_phase']=phase
         if received is not None:task['_file_received']=received
@@ -87,7 +108,7 @@ class ClipboardFileJobs(QObject):
             # A holder now falls back to its shelf's independent upload. On
             # re-enable only release these old references; never restage the
             # old clipboard just because its journal was reloaded.
-            holders=task.setdefault('holders',{})
+            self.finish(task);holders=task.setdefault('holders',{})
             task.setdefault('releases',{}).update({identity:True for identity in holders})
             holders.clear();task['_probes']=0;task.get('_hold_tokens',{}).clear()
         self.save()
@@ -95,6 +116,7 @@ class ClipboardFileJobs(QObject):
     def expire(self):
         expired=[task for task in self.tasks.values() if time.time()-task['created_at']>=86400]
         for task in expired:
+            self.finish(task)
             self.tasks.pop(task['id'],None)
             for key in tuple(task.get('_keys',())):self.client._keys.discard(key);self.client.api.cancel(key)
             job=task.get('_job')
@@ -104,7 +126,7 @@ class ClipboardFileJobs(QObject):
     def save(self):
         if self.journal is None:return
         fields=('id','sequence','staged','prepared','created_at','package','intent','file_source',
-                'source_stat','holders','releases','shared_files','_file_phase','_file_received','_clipboard_terminal')
+                'source_stat','holders','releases','shared_files','_file_phase','_file_received','_clipboard_terminal','_worker_recovery')
         rows=[{key:task.get(key) for key in fields} for task in self.tasks.values()]
         try:
             self.journal.parent.mkdir(parents=True,exist_ok=True)
@@ -116,7 +138,9 @@ class ClipboardFileJobs(QObject):
             for task in self.tasks.values():task['_journal_error']=str(error)
 
     def reset(self,*,load=False):
-        self.save();self.retry.stop();self.tasks={};self.journal=None
+        self.save();self.retry.stop()
+        for task in self.tasks.values():self.finish(task)
+        self.tasks={};self.journal=None
         identity=self.client._identity
         if not identity or not uuid(identity[0]) or not self.client.enabled:return
         self.journal=self.base/(identity[0]+'.json')
@@ -139,6 +163,11 @@ class ClipboardFileJobs(QObject):
             if not isinstance(row.get('source_stat'),list) or len(row['source_stat'])!=4:continue
             if not isinstance(row.get('file_source'),str):continue
             if not isinstance(row.get('intent'),dict) or type(row.get('sequence')) is not int:continue
+            recovery=row.get('_worker_recovery')
+            if recovery is not None and (not isinstance(recovery,dict)
+                    or recovery.get('code') not in ('CLIPBOARD_WORKER_IO','CLIPBOARD_WORKER_ERROR')
+                    or type(recovery.get('attempts')) is not int or not 1<=recovery['attempts']<=16):
+                row.pop('_worker_recovery',None)
             if item is not None:
                 try:
                     path=Path(item['path']);parent=path.parent
@@ -157,19 +186,29 @@ class ClipboardFileJobs(QObject):
         if task.get('releases') and not self.held(task):return
         if task.get('_clipboard_terminal') or not self._within_limits(task):
             self.update(task,'unavailable');return
+        if not self.begin(task):return
+        attempt=task.get('_file_attempt')
+        def cancelled():
+            if task.get('_file_attempt') is not attempt:return
+            self.finish(task)
+            if self.valid(task) and self.held(task):
+                self.update(task,'retrying');task['_file_retry_at']=0;self.retry.start(1)
         item=task.get('package')
         if not item:
+            from clipboard_sync import WorkerFailure
             try:
-                if file_stamp(task['file_source'])!=task['source_stat']:raise OSError('原文件已发生变化。')
+                if file_stamp(task['file_source'])!=task['source_stat']:
+                    self._worker_failed(task,WorkerFailure('changed'));return
                 directory=self.client._directory()
-            except OSError as error:self.fail(task,error);return
+            except OSError as error:self._worker_failed(task,WorkerFailure.from_exception(error,'prepare'));return
             from clipboard_sync import package
             def prepared(result):
                 if not self.valid(task):return
-                if not result:self.fail(task,ValueError('共享上传快照无法恢复。'));return
-                task.update(package=result,prepared=True)
+                if not result:self._worker_failed(task,WorkerFailure('bug'));return
+                task.pop('_worker_recovery',None);task.update(package=result,prepared=True)
                 self.prepared(task);self.client._stage(task)
-            task['_job']=self.client._work(lambda cancel:package(('files',[task['file_source']]),directory,cancel),prepared)
+            task['_job']=self.client._work(lambda cancel:package(('files',[task['file_source']]),directory,cancel),prepared,
+                failure=lambda error:self._worker_failed(task,error),cancelled=cancelled,_task=task)
             return
         def verify(cancel):
             with Path(item['path']).open('rb') as stream:
@@ -180,7 +219,10 @@ class ClipboardFileJobs(QObject):
             return size==item['size'] and digest.hexdigest()==item['sha256']
         def verified(ok):
             if not self.valid(task):return
-            if not ok:self.fail(task,ValueError('共享上传快照校验失败。'));return
+            if not ok:
+                from clipboard_sync import WorkerFailure
+                self._worker_failed(task,WorkerFailure('integrity'));return
+            task.pop('_worker_recovery',None)
             def status(result,error):
                 if error:self.fail(task,error);return
                 head=(result or {}).get('clipboard') or {}
@@ -189,7 +231,16 @@ class ClipboardFileJobs(QObject):
                 elif task.get('holders'):self.client._stage(task)
                 else:self.update(task,'unavailable')
             self.client._request('GET',f'/v1/clipboard/{task["id"]}/shared',status,_task=task)
-        task['_job']=self.client._work(verify,verified)
+        task['_job']=self.client._work(verify,verified,
+            failure=lambda error:self._worker_failed(task,error),cancelled=cancelled,_task=task)
+
+    def _worker_failed(self,task,error):
+        if not self.valid(task):return
+        from clipboard_sync import worker_retry_allowed,worker_retry_delay,WorkerFailure
+        if worker_retry_allowed(task,error):self.fail(task,error,retry_ms=worker_retry_delay(task))
+        else:
+            if error.retryable:error=WorkerFailure('paused')
+            self.client._stop_upload(task,error);self.client._worker_error_view(task['id'],error)
 
     @staticmethod
     def _within_limits(task):
@@ -203,10 +254,11 @@ class ClipboardFileJobs(QObject):
                 and isinstance(raw,dict) and type(raw.get('size')) is int
                 and 0<raw['size']<=MAX_BYTES and raw['size']==stamp[2])
 
-    def fail(self,task,error):
+    def fail(self,task,error,*,retry_ms=5000):
         if not self.valid(task):return
+        self.finish(task)
         self.update(task,'retrying',error=error)
-        task['_file_retry_at']=time.monotonic()+5;self.retry.start(5001)
+        task['_file_retry_at']=time.monotonic()+retry_ms/1000;self.retry.start(retry_ms+1)
 
     def _retry(self):
         if not self.client.enabled or self.client.closed:
@@ -216,12 +268,18 @@ class ClipboardFileJobs(QObject):
             if self.valid(task) and task.get('releases'):
                 for identity in tuple(task['releases']):self.release(task['id'],identity)
                 later=True
-            if not self.valid(task) or not self.held(task) or task.get('_file_phase')!='retrying':continue
+            if (not self.valid(task) or not self.held(task) or task.get('_file_phase')!='retrying'
+                    or task.get('_file_attempt') is not None):continue
+            if self.client._pending is task or self.client._local_retry is task:
+                # This task's primary retry timer is the sole owner. Retained
+                # shelf references take over only after that owner is released.
+                later=True;continue
             if self.client._pending is not None and self.client._pending is not task:
                 later=True;continue
             if task.get('_file_retry_at',0)>time.monotonic():later=True;continue
             task['uploading']=False
-            if task.get('prepared'):self.client._stage(task)
+            if task.get('prepared'):
+                if self.begin(task):self.client._stage(task)
             else:self._restore(task)
         if later:self.retry.start(1000)
 
@@ -257,7 +315,8 @@ class ClipboardFileJobs(QObject):
             if task:self._hold(task,ref,item_id,callback,guard=guard)
             for row in prepared:row['_probes']=max(0,row.get('_probes',0)-1)
             if task is None:callback(None)
-        job=self.client._work(digest,matched);job._shared_probe=True
+        def cancelled():matched(None)
+        job=self.client._work(digest,matched,failure=lambda error:matched(None),cancelled=cancelled);job._shared_probe=True
         return True
 
     def _hold(self,task,ref,item_id,callback,*,guard=None,token=None):
@@ -303,6 +362,7 @@ class ClipboardFileJobs(QObject):
         if not self.held(task) and self.client._pending is not task:
             # Stop an old payload as soon as its final shelf consumer leaves,
             # while preserving the idempotent release control request below.
+            self.finish(task)
             for key in tuple(task.get('_keys',set())-task.get('_release_keys',set())):
                 self.client._keys.discard(key);self.client.api.cancel(key)
             job=task.get('_job')

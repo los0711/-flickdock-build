@@ -13,6 +13,11 @@ import ui_theme
 def read_clip_image(value,size,cancel):
     if cancel.is_set() or value is None:return QImage()
     kind,data=value
+    content=data.get('local_content') if kind=='image' else None
+    if content is not None:
+        with content.acquire() as original:
+            part=next(part for part in original.parts if part['name']=='image')
+            return read_clip_image(('files',[part['path']]),size,cancel)
     if kind=='image' and data.get('image') is not None:
         return data['image'].scaled(size,size,Qt.KeepAspectRatio,Qt.SmoothTransformation)
     buffer=None
@@ -27,22 +32,46 @@ def read_clip_image(value,size,cancel):
     return QImage() if cancel.is_set() else image
 
 
+def read_clip_text(content,cancel):
+    """Read only the established preview budget; keep complete originals."""
+    with content.acquire() as original:
+        part=next(part for part in original.parts if part['name']=='text')
+        if cancel.is_set():return None
+        with open(part['path'],'r',encoding=part['encoding'],errors='replace',newline='') as source:
+            text=source.read(262145).split('\0',1)[0]
+        return None if cancel.is_set() else (text[:262144],len(text)>262144)
+
+
 class ClipboardPresenter(QObject):
     changed=Signal()
     def __init__(self,client,parent=None):
         super().__init__(parent);self.client=client;self.state={};self.thumbnail=QImage();self.large=QImage()
         self.pool=QThreadPool(self);self.pool.setMaxThreadCount(1);self.jobs=set();self.generation=0;self.closed=False
-        self._large_requested=False;self._decoding=set()
+        self._large_requested=False;self._decoding=set();self.text_preview=None;self.text_truncated=False;self.text_error=''
         client.view_changed.connect(self._update);self._update(client.view)
 
     def _update(self,state):
         value=state.get('value');changed=state.get('revision')!=self.state.get('revision');self.state=dict(state)
         if changed:
             self.generation+=1;self.thumbnail=QImage();self.large=QImage();self._decoding.clear()
+            self.text_preview=None;self.text_truncated=False;self.text_error=''
             for job in self.jobs:job.cancel.set()
             if value and value[0] in ('image','files'):self._decode(40)
+            if value and value[0]=='text' and value[1].get('local_content') is not None:self._decode_text(value[1]['local_content'])
             if self._large_requested:self.request_large()
         self.changed.emit()
+
+    def _decode_text(self,content):
+        if self.closed:return
+        generation=self.generation;job=DiskWork(read_clip_text,content);self.jobs.add(job)
+        def ready(value,error):
+            self.jobs.discard(job)
+            if self.closed or generation!=self.generation:return
+            if error or value is None:
+                if not job.cancel.is_set():self.text_error='无法读取剪贴板预览';self.changed.emit()
+                return
+            self.text_preview,self.text_truncated=value;self.changed.emit()
+        job.signals.done.connect(ready);self.pool.start(job,-1)
 
     def _decode(self,size):
         value=self.state.get('value');generation=self.generation
@@ -237,12 +266,17 @@ class ClipboardPreview(ReferenceModalDialog):
         c=colors(self.manager.settings.theme);self.set_surface_theme(self.manager.settings.theme)
         self.close_button.dark=self.manager.settings.theme=='dark'
         self.setStyleSheet(f"QDialog{{background:transparent;}} QLabel{{background:transparent;color:{c['text']};font-size:12px;}} QPlainTextEdit{{background:{c['card']};color:{c['text']};border:1px solid {c['border']};border-radius:8px;padding:10px;}} QPushButton#settingsClose{{background:transparent;border:0;border-radius:8px;padding:0;}} QPushButton#settingsClose:hover{{background:{c['hover']};}} QPushButton#settingsClose:pressed{{background:{c['control']};}}")
-        self.badge.set_status(phase);self.status.setText(CLOUD_STATUS_LABELS.get(phase,'仅保存在本机'))
+        self.badge.set_status(phase);self.status.setText(model.state.get('error_message') or CLOUD_STATUS_LABELS.get(phase,'仅保存在本机'))
         self.sync_limit_note.setStyleSheet(f"color:{c['secondary']};font-size:11px;background:transparent;")
         if not value:self.info.setText('剪贴板暂无可预览内容');self.content.setCurrentWidget(self.info)
         elif value[0]=='text':
-            text=value[1]['text']
-            if len(text)>262144:
+            local=value[1].get('local_content') is not None
+            text=model.text_preview if local else value[1]['text']
+            if text is None:
+                self.info.setText(model.text_error or '正在准备文本预览…');self.content.setCurrentWidget(self.info)
+                if hasattr(self,'_popup_motion'):self._popup_motion.refresh_snapshot()
+                return
+            if len(text)>262144 or local and model.text_truncated:
                 text=text[:262144];self.status.setText(self.status.text()+' · 预览前 256K 字符，剪贴板保留完整内容')
             if self.text.toPlainText()!=text:self.text.setPlainText(text)
             self.content.setCurrentWidget(self.text)

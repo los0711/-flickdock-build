@@ -24,7 +24,8 @@ class UpdateNotice(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self._owner=parent
         self._previous_focus=None
-        if parent:parent.installEventFilter(self);parent.card.installEventFilter(self)
+        # show_version owns the application subscription until hideEvent.
+        # Permanent owner filters duplicate visible events and run while hidden.
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(16,16,16,16)
@@ -147,6 +148,9 @@ class UpdateNotice(QWidget):
         width=min(420,max(240,self.width()-32))
         wanted=(272 if not self.notes_area.isHidden() else 146)+(64 if not self.status_label.isHidden() else 0)
         self.surface.setFixedSize(width,min(wanted,max(130,self.height()-32)))
+        # Recenter synchronously after changing the fixed surface size; do not
+        # depend on an unrelated descendant Resize event to activate the layout.
+        self.layout().activate()
 
     def eventFilter(self,watched,event):
         if self.isVisible() and self._owner and isValid(self._owner):
@@ -165,9 +169,9 @@ class UpdateNotice(QWidget):
                         index=buttons.index(current) if current in buttons else 0
                         buttons[(index+(-1 if event.key()==Qt.Key.Key_Backtab else 1))%len(buttons)].setFocus(Qt.FocusReason.TabFocusReason)
                     return True
-        if event.type() in (QEvent.Type.Resize,QEvent.Type.Move) and self._owner:
-            self.setGeometry(self._owner.card.geometry())
-            self._fit_surface()
+            if watched in (self._owner,self._owner.card) and event.type() in (QEvent.Type.Resize,QEvent.Type.Move):
+                self.setGeometry(self._owner.card.geometry())
+                self._fit_surface()
         return False
 
     def paintEvent(self,event):

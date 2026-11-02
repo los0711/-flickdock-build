@@ -816,8 +816,6 @@ def build_overview(view,preview_type):
     view.view_buttons=QButtonGroup(view);view.view_buttons.setExclusive(True)
     for control,key in ((view.view_list,'list'),(view.view_grid,'icons')):
         control.setFixedHeight(SEGMENT_BUTTON_HEIGHT);control.setMinimumWidth(0);control.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed);control.setCheckable(True);view.view_buttons.addButton(control)
-        css(control,"QPushButton{background:transparent;border:0;border-radius:6px;color:#A1A1AA;padding:3px 8px;font:12px 'HarmonyOS Sans SC';} QPushButton:checked{background:rgba(255,255,255,31);color:#F5F5F7;font-weight:600;}",
-            "QPushButton{background:transparent;border:0;border-radius:6px;color:#515154;padding:0;font:12px 'HarmonyOS Sans SC';} QPushButton:checked{background:transparent;color:#1D1D1F;font-weight:600;}")
         css(control,*[f"QPushButton{{background:transparent;border:0;border-radius:5px;padding:0;color:{colors(t)['secondary']};}} QPushButton:checked{{background:transparent;color:{colors(t)['text']};}}" for t in ('dark','light')])
         control.clicked.connect(lambda checked=False,key=key:view.change_view_mode(key));segment.addWidget(control,1)
         control.setChecked(view.shelf.manager.settings.view_mode==key)

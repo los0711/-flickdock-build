@@ -42,6 +42,18 @@ class MacPermissionsDialog(ReferenceModalDialog):
             # a polling tick or trusting the fact that Settings was opened.
             QTimer.singleShot(0,self,self.refresh)
 
+    def bind_owner(self,owner):
+        """Rebind a cached, nonmodal view before presenting from a new route."""
+        from shiboken6 import isValid
+        if owner is None or not isValid(owner):raise ValueError('Permission owner is unavailable')
+        owner=owner.window()
+        if self.parentWidget() is owner:return self
+        # Never reparent a visible native surface halfway through its motion.
+        # Hide also stops polling and clears any pending WindowFade callback.
+        if self.isVisible():self.hide()
+        self.setParent(owner,self.windowFlags())
+        return self
+
     def apply_theme(self):
         self._theme=self.manager.settings.theme;c=colors(self._theme);self.set_surface_theme(self._theme);self.close_button.dark=self._theme=='dark'
         self.setStyleSheet(f"QDialog{{background:transparent;}} QLabel{{color:{c['text']};background:transparent;border:0;font-size:12px;}} QFrame#permissionRow{{background:{c['card']};border:1px solid {c['border']};border-radius:8px;}} QPushButton{{color:{c['text']};background:{c['control']};border:1px solid {c['border']};border-radius:8px;padding:6px 12px;}} QPushButton:hover{{background:{c['hover']};}}")

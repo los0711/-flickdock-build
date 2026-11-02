@@ -1,5 +1,21 @@
 # FlickDock repository instructions
 
+## Continuing global engineering contract (2026-11-02)
+
+- Deliver complete runnable files/resources, no omitted logic or placeholder implementation. Prefer minimal dependencies for new isolated work; keep this existing PySide6/native/client-server architecture and all previously confirmed UI/behavior.
+- Validate external boundaries, timeouts and ownership. Controlled internal invariants fail visibly; do not add empty catch blocks or redundant null guards to conceal errors. Required lifecycle, authorization, ordering and cancellation fences remain.
+- Separate state/logic/UI, centralize meaningful constants/configuration, prefer supported modern APIs, and comment intent rather than syntax. Handle stale callbacks, task cancellation, timers and subscriptions explicitly.
+- New visual work needs complete interaction states and natural motion, but this does not authorize restyling existing FlickDock or restoring cancelled opacity, blur or G2 effects.
+- Root-cause fixes and truthful actual verification remain required; preserve unrelated functionality and complete artifacts. New conflicts with existing requirements require two plain-language options and the user's decision before dependent changes.
+
+## User change contract (2026-11-02, continuing)
+
+- Before each new change, identify the requested behavior and preserve all unrelated functions, layouts, animations, controls, shortcuts, platform integration and data. Record the relevant before/after behavior and regression scope; passing one new test is not proof that the entire product works.
+- If a new request actually conflicts with a previously required feature or is infeasible under its constraints, do not implement the conflicting part. Explain the conflict in plain Chinese, give two concrete alternatives and wait for the user's choice. Continue independent authorized work. Routine implementation choices and verified fixes without such a conflict do not require new approval.
+- Diagnose causes before changing behavior. Do not conceal errors, simulate success, add arbitrary delays or delete required safety/authorization/lifecycle checks to make a test pass. Clean-room refactoring must preserve the established behavior contracts.
+- Review all existing user flows and perform appropriate actual regression and frozen-application validation. Mental review alone is not validation. Preserve original failures and state untested/failed limits honestly; never claim complete preservation or completion from a partial suite.
+- Deliver complete usable source/software artifacts rather than omitted code fragments. Current delivery order: complete the requested clean-room review/refactoring first, deliver its complete source and short diagnosis, then continue the remaining authorized development without waiting for another confirmation. No intermediate installer or website publication is authorized at present. Do not inspect or operate the user's current computer; use isolated QA only.
+
 ## Delivery
 
 - Source repository: `https://gitee.com/rooogerluo/flick-dock`; keep it private.

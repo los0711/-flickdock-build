@@ -71,9 +71,21 @@ class CloudApi(QObject):
                 or base.hasQuery() or base.hasFragment() or base.path() not in ('','/')
                 or not (base.scheme() == 'https' or local_test)):
             raise CloudError('云同步服务尚未连接。')
-        if not path.startswith('/v1/') or '://' in path or '#' in path:
+        # The peer-shelf control plane is independently negotiated. Do not
+        # open arbitrary v2 services or change the existing v1 payload wire.
+        if not path.startswith(('/v1/', '/v2/shelf/')) or '://' in path or '#' in path:
             raise CloudError('同步请求无效。')
-        return QUrl(self.origin + path)
+        url=QUrl(self.origin + path)
+        if path.startswith('/v2/shelf/'):
+            # Qt normalizes dot segments before sending. Validate its decoded
+            # path too, so an accepted shelf URL cannot reach another service.
+            # These control paths contain only route names and opaque IDs;
+            # display names and filesystem paths belong in JSON, never here.
+            decoded=url.path(QUrl.ComponentFormattingOption.FullyDecoded)
+            if (not re.fullmatch(r'/v2/shelf/[A-Za-z0-9_/-]+',decoded)
+                    or any(segment in ('.','..') for segment in decoded.split('/'))):
+                raise CloudError('同步请求无效。')
+        return url
 
     def request(self, method, path, callback, *, data=None, raw=None, source=None, source_offset=0, source_size=None, headers=None,
                 authenticated=True, destination=None, expected=None, timeout_ms=45000,
@@ -154,6 +166,7 @@ class CloudApi(QObject):
                     authenticated=authenticated,destination=destination,expected=expected,timeout_ms=remaining,
                     progress=progress,receive_progress=receive_progress,priority=priority,_fallback_used=True,_deadline=deadline)
             state['method']=str(method).upper()
+            state['response_schema']=2 if path.startswith('/v2/shelf/') else 1
             self._requests[key] = state
             sent_signal=getattr(reply,'requestSent',None)
             if sent_signal is not None:
@@ -357,7 +370,9 @@ class CloudApi(QObject):
                     if isinstance(problem,str): problem = {'message':problem}
                     if not isinstance(problem,dict): problem = {}
                     raise CloudError(problem.get('message') or '云同步请求失败，请稍后重试。',status,problem.get('code',''),parsed)
-                if not isinstance(parsed,dict) or parsed.get('schema_version') != 1:
+                expected_schema=state.get('response_schema',1)
+                if (not isinstance(parsed,dict) or parsed.get('schema_version') != expected_schema
+                        or expected_schema==2 and type(parsed.get('schema_version')) is not int):
                     raise CloudError('云同步服务版本不匹配。',status)
                 # A fully decoded protocol response is useful even if a
                 # proxy closes the socket before Qt sees normal EOF. Invalid

@@ -174,10 +174,14 @@ class ClipboardSizeTests(unittest.TestCase):
             manager=patch.object(subject,'package',wraps=subject.package) if oversize else patch.object(subject,'package',side_effect=OSError('synthetic cache unavailable'))
             with manager as prepared:
                 clip.setMimeData(mime);client.change_debounce.stop();client._changed()
-                until(lambda:client._pending is None and not client._jobs)
+                until(lambda:not client._jobs and (client._pending is None if oversize else
+                    client.view['phase']=='error' and client.retry.isActive()))
                 if oversize:
                     for _ in range(3):clip.reannounce();client.change_debounce.stop();client._changed()
                     self.assertEqual(prepared.call_count,1)
+                else:
+                    self.assertIsNone(client._pending);self.assertIsNotNone(client._local_retry)
+                    self.assertEqual(client.retry.interval(),5000)
             self.assertIs(clip.mimeData(),mime);self.assertTrue(source.exists())
             self.assertEqual(results,[] if oversize else [False]);self.assertEqual(peer.calls,[])
             self.assertEqual(client.view['phase'],'local' if oversize else 'error')

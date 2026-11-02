@@ -89,7 +89,7 @@ class SurfaceSnapshot(QWidget):
         self.rect_global=QRect(); self.transition_bounds=QRect(); self.mix=0
         self._shadows=OrderedDict()
         self.capture_count=0
-        self._blend=QPixmap();self._blend_valid=False
+        self._last_paint=None
         self.hide()
 
     def capture_live(self,card,controls):
@@ -136,22 +136,19 @@ class SurfaceSnapshot(QWidget):
             # captured endpoints. QWidget.render has the same state-reset
             # hazard as drawSource when called under a scaling transform.
             rect=QRectF(0,0,width,height)
-            if self._blend_valid and not self._blend.isNull():
-                # This is the last actually painted cached/live mixture. A
-                # quick reverse must not rebuild it from a now-stale endpoint.
-                import ui_theme
-                painter.setRenderHints(QPainter.Antialiasing|QPainter.SmoothPixmapTransform)
-                painter.setClipPath(surface_clip(rect))
-                painter.fillRect(rect,QColor(ui_theme.color('surface')))
-                painter.drawPixmap(rect,self._blend,QRectF(self._blend.rect()))
-            else:self.paint_frame(painter,rect)
+            # Keep the last painted recipe, including Qt's already acquired
+            # live source pixmap, instead of mixing two full-size scratch
+            # pixmaps on every frame. Only a reversal needs this raster copy.
+            recipe=self._last_paint
+            if recipe is None:self.paint_frame(painter,rect)
+            else:self._compose(painter,rect,*recipe)
         finally:
             painter.end()
         return image
 
     def begin(self,source,target,origin,present=True,target_rect=None):
         self.source,self.target=source,target
-        self._blend_valid=False
+        self._last_paint=None
         self.active=True; self.mix=0; self.rect_global=QRect(origin)
         self.transition_bounds=origin.united(target_rect) if target_rect is not None else QRect(origin)
         self.setGeometry(self.owner.rect())
@@ -167,7 +164,7 @@ class SurfaceSnapshot(QWidget):
     def finish(self):
         self.active=False; self.hide()
         self.source=QPixmap(); self.target=QPixmap()
-        self._blend=QPixmap();self._weighted=QPixmap();self._blend_valid=False
+        self._last_paint=None
 
     def _effect(self):
         return getattr(self.owner,'surface_effect',None)
@@ -215,61 +212,61 @@ class SurfaceSnapshot(QWidget):
         is already the exact drawSource path used after end_surface_morph().
         No widget visibility, native geometry or raster changes at completion.
         """
+        live_mix=max(0.,min(1.,(self.mix-.75)/.25)) if live_draw is not None else 0.
+        if self.target.isNull() and live_draw is not None:live_mix=1.
+        # draw_live acquires the effect's cached source pixmap when used. Its
+        # closure then retains that exact painted frame for a rapid reverse;
+        # do not call an unused early-phase closure after the live tree changes.
+        painted_live=live_draw if live_mix else None
+        self._compose(painter,rect,self.mix,painted_live,target_size)
+        self._last_paint=(self.mix,painted_live,target_size)
+
+    @staticmethod
+    def _fitted_rect(rect,size):
+        """Fit without enlarging text; grow the surface, not its source title.
+
+        Both endpoints keep their aspect ratio. The fixed right/top anchor is
+        shared with the native morph and leaves newly revealed space to the
+        target tree rather than stretching the compact card over it.
+        """
+        width=max(1.,size.width());height=max(1.,size.height())
+        scale=min(1.,rect.width()/width,rect.height()/height)
+        return QRectF(rect.right()-width*scale,rect.top(),width*scale,height*scale)
+
+    def _compose(self,painter,rect,progress,live_draw,target_size):
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         painter.setClipPath(surface_clip(rect))
         import ui_theme
         painter.fillRect(rect,QColor(ui_theme.color('surface')))
-        if self.mix<=0 and not self.source.isNull():
-            painter.drawPixmap(rect,self.source,QRectF(self.source.rect()))
-        elif self.mix<1 and not self.source.isNull():
-            # Weighted premultiplied-alpha crossfade. Drawing a translucent
-            # source over the complete target makes frame zero more opaque
-            # than the live source. A reusable transparent layer keeps the
-            # original surface alpha and avoids resizing the native host.
-            logical=target_size if target_size is not None else self.target.deviceIndependentSize()
-            width=max(1,round(logical.width()));height=max(1,round(logical.height()))
-            dpr=self.owner.devicePixelRatioF()
-            physical=(round(width*dpr),round(height*dpr))
-            if self._blend.size().toTuple()!=physical or self._blend.devicePixelRatioF()!=dpr:
-                self._blend=QPixmap(*physical);self._blend.setDevicePixelRatio(dpr)
-            weighted=getattr(self,'_weighted',None)
-            if weighted is None or weighted.size().toTuple()!=physical or weighted.devicePixelRatioF()!=dpr:
-                weighted=self._weighted=QPixmap(*physical);weighted.setDevicePixelRatio(dpr)
-            self._blend.fill(Qt.GlobalColor.transparent)
-            layer=QPainter(self._blend);layer.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-            # The first 3/4 is entirely cached. In the final quarter, blend
-            # toward the current live tree so arrivals/progress/input stay
-            # current and the endpoint cannot flash to a different raster.
-            live_mix=max(0.,min(1.,(self.mix-.75)/.25)) if live_draw is not None else 0.
+        if progress<=0 and not self.source.isNull():
+            painter.drawPixmap(self._fitted_rect(rect,self.source.deviceIndependentSize()),self.source,QRectF(self.source.rect()))
+        else:
+            # The application surfaces are opaque. SourceOver on their common
+            # opaque material gives the same endpoint crossfade without the
+            # old per-frame full-DPR blend/weighted fills, copies and Plus pass.
+            # Content newly exposed outside the compact endpoint belongs to
+            # the target; it must not contain an enlarged compact title.
+            live_mix=max(0.,min(1.,(progress-.75)/.25)) if live_draw is not None else 0.
             if self.target.isNull() and live_draw is not None:live_mix=1.
-            # Qt applies global opacity to the *result* of Plus (including
-            # saturation), not simply to its source. Premultiply each input
-            # into a reusable scratch surface, then add at full opacity.
-            def add(weight,draw):
-                if weight<=0:return
-                weighted.fill(Qt.GlobalColor.transparent)
-                part=QPainter(weighted);part.setRenderHint(QPainter.SmoothPixmapTransform)
-                part.setOpacity(weight);draw(part);part.end()
-                layer.drawPixmap(QPoint(),weighted)
-            layer.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
-            if not self.target.isNull():add(self.mix*(1-live_mix),lambda p:p.drawPixmap(QRectF(0,0,width,height),self.target,QRectF(self.target.rect())))
-            if live_mix:add(self.mix*live_mix,live_draw)
-            add(1-self.mix,lambda p:p.drawPixmap(QRectF(0,0,width,height),self.source,QRectF(self.source.rect())))
-            layer.end()
-            self._blend_valid=True
-            painter.drawPixmap(rect,self._blend,QRectF(self._blend.rect()))
-        elif live_draw is not None:
-            painter.save()
-            painter.translate(rect.x(),rect.y())
-            if target_size is not None:
-                painter.scale(rect.width()/max(1,target_size.width()),
-                              rect.height()/max(1,target_size.height()))
-            live_draw(painter)
-            painter.restore()
-        elif not self.target.isNull():
-            painter.drawPixmap(rect,self.target,QRectF(self.target.rect()))
+            if live_mix:self._draw_live(painter,rect,live_draw,target_size)
+            if not self.target.isNull() and live_mix<1.:
+                painter.setOpacity(1.-live_mix)
+                painter.drawPixmap(self._fitted_rect(rect,self.target.deviceIndependentSize()),self.target,QRectF(self.target.rect()))
+                painter.setOpacity(1.)
+            if progress<1. and not self.source.isNull():
+                painter.setOpacity(1.-progress)
+                painter.drawPixmap(self._fitted_rect(rect,self.source.deviceIndependentSize()),self.source,QRectF(self.source.rect()))
+        painter.restore()
+
+    def _draw_live(self,painter,rect,live_draw,target_size):
+        logical=target_size if target_size is not None else self.target.deviceIndependentSize()
+        destination=self._fitted_rect(rect,logical)
+        painter.save()
+        painter.translate(destination.x(),destination.y())
+        painter.scale(destination.width()/max(1,logical.width()),destination.height()/max(1,logical.height()))
+        live_draw(painter)
         painter.restore()
 
     def _paint_content(self,painter,rect):
