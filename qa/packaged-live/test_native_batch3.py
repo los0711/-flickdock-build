@@ -193,7 +193,7 @@ class Batch3Tests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError,'Duplicate'):self.runner.menu()
 
     def recent_fixture(self):
-        popup=Control('','Window','QFrame',rectangle=(100,100,500,350))
+        popup=Control('','Window','QComboBoxPrivateContainer',rectangle=(100,100,500,350))
         view=Control('','List','QListView',popup,rectangle=(100,100,500,350))
         row=Control(qa.RECENT_NAME,'ListItem','',view,rectangle=(100,110,500,166))
         survivor=Control('Native QA peer','ListItem','',view,rectangle=(100,168,500,224))
@@ -216,16 +216,147 @@ class Batch3Tests(unittest.TestCase):
     def test_recent_clipping_diagnostic_preserves_refusal_and_has_no_names_or_input(self):
         popup,view,row,_=self.recent_fixture();popup.element_info.class_name='QComboBoxPrivateContainer'
         combo=Control('private user text','ComboBox','_DevicesCombo',rectangle=(100,50,500,90))
-        view.owner=combo
+        view.owner=combo;view.box=(100,100,455,350)
         with self.assertRaisesRegex(AssertionError,'clipped'):self.runner.row_remove_point(row)
         ancestry=next(e for e in self.runner.events if e['step']=='recent-clipping-ancestry')
         self.assertEqual([r['class_name'] for r in ancestry['ancestors']],['','QListView','_DevicesCombo'])
-        self.assertEqual([r['contains'] for r in ancestry['ancestors']],[True,True,False])
+        self.assertEqual([r['contains'] for r in ancestry['ancestors']],[True,False,False])
         hosts=next(e for e in self.runner.events if e['step']=='recent-clipping-native-popup-hosts')
         self.assertEqual(hosts['hosts'][0]['bounds'],[100,100,500,350])
         self.assertNotIn('private user text',str(self.runner.events))
         self.assertFalse(any('name' in r for r in ancestry['ancestors']))
         self.mouse.move.assert_not_called();self.mouse.click.assert_not_called()
+
+    def test_recent_native_host_overrides_only_logical_combo_not_input_guards(self):
+        popup,view,row,_=self.recent_fixture()
+        combo=Control('private combo','ComboBox','_DevicesCombo',self.root,rectangle=(100,50,500,90),handle=0)
+        view.owner=combo
+        host,point=self.runner.row_remove_target(row)
+        self.assertIs(host,popup);self.assertEqual(point,(470,138))
+        self.assertIs(row.top_level_parent(),self.root)
+        # Physical input must use native popup host, with root/owner checked.
+        popup.handle=91;view.handle=91;self.api.WindowFromPoint.return_value=91
+        popup.owner=self.root
+        popup.top_level_parent=Mock(side_effect=AssertionError('Semantic popup owner cannot authorize OS input'))
+        with patch.object(native_batch2.time,'sleep'):
+            self.runner.recent_input(row)
+        self.mouse.click.assert_called_once_with(button='left',coords=point)
+        self.backend._assert_pointer_owner.assert_called_once_with(point,123)
+        popup.top_level_parent.assert_not_called()
+
+    def test_recent_host_rejects_clipping_ambiguity_hidden_and_foreign_pid(self):
+        for case in ('row-clipped','host-clipped','ambiguous','hidden','disabled','foreign-pid','no-handle','wrong-class'):
+            with self.subTest(case=case):
+                popup,view,row,_=self.recent_fixture()
+                if case=='row-clipped':view.box=(100,120,500,350)
+                elif case=='host-clipped':popup.box=(100,100,490,350)
+                elif case=='ambiguous':self.backend.windows.return_value.append(Control('','Window','QComboBoxPrivateContainer',rectangle=popup.box,handle=92))
+                elif case=='hidden':popup.visible=False
+                elif case=='disabled':view.enabled=False
+                elif case=='foreign-pid':view.element_info.process_id=456
+                elif case=='no-handle':view.handle=0
+                elif case=='wrong-class':popup.element_info.class_name='UnrelatedWindow'
+                with self.assertRaises(AssertionError):self.runner.row_remove_target(row)
+        self.mouse.click.assert_not_called();self.mouse.move.assert_not_called()
+
+    def test_recent_native_root_mismatch_and_covering_window_never_receive_click(self):
+        popup,view,row,_=self.recent_fixture();view.handle=91
+        with self.assertRaisesRegex(AssertionError,'root do not match'):self.runner.row_remove_target(row)
+        view.handle=90;host,point=self.runner.row_remove_target(row)
+        self.api.WindowFromPoint.return_value=777
+        with self.assertRaisesRegex(AssertionError,'covered or native popup root changed'):self.runner.recent_input(row)
+        self.mouse.click.assert_not_called();self.mouse.move.assert_not_called()
+
+    def test_current_4c6_observed_geometry_requires_native_popup_despite_semantic_combo(self):
+        # Exact technical geometry/handles from actual run41386946456, not a
+        # successful deletion claim. No native calls or physical input here.
+        self.backend.pid=6396;self.backend._window_pid.return_value=6396
+        transfer=Control('FlickDock','Window','LanDialog',rectangle=(21,7,1001,711),pid=6396,handle=393924)
+        combo=Control('','ComboBox','_DevicesCombo',transfer,rectangle=(64,313,412,349),pid=6396,handle=0)
+        view=Control('','List','QListView',combo,rectangle=(65,349,411,479),pid=6396,handle=852110)
+        row=Control(qa.RECENT_NAME,'ListItem','',view,rectangle=(72,416,408,472),pid=6396,handle=0)
+        popup=Control('','Window','QComboBoxPrivateContainer',rectangle=(64,348,412,480),pid=6396,handle=852110)
+        self.backend.windows.return_value=[transfer,popup]
+        host,point=self.runner.row_remove_target(row)
+        self.assertIs(host,popup);self.assertEqual(point,(378,444))
+        self.assertIs(row.top_level_parent(),transfer)
+        self.mouse.click.assert_not_called();self.mouse.move.assert_not_called()
+
+    def test_recent_real_clip_chain_identity_and_native_pid_mismatch_fail_closed(self):
+        for case in ('mid-clipped','mid-hidden','row-hidden','row-disabled','wrong-name',
+                     'wrong-role','no-list','host-no-handle','host-native-pid','view-native-pid','host-not-root'):
+            with self.subTest(case=case):
+                popup,view,row,_=self.recent_fixture();view.handle=91;popup.handle=90
+                self.api.GetAncestor.side_effect=lambda hwnd,kind:90 if hwnd in (90,91) else hwnd
+                self.backend._window_pid.side_effect=lambda handle:123
+                if case.startswith('mid-'):
+                    middle=Control('','Pane','Viewport',view,rectangle=(100,110,500,166),handle=0)
+                    row.owner=middle
+                    if case=='mid-clipped':middle.box=(100,110,450,166)
+                    else:middle.visible=False
+                elif case=='row-hidden':row.visible=False
+                elif case=='row-disabled':row.enabled=False
+                elif case=='wrong-name':row.element_info.name='Not the fixture'
+                elif case=='wrong-role':row.element_info.control_type='Button'
+                elif case=='no-list':view.element_info.class_name='OtherList'
+                elif case=='host-no-handle':popup.handle=0
+                elif case=='host-native-pid':self.backend._window_pid.side_effect=lambda handle:456 if handle==90 else 123
+                elif case=='view-native-pid':self.backend._window_pid.side_effect=lambda handle:456 if handle==91 else 123
+                elif case=='host-not-root':self.api.GetAncestor.side_effect=lambda hwnd,kind:92
+                with self.assertRaises(AssertionError):self.runner.row_remove_target(row)
+        self.mouse.click.assert_not_called();self.mouse.move.assert_not_called()
+
+    def test_recent_foreign_cover_at_actual_pointer_is_rejected_by_existing_input_guard(self):
+        _,_,row,_=self.recent_fixture();host,point=self.runner.row_remove_target(row)
+        self.backend._assert_pointer_owner.side_effect=AssertionError('Actual pointer owner PID mismatch')
+        with self.assertRaisesRegex(AssertionError,'PID mismatch'):self.runner.recent_input(row)
+        self.mouse.click.assert_not_called();self.mouse.move.assert_not_called()
+
+    def test_recent_native_host_pid_is_checked_again_immediately_before_physical_input(self):
+        _,_,row,_=self.recent_fixture()
+        def mutate(*_):self.backend._window_pid.return_value=456
+        self.backend._assert_pointer_owner.side_effect=mutate
+        with self.assertRaisesRegex(AssertionError,'covered or native popup root changed'):
+            self.runner.recent_input(row)
+        self.mouse.click.assert_not_called();self.mouse.move.assert_not_called()
+
+    def test_recent_physical_input_uses_typed_point_and_survives_provider_destroy_after_click(self):
+        import ctypes
+        from ctypes import wintypes
+        popup,_,row,_=self.recent_fixture();observed=[]
+        prototype=ctypes.CFUNCTYPE(ctypes.c_int,wintypes.POINT)
+        callback=prototype(lambda point:observed.append((point.x,point.y)) or 90)
+        self.api.WindowFromPoint=callback
+        self.mouse.click.side_effect=lambda **_:setattr(popup,'rectangle',Mock(side_effect=RuntimeError('deleted provider')))
+        with patch.object(qa.time,'sleep'):self.runner.recent_input(row)
+        self.assertEqual(observed,[(470,138)])
+        self.mouse.click.assert_called_once_with(button='left',coords=(470,138))
+        self.assertEqual(self.runner.events[-1]['input_bounds'],[100,100,500,350])
+        self.backend._producer_topmost.assert_called_once_with(False)
+        self.backend._assert_pointer_owner.assert_called_once_with((470,138),123)
+
+    def test_recent_narrow_input_cannot_expand_into_unreviewed_mouse_actions(self):
+        _,_,row,_=self.recent_fixture()
+        for kind in ('right','double','drag'):
+            with self.subTest(kind=kind):
+                with self.assertRaises(ValueError):self.runner.recent_input(row,kind=kind)
+        self.mouse.click.assert_not_called();self.mouse.move.assert_not_called();self.mouse.double_click.assert_not_called()
+
+    def test_recent_popup_lost_after_hover_cannot_receive_a_stale_remove_click(self):
+        for change in ('hidden','new-root'):
+            with self.subTest(change=change):
+                self.mouse.click.reset_mock();self.mouse.move.reset_mock()
+                self.root.children=[]
+                row,_,_=self.drive_recent();view=row.parent();popup=view.parent()
+                self.mouse.move.side_effect=(lambda **_:setattr(popup,'visible',False)) if change=='hidden' else (
+                    lambda **_:setattr(view,'handle',999))
+                with patch.object(qa.time,'sleep'),patch.object(native_batch2.time,'sleep'):
+                    with self.assertRaises(AssertionError):self.runner.recent()
+                # Only opening the combo is permitted; no delete input after
+                # the independently re-observed native target stops matching.
+                self.assertEqual(self.mouse.click.call_count,1)
+                self.mouse.move.assert_called_once_with(coords=(470,138))
+                self.assertFalse(any(call.kwargs.get('coords')==(470,138) for call in self.mouse.click.call_args_list))
 
     def test_recent_clipping_observer_failure_never_hides_original_refusal(self):
         _,view,row,_=self.recent_fixture();view.box=(100,100,455,350)

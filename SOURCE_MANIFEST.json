@@ -26,8 +26,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 17355,
-      "sha256": "625a76c4e34fe2b9ca8c4bff7c1d65b614fdcb505224b92219cebc39a6a57c95"
+      "size": 17754,
+      "sha256": "17529013f4305240ded9d7b45150e02e9f8029e942dfa96c71b672463ccf45d3"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -1226,13 +1226,13 @@
     },
     {
       "path": "qa/packaged-live/ci_exact_installer.py",
-      "size": 22311,
-      "sha256": "7862e547f2269ff9cb848d90b1822a646e9fcaedf1a901c617cdc11c6d4b9899"
+      "size": 22404,
+      "sha256": "103588865a42bc1bab5d5bb76078fdab9d6eaeff5e10a5b56c07c1b2fec5fae4"
     },
     {
       "path": "qa/packaged-live/ci_packaged_windows_live.py",
-      "size": 94018,
-      "sha256": "4973f373cc2fa199497cc2a29ccde9cdb6141fb5fe2a208f6d613cfd5a3ae852"
+      "size": 95381,
+      "sha256": "fa90dbb968381ec30c82b56758d3738f88b0e041def0358806529ff05c36b519"
     },
     {
       "path": "qa/packaged-live/ci_windows_reveal_probe.py",
@@ -1251,8 +1251,8 @@
     },
     {
       "path": "qa/packaged-live/native_batch3.py",
-      "size": 22858,
-      "sha256": "342e2671f8c10265e9357e9ce0949f68cd4e6306224e6274c79c70ec4fe12ae6"
+      "size": 26164,
+      "sha256": "0dc1905c551f263dc753bd4f3b21b480b1ddaf3bf825d9c4a1b289758fe4a0f2"
     },
     {
       "path": "qa/packaged-live/native_editor.py",
@@ -1268,6 +1268,11 @@
       "path": "qa/packaged-live/native_shake.py",
       "size": 10451,
       "sha256": "d5a2054ee763d5ceb269065fb6e40c8a15cf3c140f4c5f63d9a637a3d9619165"
+    },
+    {
+      "path": "qa/packaged-live/native_writer_observation.py",
+      "size": 12002,
+      "sha256": "c6f2b6d22f735e7219292a3b1199cf1160b7502302ae4f9f9110a6dc01990217"
     },
     {
       "path": "qa/packaged-live/reuse_frozen.py",
@@ -1301,8 +1306,8 @@
     },
     {
       "path": "qa/packaged-live/test_native_batch3.py",
-      "size": 21220,
-      "sha256": "26cbf0f26cdc16e0eb369ed2c171e48b0401e2da8d5faf30895320120500f8da"
+      "size": 30455,
+      "sha256": "66ea7c754926da810e2d9f203404091b5ee1f4afa07008e30313fba54e67bbf9"
     },
     {
       "path": "qa/packaged-live/test_native_command_mailbox.py",
@@ -1320,9 +1325,19 @@
       "sha256": "a475035ea2abfa54d641137a4dba518b6c1408a3e22abaf8d0a1bd1f59b09389"
     },
     {
+      "path": "qa/packaged-live/test_native_writer_observation.py",
+      "size": 11436,
+      "sha256": "47ea74003f5dc9fd15e7ba0454f0003720a458ba4bb93a2a2e40d2ecd8e19010"
+    },
+    {
       "path": "qa/packaged-live/test_seed_recent_peer.py",
       "size": 9123,
       "sha256": "499a7a0cdcabbb4c6dce799612ac1e45a6a69ae4ce1994587f8a6e22e319bfcb"
+    },
+    {
+      "path": "qa/packaged-live/test_writer_scope_gates.py",
+      "size": 5812,
+      "sha256": "0d56f2ae927c3a116e65d527538cc99d921c9a03c4f94ff7dce9206b51a12afe"
     },
     {
       "path": "qa/packaged-live/ui-actions.json",
@@ -1391,8 +1406,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 40259,
-      "sha256": "6b543f040d440baa59b53bed4ddcb7e81200176414a533c2c9841ab56c3f1b09"
+      "size": 40416,
+      "sha256": "9a5805d9516b197878a8662a0a5a82c43adf4ae024e9beb57dd18f71220f2bbe"
     },
     {
       "path": "release_signing.py",

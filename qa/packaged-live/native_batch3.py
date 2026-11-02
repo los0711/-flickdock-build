@@ -235,20 +235,68 @@ class Batch3(Batch2):
         return rows
 
     def row_remove_point(self,row):
+        return self.row_remove_target(row)[1]
+
+    def row_remove_target(self,row):
         rectangle=bounds(row);point=(rectangle[2]-30,(rectangle[1]+rectangle[3])//2)
         # Delegate remove_rect is 28px square at QRect.right()-43, centred
         # vertically; derive only from this actually observed row, never from
-        # a guessed global coordinate. All clipping ancestors must contain it.
+        # a guessed global coordinate. Qt exposes a native popup's list under
+        # the logical combo in UIA; that combo is not its native clipping host.
         if rectangle[2]-rectangle[0]<120 or rectangle[3]-rectangle[1]<28:
             raise AssertionError('Recent native row is too small for its actual remove target')
         chain=self.ancestry(row)
-        for ancestor in chain:
-            if ancestor.element_info.control_type=='Window':break
-            r=bounds(ancestor)
-            if not ancestor.is_visible() or not (r[0]<=point[0]<r[2] and r[1]<=point[1]<r[3]):
-                self.observe_recent_clip(point,chain)
-                raise AssertionError('Recent remove target is clipped by actual native popup ancestor')
-        return point
+        def contains(outer,inner):
+            return outer[0]<=inner[0]<inner[2]<=outer[2] and outer[1]<=inner[1]<inner[3]<=outer[3]
+        try:
+            if row.element_info.control_type!='ListItem' or row.element_info.name!=RECENT_NAME:
+                raise AssertionError('Unexpected recent native row identity')
+            view=next((c for c in chain if c.element_info.class_name=='QListView'),None)
+            if view is None:raise AssertionError('Recent native row has no actual QListView')
+            for ancestor in chain:
+                r=bounds(ancestor)
+                if (not ancestor.is_visible() or not ancestor.is_enabled()
+                        or int(ancestor.element_info.process_id)!=self.b.pid
+                        or not (r[0]<=point[0]<r[2] and r[1]<=point[1]<r[3])):
+                    raise AssertionError('Recent remove target is clipped by actual native popup ancestor')
+                if ancestor is view:break
+            if not contains(bounds(view),rectangle):
+                raise AssertionError('Recent native row is clipped by its QListView')
+            hosts=[c for c in self.b.windows() if c.element_info.class_name=='QComboBoxPrivateContainer'
+                   and c.element_info.control_type=='Window' and c.is_visible() and c.is_enabled()
+                   and int(c.element_info.process_id)==self.b.pid and int(c.handle or 0)
+                   and contains(bounds(c),bounds(view))]
+            if len(hosts)!=1:raise AssertionError('Missing or ambiguous actual recent native popup host')
+            host=hosts[0];api=self.b._input_api();handle=int(host.handle)
+            if (not int(view.handle or 0) or self.b._window_pid(handle)!=self.b.pid
+                    or self.b._window_pid(int(view.handle))!=self.b.pid
+                    or int(api.GetAncestor(handle,2) or 0)!=handle
+                    or int(api.GetAncestor(int(view.handle),2) or 0)!=handle):
+                raise AssertionError('Recent native list and popup root do not match')
+            # Retain the existing physical-input PID/WindowFromPoint/root guard;
+            # scope it to the actual observed native popup, never the logical
+            # row.top_level_parent(), which points back to the transfer window.
+            self.mark('recent-native-popup-target',host,point=list(point),row_bounds=rectangle,
+                      view_bounds=bounds(view))
+            return host,point
+        except AssertionError:
+            self.observe_recent_clip(point,chain)
+            raise
+
+    def recent_input(self,row,*,kind='click'):
+        if kind not in ('hover','click'):raise ValueError('Unsupported recent popup physical input')
+        host,point=self.row_remove_target(row)
+        self.b._producer_topmost(False);self.b._assert_pointer_owner(point,self.b.pid)
+        # UIA's top_level_parent can follow Qt's logical owner, too. This host
+        # has already been measured and bound to the list's actual HWND root;
+        # check that exact root again immediately before physical OS input.
+        if self.b._window_pid(int(host.handle))!=self.b.pid or self.root_at(point)!=int(host.handle):
+            raise AssertionError('Recent physical input is covered or native popup root changed')
+        before=self.mark('before:'+kind,host,point=list(point))
+        if kind=='hover':self.mouse.move(coords=point)
+        else:self.mouse.click(button='left',coords=point)
+        time.sleep(.28)
+        self.mark('after:'+kind,input_bounds=before['bounds'],point=list(point))
 
     def observe_recent_clip(self,point,chain):
         """Passive bounded geometry; never change the rejected input target."""
@@ -287,8 +335,9 @@ class Batch3(Batch2):
         initial=[c.element_info.name for c in self.popup_rows()]
         if RECENT_NAME not in initial:raise AssertionError('No actual recent record to delete')
         self.mark('recent-dropdown-initial',names=initial,fixture_online=False)
-        point=self.row_remove_point(row);self.input(row,kind='hover',point=point);time.sleep(.2)
-        self.input(row,point=point)
+        self.recent_input(row,kind='hover');time.sleep(.2)
+        row=self.wait(target,'same real recent row after hover')
+        self.recent_input(row)
         self.wait(lambda:target() is None,'recent fixture row removed without closing popup',seconds=5)
         remaining=[c.element_info.name for c in self.popup_rows()]
         if sorted(remaining)!=sorted(name for name in initial if name!=RECENT_NAME):

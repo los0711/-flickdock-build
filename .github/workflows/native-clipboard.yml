@@ -22,7 +22,7 @@ on:
       normal_actions_scope:
         description: Full acceptance or isolated native observation (never installer acceptance)
         type: choice
-        options: [full, tray-observation, recent-observation]
+        options: [full, tray-observation, recent-observation, writer-observation]
         default: full
       reveal_probe:
         description: Run the isolated Windows Shell selection diagnostic
@@ -272,12 +272,14 @@ jobs:
             python qa/packaged-live/ci_packaged_windows_live.py --exe $nativeExe --sha256 $nativeHash --root $PWD --output build/normal-native-qa --actions qa/packaged-live/ui-tray-observation.json
           } elseif ($env:NORMAL_ACTIONS_SCOPE -eq 'recent-observation') {
             python qa/packaged-live/ci_packaged_windows_live.py --exe $nativeExe --sha256 $nativeHash --root $PWD --output build/normal-native-qa --actions qa/packaged-live/ui-recent-observation.json
+          } elseif ($env:NORMAL_ACTIONS_SCOPE -eq 'writer-observation') {
+            python qa/packaged-live/ci_packaged_windows_live.py --exe $nativeExe --sha256 $nativeHash --root $PWD --output build/normal-native-qa --writer-observation
           } else {
             python qa/packaged-live/ci_packaged_windows_live.py --exe $nativeExe --sha256 $nativeHash --root $PWD --output build/normal-native-qa --actions qa/packaged-live/ui-actions.json --extra-actions qa/packaged-live/ui-extra-actions.json --batch2-actions qa/packaged-live/ui-batch2-actions.json --supplement-actions qa/packaged-live/ui-supplement-actions.json
           }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Ensure native installer compiler for same-byte validation
-        if: github.event.inputs.normal_actions_scope != 'tray-observation' && github.event.inputs.normal_actions_scope != 'recent-observation'
+        if: github.event.inputs.normal_actions_scope != 'tray-observation' && github.event.inputs.normal_actions_scope != 'recent-observation' && github.event.inputs.normal_actions_scope != 'writer-observation'
         shell: pwsh
         run: |
           if (-not (Get-Command ISCC.exe -ErrorAction SilentlyContinue) -and -not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
@@ -285,7 +287,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
       - name: Verify exact production installer with a real old process and relaunch
-        if: github.event.inputs.normal_actions_scope != 'tray-observation' && github.event.inputs.normal_actions_scope != 'recent-observation'
+        if: github.event.inputs.normal_actions_scope != 'tray-observation' && github.event.inputs.normal_actions_scope != 'recent-observation' && github.event.inputs.normal_actions_scope != 'writer-observation'
         env:
           FD_QA_NATIVE: '1'
         shell: pwsh

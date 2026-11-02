@@ -1028,7 +1028,10 @@ def main():
     parser.add_argument('--extra-actions',type=Path)
     parser.add_argument('--batch2-actions',type=Path)
     parser.add_argument('--supplement-actions',type=Path)
+    parser.add_argument('--writer-observation',action='store_true')
     args=parser.parse_args();require_hosted()
+    if args.writer_observation and any((args.actions,args.extra_actions,args.batch2_actions,args.supplement_actions)):
+        raise ValueError('Writer observation cannot be combined with full GUI acceptance actions')
     sys.path.insert(0,str(args.root.resolve()))
     if not re.fullmatch(r'[0-9a-f]{64}',args.sha256) or digest(args.exe)!=args.sha256:raise AssertionError('Wrong immutable frozen executable')
     args.output.mkdir(parents=True,exist_ok=True);qa_root=Path(__file__).resolve().parent
@@ -1205,62 +1208,73 @@ def main():
                 wait(lambda:driver.find(live_name,roles=['Group']) is None,label='real peer deletion updates already open normal overview')
             recorder.run('08b-open-overview-live-peer-remove',live_remove,duration=1.2)
             report['checks'].append('Already open normal overview receives real peer add/delete without reopening; raw transition frames retained')
-            actions=json.loads(args.actions.read_text(encoding='utf8')) if args.actions else []
-            extras=json.loads(args.extra_actions.read_text(encoding='utf8')) if args.extra_actions else []
-            batch2=json.loads(args.batch2_actions.read_text(encoding='utf8')) if args.batch2_actions else []
-            supplements=json.loads(args.supplement_actions.read_text(encoding='utf8')) if args.supplement_actions else []
-            actions=compose_actions(actions,extras,batch2,supplements)
-            for index,step in enumerate(actions):
-                if application.poll() is not None:raise AssertionError('Frozen app exited during native UI flow')
-                def execute(step=step):
-                    if step['kind']=='click':return driver.click(step['name'],prefix=step.get('prefix',False))
-                    if step['kind']=='hotkey':return driver.hotkey(step['keys'])
-                    if step['kind']=='focus_window':return driver.focus_window(step['title'])
-                    if step['kind']=='ui_extra':return driver.ui_extra(step['recipe'])
-                    if step['kind']=='batch2':return driver.batch2(step['recipe'])
-                    if step['kind']=='batch3':return driver.batch3(step['recipe'])
-                    if step['kind']=='shake':return driver.shake(step['recipe'])
-                    if step['kind']=='final_motion':return driver.final_motion(step['recipe'],step.get('placement','default-edge'))
-                    if step['kind']=='drag':
-                        result=driver.drag_files(step['target'],target_prefix=step.get('target_prefix',False))
-                        for name in step.get('expected_controls',[]):
-                            wait(lambda name=name:driver.find(name),seconds=8,label='actual dropped file queued: '+name)
-                        return result
-                    if step['kind']=='hover':
-                        return driver.hover(step['name'],prefix=step.get('prefix',False))
-                    if step['kind']=='file_copy':return driver.click('Copy original file',pid=producer.pid)
-                    if step['kind']=='image_copy':return driver.click('Copy original image',pid=producer.pid)
-                    raise ValueError('Unsupported native action')
-                result=recorder.run(f'flow-{index:02}-{step["id"]}',execute,duration=step.get('duration',.9))
-                if step['kind'] in ('ui_extra','batch2','batch3','shake','final_motion'):(args.output/f'flow-{index:02}-extra-events.json').write_text(json.dumps(result,indent=2))
-                (args.output/f'flow-{index:02}-accessibility.json').write_text(json.dumps(driver.tree(),ensure_ascii=False,indent=2))
-            def real_notice_stack():
-                driver.click('Synthetic external editor',pid=producer.pid)
-                before=sum(row['method']=='POST' and row['path']=='/v1/clipboard' for row in cloud.stats()['rows'])
-                commits=[]
-                for label in ('first','second'):
-                    text='synthetic notice '+label+' '+os.urandom(6).hex()
-                    _,head=copy_and_committed(text,already_focused=True)
-                    commits.append(dict(id=head['id'],sha256=head['sha256'],committed_capture_time=time.monotonic()))
-                    if label=='first':
-                        canvas=wait(lambda:next((row for row in driver.tree()
-                            if row['class_name']=='ClipboardNotice' and row['visible']),None),
-                            seconds=4,label='actual first notice canvas before the second Copy')
-                        commits[-1]['actual_notice_bounds']=canvas['rectangle']
-                # Preserve actual overlap, expiry fade and the remaining-card
-                # position; UIA child labels are hidden cached artwork.
-                time.sleep(3.1)
-                after=sum(row['method']=='POST' and row['path']=='/v1/clipboard' for row in cloud.stats()['rows'])
-                assert after-before==2,'Distinct actual copies produced extra upload tasks during notice expiry'
-                latest=json_request(cloud.origin,'GET','/v1/clipboard',token=cloud.session['token'])['clipboard']
-                assert latest['id']==commits[-1]['id'],'Idle notice expiry replaced the latest real head'
-                assert driver.inspect()['text']==text,'Native clipboard changed during notification expiry'
-                return dict(commits=commits,post_delta=after-before,observer_generated_notice=False,
-                            manual_overlap_and_fade_review='required')
-            report['notice_stack']=recorder.run('final-real-distinct-notice-stack',real_notice_stack,duration=4.)
-            report['checks'].append('Two distinct external native copies each commit their exact payload once; notice expiry creates no extra POST or clipboard write')
-            report.update(ok=True,native_input=True,real_system_clipboard=True,local_workerd=True,tls_verification=True,
-                actual_service_requests=cloud.stats()['rows'],screen_segments=[dict(label=row['label'],distinct_pixels=row['distinct_pixels']) for row in recorder.segments])
+            if args.writer_observation:
+                from native_writer_observation import observe
+                def writer_event(**values):
+                    row=safe_motion_diagnostic(dict(monotonic=time.monotonic(),**values))
+                    with (args.output/'writer-observation-events.jsonl').open('a',encoding='utf8') as stream:
+                        stream.write(json.dumps(row,ensure_ascii=False)+'\n')
+                report['writer_observation']=recorder.run('writer-failure-recovery-observation',
+                    lambda:observe(profile,cloud,driver,writer_event),duration=1.)
+                report.update(ok=True,observation_only=True,installer_acceptance=False,
+                              native_input=True,real_system_clipboard=True,local_workerd=True,tls_verification=True)
+            if not args.writer_observation:
+                actions=json.loads(args.actions.read_text(encoding='utf8')) if args.actions else []
+                extras=json.loads(args.extra_actions.read_text(encoding='utf8')) if args.extra_actions else []
+                batch2=json.loads(args.batch2_actions.read_text(encoding='utf8')) if args.batch2_actions else []
+                supplements=json.loads(args.supplement_actions.read_text(encoding='utf8')) if args.supplement_actions else []
+                actions=compose_actions(actions,extras,batch2,supplements)
+                for index,step in enumerate(actions):
+                    if application.poll() is not None:raise AssertionError('Frozen app exited during native UI flow')
+                    def execute(step=step):
+                        if step['kind']=='click':return driver.click(step['name'],prefix=step.get('prefix',False))
+                        if step['kind']=='hotkey':return driver.hotkey(step['keys'])
+                        if step['kind']=='focus_window':return driver.focus_window(step['title'])
+                        if step['kind']=='ui_extra':return driver.ui_extra(step['recipe'])
+                        if step['kind']=='batch2':return driver.batch2(step['recipe'])
+                        if step['kind']=='batch3':return driver.batch3(step['recipe'])
+                        if step['kind']=='shake':return driver.shake(step['recipe'])
+                        if step['kind']=='final_motion':return driver.final_motion(step['recipe'],step.get('placement','default-edge'))
+                        if step['kind']=='drag':
+                            result=driver.drag_files(step['target'],target_prefix=step.get('target_prefix',False))
+                            for name in step.get('expected_controls',[]):
+                                wait(lambda name=name:driver.find(name),seconds=8,label='actual dropped file queued: '+name)
+                            return result
+                        if step['kind']=='hover':
+                            return driver.hover(step['name'],prefix=step.get('prefix',False))
+                        if step['kind']=='file_copy':return driver.click('Copy original file',pid=producer.pid)
+                        if step['kind']=='image_copy':return driver.click('Copy original image',pid=producer.pid)
+                        raise ValueError('Unsupported native action')
+                    result=recorder.run(f'flow-{index:02}-{step["id"]}',execute,duration=step.get('duration',.9))
+                    if step['kind'] in ('ui_extra','batch2','batch3','shake','final_motion'):(args.output/f'flow-{index:02}-extra-events.json').write_text(json.dumps(result,indent=2))
+                    (args.output/f'flow-{index:02}-accessibility.json').write_text(json.dumps(driver.tree(),ensure_ascii=False,indent=2))
+                def real_notice_stack():
+                    driver.click('Synthetic external editor',pid=producer.pid)
+                    before=sum(row['method']=='POST' and row['path']=='/v1/clipboard' for row in cloud.stats()['rows'])
+                    commits=[]
+                    for label in ('first','second'):
+                        text='synthetic notice '+label+' '+os.urandom(6).hex()
+                        _,head=copy_and_committed(text,already_focused=True)
+                        commits.append(dict(id=head['id'],sha256=head['sha256'],committed_capture_time=time.monotonic()))
+                        if label=='first':
+                            canvas=wait(lambda:next((row for row in driver.tree()
+                                if row['class_name']=='ClipboardNotice' and row['visible']),None),
+                                seconds=4,label='actual first notice canvas before the second Copy')
+                            commits[-1]['actual_notice_bounds']=canvas['rectangle']
+                    # Preserve actual overlap, expiry fade and the remaining-card
+                    # position; UIA child labels are hidden cached artwork.
+                    time.sleep(3.1)
+                    after=sum(row['method']=='POST' and row['path']=='/v1/clipboard' for row in cloud.stats()['rows'])
+                    assert after-before==2,'Distinct actual copies produced extra upload tasks during notice expiry'
+                    latest=json_request(cloud.origin,'GET','/v1/clipboard',token=cloud.session['token'])['clipboard']
+                    assert latest['id']==commits[-1]['id'],'Idle notice expiry replaced the latest real head'
+                    assert driver.inspect()['text']==text,'Native clipboard changed during notification expiry'
+                    return dict(commits=commits,post_delta=after-before,observer_generated_notice=False,
+                                manual_overlap_and_fade_review='required')
+                report['notice_stack']=recorder.run('final-real-distinct-notice-stack',real_notice_stack,duration=4.)
+                report['checks'].append('Two distinct external native copies each commit their exact payload once; notice expiry creates no extra POST or clipboard write')
+                report.update(ok=True,native_input=True,real_system_clipboard=True,local_workerd=True,tls_verification=True,
+                    actual_service_requests=cloud.stats()['rows'],screen_segments=[dict(label=row['label'],distinct_pixels=row['distinct_pixels']) for row in recorder.segments])
     except Exception as error:
         report['error']=type(error).__name__+': '+str(error);report['traceback']=traceback.format_exc()
         _PROGRESS.record('exception')

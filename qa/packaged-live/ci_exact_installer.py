@@ -213,6 +213,7 @@ def main():
         raise AssertionError('The production ISS must package this exact dist/FlickDock/FlickDock.exe')
     normal = json.loads(args.normal_report.read_text(encoding='utf8'))
     if (normal.get('ok') is not True or normal.get('normal_entry') is not True
+            or normal.get('observation_only') or normal.get('installer_acceptance') is False
             or normal.get('exe_sha256') != expected or normal.get('verify_switches') is not False
             or normal.get('frozen_executable_patched') is not False):
         raise AssertionError('A successful same-SHA normal frozen GUI receipt is required first')
