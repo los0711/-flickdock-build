@@ -190,7 +190,10 @@ class PointerOwnershipTests(unittest.TestCase):
         command=dict(id=1,operation='click',values=dict(name='delete row'))
         with patch.object(qa,'require_hosted'),patch.object(qa,'_UIABackend',Backend),patch.object(qa.sys,'argv',['qa','--uia-worker','101','202','owned']),patch.object(qa.sys,'stdin',io.StringIO(json.dumps(command)+'\n')),patch.object(qa.sys,'stdout',stdout):
             self.assertEqual(qa.uia_worker(),0)
-        self.assertEqual(json.loads(stdout.getvalue()),dict(id=1,result=dict(point=[20,30],input_sent=True)))
+        packets=[json.loads(line) for line in stdout.getvalue().splitlines()]
+        self.assertEqual([p for p in packets if p.get('id')==1],
+                         [dict(id=1,result=dict(point=[20,30],input_sent=True))])
+        self.assertEqual([p['event'] for p in packets if p.get('event')=='uia_ready'],['uia_ready'])
 
     def test_remote_click_returns_plain_receipt_without_control_wrapper(self):
         driver=qa.Driver.__new__(qa.Driver);receipt=dict(point=[20,30],input_sent=True)

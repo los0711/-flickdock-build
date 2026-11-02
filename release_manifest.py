@@ -147,6 +147,7 @@ MAINTAINED_TESTS=(
     'test_remote_transfer_actions_v1812.py','test_wan_transfer_v1816.py',
 )
 SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
+    'qa/packaged-live/test_uia_startup.py',
     'qa/native_text_profile.py',
     'qa/packaged-live/native_image_observation.py',
     'qa/packaged-live/test_native_image_observation.py',

@@ -15,6 +15,18 @@ DOMAINS=('flickdock-cloud.roger000416.workers.dev','flickdock-site.roger000416.w
 _PROGRESS=None
 OWNED_CHILD_GRACE_SECONDS=8
 OWNED_CHILD_KILL_SECONDS=5
+UIA_WORKER_READY_SECONDS=12
+UIA_WORKER_PROTOCOL=1
+UIA_OPERATIONS=frozenset({'windows','find','click','tree','hotkey','hover','focus_window','paste_file_in_explorer','drag_files','ui_extra','batch2','batch3','shake','final_motion','cleanup_fixture_editor'})
+UIA_WORKER_STAGES=frozenset({'worker_boot','backend_import_begin','backend_import_complete','backend_construct_begin','backend_ready','request_begin','windows_findall_begin','windows_findall_complete','request_complete'})
+
+
+def _uia_worker_stage(stage,*,request_id=None,operation=None):
+    if stage not in UIA_WORKER_STAGES:raise ValueError('Invalid UIA worker stage')
+    packet=dict(event='uia_stage',stage=stage)
+    if request_id is not None:packet['request_id']=request_id
+    if operation is not None:packet['operation']=operation
+    print(json.dumps(packet),flush=True)
 
 
 class _ReceiveFirstComplete(Exception):
@@ -707,9 +719,16 @@ class Recorder:
 
 class _UIABackend:
     def __init__(self,pid,producer_pid,base):
+        _uia_worker_stage('backend_import_begin')
         from pywinauto import Desktop
+        _uia_worker_stage('backend_import_complete')
+        _uia_worker_stage('backend_construct_begin')
         self.desktop=Desktop(backend='uia');self.pid=pid;self.producer_pid=producer_pid;self.base=base;self.sequence=0
-    def windows(self,pid=None):return [window for window in self.desktop.windows(process=pid or self.pid) if window.is_visible()]
+    def windows(self,pid=None):
+        _uia_worker_stage('windows_findall_begin',request_id=getattr(self,'_request_id',None))
+        windows=[window for window in self.desktop.windows(process=pid or self.pid) if window.is_visible()]
+        _uia_worker_stage('windows_findall_complete',request_id=getattr(self,'_request_id',None))
+        return windows
     def tree(self):
         rows=[]
         for window in self.windows():
@@ -1057,14 +1076,57 @@ class Driver(_UIABackend):
     def __init__(self,pid,producer_pid,base):
         require_hosted();self.pid=pid;self.producer_pid=producer_pid;self.base=base;self.sequence=0
         self._responses=queue.Queue();self._rpc_id=0;self._provider_failed=False
+        self._worker_started=time.monotonic()
         self._worker_stderr=(base/'uia-worker-private.stderr').open('wb')
-        self._worker=subprocess.Popen([sys.executable,str(Path(__file__).resolve()),'--uia-worker',str(pid),str(producer_pid),str(base)],
-            stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=self._worker_stderr,text=True,encoding='utf8',creationflags=subprocess.CREATE_NO_WINDOW)
+        try:
+            self._worker=subprocess.Popen([sys.executable,str(Path(__file__).resolve()),'--uia-worker',str(pid),str(producer_pid),str(base)],
+                stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=self._worker_stderr,text=True,encoding='utf8',creationflags=subprocess.CREATE_NO_WINDOW)
+        except BaseException:
+            self._worker_stderr.close();raise
         def receive():
             for line in self._worker.stdout:
                 try:self._responses.put(json.loads(line))
                 except ValueError:continue
         threading.Thread(target=receive,daemon=True).start()
+        try:self._await_ready()
+        except BaseException as error:
+            self._provider_failed=True
+            try:self.close()
+            except Exception as cleanup_error:error.add_note('UIA worker rollback failed: '+type(cleanup_error).__name__)
+            raise
+    def _observe_stage(self,packet):
+        if not isinstance(packet,dict):
+            self._provider_failed=True
+            raise RuntimeError('HARNESS_AUTOMATION_PROTOCOL_ERROR: expected worker object packet')
+        if packet.get('event')!='uia_stage':return False
+        stage=packet.get('stage');identity=packet.get('request_id');operation=packet.get('operation')
+        if (type(stage)is not str or stage not in UIA_WORKER_STAGES
+                or identity is not None and (type(identity)is not int or identity<=0)
+                or operation is not None and (type(operation)is not str or operation not in UIA_OPERATIONS)):
+            self._provider_failed=True
+            raise RuntimeError('HARNESS_AUTOMATION_PROTOCOL_ERROR: invalid worker stage')
+        # No control names, values, paths or exception text cross this trace.
+        row=dict(stage=stage,elapsed_s=round(time.monotonic()-self._worker_started,6))
+        if identity is not None:row['request_id']=identity
+        if operation is not None:row['operation']=operation
+        with (self.base/'uia-worker-stages.jsonl').open('a',encoding='utf8') as stream:stream.write(json.dumps(row)+'\n')
+        if _PROGRESS is not None:
+            details={key:value for key,value in row.items() if key!='elapsed_s'}
+            _PROGRESS.record('uia_worker_stage',worker_elapsed_s=row['elapsed_s'],**details)
+        return True
+    def _await_ready(self):
+        deadline=self._worker_started+UIA_WORKER_READY_SECONDS
+        while time.monotonic()<deadline:
+            try:packet=self._responses.get(timeout=min(.2,max(.001,deadline-time.monotonic())))
+            except queue.Empty:
+                if self._worker.poll() is not None:raise RuntimeError('HARNESS_AUTOMATION_STARTUP_FAILED: UIA worker exited before ready')
+                continue
+            if self._observe_stage(packet):continue
+            if (packet.get('event')=='uia_ready' and type(packet.get('protocol'))is int
+                    and packet['protocol']==UIA_WORKER_PROTOCOL
+                    and type(packet.get('pid'))is int and packet['pid']==self._worker.pid):return
+            raise RuntimeError('HARNESS_AUTOMATION_PROTOCOL_ERROR: expected owned worker ready')
+        raise TimeoutError('HARNESS_AUTOMATION_STARTUP_TIMEOUT: UIA worker not ready; no application request was sent')
     def _rpc(self,operation,*,seconds=12,**values):
         if self._provider_failed or self._worker.poll() is not None:raise RuntimeError('UIA worker already unavailable; refusing repeated diagnostic COM calls')
         if _PROGRESS is not None:_PROGRESS.record('automation_before',operation=operation)
@@ -1076,6 +1138,7 @@ class Driver(_UIABackend):
             except queue.Empty:
                 if self._worker.poll() is not None:raise RuntimeError('UIA worker exited during '+operation)
                 continue
+            if self._observe_stage(result):continue
             if result.get('id')!=identity:continue
             if result.get('error'):raise RuntimeError('UIA '+operation+': '+result['error'])
             if _PROGRESS is not None:_PROGRESS.record('automation_after',operation=operation)
@@ -1103,28 +1166,38 @@ class Driver(_UIABackend):
     def final_motion(self,recipe,placement='default-edge'):return self._rpc('final_motion',seconds=50,recipe=recipe,placement=placement)
     def paste_file_in_explorer(self,source):return self._rpc('paste_file_in_explorer',seconds=45,source=str(source))
     def close(self):
-        if self._worker.poll() is None:
-            self._worker.terminate()
-            try:self._worker.wait(3)
-            except subprocess.TimeoutExpired:self._worker.kill();self._worker.wait(3)
-        self._worker.stdin.close();self._worker.stdout.close();self._worker_stderr.close()
+        try:
+            if self._worker.poll() is None:
+                self._worker.terminate()
+                try:self._worker.wait(3)
+                except subprocess.TimeoutExpired:self._worker.kill();self._worker.wait(3)
+        finally:
+            try:self._worker.stdin.close()
+            finally:
+                try:self._worker.stdout.close()
+                finally:self._worker_stderr.close()
 
 
 def uia_worker():
-    require_hosted();backend=_UIABackend(int(sys.argv[2]),int(sys.argv[3]),Path(sys.argv[4]))
-    allowed={'windows','find','click','tree','hotkey','hover','focus_window','paste_file_in_explorer','drag_files','ui_extra','batch2','batch3','shake','final_motion','cleanup_fixture_editor'}
+    require_hosted();_uia_worker_stage('worker_boot')
+    backend=_UIABackend(int(sys.argv[2]),int(sys.argv[3]),Path(sys.argv[4]))
+    _uia_worker_stage('backend_ready')
+    print(json.dumps(dict(event='uia_ready',protocol=UIA_WORKER_PROTOCOL,pid=os.getpid())),flush=True)
     def bounds(control):
         rect=control.rectangle();return [rect.left,rect.top,rect.right,rect.bottom]
     for line in sys.stdin:
         command=json.loads(line);response={'id':command['id']}
         try:
             operation=command['operation']
-            if operation not in allowed:raise ValueError('Unknown UIA operation')
+            if operation not in UIA_OPERATIONS:raise ValueError('Unknown UIA operation')
+            backend._request_id=command['id']
+            _uia_worker_stage('request_begin',request_id=command['id'],operation=operation)
             result=getattr(backend,operation)(**command.get('values',{}))
             if operation=='find':result=bounds(result) if result else None
             elif operation=='windows':result=[bounds(control) for control in result]
             response['result']=result
         except Exception as error:response['error']=type(error).__name__+': '+str(error)
+        _uia_worker_stage('request_complete',request_id=command['id'])
         print(json.dumps(response),flush=True)
     return 0
 

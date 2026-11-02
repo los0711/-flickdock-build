@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "QA-only hosted Mac text phase trace; runtime identical to909b, no installer or release",
+  "purpose": "QA-only bounded UIA readiness and phase trace; runtime identical to909b, no installer or release",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -1251,8 +1251,8 @@
     },
     {
       "path": "qa/packaged-live/ci_packaged_windows_live.py",
-      "size": 110431,
-      "sha256": "00045a625a0fc29b928aec1fc67bedbacf3db4182231d20af2402877c16b7e36"
+      "size": 114788,
+      "sha256": "5ec86943052116bc2a3fd4bfe7dae398a00667eef5eb4c4e341695d1d5859fab"
     },
     {
       "path": "qa/packaged-live/ci_windows_reveal_probe.py",
@@ -1336,8 +1336,8 @@
     },
     {
       "path": "qa/packaged-live/test_harness_bounds.py",
-      "size": 18411,
-      "sha256": "da087cd49b10718e96237b759ee8a4e15d25ebf3cfdd22b00d679c3788815406"
+      "size": 18627,
+      "sha256": "1c1a426fd108778af2b62068f8e9b5fa6f7b32f8a4d080e94828a1886edbccdd"
     },
     {
       "path": "qa/packaged-live/test_harness_extras.py",
@@ -1435,6 +1435,11 @@
       "sha256": "499a7a0cdcabbb4c6dce799612ac1e45a6a69ae4ce1994587f8a6e22e319bfcb"
     },
     {
+      "path": "qa/packaged-live/test_uia_startup.py",
+      "size": 6969,
+      "sha256": "fe0a478529d7371b2b9851f3c3360f2948316dcdd1dabe3f6b74a45e13a1671e"
+    },
+    {
       "path": "qa/packaged-live/test_writer_scope_gates.py",
       "size": 6067,
       "sha256": "bcb6b7302d1fe4103c3141ce5fde12a8639aa559c3e377a6653ca584b0921c81"
@@ -1511,8 +1516,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 43699,
-      "sha256": "1b7e3241edae4d4551e4862de725acd90f0e7b48c2f68b4d73e392d701451bac"
+      "size": 43744,
+      "sha256": "4eaff268f1e7c26cae3d73b52e1fc2b24c9ab9b064c28dacbc79f7ba5eabaac7"
     },
     {
       "path": "release_signing.py",
