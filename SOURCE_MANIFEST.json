@@ -656,13 +656,13 @@
     },
     {
       "path": "clipboard_popup_motion.py",
-      "size": 14484,
-      "sha256": "026567fab37c99a6ee23b86bb7a0ec49b45652b47786fa00540adb003634ed2c"
+      "size": 14529,
+      "sha256": "146ce434630d76de1c3422d2c8916262fde1eaab32e3d2a0082da1a139825800"
     },
     {
       "path": "clipboard_preview.py",
-      "size": 14281,
-      "sha256": "a8ad7ddfb23941cf6348646fd13bb461d7a990556848a2dcce4b5e1699b1b5e1"
+      "size": 15117,
+      "sha256": "be47334823e7b0892e9c35656180e676fa60d4312263b386709c5b44d4a97f34"
     },
     {
       "path": "clipboard_sync.py",
@@ -1246,8 +1246,8 @@
     },
     {
       "path": "qa/packaged-live/ci_packaged_windows_live.py",
-      "size": 97601,
-      "sha256": "3030ffcf3d2ded76e1f75138211d618736762626a5ce2e257a28d563ad482b5b"
+      "size": 102118,
+      "sha256": "79d77b9d36e6c5995c3eceabc8d48998f7f93760a7ba6aafc55cafe2f678607a"
     },
     {
       "path": "qa/packaged-live/ci_windows_reveal_probe.py",
@@ -1298,6 +1298,11 @@
       "path": "qa/packaged-live/seed_recent_peer.py",
       "size": 11983,
       "sha256": "0a9f4581b778b13ce2d2ae90c9fec7dbc3adc766eb7244ddc44457df48596f21"
+    },
+    {
+      "path": "qa/packaged-live/test_cleanup_diagnostics.py",
+      "size": 6261,
+      "sha256": "3e35122ed5f000f05926bb966384857553203384bc59ba92fca7e35045117e8c"
     },
     {
       "path": "qa/packaged-live/test_harness_bounds.py",
@@ -1431,8 +1436,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 41549,
-      "sha256": "956e62c78b2a247b4fa621254903c991dd9d83e9dcd538e8a6e01ac606d48258"
+      "size": 41602,
+      "sha256": "ce8535959470b1c0d877551aaf302d3ed9f66557c2b36a99c11569d042e5384d"
     },
     {
       "path": "release_signing.py",
@@ -1616,8 +1621,8 @@
     },
     {
       "path": "test_clipboard_popup_motion_v1823.py",
-      "size": 16604,
-      "sha256": "d16234c2f31dcf49d1fec3290a4848e12a5a8736c8f89a6d73db5728e4280a09"
+      "size": 16931,
+      "sha256": "dc0961c9be28bd0fb4fa8f0728d759d278a26af9adc5dec44c4741fc613f123c"
     },
     {
       "path": "test_clipboard_preview_v1821.py",

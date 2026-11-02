@@ -117,6 +117,14 @@ class ClipboardButton(QPushButton):
         p.end()
 
 
+class _PreviewText(QPlainTextEdit):
+    def sizeHint(self):
+        # This is a compact, read-only preview, not a full text editor.
+        # Qt's editor default varies by platform/font and needlessly grows
+        # the popup when the sync-limit explanation is present.
+        return QSize(super().sizeHint().width(),160)
+
+
 class _PreviewContent(QStackedWidget):
     def sizeHint(self):
         # A never-shown stacked page can retain a stale QWidgetItem hint.
@@ -141,7 +149,7 @@ class ClipboardPreview(ReferenceModalDialog):
         self.close_button.clicked.connect(self.close);head.addWidget(self.close_button)
         self.body_layout.addLayout(head)
         self.content=_PreviewContent(self.body);self.content.setMinimumHeight(160);self.body_layout.addWidget(self.content)
-        self.text=QPlainTextEdit(self.content);self.text.setReadOnly(True);self.text.setTextInteractionFlags(Qt.NoTextInteraction)
+        self.text=_PreviewText(self.content);self.text.setReadOnly(True);self.text.setTextInteractionFlags(Qt.NoTextInteraction)
         self.text.setFocusPolicy(Qt.NoFocus);self.text.setContextMenuPolicy(Qt.NoContextMenu);self.content.addWidget(self.text)
         from input_focus import install_focus
         install_focus(self.text,theme=lambda:self.manager.settings.theme)
@@ -192,6 +200,14 @@ class ClipboardPreview(ReferenceModalDialog):
     def _layout_surface(self):
         if self.surface.layout():self.surface.layout().activate()
         self.body_layout.activate()
+
+    def _fit_preview_layout(self,height):
+        # Fit before reserving the native animation host. On short screens
+        # keep the explanation visible rather than making a click-to-dismiss
+        # preview depend on scrolling to reach its final line.
+        self.body_layout.setContentsMargins(20,20,20,20);self.body_layout.setSpacing(16)
+        if self.body_layout.sizeHint().height()>height:
+            self.body_layout.setContentsMargins(16,12,16,12);self.body_layout.setSpacing(12)
 
     def _capture_surface(self):
         self._layout_surface();dpr=self.devicePixelRatioF()

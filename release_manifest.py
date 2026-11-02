@@ -124,6 +124,7 @@ SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'qa/packaged-live/ui-recent-observation.json',
     'qa/packaged-live/test_writer_scope_gates.py',
     'qa/packaged-live/test_reenable_observation.py',
+    'qa/packaged-live/test_cleanup_diagnostics.py',
     'qa/packaged-live/test_notice_cadence.py',
     'qa/packaged-live/test_native_writer_observation.py',
     'qa/packaged-live/test_native_command_mailbox.py',

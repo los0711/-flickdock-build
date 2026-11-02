@@ -88,6 +88,73 @@ def require_hosted():
             or os.environ.get('RUNNER_OS')!='Windows' or os.environ.get('RUNNER_ENVIRONMENT')!='github-hosted'):
         raise RuntimeError('This script refuses to operate outside an ephemeral GitHub Windows runner')
 
+def cleanup_failure_details(error,base):
+    """Fixed technical categories only; never serialize an exception or path."""
+    result={'category':'unknown'}
+    for name in ('errno','winerror'):
+        try:value=getattr(error,name,None)
+        except Exception:result['status']='unavailable';continue
+        if type(value) is int and -(2**31)<=value<2**32:result[name]=value
+    try:
+        filename=getattr(error,'filename',None)
+        if filename is None or base is None:return result
+        path=Path(os.fsdecode(filename));anchor=Path(base)
+        if not path.is_absolute() or not anchor.is_absolute():return result
+        # Lexical normalization avoids probing blocked paths or following links.
+        path=Path(os.path.normpath(path));anchor=Path(os.path.normpath(anchor))
+        if not path.is_relative_to(anchor):result['category']='outside';return result
+        parts=path.relative_to(anchor).parts
+        if parts[:2]==('FlickDock','clipboard-cache'):category='clipboard-cache'
+        elif parts[:2]==('FlickDock','cloud-shelves'):category='cloud-shelves'
+        elif parts[:1]==('files',):category='synthetic-originals'
+        elif parts and parts[0].startswith('native-paste-'):category='synthetic-paste'
+        elif parts and parts[0] in ('local-service.log','gateway-config.json','gateway-ready.json','local-key.pem','local-cert.pem'):category='local-service'
+        elif (parts[:1]==('FlickDock',) and len(parts)==2 and parts[1] in ('settings.json','shelves.json')) or (len(parts)==1 and parts[0] in ('producer.json','editor-command.json','editor-ack.json','paste-result.json','native-result.json','native-input-ownership.jsonl','application.stdout','application.stderr','uia-worker-private.stderr','recent-seed-proof.json')):category='runner-control'
+        else:category='other'
+        result['category']=category
+    except Exception:result['status']='unavailable'
+    return result
+
+
+def retain_cleanup_state(report,phase,*,application=None,producer=None,driver=None,cloud=None,error=None,base=None):
+    """Observe direct owned handles only; do not kill, wait or infer descendants."""
+    try:
+        if phase not in ('before','after'):return
+        def owned(owner,name):
+            return getattr(owner,name,None)
+        roles=(('application',application),('producer',producer),('UIA',owned(driver,'_worker')),
+               ('gateway',owned(cloud,'gateway')),('qa-server',owned(cloud,'server')))
+        rows=[]
+        for role,process in roles:
+            row={'role':role,'present':process is not None,'pid':None,'poll':None,
+                 'returncode':None,'poll_observed':False,'descendants':'not_observed'}
+            if process is not None:
+                try:
+                    pid=process.pid
+                    if type(pid) is int and 0<pid<2**32:row['pid']=pid
+                    else:row['status']='unavailable'
+                except Exception:row['status']='unavailable'
+                try:
+                    value=process.poll()
+                    if value is None or type(value) is int and -(2**31)<=value<2**32:
+                        row['poll']=value;row['poll_observed']=True
+                    else:row['status']='unavailable'
+                except Exception:row['status']='unavailable'
+                try:
+                    value=process.returncode
+                    if value is None or type(value) is int and -(2**31)<=value<2**32:row['returncode']=value
+                    else:row['status']='unavailable'
+                except Exception:row['status']='unavailable'
+            rows.append(row)
+        details=report.setdefault('cleanup_diagnostics',{})
+        details[phase]=rows
+        if error is not None:details['profile_failure']=cleanup_failure_details(error,base)
+    except Exception:
+        # Secondary diagnostics must not replace the real failure or mark it OK.
+        try:report.setdefault('cleanup_diagnostics',{})[phase]={'status':'unavailable'}
+        except Exception:pass
+
+
 def digest(path):
     with Path(path).open('rb') as stream:return hashlib.file_digest(stream,'sha256').hexdigest()
 
@@ -416,6 +483,7 @@ class LocalCloud:
         config_file=self.folder/'gateway-config.json';config_file.write_text(json.dumps(config))
         proxy=subprocess.Popen(['node',str(self.qa_root/'gateway.mjs'),str(config_file)],stdout=self.log,stderr=self.log,
             creationflags=subprocess.CREATE_NO_WINDOW);self.processes.append(proxy)
+        self.gateway=proxy
         def gateway_ready():
             if proxy.poll() is not None:raise RuntimeError('Local TLS gateway exited')
             try:return json.loads(Path(config['ready']).read_text())
@@ -1312,6 +1380,8 @@ def main():
         raise
     finally:
         _PROGRESS.record('before','cleanup')
+        retain_cleanup_state(report,'before',application=locals().get('application'),producer=locals().get('producer'),
+            driver=locals().get('driver'),cloud=cloud)
         report['retained_diagnostics']=retain_diagnostics(args.output,profile if 'profile' in locals() else None,cloud)
         if 'driver' in locals():
             try:phase('cleanup-automation-worker',driver.close)
@@ -1328,8 +1398,13 @@ def main():
         except Exception as error:report['animation_preference_restore_error']=type(error).__name__+': '+str(error);report['ok']=False
         report['client_area_animation']=animation_preference.snapshot()
         for stream in streams:stream.close()
+        profile_cleanup_failure=None
         try:temporary_profile.cleanup()
-        except Exception as error:report['profile_cleanup_error']=type(error).__name__;report['ok']=False
+        except Exception as error:
+            report['profile_cleanup_error']=type(error).__name__;report['ok']=False
+            profile_cleanup_failure=error
+        retain_cleanup_state(report,'after',application=locals().get('application'),producer=locals().get('producer'),
+            driver=locals().get('driver'),cloud=cloud,error=profile_cleanup_failure,base=locals().get('base'))
         (args.output/'normal-frozen-native-report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
         coverage={str(index):dict(status='not_fully_verified',completion_eligible=False,reason='Raw actual normal-EXE steps require visual review and remaining platform/flow checks') for index in range(1,16)}
         if 'screen_segments' in report:

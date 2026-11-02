@@ -107,6 +107,10 @@ class ClipboardPopupTests(unittest.TestCase):
         with patch.object(motion,'available',return_value=area):dialog.open_from(source)
         self.land(motion);self.assertTrue(area.contains(motion.target_rect.toAlignedRect()))
         self.assertTrue(area.contains(dialog.geometry()));self.assertTrue(dialog.scroll.isVisible())
+        note=dialog.sync_limit_note;viewport=dialog.scroll.viewport()
+        self.assertTrue(viewport.rect().contains(QRect(note.mapTo(viewport,QPoint()),note.size())))
+        self.assertGreaterEqual(note.height(),note.heightForWidth(note.width()))
+        self.assertEqual(dialog.scroll.verticalScrollBar().maximum(),0)
         dialog.dismiss(immediate=True)
         with patch('clipboard_popup_motion.motion_allowed',return_value=False):
             dialog.open_from(source);self.assertTrue(dialog.surface.isVisible());self.assertFalse(motion.transitioning)
