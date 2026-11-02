@@ -1246,8 +1246,8 @@
     },
     {
       "path": "qa/packaged-live/native_batch2.py",
-      "size": 31234,
-      "sha256": "2739ec22a22c892a5f93e3baf47a96ebb8191dc5dbfd1b8780aebb87e3accfc0"
+      "size": 31221,
+      "sha256": "3f01861e87f0f77a3cb04f4a548914ef677e8b3bba317f8bc7190b459dad83dd"
     },
     {
       "path": "qa/packaged-live/native_batch3.py",
@@ -1296,8 +1296,8 @@
     },
     {
       "path": "qa/packaged-live/test_native_batch2.py",
-      "size": 17984,
-      "sha256": "b19e860f2b10bbc6b3f091f6b1095ffbb0c9a435e34bdcd242c2ed9c8b1a1ae8"
+      "size": 18619,
+      "sha256": "38dbbd308aea6ed5ba90d2bfec00f9b9d6884a860b741566c98b079ecf87602f"
     },
     {
       "path": "qa/packaged-live/test_native_batch3.py",

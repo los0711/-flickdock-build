@@ -146,7 +146,7 @@ class Batch2:
         point=point or centre(c);self.guard(c,point);before=self.mark('before:'+kind,c,point=list(point))
         if kind=='hover':self.mouse.move(coords=point)
         elif kind=='right':self.mouse.click(button='right',coords=point)
-        elif kind=='double':self.mouse.double_click(button='left',coords=point,interval=.07)
+        elif kind=='double':self.mouse.double_click(button='left',coords=point)
         elif kind=='click':self.mouse.click(button='left',coords=point)
         else:raise ValueError('Physical input kind')
         # A real delete may legitimately destroy this wrapper. Record its

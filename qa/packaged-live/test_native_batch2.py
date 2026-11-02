@@ -78,6 +78,18 @@ class Batch2Tests(unittest.TestCase):
   control=Control('Open',parent=self.root);self.api.WindowFromPoint.return_value=999
   with self.assertRaisesRegex(AssertionError,'Native root'):self.runner.input(control)
   self.mouse.click.assert_not_called()
+ def test_double_click_uses_pywinauto_069_supported_signature(self):
+  # The pinned mouse.double_click API has no interval keyword. A permissive
+  # Mock hid this controller error until the actual frozen GUI run.
+  sent=[]
+  def double_click(button='left',coords=(0,0)):
+   sent.append((button,coords))
+  self.mouse.double_click=double_click
+  control=Control('Synthetic file body',parent=self.root)
+  self.runner.input(control,kind='double')
+  self.assertEqual(sent,[('left',(60,40))])
+  self.backend._assert_pointer_owner.assert_called_once_with((60,40),123)
+  self.assertEqual(self.runner.events[-1]['input_bounds'],[10,20,110,60])
  def test_partly_visible_card_body_intersects_actual_ancestor_viewport_above_footer(self):
   self.root.box=(21,7,1001,711)
   viewport=Control('','Custom','QWidget',self.root,bounds=(247,131,659,582))
