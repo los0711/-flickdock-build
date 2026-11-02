@@ -1251,8 +1251,8 @@
     },
     {
       "path": "qa/packaged-live/native_batch3.py",
-      "size": 20989,
-      "sha256": "a8f802e9ede849fa41c88d80e49cb55a96728c632483ecde70dadb14566e03c1"
+      "size": 21253,
+      "sha256": "c4e7909eca294dce0637691f12474ba4d2a5dd86bba8a8295d1d84a89edab37f"
     },
     {
       "path": "qa/packaged-live/native_editor.py",
@@ -1301,8 +1301,8 @@
     },
     {
       "path": "qa/packaged-live/test_native_batch3.py",
-      "size": 16528,
-      "sha256": "a26d9aa90f29389885d919fa0b2d976543bb05a040f9acbca162294f33ef46af"
+      "size": 18430,
+      "sha256": "f034639f580ec34890c38d4bb4c9c1a6cd5b8fcad92681f4415cd75751ba3054"
     },
     {
       "path": "qa/packaged-live/test_native_command_mailbox.py",

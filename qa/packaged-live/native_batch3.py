@@ -21,7 +21,9 @@ RECENT_NAME='Native QA recent offline'
 TRAY_NAME=re.compile(r'FlickDock \d+\.\d+\.\d+(?:[^ ]*)? · 文件搁架\Z')
 TRAY_ROOTS=('Shell_TrayWnd','Shell_SecondaryTrayWnd','NotifyIconOverflowWindow',
             'TopLevelWindowForOverflowXamlIsland')
-OVERFLOW_NAMES=('Show hidden icons','显示隐藏的图标')
+# The title-case caption is observed in hosted Windows 11 run41380029330:
+# len17/SHA256[:20]=ba250111842d4c6cbfbd. Keep exact captions, not every tray ID.
+OVERFLOW_NAMES=('Show hidden icons','Show Hidden Icons','显示隐藏的图标')
 TRAY_ACTIONS=('显示搁架','粘贴到搁架','设置…','检查更新…','退出 FlickDock')
 TRAY_DIAGNOSTIC_NAMES=frozenset((*OVERFLOW_NAMES,'Hidden icon menu','System tray overflow window',
     'System tray','Notification Chevron','Notification area','Overflow notification area','Taskbar',
@@ -203,7 +205,9 @@ class Batch3(Batch2):
                 self.observe_system_tray()
                 raise AssertionError('No actual visible tray icon or native overflow button; passive inventory retained, no guessed input sent')
             self.tray_input(overflow)
-            controls=self.wait(lambda:self.system_tray_targets(),'exact actual FlickDock tray tooltip',seconds=3)
+            try:controls=self.wait(lambda:self.system_tray_targets(),'exact actual FlickDock tray tooltip',seconds=3)
+            except AssertionError:
+                self.observe_system_tray();raise
         self.tray_input(self.unique(controls,'FlickDock tray tooltip'))
         menu=self.wait(self.menu,'owned tray menu')
         for c in menu:self.mark('actual-tray-menu-action',c)

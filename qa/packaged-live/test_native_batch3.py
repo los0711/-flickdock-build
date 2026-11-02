@@ -143,6 +143,34 @@ class Batch3Tests(unittest.TestCase):
         self.backend._producer_topmost.assert_called_once_with(False)
         self.backend._assert_foreground.assert_not_called()
 
+    def test_observed_title_case_overflow_caption_requires_exact_name_and_guarded_owner(self):
+        import hashlib
+        root,notify,icon=self.tray_fixture();icon.visible=False
+        name='Show Hidden Icons'
+        self.assertEqual(len(name),17)
+        self.assertEqual(hashlib.sha256(name.encode()).hexdigest()[:20],'ba250111842d4c6cbfbd')
+        overflow=Control(name,'Button','SystemTray.NormalButton',notify,
+            rectangle=(797,720,829,768),pid=999,handle=99)
+        overflow.element_info.automation_id='SystemTrayIcon'
+        for other in ('Notifications','Show Hidden Icons extra','Prefix Show Hidden Icons'):
+            candidate=Control(other,'Button','SystemTray.NormalButton',notify,pid=999,handle=99)
+            candidate.element_info.automation_id='SystemTrayIcon'
+        self.assertEqual(self.runner.system_tray_targets(overflow=True),[overflow])
+        self.assertEqual(self.runner.system_tray_targets(),[])
+        self.runner.tray_input(overflow)
+        self.mouse.click.assert_called_once_with(button='left',coords=(813,744))
+        self.runner.process_image.assert_called_once_with(999)
+        self.assertIn('Shell_TrayWnd',self.runner.events[-2]['ancestry'])
+
+    def test_title_case_caption_outside_tray_or_with_wrong_native_image_cannot_be_clicked(self):
+        root=Control('Other','Window','Unrelated');overflow=Control('Show Hidden Icons','Button','SystemTray.NormalButton',root)
+        with self.assertRaisesRegex(AssertionError,'ancestry'):self.runner.tray_input(overflow)
+        root,notify,icon=self.tray_fixture()
+        overflow=Control('Show Hidden Icons','Button','SystemTray.NormalButton',notify,pid=999,handle=99)
+        self.runner.process_image.return_value=r'C:\private\explorer.exe'
+        with self.assertRaisesRegex(AssertionError,'system Explorer'):self.runner.tray_input(overflow)
+        self.mouse.click.assert_not_called()
+
     def test_wrong_pointer_owner_or_non_system_explorer_never_receives_input(self):
         root,notify,icon=self.tray_fixture();self.backend._window_pid.return_value=888
         with self.assertRaisesRegex(AssertionError,'different native owner'):self.runner.tray_input(icon)
