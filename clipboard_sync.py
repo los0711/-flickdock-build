@@ -1,7 +1,7 @@
 """Silent, account-wide latest clipboard. Reading never consumes the content."""
 from __future__ import annotations
 import base64,errno,hashlib,json,os,shutil,struct,sys,tempfile,threading,time,zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass,field
 from pathlib import Path,PurePosixPath
 from uuid import uuid4
 from PySide6.QtCore import QObject,QRunnable,QThreadPool,QTimer,Signal,QMimeData,QUrl,QBuffer,QIODevice,Qt
@@ -26,6 +26,18 @@ def _windows_clipboard_reader(clipboard,parent):
 def _windows_clipboard_metadata():
     from win_clipboard_io import native_metadata
     return native_metadata()
+
+@dataclass(frozen=True)
+class _EmptyBootstrapRequest:
+    session:object=field(repr=False)
+    epoch:int
+
+@dataclass(frozen=True)
+class _CompletedEmptyBootstrap:
+    session:object=field(repr=False)
+    epoch:int
+    source_sequence:int
+    proof_serial:int
 
 
 class _FilePaths(list):
@@ -440,9 +452,9 @@ class ClipboardSync(QObject):
         self._native_reader=_windows_clipboard_reader(self.clipboard,self)
         self._native_sample=None;self._native_read_token=None;self._native_read_sequence=None
         self._native_waiters={};self._native_generation=0;self._native_failures=(None,0,0.)
+        self._baseline_epoch=0;self._empty_bootstrap=None
         self._native_retry=QTimer(self);self._native_retry.setSingleShot(True)
         self._native_retry.timeout.connect(self._start_native_read)
-        if self._native_reader is not None:self._sample_empty_native_metadata()
         self.enabled=enabled;self.closed=False;self._epoch=0;self._generation=0;self._applying=False
         self._native_access=self._native_accessible()
         self._clock_anchor=None;self._observed_clock=0;self._local_fence=None;self._local_retry=None
@@ -521,13 +533,40 @@ class ClipboardSync(QObject):
 
     def _sample_empty_native_metadata(self):
         """No OLE/GetClipboardData: a busy clipboard remains unknown."""
-        try:state=_windows_clipboard_metadata()
-        except (OSError,RuntimeError):return
-        if (isinstance(state,dict) and state.get('status')=='ready' and state.get('valid') is True
-                and _valid_windows_sequence(state.get('sequence_after')) and state.get('known_empty') is True
-                and state.get('sequence_before')==state.get('sequence_after')==self._sequence()):
-            self._native_sample=dict(status='ready',valid=True,value=None,marker=b'',known_empty=True,
-                sequence=state['sequence_after'])
+        if self.closed or not self.enabled or not self._native_accessible():return False
+        if self._empty_bootstrap_current():return True
+        from win_clipboard_native import empty_proof_scope,consume_empty_proof
+        context=_EmptyBootstrapRequest(self._session_identity(),self._baseline_epoch)
+        with empty_proof_scope(context):
+            try:state=_windows_clipboard_metadata()
+            except (OSError,RuntimeError):return False
+            if (context.session!=self._session_identity() or context.epoch!=self._baseline_epoch
+                    or self.closed or not self.enabled or not self._native_accessible()):return False
+            if (isinstance(state,dict) and state.get('status')=='ready' and state.get('valid') is True
+                    and _valid_windows_sequence(state.get('sequence_after')) and state.get('known_empty') is True
+                    and state.get('sequence_before')==state.get('sequence_after')==self._sequence()):
+                self._native_sample=dict(status='ready',valid=True,value=None,marker=b'',known_empty=True,
+                    sequence=state['sequence_after'])
+                return False
+            if not isinstance(state,dict) or not consume_empty_proof(state.get('empty_proof'),context,self._sequence()):return False
+            proof=state['empty_proof']
+            self._empty_bootstrap=_CompletedEmptyBootstrap(context.session,context.epoch,proof.sequence,proof.serial)
+            self._needs_security_baseline=False;self._baseline_pending=None;self._baseline_guard=None
+            # This is the earlier empty anchor, never an assertion that the
+            # current positive Copy was already seen. A later value still
+            # needs the normal verified async sample and change handling.
+            if not self._native_current():self._last_sequence=proof.sequence;self._last_local_signature=None
+            waiter=self._native_waiters.get('baseline')
+            if waiter is not None and waiter[0]==context.session:self._native_waiters.pop('baseline')
+            self._native_retry.stop();self._native_failures=(None,0,0.)
+            if self._native_read_token is not None and self._native_read_sequence==proof.sequence:
+                self._native_reader.cancel(self._native_read_token);self._native_read_token=None;self._native_generation+=1
+            return True
+
+    def _empty_bootstrap_current(self):
+        proof=self._empty_bootstrap
+        return bool(proof is not None and not self.closed and self.enabled
+                    and proof.session==self._session_identity() and proof.epoch==self._baseline_epoch)
 
     def _native_current(self):
         sample=self._native_sample
@@ -876,9 +915,15 @@ class ClipboardSync(QObject):
     def _account_changed(self,*_,force=False):
         if self.closed and not force:return
         identity=self._session_identity()
+        accessible=self._native_accessible()
+        if identity!=self._identity or self.closed or not self.enabled or not accessible:
+            if self._empty_bootstrap is not None and self._suspended_intent is None:self._needs_security_baseline=True
+            self._baseline_epoch+=1;self._empty_bootstrap=None
         if self._native_reader is not None and (self.closed or not self.enabled or identity!=self._identity):self._cancel_native_read()
         if self._native_reader is not None and not self.closed and not self._native_current():self._sample_empty_native_metadata()
-        accessible=self._native_accessible()
+        # A nested account signal may have completed the newer transaction
+        # during a metadata provider call. Never commit this older identity.
+        if identity!=self._session_identity():return
         if identity!=self._identity or not accessible:self._needs_security_baseline=True
         security_boundary=identity!=self._identity or self._needs_security_baseline
         if self._owned_api:
@@ -914,7 +959,9 @@ class ClipboardSync(QObject):
             sequence=self._sequence();baseline=self._snapshot();baseline_sig=signature(baseline)
             known_empty=self._snapshot_known_empty
             stable=self._sequence()==sequence and getattr(self,'_notification_serial',0)==notice
-            if stable:self._last_local_signature=baseline_sig;self._last_sequence=sequence
+            if stable:
+                if not self._empty_bootstrap_current() or self._native_current():
+                    self._last_local_signature=baseline_sig;self._last_sequence=sequence
             else:
                 self._last_sequence=sequence
                 notified=getattr(self,'_copy_notified_mono',None)
@@ -939,6 +986,8 @@ class ClipboardSync(QObject):
                     # account payload. Its next actual Copy is a new event,
                     # unlike unsupported or delayed formats that remain private.
                     self._baseline_guard=None;self._needs_security_baseline=False
+                elif security_boundary and self._empty_bootstrap_current():
+                    self._baseline_guard=None;self._needs_security_baseline=False
                 elif security_boundary:
                     # Disabled/temporarily unreadable sessions have not yet
                     # established a safe baseline. Carry that fact to the next
@@ -951,7 +1000,7 @@ class ClipboardSync(QObject):
                 self._baseline_pending=(self._identity,baseline_sig,security_boundary,observed)
                 self.change_debounce.start()
         if not self.closed:self._set_view(baseline,'local')
-        if not self.closed and self.enabled and self._native_reader is not None:
+        if not self.closed and self.enabled and self._native_reader is not None and not self._empty_bootstrap_current():
             self._ensure_native(lambda:self._account_changed(force=True),'baseline')
         if self._active():QTimer.singleShot(0,self.refresh)
 

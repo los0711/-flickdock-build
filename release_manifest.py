@@ -55,6 +55,7 @@ RUNTIME_SOURCES=(
     'wan_transfer.py','webrtc_stream.py','nearby_transport.py','verify_wan.py','windows_network.py','windows_reveal.py',
 )
 MAINTAINED_TESTS=(
+    'test_clipboard_empty_bootstrap_v1825.py',
     'test_clipboard_local_original_v1825.py',
     'test_clipboard_audit_source_v1825.py','test_win_clipboard_cache_v1825.py',
     'test_popup_subscription_v1825.py',

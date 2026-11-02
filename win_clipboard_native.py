@@ -4,7 +4,10 @@ GetClipboardData may wait forever for a foreign delayed renderer. This module
 is run only in an owned, killable helper process, never the GUI/thread pool.
 """
 from __future__ import annotations
-import codecs,ctypes,hashlib,json,mmap,os,re,stat,struct,sys
+import codecs,ctypes,hashlib,itertools,json,mmap,os,re,stat,struct,sys,threading
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass,field
 from pathlib import Path
 
 MAX_BYTES=100*1024*1024
@@ -14,6 +17,42 @@ MAGIC=b'FDCR1\0'
 SYNC_MARKER='application/x-flickdock-cloud-clipboard'
 class TooLarge(Exception):pass
 class Unsupported(Exception):pass
+
+_EMPTY_ISSUER=object()
+_EMPTY_SCOPE=ContextVar('flickdock_native_empty_scope',default=None)
+_METADATA_LOCK=threading.Lock()
+_METADATA_SERIAL=itertools.count(1)
+_LATEST_METADATA_SERIAL=0
+_LATEST_EMPTY_PROOF=None
+
+@dataclass(frozen=True)
+class EmptyProof:
+    """One in-process metadata request, never a native value/wire sample."""
+    sequence:int
+    serial:int
+    _context:object=field(repr=False,compare=False)
+    _issuer:object=field(repr=False,compare=False)
+
+@contextmanager
+def empty_proof_scope(context):
+    """Expire request authority on return; old objects cannot cross requests."""
+    global _LATEST_EMPTY_PROOF
+    token=_EMPTY_SCOPE.set(context)
+    try:yield
+    finally:
+        with _METADATA_LOCK:
+            if _LATEST_EMPTY_PROOF is not None and _LATEST_EMPTY_PROOF._context is context:_LATEST_EMPTY_PROOF=None
+        _EMPTY_SCOPE.reset(token)
+
+def consume_empty_proof(proof,context,sequence):
+    global _LATEST_EMPTY_PROOF
+    with _METADATA_LOCK:
+        valid=(type(proof)is EmptyProof and proof is _LATEST_EMPTY_PROOF and proof._issuer is _EMPTY_ISSUER
+               and proof._context is context and _EMPTY_SCOPE.get() is context
+               and proof.serial==_LATEST_METADATA_SERIAL and proof.sequence==0
+               and type(sequence)is int and 0<=sequence<=0xffffffff)
+        if valid:_LATEST_EMPTY_PROOF=None
+        return valid
 
 def safe_failure(phase,error):
     """Fixed-schema diagnostics: no exception message, filename or payload."""
@@ -97,19 +136,30 @@ def _base(status='unknown',before=None,after=None,*,empty=False,code=''):
 
 def native_metadata(provider=None):
     """One immediate Open attempt; no GetClipboardData/OLE or busy retry."""
-    opened=False;before=after=None
+    global _LATEST_METADATA_SERIAL,_LATEST_EMPTY_PROOF
+    serial=next(_METADATA_SERIAL)
+    with _METADATA_LOCK:_LATEST_METADATA_SERIAL=serial;_LATEST_EMPTY_PROOF=None
+    opened=False;before=after=None;count=None;result=None
     try:
         p=provider or NativeClipboard();before=p.sequence()
-        if not before:return _base(before=before,code='SEQUENCE_UNAVAILABLE')
+        if type(before)is not int or not 0<=before<=0xffffffff:return _base(before=before,code='SEQUENCE_UNAVAILABLE')
         if not p.open():return _base(before=before,code='BUSY')
         opened=True;count=p.count();after=p.sequence()
-        result=_base('ready' if before==after else 'changed',before,after,empty=count==0)
-        result['format_count']=count;return result
+        if type(count)is not int or count<0:raise ValueError('Invalid clipboard format count')
+        if type(after)is not int or not 0<=after<=0xffffffff:raise ValueError('Invalid clipboard counter')
+        result=_base('ready' if before==after and before>0 else 'changed' if before!=after else 'unknown',before,after,empty=count==0 and before==after and before>0,code='SEQUENCE_UNAVAILABLE' if before==after==0 else '')
+        result['format_count']=count
     except Exception as error:return dict(_base(before=before,after=after,code='METADATA_UNAVAILABLE'),diagnostic=safe_failure('metadata',error))
     finally:
         if opened:
             try:p.close()
             except OSError as error:return dict(_base(before=before,after=after,code='CLOSE_UNAVAILABLE'),diagnostic=safe_failure('close',error))
+    context=_EMPTY_SCOPE.get()
+    if context is not None and count==0 and before==after==0:
+        with _METADATA_LOCK:
+            if serial==_LATEST_METADATA_SERIAL:
+                proof=EmptyProof(0,serial,context,_EMPTY_ISSUER);_LATEST_EMPTY_PROOF=proof;result['empty_proof']=proof
+    return result
 
 def unicode_text(raw):
     if len(raw)%2:raise Unsupported()

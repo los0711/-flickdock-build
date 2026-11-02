@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "QA-only passive initial metadata and exact failed frozen helper observation; original normal failure preserved; no installer/release",
+  "purpose": "Reviewed bootstrap EmptyProof fresh normal Windows validation; Shelf canonical WIP excluded; no release or installer",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -666,8 +666,8 @@
     },
     {
       "path": "clipboard_sync.py",
-      "size": 97028,
-      "sha256": "a443b68ebd2b3de776e08ff7300863e5714a4ed745ffb7a9ad48f93c88f8b279"
+      "size": 100118,
+      "sha256": "e8c7e82c848a174cf3157884b9453761f4d8967db740bc86b5735844e8a6edad"
     },
     {
       "path": "cloud/.gitignore",
@@ -1481,8 +1481,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 42805,
-      "sha256": "a750d123e600e40c51519ef1d3845a8a29e4612468ef84e2f0288f5ecc12af1e"
+      "size": 42853,
+      "sha256": "4e03f86732e699e370365756c75dac29200ced134a781997b7cff09eabf9e311"
     },
     {
       "path": "release_signing.py",
@@ -1648,6 +1648,11 @@
       "path": "test_clipboard_audit_source_v1825.py",
       "size": 3692,
       "sha256": "46c4bd28b188101c9481eabb2d97f64390b00ba237cc1bce355deb233f56824f"
+    },
+    {
+      "path": "test_clipboard_empty_bootstrap_v1825.py",
+      "size": 13733,
+      "sha256": "816775f68c76748d09b8adc19347a7ee8ae153baa654f791c811e5a57930840b"
     },
     {
       "path": "test_clipboard_fast_v1821.py",
@@ -2736,8 +2741,8 @@
     },
     {
       "path": "win_clipboard_native.py",
-      "size": 21223,
-      "sha256": "e5fea9106886831ba82d4b8f44b402c16baf1a42613b094b62cd40ea657b4089"
+      "size": 23590,
+      "sha256": "4fd676c7b0211c6ed8241efdb65448b2b0c7020457a6c6399d962c2e6b81deb1"
     },
     {
       "path": "win_owned_process.py",
