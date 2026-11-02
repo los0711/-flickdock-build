@@ -309,6 +309,10 @@ jobs:
           npm ci --prefix cloud --no-audit --no-fund
       - name: Check explicit reviewed source manifest
         run: |
+          python -m unittest discover -s qa/packaged-live -p test_native_reader_observation.py -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest discover -s qa/packaged-live -p test_reader_observation_handoff.py -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m unittest discover -s qa/packaged-live -p test_harness_bounds.py -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m unittest test_windows_shell_bundle_v1824 -v

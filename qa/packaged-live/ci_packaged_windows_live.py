@@ -9,9 +9,44 @@ from __future__ import annotations
 import argparse,base64,datetime,hashlib,http.client,json,os,queue,re,socket,ssl,struct,subprocess,sys,tempfile,threading,time,traceback
 from pathlib import Path
 from urllib.request import Request,urlopen
+from uuid import uuid4
 
 DOMAINS=('flickdock-cloud.roger000416.workers.dev','flickdock-site.roger000416.workers.dev')
 _PROGRESS=None
+OWNED_CHILD_GRACE_SECONDS=8
+OWNED_CHILD_KILL_SECONDS=5
+
+
+def cleanup_owned_children(children):
+    """Finish every owned child even if one OS process operation fails."""
+    failures=[]
+    for child in reversed(children):
+        def attempt(stage,action):
+            try:action()
+            except (OSError,subprocess.SubprocessError) as error:
+                failures.append({'pid':child.pid,'stage':stage,'error':type(error).__name__})
+        try:
+            if child.poll() is None:
+                attempt('terminate',child.terminate)
+                try:child.wait(OWNED_CHILD_GRACE_SECONDS)
+                except subprocess.TimeoutExpired:
+                    attempt('kill',child.kill)
+                    attempt('reap',lambda:child.wait(OWNED_CHILD_KILL_SECONDS))
+                except OSError as error:
+                    failures.append({'pid':child.pid,'stage':'wait','error':type(error).__name__})
+            else:attempt('reap',lambda:child.wait(0))
+            if child.returncode is None:failures.append({'pid':child.pid,'stage':'unreaped','error':'OwnedProcessStillRunning'})
+        except OSError as error:
+            failures.append({'pid':child.pid,'stage':'poll','error':type(error).__name__})
+    return failures
+
+
+def record_failed_native_copy(observer,segments,expected,exe,sha,producer,report):
+    """Observe a failed first copy without changing its original verdict."""
+    if not segments or segments[-1]['label']!='02-native-text-copy':return
+    observation=observer.after_native_text_failure(exe,sha,producer)
+    observation['expected_text_utf8_sha256']=hashlib.sha256(expected.encode('utf8')).hexdigest()
+    report['native_reader_failure_observation']=observation
 
 
 def explorer_folder_matches(window,folder):
@@ -1118,6 +1153,7 @@ def main():
         production_entry_imported=False,frozen_executable_patched=False,public_cloud=False,physical_cross_device=False,installer_executed=False,
         all_15_groups_verified=False,manual_visual_review='required',checks=[],unverified=['Real public cloud latency/P95','Physical Windows↔Mac clipboard','GPU/AMD/VMware','Mac permissions/statusbar/update installation','Native installer update chain'])
     children=[];cloud=None;streams=[];temporary_profile=DeferredProfile();animation_preference=ClientAreaAnimation()
+    reader_observer=None
     try:
         with temporary_profile as temporary:
             base=Path(temporary);profile,refs=synthetic_profile(base)
@@ -1135,6 +1171,11 @@ def main():
             environment['NO_PROXY']='127.0.0.1,localhost,'+','.join(DOMAINS)
             stdout=(base/'application.stdout').open('wb');stderr=(base/'application.stderr').open('wb')
             streams.extend((stdout,stderr))
+            from native_reader_observation import HostedNativeReaderObservation,OBSERVER_PREFIX
+            observer_nonce=uuid4().hex
+            reader_observer=HostedNativeReaderObservation(
+                Path(os.environ['RUNNER_TEMP'])/(OBSERVER_PREFIX+observer_nonce),observer_nonce,producer_profile=profile)
+            report['native_reader_before_app_start']=reader_observer.before_app_start()
             application=subprocess.Popen([str(args.exe.resolve())],cwd=base,env=environment,stdout=stdout,stderr=stderr);children.append(application)
             producer=subprocess.Popen([sys.executable,str(qa_root/'native_editor.py'),str(base)],env=environment,stdout=stdout,stderr=stderr);children.append(producer)
             driver=phase('automation-worker-start',lambda:Driver(application.pid,producer.pid,base));recorder=Recorder(args.output/'frames')
@@ -1379,6 +1420,10 @@ def main():
                     actual_service_requests=cloud.stats()['rows'],screen_segments=[dict(label=row['label'],distinct_pixels=row['distinct_pixels']) for row in recorder.segments])
     except Exception as error:
         report['error']=type(error).__name__+': '+str(error);report['traceback']=traceback.format_exc()
+        if reader_observer is not None and 'recorder' in locals() and recorder.segments and recorder.segments[-1]['label']=='02-native-text-copy':
+            try:record_failed_native_copy(reader_observer,recorder.segments,unique,args.exe,args.sha256,producer,report)
+            except Exception as observation_error:
+                report['native_reader_observation_error']={'type':type(observation_error).__name__,'traceback':traceback.format_exc()}
         _PROGRESS.record('exception')
         _PROGRESS.screenshot('failure-no-uia')
         if 'driver' in locals() and not driver._provider_failed:
@@ -1400,11 +1445,19 @@ def main():
                 report['fixture_editor_cleanup_error']='FIXTURE_EDITOR_CLEANUP_UNAVAILABLE';report['ok']=False
             try:phase('cleanup-automation-worker',driver.close)
             except Exception as error:report['automation_cleanup_error']=type(error).__name__;report['ok']=False
-        for child in reversed(children):
-            if child.poll() is None:
-                child.terminate()
-                try:child.wait(8)
-                except subprocess.TimeoutExpired:child.kill();child.wait(5)
+        try:
+            child_failures=cleanup_owned_children(children)
+            if child_failures:report['owned_child_cleanup_errors']=child_failures;report['ok']=False
+        finally:
+            # The diagnostic owns a different protected child. A failed cleanup
+            # of the producer/application must not strand that operation.
+            if reader_observer is not None:
+                try:
+                    report['native_reader_observer_cleanup']=reader_observer.close()
+                    if report['native_reader_observer_cleanup'].get('retained_ownership'):
+                        report['ok']=False
+                except Exception as observer_cleanup_error:
+                    report['native_reader_observer_cleanup_error']={'type':type(observer_cleanup_error).__name__,'traceback':traceback.format_exc()};report['ok']=False
         if cloud is not None:
             try:phase('cleanup-local-cloud',cloud.close)
             except Exception as error:report['cleanup_error']=type(error).__name__+': '+str(error);report['ok']=False

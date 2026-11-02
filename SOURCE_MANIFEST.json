@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "Clean-room reviewed source and isolated native/frozen CI only; Smart Router and retained backlog incomplete; no installer delivery or website publication",
+  "purpose": "QA-only passive initial metadata and exact failed frozen helper observation; original normal failure preserved; no installer/release",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -26,8 +26,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 23906,
-      "sha256": "fd4968809deec02cc6c33140d71ccb260516c1f1d54768eef0033ec5631ee491"
+      "size": 24223,
+      "sha256": "e8d129dd276c1f5b20d4d6f03495fee0454b3e45754351c8d632acc51582e6fe"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -1246,8 +1246,8 @@
     },
     {
       "path": "qa/packaged-live/ci_packaged_windows_live.py",
-      "size": 103132,
-      "sha256": "dbfbffd39f385928befe4cf3e484422c310da72434a19ed0f0d876041eab1aa5"
+      "size": 106384,
+      "sha256": "4b967659b31c97d80ad20a8d0568d899b8fa79d3e89e28a41d8fa6abe932d178"
     },
     {
       "path": "qa/packaged-live/ci_windows_reveal_probe.py",
@@ -1288,6 +1288,11 @@
       "path": "qa/packaged-live/native_reader_job_gate.py",
       "size": 9698,
       "sha256": "652f284281864c2350a42e2d96445e4b08cf0b80ad132dabeb0f80077ff1998d"
+    },
+    {
+      "path": "qa/packaged-live/native_reader_observation.py",
+      "size": 13862,
+      "sha256": "653cd1391bc593c7b10eb84a26c6e76df958a7ce8004ceb455d331eb6c7c57cd"
     },
     {
       "path": "qa/packaged-live/native_shake.py",
@@ -1360,6 +1365,11 @@
       "sha256": "8a5587d83d3772bfb24692b967bfcb3a560b52b165a92c4a4c0a86a3c0813201"
     },
     {
+      "path": "qa/packaged-live/test_native_reader_observation.py",
+      "size": 12056,
+      "sha256": "938b8a611d4a55a9b819a3abbb54001963bf15312c2e315319cc8b965c96b390"
+    },
+    {
       "path": "qa/packaged-live/test_native_shake.py",
       "size": 12433,
       "sha256": "a475035ea2abfa54d641137a4dba518b6c1408a3e22abaf8d0a1bd1f59b09389"
@@ -1378,6 +1388,11 @@
       "path": "qa/packaged-live/test_passed_installer_workflow.py",
       "size": 2669,
       "sha256": "1666350d3446b3ae0290e082f840b4e5aad88776246a5f5b74bdda09d94f1a05"
+    },
+    {
+      "path": "qa/packaged-live/test_reader_observation_handoff.py",
+      "size": 5254,
+      "sha256": "b4caeb150473a48e7f32dda146bb5cec6429dcf194b2cd9d865bbe0e9a6e7f32"
     },
     {
       "path": "qa/packaged-live/test_reenable_observation.py",
@@ -1466,8 +1481,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 42632,
-      "sha256": "2fe2aa8d55f5cd0654a20f9c55b8910cc64fdd915e86c24ad84de6f5d379d854"
+      "size": 42805,
+      "sha256": "a750d123e600e40c51519ef1d3845a8a29e4612468ef84e2f0288f5ecc12af1e"
     },
     {
       "path": "release_signing.py",
