@@ -4285,8 +4285,6 @@ class ShelfManager:
             stop('drop_bridge',self.drop_bridge.hide);self.drop_bridge.deleteLater()
         for dialog in {self.lan_dialog,self.wan_dialog}:
             if dialog:
-                dialog._closing_confirmed=True
-                if dialog._close_prompt is not None:dialog._close_prompt.hide()
                 stop('transfer_window',dialog.close)
         if self.settings_dialog:stop('settings_window',self.settings_dialog.close)
         if self.outgoing_drag:stop('native_drag',QDrag.cancel)

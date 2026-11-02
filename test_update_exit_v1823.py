@@ -56,6 +56,26 @@ class UpdateExitTests(unittest.TestCase):
         self.assertEqual(events[-1],'quit');self.assertEqual(events.count('quit'),1)
         self.assertIn('wan',events);self.assertIn(('lan','RuntimeError'),manager._shutdown_errors)
 
+    def test_actual_transfer_window_without_retired_prompt_cannot_block_app_exit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            dialog=LanDialog(FakeLan(),SettingsStore(Path(directory)));dialog.show();flush()
+            events=[]
+            manager=SimpleNamespace(_quitting=False,
+                lan_dialog=dialog,wan_dialog=dialog,settings_dialog=None,outgoing_drag=False,shelves=[],
+                save=lambda:events.append('save'),tray=SimpleNamespace(hide=lambda:events.append('tray')),
+                edge=SimpleNamespace(hide=lambda:events.append('edge')),dock_preview=SimpleNamespace(hide=lambda:events.append('preview')),
+                app=SimpleNamespace(quit=lambda:events.append('quit')))
+            try:
+                self.assertFalse(hasattr(dialog,'_close_prompt'))
+                self.assertFalse(hasattr(dialog,'_closing_confirmed'))
+                with patch.object(dialog,'close',wraps=dialog.close) as closed:
+                    ShelfManager.quit(manager);ShelfManager.quit(manager)
+                    closed.assert_called_once()
+                self.assertEqual(events[-1],'quit');self.assertEqual(events.count('quit'),1)
+                self.assertEqual(manager._shutdown_errors,[])
+                self.assertFalse(hasattr(dialog,'_closing_confirmed'))
+            finally:dialog.hide();dialog.deleteLater();flush()
+
     def test_mac_timeout_retry_checks_actual_exit_before_returning(self):
         alive=[True];events=[];prepared=SimpleNamespace(owner_pid=123)
         mac_updates._wait_for_owner_exit(prepared,0,lambda pid:alive[0],retry=lambda:events.append('confirm') or True,

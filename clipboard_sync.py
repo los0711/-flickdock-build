@@ -65,7 +65,7 @@ def native_sequence():
     return None
 
 
-def snapshot(clipboard):
+def snapshot(clipboard,*,baseline_state=None):
     mime=clipboard.mimeData()
     if mime is None:return None
     if mime.hasUrls() and any(url.isLocalFile() for url in mime.urls()):
@@ -81,6 +81,7 @@ def snapshot(clipboard):
     if mime.hasText():
         text=mime.text()
         if text:return ('text',dict(text=text,html=mime.html() if mime.hasHtml() else ''))
+    if baseline_state is not None:baseline_state['known_empty']=not mime.formats()
     return None
 
 
@@ -322,8 +323,9 @@ class ClipboardSync(QObject):
             self._subscribe(self.api.origin_changed,self._transport_origin_changed)
         self._subscribe(self.clipboard.dataChanged,self._schedule_change)
         read_started=time.monotonic();notified_before=getattr(self,'_copy_notified_mono',None)
+        notice=getattr(self,'_notification_serial',0)
         sequence=self._sequence();baseline=self._snapshot();sig=signature(baseline)
-        stable=self._sequence()==sequence
+        stable=self._sequence()==sequence and getattr(self,'_notification_serial',0)==notice
         self.view['value']=baseline;self._last_local_signature=sig;self._last_sequence=sequence
         if stable:
             if sig is not None:self._baseline_guard=(self._identity,sig)
@@ -374,8 +376,13 @@ class ClipboardSync(QObject):
         return background_clipboard_allowed(force=force)
 
     def _snapshot(self):
+        self._snapshot_known_empty=False
         if not self._native_accessible():return None
-        try:return snapshot(self.clipboard)
+        state={}
+        try:
+            value=snapshot(self.clipboard,baseline_state=state)
+            self._snapshot_known_empty=state.get('known_empty') is True
+            return value
         except (OSError,RuntimeError):return None
 
     def recheck_native_access(self,*,force=False):
@@ -439,6 +446,7 @@ class ClipboardSync(QObject):
 
     def _schedule_change(self):
         if self.closed:return
+        self._notification_serial=getattr(self,'_notification_serial',0)+1
         if not self._active():
             if not self.change_debounce.isActive():self.change_debounce.start()
             return
@@ -630,8 +638,10 @@ class ClipboardSync(QObject):
         stable=True;baseline_sig=None
         if not self.closed and self.enabled:
             read_started=time.monotonic();notified_before=getattr(self,'_copy_notified_mono',None)
+            notice=getattr(self,'_notification_serial',0);self._snapshot_known_empty=False
             sequence=self._sequence();baseline=self._snapshot();baseline_sig=signature(baseline)
-            stable=self._sequence()==sequence
+            known_empty=self._snapshot_known_empty
+            stable=self._sequence()==sequence and getattr(self,'_notification_serial',0)==notice
             if stable:self._last_local_signature=baseline_sig;self._last_sequence=sequence
             else:
                 self._last_sequence=sequence
@@ -652,6 +662,11 @@ class ClipboardSync(QObject):
                 self._resume_local_intent(baseline,baseline_sig)
                 if security_boundary and baseline_sig is not None:
                     self._baseline_guard=(identity,baseline_sig);self._needs_security_baseline=False
+                elif security_boundary and accessible and known_empty:
+                    # A stable, format-free native clipboard contains no old
+                    # account payload. Its next actual Copy is a new event,
+                    # unlike unsupported or delayed formats that remain private.
+                    self._baseline_guard=None;self._needs_security_baseline=False
                 elif security_boundary:
                     # Disabled/temporarily unreadable sessions have not yet
                     # established a safe baseline. Carry that fact to the next
@@ -693,10 +708,11 @@ class ClipboardSync(QObject):
         # Repeated native notifications for one copy must not ask another app
         # to render the same delayed clipboard again or repeat file/image work.
         if sequence is not None and sequence==self._last_sequence:return
+        notice=getattr(self,'_notification_serial',0)
         self._reading_notification=True
         try:value=self._snapshot();sig=signature(value)
         finally:self._reading_notification=False
-        if self._sequence()!=sequence:
+        if self._sequence()!=sequence or getattr(self,'_notification_serial',0)!=notice:
             # A delayed provider can pump events and change the native value
             # during a read. Do not stamp an old sample with a newer counter.
             self.change_debounce.start();return

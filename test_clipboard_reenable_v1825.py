@@ -324,6 +324,56 @@ class ReenableTests(unittest.TestCase):
         self._startup_baseline('file')
     def test_actual_constructor_empty_clipboard_first_true_copy_still_uploads(self):
         self._startup_baseline('empty')
+    def _empty_login(self,kind='text',mime=None):
+        self.client.close();self.peer.token='';self.peer.account=None;self.clip=SequencedClipboard()
+        if mime is not None:self.clip.setMimeData(mime)
+        self.client=subject.ClipboardSync(self.peer,Events(),self.base/'empty-login',enabled=True,clipboard=self.clip)
+        self.client._sequence=lambda:self.clip.sequence;self.client._last_sequence=self.clip.sequence
+        self.peer.account={'id':str(uuid4())};self.peer.token='restored-session'
+        self.peer.account_changed.emit(self.peer.account);self.settle()
+        starts=[];self.client.copy_started.connect(lambda:starts.append(True))
+        original=QMimeData()
+        if kind=='file':
+            source=self.base/'first-after-login.bin';source.write_bytes(b'original first copied bytes')
+            original.setUrls([QUrl.fromLocalFile(str(source))]);original.setData('application/x-original',b'preserve')
+        else:original.setText('synthetic first Copy after actual login')
+        self.clip.setMimeData(original);self.settle()
+        return starts,original
+    def test_actual_signedout_empty_login_first_text_copy_uploads_once(self):
+        starts,original=self._empty_login()
+        self.assertEqual(starts,[True]);self.assertEqual(sum(m=='POST' for m,p,o in self.peer.calls),1)
+        self.assertIs(self.clip.mimeData(),original);self.assertIsNone(self.client._pending)
+    def test_actual_signedout_empty_login_first_file_copy_uploads_once(self):
+        starts,original=self._empty_login('file')
+        until(lambda:bool(self.peer.held))
+        self.assertEqual(starts,[True]);self.assertEqual(sum(m=='POST' for m,p,o in self.peer.calls),1)
+        self.assertEqual(len(self.peer.held),1);self.assertIs(self.clip.mimeData(),original)
+        self.assertTrue(original.hasFormat('application/x-original'))
+    def test_account_unknown_formats_first_readable_content_stays_private(self):
+        unknown=QMimeData();unknown.setData('application/x-delayed-private',b'original')
+        starts,original=self._empty_login(mime=unknown)
+        self.assertFalse(starts);self.assertFalse(any(m in ('POST','PUT') for m,p,o in self.peer.calls))
+        self.assertIs(self.clip.mimeData(),original)
+    def test_formats_reentry_without_native_counter_is_not_trusted_as_empty(self):
+        self.client.close();self.peer.token='';self.peer.account=None;self.clip=SequencedClipboard()
+        self.client=subject.ClipboardSync(self.peer,Events(),self.base/'empty-race',enabled=True,clipboard=self.clip)
+        self.client._sequence=lambda:None
+        original=self.clip.mimeData();formats=original.formats;changed=[False]
+        def reentry():
+            if not changed[0]:changed[0]=True;self.clip.text('synthetic delayed previous-account content')
+            return formats()
+        self.peer.account={'id':str(uuid4())};self.peer.token='new-session'
+        with patch.object(original,'formats',side_effect=reentry):self.peer.account_changed.emit(self.peer.account)
+        self.assertIsNotNone(self.client._baseline_pending);self.settle()
+        self.assertFalse(any(m in ('POST','PUT') for m,p,o in self.peer.calls))
+        self.clip.text('synthetic genuinely different later Copy');self.settle()
+        self.assertEqual(sum(m=='POST' for m,p,o in self.peer.calls),1)
+    def test_permission_recovery_known_empty_allows_first_copy(self):
+        with patch.object(self.client,'_native_accessible',return_value=False):self.client._account_changed(force=True)
+        self.clip.clear();self.client.change_debounce.stop();self.client._account_changed(force=True);self.settle()
+        self.assertIsNone(self.client._baseline_pending);self.assertFalse(self.client._needs_security_baseline)
+        self.clip.text('synthetic new Copy after empty permission baseline');self.settle()
+        self.assertEqual(sum(m=='POST' for m,p,o in self.peer.calls),1)
     def _startup_read_race(self,same_content=False,empty=False):
         self.client.close();clip=SequencedClipboard()
         if not empty:clip.text('synthetic startup sample A')
