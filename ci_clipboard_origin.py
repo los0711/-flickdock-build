@@ -3,6 +3,25 @@ import argparse,json,os,subprocess,sys,tempfile,time
 from pathlib import Path
 
 
+def publish_json(path,value,*,timeout=2.):
+    """Atomic fixture mailbox, tolerating bounded Windows sharing contention.
+
+    Keep one command ID and one immutable pending payload until replacement
+    succeeds. The receiver may briefly hold the old JSON open during polling;
+    never delete that valid mailbox or publish partial JSON as a workaround.
+    This helper is used only by the hosted QA controller/editor, not the app.
+    """
+    path=Path(path);pending=path.with_suffix('.tmp')
+    pending.write_text(json.dumps(value),encoding='utf8')
+    deadline=time.monotonic()+timeout
+    while True:
+        try:
+            pending.replace(path);return
+        except PermissionError as error:
+            if getattr(error,'winerror',None) not in (5,32,33) or time.monotonic()>=deadline:raise
+            time.sleep(.01)
+
+
 def main():
     if os.environ.get('GITHUB_ACTIONS')!='true' or os.environ.get('RUNNER_OS') not in ('Windows','macOS'):
         raise RuntimeError('Native clipboard QA requires an ephemeral CI runner')
@@ -34,7 +53,7 @@ def main():
                     assert len(copies)==1,'Standard editor Copy action missing'
                     copies[0].trigger();menu.deleteLater()
             elif action=='quit':app.quit()
-            (args.editor/'ack.json').write_text(json.dumps({'id':seen[0]}))
+            publish_json(args.editor/'ack.json',{'id':seen[0]})
         timer=QTimer();timer.timeout.connect(command);timer.start(20)
         return app.exec()
 
@@ -61,8 +80,8 @@ def main():
         command_id=0
         def command(action,**values):
             nonlocal command_id
-            command_id+=1;pending=base/'command.tmp'
-            pending.write_text(json.dumps(dict(id=command_id,action=action,**values)));pending.replace(base/'command.json')
+            command_id+=1
+            publish_json(base/'command.json',dict(id=command_id,action=action,**values))
             def acknowledged():
                 if child.poll() is not None:raise AssertionError('External editor exited: '+child.stderr.read().decode('utf8',errors='replace'))
                 try:return json.loads((base/'ack.json').read_text())['id']==command_id

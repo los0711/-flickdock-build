@@ -121,12 +121,28 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          python -m unittest test_ui_followup_v1823 test_cached_surface_v1823 test_stack_spread_v1823 test_input_motion_v1823 test_content_entrance_v1823 test_transfer_drop_feedback_v1823 test_transfer_item_motion_v1823 test_popup_motion_v1823 test_drop_target_motion_v1823 test_morph_snapshot_content_v1824 -q
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -m unittest test_clipboard_notice_motion_v1823 test_clipboard_popup_motion_v1823 test_mac_status_drop_v1823 test_mac_permissions_v1821 test_presentation_v1819.PresentationTests -q
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python test_surface_continuity_v162.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $PSNativeCommandUseErrorActionPreference = $false
+          $diagnostics = Join-Path $PWD 'build/native-motion-diagnostics'
+          New-Item -ItemType Directory -Force -Path $diagnostics | Out-Null
+          function Invoke-MotionCheck([string]$name, [string[]]$arguments) {
+            $stdout = Join-Path $diagnostics ($name + '.stdout.log')
+            $stderr = Join-Path $diagnostics ($name + '.stderr.log')
+            $started = (Get-Date).ToUniversalTime().ToString('o')
+            @{ name=$name; arguments=$arguments; started_at=$started; status='running'; python_exit_code=$null } |
+              ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $diagnostics ($name + '.json')) -Encoding utf8
+            Write-Host ('MOTION_PROCESS_START ' + $name)
+            & python -X faulthandler -u @arguments 1> $stdout 2> $stderr
+            $nativeExit = $LASTEXITCODE
+            @{ name=$name; arguments=$arguments; started_at=$started; completed_at=(Get-Date).ToUniversalTime().ToString('o'); status='completed'; python_exit_code=$nativeExit } |
+              ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $diagnostics ($name + '.json')) -Encoding utf8
+            Get-Content -LiteralPath $stdout
+            Get-Content -LiteralPath $stderr
+            Write-Host ('MOTION_PROCESS_EXIT ' + $name + ' ' + $nativeExit)
+            if ($nativeExit -ne 0) { exit $nativeExit }
+          }
+          Invoke-MotionCheck 'motion-components' @('-m', 'unittest', 'test_ui_followup_v1823', 'test_cached_surface_v1823', 'test_stack_spread_v1823', 'test_input_motion_v1823', 'test_content_entrance_v1823', 'test_transfer_drop_feedback_v1823', 'test_transfer_item_motion_v1823', 'test_popup_motion_v1823', 'test_drop_target_motion_v1823', 'test_morph_snapshot_content_v1824', '-v')
+          Invoke-MotionCheck 'motion-notices-permissions' @('-m', 'unittest', 'test_clipboard_notice_motion_v1823', 'test_clipboard_popup_motion_v1823', 'test_mac_status_drop_v1823', 'test_mac_permissions_v1821', 'test_presentation_v1819.PresentationTests', '-v')
+          Invoke-MotionCheck 'surface-continuity' @('test_surface_continuity_v162.py')
       - name: Reproduce asynchronous metadata reconciliation before framework warmup
         if: runner.os == 'macOS'
         shell: bash
@@ -188,6 +204,7 @@ jobs:
             native-utility.json
             native-installer-close.json
             native-status-drop.json
+            build/native-motion-diagnostics/
           retention-days: 3
 
   frozen-normal-entry:

@@ -121,6 +121,7 @@ SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'qa/packaged-live/test_harness_bounds.py',
     'qa/packaged-live/test_harness_extras.py','qa/packaged-live/ui-extra-actions.json',
     'qa/packaged-live/native_batch2.py','qa/packaged-live/test_native_batch2.py',
+    'qa/packaged-live/test_native_command_mailbox.py',
     'qa/packaged-live/ui-batch2-actions.json','qa/packaged-live/BATCH2.md',
     'qa/packaged-live/native_final_motion.py','qa/packaged-live/test_native_final_motion.py','qa/packaged-live/FINAL_MOTION.md',
     'qa/packaged-live/native_batch3.py','qa/packaged-live/test_native_batch3.py','qa/packaged-live/ui-batch3-actions.json',

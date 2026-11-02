@@ -26,8 +26,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 14550,
-      "sha256": "329d45e46f5830a7c0bc1c411de43ac4a0d90fcc22d98d7aef1a54a69d14deef"
+      "size": 16052,
+      "sha256": "a644b5aee5730deb83dcef24248f1278d2596084adc081ad653418ef35778832"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -616,8 +616,8 @@
     },
     {
       "path": "ci_clipboard_origin.py",
-      "size": 7330,
-      "sha256": "fbf7807d4852562dded5ec30aa297d14c41e259d89b0266b746396af6d5214e3"
+      "size": 8084,
+      "sha256": "004174988ec8ce4d9f20a79c064adde475b2f24810980f2ad321d50c3d16e48c"
     },
     {
       "path": "ci_installer_close.py",
@@ -1305,6 +1305,11 @@
       "sha256": "01662c40543ee2bc07d3c6c4a2f30a572aef0890b55981ec4c3803aa90be85cd"
     },
     {
+      "path": "qa/packaged-live/test_native_command_mailbox.py",
+      "size": 2847,
+      "sha256": "40a2106e3baab44937841ddb30849fca0da70a134645975a6f9f484fbe46a68b"
+    },
+    {
       "path": "qa/packaged-live/test_native_final_motion.py",
       "size": 20457,
       "sha256": "c1aa2a36afb480c8bfb30aeb3d6589d01ee97878de409fd9ba468ce8c27e94c8"
@@ -1376,8 +1381,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 40065,
-      "sha256": "7eac4f97af5dbaf5cf4acfd1cfa96f204a8d741e9af8e72f4c5f9eecf7bb8a53"
+      "size": 40120,
+      "sha256": "1ad72bbc761ef9a99c7a65d0b125f86f29ba8ffafb79dc8edba4eb70fc80514e"
     },
     {
       "path": "release_signing.py",
