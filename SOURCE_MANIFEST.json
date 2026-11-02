@@ -16,8 +16,8 @@
     },
     {
       "path": ".github/workflows/macos-build.yml",
-      "size": 6156,
-      "sha256": "4fd95ea7458edeb6941bffdcdd884fff10debbe2458aaa57daf9bb73ca0d2df3"
+      "size": 6238,
+      "sha256": "e2f3543d60201c4d2fcb3413925f86e10fb3c1a4cd9bdc6e45d4d1055396d177"
     },
     {
       "path": ".github/workflows/macos-intel-motion-diagnostic.yml",
@@ -26,8 +26,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 17247,
-      "sha256": "7a5e10a9bfb2f3dd2d864be068e854e4e09d5bb1ab77af03602835c0a47c24c5"
+      "size": 17355,
+      "sha256": "625a76c4e34fe2b9ca8c4bff7c1d65b614fdcb505224b92219cebc39a6a57c95"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -846,8 +846,8 @@
     },
     {
       "path": "cloud_api.py",
-      "size": 26869,
-      "sha256": "79bd7ae4366e76987502bdd9af4ff2b40789fecc58581917909cd02bd6b1875a"
+      "size": 27146,
+      "sha256": "cad9f3ee5841510e15cd3df64a0c1c6a6199c3657be8c3dceffaa15a27837caf"
     },
     {
       "path": "cloud_config.py",
@@ -921,8 +921,8 @@
     },
     {
       "path": "download_writer.py",
-      "size": 6182,
-      "sha256": "e620217ab2cdd86cb82465d3ec73c0c4755fb05543d219e8a18b9977b7672cd1"
+      "size": 7349,
+      "sha256": "e4cb9bcf1ad9bea10842132d1138a50d566fbb557e95cd52136ccdafe929989e"
     },
     {
       "path": "drag_artwork.py",
@@ -1231,8 +1231,8 @@
     },
     {
       "path": "qa/packaged-live/ci_packaged_windows_live.py",
-      "size": 90074,
-      "sha256": "a16cc59f1faba378a55c32105c63aeb81f5d9262af40e13878a66554c6723fc7"
+      "size": 94018,
+      "sha256": "4973f373cc2fa199497cc2a29ccde9cdb6141fb5fe2a208f6d613cfd5a3ae852"
     },
     {
       "path": "qa/packaged-live/ci_windows_reveal_probe.py",
@@ -1241,8 +1241,8 @@
     },
     {
       "path": "qa/packaged-live/gateway.mjs",
-      "size": 3811,
-      "sha256": "e83edb1261dd99c216fc425c58d92408bcb0221f1dcccc5fbcd7dfc3aa6e2d49"
+      "size": 4010,
+      "sha256": "d0fab5d54a3d94d0048a4bbe7998d022af65d049e762d589a75420e2c41af508"
     },
     {
       "path": "qa/packaged-live/native_batch2.py",
@@ -1281,8 +1281,8 @@
     },
     {
       "path": "qa/packaged-live/test_harness_bounds.py",
-      "size": 16337,
-      "sha256": "c2b9e98047e6d5e942867cc6fa65cc9ca2e0a2acd545dbc1266b0cc75bf9e5d6"
+      "size": 18411,
+      "sha256": "da087cd49b10718e96237b759ee8a4e15d25ebf3cfdd22b00d679c3788815406"
     },
     {
       "path": "qa/packaged-live/test_harness_extras.py",
@@ -1391,8 +1391,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 40220,
-      "sha256": "7b3d1831a6d3bc7b259d884889066bf403bd725d7bfd65bba68b9d509b79b8cc"
+      "size": 40259,
+      "sha256": "6b543f040d440baa59b53bed4ddcb7e81200176414a533c2c9841ab56c3f1b09"
     },
     {
       "path": "release_signing.py",
@@ -1663,6 +1663,11 @@
       "path": "test_download_ranges_v1821.py",
       "size": 5967,
       "sha256": "dc2531f0eee75b67d2eabffaffdd04d49f9eda18d28eb9518891264efe40b5f2"
+    },
+    {
+      "path": "test_download_terminal_v1824.py",
+      "size": 8598,
+      "sha256": "fce3e109c5becde2502a824a076ae0464e2b4e72b9da5aa7e441193a57a7bdba"
     },
     {
       "path": "test_drag_artwork_v161.py",

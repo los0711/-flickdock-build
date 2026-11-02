@@ -276,6 +276,12 @@ class CloudApi(QObject):
                     elif state['writer_finishing']:self._finish(key)
                 writer.deleteLater()
             writer.finished.connect(completed,Qt.ConnectionType.QueuedConnection)
+            try:writer.start()
+            except queue.Full:
+                writer.cancel()
+                raise CloudError('本地文件保存队列繁忙，请稍后重试。',code='DOWNLOAD_QUEUE_BUSY')
+            except Exception:
+                writer.cancel();raise
         return state['writer']
 
     def _finish(self, key, error=None):

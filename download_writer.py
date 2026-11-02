@@ -58,23 +58,48 @@ class DownloadWriter(QObject):
         self.part=self.target.with_name('.'+self.target.name+'-'+key+'.part')
         self._condition=threading.Condition();self._queue=deque();self._buffered=0
         self._end=None;self._cancelled=False
+        self._future=None;self._started=False;self._start_failed=False;self._terminal=False
         with _targets_guard:
             identity=os.path.normcase(os.path.abspath(target))
             self._target=_targets.get(identity) or _Target();_targets[identity]=self._target
-            previous=self._target.latest
+            self._previous=self._target.latest
             self._target.latest=weakref.ref(self)
-        try:self._future=(_clipboard_pool if priority=='high' else _disk_pool).submit(self._run)
+        self._pool=_clipboard_pool if priority=='high' else _disk_pool
+
+    def _rollback_claim(self):
+        with _targets_guard:
+            if self._target.latest and self._target.latest() is self:self._target.latest=self._previous
+
+    def start(self):
+        """The owner registers its completion slot before scheduling any IO."""
+        with self._condition:
+            if self._started or self._cancelled:return False
+            self._started=True
+        # Do not hold the condition across submit: a worker may complete before
+        # submit returns, and cancel may arrive while admission is in progress.
+        try:future=self._pool.submit(self._run)
         except BaseException:
-            with _targets_guard:
-                if self._target.latest and self._target.latest() is self:self._target.latest=previous
-            self.setParent(None);self.deleteLater();raise
+            with self._condition:self._start_failed=True;cancelled=self._cancelled
+            self._rollback_claim()
+            if cancelled:self._complete(None)
+            raise
+        with self._condition:self._future=future;cancelled=self._cancelled
+        if cancelled and future.cancel():self._complete(None)
+        return True
+
+    def _complete(self,result):
+        with self._condition:
+            if self._terminal:return
+            self._terminal=True
+        try:self.finished.emit(result)
+        except RuntimeError:pass
 
     def capacity(self):
         with self._condition:return max(0,self.CAPACITY-self._buffered)
 
     def write(self,chunk):
         with self._condition:
-            if self._cancelled:return
+            if self._cancelled or self._terminal:return
             self._queue.append(chunk);self._buffered+=len(chunk);self._condition.notify()
 
     def finish(self,size,digest):
@@ -84,7 +109,10 @@ class DownloadWriter(QObject):
         with self._condition:
             if self._cancelled:return
             self._cancelled=True;self._queue.clear();self._buffered=0;self._condition.notify()
-        if self._future.cancel():self.finished.emit(None)
+            future=self._future;unstarted=not self._started or self._start_failed
+        if unstarted:
+            self._rollback_claim();self._complete(None)
+        elif future is not None and future.cancel():self._complete(None)
 
     def _run(self):
         stream=None;result=None;published=False
@@ -136,5 +164,4 @@ class DownloadWriter(QObject):
                 except OSError:pass
             # The owner can be destroyed during application shutdown. All disk
             # cleanup still completes; no late signal may revive a request.
-            try:self.finished.emit(result)
-            except RuntimeError:pass
+            self._complete(result)

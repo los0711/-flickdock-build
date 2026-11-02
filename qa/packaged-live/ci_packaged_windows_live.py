@@ -150,6 +150,57 @@ def producer_corner(width,height,target,screen_width,screen_height):
     return max(safe,key=lambda xy:(xy[0]+width/2-target[0])**2+(xy[1]+height/2-target[1])**2)
 
 
+def shelf_switch_diagnostics(profile,cloud):
+    """Only technical state for objects created by this isolated QA peer.
+
+    No original reference paths, names, credentials or text leave the profile.
+    The normal process is observed through its existing journal, not imported.
+    """
+    account=str(cloud.session['account']['id'])
+    if not re.fullmatch(r'[a-f0-9-]{36}',account):raise ValueError('Invalid isolated account')
+    root=Path(profile)/'cloud-shelves'/account
+    path=root/'state.json'
+    if path.is_symlink() or root.is_symlink() or path.stat().st_size>4*1024*1024:raise ValueError('Unsafe diagnostic state')
+    state=json.loads(path.read_text(encoding='utf8'))
+    if not isinstance(state,dict):raise ValueError('Invalid diagnostic state')
+    result={'entry_count':len(state.get('entries',{})),'download_count':len(state.get('downloads',{})),
+            'deferred_count':len(state.get('deferred_downloads',{})),
+            'awaiting_receive':bool(state.get('awaiting_receive')),'objects':[]}
+    cursor=str(state.get('cursor',''))
+    if cursor.isdecimal() and len(cursor)<=20:result['cursor']=cursor
+    for identity,version in list(getattr(cloud,'shelf_versions',{}).items())[:64]:
+        if not re.fullmatch(r'[a-f0-9-]{36}',identity) or type(version) is not int or not 0<version<2**53:continue
+        entry=state.get('entries',{}).get(identity,{})
+        download=state.get('downloads',{}).get(identity,{})
+        deferred=state.get('deferred_downloads',{}).get(identity,{})
+        row={'object_key':hashlib.sha256(identity.encode()).hexdigest()[:16],
+             'present':bool(entry),'version':entry.get('version') if type(entry.get('version')) is int else None,
+             'dirty':bool(entry.get('dirty')),'deleted':bool(entry.get('deleted')),
+             'download_present':bool(download),'verified_parts':len(download.get('hashes',{})),
+             'deferred':bool(deferred),'cache':[]}
+        # These are the exact small synthetic peer files, not journal refs or
+        # arbitrary names. Never inspect user-copy payloads or original files.
+        parent=root/'files'/identity/str(version);name='Actual local peer item'
+        if parent.is_dir() and not any(p.is_symlink() or getattr(p,'is_junction',lambda:False)() for p in [parent,*list(parent.parents)[:4]]):
+            candidates=[('assembled',parent/name),('chunk_0',parent/('.'+name+'.chunk-0'))]
+            from itertools import islice
+            candidates += [('temporary_part',p) for p in islice(parent.glob('.'+name+'*.part'),8)]
+            for kind,candidate in candidates:
+                if candidate.is_symlink() or not candidate.is_file():continue
+                size=candidate.stat().st_size
+                item={'kind':kind,'size':size}
+                if size<=1024:
+                    expected=('Synthetic remote shelf object '+identity+'\n').encode()
+                    item['matches_synthetic_sha256']=hashlib.sha256(candidate.read_bytes()).digest()==hashlib.sha256(expected).digest()
+                row['cache'].append(item)
+        result['objects'].append(row)
+    settings=Path(profile)/'settings.json'
+    if settings.is_file() and not settings.is_symlink() and settings.stat().st_size<65536:
+        value=json.loads(settings.read_text(encoding='utf8'))
+        result['settings']={key:value[key] for key in ('sync_upload_enabled','sync_receive_enabled','clipboard_sync_enabled') if type(value.get(key)) is bool}
+    return result
+
+
 def retain_diagnostics(output,profile,cloud):
     """Failure-safe allowlist export; never copy a private profile or raw log."""
     status={};errors=[]
@@ -165,6 +216,7 @@ def retain_diagnostics(output,profile,cloud):
                 if not isinstance(row,dict):continue
                 item={key:value for key,value in row.items() if key in ('index','started','status','first_byte','finished') and number(value)}
                 if row.get('method') in ('GET','POST','PUT','DELETE','PATCH','HEAD','OPTIONS'):item['method']=row['method']
+                if re.fullmatch('[0-9a-f]{16}',str(row.get('object_key',''))):item['object_key']=row['object_key']
                 path=str(row.get('path','')).split('?')[0]
                 path=re.sub(r'[0-9a-f]{8}-[0-9a-f-]{27,}',':id',path,flags=re.I)
                 item['path']=path if re.fullmatch(r'/(?:v1|api|updates|health)(?:/[A-Za-z0-9_:.-]{1,80})*',path) else 'UNRECOGNIZED_ROUTE'
@@ -176,6 +228,12 @@ def retain_diagnostics(output,profile,cloud):
             (output/'synthetic-gateway-stats.json').write_text(json.dumps(saved,indent=2));status['gateway_rows']=len(safe)
         except Exception as error:errors.append('gateway:'+type(error).__name__)
     if profile is not None:
+        if cloud is not None:
+            try:
+                snapshot=shelf_switch_diagnostics(profile,cloud)
+                (output/'synthetic-shelf-switch-state.json').write_text(json.dumps(snapshot,indent=2))
+                status['shelf_switch_state']=True
+            except Exception as error:errors.append('shelf-switch-state:'+type(error).__name__)
         try:
             raw=read(profile.parent/'recent-seed-proof.json',256*1024)
             if raw:

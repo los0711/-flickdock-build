@@ -53,6 +53,7 @@ RUNTIME_SOURCES=(
     'wan_transfer.py','webrtc_stream.py','nearby_transport.py','verify_wan.py','windows_network.py','windows_reveal.py',
 )
 MAINTAINED_TESTS=(
+    'test_download_terminal_v1824.py',
     'test_morph_snapshot_content_v1824.py',
     'test_windows_reveal_v1824.py',
     'test_transfer_balance_v1824.py',

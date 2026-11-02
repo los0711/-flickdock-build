@@ -2,6 +2,7 @@
 import https from 'node:https';
 import http from 'node:http';
 import {readFile,writeFile} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
 
 if(process.env.GITHUB_ACTIONS!=='true'||process.env.RUNNER_OS!=='Windows')throw Error('Ephemeral Windows CI only');
 const config=JSON.parse(await readFile(process.argv[2],'utf8'));
@@ -29,6 +30,8 @@ function forward(req,res,row){
 }
 const gateway=https.createServer({key:await readFile(config.key),cert:await readFile(config.cert)},(req,res)=>{
   const row={index:rows.length,method:req.method,path:route(req.url),started:performance.now()};rows.push(row);
+  const item=/^\/v1\/items\/([a-f0-9-]{36})(?:\/|\?)/i.exec(req.url);
+  if(item)row.object_key=createHash('sha256').update(item[1]).digest('hex').slice(0,16);
   if(hold&&req.method==='PUT'&&(req.url.startsWith('/v1/clipboard/')||req.url.startsWith('/v1/uploads/'))){
     if(held.length>=4){row.status=503;res.writeHead(503);res.end();return;}
     row.held=true;req.pause();held.push([req,res,row]);return;

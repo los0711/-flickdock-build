@@ -15,6 +15,30 @@ class FakeWorker:
     def wait(self,timeout):return 0
 
 class BoundTests(unittest.TestCase):
+    def test_shelf_diagnostic_exports_only_technical_fields_of_known_peer_objects(self):
+        import hashlib
+        account='11111111-1111-4111-8111-111111111111';identity='22222222-2222-4222-8222-222222222222'
+        with tempfile.TemporaryDirectory() as directory:
+            profile=Path(directory);root=profile/'cloud-shelves'/account;target=root/'files'/identity/'1'
+            target.mkdir(parents=True)
+            secret='private text and password must never be exported'
+            (root/'state.json').write_text(json.dumps(dict(cursor='4',entries={identity:dict(version=1,ref=secret,dirty=False)},
+                downloads={identity:dict(hashes={'0':'a'*64},name=secret)},deferred_downloads={},view={'texts':{'private':secret}})))
+            (target/'Actual local peer item').write_bytes(('Synthetic remote shelf object '+identity+'\n').encode())
+            (profile/'settings.json').write_text(json.dumps(dict(sync_receive_enabled=True,clipboard_sync_enabled=False,token=secret)))
+            cloud=SimpleNamespace(session={'account':{'id':account}},shelf_versions={identity:1})
+            result=qa.shelf_switch_diagnostics(profile,cloud);encoded=json.dumps(result)
+            self.assertNotIn(secret,encoded);self.assertNotIn(identity,encoded);self.assertNotIn(str(profile),encoded)
+            self.assertEqual(result['objects'][0]['object_key'],hashlib.sha256(identity.encode()).hexdigest()[:16])
+            self.assertEqual(result['objects'][0]['verified_parts'],1)
+            self.assertEqual(result['objects'][0]['cache'],[dict(kind='assembled',size=67,matches_synthetic_sha256=True)])
+            self.assertEqual(result['settings'],dict(sync_receive_enabled=True,clipboard_sync_enabled=False))
+
+    def test_shelf_diagnostic_rejects_arbitrary_account_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cloud=SimpleNamespace(session={'account':{'id':'../../private'}},shelf_versions={})
+            with self.assertRaisesRegex(ValueError,'isolated account'):qa.shelf_switch_diagnostics(Path(directory),cloud)
+
     def test_final_motion_uses_existing_isolated_worker_with_hard_deadline(self):
         driver=qa.Driver.__new__(qa.Driver)
         from unittest.mock import Mock
