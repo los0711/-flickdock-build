@@ -135,6 +135,50 @@ class FinalMotionTests(unittest.TestCase):
         self.mouse.click.side_effect=click;self.runner.set_pin(False)
         self.mouse.click.assert_called_once_with(button='left',coords=(192,36));pin.Toggle.assert_not_called()
 
+    def test_already_correct_pin_reuses_verified_observation_near_deadline(self):
+        pin=self.header_controls()['pin'];clock=[18.8]
+        self.runner.started=0;self.runner.deadline=20
+        original_named=self.runner.named
+        def query(key):
+            clock[0]+=.7
+            return original_named(key)
+        self.runner.named=Mock(side_effect=query)
+        original_selected=qa.selected
+        def read(control):
+            clock[0]+=.2
+            return original_selected(control)
+        with patch.object(qa.time,'monotonic',side_effect=lambda:clock[0]),patch.object(qa,'selected',side_effect=read):
+            self.runner.set_pin(True)
+        self.runner.named.assert_called_once_with('pin');self.mouse.click.assert_not_called()
+        self.assertAlmostEqual(clock[0],19.7)
+        self.assertEqual(self.runner.events[-1]['bounds'],list(pin.box))
+
+    def test_changed_pin_requires_fresh_strict_observation_and_confirmed_state(self):
+        pin=self.header_controls()['pin'];pin.toggle=1
+        replacement=Control('pin replacement','CheckBox','ToolbarButton',rectangle=(100,20,132,52));replacement.toggle=0
+        self.runner.target=Mock(return_value=pin);self.runner.named=Mock(return_value=replacement)
+        self.runner.wait=self.immediate_wait
+        self.runner.set_pin(False)
+        self.mouse.click.assert_called_once();self.runner.named.assert_called_once_with('pin')
+        self.assertEqual(self.runner.events[-1]['bounds'],list(replacement.box))
+
+    def test_changed_pin_wrong_or_indeterminate_state_cannot_pass(self):
+        pin=self.header_controls()['pin'];pin.toggle=1
+        self.runner.target=Mock(return_value=pin);self.runner.named=Mock(return_value=pin)
+        self.runner.wait=self.immediate_wait
+        for actual in (1,2):
+            with self.subTest(actual=actual):
+                pin.toggle=1
+                self.mouse.click.side_effect=lambda **_:setattr(pin,'toggle',actual)
+                with self.assertRaisesRegex(AssertionError,'actual pin state'):self.runner.set_pin(False)
+        self.assertFalse(any(row['step']=='actual-pin-state' for row in self.runner.events))
+
+    def test_pin_change_after_global_deadline_cannot_send_input(self):
+        pin=self.header_controls()['pin'];self.runner.target=Mock(return_value=pin)
+        self.runner.deadline=0
+        with self.assertRaisesRegex(AssertionError,'deadline before input'):self.runner.set_pin(False)
+        self.mouse.click.assert_not_called()
+
     def test_physical_click_does_not_reread_destroyed_provider(self):
         c=self.header_controls()['expand']
         self.mouse.click.side_effect=lambda **_:setattr(c,'rectangle',Mock(side_effect=RuntimeError('deleted wrapper')))

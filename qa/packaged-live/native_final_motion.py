@@ -112,9 +112,17 @@ class FinalMotion(Batch2):
     def set_pin(self,value):
         control=self.target('pin');initial=selected(control)
         if initial not in (0,1):raise AssertionError('Indeterminate actual pin checkbox')
-        if bool(initial)!=bool(value):self.input(control)
-        self.wait(lambda:bool(selected(self.target('pin')))==bool(value),'actual pin state')
-        self.mark('actual-pin-state',self.target('pin'),checked=bool(value))
+        if bool(initial)!=bool(value):
+            self.input(control)
+            def verified():
+                current=self.named('pin')
+                state=None if current is None else selected(current)
+                return current if state in (0,1) and bool(state)==bool(value) else None
+            control=self.wait(verified,'actual pin state')
+        # Record the actual observation already verified above. Re-enumerating
+        # the full UIA tree twice more adds no state check and can consume the
+        # bounded recipe deadline during restoration on a busy hosted desktop.
+        self.mark('actual-pin-state',control,checked=bool(value))
 
     def state(self):
         mode=self.mode()

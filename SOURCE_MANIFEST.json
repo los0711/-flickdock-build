@@ -1261,8 +1261,8 @@
     },
     {
       "path": "qa/packaged-live/native_final_motion.py",
-      "size": 19724,
-      "sha256": "1ac0eb2c4adb1ec08b1adceb729d4ba6c999bceaaff617ba84f8aa0bf422d238"
+      "size": 20156,
+      "sha256": "22d787a113de0c75bde9f3c8820d2b2805018f521ddd587789117eb5df41dbfc"
     },
     {
       "path": "qa/packaged-live/native_shake.py",
@@ -1311,8 +1311,8 @@
     },
     {
       "path": "qa/packaged-live/test_native_final_motion.py",
-      "size": 20457,
-      "sha256": "c1aa2a36afb480c8bfb30aeb3d6589d01ee97878de409fd9ba468ce8c27e94c8"
+      "size": 22942,
+      "sha256": "83e3035a5a51789505645d39b2b78befc8ac43add01b02c6740599f620992f6d"
     },
     {
       "path": "qa/packaged-live/test_native_shake.py",
