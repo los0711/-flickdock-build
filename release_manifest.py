@@ -127,6 +127,8 @@ SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'qa/packaged-live/test_cleanup_diagnostics.py',
     'qa/packaged-live/fixture_editor_lifecycle.py',
     'qa/packaged-live/test_fixture_editor_lifecycle.py',
+    'qa/packaged-live/test_reuse_passed_normal.py',
+    'qa/packaged-live/test_passed_installer_workflow.py',
     'qa/packaged-live/test_notice_cadence.py',
     'qa/packaged-live/test_native_writer_observation.py',
     'qa/packaged-live/test_native_command_mailbox.py',

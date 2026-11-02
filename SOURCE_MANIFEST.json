@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.24",
-  "purpose": "Current Smart development checkpoint QA only; full Smart Router incomplete, not approved for trial delivery or website publication",
+  "purpose": "User-authorized partial Windows trial installer from a passed immutable normal EXE; full Smart incomplete, no public release",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -26,8 +26,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 18445,
-      "sha256": "281b25f08899f98fb3b5aed7f7c06b8665496f17fdd8932e7dc82faacaf28f87"
+      "size": 21914,
+      "sha256": "2483688c0a5c9dd6369190c0742aa1c4a6a0fd8a541cbb21336c50a80c0488ed"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -1296,8 +1296,8 @@
     },
     {
       "path": "qa/packaged-live/reuse_frozen.py",
-      "size": 4304,
-      "sha256": "4958d3e3df6998e6e10f5097d3c2600962fd0635c3be6b07685a9728f89c8674"
+      "size": 10289,
+      "sha256": "d0339d984f7e84ea260f24bba2fc59be039806671f59dffa038786eab14d4b63"
     },
     {
       "path": "qa/packaged-live/seed_recent_peer.py",
@@ -1365,9 +1365,19 @@
       "sha256": "06ff8ca7d479b657eb6b024caef7aad4aea0a34043e99a7601e2e0b982513ea6"
     },
     {
+      "path": "qa/packaged-live/test_passed_installer_workflow.py",
+      "size": 2669,
+      "sha256": "1666350d3446b3ae0290e082f840b4e5aad88776246a5f5b74bdda09d94f1a05"
+    },
+    {
       "path": "qa/packaged-live/test_reenable_observation.py",
       "size": 2291,
       "sha256": "0ddcc461acdd54f0f456e36d0c0e8ddabb7ef98fd211b87b8a7fad720d554da7"
+    },
+    {
+      "path": "qa/packaged-live/test_reuse_passed_normal.py",
+      "size": 7312,
+      "sha256": "b2c8f277ebdc3ae95909719b15f2489e6d2a90b845b1993bbe5a3e7511a01fe5"
     },
     {
       "path": "qa/packaged-live/test_seed_recent_peer.py",
@@ -1446,8 +1456,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 41713,
-      "sha256": "801846f3d97f62361098c8f48245e2bd3ed345452255d89bc0e91f1442697190"
+      "size": 41825,
+      "sha256": "6929dd39626eb2acf32933a123f9e5c3c81593a75ab385bcfaa7fe6f2708628f"
     },
     {
       "path": "release_signing.py",
