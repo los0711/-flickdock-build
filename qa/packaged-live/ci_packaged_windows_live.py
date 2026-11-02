@@ -902,6 +902,11 @@ class _UIABackend:
         require_hosted()
         from native_batch3 import run
         return run(self,recipe)
+    def cleanup_fixture_editor(self):
+        lease=getattr(self,'_fixture_editor',None)
+        if lease is None:return dict(status='not_registered',close_requested=False,handle_released=True)
+        try:return lease.cleanup()
+        finally:self._fixture_editor=None
     def shake(self,recipe):
         require_hosted()
         from native_shake import run
@@ -1029,6 +1034,7 @@ class Driver(_UIABackend):
     def ui_extra(self,recipe):return self._rpc('ui_extra',seconds=40,recipe=recipe)
     def batch2(self,recipe):return self._rpc('batch2',seconds=75,recipe=recipe)
     def batch3(self,recipe):return self._rpc('batch3',seconds=55,recipe=recipe)
+    def cleanup_fixture_editor(self):return self._rpc('cleanup_fixture_editor',seconds=12)
     def shake(self,recipe):return self._rpc('shake',seconds=45,recipe=recipe)
     def final_motion(self,recipe,placement='default-edge'):return self._rpc('final_motion',seconds=50,recipe=recipe,placement=placement)
     def paste_file_in_explorer(self,source):return self._rpc('paste_file_in_explorer',seconds=45,source=str(source))
@@ -1042,7 +1048,7 @@ class Driver(_UIABackend):
 
 def uia_worker():
     require_hosted();backend=_UIABackend(int(sys.argv[2]),int(sys.argv[3]),Path(sys.argv[4]))
-    allowed={'windows','find','click','tree','hotkey','hover','focus_window','paste_file_in_explorer','drag_files','ui_extra','batch2','batch3','shake','final_motion'}
+    allowed={'windows','find','click','tree','hotkey','hover','focus_window','paste_file_in_explorer','drag_files','ui_extra','batch2','batch3','shake','final_motion','cleanup_fixture_editor'}
     def bounds(control):
         rect=control.rectangle();return [rect.left,rect.top,rect.right,rect.bottom]
     for line in sys.stdin:
@@ -1385,6 +1391,13 @@ def main():
             driver=locals().get('driver'),cloud=cloud)
         report['retained_diagnostics']=retain_diagnostics(args.output,profile if 'profile' in locals() else None,cloud)
         if 'driver' in locals():
+            try:
+                status=phase('cleanup-verified-fixture-editor',driver.cleanup_fixture_editor)
+                report['fixture_editor_cleanup']=status
+                if status.get('status') not in ('not_registered','already_closed','already_exited','already_released','closed') or not status.get('handle_released'):
+                    report['fixture_editor_cleanup_error']='FIXTURE_EDITOR_NOT_CLOSED';report['ok']=False
+            except Exception:
+                report['fixture_editor_cleanup_error']='FIXTURE_EDITOR_CLEANUP_UNAVAILABLE';report['ok']=False
             try:phase('cleanup-automation-worker',driver.close)
             except Exception as error:report['automation_cleanup_error']=type(error).__name__;report['ok']=False
         for child in reversed(children):

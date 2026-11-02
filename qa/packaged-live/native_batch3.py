@@ -403,7 +403,16 @@ class Batch3(Batch2):
         self.wait(lambda:self.scope('overview') is None,'shelf actually hides after opening original',seconds=4)
         observed=self.wait(lambda:self.observe_editor(before,expected),'external native editor with exact original path',seconds=7)
         self.mark('actual-open-original-and-shelf-hidden',**observed)
-        # Passive observation only: never type, close or terminate the editor.
+        # Keep it untouched throughout observation; only final QA cleanup may
+        # request WM_CLOSE on this exact, identity-verified fixture window.
+        from fixture_editor_lifecycle import FixtureEditorLease,WindowsEditorAPI
+        if getattr(self.b,'_fixture_editor',None) is not None:raise AssertionError('Fixture editor already registered')
+        def verified_command():
+            data=self.process_command(observed['pid'])
+            return (ntpath.basename(str(data.get('ExecutablePath') or '')).casefold()==observed['image']
+                    and command_has_exact_path(data.get('CommandLine'),expected))
+        self.b._fixture_editor=FixtureEditorLease.capture(WindowsEditorAPI(require_hosted),
+            pid=observed['pid'],hwnd=observed['handle'],image=observed['image'],verify=verified_command,guard=require_hosted)
         self.overview();self.mark('overview-restored-editor-left-unmodified')
 
     def run(self,recipe):

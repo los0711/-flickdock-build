@@ -1246,13 +1246,18 @@
     },
     {
       "path": "qa/packaged-live/ci_packaged_windows_live.py",
-      "size": 102165,
-      "sha256": "1719547a5df84f2593a1f37ce871964c1f9b4a1494375c371929fcb54c84de8f"
+      "size": 103132,
+      "sha256": "dbfbffd39f385928befe4cf3e484422c310da72434a19ed0f0d876041eab1aa5"
     },
     {
       "path": "qa/packaged-live/ci_windows_reveal_probe.py",
       "size": 14684,
       "sha256": "706f95fb80fa0e9d30cac22b3d5a402a493ab72e8c07be9c550ebaf10880afea"
+    },
+    {
+      "path": "qa/packaged-live/fixture_editor_lifecycle.py",
+      "size": 6543,
+      "sha256": "484d77bfb4518a5d94467091707833433846a05f4b986c1396fa5e40f283977f"
     },
     {
       "path": "qa/packaged-live/gateway.mjs",
@@ -1266,8 +1271,8 @@
     },
     {
       "path": "qa/packaged-live/native_batch3.py",
-      "size": 26164,
-      "sha256": "0dc1905c551f263dc753bd4f3b21b480b1ddaf3bf825d9c4a1b289758fe4a0f2"
+      "size": 26932,
+      "sha256": "d09127bc8b766bf3f4a6170bf511aac007d4f56d96604300a18ca27626e7dc39"
     },
     {
       "path": "qa/packaged-live/native_editor.py",
@@ -1303,6 +1308,11 @@
       "path": "qa/packaged-live/test_cleanup_diagnostics.py",
       "size": 7087,
       "sha256": "df904701dd5667c3e237a4e78cf9da549e316991f11c3067964b75ee4adcfd07"
+    },
+    {
+      "path": "qa/packaged-live/test_fixture_editor_lifecycle.py",
+      "size": 8588,
+      "sha256": "0d72af48c86009a7992d0b0321d66c008218884b323dea7e9ea2dc674afa37e8"
     },
     {
       "path": "qa/packaged-live/test_harness_bounds.py",
@@ -1436,8 +1446,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 41602,
-      "sha256": "ce8535959470b1c0d877551aaf302d3ed9f66557c2b36a99c11569d042e5384d"
+      "size": 41713,
+      "sha256": "801846f3d97f62361098c8f48245e2bd3ed345452255d89bc0e91f1442697190"
     },
     {
       "path": "release_signing.py",
