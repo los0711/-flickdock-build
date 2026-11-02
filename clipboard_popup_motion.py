@@ -79,7 +79,7 @@ class ClipboardPopupMotion(QObject):
                 self._bind(source);self.source_rect=QRectF(QPoint(source.mapToGlobal(QPoint())),source.size())
             self._animate(1.);return
         self._bind(source);area=self.available(source).adjusted(8,8,-8,-8)
-        window.refresh();window._fit_preview_layout(area.height()-40);hint=window.sizeHint()
+        window.refresh();window._fit_preview_layout(max(1,min(window._natural_surface_width,area.width()-40)),area.height()-40);hint=window.sizeHint()
         width=max(1,min(hint.width()-40,area.width()-40));height=max(1,min(hint.height()-40,area.height()-40))
         visual=getattr(self.owner,'visual_geometry',None)
         center=(visual() if callable(visual) else self.owner.frameGeometry()).center()

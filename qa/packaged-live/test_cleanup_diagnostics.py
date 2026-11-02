@@ -65,6 +65,17 @@ class CleanupDiagnosticsTests(unittest.TestCase):
             error=PermissionError(13,'secret',str(base/'files'/'..'/'..'/'private'))
             self.assertEqual(qa.cleanup_failure_details(error,base)['category'],'outside')
 
+    def test_profile_root_is_distinct_from_other_child_or_unknown_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base=Path(directory)
+            error=PermissionError(13,'private content',str(base));error.winerror=32
+            self.assertEqual(qa.cleanup_failure_details(error,base),dict(category='profile-root',errno=13,winerror=32))
+            error=PermissionError(13,'private content',str(base/'unclassified-secret'))
+            self.assertEqual(qa.cleanup_failure_details(error,base)['category'],'other')
+            error=PermissionError(13,'private content','relative-secret')
+            self.assertEqual(qa.cleanup_failure_details(error,base)['category'],'unknown')
+            self.assertEqual(qa.cleanup_failure_details(PermissionError('secret'),base)['category'],'unknown')
+
     def test_hostile_scalar_values_are_rejected_without_repr_or_str(self):
         class Private:
             def __str__(self):raise AssertionError('must not stringify')

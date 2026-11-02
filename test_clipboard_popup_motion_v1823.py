@@ -1,7 +1,7 @@
 """Real clipboard preview widgets, isolated clipboard and fixed-host pixels."""
 import unittest
 from unittest.mock import patch
-from PySide6.QtCore import QPoint,QRect,QRectF,Qt,QMimeData,QVariantAnimation,QEvent
+from PySide6.QtCore import QPoint,QRect,QRectF,QSize,Qt,QMimeData,QVariantAnimation,QEvent
 from PySide6.QtGui import QImage,QColor
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QPushButton,QApplication,QMenu
@@ -28,6 +28,45 @@ class ClipboardPopupTests(unittest.TestCase):
         source.click();dialog=self.manager.clipboard_preview_dialog
         self.assertTrue(dialog.isVisible());return source,dialog,dialog._popup_motion
     def land(self,motion):motion.animation.setCurrentTime(motion.animation.duration());ws.flush()
+
+    def test_real_width_note_hint_is_compact_and_resets_after_narrow_open(self):
+        source,dialog,motion=self.open();dialog.dismiss(immediate=True)
+        note=dialog.sync_limit_note;natural_width=note.sizeHint().width()
+        # Match observed Mac natural wrapping heuristic versus real-width
+        # height, without depending on the host platform's font fallback.
+        with patch.object(note,'sizeHint',new=lambda:QSize(natural_width,64)), \
+             patch.object(note,'heightForWidth',new=lambda width:32):
+            dialog.status.setMinimumHeight(17)
+            note.updateGeometry();dialog.status.updateGeometry();dialog.body_layout.invalidate()
+            for stage,area,expected_width in (
+                    ('normal',QRect(0,0,1200,900),420),
+                    ('narrow',QRect(0,0,360,480),304),
+                    ('normal-again',QRect(0,0,1200,900),420)):
+                with self.subTest(stage=stage),patch.object(motion,'available',return_value=area):
+                    try:
+                        dialog.open_from(source)
+                        host=QRect(dialog.geometry());surface=dialog.surface.size();native=dialog.winId()
+                        self.land(motion)
+                        # These assertions also prove the instance virtual-method
+                        # treatment reached Qt's actual layout cache, not only a
+                        # Python call that QWidgetItem ignored.
+                        self.assertEqual(note.sizeHint().height(),64)
+                        self.assertEqual(note.heightForWidth(note.width()),32)
+                        self.assertGreater(dialog.body_layout.sizeHint().height(),330)
+                        self.assertEqual(dialog.body_layout.totalHeightForWidth(dialog.surface.width()),329)
+                        self.assertLess(motion.target_rect.height(),330)
+                        self.assertEqual(motion.target_rect.width(),expected_width)
+                        self.assertEqual(dialog.surface.width(),expected_width)
+                        viewport=dialog.scroll.viewport()
+                        self.assertTrue(viewport.rect().contains(QRect(note.mapTo(viewport,QPoint()),note.size())))
+                        self.assertGreaterEqual(note.height(),note.heightForWidth(note.width()))
+                        self.assertEqual(dialog.scroll.verticalScrollBar().maximum(),0)
+                        self.assertEqual(dialog.geometry(),host);self.assertEqual(dialog.surface.size(),surface)
+                        self.assertEqual(dialog.winId(),native)
+                        self.assertEqual(dialog.body_layout.getContentsMargins(),(20,20,20,20))
+                        self.assertEqual(dialog.body_layout.spacing(),16)
+                    finally:
+                        dialog.dismiss(immediate=True);ws.flush()
 
     def test_sync_limit_note_fits_and_click_closes_without_upload_or_host_action(self):
         for overview in (False,True):

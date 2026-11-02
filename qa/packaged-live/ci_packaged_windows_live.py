@@ -104,7 +104,8 @@ def cleanup_failure_details(error,base):
         path=Path(os.path.normpath(path));anchor=Path(os.path.normpath(anchor))
         if not path.is_relative_to(anchor):result['category']='outside';return result
         parts=path.relative_to(anchor).parts
-        if parts[:2]==('FlickDock','clipboard-cache'):category='clipboard-cache'
+        if not parts:category='profile-root'
+        elif parts[:2]==('FlickDock','clipboard-cache'):category='clipboard-cache'
         elif parts[:2]==('FlickDock','cloud-shelves'):category='cloud-shelves'
         elif parts[:1]==('files',):category='synthetic-originals'
         elif parts and parts[0].startswith('native-paste-'):category='synthetic-paste'

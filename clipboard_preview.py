@@ -197,16 +197,28 @@ class ClipboardPreview(ReferenceModalDialog):
         if not hasattr(self,'_popup_motion'):return super().adjustSize()
         self._layout_surface()
 
+    def sizeHint(self):
+        hint=super().sizeHint()
+        if not hasattr(self,'body_layout'):return hint
+        width=getattr(self,'_presentation_width',hint.width()-40)
+        # QLabel's natural wrapped hint can assume a narrower width than
+        # this surface (notably with macOS font metrics). Reserve its real
+        # height for this width, not that heuristic's extra blank lines.
+        height=self.body_layout.totalHeightForWidth(width)
+        if height<0:height=hint.height()-40
+        return QSize(width+40,max(height,self.body_layout.minimumSize().height())+40)
+
     def _layout_surface(self):
         if self.surface.layout():self.surface.layout().activate()
         self.body_layout.activate()
 
-    def _fit_preview_layout(self,height):
+    def _fit_preview_layout(self,width,height):
         # Fit before reserving the native animation host. On short screens
         # keep the explanation visible rather than making a click-to-dismiss
         # preview depend on scrolling to reach its final line.
+        self._presentation_width=width
         self.body_layout.setContentsMargins(20,20,20,20);self.body_layout.setSpacing(16)
-        if self.body_layout.sizeHint().height()>height:
+        if self.sizeHint().height()-40>height:
             self.body_layout.setContentsMargins(16,12,16,12);self.body_layout.setSpacing(12)
 
     def _capture_surface(self):

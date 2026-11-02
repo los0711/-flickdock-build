@@ -656,13 +656,13 @@
     },
     {
       "path": "clipboard_popup_motion.py",
-      "size": 14529,
-      "sha256": "146ce434630d76de1c3422d2c8916262fde1eaab32e3d2a0082da1a139825800"
+      "size": 14587,
+      "sha256": "09d0ec224ea1eb4adf8fd0d30779a16c20e24c9e521dc8b0aee24c255f1d364c"
     },
     {
       "path": "clipboard_preview.py",
-      "size": 15117,
-      "sha256": "be47334823e7b0892e9c35656180e676fa60d4312263b386709c5b44d4a97f34"
+      "size": 15753,
+      "sha256": "f268c0a12a7460970ac127a212f871390c96bb48c8213828e0d0b74dd5846ca0"
     },
     {
       "path": "clipboard_sync.py",
@@ -1246,8 +1246,8 @@
     },
     {
       "path": "qa/packaged-live/ci_packaged_windows_live.py",
-      "size": 102118,
-      "sha256": "79d77b9d36e6c5995c3eceabc8d48998f7f93760a7ba6aafc55cafe2f678607a"
+      "size": 102165,
+      "sha256": "1719547a5df84f2593a1f37ce871964c1f9b4a1494375c371929fcb54c84de8f"
     },
     {
       "path": "qa/packaged-live/ci_windows_reveal_probe.py",
@@ -1301,8 +1301,8 @@
     },
     {
       "path": "qa/packaged-live/test_cleanup_diagnostics.py",
-      "size": 6261,
-      "sha256": "3e35122ed5f000f05926bb966384857553203384bc59ba92fca7e35045117e8c"
+      "size": 7087,
+      "sha256": "df904701dd5667c3e237a4e78cf9da549e316991f11c3067964b75ee4adcfd07"
     },
     {
       "path": "qa/packaged-live/test_harness_bounds.py",
@@ -1621,8 +1621,8 @@
     },
     {
       "path": "test_clipboard_popup_motion_v1823.py",
-      "size": 16931,
-      "sha256": "dc0961c9be28bd0fb4fa8f0728d759d278a26af9adc5dec44c4741fc613f123c"
+      "size": 19799,
+      "sha256": "789bd02af0a60ef08f01108d66db02b273147e6a88f57385c211f7238a202051"
     },
     {
       "path": "test_clipboard_preview_v1821.py",
