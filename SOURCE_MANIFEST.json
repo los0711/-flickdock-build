@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "Complete raw text/HTML integrity fused with strict decoding; verification only, no installer or release",
+  "purpose": "QA-only hosted Mac text phase trace; runtime identical to909b, no installer or release",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -26,8 +26,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 25385,
-      "sha256": "f7216ba6f04198fcaf8c262255670b88718c3054b7cc706e8721a3a00e2bc3dc"
+      "size": 26756,
+      "sha256": "2f5ef6bda26fc53b5d972e532b183a84c54f69b0a105be4d53cfe3c0f5a93938"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -1230,6 +1230,11 @@
       "sha256": "f056f843b0a7d31d4ef3d553ec14833a743a633dda8b57af053e7cdef5788549"
     },
     {
+      "path": "qa/native_text_profile.py",
+      "size": 5664,
+      "sha256": "bb13677aa1653ebea9e60e24741968100ff17ada4f5fa83c5d11d871c2a95ef8"
+    },
+    {
       "path": "qa/packaged-live/BATCH2.md",
       "size": 3158,
       "sha256": "8c19cc2e02c09bd8023b4a4b01153a5c3f36f09dae4e749dbf568ca3b2b4c082"
@@ -1506,8 +1511,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 43665,
-      "sha256": "6e39c76b0aad9e895d3a47786da260c1857c7d27c057b095949b909537c938fc"
+      "size": 43699,
+      "sha256": "1b7e3241edae4d4551e4862de725acd90f0e7b48c2f68b4d73e392d701451bac"
     },
     {
       "path": "release_signing.py",
