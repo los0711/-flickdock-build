@@ -234,6 +234,24 @@ class Batch3Tests(unittest.TestCase):
         self.assertEqual(self.runner.events[-1]['error_type'],'RuntimeError')
         self.assertNotIn('private payload',str(self.runner.events));self.mouse.click.assert_not_called()
 
+    def test_recent_clipping_native_point_uses_actual_ctypes_structure_not_tuple(self):
+        import ctypes
+        from ctypes import wintypes
+        _,view,row,_=self.recent_fixture();view.box=(100,100,455,350)
+        received=[]
+        # A real ctypes argument converter, not a Mock that accepts any tuple.
+        prototype=ctypes.CFUNCTYPE(ctypes.c_int,wintypes.POINT)
+        callback=prototype(lambda point:received.append((point.x,point.y)) or 90)
+        self.api.WindowFromPoint=callback
+        with self.assertRaises(ctypes.ArgumentError):callback((470,138))
+        with self.assertRaises(TypeError):wintypes.POINT.from_param((470,138))
+        with self.assertRaisesRegex(AssertionError,'clipped'):self.runner.row_remove_point(row)
+        self.assertEqual(received,[(470,138)])
+        hit=next(e for e in self.runner.events if e['step']=='recent-clipping-native-hit')
+        self.assertEqual((hit['hit'],hit['root'],hit['hit_pid'],hit['root_pid']),(90,90,123,123))
+        self.assertFalse(any(e['step']=='recent-clipping-observation-failed' for e in self.runner.events))
+        self.mouse.move.assert_not_called();self.mouse.click.assert_not_called()
+
     def drive_recent(self,close_whole_popup=False):
         popup,view,row,survivor=self.recent_fixture()
         combo=Control('Native QA peer','ComboBox','_DevicesCombo',self.root)

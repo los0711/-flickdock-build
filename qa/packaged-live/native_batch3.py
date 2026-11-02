@@ -262,7 +262,8 @@ class Batch3(Batch2):
         try:
             self.mark('recent-clipping-ancestry',point=list(point),
                       ancestors=[technical(c) for c in chain[:24]])
-            api=self.b._input_api();hit=int(api.WindowFromPoint(point) or 0)
+            from ctypes import wintypes
+            api=self.b._input_api();hit=int(api.WindowFromPoint(wintypes.POINT(*point)) or 0)
             root=int(api.GetAncestor(hit,2) or 0) if hit else 0
             self.mark('recent-clipping-native-hit',point=list(point),hit=hit,root=root,
                       hit_pid=self.b._window_pid(hit) if hit else 0,
