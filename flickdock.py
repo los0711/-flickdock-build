@@ -2813,7 +2813,13 @@ class ShelfWindow(QWidget):
     def add_transfer_actions(self,menu,refs):
         # Snapshot only logical references. No stat/hash/native icon provider
         # in a context-menu callback; the existing queue validates asynchronously.
-        refs=tuple(refs);ready=lambda:bool(refs) and all(self.transfer_paths_for_refs([ref]) for ref in refs)
+        requested=tuple(refs)
+        # Native text/link items are not files. They must keep text/plain and
+        # must not disable transfer of the actual files alongside them. Pasted
+        # text with an existing owned TXT backing is a transferable file.
+        refs=tuple(ref for ref in requested if not self.content.is_text(ref)
+            or self.content.metadata.get(ref,{}).get('text_file'))
+        ready=lambda:bool(refs) and all(self.transfer_paths_for_refs([ref]) for ref in refs)
         enabled=ready()
         for transport,title in (('lan','使用局域网传输'),('wan','使用远程传输')):
             def send(checked=False,transport=transport):
@@ -2821,7 +2827,9 @@ class ShelfWindow(QWidget):
                 paths=self.transfer_paths_for_refs(refs)
                 if paths:self.manager.queue_transfer_paths(transport,paths)
             action=menu.addAction(title,send);action.setEnabled(enabled)
-            if not enabled:action.setToolTip('所选内容全部下载或准备完成后可发送')
+            if not refs:action.setToolTip('纯文字和链接不是文件，请使用复制内容')
+            elif not enabled:action.setToolTip('所选文件全部下载或准备完成后可发送')
+            elif len(refs)!=len(requested):action.setToolTip('传输搁架中的所有文件，不含纯文字和链接')
 
     def show_menu(self, mode=None, pos=None):
         if confirmation_active(self):return

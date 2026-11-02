@@ -961,8 +961,8 @@
     },
     {
       "path": "flickdock.py",
-      "size": 245989,
-      "sha256": "27821befca0866204e8921f0323e35c14b54e6276d97ab874ce7cb684cf4d311"
+      "size": 246609,
+      "sha256": "5e5eca84603ee63d537d5abed098586c9b32bce99aecfcbee38eb541f073e3f0"
     },
     {
       "path": "flickdock_icons.py",
@@ -1246,8 +1246,8 @@
     },
     {
       "path": "qa/packaged-live/native_batch2.py",
-      "size": 31221,
-      "sha256": "3f01861e87f0f77a3cb04f4a548914ef677e8b3bba317f8bc7190b459dad83dd"
+      "size": 31741,
+      "sha256": "247b30a9ff25600c1fc65294995b974151338dc07e48386c17b3cfa1743bc21e"
     },
     {
       "path": "qa/packaged-live/native_batch3.py",
@@ -1296,8 +1296,8 @@
     },
     {
       "path": "qa/packaged-live/test_native_batch2.py",
-      "size": 18619,
-      "sha256": "38dbbd308aea6ed5ba90d2bfec00f9b9d6884a860b741566c98b079ecf87602f"
+      "size": 18669,
+      "sha256": "7bd1084938ac364d1a65891ec5d1888cd72c26ee0dd4ef4f75c01f5dc7c47aaf"
     },
     {
       "path": "qa/packaged-live/test_native_batch3.py",
@@ -2121,8 +2121,8 @@
     },
     {
       "path": "test_transfer_entry_v1822.py",
-      "size": 11670,
-      "sha256": "0c3ecee4279335dafbe885dd3fd845e2ff36e3291284573c11b6c4fe3474e144"
+      "size": 13488,
+      "sha256": "fdba71bba12c24d3e2fddc064986b8150b6b4b30a49b1221f9080ef6b077557e"
     },
     {
       "path": "test_transfer_interaction_v1823.py",

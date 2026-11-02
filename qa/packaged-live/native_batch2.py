@@ -285,9 +285,9 @@ class Batch2:
         for mode in ('lan','wan'):
             c=self.resolve('grid_text');self.input(c,kind='right',point=self.body_point(c))
             self.menu_action(mode);self.queue(['original-text.txt']);self.click('queue_clear','transfer');self.click('back','transfer')
-        # Mini's menu sends its entire shelf, including any real peer fixture
-        # objects already received by core QA. Record exact queue; don't assert
-        # that such a shelf contains exactly four files.
+        # Mini's menu sends all transferable files. Preserve the two real
+        # peer native-text fixtures in the shelf without materializing TXT.
+        # Record both inventories and validate the exact outgoing queue.
         all_names=sorted(c.element_info.name for c in self.scope('overview').descendants()
                          if c.is_visible() and c.element_info.class_name=='IconItem')
         if not set(ORIGINALS)<=set(all_names):raise AssertionError('Complete shelf card fixture unavailable for mini-all')
@@ -295,9 +295,15 @@ class Batch2:
                    for c in self.scope('overview').descendants()):
             raise AssertionError('Observed card inventory does not match actual overview total; mini-all proof requires complete fixture')
         self.mark('current-shelf-card-inventory',files=all_names)
+        non_files=sorted(name for name in all_names if name not in ORIGINALS)
+        if non_files!=['Actual local peer item','Actual local peer item']:
+            raise AssertionError('Unexpected non-file fixture inventory: '+repr(non_files))
+        # The two core peer fixtures are native text/plain, not file paths.
+        # Check all four original files, preserving those text items unchanged.
+        self.mark('current-shelf-transfer-file-inventory',files=sorted(ORIGINALS),native_text_count=2)
         for mode in ('lan','wan'):
             self.b.hotkey('^%{SPACE}');mini=self.wait(lambda:self.matches('mini') or None,'mini stack')[0]
-            self.input(mini,kind='right');self.menu_action(mode);self.queue(all_names,exact=True)
+            self.input(mini,kind='right');self.menu_action(mode);self.queue(sorted(ORIGINALS),exact=True)
             self.click('queue_clear','transfer');self.click('back','transfer')
 
     def theme(self):

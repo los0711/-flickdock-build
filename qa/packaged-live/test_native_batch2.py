@@ -136,15 +136,15 @@ class Batch2Tests(unittest.TestCase):
   self.assertEqual([c.args[0] for c in self.runner.click.call_args_list[:3]],['grid','select_all','deselect_all'])
   doubles=[c for c in self.runner.input.call_args_list if c.kwargs.get('kind')=='double']
   self.assertEqual([c.args[0] for c in doubles],[card,row]);self.assertEqual(check.toggle,0)
- def test_context_mini_all_checks_entire_observed_shelf_including_peer(self):
-  names=[*qa.ORIGINALS,'peer-shared.txt'];cards=[Control(name,'Group','IconItem',self.root) for name in names]
-  Control('5 项','Text','QLabel',self.root)
+ def test_context_mini_all_checks_all_files_preserving_two_native_peer_text_items(self):
+  names=[*qa.ORIGINALS,'Actual local peer item','Actual local peer item'];cards=[Control(name,'Group','IconItem',self.root) for name in names]
+  Control('6 项','Text','QLabel',self.root)
   mini=Control('搁架文件预览','Client','MiniStack',self.root)
   self.runner.overview=Mock();self.runner.click=Mock();self.runner.input=Mock();self.runner.menu_action=Mock()
   self.runner.resolve=Mock(return_value=cards[1]);self.runner.matches=Mock(return_value=[mini]);self.runner.queue=Mock()
   self.runner.context()
   mini_calls=[c for c in self.runner.queue.call_args_list if c.kwargs.get('exact')]
-  self.assertEqual(len(mini_calls),2);self.assertEqual(mini_calls[0].args[0],sorted(names))
+  self.assertEqual(len(mini_calls),2);self.assertEqual(mini_calls[0].args[0],sorted(qa.ORIGINALS))
   self.assertEqual([c.args[0] for c in self.runner.menu_action.call_args_list],['lan','wan','lan','wan'])
  def test_theme_repeats_and_restores_visible_initial_selection(self):
   initial={'light':0,'dark':1};controls={key:Control(key,'CheckBox') for key in initial}
