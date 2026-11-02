@@ -13,6 +13,7 @@ from pathlib import Path
 MAX_BYTES=100*1024*1024
 MAX_HEADER=16384
 MAX_WIRE=MAX_BYTES+MAX_HEADER+2048
+NATIVE_COPY_CHUNK_BYTES=262144
 MAGIC=b'FDCR1\0'
 SYNC_MARKER='application/x-flickdock-cloud-clipboard'
 IMAGE_FORMAT_PREFERENCE=(
@@ -219,7 +220,7 @@ def dib_image(raw,limit=MAX_BYTES):
 
 def _chunks(raw,start=0,end=None):
     end=len(raw) if end is None else end
-    for offset in range(start,end,262144):yield raw[offset:min(end,offset+262144)]
+    for offset in range(start,end,NATIVE_COPY_CHUNK_BYTES):yield raw[offset:min(end,offset+NATIVE_COPY_CHUNK_BYTES)]
 
 def _text_parts(raw,html,limit,*,cancel=None,encoding='utf-16-le'):
     if encoding=='utf-16-le':
@@ -229,15 +230,22 @@ def _text_parts(raw,html,limit,*,cancel=None,encoding='utf-16-le'):
         if end<0:raise Unsupported()
     elif encoding=='utf-8':end=len(raw)
     else:raise Unsupported()
-    decoder=codecs.getincrementaldecoder(encoding)('strict');text=[];size=0;digest=hashlib.sha256();too_large=False
+    # Every UTF-16 code unit needs at least one UTF-8 byte (a surrogate pair
+    # needs four). This lower bound can prove ineligibility before decoding;
+    # still validate and hash every original chunk, without retaining a full
+    # decoded copy which will be discarded just above the cloud threshold.
+    too_large=end//2>limit if encoding=='utf-16-le' else end>limit
+    decoder=codecs.getincrementaldecoder(encoding)('strict');text=[];size=0;digest=hashlib.sha256()
     for chunk in _chunks(raw,0,end):
         if cancel is not None and cancel.is_set():raise InterruptedError('Original analysis cancelled')
         part=decoder.decode(chunk);encoded=part.encode('utf8');size+=len(encoded);digest.update(encoded)
-        if size<=limit:text.append(part)
-        elif not too_large:text.clear();too_large=True
+        if not too_large:
+            if size<=limit:text.append(part)
+            else:text.clear();too_large=True
     final=decoder.decode(b'',final=True);size+=len(final.encode('utf8'));digest.update(final.encode('utf8'))
-    if size<=limit:text.append(final)
-    else:text.clear();too_large=True
+    if not too_large:
+        if size<=limit:text.append(final)
+        else:text.clear();too_large=True
     html_value='';html_size=0;html_digest=hashlib.sha256()
     if html is not None:
         fields={k.decode():int(v) for k,v in re.findall(rb'(StartHTML|EndHTML|StartFragment|EndFragment):\s*(-?\d+)',html[:4096])}
@@ -248,7 +256,7 @@ def _text_parts(raw,html,limit,*,cancel=None,encoding='utf-16-le'):
         for chunk in _chunks(html,a,b):
             if cancel is not None and cancel.is_set():raise InterruptedError('Original analysis cancelled')
             part=html_decoder.decode(chunk);html_size+=len(chunk);html_digest.update(chunk)
-            if size+html_size<=limit:pieces.append(part)
+            if not too_large and size+html_size<=limit:pieces.append(part)
             else:pieces.clear();too_large=True
         part=html_decoder.decode(b'',final=True)
         if not too_large:pieces.append(part);html_value=''.join(pieces)

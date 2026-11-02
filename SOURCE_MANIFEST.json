@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "Reviewed current-empty clipboard receipt, bounded owned stages, preview retirement and morph; fresh verification only, no installer or release",
+  "purpose": "Reviewed portable lock classification, bounded text analysis, private-baseline local protection and exact Copy QA; verification only, no installer or release",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -16,8 +16,8 @@
     },
     {
       "path": ".github/workflows/macos-build.yml",
-      "size": 7480,
-      "sha256": "8843c1b8af337b0cdd987fce43833eab761a37341afb4b7c21e3638a9f4e928e"
+      "size": 7548,
+      "sha256": "1b4197acf755b9dd39b9a2e64335cdeaf07cf2fce4819885209b98a489545ea9"
     },
     {
       "path": ".github/workflows/macos-intel-motion-diagnostic.yml",
@@ -26,8 +26,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 25273,
-      "sha256": "b432f230c42ea8376db38dbfe9aa9e85fa39b6aef46acd9808ad0770f2b76dfb"
+      "size": 25347,
+      "sha256": "6b8487819a771448027b77d8e67a3fd9e9f9e12f3b3b43ff71d81f2f6b632cf3"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -666,8 +666,8 @@
     },
     {
       "path": "clipboard_sync.py",
-      "size": 105132,
-      "sha256": "302c4bdd249d8f87a11755d6cbe8fa3abf569833909fe68904ecbb45cd1adea5"
+      "size": 106153,
+      "sha256": "d95666e5bd0057c5619e43ea7aaac1d07a3b4b630723d4fba6a8afcda8b6fc9b"
     },
     {
       "path": "cloud/.gitignore",
@@ -1506,8 +1506,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 43483,
-      "sha256": "6d6672d4f70e2d40d09d68c70589ec3944c9f506e679f3b4dba488355503a72a"
+      "size": 43619,
+      "sha256": "b478f2a084a0fcdf7b1e66e50eb52f9937d674b45dd8425231420c5d88a7f674"
     },
     {
       "path": "release_signing.py",
@@ -1753,6 +1753,11 @@
       "path": "test_clipboard_preview_v1821.py",
       "size": 9784,
       "sha256": "8d7aa02bc7cb4ea72bc71ca0a7ab2527bbffeb2694fa8c1ec8cf9083c2bddc03"
+    },
+    {
+      "path": "test_clipboard_private_baseline_v1825.py",
+      "size": 6632,
+      "sha256": "1478929e2ce614a79774dd2ed97cc926f25a0d495baf2b848be600453e6024b3"
     },
     {
       "path": "test_clipboard_reader_entry_v1825.py",
@@ -2140,6 +2145,11 @@
       "sha256": "df952c98fe8be47a824715822366dfc68fad5fc3b16fd741ae7c0a6e2c58eb00"
     },
     {
+      "path": "test_native_text_budget_v1825.py",
+      "size": 2694,
+      "sha256": "5d001bae28d9475ec87e8050e15f7d402c951cc9926a93de0f94d682ced59d8b"
+    },
+    {
       "path": "test_nearby_transport_v1818.py",
       "size": 8415,
       "sha256": "ff5d4ca01623f3065e1103e3083e88d09a3b8bd70595d5fbcaa083f486a66ca6"
@@ -2510,6 +2520,11 @@
       "sha256": "4632cbc2dd7be7cb5d57fc4d2e7522d182fd2cb1a3900afd2e6d0ca19a6c6bca"
     },
     {
+      "path": "test_verify_clipboard_commit_v1825.py",
+      "size": 2458,
+      "sha256": "c34b55cac5b4d82a84ac106a45b8452705a002c0c89133cb3616e86ed5f1bd41"
+    },
+    {
       "path": "test_wan_account_v1819.py",
       "size": 4165,
       "sha256": "2ad8d312e9f9c4a55adc92b7e2274b956a5643b26a83473dbe6e408d78973a69"
@@ -2541,8 +2556,8 @@
     },
     {
       "path": "test_win_clipboard_cache_v1825.py",
-      "size": 23094,
-      "sha256": "d29f3caebd43fffad717070ffd0fc11e3707a91c5445cf3263c65e448c527f67"
+      "size": 26904,
+      "sha256": "c84fd411637f41afbc5381a3ff8bde9d4a80058692526c66f6a5ec37b84d1823"
     },
     {
       "path": "test_win_clipboard_io_v1825.py",
@@ -2656,8 +2671,8 @@
     },
     {
       "path": "verify_clipboard.py",
-      "size": 11806,
-      "sha256": "23016546f1263a641028ccff50a68229f6c899a605e64e717fcb56e1dc88c2ae"
+      "size": 14654,
+      "sha256": "6a688a96c22131d7c07ce11db7b6565e7f06941ea27362a340ba7111b305d7d7"
     },
     {
       "path": "verify_cloud.py",
@@ -2806,8 +2821,8 @@
     },
     {
       "path": "win_clipboard_cache.py",
-      "size": 17500,
-      "sha256": "eac2af8155b32b705928603575d387c566572b59ba6416edaa4c25e5c204222a"
+      "size": 17697,
+      "sha256": "9fcbe400ec6a78a076b3b9516005e750710d70aa56cff8ef3790db6e79020b2e"
     },
     {
       "path": "win_clipboard_io.py",
@@ -2816,8 +2831,8 @@
     },
     {
       "path": "win_clipboard_native.py",
-      "size": 23871,
-      "sha256": "f25e9dc3d74eb847bef93a49734758054411858d33b1297ef988635c04e3d16a"
+      "size": 24361,
+      "sha256": "a405754837b7ba07841d6639b8b44b1dddc63732f2f58e9a49626a16f1e86f82"
     },
     {
       "path": "win_owned_process.py",

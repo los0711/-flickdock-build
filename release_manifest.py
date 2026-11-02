@@ -57,11 +57,14 @@ RUNTIME_SOURCES=(
     'wan_transfer.py','webrtc_stream.py','nearby_transport.py','verify_wan.py','windows_network.py','windows_reveal.py',
 )
 MAINTAINED_TESTS=(
+    'test_native_text_budget_v1825.py',
+    'test_verify_clipboard_commit_v1825.py',
     'test_native_read_retry_v1825.py',
     'test_native_image_fidelity_v1825.py',
     'test_shelf_stage_store_v1825.py',
     'test_clipboard_empty_bootstrap_v1825.py',
     'test_clipboard_empty_receive_v1825.py',
+    'test_clipboard_private_baseline_v1825.py',
     'test_chrome_event_scope_v1825.py',
     'test_qt_unittest_v1825.py',
     'test_clipboard_presenter_lifecycle_v1825.py',

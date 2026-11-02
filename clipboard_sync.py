@@ -795,6 +795,13 @@ class ClipboardSync(QObject):
             from PySide6.QtGui import QCursor
             point=QCursor.pos();self._copy_point=(point.x(),point.y())
             self._copy_notified_mono=time.monotonic()
+            baseline=self._baseline_pending
+            if (baseline is not None and baseline[0]==self._identity and baseline[2]
+                    and self._local_fence is None):
+                # Unclassified startup notifications cannot authorize upload,
+                # but an older peer must not erase their local native value.
+                self._local_fence=dict(mono=self._copy_notified_mono,at=None,floor=self._observed_clock)
+                self._copy_timestamp(self._local_fence)
             if not self.change_debounce.isActive():self.change_debounce.start()
 
     def _same_local_content(self,sig):
@@ -982,6 +989,10 @@ class ClipboardSync(QObject):
         if self.closed and not force:return
         identity=self._session_identity()
         accessible=self._native_accessible()
+        baseline=self._baseline_pending
+        private_receive_fence=(self._local_fence if identity==self._identity and not self.closed
+            and self.enabled and accessible and baseline is not None
+            and baseline[0]==identity and baseline[2] else None)
         if identity!=self._identity or self.closed or not self.enabled or not accessible:
             if self._empty_bootstrap is not None and self._suspended_intent is None:self._needs_security_baseline=True
             self._baseline_epoch+=1;self._empty_bootstrap=None
@@ -1047,6 +1058,9 @@ class ClipboardSync(QObject):
                 self._resume_local_intent(baseline,baseline_sig)
                 if security_boundary and baseline_sig is not None:
                     self._baseline_guard=(identity,baseline_sig);self._needs_security_baseline=False
+                    # Baseline completion is not a Copy. Keep only this same
+                    # session's first notification fence, never export intent.
+                    if private_receive_fence is not None:self._local_fence=private_receive_fence
                 elif security_boundary and accessible and known_empty:
                     # A stable, format-free native clipboard contains no old
                     # account payload. Its next actual Copy is a new event,

@@ -6,7 +6,7 @@ lease only closes its own read-only lock and wakes a coalesced cleanup worker;
 there is no per-copy cleanup thread or unbounded in-memory deletion queue.
 """
 from __future__ import annotations
-import hashlib,json,math,mmap,os,re,shutil,tempfile,threading,time,weakref
+import errno,hashlib,json,math,mmap,os,re,shutil,tempfile,threading,time,weakref
 from contextlib import contextmanager,ExitStack
 from dataclasses import dataclass,field
 from pathlib import Path
@@ -57,7 +57,9 @@ class _Lock:
                 fcntl.flock(self.file.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
         except OSError as error:
             self.file.close()
-            if error.errno in (11,13,36) or getattr(error,'winerror',None) in (32,33,158):raise CacheLeaseBusy(error.errno,'Owned cache lease is active') from None
+            # Nonblocking flock uses different errno values on macOS/Linux.
+            # Only a lock conflict is an active holder; other IO stays unknown.
+            if error.errno in (errno.EAGAIN,errno.EWOULDBLOCK,errno.EACCES) or getattr(error,'winerror',None) in (32,33,158):raise CacheLeaseBusy(error.errno,'Owned cache lease is active') from None
             raise
         except Exception:self.file.close();raise
     def close(self):

@@ -2,8 +2,69 @@
 import gc,hashlib,json,mmap,os,struct,subprocess,sys,tempfile,threading,time,unittest
 from dataclasses import FrozenInstanceError
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 import win_clipboard_cache as cache
+
+class LockErrorClassificationTests(unittest.TestCase):
+    def setUp(self):
+        from test_win_clipboard_io_v1825 import ensure_owned_process_temp
+        ensure_owned_process_temp()
+        self.temp=tempfile.TemporaryDirectory(prefix='fd-lock-classification-')
+        self.addCleanup(self.temp.cleanup)
+        self.base=Path(self.temp.name).resolve(strict=True)/'private'
+        self.root=self.base/('d'*32);self.root.mkdir(parents=True)
+        self.lock=self.root/'lease.lock';self.lock.write_bytes(b'0')
+        marker={'version':1,'token':self.root.name,'instance':'a'*32,'created':time.time()-86401}
+        (self.root/'owner.json').write_text(json.dumps(marker))
+
+    def run_sweep(self,number,platform_errno,*,windows=False,winerror=None):
+        def locked(*args):
+            error=OSError(number,'Synthetic lock failure')
+            if winerror is not None:error.winerror=winerror
+            raise error
+        api=(SimpleNamespace(LK_NBLCK=1,locking=locked) if windows else
+             SimpleNamespace(LOCK_EX=1,LOCK_NB=2,flock=locked))
+        # Replace this module's platform view, never process-wide os.name.
+        platform=SimpleNamespace(name='nt' if windows else 'posix',scandir=os.scandir)
+        with patch.object(cache,'os',platform),patch.object(cache,'errno',platform_errno,create=True),patch.dict(sys.modules,{'msvcrt' if windows else 'fcntl':api}),patch.object(cache,'cache_base',return_value=self.base),patch.object(cache,'_LAST_CLEANUP_STATUS',None),patch.object(cache,'_LAST_CLEANUP_ERROR',None):
+            cache._sweep()
+            result=(cache._LAST_CLEANUP_STATUS,cache._LAST_CLEANUP_ERROR)
+        self.assertTrue(self.root.exists())
+        return result
+
+    def test_mac_eagain_35_is_a_real_sweep_busy_skip(self):
+        status,error=self.run_sweep(35,SimpleNamespace(EAGAIN=35,EWOULDBLOCK=35,EACCES=13))
+        self.assertEqual(status,{'phase':'cleanup_lease','status':'active'});self.assertIsNone(error)
+
+    def test_linux_eagain_and_posix_access_conflict_remain_busy(self):
+        platform=SimpleNamespace(EAGAIN=11,EWOULDBLOCK=11,EACCES=13)
+        for number in (11,13):
+            with self.subTest(number=number):
+                status,error=self.run_sweep(number,platform)
+                self.assertEqual(status,{'phase':'cleanup_lease','status':'active'});self.assertIsNone(error)
+
+    def test_nonblocking_code_comes_from_current_platform_not_a_fixed_number(self):
+        profiles=((SimpleNamespace(EAGAIN=35,EWOULDBLOCK=35,EACCES=13),(5,11,36,63)),
+                  (SimpleNamespace(EAGAIN=11,EWOULDBLOCK=11,EACCES=13),(5,35,36)))
+        for platform,numbers in profiles:
+            for number in numbers:
+                with self.subTest(eagain=platform.EAGAIN,number=number):
+                    status,error=self.run_sweep(number,platform)
+                    self.assertIsNone(status);self.assertEqual(error['phase'],'cleanup_root');self.assertEqual(error['errno'],number)
+
+    def test_windows_documented_lock_conflicts_remain_busy(self):
+        platform=SimpleNamespace(EAGAIN=11,EWOULDBLOCK=11,EACCES=13)
+        for number in (32,33,158):
+            with self.subTest(winerror=number):
+                status,error=self.run_sweep(22,platform,windows=True,winerror=number)
+                self.assertEqual(status,{'phase':'cleanup_lease','status':'active'});self.assertIsNone(error)
+
+    def test_lock_open_permission_error_is_not_an_active_holder(self):
+        error=PermissionError(13,'Synthetic open denied')
+        with patch('builtins.open',side_effect=error):
+            with self.assertRaises(PermissionError) as raised:cache._Lock(self.lock)
+        self.assertIs(raised.exception,error);self.assertNotIsInstance(raised.exception,cache.CacheLeaseBusy)
 
 class TempBaseAliasTests(unittest.TestCase):
     def setUp(self):
@@ -206,7 +267,7 @@ class OriginalCacheTests(unittest.TestCase):
         marker=json.loads((root/'owner.json').read_text());marker.update(instance='a'*32,created=time.time()-86401);(root/'owner.json').write_text(json.dumps(marker));root.with_suffix('.owner.json').write_text(json.dumps(marker))
         # Controlled lost-process namespace state, not a real process crash.
         with cache._GUARD:cache._LIVE.pop(cap.token,None)
-        cache._sweep();self.assertTrue(root.exists());self.assertEqual(cache._LAST_CLEANUP_STATUS,{'phase':'cleanup_lease','status':'active'})
+        cache._sweep();self.assertTrue(root.exists());self.assertEqual(cache._LAST_CLEANUP_STATUS,{'phase':'cleanup_lease','status':'active'},cache._LAST_CLEANUP_ERROR)
         cap.lock.close();cap.lock=None;cache._sweep();self.assertFalse(root.exists())
     def test_exact_helper_argument_parser_rejects_before_any_native_capture(self):
         import win_clipboard_native as native

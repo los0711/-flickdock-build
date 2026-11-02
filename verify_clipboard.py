@@ -6,7 +6,7 @@ if NATIVE:
         raise RuntimeError('Native clipboard QA is restricted to an ephemeral CI runner.')
     os.environ['QT_QPA_PLATFORM']='cocoa' if sys.platform=='darwin' else 'windows'
 else:os.environ['QT_QPA_PLATFORM']='offscreen'
-import json,tempfile,time
+import hashlib,json,tempfile,time
 from uuid import uuid4
 from pathlib import Path
 from PySide6.QtCore import QObject,Signal,QMimeData,QUrl
@@ -32,6 +32,60 @@ class Events(QObject):
     connected=Signal()
     def __init__(self):super().__init__();self.socket=self
 
+def safe_client_state(client):
+    def identity(value):return hashlib.sha256(value.encode('utf8')).hexdigest()[:12] if value else ''
+    sample=client._native_sample or {}
+    sequence=client._last_sequence
+    return dict(seen=identity(client._seen),view_id=identity(client.view.get('id','')),
+        phase=client.view.get('phase'),error_code=client.view.get('error_code'),
+        baseline_pending=client._baseline_pending is not None,baseline_guard=client._baseline_guard is not None,
+        needs_security_baseline=client._needs_security_baseline,has_local_fence=client._local_fence is not None,
+        pending=client._pending is not None,local_retry=client._local_retry is not None,
+        generation=client._generation,native_generation=client._native_generation,
+        last_sequence=sequence if type(sequence)is int else None,
+        notifications=getattr(client,'_notification_serial',0),reader_active=client._native_read_token is not None,
+        sample_status=sample.get('status'),sample_code=sample.get('code'),
+        fetch_active=client._fetching,worker_jobs=len(client._jobs))
+
+
+class LocalCopyReceipt:
+    """Bind verification to a new local intent, not a late prior upload ACK."""
+    def __init__(self,client):
+        self.client=client;self.initial_generation=client._generation
+        self.generations=[];self.task_ids=set();self.committed=set();self.closed=False
+        client.copy_started.connect(self._started)
+        client.view_changed.connect(self._view)
+        client.copy_result.connect(self._result)
+
+    def _started(self):
+        if not self.closed:self.generations.append(self.client._generation)
+
+    def _view(self,view):
+        if (not self.closed and len(self.generations)==1
+                and self.client._generation==self.generations[0]
+                and view.get('phase')=='uploading' and view.get('id')):
+            self.task_ids.add(view['id'])
+
+    def _result(self,ok,context):
+        if not self.closed and ok and context['id'] in self.task_ids:
+            self.committed.add(context['id'])
+
+    def complete(self):
+        return (not self.closed and len(self.generations)==1
+            and self.generations[0]>self.initial_generation
+            and self.client._generation==self.generations[0]
+            and len(self.task_ids)==1 and self.committed==self.task_ids
+            and self.client._seen in self.committed
+            and self.client._pending is None and self.client._local_retry is None)
+
+    def close(self):
+        if self.closed:return
+        self.closed=True
+        self.client.copy_started.disconnect(self._started)
+        self.client.view_changed.disconnect(self._view)
+        self.client.copy_result.disconnect(self._result)
+
+
 def main():
     # Windowed Windows executables intentionally have no Python stdin object.
     if '--verify-connection' in sys.argv:
@@ -41,7 +95,7 @@ def main():
     def until(predicate):
         deadline=time.monotonic()+45
         while not predicate() and time.monotonic()<deadline:app.processEvents();time.sleep(.005)
-        assert predicate(),'clipboard operation did not finish'
+        assert predicate(),'clipboard operation did not finish: '+json.dumps([safe_client_state(client) for client in clients],sort_keys=True)
     with tempfile.TemporaryDirectory(prefix='flickdock-clipboard-http-') as directory:
         clips=[app.clipboard() if NATIVE else Clipboard(),Clipboard()];accounts=[Account(connection['origin'],connection[key]) for key in ('a','b')]
         events=[CloudEvents(account,enabled=False) for account in accounts]
@@ -61,8 +115,11 @@ def main():
                 finished=[];api.request(method,path,lambda result,error:finished.append((result,error)),**kwargs)
                 until(lambda:bool(finished));result,error=finished[0];assert error is None,str(error);return result
             def publish(index,mime):
-                previous=clients[index]._seen;clips[index].setMimeData(mime)
-                until(lambda:clients[index]._seen!=previous and clients[index]._pending is None)
+                receipt=LocalCopyReceipt(clients[index])
+                try:
+                    clips[index].setMimeData(mime)
+                    until(receipt.complete)
+                finally:receipt.close()
             intake=dict(item_id=str(uuid4()),upload_id=str(uuid4()),name='Preparing original folder',kind='file',size=0)
             request(accounts[0].api,'POST','/v1/sync/intake',data={'items':[intake]})
             rows=request(accounts[1].api,'GET','/v1/sync/changes')['transfers']
