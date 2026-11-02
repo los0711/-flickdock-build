@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "QA-only bounded UIA readiness and phase trace; runtime identical to909b, no installer or release",
+  "purpose": "QA-only complete native text materialization stage timings; runtime identical to909b, no installer or release",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -1231,8 +1231,8 @@
     },
     {
       "path": "qa/native_text_profile.py",
-      "size": 5664,
-      "sha256": "bb13677aa1653ebea9e60e24741968100ff17ada4f5fa83c5d11d871c2a95ef8"
+      "size": 12897,
+      "sha256": "ab6d14a5c023b3d06887b653e59dc23cac89b693189a6f53cf00d854420dcee0"
     },
     {
       "path": "qa/packaged-live/BATCH2.md",
