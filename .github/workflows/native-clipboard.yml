@@ -356,19 +356,19 @@ jobs:
       - name: Check delayed formats, input fields and shared upload regressions
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m unittest test_clipboard_origin_v1823 test_clipboard_loop_v1824 test_sync_switch_lifecycle_v1824 test_transfer_interaction_v1823 test_clipboard_sync_v1819 test_clipboard_fast_v1821 test_shared_clipboard_files_v1821 test_pointer_paste_v1819 -q
+        run: python -X faulthandler qt_unittest.py test_clipboard_origin_v1823 test_clipboard_loop_v1824 test_sync_switch_lifecycle_v1824 test_transfer_interaction_v1823 test_clipboard_sync_v1819 test_clipboard_fast_v1821 test_shared_clipboard_files_v1821 test_pointer_paste_v1819 -v
       - name: Verify independent updater handoff regressions
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m unittest test_update_inline_v171 -q
+        run: python -X faulthandler qt_unittest.py test_update_inline_v171 -v
       - name: Verify current platform file-manager and functional layout contracts before full builds
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m unittest test_ui_polish_v1823 test_functional_layout_v1823 test_update_exit_v1823 test_update_macos_controller -q
+        run: python -X faulthandler qt_unittest.py test_ui_polish_v1823 test_functional_layout_v1823 test_update_exit_v1823 test_update_macos_controller -v
       - name: Verify frame lifecycle, popup and real control-state paint regressions
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m unittest test_windows_reveal_v1824 test_transfer_balance_v1824 test_item_reflow_occlusion_v1824 test_native_owner_lifetime_v1824 test_frame_animation_v1824 test_screen_animation_timer_v1824 test_user_popup_fixes_v1823 test_standard_control_states_v1824 test_disabled_field_states_v1824 -q
+        run: python -X faulthandler qt_unittest.py test_windows_reveal_v1824 test_transfer_balance_v1824 test_item_reflow_occlusion_v1824 test_native_owner_lifetime_v1824 test_frame_animation_v1824 test_screen_animation_timer_v1824 test_user_popup_fixes_v1823 test_standard_control_states_v1824 test_disabled_field_states_v1824 -v
       - name: Verify all motion paths with explicit ordinary and reduced-motion prerequisites
         shell: pwsh
         env:
@@ -410,8 +410,8 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          QT_QPA_PLATFORM=offscreen python -m unittest test_motion_resources_v1822.DisplayMetadataTests -v
-          QT_QPA_PLATFORM=offscreen python -m unittest test_stability_v1822 test_resources_v1822.ResourceTests test_motion_resources_v1822.MotionTests test_motion_resources_v1822.DisplayMetadataTests test_motion_resources_v1822.MacVolumeTests test_receive_lifecycle_v1822.ReceiveLifecycleTests test_transfer_entry_v1822.EntryTests test_small_upload_lane.SmallLaneTests -q
+          QT_QPA_PLATFORM=offscreen python -X faulthandler qt_unittest.py test_motion_resources_v1822.DisplayMetadataTests -v
+          QT_QPA_PLATFORM=offscreen python -X faulthandler qt_unittest.py test_stability_v1822 test_resources_v1822.ResourceTests test_motion_resources_v1822.MotionTests test_motion_resources_v1822.DisplayMetadataTests test_motion_resources_v1822.MacVolumeTests test_receive_lifecycle_v1822.ReceiveLifecycleTests test_transfer_entry_v1822.EntryTests test_small_upload_lane.SmallLaneTests -v
       - name: Inspect native volume metadata on the disposable Mac filesystem
         if: runner.os == 'macOS'
         shell: bash

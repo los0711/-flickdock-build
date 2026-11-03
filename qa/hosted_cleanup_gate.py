@@ -22,7 +22,7 @@ JOBS={'Windows':frozenset({'frozen-normal-entry','cleanup-boundaries'}),
       'macOS':frozenset({'build','cleanup-boundaries'})}
 PLATFORMS={'Windows':'win32','macOS':'darwin'}
 RUNTIME={
-    'clipboard_sync.py':'6eb2e683b3ce24c892307bb02dc78043f7ffcfd70f67d33f690ce40d42adb306',
+    'clipboard_sync.py':'b5a78cc67006e243b2b57bc221d9822aaa652564597f66d036731b7157279aa7',
     'clipboard_cleanup.py':'569d3066bf9936a2cd92386b7a8d64efbe014a2f523f611097b86c9d11ba4ea6',
     'clipboard_cleanup_worker.py':'fd631a9451ca62aaee90f9c2f5e1bb5c068fdc78fcda15883d34631a963f6552',
 }

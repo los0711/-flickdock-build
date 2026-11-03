@@ -75,6 +75,8 @@ class HostedCandidateTests(unittest.TestCase):
     def test_runtime_hash_binding_and_native_free_local_review(self):
         self.assertEqual(len(gate.RUNTIME),3)
         self.assertTrue(all(gate.HEX.fullmatch(value) for value in gate.RUNTIME.values()))
+        self.assertEqual({name:gate.sha(SOURCE.parent.parent/name) for name in gate.RUNTIME},gate.RUNTIME,
+            'An intentional runtime edit requires an explicitly reviewed source pin; never bypass the gate')
         tree=ast.parse(SOURCE.read_text(encoding='utf-8'))
         imports=[node.module or '' for node in ast.walk(tree) if isinstance(node,ast.ImportFrom)]
         self.assertNotIn('qa.clipboard_cleanup_synthetic',imports)

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "Invalidate only successful idle cleanup results on a real protection-context change; failure backoff and format-noise budget retained. Owned QA leases age consistently across processes.",
+  "purpose": "QA only: retain exact reviewed clipboard-sync hash enforcement and honor already-requested Qt fixture destruction in six remaining Qt suites; same test identities/deadlines, native Mac failures remain unresolved pending actual replay.",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -26,8 +26,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 35898,
-      "sha256": "e14bbbfb199dba38cd24e4c3325baf935c64d1f3e2458b9af0c85c0bd6d435bf"
+      "size": 36012,
+      "sha256": "5952d21be4d64a3ca954e7a4af2e402f1ab95c6fb38a63a2dd8248f17ca88763"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -1282,7 +1282,7 @@
     {
       "path": "qa/hosted_cleanup_gate.py",
       "size": 12643,
-      "sha256": "4ea5743da7ff5e378a7c9f57eda1a812bb3a9a5eb49631fa11b84ad77f6e9846"
+      "sha256": "6cb90b09c4961e2dfdd0403c27cf0098b24c2c7a5cd754f83c5f95f58263fe68"
     },
     {
       "path": "qa/macos_motion_diagnostic_v1824.py",
@@ -1581,8 +1581,8 @@
     },
     {
       "path": "qa/test_hosted_cleanup_gate_v1825.py",
-      "size": 6405,
-      "sha256": "ffc26f24e39fc04c86c042a5a57bceb052afb8c58c9329462885f20e3ef57866"
+      "size": 6621,
+      "sha256": "1935ba44f1a86a6a61ebf924d404434198c22bc43c584eafee1914aef0695a9d"
     },
     {
       "path": "qa/test_macos_motion_diagnostic_v1824.py",
