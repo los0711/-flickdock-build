@@ -39,7 +39,7 @@ on:
       normal_actions_scope:
         description: Full acceptance or isolated native observation (never installer acceptance)
         type: choice
-        options: [full, core, header-sequence-observation, tray-observation, recent-observation, writer-observation, receive-first-observation]
+        options: [full, core, header-sequence-observation, header-isolated-observation, tray-observation, recent-observation, writer-observation, receive-first-observation]
         default: full
       reveal_probe:
         description: Run the isolated Windows Shell selection diagnostic
@@ -593,6 +593,8 @@ jobs:
             python qa/packaged-live/ci_packaged_windows_live.py --exe $nativeExe --sha256 $nativeHash --root $PWD --output build/normal-native-qa
           } elseif ($env:NORMAL_ACTIONS_SCOPE -eq 'header-sequence-observation') {
             python qa/packaged-live/ci_packaged_windows_live.py --exe $nativeExe --sha256 $nativeHash --root $PWD --output build/normal-native-qa --actions qa/packaged-live/ui-header-sequence.json
+          } elseif ($env:NORMAL_ACTIONS_SCOPE -eq 'header-isolated-observation') {
+            python qa/packaged-live/ci_packaged_windows_live.py --exe $nativeExe --sha256 $nativeHash --root $PWD --output build/normal-native-qa --header-only
           } elseif ($env:NORMAL_ACTIONS_SCOPE -eq 'tray-observation') {
             python qa/packaged-live/ci_packaged_windows_live.py --exe $nativeExe --sha256 $nativeHash --root $PWD --output build/normal-native-qa --actions qa/packaged-live/ui-tray-observation.json
           } elseif ($env:NORMAL_ACTIONS_SCOPE -eq 'recent-observation') {

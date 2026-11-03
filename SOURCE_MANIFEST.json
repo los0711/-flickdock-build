@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "Targeted connection-generation replay, unused TURN carrier isolation and permanent download failure policy. Hosted requested header/menu/dock observation and local native protocol verification only. No publication/installer acceptance; previous preview bytes unchanged.",
+  "purpose": "Isolated actual header/menu/dock observation of unchanged ec8 runtime. Earlier normal receive failure remains failed, not bypassed for acceptance. No installer or release.",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -26,8 +26,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 38097,
-      "sha256": "013f1d0a784d18590a1002cebba4cfc9f0c0442b5375c66869a11ffc401c2975"
+      "size": 38371,
+      "sha256": "2833ec9fdda82ccee4f4e7dd7ee2a95394758885d7a9107b89989e7053777963"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -1336,8 +1336,8 @@
     },
     {
       "path": "qa/packaged-live/ci_packaged_windows_live.py",
-      "size": 116198,
-      "sha256": "266713aed16f9d69cfadf6327f54502bde5b810149dbb43049da7cbadc05ae39"
+      "size": 117509,
+      "sha256": "28d1fa68de2a2d96a438aa97aca29ad3d4a3837071cc2b5f8111582cbf85942f"
     },
     {
       "path": "qa/packaged-live/ci_windows_reveal_probe.py",

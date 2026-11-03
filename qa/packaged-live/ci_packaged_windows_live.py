@@ -33,6 +33,10 @@ class _ReceiveFirstComplete(Exception):
     """End this isolated QA scope while retaining the common cleanup gates."""
 
 
+class _HeaderObservationComplete(Exception):
+    """An isolated motion observation does not qualify the normal core."""
+
+
 def require_virgin_empty_metadata(state):
     if (not isinstance(state,dict) or state.get('clipboard_modified') is not False
             or state.get('opened') is not True or state.get('closed') is not True
@@ -1263,7 +1267,10 @@ def main():
     parser.add_argument('--supplement-actions',type=Path)
     parser.add_argument('--writer-observation',action='store_true')
     parser.add_argument('--receive-first',action='store_true')
+    parser.add_argument('--header-only',action='store_true')
     args=parser.parse_args();require_hosted()
+    if args.header_only and any((args.receive_first,args.writer_observation,args.actions,args.extra_actions,args.batch2_actions,args.supplement_actions)):
+        raise ValueError('Header-only is isolated observation, never normal core or installer acceptance')
     if args.writer_observation and any((args.actions,args.extra_actions,args.batch2_actions,args.supplement_actions)):
         raise ValueError('Writer observation cannot be combined with full GUI acceptance actions')
     if args.receive_first and any((args.writer_observation,args.actions,args.extra_actions,args.batch2_actions,args.supplement_actions)):
@@ -1314,6 +1321,14 @@ def main():
             assert not any(row['method'] in ('POST','PUT') and row['path'].startswith('/v1/uploads')
                            for row in cloud.stats()['rows']),'Startup with shelf upload disabled wrote shelf data'
             phase('initial-accessibility-tree',lambda:(args.output/'initial-accessibility.json').write_text(json.dumps(driver.tree(),ensure_ascii=False,indent=2)),screens=True)
+            if args.header_only:
+                report['header_observation']=recorder.run('isolated-header-expand-collapse-more-dock',
+                    lambda:driver.final_motion('header-menu-dock'),duration=1.)
+                report.update(ok=True,observation_only=True,installer_acceptance=False,native_input=True,
+                    validation_scope='isolated-header-only',core_accepted=False,
+                    actual_service_requests=cloud.stats()['rows'],
+                    screen_segments=[dict(label=row['label'],distinct_pixels=row['distinct_pixels']) for row in recorder.segments])
+                raise _HeaderObservationComplete()
             if args.receive_first:
                 def receive_before_any_local_copy():
                     text='synthetic virgin peer receive '+os.urandom(6).hex()
@@ -1566,6 +1581,9 @@ def main():
                 report['checks'].append('Two distinct external native copies each commit their exact payload once; notice expiry creates no extra POST or clipboard write')
                 report.update(ok=True,native_input=True,real_system_clipboard=True,local_workerd=True,tls_verification=True,
                     actual_service_requests=cloud.stats()['rows'],screen_segments=[dict(label=row['label'],distinct_pixels=row['distinct_pixels']) for row in recorder.segments])
+    except _HeaderObservationComplete:
+        if not args.header_only or report.get('validation_scope')!='isolated-header-only':
+            raise AssertionError('Invalid isolated header observation completion')
     except _ReceiveFirstComplete:
         if not args.receive_first or report.get('receive_first',{}).get('received') is not True:
             raise AssertionError('Invalid receive-first QA completion')
