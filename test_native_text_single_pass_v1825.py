@@ -1,5 +1,6 @@
 """Owned original validation: full raw hashes share the strict text scan."""
 import gc,hashlib,json,os,struct,tempfile,threading,unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 import win_clipboard_cache as cache
@@ -36,7 +37,7 @@ class NativeTextSinglePassTests(unittest.TestCase):
         paths={cap.root/(part['name']+'.bin'):part['name'] for part in descriptor['local_parts']}
         inodes={(path.stat().st_dev,path.stat().st_ino):name for path,name in paths.items()}
         counts={name:dict(file_read_bytes=0,mapped_chunk_bytes=0) for name in paths.values()};maps={}
-        real_open=Path.open;real_map=cache.mmap.mmap;real_chunks=native._chunks
+        real_open=Path.open;real_map=cache.mmap.mmap;real_spans=native._text_spans
         class Stream:
             def __init__(self,source,name):self.source=source;self.name=name
             def read(self,*a,**kw):
@@ -49,11 +50,15 @@ class NativeTextSinglePassTests(unittest.TestCase):
             return Stream(source,paths[path]) if path in paths and (a[0] if a else kw.get('mode','r'))=='rb' else source
         def mapped(fd,*a,**kw):
             value=real_map(fd,*a,**kw);info=os.fstat(fd);maps[id(value)]=inodes[(info.st_dev,info.st_ino)];return value
-        def chunks(value,*a,**kw):
-            for part in real_chunks(value,*a,**kw):
-                if id(value) in maps:counts[maps[id(value)]]['mapped_chunk_bytes']+=len(part)
-                yield part
-        with patch.object(Path,'open',opened),patch.object(cache.mmap,'mmap',side_effect=mapped),patch.object(native,'_chunks',chunks):content=cap.adopt(descriptor)
+        @contextmanager
+        def spans(value,*a,**kw):
+            with real_spans(value,*a,**kw) as source:
+                def counted():
+                    for part in source:
+                        if id(value) in maps:counts[maps[id(value)]]['mapped_chunk_bytes']+=len(part)
+                        yield part
+                yield counted()
+        with patch.object(Path,'open',opened),patch.object(cache.mmap,'mmap',side_effect=mapped),patch.object(native,'_text_spans',spans):content=cap.adopt(descriptor)
         print(json.dumps(dict(case='parent_raw_traversals',counts=counts,raw_sizes=dict(text=len(raw),html=len(html)))))
         self.assertEqual(sum(row['file_read_bytes'] for row in counts.values()),0,'Raw SHA must not rescan the complete file before strict decoding')
         self.assertEqual(counts['text']['mapped_chunk_bytes'],len(raw));self.assertEqual(counts['html']['mapped_chunk_bytes'],len(html))

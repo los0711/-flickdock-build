@@ -222,6 +222,28 @@ def _chunks(raw,start=0,end=None):
     end=len(raw) if end is None else end
     for offset in range(start,end,NATIVE_COPY_CHUNK_BYTES):yield raw[offset:min(end,offset+NATIVE_COPY_CHUNK_BYTES)]
 
+@contextmanager
+def _text_spans(raw,start=0,end=None):
+    """Borrow only inside strict text analysis; errors may retain tracebacks."""
+    end=len(raw) if end is None else end
+    # Keep slice-only provider adapters working; real native buffers can be borrowed.
+    try:base=memoryview(raw)
+    except TypeError:base=None
+    value=raw if base is None else base
+    def spans():
+        for offset in range(start,end,NATIVE_COPY_CHUNK_BYTES):
+            part=value[offset:min(end,offset+NATIVE_COPY_CHUNK_BYTES)]
+            try:yield part
+            finally:
+                if isinstance(part,memoryview):part.release()
+    stream=spans()
+    try:yield stream
+    finally:
+        try:stream.close()
+        finally:
+            if base is not None:base.release()
+
+
 def _text_parts(raw,html,limit,*,cancel=None,encoding='utf-16-le',part_digests=None):
     if part_digests is not None and type(part_digests)is not dict:raise TypeError('Raw digest output must be a dictionary')
     if encoding=='utf-16-le':
@@ -239,16 +261,18 @@ def _text_parts(raw,html,limit,*,cancel=None,encoding='utf-16-le',part_digests=N
     decoder=codecs.getincrementaldecoder(encoding)('strict');text=[];size=0;digest=hashlib.sha256()
     raw_text=hashlib.sha256() if part_digests is not None else None
     def hash_span(sha,value,start,stop):
-        for chunk in _chunks(value,start,stop):
+        with _text_spans(value,start,stop) as chunks:
+            for chunk in chunks:
+                if cancel is not None and cancel.is_set():raise InterruptedError('Original analysis cancelled')
+                sha.update(chunk)
+    with _text_spans(raw,0,end) as chunks:
+        for chunk in chunks:
             if cancel is not None and cancel.is_set():raise InterruptedError('Original analysis cancelled')
-            sha.update(chunk)
-    for chunk in _chunks(raw,0,end):
-        if cancel is not None and cancel.is_set():raise InterruptedError('Original analysis cancelled')
-        if raw_text is not None:raw_text.update(chunk)
-        part=decoder.decode(chunk);encoded=part.encode('utf8');size+=len(encoded);digest.update(encoded)
-        if not too_large:
-            if size<=limit:text.append(part)
-            else:text.clear();too_large=True
+            if raw_text is not None:raw_text.update(chunk)
+            part=decoder.decode(chunk);encoded=part.encode('utf8');size+=len(encoded);digest.update(encoded)
+            if not too_large:
+                if size<=limit:text.append(part)
+                else:text.clear();too_large=True
     final=decoder.decode(b'',final=True);size+=len(final.encode('utf8'));digest.update(final.encode('utf8'))
     if not too_large:
         if size<=limit:text.append(final)
@@ -266,12 +290,13 @@ def _text_parts(raw,html,limit,*,cancel=None,encoding='utf-16-le',part_digests=N
         if part_digests is not None:
             raw_html=hashlib.sha256();hash_span(raw_html,html,0,a)
         html_decoder=codecs.getincrementaldecoder('utf8')('strict');pieces=[]
-        for chunk in _chunks(html,a,b):
-            if cancel is not None and cancel.is_set():raise InterruptedError('Original analysis cancelled')
-            if raw_html is not None:raw_html.update(chunk)
-            part=html_decoder.decode(chunk);html_size+=len(chunk);html_digest.update(chunk)
-            if not too_large and size+html_size<=limit:pieces.append(part)
-            else:pieces.clear();too_large=True
+        with _text_spans(html,a,b) as chunks:
+            for chunk in chunks:
+                if cancel is not None and cancel.is_set():raise InterruptedError('Original analysis cancelled')
+                if raw_html is not None:raw_html.update(chunk)
+                part=html_decoder.decode(chunk);html_size+=len(chunk);html_digest.update(chunk)
+                if not too_large and size+html_size<=limit:pieces.append(part)
+                else:pieces.clear();too_large=True
         part=html_decoder.decode(b'',final=True)
         if not too_large:pieces.append(part);html_value=''.join(pieces)
         if raw_html is not None:hash_span(raw_html,html,b,len(html))

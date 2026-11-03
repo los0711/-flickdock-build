@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "Windows directory sharing access correction from actual hosted failure; text-view candidate excluded; no installer/release",
+  "purpose": "Scoped text-only buffer borrowing with explicit failure release; actual platform verification pending, no installer or release",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -16,8 +16,8 @@
     },
     {
       "path": ".github/workflows/macos-build.yml",
-      "size": 8754,
-      "sha256": "1043e73b0a82a869f8c5edaf1d7a75f342dd08259b8d560a5b63f6b8694d539c"
+      "size": 8783,
+      "sha256": "2d631a1d4f027bbb2f8ee2d7ab046b62c1671cce1747d1a6197a1c5db6cd5aa2"
     },
     {
       "path": ".github/workflows/macos-intel-motion-diagnostic.yml",
@@ -26,8 +26,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 30069,
-      "sha256": "f3841bbbb21755395ba9487c7d93a98fdbc23c11fbaf7115c3fb0a5c345fb527"
+      "size": 30101,
+      "sha256": "8965b369f15ffadb06330841a70e9bfaec0c07df6c7ae8d50827b24bb8be7795"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -1541,8 +1541,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 43998,
-      "sha256": "f6428a2c683eedfd6a953167fa902aaebf1485a807e13fc9bd45c824dcf21fa3"
+      "size": 44038,
+      "sha256": "90109a9557302576d5b639f985a1aeb43250eac51f01b2ddaa19e4c9a70c29bb"
     },
     {
       "path": "release_signing.py",
@@ -2196,8 +2196,13 @@
     },
     {
       "path": "test_native_text_single_pass_v1825.py",
-      "size": 7226,
-      "sha256": "5bc7e6cfbb250a07d7e840d35630615c5bc0c70816a6f352b6dabc8f5dec2847"
+      "size": 7414,
+      "sha256": "95d03abfda0fe3e593e55e9aaf45196a8e9ef30497d5c264d3388515260404ce"
+    },
+    {
+      "path": "test_native_text_views_v1825.py",
+      "size": 5201,
+      "sha256": "d37921da2c560ecac607f0b523850af69aa668d9f9dd175a4c93f839b40f0d89"
     },
     {
       "path": "test_nearby_transport_v1818.py",
@@ -2881,8 +2886,8 @@
     },
     {
       "path": "win_clipboard_native.py",
-      "size": 25555,
-      "sha256": "080db011c3f0f437e8d0419b66ebbf9471a30579ed3bb2a3b8226eeae4687d9d"
+      "size": 26491,
+      "sha256": "632dfb067228358bdabe93cfba83ea10111d5a996bc30201e8654d80ea8ec517"
     },
     {
       "path": "win_owned_process.py",
