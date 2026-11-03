@@ -1507,6 +1507,7 @@ def main():
                 batch2=json.loads(args.batch2_actions.read_text(encoding='utf8')) if args.batch2_actions else []
                 supplements=json.loads(args.supplement_actions.read_text(encoding='utf8')) if args.supplement_actions else []
                 actions=compose_actions(actions,extras,batch2,supplements)
+                report['validation_scope']='full' if actions else 'core'
                 for index,step in enumerate(actions):
                     if application.poll() is not None:raise AssertionError('Frozen app exited during native UI flow')
                     def execute(step=step):

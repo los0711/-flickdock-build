@@ -76,10 +76,24 @@ class ScopeGates(unittest.TestCase):
         for name in ('Ensure native installer compiler for same-byte validation','Verify exact production installer with a real old process and relaunch'):
             block=workflow.split('- name: '+name,1)[1].split('- name:',1)[0]
             guard=next(line for line in block.splitlines() if line.strip().startswith('if:'))
-            self.assertIn("normal_actions_scope != 'writer-observation'",guard)
             self.assertIn("installer_acceptance == 'true'",guard)
+            def allowed(scope,acceptance='true'):
+                inputs=SimpleNamespace(normal_actions_scope=scope,installer_acceptance=acceptance)
+                return eval(guard.strip()[4:].replace('&&','and').replace('||','or'),{'__builtins__':{}},
+                    {'github':SimpleNamespace(event=SimpleNamespace(inputs=inputs))})
+            for scope in ('core','full'):self.assertTrue(allowed(scope))
+            for scope in ('writer-observation','recent-observation','tray-observation','receive-first-observation','unknown'):
+                self.assertFalse(allowed(scope))
+            self.assertFalse(allowed('core','false'))
         inputs=workflow.split('      installer_acceptance:',1)[1].split('      reuse_normal_run:',1)[0]
         self.assertIn('type: boolean',inputs);self.assertIn('default: false',inputs)
+
+    def test_core_trial_runs_real_normal_entry_without_the_unrelated_ui_action_lists(self):
+        workflow=(HERE.parents[1]/'.github/workflows/native-clipboard.yml').read_text(encoding='utf8')
+        branch=workflow.split("if ($env:NORMAL_ACTIONS_SCOPE -eq 'core') {",1)[1].split('} elseif',1)[0]
+        self.assertIn('ci_packaged_windows_live.py --exe $nativeExe --sha256 $nativeHash',branch)
+        self.assertNotIn('--actions',branch);self.assertNotIn('--writer-observation',branch)
+        self.assertNotIn('--receive-first',branch);self.assertNotIn('--verify',branch)
 
 
 if __name__=='__main__':unittest.main()

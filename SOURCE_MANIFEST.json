@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "Shelf admission uses one asynchronous filesystem preflight and one prepared commit; obsolete synchronous classifier removed. Copy-owned result metadata prepared before worker success and safely cleaned on cancellation.105controlled checks plus original actual intake scripts passed; old held-copy appearance test also failed on unchanged d1 and was migrated to settled existing status glyph, no styling, layout or animation implementation changed. No new frozen/installer/publication acceptance.",
+  "purpose": "QA-only Windows trial core scope: actual normal EXE native Copy/Paste, receive/upload/clipboard switches, live shelf and notice noecho, then same-SHA production installer coverage. User authorised preliminary stable Windows test package by2026-11-03 19:00 Shanghai; incomplete features disclosed, no website publication. Full platform/unit/UI action suites skipped.6pure scope/installer guards passed; application runtime identical8e92.",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -26,8 +26,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 36012,
-      "sha256": "5952d21be4d64a3ca954e7a4af2e402f1ab95c6fb38a63a2dd8248f17ca88763"
+      "size": 36338,
+      "sha256": "3531b5355879154dd6a896959f7d56d21885ecf4ffd7ce8c39689b7ee82c6f3b"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -1331,8 +1331,8 @@
     },
     {
       "path": "qa/packaged-live/ci_packaged_windows_live.py",
-      "size": 115893,
-      "sha256": "a1a735ec75a672d0ccc33d4594d28ce3c8add7a9a7ee4af2595e79d7d5b8e2dc"
+      "size": 115966,
+      "sha256": "8c83bb6994be0aa97fd0bb81270ed182ddb8875e605a806c194593aa2f3fe301"
     },
     {
       "path": "qa/packaged-live/ci_windows_reveal_probe.py",
@@ -1536,8 +1536,8 @@
     },
     {
       "path": "qa/packaged-live/test_writer_scope_gates.py",
-      "size": 6067,
-      "sha256": "bcb6b7302d1fe4103c3141ce5fde12a8639aa559c3e377a6653ca584b0921c81"
+      "size": 7210,
+      "sha256": "f1bb6945c064b8803245a0aa848c010bd99ccf0d568abc6c3727b80b5fdc0de0"
     },
     {
       "path": "qa/packaged-live/ui-actions.json",
