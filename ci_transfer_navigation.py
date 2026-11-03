@@ -65,6 +65,10 @@ def main():
                 assert sum(control.isChecked() for control in dialog.mode_buttons.values())==1
                 assert dialog.mode_buttons[mode].parentWidget() is dialog.mode_segment
                 QTest.keySequence(dialog.panel.drop_zone,QKeySequence(QKeySequence.StandardKey.Paste));app.processEvents()
+                # File Paste now captures in its owned helper. Observe the
+                # committed draft within the existing five-second wait budget;
+                # one processEvents() cannot stand in for asynchronous success.
+                wait(lambda:dialog.panel._queued_paths==[str(original)])
                 assert dialog.panel._queued_paths==[str(original)] and dialog.winId()==native
             checks.append('native segmented modes keep one window and original-file Paste')
             dialog.close();wait(lambda:not dialog.isVisible())

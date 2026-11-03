@@ -89,7 +89,12 @@ def main():
             wait(acknowledged)
         def puts():return sum(method=='PUT' for method,_ in hub.calls)
         try:
-            wait(lambda:all(not client._fetching for client in clients))
+            # The user chose privacy: copies made before the initial native
+            # baseline is known remain local. The ordinary-Copy checks below
+            # start only after real readiness; the private-baseline suite tests
+            # the overlapping first-Copy branch and prohibits later replay.
+            wait(lambda:all(not client._fetching and not client._needs_security_baseline for client in clients))
+            assert puts()==0,'Initial private clipboard was uploaded during baseline initialization'
             before=native_sequence();command('type');settle()
             assert native_sequence()==before and puts()==0,'Typing changed clipboard or uploaded content'
             checks.append('separate native editor typing preserves clipboard')

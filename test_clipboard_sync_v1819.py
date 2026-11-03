@@ -135,7 +135,16 @@ class ClipboardTests(unittest.TestCase):
         (old/'private.bin').write_bytes(b'old private copy');unmarked=old.parent/'clip-unrelated';unmarked.mkdir();(unmarked/'keep').write_bytes(b'original')
         account=Account(self.hub.api('restart'),'restart');account.signed_in=False
         client=ClipboardSync(account,Events(),base,enabled=True,clipboard=Clipboard());self.clients.append(client)
-        until(lambda:not old.exists());self.assertTrue((unmarked/'keep').exists())
+        try:until(lambda:not old.exists())
+        except AssertionError as error:
+            operation=client._cleanup_runner.active
+            observed=dict(cleanup_status=client._cleanup_status,
+                cache_has_alias=client.cache.resolve(strict=True)!=client.cache.absolute(),
+                helper_active=operation is not None,
+                helper_result=operation.result if operation is not None else None,
+                paused_records=len(client._cleanup_paused),inventory=client._cleanup_inventory)
+            raise AssertionError('Owned startup cleanup did not finish: '+json.dumps(observed)) from error
+        self.assertTrue((unmarked/'keep').exists())
 
     def test_near_limit_file_keeps_its_bytes_despite_archive_headers(self):
         source=self.base/'near-limit.bin';source.write_bytes(b'x'*4095);out=self.base/'pack';out.mkdir()

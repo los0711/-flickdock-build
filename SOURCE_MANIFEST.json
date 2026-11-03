@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "Windows advertised-file Paste owned reader/draft scope; legacy aliases unchanged. Failed shelf retry remains unresolved; build validation only.",
+  "purpose": "QA only: user privacy-selected baseline readiness, async draft observation and retained Mac cleanup failure diagnostics; runtime identical7bc.",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -616,8 +616,8 @@
     },
     {
       "path": "ci_clipboard_origin.py",
-      "size": 8084,
-      "sha256": "004174988ec8ce4d9f20a79c064adde475b2f24810980f2ad321d50c3d16e48c"
+      "size": 8534,
+      "sha256": "37ebcdd39f8345dfd6becb0ed177466d9e4933101bd638a30b2790521082e6a1"
     },
     {
       "path": "ci_installer_close.py",
@@ -636,8 +636,8 @@
     },
     {
       "path": "ci_transfer_navigation.py",
-      "size": 10260,
-      "sha256": "a30569df7bcd99ebcf8bbfd40173390cd067c7a4930eee7bd0848c3ae08019d3"
+      "size": 10567,
+      "sha256": "66e344b18d6c5cb841fa098d127f19d2ef734976aff0eb5fd644531d4b360352"
     },
     {
       "path": "ci_utility_windows.py",
@@ -1911,8 +1911,8 @@
     },
     {
       "path": "test_clipboard_sync_v1819.py",
-      "size": 16704,
-      "sha256": "b6c4912898b00d038e19d5e8aaa3fde00c83945ebe728fe9a29d9a1c6500fb33"
+      "size": 17304,
+      "sha256": "44c101dd9fa4d824a2610748083421b6dffc396a75776081ccc20a90429c3d6f"
     },
     {
       "path": "test_clipboard_transport_v1825.py",
