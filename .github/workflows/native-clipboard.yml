@@ -3,10 +3,11 @@ name: Native clipboard verification
 on:
   workflow_dispatch:
     inputs:
-      owned_producer_lookup:
-        description: Isolated owned producer lookup only; no application acceptance
-        type: boolean
-        default: false
+      diagnostic_probe:
+        description: Standalone owned QA only; not application or installer acceptance
+        type: choice
+        options: [none, owned-producer-lookup, explicit-paste-formats]
+        default: none
       cleanup_boundaries:
         description: Isolated real process/filesystem cleanup checks; not frozen application or installer acceptance
         type: boolean
@@ -52,8 +53,47 @@ permissions:
   actions: read
 
 jobs:
+  explicit-paste-format-probe:
+    if: github.repository == 'los0711/-flickdock-build' && github.event_name == 'workflow_dispatch' && inputs.diagnostic_probe == 'explicit-paste-formats'
+    runs-on: windows-latest
+    timeout-minutes: 12
+    env:
+      PYTHONUTF8: '1'
+      PYTHONUNBUFFERED: '1'
+      FD_QA_NATIVE: '1'
+      FD_EXPLICIT_PASTE_FORMAT_PROBE: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Validate pure guards and codecs before native dependencies
+        shell: pwsh
+        run: |
+          python qa/packaged-live/verify_frozen_source.py --before-build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -X utf8 -m unittest discover -s qa/explicit-paste-format-probe -p test_probe_contract.py -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Install exact existing application dependencies for Qt converter compatibility
+        run: python -m pip install -r requirements.txt
+      - name: Standalone owned native format observation on this fresh runner
+        shell: pwsh
+        run: |
+          python -X utf8 qa/explicit-paste-format-probe/qt_format_probe.py --source-root $PWD --output build/explicit-paste-format-probe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Preserve raw observation including failure and unverified formats
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: explicit-paste-formats-${{ github.sha }}-${{ github.run_attempt }}
+          path: build/explicit-paste-format-probe/
+          if-no-files-found: error
+          retention-days: 3
+
   owned-producer-lookup-probe:
-    if: github.repository == 'los0711/-flickdock-build' && github.event_name == 'workflow_dispatch' && inputs.owned_producer_lookup == true
+    if: github.repository == 'los0711/-flickdock-build' && github.event_name == 'workflow_dispatch' && inputs.diagnostic_probe == 'owned-producer-lookup'
     runs-on: windows-latest
     timeout-minutes: 4
     env:
@@ -444,6 +484,8 @@ jobs:
           python -m unittest discover -s qa/packaged-live -p test_native_image_observation.py -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m unittest discover -s qa/packaged-live -p test_image_observation_handoff.py -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest discover -s qa/packaged-live -p test_uia_window_phases.py -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m unittest discover -s qa/packaged-live -p test_reader_observation_handoff.py -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

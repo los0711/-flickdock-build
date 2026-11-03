@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "Single-pass strict local text validation and complete cache hashing; actual platform validation pending, not release",
+  "purpose": "Explicit paste compatibility probe plus safe UIA phase diagnostics; runtime unchanged8b713, no release",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -26,8 +26,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 32187,
-      "sha256": "1673afa102def4747fb05edeefd0ea8ce08fec9a2f55ca0c681bcb394b3e8753"
+      "size": 34332,
+      "sha256": "c74d2e5c9f60ce1d5004a3a1cb8c07627d3a7708ec25fac9aeb6cdc8a1eec4c1"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -1240,6 +1240,36 @@
       "sha256": "d15b700091e8b33a5f08dc5a163508a20174086acfc0d08043458cc81b11d71e"
     },
     {
+      "path": "qa/explicit-paste-format-probe/native_blocked_provider.py",
+      "size": 3976,
+      "sha256": "d6f7948ab8e0f12d566c436258b00d6fe5e798e80d1b73153181f553d54374f5"
+    },
+    {
+      "path": "qa/explicit-paste-format-probe/native_observer.py",
+      "size": 5428,
+      "sha256": "439587769b3caceaac7ed45bdbc08d297260f9da241e4f57721fe47c05e596e4"
+    },
+    {
+      "path": "qa/explicit-paste-format-probe/probe_contract.py",
+      "size": 14242,
+      "sha256": "55e4c9773e40bbbd911d78249b89e1021f502f0ff315c7875effd972cf6062e6"
+    },
+    {
+      "path": "qa/explicit-paste-format-probe/qt_format_probe.py",
+      "size": 17837,
+      "sha256": "031a56bf8b10d26aa8de839edc482a626feff0c0345a5e2bf40bb28025a43e32"
+    },
+    {
+      "path": "qa/explicit-paste-format-probe/qt_legacy_observer.py",
+      "size": 4217,
+      "sha256": "e05709e0d3c35e099871747030338e01c6de42f51810fa9768fcb6bc288a761f"
+    },
+    {
+      "path": "qa/explicit-paste-format-probe/test_probe_contract.py",
+      "size": 21254,
+      "sha256": "734778404cc2ec07ece5834c44fa32676a4a27b8a88fbbe19bcaadbadc8acad8"
+    },
+    {
       "path": "qa/hosted_cleanup_gate.py",
       "size": 12643,
       "sha256": "4ea5743da7ff5e378a7c9f57eda1a812bb3a9a5eb49631fa11b84ad77f6e9846"
@@ -1286,8 +1316,8 @@
     },
     {
       "path": "qa/packaged-live/ci_packaged_windows_live.py",
-      "size": 114788,
-      "sha256": "5ec86943052116bc2a3fd4bfe7dae398a00667eef5eb4c4e341695d1d5859fab"
+      "size": 115148,
+      "sha256": "134de71b9794eff04d23b741b8fab28c307bd4e1805f3d407d43b692c0d934a4"
     },
     {
       "path": "qa/packaged-live/ci_windows_reveal_probe.py",
@@ -1475,6 +1505,11 @@
       "sha256": "fe0a478529d7371b2b9851f3c3360f2948316dcdd1dabe3f6b74a45e13a1671e"
     },
     {
+      "path": "qa/packaged-live/test_uia_window_phases.py",
+      "size": 4942,
+      "sha256": "4b5b8b063617bd4cdbe90c57324f8a51c211b7471b0b1d4a35e60bb0569e98ed"
+    },
+    {
       "path": "qa/packaged-live/test_writer_scope_gates.py",
       "size": 6067,
       "sha256": "bcb6b7302d1fe4103c3141ce5fde12a8639aa559c3e377a6653ca584b0921c81"
@@ -1556,8 +1591,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 44234,
-      "sha256": "88d5db0607bce411cedb8153e759f71be84389134eb3366346eddfa537ed3b3d"
+      "size": 44647,
+      "sha256": "8df6ab4bfcecd99027829c68685915088b92c8c864b7683b70007200f1e4ddb3"
     },
     {
       "path": "release_signing.py",

@@ -18,7 +18,7 @@ OWNED_CHILD_KILL_SECONDS=5
 UIA_WORKER_READY_SECONDS=12
 UIA_WORKER_PROTOCOL=1
 UIA_OPERATIONS=frozenset({'windows','find','click','tree','hotkey','hover','focus_window','paste_file_in_explorer','drag_files','ui_extra','batch2','batch3','shake','final_motion','cleanup_fixture_editor'})
-UIA_WORKER_STAGES=frozenset({'worker_boot','backend_import_begin','backend_import_complete','backend_construct_begin','backend_ready','request_begin','windows_findall_begin','windows_findall_complete','request_complete'})
+UIA_WORKER_STAGES=frozenset({'worker_boot','backend_import_begin','backend_import_complete','backend_construct_begin','backend_ready','request_begin','windows_findall_begin','windows_findall_complete','windows_visibility_begin','windows_visibility_complete','request_complete'})
 
 
 def _uia_worker_stage(stage,*,request_id=None,operation=None):
@@ -726,8 +726,14 @@ class _UIABackend:
         self.desktop=Desktop(backend='uia');self.pid=pid;self.producer_pid=producer_pid;self.base=base;self.sequence=0
     def windows(self,pid=None):
         _uia_worker_stage('windows_findall_begin',request_id=getattr(self,'_request_id',None))
-        windows=[window for window in self.desktop.windows(process=pid or self.pid) if window.is_visible()]
+        candidates=self.desktop.windows(process=pid or self.pid)
         _uia_worker_stage('windows_findall_complete',request_id=getattr(self,'_request_id',None))
+        windows=[]
+        for window in candidates:
+            _uia_worker_stage('windows_visibility_begin',request_id=getattr(self,'_request_id',None))
+            visible=window.is_visible()
+            _uia_worker_stage('windows_visibility_complete',request_id=getattr(self,'_request_id',None))
+            if visible:windows.append(window)
         return windows
     def tree(self):
         rows=[]
