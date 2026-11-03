@@ -39,7 +39,7 @@ on:
       normal_actions_scope:
         description: Full acceptance or isolated native observation (never installer acceptance)
         type: choice
-        options: [full, core, tray-observation, recent-observation, writer-observation, receive-first-observation]
+        options: [full, core, header-sequence-observation, tray-observation, recent-observation, writer-observation, receive-first-observation]
         default: full
       reveal_probe:
         description: Run the isolated Windows Shell selection diagnostic
@@ -564,6 +564,24 @@ jobs:
           $cleanupExit = $LASTEXITCODE
           Get-Content -LiteralPath build/cleanup-frozen/report.jsonl
           if ($cleanupExit -ne 0) { exit $cleanupExit }
+      - name: Targeted native transport recovery and local TLS measurement
+        if: github.event.inputs.normal_actions_scope == 'header-sequence-observation'
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $protocolProfile = Join-Path $env:RUNNER_TEMP ('flickdock-protocol-' + [Guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Force -Path $protocolProfile | Out-Null
+          $env:APPDATA = $protocolProfile
+          $env:LOCALAPPDATA = $protocolProfile
+          New-Item -ItemType Directory -Force -Path build/transport-recovery | Out-Null
+          python -c "import subprocess,sys; subprocess.run([sys.executable,'qt_unittest.py','test_wan_generation_v1825','test_wan_transfer_v1816.NativeStream','test_nearby_transport_v1818','-v'],check=True,timeout=100)" *> build/transport-recovery/native.log
+          $nativeCode = $LASTEXITCODE
+          Get-Content -LiteralPath build/transport-recovery/native.log
+          if ($nativeCode -ne 0) { exit $nativeCode }
+          & 'p2p/runtime/node.exe' --experimental-vm-modules --test p2p/bridge_lifecycle_test.mjs *> build/transport-recovery/bridge.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python bench_lan_throughput_v183.py --size-mib 128 --output build/transport-recovery/lan.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Normal frozen process, external native Copy/Paste, policy switches and actual screen frames
         shell: pwsh
         env:
@@ -573,6 +591,8 @@ jobs:
           $nativeHash = (Get-FileHash -LiteralPath $nativeExe -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($env:NORMAL_ACTIONS_SCOPE -eq 'core') {
             python qa/packaged-live/ci_packaged_windows_live.py --exe $nativeExe --sha256 $nativeHash --root $PWD --output build/normal-native-qa
+          } elseif ($env:NORMAL_ACTIONS_SCOPE -eq 'header-sequence-observation') {
+            python qa/packaged-live/ci_packaged_windows_live.py --exe $nativeExe --sha256 $nativeHash --root $PWD --output build/normal-native-qa --actions qa/packaged-live/ui-header-sequence.json
           } elseif ($env:NORMAL_ACTIONS_SCOPE -eq 'tray-observation') {
             python qa/packaged-live/ci_packaged_windows_live.py --exe $nativeExe --sha256 $nativeHash --root $PWD --output build/normal-native-qa --actions qa/packaged-live/ui-tray-observation.json
           } elseif ($env:NORMAL_ACTIONS_SCOPE -eq 'recent-observation') {
@@ -614,6 +634,7 @@ jobs:
             build/normal-native-qa/
             build/native-reader-job/
             build/cleanup-frozen/
+            build/transport-recovery/
             build/normal-source-verification.json
             build/reused-frozen-receipt.json
             build/exact-installer/

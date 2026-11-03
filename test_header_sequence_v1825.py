@@ -1,0 +1,77 @@
+"""Real Qt toolbar/menu input during reversible shelf geometry transitions."""
+import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from PySide6.QtCore import QPoint,QRect,QTimer,Qt
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication,QMenu
+
+import test_html_native_workspace as workspace
+APP,flush,until=workspace.APP,workspace.flush,workspace.until
+
+
+class HeaderSequenceTests(unittest.TestCase):
+    setUp=workspace.WorkspaceTests.setUp
+    tearDown=workspace.WorkspaceTests.tearDown
+
+    def enable_motion(self):
+        self.manager.motion=True
+        self.manager.edge=SimpleNamespace(geometry=lambda:QRect(1912,200,8,160),
+                                          screen_area=lambda:QRect(0,0,1920,1080))
+        self.shelf.presentation.motion=True;self.shelf.geometry_morph.motion=True
+        self.shelf.presentation_kind='dock'
+        self.patches.enter_context(patch('native_ui_common.reduced_motion',return_value=False))
+
+    def choose_dock_menu(self):
+        seen=[]
+        def select():
+            menu=QApplication.activePopupWidget()
+            if not isinstance(menu,QMenu):return
+            action=next(action for action in menu.actions() if action.text()=='收起到屏幕边缘')
+            seen.append(action.text());menu.setActiveAction(action)
+            QTest.keyClick(menu,Qt.Key_Return)
+        # A watchdog prevents an unexpectedly missing action hanging the suite.
+        watchdog=QTimer();watchdog.setSingleShot(True)
+        watchdog.timeout.connect(lambda:QApplication.activePopupWidget().close() if QApplication.activePopupWidget() else None)
+        watchdog.start(1000)
+        QTimer.singleShot(30,select)
+        QTest.mouseClick(self.shelf.menu_button,Qt.LeftButton)
+        watchdog.stop();self.assertEqual(seen,['收起到屏幕边缘'])
+
+    def assert_recovered(self):
+        until(lambda:self.shelf.visible_state=='hidden',seconds=2)
+        self.assertFalse(self.shelf._menu_open)
+        self.assertFalse(self.shelf.geometry_morph.active)
+        self.assertFalse(self.shelf._morph_host_active)
+        self.assertFalse(self.shelf._transition_preparing)
+        # Match the manager's real leave/re-enter lifecycle after explicit dock.
+        self.manager.edge_suppressed=False
+        self.shelf.reveal_from_dock()
+        until(lambda:self.shelf.presentation._motion_done and self.shelf._toolbar_entrance.progress==1.,seconds=2)
+        self.assertTrue(self.shelf.isVisible())
+        self.assertEqual(self.shelf.visible_state,'floating')
+        self.assertGreater(self.shelf.windowOpacity(),.99)
+        for control in (self.shelf.cloud_button,self.shelf.network_status,self.shelf.pin_button,
+                        self.shelf.expand_button,self.shelf.menu_button,self.shelf.close_button):
+            self.assertTrue(control.isVisible(),control.objectName())
+            self.assertTrue(control.isEnabled())
+            self.assertGreater(getattr(control,'_entry_alpha',1),.99)
+        self.assertIsNone(QApplication.activePopupWidget())
+
+    def test_expand_then_menu_dock_during_animation_and_reopen(self):
+        self.enable_motion()
+        QTest.mouseClick(self.shelf.expand_button,Qt.LeftButton)
+        self.assertTrue(self.shelf.expanded)
+        self.choose_dock_menu();self.assert_recovered()
+
+    def test_expand_collapse_then_menu_dock_and_reopen(self):
+        self.enable_motion()
+        for pause in (0,35,120,260):
+            QTest.mouseClick(self.shelf.expand_button,Qt.LeftButton)
+            if pause:QTest.qWait(pause)
+            QTest.mouseClick(self.shelf.expand_button,Qt.LeftButton)
+            self.choose_dock_menu();self.assert_recovered()
+
+
+if __name__=='__main__':unittest.main()

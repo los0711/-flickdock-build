@@ -129,6 +129,7 @@ def transfer_fraction(state):
 def transfer_phase_label(state):
     phase=state.get('phase')
     return ('正在复制' if phase=='copying' else '正在下载' if phase=='downloading'
+            else '下载失败' if phase=='error' and state.get('remote') else '同步失败' if phase=='error'
             else '等待云端确认' if phase=='verifying'
             else '等待重试' if phase=='retrying'
             else '校验原文件' if phase=='validating'
@@ -203,6 +204,7 @@ class TransferRateTracker:
         if phase=='preparing':return '准备中'
         if phase=='verifying':return '等待云端确认'
         if phase=='retrying':return '等待重试'
+        if phase=='error':return state.get('message') or '同步失败'
         if phase=='validating':return '校验原文件'
         received,total=self._numbers(state)
         if total<=0:return '计算中'

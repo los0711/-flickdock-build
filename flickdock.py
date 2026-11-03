@@ -587,9 +587,10 @@ class PreviewPane(QFrame):
         sync=getattr(self.shelf.manager,'sync',None)
         paused=bool(sync and getattr(sync,'is_upload_paused',lambda _:False)(self.current_path))
         self.transfer_row.setVisible(bool(state) or paused)
-        self.transfer_progress.setVisible(bool(state));self.transfer_meta.setVisible(bool(state))
-        self.transfer_overlay.setGeometry(self.stack.rect());self.transfer_overlay.setVisible(bool(state))
-        if state:self.transfer_overlay.raise_();self.transfer_overlay.update()
+        failed=bool(state and state.get('phase')=='error')
+        self.transfer_progress.setVisible(bool(state) and not failed);self.transfer_meta.setVisible(bool(state))
+        self.transfer_overlay.setGeometry(self.stack.rect());self.transfer_overlay.setVisible(bool(state) and not failed)
+        if state and not failed:self.transfer_overlay.raise_();self.transfer_overlay.update()
         if not state:
             self.transfer_meta.clear()
             if paused:
@@ -604,10 +605,10 @@ class PreviewPane(QFrame):
         self.transfer_meta.setText(progress+self.shelf.transfer_rates.remaining_text(self.current_path,state))
         copying=state.get('phase')=='copying'
         receiving=self.shelf._receiving_transfer(state)
-        self.cancel_transfer.setText('取消复制' if copying else '取消下载' if receiving else '取消上传')
+        self.cancel_transfer.setText('重试下载' if failed and receiving else '取消复制' if copying else '取消下载' if receiving else '取消上传')
         self.cancel_transfer.setEnabled(True)
         if self.shelf.content.is_pending(self.current_path):
-            self.info.setText(transfer_phase_label(state) if state.get('phase') in ('verifying','retrying','validating')
+            self.info.setText(transfer_phase_label(state) if state.get('phase') in ('verifying','retrying','validating','error')
                               else '另一台设备正在上传' if state.get('remote') and state.get('phase')!='downloading'
                               else '正在下载原文件' if state.get('phase')=='downloading'
                               else transfer_phase_label(state))
@@ -616,7 +617,10 @@ class PreviewPane(QFrame):
         ref=self.current_path
         if not ref:return
         sync=getattr(self.shelf.manager,'sync',None)
-        if ref in self.shelf.content.transfers:self.shelf.cancel_transfer(ref)
+        state=self.shelf.content.transfers.get(ref)
+        if state and state.get('phase')=='error' and state.get('remote'):
+            sync.retry_download(state['id'])
+        elif state:self.shelf.cancel_transfer(ref)
         elif sync and getattr(sync,'is_upload_paused',lambda _:False)(ref):sync.retry_upload(ref)
         self.update_transfer_status();self.refresh_cloud_status()
 
@@ -1011,10 +1015,11 @@ class ContentsPopup(QFrame):
             verifying=sum(v.get('phase')=='verifying' for v in states)
             retrying=sum(v.get('phase')=='retrying' for v in states)
             validating=sum(v.get('phase')=='validating' for v in states)
-            uploading=count-copying-downloading-verifying-retrying-validating
+            failed=sum(v.get('phase')=='error' for v in states)
+            uploading=count-copying-downloading-verifying-retrying-validating-failed
             self.transfer_count.setText(' · '.join(f'{label} {amount} 项' for label,amount in
                 (('正在复制',copying),('正在上传',uploading),('等待确认',verifying),
-                 ('正在下载',downloading),('校验中',validating),('等待重试',retrying)) if amount))
+                 ('正在下载',downloading),('校验中',validating),('等待重试',retrying),('下载失败',failed)) if amount))
             all_known=all(transfer_fraction(state) is not None for state in states)
             self.transfer_bar.setRange(0,1000 if all_known else 0)
             if all_known:self.transfer_bar.setValue(round(1000*min(1,received/total)))
@@ -1022,6 +1027,9 @@ class ContentsPopup(QFrame):
             fraction=transfer_fraction(overall_state)
             progress=f'{round(fraction*100)}% · ' if fraction is not None else ''
             self.transfer_eta.setText(progress+self.shelf.transfer_rates.remaining_text('__aggregate__',overall_state))
+            if failed==count:
+                self.transfer_bar.setRange(0,1000)
+                self.transfer_eta.setText('已停止自动重试')
         else:self.transfer_count.clear();self.transfer_eta.clear()
         self.preview.update_transfer_status()
         if tuple(self.visible_refs()) != tuple(getattr(self,'_build_refs',())):self.rebuild()
@@ -1994,7 +2002,7 @@ class ShelfWindow(QWidget):
             if ref.removeprefix('flickdock:transfer:') not in identities]
 
     def _repaint_transfers(self):
-        if not self.content.transfers:self._transfer_timer.stop()
+        if not any(state.get('phase')!='error' for state in self.content.transfers.values()):self._transfer_timer.stop()
         if not self.isVisible() or self.content_transition_active():return
         for zone in self.zones.values():zone.icon.update()
         if self.popup and self.popup.isVisible():
@@ -2004,7 +2012,9 @@ class ShelfWindow(QWidget):
 
     def transfers_updated(self):
         self.transfer_rates.observe(self.content.transfers)
-        if self.content.transfers and not self._transfer_timer.isActive():self._transfer_timer.start()
+        active=any(state.get('phase')!='error' for state in self.content.transfers.values())
+        if active and not self._transfer_timer.isActive():self._transfer_timer.start()
+        elif not active:self._transfer_timer.stop()
         self.expand_button.setEnabled(True)
         self.zones['permanent'].refresh()
         if self.popup and self.popup.isVisible() and not self.content_transition_active():

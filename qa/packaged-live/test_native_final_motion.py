@@ -355,5 +355,31 @@ class FinalMotionTests(unittest.TestCase):
         self.assertEqual(self.runner.deadline,self.runner.started+45)
         self.assertEqual(self.runner.events[0]['soft_deadline_seconds'],45)
 
+    def test_header_menu_recipe_replays_exact_order_and_requires_hidden_host_before_reopen(self):
+        controls=self.header_controls();action=Control('收起到屏幕边缘','MenuItem','QAction',self.root)
+        original=dict(mode='mini',pinned=True);visible=[True];inputs=[]
+        self.runner.state=Mock(return_value=original);self.runner.set_pin=Mock();self.runner.restore=Mock()
+        self.runner.show_mode=Mock(side_effect=lambda _:visible.__setitem__(0,True))
+        self.runner.scope=Mock(side_effect=lambda _:self.root if visible[0] else None)
+        self.runner.wait=self.immediate_wait;self.runner.header=Mock()
+        def click(control,**_):
+            inputs.append(control)
+            if control is action:visible[0]=False
+        self.runner.input=Mock(side_effect=click)
+        with patch.object(qa.time,'sleep'):
+            self.runner.header_menu_dock()
+        self.assertEqual(inputs,[controls['expand'],controls['expand'],controls['more'],action]*2)
+        self.assertEqual(self.runner.header.call_count,2)
+        self.runner.restore.assert_called_once_with(original)
+
+    def test_menu_dock_cannot_pass_while_the_host_remains_visible(self):
+        self.header_controls();Control('收起到屏幕边缘','MenuItem','QAction',self.root)
+        original=dict(mode='mini',pinned=True)
+        self.runner.state=Mock(return_value=original);self.runner.set_pin=Mock();self.runner.show_mode=Mock()
+        self.runner.restore=Mock();self.runner.input=Mock();self.runner.wait=self.immediate_wait
+        with self.assertRaisesRegex(AssertionError,'really hides'):
+            self.runner.header_menu_dock()
+        self.runner.restore.assert_called_once_with(original)
+
 
 if __name__=='__main__':unittest.main()

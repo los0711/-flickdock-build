@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "QA-only Windows trial core scope: actual normal EXE native Copy/Paste, receive/upload/clipboard switches, live shelf and notice noecho, then same-SHA production installer coverage. User authorised preliminary stable Windows test package by2026-11-03 19:00 Shanghai; incomplete features disclosed, no website publication. Full platform/unit/UI action suites skipped.6pure scope/installer guards passed; application runtime identical8e92.",
+  "purpose": "Targeted connection-generation replay, unused TURN carrier isolation and permanent download failure policy. Hosted requested header/menu/dock observation and local native protocol verification only. No publication/installer acceptance; previous preview bytes unchanged.",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -26,8 +26,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 36338,
-      "sha256": "3531b5355879154dd6a896959f7d56d21885ecf4ffd7ce8c39689b7ee82c6f3b"
+      "size": 38097,
+      "sha256": "013f1d0a784d18590a1002cebba4cfc9f0c0442b5375c66869a11ffc401c2975"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -996,8 +996,8 @@
     },
     {
       "path": "flickdock.py",
-      "size": 252883,
-      "sha256": "53ae391253cf8867f31642fe096fa426622af322f6e8f43301e0e453449368ab"
+      "size": 253619,
+      "sha256": "49f7e4a771dac1893f17581311060ce28764662a57a805f4bc7001e2e9025236"
     },
     {
       "path": "flickdock_icons.py",
@@ -1186,8 +1186,13 @@
     },
     {
       "path": "p2p/bridge.mjs",
-      "size": 7701,
-      "sha256": "8242c55e47d17699c8acecda5558a80427a880e678e42f1ed45ccdf11e99c54f"
+      "size": 8119,
+      "sha256": "a137942244d846297a31d408b7e9c8ce6fb58354a795f788c7d1cd9dfaaea1ed"
+    },
+    {
+      "path": "p2p/bridge_lifecycle_test.mjs",
+      "size": 4189,
+      "sha256": "686083a7143aa4985e8b066077aad6b04e82142c07a4041a09da469ffd984423"
     },
     {
       "path": "p2p/node-shasums.json",
@@ -1331,8 +1336,8 @@
     },
     {
       "path": "qa/packaged-live/ci_packaged_windows_live.py",
-      "size": 115966,
-      "sha256": "8c83bb6994be0aa97fd0bb81270ed182ddb8875e605a806c194593aa2f3fe301"
+      "size": 116198,
+      "sha256": "266713aed16f9d69cfadf6327f54502bde5b810149dbb43049da7cbadc05ae39"
     },
     {
       "path": "qa/packaged-live/ci_windows_reveal_probe.py",
@@ -1371,8 +1376,8 @@
     },
     {
       "path": "qa/packaged-live/native_final_motion.py",
-      "size": 20156,
-      "sha256": "22d787a113de0c75bde9f3c8820d2b2805018f521ddd587789117eb5df41dbfc"
+      "size": 21930,
+      "sha256": "cd6dee17ff27ba1240fd9ebfb1b3fcd5e97b256221d409d6e3d92d35ff451d59"
     },
     {
       "path": "qa/packaged-live/native_image_observation.py",
@@ -1461,8 +1466,8 @@
     },
     {
       "path": "qa/packaged-live/test_native_final_motion.py",
-      "size": 22942,
-      "sha256": "83e3035a5a51789505645d39b2b78befc8ac43add01b02c6740599f620992f6d"
+      "size": 24644,
+      "sha256": "8750e0d94819aeedf7a56be9bdcc562d80c982c649a3791bffea7aa97341e619"
     },
     {
       "path": "qa/packaged-live/test_native_image_observation.py",
@@ -1560,6 +1565,11 @@
       "sha256": "5af1410d0e041aca3c9b013d7319c577abd3a37df4aee4456d1023892bd9045b"
     },
     {
+      "path": "qa/packaged-live/ui-header-sequence.json",
+      "size": 123,
+      "sha256": "96c8281d4e32dfeb28a51d0c409232edff5a76cd2fa595dafa945946d5a11a7a"
+    },
+    {
       "path": "qa/packaged-live/ui-recent-observation.json",
       "size": 272,
       "sha256": "d87955d6e7c8873bc0c71fff30964aae9c10a67784e2bf2bbcd76f199ea4e935"
@@ -1621,8 +1631,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 45047,
-      "sha256": "9493346069e2a7333262bbd9c96c08d98ce25e4dd4d00f8c8e32768f2af67929"
+      "size": 45267,
+      "sha256": "073296e27220b92387f6fdab81c99ef7473b91dad5e2a830db8de969a8d441dd"
     },
     {
       "path": "release_signing.py",
@@ -1696,8 +1706,8 @@
     },
     {
       "path": "shelf_sync.py",
-      "size": 116444,
-      "sha256": "05796aa986061df4b23d6a738f4452aa209b83c46eeecb3f65110c073cca92b6"
+      "size": 118471,
+      "sha256": "fbbf66033cd600b24ef5160c7aa53ed1ef7bbcf28dc7a993dc0c88387996d32c"
     },
     {
       "path": "shortcut_preview.py",
@@ -2015,6 +2025,16 @@
       "sha256": "7a8a906a723ac06564f3937c4593d9935253ee93f0a02a09446ec30e303d72ef"
     },
     {
+      "path": "test_download_failure_policy_v1825.py",
+      "size": 5280,
+      "sha256": "c21d3a12528f8c78a0bd30e5183177bdcc4c2749ce8b9c9fdee68b61815dfafd"
+    },
+    {
+      "path": "test_download_failure_ui_v1825.py",
+      "size": 1762,
+      "sha256": "286213975010bd5bb502fd5db07541ea0ba891992b840f668d67e930ec18c062"
+    },
+    {
       "path": "test_download_ranges_v1821.py",
       "size": 5967,
       "sha256": "dc2531f0eee75b67d2eabffaffdd04d49f9eda18d28eb9518891264efe40b5f2"
@@ -2113,6 +2133,11 @@
       "path": "test_global_hotkeys.py",
       "size": 4498,
       "sha256": "bdca7a9e1cb71c8a75be1840b6684297af54b5ab23444f32a85f4277a43adec5"
+    },
+    {
+      "path": "test_header_sequence_v1825.py",
+      "size": 3729,
+      "sha256": "344d1daef4cc30c910cbebd23cc80f3b176a6bb3013670a8d163e873795c0cb1"
     },
     {
       "path": "test_hig_accessibility.py",
@@ -2695,6 +2720,11 @@
       "sha256": "a4c42e05ac3c71ce4c0e3835a91d8133c68fefda1b0a11cc9c14375d33327fd2"
     },
     {
+      "path": "test_wan_generation_v1825.py",
+      "size": 2787,
+      "sha256": "d4ef82defeac0dc18dc1953fefb9298ecdcf4bdbd8dead5ced791c70974ece2d"
+    },
+    {
       "path": "test_wan_signaling_v1818.py",
       "size": 3881,
       "sha256": "bd103549f40be90969fe717275b5d5b4a40de73c36fd5db90e62f7d56bdb84ee"
@@ -2786,8 +2816,8 @@
     },
     {
       "path": "transfer_visuals.py",
-      "size": 14696,
-      "sha256": "ba65aeba8132cc3096df746482e7939fa45add883e6c4cefd680a621ccc7df5b"
+      "size": 14880,
+      "sha256": "30bc1e1f4186f92dc50d6e4fc5f27aa99cc28815d1eb4418d5d1a13da18976b2"
     },
     {
       "path": "ui_theme.py",
@@ -2856,8 +2886,8 @@
     },
     {
       "path": "wan_transfer.py",
-      "size": 44457,
-      "sha256": "d5723d3f5df4c25c1773191d1ab8c19c099ae17aebd3b1357a525c528825960b"
+      "size": 45254,
+      "sha256": "43a4c45b0c9948884cf60fe5fca94a47b9af82d40c69b2b91f12acdf0a60392f"
     },
     {
       "path": "webrtc_stream.py",

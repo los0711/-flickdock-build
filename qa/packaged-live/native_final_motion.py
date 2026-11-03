@@ -12,7 +12,7 @@ import time
 from native_batch2 import Batch2, bounds, centre, selected
 
 
-RECIPES=('header-fixed-expand','host-real-leave-close')
+RECIPES=('header-fixed-expand','host-real-leave-close','header-menu-dock')
 PLACEMENTS=('default-edge','manual-position')
 SELECTORS={
     'network':(None,'Group','NetworkStatus'),
@@ -177,6 +177,38 @@ class FinalMotion(Batch2):
                 rows.setdefault(identity,w)
         if len(rows)>1:raise AssertionError('Duplicate actual clipboard preview hosts')
         return next(iter(rows.values()),None)
+
+    def header_menu_dock(self):
+        original=self.state();failure=None
+        try:
+            self.set_pin(True)
+            for delay in (0.,.08):
+                self.show_mode('mini')
+                expand=self.target('expand');more=self.target('more')
+                self.input(expand)
+                if delay:time.sleep(delay)
+                self.input(expand)
+                self.input(more)
+                def dock_action():
+                    rows=[control for root in self.b.windows() for control in [root,*root.descendants()]
+                          if control.is_visible() and control.is_enabled()
+                          and control.element_info.control_type=='MenuItem'
+                          and control.element_info.name=='收起到屏幕边缘']
+                    if len(rows)>1:raise AssertionError('Ambiguous actual dock menu action')
+                    return rows[0] if rows else None
+                self.input(self.wait(dock_action,'actual dock action after rapid toolbar input'))
+                self.wait(lambda:self.scope('overview') is None,'menu dock really hides the shelf',seconds=2)
+                self.mark('menu-dock-hidden',between_clicks_seconds=delay)
+                self.show_mode('mini')
+                self.header('recovered-header')
+                self.mark('menu-dock-reopened-and-controls-available')
+        except BaseException as error:
+            failure=error;raise
+        finally:
+            try:self.restore(original)
+            except Exception as error:
+                self.mark('restore-failed',error_type=type(error).__name__,error=str(error))
+                if failure is None:raise
 
     def hide_explicitly(self):
         control=self.named('close')
@@ -359,12 +391,13 @@ class FinalMotion(Batch2):
 def run(backend,recipe,*,placement='default-edge'):
     if recipe not in RECIPES:raise ValueError('Unsupported final motion recipe')
     runner=FinalMotion(backend);runner.recipe=recipe
-    if recipe=='host-real-leave-close':
+    if recipe in ('host-real-leave-close','header-menu-dock'):
         # Two real modes plus measured UIA queries need a bounded overall
         # budget. Individual popup/physical-leave deadlines remain unchanged.
         runner.budget_seconds=45;runner.deadline=runner.started+runner.budget_seconds
     runner.mark('recipe-start',placement=placement,soft_deadline_seconds=runner.budget_seconds)
     if recipe=='header-fixed-expand':runner.header_fixed_expand()
+    elif recipe=='header-menu-dock':runner.header_menu_dock()
     else:runner.host_real_leave_close(placement)
     runner.originals_unchanged()
     return dict(recipe=recipe,placement=placement,events=runner.events,elapsed=time.monotonic()-runner.started,

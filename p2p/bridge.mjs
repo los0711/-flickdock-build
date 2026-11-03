@@ -72,7 +72,16 @@ function bind(dc) {
 async function control(value) {
   if(value.type==='init') {
     if(pc)throw new Error('Already initialized');
-    turnTransport=await adaptTurnServers(value.iceServers||[],()=>{event({type:'error',message:'中继连接中断，正在尝试恢复。'});stop();},value.preferTls!==false,value.proxies||{});
+    turnTransport=await adaptTurnServers(value.iceServers||[],()=>{
+      if(closed)return;
+      const pair=pc?.getSelectedCandidatePair();
+      // ICE may select a direct pair while an unused TURN socket is idle.
+      // Only failure of the actual carrier may tear down that DTLS channel.
+      if(channel?.isOpen()&&pair?.local&&pair?.remote&&pair.local.type!=='relay'&&pair.remote.type!=='relay'){
+        event({type:'relay-unavailable',inUse:false});return;
+      }
+      event({type:'error',message:'中继连接中断，正在尝试恢复。'});stop();
+    },value.preferTls!==false,value.proxies||{});
     if(closed){turnTransport.close();return;}
     event({type:'transport',relayTransport:turnTransport.relayTransport,tlsFallback:!!turnTransport.tlsFallback,proxyUsed:!!turnTransport.proxyUsed});
     pc=new rtc.PeerConnection('FlickDock',{iceServers:turnTransport.iceServers,maxMessageSize:131072,iceTransportPolicy:value.forceRelay?'relay':'all',enableIceTcp:true});

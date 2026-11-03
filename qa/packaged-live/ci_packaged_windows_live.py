@@ -1508,6 +1508,8 @@ def main():
                 supplements=json.loads(args.supplement_actions.read_text(encoding='utf8')) if args.supplement_actions else []
                 actions=compose_actions(actions,extras,batch2,supplements)
                 report['validation_scope']='full' if actions else 'core'
+                if actions and all(step.get('id')=='header-expand-collapse-more-dock' for step in actions):
+                    report.update(validation_scope='core+header-sequence',observation_only=True,installer_acceptance=False)
                 for index,step in enumerate(actions):
                     if application.poll() is not None:raise AssertionError('Frozen app exited during native UI flow')
                     def execute(step=step):

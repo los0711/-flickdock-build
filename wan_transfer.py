@@ -397,13 +397,19 @@ class WanTransferService(LanTransferService):
 
     def _begin(self,identifier,state,value):
         if self._closing:return
+        generation=value['generation']
+        if type(generation) is not int or generation<1:raise ValueError('Invalid connection generation')
         previous=state.get('bridge')
+        # An accepted/replayed signaling message owns one native connection.
+        # Retrying that connection requires the server's next generation;
+        # replaying a consumed begin cannot recreate its DTLS identity.
+        if generation<state.get('generation',0) or generation==state.get('generation',0) and previous is not None:return
         if state.get('done') and state['role']=='send':return
         if value.get('relayAttempt') and previous and previous.opened.is_set() and not previous.closed:return
         if previous:
             if previous.route=='relay':state['relay_bytes_prior']=state.get('relay_bytes_prior',0)+sum(previous.traffic().values())
             previous.shutdown()
-        generation=value['generation'];state['generation']=generation;state['ready'].clear();state.pop('error',None)
+        state['generation']=generation;state['ready'].clear();state.pop('error',None)
         state['requested']=True;state['retry_inflight']=False
         state['relay_allowed']=bool(value.get('relayAllowed'));state['connect_started']=time.monotonic()
         state['relay_requested']=False;state.pop('network_error',None)
@@ -454,7 +460,13 @@ class WanTransferService(LanTransferService):
         elif kind=='transport':
             state['relay_transport']=event.get('relayTransport','')
             if event.get('tlsFallback'):state['tls_failed']=True
+        elif kind=='relay-unavailable':
+            state['tls_failed']=True
+            from network_diagnostics import record_event
+            record_event(self.base,'remote','relay','UNUSED_TLS_CLOSED')
         elif kind=='open':
+            if state.get('opened_generation')==state['generation']:return
+            state['opened_generation']=state['generation']
             state['route']=event['route'];state['ready'].set()
             self._send_signal(dict(type='connected',id=identifier,generation=state['generation']))
             self.status_changed.emit('P2P 直连已建立。' if event['route']=='direct' else '中继连接已建立。')

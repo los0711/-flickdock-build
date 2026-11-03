@@ -5,6 +5,7 @@ work runs outside the GUI thread. Every callback belongs to an account epoch.
 """
 from __future__ import annotations
 import copy
+import errno
 from functools import partial
 from datetime import datetime, timezone
 import hashlib
@@ -25,6 +26,9 @@ from shelf_payload_gate import ShelfPayloadGate
 from shelf_stage_store import ShelfStageStore, StageResourceError, canonical_path, owned_stage_path, validate_owned_outbox, ResourceCleanupWork, register_materialization, remove_unreferenced, checked_materialization
 from sync_files import (DiskWork, DIRECTORY_MIME, assemble_parts, fingerprint, read_part, read_utf8, safe_name,
                         stage_item, unpack_directory,MAX_FILE_BYTES,StageCleanupError)
+
+DOWNLOAD_INTEGRITY_ATTEMPTS=3
+DOWNLOAD_INTEGRITY_ERRORS=frozenset(('DOWNLOAD_HASH_MISMATCH','DOWNLOAD_HEADER_INVALID'))
 
 
 def _stage_owned_admission(function, args, cancel):
@@ -529,13 +533,15 @@ class ShelfSync(QObject):
                           for index,value in in_flight.items()
                           if str(index).isdecimal() and str(index) not in hashes)
             received=min(size,received)
-            phase=('retrying' if self.state.get('deferred_downloads',{}).get(identity,{}).get('retry_at',0)>time.time() else
+            deferred=self.state.get('deferred_downloads',{}).get(identity,{})
+            phase=('error' if deferred.get('blocked') else
+                   'retrying' if deferred.get('retry_at',0)>time.time() else
                    'validating' if record.get('_assembling') else
                    'retrying' if not self.running and self._paused('not_before') else 'downloading')
             latest=self._remote_heads.get(identity,record)
             transfers.append(dict(id=identity,ref=entries.get(identity,{}).get('ref'),name=latest.get('name',record.get('name','')),
                 kind=record.get('kind','file'),received=received,total=size,
-                phase=phase,remote=True,message=self.state.get('deferred_downloads',{}).get(identity,{}).get('last_error','')))
+                phase=phase,remote=True,message=deferred.get('last_error','')))
             known.add(identity)
         for remote in (self.remote_transfers if self.receive_enabled else ()):
             identity=remote.get('item_id')
@@ -737,6 +743,14 @@ class ShelfSync(QObject):
             return 'uploading'
         return 'pending'
 
+    def retry_download(self,identity):
+        if self.closed or not self.receive_enabled or self.state is None:return False
+        deferred=self.state.get('deferred_downloads',{}).get(identity)
+        if not deferred or not deferred.get('blocked'):return False
+        deferred.update(blocked=False,attempts=0,retry_at=0)
+        self._persist();self._notify_transfers();self.debounce.start(1)
+        return True
+
     def cancel_download(self,identity,*,remove=False):
         record=self.download_transfers.get(identity)
         if not record or not self.state:return False
@@ -918,6 +932,16 @@ class ShelfSync(QObject):
         self.running=False;self.transfer=None
         self._persist();self._notify_transfers()
         self.status_changed.emit('云端版本有变化；开启接收后才能继续上传该项。')
+
+    @staticmethod
+    def _download_retryable(error):
+        code=getattr(error,'code','')
+        if code in ('cancelled','DOWNLOAD_SAVE_FAILED','CLIENT_PROCESSING_ERROR'):return False
+        if code in ('DOWNLOAD_TRUNCATED',*DOWNLOAD_INTEGRITY_ERRORS):return True
+        status=getattr(error,'status',None)
+        if status is not None:return status in (0,408,425,429) or 500<=status<=599
+        if isinstance(error,OSError):return error.errno in (errno.EAGAIN,errno.ETIMEDOUT,errno.ECONNRESET,errno.ECONNABORTED,errno.ENETDOWN,errno.ENETUNREACH,errno.EHOSTUNREACH)
+        return False
 
     @staticmethod
     def _retry_delay(error):
@@ -1173,7 +1197,7 @@ class ShelfSync(QObject):
             pending = list(enumerate(changes))
             incoming={change.get('record',{}).get('id') for change in changes if isinstance(change,dict)}
             for identity,deferred in list(self.state.get('deferred_downloads',{}).items()):
-                if identity not in incoming and deferred.get('retry_at',0)<=time.time():
+                if identity not in incoming and not deferred.get('blocked') and deferred.get('retry_at',0)<=time.time():
                     pending.append((len(pending),{'cursor':str(deferred.get('remote_order') or ''),'record':deferred['record']}))
             def next_record():
                 if not pending:
@@ -1231,7 +1255,8 @@ class ShelfSync(QObject):
             callback();return
         deferred=self.state.setdefault('deferred_downloads',{}).get(identity)
         if deferred:
-            if record['version']==deferred['record'].get('version') and deferred.get('retry_at',0)>time.time():
+            if (record['version']<deferred['record']['version'] or
+                    record['version']==deferred['record']['version'] and (deferred.get('blocked') or deferred.get('retry_at',0)>time.time())):
                 callback();return
             if record['version']>deferred['record'].get('version',0):self.state['deferred_downloads'].pop(identity,None)
         entries = self.state['entries']; entry = entries.get(identity)
@@ -1309,13 +1334,16 @@ class ShelfSync(QObject):
             pending=self.state.setdefault('deferred_downloads',{})
             attempts=pending.get(identity,{}).get('attempts',0)+1
             code=getattr(error,'code','')
-            message=re.sub(r'https?://\S+','[连接]',str(error))[:180]
+            blocked=(not self._download_retryable(error) or
+                     code in DOWNLOAD_INTEGRITY_ERRORS and attempts>=DOWNLOAD_INTEGRITY_ATTEMPTS)
+            message=self._upload_error_summary(error)
             if code and re.fullmatch('[A-Z_]{1,48}',code):message+='（'+code+'）'
             pending[identity]=dict(record=dict(record),remote_order=remote_order,attempts=attempts,
-                retry_at=time.time()+min(60,2**min(attempts,6)),last_error=message)
+                retry_at=0 if blocked else time.time()+min(60,2**min(attempts,6)),last_error=message,blocked=blocked)
             self.download_transfers[identity].pop('_assembling',None)
             self._persist();self._notify_transfers()
-            self.status_changed.emit('“'+str(record['name'])[:60]+'”同步未完成：'+message+'。其他文件继续同步。')
+            self.status_changed.emit('“'+str(record['name'])[:60]+'”同步未完成：'+message+
+                                     ('。已停止自动重试，修正后可重试下载。' if blocked else '。其他文件继续同步。'))
             callback()
         def downloaded(path,error):
             if fence['superseded'] or self._remote_heads.get(identity,{}).get('version',0)>record['version']:
@@ -1498,7 +1526,7 @@ class ShelfSync(QObject):
                     nonlocal halted
                     if halted:return
                     if error:
-                        if (chunk_size>4*1024*1024 and not small_parts[0]
+                        if (chunk_size>4*1024*1024 and not small_parts[0] and self._download_retryable(error)
                                 and getattr(error,'status',0) not in (401,403,429)
                                 and not self._quota_error(error)):
                             # A cleanly closed large response may still be
@@ -1512,7 +1540,7 @@ class ShelfSync(QObject):
                             for key in tuple(request_keys):self.api.cancel(key)
                             self._request('GET','/v1/items/'+identity+'/content',metadata,
                                           headers=content_headers())
-                        elif count==1:
+                        elif count==1 and self._download_retryable(error):
                             # A complete body with a lost HTTP completion must
                             # not become an endless 100% retry. Only accept it
                             # after matching the whole committed SHA-256.
@@ -1592,6 +1620,9 @@ class ShelfSync(QObject):
         self._change_view(change)
 
     def _push_next(self):
+        deferred=list(self.state.get('deferred_downloads',{}).values())
+        download_retries=[row for row in deferred if not row.get('blocked')]
+        download_blocked=len(deferred)-len(download_retries)
         if self._lane_context is not None:
             self.small_lane.finish();return
         self._main_cycle_phase='upload'
@@ -1604,16 +1635,17 @@ class ShelfSync(QObject):
             self._notify_transfers()
             if self.state.get('awaiting_receive') and not self.receive_enabled:
                 self.status_changed.emit('云端版本有变化；开启接收后才能继续上传该项。')
+            elif download_blocked:self.status_changed.emit(f'{download_blocked} 项下载失败，已停止自动重试；请检查错误后重试。')
             elif not self.upload_enabled:self.status_changed.emit('云端内容已接收；本机更改等待上传。')
             else:self.status_changed.emit('搁架已同步。')
             if self._refresh_again and self.receive_enabled:
                 self._refresh_again=False;self.debounce.start(1)
-            elif self.receive_enabled and self.state.get('deferred_downloads'):
+            elif self.receive_enabled and download_retries:
                 # Receive-only sessions also own interrupted downloads. This
                 # early return used to skip their wake-up timer entirely.
-                due=min(item.get('retry_at',time.time()) for item in self.state['deferred_downloads'].values())
+                due=min(item.get('retry_at',time.time()) for item in download_retries)
                 self.debounce.start(max(1,min(60000,round((due-time.time())*1000)+1)))
-                self.status_changed.emit(f"{len(self.state['deferred_downloads'])} 项等待重试，其他内容已接收。")
+                self.status_changed.emit(f"{len(download_retries)} 项等待重试，其他内容已接收。")
             return
         self._cycle_direction='upload'
         if self.clipboard_bridge:self.clipboard_bridge.reconcile()
@@ -1642,12 +1674,12 @@ class ShelfSync(QObject):
                 and e.get('ref') in visible) for e in self.state['entries'].values())
             small_retries=[deadline for identity,deadline in self.small_lane.retry_at.items()
                            if deadline>time.monotonic() and self.state['entries'].get(identity,{}).get('dirty')]
-            retrying=len(self.state.get('deferred_downloads',{}))+len(small_retries)
-            self.status_changed.emit(f'{retrying} 项等待重试，其他内容已同步。' if retrying else f'可同步内容已同步；{blocked} 项暂留本机，请检查文件大小或位置。' if blocked else f'其他可同步内容已同步；{paused} 项暂停上传。' if paused else '搁架已同步。')
+            retrying=len(download_retries)+len(small_retries)
+            self.status_changed.emit(f'{retrying} 项等待重试，其他内容已同步。' if retrying else f'{download_blocked} 项下载失败，已停止自动重试；请检查错误后重试。' if download_blocked else f'可同步内容已同步；{blocked} 项暂留本机，请检查文件大小或位置。' if blocked else f'其他可同步内容已同步；{paused} 项暂停上传。' if paused else '搁架已同步。')
             if self._refresh_again:
                 self._refresh_again=False;self.debounce.start(1)
-            elif self.state.get('deferred_downloads'):
-                due=min(item.get('retry_at',time.time()) for item in self.state['deferred_downloads'].values())
+            elif download_retries:
+                due=min(item.get('retry_at',time.time()) for item in download_retries)
                 self.debounce.start(max(1,min(60000,round((due-time.time())*1000))))
             elif small_retries:self.debounce.start(max(1,round((min(small_retries)-time.monotonic())*1000)+1))
             return
