@@ -168,6 +168,16 @@ jobs:
           $cleanupExit = $LASTEXITCODE
           Get-Content -LiteralPath build/cleanup-boundaries/report.jsonl
           if ($cleanupExit -ne 0) { exit $cleanupExit }
+      - name: Original signed-out startup cleanup with canonical owned Mac fixture
+        if: runner.os == 'macOS'
+        shell: pwsh
+        run: |
+          python qt_unittest.py test_clipboard_sync_v1819.ClipboardTests.test_startup_reaps_expired_owned_cache_and_preserves_unmarked_directories -v *> build/cleanup-boundaries/startup-cache-fixture.log
+          $fixtureExit = $LASTEXITCODE
+          Get-Content -LiteralPath build/cleanup-boundaries/startup-cache-fixture.log
+          @{ python_exit_code=$fixtureExit; original_wait_seconds=5; synthetic_backend=$false; scope='Original owned signed-out ClipboardSync startup deletion; unmarked original preserved; no OS clipboard test' } |
+            ConvertTo-Json | Set-Content -LiteralPath build/cleanup-boundaries/startup-cache-fixture.json -Encoding utf8
+          if ($fixtureExit -ne 0) { exit $fixtureExit }
       - name: Preserve real boundary receipts including failures
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

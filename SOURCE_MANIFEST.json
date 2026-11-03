@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "QA only: user privacy-selected baseline readiness, async draft observation and retained Mac cleanup failure diagnostics; runtime identical7bc.",
+  "purpose": "QA-only canonical owned temporary fixture after actual Mac UNSAFE alias evidence; original5s and production no-link checks unchanged.",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -26,8 +26,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 34938,
-      "sha256": "55e8d697fe1a1a36640c009501fea6256b44fbb9b9239cb47e9ed04b469c4f4d"
+      "size": 35820,
+      "sha256": "6b98fba114bdd26204978b4ba4cb2dacec7aae4713e58b7549c9fca037f85740"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -1911,8 +1911,8 @@
     },
     {
       "path": "test_clipboard_sync_v1819.py",
-      "size": 17304,
-      "sha256": "44c101dd9fa4d824a2610748083421b6dffc396a75776081ccc20a90429c3d6f"
+      "size": 17572,
+      "sha256": "71c939b3246004bef74e53777dd1caf37043dd68db999b16ab6f1e8e8da4633c"
     },
     {
       "path": "test_clipboard_transport_v1825.py",

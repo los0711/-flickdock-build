@@ -64,7 +64,11 @@ class Hub:
 
 class ClipboardTests(unittest.TestCase):
     def setUp(self):
-        self.temp=tempfile.TemporaryDirectory();self.base=Path(self.temp.name);self.hub=Hub();self.clients=[];self.clips=[]
+        self.temp=tempfile.TemporaryDirectory()
+        # This newly created fixture is ours. macOS can spell its OS temporary
+        # root through /var; pass its canonical path to the real cleanup worker,
+        # whose rejection of arbitrary linked user/cache paths remains intact.
+        self.base=Path(self.temp.name).resolve(strict=True);self.hub=Hub();self.clients=[];self.clips=[]
         for i in range(3):
             clip=Clipboard();events=Events();self.hub.events.append(events);account=Account(self.hub.api(str(i)),str(i))
             self.clients.append(ClipboardSync(account,events,self.base/str(i),enabled=True,clipboard=clip));self.clips.append(clip)
