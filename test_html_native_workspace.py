@@ -14,7 +14,7 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-from PySide6.QtCore import QCoreApplication, QEvent, QPoint, QRect, QRectF, Qt
+from PySide6.QtCore import QCoreApplication, QEvent, QEventLoop, QTimer, QPoint, QRect, QRectF, Qt
 from PySide6.QtGui import QColor, QFocusEvent, QPalette, QImage, QPainter
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QPushButton
@@ -36,11 +36,25 @@ def flush():
 
 def until(predicate,seconds=5):
     deadline=time.monotonic()+seconds
-    while not predicate() and time.monotonic()<deadline:
-        flush();QTest.qWait(5)
-        # QTest's C++ wait can retain the Python GIL. Give disk/import workers
-        # an explicit turn, as QApplication.exec does in the running app.
-        time.sleep(.001)
+    if predicate():return
+    # Match QApplication.exec: QTest's repeated C++ wait can starve Python
+    # disk/hash workers despite idle GUI time. Keep the same deadline and
+    # predicate; never turn an incomplete task into a successful wait.
+    loop=QEventLoop();timer=QTimer(loop);failures=[]
+    def check():
+        try:ready=predicate()
+        except BaseException as error:
+            failures.append((error,error.__traceback__));loop.quit()
+        else:
+            if ready or time.monotonic()>=deadline:loop.quit()
+    timer.setInterval(5);timer.timeout.connect(check)
+    try:
+        if time.monotonic()<deadline:timer.start();loop.exec()
+    finally:
+        timer.stop();timer.timeout.disconnect(check)
+        loop.deleteLater();QCoreApplication.sendPostedEvents(loop,QEvent.Type.DeferredDelete)
+    if failures:
+        error,traceback=failures[0];raise error.with_traceback(traceback)
     if not predicate():raise AssertionError('Native workspace fixture did not settle')
 
 

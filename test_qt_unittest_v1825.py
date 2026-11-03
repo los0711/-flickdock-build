@@ -3,11 +3,12 @@ import io
 import sys
 import unittest
 from unittest.mock import patch
-from PySide6.QtCore import QCoreApplication,QEvent,QTimer
+from PySide6.QtCore import QCoreApplication,QEvent,QTimer,QThread
 from PySide6.QtWidgets import QWidget
 from shiboken6 import isValid
 from test_html_native_workspace import APP,flush
 import qt_unittest as subject
+import test_html_native_workspace as workspace
 
 
 class QtRunnerTests(unittest.TestCase):
@@ -71,6 +72,43 @@ class QtRunnerTests(unittest.TestCase):
         with patch.object(QCoreApplication,'instance',return_value=None):
             result=self.run_case(lambda:None)
         self.assertTrue(result.wasSuccessful());self.assertEqual(result.testsRun,1)
+
+
+class NativeFixtureWaitTests(unittest.TestCase):
+    def test_wait_runs_a_real_qt_loop_like_the_application_not_a_busy_test_pump(self):
+        before=QThread.currentThread().loopLevel();observed=[]
+        QTimer.singleShot(0,lambda:observed.append(QThread.currentThread().loopLevel()))
+        workspace.until(lambda:bool(observed))
+        self.assertGreater(observed[0],before,'Worker budgets must be exercised under a real Qt event loop')
+
+    def test_already_ready_does_not_pump_unrelated_pending_events(self):
+        delivered=[];QTimer.singleShot(0,lambda:delivered.append(True))
+        workspace.until(lambda:True)
+        self.assertEqual(delivered,[]);flush();self.assertEqual(delivered,[True])
+
+    def test_actual_pending_work_and_original_timeout_are_both_observed(self):
+        import time
+        delivered=[];QTimer.singleShot(15,lambda:delivered.append(True))
+        workspace.until(lambda:bool(delivered),seconds=.3);self.assertEqual(delivered,[True])
+        started=time.monotonic()
+        with self.assertRaisesRegex(AssertionError,'Native workspace fixture did not settle'):
+            workspace.until(lambda:False,seconds=.02)
+        self.assertGreaterEqual(time.monotonic()-started,.015)
+
+    def test_predicate_errors_and_interruptions_propagate_and_stop_only_owned_wait(self):
+        for error in (TypeError('Owned predicate failure'),KeyboardInterrupt('Owned interruption')):
+            calls=[];outside=[];kept=QTimer();kept.setInterval(5);kept.timeout.connect(lambda:outside.append(True));kept.start()
+            def predicate():
+                calls.append(True)
+                if len(calls)>1:raise error
+                return False
+            try:
+                with self.assertRaises(type(error)):workspace.until(predicate)
+                count=len(calls);before=len(outside)
+                from PySide6.QtTest import QTest
+                QTest.qWait(20)
+                self.assertEqual(len(calls),count);self.assertGreater(len(outside),before)
+            finally:kept.stop()
 
 
 if __name__=='__main__':unittest.main()

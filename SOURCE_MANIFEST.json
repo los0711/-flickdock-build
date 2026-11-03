@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "Bound UTF16 terminator metadata scanning while preserving strict complete original validation, raw/logical SHA and3s deadline;649 controlled checks plus41 final diagnostic neighbors, root self-review; actual fresh platform/frozen gates pending.",
+  "purpose": "QA only: use a real Qt event loop for asynchronous fixture waits, retaining predicates and original deadlines, propagating errors and disposing only owned wait timers. Original large-text test and application bytes unchanged. 53 focused and653 combined checks pass. Reuse unchanged85 frozen application; new native checks still required.",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -2126,8 +2126,8 @@
     },
     {
       "path": "test_html_native_workspace.py",
-      "size": 29788,
-      "sha256": "800a67b5313cea343545f42d524497cd3be18d0380e5d5421d38e2d6a1b19d8e"
+      "size": 30450,
+      "sha256": "a12d79d1b77cd910da916f7b1456565a18e4208412a3a78c15e3840c720e526a"
     },
     {
       "path": "test_input_motion_v1823.py",
@@ -2346,8 +2346,8 @@
     },
     {
       "path": "test_qt_unittest_v1825.py",
-      "size": 4018,
-      "sha256": "271b0e3a248255e1824e58eeb0d7d034eec40ebf38ae50f53372a740810a58f7"
+      "size": 6107,
+      "sha256": "dcad73947bc258279c43d7e26fc6d912e5928aec516482f87083289af57fcb41"
     },
     {
       "path": "test_receive_lifecycle_v1822.py",
