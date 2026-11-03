@@ -151,6 +151,9 @@ MAINTAINED_TESTS=(
 )
 SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'qa/hosted_cleanup_gate.py','qa/test_hosted_cleanup_gate_v1825.py',
+    'qa/owned-producer-lookup/lookup_contract.py',
+    'qa/owned-producer-lookup/lookup_probe.py',
+    'qa/owned-producer-lookup/test_lookup_probe.py',
     'qa/clipboard_cleanup_synthetic.py',
     'qa/packaged-live/test_uia_startup.py',
     'qa/native_text_profile.py',

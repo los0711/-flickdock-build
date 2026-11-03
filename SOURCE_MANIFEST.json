@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "Scoped text-only buffer borrowing with explicit failure release; actual platform verification pending, no installer or release",
+  "purpose": "Isolated owned producer UIA query diagnostic; no application acceptance or release",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -26,8 +26,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 30101,
-      "sha256": "8965b369f15ffadb06330841a70e9bfaec0c07df6c7ae8d50827b24bb8be7795"
+      "size": 32154,
+      "sha256": "86a9dd35834d44a6c616b80fb22646ec52ff6a5ec8fc104f5bdc822c8215ec52"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -1255,6 +1255,21 @@
       "sha256": "ab6d14a5c023b3d06887b653e59dc23cac89b693189a6f53cf00d854420dcee0"
     },
     {
+      "path": "qa/owned-producer-lookup/lookup_contract.py",
+      "size": 10396,
+      "sha256": "cf38f13d399141ee30f4eb82cf2e8295990d5a126a80517dcc37cfe088fd451d"
+    },
+    {
+      "path": "qa/owned-producer-lookup/lookup_probe.py",
+      "size": 16602,
+      "sha256": "5832c3c12330cf0b4dc48111e64bd73f1fbc354db8bbb21aed3cf811ec1483ec"
+    },
+    {
+      "path": "qa/owned-producer-lookup/test_lookup_probe.py",
+      "size": 22121,
+      "sha256": "e7536f9469399f91cbc41d479954a96b2aad5878f31e6a24cfe3d99f6e0aa7e9"
+    },
+    {
       "path": "qa/packaged-live/BATCH2.md",
       "size": 3158,
       "sha256": "8c19cc2e02c09bd8023b4a4b01153a5c3f36f09dae4e749dbf568ca3b2b4c082"
@@ -1541,8 +1556,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 44038,
-      "sha256": "90109a9557302576d5b639f985a1aeb43250eac51f01b2ddaa19e4c9a70c29bb"
+      "size": 44193,
+      "sha256": "2cd5b7dafee1be46fa6ee00e46ff7c52aa1ab752d8b6f889cbb9e65f5c7cefec"
     },
     {
       "path": "release_signing.py",

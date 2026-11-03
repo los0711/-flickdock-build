@@ -3,6 +3,10 @@ name: Native clipboard verification
 on:
   workflow_dispatch:
     inputs:
+      owned_producer_lookup:
+        description: Isolated owned producer lookup only; no application acceptance
+        type: boolean
+        default: false
       cleanup_boundaries:
         description: Isolated real process/filesystem cleanup checks; not frozen application or installer acceptance
         type: boolean
@@ -48,6 +52,45 @@ permissions:
   actions: read
 
 jobs:
+  owned-producer-lookup-probe:
+    if: github.repository == 'los0711/-flickdock-build' && github.event_name == 'workflow_dispatch' && inputs.owned_producer_lookup == true
+    runs-on: windows-latest
+    timeout-minutes: 4
+    env:
+      PYTHONUTF8: '1'
+      PYTHONUNBUFFERED: '1'
+      FD_QA_NATIVE: '1'
+      FD_OWNED_PRODUCER_LOOKUP: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Pure guards, kernel fakes and resource failures before native dependencies
+        shell: pwsh
+        run: |
+          python qa/packaged-live/verify_frozen_source.py --before-build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -X utf8 -m unittest discover -s qa/owned-producer-lookup -p test_lookup_probe.py -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Existing Qt and UIA versions only; no application build
+        run: python -m pip install PySide6==6.12.0 pywinauto==0.6.9 pywin32==311
+      - name: Compare the same owned external producer in isolated protected workers
+        shell: pwsh
+        run: |
+          python -X utf8 qa/owned-producer-lookup/lookup_probe.py --output "$env:GITHUB_WORKSPACE/build/owned-producer-lookup"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Preserve original failure even when owned-handle lookup succeeds
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: owned-producer-lookup-${{ github.sha }}-${{ github.run_attempt }}
+          path: build/owned-producer-lookup/
+          if-no-files-found: error
+          retention-days: 3
+
   cleanup-boundaries:
     if: github.repository == 'los0711/-flickdock-build' && github.event.inputs.cleanup_boundaries == 'true'
     strategy:
