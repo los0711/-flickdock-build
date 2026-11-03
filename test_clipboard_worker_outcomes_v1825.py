@@ -55,9 +55,18 @@ class WorkerConsumerTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.base=Path(self.temp.name);self.peer=Peer();self.clip=Clipboard()
         self.client=subject.ClipboardSync(self.peer,Events(),self.base,clipboard=self.clip)
+        self.clients=[self.client]
         self.events=[];self.client.copy_result.connect(lambda ok,context:self.events.append(ok));flush()
     def tearDown(self):
-        self.client.close();until(lambda:not self.client._jobs);flush();self.temp.cleanup()
+        # Replaced parentless clients remain owned until their disk pool and
+        # cleanup process retire; collect their QObjects on the GUI thread.
+        for client in self.clients:client.close()
+        until(lambda:all(not client._jobs and client.pool.activeThreadCount()==0
+            and client._cleanup_runner.active is None for client in self.clients))
+        for client in self.clients:
+            self.assertIsNone(client._cleanup_runner.quarantined)
+            client.deleteLater()
+        flush();self.temp.cleanup()
     def copy(self,label):
         self.clip.text(label+'x'*33000);self.client.change_debounce.stop();self.client._changed()
     def posts(self):return sum(m=='POST' and p=='/v1/clipboard' for m,p,d in self.peer.calls)
@@ -183,6 +192,7 @@ class WorkerConsumerTests(unittest.TestCase):
         hub.body=raw;hub.head=dict(id=identity,version=1,ready=True,kind='files',size=len(raw),
             sha256=hashlib.sha256(raw).hexdigest(),copied_at=round(time.time()*1000)+1000)
         self.client=subject.ClipboardSync(account,Events(),self.base/'receiver',clipboard=clip)
+        self.clients.append(self.client)
         until(lambda:self.client.view.get('error_code')=='CLIPBOARD_WORKER_INTEGRITY')
         self.assertFalse(self.client.retry.isActive());self.assertEqual(clip.mimeData().text(),'original native content')
         count=sum(p.endswith('/content') for m,p in hub.calls)
@@ -210,6 +220,7 @@ class WorkerConsumerTests(unittest.TestCase):
     def test_inline_materialization_access_error_stops_using_existing_owner(self):
         self.client.close();hub=Hub();clip=Clipboard()
         self.client=subject.ClipboardSync(Account(hub.api('legacy'),'legacy'),Events(),self.base/'legacy',clipboard=clip)
+        self.clients.append(self.client)
         flush()
         with patch.object(self.client,'_directory',side_effect=PermissionError(errno.EACCES,'PRIVATE_FIXTURE')):
             clip.text('legacy inline fallback fixture');self.client.change_debounce.stop();self.client._changed()

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "QA only: canonicalize newly owned bootstrap TEMP path to preserve real no-links cleanup; inspect retained preview worker ownership without payloads or weakening immediate release assertion. Runtime identical711.",
+  "purpose": "QA only: retain replaced worker-consumer fixture clients until all owned jobs and cleanup operations retire, then request Qt deletion on GUI thread. No tests removed, assertions or deadlines relaxed, GC disabled or application changes. Native AV remains unproven pending replay.",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -1921,8 +1921,8 @@
     },
     {
       "path": "test_clipboard_worker_outcomes_v1825.py",
-      "size": 29980,
-      "sha256": "a71e57e096a5072b0cc66e59be5996069564429ca21acefdb930abf31dcd36b7"
+      "size": 30543,
+      "sha256": "24c749be92b7d31cd4acd19eef73d3d4db6fceac536b4a1247d913e136d9322a"
     },
     {
       "path": "test_cloud_api_stream_v183.py",
