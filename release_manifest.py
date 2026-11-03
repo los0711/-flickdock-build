@@ -165,6 +165,7 @@ SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'qa/clipboard_cleanup_synthetic.py',
     'qa/packaged-live/test_uia_startup.py',
     'qa/native_text_profile.py',
+    'qa/native_text_plain.py','qa/test_native_text_plain.py',
     'qa/packaged-live/native_image_observation.py',
     'qa/packaged-live/test_native_image_observation.py',
     'qa/packaged-live/test_image_observation_handoff.py',

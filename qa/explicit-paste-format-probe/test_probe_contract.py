@@ -16,6 +16,17 @@ def block(paths,wide=True):
     return struct.pack('<IiiII',20,0,0,0,int(wide))+data
 
 class GuardTests(unittest.TestCase):
+    def test_fixed_child_stages_never_export_unknown_or_private_fields(self):
+        with tempfile.TemporaryDirectory(prefix='fd-fixed-stage-') as directory:
+            root=Path(directory);path=root/'legacy-stage-123.jsonl'
+            self.assertEqual(c.read_legacy_trace(root,123),[])
+            row=dict(stage='paste_begin',seconds=.1);path.write_text(json.dumps(row)+'\n')
+            self.assertEqual(c.read_legacy_trace(root,123),[row])
+            for value in (dict(row,name='synthetic_private'),dict(row,stage='synthetic_private'),dict(row,stage=[]),dict(row,seconds=float('nan')),dict(row,seconds=True)):
+                path.write_text(json.dumps(value)+'\n')
+                with self.assertRaises(ValueError):c.read_legacy_trace(root,123)
+            path.write_text('x'*(c.LEGACY_TRACE_MAX_BYTES+1))
+            with self.assertRaises(ValueError):c.read_legacy_trace(root,123)
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(prefix='fd-format-guard-pure-');self.base=Path(self.temp.name).resolve()
         self.root=self.base/('fd-explicit-format-'+'a'*32);self.root.mkdir();self.nonce='b'*64

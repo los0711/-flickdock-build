@@ -196,14 +196,21 @@ jobs:
           python-version: '3.12'
       - name: Install identical reviewed Qt runtime
         run: python -m pip install PySide6==6.12.0
+      - name: Original complete deadline test without profiling hooks
+        run: |
+          python -m unittest discover -s qa -p test_native_text_plain.py -v
+          python qa/native_text_plain.py --output build/native-text-plain
       - name: Trace actual default deadline without relaxing its original assertions
+        if: always()
         run: python qa/native_text_profile.py --output build/native-text-profile
       - name: Preserve original failure and phase evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: native-text-profile-${{ github.sha }}
-          path: build/native-text-profile/
+          path: |
+            build/native-text-profile/
+            build/native-text-plain/
           if-no-files-found: error
           retention-days: 3
   reveal-probe:

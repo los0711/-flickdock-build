@@ -8,7 +8,7 @@ import argparse,hashlib,json,os,secrets,sys,tempfile,time,traceback,uuid
 from collections import Counter
 from pathlib import Path
 from probe_contract import (ChildOperation,GuardError,QuarantineError,checked_source,classify_fastpath,inside,normal_path,path_fingerprint,
-                            require_hosted,safe_error,scope_record,text_fingerprint,wait_operation)
+                            read_legacy_trace,require_hosted,safe_error,scope_record,text_fingerprint,wait_operation)
 
 SOURCES=('lan_panel.py','flickdock.py','pointer_paste.py','shelf_content.py','win_clipboard_native.py',
          'win_clipboard_io.py','win_clipboard_cache.py','win_owned_process.py','clipboard_audit.py')
@@ -84,6 +84,14 @@ def run(args):
         receipt=wait_operation(operation,pump);receipt['producer_event_pumps']=pumps
         if receipt['quarantined']:
             native_quarantined=True;raise QuarantineError(receipt)
+        if script=='qt_legacy_observer.py':
+            try:receipt['legacy_stages']=read_legacy_trace(root,operation.process.pid) if operation.process is not None else []
+            except (OSError,ValueError,UnicodeError) as cause:
+                # A child killed during its diagnostic write can leave a partial
+                # line. Keep the original deadline/resource receipt visible.
+                receipt['legacy_trace_error']=safe_error(cause)
+                if not receipt['error']:receipt['error']='QA_LEGACY_TRACE_INVALID'
+            receipt['legacy_stage_scope']='Owned child after scope validation; startup and file trace overhead remain inside original3s'
         return receipt
     def private_path_summary(paths):
         normalized=[normal_path(p) for p in paths]

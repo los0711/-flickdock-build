@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "Explicit paste compatibility probe plus safe UIA phase diagnostics; runtime unchanged8b713, no release",
+  "purpose": "Uninstrumented original Mac text comparison and fixed safe legacy paste phases; no application runtime change or release",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -26,8 +26,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 34332,
-      "sha256": "c74d2e5c9f60ce1d5004a3a1cb8c07627d3a7708ec25fac9aeb6cdc8a1eec4c1"
+      "size": 34646,
+      "sha256": "9f76882b617308f5dc0f13bd69fe88cd48983ed8be6fa9c4c51baf48df2a0211"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -1251,23 +1251,23 @@
     },
     {
       "path": "qa/explicit-paste-format-probe/probe_contract.py",
-      "size": 14242,
-      "sha256": "55e4c9773e40bbbd911d78249b89e1021f502f0ff315c7875effd972cf6062e6"
+      "size": 15373,
+      "sha256": "a2d03d274488c6e4c3c6f343e0b69e99035e4bcbf1fff2a61dffe01fc30a1c37"
     },
     {
       "path": "qa/explicit-paste-format-probe/qt_format_probe.py",
-      "size": 17837,
-      "sha256": "031a56bf8b10d26aa8de839edc482a626feff0c0345a5e2bf40bb28025a43e32"
+      "size": 18532,
+      "sha256": "e0b76782b10efa165547b3e9cf3b6b3c1eeed317de33ebf88c05f971c67c5f08"
     },
     {
       "path": "qa/explicit-paste-format-probe/qt_legacy_observer.py",
-      "size": 4217,
-      "sha256": "e05709e0d3c35e099871747030338e01c6de42f51810fa9768fcb6bc288a761f"
+      "size": 5083,
+      "sha256": "199ae661d59a7c0a266bf7daf7364311f2530e232df38ba1214e7582df5437ab"
     },
     {
       "path": "qa/explicit-paste-format-probe/test_probe_contract.py",
-      "size": 21254,
-      "sha256": "734778404cc2ec07ece5834c44fa32676a4a27b8a88fbbe19bcaadbadc8acad8"
+      "size": 22149,
+      "sha256": "390a693bf810b81a465810f1222e6911f6aba8ba59494d3fa4cf846bc11d9d4f"
     },
     {
       "path": "qa/hosted_cleanup_gate.py",
@@ -1278,6 +1278,11 @@
       "path": "qa/macos_motion_diagnostic_v1824.py",
       "size": 9061,
       "sha256": "f056f843b0a7d31d4ef3d553ec14833a743a633dda8b57af053e7cdef5788549"
+    },
+    {
+      "path": "qa/native_text_plain.py",
+      "size": 3104,
+      "sha256": "039472ff10925a11abd8a0ca8c5dc89d4876aeed0585cc1d629c681a9f18f5bc"
     },
     {
       "path": "qa/native_text_profile.py",
@@ -1565,6 +1570,11 @@
       "sha256": "7a62a49794c552361c0414cf53a4e1aec9a92fcf6806f20e560db086b6c505af"
     },
     {
+      "path": "qa/test_native_text_plain.py",
+      "size": 1735,
+      "sha256": "a8669f043e573af9647bb5260b1b8a25759331810fcf844b6814df7e97349e03"
+    },
+    {
       "path": "qt_unittest.py",
       "size": 1692,
       "sha256": "50e03cb0ee1c794b8924f4e40cf171c04774b580d7e3a6cb311455f28a131d4c"
@@ -1591,8 +1601,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 44647,
-      "sha256": "8df6ab4bfcecd99027829c68685915088b92c8c864b7683b70007200f1e4ddb3"
+      "size": 44710,
+      "sha256": "dc619955684cc80a7dff38bb12e19062c908d4da5f74b91b0701fbefb3a9839b"
     },
     {
       "path": "release_signing.py",

@@ -1,6 +1,6 @@
 """Portable QA contracts. Importing this file never loads Qt or a native DLL."""
 from __future__ import annotations
-import hashlib,json,os,re,struct,subprocess,sys,threading,time,traceback
+import hashlib,json,math,os,re,struct,subprocess,sys,threading,time,traceback
 from pathlib import Path
 
 MAGIC=b'FDXPQA1\0'
@@ -9,6 +9,23 @@ MAX_FRAME=8*1024*1024  # QA reference-list/diagnostic bound; never an app/cloud 
 SCOPE_NAME=re.compile(r'fd-explicit-format-[0-9a-f]{32}\Z')
 JOB='explicit-paste-format-probe'
 PHASES={'metadata','paths','legacy-inspect','legacy-control','legacy-filtered','blocked-provider'}
+LEGACY_STAGES=frozenset({'imports_begin','imports_complete','application_begin','application_ready',
+    'clipboard_read_begin','clipboard_read_complete','dialog_begin','dialog_ready','paste_begin','paste_complete',
+    'undo_begin','undo_complete','dialog_retire_begin','dialog_retire_complete','frame_begin','frame_complete'})
+LEGACY_TRACE_MAX_BYTES=16384
+
+def read_legacy_trace(root,pid):
+    if type(pid)is not int or pid<=0:raise ValueError('OWNED_TRACE_PID_REQUIRED')
+    path=root/('legacy-stage-'+str(pid)+'.jsonl')
+    if not path.exists():return []
+    if path.is_symlink() or path.is_junction() or path.stat().st_size>LEGACY_TRACE_MAX_BYTES:raise ValueError('OWNED_TRACE_INVALID')
+    rows=[]
+    for line in path.read_text(encoding='utf8').splitlines():
+        row=json.loads(line)
+        if (not isinstance(row,dict) or set(row)!={'stage','seconds'} or type(row['stage'])is not str or row['stage'] not in LEGACY_STAGES
+            or type(row['seconds'])not in (int,float) or not math.isfinite(row['seconds']) or row['seconds']<0):raise ValueError('OWNED_TRACE_SCHEMA')
+        rows.append(row)
+    return rows
 
 class GuardError(RuntimeError):pass
 class QuarantineError(RuntimeError):
