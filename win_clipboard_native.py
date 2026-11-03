@@ -14,6 +14,7 @@ MAX_BYTES=100*1024*1024
 MAX_HEADER=16384
 MAX_WIRE=MAX_BYTES+MAX_HEADER+2048
 NATIVE_COPY_CHUNK_BYTES=262144
+NATIVE_TEXT_PROBE_BYTES=4096
 MAGIC=b'FDCR1\0'
 SYNC_MARKER='application/x-flickdock-cloud-clipboard'
 IMAGE_FORMAT_PREFERENCE=(
@@ -247,9 +248,23 @@ def _text_spans(raw,start=0,end=None):
 def _text_end(raw,encoding):
     if encoding=='utf-16-le':
         if len(raw)%2:raise Unsupported()
-        end=raw.find(b'\0\0')
-        while end>=0 and end%2:end=raw.find(b'\0\0',end+1)
-        if end<0:raise Unsupported()
+        # Ordinary short copies keep their cheap byte probe. Large/ambiguous
+        # buffers scan aligned Unicode in bounded chunks rather than calling
+        # Python find() once for every false NUL between two code units.
+        with _text_spans(raw,0,min(len(raw),NATIVE_TEXT_PROBE_BYTES)) as chunks:
+            prefix=bytes(next(chunks,b''))
+        end=prefix.find(b'\0\0')
+        if end>=0 and end%2==0:return end
+        if end<0 and len(raw)<=NATIVE_TEXT_PROBE_BYTES:raise Unsupported()
+        with _text_spans(raw) as chunks:
+            for index,chunk in enumerate(chunks):
+                # This pass locates the terminator only, including malformed
+                # padding. The full logical text still undergoes the existing
+                # strict decoder and complete raw/logical integrity checks.
+                text=codecs.decode(chunk,'utf-16-le','surrogatepass');at=text.find('\0')
+                if at>=0:
+                    return index*NATIVE_COPY_CHUNK_BYTES+len(text[:at].encode('utf-16-le','surrogatepass'))
+        raise Unsupported()
     elif encoding=='utf-8':end=len(raw)
     else:raise Unsupported()
     return end

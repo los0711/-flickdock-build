@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "QA only: original92 cohort explicitly retires owned clipboard clients and shared shelf engines after real lane quiescence, then GUI deletion.92 focused pass; full644 remains failed on original100MiB deadline and7-object retry6/7, not hidden or relaxed. No application changes; native crash repair not claimed.",
+  "purpose": "Bound UTF16 terminator metadata scanning while preserving strict complete original validation, raw/logical SHA and3s deadline;649 controlled checks plus41 final diagnostic neighbors, root self-review; actual fresh platform/frozen gates pending.",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -1956,8 +1956,8 @@
     },
     {
       "path": "test_concurrent_uploads_v1825.py",
-      "size": 33099,
-      "sha256": "1acb8c68f93e464b1bfa72edd8b1d1ab36e391a7740371ea4a5bc1f828904c4a"
+      "size": 34064,
+      "sha256": "d1b5365674132addf04434c81c224132b2a545659410cb1b9e03eb475e4a1657"
     },
     {
       "path": "test_confirm_clear_v161.py",
@@ -2291,13 +2291,13 @@
     },
     {
       "path": "test_native_text_single_pass_v1825.py",
-      "size": 7414,
-      "sha256": "95d03abfda0fe3e593e55e9aaf45196a8e9ef30497d5c264d3388515260404ce"
+      "size": 8012,
+      "sha256": "fd6f52e32f3cc37d73ecb57eea2613b917eb57d9bd25d51291c23cb0817307da"
     },
     {
       "path": "test_native_text_stream_v1825.py",
-      "size": 4211,
-      "sha256": "9b55d6d3f485ed841e6606d9e21c1354bd8d4a2c9e8a260e23c06a79f56a13c4"
+      "size": 6937,
+      "sha256": "c6d24157566359bdfac12e674bc59b26f64c8a3add8171a5111b11919a841827"
     },
     {
       "path": "test_native_text_views_v1825.py",
@@ -2986,8 +2986,8 @@
     },
     {
       "path": "win_clipboard_native.py",
-      "size": 28451,
-      "sha256": "88e35f7c220bcd1e39c5bdb8d804b99c680385f5cbebaeea429c23abe60b8084"
+      "size": 29428,
+      "sha256": "f754b0e8cb1dc546cfde94ec50924d462b875f5714d2a71498f66908e23751f4"
     },
     {
       "path": "win_clipboard_references.py",

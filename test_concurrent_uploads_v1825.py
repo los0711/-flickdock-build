@@ -1,5 +1,6 @@
 """Real ShelfSync callbacks with a controlled, held transport (not cloud proof)."""
 import tempfile
+import json,time
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -402,6 +403,16 @@ class ConcurrentUploads(unittest.TestCase):
                     held=list(api.held)
                     for key in held:api.held.pop(key)()
                     if spin(lambda:len(api.committed)==7 or len(api.held)>0,seconds=.8) and len(api.committed)==7:break
+                if len(api.committed)!=7:
+                    # Diagnose only the synthetic fixture's scheduling state;
+                    # retain the original7-object assertion and retry budget.
+                    print(json.dumps(dict(case='main_object_retry_incomplete',committed=len(api.committed),
+                        reservations=len(api.uploads),held=len(api.held),pending=len(api.pending),
+                        running=engine.running,main_active=engine.transfer is not None,
+                        auxiliary_tasks=len(engine.small_lane.tasks),
+                        retry_in={key:max(0,value-time.monotonic()) for key,value in engine.small_lane.retry_at.items()},
+                        entries=[dict(name=value['name'],dirty=value.get('dirty'),paused=value.get('paused_upload',False),
+                            waiter_registered=value['id'] in engine.payload_gate.waiters) for value in engine.state['entries'].values()])))
                 self.assertEqual(len(api.committed),7)
                 self.assertEqual(len(api.uploads),7,'retry must reuse its existing server reservation')
                 self.assertEqual([key for key,row in api.uploads.items() if row['item_id']==identity],[original_upload])

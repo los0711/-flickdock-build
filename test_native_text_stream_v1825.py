@@ -68,4 +68,48 @@ class NativeTextStreamTests(unittest.TestCase):
             else:self.fail('Invalid Unicode produced a usable cache')
 
 
+class NativeTextTerminatorTests(unittest.TestCase):
+    def test_unaligned_false_matches_do_not_create_one_python_search_per_character(self):
+        raw=b'x\0\0\x01'*262144+b'\0\0'
+        class Original:
+            def __init__(self):self.find_calls=0
+            def __len__(self):return len(raw)
+            def __getitem__(self,key):return memoryview(raw)[key]
+            def find(self,*args):self.find_calls+=1;return raw.find(*args)
+        original=Original();self.assertEqual(native._text_end(original,'utf-16-le'),len(raw)-2)
+        self.assertLessEqual(original.find_calls,1+len(raw)//native.NATIVE_COPY_CHUNK_BYTES,
+            'Aligned Unicode metadata must not cause a Python callback for every false byte match')
+
+    def test_first_aligned_nul_survives_surrogates_and_chunk_boundaries(self):
+        for text in ('', 'short text', '😀中', 'x'*(native.NATIVE_COPY_CHUNK_BYTES//2-1)+'😀尾',
+                     '\u0100x'*40000, 'x'*(native.NATIVE_COPY_CHUNK_BYTES//2)):
+            with self.subTest(characters=len(text)):
+                raw=text.encode('utf-16-le')+b'\0\0\0\xd8ignored invalid tail'
+                if len(raw)%2:raw+=b'!'
+                self.assertEqual(native._text_end(raw,'utf-16-le'),len(text.encode('utf-16-le')))
+
+    def test_invalid_logical_unicode_still_fails_complete_strict_analysis(self):
+        raw=b'x\0'*150000+b'\0\xd8\0\0';digests={}
+        self.assertEqual(native._text_end(raw,'utf-16-le'),len(raw)-2)
+        with self.assertRaises(UnicodeDecodeError):native._text_parts(raw,None,0,part_digests=digests)
+        self.assertEqual(digests,{})
+
+    def test_missing_terminator_odd_length_and_unsupported_encoding_stay_invalid(self):
+        for raw,encoding in ((b'', 'utf-16-le'),(b'x\0', 'utf-16-le'),
+                             (b'x\0\0', 'utf-16-le'),(b'x', 'unsupported')):
+            with self.subTest(length=len(raw),encoding=encoding),self.assertRaises(native.Unsupported):
+                native._text_end(raw,encoding)
+        self.assertEqual(native._text_end(b'utf8\0kept','utf-8'),9)
+
+    def test_failed_metadata_scan_releases_borrow_even_with_retained_traceback(self):
+        with tempfile.TemporaryDirectory(prefix='fd-end-owned-') as directory:
+            path=Path(directory)/'unterminated';path.write_bytes(b'x\0'*300000)
+            with path.open('rb') as source:raw=mmap.mmap(source.fileno(),0,access=mmap.ACCESS_READ)
+            try:native._text_end(raw,'utf-16-le')
+            except native.Unsupported as error:
+                traceback=error.__traceback__;raw.close()
+                self.assertTrue(raw.closed);self.assertIs(error.__traceback__,traceback)
+            else:self.fail('Missing native terminator was accepted')
+
+
 if __name__=='__main__':unittest.main()

@@ -36,8 +36,8 @@ class NativeTextSinglePassTests(unittest.TestCase):
         cap,descriptor,raw,html=self.original(text,body)
         paths={cap.root/(part['name']+'.bin'):part['name'] for part in descriptor['local_parts']}
         inodes={(path.stat().st_dev,path.stat().st_ino):name for path,name in paths.items()}
-        counts={name:dict(file_read_bytes=0,mapped_chunk_bytes=0) for name in paths.values()};maps={}
-        real_open=Path.open;real_map=cache.mmap.mmap;real_spans=native._text_spans
+        counts={name:dict(file_read_bytes=0,mapped_chunk_bytes=0,terminator_metadata_bytes=0) for name in paths.values()};maps={}
+        real_open=Path.open;real_map=cache.mmap.mmap;real_spans=native._text_spans;real_end=native._text_end;metadata_depth=[0]
         class Stream:
             def __init__(self,source,name):self.source=source;self.name=name
             def read(self,*a,**kw):
@@ -50,18 +50,26 @@ class NativeTextSinglePassTests(unittest.TestCase):
             return Stream(source,paths[path]) if path in paths and (a[0] if a else kw.get('mode','r'))=='rb' else source
         def mapped(fd,*a,**kw):
             value=real_map(fd,*a,**kw);info=os.fstat(fd);maps[id(value)]=inodes[(info.st_dev,info.st_ino)];return value
+        def text_end(*args,**kwargs):
+            metadata_depth[0]+=1
+            try:return real_end(*args,**kwargs)
+            finally:metadata_depth[0]-=1
         @contextmanager
         def spans(value,*a,**kw):
             with real_spans(value,*a,**kw) as source:
                 def counted():
                     for part in source:
-                        if id(value) in maps:counts[maps[id(value)]]['mapped_chunk_bytes']+=len(part)
+                        if id(value) in maps:
+                            field='terminator_metadata_bytes' if metadata_depth[0] else 'mapped_chunk_bytes'
+                            counts[maps[id(value)]][field]+=len(part)
                         yield part
                 yield counted()
-        with patch.object(Path,'open',opened),patch.object(cache.mmap,'mmap',side_effect=mapped),patch.object(native,'_text_spans',spans):content=cap.adopt(descriptor)
+        with patch.object(Path,'open',opened),patch.object(cache.mmap,'mmap',side_effect=mapped),patch.object(native,'_text_spans',spans),patch.object(native,'_text_end',side_effect=text_end):content=cap.adopt(descriptor)
         print(json.dumps(dict(case='parent_raw_traversals',counts=counts,raw_sizes=dict(text=len(raw),html=len(html)))))
         self.assertEqual(sum(row['file_read_bytes'] for row in counts.values()),0,'Raw SHA must not rescan the complete file before strict decoding')
         self.assertEqual(counts['text']['mapped_chunk_bytes'],len(raw));self.assertEqual(counts['html']['mapped_chunk_bytes'],len(html))
+        self.assertGreater(counts['text']['terminator_metadata_bytes'],0)
+        self.assertLessEqual(counts['text']['terminator_metadata_bytes'],len(raw)+native.NATIVE_TEXT_PROBE_BYTES)
         self.assertEqual(content.fingerprint,('text',descriptor['fingerprint']))
         del content,cap
     def test_optional_raw_digests_cover_terminator_text_tail_and_html_framing(self):
