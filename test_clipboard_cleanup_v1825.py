@@ -17,6 +17,20 @@ def synthetic_process(command,**options):
 
 
 class WorkerCleanupTests(unittest.TestCase):
+    def test_windows_directory_pin_requests_list_access_and_denies_delete_sharing(self):
+        from qa.clipboard_cleanup_synthetic import production_held_directory
+        calls=[]
+        class Function:
+            def __init__(self,name,result):self.name=name;self.result=result
+            def __call__(self,*args):calls.append((self.name,args));return self.result
+        kernel=SimpleNamespace(CreateFileW=Function('open',123),CloseHandle=Function('close',True))
+        with patch.object(worker,'os',SimpleNamespace(name='nt')),patch.object(worker,'stamp',return_value=[1,2]),patch.object(worker,'windows_directory_api',return_value=kernel):
+            with production_held_directory(Path('owned-fixture')):self.assertEqual(len(calls),1)
+        self.assertEqual(calls[-1],('close',(123,)))
+        opened=calls[0][1]
+        self.assertEqual(opened[1]&0x0001,0x0001,'Attribute-only handles do not pin a directory name')
+        self.assertEqual(opened[2]&0x0004,0,'Cleanup must not share deletion of an inspected directory')
+        self.assertEqual(opened[5]&0x00200000,0x00200000)
     def setUp(self):
         from test_win_clipboard_io_v1825 import ensure_owned_process_temp
         from qa.clipboard_cleanup_synthetic import synthetic_scope

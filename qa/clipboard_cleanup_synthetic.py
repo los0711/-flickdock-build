@@ -3,6 +3,7 @@ from contextlib import contextmanager,nullcontext
 import ctypes,os,subprocess,sys,threading
 from pathlib import Path
 from unittest.mock import patch
+from clipboard_cleanup_worker import held_directory as production_held_directory
 
 TREE=Path(__file__).absolute().parent.parent
 COUNTERS={'parent_native_attempts':0,'child_native_attempts':0,'spawned':0,'reaped':0}

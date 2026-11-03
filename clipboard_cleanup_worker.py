@@ -15,6 +15,7 @@ TOKEN=re.compile(r'[0-9a-f]{32}\Z')
 NAME=re.compile(r'clip-[A-Za-z0-9_-]{1,64}\Z')
 SIDECAR_SUFFIX='.cleanup.json'
 PARTIAL_SUFFIX='.cleanup-partial'
+WINDOWS_DIRECTORY_READ_ACCESS=0x0001|0x0080
 
 
 class CleanupBoundary(ValueError):pass
@@ -83,7 +84,9 @@ def held_directory(path):
         kernel=windows_directory_api()
         kernel.CreateFileW.argtypes=[w.LPCWSTR,w.DWORD,w.DWORD,w.LPVOID,w.DWORD,w.DWORD,w.HANDLE];kernel.CreateFileW.restype=w.HANDLE
         kernel.CloseHandle.argtypes=[w.HANDLE];kernel.CloseHandle.restype=w.BOOL
-        handle=kernel.CreateFileW(str(path),0x80,3,None,3,0x02200000,None)
+        # Attribute-only handles do not enforce ordinary sharing checks on
+        # Windows. Reading directory entries makes no-share-delete effective.
+        handle=kernel.CreateFileW(str(path),WINDOWS_DIRECTORY_READ_ACCESS,3,None,3,0x02200000,None)
         if handle==ctypes.c_void_p(-1).value:raise ctypes.WinError(ctypes.get_last_error())
         try:
             # Omitting FILE_SHARE_DELETE pins this directory and its name;

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "Hosted source/frozen cleanup boundary gates only; runtime identical tode332b7, no installer or release",
+  "purpose": "Windows directory sharing access correction from actual hosted failure; text-view candidate excluded; no installer/release",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -656,8 +656,8 @@
     },
     {
       "path": "clipboard_cleanup_worker.py",
-      "size": 24784,
-      "sha256": "83cc47f11b2f7af10d5e6f554949d2e8283998a6f040decfdc03c66f0e41971b"
+      "size": 25006,
+      "sha256": "fd631a9451ca62aaee90f9c2f5e1bb5c068fdc78fcda15883d34631a963f6552"
     },
     {
       "path": "clipboard_notice_motion.py",
@@ -1236,13 +1236,13 @@
     },
     {
       "path": "qa/clipboard_cleanup_synthetic.py",
-      "size": 4462,
-      "sha256": "852629bb6a513d4e84c6d8dc22d28a6d03fa0341a4d9d526db70122aa3fac5ec"
+      "size": 4543,
+      "sha256": "d15b700091e8b33a5f08dc5a163508a20174086acfc0d08043458cc81b11d71e"
     },
     {
       "path": "qa/hosted_cleanup_gate.py",
-      "size": 11522,
-      "sha256": "8d07a565b9dda8ae373556fff1f3511077205ad4203a09df66dd2578c2a05e6d"
+      "size": 12643,
+      "sha256": "4ea5743da7ff5e378a7c9f57eda1a812bb3a9a5eb49631fa11b84ad77f6e9846"
     },
     {
       "path": "qa/macos_motion_diagnostic_v1824.py",
@@ -1731,8 +1731,8 @@
     },
     {
       "path": "test_clipboard_cleanup_v1825.py",
-      "size": 20003,
-      "sha256": "bac833a3b3ce6774d73c578666ccf6d4fc7710ed5a2261923982b710c1f4afaf"
+      "size": 21097,
+      "sha256": "17da96d13828f25ddd4e47f05de38bc1ebba34946b879b37919e7172de5139e1"
     },
     {
       "path": "test_clipboard_empty_bootstrap_v1825.py",

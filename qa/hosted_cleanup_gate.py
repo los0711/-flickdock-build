@@ -24,7 +24,7 @@ PLATFORMS={'Windows':'win32','macOS':'darwin'}
 RUNTIME={
     'clipboard_sync.py':'6eb2e683b3ce24c892307bb02dc78043f7ffcfd70f67d33f690ce40d42adb306',
     'clipboard_cleanup.py':'569d3066bf9936a2cd92386b7a8d64efbe014a2f523f611097b86c9d11ba4ea6',
-    'clipboard_cleanup_worker.py':'83cc47f11b2f7af10d5e6f554949d2e8283998a6f040decfdc03c66f0e41971b',
+    'clipboard_cleanup_worker.py':'fd631a9451ca62aaee90f9c2f5e1bb5c068fdc78fcda15883d34631a963f6552',
 }
 PREFIX='flickdock-cleanup-hosted-'
 HEX=re.compile(r'[0-9a-f]{64}\Z')
@@ -99,6 +99,26 @@ def await_operation(app,controller,value,operations):
     return receipts[0]
 
 
+def attribute_only_control(worker,root):
+    import ctypes
+    from ctypes import wintypes as w
+    directory=root/'attribute-only-control';directory.mkdir();moved=root/'attribute-only-moved'
+    kernel=worker.windows_directory_api()
+    kernel.CreateFileW.argtypes=[w.LPCWSTR,w.DWORD,w.DWORD,w.LPVOID,w.DWORD,w.DWORD,w.HANDLE]
+    kernel.CreateFileW.restype=w.HANDLE
+    kernel.CloseHandle.argtypes=[w.HANDLE];kernel.CloseHandle.restype=w.BOOL
+    handle=kernel.CreateFileW(str(directory),0x80,3,None,3,0x02200000,None)
+    if handle==ctypes.c_void_p(-1).value:raise ctypes.WinError(ctypes.get_last_error())
+    allowed=False
+    try:
+        try:directory.rename(moved);allowed=True
+        except PermissionError:pass
+    finally:
+        if not kernel.CloseHandle(handle):raise ctypes.WinError(ctypes.get_last_error())
+    if allowed:moved.rename(directory)
+    return allowed
+
+
 def run_cases(app,lane,worker,root,exe,operations):
     results=[]
     original=root/'original.bin';original.write_bytes(b'owned-original-do-not-delete')
@@ -138,6 +158,7 @@ def run_cases(app,lane,worker,root,exe,operations):
     finally:timeout.close()
 
     if os.name=='nt':
+        old_rename_allowed=attribute_only_control(worker,root)
         directory=root/'share-pin';directory.mkdir();moved=root/'share-pin-moved'
         denied=False
         with worker.held_directory(directory):
@@ -145,7 +166,9 @@ def run_cases(app,lane,worker,root,exe,operations):
             except PermissionError:denied=True
         check(denied and directory.exists() and not moved.exists(),'NATIVE_SHARE_DELETE_NOT_DENIED')
         directory.rename(moved);moved.rename(directory)
-        results.append({'scope':'actual-Windows-owned-directory','rename_denied_while_held':True,'rename_after_release':True})
+        results.append({'scope':'actual-Windows-owned-directory','attribute_only_control_rename_allowed':old_rename_allowed,
+                        'rename_denied_while_held':True,'rename_after_release':True,
+                        'requested_directory_access':worker.WINDOWS_DIRECTORY_READ_ACCESS})
     else:
         needed=(os.open,os.stat,os.unlink,os.rmdir,os.link)
         check(all(function in os.supports_dir_fd for function in needed),'POSIX_DIR_FD_UNAVAILABLE')
