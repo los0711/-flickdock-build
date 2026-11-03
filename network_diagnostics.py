@@ -9,7 +9,7 @@ _last={}
 
 
 def record_event(base,component,phase,code,status=0,details=None):
-    if base is None or component not in ('cloud','update','remote'):return
+    if base is None or component not in ('cloud','update','remote','ui'):return
     if not all(isinstance(value,str) and re.fullmatch(r'[A-Z0-9_]{1,80}',value.upper()) for value in (phase,code)):return
     key=(str(base),component,phase,code,status);now=time.monotonic()
     with _lock:

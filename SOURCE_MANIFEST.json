@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "Isolated actual header/menu/dock observation of unchanged ec8 runtime. Earlier normal receive failure remains failed, not bypassed for acceptance. No installer or release.",
+  "purpose": "Restore explicit failed receive rows after switch reenable and record payload-free GUI callback exception frames, preserving original error hook. Hosted root diagnosis, not acceptance/publication.",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -1031,8 +1031,8 @@
     },
     {
       "path": "gui_watchdog.py",
-      "size": 1733,
-      "sha256": "12ff2ce07a7279822b49e581416325f1d204b2f4b3b2f3d2c4c9eb2ccf8208ac"
+      "size": 2650,
+      "sha256": "97be11d1b1bc068a03b1e655006132ae3a29295cca15c71a9d17e937888161fe"
     },
     {
       "path": "image_preview.py",
@@ -1166,8 +1166,8 @@
     },
     {
       "path": "network_diagnostics.py",
-      "size": 2597,
-      "sha256": "1f543368643c361c17678e02f08209f26393f50f47616a3fac895e4e01ef1cc8"
+      "size": 2602,
+      "sha256": "6e37a07e96be5406abf8bf1fdedc0d78a42af6ed2a6e77e8a499636ceba7dfc6"
     },
     {
       "path": "network_environment.py",
@@ -1631,8 +1631,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 45267,
-      "sha256": "073296e27220b92387f6fdab81c99ef7473b91dad5e2a830db8de969a8d441dd"
+      "size": 45306,
+      "sha256": "98657afba284b38bfe1de889249d638dc1c87f53ecb1a5658acd0be2dc34b70d"
     },
     {
       "path": "release_signing.py",
@@ -1706,8 +1706,8 @@
     },
     {
       "path": "shelf_sync.py",
-      "size": 118471,
-      "sha256": "fbbf66033cd600b24ef5160c7aa53ed1ef7bbcf28dc7a993dc0c88387996d32c"
+      "size": 118605,
+      "sha256": "d4b8c8652ad83b54703d876bf1ebd8402936b5271afb7bdf2bd7df580f9cfc7d"
     },
     {
       "path": "shortcut_preview.py",
@@ -2026,8 +2026,8 @@
     },
     {
       "path": "test_download_failure_policy_v1825.py",
-      "size": 5280,
-      "sha256": "c21d3a12528f8c78a0bd30e5183177bdcc4c2749ce8b9c9fdee68b61815dfafd"
+      "size": 7608,
+      "sha256": "cf1696c85600a533ede790f9d4b441de1bf60e298c64250c759a583c1f4e6b19"
     },
     {
       "path": "test_download_failure_ui_v1825.py",
@@ -2378,6 +2378,11 @@
       "path": "test_qt_unittest_v1825.py",
       "size": 7597,
       "sha256": "5d23f50a383d874b08142980700bcca67347219adb58b225ad56d5c48c89678d"
+    },
+    {
+      "path": "test_receive_http_lifecycle_v1825.py",
+      "size": 7364,
+      "sha256": "c38b54936545fa5f9fd01399e23ec79de9ed2f321d04b76875abef375be83463"
     },
     {
       "path": "test_receive_lifecycle_v1822.py",

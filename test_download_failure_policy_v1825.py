@@ -14,9 +14,13 @@ class FaultApi(Api):
     def __init__(self,records,blobs,failed,error):
         super().__init__(records,blobs)
         self.failed=failed;self.error=error;self.attempts=0
+        self.failed_part=None;self.part_requests=[]
 
     def request(self,method,path,callback,**kwargs):
-        if '/parts/' in path and path.split('/')[3]==self.failed and self.error:
+        index=int(path.split('/parts/')[1].split('?')[0]) if '/parts/' in path else None
+        if index is not None:self.part_requests.append((path.split('/')[3],index))
+        if (index is not None and path.split('/')[3]==self.failed and self.error
+                and self.failed_part in (None,index)):
             self.attempts+=1;key=uuid4().hex;self.pending[key]=True
             def complete():
                 if self.pending.pop(key,False):callback(None,self.error)
@@ -92,6 +96,34 @@ class DownloadFailureTests(unittest.TestCase):
         entry=self.engine.state['entries'][self.first]
         self.assertEqual(entry['version'],2)
         self.assertEqual(Path(entry['ref']).read_bytes(),b'new verified revision')
+
+    def test_receive_switch_preserves_stopped_failure_and_its_manual_retry(self):
+        self.start(CloudError('Cannot save original',code='DOWNLOAD_SAVE_FAILED'))
+        self.engine.set_directions(True,False)
+        self.assertNotIn(self.first,self.engine.download_transfers)
+        self.engine.set_directions(True,True)
+        self.assertTrue(spin(lambda:not self.engine.running and not self.api.pending))
+        self.assertIn(self.first,self.engine.download_transfers)
+        self.assertEqual(self.api.attempts,1)
+        self.assertEqual(next(row for row in self.transfers[-1] if row['id']==self.first)['phase'],'error')
+        self.api.error=None
+        self.assertTrue(self.engine.retry_download(self.first))
+        self.assertTrue(spin(lambda:len(self.adapter.view['permanent'])==2 and not self.engine.running))
+
+    def test_manual_retry_reuses_verified_neighbor_parts_instead_of_downloading_again(self):
+        self.blobs[self.first]=b'A'*65536+b'B'*65536+b'C'*65536
+        self.records[0]['record']=file_record(self.first,'first.bin',self.blobs[self.first])
+        self.api=FaultApi(self.records,self.blobs,self.first,CloudError('Cannot save middle part',code='DOWNLOAD_SAVE_FAILED'))
+        self.api.failed_part=1;self.service.api=self.api
+        self.engine=ShelfSync(self.directory.name,self.service,self.adapter,poll_ms=600000)
+        self.service.account_changed.emit({'id':'failure-policy-account'})
+        self.assertTrue(spin(lambda:self.engine.state['cursor']=='2' and not self.engine.running))
+        self.assertEqual(set(self.engine.state['downloads'][self.first]['hashes']),{'0','2'})
+        before=len(self.api.part_requests);self.api.error=None
+        self.assertTrue(self.engine.retry_download(self.first))
+        self.assertTrue(spin(lambda:len(self.adapter.view['permanent'])==2 and not self.engine.running))
+        self.assertEqual(self.api.part_requests[before:],[(self.first,1)])
+        self.assertEqual(Path(self.engine.state['entries'][self.first]['ref']).read_bytes(),self.blobs[self.first])
 
 
 if __name__=='__main__':unittest.main()

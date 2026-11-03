@@ -1,12 +1,17 @@
 """Capture Python stacks after a stalled event loop, without inspecting content."""
 import faulthandler
+import sys
+import traceback
 from pathlib import Path
 from PySide6.QtCore import QObject,QTimer
 
 
 class GuiWatchdog(QObject):
     def __init__(self,app,base,*,timeout=8):
-        super().__init__(app);self.stream=None;self.timeout=timeout
+        super().__init__(app);self.stream=None;self.timeout=timeout;self.base=base
+        self._previous_hook=sys.excepthook
+        self._exception_hook=self._report_exception
+        sys.excepthook=self._exception_hook
         self.timer=QTimer(self);self.timer.setInterval(1000);self.timer.timeout.connect(self.beat)
         try:
             directory=Path(base)/'diagnostics';directory.mkdir(parents=True,exist_ok=True)
@@ -17,6 +22,17 @@ class GuiWatchdog(QObject):
             self.stream.write(b'\nFlickDock event loop watchdog; stack frames only, no clipboard content\n')
             self.beat();self.timer.start();app.aboutToQuit.connect(self.close)
         except (OSError,RuntimeError):self.close()
+
+    def _report_exception(self,kind,error,trace):
+        # Windowed executables have no stderr. Preserve a diagnostic frame,
+        # without exception text, locals or private absolute filesystem paths.
+        # Delegate unchanged so an invariant failure is never converted to OK.
+        from network_diagnostics import record_event
+        frames=traceback.extract_tb(trace)
+        details=dict(cause=kind.__name__)
+        if frames:details['location']=Path(frames[-1].filename).name+':'+str(frames[-1].lineno)
+        record_event(self.base,'ui','callback','CALLBACK_EXCEPTION',details=details)
+        self._previous_hook(kind,error,trace)
 
     def beat(self):
         if self.stream is None:return
@@ -31,5 +47,6 @@ class GuiWatchdog(QObject):
 
     def close(self):
         self.timer.stop()
+        if sys.excepthook is self._exception_hook:sys.excepthook=self._previous_hook
         if self.stream is not None:
             faulthandler.cancel_dump_traceback_later();self.stream.close();self.stream=None

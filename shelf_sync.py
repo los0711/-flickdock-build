@@ -173,6 +173,7 @@ class ShelfSync(QObject):
         self.upload_enabled,self.receive_enabled=upload_enabled,receive_enabled
         if receive_enabled and self.state is not None:
             self.state.pop('awaiting_receive',None)
+            self._restore_deferred_downloads()
         if not receive_enabled:
             self.remote_transfers=[]
             self._live_upload_progress.clear()
@@ -263,10 +264,7 @@ class ShelfSync(QObject):
         self.account_id = target
         path = self._profile(target)
         self.state = self._read(path,{'entries':{},'cursor':'0','view':None})
-        for identity,deferred in self.state.get('deferred_downloads',{}).items():
-            record=deferred.get('record',{}) if isinstance(deferred,dict) else {}
-            if record.get('id')==identity and re.fullmatch(r'[A-Za-z0-9_-]{1,128}',identity):
-                self.download_transfers[identity]=dict(record)
+        self._restore_deferred_downloads()
         if self.receive_enabled:self.state.pop('awaiting_receive',None)
         if self.state.get('view') is None:
             if target and self.owner is None and not self.meta.get('imported_guest'):
@@ -742,6 +740,12 @@ class ShelfSync(QObject):
         if resume.get('upload_id') or self.transfer and self.transfer.get('id')==entry['id']:
             return 'uploading'
         return 'pending'
+
+    def _restore_deferred_downloads(self):
+        for identity,deferred in self.state.get('deferred_downloads',{}).items():
+            record=deferred.get('record',{}) if isinstance(deferred,dict) else {}
+            if record.get('id')==identity and re.fullmatch(r'[A-Za-z0-9_-]{1,128}',identity):
+                self.download_transfers[identity]=dict(record)
 
     def retry_download(self,identity):
         if self.closed or not self.receive_enabled or self.state is None:return False

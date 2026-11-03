@@ -145,7 +145,7 @@ MAINTAINED_TESTS=(
     'test_account_actions_v181.py','test_account_settings_v181.py','test_account_rules_v1811.py','test_transfer_ui_v181.py',
     'test_lan_transfer_v181.py','test_lan_dialog_v183.py','test_shelf_transfers_v181.py','test_sync_staging_v181.py','test_cloud_progress_v181.py',
     'test_cloud_api_stream_v183.py','test_sync_directions.py','test_sync_timeout_recovery.py',
-    'test_sync_receive_priority.py','test_download_failure_policy_v1825.py','test_download_failure_ui_v1825.py','test_header_sequence_v1825.py','test_cloud_download_fast_path_v189.py','test_window_layer.py',
+    'test_sync_receive_priority.py','test_download_failure_policy_v1825.py','test_download_failure_ui_v1825.py','test_receive_http_lifecycle_v1825.py','test_header_sequence_v1825.py','test_cloud_download_fast_path_v189.py','test_window_layer.py',
     'test_mac_window_order_v1810.py','test_mac_cocoa_spaces.py','test_win_window_order_v1810.py',
     'test_html_native_lan.py','test_html_native_dialogs.py','test_html_native_workspace.py',
     'test_hig_accessibility.py','test_account_profile_layout_v1814.py','test_lan_hig_layout_v1814.py',
