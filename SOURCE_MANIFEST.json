@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "QA only: use a real Qt event loop for asynchronous fixture waits, retaining predicates and original deadlines, propagating errors and disposing only owned wait timers. Original large-text test and application bytes unchanged. 53 focused and653 combined checks pass. Reuse unchanged85 frozen application; new native checks still required.",
+  "purpose": "QA-only native failure diagnosis: original cleanup200ms, retry30s and complete-text3s assertions retained. Add assertion failure state without private content and phase thread CPU timing;52focused checks passed, native failures remain unresolved. Runtime identical85; reuse its frozen evidence, no installer/publication.",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -1296,8 +1296,8 @@
     },
     {
       "path": "qa/native_text_profile.py",
-      "size": 12897,
-      "sha256": "ab6d14a5c023b3d06887b653e59dc23cac89b693189a6f53cf00d854420dcee0"
+      "size": 13048,
+      "sha256": "d5d2d4503a5050e1ccce9326980f9a2b10405307e163b2bf2a0f1cdd4c3bc4a6"
     },
     {
       "path": "qa/owned-producer-lookup/lookup_contract.py",
@@ -1811,8 +1811,8 @@
     },
     {
       "path": "test_clipboard_cleanup_v1825.py",
-      "size": 22534,
-      "sha256": "068211fd5880e269a5c64aeabea47e73a7c5c7b33aaf62a2a86f935af27e3ff8"
+      "size": 22680,
+      "sha256": "cf0531ff15a0d77617e8f40663302f44492d620513adfd161eda37b5ed307dcc"
     },
     {
       "path": "test_clipboard_empty_bootstrap_v1825.py",
@@ -2281,8 +2281,8 @@
     },
     {
       "path": "test_native_read_retry_v1825.py",
-      "size": 6968,
-      "sha256": "df952c98fe8be47a824715822366dfc68fad5fc3b16fd741ae7c0a6e2c58eb00"
+      "size": 7235,
+      "sha256": "dc2c0a580fe3d8ce45d02c5c10050810d60e5542851813c2396003b705e3b00f"
     },
     {
       "path": "test_native_text_budget_v1825.py",

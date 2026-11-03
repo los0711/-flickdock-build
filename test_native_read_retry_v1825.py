@@ -77,6 +77,9 @@ class NativeRetryTests(unittest.TestCase):
         with patch.object(sync.time,'monotonic',return_value=stamp+29.999):self.client._start_native_read()
         self.assertEqual(self.reader.serial,calls)
         with patch.object(sync.time,'monotonic',return_value=stamp+30.):self.client._start_native_read()
-        self.assertEqual(self.reader.serial,calls+1);self.assertEqual(self.posts(),0)
+        self.assertEqual(self.reader.serial,calls+1,dict(sequence=sequence,count=count,stamp=stamp,
+            boundary=stamp+30.,elapsed=(stamp+30.)-stamp,failures=self.client._native_failures,
+            reader_pending=self.client._native_read_token is not None,waiters=sorted(self.client._native_waiters)))
+        self.assertEqual(self.posts(),0)
 
 if __name__=='__main__':unittest.main(verbosity=2)

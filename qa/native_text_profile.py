@@ -26,10 +26,10 @@ def instrument(owner,name,log):
     original=getattr(owner,name)
     @functools.wraps(original)
     def measured(*args,**kwargs):
-        started=time.perf_counter()
+        started=time.perf_counter();cpu=time.thread_time()
         emit(log,dict(stage=name,event='start',pid=os.getpid(),t=started))
         try:return original(*args,**kwargs)
-        finally:emit(log,dict(stage=name,event='end',pid=os.getpid(),t=time.perf_counter(),seconds=time.perf_counter()-started))
+        finally:emit(log,dict(stage=name,event='end',pid=os.getpid(),t=time.perf_counter(),seconds=time.perf_counter()-started,cpu_seconds=time.thread_time()-cpu))
     setattr(owner,name,measured)
 
 
@@ -54,9 +54,9 @@ def instrument(owner,name):
  original=getattr(owner,name)
  @functools.wraps(original)
  def measured(*args,**kwargs):
-  started=time.perf_counter();emit(dict(stage=name,event='start',pid=os.getpid(),t=started))
+  started=time.perf_counter();cpu=time.thread_time();emit(dict(stage=name,event='start',pid=os.getpid(),t=started))
   try:return original(*args,**kwargs)
-  finally:emit(dict(stage=name,event='end',pid=os.getpid(),t=time.perf_counter(),seconds=time.perf_counter()-started))
+  finally:emit(dict(stage=name,event='end',pid=os.getpid(),t=time.perf_counter(),seconds=time.perf_counter()-started,cpu_seconds=time.thread_time()-cpu))
  setattr(owner,name,measured)
 _detail_sample_every=64
 _detail_current=contextvars.ContextVar('qa_text_cache_write',default=None)
@@ -208,7 +208,7 @@ def main():
         import test_clipboard_local_original_v1825 as checks
         from qt_unittest import QtTestRunner
         log=output/'stages.jsonl'
-        instrument(native,'_text_parts',log);instrument(cache.CacheCapability,'adopt',log)
+        instrument(native,'_text_parts',log);instrument(native,'_text_end',log);instrument(cache.CacheCapability,'adopt',log)
         instrument(reader._ReadOperation,'_run',log)
         method=checks.LocalOriginalTests.test_real_100m_plus_one_logical_text_keeps_full_utf16_under_default_deadline
         constants=list(method.__code__.co_consts)

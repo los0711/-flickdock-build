@@ -272,7 +272,10 @@ raise SystemExit(w.main(sys.argv[1:]))
         actor=self.actor(program,deadline_ms=200);results=[];actor.submit(self.request(references=[str(source)]),results.append);operation=actor.active
         self.assertTrue(operation.done.wait(1.5),'Deadline must not depend on GUI processEvents')
         self.assertTrue(operation.reaped);self.assertIsNotNone(operation.process.returncode)
-        until(lambda:bool(results));self.assertEqual(results[0]['status'],'deferred');self.assertEqual(results[0]['code'],'DEADLINE');self.assertEqual(source.read_bytes(),b'keep original')
+        until(lambda:bool(results));self.assertEqual(results[0]['status'],'deferred',dict(
+            result=results[0],reason=operation.reason,reaped=operation.reaped,
+            returncode=operation.process.returncode))
+        self.assertEqual(results[0]['code'],'DEADLINE');self.assertEqual(source.read_bytes(),b'keep original')
 
 
 if __name__=='__main__':unittest.main()
