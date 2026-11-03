@@ -8,7 +8,7 @@ from uuid import uuid4
 import win_clipboard_native as native
 import clipboard_sync as sync
 from test_clipboard_native_read_v1825 import NativeClipboard,Reader
-from test_clipboard_sync_v1819 import Events
+from test_clipboard_sync_v1819 import Events,retire_clipboard_clients
 from test_shared_clipboard_files_v1821 import Peer
 from test_html_native_workspace import APP,flush,until
 
@@ -78,7 +78,7 @@ class EmptyBootstrapFlowTests(unittest.TestCase):
         self.patches=[patch.object(sync,'_windows_clipboard_reader',return_value=self.reader),patch.object(sync,'native_sequence',side_effect=lambda:self.clip.sequence),patch.object(sync.QApplication,'clipboard',return_value=self.clip),patch.object(sync,'_windows_clipboard_metadata',side_effect=lambda:native.native_metadata(self.provider))]
         for item in self.patches:item.start()
     def tearDown(self):
-        if self.client is not None:self.client.close();until(lambda:not self.client._jobs);flush()
+        if self.client is not None:retire_clipboard_clients([self.client])
         for item in reversed(self.patches):item.stop()
         self.temp.cleanup()
     def start(self):

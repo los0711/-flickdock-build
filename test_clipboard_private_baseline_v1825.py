@@ -6,7 +6,7 @@ from uuid import uuid4
 import test_clipboard_native_read_v1825 as fixture
 from test_html_native_workspace import APP,flush,until
 from test_shared_clipboard_files_v1821 import Peer
-from test_clipboard_sync_v1819 import Events
+from test_clipboard_sync_v1819 import Events,retire_clipboard_clients
 import clipboard_sync as sync
 
 
@@ -20,7 +20,7 @@ class PrivateBaselineFenceTests(unittest.TestCase):
         self.client=sync.ClipboardSync(self.peer,Events(),self.temp.name,clipboard=self.clip);flush()
         self.assertTrue(self.client._needs_security_baseline);self.old_token=self.client._native_read_token
     def tearDown(self):
-        self.client.close();until(lambda:not self.client._jobs);flush()
+        retire_clipboard_clients([self.client])
         for item in reversed(self.patches):item.stop()
         self.temp.cleanup()
     def posts(self):return sum(method=='POST' for method,path,data in self.peer.calls)

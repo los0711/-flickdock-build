@@ -7,7 +7,7 @@ import win_clipboard_native as native
 from test_clipboard_native_read_v1825 import NativeClipboard,Reader
 from test_clipboard_empty_bootstrap_v1825 import MetadataProvider
 from test_shared_clipboard_files_v1821 import Peer
-from test_clipboard_sync_v1819 import Events
+from test_clipboard_sync_v1819 import Events,retire_clipboard_clients
 from test_html_native_workspace import flush,until
 
 class NativeRetryTests(unittest.TestCase):
@@ -17,7 +17,7 @@ class NativeRetryTests(unittest.TestCase):
         for item in self.patches:item.start()
         self.client=sync.ClipboardSync(self.peer,Events(),self.temp.name,clipboard=self.clip);self.notices=[];self.client.copy_result.connect(lambda ok,context:self.notices.append(ok));flush()
     def tearDown(self):
-        self.client.close();until(lambda:not self.client._jobs);flush()
+        retire_clipboard_clients([self.client])
         for item in reversed(self.patches):item.stop()
         self.temp.cleanup()
     def copy(self,text='synthetic pending original'):

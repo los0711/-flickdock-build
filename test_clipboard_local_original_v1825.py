@@ -30,9 +30,8 @@ class LocalOriginalTests(unittest.TestCase):
         self.model.close();until(lambda:not self.model.jobs);self.model.state={}
         self.f.client._native_sample=None;self.f.client.view={}
         self.f.tearDown()
-        # The fixture owns these QObjects. Finished jobs/signals can retain
-        # their original-content arguments until their Qt owners are deleted.
-        self.model.deleteLater();self.f.client.deleteLater();flush()
+        # The nested fixture retires its client; this scope owns the presenter.
+        self.model.deleteLater();flush()
         gc.collect();cache.schedule_cleanup();self.assertTrue(cache._IDLE.wait(2))
         self.base_patch.stop();self.cache_temp.cleanup()
     def inject(self,result):

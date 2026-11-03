@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "Recognize the owned POSIX helper kernel deadline only after the original parent budget expires; early alarm, other signal and Windows exits stay failures. Original2-case counterexample1fail;656combined attempted655pass/1POSIXskip,7exact-pin checks pass. New actual POSIX kernel case requires hosted check. No deadline/GUI/protocol/clipboard payload changes;85 frozen is now older, not current acceptance.",
+  "purpose": "QA only: four bootstrap/native/private/retry fixture owners now reuse explicit GUI retirement after all independent lanes end; presenter scope no longer deletes the nested client twice. Original4owner contract failures retained;95focused and657attempted656pass/1POSIXskip. Original100MiB test body/deadline and all application bytes identical669. Native AV not declared repaired; no installer/publication.",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -1816,8 +1816,8 @@
     },
     {
       "path": "test_clipboard_empty_bootstrap_v1825.py",
-      "size": 17044,
-      "sha256": "b7a03c79f20970fbe695c4bf50b5413c2103a1591f2d2e854d044df6a21285bd"
+      "size": 17045,
+      "sha256": "c5440040e30a3b0e531d7e34c47c914b5f28cac869eef545cab51746b8222091"
     },
     {
       "path": "test_clipboard_empty_receive_v1825.py",
@@ -1831,8 +1831,8 @@
     },
     {
       "path": "test_clipboard_local_original_v1825.py",
-      "size": 18138,
-      "sha256": "2ed5fe90bce325e33be79cf2e971ef4cf358985a811c305ee691c0812218ec34"
+      "size": 18035,
+      "sha256": "5dae77285449b84c79dde9fd9ba084247cf8c1c82c99ffbe58431b6e81670700"
     },
     {
       "path": "test_clipboard_loop_v1824.py",
@@ -1846,8 +1846,8 @@
     },
     {
       "path": "test_clipboard_native_read_v1825.py",
-      "size": 15199,
-      "sha256": "1e1e219dbd419d4fd490e4a6fc2ceeb0189f3a4bdebe34e7aebf8f04a6833b3d"
+      "size": 15200,
+      "sha256": "a0d69f68a662d14d8236e99081843c243a268cfb4454b61d9f753cb3e7ce955e"
     },
     {
       "path": "test_clipboard_notice_motion_v1823.py",
@@ -1881,8 +1881,8 @@
     },
     {
       "path": "test_clipboard_private_baseline_v1825.py",
-      "size": 6632,
-      "sha256": "1478929e2ce614a79774dd2ed97cc926f25a0d495baf2b848be600453e6024b3"
+      "size": 6633,
+      "sha256": "cf70b0a66b47b4feac50c89d007fd54b0a98435d02c9c27b37a119d9efbf2312"
     },
     {
       "path": "test_clipboard_read_purpose_v1825.py",
@@ -2281,8 +2281,8 @@
     },
     {
       "path": "test_native_read_retry_v1825.py",
-      "size": 7235,
-      "sha256": "dc2c0a580fe3d8ce45d02c5c10050810d60e5542851813c2396003b705e3b00f"
+      "size": 7236,
+      "sha256": "0cc359ae15a766934f0dbcae6da00fc7d5a61190ce9ee09868ac02c160f3d56c"
     },
     {
       "path": "test_native_text_budget_v1825.py",
@@ -2346,8 +2346,8 @@
     },
     {
       "path": "test_qt_unittest_v1825.py",
-      "size": 6107,
-      "sha256": "dcad73947bc258279c43d7e26fc6d912e5928aec516482f87083289af57fcb41"
+      "size": 7597,
+      "sha256": "5d23f50a383d874b08142980700bcca67347219adb58b225ad56d5c48c89678d"
     },
     {
       "path": "test_receive_lifecycle_v1822.py",

@@ -111,4 +111,27 @@ class NativeFixtureWaitTests(unittest.TestCase):
             finally:kept.stop()
 
 
+class ClipboardFixtureOwnerTests(unittest.TestCase):
+    def test_bootstrap_native_private_and_retry_owners_are_retired_on_gui_before_next_case(self):
+        from test_clipboard_empty_bootstrap_v1825 import EmptyBootstrapFlowTests
+        from test_clipboard_native_read_v1825 import NativeReadTests
+        from test_clipboard_private_baseline_v1825 import PrivateBaselineFenceTests
+        from test_native_read_retry_v1825 import NativeRetryTests
+        from test_clipboard_sync_v1819 import retire_clipboard_clients
+        for factory in (EmptyBootstrapFlowTests,NativeReadTests,PrivateBaselineFenceTests,NativeRetryTests):
+            with self.subTest(fixture=factory.__name__):
+                case=factory('runTest');case.setUp()
+                if case.client is None:case.start()
+                client=case.client;destroyed=[]
+                client.destroyed.connect(lambda:destroyed.append(QThread.currentThread()==APP.thread()))
+                try:
+                    case.tearDown()
+                    self.assertFalse(isValid(client),'Closed fixture left its Qt owner alive after releasing its profile')
+                    self.assertEqual(destroyed,[True],'Fixture Qt destruction must run on the GUI thread')
+                finally:
+                    # Preserve the observed failed contract before releasing
+                    # only this test's retained object, never global Qt state.
+                    if isValid(client):retire_clipboard_clients([client])
+
+
 if __name__=='__main__':unittest.main()

@@ -6,7 +6,7 @@ from uuid import uuid4
 from PySide6.QtCore import QObject,Signal,QMimeData,QTimer
 from test_html_native_workspace import APP,until,flush
 from test_shared_clipboard_files_v1821 import Peer
-from test_clipboard_sync_v1819 import Events
+from test_clipboard_sync_v1819 import Events,retire_clipboard_clients
 import clipboard_sync as subject
 
 
@@ -55,7 +55,7 @@ class NativeReadTests(unittest.TestCase):
         self.metadata.start();self.client=subject.ClipboardSync(self.peer,Events(),self.temp.name,clipboard=self.clip)
         flush()
     def tearDown(self):
-        self.client.close();until(lambda:not self.client._jobs);flush()
+        retire_clipboard_clients([self.client])
         self.metadata.stop();self.application.stop();self.native.stop();self.factory.stop();self.temp.cleanup()
     def posts(self):return sum(method=='POST' for method,path,data in self.peer.calls)
     def settle(self):
