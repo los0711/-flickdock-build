@@ -182,13 +182,19 @@ class FinalMotion(Batch2):
         original=self.state();failure=None
         try:
             self.set_pin(True)
-            for delay in (0.,.08):
+            for sequence,delay in (('confirmed-toggle',None),('rapid-input',.08)):
                 self.show_mode('mini')
-                expand=self.target('expand');more=self.target('more')
-                self.input(expand)
-                if delay:time.sleep(delay)
-                self.input(expand)
-                self.input(more)
+                self.input(self.target('expand'))
+                if delay is None:
+                    self.wait(lambda:self.mode()=='overview','confirmed expand before collapse');self.settle()
+                else:time.sleep(delay)
+                self.input(self.target('expand'))
+                if delay is None:
+                    self.wait(lambda:self.mode()=='mini','confirmed collapse before menu');self.settle()
+                # Rapid input may miss a control moving under the pointer.
+                # Retain its actual outcome rather than claim two callbacks.
+                self.mark('mode-after-toggle-input',sequence=sequence,observed_mode=self.mode())
+                self.input(self.target('more'))
                 def dock_action():
                     rows=[control for root in self.b.windows() for control in [root,*root.descendants()]
                           if control.is_visible() and control.is_enabled()
@@ -198,7 +204,7 @@ class FinalMotion(Batch2):
                     return rows[0] if rows else None
                 self.input(self.wait(dock_action,'actual dock action after rapid toolbar input'))
                 self.wait(lambda:self.scope('overview') is None,'menu dock really hides the shelf',seconds=2)
-                self.mark('menu-dock-hidden',between_clicks_seconds=delay)
+                self.mark('menu-dock-hidden',sequence=sequence,between_clicks_seconds=delay)
                 self.show_mode('mini')
                 self.header('recovered-header')
                 self.mark('menu-dock-reopened-and-controls-available')

@@ -361,9 +361,11 @@ class FinalMotionTests(unittest.TestCase):
         self.runner.state=Mock(return_value=original);self.runner.set_pin=Mock();self.runner.restore=Mock()
         self.runner.show_mode=Mock(side_effect=lambda _:visible.__setitem__(0,True))
         self.runner.scope=Mock(side_effect=lambda _:self.root if visible[0] else None)
-        self.runner.wait=self.immediate_wait;self.runner.header=Mock()
+        self.runner.wait=self.immediate_wait;self.runner.header=Mock();self.runner.settle=Mock()
         def click(control,**_):
             inputs.append(control)
+            if control is controls['expand']:
+                control.element_info.name='收起详情' if control.element_info.name=='展开详情' else '展开详情'
             if control is action:visible[0]=False
         self.runner.input=Mock(side_effect=click)
         with patch.object(qa.time,'sleep'):
@@ -373,11 +375,24 @@ class FinalMotionTests(unittest.TestCase):
         self.runner.restore.assert_called_once_with(original)
 
     def test_menu_dock_cannot_pass_while_the_host_remains_visible(self):
-        self.header_controls();Control('收起到屏幕边缘','MenuItem','QAction',self.root)
+        controls=self.header_controls();Control('收起到屏幕边缘','MenuItem','QAction',self.root)
         original=dict(mode='mini',pinned=True)
         self.runner.state=Mock(return_value=original);self.runner.set_pin=Mock();self.runner.show_mode=Mock()
-        self.runner.restore=Mock();self.runner.input=Mock();self.runner.wait=self.immediate_wait
+        self.runner.restore=Mock();self.runner.wait=self.immediate_wait;self.runner.settle=Mock()
+        def click(control):
+            if control is controls['expand']:
+                control.element_info.name='收起详情' if control.element_info.name=='展开详情' else '展开详情'
+        self.runner.input=Mock(side_effect=click)
         with self.assertRaisesRegex(AssertionError,'really hides'):
+            self.runner.header_menu_dock()
+        self.runner.restore.assert_called_once_with(original)
+
+    def test_missing_collapse_callback_cannot_be_reported_as_full_toggle_sequence(self):
+        controls=self.header_controls();original=dict(mode='mini',pinned=True)
+        self.runner.state=Mock(return_value=original);self.runner.set_pin=Mock();self.runner.show_mode=Mock()
+        self.runner.restore=Mock();self.runner.wait=self.immediate_wait;self.runner.settle=Mock()
+        self.runner.input=Mock(side_effect=lambda control:setattr(control.element_info,'name','收起详情'))
+        with self.assertRaisesRegex(AssertionError,'confirmed collapse'):
             self.runner.header_menu_dock()
         self.runner.restore.assert_called_once_with(original)
 

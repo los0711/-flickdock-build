@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "Copy bound display identity and geometry into paint/animation value snapshots, refreshed by existing display reconciliation. First no-hide repair passed native replay but still recorded paint exception; awaiting clean exact packaged replay. No installer/publication.",
+  "purpose": "Require an observed expanded then collapsed mode for the full native toolbar sequence; rapid moving-target clicks retain their actual mode separately. QA-only, unchanged0a runtime. No installer/release.",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -1376,8 +1376,8 @@
     },
     {
       "path": "qa/packaged-live/native_final_motion.py",
-      "size": 21930,
-      "sha256": "cd6dee17ff27ba1240fd9ebfb1b3fcd5e97b256221d409d6e3d92d35ff451d59"
+      "size": 22500,
+      "sha256": "4496d033d18ed90652c586cbf4a1594847078e656aab0be60b5b1f8faf83573f"
     },
     {
       "path": "qa/packaged-live/native_image_observation.py",
@@ -1466,8 +1466,8 @@
     },
     {
       "path": "qa/packaged-live/test_native_final_motion.py",
-      "size": 24644,
-      "sha256": "8750e0d94819aeedf7a56be9bdcc562d80c982c649a3791bffea7aa97341e619"
+      "size": 25761,
+      "sha256": "a5d12817ffbd4a7b52b1de14a8c12d6b079fb7e7abb873e294a2e1b73efdc54b"
     },
     {
       "path": "qa/packaged-live/test_native_image_observation.py",
