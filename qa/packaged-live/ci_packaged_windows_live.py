@@ -125,13 +125,26 @@ class Progress:
     def __init__(self,out):
         self.out=out;self.lock=threading.Lock();self.phase='startup';self.started=time.monotonic();self.stopped=threading.Event()
         self.path=out/'qa-phases.jsonl';self.shots=out/'phase-screen';self.shots.mkdir(exist_ok=True)
+        from diagnostic_journal import DiagnosticJournal
+        self.journal=DiagnosticJournal()
         self.thread=threading.Thread(target=self._heartbeat,daemon=True);self.thread.start()
     def record(self,event,phase=None,**details):
         with self.lock:
             if phase is not None:self.phase=phase;self.started=time.monotonic()
             row=dict(event=event,phase=self.phase,elapsed_s=round(time.monotonic()-self.started,3),mono=time.monotonic(),**details)
-            with self.path.open('a',encoding='utf8') as stream:stream.write(json.dumps(row)+'\n')
-        print('QA_STAGE '+json.dumps(row),flush=True)
+            self._submit_trace(self.path,row,'QA_STAGE ')
+    def _submit_trace(self,path,row,prefix=None):
+        from diagnostic_journal import JournalUnavailable
+        try:self.journal.submit(path,row,prefix)
+        except JournalUnavailable as error:
+            if error.code=='CLOSED':raise
+            # IO/capacity failure remains a failed final gate. It must never
+            # interrupt the finally block that retires owned app/helper tasks.
+            self.trace_failure_code=error.code
+    def uia_stage(self,row):
+        self._submit_trace(self.out/'uia-worker-stages.jsonl',row)
+        details={key:value for key,value in row.items() if key!='elapsed_s'}
+        self.record('uia_worker_stage',worker_elapsed_s=row['elapsed_s'],**details)
     def _heartbeat(self):
         while not self.stopped.wait(10):self.record('heartbeat')
     def screenshot(self,label):
@@ -146,7 +159,9 @@ class Progress:
             except Exception as error:errors.append(type(error).__name__)
         task=threading.Thread(target=capture,daemon=True);task.start();task.join(3)
         if task.is_alive() or errors:self.record('screenshot_unavailable')
-    def close(self):self.stopped.set();self.thread.join(1)
+    def close(self):
+        self.stopped.set();self.thread.join(1)
+        return self.journal.close()
 
 
 def phase(label,action,*,screens=False):
@@ -1115,10 +1130,10 @@ class Driver(_UIABackend):
         row=dict(stage=stage,elapsed_s=round(time.monotonic()-self._worker_started,6))
         if identity is not None:row['request_id']=identity
         if operation is not None:row['operation']=operation
-        with (self.base/'uia-worker-stages.jsonl').open('a',encoding='utf8') as stream:stream.write(json.dumps(row)+'\n')
         if _PROGRESS is not None:
-            details={key:value for key,value in row.items() if key!='elapsed_s'}
-            _PROGRESS.record('uia_worker_stage',worker_elapsed_s=row['elapsed_s'],**details)
+            _PROGRESS.uia_stage(row)
+        else:
+            with (self.base/'uia-worker-stages.jsonl').open('a',encoding='utf8') as stream:stream.write(json.dumps(row)+'\n')
         return True
     def _await_ready(self):
         deadline=self._worker_started+UIA_WORKER_READY_SECONDS
@@ -1605,6 +1620,8 @@ def main():
             profile_cleanup_failure=error
         retain_cleanup_state(report,'after',application=locals().get('application'),producer=locals().get('producer'),
             driver=locals().get('driver'),cloud=cloud,error=profile_cleanup_failure,base=locals().get('base'))
+        _PROGRESS.record('done');report['diagnostic_journal']=_PROGRESS.close()
+        if not report['diagnostic_journal']['complete']:report['ok']=False
         (args.output/'normal-frozen-native-report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
         coverage={str(index):dict(status='not_fully_verified',completion_eligible=False,reason='Raw actual normal-EXE steps require visual review and remaining platform/flow checks') for index in range(1,16)}
         if 'screen_segments' in report and not report.get('observation_only'):
@@ -1620,7 +1637,7 @@ def main():
         (args.output/'completion-gate.json').write_text(json.dumps(dict(implementation_complete=False,
             all_requested_changes_complete=False,publication_authorized=False,exe_sha256=args.sha256,
             reason='Native core flow is not complete 15-group visual, platform and installer acceptance; actual frames require review'),indent=2))
-        _PROGRESS.record('done');_PROGRESS.close();faulthandler.cancel_dump_traceback_later();stacks.close()
+        faulthandler.cancel_dump_traceback_later();stacks.close()
     return 0 if report['ok'] else 1
 
 if __name__=='__main__':

@@ -140,7 +140,10 @@ def run(args):
                     receipt=child('native_observer.py' if phase in ('metadata','paths') else 'qt_legacy_observer.py',phase)
                     receipts[phase]=receipt;row['phases'][phase]=sanitized(receipt)
                     row['phases'][phase]['provider_payload_requests']=[fmt for label,fmt in mime.calls[start:] if label==phase]
-                    require_ok(receipt)
+                    # A terminal failed default editor paste is still a failed
+                    # observation, but must not prevent measuring the actual
+                    # file-routing filter, which does not use that editor path.
+                    if phase!='legacy-control':require_ok(receipt)
                 meta=receipts['metadata']['value'];native=receipts['paths']['value'];legacy=receipts['legacy-inspect']['value']
                 control=receipts['legacy-control']['value'];filtered=receipts['legacy-filtered']['value']
                 assert row['phases']['metadata']['provider_payload_requests']==[],'METADATA_RENDERED_PAYLOAD'
@@ -158,11 +161,15 @@ def run(args):
                     # CF_HDROP absence is the observation this job is designed to discover, not fabricated failure/success.
                     if native['paths'] is not None:assert path_fingerprint(native['paths'])==path_fingerprint(expected),'NATIVE_PATHS_DIFFER'
                 else:
+                    control=require_ok(receipts['legacy-control'])
                     assert filtered['queue_dispatch_count']==0,'NONLOCAL_WAS_QUEUED'
                     assert filtered['input_hash']==control['input_hash'],'DEFAULT_TEXT_CHANGED'
                     assert filtered['cursor']==control['cursor'] and filtered['selection']==control['selection'],'INPUT_STATE_CHANGED'
                     assert filtered['undo_restored']==control['undo_restored'],'DEFAULT_UNDO_CHANGED'
                 row['status']='observed';row['fastpath_coverage']=classify_fastpath(legacy_routable,legacy['paths'],meta,native,expected_queue)
+                control_receipt=receipts['legacy-control']
+                if control_receipt['error'] or not control_receipt['value'] or control_receipt['value']['status']!='ok':
+                    row['status']='observed_with_control_failure';errors.append(identifier+'-legacy-control')
             except QuarantineError as cause:
                 row['status']='quarantined';row['quarantine_receipt']=sanitized(cause.receipt);errors.append(identifier);raise
             except Exception as cause:row['status']='failed';row['error']=safe_exception(cause);errors.append(identifier)

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "Uninstrumented original Mac text comparison and fixed safe legacy paste phases; no application runtime change or release",
+  "purpose": "Bounded off-controller QA diagnostic writes with explicit failed flush gate; complete original runtime8b713 and UIA budgets unchanged",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -26,8 +26,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 34646,
-      "sha256": "9f76882b617308f5dc0f13bd69fe88cd48983ed8be6fa9c4c51baf48df2a0211"
+      "size": 34797,
+      "sha256": "26b273fa187b210d58af3fdf64be5c9ed2d999a03f2eab9f138bee0f8a9e0029"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -1256,8 +1256,8 @@
     },
     {
       "path": "qa/explicit-paste-format-probe/qt_format_probe.py",
-      "size": 18532,
-      "sha256": "e0b76782b10efa165547b3e9cf3b6b3c1eeed317de33ebf88c05f971c67c5f08"
+      "size": 19152,
+      "sha256": "b464649f68df4c9eec88bda7da1beb56da5aace4bc742caf34d039e9521ac034"
     },
     {
       "path": "qa/explicit-paste-format-probe/qt_legacy_observer.py",
@@ -1321,13 +1321,18 @@
     },
     {
       "path": "qa/packaged-live/ci_packaged_windows_live.py",
-      "size": 115148,
-      "sha256": "134de71b9794eff04d23b741b8fab28c307bd4e1805f3d407d43b692c0d934a4"
+      "size": 115893,
+      "sha256": "a1a735ec75a672d0ccc33d4594d28ce3c8add7a9a7ee4af2595e79d7d5b8e2dc"
     },
     {
       "path": "qa/packaged-live/ci_windows_reveal_probe.py",
       "size": 14684,
       "sha256": "706f95fb80fa0e9d30cac22b3d5a402a493ab72e8c07be9c550ebaf10880afea"
+    },
+    {
+      "path": "qa/packaged-live/diagnostic_journal.py",
+      "size": 2631,
+      "sha256": "9e58da80a08a474c531426978247cf2fbab6e16c41e49868d35a3c2c8aea6532"
     },
     {
       "path": "qa/packaged-live/fixture_editor_lifecycle.py",
@@ -1398,6 +1403,11 @@
       "path": "qa/packaged-live/test_cleanup_diagnostics.py",
       "size": 7087,
       "sha256": "df904701dd5667c3e237a4e78cf9da549e316991f11c3067964b75ee4adcfd07"
+    },
+    {
+      "path": "qa/packaged-live/test_diagnostic_journal.py",
+      "size": 5383,
+      "sha256": "52b447b4a4a2f9befb16b6ff9b34470a02b77aab3f16de12decfc19e4e931477"
     },
     {
       "path": "qa/packaged-live/test_fixture_editor_lifecycle.py",
@@ -1506,8 +1516,8 @@
     },
     {
       "path": "qa/packaged-live/test_uia_startup.py",
-      "size": 6969,
-      "sha256": "fe0a478529d7371b2b9851f3c3360f2948316dcdd1dabe3f6b74a45e13a1671e"
+      "size": 7019,
+      "sha256": "cf04217fa63b37cd0237b33a8079180f3c6ca713e2b166ca6e36fb39bb90b557"
     },
     {
       "path": "qa/packaged-live/test_uia_window_phases.py",
@@ -1601,8 +1611,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 44710,
-      "sha256": "dc619955684cc80a7dff38bb12e19062c908d4da5f74b91b0701fbefb3a9839b"
+      "size": 44803,
+      "sha256": "0766c9d7872769e39bce8aad436fa1a3a2392912733f0002d6705247b7aa3cb2"
     },
     {
       "path": "release_signing.py",

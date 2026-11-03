@@ -86,11 +86,13 @@ class StartupTests(unittest.TestCase):
         self.assertIsNotNone(self.children[-1].poll())
     def test_stage_trace_has_no_payload_and_keeps_progress_phase_clock_separate(self):
         driver=qa.Driver.__new__(qa.Driver);driver.base=self.base;driver._worker_started=time.monotonic()
-        progress=qa.Progress.__new__(qa.Progress);progress.lock=threading.Lock();progress.path=self.base/'progress.jsonl'
+        progress=qa.Progress(self.base);progress.path=self.base/'progress.jsonl'
         progress.phase='owned-phase';progress.started=time.monotonic()
         with patch.object(qa,'_PROGRESS',progress),patch.object(qa.sys,'stdout',io.StringIO()):
-            self.assertTrue(driver._observe_stage(dict(event='uia_stage',stage='request_begin',request_id=1,operation='windows',
-                                                      name='private title',path='private path',values='private content')))
+            try:
+                self.assertTrue(driver._observe_stage(dict(event='uia_stage',stage='request_begin',request_id=1,operation='windows',
+                                                          name='private title',path='private path',values='private content')))
+            finally:self.assertTrue(progress.close()['complete'])
         raw=(self.base/'uia-worker-stages.jsonl').read_text();self.assertNotIn('private',raw)
         row=json.loads((self.base/'progress.jsonl').read_text())
         self.assertEqual(row['phase'],'owned-phase');self.assertIn('elapsed_s',row);self.assertIn('worker_elapsed_s',row)

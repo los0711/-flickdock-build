@@ -494,6 +494,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m unittest discover -s qa/packaged-live -p test_uia_window_phases.py -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest discover -s qa/packaged-live -p test_diagnostic_journal.py -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m unittest discover -s qa/packaged-live -p test_reader_observation_handoff.py -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m unittest discover -s qa/packaged-live -p test_harness_bounds.py -v

@@ -164,6 +164,7 @@ SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'qa/owned-producer-lookup/test_lookup_probe.py',
     'qa/clipboard_cleanup_synthetic.py',
     'qa/packaged-live/test_uia_startup.py',
+    'qa/packaged-live/diagnostic_journal.py','qa/packaged-live/test_diagnostic_journal.py',
     'qa/native_text_profile.py',
     'qa/native_text_plain.py','qa/test_native_text_plain.py',
     'qa/packaged-live/native_image_observation.py',
