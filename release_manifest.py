@@ -203,6 +203,7 @@ SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'qa/packaged-live/native_batch2.py','qa/packaged-live/test_native_batch2.py',
     'qa/packaged-live/ui-batch2-actions.json','qa/packaged-live/BATCH2.md',
     'qa/packaged-live/native_final_motion.py','qa/packaged-live/test_native_final_motion.py','qa/packaged-live/FINAL_MOTION.md',
+    'qa/packaged-live/bench_native_file_transfer.py',
     'qa/packaged-live/native_batch3.py','qa/packaged-live/test_native_batch3.py','qa/packaged-live/ui-batch3-actions.json',
     'qa/packaged-live/native_shake.py','qa/packaged-live/test_native_shake.py','qa/packaged-live/ui-supplement-actions.json',
     'qa/packaged-live/test_harness_supplements.py',

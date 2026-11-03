@@ -574,6 +574,8 @@ jobs:
           $env:APPDATA = $protocolProfile
           $env:LOCALAPPDATA = $protocolProfile
           New-Item -ItemType Directory -Force -Path build/transport-recovery | Out-Null
+          python p2p_assets.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -c "import subprocess,sys; subprocess.run([sys.executable,'qt_unittest.py','test_wan_generation_v1825','test_wan_transfer_v1816.NativeStream','test_nearby_transport_v1818','-v'],check=True,timeout=100)" *> build/transport-recovery/native.log
           $nativeCode = $LASTEXITCODE
           Get-Content -LiteralPath build/transport-recovery/native.log
@@ -582,6 +584,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python bench_lan_throughput_v183.py --size-mib 128 --output build/transport-recovery/lan.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -c "import subprocess,sys; subprocess.run([sys.executable,'qa/packaged-live/bench_native_file_transfer.py','--size-mib','128','--output','build/transport-recovery/native-file.json'],check=True,timeout=100)" *> build/transport-recovery/native-file.log
+          $fileCode = $LASTEXITCODE
+          Get-Content -LiteralPath build/transport-recovery/native-file.log
+          if ($fileCode -ne 0) { exit $fileCode }
       - name: Normal frozen process, external native Copy/Paste, policy switches and actual screen frames
         shell: pwsh
         env:

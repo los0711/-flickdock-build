@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "Require an observed expanded then collapsed mode for the full native toolbar sequence; rapid moving-target clicks retain their actual mode separately. QA-only, unchanged0a runtime. No installer/release.",
+  "purpose": "Hosted-only128MiB real file protocol over native host ICE with actual receive byte/time samples and whole SHA256. QA-only unchanged0a runtime. Static compile checked; measurement not yet run. No installer/release.",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -26,8 +26,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 38371,
-      "sha256": "2833ec9fdda82ccee4f4e7dd7ee2a95394758885d7a9107b89989e7053777963"
+      "size": 38896,
+      "sha256": "70d02590a49606c05abe6cb02c7a6883c712e603b47c2c2c2d14de3849ada3f3"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -1330,6 +1330,11 @@
       "sha256": "1eba422d282954a59a7ad505529612740b893d85437ed3c7f1fdcf786e73384c"
     },
     {
+      "path": "qa/packaged-live/bench_native_file_transfer.py",
+      "size": 5520,
+      "sha256": "7d8806c562ea18febf252d2f2a15f30b2990ed7a624d59605da737dfb0d77305"
+    },
+    {
       "path": "qa/packaged-live/ci_exact_installer.py",
       "size": 22404,
       "sha256": "103588865a42bc1bab5d5bb76078fdab9d6eaeff5e10a5b56c07c1b2fec5fae4"
@@ -1631,8 +1636,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 45306,
-      "sha256": "98657afba284b38bfe1de889249d638dc1c87f53ecb1a5658acd0be2dc34b70d"
+      "size": 45361,
+      "sha256": "d71464e69b0c602a9a6891003d3ef629f091a6be7f22c3f1ed4fdbd90930a007"
     },
     {
       "path": "release_signing.py",
