@@ -1,5 +1,6 @@
 """Trusted metadata-empty bootstrap, fake native providers and local peer only."""
 import ctypes,tempfile,time,unittest
+from pathlib import Path
 from types import SimpleNamespace,ModuleType
 from dataclasses import FrozenInstanceError,replace
 from unittest.mock import patch
@@ -80,7 +81,11 @@ class EmptyBootstrapFlowTests(unittest.TestCase):
         if self.client is not None:self.client.close();until(lambda:not self.client._jobs);flush()
         for item in reversed(self.patches):item.stop()
         self.temp.cleanup()
-    def start(self):self.client=sync.ClipboardSync(self.peer,Events(),self.temp.name,clipboard=self.clip);flush();return self.client
+    def start(self):
+        # Canonicalize this newly owned fixture, never arbitrary application
+        # input: macOS's /var alias must not defeat the real no-links worker.
+        base=Path(self.temp.name).resolve(strict=True)
+        self.client=sync.ClipboardSync(self.peer,Events(),base,clipboard=self.clip);flush();return self.client
     def posts(self):return sum(method=='POST' and path=='/v1/clipboard' for method,path,data in self.peer.calls)
     def copy(self,text):
         self.clip.copy(text);self.client.change_debounce.stop();self.client._changed();token=self.client._native_read_token;self.reader.deliver(token);until(lambda:self.posts()==1 and self.client.view.get('phase')=='synced')

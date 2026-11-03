@@ -1,5 +1,5 @@
 """Actual preview worker terminals release owned originals; no OS clipboard."""
-import gc,hashlib,tempfile,threading,unittest,weakref
+import gc,hashlib,json,tempfile,threading,types,unittest,weakref
 from pathlib import Path
 from unittest.mock import patch
 from PySide6.QtCore import QObject,Signal,QBuffer,QIODevice
@@ -69,6 +69,20 @@ class PresenterLifetimeTests(unittest.TestCase):
                 self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(),expected)
         finally:release.set()
         presenter.close();presenter.state={};client.view={};gc.collect()
+        if any(reference() is not None for reference in job_refs):
+            # Report ownership shape only, never payload/path/exception text.
+            # Keep the original immediate release assertion unchanged.
+            retained=[];owners=[];worker=None
+            for reference in job_refs:
+                worker=reference()
+                if worker is None:continue
+                owners=gc.get_referrers(worker)
+                retained.append(dict(worker_type=type(worker).__name__,
+                    args_count=len(worker.args),owners=[dict(type=type(owner).__name__,
+                        function=owner.f_code.co_name if isinstance(owner,types.FrameType) else '') for owner in owners]))
+            print(json.dumps(dict(case='preview_terminal_retained_worker',kind=kind,outcome=outcome,
+                active_threads=presenter.pool.activeThreadCount(),jobs=len(presenter.jobs),retained=retained)))
+            del retained,worker,owners
         self.assertTrue(all(reference() is None for reference in job_refs),'Completed done subscription still retains its worker')
         self.assertIsNone(content_ref(),'Completed preview worker still retains the original content')
         self.assertIsNone(lease_ref(),'Completed preview worker still retains its original lease')

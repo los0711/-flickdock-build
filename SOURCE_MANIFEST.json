@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "QA only: retain exact reviewed clipboard-sync hash enforcement and honor already-requested Qt fixture destruction in six remaining Qt suites; same test identities/deadlines, native Mac failures remain unresolved pending actual replay.",
+  "purpose": "QA only: canonicalize newly owned bootstrap TEMP path to preserve real no-links cleanup; inspect retained preview worker ownership without payloads or weakening immediate release assertion. Runtime identical711.",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -1816,8 +1816,8 @@
     },
     {
       "path": "test_clipboard_empty_bootstrap_v1825.py",
-      "size": 16810,
-      "sha256": "8a3e894e5d199a536147d978b44049a7017bc8052ba58d730572d27d78fe0d18"
+      "size": 17044,
+      "sha256": "b7a03c79f20970fbe695c4bf50b5413c2103a1591f2d2e854d044df6a21285bd"
     },
     {
       "path": "test_clipboard_empty_receive_v1825.py",
@@ -1871,8 +1871,8 @@
     },
     {
       "path": "test_clipboard_presenter_lifecycle_v1825.py",
-      "size": 5317,
-      "sha256": "2d224a88fd5c6e082e706812fe06351da6c978e6b0a19f29b5e5c520d97833bd"
+      "size": 6290,
+      "sha256": "614afb4de4b54df0a031fd1b946208546587f2511c8b35766c83ba97917395c9"
     },
     {
       "path": "test_clipboard_preview_v1821.py",
