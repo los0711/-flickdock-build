@@ -23,7 +23,7 @@ JOBS={'Windows':frozenset({'frozen-normal-entry','cleanup-boundaries'}),
 PLATFORMS={'Windows':'win32','macOS':'darwin'}
 RUNTIME={
     'clipboard_sync.py':'b5a78cc67006e243b2b57bc221d9822aaa652564597f66d036731b7157279aa7',
-    'clipboard_cleanup.py':'569d3066bf9936a2cd92386b7a8d64efbe014a2f523f611097b86c9d11ba4ea6',
+    'clipboard_cleanup.py':'7df3efded7d45f3019290a3701f08b3e1367eee62258b3192e8478505ec06085',
     'clipboard_cleanup_worker.py':'fd631a9451ca62aaee90f9c2f5e1bb5c068fdc78fcda15883d34631a963f6552',
 }
 PREFIX='flickdock-cleanup-hosted-'

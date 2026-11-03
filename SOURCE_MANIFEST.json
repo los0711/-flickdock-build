@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "QA-only native failure diagnosis: original cleanup200ms, retry30s and complete-text3s assertions retained. Add assertion failure state without private content and phase thread CPU timing;52focused checks passed, native failures remain unresolved. Runtime identical85; reuse its frozen evidence, no installer/publication.",
+  "purpose": "Recognize the owned POSIX helper kernel deadline only after the original parent budget expires; early alarm, other signal and Windows exits stay failures. Original2-case counterexample1fail;656combined attempted655pass/1POSIXskip,7exact-pin checks pass. New actual POSIX kernel case requires hosted check. No deadline/GUI/protocol/clipboard payload changes;85 frozen is now older, not current acceptance.",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -651,8 +651,8 @@
     },
     {
       "path": "clipboard_cleanup.py",
-      "size": 7815,
-      "sha256": "569d3066bf9936a2cd92386b7a8d64efbe014a2f523f611097b86c9d11ba4ea6"
+      "size": 8305,
+      "sha256": "7df3efded7d45f3019290a3701f08b3e1367eee62258b3192e8478505ec06085"
     },
     {
       "path": "clipboard_cleanup_worker.py",
@@ -1282,7 +1282,7 @@
     {
       "path": "qa/hosted_cleanup_gate.py",
       "size": 12643,
-      "sha256": "6cb90b09c4961e2dfdd0403c27cf0098b24c2c7a5cd754f83c5f95f58263fe68"
+      "sha256": "05d89a6ffa200ba2c8c6c7de09f78c0b7103ddee95b66a2d5e8d105612d09924"
     },
     {
       "path": "qa/macos_motion_diagnostic_v1824.py",
@@ -1811,8 +1811,8 @@
     },
     {
       "path": "test_clipboard_cleanup_v1825.py",
-      "size": 22680,
-      "sha256": "cf0531ff15a0d77617e8f40663302f44492d620513adfd161eda37b5ed307dcc"
+      "size": 25826,
+      "sha256": "377ab5770d50c9d8eea1a51d45560ab8fd173009f7d559dca563f606f27e3a90"
     },
     {
       "path": "test_clipboard_empty_bootstrap_v1825.py",

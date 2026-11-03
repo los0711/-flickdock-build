@@ -1,6 +1,6 @@
 """One owned filesystem operation, isolated from UI and copy worker pools."""
 from __future__ import annotations
-import json,os,subprocess,sys,tempfile,threading,time
+import json,os,signal,subprocess,sys,tempfile,threading,time
 from pathlib import Path
 from uuid import uuid4
 from PySide6.QtCore import QObject,QTimer
@@ -24,7 +24,9 @@ class Operation:
         self.lock=threading.Lock();self.cancelled=threading.Event();self.done=threading.Event();self.process=None
         self.result=None;self.reaped=False;self.reason=None;self.deadline=threading.Timer(deadline_ms/1000,self.cancel,args=('DEADLINE',));self.deadline.daemon=True
         self.thread=threading.Thread(target=self.run,name='FlickDock-clipboard-cleanup',daemon=True)
-    def start(self):self.deadline.start();self.thread.start()
+    def start(self):
+        self.expires_at=time.monotonic()+self.deadline_ms/1000
+        self.deadline.start();self.thread.start()
     def cancel(self,reason='CANCELLED'):
         with self.lock:
             if self.done.is_set():return
@@ -59,6 +61,11 @@ class Operation:
                 if size>MAX_MESSAGE_BYTES:self.cancel('OUTPUT_LIMIT');chunks.clear();continue
                 chunks.append(chunk)
             code=process.wait(timeout=1 if self.cancelled.is_set() else None)
+            # The helper's kernel alarm can win while the parent's Python
+            # timer is unscheduled. Confirm both the signal and our original
+            # budget; an early alarm or a different exit remains a failure.
+            if os.name!='nt' and code==-signal.SIGALRM and time.monotonic()>=self.expires_at:
+                with self.lock:self.reason=self.reason or 'DEADLINE';self.cancelled.set()
             if not self.cancelled.is_set():
                 if code!=0:response=dict(status='failed',code='PROCESS_FAILED')
                 else:

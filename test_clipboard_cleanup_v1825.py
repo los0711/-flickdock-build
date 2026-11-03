@@ -278,4 +278,57 @@ raise SystemExit(w.main(sys.argv[1:]))
         self.assertEqual(results[0]['code'],'DEADLINE');self.assertEqual(source.read_bytes(),b'keep original')
 
 
+class KernelDeadlineOutcomeTests(unittest.TestCase):
+    setUp=ProcessCleanupTests.setUp
+    tearDown=ProcessCleanupTests.tearDown
+    request=ProcessCleanupTests.request
+    actor=ProcessCleanupTests.actor
+
+    @unittest.skipUnless(os.name!='nt','Actual SIGALRM requires the hosted POSIX kernel')
+    def test_actual_kernel_deadline_reaps_child_when_parent_timer_cannot_run(self):
+        import signal
+        class DeferredTimer:
+            def __init__(self,*args,**kwargs):pass
+            def start(self):pass
+            def cancel(self):pass
+        program="import sys,time;sys.path.insert(0,sys.argv.pop(1));import clipboard_cleanup_worker as w;w.execute=lambda *a,**kw:time.sleep(2);raise SystemExit(w.main(sys.argv[1:]))"
+        results=[]
+        with patch.object(lane.threading,'Timer',DeferredTimer):
+            actor=self.actor(program,deadline_ms=200);actor.submit(self.request(),results.append);operation=actor.active
+            self.assertTrue(operation.done.wait(1.5),'Kernel deadline must not depend on the parent timer or GUI')
+            until(lambda:bool(results))
+        self.assertTrue(operation.reaped);self.assertEqual(operation.process.returncode,-signal.SIGALRM)
+        self.assertEqual(results,[dict(status='deferred',code='DEADLINE')])
+
+    def outcome(self,code,elapsed,platform):
+        import io
+        clock=[100.]
+        class DeferredTimer:
+            def __init__(self,*args,**kwargs):pass
+            def start(self):pass
+            def cancel(self):pass
+        class Process:
+            stdout=io.BytesIO();returncode=None
+            def wait(self,**options):clock[0]=100.+elapsed;self.returncode=code;return code
+            def poll(self):return self.returncode
+            def kill(self):raise AssertionError('A reaped child must not be killed again')
+        process=Process();results=[]
+        with patch.object(lane.threading,'Timer',DeferredTimer),patch.object(lane,'time',SimpleNamespace(monotonic=lambda:clock[0])),\
+             patch.object(lane,'os',SimpleNamespace(name=platform,getpid=os.getpid)),\
+             patch.object(lane,'signal',SimpleNamespace(SIGALRM=14),create=True):
+            actor=lane.ClipboardCleanup(command=['owned-synthetic'],process_factory=lambda *args,**options:process,deadline_ms=200)
+            self.controllers.append(actor);actor.submit(self.request(),results.append);operation=actor.active
+            self.assertTrue(operation.done.wait(1.5));until(lambda:bool(results))
+        self.assertTrue(operation.reaped);self.assertTrue(process.stdout.closed)
+        return results[0]
+
+    def test_kernel_alarm_after_real_budget_is_deadline_when_parent_timer_is_not_scheduled(self):
+        self.assertEqual(self.outcome(-14,.201,'posix'),dict(status='deferred',code='DEADLINE'))
+
+    def test_early_alarm_other_signal_and_windows_code_remain_process_failures(self):
+        for code,elapsed,platform in ((-14,.1,'posix'),(-9,.3,'posix'),(-14,.3,'nt')):
+            with self.subTest(code=code,elapsed=elapsed,platform=platform):
+                self.assertEqual(self.outcome(code,elapsed,platform),dict(status='failed',code='PROCESS_FAILED'))
+
+
 if __name__=='__main__':unittest.main()
