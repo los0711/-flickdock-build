@@ -36,13 +36,19 @@ def validate_profiles(value):
 
 
 def display_values(store,screen,defaults=None):
+    key=display_id(screen)
+    return display_values_for_id(store,key,key==display_id(QGuiApplication.primaryScreen()),defaults)
+
+
+def display_values_for_id(store,key,is_primary,defaults=None):
+    """Render settings from an immutable identity, without a QScreen lifetime."""
     values={key:(defaults[key] if defaults and key in defaults else getattr(store,key)) for key in FIELDS}
     profiles=defaults.get('display_triggers',store.display_triggers) if defaults is not None else store.display_triggers
-    row=profiles.get(display_id(screen))
+    row=profiles.get(key)
     if row:
         values.update({target:row[key] for key,target in PROFILE_FIELDS.items() if key in row})
         values['enabled']=row['enabled']
-    else:values['enabled']=display_id(screen)==display_id(QGuiApplication.primaryScreen())
+    else:values['enabled']=is_primary
     return values
 
 

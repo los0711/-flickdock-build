@@ -98,6 +98,9 @@ class HeaderSequenceTests(unittest.TestCase):
                 # Retire an owned QObject proxy, never a real system QScreen.
                 # The OS now exposes the same display through a live Qt object.
                 delete(old);self.assertFalse(isValid(old))
+                self.assertEqual(edge.values()['dock_edge'],self.manager.settings.dock_edge)
+                self.assertEqual(edge.screen_area(),QRect(0,0,1920,1040))
+                self.assertEqual(edge.screen_geometry(),QRect(0,0,1920,1080))
                 self.shelf.hide_animated(explicit=True)
                 until(lambda:self.shelf.visible_state=='hidden',seconds=2)
                 self.assertIs(edge.display,current)

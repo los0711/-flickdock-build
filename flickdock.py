@@ -3267,7 +3267,7 @@ class DockHandle(QWidget):
     def __init__(self,manager,screen=None):
         super().__init__()
         self.manager=manager
-        self.display=screen or QGuiApplication.primaryScreen()
+        self.bind_display(screen or QGuiApplication.primaryScreen())
         self.setWindowTitle('FlickDock edge')
         self.setWindowFlags(Qt.WindowType.Tool|Qt.WindowType.FramelessWindowHint|Qt.WindowType.WindowStaysOnTopHint|Qt.WindowType.WindowDoesNotAcceptFocus)
         keep_tool_visible_when_inactive(self)
@@ -3277,16 +3277,29 @@ class DockHandle(QWidget):
         self.appearance=Spring(self,{'alpha':0},lambda _:self.update(),motion=manager.motion)
         self.position_at_edge()
 
-    def screen_area(self): return self.display.availableGeometry()
+    def bind_display(self,screen):
+        from display_triggers import display_id
+        self.display=screen
+        self._display_key=display_id(screen)
+        self._display_primary=self._display_key==display_id(QGuiApplication.primaryScreen())
+        # Native screen objects can retire between Qt display notifications.
+        # Painting/animation consume value snapshots; only display binding
+        # reads the externally owned object and refreshes these together.
+        self._display_area=QRect(screen.availableGeometry())
+        self._display_geometry=QRect(screen.geometry())
+
+    def screen_area(self):return QRect(self._display_area)
+
+    def screen_geometry(self):return QRect(self._display_geometry)
 
     def values(self):
-        from display_triggers import display_values
-        return display_values(self.manager.settings,self.display,getattr(self.manager,'_dock_preview_values',None))
+        from display_triggers import display_values_for_id
+        return display_values_for_id(self.manager.settings,self._display_key,self._display_primary,getattr(self.manager,'_dock_preview_values',None))
 
     def activation_region(self):
         region=QRect(self.geometry())
         if sys.platform=='darwin':
-            screen=self.display.geometry()
+            screen=self.screen_geometry()
             edge=self.values()['dock_edge']
             if edge=='right':region.setRight(screen.right()+1)
             elif edge=='left':region.setLeft(screen.left()-1)
@@ -3995,7 +4008,7 @@ class ShelfManager:
                 self.edges[key]=DockHandle(self,screen)
                 screen.availableGeometryChanged.connect(self._position_edges)
                 screen.geometryChanged.connect(self._position_edges)
-            else:self.edges[key].display=screen
+            else:self.edges[key].bind_display(screen)
         if getattr(self,'edge',None) not in self.edges.values():
             self.edge=next((edge for edge in self.edges.values() if edge.display is QGuiApplication.primaryScreen()),next(iter(self.edges.values()),None))
         if hasattr(self,'shelf'):self.update_handles()
@@ -4006,7 +4019,8 @@ class ShelfManager:
         # displays down). Reconcile live handles before dereferencing a screen.
         if any(not isValid(edge) or not isValid(edge.display) for edge in self.edges.values()):
             self._refresh_displays();return
-        for edge in tuple(self.edges.values()):edge.position_at_edge()
+        for edge in tuple(self.edges.values()):
+            edge.bind_display(edge.display);edge.position_at_edge()
 
     def dock_values(self):
         return {key:value for key,value in self.edge.values().items() if key!='enabled'}
@@ -4278,7 +4292,7 @@ class ShelfManager:
                 or bool(self.lan_dialog and self.lan_dialog.isVisible()) or bool(self.wan_dialog and self.wan_dialog.isVisible()))
         now=time.monotonic(); pos=QCursor.pos()
         for edge in getattr(self,'edges',{}).values():
-            if edge.values()['enabled'] and edge.display.geometry().contains(pos):self.edge=edge;break
+            if edge.values()['enabled'] and edge.screen_geometry().contains(pos):self.edge=edge;break
         self.drop_bridge.sync(self.shelf,dragging=bool(mouse_buttons_mask()&1))
         if self.settings_open():
             if self._settings_prompt_active():

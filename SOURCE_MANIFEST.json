@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "Reconcile expired external QScreen proxies before shelf hide/show handle updates. Original native no-hide failures retained, nine related source checks passed; awaiting exact packaged replay. No installer/publication.",
+  "purpose": "Copy bound display identity and geometry into paint/animation value snapshots, refreshed by existing display reconciliation. First no-hide repair passed native replay but still recorded paint exception; awaiting clean exact packaged replay. No installer/publication.",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -936,8 +936,8 @@
     },
     {
       "path": "display_triggers.py",
-      "size": 15114,
-      "sha256": "59bf72d2c81141765a0257191e5092ecf923b24af9f6e293b7850fc483eccf44"
+      "size": 15322,
+      "sha256": "d43b4b02db4f4315be273cd3ab00ac29f335ebcc032394b52dc8ed67fc732d33"
     },
     {
       "path": "dock_geometry.py",
@@ -996,8 +996,8 @@
     },
     {
       "path": "flickdock.py",
-      "size": 253987,
-      "sha256": "adc95d6de547f747197f34dbfbd4cbcc0a7c16bac3809331ec5396a992454f75"
+      "size": 254750,
+      "sha256": "3939787b908dce946f4e9bb8ee57177171b556fc85f588cce2f16621582ebc3f"
     },
     {
       "path": "flickdock_icons.py",
@@ -2016,8 +2016,8 @@
     },
     {
       "path": "test_display_groups_v1821.py",
-      "size": 12194,
-      "sha256": "013a61e71982d45c9fc1d771c2c90834da55c55fbcfb6a7c0ce676a5b92b345d"
+      "size": 12279,
+      "sha256": "d8f281e33bebfebd90e6f988288688f3b29d942cecd7e59da45c5691758bf2ff"
     },
     {
       "path": "test_dock_preview_v16.py",
@@ -2136,8 +2136,8 @@
     },
     {
       "path": "test_header_sequence_v1825.py",
-      "size": 6068,
-      "sha256": "6e18b09dc566b35c34f56b140df59784dad389af74843aec23d33ac885de0243"
+      "size": 6313,
+      "sha256": "934d721873a1be42ad793480957a3cb59c30e0764793cacad3674cac48bf116b"
     },
     {
       "path": "test_hig_accessibility.py",

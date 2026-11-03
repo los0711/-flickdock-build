@@ -146,6 +146,7 @@ class DisplayTests(unittest.TestCase):
         manager.edges={};manager._dock_preview_values=None
         for screen in (self.main,self.second):
             edge=SimpleNamespace(display=screen,visible=False)
+            edge.bind_display=lambda screen,edge=edge:setattr(edge,'display',screen)
             edge.values=lambda edge=edge:display_values(manager.settings,edge.display,manager._dock_preview_values)
             edge.position_at_edge=lambda edge=edge:setattr(edge,'rect',trigger_rect(edge.display.availableGeometry(),edge.values()['dock_edge'],edge.values()['dock_position'],edge.values()['dock_length'],edge.values()['dock_thickness']))
             edge.hide=lambda edge=edge:setattr(edge,'visible',False)
