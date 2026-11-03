@@ -45,6 +45,25 @@ jobs:
         run: |
           python ci_assets.py
           python build_macos.py --target-arch '${{ matrix.arch }}'
+      - name: Actual frozen private cleanup entry and original-byte protection
+        timeout-minutes: 3
+        run: |
+          mkdir -p build/cleanup-frozen
+          cleanup_exe="$PWD/dist/FlickDock.app/Contents/MacOS/FlickDock"
+          cleanup_hash="$(shasum -a 256 "$cleanup_exe" | cut -d ' ' -f1)"
+          cleanup_nonce="$(python -c 'from uuid import uuid4; print(uuid4().hex)')"
+          cleanup_exit=0
+          build/macos-venv/bin/python qa/hosted_cleanup_gate.py --hosted-cleanup --nonce "$cleanup_nonce" --repo "$PWD" --exe "$cleanup_exe" --exe-sha256 "$cleanup_hash" > build/cleanup-frozen/report.jsonl 2>&1 || cleanup_exit=$?
+          cat build/cleanup-frozen/report.jsonl
+          exit "$cleanup_exit"
+      - name: Preserve frozen cleanup receipt even if later platform tests fail
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: cleanup-frozen-${{ matrix.arch }}-${{ github.sha }}
+          path: build/cleanup-frozen/
+          if-no-files-found: warn
+          retention-days: 3
       - name: Verify final functional layout, cancellation and helper handoff boundaries
         run: |
           build/macos-venv/bin/python qt_unittest.py test_ui_polish_v1823 test_functional_layout_v1823 test_update_exit_v1823 test_update_macos_controller -q

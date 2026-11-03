@@ -3,6 +3,10 @@ name: Native clipboard verification
 on:
   workflow_dispatch:
     inputs:
+      cleanup_boundaries:
+        description: Isolated real process/filesystem cleanup checks; not frozen application or installer acceptance
+        type: boolean
+        default: false
       text_profile:
         description: Isolated Mac Intel synthetic text phase evidence only; not normal or installer acceptance
         type: boolean
@@ -44,6 +48,53 @@ permissions:
   actions: read
 
 jobs:
+  cleanup-boundaries:
+    if: github.repository == 'los0711/-flickdock-build' && github.event.inputs.cleanup_boundaries == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-latest, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 5
+    env:
+      PYTHONUTF8: '1'
+      QT_QPA_PLATFORM: offscreen
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Verify exact reviewed files and pure guard/resource cases
+        shell: pwsh
+        run: |
+          python qa/packaged-live/verify_frozen_source.py --before-build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest discover -s qa -p test_hosted_cleanup_gate_v1825.py -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Install the existing reviewed Qt version
+        run: python -m pip install PySide6==6.12.0
+      - name: Actual default source helper, directory protection and timeout retirement
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path build/cleanup-boundaries | Out-Null
+          $cleanupNonce = [Guid]::NewGuid().ToString('N')
+          python qa/hosted_cleanup_gate.py --hosted-cleanup --nonce $cleanupNonce --repo $PWD --source-only *> build/cleanup-boundaries/report.jsonl
+          $cleanupExit = $LASTEXITCODE
+          Get-Content -LiteralPath build/cleanup-boundaries/report.jsonl
+          if ($cleanupExit -ne 0) { exit $cleanupExit }
+      - name: Preserve real boundary receipts including failures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: cleanup-boundaries-${{ matrix.runner }}-${{ github.sha }}
+          path: |
+            build/cleanup-boundaries/
+            build/normal-source-verification.json
+          if-no-files-found: error
+          retention-days: 3
   text-profile:
     if: github.repository == 'los0711/-flickdock-build' && github.event.inputs.text_profile == 'true'
     runs-on: macos-15-intel
@@ -398,6 +449,18 @@ jobs:
           python qa/packaged-live/reuse_frozen.py --run $env:REUSE_NORMAL_RUN
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python qa/packaged-live/verify_frozen_source.py --after-build
+      - name: Actual frozen private cleanup entry and original-byte protection
+        shell: pwsh
+        timeout-minutes: 3
+        run: |
+          New-Item -ItemType Directory -Force -Path build/cleanup-frozen | Out-Null
+          $cleanupExe = (Resolve-Path 'dist/FlickDock/FlickDock.exe').Path
+          $cleanupHash = (Get-FileHash -LiteralPath $cleanupExe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $cleanupNonce = [Guid]::NewGuid().ToString('N')
+          python qa/hosted_cleanup_gate.py --hosted-cleanup --nonce $cleanupNonce --repo $PWD --exe $cleanupExe --exe-sha256 $cleanupHash *> build/cleanup-frozen/report.jsonl
+          $cleanupExit = $LASTEXITCODE
+          Get-Content -LiteralPath build/cleanup-frozen/report.jsonl
+          if ($cleanupExit -ne 0) { exit $cleanupExit }
       - name: Normal frozen process, external native Copy/Paste, policy switches and actual screen frames
         shell: pwsh
         env:
@@ -445,6 +508,7 @@ jobs:
           path: |
             build/normal-native-qa/
             build/native-reader-job/
+            build/cleanup-frozen/
             build/normal-source-verification.json
             build/reused-frozen-receipt.json
             build/exact-installer/

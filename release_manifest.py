@@ -149,6 +149,7 @@ MAINTAINED_TESTS=(
     'test_remote_transfer_actions_v1812.py','test_wan_transfer_v1816.py',
 )
 SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
+    'qa/hosted_cleanup_gate.py','qa/test_hosted_cleanup_gate_v1825.py',
     'qa/clipboard_cleanup_synthetic.py',
     'qa/packaged-live/test_uia_startup.py',
     'qa/native_text_profile.py',

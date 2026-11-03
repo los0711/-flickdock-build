@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "Reviewed isolated durable clipboard cache cleanup checkpoint; verification only, no installer or release",
+  "purpose": "Hosted source/frozen cleanup boundary gates only; runtime identical tode332b7, no installer or release",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -16,8 +16,8 @@
     },
     {
       "path": ".github/workflows/macos-build.yml",
-      "size": 7647,
-      "sha256": "b526d863b4ddc0a436d9ff19a7ea0adab9559677ec83b5b5afd146688d771e86"
+      "size": 8754,
+      "sha256": "1043e73b0a82a869f8c5edaf1d7a75f342dd08259b8d560a5b63f6b8694d539c"
     },
     {
       "path": ".github/workflows/macos-intel-motion-diagnostic.yml",
@@ -26,8 +26,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 26826,
-      "sha256": "304a8aa4f75dd7fef3fc05dd7cf0369a663e69baeddbb3a080c36137a21c898f"
+      "size": 30069,
+      "sha256": "f3841bbbb21755395ba9487c7d93a98fdbc23c11fbaf7115c3fb0a5c345fb527"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -1240,6 +1240,11 @@
       "sha256": "852629bb6a513d4e84c6d8dc22d28a6d03fa0341a4d9d526db70122aa3fac5ec"
     },
     {
+      "path": "qa/hosted_cleanup_gate.py",
+      "size": 11522,
+      "sha256": "8d07a565b9dda8ae373556fff1f3511077205ad4203a09df66dd2578c2a05e6d"
+    },
+    {
       "path": "qa/macos_motion_diagnostic_v1824.py",
       "size": 9061,
       "sha256": "f056f843b0a7d31d4ef3d553ec14833a743a633dda8b57af053e7cdef5788549"
@@ -1500,6 +1505,11 @@
       "sha256": "484fb6080c5a90a253951a0095d3328c97e0d6fdc1945957ce354079d461f1bc"
     },
     {
+      "path": "qa/test_hosted_cleanup_gate_v1825.py",
+      "size": 6405,
+      "sha256": "ffc26f24e39fc04c86c042a5a57bceb052afb8c58c9329462885f20e3ef57866"
+    },
+    {
       "path": "qa/test_macos_motion_diagnostic_v1824.py",
       "size": 6634,
       "sha256": "7a62a49794c552361c0414cf53a4e1aec9a92fcf6806f20e560db086b6c505af"
@@ -1531,8 +1541,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 43925,
-      "sha256": "08fc5663eaa0c78cc8cf651f60cd37cbef8688bcafaeff5cf6474a72f7eee000"
+      "size": 43998,
+      "sha256": "f6428a2c683eedfd6a953167fa902aaebf1485a807e13fc9bd45c824dcf21fa3"
     },
     {
       "path": "release_signing.py",
