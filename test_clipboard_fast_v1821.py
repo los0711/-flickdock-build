@@ -35,11 +35,12 @@ class InlineHub(Hub):
 
 class ClipboardFastTests(unittest.TestCase):
     def setUp(self):
-        self.temp=tempfile.TemporaryDirectory();self.hub=InlineHub();self.clients=[];self.clips=[]
+        self.temp=tempfile.TemporaryDirectory();base=Path(self.temp.name).resolve(strict=True)
+        self.hub=InlineHub();self.clients=[];self.clips=[]
         for index in range(2):
             clip=Clipboard();account=Account(self.hub.api(str(index)),str(index))
             events=CloudEvents(account,enabled=False);self.hub.events.append(events)
-            self.clients.append(ClipboardSync(account,events,Path(self.temp.name)/str(index),clipboard=clip));self.clips.append(clip)
+            self.clients.append(ClipboardSync(account,events,base/str(index),clipboard=clip));self.clips.append(clip)
         flush()
 
     def tearDown(self):

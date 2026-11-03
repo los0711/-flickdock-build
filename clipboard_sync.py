@@ -488,6 +488,7 @@ class ClipboardSync(QObject):
         from clipboard_cleanup import ClipboardCleanup
         self._cleanup_runner=ClipboardCleanup(self);self._cleanup_epoch=0;self._cleanup_requested=False
         self._cleanup_inventory=True;self._cleanup_inventory_failed=False;self._cleanup_cursor='';self._cleanup_retry_at=0.;self._cleanup_status=None
+        self._cleanup_idle_context=None
         self._cleanup_paused={};self._cleanup_fatal_recheck=0.
         self.poll=QTimer(self);self.poll.setInterval(30000);self.poll.timeout.connect(self._tick)
         self.retry=QTimer(self);self.retry.setSingleShot(True);self.retry.setInterval(5000);self.retry.timeout.connect(self._retry)
@@ -1732,10 +1733,18 @@ class ClipboardSync(QObject):
         from clipboard_cleanup_worker import BATCH_SIZE,RETENTION_SECONDS,RETRY_SECONDS,FATAL_RECHECK_SECONDS,NAME
         if self.closed or not self.enabled or not self._native_accessible(force=True):return
         if self._cleanup_runner.active is not None:self._cleanup_requested=True;return
+        protected=self.file_jobs.protected_directories()
+        idle_context=(self._generation,self._session_identity(),self._current_directory,frozenset(protected))
+        # A successful scan's idle budget belongs to its protection context.
+        # Releasing a real reference must not inherit that obsolete result;
+        # genuine failures keep their independent retry deadline. Native format
+        # noise alone changes neither this generation nor the held directories.
+        if self._cleanup_idle_context is not None and self._cleanup_idle_context!=idle_context:
+            self._cleanup_retry_at=0.;self._cleanup_idle_context=None
         if time.monotonic()<self._cleanup_retry_at:return
+        self._cleanup_idle_context=None
         if self._cleanup_paused and time.monotonic()>=self._cleanup_fatal_recheck:
             self._cleanup_inventory=True;self._cleanup_cursor='';self._cleanup_fatal_recheck=time.monotonic()+FATAL_RECHECK_SECONDS
-        protected=self.file_jobs.protected_directories()
         if self._current_directory is not None:protected.add(self._current_directory)
         targets=[dict(name=path.name,created=created) for path,created in self._directories
                  if path.parent==self.cache and NAME.fullmatch(path.name) and path not in protected
@@ -1783,6 +1792,7 @@ class ClipboardSync(QObject):
             candidates=[item for item in result['candidates'] if item['name']not in self._cleanup_paused]
             if not ready or not candidates:
                 self._cleanup_retry_at=time.monotonic()+RETRY_SECONDS if ready or result['errors'] else 0.
+                if ready and not result['errors']:self._cleanup_idle_context=idle_context
                 if result['errors']:self._record_cleanup_status(dict(status='failed',code=result['errors'][0]['code']))
                 return
             if not self.enabled or not self._native_accessible(force=True) or fence!=self._cleanup_fence():return
@@ -1797,6 +1807,7 @@ class ClipboardSync(QObject):
                 self._pause_unsafe_cleanup(outcome['errors'],candidates)
                 removed=set(outcome['deleted']);expected={item['name']:item['created'] for item in candidates}
                 self._directories=[(path,created) for path,created in self._directories if not(path.name in removed and expected.get(path.name)==created)]
+                if not outcome['errors']:self._cleanup_idle_context=idle_context
                 self._record_cleanup_status(dict(status='failed' if outcome['errors'] else 'ready',code=outcome['errors'][0]['code'] if outcome['errors'] else 'COMPLETE'))
             self._cleanup_runner.submit(delete,deleted)
         self._cleanup_runner.submit(request,completed)

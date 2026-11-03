@@ -1,5 +1,5 @@
 """Permission metadata and explicit user setup, no real OS permissions or clipboard."""
-import unittest,tempfile
+import json,unittest,tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock,patch
@@ -76,14 +76,32 @@ class ClipboardPermissionTests(unittest.TestCase):
         mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(source))]);self.clips[0].setMimeData(mime)
         fast.until(lambda:clip.mimeData().hasUrls())
         received=Path(clip.mimeData().urls()[0].toLocalFile());self.assertTrue(received.exists())
-        with patch.object(receiver,'_native_accessible',return_value=False),patch('clipboard_sync.time.time',return_value=time.time()+90000):
+        fast.until(lambda:receiver._cleanup_runner.active is None)
+        directory=next(path for path,created in receiver._directories if received.is_relative_to(path))
+        expired=time.time()-90000
+        # The real helper has its own wall clock. Age this owned fixture's
+        # durable lease and its matching journal, instead of advancing only
+        # the parent's clock and accidentally testing a non-expired child view.
+        lease=directory/'.lease.json';metadata=json.loads(lease.read_text(encoding='utf8'))
+        metadata['created_at']=expired;lease.write_text(json.dumps(metadata),encoding='utf8')
+        receiver._directories=[(path,expired if path==directory else created) for path,created in receiver._directories]
+        with patch.object(receiver,'_native_accessible',return_value=False):
             receiver.recheck_native_access();receiver._cleanup()
-            fast.until(lambda:not receiver._jobs)
+            fast.until(lambda:not receiver._jobs and receiver._cleanup_runner.active is None)
             self.assertEqual(received.read_bytes(),b'paste remains usable');self.assertTrue(clip.mimeData().hasUrls())
         receiver.recheck_native_access();clip.text('a new copy releases the old native file reference')
         fast.until(lambda:self.hub.head and self.hub.head['kind']=='text')
-        with patch('clipboard_sync.time.time',return_value=time.time()+90000):receiver._cleanup()
-        fast.until(lambda:not receiver._jobs)
+        receiver._cleanup()
+        try:fast.until(lambda:not received.exists() and not receiver._jobs and receiver._cleanup_runner.active is None)
+        except AssertionError as error:
+            operation=receiver._cleanup_runner.active
+            observed=dict(status=receiver._cleanup_status,inventory=receiver._cleanup_inventory,
+                paused=list(receiver._cleanup_paused),retry_in=receiver._cleanup_retry_at-time.monotonic(),
+                protected=[path.name for path in receiver.file_jobs.protected_directories()],
+                current=receiver._current_directory.name if receiver._current_directory is not None else None,
+                directories=[(path.name,created) for path,created in receiver._directories],
+                active_result=operation.result if operation is not None else None)
+            raise AssertionError('Owned permission cleanup did not finish: '+json.dumps(observed)) from error
         self.assertFalse(received.exists());self.assertEqual(source.read_bytes(),b'paste remains usable')
 
 

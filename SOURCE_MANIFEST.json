@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "QA-only canonical owned temporary fixture after actual Mac UNSAFE alias evidence; original5s and production no-link checks unchanged.",
+  "purpose": "Invalidate only successful idle cleanup results on a real protection-context change; failure backoff and format-noise budget retained. Owned QA leases age consistently across processes.",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -26,8 +26,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 35820,
-      "sha256": "6b98fba114bdd26204978b4ba4cb2dacec7aae4713e58b7549c9fca037f85740"
+      "size": 35898,
+      "sha256": "e14bbbfb199dba38cd24e4c3325baf935c64d1f3e2458b9af0c85c0bd6d435bf"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -681,8 +681,8 @@
     },
     {
       "path": "clipboard_sync.py",
-      "size": 114270,
-      "sha256": "6eb2e683b3ce24c892307bb02dc78043f7ffcfd70f67d33f690ce40d42adb306"
+      "size": 115110,
+      "sha256": "b5a78cc67006e243b2b57bc221d9822aaa652564597f66d036731b7157279aa7"
     },
     {
       "path": "cloud/.gitignore",
@@ -1811,8 +1811,8 @@
     },
     {
       "path": "test_clipboard_cleanup_v1825.py",
-      "size": 21097,
-      "sha256": "17da96d13828f25ddd4e47f05de38bc1ebba34946b879b37919e7172de5139e1"
+      "size": 22534,
+      "sha256": "068211fd5880e269a5c64aeabea47e73a7c5c7b33aaf62a2a86f935af27e3ff8"
     },
     {
       "path": "test_clipboard_empty_bootstrap_v1825.py",
@@ -1826,8 +1826,8 @@
     },
     {
       "path": "test_clipboard_fast_v1821.py",
-      "size": 11124,
-      "sha256": "7b56b55266e67e7a49d6f4110bd1a88f740faf765b829ddc39e264ce2b620937"
+      "size": 11163,
+      "sha256": "99302269474b968614db84eace196e3c67790f75356023a3e94c78fe1eb3c6e5"
     },
     {
       "path": "test_clipboard_local_original_v1825.py",
@@ -2196,8 +2196,8 @@
     },
     {
       "path": "test_mac_permissions_v1821.py",
-      "size": 11824,
-      "sha256": "efa3c42052ccbac76fc6acabf79d426c8844f0619ead70584e834df1099d66b1"
+      "size": 13345,
+      "sha256": "15cc1eb4333f338cb9e865a77b81dcfb617d4e5422236d78c96ff76bcce29bb4"
     },
     {
       "path": "test_mac_status_drop_v1823.py",

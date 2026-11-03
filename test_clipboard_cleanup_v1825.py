@@ -151,6 +151,22 @@ class CleanupClientTests(unittest.TestCase):
         with patch.object(self.client.file_jobs,'protected_directories',return_value={root}):
             self.client._cleanup_retry_at=0;self.client._cleanup();until(lambda:self.client._cleanup_runner.active is None)
         self.assertTrue(body.exists())
+    def test_successful_idle_plan_rechecks_when_current_reference_is_released(self):
+        self.native_files(self.source);root,body=self.expired()
+        self.client._current_directory=root;self.client._cleanup_inventory=True;self.client._cleanup_retry_at=0
+        self.client._cleanup();until(lambda:self.client._cleanup_runner.active is None)
+        self.assertTrue(body.exists());self.assertGreater(self.client._cleanup_retry_at,time.monotonic())
+        self.client._current_directory=None;self.client._cleanup()
+        until(lambda:not root.exists() and self.client._cleanup_runner.active is None)
+        self.assertEqual(self.source.read_bytes(),b'untouched original')
+    def test_format_noise_keeps_the_successful_idle_budget(self):
+        self.native_files(self.source);root,body=self.expired()
+        self.client._current_directory=root;self.client._cleanup_inventory=True;self.client._cleanup_retry_at=0
+        self.client._cleanup();until(lambda:self.client._cleanup_runner.active is None)
+        before=self.spawn_mock.call_count
+        for unused in range(12):
+            self.f.clip.sequence+=1;self.f.clip.dataChanged.emit();self.client.change_debounce.stop();self.client._cleanup()
+        self.assertEqual(self.spawn_mock.call_count,before);self.assertTrue(body.exists())
     def test_actual_new_client_recovers_sidecar_without_inner_marker(self):
         root,body=self.expired();record=worker.inspect(self.client.cache,root.name);worker.save_owner(self.client.cache,record);(root/'.lease.json').unlink()
         self.client.close();until(lambda:self.client._cleanup_runner.active is None)
@@ -185,7 +201,10 @@ class CleanupClientTests(unittest.TestCase):
         failed=Failed();self.client._cleanup_runner=failed
         try:
             self.client._cleanup_retry_at=0;self.client._cleanup()
-            for unused in range(20):self.client._cleanup()
+            for unused in range(20):
+                self.client._generation+=1
+                self.client._current_directory=root if unused%2 else None
+                self.client._cleanup()
             self.assertEqual(len(failed.calls),1);self.assertTrue(body.exists());self.assertIn(root,dict(self.client._directories))
         finally:self.client._cleanup_runner=actual
     def test_fatal_generation_is_paused_without_blocking_good_target_then_owner_change_recovers(self):
