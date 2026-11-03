@@ -4,6 +4,7 @@ from pathlib import Path
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 from unittest.mock import patch
@@ -40,6 +41,38 @@ class Provider:
 
 
 class CaptureTests(unittest.TestCase):
+    def test_shelf_canonicalization_is_explicit_after_unlock_and_never_reads_body(self):
+        with tempfile.TemporaryDirectory(prefix='fd-reference-canonical-') as directory:
+            root=Path(directory).resolve();(root/'nested').mkdir();source=root/'original.bin';source.write_bytes(b'owned original')
+            paths=(str(root/'nested'/'..'/'original.bin'),str(root/'nested'))
+            provider=Provider(hdrop(paths));resolve=Path.resolve
+            def canonical(path,*args,**options):
+                self.assertTrue(provider.closed);self.assertFalse(provider.opened)
+                return resolve(path,*args,**options)
+            with patch.object(Path,'resolve',canonical),patch.object(Path,'open',side_effect=AssertionError('Reference normalization read file body')):
+                value=capture(REQUEST,SEQUENCE,provider=provider,canonicalize=True)
+            self.assertEqual(value['paths'],(str(source),str(root/'nested')))
+            self.assertEqual(source.read_bytes(),b'owned original')
+
+    def test_change_or_filesystem_failure_during_canonicalization_is_not_committed(self):
+        provider=Provider()
+        def changed(paths):provider.counter+=1;return paths
+        with patch('win_clipboard_references.canonical_references',side_effect=changed):
+            self.assertEqual(capture(REQUEST,SEQUENCE,provider=provider,canonicalize=True)['code'],'CHANGED')
+        with patch('win_clipboard_references.canonical_references',side_effect=OSError(5,'private location')):
+            value=capture(REQUEST,SEQUENCE,provider=Provider(),canonicalize=True)
+        self.assertEqual(value['code'],'READ_UNAVAILABLE');self.assertNotIn('private',repr(value))
+
+    def test_purpose_and_private_parser_keep_transfer_arguments_and_reject_ambiguous_flags(self):
+        ordinary=ReferenceReadPurpose(REQUEST,SEQUENCE);shelf=ReferenceReadPurpose(REQUEST,SEQUENCE,canonicalize=True)
+        self.assertEqual(ordinary.arguments(None),['--request',REQUEST,'--sequence',str(SEQUENCE)])
+        self.assertEqual(parse_arguments(ordinary.arguments(None)),(REQUEST,SEQUENCE,False))
+        self.assertEqual(parse_arguments(shelf.arguments(None)),(REQUEST,SEQUENCE,True))
+        for flag in ('0','true','', '2'):
+            with self.subTest(flag=flag),self.assertRaises(ValueError):parse_arguments(ordinary.arguments(None)+['--canonicalize',flag])
+        with self.assertRaises(ValueError):parse_arguments(shelf.arguments(None)+['--canonicalize','1'])
+        with self.assertRaises(ValueError):ReferenceReadPurpose(REQUEST,SEQUENCE,canonicalize=1)
+
     def test_multiple_files_directory_unc_and_original_order_without_fs_reads(self):
         provider=Provider()
         def parse(raw,**options):

@@ -1456,6 +1456,7 @@ class ShelfWindow(QWidget):
     def __init__(self, manager: "ShelfManager", number: int, data: dict | None = None):
         super().__init__()
         self.manager = manager
+        self.file_paste = None
         self.number = number
         data = data or {}
         self.content = ContentRepository(data.get("texts"),data.get("metadata"))
@@ -2281,6 +2282,7 @@ class ShelfWindow(QWidget):
         self.manager.update_handles()
 
     def remove_all(self, mode: str):
+        if self.file_paste is not None:self.file_paste.invalidate()
         self._cancel_intake()
         self._copy_epoch+=1
         for job in getattr(self,'_intake_limit_jobs',()):job.cancel.set()
@@ -2317,10 +2319,12 @@ class ShelfWindow(QWidget):
         self.manager.save()
         self.manager.update_handles()
 
+    def _can_receive_intake(self):
+        return not (self.manager.outgoing_drag or self.dragging or confirmation_active(self)
+                    or getattr(self.manager,'settings_open',lambda:False)())
+
     def receive_mime(self, mode, mime, *, source='drop'):
-        if (self.manager.outgoing_drag or self.dragging or confirmation_active(self)
-                or getattr(self.manager,'settings_open',lambda:False)()):
-            return False
+        if not self._can_receive_intake():return False
         remote=self.resolver.candidates(mime)
         if source=='paste' and mime.hasText() and not mime.hasUrls() and not mime.hasImage():
             remote=[]
@@ -2344,6 +2348,9 @@ class ShelfWindow(QWidget):
                     if self.content.is_text(ref) and not jobs:self.content.materialize_pasted_text(ref,self.manager.settings.capture_dir)
             except OSError as error:
                 self.status_label.setText('文字文件未能保存：'+str(error));return False
+        return self._receive_intake_paths(mode,paths,jobs,source=source)
+
+    def _receive_intake_paths(self,mode,paths,jobs=(),*,source,added_at=None):
         self._cancel_intake()
         epoch=self._intake_epoch
         self._intake_preserve_view=source=='paste' or self.expanded
@@ -2357,7 +2364,7 @@ class ShelfWindow(QWidget):
             self._show_at(self._dock_target,self.presentation_kind,QPoint())
         self.import_paths(mode,paths,
             on_committed=lambda:self._committed_intake(mode,epoch),
-            on_failed=lambda:self._abort_intake(epoch))
+            on_failed=lambda:self._abort_intake(epoch),_added_at=added_at)
         for ref,url in jobs: self.resolver.resolve(ref,url)
         return True
 
@@ -2818,7 +2825,37 @@ class ShelfWindow(QWidget):
             self._file_choosing=False;self._picker_return_until=time.monotonic()+1.5
             self.touch()
 
+    def _file_paste_intent(self):
+        if self.file_paste is None:
+            from explicit_file_paste import FilePasteIntent
+            from clipboard_references import ReferenceReadPurpose
+            self.file_paste=FilePasteIntent(self,self._receive_file_paste,self._file_paste_failed,
+                purpose_factory=lambda request,sequence:ReferenceReadPurpose(request,sequence,canonicalize=True))
+        return self.file_paste
+
+    def paste_hold_active(self):
+        return self.file_paste is not None and self.file_paste.pending
+
+    def _file_paste_failed(self,message):
+        self.status_label.setText(message);self.touch()
+
+    def _receive_file_paste(self,paths,context):
+        mode,epoch,added_at=context
+        if (epoch!=self._copy_epoch or self.manager._quitting or self.visible_state=='hiding'
+                or not self._can_receive_intake()):return False
+        return self._receive_intake_paths(mode,paths,source='paste',added_at=added_at)
+
+    def hideEvent(self,event):
+        if self.file_paste is not None:self.file_paste.invalidate()
+        super().hideEvent(event)
+
     def paste_clipboard(self, mode):
+        if self.manager._quitting or not self._can_receive_intake():return False
+        context=(mode,self._copy_epoch,QDateTime.currentDateTimeUtc().toString(Qt.ISODate))
+        handled=self._file_paste_intent().request_if_advertised(context=context)
+        if handled is not None:
+            if handled:self.touch()
+            return handled
         return self.receive_mime(mode,QApplication.clipboard().mimeData(),source='paste')
 
     def copy_items(self, refs):
@@ -4225,7 +4262,7 @@ class ShelfManager:
             retired=False
             for shelf in self.shelves:
                 if (shelf.isVisible() and not shelf.pinned and not shelf.dragging
-                        and not shelf.incoming_drop and not shelf._archive_choosing and not shelf.picker_hold_active(now)
+                        and not shelf.incoming_drop and not shelf._archive_choosing and not shelf.picker_hold_active(now) and not shelf.paste_hold_active()
                         and not confirmation_active(shelf) and not self.outgoing_drag):
                     # Qt-visible windows can already be behind a full-screen
                     # browser. Retire them before the edge handoff this tick.
@@ -4235,7 +4272,7 @@ class ShelfManager:
         for shelf in self.shelves:
             if not shelf.isVisible(): continue
             modal=QApplication.activeModalWidget(); popup=QApplication.activePopupWidget()
-            blocked=shelf.picker_hold_active(now) or shelf._menu_open or shelf.rename_edit.isVisible() or modal is not None or popup is not None or confirmation_active(shelf)
+            blocked=shelf.picker_hold_active(now) or shelf.paste_hold_active() or shelf._menu_open or shelf.rename_edit.isVisible() or modal is not None or popup is not None or confirmation_active(shelf)
             press_blocked=shelf.picker_hold_active(now) or modal is not None or shelf.rename_edit.isVisible() or (popup is not None and popup.frameGeometry().contains(pos)) or confirmation_active(shelf)
             in_settings=app_active and self.settings_dialog is not None and self.settings_dialog.isVisible() and self.settings_dialog.frameGeometry().contains(pos)
             in_settings=in_settings or bool(app_active and self.lan_dialog and self.lan_dialog.isVisible() and self.lan_dialog.frameGeometry().contains(pos))
@@ -4296,6 +4333,7 @@ class ShelfManager:
         # Let file jobs wind down while services close, rather than waiting
         # until every service has already spent its own shutdown grace.
         for shelf in self.shelves:
+            if shelf.file_paste is not None:stop('file_paste',shelf.file_paste.close)
             for job in tuple(shelf.copy_jobs):stop('copy_cancel',job.cancel)
             if shelf.archive_job:stop('archive_cancel',shelf.archive_job.cancel)
         # Cancel producers before closing windows. One failed native provider

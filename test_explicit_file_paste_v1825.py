@@ -1,10 +1,12 @@
 """Actual Qt transfer entry with owned fake metadata/reader, no native clipboard."""
 import unittest
+from pathlib import Path
 from unittest.mock import patch
-from PySide6.QtCore import QEvent,Qt
+from PySide6.QtCore import QEvent,Qt,QMimeData,QDateTime
 from PySide6.QtGui import QKeyEvent,QKeySequence
 from PySide6.QtTest import QTest
 import test_transfer_interaction_v1823 as fixtures
+import test_html_native_workspace as shelf_fixtures
 from explicit_file_paste import windows_file_hint
 from clipboard_references import receipt
 
@@ -107,6 +109,101 @@ class TransferScopeTests(unittest.TestCase):
         route=self.isolated_route();route._hint=lambda:None
         event=QKeyEvent(QEvent.Type.KeyPress,Qt.Key.Key_V,Qt.KeyboardModifier.ControlModifier)
         self.assertIsNone(route.maybe_handle(event));self.assertIsNone(route._reader)
+
+
+class ShelfScopeTests(unittest.TestCase):
+    def setUp(self):
+        self.workspace=shelf_fixtures.WorkspaceTests('runTest');self.workspace.setUp();self.shelf=self.workspace.shelf
+        self.route=self.shelf._file_paste_intent();self.route.enabled=True;self.route._hint=lambda:41;self.route._reader_factory=Reader
+        self.serial=0
+    def tearDown(self):self.workspace.tearDown()
+    def paths(self,*,directory=False):
+        self.serial+=1;root=self.workspace.base
+        paths=[root/f'paste-{self.serial}-{index}.dat' for index in range(2)]
+        for index,path in enumerate(paths):path.write_bytes(b'owned original '+bytes([index]))
+        if directory:
+            folder=root/f'paste-directory-{self.serial}';folder.mkdir();(folder/'inside.txt').write_text('owned');paths.append(folder)
+        return [str(path) for path in paths]
+    def paste(self):
+        with patch.object(shelf_fixtures.subject.QApplication,'clipboard',side_effect=AssertionError('S1 GUI touched foreign provider')):
+            self.assertTrue(self.shelf.paste_clipboard('permanent'))
+        return len(self.route._reader.requests)-1
+    def settle(self,paths):
+        shelf_fixtures.until(lambda:all(path in self.shelf.files['permanent'] for path in paths) and not self.shelf.incoming_drop)
+
+    def test_files_and_directory_use_one_isolated_request_without_gui_payload_read(self):
+        paths=self.paths(directory=True);before=list(self.shelf.files['permanent']);index=self.paste()
+        self.assertTrue(self.shelf.paste_hold_active())
+        self.assertEqual(self.shelf.files['permanent'],before);self.assertEqual(len(self.route._reader.requests),1)
+        self.assertTrue(self.route._reader.requests[0][1].canonicalize)
+        self.route._reader.complete(index,paths);self.settle(paths)
+        self.assertFalse(self.shelf.paste_hold_active())
+        for file in paths[:2]:self.assertTrue(Path(file).read_bytes().startswith(b'owned original'))
+
+    def test_preview_and_overview_paste_preserve_the_current_view(self):
+        for expanded in (False,True):
+            if expanded:self.workspace.overview()
+            paths=self.paths();index=self.paste();self.route._reader.complete(index,paths);self.settle(paths)
+            self.assertTrue(self.shelf.isVisible());self.assertEqual(self.shelf.expanded,expanded)
+
+    def test_owned_external_editor_paste_chord_routes_once_without_activation_or_gui_read(self):
+        from pointer_paste import PointerPasteController
+        from PySide6.QtWidgets import QLineEdit
+        editor=QLineEdit();editor.setText('keep editor contents');editor.show();editor.setFocus();shelf_fixtures.flush()
+        controller=PointerPasteController(shelf_fixtures.APP,lambda:self.shelf,
+            lambda owner:owner.paste_clipboard('permanent'),native=False)
+        try:
+            with patch.object(shelf_fixtures.subject.QApplication,'clipboard',side_effect=AssertionError('Paste chord read external provider on GUI')):
+                QTest.keySequence(editor,QKeySequence(QKeySequence.StandardKey.Paste));shelf_fixtures.flush()
+            self.assertEqual(editor.text(),'keep editor contents');self.assertEqual(len(self.route._reader.requests),1)
+            paths=self.paths();self.route._reader.complete(0,paths);self.settle(paths)
+        finally:controller.close();editor.close();editor.deleteLater();shelf_fixtures.flush()
+
+    def test_clear_and_native_hide_reopen_retire_old_intents(self):
+        paths=self.paths();index=self.paste();self.shelf.remove_all('permanent');self.route._reader.complete(index,paths)
+        self.assertFalse(self.shelf.paste_hold_active())
+        self.assertEqual(self.shelf.files['permanent'],[])
+        index=self.paste();self.shelf.hide();self.shelf.show();shelf_fixtures.flush();self.route._reader.complete(index,paths)
+        self.assertEqual(self.shelf.files['permanent'],[]);self.assertEqual(self.route._reader.cancelled,['1','2'])
+        index=self.paste();self.route._reader.complete(index,paths);self.settle(paths)
+
+    def test_late_paths_cannot_enter_settings_quitting_or_hiding_owner(self):
+        for boundary in ('settings','quitting','hiding'):
+            paths=self.paths();index=self.paste()
+            if boundary=='settings':self.workspace.manager.settings_open=lambda:True
+            elif boundary=='quitting':self.workspace.manager._quitting=True
+            else:self.shelf.visible_state='hiding'
+            self.route._reader.complete(index,paths)
+            self.assertFalse(any(path in self.shelf.files['permanent'] for path in paths))
+            self.workspace.manager.settings_open=lambda:False;self.workspace.manager._quitting=False;self.shelf.visible_state='floating'
+
+    def test_absent_file_hint_keeps_original_text_and_native_drag_semantics(self):
+        from types import SimpleNamespace
+        self.route._hint=lambda:None;mime=QMimeData();mime.setText('owned original text for shelf')
+        with patch.object(shelf_fixtures.subject.QApplication,'clipboard',return_value=SimpleNamespace(mimeData=lambda:mime)):
+            self.assertTrue(self.shelf.paste_clipboard('permanent'))
+        ref=self.shelf.files['permanent'][-1];shelf_fixtures.until(lambda:not self.shelf.incoming_drop)
+        self.assertEqual(self.shelf.content.text(ref),'owned original text for shelf')
+        exported=self.shelf.content.mime_for([ref]);self.assertTrue(exported.hasText());self.assertFalse(exported.hasUrls())
+        self.assertIsNone(self.route._reader)
+
+    def test_copy_mode_preserves_source_and_uses_the_existing_copy_pipeline(self):
+        self.workspace.settings.update(capture_mode='copy');paths=self.paths();before=len(self.shelf.files['permanent'])
+        index=self.paste();self.route._reader.complete(index,paths)
+        shelf_fixtures.until(lambda:len(self.shelf.files['permanent'])==before+2 and not self.shelf.copy_jobs and not self.shelf.incoming_drop)
+        for original,copied in zip(paths,self.shelf.files['permanent'][-2:]):
+            self.assertNotEqual(original,copied);self.assertEqual(Path(original).read_bytes(),Path(copied).read_bytes())
+            self.assertEqual(self.shelf.content.metadata[copied]['capture_mode'],'copy')
+
+    def test_intake_time_is_bound_to_the_paste_request_not_the_delayed_completion(self):
+        expected='2026-11-03T09:12:34Z';moment=QDateTime.fromString(expected,Qt.ISODate)
+        class Clock(QDateTime):
+            @staticmethod
+            def currentDateTimeUtc():return moment
+        paths=self.paths()
+        with patch.object(shelf_fixtures.subject,'QDateTime',Clock):index=self.paste()
+        self.route._reader.complete(index,paths);self.settle(paths)
+        for path in paths:self.assertEqual(self.shelf.content.metadata[path]['shelf_added_at'],expected)
 
 
 if __name__=='__main__':unittest.main()

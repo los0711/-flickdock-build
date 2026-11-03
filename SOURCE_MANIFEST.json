@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "QA only: four bootstrap/native/private/retry fixture owners now reuse explicit GUI retirement after all independent lanes end; presenter scope no longer deletes the nested client twice. Original4owner contract failures retained;95focused and657attempted656pass/1POSIXskip. Original100MiB test body/deadline and all application bytes identical669. Native AV not declared repaired; no installer/publication.",
+  "purpose": "S1 Windows positively-advertised CF_HDROP Paste shares explicit intent/owned reader with T1; shelf canonicalization after unlock in helper, immutable mode/time/clear fences and bounded pending hold. Default T1 arguments, original system clipboard, cloud admission and unknown/Mac fallback retained.668 attempted667pass1localPOSIXskip; actual delayed synthetic child proof runtime-identical. Downstream GUI filesystem checks and native/frozen acceptance still pending; no installer/release.",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -676,8 +676,8 @@
     },
     {
       "path": "clipboard_references.py",
-      "size": 4848,
-      "sha256": "1b8eb689971f0921bdfc6c08f9d69a17ebeea0aaa6dbbeea57819462ab0d722a"
+      "size": 5070,
+      "sha256": "567eba80e0422b3ccc98ef0531fb434782d549ab8a9d47806d3c42a925abd4ad"
     },
     {
       "path": "clipboard_sync.py",
@@ -981,8 +981,8 @@
     },
     {
       "path": "explicit_file_paste.py",
-      "size": 4666,
-      "sha256": "763b3ab3b1f79409d2b44275da6155a2dc88e53d6690bfc70b27055cb80a687d"
+      "size": 5615,
+      "sha256": "bf58d4a6bc22b1dff539aac285ff8908ddd39a2c106f3d186dc5b951a69d3bcf"
     },
     {
       "path": "file_metadata.py",
@@ -996,8 +996,8 @@
     },
     {
       "path": "flickdock.py",
-      "size": 249341,
-      "sha256": "5ad7c06965055cbbc5f61b080f996c698c8bb5ee4a2c76024daf4aa7803deee8"
+      "size": 251334,
+      "sha256": "a049d36e12eca75c252c6ca5882b108d0d2e8712c40eafcbcf2973b71e472a27"
     },
     {
       "path": "flickdock_icons.py",
@@ -1901,8 +1901,8 @@
     },
     {
       "path": "test_clipboard_references_v1825.py",
-      "size": 12375,
-      "sha256": "300c1c4559fff5ce44964c3712721b2d1f1ea0584ff3b03d30a5702b63e355ac"
+      "size": 14963,
+      "sha256": "e3fe4114bcce54757fc40a34ae9b8af4318550046b2e5864e393d915cdcee5cc"
     },
     {
       "path": "test_clipboard_size_contract_v1825.py",
@@ -2056,8 +2056,8 @@
     },
     {
       "path": "test_explicit_file_paste_v1825.py",
-      "size": 6505,
-      "sha256": "48edcf0c1767cc4e43b02255bcec6897ee57be44a348cccd35ed5249155e86e7"
+      "size": 13362,
+      "sha256": "a41ba8ae123b0a11045576adff130a65168854cc7f9f9b5e12b127731d15e61d"
     },
     {
       "path": "test_feedback_v1816.py",
@@ -2991,8 +2991,8 @@
     },
     {
       "path": "win_clipboard_references.py",
-      "size": 4437,
-      "sha256": "737b81d32e13ac067c4892ea37988487a5275e0b674134f4e3ce9f9ebcb5ee63"
+      "size": 5229,
+      "sha256": "976970f4e9475c018d60b4a6472de2f90688e36bf5e5f5640b17bcd5a2f04007"
     },
     {
       "path": "win_owned_process.py",

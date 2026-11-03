@@ -88,15 +88,19 @@ def decode_frame(raw,*,request,sequence):
 class ReferenceReadPurpose:
     request:str
     sequence:int
+    canonicalize:bool=False
 
-    def __post_init__(self):checked_request(self.request,self.sequence)
+    def __post_init__(self):
+        checked_request(self.request,self.sequence)
+        if type(self.canonicalize)is not bool:raise ValueError('Invalid local reference purpose')
     @property
     def max_wire(self):return MAX_FRAME_BYTES+len(MAGIC)+4
     @staticmethod
     def cache(cancel):return None
     def arguments(self,cache):
         if cache is not None:raise RuntimeError('Reference reader cannot own a body cache')
-        return ['--request',self.request,'--sequence',str(self.sequence)]
+        arguments=['--request',self.request,'--sequence',str(self.sequence)]
+        return arguments+['--canonicalize','1'] if self.canonicalize else arguments
     def decode(self,raw,cache):
         if cache is not None:raise RuntimeError('Reference reader cannot adopt body data')
         return decode_frame(raw,request=self.request,sequence=self.sequence)
