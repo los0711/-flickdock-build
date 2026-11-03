@@ -776,6 +776,7 @@ class LanPanel(QFrame):
     received_paths = Signal(list)
     transfer_started = Signal()
     lan_recommended = Signal(list,str)
+    draft_replaced = Signal()
 
     def __init__(self, service, parent=None, *, theme='light', settings=None,metadata_cache=None):
         super().__init__(parent)
@@ -1211,7 +1212,8 @@ class LanPanel(QFrame):
         self._render_history(preserve_motion=True);self.history_layout.activate()
         self.history_motion.reflow({},positions)
 
-    def queue_paths(self, paths, *, replace=False):
+    def queue_paths(self, paths, *, replace=False,draft_handoff=False):
+        if replace and not draft_handoff:self.draft_replaced.emit()
         self._explicit_queue=True
         previous=list(self._queued_paths)
         if replace:self._queued_paths=[]
@@ -1808,11 +1810,16 @@ class _TransferDropRouter(QObject):
     """Queue a local file drop anywhere in the transfer window, exactly once."""
     def __init__(self, dialog):
         super().__init__(dialog);self.dialog=dialog
+        from explicit_file_paste import TransferFilePaste
+        self.native_paste=TransferFilePaste(dialog)
+        dialog.panel.draft_replaced.connect(self.native_paste.invalidate)
         for widget in [dialog,*dialog.findChildren(QWidget)]:widget.setAcceptDrops(True)
         QApplication.instance().installEventFilter(self)
 
     def eventFilter(self, watched, event):
         kind=event.type()
+        if kind==QEvent.Type.Hide and watched is self.dialog:
+            self.native_paste.invalidate();return False
         if kind not in (QEvent.Type.ShortcutOverride,QEvent.Type.KeyPress,QEvent.Type.DragEnter,
                         QEvent.Type.DragMove,QEvent.Type.DragLeave,QEvent.Type.Drop):return False
         from shiboken6 import isValid
@@ -1821,6 +1828,8 @@ class _TransferDropRouter(QObject):
         if kind in (QEvent.Type.ShortcutOverride,QEvent.Type.KeyPress):
             if (not self.dialog.isVisible() or QApplication.activeModalWidget() is not None
                     or not event.matches(QKeySequence.StandardKey.Paste)):return False
+            handled=self.native_paste.maybe_handle(event)
+            if handled is not None:return handled
             mime=QApplication.clipboard().mimeData()
             if mime is None or not mime.hasUrls():return False
             urls=mime.urls()
@@ -2031,10 +2040,11 @@ class LanDialog(QDialog):
                 panel=LanPanel(service,self.panel_stack,theme=self._theme,settings=self._settings,metadata_cache=self.file_metadata)
                 panel.lan_recommended.connect(self.lan_recommended)
                 self._panels[service]=panel;self.panel_stack.addWidget(panel)
+                panel.draft_replaced.connect(self.drop_router.native_paste.invalidate)
                 for widget in (panel,*panel.findChildren(QWidget)):widget.setAcceptDrops(True)
             self.panel=self._panels[service];self._wan=getattr(service,'mode','lan')=='wan'
             self._mount_mode_status()
-            self.panel.queue_paths(queued,replace=True)
+            self.panel.queue_paths(queued,replace=True,draft_handoff=True)
             self.panel._explicit_queue=explicit_queue
             self.mode_buttons['wan' if self._wan else 'lan'].setChecked(True)
             if not hasattr(self,'_page_fade'):

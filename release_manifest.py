@@ -35,6 +35,7 @@ RUNTIME_SOURCES=(
     'shelf_payload_gate.py',
     'win_clipboard_cache.py',
     'win_clipboard_native.py','win_clipboard_io.py','win_owned_process.py',
+    'clipboard_references.py','win_clipboard_references.py','explicit_file_paste.py',
     'clipboard_cleanup.py','clipboard_cleanup_worker.py',
     'control_states.py',
     'frame_animation.py',
@@ -60,6 +61,9 @@ RUNTIME_SOURCES=(
 MAINTAINED_TESTS=(
     'test_native_text_views_v1825.py',
     'test_native_text_stream_v1825.py',
+    'test_clipboard_read_purpose_v1825.py',
+    'test_clipboard_references_v1825.py',
+    'test_explicit_file_paste_v1825.py',
     'test_clipboard_cleanup_v1825.py','test_clipboard_cleanup_entry_v1825.py',
     'test_native_text_single_pass_v1825.py',
     'test_native_text_budget_v1825.py',

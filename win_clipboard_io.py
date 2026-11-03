@@ -73,11 +73,29 @@ def decode_frame(raw,*,cache=None):
         result['value']=('files',[path]);result['signature']=('files',((canonical,*info),));result['source_stat']=stamp
     return result
 
+class _ClipboardReadPurpose:
+    """Default FDCR1 binding; process ownership is independent of payload type."""
+    @property
+    def max_wire(self):return MAX_WIRE
+    @staticmethod
+    def cache(cancel):return CacheCapability(cancel=cancel)
+    @staticmethod
+    def arguments(cache):return cache.arguments()
+    @staticmethod
+    def decode(raw,cache):return decode_frame(raw,cache=cache)
+    @staticmethod
+    def failure(code='READ_UNAVAILABLE',diagnostic=None):return unknown(code,diagnostic)
+    @staticmethod
+    def command():
+        if getattr(sys,'frozen',False):return [sys.executable,'--clipboard-reader']
+        return [sys.executable,str(Path(__file__).with_name('win_clipboard_native.py'))]
+
 class _ReadOperation:
     """One owner for child, pipe, parse and reap. Contains no Qt objects."""
-    def __init__(self,token,callback,command,deadline_ms,process_factory):
+    def __init__(self,token,callback,command,deadline_ms,process_factory,*,purpose=None):
         self.token=token;self.callback=callback;self.command=command
         self.process=None;self.reason=None;self.result=None
+        self.purpose=_ClipboardReadPurpose() if purpose is None else purpose
         self.reaped=False;self.done=threading.Event();self.lock=threading.Lock();self.process_factory=process_factory;self.diagnostic=None;self.cancelled=threading.Event()
         self.deadline=threading.Timer(deadline_ms/1000,self.cancel,args=('DEADLINE',));self.deadline.daemon=True
         self.thread=threading.Thread(target=self._run,name='FlickDock-clipboard-reader',daemon=True)
@@ -113,8 +131,8 @@ class _ReadOperation:
         try:
             with self.lock:cancelled=self.reason is not None
             if cancelled:return
-            cache=CacheCapability(cancel=self.cancelled)
-            process=self.process_factory([*self.command,*cache.arguments()],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
+            cache=self.purpose.cache(self.cancelled)
+            process=self.process_factory([*self.command,*self.purpose.arguments(cache)],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
                 close_fds=True,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
             with self.lock:self.process=process;cancelled=self.reason is not None
             if cancelled:process.kill()
@@ -125,17 +143,17 @@ class _ReadOperation:
                 with self.lock:cancelled=self.reason is not None
                 if cancelled:chunks.clear();continue
                 size+=len(block)
-                if size>MAX_WIRE:self.cancel('OUTPUT_LIMIT');chunks.clear();continue
+                if size>self.purpose.max_wire:self.cancel('OUTPUT_LIMIT');chunks.clear();continue
                 chunks.append(block)
             code=process.wait(timeout=1. if self.reason else None) # Worker only.
             with self.lock:reason=self.reason
-            if reason:value=unknown(reason)
-            elif code!=0:value=unknown('PROCESS_FAILED')
+            if reason:value=self.purpose.failure(reason)
+            elif code!=0:value=self.purpose.failure('PROCESS_FAILED')
             else:
-                try:value=decode_frame(b''.join(chunks),cache=cache)
-                except (ValueError,UnicodeError,TypeError,KeyError):value=unknown('INVALID_FRAME')
+                try:value=self.purpose.decode(b''.join(chunks),cache)
+                except (ValueError,UnicodeError,TypeError,KeyError):value=self.purpose.failure('INVALID_FRAME')
         except Exception as error:
-            value=unknown('START_FAILED' if process is None else 'PROCESS_FAILED',safe_failure(getattr(error,'phase','spawn' if process is None else 'pipe'),error))
+            value=self.purpose.failure('START_FAILED' if process is None else 'PROCESS_FAILED',safe_failure(getattr(error,'phase','spawn' if process is None else 'pipe'),error))
             if process is None:
                 process=getattr(error,'_helper_owner',None)
                 if process is not None:
@@ -155,11 +173,11 @@ class _ReadOperation:
                             # Local cache IO is not an unreaped OS process.
                             # Reject this sample, preserve cleanup ownership,
                             # but allow the next real clipboard event to run.
-                            value=unknown('CACHE_UNAVAILABLE',safe_failure('cache',error))
+                            value=self.purpose.failure('CACHE_UNAVAILABLE',safe_failure('cache',error))
                     else:self._unreaped_cache=cache # Keep authority with quarantined writer.
-                with self.lock:self.result=unknown(cleanup or self.reason,self.diagnostic or getattr(process,'diagnostic',None)) if cleanup or self.reason else value or unknown('READ_UNAVAILABLE')
+                with self.lock:self.result=self.purpose.failure(cleanup or self.reason,self.diagnostic or getattr(process,'diagnostic',None)) if cleanup or self.reason else value or self.purpose.failure('READ_UNAVAILABLE')
             except Exception as error:
-                self.result=unknown('REAP_FAILED',safe_failure('cleanup',error));self.reaped=False
+                self.result=self.purpose.failure('REAP_FAILED',safe_failure('cleanup',error));self.reaped=False
             finally:self.deadline.cancel();self.done.set()
 
 class WindowsClipboardReader(QObject):
@@ -170,40 +188,49 @@ class WindowsClipboardReader(QObject):
     The worker owns process/pipe/decoding/reaping end to end, so no queued Qt
     process/parse callbacks can reference a deleted native process object.
     """
-    def __init__(self,parent=None,*,deadline_ms=3000,command=None,process_factory=None):
+    def __init__(self,parent=None,*,deadline_ms=3000,command=None,process_factory=None,purpose=None):
         super().__init__(parent);self.deadline_ms=max(50,min(int(deadline_ms),10000));self.command=command
         self.process_factory=process_factory or spawn_owned
+        self.purpose=_ClipboardReadPurpose() if purpose is None else purpose
         self._active=None;self._pending=None;self._closed=False;self._quarantined=None
         self._clock=QTimer(self);self._clock.setInterval(5);self._clock.timeout.connect(self._poll)
         from PySide6.QtCore import QCoreApplication
         app=QCoreApplication.instance()
         if app is not None:app.aboutToQuit.connect(self.close)
-    def _argv(self):
+    def _argv(self,purpose=None):
         if self.command is not None:return list(self.command)
-        if getattr(sys,'frozen',False):return [sys.executable,'--clipboard-reader']
-        return [sys.executable,str(Path(__file__).with_name('win_clipboard_native.py'))]
+        return (self.purpose if purpose is None else purpose).command()
     def _notify(self,request,value):
         callback=request.callback;request.callback=None
         if callback is not None and not self._closed:callback(value,None)
-    def read(self,callback,*,replace=False):
+    def read(self,callback,*,replace=False,purpose=None):
         token=uuid4().hex
+        purpose=self.purpose if purpose is None else purpose
         if self._closed:
-            QTimer.singleShot(0,self,lambda:callback(unknown('CLOSED'),None));return token
+            QTimer.singleShot(0,self,lambda:callback(purpose.failure('CLOSED'),None));return token
         if self._quarantined is not None:
-            QTimer.singleShot(0,self,lambda:callback(unknown('REAP_FAILED'),None));return token
-        operation=_ReadOperation(token,callback,self._argv(),self.deadline_ms,self.process_factory)
+            QTimer.singleShot(0,self,lambda:callback(purpose.failure('REAP_FAILED'),None));return token
+        operation=_ReadOperation(token,callback,self._argv(purpose),self.deadline_ms,self.process_factory,purpose=purpose)
         if self._active is None:
             pending,self._pending=self._pending,None
-            if pending is not None:QTimer.singleShot(0,self,lambda:self._notify(pending,unknown('SUPERSEDED')))
+            if pending is not None:QTimer.singleShot(0,self,lambda:self._notify(pending,pending.purpose.failure('SUPERSEDED')))
             self._start(operation)
         else:
             pending,self._pending=self._pending,operation
-            if pending is not None:QTimer.singleShot(0,self,lambda:self._notify(pending,unknown('SUPERSEDED')))
+            if pending is not None:QTimer.singleShot(0,self,lambda:self._notify(pending,pending.purpose.failure('SUPERSEDED')))
             if replace:self._active.cancel('SUPERSEDED')
         return token
     request=read
     def _start(self,operation):
         self._active=operation;operation.start();self._clock.start()
+    def dispatch_ready(self):
+        """Deliver only a fully verified/reaped result, without waiting for I/O.
+
+        Explicit Paste uses this before a new user intent, so a ready prior
+        Paste is not discarded just because its Qt delivery tick is pending.
+        Cloud-listener replacement keeps its existing, separate ordering.
+        """
+        if self._active is not None and self._active.done.is_set():self._poll()
     def _poll(self):
         operation=self._active
         if operation is None:self._clock.stop();return
@@ -213,7 +240,7 @@ class WindowsClipboardReader(QObject):
         try:
             self._notify(operation,operation.result)
             if self._quarantined is not None and self._pending is not None:
-                pending,self._pending=self._pending,None;self._notify(pending,unknown('REAP_FAILED'))
+                pending,self._pending=self._pending,None;self._notify(pending,pending.purpose.failure('REAP_FAILED'))
         finally:
             if self._active is None and self._pending is not None and not self._closed and self._quarantined is None:
                 pending,self._pending=self._pending,None;self._start(pending)

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "Bounded off-controller QA diagnostic writes with explicit failed flush gate; complete original runtime8b713 and UIA budgets unchanged",
+  "purpose": "Windows advertised-file Paste owned reader/draft scope; legacy aliases unchanged. Failed shelf retry remains unresolved; build validation only.",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -16,8 +16,8 @@
     },
     {
       "path": ".github/workflows/macos-build.yml",
-      "size": 8813,
-      "sha256": "fd00467ff19bd49a10a3fea98ec3804e4cf36dda135b0451750a9758c9c4caeb"
+      "size": 8942,
+      "sha256": "72f393d72b2721db1c50cae837481ae400608849205e70e23a2ce067abc5e22a"
     },
     {
       "path": ".github/workflows/macos-intel-motion-diagnostic.yml",
@@ -26,8 +26,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 34797,
-      "sha256": "26b273fa187b210d58af3fdf64be5c9ed2d999a03f2eab9f138bee0f8a9e0029"
+      "size": 34938,
+      "sha256": "55e8d697fe1a1a36640c009501fea6256b44fbb9b9239cb47e9ed04b469c4f4d"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -675,6 +675,11 @@
       "sha256": "8ac461c427818ebb62068bd8f8c601f513b3579d02564657bf79d117db0c3b29"
     },
     {
+      "path": "clipboard_references.py",
+      "size": 4848,
+      "sha256": "1b8eb689971f0921bdfc6c08f9d69a17ebeea0aaa6dbbeea57819462ab0d722a"
+    },
+    {
       "path": "clipboard_sync.py",
       "size": 114270,
       "sha256": "6eb2e683b3ce24c892307bb02dc78043f7ffcfd70f67d33f690ce40d42adb306"
@@ -975,6 +980,11 @@
       "sha256": "bf745df321531ff1ef94343ec0682e9f486b0bd33a520809d60499cf9ccc89c7"
     },
     {
+      "path": "explicit_file_paste.py",
+      "size": 4666,
+      "sha256": "763b3ab3b1f79409d2b44275da6155a2dc88e53d6690bfc70b27055cb80a687d"
+    },
+    {
       "path": "file_metadata.py",
       "size": 6977,
       "sha256": "902e625d9f759244a73fdf31491dea6df664530607e36ee54cd9c7e1951b4e2e"
@@ -986,8 +996,8 @@
     },
     {
       "path": "flickdock.py",
-      "size": 249061,
-      "sha256": "ce607a1d1bcf3876040111a06f022e8a591e868963d18e69a0c010a9e0076614"
+      "size": 249341,
+      "sha256": "5ad7c06965055cbbc5f61b080f996c698c8bb5ee4a2c76024daf4aa7803deee8"
     },
     {
       "path": "flickdock_icons.py",
@@ -1051,8 +1061,8 @@
     },
     {
       "path": "lan_panel.py",
-      "size": 127132,
-      "sha256": "054e2c94b64a19db90574c71cd62d7d4679c17d0ab07a132e13734d422606b87"
+      "size": 127766,
+      "sha256": "7018ecc1f12b02d6f36353f8414805d0c3d46715efd51f647c221fcd38afd2a9"
     },
     {
       "path": "lan_transfer.py",
@@ -1611,8 +1621,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 44803,
-      "sha256": "0766c9d7872769e39bce8aad436fa1a3a2392912733f0002d6705247b7aa3cb2"
+      "size": 45020,
+      "sha256": "253b6418d79ee52f5c3bc658ba20167b837607814e18dafb76993456cf51bb7e"
     },
     {
       "path": "release_signing.py",
@@ -1875,6 +1885,11 @@
       "sha256": "1478929e2ce614a79774dd2ed97cc926f25a0d495baf2b848be600453e6024b3"
     },
     {
+      "path": "test_clipboard_read_purpose_v1825.py",
+      "size": 3980,
+      "sha256": "ab45f08d23e2cc06892b9bf0be15b57abd1cf17a4121f04611c0e40907ae41e6"
+    },
+    {
       "path": "test_clipboard_reader_entry_v1825.py",
       "size": 2818,
       "sha256": "a6a4299d6e0c2da78f755b447d409057d36ccf35d078beef16334da03ff25ddb"
@@ -1883,6 +1898,11 @@
       "path": "test_clipboard_reenable_v1825.py",
       "size": 28302,
       "sha256": "838b56ce7b5900c66cbf31de975f2c697b53573af8ee914b8b67e6778c3b7916"
+    },
+    {
+      "path": "test_clipboard_references_v1825.py",
+      "size": 12375,
+      "sha256": "300c1c4559fff5ce44964c3712721b2d1f1ea0584ff3b03d30a5702b63e355ac"
     },
     {
       "path": "test_clipboard_size_contract_v1825.py",
@@ -2033,6 +2053,11 @@
       "path": "test_expand_flash_v165.py",
       "size": 10391,
       "sha256": "3f98f04218551cdd3deb6bc8b25f61ba1a30234dac2100f6f3d143cae4727e6c"
+    },
+    {
+      "path": "test_explicit_file_paste_v1825.py",
+      "size": 6505,
+      "sha256": "48edcf0c1767cc4e43b02255bcec6897ee57be44a348cccd35ed5249155e86e7"
     },
     {
       "path": "test_feedback_v1816.py",
@@ -2956,13 +2981,18 @@
     },
     {
       "path": "win_clipboard_io.py",
-      "size": 14994,
-      "sha256": "de098cf61f56deeb8b8e2a258bc0451418506084e4321dfa968841879074806a"
+      "size": 16543,
+      "sha256": "88037db2760caed2dc51759f84e117fa18458fe1eb335d5fc1be67cbe67f49c4"
     },
     {
       "path": "win_clipboard_native.py",
       "size": 28451,
       "sha256": "88e35f7c220bcd1e39c5bdb8d804b99c680385f5cbebaeea429c23abe60b8084"
+    },
+    {
+      "path": "win_clipboard_references.py",
+      "size": 4437,
+      "sha256": "737b81d32e13ac067c4892ea37988487a5275e0b674134f4e3ce9f9ebcb5ee63"
     },
     {
       "path": "win_owned_process.py",

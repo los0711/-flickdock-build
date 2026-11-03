@@ -2,6 +2,11 @@
 from __future__ import annotations
 import sys
 
+if '--clipboard-references' in sys.argv[1:]:
+    if sys.argv[1]!='--clipboard-references' or sys.platform!='win32':raise SystemExit(2)
+    from win_clipboard_references import main as _clipboard_references_main
+    raise SystemExit(_clipboard_references_main(sys.argv[2:]))
+
 if '--clipboard-cleaner' in sys.argv[1:]:
     if sys.argv[1]!='--clipboard-cleaner':raise SystemExit(2)
     from clipboard_cleanup_worker import main as _clipboard_cleaner_main
