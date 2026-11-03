@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "Restore explicit failed receive rows after switch reenable and record payload-free GUI callback exception frames, preserving original error hook. Hosted root diagnosis, not acceptance/publication.",
+  "purpose": "Reconcile expired external QScreen proxies before shelf hide/show handle updates. Original native no-hide failures retained, nine related source checks passed; awaiting exact packaged replay. No installer/publication.",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -996,8 +996,8 @@
     },
     {
       "path": "flickdock.py",
-      "size": 253619,
-      "sha256": "49f7e4a771dac1893f17581311060ce28764662a57a805f4bc7001e2e9025236"
+      "size": 253987,
+      "sha256": "adc95d6de547f747197f34dbfbd4cbcc0a7c16bac3809331ec5396a992454f75"
     },
     {
       "path": "flickdock_icons.py",
@@ -2136,8 +2136,8 @@
     },
     {
       "path": "test_header_sequence_v1825.py",
-      "size": 3729,
-      "sha256": "344d1daef4cc30c910cbebd23cc80f3b176a6bb3013670a8d163e873795c0cb1"
+      "size": 6068,
+      "sha256": "6e18b09dc566b35c34f56b140df59784dad389af74843aec23d33ac885de0243"
     },
     {
       "path": "test_hig_accessibility.py",

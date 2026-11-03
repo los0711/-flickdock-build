@@ -4233,7 +4233,13 @@ class ShelfManager:
                 self.sync.local_changed()
 
     def update_handles(self):
-        for edge in getattr(self,'edges',{'primary':self.edge}).values():
+        edges=getattr(self,'edges',{'primary':self.edge})
+        # A native screen proxy can retire before its queued geometry/removal
+        # notification. Rebind from Qt's current display list before a show/
+        # hide transition reads per-display settings or screen geometry.
+        if any(not isValid(edge.display) for edge in edges.values()):
+            self._refresh_displays();return
+        for edge in edges.values():
             if self.settings_open():edge.show_handle()
             elif self._dock_preview_values is not None:edge.hide()
             elif (self.settings.keep_empty_handle or any(s.has_files() for s in self.shelves)) and not any(s.isVisible() for s in self.shelves):edge.show_handle()
