@@ -5,7 +5,7 @@ from uuid import uuid4
 from unittest.mock import patch
 from PySide6.QtCore import QMimeData,QUrl
 from clipboard_sync import ClipboardSync,inline_text,snapshot
-from test_clipboard_sync_v1819 import APP,Account,Clipboard,Events,Hub,until,flush
+from test_clipboard_sync_v1819 import APP,Account,Clipboard,Events,Hub,until,flush,retire_clipboard_clients
 
 
 class SequencedClipboard(Clipboard):
@@ -35,8 +35,7 @@ class ClipboardLoopTests(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory(prefix='flickdock-copy-loop-')
         self.base=Path(self.temp.name);self.clients=[]
     def tearDown(self):
-        for client in self.clients:client.close()
-        until(lambda:all(not client._jobs for client in self.clients));flush();self.temp.cleanup()
+        retire_clipboard_clients(self.clients);self.temp.cleanup()
     def make(self,name,hub=None,mime=None):
         hub=hub or Hub();clip=SequencedClipboard()
         if mime is not None:clip.setMimeData(mime)

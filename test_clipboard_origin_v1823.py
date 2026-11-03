@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QLineEdit,QWidget,QVBoxLayout
 from clipboard_sync import ClipboardSync,SYNC_MARKER
 from clipboard_audit import ClipboardAudit
 import clipboard_audit
-from test_clipboard_sync_v1819 import Clipboard,Account,Events,Hub,APP,flush,until
+from test_clipboard_sync_v1819 import Clipboard,Account,Events,Hub,APP,flush,until,retire_clipboard_clients
 
 
 class SequenceClipboard(Clipboard):
@@ -40,8 +40,7 @@ class OriginTests(unittest.TestCase):
         deadline=time.monotonic()+seconds
         while time.monotonic()<deadline:APP.processEvents();time.sleep(.002)
     def tearDown(self):
-        for client in self.clients:client.close()
-        until(lambda:all(not client._jobs for client in self.clients));flush();self.temp.cleanup()
+        retire_clipboard_clients(self.clients);self.temp.cleanup()
     def puts(self):return sum(method=='PUT' for method,_ in self.hub.calls)
 
     def test_delayed_text_notifications_never_republish_or_invalidate_receive(self):

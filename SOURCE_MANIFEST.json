@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "QA only: retain replaced worker-consumer fixture clients until all owned jobs and cleanup operations retire, then request Qt deletion on GUI thread. No tests removed, assertions or deadlines relaxed, GC disabled or application changes. Native AV remains unproven pending replay.",
+  "purpose": "QA only: original92 cohort explicitly retires owned clipboard clients and shared shelf engines after real lane quiescence, then GUI deletion.92 focused pass; full644 remains failed on original100MiB deadline and7-object retry6/7, not hidden or relaxed. No application changes; native crash repair not claimed.",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -1826,8 +1826,8 @@
     },
     {
       "path": "test_clipboard_fast_v1821.py",
-      "size": 11163,
-      "sha256": "99302269474b968614db84eace196e3c67790f75356023a3e94c78fe1eb3c6e5"
+      "size": 11106,
+      "sha256": "39aa8128c1205afc9d4ce1868b85d9247633f77706863c0a6560f66a45dcc1b7"
     },
     {
       "path": "test_clipboard_local_original_v1825.py",
@@ -1836,8 +1836,8 @@
     },
     {
       "path": "test_clipboard_loop_v1824.py",
-      "size": 10682,
-      "sha256": "60268371d5cc4f3a698a9da693d84e4515940e8b4566e215e82b2a34751e7c6f"
+      "size": 10625,
+      "sha256": "1715b8cdb526ff9f6e9eb5ca0697d3cceeb3401cb4dd9b3faa8e69bbdea40e0b"
     },
     {
       "path": "test_clipboard_multipart_v1825.py",
@@ -1856,8 +1856,8 @@
     },
     {
       "path": "test_clipboard_origin_v1823.py",
-      "size": 12984,
-      "sha256": "92ff57284d38244d121a0d39014cffefbaa1a231d1dc41c9e61cdfebfd3f26fb"
+      "size": 12927,
+      "sha256": "869ced40e24c120a45e93877723cbd075103a90eba18edd38c56dfb491627396"
     },
     {
       "path": "test_clipboard_popup_motion_v1823.py",
@@ -1911,8 +1911,8 @@
     },
     {
       "path": "test_clipboard_sync_v1819.py",
-      "size": 17572,
-      "sha256": "71c939b3246004bef74e53777dd1caf37043dd68db999b16ab6f1e8e8da4633c"
+      "size": 18040,
+      "sha256": "028cfd914391206e94f07e2c8482bf583cff52233b9fc2f47014f9bd752b885f"
     },
     {
       "path": "test_clipboard_transport_v1825.py",
@@ -2441,8 +2441,8 @@
     },
     {
       "path": "test_shared_clipboard_files_v1821.py",
-      "size": 19595,
-      "sha256": "0158348e01909daae9059143ae757799bf3eb13c0d7c88d535e79d85e2964c73"
+      "size": 19758,
+      "sha256": "68afc51ae6a7d6ec0834afab54e9fe842cb650441bd559674eca4807248bf703"
     },
     {
       "path": "test_shelf_content.py",

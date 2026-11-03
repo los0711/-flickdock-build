@@ -11,7 +11,7 @@ from unittest.mock import patch
 os.environ['QT_QPA_PLATFORM']='offscreen'
 from PySide6.QtCore import QObject,QTimer,QMimeData,QUrl,Signal
 from test_html_native_workspace import APP,until,flush
-from test_clipboard_sync_v1819 import Clipboard,Events
+from test_clipboard_sync_v1819 import Clipboard,Events,retire_clipboard_clients
 from test_small_upload_lane import Adapter
 from clipboard_sync import ClipboardSync,package
 from shelf_sync import ShelfSync
@@ -123,8 +123,10 @@ class SharedFilesTests(unittest.TestCase):
     def tearDown(self):
         for engine in self.engines:engine.close()
         for client in self.clients:client.close()
-        until(lambda:all(not client._jobs for client in self.clients) and all(not engine.jobs for engine in self.engines))
-        flush();self.temp.cleanup()
+        until(lambda:all(not client._jobs for client in self.clients)
+            and all(not engine.jobs and engine.pool.activeThreadCount()==0 for engine in self.engines))
+        for engine in self.engines:engine.deleteLater()
+        retire_clipboard_clients(self.clients);self.temp.cleanup()
         self.assertEqual(self.qt_errors,[],'Qt callback exceptions must fail the test')
     def source(self,name='original.bin',size=512*1024):
         path=self.base/name;path.write_bytes((b'original raw bytes 1234567890'*((size+27)//28))[:size]);return path

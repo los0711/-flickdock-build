@@ -62,6 +62,19 @@ class Hub:
         return Api()
 
 
+def retire_clipboard_clients(clients):
+    """Release only fixture-owned clients after every independent lane ends."""
+    clients=tuple(clients)
+    for client in clients:client.close()
+    until(lambda:all(not client._jobs and client.pool.activeThreadCount()==0
+        and client._cleanup_runner.active is None for client in clients))
+    for client in clients:
+        if client._cleanup_runner.quarantined is not None:
+            raise AssertionError('Owned clipboard cleanup process was not reaped')
+        client.deleteLater()
+    flush()
+
+
 class ClipboardTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory()
@@ -74,8 +87,7 @@ class ClipboardTests(unittest.TestCase):
             self.clients.append(ClipboardSync(account,events,self.base/str(i),enabled=True,clipboard=clip));self.clips.append(clip)
         flush()
     def tearDown(self):
-        for client in self.clients:client.close()
-        until(lambda:all(not client._jobs for client in self.clients));flush();self.temp.cleanup()
+        retire_clipboard_clients(self.clients);self.temp.cleanup()
 
     def test_latest_copy_from_any_device_replaces_and_paste_never_consumes(self):
         self.clips[0].text('first 中文\r\n');until(lambda:self.clips[1].mimeData().text()=='first 中文\r\n')

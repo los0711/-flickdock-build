@@ -5,7 +5,7 @@ from unittest.mock import patch
 from PySide6.QtCore import QTimer
 from cloud_events import CloudEvents
 from clipboard_sync import ClipboardSync,inline_text,unpack_inline
-from test_clipboard_sync_v1819 import Account,Clipboard,Hub,APP,flush,until
+from test_clipboard_sync_v1819 import Account,Clipboard,Hub,APP,flush,until,retire_clipboard_clients
 
 
 class InlineHub(Hub):
@@ -45,8 +45,7 @@ class ClipboardFastTests(unittest.TestCase):
 
     def tearDown(self):
         for event in self.hub.events:event.close()
-        for client in self.clients:client.close()
-        until(lambda:all(not client._jobs for client in self.clients));flush();self.temp.cleanup()
+        retire_clipboard_clients(self.clients);self.temp.cleanup()
 
     def test_small_text_uses_single_publish_no_body_or_disk_and_never_echoes(self):
         sender,receiver=self.clients
