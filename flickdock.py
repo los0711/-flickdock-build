@@ -1457,6 +1457,7 @@ class ShelfWindow(QWidget):
         super().__init__()
         self.manager = manager
         self.file_paste = None
+        self._file_admission_jobs={}
         self.number = number
         data = data or {}
         self.content = ContentRepository(data.get("texts"),data.get("metadata"))
@@ -2132,25 +2133,20 @@ class ShelfWindow(QWidget):
                     self.popup._size_sort_timer=timer
                 if not self.popup._size_sort_timer.isActive():self.popup._size_sort_timer.start(32)
 
-    def add_paths(self, mode, refs, *, defer_cloud=False, added_at=None):
-        from shelf_intake_limit import MAX_SHELF_BYTES
-        import stat
-        rejected=[]
+    def add_paths(self, mode, refs, *, defer_cloud=False, added_at=None,_prepared=None):
+        from shelf_intake_limit import prepare_additions
+        from threading import Event
+        refs=tuple(refs)
         added_at=added_at or QDateTime.currentDateTimeUtc().toString(Qt.ISODate)
-        for ref in refs:
-            info=None
-            if not self.content.is_text(ref):
-                try:
-                    info=Path(ref).stat()
-                    if stat.S_ISREG(info.st_mode) and info.st_size>MAX_SHELF_BYTES:
-                        rejected.append(ref);continue
-                except OSError:pass
-            value = ref if self.content.is_text(ref) else str(Path(ref).resolve())
-            if self.content.exists(value):
-                if info is not None:self.file_metadata.prime(value,info)
-                if value in self.files[mode]: self.files[mode].remove(value)
-                self.files[mode].append(value)
-                self.content.metadata.setdefault(value,{})['shelf_added_at']=added_at
+        prepared=prepare_additions(refs,Event()) if _prepared is None else _prepared
+        if refs!=prepared.sources:
+            raise RuntimeError('Prepared shelf paths crossed intake ownership')
+        for ref,value,info,exists in prepared.entries:
+            if not exists or (self.content.is_text(ref) and not self.content.exists(ref)):continue
+            if info is not None:self.file_metadata.prime(value,info)
+            if value in self.files[mode]:self.files[mode].remove(value)
+            self.files[mode].append(value)
+            self.content.metadata.setdefault(value,{})['shelf_added_at']=added_at
         self.refresh()
         self.touch()
         if defer_cloud and hasattr(self.manager, 'save_after_intake'):
@@ -2158,37 +2154,53 @@ class ShelfWindow(QWidget):
         else:
             self.manager.save()
         self.manager.update_handles()
-        if rejected:getattr(self.manager,'show_oversize_notice',lambda paths:None)(rejected)
+        if prepared.rejected:getattr(self.manager,'show_oversize_notice',lambda paths:None)(prepared.rejected)
 
-    def import_paths(self,mode,refs,on_committed=None,on_failed=None,*,_checked=False,_added_at=None):
+    def _prepared_file_intake(self,job,result,error):
+        if job not in self._file_admission_jobs:raise RuntimeError('Unknown shelf admission owner')
+        self._file_admission_jobs[job]=(result,error)
+        # Disk completion order must not change the order of accepted pastes.
+        while self._file_admission_jobs:
+            first=next(iter(self._file_admission_jobs))
+            ready=self._file_admission_jobs[first]
+            if ready is None:break
+            del self._file_admission_jobs[first]
+            try:self._apply_prepared_file_intake(first,*ready)
+            finally:first.deleteLater()
+
+    def _apply_prepared_file_intake(self,job,result,error):
+        mode,epoch,added_at,on_committed,on_failed=job.context
+        if epoch!=self._copy_epoch or self.manager._quitting:return
+        if error is not None:
+            if isinstance(error,InterruptedError) and job.work.cancel.is_set():return
+            if not isinstance(error,(OSError,ValueError)):raise error
+            self.status_label.setText('读取文件失败：'+str(error))
+            if on_failed:on_failed(str(error))
+            return
+        allowed,blocked,prepared=result
+        if blocked:getattr(self.manager,'show_oversize_notice',lambda paths:None)(blocked)
+        if allowed:self.import_paths(mode,allowed,on_committed,on_failed,_added_at=added_at,_prepared=prepared)
+        elif on_failed:on_failed('超过 1 GB，请使用远程传输。')
+
+    def import_paths(self,mode,refs,on_committed=None,on_failed=None,*,_added_at=None,_prepared=None):
         """Apply the intake policy only to external file imports, never ZIPs."""
         refs=list(refs)
         _added_at=_added_at or QDateTime.currentDateTimeUtc().toString(Qt.ISODate)
-        if not _checked:
-            from shelf_intake_limit import classify
-            def checked(result,error):
-                if error:
-                    if on_failed:on_failed(str(error))
-                    return
-                allowed,blocked=result
-                if blocked:getattr(self.manager,'show_oversize_notice',lambda paths:None)(blocked)
-                if allowed:self.import_paths(mode,allowed,on_committed,on_failed,_checked=True,_added_at=_added_at)
-                elif on_failed:on_failed('超过 1 GB，请使用远程传输。')
-            if any(not self.content.is_text(ref) and Path(ref).is_dir() for ref in refs):
-                epoch=self._copy_epoch;job=DiskWork(classify,refs);self._intake_limit_jobs=getattr(self,'_intake_limit_jobs',set());self._intake_limit_jobs.add(job)
-                def finished(result,error):
-                    self._intake_limit_jobs.discard(job)
-                    if epoch==self._copy_epoch and not self.manager._quitting:checked(result,error)
-                job.signals.done.connect(finished);QThreadPool.globalInstance().start(job);return
-            try:checked(classify(refs,__import__('threading').Event()),None)
-            except OSError as error:checked(None,error)
-            return
+        if _prepared is None:
+            from shelf_admission import ShelfAdmission,MAX_PENDING_ADMISSIONS
+            if len(self._file_admission_jobs)>=MAX_PENDING_ADMISSIONS:
+                message='正在处理较多文件，请稍后再粘贴。';self.status_label.setText(message)
+                if on_failed:on_failed(message)
+                return
+            job=ShelfAdmission(self,refs,(mode,self._copy_epoch,_added_at,on_committed,on_failed))
+            job.finished.connect(self._prepared_file_intake)
+            self._file_admission_jobs[job]=None;job.start();return
         def committed(paths):
             if on_committed:on_committed()
             offer=getattr(self.manager,'offer_large_intake',None)
             if offer:offer(paths)
         if self.manager.settings.capture_mode!='copy':
-            self.add_paths(mode,refs,defer_cloud=on_committed is not None,added_at=_added_at)
+            self.add_paths(mode,refs,defer_cloud=on_committed is not None,added_at=_added_at,_prepared=_prepared)
             committed(refs)
             return
         directory=self.manager.settings.capture_dir
@@ -2199,10 +2211,11 @@ class ShelfWindow(QWidget):
             key=os.path.normcase(os.path.abspath(ref))
             if key!=owned and not key.startswith(owned+os.sep):external.append(ref)
         if not external:
-            self.add_paths(mode,refs,defer_cloud=on_committed is not None,added_at=_added_at)
+            self.add_paths(mode,refs,defer_cloud=on_committed is not None,added_at=_added_at,_prepared=_prepared)
             committed(refs)
             return
-        job=CopyFilesJob(external,directory,parent=self)
+        from shelf_intake_limit import prepare_additions,PreparedPaths
+        job=CopyFilesJob(external,directory,parent=self,prepare_result=prepare_additions if _prepared is not None else None)
         epoch=self._copy_epoch
         self.copy_jobs.add(job)
         placeholders={}
@@ -2227,8 +2240,17 @@ class ShelfWindow(QWidget):
                 for old,new in replacement.items():
                     self.content.metadata[new]={'capture_mode':'copy','original_name':Path(old).name,'owned_root':str(Path(directory).absolute())}
                 captured=[replacement.get(ref,ref) for ref in refs]
+                prepared=None
+                if _prepared is not None:
+                    copied=job.prepared_result
+                    copied_rows={row[0]:row for row in copied.entries}
+                    original_rows={row[0]:row for row in _prepared.entries}
+                    rejected=copied.rejected+tuple(ref for ref in _prepared.rejected if ref not in external)
+                    ready_rows={**original_rows,**copied_rows}
+                    rows=tuple(ready_rows[value] for value in captured if value not in rejected)
+                    prepared=PreparedPaths(tuple(captured),rows,rejected)
                 self.add_paths(mode,captured,
-                               defer_cloud=on_committed is not None,added_at=_added_at)
+                               defer_cloud=on_committed is not None,added_at=_added_at,_prepared=prepared)
                 committed(captured)
                 if not on_committed:self.zones[mode].pulse('drop')
             else:
@@ -2285,7 +2307,7 @@ class ShelfWindow(QWidget):
         if self.file_paste is not None:self.file_paste.invalidate()
         self._cancel_intake()
         self._copy_epoch+=1
-        for job in getattr(self,'_intake_limit_jobs',()):job.cancel.set()
+        for job in self._file_admission_jobs:job.cancel()
         for job in tuple(self.copy_jobs):job.cancel()
         if self.popup:
             self.popup.preview.media.release_source()
@@ -4363,7 +4385,7 @@ class ShelfManager:
         jobs=[]
         for shelf in self.shelves:
             shelf._copy_epoch+=1
-            for job in getattr(shelf,'_intake_limit_jobs',()):job.cancel.set()
+            for job in shelf._file_admission_jobs:job.cancel()
             for job in tuple(shelf.copy_jobs):stop('copy_cancel',job.cancel);jobs.append(job)
             if shelf.archive_job:stop('archive_cancel',shelf.archive_job.cancel);jobs.append(shelf.archive_job)
             stop('resolver',shelf.resolver.close);stop('image_cache',shelf.image_cache.close)

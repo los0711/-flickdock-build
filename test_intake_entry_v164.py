@@ -329,7 +329,9 @@ with tempfile.TemporaryDirectory(prefix='flickdock-intake-entry-v164-') as tempo
                             'Accepted drop disappeared while copying',shelf.visible_state)
                     finally:release.set()
                     until(lambda:not shelf.copy_jobs)
-            else:drop('dock',original)
+            else:
+                drop('dock',original)
+                until(lambda:not shelf._file_admission_jobs)
             assert shelf.visible_state=='floating' and shelf.incoming_drop, (
                 'Accepted drop kept the stale hiding animation',shelf.visible_state)
             tile=shelf.zones['permanent'].icon

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "S1 Windows positively-advertised CF_HDROP Paste shares explicit intent/owned reader with T1; shelf canonicalization after unlock in helper, immutable mode/time/clear fences and bounded pending hold. Default T1 arguments, original system clipboard, cloud admission and unknown/Mac fallback retained.668 attempted667pass1localPOSIXskip; actual delayed synthetic child proof runtime-identical. Downstream GUI filesystem checks and native/frozen acceptance still pending; no installer/release.",
+  "purpose": "Shelf admission uses one asynchronous filesystem preflight and one prepared commit; obsolete synchronous classifier removed. Copy-owned result metadata prepared before worker success and safely cleaned on cancellation.105controlled checks plus original actual intake scripts passed; old held-copy appearance test also failed on unchanged d1 and was migrated to settled existing status glyph, no styling, layout or animation implementation changed. No new frozen/installer/publication acceptance.",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -601,8 +601,8 @@
     },
     {
       "path": "capture_files.py",
-      "size": 7841,
-      "sha256": "a463abbfb9833d22508909de96b5922860d9cdb55e63612f4a4c084ef32d62ce"
+      "size": 8564,
+      "sha256": "83891414c8e840429e161700cb5bc0f0251e3bbe608ece2e1badbff7c22b732d"
     },
     {
       "path": "check_release_v16.py",
@@ -996,8 +996,8 @@
     },
     {
       "path": "flickdock.py",
-      "size": 251334,
-      "sha256": "a049d36e12eca75c252c6ca5882b108d0d2e8712c40eafcbcf2973b71e472a27"
+      "size": 252883,
+      "sha256": "53ae391253cf8867f31642fe096fa426622af322f6e8f43301e0e453449368ab"
     },
     {
       "path": "flickdock_icons.py",
@@ -1621,8 +1621,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 45020,
-      "sha256": "253b6418d79ee52f5c3bc658ba20167b837607814e18dafb76993456cf51bb7e"
+      "size": 45047,
+      "sha256": "9493346069e2a7333262bbd9c96c08d98ce25e4dd4d00f8c8e32768f2af67929"
     },
     {
       "path": "release_signing.py",
@@ -1670,14 +1670,19 @@
       "sha256": "e53f66b158af2f009c87d180ac152d2e73e6c0c4ff79a2ec2693eb26348733ad"
     },
     {
+      "path": "shelf_admission.py",
+      "size": 1003,
+      "sha256": "5130be0deaa6b5dfd92169dc0068d33b2ba15e09094f5d2ec299a0e1b7b07b81"
+    },
+    {
       "path": "shelf_content.py",
       "size": 14077,
       "sha256": "6dafc64de28acfb4f78b5e2929bbfb094c3f678efe00c242625f102800a6ac5d"
     },
     {
       "path": "shelf_intake_limit.py",
-      "size": 3759,
-      "sha256": "6b92f29931696f22afe567030724411fa6d70f74f4f4040480cc03402a54b389"
+      "size": 4901,
+      "sha256": "4f4940e625909ba79409534408f48cf542f19ee9fe4296318a3dba214ccf26b2"
     },
     {
       "path": "shelf_payload_gate.py",
@@ -2056,8 +2061,8 @@
     },
     {
       "path": "test_explicit_file_paste_v1825.py",
-      "size": 13362,
-      "sha256": "a41ba8ae123b0a11045576adff130a65168854cc7f9f9b5e12b127731d15e61d"
+      "size": 18161,
+      "sha256": "b34c6e739d157b93e28752c6a5bcb872507403bd97001e52d8482299dd2410fa"
     },
     {
       "path": "test_feedback_v1816.py",
@@ -2126,8 +2131,8 @@
     },
     {
       "path": "test_html_native_workspace.py",
-      "size": 30450,
-      "sha256": "a12d79d1b77cd910da916f7b1456565a18e4208412a3a78c15e3840c720e526a"
+      "size": 30490,
+      "sha256": "4152c6581ce66ff42b10f9b90d3a5882befa848050566c5c10bdea2bc4856762"
     },
     {
       "path": "test_input_motion_v1823.py",
@@ -2136,8 +2141,8 @@
     },
     {
       "path": "test_intake_entry_v164.py",
-      "size": 17543,
-      "sha256": "331efe619f94e4b54dd1e20edeeb99b3cb95d99661fabfc645726801ba6e6c6c"
+      "size": 17621,
+      "sha256": "d5032e3310a267fe3fa2a712a5d947a93995de9fd75f16b37b811bbbc702ee54"
     },
     {
       "path": "test_intake_first_frame_v1810.py",
@@ -2146,8 +2151,8 @@
     },
     {
       "path": "test_intake_v164.py",
-      "size": 6226,
-      "sha256": "55f6a424c85e6ff7e1e80d042cad3228117722478ddf7b48eb1ba9add61bc467"
+      "size": 6469,
+      "sha256": "9bdbefae7c4b84d114b361999379295d7f621f9d53f0fd59c0f652fea3bda727"
     },
     {
       "path": "test_integration_v161.py",
@@ -2156,8 +2161,8 @@
     },
     {
       "path": "test_interaction_scope_v1821.py",
-      "size": 17993,
-      "sha256": "d9247f48ccd0ce3b8c9ac9a200d4441557ebb22f1497136946cdbb90d8a9be88"
+      "size": 17978,
+      "sha256": "4cd3aa0b35e886ac42bec488187707f573927bf6af1d2873663207318e4db683"
     },
     {
       "path": "test_interactions_v163.py",
@@ -2591,8 +2596,8 @@
     },
     {
       "path": "test_transfer_ui_v181.py",
-      "size": 36295,
-      "sha256": "dd1819f92da7553718a8fa92fce37e8ca9c7890e0a8858f867c0f3163e841ed9"
+      "size": 36952,
+      "sha256": "534a3a0e584dd97d398e406829034a2930981fb47da83cc2462200234d381c5e"
     },
     {
       "path": "test_trigger_reliability_v1810.py",

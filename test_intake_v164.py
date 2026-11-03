@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -90,8 +91,9 @@ with tempfile.TemporaryDirectory(prefix='flickdock-intake-v164-') as temporary:
     class ControlledCopy(QObject):
         finished=Signal(list);failed=Signal(str);cancelled=Signal();progress=Signal(object)
         jobs=[]
-        def __init__(self,paths,destination,parent=None):
+        def __init__(self,paths,destination,parent=None,*,prepare_result=None):
             super().__init__(parent);self.paths=paths;self.destination=Path(destination)
+            self.prepare_result=prepare_result;self.prepared_result=None
             self.jobs.append(self)
         def start(self):pass
         def cancel(self):self.cancelled.emit()
@@ -110,9 +112,11 @@ with tempfile.TemporaryDirectory(prefix='flickdock-intake-v164-') as temporary:
     mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(source))])
     with patch.object(subject,'CopyFilesJob',ControlledCopy):
         assert shelf.receive_mime('permanent',mime)
+        wait_for(lambda:bool(ControlledCopy.jobs))
         job=ControlledCopy.jobs[-1]
         copied=Path(temporary)/'captured'/'owned-incoming.txt';copied.parent.mkdir(parents=True,exist_ok=True)
         copied.write_text(source.read_text(encoding='utf8'),encoding='utf8')
+        job.prepared_result=job.prepare_result([str(copied)],threading.Event())
         job.finished.emit([str(copied)])
         assert shelf.files['permanent']==[str(copied)]
         wait_for(lambda:shelf.visible_state in ('hiding','hidden'))

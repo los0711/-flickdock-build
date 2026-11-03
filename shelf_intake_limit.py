@@ -1,7 +1,40 @@
 """Shelf-only byte limit. Remote/LAN transfers and local originals are untouched."""
 from pathlib import Path
-import os
+from dataclasses import dataclass
+import os,stat
 MAX_SHELF_BYTES=1024**3
+
+
+@dataclass(frozen=True)
+class PreparedPaths:
+    sources:tuple
+    entries:tuple
+    rejected:tuple
+
+
+def prepare_additions(paths,cancel):
+    """Perform the existing add-paths disk checks once, outside the GUI."""
+    sources=tuple(paths);entries=[];rejected=[]
+    for ref in sources:
+        if cancel.is_set():raise InterruptedError()
+        if isinstance(ref,str) and ref.startswith('flickdock:text:'):
+            entries.append((ref,ref,None,True));continue
+        info=None
+        try:
+            info=Path(ref).stat()
+            if stat.S_ISREG(info.st_mode) and info.st_size>MAX_SHELF_BYTES:
+                rejected.append(ref);continue
+        except OSError:pass
+        value=str(Path(ref).resolve())
+        if cancel.is_set():raise InterruptedError()
+        entries.append((ref,value,info,Path(value).exists()))
+    if cancel.is_set():raise InterruptedError()
+    return PreparedPaths(sources,tuple(entries),tuple(rejected))
+
+
+def prepare_intake(paths,cancel):
+    allowed,blocked=classify(paths,cancel)
+    return tuple(allowed),tuple(blocked),prepare_additions(allowed,cancel)
 
 
 def classify(paths,cancel):

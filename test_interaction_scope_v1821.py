@@ -87,7 +87,7 @@ class OrderingTests(unittest.TestCase):
         with patch('shelf_intake_limit.MAX_SHELF_BYTES',8):
             self.assertEqual(classify([str(small),str(large),str(directory)],threading.Event()),([str(small)],[str(large),str(directory)]))
             self.shelf.import_paths('permanent',[str(small),str(large),str(directory)])
-            until(lambda:not getattr(self.shelf,'_intake_limit_jobs',set()))
+            until(lambda:not self.shelf._file_admission_jobs)
             self.assertIn(str(small),self.shelf.files['permanent'])
             self.assertNotIn(str(large),self.shelf.files['permanent']);self.assertNotIn(str(directory),self.shelf.files['permanent'])
         self.assertEqual(set(rejected),{str(large),str(directory)})

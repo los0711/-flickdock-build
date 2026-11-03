@@ -129,7 +129,7 @@ class WorkspaceTests(unittest.TestCase):
 
     def tearDown(self):
         if self.shelf.archive_job:self.shelf.archive_job.cancel()
-        until(lambda:self.shelf.archive_job is None and not self.shelf.copy_jobs and not self.shelf._delete_jobs)
+        until(lambda:self.shelf.archive_job is None and not self.shelf.copy_jobs and not self.shelf._delete_jobs and not self.shelf._file_admission_jobs)
         for timer in (self.shelf._transfer_timer,self.shelf._image_timer,self.shelf._intake_timer):timer.stop()
         if self.shelf.popup:self.shelf.popup.preview.media.release_source()
         self.shelf.resolver.close();self.shelf.image_cache.close()

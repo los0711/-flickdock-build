@@ -113,7 +113,7 @@ class TransferUITests(unittest.TestCase):
         for release in self.barriers:release.set()
         self.shelf._copy_epoch+=1
         for job in tuple(self.shelf.copy_jobs):job.cancel()
-        wait(lambda:not self.shelf.copy_jobs and not self.shelf._delete_jobs)
+        wait(lambda:not self.shelf.copy_jobs and not self.shelf._delete_jobs and not self.shelf._file_admission_jobs)
         self.shelf._transfer_timer.stop();self.shelf._image_timer.stop();self.shelf._intake_timer.stop()
         self.shelf.resolver.close();self.shelf.image_cache.close()
         if self.shelf.popup:self.shelf.popup.preview.media.release_source()
@@ -186,8 +186,12 @@ class TransferUITests(unittest.TestCase):
             popup=self.overview();self.assertIn(ref,popup.visible_refs())
             popup.set_category('uploading');popup.preview.show_path(ref,force=True);flush()
             item=next(item for item in popup.rows_body.findChildren(IconItem) if item.ref==ref)
+            self.assertIs(item,popup._item_widgets[ref],
+                'Artwork probe selected a retired card instead of the visible keyed item')
+            wait(lambda:item.graphicsEffect() is None)
             active=opaque_artwork(item)
-            removed=self.shelf.content.transfers.pop(ref);normal=opaque_artwork(item);self.shelf.content.transfers[ref]=removed
+            removed=self.shelf.content.transfers.pop(ref);item.refresh_cloud_status();normal=opaque_artwork(item)
+            self.shelf.content.transfers[ref]=removed;item.refresh_cloud_status()
             self.assertNotEqual(active,normal,'transfer tile needs a small progress badge')
             candidates=[]
             ratio=normal.devicePixelRatio()
@@ -200,9 +204,13 @@ class TransferUITests(unittest.TestCase):
                     candidates.append((sat,x,y))
             saturation,x,y=max(candidates);self.assertGreater(saturation,40)
             self.assertEqual(active.pixelColor(x,y),normal.pixelColor(x,y),'upload must preserve icon colors')
-            blue=sum(1 for y in range(active.height()) for x in range(active.width())
-                     if (lambda c:c.blue()>180 and c.blue()-c.red()>85 and c.blue()-c.green()>25)(active.pixelColor(x,y)))
-            self.assertGreater(blue,20,'small upload arc must remain visible beside artwork')
+            badge=item.status_badge.geometry()
+            changed=sum(1 for y in range(round(badge.top()*ratio),round((badge.bottom()+1)*ratio))
+                for x in range(round(badge.left()*ratio),round((badge.right()+1)*ratio))
+                if active.pixelColor(x,y)!=normal.pixelColor(x,y))
+            # Local copying uses the current neutral status glyph, not the
+            # old separate blue upload arc. Its progress must still be visible.
+            self.assertGreater(changed,20,'copy progress must visibly change the actual status glyph')
             self.assertEqual(popup.preview.cancel_transfer.text(),'取消复制')
             self.assertFalse(popup.preview.copy_button.isEnabled())
             QTest.mouseClick(popup.preview.cancel_transfer,Qt.MouseButton.LeftButton)
@@ -213,7 +221,7 @@ class TransferUITests(unittest.TestCase):
         self.assertTrue(path.is_file());self.assertEqual(path.stat().st_size,3*1024*1024)
     def test_copy_removal_and_clear_delete_only_owned_bytes_asynchronously(self):
         paths=[self.file('第一份.bin'),self.file('第二份.bin')]
-        self.shelf.import_paths('permanent',list(map(str,paths)));wait(lambda:not self.shelf.copy_jobs)
+        self.shelf.import_paths('permanent',list(map(str,paths)));wait(lambda:not self.shelf._file_admission_jobs and not self.shelf.copy_jobs)
         copies=list(map(Path,self.shelf.files['permanent']))
         self.assertEqual(len(copies),2);self.assertTrue(all(path.parent==copies[0].parent for path in copies))
         foreign=self.saved/'imports'/'foreign-owner';foreign.mkdir();(foreign/'keep').write_bytes(b'preserve')
@@ -238,7 +246,7 @@ class TransferUITests(unittest.TestCase):
         self.assertEqual((foreign/'keep').read_bytes(),b'preserve')
     def test_reference_removal_and_untrusted_copy_metadata_never_delete_original(self):
         path=self.file();self.settings.update(capture_mode='reference')
-        self.assertTrue(self.shelf.receive_mime('permanent',mime(path)))
+        self.assertTrue(self.shelf.receive_mime('permanent',mime(path)));wait(lambda:not self.shelf._file_admission_jobs)
         self.assertEqual(self.shelf.files['permanent'],[str(path)])
         self.shelf.remove_path('permanent',str(path));wait(lambda:not self.shelf._delete_jobs)
         self.assertTrue(path.is_file())

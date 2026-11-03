@@ -64,7 +64,7 @@ def _copy_tree(source, target, cancel_event):
             raise ValueError(f'无法复制此类型的项目：{incoming.name}')
 
 
-def copy_files(paths, directory, cancel_event=None, progress=None):
+def copy_files(paths, directory, cancel_event=None, progress=None, *, prepare_result=None):
     """Copy in order into one uniquely owned imports directory, or clean it up.
 
     This function performs disk I/O and is called only by a worker in the UI.
@@ -117,6 +117,8 @@ def copy_files(paths, directory, cancel_event=None, progress=None):
             if progress: progress(dict(source=str(source),received=copied,total=total or copied,complete=True))
             result.append(str(target))
         _check(cancel_event)
+        if prepare_result is not None:prepare_result(tuple(result),cancel_event)
+        _check(cancel_event)
         return result
     except BaseException:
         shutil.rmtree(owned)
@@ -131,15 +133,22 @@ class _Signals(QObject):
 
 
 class _CopyWorker(QRunnable):
-    def __init__(self, paths, directory, cancel_event, completed):
+    def __init__(self, paths, directory, cancel_event, completed,prepare_result=None):
         super().__init__()
         self.paths, self.directory = paths, directory
         self.cancel_event, self.completed = cancel_event, completed
         self.signals = _Signals()
+        self.prepare_result=prepare_result;self.prepared_result=None
 
     def run(self):
         try:
-            result = copy_files(self.paths, self.directory, self.cancel_event, self.signals.progress.emit)
+            def prepared(paths,cancel):
+                try:self.prepared_result=self.prepare_result(paths,cancel)
+                except InterruptedError:
+                    if cancel.is_set():raise CopyCancelled()
+                    raise
+            result = copy_files(self.paths, self.directory, self.cancel_event, self.signals.progress.emit,
+                prepare_result=prepared if self.prepare_result is not None else None)
         except CopyCancelled:
             self.signals.cancelled.emit()
         except Exception as error:
@@ -161,7 +170,7 @@ class CopyFilesJob(QObject):
     cancelled = Signal()
     progress = Signal(object)
 
-    def __init__(self, paths, directory, parent=None, *, pool=None):
+    def __init__(self, paths, directory, parent=None, *, pool=None,prepare_result=None):
         super().__init__(parent)
         self.paths, self.directory = tuple(paths), directory
         self._pool = pool if pool is not None else QThreadPool.globalInstance()
@@ -169,6 +178,7 @@ class CopyFilesJob(QObject):
         self._started = self._delivered = False
         self._worker = None
         self.result_paths = []
+        self.prepare_result=prepare_result;self.prepared_result=None
 
     @property
     def is_running(self):
@@ -178,7 +188,7 @@ class CopyFilesJob(QObject):
         if self._started:
             return False
         self._started = True
-        self._worker = _CopyWorker(self.paths, self.directory, self._cancel_event, self._completed)
+        self._worker = _CopyWorker(self.paths, self.directory, self._cancel_event, self._completed,self.prepare_result)
         self._worker.signals.finished.connect(self._on_finished, Qt.ConnectionType.QueuedConnection)
         self._worker.signals.failed.connect(self._on_failed, Qt.ConnectionType.QueuedConnection)
         self._worker.signals.cancelled.connect(self._on_cancelled, Qt.ConnectionType.QueuedConnection)
@@ -197,6 +207,7 @@ class CopyFilesJob(QObject):
         if not self._delivered:
             self._delivered = True
             self.result_paths = list(paths)
+            self.prepared_result=self._worker.prepared_result
             self.finished.emit(self.result_paths)
 
     @Slot(str)

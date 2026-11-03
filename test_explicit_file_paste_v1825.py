@@ -182,7 +182,7 @@ class ShelfScopeTests(unittest.TestCase):
         self.route._hint=lambda:None;mime=QMimeData();mime.setText('owned original text for shelf')
         with patch.object(shelf_fixtures.subject.QApplication,'clipboard',return_value=SimpleNamespace(mimeData=lambda:mime)):
             self.assertTrue(self.shelf.paste_clipboard('permanent'))
-        ref=self.shelf.files['permanent'][-1];shelf_fixtures.until(lambda:not self.shelf.incoming_drop)
+        shelf_fixtures.until(lambda:not self.shelf.incoming_drop);ref=self.shelf.files['permanent'][-1]
         self.assertEqual(self.shelf.content.text(ref),'owned original text for shelf')
         exported=self.shelf.content.mime_for([ref]);self.assertTrue(exported.hasText());self.assertFalse(exported.hasUrls())
         self.assertIsNone(self.route._reader)
@@ -204,6 +204,86 @@ class ShelfScopeTests(unittest.TestCase):
         with patch.object(shelf_fixtures.subject,'QDateTime',Clock):index=self.paste()
         self.route._reader.complete(index,paths);self.settle(paths)
         for path in paths:self.assertEqual(self.shelf.content.metadata[path]['shelf_added_at'],expected)
+
+    def test_reference_admission_never_stats_the_source_on_the_gui_thread(self):
+        self._assert_no_gui_admission_stat('reference')
+
+    def test_copy_admission_never_stats_source_or_captured_files_on_the_gui_thread(self):
+        self._assert_no_gui_admission_stat('copy')
+
+    def _assert_no_gui_admission_stat(self,mode):
+        from PySide6.QtCore import QThread
+        self.workspace.settings.update(capture_mode=mode);paths=self.paths();index=self.paste()
+        original=Path.stat;violations=[];base=str(self.workspace.base)
+        def stat(path,*args,**kwargs):
+            if str(path).startswith(base) and QThread.currentThread()==shelf_fixtures.APP.thread():
+                violations.append(str(path));raise AssertionError('Admission disk access on GUI')
+            return original(path,*args,**kwargs)
+        with patch.object(Path,'stat',stat):
+            self.route._reader.complete(index,paths)
+            shelf_fixtures.until(lambda:len(self.shelf.files['permanent'])==len(self.workspace.paths)+2 and not self.shelf.copy_jobs and not self.shelf.incoming_drop)
+        self.assertEqual(violations,[])
+        for path in paths:self.assertTrue(Path(path).read_bytes().startswith(b'owned original'))
+
+    def test_clear_while_preflight_is_running_cannot_restore_the_old_files(self):
+        import threading
+        import shelf_admission
+        entered=threading.Event();release=threading.Event();prepare=shelf_admission.prepare_intake
+        def held(paths,cancel):
+            entered.set()
+            if not release.wait(3):raise TimeoutError('Owned preflight fixture not released')
+            return prepare(paths,cancel)
+        paths=self.paths()
+        try:
+            with patch.object(shelf_admission,'prepare_intake',held):
+                index=self.paste();self.route._reader.complete(index,paths)
+                shelf_fixtures.until(entered.is_set)
+                self.shelf.remove_all('permanent');release.set()
+                shelf_fixtures.until(lambda:not self.shelf._file_admission_jobs)
+            self.assertEqual(self.shelf.files['permanent'],[])
+            for path in paths:self.assertTrue(Path(path).exists())
+        finally:release.set()
+
+    def test_reverse_disk_completion_preserves_the_order_of_accepted_pastes(self):
+        import threading
+        import shelf_admission
+        release=threading.Event();entered=threading.Event();prepare=shelf_admission.prepare_intake
+        first=self.paths();second=self.paths()
+        def held(paths,cancel):
+            if paths[0]==first[0]:
+                entered.set()
+                if not release.wait(3):raise TimeoutError('Owned first admission not released')
+            return prepare(paths,cancel)
+        try:
+            with patch.object(shelf_admission,'prepare_intake',held):
+                index=self.paste();self.route._reader.complete(index,first);shelf_fixtures.until(entered.is_set)
+                index=self.paste();self.route._reader.complete(index,second)
+                shelf_fixtures.until(lambda:len(self.shelf._file_admission_jobs)==2 and list(self.shelf._file_admission_jobs.values())[-1] is not None)
+                self.assertFalse(any(path in self.shelf.files['permanent'] for path in first+second))
+                release.set();shelf_fixtures.until(lambda:not self.shelf._file_admission_jobs and not self.shelf.incoming_drop)
+            self.assertEqual(self.shelf.files['permanent'][-4:],first+second)
+        finally:release.set()
+
+    def test_clear_during_copy_result_preflight_cleans_only_the_owned_copy(self):
+        import threading
+        import shelf_intake_limit
+        self.workspace.settings.update(capture_mode='copy');paths=self.paths()
+        entered=threading.Event();release=threading.Event();prepare=shelf_intake_limit.prepare_additions
+        destination=Path(self.workspace.settings.capture_dir)/'imports'
+        def held(paths,cancel):
+            if all(Path(path).is_relative_to(destination) for path in paths):
+                entered.set()
+                if not release.wait(3):raise TimeoutError('Owned copy result fixture not released')
+            return prepare(paths,cancel)
+        try:
+            with patch.object(shelf_intake_limit,'prepare_additions',held):
+                index=self.paste();self.route._reader.complete(index,paths);shelf_fixtures.until(entered.is_set)
+                self.shelf.remove_all('permanent');release.set()
+                shelf_fixtures.until(lambda:not self.shelf.copy_jobs and not self.shelf._file_admission_jobs)
+            self.assertEqual(self.shelf.files['permanent'],[])
+            self.assertEqual(list(destination.iterdir()),[])
+            for path in paths:self.assertTrue(Path(path).read_bytes().startswith(b'owned original'))
+        finally:release.set()
 
 
 if __name__=='__main__':unittest.main()

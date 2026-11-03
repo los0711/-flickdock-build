@@ -36,6 +36,7 @@ RUNTIME_SOURCES=(
     'win_clipboard_cache.py',
     'win_clipboard_native.py','win_clipboard_io.py','win_owned_process.py',
     'clipboard_references.py','win_clipboard_references.py','explicit_file_paste.py',
+    'shelf_admission.py',
     'clipboard_cleanup.py','clipboard_cleanup_worker.py',
     'control_states.py',
     'frame_animation.py',
