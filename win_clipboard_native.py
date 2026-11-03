@@ -244,8 +244,7 @@ def _text_spans(raw,start=0,end=None):
             if base is not None:base.release()
 
 
-def _text_parts(raw,html,limit,*,cancel=None,encoding='utf-16-le',part_digests=None):
-    if part_digests is not None and type(part_digests)is not dict:raise TypeError('Raw digest output must be a dictionary')
+def _text_end(raw,encoding):
     if encoding=='utf-16-le':
         if len(raw)%2:raise Unsupported()
         end=raw.find(b'\0\0')
@@ -253,6 +252,12 @@ def _text_parts(raw,html,limit,*,cancel=None,encoding='utf-16-le',part_digests=N
         if end<0:raise Unsupported()
     elif encoding=='utf-8':end=len(raw)
     else:raise Unsupported()
+    return end
+
+
+def _text_stream(raw,html,limit,*,cancel=None,encoding='utf-16-le',part_digests=None,native_end=None,cache_prefix=False):
+    if part_digests is not None and type(part_digests)is not dict:raise TypeError('Raw digest output must be a dictionary')
+    end=_text_end(raw,encoding) if native_end is None else native_end
     # Every UTF-16 code unit needs at least one UTF-8 byte (a surrogate pair
     # needs four). This lower bound can prove ineligibility before decoding;
     # still validate and hash every original chunk, without retaining a full
@@ -273,10 +278,14 @@ def _text_parts(raw,html,limit,*,cancel=None,encoding='utf-16-le',part_digests=N
             if not too_large:
                 if size<=limit:text.append(part)
                 else:text.clear();too_large=True
+            yield chunk
     final=decoder.decode(b'',final=True);size+=len(final.encode('utf8'));digest.update(final.encode('utf8'))
     if not too_large:
         if size<=limit:text.append(final)
         else:text.clear();too_large=True
+    if cache_prefix and encoding=='utf-16-le':
+        with _text_spans(raw,end,end+2) as terminator:
+            yield from terminator
     # The logical text ends before its native NUL. Raw integrity also covers
     # the terminator and every byte after it, without decoding that padding.
     if raw_text is not None:hash_span(raw_text,raw,end,len(raw))
@@ -306,6 +315,30 @@ def _text_parts(raw,html,limit,*,cancel=None,encoding='utf-16-le',part_digests=N
         part_digests['text']=raw_text.hexdigest()
         if raw_html is not None:part_digests['html']=raw_html.hexdigest()
     return (None if too_large else dict(text=''.join(text),html=html_value)),size+html_size,fingerprint,end+(2 if encoding=='utf-16-le' else 0)
+
+
+@contextmanager
+def _text_analysis(raw,html,limit,**options):
+    # Cache writing and strict analysis can consume one borrowed stream. Close
+    # both generators explicitly even if a failed consumer retains a traceback.
+    analysis=[];stream=_text_stream(raw,html,limit,**options)
+    def chunks():
+        while True:
+            try:chunk=next(stream)
+            except StopIteration as complete:
+                analysis.append(complete.value);return
+            yield chunk
+    output=chunks()
+    try:yield output,analysis
+    finally:
+        try:output.close()
+        finally:stream.close()
+
+
+def _text_parts(raw,html,limit,**options):
+    with _text_analysis(raw,html,limit,**options) as (chunks,analysis):
+        for chunk in chunks:pass
+    return analysis[0]
 
 def capture(provider=None,limit=MAX_BYTES,*,cache=None):
     opened=False;before=after=None;phase='init'
@@ -372,13 +405,25 @@ def capture(provider=None,limit=MAX_BYTES,*,cache=None):
                 if len(text.encode('utf8'))+len(formatted.encode('utf8'))>limit:raise TooLarge()
                 if text:value=('text',dict(text=text,html=formatted))
             else:
-                text,size,fingerprint,end=_text_parts(raw,html,limit)
-                if text is None:
+                end=_text_end(raw,'utf-16-le')
+                if html is None and end//2>limit:
+                    # This lower bound proves it cannot be uploaded. Preserve
+                    # its full native prefix while validating/hashing logical
+                    # text in the same pass; CacheSink still hashes every byte.
+                    phase='cache'
+                    with _text_analysis(raw,None,limit,native_end=end,cache_prefix=True) as (chunks,analysis):
+                        cache.write('text',chunks,encoding='utf-16-le')
+                    text,size,fingerprint,end=analysis[0]
+                    if text is not None:raise RuntimeError('Proven over-limit text became uploadable')
+                    local=cache.descriptor('text',size,fingerprint);eligible=False
+                else:
+                    text,size,fingerprint,end=_text_parts(raw,html,limit,native_end=end)
+                if local is None and text is None:
                     phase='cache'
                     cache.write('text',_chunks(raw,0,end),encoding='utf-16-le')
                     if html is not None:cache.write('html',_chunks(html),encoding='utf-8')
                     local=cache.descriptor('text',size,fingerprint);eligible=False
-                elif text['text']:value=('text',text)
+                elif local is None and text['text']:value=('text',text)
         phase='sequence';after=p.sequence()
         if before!=after:return _base('changed',before,after)
         if value is None and local is None:return _base(before=before,after=after,code='UNSUPPORTED')

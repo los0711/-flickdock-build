@@ -59,6 +59,7 @@ RUNTIME_SOURCES=(
 )
 MAINTAINED_TESTS=(
     'test_native_text_views_v1825.py',
+    'test_native_text_stream_v1825.py',
     'test_clipboard_cleanup_v1825.py','test_clipboard_cleanup_entry_v1825.py',
     'test_native_text_single_pass_v1825.py',
     'test_native_text_budget_v1825.py',

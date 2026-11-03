@@ -2,7 +2,7 @@
   "schema_version": 1,
   "product": "FlickDock",
   "version": "1.8.25",
-  "purpose": "Isolated owned producer UIA query diagnostic; no application acceptance or release",
+  "purpose": "Single-pass strict local text validation and complete cache hashing; actual platform validation pending, not release",
   "files": [
     {
       "path": ".circleci/config.yml",
@@ -16,8 +16,8 @@
     },
     {
       "path": ".github/workflows/macos-build.yml",
-      "size": 8783,
-      "sha256": "2d631a1d4f027bbb2f8ee2d7ab046b62c1671cce1747d1a6197a1c5db6cd5aa2"
+      "size": 8813,
+      "sha256": "fd00467ff19bd49a10a3fea98ec3804e4cf36dda135b0451750a9758c9c4caeb"
     },
     {
       "path": ".github/workflows/macos-intel-motion-diagnostic.yml",
@@ -26,8 +26,8 @@
     },
     {
       "path": ".github/workflows/native-clipboard.yml",
-      "size": 32154,
-      "sha256": "86a9dd35834d44a6c616b80fb22646ec52ff6a5ec8fc104f5bdc822c8215ec52"
+      "size": 32187,
+      "sha256": "1673afa102def4747fb05edeefd0ea8ce08fec9a2f55ca0c681bcb394b3e8753"
     },
     {
       "path": ".github/workflows/packaged-windows-live.yml",
@@ -1556,8 +1556,8 @@
     },
     {
       "path": "release_manifest.py",
-      "size": 44193,
-      "sha256": "2cd5b7dafee1be46fa6ee00e46ff7c52aa1ab752d8b6f889cbb9e65f5c7cefec"
+      "size": 44234,
+      "sha256": "88d5db0607bce411cedb8153e759f71be84389134eb3366346eddfa537ed3b3d"
     },
     {
       "path": "release_signing.py",
@@ -2213,6 +2213,11 @@
       "path": "test_native_text_single_pass_v1825.py",
       "size": 7414,
       "sha256": "95d03abfda0fe3e593e55e9aaf45196a8e9ef30497d5c264d3388515260404ce"
+    },
+    {
+      "path": "test_native_text_stream_v1825.py",
+      "size": 4211,
+      "sha256": "9b55d6d3f485ed841e6606d9e21c1354bd8d4a2c9e8a260e23c06a79f56a13c4"
     },
     {
       "path": "test_native_text_views_v1825.py",
@@ -2901,8 +2906,8 @@
     },
     {
       "path": "win_clipboard_native.py",
-      "size": 26491,
-      "sha256": "632dfb067228358bdabe93cfba83ea10111d5a996bc30201e8654d80ea8ec517"
+      "size": 28451,
+      "sha256": "88e35f7c220bcd1e39c5bdb8d804b99c680385f5cbebaeea429c23abe60b8084"
     },
     {
       "path": "win_owned_process.py",
