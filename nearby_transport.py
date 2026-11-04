@@ -54,12 +54,15 @@ def _message(raw,deadline,cancel):
 class NearbyStream:
     """Socket interface with peer-read progress, retaining WebRTC cancellation."""
     def __init__(self,raw,stream):
-        self.raw,self.stream=raw,stream;self._sent=self._received=0
+        from tls_stream import TlsStream
+        self.raw=raw;self.stream=TlsStream(stream);self._sent=self._received=0
         self._spans=deque();self._payload=0;self._offset=self._origin=0
         self._acked=0;self._last_ack=0.;self._lock=threading.RLock()
-        raw.own_socket(stream)
+        raw.replace_owned_socket(stream,self.stream)
     @property
     def route(self):return 'direct'
+    @property
+    def closed(self):return self.raw.closed
     def settimeout(self,value):self.stream.settimeout(value)
     def _credit(self,force=False):
         now=time.monotonic()

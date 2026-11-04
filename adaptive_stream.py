@@ -1,0 +1,455 @@
+"""Bounded, acknowledged records over existing encrypted LAN/WebRTC streams.
+
+Each direction chooses independently. Sequence numbers permit an interrupted
+record to be retried on another connection without duplicating application bytes.
+TLS/DTLS still provide encryption, authentication and congestion control.
+"""
+from collections import OrderedDict,deque
+from dataclasses import dataclass,field
+import json
+import logging
+import os
+import re
+import socket
+import struct
+import threading
+import time
+from uuid import uuid4
+
+from route_policy import RoutePolicy,ROUTE_ORDER
+
+HEADER=struct.Struct('!BQI')
+DATA,ACK,PROBE,PROBE_ACK,SIGNAL,PING,PONG=range(7)
+MAX_RECORD_BYTES=64*1024
+BLOCK_BYTES=MAX_RECORD_BYTES-HEADER.size
+WINDOW_BYTES=4*1024*1024
+RECEIVE_BYTES=8*1024*1024
+PROBE_BYTES=256*1024
+PROBE_INTERVAL_SECONDS=30.
+PROBE_TIMEOUT_SECONDS=12.
+STALL_SECONDS=8.
+PATH_CONNECT_SECONDS=15.
+PATH_RETRY_SECONDS=30.
+ACTIVE_SECONDS=5.
+BULK_BYTES=128*1024
+LATENCY_MESSAGE_BYTES=16*1024
+PING_INTERVAL_SECONDS=30.
+LOG=logging.getLogger(__name__)
+
+
+@dataclass
+class PathState:
+    key:str
+    route:str
+    stream:object
+    lock:object=field(default_factory=threading.Lock)
+    dead:bool=False
+    sent:int=0
+    received:int=0
+    probed:float=0.
+    probes:int=0
+    pinged:float=0.
+    ping_number:int=0
+    latency:float=0.
+    sample_at:float=0.
+    sample_bytes:int=0
+
+
+class AdaptiveStream:
+    def __init__(self,raw,nearby,*,initiator,cancel,authorized=lambda:True,
+                 secondary=None,cloud=None,primary=True,prefer_tls=False,signal_out=None,event=lambda value:None):
+        self.raw=raw;self.cancel=cancel;self.authorized=authorized;self.secondary=secondary
+        self.initiator=initiator;self.event=event;self.policy=RoutePolicy()
+        self.cloud=cloud;self._cloud_starting=False;self._cloud_retry=0.
+        self.signal_out=signal_out
+        self._condition=threading.Condition(threading.RLock());self._send_lock=threading.Lock()
+        self._paths={};self._pending=OrderedDict();self._reorder={};self._input=deque()
+        self._input_bytes=0;self._pending_bytes=0;self._sequence=0;self._received_sequence=0
+        self._sent_bytes=0;self._acked_bytes=0;self._received_bytes=0
+        self.sent_route='';self.received_route=''
+        self._payload=0;self._acked_payload=0;self._offset=0;self._payload_origin=0
+        self._timeout=1.;self._closed=False;self._probe=None;self._probe_number=0
+        self._last_send=0.;self._empty_since=0.;self._secondary=None;self._secondary_id=''
+        self._secondary_started=0.;self._secondary_retry=0.;self._prefer_tls=prefer_tls
+        self._reported='';self._selected_key=None;self._next_probe=0.;self._probe_data=os.urandom(PROBE_BYTES)
+        if nearby is not raw:
+            raw.release_owned_socket(nearby.stream)
+            self._add('lan','lan',nearby.stream)
+        if primary:self._add('primary','relay' if raw.route=='relay' else 'p2p',raw)
+        self._thread(self._monitor,'routes')
+
+    def _thread(self,work,name):
+        threading.Thread(target=work,daemon=True,name='FlickDock-adaptive-'+name).start()
+
+    @property
+    def closed(self):return self._closed
+
+    @property
+    def route(self):
+        with self._condition:
+            key=self.policy.current
+            return self._paths[key].route if key in self._paths and not self._paths[key].dead else ''
+
+    def settimeout(self,value):self._timeout=value
+
+    def _live(self):return {key:path.route for key,path in self._paths.items() if not path.dead}
+
+    def _add(self,key,route,stream):
+        with self._condition:
+            if self._closed:stream.shutdown();return
+            if key in self._paths:raise ValueError('Duplicate adaptive connection')
+            stream.settimeout(.25);path=PathState(key,route,stream);self._paths[key]=path
+            self.policy.choose(self._live());self._empty_since=0.;self._condition.notify_all()
+        self._thread(lambda:self._reader(path),'read-'+key)
+
+    def _alive(self):return not self._closed and not self.cancel.is_set() and self.authorized()
+
+    def attach_native(self,raw,role):
+        from nearby_transport import try_nearby
+        nearby=try_nearby(raw,role,self.cancel)
+        self.attach_prepared(raw,nearby)
+
+    def attach_prepared(self,raw,nearby):
+        if nearby is not raw:
+            raw.release_owned_socket(nearby.stream)
+            with self._condition:existing=self._paths.get('lan')
+            if existing is None or existing.dead:
+                with self._condition:self._paths.pop('lan',None)
+                self._add('lan','lan',nearby.stream)
+            else:nearby.stream.close()
+        with self._condition:present='primary' in self._paths
+        if not present:self._add('primary','relay' if raw.route=='relay' else 'p2p',raw)
+
+    def _frame(self,path,kind,sequence,body=b''):
+        if path.dead or not self._alive():raise ConnectionError('传输线路不可用。')
+        packet=HEADER.pack(kind,sequence,len(body))+body
+        try:
+            with path.lock:path.stream.sendall(packet)
+            with self._condition:path.sent+=len(packet)
+        except (OSError,ValueError):self._failed(path);raise
+
+    def _control(self,kind,sequence,body=b'',path=None):
+        with self._condition:
+            choices=[path] if path is not None and not path.dead else sorted(
+                (p for p in self._paths.values() if not p.dead),key=lambda p:ROUTE_ORDER[p.route])
+        for candidate in choices:
+            try:self._frame(candidate,kind,sequence,body);return
+            except (OSError,ValueError):continue
+        raise ConnectionError('没有可用的传输线路。')
+
+    def _signal(self,value):
+        if self.signal_out is not None and self.signal_out(value):return
+        self.send_inband(value)
+
+    def send_inband(self,value):
+        self._control(SIGNAL,0,json.dumps(value,separators=(',',':')).encode('utf8'))
+
+    def _failed(self,path):
+        with self._condition:
+            if path.dead:return
+            path.dead=True;self.policy.choose(self._live());self._condition.notify_all()
+        LOG.info('Adaptive %s connection ended',path.route)
+        try:
+            if hasattr(path.stream,'shutdown'):path.stream.shutdown()
+            else:path.stream.close()
+        except OSError:LOG.debug('Ended route cleanup failed',exc_info=True)
+
+    def _exact(self,path,size):
+        result=bytearray()
+        while len(result)<size:
+            if not self._alive() or path.dead:raise ConnectionError('传输已关闭。')
+            try:chunk=path.stream.recv(size-len(result))
+            except socket.timeout:continue
+            if not chunk:raise EOFError('传输线路已关闭。')
+            result.extend(chunk)
+        return bytes(result)
+
+    def _reader(self,path):
+        try:
+            while self._alive() and not path.dead:
+                kind,sequence,size=HEADER.unpack(self._exact(path,HEADER.size))
+                limit=PROBE_BYTES if kind==PROBE else MAX_RECORD_BYTES
+                if kind not in (DATA,ACK,PROBE,PROBE_ACK,SIGNAL,PING,PONG) or size>limit:
+                    raise ValueError('Invalid adaptive frame')
+                body=self._exact(path,size)
+                with self._condition:path.received+=HEADER.size+size
+                if kind==DATA:self._receive_data(path,sequence,body)
+                elif kind==ACK:self._ack(sequence,body)
+                elif kind==PROBE:
+                    if len(body)!=PROBE_BYTES:raise ValueError('Invalid route probe')
+                    self._control(PROBE_ACK,sequence,struct.pack('!I',len(body)),path)
+                elif kind==PROBE_ACK:self._probe_ack(path,sequence,body)
+                elif kind==PING:
+                    if body:raise ValueError('Invalid route ping')
+                    self._control(PONG,sequence,path=path)
+                elif kind==PONG:
+                    if body:raise ValueError('Invalid route pong')
+                    if sequence==path.ping_number:path.latency=time.perf_counter()-path.pinged
+                elif kind==SIGNAL:
+                    if sequence:raise ValueError('Invalid route signal')
+                    self._secondary_signal(json.loads(body))
+        except (OSError,EOFError,ValueError,TypeError,KeyError,RecursionError) as error:
+            if self._alive():LOG.debug('Adaptive connection ended: %r',error)
+        finally:self._failed(path)
+
+    def _receive_data(self,path,sequence,body):
+        with self._condition:
+            self.received_route=path.route
+            if not body or not sequence or sequence>self._received_sequence+WINDOW_BYTES//BLOCK_BYTES+1:
+                raise ValueError('Invalid adaptive sequence')
+            if sequence>self._received_sequence:
+                if sequence not in self._reorder:self._reorder[sequence]=body
+                while self._received_sequence+1 in self._reorder:
+                    chunk=self._reorder[self._received_sequence+1]
+                    if self._input_bytes+len(chunk)>RECEIVE_BYTES:
+                        if not self._alive():raise ConnectionError('传输已关闭。')
+                        self._condition.wait(.1);continue
+                    self._received_sequence+=1;self._reorder.pop(self._received_sequence)
+                    self._input.append(chunk);self._input_bytes+=len(chunk);self._received_bytes+=len(chunk)
+                    self._condition.notify_all()
+            received=self._received_sequence;count=self._received_bytes
+        self._control(ACK,received,struct.pack('!Q',count),path)
+
+    def _ack(self,sequence,body):
+        if len(body)!=8:raise ValueError('Invalid adaptive acknowledgement')
+        count=struct.unpack('!Q',body)[0]
+        with self._condition:
+            if sequence>self._sequence or count>self._sent_bytes:raise ValueError('Invalid adaptive acknowledgement')
+            if count<=self._acked_bytes:return
+            numbers=[number for number in self._pending if number<=sequence]
+            removed=sum(len(self._pending[number]['body']) for number in numbers)
+            if self._acked_bytes+removed!=count:raise ValueError('Inconsistent adaptive acknowledgement')
+            for number in numbers:
+                record=self._pending.pop(number)
+                self._acked_payload+=record['payload'];self._pending_bytes-=len(record['body'])
+                path=self._paths.get(record['path'])
+                if path is not None:
+                    if not path.sample_at:path.sample_at=record['sent']
+                    path.sample_bytes+=len(record['body']);elapsed=time.perf_counter()-path.sample_at
+                    if elapsed>=1. and path.sample_bytes>=BULK_BYTES:
+                        self.policy.observe(path.key,path.sample_bytes,elapsed);path.sample_at=time.perf_counter();path.sample_bytes=0
+            self._acked_bytes=count;self._condition.notify_all()
+
+    def _send(self,data,payload):
+        with self._send_lock:
+            view=memoryview(data)
+            for offset in range(0,len(view),BLOCK_BYTES):
+                body=bytes(view[offset:offset+BLOCK_BYTES])
+                with self._condition:
+                    while self._pending_bytes+len(body)>WINDOW_BYTES or len(self._pending)>=WINDOW_BYTES//BLOCK_BYTES or not self._live():
+                        if not self._alive():raise ConnectionError('传输已关闭。')
+                        self._condition.wait(.1)
+                    if not self._alive():raise ConnectionError('传输已关闭。')
+                    self._sequence+=1;sequence=self._sequence;self._sent_bytes+=len(body)
+                    self._pending_bytes+=len(body);self._last_send=time.perf_counter()
+                    record=dict(body=body,payload=len(body) if payload else 0,path=None,sent=0.)
+                    self._pending[sequence]=record
+                self._transmit(sequence,record)
+
+    def _transmit(self,sequence,record):
+        with self._condition:
+            key=self.policy.current;path=self._paths.get(key)
+            if len(record['body'])<=LATENCY_MESSAGE_BYTES:
+                quick=[p for p in self._paths.values() if not p.dead and p.latency>0 and time.perf_counter()-p.pinged<PING_INTERVAL_SECONDS*2]
+                if quick:path=min(quick,key=lambda p:p.latency);key=path.key
+            if path is None or path.dead:return
+            record.update(path=key,sent=time.perf_counter())
+        try:
+            self._frame(path,DATA,sequence,record['body'])
+            self.sent_route=path.route
+        except (OSError,ValueError):pass
+
+    def sendall(self,data):self._send(data,False)
+    def send_payload(self,data):self._send(data,True)
+
+    def set_payload_offset(self,value):
+        with self._condition:self._offset=value;self._payload_origin=self._acked_payload
+
+    def payload_progress(self):
+        with self._condition:return self._offset+self._acked_payload-self._payload_origin
+
+    def recv(self,size):
+        target=bytearray(size);count=self.recv_into(target);return bytes(target[:count])
+
+    def recv_into(self,target):
+        if not len(target):return 0
+        with self._condition:
+            deadline=time.perf_counter()+self._timeout
+            while not self._input:
+                if not self._alive():return 0
+                remaining=deadline-time.perf_counter()
+                if remaining<=0:raise socket.timeout()
+                self._condition.wait(remaining)
+            data=self._input.popleft();count=min(len(target),len(data));target[:count]=data[:count]
+            if count<len(data):self._input.appendleft(data[count:])
+            self._input_bytes-=count;self._condition.notify_all();return count
+
+    def _probe_ack(self,path,number,body):
+        with self._condition:
+            probe=self._probe
+            if probe is None or probe[:2]!=(path.key,number):return
+            if body!=struct.pack('!I',PROBE_BYTES):raise ValueError('Invalid route probe acknowledgement')
+            self.policy.observe(path.key,PROBE_BYTES,time.perf_counter()-probe[2]);self._probe=None
+            self.policy.choose(self._live())
+
+    def _launch_secondary(self,identifier):
+        if not self.secondary:return
+        previous=self._secondary
+        if previous is not None:
+            path=self._paths.get('secondary')
+            if path is not None and not path.dead:return
+            previous.shutdown()
+        self._secondary_id=identifier;self._secondary_started=time.perf_counter()
+        def event(value):
+            if not self._alive() or identifier!=self._secondary_id:return
+            kind=value.get('type')
+            try:
+                if kind in ('description','candidate'):
+                    self._signal(dict(kind='candidate',id=identifier,payload=value))
+                elif kind=='open':
+                    candidate=self._secondary
+                    def connected():
+                        from nearby_transport import try_nearby
+                        with self._condition:lan=self._paths.get('lan')
+                        nearby=candidate if candidate.route=='relay' or lan is not None and not lan.dead else try_nearby(candidate,'send' if self.initiator else 'receive',self.cancel)
+                        if not self._alive() or identifier!=self._secondary_id:candidate.shutdown();return
+                        if nearby is not candidate:
+                            candidate.release_owned_socket(nearby.stream)
+                            with self._condition:old=self._paths.pop('lan',None)
+                            if old is not None:old.stream.close()
+                            self._add('lan','lan',nearby.stream)
+                        with self._condition:self._paths.pop('secondary',None)
+                        self._add('secondary','relay' if candidate.route=='relay' else 'p2p',candidate)
+                    self._thread(connected,'candidate-ready')
+                elif kind in ('closed','error') or kind=='state' and value.get('state')=='failed':
+                    self._secondary_retry=time.perf_counter()+PATH_RETRY_SECONDS
+            except (OSError,ValueError):LOG.debug('Alternative route signaling ended',exc_info=True)
+        configured=self.secondary(event,dict(type='init',initiator=self.initiator,preferTls=self._prefer_tls,
+            forceRelay=self.raw.route!='relay'))
+        if configured is None:
+            self._secondary=None;self._secondary_retry=time.perf_counter()+PATH_RETRY_SECONDS;return
+        self._secondary,configuration=configured
+        self._secondary.control(configuration)
+
+    def _secondary_signal(self,value):
+        if not isinstance(value,dict) or not re.fullmatch('[a-f0-9]{32}',str(value.get('id',''))):raise ValueError('Invalid alternative route identity')
+        if value.get('kind')=='cloud':
+            if self.initiator or not self.cloud or not re.fullmatch('[a-f0-9]{64}',str(value.get('key',''))):return
+            configured=self.cloud(dict(id=value['id'],key=value['key']))
+            if configured is not None:
+                with self._condition:old=self._paths.pop('cloud',None)
+                if old is not None:old.stream.shutdown()
+                self._add('cloud','cloud',configured[0])
+            return
+        if value.get('kind')=='start':
+            if self.initiator:raise ValueError('Unexpected alternative route initiator')
+            self._launch_secondary(value['id'])
+        elif value.get('kind')=='candidate' and value['id']==self._secondary_id and self._secondary is not None:
+            payload=value.get('payload')
+            if not isinstance(payload,dict) or payload.get('type') not in ('description','candidate'):raise ValueError('Invalid alternative route signal')
+            self._secondary.control(payload)
+        # Signals from an earlier connection generation may already be in flight.
+
+    def _open_cloud(self):
+        try:
+            configured=self.cloud(None)
+            if configured is None:return
+            stream,descriptor=configured
+            if not self._alive():stream.shutdown();return
+            self._signal(dict(kind='cloud',**descriptor))
+            with self._condition:self._paths.pop('cloud',None)
+            self._add('cloud','cloud',stream)
+        except (OSError,ValueError):LOG.debug('Cloud alternative unavailable',exc_info=True)
+        finally:self._cloud_starting=False;self._cloud_retry=time.perf_counter()+PATH_RETRY_SECONDS
+
+    def _monitor(self):
+        while self._alive():
+            now=time.perf_counter()
+            try:
+                with self._condition:
+                    for key in ('primary','secondary'):
+                        path=self._paths.get(key)
+                        if path is not None and not path.dead and path.stream.route in ('direct','relay'):
+                            path.route='relay' if path.stream.route=='relay' else 'p2p'
+                    live=self._live();self.policy.choose(live)
+                    if not live:
+                        if not self._empty_since:self._empty_since=now
+                        if now-self._empty_since>PATH_CONNECT_SECONDS:break
+                    route=self.route
+                    changed=self._selected_key!=self.policy.current
+                    self._selected_key=self.policy.current
+                    if route and route!=self._reported:
+                        self._reported=route;self.event(dict(type='route',route=route))
+                    retry=[(number,record) for number,record in self._pending.items()
+                           if record['path'] not in live or now-record['sent']>STALL_SECONDS
+                           or changed and record['path']!=self.policy.current and len(record['body'])>LATENCY_MESSAGE_BYTES]
+                    active=now-self._last_send<ACTIVE_SECONDS and self._sent_bytes>=BULK_BYTES
+                if retry:
+                    with self._condition:
+                        current=self.policy.current
+                        alternatives=[key for key in live if key!=current]
+                        if alternatives and any(record['path']==current and now-record['sent']>STALL_SECONDS for _,record in retry):
+                            self.policy.current=max(alternatives,key=lambda key:self.policy.samples[key].rate if key in self.policy.samples else 0.)
+                            self.policy.changed=now
+                for number,record in retry:self._transmit(number,record)
+                cloud_path=self._paths.get('cloud')
+                if (self.initiator and self.cloud and active and not self._cloud_starting and now>=self._cloud_retry
+                        and (cloud_path is None or cloud_path.dead)):
+                    self._cloud_starting=True;self._thread(self._open_cloud,'cloud-open')
+                if self.initiator and self.secondary and active and now>=self._secondary_retry:
+                    alternative=self._paths.get('secondary')
+                    if self._secondary is None or alternative is not None and alternative.dead:
+                        identifier=uuid4().hex;self._signal(dict(kind='start',id=identifier));self._launch_secondary(identifier)
+                    elif alternative is None and now-self._secondary_started>PATH_CONNECT_SECONDS:
+                        self._secondary.shutdown();self._secondary=None;self._prefer_tls=not self._prefer_tls
+                        self._secondary_retry=now+1.
+                with self._condition:
+                    if self._probe and now-self._probe[2]>PROBE_TIMEOUT_SECONDS:self._probe=None
+                    pings=[p for p in self._paths.values() if not p.dead and now-p.pinged>PING_INTERVAL_SECONDS]
+                    for candidate in pings:candidate.ping_number+=1;candidate.pinged=now
+                    choices=sorted((p for p in self._paths.values() if not p.dead and now-p.probed>=(2. if p.probes<2 else PROBE_INTERVAL_SECONDS)),
+                        key=lambda p:(p.key!=self.policy.current,p.probed))
+                    path=choices[0] if active and self._probe is None and choices and now>=self._next_probe else None
+                    if path:
+                        self._probe_number+=1;number=self._probe_number
+                        self._probe=(path.key,number,now);path.probed=now;path.probes+=1;self._next_probe=now+1.
+                if path:self._frame(path,PROBE,number,self._probe_data)
+                for candidate in pings:self._frame(candidate,PING,candidate.ping_number)
+            except (OSError,ValueError):LOG.debug('Route check did not complete',exc_info=True)
+            self.cancel.wait(.1)
+        self.shutdown()
+
+    def traffic(self,*,refresh=False):
+        with self._condition:return dict(sent=sum(p.sent for p in self._paths.values()),received=sum(p.received for p in self._paths.values()))
+
+    def relay_traffic(self):
+        with self._condition:return sum(p.sent+p.received for p in self._paths.values() if p.route=='relay')
+
+    def measurements(self):
+        with self._condition:
+            return [dict(route=p.route,available=not p.dead,latency_ms=p.latency*1000 if p.latency else None,
+                         bytes_per_second=self.policy.samples[p.key].rate if p.key in self.policy.samples and time.perf_counter()-self.policy.samples[p.key].when<60. else None)
+                    for p in self._paths.values()]
+
+    def connection_info(self):
+        with self._condition:
+            path=self._paths.get(self.policy.current)
+            if path is None or path.dead:return dict(route='connecting',latency_ms=None)
+            fresh=path.latency>0 and time.perf_counter()-path.pinged<PING_INTERVAL_SECONDS*2
+            return dict(route=path.route,latency_ms=round(path.latency*1000) if fresh else None)
+
+    def shutdown(self,*_):
+        with self._condition:
+            if self._closed:return
+            self._closed=True;self._condition.notify_all();paths=list(self._paths.values())
+        for path in paths:
+            if hasattr(path.stream,'shutdown'):path.stream.shutdown()
+            else:path.stream.close()
+        if self._secondary is not None:self._secondary.shutdown()
+        self.raw.shutdown()
+
+    def close(self):
+        deadline=time.perf_counter()+2.
+        with self._condition:
+            while self._pending and self._alive() and time.perf_counter()<deadline:self._condition.wait(.05)
+        self.shutdown()

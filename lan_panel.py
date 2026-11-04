@@ -127,6 +127,25 @@ def _turn_usage(value):
     return f'TURN:{amount/1000:.2f}GB' if amount>=1000 else f'TURN:{amount:.1f}MB'
 
 
+def _transport_label(record):
+    route=record.get('route');title={'lan':'局域网','direct':'P2P 直连','p2p':'P2P 直连','relay':'TURN 中继','cloud':'云端'}.get(route,'')
+    usage=_turn_usage(record.get('relay_bytes')) if record.get('relay_bytes',0)>0 else ''
+    return (' · '+title if title else '')+(' · '+usage if usage else '')
+
+
+def _transport_hint(data):
+    labels={'lan':'局域网','p2p':'P2P 直连','relay':'TURN 中继','cloud':'云端'}
+    lines=['自动检测并选择更快的可用线路']
+    measurements=data.get('route_measurements',[])
+    for route,title in labels.items():
+        samples=[row for row in measurements if row.get('route')==route and row.get('available')]
+        rates=[row['bytes_per_second'] for row in samples if isinstance(row.get('bytes_per_second'),(int,float))]
+        value=f'{_size(max(rates))}/s' if rates else '待测速' if samples else '未连接'
+        lines.append(title+'：'+value)
+    if data.get('relay_bytes',0)>0:lines.append('TURN 用量以 Cloudflare 实际统计为准。')
+    return '\n'.join(lines)
+
+
 def _remaining(value):
     if value<60:return f'剩余约 {max(1,math.ceil(value))} 秒'
     if value<3600:return f'剩余约 {math.ceil(value/60)} 分钟'
@@ -595,7 +614,7 @@ class _HistoryRow(QFrame):
         trailing.addWidget(self.state, 0, Qt.AlignmentFlag.AlignRight)
         # Keep the timestamp accessible while the second line combines peer/time.
         self.when.hide()
-        transport=(' · '+_turn_usage(record.get('relay_bytes')) if record.get('route')=='relay' or record.get('relay_bytes',0)>0 else ' · P2P' if record.get('route')=='direct' else '')
+        transport=_transport_label(record)
         self.title.setText((error if error else peer + ' · ' + record['when'])+transport)
         if transport:self.title.setToolTip(self.title.accessibleName()+'\nTURN 为本次中继连接数据量；不含网络协议开销，计费用量以 Cloudflare 为准。')
         layout.addLayout(trailing)
@@ -618,6 +637,7 @@ class LanPanel(QFrame):
     def __init__(self, service, parent=None, *, theme='light', settings=None,metadata_cache=None):
         super().__init__(parent)
         self.service = service; self.settings = settings; self._paths_provider = None
+        self.account_sender=None
         self._wan=getattr(service,'mode','lan')=='wan'
         self._rows = {}; self._offers = {}; self._queued_paths = []; self._row_sequence = 0
         from file_metadata import FileMetadataCache
@@ -1189,6 +1209,11 @@ class LanPanel(QFrame):
             paths, _ = QFileDialog.getOpenFileNames(self, '选择要发送的文件')
         if not paths: return
         try:
+            if not self._wan and self.account_sender is not None:
+                identifier=self.account_sender(peer,paths)
+                if identifier is not None:
+                    if identifier:self.queue_paths([],replace=True)
+                    return
             identifier = self.service.send(peer, paths)
             if self._wan:self.peer_code_input.clear()
             self._set_history_context(identifier, paths)
@@ -1263,6 +1288,8 @@ class LanPanel(QFrame):
 
     def show_offer(self, offer):
         """Replay an offer emitted before this optional panel was mounted."""
+        state=getattr(self.service,'_pending',{}).get(offer['id'],{})
+        if offer.get('account_device') is True and state.get('destination'):return
         identifier = offer['id']; self._offers[identifier] = offer
         if identifier in self._rows:return
         row = self._row(identifier, offer['peer'], 'receive')
@@ -1382,9 +1409,9 @@ class LanPanel(QFrame):
                 row['title'].setText(Path(name).name)
                 row['title'].setToolTip(('发送至 ' if data['direction']=='send' else '接收自 ')+str(data.get('peer') or ''))
             eta=_remaining((total-received)/speed) if speed and total>received else '正在完成' if total and received>=total else '计算剩余时间…'
-            transport=' · '+_turn_usage(row.get('relay_bytes')) if row.get('route')=='relay' or row.get('relay_bytes',0)>0 else ' · P2P' if row.get('route')=='direct' else ''
+            transport=_transport_label(row)
             row['detail'].setText(f'{_size(received)} / {_size(total)} · ' + (f'{_size(speed)}/s' if speed else '计算速度…')+' · '+eta+transport)
-            if transport:row['detail'].setToolTip('TURN 为本次中继连接数据量；不含网络协议开销，计费用量以 Cloudflare 为准。')
+            if data.get('route_measurements'):row['detail'].setToolTip(_transport_hint(data))
         elif state == 'waiting':
             if not self._wan:self.send_code_value.setText(' '.join(str(data.get('code',''))) or '—')
             row['bar'].setRange(0, 0)
@@ -1494,6 +1521,7 @@ class LanDialog(QDialog):
     def __init__(self, service, settings, parent=None):
         super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
         self._settings=settings;self._panels={};self._theme=settings.theme
+        self.account_sender=None
         self._close_prompt=None;self._closing_confirmed=False;self._navigate_after_close=None
         self.finished.connect(self._finish_navigation)
         self._wan=getattr(service,'mode','lan')=='wan'
@@ -1601,7 +1629,7 @@ class LanDialog(QDialog):
                 panel.lan_recommended.connect(self.lan_recommended)
                 self._panels[service]=panel;self.panel_stack.addWidget(panel)
                 for widget in (panel,*panel.findChildren(QWidget)):widget.setAcceptDrops(True)
-            self.panel=self._panels[service];self._wan=getattr(service,'mode','lan')=='wan'
+            self.panel=self._panels[service];self.panel.account_sender=self.account_sender;self._wan=getattr(service,'mode','lan')=='wan'
             self.panel.queue_paths(queued,replace=True)
             self.mode_buttons['wan' if self._wan else 'lan'].setChecked(True)
             if not hasattr(self,'_page_fade'):

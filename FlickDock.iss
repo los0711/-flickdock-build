@@ -1,5 +1,5 @@
 #define Root AddBackslash(SourcePath)
-#define AppVersion "1.8.22"
+#define AppVersion "1.8.23"
 
 [Setup]
 AppId={{C51D7C62-61AE-45D7-A96D-6DC63B8495E7}
@@ -21,8 +21,8 @@ Uninstallable=yes
 CreateUninstallRegKey=yes
 UsePreviousTasks=yes
 WizardStyle=modern
-Compression=lzma2
-SolidCompression=no
+Compression=lzma2/ultra64
+SolidCompression=yes
 ; A tray window can hide on WM_CLOSE while its process still owns the bundle.
 ; Keep Restart Manager's confirmation, then finish closing only this app's EXEs.
 CloseApplications=force

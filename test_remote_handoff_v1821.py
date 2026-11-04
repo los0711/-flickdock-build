@@ -17,7 +17,7 @@ class HandoffTests(unittest.TestCase):
         until(lambda:not getattr(self.manager,'_large_intake_jobs',set()))
         fixture.WorkspaceTests.tearDown(self)
     def prepare(self):
-        self.manager.sync=SimpleNamespace(cancel_upload=Mock(return_value=True),
+        self.manager.sync=SimpleNamespace(upload_time_for_ref=lambda _:None,cancel_upload=Mock(return_value=True),
             sync_status_for_ref=lambda _: 'local',sync_statuses_for_refs=lambda refs:{ref:'local' for ref in refs})
         panel=SimpleNamespace(_queued_paths=[])
         panel.queue_paths=lambda paths:panel._queued_paths.extend(str(Path(ref)) for ref in paths if Path(ref).exists())

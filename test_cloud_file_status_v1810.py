@@ -9,7 +9,7 @@ os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 _profile = tempfile.TemporaryDirectory(prefix='flickdock-status-')
 os.environ['APPDATA'] = _profile.name
 
-from PySide6.QtWidgets import QApplication, QFrame, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QFrame, QVBoxLayout, QWidget, QLabel
 
 from content_grid import IconItem
 from flickdock import ContentsPopup, FileRow, PreviewPane
@@ -23,6 +23,7 @@ repo = ContentRepository()
 ref = repo.add_text('状态图标随真实上传阶段更新')
 class FakeSync:
     state = 'pending'
+    def upload_time_for_ref(self,value):return None
     def sync_status_for_ref(self, value):
         assert value == ref
         return self.state
@@ -72,13 +73,13 @@ badge.set_status('uploading',dict(received=50,total=100,phase='uploading'))
 progress_artwork=hashlib.sha256(bytes(badge.grab().toImage().bits())).hexdigest()
 assert progress_artwork not in images, 'upload progress should arc around the same status mark'
 
-preview = SimpleNamespace(current_path=ref, _group_refs=(), cloud_badge=CloudStatusBadge(), shelf=shelf)
+preview = SimpleNamespace(current_path=ref, _group_refs=(), status_value=QLabel(), upload_time=QLabel(), shelf=shelf)
 sync.state = 'synced'
 PreviewPane.refresh_cloud_status(preview)
-assert preview.cloud_badge.isVisible() and preview.cloud_badge.status == 'synced'
+assert preview.status_value.text() == CLOUD_STATUS_LABELS['synced']
 preview._group_refs = (ref, ref)
 PreviewPane.refresh_cloud_status(preview)
-assert not preview.cloud_badge.isVisible(), 'a multi-selection has no single cloud status'
+assert not preview.status_value.text(), 'a multi-selection has no single cloud status'
 
 calls = []
 sync.sync_statuses_for_refs = lambda refs: (calls.append(tuple(refs)) or {item:'synced' for item in refs})

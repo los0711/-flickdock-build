@@ -153,7 +153,7 @@ class WorkspaceTests(unittest.TestCase):
 
     def test_cloud_status_points_follow_live_sync_provider_for_each_state(self):
         state={'value':'local'}
-        self.manager.sync=SimpleNamespace(sync_status_for_ref=lambda _:state['value'],
+        self.manager.sync=SimpleNamespace(upload_time_for_ref=lambda _:None,sync_status_for_ref=lambda _:state['value'],
             sync_statuses_for_refs=lambda refs:{ref:state['value'] for ref in refs},is_upload_paused=lambda _:False)
         popup=self.overview();ref=self.paths[1];popup.select_item(ref)
         row=next(row for row in popup.rows_body.findChildren(subject.FileRow) if row.path==ref)
@@ -161,18 +161,17 @@ class WorkspaceTests(unittest.TestCase):
         for status in ('synced','uploading','pending','local','paused','error'):
             state['value']=status;popup.refresh_cloud_status();flush()
             self.assertEqual(row.icon_label.cloud_status,status)
-            self.assertEqual(popup.preview.cloud_badge.status,status)
-            image=popup.preview.cloud_badge.grab().toImage()
+            self.assertEqual(popup.preview.status_value.text(),subject.CLOUD_STATUS_LABELS[status])
+            image=row.icon_label.grab().toImage()
             renderings.append(bytes(image.constBits()))
-            self.assertEqual(popup.preview.cloud_badge.accessibleName(),subject.CLOUD_STATUS_LABELS[status])
             # Real glyph artwork must be present in the circle, not just a
             # color-only dot; every state is distinguishable without color.
             self.assertGreater(sum(image.pixelColor(x,y).alpha()>0 for x in range(8,24) for y in range(8,24)),8,status)
         self.assertEqual(len(set(renderings)),6)
-        popup.preview.show_group((self.paths[0],self.paths[1]));self.assertFalse(popup.preview.cloud_badge.isVisible())
-        for enabled,hex_color in ((True,palette()['green']),(False,palette()['red'])):
-            self.settings.update(sync_upload_enabled=enabled);flush()
-            image=popup.cloud_selector.grab().toImage();ratio=image.devicePixelRatio()
+        popup.preview.show_group((self.paths[0],self.paths[1]));self.assertEqual(popup.preview.status_value.text(),'')
+        for enabled,hex_color in ((True,'#229f69'),(False,'#dc5262')):
+            self.settings.update(sync_upload_enabled=enabled);self.shelf.refresh_cloud_button();flush()
+            image=self.shelf.cloud_button.grab().toImage();ratio=image.devicePixelRatio()
             target=QColor(hex_color)
             matching=sum(max(abs(a-b) for a,b in zip(image.pixelColor(x,y).getRgb()[:3],target.getRgb()[:3]))<12
                 for x in range(round(4*ratio),round(22*ratio)) for y in range(round(7*ratio),round(25*ratio)))
@@ -281,23 +280,26 @@ class WorkspaceTests(unittest.TestCase):
 
     def test_adaptive_layout_preserves_content_preview_and_bulk_actions(self):
         popup=self.overview()
-        self.assertGreaterEqual(popup.preview.stack.height(),280)
+        self.assertGreaterEqual(popup.preview.stack.height(),176)
         for width,height in ((1040,600),(800,560),(600,520),(420,500)):
             popup.resize(width,height);flush();popup._apply_responsive_layout();flush()
             self.assertTrue(popup.rect().contains(self.bounds(popup.header,popup)))
             self.assertTrue(popup.rect().contains(self.bounds(popup.scroll,popup)))
             self.assertGreaterEqual(popup.scroll.width(),200)
-            for control in (popup.search_edit,popup.cloud_selector,popup.view_segment,popup.zip_button,popup.zip_all_button,popup.clear_button,popup.bulk_more):
-                if control.isVisible():self.assertTrue(popup.header.rect().contains(self.bounds(control,popup.header)),(width,control.objectName(),getattr(control,'text',lambda:'')()))
+            for control in (popup.search_edit,popup.view_segment):
+                if control.isVisible():self.assertTrue(popup.selection_actions.rect().contains(self.bounds(control,popup.selection_actions)),(width,control.objectName(),getattr(control,'text',lambda:'')()))
+            for control in (popup.sort_segment,popup.zip_button,popup.zip_all_button,popup.clear_button,popup.bulk_more,popup.select_all_button):
+                if control.isVisible():self.assertTrue(popup.selection_bar.rect().contains(self.bounds(control,popup.selection_bar)),(width,control.accessibleName()))
             if width>=780:
                 self.assertTrue(popup.sidebar.isVisible());self.assertTrue(popup.preview.isVisible())
                 self.assertLess(popup.middle.geometry().right(),popup.preview.geometry().left())
             else:
                 self.assertFalse(popup.sidebar.isVisible());self.assertTrue(popup.category_picker.isVisible())
-                self.assertTrue(popup.bulk_more.isVisible());self.assertFalse(popup.preview.isVisible())
+                self.assertTrue(popup.select_all_button.isVisible());self.assertFalse(popup.preview.isVisible())
                 popup.toggle_narrow_preview();flush()
                 self.assertTrue(popup.preview.isVisible());self.assertFalse(popup.scroll.isVisible())
-                self.assertTrue(popup.rect().contains(self.bounds(popup.preview.open_button,popup)))
+                popup.preview.content_scroll.ensureWidgetVisible(popup.preview.open_button);flush()
+                self.assertTrue(popup.preview.content_scroll.viewport().rect().contains(self.bounds(popup.preview.open_button,popup.preview.content_scroll.viewport())))
                 popup.toggle_narrow_preview();flush()
 
     def test_grid_cells_fit_scroll_area_and_keyboard_selection_has_visible_feedback(self):

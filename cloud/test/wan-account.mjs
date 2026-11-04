@@ -40,16 +40,56 @@ try{
   const peer=peers.peers.find(row=>row.id===sb.id);assert.equal(peer.account_device,true);assert.equal(peer.lan_id,'b'.repeat(32));assert.equal(peer.name,'Mac');
   const spec=()=>({type:'request',id:randomBytes(16).toString('hex'),token:randomBytes(32).toString('hex'),digest:'d'.repeat(64),total:'12',count:1,names:['original.txt']});
   const request={...spec(),peer:sb.id};sa.send(request);
-  assert.equal((await sb.wait(row=>row.type==='request'&&row.id===request.id)).peer.id,sa.id);
+  const ownOffer=await sb.wait(row=>row.type==='request'&&row.id===request.id);
+  assert.equal(ownOffer.peer.id,sa.id);assert.equal(ownOffer.account_device,true);assert.equal(ownOffer.account_id,a.account.id);
   console.log('PASS same-account first transfer without code, canonical name, badge and LAN identity');
   const unrelated={...spec(),peer:sb.id};sc.send(unrelated);
   assert.match((await sc.wait(row=>row.type==='error'&&row.id===unrelated.id)).message,/首次传输/);
+  const pipe=randomBytes(16).toString('hex'),pipePath='/v1/wan/cloud/'+pipe;
+  async function transport(method,path,account,body,expected=200,extra={}){
+    const response=await fetch(origin+path,{method,headers:{Authorization:'Bearer '+account.token,'Content-Type':body instanceof Uint8Array?'application/octet-stream':'application/json',...extra},body:body===undefined?undefined:body instanceof Uint8Array?body:JSON.stringify(body)});
+    let result;
+    try{result=await response.json();}catch(error){throw new Error(method+' '+path+' response '+response.status,{cause:error});}
+    assert.equal(response.status,expected,JSON.stringify(result));return result;
+  }
+  await transport('POST',pipePath,a,{peer:sb.id},201,{'X-Wan-Credential':sa.credential});
+  await transport('GET',pipePath+'/0/0',c,undefined,410);
+  const original=randomBytes(1024*1024),checksum=hash(original);
+  await transport('PUT',pipePath+'/0/0',b,original,403,{'X-Content-SHA256':checksum});
+  await transport('PUT',pipePath+'/0/0',a,original,200,{'X-Content-SHA256':checksum});
+  await transport('PUT',pipePath+'/0/0',a,original,200,{'X-Content-SHA256':checksum});
+  await transport('GET',pipePath+'/0/0',a,undefined,403);
+  const block=await transport('GET',pipePath+'/0/0',b);assert(block.ready);assert.deepEqual(Buffer.from(block.body,'base64'),original);
+  await transport('DELETE',pipePath+'/0/0',b);await transport('DELETE',pipePath+'/0/0',b);
+  await transport('DELETE',pipePath,b);await transport('GET',pipePath+'/0/0',b,undefined,410);
+  await transport('POST',pipePath,a,{peer:sb.id},409,{'X-Wan-Credential':sa.credential});
+  const pipes=[];
+  for(let index=0;index<4;index++){
+    const path='/v1/wan/cloud/'+randomBytes(16).toString('hex');pipes.push(path);
+    await transport('POST',path,a,{peer:sb.id},201,{'X-Wan-Credential':sa.credential});
+  }
+  await transport('POST','/v1/wan/cloud/'+randomBytes(16).toString('hex'),a,{peer:sb.id},429,{'X-Wan-Credential':sa.credential});
+  await transport('PUT',pipes[0]+'/0/0',a,randomBytes(1024*1024+17),413,{'X-Content-SHA256':checksum});
+  for(const path of pipes)await transport('DELETE',path,a);
+  console.log('PASS cloud transport original R2 bytes, owner/account/direction isolation, idempotent writes, read acknowledgements and cleanup');
+  sb.send({type:'accept',id:request.id});const connected=await sa.wait(row=>row.type==='begin'&&row.id===request.id);
+  const route={kind:'start',id:randomBytes(16).toString('hex')};
+  sa.send({type:'path_signal',id:request.id,generation:connected.generation,value:route});
+  assert.deepEqual((await sb.wait(row=>row.type==='path_signal'&&row.id===request.id)).value,route);
+  sa.send({type:'path_signal',id:request.id,generation:connected.generation,value:{kind:'file',id:route.id,body:'not allowed'}});
+  assert.match((await sa.wait(row=>row.type==='error'&&row.requestType==='path_signal')).message,/信令/);
+  console.log('PASS independent route signaling forwards only validated connection metadata after consent');
   sb.socket.close();await new Promise(resolve=>sb.socket.once('close',resolve));
   const offline=await sa.wait(row=>row.type==='peers'&&row.peers.some(peer=>peer.id===sb.id&&!peer.online));assert(offline);
   const denied={...spec(),peer:sb.id};sa.send(denied);assert.match((await sa.wait(row=>row.type==='error'&&row.id===denied.id)).message,/不在线/);
   console.log('PASS cross-account cannot bypass code, live offline presence and server-side send rejection');
+  await api('POST','/v1/wan/ice',null,{credential:sa.credential},401);
+  await api('POST','/v1/wan/ice',c.token,{credential:sa.credential},401);
+  await api('POST','/v1/wan/ice',a.token,{credential:sa.credential},503);
+  console.log('PASS authenticated sync ICE endpoint rejects anonymous and foreign owners and reports disabled relay');
   const logoutNonce=randomBytes(16).toString('hex');sa.send({type:'account_state',nonce:logoutNonce,active:false});
   await sa.wait(row=>row.type==='account_state'&&row.nonce===logoutNonce);
+  await api('POST','/v1/wan/ice',a.token,{credential:sa.credential},401);
   await api('POST','/v1/wan/account',a.token,{credential:sa.credential,lan_id:'a'.repeat(32),nonce:sa.nonce},409);
   sa.send({type:'recent'});assert.equal((await sa.wait(row=>row.type==='peers'&&row.peers.length===0)).peers.length,0);
   console.log('PASS logout intent rejects delayed authenticated bind even while old cloud token remains valid');

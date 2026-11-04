@@ -3,6 +3,7 @@ import base64,copy,hashlib,json,tempfile,time,unittest
 from pathlib import Path
 from unittest.mock import patch
 from PySide6.QtCore import QTimer
+from PySide6.QtTest import QTest
 from cloud_events import CloudEvents
 from clipboard_sync import ClipboardSync,inline_text,unpack_inline
 from test_clipboard_sync_v1819 import Account,Clipboard,Hub,APP,flush,until
@@ -136,6 +137,40 @@ class ClipboardFastTests(unittest.TestCase):
             self.assertEqual(sender._last_sequence,11);self.assertTrue(sender.change_debounce.isActive())
         sender._changed()
         until(lambda:self.clips[1].mimeData().text()=='delayed native rendering')
+
+    def test_delayed_native_format_sequences_do_not_echo_synced_content(self):
+        receiver=self.clients[1];sequence=[40]
+        receiver._sequence=lambda:sequence[0]
+        receiver._last_sequence=40
+        with patch.object(self.clips[1],'setMimeData',wraps=self.clips[1].setMimeData) as write:
+            self.clips[0].text('one actual copy')
+            until(lambda:self.clips[1].mimeData().text()=='one actual copy')
+            baseline=len([call for call in self.hub.calls if call[0]!='GET'])
+            generation=receiver._generation
+            for _ in range(8):
+                sequence[0]+=1
+                self.clips[1].dataChanged.emit()
+                receiver._changed();receiver.refresh();flush()
+            self.assertEqual(receiver._generation,generation)
+            self.assertEqual(len([call for call in self.hub.calls if call[0]!='GET']),baseline)
+            self.assertEqual(write.call_count,1)
+            # History can strip private formats; identical content remains one intent.
+            sequence[0]+=1;self.clips[1].text('one actual copy')
+            sender_generation=receiver._generation
+            QTest.qWait(100);flush()
+            self.assertEqual(len([call for call in self.hub.calls if call[0]!='GET']),baseline)
+            self.assertEqual(receiver._generation,sender_generation)
+            self.assertEqual(receiver.view['id'],self.hub.head['id'])
+
+    def test_changed_payload_with_retained_marker_is_a_real_copy(self):
+        self.clips[0].text('remote original')
+        until(lambda:self.clips[1].mimeData().text()=='remote original')
+        receiver=self.clients[1];sequence=[receiver._last_sequence or 0]
+        receiver._sequence=lambda:sequence[0]
+        old=self.hub.head['id'];mime=self.clips[1].mimeData()
+        mime.setText('locally edited');sequence[0]+=1;self.clips[1].dataChanged.emit()
+        until(lambda:self.hub.head['id']!=old)
+        until(lambda:self.clips[0].mimeData().text()=='locally edited')
 
     def test_sender_feedback_only_after_commit_and_no_recipient_feedback(self):
         sent=[];received=[]

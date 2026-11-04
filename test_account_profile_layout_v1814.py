@@ -81,6 +81,22 @@ class AccountProfileLayoutTests(unittest.TestCase):
         self.assertIs(rows['other'],self.panel._rows_by_id['other'])
         self.assertEqual(self.panel._rows_by_id['other'].findChild(AccountNameLabel,'accountDeviceName').text(),'MacBook Air')
 
+    def test_devices_use_one_scroll_column_and_live_route_latency_without_rebuild(self):
+        self.service.devices.extend(dict(id=f'peer-{index}',name=f'设备 {index}',platform='windows') for index in range(8))
+        self.service.list_devices();self.settle();rows=dict(self.panel._rows_by_id)
+        self.panel.set_device_connections({'other':{'route':'p2p','latency_ms':48},'peer-0':{'route':'lan','latency_ms':3}})
+        self.settle()
+        self.assertEqual(rows,self.panel._rows_by_id)
+        self.assertIn('P2P 直连 · 48 ms',rows['other']._connection_label.text())
+        self.assertIn('局域网 · 3 ms',rows['peer-0']._connection_label.text())
+        self.assertIn('未连接 · —',rows['peer-1']._connection_label.text())
+        self.assertEqual(len({row.x() for row in rows.values()}),1)
+        self.assertEqual(len({row.y() for row in rows.values()}),len(rows))
+        self.assertGreater(self.panel.devices_scroll.verticalScrollBar().maximum(),0)
+        self.panel.set_device_connections({'other':{'route':'relay','latency_ms':None}})
+        self.assertIn('TURN 中继 · —',rows['other']._connection_label.text())
+        self.assertEqual(rows,self.panel._rows_by_id)
+
     def test_rename_is_floating_without_resizing_rows_and_actions_stay_at_right_edge(self):
         for width in (740,892,1024):
             self.dialog.resize(width,632);self.settle()

@@ -10,6 +10,12 @@ import {udpToStream,TurnStreamDecoder,tlsTurnTunnel,adaptTurnServers,httpConnect
 const relay=(port=443)=>({hostname:'turn.cloudflare.com',port,relayType:'TurnTls',username:'test-user',password:'test-credential'});
 const udpRelay={...relay(3478),relayType:'TurnUdp'},stun='stun:stun.cloudflare.com:3478';
 const packet=()=>{const b=Buffer.alloc(23);b.writeUInt16BE(0x4001);b.writeUInt16BE(19,2);return b;};
+test('UDP relay preference keeps native endpoints and opens no TLS tunnel',async t=>{
+  t.mock.method(tls,'connect',()=>{throw Error('Unexpected TLS connection');});
+  const configuration=await adaptTurnServers([stun,udpRelay,relay()],()=>{},false);
+  assert.equal(configuration.relayTransport,'udp');
+  assert.deepEqual(configuration.iceServers,[stun,udpRelay]);configuration.close();
+});
 class TLS extends EventEmitter{
   writableLength=0;writes=[];destroyed=false;
   setNoDelay(value){assert.equal(value,true);}

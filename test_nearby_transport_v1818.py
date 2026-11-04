@@ -105,8 +105,9 @@ class NearbyTests(unittest.TestCase):
 
 class NearbyBoundaryTests(unittest.TestCase):
     def test_live_progress_counts_peer_read_payload_excluding_protocol_bytes(self):
-        raw=SimpleNamespace(_nearby_delivered=0,own_socket=lambda _:None)
-        stream=nearby.NearbyStream(raw,SimpleNamespace(sendall=lambda _:None))
+        raw=SimpleNamespace(_nearby_delivered=0,replace_owned_socket=lambda *_:None)
+        socket=SimpleNamespace(gettimeout=lambda:1,setblocking=lambda _:None,send=lambda data:len(data))
+        stream=nearby.NearbyStream(raw,socket)
         stream.sendall(b'H'*10);stream.set_payload_offset(100);stream.send_payload(b'B'*20);stream.sendall(b'T'*10)
         self.assertEqual(stream.payload_progress(),100)
         raw._nearby_delivered=10;self.assertEqual(stream.payload_progress(),100)

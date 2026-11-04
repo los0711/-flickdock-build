@@ -55,24 +55,24 @@ class OrderingTests(unittest.TestCase):
         popup.sort_buttons['size'].click();flush()
         self.assertEqual(popup.sort_buttons['size'].direction,2)
         self.assertEqual(popup.sort_buttons['time'].direction,0)
-        popup.selection_hint.click();flush()
+        popup.sort_buttons['size'].click();flush()
         self.assertIsNone(popup.sort_key)
         self.assertTrue(all(control.direction==0 for control in popup.sort_buttons.values()))
 
     def test_sort_pair_arrows_and_default_reset_even_when_order_is_unchanged(self):
         from reference_widgets import palette
         popup=self.overview();initial=list(popup.visible_refs())
-        self.assertEqual(popup.selection_hint.text(),'默认')
+        self.assertEqual(set(popup.sort_buttons),{'time','size'})
         for key in ('time','size'):
             control=popup.sort_buttons[key]
-            self.assertEqual(control.geometry().center().y(),popup.selection_hint.geometry().center().y())
+            self.assertEqual(control.geometry().center().y(),popup.sort_buttons['time'].geometry().center().y())
             for direction in (1,2,0):
                 control.click();flush();self.assertEqual(control.direction,direction)
                 self.assertEqual(control.arrow_colors(),tuple(palette()['link'] if direction==value else palette()['muted'] for value in (1,2)))
                 self.assertEqual(control.text(),'时间' if key=='time' else '大小')
         popup.cycle_sort('time');popup.cycle_sort('time');flush()
         self.assertEqual(popup.visible_refs(),initial)
-        popup.selection_hint.click();flush()
+        popup.sort_buttons['time'].click();flush()
         self.assertEqual(popup.visible_refs(),initial);self.assertIsNone(popup.sort_key)
         self.assertTrue(all(control.direction==0 for control in popup.sort_buttons.values()))
 

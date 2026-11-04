@@ -346,3 +346,50 @@ class ClearConfirmOverlay(QWidget):
     def closeEvent(self, event):
         self.cancel()
         event.accept()
+
+
+class DeleteConfirmOverlay(ClearConfirmOverlay):
+    """Choose a deletion scope while retaining the shelf's modal lifecycle."""
+    def __init__(self,card,count,selected_count,**kwargs):
+        super().__init__(card,count,**kwargs)
+        self.scope=None
+        self.setAccessibleName('删除搁架项目')
+        self.title.setText('删除搁架项目？')
+        self.selected_button=_PointerConfirmButton('删除已选',self.panel)
+        self.selected_button.setAccessibleName(f'删除已选的 {selected_count} 个项目')
+        self.selected_button.setEnabled(selected_count>0)
+        self.selected_button.setFont(self.delete_button.font())
+        self.selected_button.setCursor(Qt.PointingHandCursor)
+        self.selected_button.setMinimumSize(self.selected_button.fontMetrics().horizontalAdvance('删除已选')+32,32)
+        self.selected_button.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
+        self.selected_button.setFixedHeight(32)
+        self.selected_button.clicked.connect(lambda:self._choose('selected'))
+        self.delete_button.setText('删除全部')
+        self.delete_button.setMinimumWidth(self.delete_button.fontMetrics().horizontalAdvance('删除全部')+32)
+        self.delete_button.clicked.disconnect()
+        self.delete_button.clicked.connect(lambda:self._choose('all'))
+        buttons=self.panel.layout().itemAt(self.panel.layout().count()-1).layout()
+        buttons.removeWidget(self.cancel_button);buttons.removeWidget(self.delete_button)
+        for control in (self.selected_button,self.delete_button,self.cancel_button):buttons.addWidget(control,1)
+        QWidget.setTabOrder(self.cancel_button,self.selected_button)
+        QWidget.setTabOrder(self.selected_button,self.delete_button)
+        QWidget.setTabOrder(self.delete_button,self.cancel_button)
+        self.apply_theme(self._theme);self._layout_overlay()
+
+    def apply_theme(self,theme):
+        super().apply_theme(theme)
+        if hasattr(self,'selected_button'):
+            c=ui_colors(self._theme)
+            self.selected_button.setStyleSheet(self.cancel_button.styleSheet()+
+                f"QPushButton{{color:{c['red']};}} QPushButton:disabled{{color:{c['muted']};background:{c['control']};}}")
+
+    def open(self):
+        self.scope=None
+        return super().open()
+
+    def _choose(self,scope):
+        self.scope=scope;self._finish(True)
+
+    def _finish(self,accepted):
+        if not accepted:self.scope=None
+        super()._finish(accepted)

@@ -71,6 +71,37 @@ class Adapter:
     def title(self,ref):return Path(ref).name
 
 class SmallLaneTests(unittest.TestCase):
+    def test_three_small_files_upload_together_and_refill_without_exceeding_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);api=Api();api.hold_small=True
+            service=Service(api);adapter=Adapter()
+            for index in range(6):
+                path=root/f'{index}.txt';path.write_bytes(f'original-{index}'.encode())
+                adapter.view['permanent'].append(str(path))
+            engine=ShelfSync(root/'profile',service,adapter,poll_ms=600000)
+            engine.set_directions(True,False);service.account_changed.emit({'id':'fixture'})
+            try:
+                self.assertTrue(spin(lambda:len(api.held)==3))
+                self.assertEqual(len(engine.upload_lanes.active),2)
+                engine.set_clipboard_priority(True)
+                key=next(iter(api.held));api.held.pop(key)()
+                self.assertTrue(spin(lambda:len(api.committed)==1))
+                QTimer.singleShot(0,engine.upload_lanes.kick);APP.processEvents()
+                self.assertEqual(len(api.held),2)
+                engine.set_clipboard_priority(False)
+                self.assertTrue(spin(lambda:len(api.held)==3))
+                self.assertEqual(len(api.uploads),4)
+                for _ in range(6):
+                    for key,callback in list(api.held.items()):
+                        api.held.pop(key);callback()
+                    spin(lambda:bool(api.held) or not engine.running)
+                    self.assertLessEqual(len(api.held),3)
+                    if not engine.running:break
+                self.assertEqual(len(api.committed),6)
+                self.assertFalse(api.cancelled)
+                self.assertFalse(engine.upload_lanes.active)
+            finally:engine.close()
+
     def test_cancelled_small_upload_pauses_without_retrying_or_stopping_bulk(self):
         for code in ('UPLOAD_CANCELLED','UPLOAD_EXPIRED'):
             with self.subTest(code=code),tempfile.TemporaryDirectory() as directory:
@@ -85,8 +116,8 @@ class SmallLaneTests(unittest.TestCase):
                     self.assertTrue(spin(lambda:any(e.get('paused_upload') for e in engine.state['entries'].values())))
                     entry=next(e for e in engine.state['entries'].values() if e['ref']==str(small))
                     self.assertNotIn(entry['id'],engine.state['resumable_uploads'])
-                    self.assertNotIn(entry['id'],engine.small_lane.retry_at)
-                    engine.small_lane.kick();APP.processEvents()
+                    self.assertNotIn(entry['id'],engine.upload_lanes.retry_at)
+                    engine.upload_lanes.kick();APP.processEvents()
                     self.assertTrue(held.issubset(api.pending));self.assertFalse(api.cancelled)
                     self.assertNotIn('small.bin',api.committed)
                     old_ids=set(api.uploads);api.terminal_small=None;engine.retry_upload(str(small))
@@ -112,7 +143,7 @@ class SmallLaneTests(unittest.TestCase):
                 self.assertEqual(api.committed,{'image.png':original,'second.bin':b'second'})
                 self.assertTrue(held.issubset(api.pending));self.assertFalse(api.cancelled)
                 engine.set_clipboard_priority(True)
-                self.assertTrue(engine.running);self.assertIsNone(engine.small_lane.active)
+                self.assertTrue(engine.running);self.assertFalse(engine.upload_lanes.active)
                 self.assertTrue(held.issubset(api.pending));self.assertFalse(api.cancelled)
                 self.assertTrue(engine.state['resumable_uploads'])
             finally:engine.close()
@@ -122,12 +153,12 @@ class SmallLaneTests(unittest.TestCase):
             root=Path(directory);api=Api();service=Service(api);adapter=Adapter()
             engine=ShelfSync(root,service,adapter,poll_ms=600000)
             engine.set_directions(True,False);service.account_changed.emit({'id':'first'})
-            token=dict(id='stale');engine.small_lane.active=token
+            token=dict(id='stale');engine.upload_lanes.active[token['id']]=token
             events=[]
-            engine.small_lane.run(token,lambda:engine._request('POST','/v1/sync/intake',lambda *args:events.append(args),data={}))
+            engine.upload_lanes.run(token,lambda:engine._request('POST','/v1/sync/intake',lambda *args:events.append(args),data={}))
             service.account_changed.emit({'id':'second'})
             self.assertTrue(spin(lambda:not engine.running))
-            self.assertEqual(events,[]);self.assertIsNone(engine.small_lane.active)
+            self.assertEqual(events,[]);self.assertFalse(engine.upload_lanes.active)
             engine.close()
 
     def test_transient_small_failure_resumes_without_waiting_for_bulk(self):
@@ -140,11 +171,11 @@ class SmallLaneTests(unittest.TestCase):
                 self.assertTrue(spin(lambda:bool(api.held)));held=set(api.held)
                 small=root/'small.bin';small.write_bytes(b'original');api.fail_small_once=True
                 adapter.view['permanent'].append(str(small));engine.local_changed()
-                self.assertTrue(spin(lambda:bool(engine.small_lane.retry_at)))
+                self.assertTrue(spin(lambda:bool(engine.upload_lanes.retry_at)))
                 self.assertNotIn('small.bin',api.committed)
                 identity=next(e['id'] for e in engine.state['entries'].values() if e['ref']==str(small))
                 upload_id=engine.state['resumable_uploads'][identity]['upload_id']
-                engine.small_lane.retry_at[identity]=0;engine.small_lane.retry.stop();engine.small_lane.kick()
+                engine.upload_lanes.retry_at[identity]=0;engine.upload_lanes.retry.stop();engine.upload_lanes.kick()
                 self.assertTrue(spin(lambda:'small.bin' in api.committed))
                 self.assertEqual(api.committed['small.bin'],b'original');self.assertIn(upload_id,api.uploads)
                 self.assertEqual(len(api.uploads),2);self.assertTrue(held.issubset(api.pending));self.assertFalse(api.cancelled)
@@ -165,10 +196,10 @@ class SmallLaneTests(unittest.TestCase):
                 small_key=next(key for key,name in api.held_names.items() if name=='small.bin')
                 statuses.clear();api.held.pop(large_key)()
                 self.assertTrue(spin(lambda:'large.bin' in api.committed and engine.transfer is None))
-                self.assertTrue(engine.running);self.assertIsNotNone(engine.small_lane.active)
+                self.assertTrue(engine.running);self.assertTrue(engine.upload_lanes.active)
                 self.assertNotIn('搁架已同步。',statuses)
                 engine.set_clipboard_priority(True)
-                self.assertNotIn(small_key,api.cancelled);self.assertIsNotNone(engine.small_lane.active)
+                self.assertNotIn(small_key,api.cancelled);self.assertTrue(engine.upload_lanes.active)
                 self.assertNotIn('small.bin',api.committed)
                 api.held.pop(small_key)();engine.set_clipboard_priority(False)
                 self.assertTrue(spin(lambda:'small.bin' in api.committed and not engine.running))

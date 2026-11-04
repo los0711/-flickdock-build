@@ -1,13 +1,22 @@
 """Two small views of the same current clipboard; no second clipboard watcher."""
 from pathlib import Path
-from PySide6.QtCore import QObject,Signal,QThreadPool,QBuffer,QIODevice,QSize,Qt,QRectF
+from PySide6.QtCore import QObject,Signal,QThreadPool,QBuffer,QIODevice,QSize,Qt,QRectF,QEvent
 from PySide6.QtGui import QImage,QImageReader,QPainter,QPainterPath,QColor,QPen
-from PySide6.QtWidgets import QPushButton,QLabel,QHBoxLayout,QPlainTextEdit,QStackedWidget
+from PySide6.QtWidgets import QApplication,QPushButton,QLabel,QHBoxLayout,QPlainTextEdit,QStackedWidget,QWidget
 from app_settings import ReferenceModalDialog,SettingsCloseButton
 from native_ui_common import colors,icon
 from sync_files import DiskWork
 from transfer_visuals import draw_cloud_status_badge,CloudStatusBadge,CLOUD_STATUS_LABELS
 import ui_theme
+
+
+def clipboard_status(state):
+    if state.get('route')=='cloud':return '已通过云端通道送达'+(' · 已备份' if state.get('backed_up') else '')
+    routes={'lan':'局域网','p2p':'P2P 直连','relay':'TURN 中继'}
+    route=routes.get(state.get('route'))
+    if route:
+        return '已通过'+route+'同步'+(' · 已备份到云端' if state.get('backed_up') else '')
+    return CLOUD_STATUS_LABELS.get(state.get('phase'),'仅保存在本机')
 
 
 def read_clip_image(value,size,cancel):
@@ -72,7 +81,7 @@ class ClipboardButton(QPushButton):
     def __init__(self,manager,parent=None):
         super().__init__(parent);self.manager=manager;self.presenter=None
         self.setFixedSize(32,32);self.setAutoDefault(False);self.setCursor(Qt.PointingHandCursor)
-        self.setAccessibleName('放大查看剪贴板');self.clicked.connect(self._open);self.refresh()
+        self.setAccessibleName('打开或关闭剪贴板预览');self.clicked.connect(self._open);self.refresh()
 
     def _open(self):
         action=getattr(self.manager,'show_clipboard_preview',None)
@@ -88,7 +97,7 @@ class ClipboardButton(QPushButton):
             if presenter is not None:presenter.changed.connect(self.refresh)
         state=presenter.state if presenter is not None else {}
         self.setToolTip('剪贴板 · '+('需要设置 Mac 剪贴板权限，点击前往' if state.get('permission_required') else
-            CLOUD_STATUS_LABELS.get(state.get('phase'),'仅保存在本机') if state.get('value') else '暂无可预览内容'))
+            clipboard_status(state) if state.get('value') else '暂无可预览内容'))
         self.update()
 
     def paintEvent(self,event):
@@ -114,6 +123,7 @@ class ClipboardPreview(ReferenceModalDialog):
         super().__init__(manager.shelf,surface_width=600,modal=False)
         self.setWindowFlag(Qt.WindowStaysOnTopHint,True)
         self.manager=manager;self.presenter=manager.clipboard_presenter
+        self._outside_watch=False
         self.setWindowTitle('FlickDock · 剪贴板预览')
         head=QHBoxLayout();self.title=QLabel('剪贴板预览',self.body);head.addWidget(self.title,1)
         self.badge=CloudStatusBadge(self.body);head.addWidget(self.badge)
@@ -128,13 +138,34 @@ class ClipboardPreview(ReferenceModalDialog):
         self.info=QLabel(self.content);self.info.setWordWrap(True);self.info.setAlignment(Qt.AlignCenter);self.content.addWidget(self.info)
         self.status=QLabel(self.body);self.body_layout.addWidget(self.status)
         self.presenter.changed.connect(self.refresh);self.refresh()
+        # Include text viewports and image children, which consume mouse events
+        # before they can reach the dialog's own mouseReleaseEvent.
+        for widget in (self,*self.findChildren(QWidget)):widget.installEventFilter(self)
+        manager.shelf.installEventFilter(self)
+
+    def eventFilter(self,watched,event):
+        if watched is self.manager.shelf and event.type() in (QEvent.Hide,QEvent.Close):
+            self.hide()
+            return super().eventFilter(watched,event)
+        inside=isinstance(watched,QWidget) and (watched is self or self.isAncestorOf(watched))
+        if event.type()==QEvent.MouseButtonPress and self.isVisible() and isinstance(watched,QWidget) and not inside:
+            owner=watched
+            while isinstance(owner,QWidget) and not isinstance(owner,ClipboardButton):owner=owner.parentWidget()
+            if not isinstance(owner,ClipboardButton):self.close()
+        if event.type()==QEvent.MouseButtonRelease and self.isVisible() and inside:
+            self.close();return True
+        return super().eventFilter(watched,event)
+
+    def _application_state(self,state):
+        if state!=Qt.ApplicationActive and self.isVisible():self.close()
 
     def refresh(self):
         model=self.presenter;value=model.state.get('value');phase=model.state.get('phase','local')
         c=colors(self.manager.settings.theme);self.set_surface_theme(self.manager.settings.theme)
         self.close_button.dark=self.manager.settings.theme=='dark'
         self.setStyleSheet(f"QDialog{{background:transparent;}} QLabel{{background:transparent;color:{c['text']};font-size:12px;}} QPlainTextEdit{{background:{c['card']};color:{c['text']};border:1px solid {c['border']};border-radius:8px;padding:10px;}} QPushButton#settingsClose{{background:transparent;border:0;border-radius:8px;padding:0;}} QPushButton#settingsClose:hover{{background:{c['hover']};}} QPushButton#settingsClose:pressed{{background:{c['control']};}}")
-        self.badge.set_status(phase);self.status.setText(CLOUD_STATUS_LABELS.get(phase,'仅保存在本机'))
+        self.badge.set_status(phase);status=clipboard_status(model.state);self.status.setText(status)
+        self.badge.setToolTip(status);self.badge.setAccessibleName(status)
         if not value:self.info.setText('剪贴板暂无可预览内容');self.content.setCurrentWidget(self.info)
         elif value[0]=='text':
             text=value[1]['text']
@@ -150,6 +181,15 @@ class ClipboardPreview(ReferenceModalDialog):
 
     def showEvent(self,event):
         self.presenter.request_large();self.refresh();super().showEvent(event)
+        if not self._outside_watch:
+            app=QApplication.instance();app.installEventFilter(self);app.applicationStateChanged.connect(self._application_state)
+            self._outside_watch=True
 
     def closeEvent(self,event):
         self.presenter._large_requested=False;super().closeEvent(event)
+
+    def hideEvent(self,event):
+        if self._outside_watch:
+            app=QApplication.instance();app.removeEventFilter(self);app.applicationStateChanged.disconnect(self._application_state)
+            self._outside_watch=False
+        self.presenter._large_requested=False;super().hideEvent(event)

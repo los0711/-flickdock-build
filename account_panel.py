@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from functools import partial
+import math
 import os
 from pathlib import Path
 import sys
@@ -12,7 +13,9 @@ from PySide6.QtCore import QByteArray, QDateTime, QEvent, QRect, QRectF, QSize, 
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter, QLinearGradient
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMenu, QToolButton,
-                               QPushButton, QSizePolicy, QVBoxLayout, QWidget, QLayout)
+                               QPushButton, QSizePolicy, QVBoxLayout, QWidget, QLayout, QScrollArea)
+
+DEVICE_LIST_MAX_HEIGHT=260
 
 
 def _label(text='', parent=None, *, muted=False):
@@ -216,6 +219,7 @@ class AccountPanel(QFrame):
     def __init__(self,service,parent=None,*,theme='light',email_binding=False):
         super().__init__(parent)
         self.service=service
+        self._device_connections={}
         self._fit_timer=QTimer(self);self._fit_timer.setSingleShot(True)
         self._fit_timer.timeout.connect(self._fit_signed_content)
         # Keep the argument for older app builds; the email controls are gone.
@@ -409,20 +413,25 @@ class AccountPanel(QFrame):
         signed.addWidget(self.login_alias_edit)
         self.profile_frame.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.profile_frame.customContextMenuRequested.connect(self._profile_menu)
-        # Devices follow the same two-column inset layout as the source. A row
-        # still owns its original rename form and remove-confirmation workflow.
+        # Device names, route and RTT share a single row. Its own scroll area
+        # keeps a large account from pushing the settings controls offscreen.
         old=self.devices_body.layout()
         if old is not None:
             from shiboken6 import delete
             delete(old)
         self.devices_layout=QGridLayout(self.devices_body);self.devices_layout.setContentsMargins(0,10,0,0);self.devices_layout.setSpacing(10)
         self.devices_layout.setColumnStretch(0,1)
-        self.devices_layout.setColumnStretch(1,1)
         self.devices_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         self.devices_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.devices_body.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Maximum)
         self.devices_body.installEventFilter(self)
-        signed.addWidget(self.devices_body);self.devices_body.show()
+        self.devices_scroll=QScrollArea(self.signed_in_page)
+        self.devices_scroll.setObjectName('accountDevicesScroll');self.devices_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.devices_scroll.setWidgetResizable(True)
+        self.devices_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.devices_scroll.setStyleSheet('QScrollArea{background:transparent;border:0;} QScrollArea>QWidget>QWidget{background:transparent;} QScrollBar:vertical{width:6px;background:transparent;} QScrollBar::handle:vertical{background:rgba(142,142,147,90);border-radius:3px;min-height:24px;} QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;} QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{background:transparent;}')
+        self.devices_scroll.setWidget(self.devices_body)
+        signed.addWidget(self.devices_scroll);self.devices_body.show()
         root.removeWidget(self.status_label)
         signed.addWidget(self.status_label)
         self.devices_heading_label.hide();self.refresh_button.hide()
@@ -755,7 +764,7 @@ class AccountPanel(QFrame):
                     self._device_rows.append(row);self._rows_by_id[key]=row
                     continue
                 row=QFrame(self.devices_body);row.setObjectName('accountDevice')
-                row.setMinimumHeight(44)
+                row.setMinimumHeight(60)
                 row_layout=QVBoxLayout(row);row_layout.setContentsMargins(10,5,10,5);row_layout.setSpacing(8)
                 horizontal=QHBoxLayout();horizontal.setSpacing(5);row_layout.addLayout(horizontal)
                 glyph=AccountGlyph(row,device=True,platform=str(device.get('platform','')))
@@ -768,7 +777,8 @@ class AccountPanel(QFrame):
                 device_name.setProperty('compactDeviceName',True)
                 device_name.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Fixed)
                 device_name.setMaximumWidth(16777215)
-                horizontal.addWidget(device_name,1)
+                device_text=QVBoxLayout();device_text.setSpacing(0)
+                device_text.addWidget(device_name);horizontal.addLayout(device_text,1)
                 platform={'windows':'Windows','macos':'Mac','linux':'Linux'}.get(str(device.get('platform','')),'其他设备')
                 current=bool(device.get('current') or key==str(self.service.device_id))
                 row._current_device=current
@@ -779,11 +789,8 @@ class AccountPanel(QFrame):
                 subtitle=AccountNameLabel(row);subtitle.setObjectName('accountCurrentDevice' if current else 'accountDeviceMeta')
                 subtitle.setFixedHeight(20)
                 subtitle.setText('(本机)' if current else platform)
-                if current:
-                    subtitle.setSizePolicy(QSizePolicy.Policy.Fixed,QSizePolicy.Policy.Fixed)
-                    subtitle.setFixedWidth(48)
-                    horizontal.addWidget(subtitle)
-                else:subtitle.hide()
+                subtitle.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Fixed)
+                device_text.addWidget(subtitle);row._connection_label=subtitle
                 actions=QWidget(row);actions.setObjectName('accountDeviceActions')
                 action_layout=QHBoxLayout(actions);action_layout.setContentsMargins(0,0,0,0);action_layout.setSpacing(3)
                 actions.setSizePolicy(QSizePolicy.Policy.Fixed,QSizePolicy.Policy.Fixed)
@@ -834,13 +841,14 @@ class AccountPanel(QFrame):
             self.devices_layout.addWidget(empty,0,0,1,2);self._device_rows.append(empty)
         self.devices_heading_label.setText('已登录设备'+(' · '+str(len(self._devices)) if self._devices else ''))
         self._layout_device_rows()
+        self._update_device_connections()
         if motion is not None:
             self._fit_signed_content();self.devices_layout.activate()
             motion.reflow(self._rows_by_id,positions,enabled=self.isVisible() and motion_allowed())
         self.devices_body.updateGeometry();self.signed_in_page.updateGeometry();self.updateGeometry()
 
     def _layout_device_rows(self):
-        columns=2 if self.devices_body.width()>=472 else 1
+        columns=1
         signature=(columns,tuple(id(row) for row in self._device_rows),self.confirm_frame.isVisible())
         if getattr(self,'_device_layout_signature',None)==signature:return
         self._device_layout_signature=signature
@@ -858,6 +866,24 @@ class AccountPanel(QFrame):
         self._update_enabled()
         self._queue_fit()
 
+    def set_device_connections(self,snapshot):
+        self._device_connections=dict(snapshot)
+        self._update_device_connections()
+
+    def _update_device_connections(self):
+        labels={'lan':'局域网','p2p':'P2P 直连','relay':'TURN 中继','cloud':'云端','connecting':'连接中','disconnected':'未连接'}
+        platforms={'windows':'Windows','macos':'Mac','linux':'Linux'}
+        for identity,row in self._rows_by_id.items():
+            device=self._devices[identity];platform=platforms.get(str(device.get('platform','')),'其他设备')
+            if row._current_device:text=platform+' · (本机)'
+            else:
+                info=self._device_connections.get(identity,{})
+                route=labels.get(info.get('route'),'未连接');latency=info.get('latency_ms')
+                delay=str(round(latency))+' ms' if type(latency) in (float,int) and math.isfinite(latency) and 0<=latency<60000 else '—'
+                text=platform+' · '+route+' · '+delay
+            row._connection_label.setText(text)
+            row._connection_label.setAccessibleName(text)
+
     def _queue_fit(self):
         if not self._fit_timer.isActive():self._fit_timer.start(0)
 
@@ -870,6 +896,7 @@ class AccountPanel(QFrame):
         # leaving a stale 44px allocation for a subsequently 60px profile.
         devices=max(0,self.devices_layout.minimumSize().height()+2)
         self.devices_body.setFixedHeight(devices)
+        self.devices_scroll.setFixedHeight(min(DEVICE_LIST_MAX_HEIGHT,devices))
         # Layout owns child positions on every platform. Manual setGeometry
         # raced Cocoa's next layout pass and placed status text over controls.
         signed=self.signed_in_page.layout();signed.invalidate()
@@ -1013,7 +1040,7 @@ class AccountPanel(QFrame):
             QFrame#accountPanel QLabel#accountCurrentDevice {{font-size:11px;color:#0A84FF;}}
             QFrame#accountPanel QLabel#accountSyncStatus {{font-size:12px;color:{secondary};padding:0;}}
             QFrame#accountProfile,QFrame#accountDevices {{background:transparent;border:0;}}
-            QFrame#accountDevices {{border-top:1px solid {edge};}}
+            QFrame#accountDevices {{border:0;}}
             QFrame#accountDevice {{background:{'rgba(255,255,255,8)' if self._dark else 'rgba(0,0,0,6)'};border:1px solid {edge};border-radius:12px;}}
             QFrame#accountPanel QPushButton {{background:{control};color:{ink};border:0;padding:5px 12px;font-size:12px;}}
             QFrame#accountPanel QPushButton#accountDanger {{background:rgba(255,69,58,38);color:#FF453A;}}

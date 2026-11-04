@@ -6,10 +6,10 @@ from PySide6.QtGui import QColor, QPalette
 _theme = 'light'
 _PALETTES = {
     'light': {'surface':'#ffffff','canvas':'#f0f2f6','text':'#1d1d1f','secondary':'#515154',
-              'border':'#dfe2e8','hover':'#e8f2ff','icon':'#3a3a3c','button':'#f1f2f5',
+              'border':'transparent','hover':'#e8f2ff','icon':'#3a3a3c','button':'#f1f2f5',
               'selected':'#d6eaff','tab':'#ffffff','accent':'#007aff'},
     'dark': {'surface':'#1c1c1e','canvas':'#161616','text':'#f5f5f7','secondary':'#a1a1aa',
-             'border':'#3a3a3c','hover':'#303034','icon':'#e4e4e7','button':'#2c2c2e',
+             'border':'transparent','hover':'#303034','icon':'#e4e4e7','button':'#2c2c2e',
              'selected':'#1c3854','tab':'#2c2c2e','accent':'#0a84ff'}
 }
 

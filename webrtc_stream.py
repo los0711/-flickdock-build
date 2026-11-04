@@ -15,9 +15,17 @@ class WebRTCStream:
         self._process=subprocess.Popen([str(executable),'--use-system-ca',str(root/'bridge.mjs')],stdin=subprocess.PIPE,stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,cwd=root,creationflags=subprocess.CREATE_NO_WINDOW if sys.platform=='win32' else 0,
             env={key:value for key,value in os.environ.items() if key not in ('NODE_OPTIONS','NODE_PATH','NODE_EXTRA_CA_CERTS')})
+        self._initialize_buffers(on_signal)
+        self._reader_thread=threading.Thread(target=self._reader,daemon=True,name='FlickDock-WebRTC-pipe')
+        threading.Thread(target=self._drain_stderr,daemon=True,name='FlickDock-WebRTC-diagnostics').start()
+        self._reader_thread.start()
+        threading.Thread(target=self._writer,daemon=True,name='FlickDock-WebRTC-writer').start()
+
+    def _initialize_buffers(self,on_signal):
         self._condition=threading.Condition();self._data=deque();self._size=0
         self._controls=deque();self._writes=deque();self._write_bytes=0;self._control_bytes=0
         self._closed=False;self._timeout=1.;self.opened=threading.Event();self.route='';self.on_signal=on_signal
+        self.adaptive_capable=False
         self._nearby_context={};self._nearby_messages=deque();self._nearby_delivered=0;self._sockets=[]
         self._traffic={'sent':0,'received':0};self._stats_generation=0;self.last_activity=time.monotonic()
         self._sent_position=0;self._payload_spans=deque();self._payload_delivered=0
@@ -25,10 +33,6 @@ class WebRTCStream:
         self._reader_done=threading.Event()
         self._stderr_code='UNKNOWN';self._stderr_done=threading.Event()
         self._write_closed=False;self._shutdown_started=False;self._close_lock=threading.Lock()
-        self._reader_thread=threading.Thread(target=self._reader,daemon=True,name='FlickDock-WebRTC-pipe')
-        threading.Thread(target=self._drain_stderr,daemon=True,name='FlickDock-WebRTC-diagnostics').start()
-        self._reader_thread.start()
-        threading.Thread(target=self._writer,daemon=True,name='FlickDock-WebRTC-writer').start()
 
     @property
     def closed(self):return self._closed
@@ -97,39 +101,7 @@ class WebRTCStream:
                 size=struct.unpack('!I',self._read_pipe(4))[0]
                 if not 1<=size<=131073:raise ValueError('Invalid bridge frame')
                 packet=self._read_pipe(size)
-                if packet[:1]==b'B':
-                    with self._condition:
-                        while self._size>=8*1024*1024 and not self._closed and not self._write_closed:self._condition.wait()
-                        if self._closed or self._write_closed:continue
-                        self._data.append(packet[1:]);self._size+=len(packet)-1;self._condition.notify_all()
-                elif packet[:1]==b'J':
-                    value=json.loads(packet[1:])
-                    if value.get('type')=='open':
-                        self.route=value['route'];self._nearby_context=value.get('nearby',{});self.opened.set()
-                    if value.get('type')=='nearby':
-                        data=value.get('data',{})
-                        with self._condition:
-                            if data.get('state')=='credit':
-                                count=data.get('received','')
-                                if isinstance(count,str) and count.isascii() and count.isdigit() and len(count)<=20:
-                                    self._nearby_delivered=max(self._nearby_delivered,int(count))
-                            elif len(self._nearby_messages)<8:self._nearby_messages.append(data)
-                            else:raise ValueError('Nearby control queue exceeded')
-                            self._condition.notify_all()
-                    if value.get('type')=='stats':
-                        with self._condition:
-                            for key in ('sent','received'):
-                                count=value.get(key)
-                                if type(count) is int and count>=0:
-                                    if count>self._traffic[key]:self.last_activity=time.monotonic()
-                                    self._traffic[key]=max(self._traffic[key],count)
-                            self._stats_generation+=1;self._condition.notify_all()
-                            delivered=value.get('delivered')
-                            if type(delivered) is int and delivered>=self._delivered_position:
-                                self._delivered_position=delivered
-                                self._advance_payload()
-                    self.on_signal(value)
-                else:raise ValueError('Invalid bridge type')
+                self._accept_packet(packet)
         except (OSError,EOFError,ValueError):pass
         finally:
             with self._condition:self._closed=True;self._condition.notify_all()
@@ -137,10 +109,55 @@ class WebRTCStream:
             self._reader_done.set()
             self.on_signal(self._closed_event())
 
+    def _accept_packet(self,packet):
+        if packet[:1]==b'B':
+            with self._condition:
+                while self._size>=8*1024*1024 and not self._closed and not self._write_closed:self._condition.wait()
+                if self._closed or self._write_closed:return
+                self._data.append(packet[1:]);self._size+=len(packet)-1;self._condition.notify_all()
+        elif packet[:1]==b'J':
+            value=json.loads(packet[1:])
+            if value.get('type') in ('capabilities','open'):self.adaptive_capable=value.get('adaptive') is True
+            if value.get('type')=='open':
+                self.route=value['route'];self._nearby_context=value.get('nearby',{});self.opened.set()
+            if value.get('type')=='nearby':
+                data=value.get('data',{})
+                with self._condition:
+                    if data.get('state')=='credit':
+                        count=data.get('received','')
+                        if isinstance(count,str) and count.isascii() and count.isdigit() and len(count)<=20:
+                            self._nearby_delivered=max(self._nearby_delivered,int(count))
+                    elif len(self._nearby_messages)<8:self._nearby_messages.append(data)
+                    else:raise ValueError('Nearby control queue exceeded')
+                    self._condition.notify_all()
+            if value.get('type')=='path' and value.get('route') in ('direct','relay'):self.route=value['route']
+            if value.get('type')=='stats':
+                with self._condition:
+                    for key in ('sent','received'):
+                        count=value.get(key)
+                        if type(count) is int and count>=0:
+                            if count>self._traffic[key]:self.last_activity=time.monotonic()
+                            self._traffic[key]=max(self._traffic[key],count)
+                    self._stats_generation+=1;self._condition.notify_all()
+                    delivered=value.get('delivered')
+                    if type(delivered) is int and delivered>=self._delivered_position:
+                        self._delivered_position=delivered
+                        self._advance_payload()
+            self.on_signal(value)
+        else:raise ValueError('Invalid bridge type')
+
     def own_socket(self,stream):
         with self._condition:
             if self._closed:stream.close();raise ConnectionError('远程连接已中断。')
             self._sockets.append(stream)
+    def replace_owned_socket(self,old,new):
+        with self._condition:
+            if self._closed:new.close();raise ConnectionError('远程连接已中断。')
+            self._sockets.remove(old);self._sockets.append(new)
+    def release_owned_socket(self,stream):
+        with self._condition:
+            if self._closed:raise ConnectionError('远程连接已中断。')
+            self._sockets.remove(stream)
     def _close_sockets(self):
         with self._condition:sockets,self._sockets=self._sockets,[]
         for stream in sockets:

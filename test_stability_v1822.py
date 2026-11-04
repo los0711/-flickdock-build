@@ -105,12 +105,12 @@ class PriorityIsolationTests(unittest.TestCase):
         self.peer.finish(identity);until(lambda:not entry['dirty'])
         self.assertEqual(len(self.peer.puts),1);self.assertEqual(self.peer.payload_bytes,path.stat().st_size)
 
-    def test_priority_lease_expires_without_cancelling_inflight_cycle(self):
+    def test_priority_is_released_by_clipboard_completion_without_cancelling_inflight_cycle(self):
         self.engine.running=True
         with patch.object(self.engine,'_interrupt_cycle') as interrupt:
             self.engine.set_clipboard_priority(True)
             interrupt.assert_not_called();self.assertTrue(self.engine.running)
-            self.engine._clipboard_lease.timeout.emit()
+            self.engine.set_clipboard_priority(False)
             self.assertFalse(self.engine._clipboard_priority)
 
 

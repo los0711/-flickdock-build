@@ -1,4 +1,4 @@
-"""Native Windows media preview; no bundled decoder or external process.
+"""Qt media preview with native rendering and source-scoped player ownership.
 
 Video opens silently, pauses on its first frame and only plays audibly after
 an explicit button press. Each source owns a separate player generation so
@@ -11,12 +11,13 @@ from pathlib import Path
 import sys
 
 if sys.platform == "win32":
-    os.environ["QT_MEDIA_BACKEND"] = "windows"
+    os.environ["QT_MEDIA_BACKEND"] = "ffmpeg"
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QImage, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QVideoFrame, QVideoSink
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSizePolicy, QSlider, QVBoxLayout, QWidget
+from PySide6.QtMultimediaWidgets import QVideoWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSizePolicy, QSlider, QStyle, QStyleOptionSlider, QVBoxLayout, QWidget
 
 from flickdock_icons import document_pixmap, file_pixmap
 from flickdock_motion import Spring
@@ -25,6 +26,49 @@ import ui_theme
 
 VIDEO_SUFFIXES = {".mp4", ".m4v", ".mov", ".avi", ".mkv", ".webm", ".wmv", ".mpeg", ".mpg", ".3gp", ".ts", ".m2ts", ".vob"}
 AUDIO_SUFFIXES = {".mp3", ".wav", ".flac", ".aac", ".m4a", ".ogg", ".wma", ".opus", ".aiff", ".aif", ".amr", ".mid", ".midi"}
+POSTER_TIMEOUT_MS = 10000
+SEEK_COALESCE_MS = 80
+
+
+class _SeekSlider(QSlider):
+    """Use the styled groove's absolute position for both clicks and drags."""
+    def _move_to(self, point):
+        option = QStyleOptionSlider()
+        self.initStyleOption(option)
+        groove = self.style().subControlRect(QStyle.ComplexControl.CC_Slider, option,
+                                             QStyle.SubControl.SC_SliderGroove, self)
+        handle = self.style().subControlRect(QStyle.ComplexControl.CC_Slider, option,
+                                             QStyle.SubControl.SC_SliderHandle, self)
+        span = max(1, groove.width() - handle.width())
+        offset = round(point.x() - groove.left() - handle.width() / 2)
+        value = QStyle.sliderValueFromPosition(self.minimum(), self.maximum(),
+                                              max(0, min(span, offset)), span, option.upsideDown)
+        self.setValue(value)
+        self.sliderMoved.emit(value)
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton:
+            super().mousePressEvent(event)
+            return
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
+        self.setSliderDown(True)
+        self._move_to(event.position())
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self.isSliderDown():
+            self._move_to(event.position())
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self.isSliderDown():
+            self._move_to(event.position())
+            self.setSliderDown(False)
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
 
 
 def _clock(milliseconds):
@@ -136,9 +180,31 @@ class _VideoSurface(QWidget):
         super().__init__(parent)
         self.image = QImage()
         self.fallback = None
+        self.native = None
         self.setMinimumHeight(100)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+    def attach_video(self):
+        assert self.native is None
+        self.native = QVideoWidget(self)
+        self.native.setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
+        self.native.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.native.setGeometry(self.rect())
+        self.native.hide()
+        return self.native
+
+    def detach_video(self):
+        if self.native is not None:
+            self.native.hide()
+            self.native.deleteLater()
+            self.native = None
+        self.update()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self.native is not None:
+            self.native.setGeometry(self.rect())
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -178,8 +244,12 @@ class MediaPreview(QWidget):
         self._reported_playing = self._muted = False
         self._poster_timer = QTimer(self)
         self._poster_timer.setSingleShot(True)
-        self._poster_timer.setInterval(2200)
+        self._poster_timer.setInterval(POSTER_TIMEOUT_MS)
         self._poster_timer.timeout.connect(self._poster_timeout)
+        self._seek_timer = QTimer(self)
+        self._seek_timer.setSingleShot(True)
+        self._seek_timer.setInterval(SEEK_COALESCE_MS)
+        self._seek_timer.timeout.connect(lambda: self._seek(self.seek_slider.value()))
         self.setObjectName("mediaPreview")
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -189,12 +259,12 @@ class MediaPreview(QWidget):
         self.status_label = QLabel(self)
         self.status_label.setWordWrap(True)
         root.addWidget(self.status_label)
-        self.seek_slider = QSlider(Qt.Orientation.Horizontal, self)
+        self.seek_slider = _SeekSlider(Qt.Orientation.Horizontal, self)
         self.seek_slider.setRange(0, 0)
         self.seek_slider.setAccessibleName("播放进度")
         self.seek_slider.setEnabled(False)
-        self.seek_slider.sliderMoved.connect(self._seek)
-        self.seek_slider.sliderReleased.connect(lambda: self._seek(self.seek_slider.value()))
+        self.seek_slider.sliderMoved.connect(self._queue_seek)
+        self.seek_slider.sliderReleased.connect(self._finish_seek)
         self.seek_slider.valueChanged.connect(self._keyboard_seek)
         root.addWidget(self.seek_slider)
         controls = QHBoxLayout()
@@ -313,7 +383,9 @@ class MediaPreview(QWidget):
         self.audio_output.setVolume(self.volume_slider.value() / 100)
         self.audio_output.setMuted(True)
         player.setAudioOutput(self.audio_output)
-        self.video_sink = QVideoSink(self)
+        # Each source owns its renderer/sink, so a queued frame from an old
+        # decoder cannot be accepted by the next source's generation.
+        self.video_sink = self.surface.attach_video().videoSink() if self._video else QVideoSink(self)
         player.setVideoSink(self.video_sink)
         self.video_sink.videoFrameChanged.connect(lambda frame: self._frame_changed(frame, generation))
         player.durationChanged.connect(lambda duration: self._set_duration(duration) if generation == self._generation else None)
@@ -331,15 +403,16 @@ class MediaPreview(QWidget):
         if audio is not None:
             audio.setMuted(True)
         if player is not None:
-            # stop() alone retains the Media Foundation source and its file
-            # handle. Clearing the source and outputs releases that ownership.
+            # stop() alone retains the source/file handle. Clear ownership too.
             player.stop()
             player.setSource(QUrl())
             player.setVideoSink(None)
             player.setAudioOutput(None)
         if sink is not None:
             sink.setVideoFrame(QVideoFrame())
-        for item in (player, sink, audio):
+        native_sink = self.surface.native is not None
+        self.surface.detach_video()
+        for item in (player, None if native_sink else sink, audio):
             if item is not None:
                 item.deleteLater()
 
@@ -378,21 +451,23 @@ class MediaPreview(QWidget):
     def _frame_changed(self, frame, generation):
         if generation != self._generation or self.player is None or not frame.isValid():
             return
-        if not self._poster_pending and not self._user_playing and not self._seek_frame_pending:
+        if not self._poster_pending and not self._user_playing and not self._seek_frame_pending and self._poster_sent:
             return
-        image = frame.toImage()
-        if image.isNull():
-            return
-        self.surface.image = image
+        if self.surface.native is not None:
+            self.surface.native.show()
+        # Qt renders playing frames directly. CPU readback is only needed for
+        # a reusable poster or an explicitly sought paused frame.
+        image = frame.toImage() if not self._poster_sent or self._poster_pending or self._seek_frame_pending else QImage()
+        if not image.isNull():
+            self.surface.image = image
+            self.surface.update()
         self._seek_frame_pending = False
-        self.surface.update()
-        first_frame = not self._poster_sent
-        self._poster_sent = True
+        first_frame = not self._poster_sent and not image.isNull()
+        self._poster_sent = self._poster_sent or first_frame
         if self._poster_pending:
             self._poster_pending = False
             self._poster_timer.stop()
             self.player.pause()
-            self.player.setPosition(0)
             self._report_playing(False)
         self.status_label.hide()
         if first_frame:
@@ -403,6 +478,7 @@ class MediaPreview(QWidget):
     def _poster_timeout(self):
         if not self._poster_pending:
             return
+        # Late decoder frames remain eligible to replace the placeholder.
         self._poster_pending = False
         if self.player is not None:
             self.player.pause()
@@ -457,6 +533,15 @@ class MediaPreview(QWidget):
         if self.player is not None and not self._failed and self._ensure_source_available() and self.player.isSeekable():
             self._seek_frame_pending = self._video
             self.player.setPosition(int(position))
+
+    def _queue_seek(self, position):
+        self.duration_label.setText(f"{_clock(position)} / {_clock(self.seek_slider.maximum())}")
+        if not self._seek_timer.isActive():
+            self._seek_timer.start()
+
+    def _finish_seek(self):
+        self._seek_timer.stop()
+        self._seek(self.seek_slider.value())
 
     def _keyboard_seek(self, position):
         if not self.seek_slider.isSliderDown():
@@ -534,8 +619,13 @@ class MediaPreview(QWidget):
         self._play_when_ready = False
         self._seek_frame_pending = False
         self._poster_timer.stop()
+        self._seek_timer.stop()
         if self.player is not None and remember_position and self._source_exists(self.path):
             self._resume_position = self.player.position()
+            if self._video and self.video_sink is not None:
+                image = self.video_sink.videoFrame().toImage()
+                if not image.isNull():
+                    self.surface.image = image
         self._dispose_player()
         self._loaded = False
         self.seek_slider.setEnabled(False)

@@ -88,8 +88,8 @@ try{
   });
   await check('peer receives real upload progress before a streamed R2 part completes',async()=>{
     const sender=await request('POST','/v1/auth/register',credentials('event-progress-fixture'),undefined,201),receiver=await request('POST','/v1/auth/login',credentials('event-progress-fixture'));
-    const socket=new WebSocket(base.replace('http:','ws:')+'/v1/events',{headers:{Authorization:'Bearer '+receiver.token}}),progress=[];
-    socket.on('message',body=>{const value=JSON.parse(body.toString());if(value.type==='progress')progress.push(value);});
+    const socket=new WebSocket(base.replace('http:','ws:')+'/v1/events',{headers:{Authorization:'Bearer '+receiver.token}}),progress=[];let uploadFinished=false;
+    socket.on('message',body=>{const value=JSON.parse(body.toString());if(value.type==='progress')progress.push({...value,received_before_completion:!uploadFinished});});
     await new Promise((resolve,reject)=>{socket.once('open',resolve);socket.once('error',reject);});
     try{
       const data=Buffer.alloc(6*1024*1024,0x62),id=randomUUID(),digest=hash(data);
@@ -97,9 +97,11 @@ try{
       let position=0;
       const body=new ReadableStream({async pull(controller){if(position===data.length){controller.close();return;}await sleep(35);const end=Math.min(position+65536,data.length);controller.enqueue(data.subarray(position,end));position=end;}});
       const uploaded=await localFetch(base+`/v1/uploads/${reserved.upload_id}/parts/0`,{method:'PUT',headers:{Authorization:'Bearer '+sender.token,'X-Content-SHA256':digest,'Content-Length':String(data.length)},body,duplex:'half'});
-      assert.equal(uploaded.status,200,await uploaded.text());await sleep(200);
+      uploadFinished=true;assert.equal(uploaded.status,200,await uploaded.text());await sleep(200);
       const samples=progress.filter(value=>value.upload_id===reserved.upload_id);
-      assert.ok(samples.filter(value=>value.received_bytes>0&&value.received_bytes<data.length).length>=3,JSON.stringify(samples));
+      // Event coalescing is allowed. Prove useful progress arrived while the
+      // upload was still pending instead of requiring an arbitrary sample count.
+      assert.ok(samples.some(value=>value.received_bytes>0&&value.received_bytes<data.length&&value.received_before_completion),JSON.stringify(samples));
       assert.ok(samples.every(value=>value.total===data.length));
       const committed=await request('POST',`/v1/uploads/${reserved.upload_id}/commit`,{},sender.token);assert.equal(committed.record.sha256,digest);
       await request('DELETE',`/v1/items/${id}`,{base_version:1},sender.token);
@@ -453,18 +455,28 @@ try{
     const first=await reserve(alice.token,firstId,content);
     await part(alice.token,first.upload_id,0,content);
     await request('POST',`/v1/uploads/${first.upload_id}/commit`,{},alice.token);
+    const originalMetadata=await request('GET',`/v1/items/${firstId}/metadata`,undefined,alice.token);
+    assert.match(originalMetadata.uploaded_at,/^\d{4}-\d{2}-\d{2}T/);
+    await request('GET',`/v1/items/${firstId}/metadata`,undefined,bob.token,404);
+    await request('GET',`/v1/items/${firstId}/metadata`,undefined,undefined,401);
     const usage=sqlRows(`SELECT allocated_bytes n FROM accounts WHERE id='${alice.account.id}'`)[0].n;
     const instantId=randomUUID();
     const input={upload_id:instantId,item_id:secondId,base_version:0,kind:'file',name:'相同内容.bin',mime_type:'application/octet-stream',size:content.length,sha256:hash(content)};
     const fast=await request('POST','/v1/uploads',input,alice.token,201);
     assert.equal(fast.instant,true);assert.equal(fast.record.id,secondId);
+    const reusedMetadata=await request('GET',`/v1/items/${secondId}/metadata`,undefined,alice.token);
+    assert.equal(reusedMetadata.uploaded_at,fast.record.updated_at);
+    sql(`UPDATE items SET name='renamed metadata',version=version+1,updated_at=updated_at+60000 WHERE account_id='${alice.account.id}' AND id='${firstId}'`);
+    const renamedMetadata=await request('GET',`/v1/items/${firstId}/metadata`,undefined,alice.token);
+    assert.equal(renamedMetadata.version,2);assert.equal(renamedMetadata.uploaded_at,originalMetadata.uploaded_at);
+
     assert.equal((await request('POST','/v1/uploads',input,alice.token,201)).record.version,1);
     assert.equal(sqlRows(`SELECT allocated_bytes n FROM accounts WHERE id='${alice.account.id}'`)[0].n,usage);
     assert.equal(sqlRows(`SELECT COUNT(*) n FROM allocations WHERE account_id='${alice.account.id}' AND size=${content.length}`)[0].n,1);
     await request('POST','/v1/uploads',{...input,name:'other.bin'},alice.token,409);
     const other=await reserve(bob.token,randomUUID(),content);assert.equal(other.part_count,1);
     await request('DELETE',`/v1/uploads/${other.upload_id}`,undefined,bob.token);
-    await request('DELETE',`/v1/items/${firstId}`,{base_version:1},alice.token);
+    await request('DELETE',`/v1/items/${firstId}`,{base_version:2},alice.token);
     const stillThere=await localFetch(base+`/v1/items/${secondId}/parts/0?version=1`,{headers:{Authorization:'Bearer '+alice.token}});
     assert.equal(stillThere.status,200);assert.deepEqual(Buffer.from(await stillThere.arrayBuffer()),content);
     assert.equal(sqlRows(`SELECT allocated_bytes n FROM accounts WHERE id='${alice.account.id}'`)[0].n,usage);

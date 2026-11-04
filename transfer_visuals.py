@@ -8,6 +8,7 @@ import ui_theme
 
 
 CLOUD_STATUS_LABELS = {
+    'peer': '已同步到设备',
     'synced': '已同步到云端',
     'uploading': '正在上传到云端',
     'pending': '等待上传到云端',
@@ -16,10 +17,12 @@ CLOUD_STATUS_LABELS = {
     'error': '云端上传失败',
 }
 _CLOUD_STATUS_COLORS = {
+    'peer': '#287fe2',
     'synced': '#25966c', 'uploading': '#287fe2', 'pending': '#5684bd',
     'local': '#8391a3', 'paused': '#bd822e', 'error': '#d04c59',
 }
 _CLOUD_STATUS_DARK_COLORS = {
+    'peer': '#75b7ff',
     'synced': '#67d7a4', 'uploading': '#75b7ff', 'pending': '#9dc5f7',
     'local': '#b6c5d8', 'paused': '#efbb70', 'error': '#ff8d97',
 }

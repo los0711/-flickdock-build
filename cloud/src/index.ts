@@ -7,6 +7,7 @@ import {isIP} from 'node:net';
 import {wanRoute,type WanEnv} from './wan';
 import {clipboardRequest,clipboardAlarm} from './clipboard';
 import {intakeRequest} from './intake';
+import {storageBudget,StorageBudgetError} from './storage-budget';
 export {WanHub} from './wan';
 
 interface Env extends WanEnv {
@@ -141,10 +142,8 @@ async function rate(env:Env,key:string,limit:number,window:number){
   if(row!.n>limit)fail(429,'RATE_LIMITED','Too many attempts; retry later',{retry_after:Math.ceil(((slot+1)*window-now)/1000)});
 }
 async function budget(env:Env,kind:'A'|'B',count:number){
-  if(count<=0)return;
-  const cap=config(kind==='A'?env.R2_CLASS_A_BUDGET:env.R2_CLASS_B_BUDGET,kind==='A'?1000000:10000000);
-  const row=await first(env,'INSERT INTO budgets(period,kind,n) VALUES(?,?,?) ON CONFLICT(period,kind) DO UPDATE SET n=n+excluded.n RETURNING n',new Date().toISOString().slice(0,7),kind,count);
-  if(row!.n>cap){const now=new Date();const next=Date.UTC(now.getUTCFullYear(),now.getUTCMonth()+1,1);fail(503,'STORAGE_REQUEST_BUDGET','Storage request budget exhausted',{retry_after:Math.ceil((next-now.getTime())/1000)});}
+  try{await storageBudget(env,kind,count);}
+  catch(error){if(error instanceof StorageBudgetError)fail(error.status,error.code,error.message,error.details);throw error;}
 }
 const usernameKey=(value:string)=>caseFold(value.normalize('NFKC').trim());
 const reservedLoginAlias=(value:string)=>/^id:+[a-f0-9-]{36}$/i.test(value);
@@ -312,7 +311,7 @@ async function cleanup(env:Env){
 
 async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Response>{
   const url=new URL(request.url),path=url.pathname,method=request.method;
-  if(path.startsWith('/v1/wan/')&&path!=='/v1/wan/account')return wanRoute(request,env);
+  if(path.startsWith('/v1/wan/')&&!path.startsWith('/v1/wan/cloud/')&&!['/v1/wan/account','/v1/wan/ice'].includes(path))return wanRoute(request,env);
   if(method==='GET'&&path==='/v1/health')return json({service:'flickdock-cloud'});
   // Cloudflare enforces its account-wide free limits. Keep per-identity
   // authentication abuse controls below, but do not reject normal sync early.
@@ -357,6 +356,19 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
     return env.WAN.get(env.WAN.idFromName('flickdock-wan-v1')).fetch(new Request('https://internal/account',
       {method:'POST',headers:{'X-Wan-Device':sha(credential),'X-Wan-Account':owner.id,
         'X-Wan-Account-Device':owner.device_id,'X-Wan-Session':owner.token_hash,'X-Wan-Lan':lanId,'X-Wan-Nonce':nonce}}));
+  }
+  if(path==='/v1/wan/ice'&&method==='POST'){
+    const value=await body(request,['credential']);const credential=digest(value.credential);
+    return env.WAN.get(env.WAN.idFromName('flickdock-wan-v1')).fetch(new Request('https://internal/ice',
+      {method:'POST',headers:{'X-Wan-Device':sha(credential),'X-Wan-Account':owner.id,
+        'X-Wan-Account-Device':owner.device_id,'X-Wan-Session':owner.token_hash}}));
+  }
+  if(path.startsWith('/v1/wan/cloud/')){
+    const headers=new Headers({'X-Wan-Account':owner.id,'X-Wan-Account-Device':owner.device_id,'X-Wan-Session':owner.token_hash});
+    for(const name of ['Content-Type','Content-Length','X-Content-SHA256']){const value=request.headers.get(name);if(value!==null)headers.set(name,value);}
+    const credential=request.headers.get('X-Wan-Credential');
+    if(credential&&/^[a-f0-9]{64}$/.test(credential))headers.set('X-Wan-Device',sha(credential));
+    return env.WAN.get(env.WAN.idFromName('flickdock-wan-v1')).fetch(new Request('https://internal/cloud/'+path.slice('/v1/wan/cloud/'.length),{method,headers,body:request.body}));
   }
   if(path==='/v1/clipboard'||path.startsWith('/v1/clipboard/')){
     const headers=new Headers(request.headers);headers.delete('Authorization');
@@ -702,6 +714,22 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
     announce(env,ctx,owner,'content');
     if(current?.active_upload)await purgeUpload(env,current.active_upload);
     return json({record:record((await item(env,owner.id,id))!)});
+  }
+  match=path.match(/^\/v1\/items\/([^/]+)\/metadata$/);
+  if(method==='GET'&&match){
+    const id=uuid(match[1]),value=await item(env,owner.id,id);
+    if(!value||value.deleted)fail(404,'NOT_FOUND','Item not found');
+    // Rename revisions also update items.updated_at. Resolve the revision
+    // that committed this content, including account-scoped instant reuse.
+    const committed=await first(env,`SELECT json_extract(record,'$.updated_at') uploaded_at FROM changes
+      WHERE account_id=? AND item_id=? AND json_extract(record,'$.sha256')=?
+      AND json_extract(record,'$.version')=(SELECT MAX(revision) FROM (
+        SELECT base_version+1 revision FROM uploads WHERE id=? AND account_id=? AND item_id=?
+        UNION ALL SELECT result_version revision FROM instant_receipts
+        WHERE account_id=? AND item_id=? AND source_upload=? AND result_version<=?))
+      ORDER BY seq DESC LIMIT 1`,owner.id,id,value!.sha256,value!.active_upload,owner.id,id,
+      owner.id,id,value!.active_upload,value!.version);
+    return json({id,version:value!.version,sha256:value!.sha256,uploaded_at:committed?.uploaded_at??null});
   }
   match=path.match(/^\/v1\/items\/([^/]+)\/content$/);
   if(method==='GET'&&match){

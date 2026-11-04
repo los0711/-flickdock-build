@@ -2,7 +2,7 @@
 import os
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 os.environ['QT_SCALE_FACTOR'] = '1.25'
-os.environ['QT_MEDIA_BACKEND'] = 'windows'
+os.environ['QT_MEDIA_BACKEND'] = 'ffmpeg'
 
 from contextlib import contextmanager
 import hashlib

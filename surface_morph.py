@@ -79,18 +79,19 @@ class SurfaceSnapshot(QWidget):
         self._shadows=OrderedDict()
         self.capture_count=0
         self._blend=QPixmap()
+        self.target_sections=[]
         self.hide()
 
     def capture_live(self,card,controls):
-        visibility=[(button,not button.isHidden()) for button in controls]
+        visibility=[(button,not button.isHidden()) for button in controls if card.isAncestorOf(button)]
         effect=card.graphicsEffect()
         enabled=effect.isEnabled() if effect else False
         for button,_ in visibility: button.hide()
         if effect: effect.setEnabled(False)
         try:
             card.ensurePolished()
-            for child in card.findChildren(QWidget):
-                if child.layout(): child.layout().activate()
+            # QWidget.render prepares dirty descendant layouts in Qt. Walking
+            # thousands of row children again in Python delays the first frame.
             dpr=card.devicePixelRatioF()
             image=QPixmap(round(card.width()*dpr),round(card.height()*dpr))
             image.setDevicePixelRatio(dpr); image.fill(Qt.GlobalColor.transparent)
@@ -122,6 +123,7 @@ class SurfaceSnapshot(QWidget):
         return image
 
     def begin(self,source,target,origin,present=True,target_rect=None):
+        self.target_sections=[]
         self.source,self.target=source,target
         self.active=True; self.mix=0; self.rect_global=QRect(origin)
         self.transition_bounds=origin.united(target_rect) if target_rect is not None else QRect(origin)
@@ -137,6 +139,7 @@ class SurfaceSnapshot(QWidget):
 
     def finish(self):
         self.active=False; self.hide()
+        self.target_sections=[]
         self.source=QPixmap(); self.target=QPixmap()
 
     def _effect(self):
@@ -177,12 +180,25 @@ class SurfaceSnapshot(QWidget):
                              effect.offset() if effect else None,
                              effect.color() if effect else None)
 
+    def draw_target(self,painter,rect):
+        if not self.target_sections:
+            painter.drawPixmap(rect,self.target,QRectF(self.target.rect()));return
+        size=self.target.deviceIndependentSize();ratio=self.target.devicePixelRatioF()
+        painter.save();painter.translate(rect.topLeft())
+        painter.scale(rect.width()/size.width(),rect.height()/size.height())
+        for section,offset in self.target_sections:
+            painter.save();painter.setClipRect(section)
+            destination=section.translated(offset.x()*(1-self.mix),offset.y()*(1-self.mix))
+            source=QRectF(section.x()*ratio,section.y()*ratio,section.width()*ratio,section.height()*ratio)
+            painter.drawPixmap(destination,self.target,source);painter.restore()
+        painter.restore()
+
     def paint_frame(self,painter,rect,live_draw=None,target_size=None):
         """Paint inside MotionShadow's existing source coordinate system.
 
         Target widgets stay at their final layout size and remain visible to
-        Qt. The source fades away over that live target. At progress one this
-        is already the exact drawSource path used after end_surface_morph().
+        Qt. Blend the captured endpoints, then hand off to the cached live
+        source at progress one, before end_surface_morph().
         No widget visibility, native geometry or raster changes at completion.
         """
         painter.save()
@@ -212,7 +228,7 @@ class SurfaceSnapshot(QWidget):
             layer=QPainter(self._blend);layer.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
             layer.setOpacity(self.mix)
             if live_draw is not None:live_draw(layer)
-            elif not self.target.isNull():layer.drawPixmap(QRectF(0,0,width,height),self.target,QRectF(self.target.rect()))
+            elif not self.target.isNull():self.draw_target(layer,QRectF(0,0,width,height))
             layer.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
             layer.setOpacity(1-self.mix)
             layer.drawPixmap(QRectF(0,0,width,height),self.source,QRectF(self.source.rect()));layer.end()
@@ -226,7 +242,7 @@ class SurfaceSnapshot(QWidget):
             live_draw(painter)
             painter.restore()
         elif not self.target.isNull():
-            painter.drawPixmap(rect,self.target,QRectF(self.target.rect()))
+            self.draw_target(painter,rect)
         painter.restore()
 
     def _paint_content(self,painter,rect):

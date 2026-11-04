@@ -477,6 +477,7 @@ class SettingsStore(QObject):
                       "capture_mode": "reference", "keep_empty_handle": True,
                       "sync_upload_enabled": True, "sync_receive_enabled": True,
                       "clipboard_sync_enabled": True, "clipboard_notice_seen": False, "clipboard_success_notice": True,
+                      "video_link_prompt": True, "video_download_dir": str(self.base / "videos"),
                       "trigger_view": "compact", "shake_sensitivity": DEFAULT_SHAKE_SENSITIVITY,
                       "view_mode": "list", "shelf_shortcut": SHELF_SHORTCUT,
                       "overview_shortcut": OVERVIEW_SHORTCUT, "dock_edge": "right",
@@ -504,7 +505,11 @@ class SettingsStore(QObject):
                         self._data["lan_receive_dir"] = str(candidate)
                 if isinstance(data.get("autostart"), bool):
                     self._data["autostart"] = data["autostart"]
-                for name in ("sync_upload_enabled", "sync_receive_enabled", "clipboard_sync_enabled", "clipboard_notice_seen", "clipboard_success_notice", "automatic_updates"):
+                video_directory=data.get('video_download_dir')
+                if isinstance(video_directory,str) and video_directory.strip():
+                    candidate=Path(os.path.expandvars(video_directory)).expanduser()
+                    if candidate.is_absolute():self._data['video_download_dir']=str(candidate)
+                for name in ("sync_upload_enabled", "sync_receive_enabled", "clipboard_sync_enabled", "clipboard_notice_seen", "clipboard_success_notice", "automatic_updates", "video_link_prompt"):
                     if isinstance(data.get(name), bool):
                         self._data[name] = data[name]
                 if data.get("capture_mode") in CAPTURE_MODES:
@@ -574,6 +579,12 @@ class SettingsStore(QObject):
     @property
     def clipboard_sync_enabled(self) -> bool:
         return self._data["clipboard_sync_enabled"]
+
+    @property
+    def video_link_prompt(self):return self._data['video_link_prompt']
+
+    @property
+    def video_download_dir(self):return self._data['video_download_dir']
 
     @property
     def automatic_updates(self):
@@ -691,7 +702,7 @@ class SettingsStore(QObject):
                trigger_visible=None, dock_color=None, dock_opacity=None,
                capture_mode=None, keep_empty_handle=None, trigger_view=None,
                shake_sensitivity=None, sync_upload_enabled=None,
-               sync_receive_enabled=None, clipboard_sync_enabled=None, clipboard_notice_seen=None, clipboard_success_notice=None, display_triggers=None, automatic_updates=None) -> bool:
+               sync_receive_enabled=None, clipboard_sync_enabled=None, clipboard_notice_seen=None, clipboard_success_notice=None, display_triggers=None, automatic_updates=None, video_link_prompt=None, video_download_dir=None) -> bool:
         candidate = dict(self._data)
         if display_triggers is not None:
             from display_triggers import validate_profiles
@@ -702,6 +713,8 @@ class SettingsStore(QObject):
             candidate["theme"] = theme
         if capture_dir is not None:
             candidate["capture_dir"] = str(self._validate_directory(capture_dir))
+        if video_download_dir is not None:
+            candidate['video_download_dir']=str(self._validate_directory(video_download_dir))
         if capture_mode is not None:
             if capture_mode not in CAPTURE_MODES:
                 raise ValueError("请选择快捷方式或复制到保存位置。")
@@ -715,6 +728,7 @@ class SettingsStore(QObject):
                             ("clipboard_sync_enabled", clipboard_sync_enabled),
                             ("clipboard_notice_seen", clipboard_notice_seen),
                             ("clipboard_success_notice", clipboard_success_notice),
+                            ("video_link_prompt", video_link_prompt),
                             ("automatic_updates", automatic_updates)):
             if value is not None:
                 if not isinstance(value, bool):
@@ -1244,12 +1258,15 @@ class SettingsDialog(QDialog):
         cloud_layout.addWidget(cloud_heading)
         self.sync_upload_checkbox = SettingsToggleSwitch("上传本机搁架到云端", cloud)
         self.sync_receive_checkbox = SettingsToggleSwitch("接收云端与其他设备内容", cloud)
-        self.clipboard_sync_checkbox = SettingsToggleSwitch("云剪贴板同步", cloud)
-        self.clipboard_sync_checkbox.setAccessibleName('云剪贴板同步')
-        self.clipboard_sync_checkbox.setToolTip('自动同步小于 20 MB 的文本、链接、图片或单个文件，仅限同账号设备；可在这里关闭。')
+        self.clipboard_sync_checkbox = SettingsToggleSwitch("剪贴板同步", cloud)
+        self.clipboard_sync_checkbox.setAccessibleName('剪贴板同步')
+        self.clipboard_sync_checkbox.setToolTip('自动同步小于 20 MB 的文本、链接、图片或单个文件；同账号设备优先直连送达，云端独立备份。')
         self.clipboard_sync_checkbox.toggled.connect(self._clipboard_sync_changed)
-        self.clipboard_success_checkbox=SettingsToggleSwitch('剪贴板同步成功提示',cloud)
+        self.clipboard_success_checkbox=SettingsToggleSwitch('剪贴板复制提示',cloud)
+        self.clipboard_success_checkbox.setToolTip('关闭后，同步成功和失败都不弹出复制提示。')
         self.clipboard_success_checkbox.toggled.connect(self._clipboard_success_changed)
+        self.video_prompt_checkbox=SettingsToggleSwitch('复制视频链接时提示解析',cloud)
+        self.video_prompt_checkbox.toggled.connect(self._video_prompt_changed)
         self.sync_upload_checkbox.setAccessibleName("上传本机搁架到云端")
         self.sync_receive_checkbox.setAccessibleName("接收云端与其他设备内容")
         cloud_layout.addWidget(self.sync_upload_checkbox)
@@ -1537,8 +1554,8 @@ class SettingsDialog(QDialog):
         cl.setAlignment(Qt.AlignmentFlag.AlignTop)
         ch=QLabel('云同步与存储',cloud);ch.setObjectName('settingsSection');cl.addWidget(ch)
         for control,label in ((self.sync_upload_checkbox,'上传本机搁架到云端'),(self.sync_receive_checkbox,'接收云端与其他设备内容'),
-                              (self.clipboard_sync_checkbox,'云剪贴板同步（小于 20 MB）'),
-                              (self.clipboard_success_checkbox,'剪贴板同步成功提示')):
+                              (self.clipboard_sync_checkbox,'剪贴板同步（小于 20 MB）'),
+                              (self.clipboard_success_checkbox,'剪贴板复制提示')):
             cl.addWidget(self._reference_toggle(control,label,cloud))
         self.retention_description=QLabel('云端文件保存时间\n小于 100 MB：上传成功后保留 24 小时。\n100 MB 及以上：上传成功后保留 2 小时。\n从完整上传成功时计时；到期仅清理云端副本，本机原文件和已下载的文件不受影响。',cloud)
         self.retention_description.setObjectName('settingsDetail');self.retention_description.setWordWrap(True)
@@ -1547,6 +1564,8 @@ class SettingsDialog(QDialog):
         cl.addWidget(self._reference_segment(self.capture_mode_combo,('快捷方式','复制到保存位置')))
         path=QHBoxLayout();path.setSpacing(8);self.folder_edit.setMinimumHeight(28);self.folder_edit.setMaximumHeight(28);path.addWidget(self.folder_edit,1)
         browse=QPushButton('浏览…',cloud);browse.setMinimumHeight(28);browse.setObjectName('settingsBrowse');browse.setAutoDefault(False);browse.clicked.connect(self.choose_directory);path.addWidget(browse);cl.addLayout(path)
+        video_heading=QLabel('视频解析',cloud);video_heading.setObjectName('settingsSection');cl.addWidget(video_heading)
+        cl.addWidget(self._reference_toggle(self.video_prompt_checkbox,'复制视频链接时提示解析',cloud))
         lower_grid.addWidget(shortcuts,1);lower_grid.addWidget(cloud,1);self.body_layout.addWidget(lower)
         self.body_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.body_layout.setSizeConstraints(QLayout.SizeConstraint.SetMinimumSize,QLayout.SizeConstraint.SetNoConstraint)
@@ -2006,6 +2025,7 @@ class SettingsDialog(QDialog):
         self.sync_upload_checkbox.setChecked(self.store.sync_upload_enabled)
         self.sync_receive_checkbox.setChecked(self.store.sync_receive_enabled)
         self.clipboard_sync_checkbox.setChecked(self.store.clipboard_sync_enabled)
+        self.video_prompt_checkbox.setChecked(self.store.video_link_prompt)
         self.clipboard_success_checkbox.setChecked(self.store.clipboard_success_notice)
         self.theme_combo.setCurrentIndex(1 if self.store.theme == "dark" else 0)
         self.folder_edit.setText(str(self.store.capture_dir))
@@ -2074,8 +2094,17 @@ class SettingsDialog(QDialog):
             self.clipboard_sync_checkbox.blockSignals(blocked)
             self.error_label.setText(str(error));self.error_label.show()
 
+    def _video_prompt_changed(self,checked):
+        if self._loading_values:return
+        try:self.store.update(video_link_prompt=checked)
+        except (ValueError,OSError) as error:
+            blocked=self.video_prompt_checkbox.blockSignals(True)
+            self.video_prompt_checkbox.setChecked(self.store.video_link_prompt);self.video_prompt_checkbox.blockSignals(blocked)
+            self.error_label.setText(str(error));self.error_label.show()
+
     def _sync_direction_controls(self):
         for control, value in ((self.sync_upload_checkbox, self.store.sync_upload_enabled),
+                               (self.video_prompt_checkbox,self.store.video_link_prompt),
                                (self.sync_receive_checkbox, self.store.sync_receive_enabled)):
             blocked = control.blockSignals(True)
             control.setChecked(value)

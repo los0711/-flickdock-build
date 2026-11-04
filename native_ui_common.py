@@ -5,6 +5,7 @@ used. Windows and macOS keep the separate radius, font and titlebar treatments
 specified by that document.
 """
 from __future__ import annotations
+import re
 
 import sys
 import os
@@ -19,6 +20,9 @@ from PySide6.QtWidgets import QApplication, QAbstractButton, QHBoxLayout, QLabel
 
 
 WINDOWS_FONT_STACK=('HarmonyOS Sans SC','Segoe UI Variable Text','Segoe UI','Noto Sans SC','Source Han Sans SC')
+SHELF_HEADER_BUTTON_SIZE_PX = 32
+SHELF_HEADER_BUTTON_GAP_PX = 6
+SHELF_HEADER_RIGHT_MARGIN_PX = 16
 
 
 class _RoundedPopupClip(QObject):
@@ -62,10 +66,25 @@ def readable_size(value):
     value=int(value)
     return value+(1 if value>=12 else 2) if sys.platform=='win32' else value
 
+def flat_qss(source):
+    def block(match):
+        selector,body=match.groups()
+        if not re.search(r':focus|keyboardFocus|::indicator|::handle',selector):
+            def outline(declaration):
+                value=declaration[1].strip()
+                if value in ('0','none','0px'):return declaration[0]
+                width=re.match(r'([\d.]+px)\s+',value)
+                return 'border:'+(width[1] if width else '1px')+' solid transparent'
+            body=re.sub(r'(?<![\w-])border\s*:\s*([^;{}]+)',outline,body)
+            body=re.sub(r'(?<![\w-])border-color\s*:\s*[^;{}]+','border-color:transparent',body)
+        return selector+'{'+body+'}'
+    return re.sub(r'([^{}]+)\{([^{}]*)\}',block,source)
+
+
 def readable_qss(source):
     """One size step on Windows, applied once before installing a stylesheet."""
+    source=flat_qss(source)
     if sys.platform != 'win32' or 'flickdock-readable-type' in source:return source
-    import re
     source=re.sub(r'(font-size\s*:\s*)(\d+)(px)',lambda m:m[1]+str(readable_size(m[2]))+m[3],source)
     source=re.sub(r'(font\s*:\s*(?:[1-9]00\s+)?)(\d+)(px)',lambda m:m[1]+str(readable_size(m[2]))+m[3],source)
     return source+'\n/* flickdock-readable-type */'
@@ -214,6 +233,7 @@ _SEMANTIC = {
 def colors(theme='dark', platform=None):
     result = dict(_LIGHT if str(theme).lower() == 'light' else _DARK)
     result.update(_SEMANTIC)
+    result.update(border='transparent',glass_border='transparent',hover_border='transparent',selected_border='transparent')
     result.update(action='#0062CC', action_hover='#0054B0', danger_action='#B42318', on_action='#FFFFFF',
                   link='#0062CC' if str(theme).lower() == 'light' else '#6DAEFF')
     if str(theme).lower() == 'light':
@@ -268,8 +288,10 @@ _SVG_BODY = {
     'moon': '<path d="M20.5 13A9 9 0 0 1 11 3.5 9 9 0 1 0 20.5 13Z"/>',
     'plus': '<path d="M12 4v16M4 12h16"/>',
     'shelf': '<path d="m3 13 3-9h12l3 9v7H3v-7Z"/><path d="M3 13h5l2 3h4l2-3h5"/>',
+    'send': '<path d="m22 2-7 20-4-9-9-4L22 2ZM22 2 11 13"/>',
+    'download': '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>',
 }
-_ALIASES = {'folder': 'file', 'upload': 'transferring', 'download': 'transferring',
+_ALIASES = {'folder': 'file', 'upload': 'transferring',
             'wifi': 'nearby', 'lan': 'nearby', 'chevron-down': 'chevron',
             'chevron-right': 'right', 'cloud-upload': 'cloud', 'cloud-off': 'cloud'}
 

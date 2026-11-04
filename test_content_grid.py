@@ -100,7 +100,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-grid-') as profile:
         item.set_selected(item.ref in popup.selected)
     wait(180)
     assert items[0]._selected and not items[1]._selected
-    assert len(items[0].findChildren(Spring)) == 2, 'one item spring + one persistent remove-button spring'
+    assert len(items[0].findChildren(Spring)) == 3, 'item and persistent delete/send buttons'
     popup.grab().save(str(Path(__file__).parent / 'v15-icon-grid.png'))
     popup.hide()
 print('CONTENT_GRID_OK')

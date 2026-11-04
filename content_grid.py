@@ -23,6 +23,11 @@ except ImportError:
                 "accent": "#1876db"}[key]
 
 
+GRID_CARD_HEIGHT_PX=120
+GRID_CARD_MIN_WIDTH_PX=112
+GRID_COLUMN_WIDTH_PX=144
+
+
 class IconItem(QWidget):
     """Reference grid cell; ``popup.selected`` is the selection authority.
 

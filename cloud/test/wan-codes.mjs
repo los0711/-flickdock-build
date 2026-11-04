@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import {registerHooks} from 'node:module';
 registerHooks({
-  resolve(specifier,context,next){return specifier==='cloudflare:workers'?{url:'wan-test:workers',shortCircuit:true}:next(specifier==='./relay-budget'?specifier+'.ts':specifier,context);},
+  resolve(specifier,context,next){return specifier==='cloudflare:workers'?{url:'wan-test:workers',shortCircuit:true}:next(['./relay-budget','./cloud-pipe','./storage-budget'].includes(specifier)?specifier+'.ts':specifier,context);},
   load(url,context,next){return url==='wan-test:workers'?{format:'module',shortCircuit:true,source:'export class DurableObject {constructor(ctx,env){this.ctx=ctx;this.env=env;}}'}:next(url,context);},
 });
 const {WanHub}=await import('../src/wan.ts');
@@ -41,6 +41,7 @@ try{
   await send(alice,{...input(id),prepared:true,token:'f'.repeat(64)});assert.equal(last(alice,'error').requestType,'request');
   now+=120000;await send(alice,{...input(id),prepared:true});assert.equal(last(bob,'request').id,id,'Manifest preparation may outlive the original code');
   await send(bob,{type:'accept',id});assert.equal(last(alice,'begin').id,id);
+  assert.equal(last(alice,'begin').adaptive,false,'Published clients must receive the unchanged file protocol');
   await hub.webSocketClose(bob);assert.equal(last(alice,'peers').peers[0].online,false);
   bob.readyState=1;await send(bob,{type:'hello',name:'bob',platform:'macos'});
   assert.equal(last(alice,'peers').peers[0].online,true);
@@ -57,5 +58,12 @@ try{
   now+=60000;await send(bob,{type:'refresh'});const valid=last(bob,'identity').code,cancelled=next();
   await send(alice,{type:'cancel',id:cancelled});await send(alice,{type:'prepare',id:cancelled,token:'d'.repeat(64),code:valid});assert.equal(last(alice,'error').id,cancelled);
   const legacyId=next();await send(alice,{...input(legacyId),code:valid});assert.equal(last(bob,'request').id,legacyId,'Existing desktop versions retain the code request protocol');
+  await send(alice,{type:'hello',name:'alice',platform:'windows',features:['routes-v1','mesh-v1']});
+  await send(bob,{type:'hello',name:'bob',platform:'macos',features:['routes-v1','mesh-v1']});
+  await send(alice,{type:'cancel',id:legacyId});
+  const adaptiveId=next();await send(alice,{...input(adaptiveId),peer:bob.deserializeAttachment().id});await send(bob,{type:'accept',id:adaptiveId});
+  assert.equal(last(alice,'begin').adaptive,true);assert.equal(last(bob,'begin').adaptive,true);
+  await send(alice,{type:'cancel',id:adaptiveId});
+  console.log('PASS route framing requires both peers to advertise capabilities');
   console.log('PASS refresh deadlines, old-code overlap/single use, early reservation, sender/token binding, recent device expiry independence, deletion, cancellation and legacy requests');
 }finally{Date.now=originalNow;}

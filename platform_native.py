@@ -389,7 +389,7 @@ def window_move_active():
 def configure_media_backend(*, platform=None):
     platform = sys.platform if platform is None else platform
     if platform == 'win32':
-        os.environ['QT_MEDIA_BACKEND'] = 'windows'
+        os.environ['QT_MEDIA_BACKEND'] = 'ffmpeg'
     elif platform == 'darwin':
         os.environ['QT_MEDIA_BACKEND'] = 'darwin'
         # QCocoaWindow::raise defaults to activateIgnoringOtherApps:YES.

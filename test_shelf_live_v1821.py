@@ -75,7 +75,7 @@ class LiveShelfTests(unittest.TestCase):
         from PySide6.QtGui import QImage,QColor
         self.manager.motion=True;self.manager._sync_transfer_refs=set()
         tile=self.shelf.zones['permanent'].icon;tile.motion=True
-        self.manager.sync=SimpleNamespace(catching_up=False,sync_status_for_ref=lambda _:'synced')
+        self.manager.sync=SimpleNamespace(upload_time_for_ref=lambda _:None,catching_up=False,sync_status_for_ref=lambda _:'synced')
         popup=self.overview();adapter=ShelfAdapter(self.manager)
         for mode in ('list','icons'):
             self.settings.update(view_mode=mode);popup._render_signature=None;popup.rebuild();flush()

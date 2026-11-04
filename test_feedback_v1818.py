@@ -286,7 +286,7 @@ class FeedbackTests(unittest.TestCase):
             'paused':dict(dirty=True,paused_upload=True,ref='paused'),
             'stale':dict(dirty=True,ref='gone',fingerprint='old',blocked_fingerprint='old')}
         engine=SimpleNamespace(upload_enabled=True,receive_enabled=True,state=dict(entries=entries),running=True,transfer=None,
-            _clipboard_priority=False,_lane_context=None,small_lane=SimpleNamespace(active=None,retry_at={}),clipboard_bridge=None,
+            _clipboard_priority=False,_lane_context=None,upload_lanes=SimpleNamespace(active={},retry_at={}),clipboard_bridge=None,
             _cycle_direction='',_refresh_again=False,_notify_transfers=lambda:None,_pending_removal=lambda:None,_paused=lambda _:False,
             adapter=SimpleNamespace(snapshot=lambda:dict(permanent=['blocked'])),status_changed=SimpleNamespace(emit=statuses.append))
         for identity,entry in entries.items():entry['id']=identity

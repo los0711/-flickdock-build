@@ -6,7 +6,8 @@ from pathlib import Path
 import tempfile
 from unittest.mock import patch
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QPoint, Qt, Signal
+from PySide6.QtTest import QTest
 from PySide6.QtGui import QFont, QFontDatabase, QImage
 from PySide6.QtMultimedia import QMediaPlayer as NativePlayer, QVideoFrame
 from PySide6.QtWidgets import QApplication
@@ -145,6 +146,25 @@ with tempfile.TemporaryDirectory(prefix="flickdock-media-") as temporary, \
     preview.video_sink.videoFrameChanged.emit(QVideoFrame(red))
     assert preview.surface.image.pixelColor(0, 0).name() == "#ed483b" and len(frames) == 1
     print("PASS play/pause is explicit, keyboard/timeline seek updates a paused video frame and duration")
+
+    app.processEvents()
+    with patch.object(preview.player,'setPosition',wraps=preview.player.setPosition) as seek:
+        QTest.mouseClick(preview.seek_slider,Qt.LeftButton,pos=QPoint(round(preview.seek_slider.width()*.75),preview.seek_slider.height()//2))
+        assert 8500 <= preview.player.position() <= 9500
+        assert seek.call_count == 1 and not preview._seek_timer.isActive()
+        QTest.mousePress(preview.seek_slider,Qt.LeftButton,pos=QPoint(10,preview.seek_slider.height()//2))
+        for x in range(20,preview.seek_slider.width()-10,5):
+            QTest.mouseMove(preview.seek_slider,QPoint(x,preview.seek_slider.height()//2))
+        QTest.mouseRelease(preview.seek_slider,Qt.LeftButton,pos=QPoint(preview.seek_slider.width()-10,preview.seek_slider.height()//2))
+        assert seek.call_count == 2 and not preview._seek_timer.isActive()
+    # Normal playing frames go straight to Qt's renderer, retaining the CPU
+    # poster until explicit pause/seek/source release needs a snapshot.
+    preview.toggle_playback()
+    with patch.object(subject.QVideoFrame,'toImage',side_effect=AssertionError('per-frame CPU readback')):
+        preview._seek_frame_pending=False
+        preview.video_sink.videoFrameChanged.emit(QVideoFrame(red))
+    preview.toggle_playback()
+    print('PASS absolute timeline clicks, coalesced drag seeks and native playback without per-frame CPU copies')
 
     stale_player, stale_sink = preview.player, preview.video_sink
     preview.set_source(second)

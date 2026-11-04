@@ -177,17 +177,24 @@ class MotionShadow(QGraphicsDropShadowEffect):
 
     def draw(self, painter: QPainter) -> None:
         bounds = self.sourceBoundingRect(Qt.CoordinateSystem.LogicalCoordinates)
+        snapshot=self._surface_snapshot
+        active=snapshot is not None and snapshot.active
         # QWidget drawSource() can restore its own painter state and bypass
         # the caller's scale/clip. Always composite its cached pixmap ourselves,
         # at rest as well as in motion, so intermediate and final frames share
         # exactly one transform-respecting path.
         offset=QPoint()
-        source=self.sourcePixmap(Qt.CoordinateSystem.LogicalCoordinates,offset,
-                                 QGraphicsEffect.PixmapPadMode.NoPad)
+        if active and snapshot.mix<1:
+            # The endpoint was rendered once at the final layout size. Asking
+            # Qt for the live source on every blend tick repaints the entire
+            # overview; use that endpoint until the final live-source handoff.
+            source=snapshot.target
+        else:
+            source=self.sourcePixmap(Qt.CoordinateSystem.LogicalCoordinates,offset,
+                                     QGraphicsEffect.PixmapPadMode.NoPad)
         def draw_live(target):
-            target.drawPixmap(QPointF(offset),source)
-        snapshot=self._surface_snapshot
-        active=snapshot is not None and snapshot.active
+            if active and snapshot.mix<1:snapshot.draw_target(target,QRectF(QPointF(),bounds.size()))
+            else:target.drawPixmap(QPointF(offset),source)
         rect=self._surface_rect(snapshot) if active else bounds
         center = rect.center()
         painter.save()
@@ -208,6 +215,7 @@ class MotionShadow(QGraphicsDropShadowEffect):
 
 class FeedbackButton(QPushButton):
     """Painted icon button with pointer-down feedback and a soft release."""
+    glyph_scale = 1.0
     _NAMES = {"more": "更多操作", "close": "移除", "check": "已复制", "plus": "添加文件",
               "pin": "永久区域", "temporary": "临时区域", "trash": "移除",
               "copy": "复制", "chevron": "展开", "shelf": "文件搁架",
@@ -336,7 +344,7 @@ class FeedbackButton(QPushButton):
             p.drawRoundedRect(QRectF(self.rect()).adjusted(2, 2, -2, -2),
                               8 if flat_toolbar else self.height() / 2,
                               8 if flat_toolbar else self.height() / 2)
-        glyph_size = min(24, self.width() - 8)*(.82 if self.glyph=='copy' else .875)
+        glyph_size = min(24, self.width() - 8)*(.82 if self.glyph=='copy' else .875)*self.glyph_scale
         if not self.isEnabled():
             p.setOpacity(.45)
         glyph_color = (self._glyph_tint or (ui_theme.color("accent") if self.glyph == "nearby"

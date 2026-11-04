@@ -56,6 +56,23 @@ jobs:
       - name: Measure verified local LAN loopback transfer
         run: |
           build/macos-venv/bin/python bench_lan_throughput_v183.py --size-mib 128 --output "../outputs/mac-lan-${{ matrix.arch }}.json"
+      - name: Verify native video and audio downloads from source and frozen app
+        run: |
+          build/macos-venv/bin/python - <<'PY'
+          import json,sys,unittest
+          from pathlib import Path
+          from unittest.mock import patch
+          import test_video_v1823
+          results=[]
+          for frozen in (False,True):
+              executable=str(Path('dist/FlickDock.app/Contents/MacOS/FlickDock').resolve()) if frozen else sys.executable
+              with patch.object(sys,'frozen',frozen,create=True),patch.object(sys,'executable',executable):
+                  suite=unittest.defaultTestLoader.loadTestsFromModule(test_video_v1823)
+                  result=unittest.TextTestRunner(verbosity=2).run(suite)
+              assert result.wasSuccessful() and result.testsRun==3 and not result.skipped
+              results.append(dict(frozen=frozen,tests=result.testsRun,ok=True))
+          Path('../outputs/mac-video-${{ matrix.arch }}.json').write_text(json.dumps(dict(ok=True,architecture='${{ matrix.arch }}',checks=results),indent=2))
+          PY
       - name: Gather verified release artifacts
         run: |
           python - <<'PY'
@@ -63,7 +80,7 @@ jobs:
           import shutil
           source, target = Path('../outputs'), Path('ci-output')
           target.mkdir()
-          for pattern in ('FlickDock-*-macOS-${{ matrix.arch }}.zip', 'FlickDock-*-macOS-${{ matrix.arch }}.dmg', 'FlickDock-*-macOS-${{ matrix.arch }}.pkg', 'mac-build-*-${{ matrix.arch }}.json', 'mac-cloud-${{ matrix.arch }}.json', 'mac-lan-${{ matrix.arch }}.json'):
+          for pattern in ('FlickDock-*-macOS-${{ matrix.arch }}.zip', 'FlickDock-*-macOS-${{ matrix.arch }}.dmg', 'FlickDock-*-macOS-${{ matrix.arch }}.pkg', 'mac-build-*-${{ matrix.arch }}.json', 'mac-cloud-${{ matrix.arch }}.json', 'mac-lan-${{ matrix.arch }}.json', 'mac-video-${{ matrix.arch }}.json'):
               files = list(source.glob(pattern))
               assert len(files) == 1, (pattern, files)
               for path in files:

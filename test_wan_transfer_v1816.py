@@ -147,7 +147,7 @@ class WanRecovery(unittest.TestCase):
         state=self.state();fake=unittest.mock.Mock();fake.opened.is_set.return_value=False
         state.update(bridge=fake,relay_transport='tls',relay_allowed=False)
         self.service._handle_native(dict(id=self.identifier,generation=1,event=dict(type='state',state='failed')))
-        self.assertTrue(state['ready'].is_set());self.assertTrue(state['tls_failed'])
+        self.assertTrue(state['ready'].is_set());self.assertFalse(state['udp_failed'])
         with patch('wan_transfer.WebRTCStream',return_value=fake):
             self.service._begin(self.identifier,state,dict(generation=2,iceServers=[],relayAllowed=False))
         self.assertFalse(fake.control.call_args.args[0]['preferTls'])
@@ -185,7 +185,7 @@ class TurnTLS(unittest.TestCase):
         if not node.is_file():self.skipTest('Build host must prepare pinned WebRTC assets')
         result=subprocess.run([str(node),'--test',str(root/'test-turn-tls.mjs')],cwd=root,capture_output=True,text=True,timeout=30)
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-        self.assertIn('pass 16',result.stdout)
+        self.assertIn('pass 17',result.stdout)
 
 class NativeStream(unittest.TestCase):
     def setUp(self):

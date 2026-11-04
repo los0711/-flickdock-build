@@ -49,11 +49,6 @@ class ClipboardNotice(QWidget):
         self._result_timer.stop();self._pending_result=None;self.generation+=1
         self.hide()
 
-    def disable_success(self):
-        if self._pending_result is not None and self._pending_result[0]:
-            self._result_timer.stop();self._pending_result=None
-        if self.message.text()=='复制已同步':self.dismiss()
-
     def schedule_result(self,ok,context):
         self._pending_result=(ok,dict(context));self._result_timer.start()
 
@@ -61,9 +56,10 @@ class ClipboardNotice(QWidget):
         result,self._pending_result=self._pending_result,None
         if (result is not None and not getattr(self.manager,'_quitting',False)
                 and getattr(self.manager,'_clipboard_runtime_enabled',lambda:True)()
-                and (not result[0] or getattr(self.manager.settings,'clipboard_success_notice',True))):self.show_result(*result)
+                and getattr(self.manager.settings,'clipboard_success_notice',True)):self.show_result(*result)
 
     def show_result(self,ok,context):
+        if not getattr(self.manager.settings,'clipboard_success_notice',True):return
         from native_ui_common import colors,reduced_motion,icon
         from pathlib import Path
         c=colors(self.manager.settings.theme);self.generation+=1;generation=self.generation

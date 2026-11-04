@@ -9,11 +9,16 @@ sys.path.insert(0,str(root))
 from bundle_policy import filter_bundle
 from p2p_assets import bundle_assets
 p2p_binaries,p2p_datas=bundle_assets()
+from video_assets import bundle_assets as video_bundle_assets
+from PyInstaller.utils.hooks import collect_all
+video_binaries,video_datas=video_bundle_assets()
+yt_datas,yt_binaries,yt_hidden=collect_all('yt_dlp')
+ejs_datas,ejs_binaries,ejs_hidden=collect_all('yt_dlp_ejs')
 
 font_names=['HarmonyOS_Sans_SC_Regular.ttf']
 license_names=['HarmonyOS-Sans-LICENSE.txt','Python-LICENSE.txt',
-               'LGPL-3.0.txt','GPL-3.0.txt','PyInstaller-COPYING.txt',
-               'OpenSSL-LICENSE.txt','Cloud-Client-LICENSES.txt','Lucide-LICENSE.txt','WebRTC-LICENSES.txt','Release-Crypto-LICENSES.txt']
+               'FFmpeg-LICENSE.txt','LGPL-3.0.txt','GPL-3.0.txt','PyInstaller-COPYING.txt',
+               'OpenSSL-LICENSE.txt','Cloud-Client-LICENSES.txt','Lucide-LICENSE.txt','WebRTC-LICENSES.txt','Release-Crypto-LICENSES.txt','Video-LICENSES.txt']
 asset_files=[(root/'fonts'/name,'fonts') for name in font_names]
 asset_files += [(root/'licenses'/name,'licenses') for name in license_names]
 asset_files += [(root/'THIRD_PARTY_NOTICES.md','.'),(root/'font_manifest.json','.')]
@@ -31,15 +36,15 @@ for source,_ in asset_files:
 unused_qt=['QtWebEngineCore','QtWebEngineWidgets','QtWebEngineQuick','QtPdf','QtPdfWidgets',
            'QtQml','QtQuick','QtQuickWidgets','QtQuickControls2','QtQmlMeta','QtQmlModels',
            'QtQmlWorkerScript','QtVirtualKeyboard','QtOpenGL','QtOpenGLWidgets',
-           'QtMultimediaWidgets','QtSvgWidgets','QtSql','QtPrintSupport','QtHelp','QtTest']
+           'QtSvgWidgets','QtSql','QtPrintSupport','QtHelp','QtTest']
 a=Analysis(
-    [str(root/'flickdock.py')],pathex=[str(root)],binaries=p2p_binaries,
-    datas=[(str(source),destination) for source,destination in asset_files]+p2p_datas,
+    [str(root/'flickdock.py')],pathex=[str(root)],binaries=p2p_binaries+video_binaries+yt_binaries+ejs_binaries,
+    datas=[(str(source),destination) for source,destination in asset_files]+p2p_datas+video_datas+yt_datas+ejs_datas,
     # scrypt for cloud accounts needs _hashlib/libcrypto. Keep the native
     # dependency closure; the network transport still uses Qt/Schannel.
-    hiddenimports=['PySide6.QtSvg','PySide6.QtMultimedia','PySide6.QtWebSockets',
+    hiddenimports=['PySide6.QtSvg','PySide6.QtMultimedia','PySide6.QtMultimediaWidgets','PySide6.QtWebSockets',
                    '_md5','_sha1','_sha2','_sha3','_blake2','_hashlib',
-                   'keyring.backends.Windows'],
+                   'keyring.backends.Windows']+yt_hidden+ejs_hidden,
     hookspath=[],hooksconfig={},runtime_hooks=[str(root/'runtime_media.py')],
     excludes=['PySide6.'+name for name in unused_qt]+['keyring.backends.SecretService','keyring.backends.kwallet','numpy','PIL'],
     noarchive=False,optimize=0,

@@ -1,8 +1,12 @@
-"""Opacity-only utility transitions, separate from the native shelf compositor."""
-from PySide6.QtCore import QCoreApplication,QEvent,QObject,QPoint,QPointF,Qt,QTimer,QVariantAnimation,QEasingCurve
-from PySide6.QtGui import QGuiApplication,QPainter
-from PySide6.QtWidgets import QWidget
+"""Utility-window transitions, separate from the native shelf compositor."""
+from PySide6.QtCore import QCoreApplication,QEvent,QObject,QPoint,QPointF,QRectF,Qt,QTimer,QVariantAnimation,QEasingCurve
+from PySide6.QtGui import QGuiApplication,QPainter,QPixmap
+from PySide6.QtWidgets import QWidget,QGraphicsEffect
 from shiboken6 import isValid
+
+UTILITY_TRANSITION_MS=180
+WINDOW_MIN_SCALE=.96
+WINDOW_OPEN_OPACITY=.78
 
 
 def motion_allowed():
@@ -88,35 +92,65 @@ def fade_hide(window):
     if fade is None or not fade.defer_done(None,lambda _:window.hide()):window.hide()
 
 
+class _WindowZoom(QGraphicsEffect):
+    """Transform one captured surface without resizing its native window."""
+    def __init__(self,parent):
+        super().__init__(parent);self.scale=1.;self.snapshot=QPixmap();self.setEnabled(False)
+
+    def reset(self):self.snapshot=QPixmap();self.scale=1.;self.setEnabled(False)
+
+    def draw(self,painter):
+        if self.snapshot.isNull():
+            self.offset=QPoint()
+            self.snapshot=self.sourcePixmap(Qt.LogicalCoordinates,self.offset,QGraphicsEffect.NoPad)
+        bounds=self.sourceBoundingRect(Qt.LogicalCoordinates);center=bounds.center()
+        painter.save();painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        painter.translate(center);painter.scale(self.scale,self.scale);painter.translate(-center)
+        painter.drawPixmap(QPointF(self.offset),self.snapshot);painter.restore()
+
+
 class WindowFade(QObject):
     """Keep native focus, shadow and hit testing; never animate geometry."""
     def __init__(self,window):
         super().__init__(window);self.window=window;self.pending=None;self.completing=False
-        self.animation=QVariantAnimation(self);self.animation.setDuration(180)
+        self.scale=1.;self.zoom=None
+        self.animation=QVariantAnimation(self);self.animation.setDuration(UTILITY_TRANSITION_MS)
         self.animation.setEasingCurve(exit_curve())
-        self.animation.valueChanged.connect(lambda value:window.setWindowOpacity(float(value)))
+        self.animation.valueChanged.connect(self._frame)
         self.animation.finished.connect(self._finished);window.installEventFilter(self)
 
     def enabled(self):
         return QGuiApplication.platformName() not in ('offscreen','minimal') and motion_allowed()
+
+    def _frame(self,value):
+        self.window.setWindowOpacity(value.x());self.scale=value.y()
+        if self.zoom is not None:
+            self.zoom.scale=self.scale;self.zoom.update()
+
+    def _reset_zoom(self):
+        self.scale=1.
+        if self.zoom is not None:self.zoom.reset()
 
     def eventFilter(self,watched,event):
         if QCoreApplication.closingDown() or not isValid(self.window):return False
         if event.type()==QEvent.Show and not event.spontaneous() and not self.window.isMinimized():
             self.pending=None;self.animation.stop()
             if self.enabled():
-                self.window.setWindowOpacity(.78);self._start(1.0)
-            else:self.window.setWindowOpacity(1.0)
+                self.scale=WINDOW_MIN_SCALE;self.window.setWindowOpacity(WINDOW_OPEN_OPACITY);self._start(1.0)
+            else:self._reset_zoom();self.window.setWindowOpacity(1.0)
         elif event.type()==QEvent.Hide:
-            self.animation.stop();self.pending=None;self.window.setWindowOpacity(1.0)
+            self.animation.stop();self.pending=None;self._reset_zoom();self.window.setWindowOpacity(1.0)
         elif event.type()==QEvent.WindowStateChange and self.window.isMinimized():
-            self.animation.stop();self.pending=None;self.window.setWindowOpacity(1.0)
+            self.animation.stop();self.pending=None;self._reset_zoom();self.window.setWindowOpacity(1.0)
         return super().eventFilter(watched,event)
 
     def _start(self,target):
         self.animation.stop()
-        self.animation.setStartValue(self.window.windowOpacity())
-        self.animation.setEndValue(target);self.animation.start()
+        if self.zoom is None:
+            self.zoom=_WindowZoom(self.window);self.window.setGraphicsEffect(self.zoom)
+        self.zoom.setEnabled(True);self.zoom.scale=self.scale
+        self.animation.setStartValue(QPointF(self.window.windowOpacity(),self.scale))
+        self.animation.setEndValue(QPointF(target,1. if target else WINDOW_MIN_SCALE));self.animation.start()
 
     def defer_done(self,result,callback):
         if self.completing or not self.window.isVisible() or not self.enabled():return False
@@ -130,7 +164,7 @@ class WindowFade(QObject):
         if self.pending is not None:
             self.pending=None;self.animation.stop()
             if self.enabled():self._start(1.0)
-            else:self.window.setWindowOpacity(1.0)
+            else:self._reset_zoom();self.window.setWindowOpacity(1.0)
 
     def _finished(self):
         callback,self.pending=self.pending,None
@@ -138,6 +172,7 @@ class WindowFade(QObject):
             self.completing=True
             try:callback()
             finally:self.completing=False
+        else:self._reset_zoom()
 
 
 class SnapshotFade(QWidget):

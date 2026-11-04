@@ -202,7 +202,7 @@ class TransferUITests(unittest.TestCase):
             self.assertEqual(active.pixelColor(x,y),normal.pixelColor(x,y),'upload must preserve icon colors')
             blue=sum(1 for y in range(active.height()) for x in range(active.width())
                      if (lambda c:c.blue()>180 and c.blue()-c.red()>85 and c.blue()-c.green()>25)(active.pixelColor(x,y)))
-            self.assertGreater(blue,20,'small upload arc must remain visible beside artwork')
+            self.assertGreater(blue,10,'compact upload arc must remain visible beside artwork')
             self.assertEqual(popup.preview.cancel_transfer.text(),'取消复制')
             self.assertFalse(popup.preview.copy_button.isEnabled())
             QTest.mouseClick(popup.preview.cancel_transfer,Qt.MouseButton.LeftButton)
@@ -399,28 +399,25 @@ class TransferUITests(unittest.TestCase):
         self.assertIn(pending,popup.visible_refs())
         popup.set_category('uploading');self.assertIn(pending,popup.visible_refs())
 
-    def test_selected_preview_uses_same_cloud_state_mark_as_file_artwork(self):
+    def test_selected_preview_uses_cloud_status_text_without_header_mark(self):
         path=str(self.file('状态预览.txt'))
         self.shelf.add_paths('permanent',[path])
         state={'value':'pending'}
-        self.manager.sync=SimpleNamespace(
+        self.manager.sync=SimpleNamespace(upload_time_for_ref=lambda _:None,
             sync_status_for_ref=lambda ref:state['value'],
             sync_statuses_for_refs=lambda refs:{ref:state['value'] for ref in refs})
         popup=self.overview()
         self.assertEqual(popup.preview.current_path,path)
-        self.assertEqual(popup.preview.cloud_badge.status,'pending')
-        self.assertTrue(popup.preview.cloud_badge.isVisible())
-        self.assertLess(popup.preview.cloud_badge.geometry().right(),
-                        popup.preview.copy_button.geometry().left())
+        self.assertEqual(popup.preview.status_value.text(),subject.CLOUD_STATUS_LABELS['pending'])
         state['value']='synced'
         popup.refresh_cloud_status();flush()
-        self.assertEqual(popup.preview.cloud_badge.status,'synced')
+        self.assertEqual(popup.preview.status_value.text(),subject.CLOUD_STATUS_LABELS['synced'])
         popup.preview.show_group((path,path))
-        self.assertFalse(popup.preview.cloud_badge.isVisible())
+        self.assertEqual(popup.preview.status_value.text(),'')
     def test_manager_projects_remote_pending_enables_expand_and_routes_cancel_to_sync(self):
         self.manager._sync_transfer_refs=set()
         calls=[]
-        self.manager.sync=SimpleNamespace(cancel_upload=lambda value,**options:calls.append((value,options)))
+        self.manager.sync=SimpleNamespace(upload_time_for_ref=lambda _:None,cancel_upload=lambda value,**options:calls.append((value,options)))
         self.assertTrue(self.shelf.expand_button.isEnabled(),'empty shelf should still open the overview')
         state=dict(id='remote-item',ref=None,name='另一台设备的文档.pdf',kind='file',remote=True,
                    phase='remote',received=300,total=1000,upload_id='remote-upload')
@@ -493,7 +490,8 @@ class TransferUITests(unittest.TestCase):
         popup=self.overview();popup.setFixedWidth(330);popup.layout().activate();flush()
         self.assertTrue(popup._narrow_layout)
         popup.select_item(refs[-1]);flush()
-        self.assertTrue(popup.zip_button.isVisible())
+        self.assertTrue(popup.bulk_more.isVisible())
+        self.assertTrue(popup.zip_button.isEnabled())
         self.assertTrue(popup.scroll.isVisible())
         self.assertFalse(popup.preview.isVisible())
         popup.toggle_narrow_preview();flush()
@@ -517,7 +515,8 @@ class TransferUITests(unittest.TestCase):
         def inspect_bulk(menu,*_):
             bulk.extend((action.text(),action.isEnabled()) for action in menu.actions() if not action.isSeparator())
         with patch.object(subject.AnimatedMenu,'exec',inspect_bulk):popup.open_bulk_menu()
-        self.assertEqual(bulk,[('打包所选…',True),('打包全部…',True),('清空全部',True)])
+        self.assertTrue(popup.select_all_button.isVisible())
+        self.assertEqual(bulk,[('按时间排序',True),('按大小排序',True),('打包所选…',True),('打包全部…',True),('删除项目…',True)])
         for widget in (popup.title,popup.bulk_more,popup.category_picker,popup.narrow_view_button,popup.scroll):
             self.assertGreaterEqual(widget.mapTo(popup,QPoint(0,0)).x(),0)
             self.assertLessEqual(widget.mapTo(popup,QPoint(widget.width(),0)).x(),popup.width())

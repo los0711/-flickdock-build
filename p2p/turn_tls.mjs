@@ -183,6 +183,8 @@ export async function tlsTurnTunnel(server,onError=()=>{},proxy=null){
 }
 
 export async function adaptTurnServers(servers,onError,preferTls=true,proxies={}){
+  if(!preferTls&&servers.some(row=>row?.relayType==='TurnUdp'))
+    return {iceServers:servers.filter(row=>typeof row==='string'||row?.relayType==='TurnUdp'),close:()=>{},relayTransport:'udp'};
   const relays=servers.filter(row=>row&&typeof row==='object'&&row.relayType==='TurnTls').sort((a,b)=>(a.port===443?0:1)-(b.port===443?0:1));
   // Direct sessions contain STUN only: do not introduce any TLS connection.
   if(!relays.length)return {iceServers:servers,close:()=>{},relayTransport:servers.some(row=>row?.relayType==='TurnUdp')?'udp':'direct'};

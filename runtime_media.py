@@ -1,4 +1,4 @@
-"""Select the packaged native Windows media plugin before importing Qt."""
+"""Select the packaged Qt FFmpeg media plugin on Windows before importing Qt."""
 import os
 import sys
 import codecs
@@ -7,6 +7,6 @@ import codecs
 codecs.lookup('idna')
 'flickdock.local'.encode('idna')
 if sys.platform == 'win32':
-    os.environ['QT_MEDIA_BACKEND']='windows'
+    os.environ['QT_MEDIA_BACKEND']='ffmpeg'
 elif sys.platform == 'darwin':
     os.environ['QT_MEDIA_BACKEND']='darwin'

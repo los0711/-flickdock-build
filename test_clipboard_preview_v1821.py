@@ -52,9 +52,66 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(dialog.badge.status,'synced')
         popup.clipboard_button.click();workspace.flush()
         self.assertIs(self.manager.clipboard_preview_dialog,dialog)
+        self.assertFalse(dialog.isVisible())
+        popup.clipboard_button.click();workspace.flush()
+        self.assertTrue(dialog.isVisible())
         self.assertEqual(writes(),before)
         self.assertEqual(self.clip.mimeData().text(),'original 中文\nhttps://example.invalid')
         self.clip.text('new value');workspace.until(lambda:dialog.text.toPlainText()=='new value')
+
+    def test_compact_and_overview_buttons_toggle_the_same_dialog(self):
+        small=self.shelf.zones['permanent'].clipboard_button
+        for _ in range(3):
+            small.click();workspace.flush();dialog=self.manager.clipboard_preview_dialog
+            self.assertTrue(dialog.isVisible())
+            small.click();workspace.flush();self.assertFalse(dialog.isVisible())
+            self.assertFalse(self.model._large_requested)
+        popup=self.overview()
+        for _ in range(3):
+            popup.clipboard_button.click();workspace.flush();self.assertTrue(dialog.isVisible())
+            popup.clipboard_button.click();workspace.flush();self.assertFalse(dialog.isVisible())
+        self.assertIs(self.manager.clipboard_preview_dialog,dialog)
+
+    def test_owner_close_and_switch_close_clipboard_preview(self):
+        self.manager.show_clipboard_preview();dialog=self.manager.clipboard_preview_dialog
+        self.assertTrue(dialog.isVisible())
+        self.shelf.show_contents();workspace.flush();self.assertFalse(dialog.isVisible())
+        self.manager.show_clipboard_preview();self.shelf.collapse_contents();workspace.flush()
+        self.assertFalse(dialog.isVisible());self.assertFalse(self.model._large_requested)
+        self.manager.show_clipboard_preview();self.shelf.hide();workspace.flush()
+        self.assertFalse(dialog.isVisible());self.assertIsNone(dialog._window_fade.pending)
+
+    def test_click_outside_closes_and_releases_application_watch(self):
+        popup=self.overview()
+        self.manager.show_clipboard_preview();dialog=self.manager.clipboard_preview_dialog
+        self.assertTrue(dialog._outside_watch)
+        QTest.mouseClick(popup.search_edit,Qt.LeftButton,pos=QPoint(4,4));workspace.flush()
+        self.assertFalse(dialog.isVisible());self.assertFalse(dialog._outside_watch)
+        popup.clipboard_button.click();workspace.flush()
+        self.assertTrue(dialog.isVisible())
+        dialog._application_state(Qt.ApplicationInactive);workspace.flush()
+        self.assertFalse(dialog.isVisible());self.assertFalse(dialog._outside_watch)
+
+    def test_click_any_preview_area_closes_without_changing_clipboard(self):
+        self.clip.text('original text')
+        workspace.until(lambda:self.model.state.get('phase')=='synced')
+        self.manager.show_clipboard_preview();dialog=self.manager.clipboard_preview_dialog
+        targets=(dialog.title,dialog.badge,dialog.text.viewport(),dialog.status,dialog.surface,dialog.close_button,dialog)
+        for target in targets:
+            if not dialog.isVisible():self.manager.show_clipboard_preview()
+            workspace.flush();QTest.mouseClick(target,Qt.LeftButton,pos=QPoint(2,2));workspace.flush()
+            self.assertFalse(dialog.isVisible(),target.objectName())
+            self.assertFalse(self.model._large_requested)
+        image=QImage(80,60,QImage.Format_RGB32);image.fill(QColor('#4267a1'))
+        mime=QMimeData();mime.setImageData(image);self.clip.setMimeData(mime)
+        workspace.until(lambda:self.model.state.get('phase')=='synced')
+        self.manager.show_clipboard_preview();workspace.until(lambda:not self.model.large.isNull())
+        QTest.mouseClick(dialog.image,Qt.LeftButton,pos=QPoint(10,10));workspace.flush()
+        self.assertFalse(dialog.isVisible())
+        self.clip.clear();workspace.until(lambda:self.model.state.get('value') is None)
+        self.manager.show_clipboard_preview();workspace.flush()
+        QTest.mouseClick(dialog.info,Qt.LeftButton,pos=QPoint(2,2));workspace.flush()
+        self.assertFalse(dialog.isVisible());self.assertIsNone(self.model.state.get('value'))
 
     def test_active_transfer_moves_clipboard_above_strip_and_entire_button_clicks(self):
         popup=self.overview();button=popup.clipboard_button

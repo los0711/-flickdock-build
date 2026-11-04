@@ -1,6 +1,7 @@
 """Bounded asynchronous cloud transport. Session headers never follow redirects."""
 from __future__ import annotations
 import hashlib
+import io
 import json
 import os
 import re
@@ -14,6 +15,10 @@ from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkRe
 from app_version import APP_VERSION
 from cloud_config import CLOUD_ORIGINS
 from download_writer import DownloadWriter
+from transfer_priority import bulk_delay
+
+UPLOAD_READ_BYTES=64*1024
+PRIORITY_POLL_MS=25
 
 
 class CloudError(Exception):
@@ -23,22 +28,36 @@ class CloudError(Exception):
 
 class UploadSlice(QIODevice):
     """Seekable, bounded device: Qt reads only this part, never a 64MiB copy."""
-    def __init__(self,path,offset,size,parent=None):
+    def __init__(self,path,offset,size,parent=None,*,bulk=False):
         super().__init__(parent)
-        self._stream=Path(path).open('rb');self._start=offset;self._length=size
+        self._stream=io.BytesIO(path) if isinstance(path,bytes) else Path(path).open('rb')
+        self._start=offset;self._length=size;self._bulk=bulk;self._last_read=time.monotonic()
+        self._resume=QTimer(self);self._resume.setSingleShot(True);self._resume.timeout.connect(self._available)
         self._stream.seek(offset);self.open(QIODevice.OpenModeFlag.ReadOnly|QIODevice.OpenModeFlag.Unbuffered)
 
     def isSequential(self):return False
     def size(self):return self._length
-    def bytesAvailable(self):return 0 if self._stream.closed else max(0,self._start+self._length-self._stream.tell())
-    def atEnd(self):return self.bytesAvailable()==0
+    def _remaining(self):return 0 if self._stream.closed else max(0,self._start+self._length-self._stream.tell())
+    def bytesAvailable(self):return 0 if self._blocked() else self._remaining()
+    def atEnd(self):return self._remaining()==0
+    def _blocked(self):
+        if self._bulk and self._remaining() and bulk_delay(self._last_read)>0:
+            if not self._resume.isActive():self._resume.start(PRIORITY_POLL_MS)
+            return True
+        return False
+    def _available(self):
+        if not self._stream.closed and not self._blocked() and self._remaining():self.readyRead.emit()
     def seek(self,position):
         if self._stream.closed or not 0<=position<=self._length:return False
         self._stream.seek(self._start+position)
         return super().seek(position)
     def readData(self,maximum):
-        return self._stream.read(min(maximum,self.bytesAvailable()))
+        if self._blocked():return b''
+        data=self._stream.read(min(maximum,self._remaining(),UPLOAD_READ_BYTES if self._bulk else maximum))
+        if data:self._last_read=time.monotonic()
+        return data
     def close(self):
+        self._resume.stop()
         if not self._stream.closed:self._stream.close()
         super().close()
 
@@ -53,6 +72,7 @@ class CloudApi(QObject):
         super().__init__(parent)
         self.origin = str(origin).rstrip('/')
         self.network = network or QNetworkAccessManager(self)
+        self.priority_network = network or QNetworkAccessManager(self)
         self.token = ''
         self._requests = {}
         self._deferred = {}
@@ -111,8 +131,8 @@ class CloudApi(QObject):
                 upload_size=file_size-source_offset if source_size is None else source_size
                 if (type(source_offset) is not int or type(upload_size) is not int or source_offset<0 or upload_size<0
                         or source_offset+upload_size>file_size):raise CloudError('上传分块范围无效。')
-                if source_offset or source_size is not None:
-                    source_file=UploadSlice(path_to_send,source_offset,upload_size,self)
+                if source_offset or source_size is not None or priority!='high':
+                    source_file=UploadSlice(path_to_send,source_offset,upload_size,self,bulk=priority!='high')
                 else:
                     source_file = QFile(str(path_to_send))
                     if not source_file.open(QIODevice.OpenModeFlag.ReadOnly):
@@ -121,6 +141,10 @@ class CloudApi(QObject):
                 # sending it. QFile remains open until this reply finishes.
                 request.setAttribute(QNetworkRequest.Attribute.DoNotBufferUploadDataAttribute, True)
                 request.setRawHeader(b'Content-Length', str(upload_size).encode('ascii'))
+            elif raw is not None and priority!='high' and re.fullmatch(r'/v1/uploads/[^/]+/parts/\d+',path):
+                source_file=UploadSlice(payload,0,upload_size,self,bulk=True)
+                request.setAttribute(QNetworkRequest.Attribute.DoNotBufferUploadDataAttribute,True)
+                request.setRawHeader(b'Content-Length',str(upload_size).encode('ascii'))
             # A large streamed R2 PUT is one network request rather than many
             # small requests. Keep Qt's idle timeout, while allowing the total
             # upload time to scale with bytes on a slower uplink.
@@ -130,7 +154,8 @@ class CloudApi(QObject):
             request.setTransferTimeout(timeout_ms)
             request.setRawHeader(b'Content-Type', b'application/octet-stream' if raw is not None or source is not None else b'application/json')
             for name, value in (headers or {}).items(): request.setRawHeader(name.encode('ascii'), str(value).encode('ascii'))
-            reply = self.network.sendCustomRequest(request, method.encode('ascii'), source_file or payload)
+            network=self.priority_network if priority=='high' else self.network
+            reply = network.sendCustomRequest(request, method.encode('ascii'), source_file or payload)
             timer = QTimer(self); timer.setSingleShot(True)
             state = {'reply':reply,'callback':callback,'timer':timer,'body':bytearray(),
                      'received':0,'expected':expected,'destination':Path(destination) if destination else None,
@@ -144,7 +169,7 @@ class CloudApi(QObject):
                      'started':time.monotonic(),'budget':max(total_timeout,300000) if destination else total_timeout,
                      'retry':None}
             state.update(writer=None,writer_result=None,writer_finishing=False,writer_completed=False,disk_priority=priority,
-                         deferred_error=None,drain_scheduled=False)
+                         deferred_error=None,drain_scheduled=False,last_payload=time.monotonic())
             if destination and callable(getattr(reply,'setReadBufferSize',None)):reply.setReadBufferSize(1024*1024)
             if _deadline is not None:state['budget']=min(state['budget'],max(1,round((_deadline-time.monotonic())*1000)))
             deadline=state['deadline']=time.monotonic()+state['budget']/1000
@@ -230,7 +255,16 @@ class CloudApi(QObject):
         reply = state['reply']
         status = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute) or 0
         try:
-            budget = 512 * 1024
+            bulk=state['destination'] is not None and status==200 and state['disk_priority']!='high'
+            if bulk and bulk_delay(state['last_payload'])>0:
+                if not state['drain_scheduled']:
+                    state['drain_scheduled']=True
+                    def resume_priority():
+                        if key in self._requests:
+                            state['drain_scheduled']=False;self._drain(key)
+                    QTimer.singleShot(PRIORITY_POLL_MS,self,resume_priority)
+                return
+            budget = UPLOAD_READ_BYTES if bulk else 512 * 1024
             while reply.bytesAvailable() and budget > 0:
                 limit=min(65536,budget)
                 if state['destination'] is not None and status==200:
@@ -239,6 +273,7 @@ class CloudApi(QObject):
                     if not limit:break
                 chunk = bytes(reply.read(limit)); budget -= len(chunk)
                 if not chunk: break
+                state['last_payload']=time.monotonic()
                 state['received'] += len(chunk)
                 if state['destination'] is not None and status == 200:
                     expected = state['expected'] or {}

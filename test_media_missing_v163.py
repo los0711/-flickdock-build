@@ -1,7 +1,7 @@
 """Missing-file guards from the media UI, silent and offscreen."""
 import os
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
-os.environ['QT_MEDIA_BACKEND'] = 'windows'
+os.environ['QT_MEDIA_BACKEND'] = 'ffmpeg'
 
 from pathlib import Path
 import shutil
