@@ -10,6 +10,7 @@ _import_profile = tempfile.TemporaryDirectory(prefix='flickdock-trigger-import-'
 os.environ['APPDATA'] = _import_profile.name
 
 from PySide6.QtCore import QMimeData, QPoint, Qt, QUrl
+from PySide6.QtGui import QDragEnterEvent
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
 import app_settings
@@ -84,6 +85,26 @@ class TriggerReliabilityTests(unittest.TestCase):
         self.assertEqual(visible_during_show, [True])
         self.assertTrue(manager.shelf.isVisible())
         self.assertFalse(manager.edge.isVisible())
+
+    def test_shake_keeps_empty_trigger_and_edge_drag_hands_off_the_same_shelf(self):
+        manager=self.manager;manager.motion=False;manager.settings.update(trigger_view='compact')
+        shelf=manager.shelf;shelf.show_transient(QPoint(160,180),reason='drag');manager.auto_shown=shelf
+        manager.update_handles();self.assertTrue(manager.edge.isVisible())
+        for control in (shelf.cloud_button,shelf.network_status,shelf.lan_button,shelf.zones['permanent'].clipboard_button):
+            self.assertTrue(control.isVisible())
+        for control in (shelf.pin_button,shelf.expand_button,shelf.menu_button,shelf.close_button):
+            self.assertFalse(control.isVisible())
+        source=Path(self.profile.name)/'retained.txt';source.write_bytes(b'original file')
+        shelf.add_paths('permanent',[str(source)]);before=list(shelf.files['permanent'])
+        mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(source))])
+        event=QDragEnterEvent(manager.edge.rect().center(),Qt.CopyAction,mime,Qt.LeftButton,Qt.NoModifier)
+        manager.edge.dragEnterEvent(event);APP.processEvents()
+        self.assertTrue(event.isAccepted());self.assertIs(manager.shelf,shelf)
+        self.assertEqual(shelf.presentation_kind,'dock');self.assertIsNone(manager.auto_shown)
+        from test_html_native_workspace import until
+        until(lambda:not shelf.geometry_morph.active)
+        self.assertEqual(shelf.visual_geometry().topLeft(),shelf._dock_target_rect().topLeft())
+        self.assertEqual(shelf.files['permanent'],before);self.assertEqual(source.read_bytes(),b'original file')
 
     def test_external_browser_press_retires_obscured_shelf_with_lan_still_open(self):
         manager = self.manager

@@ -193,8 +193,11 @@ class WorkspaceTests(unittest.TestCase):
         for expected in ('添加文件','设置','收起到屏幕边缘'):
             self.assertTrue(any(expected in value for value in texts),(expected,texts))
         self.shelf.collapse_contents();self.shelf.presentation_kind='drag';self.shelf._layout_header(subject.CARD_W)
-        for control in (self.shelf.account_button,self.shelf.lan_button,self.shelf.account_caption,self.shelf.lan_caption,self.shelf.footer_line):
+        for control in (self.shelf.account_button,self.shelf.account_caption,self.shelf.lan_caption):
             self.assertFalse(control.isVisible())
+        for control in (self.shelf.cloud_button,self.shelf.network_status,self.shelf.lan_button):
+            self.assertTrue(control.isVisible())
+        for control in controls:self.assertFalse(control.isVisible())
         self.assertTrue(self.shelf.zones['permanent'].caption.isVisible())
 
     def test_view_mode_only_settings_do_not_apply_global_services(self):

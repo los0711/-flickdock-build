@@ -7,7 +7,7 @@ from PySide6.QtCore import QPoint,QRect
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication,QLabel
 from app_settings import SettingsStore,SettingsDialog
-from lan_panel import LanDialog
+from lan_panel import LanDialog,_CodeExpiryBar,_CopyCodeButton
 from test_lan_dialog_v183 import FakeLan
 from wan_transfer import WanTransferService
 
@@ -15,6 +15,22 @@ APP=QApplication.instance() or QApplication([])
 
 
 class WorkbenchTests(unittest.TestCase):
+    def test_code_progress_uses_server_deadline_and_requests_one_refresh_without_countdown_text(self):
+        with tempfile.TemporaryDirectory() as directory:
+            wan=WanTransferService(Path(directory)/'wan',enabled=False);button=_CopyCodeButton();bar=_CodeExpiryBar(wan,button)
+            try:
+                wan._connected=True;wan.code='12345678';wan._code_duration=20;wan._code_refresh_at=1010;wan._code_expires_at=1100
+                with patch('wan_transfer.time.monotonic',return_value=1000):bar._tick()
+                self.assertEqual(bar.value(),500);self.assertFalse(bar.isTextVisible());self.assertEqual(button.text(),'12345678')
+                with patch('wan_transfer.time.monotonic',return_value=1010),patch.object(wan,'_send_signal',return_value=True) as send:
+                    for _ in range(20):bar._tick()
+                    send.assert_called_once_with({'type':'refresh'});self.assertEqual(bar.value(),0)
+                wan.code='87654321';wan._code_refresh_at=1031;wan._refresh_sent_at=0
+                with patch('wan_transfer.time.monotonic',return_value=1011):bar._tick()
+                self.assertEqual(bar.value(),1000);self.assertEqual(button.text(),'87654321')
+                bar.show();QTest.qWait(5);bar.hide();self.assertFalse(bar._timer.isActive())
+            finally:bar.deleteLater();button.deleteLater();wan.close();wan.deleteLater();QTest.qWait(10)
+
     def test_send_button_stays_visible_with_long_queues_short_screens_and_both_modes(self):
         with tempfile.TemporaryDirectory() as directory,patch('window_chrome.WindowChrome._available',return_value=QRect(0,0,853,480)):
             base=Path(directory);service=FakeLan();wan=WanTransferService(base/'wan',enabled=False)
@@ -24,10 +40,12 @@ class WorkbenchTests(unittest.TestCase):
                 path=base/f'{number}.txt';path.write_text('original');paths.append(str(path))
             try:
                 for backend in (service,wan):
-                    panel=window.set_service(backend)
+                    geometry=window.geometry();panel=window.set_service(backend);QTest.qWait(30)
+                    self.assertEqual(window.geometry(),geometry)
                     for count in (0,1,12,0):
                         panel.queue_paths(paths[:count],replace=True);QTest.qWait(20)
                         self.assertTrue(panel.send_button.isVisible())
+                        if backend is wan:self.assertFalse(hasattr(panel,'custom_input'));self.assertIsNotNone(panel.code_progress)
                         self.assertFalse(panel.send_scroll.isAncestorOf(panel.send_button))
                         bounds=QRect(panel.send_button.mapTo(window,QPoint()),panel.send_button.size())
                         self.assertTrue(window.card.geometry().contains(bounds))

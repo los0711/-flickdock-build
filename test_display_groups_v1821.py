@@ -66,7 +66,7 @@ class DisplayTests(unittest.TestCase):
             with self.subTest(field=field),self.assertRaises(ValueError):validate_profiles({display_id(self.second):dict(draft[display_id(self.second)],**{field:value})})
 
     def test_settings_save_cancel_and_toggle_blank_area(self):
-        view=SettingsDialog(self.store);view.show();flush()
+        view=SettingsDialog(self.store);view.select_category('外观与交互');view.show();flush()
         try:
             control=view.keep_empty_handle_checkbox;before=control.isChecked();holder=control.parentWidget()
             QTest.mouseClick(holder,Qt.LeftButton,pos=QPoint(10,holder.height()//2));flush();self.assertEqual(control.isChecked(),before)
@@ -85,6 +85,7 @@ class DisplayTests(unittest.TestCase):
             with ExitStack() as overrides:
                 for row in rows:overrides.enter_context(patch.object(row,'_motion_enabled',return_value=True))
                 for width,height in ((892,632),(1100,760),(700,500)):
+                    view.select_category('外观与交互')
                     view.resize(width,height);flush()
                     rows[0].set_expanded(False);rows[1].set_expanded(True);QTest.qWait(30)
                     rows[0].set_expanded(True);rows[1].set_expanded(False);QTest.qWait(30)
@@ -97,15 +98,15 @@ class DisplayTests(unittest.TestCase):
                             while ancestor is not view.body:
                                 self.assertTrue(ancestor.rect().contains(control.mapTo(ancestor,control.rect().bottomRight())))
                                 ancestor=ancestor.parentWidget()
-                    label=view.retention_description
+                    view.select_category('同步与剪贴板');flush();label=view.retention_description
                     self.assertGreaterEqual(label.height(),label.heightForWidth(label.width()))
-                    last=view.body_layout.itemAt(view.body_layout.count()-1).widget()
-                    self.assertLessEqual(view.body.height()-last.geometry().bottom(),32)
-                    sections=[view.body_layout.itemAt(i).widget() for i in range(view.body_layout.count())]
+                    sections=[view.body_layout.itemAt(i).widget() for i in range(view.body_layout.count()) if view.body_layout.itemAt(i).widget().isVisible()]
+                    last=sections[-1];self.assertLessEqual(view.body.height(),max(view.scroll.viewport().height(),last.geometry().bottom()+32))
                     for first,second in zip(sections,sections[1:]):self.assertLess(first.geometry().bottom(),second.geometry().top())
+                view.select_category('外观与交互')
                 for row in rows:row.set_expanded(False,animate=False)
                 for _ in range(6):flush()
-                self.assertLessEqual(view.body.height()-last.geometry().bottom(),32)
+                last=view.dock_card;self.assertLessEqual(view.body.height(),max(view.scroll.viewport().height(),last.geometry().bottom()+32))
         finally:view.hide();view.deleteLater();flush()
 
     def test_all_enabled_draft_handles_receive_geometry_and_are_shown(self):
@@ -113,7 +114,7 @@ class DisplayTests(unittest.TestCase):
         from dock_geometry import trigger_rect
         row=self.editor.rows[display_id(self.second)];row.toggle.setChecked(True);row.edge.setCurrentIndex(row.edge.findData('left'));row.controls['position'].setValue(73)
         manager=SimpleNamespace(settings=self.store,_quitting=False,settings_open=lambda:True,_settings_prompt_active=lambda:False,dock_preview=SimpleNamespace(hide=Mock()),settings_edge_hint=SimpleNamespace(hide=Mock()))
-        manager.edges={};manager._dock_preview_values=None
+        manager.edges={};manager._dock_preview_values=None;manager.shelves=[]
         for screen in (self.main,self.second):
             edge=SimpleNamespace(display=screen,visible=False)
             edge.values=lambda edge=edge:display_values(manager.settings,edge.display,manager._dock_preview_values)

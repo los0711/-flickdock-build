@@ -86,6 +86,8 @@ FILE_DETAIL_FONT_SIZE_PX = 10
 FILE_ROW_HEIGHT_PX=58
 OVERVIEW_FULL_TOOLBAR_MIN_WIDTH_PX=484
 OVERVIEW_SECTION_OFFSETS_PX = (('header',(0,-8)),('sidebar',(-18,0)),('middle',(0,14)),('preview',(18,0)))
+OVERVIEW_TRANSITION_MAX_ITEMS = 24
+SHAKE_DISMISS_SECONDS = 3.0
 STATE_FILE = BASE / "shelves.json"
 OLD_STATE_FILE = Path(os.getenv("APPDATA", str(Path.home()))) / "DoudouShelf" / "shelves.json"
 FONT_FAMILY = "sans-serif"
@@ -286,7 +288,7 @@ class DropZone(QFrame):
             self.drop_highlight = True
             self.icon.set_hover(True)
             self._apply_style()
-            self.shelf.touch(passive_drag=True)
+            self.shelf.touch()
             event.setDropAction(Qt.DropAction.CopyAction)
             event.accept()
         else:
@@ -294,7 +296,7 @@ class DropZone(QFrame):
 
     def dragMoveEvent(self, event):
         if self.shelf.accepts_content_drop(event):
-            self.shelf.touch(passive_drag=True)
+            self.shelf.touch()
             event.setDropAction(Qt.DropAction.CopyAction)
             event.accept()
         else:
@@ -1250,6 +1252,21 @@ class ContentsPopup(QFrame):
         if self._build_cursor<len(self._build_refs): self._build_timer.start(1)
         self.preview.resume_preview()
 
+    def prepare_transition(self):
+        """Capture one complete viewport; defer only rows outside that viewport."""
+        for section in (self,self.middle,self.scroll):
+            layout=section.layout()
+            if layout is not None:layout.activate()
+        columns=getattr(self,'_grid_columns',1) if self.shelf.manager.settings.view_mode=='icons' else 1
+        row_height=GRID_CARD_HEIGHT_PX+8 if columns>1 or self.shelf.manager.settings.view_mode=='icons' else FILE_ROW_HEIGHT_PX+6
+        count=min(OVERVIEW_TRANSITION_MAX_ITEMS,(math.ceil(max(1,self.scroll.viewport().height())/row_height)+1)*columns,len(self._build_refs))
+        self._build_timer.stop()
+        for index in range(count):
+            if index not in self._build_installed:
+                self._build_append(index,self._build_refs[index]);self._build_installed.add(index)
+        while self._build_cursor<len(self._build_refs) and self._build_cursor in self._build_installed:self._build_cursor+=1
+        self.rows_layout.activate()
+
     def chosen_refs(self):
         return [ref for ref in self.shelf.files['permanent'] if ref in self.selected]
 
@@ -1569,6 +1586,10 @@ class ShelfWindow(QWidget):
         from ui_transitions import ToolbarEntrance
         self._toolbar_entrance=ToolbarEntrance(self,lambda:[self.close_button,self.menu_button,self.expand_button,self.pin_button,self.cloud_button])
 
+    def _visible_header_controls(self):
+        if self.presentation_kind=='drag' and not self.expanded:return (self.cloud_button,self.network_status)
+        return (self.cloud_button,self.network_status,self.pin_button,self.expand_button,self.menu_button,self.close_button)
+
     def _layout_header(self,width):
         expanded=self.expanded
         self.brand_title.hide()
@@ -1576,7 +1597,9 @@ class ShelfWindow(QWidget):
         center=QRectF(self.card.geometry()).center();effect=self.surface_effect
         transform=QTransform();transform.translate(center.x()+effect.dx,center.y()+effect.dy)
         transform.scale(effect.sx,effect.sy);transform.translate(-center.x(),-center.y())
-        buttons=(self.cloud_button,self.network_status,self.pin_button,self.expand_button,self.menu_button,self.close_button)
+        buttons=self._visible_header_controls()
+        for item in (self.pin_button,self.expand_button,self.menu_button,self.close_button):
+            if item not in buttons:item.hide()
         for index,item in enumerate(buttons):
             size=SHELF_HEADER_BUTTON_SIZE_PX;gap=SHELF_HEADER_BUTTON_GAP_PX
             x=width-SHELF_HEADER_RIGHT_MARGIN_PX-len(buttons)*(size+gap)+index*(size+gap)+gap
@@ -1587,22 +1610,16 @@ class ShelfWindow(QWidget):
         item=self.lan_button
         point=transform.map(QRectF(self.card.x()+10,self.card.y()+CARD_H-39,112,32).center())
         item.setFixedSize(112,32);item.move(round(point.x()-56),round(point.y()-16));item.set_presentation_scale(effect.sx,effect.sy)
-        item.setVisible(not expanded and self.presentation_kind!='drag');item.raise_()
+        item.setVisible(not expanded);item.raise_()
         for attr in ('account_caption','lan_caption','header_line','footer_line','traffic_controls'):
             item=getattr(self,attr,None)
-            if item is not None:item.setVisible(not expanded and attr in ('header_line','footer_line') and (self.presentation_kind!='drag' or attr=='header_line'))
-        if self.presentation_kind=='drag':
-            self.network_status.hide()
-            for item in (self.pin_button,self.expand_button,self.menu_button,self.close_button,self.traffic_controls):item.hide()
-            center=transform.map(QRectF(self.card.x()+width-48,self.card.y()+8,32,32).center())
-            self.cloud_button.move(round(center.x()-16),round(center.y()-16));self.cloud_button.show();self.cloud_button.raise_()
+            if item is not None:item.setVisible(not expanded and attr in ('header_line','footer_line'))
         zone=self.zones.get('permanent')
         if zone:
-            x=131 if self.presentation_kind=='drag' else 242
-            y=214 if self.presentation_kind=='drag' else 230
+            x,y=242,230
             zone.caption.move(x,y);zone.count_arrow.move(x+49,y+10)
-            zone.clipboard_button.move(x-42,y);zone.clipboard_button.setVisible(self.presentation_kind!='drag')
-            zone.hint.move(40,180 if self.presentation_kind=='drag' else 188)
+            zone.clipboard_button.move(x-42,y);zone.clipboard_button.setVisible(not expanded)
+            zone.hint.move(40,188)
 
     def refresh_cloud_button(self):
         enabled = self.manager.settings.sync_upload_enabled and self.manager.settings.sync_receive_enabled
@@ -1718,6 +1735,7 @@ class ShelfWindow(QWidget):
         # on every tick invalidates Qt's backing store and causes resize stalls.
         self.card.setGeometry(target.x()-self.x()+14,target.y()-self.y()+7,target.width()-28,target.height()-27)
         self._layout_header(self.card.width())
+        if self.expanded:self.popup.prepare_transition()
         target_image=snapshot.capture_live(self.card,controls)
         snapshot.begin(source,target_image,origin,present=False,target_rect=target)
         if self.expanded:
@@ -1794,7 +1812,9 @@ class ShelfWindow(QWidget):
 
     def _place_morph_controls(self,snapshot,rect):
         transform=snapshot.presentation_transform(rect)
-        buttons=(self.cloud_button,self.network_status,self.pin_button,self.expand_button,self.menu_button,self.close_button)
+        buttons=self._visible_header_controls()
+        for item in (self.pin_button,self.expand_button,self.menu_button,self.close_button):
+            if item not in buttons:item.hide()
         size=32
         width=rect.width()-28
         for index,button in enumerate(buttons):
@@ -1941,9 +1961,8 @@ class ShelfWindow(QWidget):
             mode = self.active_mode if self.files[self.active_mode] else next((m for m in MODES if self.files[m]), self.active_mode)
             self.show_contents(mode)
 
-    def touch(self,*,passive_drag=False):
+    def touch(self):
         self.last_activity = time.monotonic()
-        if not passive_drag and self.presentation_kind=='drag':self._shake_last_interaction=self.last_activity
 
     def has_files(self) -> bool:
         return bool(self.display_refs())
@@ -2120,7 +2139,7 @@ class ShelfWindow(QWidget):
         self.manager.update_handles()
         if rejected:getattr(self.manager,'show_oversize_notice',lambda paths:None)(rejected)
 
-    def import_paths(self,mode,refs,on_committed=None,on_failed=None,*,_checked=False):
+    def import_paths(self,mode,refs,on_committed=None,on_failed=None,*,_checked=False,force_copy=False):
         """Apply the intake policy only to external file imports, never ZIPs."""
         refs=list(refs)
         if not _checked:
@@ -2131,7 +2150,7 @@ class ShelfWindow(QWidget):
                     return
                 allowed,blocked=result
                 if blocked:getattr(self.manager,'show_oversize_notice',lambda paths:None)(blocked)
-                if allowed:self.import_paths(mode,allowed,on_committed,on_failed,_checked=True)
+                if allowed:self.import_paths(mode,allowed,on_committed,on_failed,_checked=True,force_copy=force_copy)
                 elif on_failed:on_failed('超过 1 GB，请使用远程传输。')
             if any(not self.content.is_text(ref) and Path(ref).is_dir() for ref in refs):
                 epoch=self._copy_epoch;job=DiskWork(classify,refs);self._intake_limit_jobs=getattr(self,'_intake_limit_jobs',set());self._intake_limit_jobs.add(job)
@@ -2146,7 +2165,7 @@ class ShelfWindow(QWidget):
             if on_committed:on_committed()
             offer=getattr(self.manager,'offer_large_intake',None)
             if offer:offer(paths)
-        if self.manager.settings.capture_mode!='copy':
+        if not force_copy and self.manager.settings.capture_mode!='copy':
             self.add_paths(mode,refs,defer_cloud=on_committed is not None)
             committed(refs)
             return
@@ -2398,7 +2417,7 @@ class ShelfWindow(QWidget):
         if self.accepts_content_drop(event):
             self.active_mode = "permanent"
             self._highlight_content_drop(True)
-            self.touch(passive_drag=True)
+            self.touch()
             event.setDropAction(Qt.DropAction.CopyAction)
             event.accept()
         else:
@@ -2406,7 +2425,7 @@ class ShelfWindow(QWidget):
 
     def dragMoveEvent(self, event):
         if self.accepts_content_drop(event):
-            self.touch(passive_drag=True)
+            self.touch()
             event.setDropAction(Qt.DropAction.CopyAction)
             event.accept()
         else:
@@ -2547,7 +2566,7 @@ class ShelfWindow(QWidget):
             offset=QPoint(round(max(-24,min(24,-vx*.012))),round(max(-18,min(18,-vy*.012))))
         self._show_at(QPoint(x,y),reason,offset,reserve=reserve)
         if reason=='drag':
-            self._shake_pointer=QPoint(cursor);self._shake_last_interaction=time.monotonic()
+            self._shake_outside_since=time.monotonic()
         if velocity is not None and self.manager.motion:
             # The newly revealed shelf settles against the actual flick,
             # with a small elastic impulse, rather than a generic fade alone.
@@ -2563,21 +2582,18 @@ class ShelfWindow(QWidget):
         return reveal_rect(area,self.manager.edge.geometry(),size,self._dock_edge())
 
     def shake_idle_expired(self,position,now,inside):
-        rect=self.visual_geometry().adjusted(14,7,-14,-20)
-        previous=getattr(self,'_shake_pointer',QPoint(position))
-        distance=lambda point:max(rect.left()-point.x(),point.x()-rect.right(),rect.top()-point.y(),point.y()-rect.bottom(),0)
-        current_distance=distance(position)
-        if (position-previous).manhattanLength()>=3:
-            if inside or current_distance<96 or current_distance<distance(previous):
-                self._shake_last_interaction=now
-            self._shake_pointer=QPoint(position)
-        last=getattr(self,'_shake_last_interaction',self.last_activity)
-        return now-last>=(.8 if current_distance>220 else IDLE_SECONDS)
+        if inside:self._shake_outside_since=None;return False
+        if getattr(self,'_shake_outside_since',None) is None:self._shake_outside_since=now
+        return now-self._shake_outside_since>=SHAKE_DISMISS_SECONDS
 
     def reveal_from_dock(self,*,expanded=False):
         if self.manager.edge_suppressed: return
         offsets={'right':QPoint(30,0),'left':QPoint(-30,0),'top':QPoint(0,-24),'bottom':QPoint(0,24)}
         if self.isVisible():
+            if self.presentation_kind=='drag':
+                self.manager.auto_shown=None
+                self._show_at(self._dock_target_rect().topLeft(),'dock',QPoint())
+                return
             # A hover return interrupts the presentation spring in place. The
             # original overview was constrained from the compact anchor; a new
             # expanded reveal_rect here would change its vertical anchor.
@@ -3981,10 +3997,11 @@ class ShelfManager:
                 self.sync.local_changed()
 
     def update_handles(self):
+        shake_visible=any(s.isVisible() and s.presentation_kind=='drag' and not s.expanded for s in self.shelves)
         for edge in getattr(self,'edges',{'primary':self.edge}).values():
             if self.settings_open():edge.show_handle()
             elif self._dock_preview_values is not None:edge.hide()
-            elif (self.settings.keep_empty_handle or any(s.has_files() for s in self.shelves)) and not any(s.isVisible() for s in self.shelves):edge.show_handle()
+            elif shake_visible or (self.settings.keep_empty_handle or any(s.has_files() for s in self.shelves)) and not any(s.isVisible() for s in self.shelves):edge.show_handle()
             else:edge.hide()
 
     def _content_drag_validated(self, position):

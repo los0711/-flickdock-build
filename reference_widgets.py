@@ -475,18 +475,18 @@ class RenameDialog(QDialog):
             f"QFrame#renameSheet{{background:#FFFFFF;border:1px solid rgba(0,0,0,23);border-radius:{c['radius']}px;}}")
         form=QVBoxLayout(self.card);form.setContentsMargins(20,20,20,20);form.setSpacing(16)
         header=QHBoxLayout();header.addWidget(label('重命名文件',14,600,parent=self.card),1)
-        close=ToolbarButton('close',self.card,motion=shelf.manager.motion);close.setFixedSize(32,32);close.clicked.connect(self.reject);header.addWidget(close);form.addLayout(header)
+        close=ToolbarButton('close',self.card,motion=shelf.manager.motion);close.setFixedSize(32,32);close.setAutoDefault(False);close.clicked.connect(self.reject);header.addWidget(close);form.addLayout(header)
         form.addWidget(label('修改扩展名可能导致文件不可用',12,400,'secondary',self.card))
         edit=shelf.rename_edit;edit.setParent(self.card);edit.setFixedHeight(34)
         css(edit,"QLineEdit{background:#242426;color:#F5F5F7;border:1px solid #3F3F46;border-radius:8px;padding:7px 10px;font:12px 'HarmonyOS Sans SC';} QLineEdit:focus{border-color:#0A84FF;}",
             "QLineEdit{background:#FFFFFF;color:#1D1D1F;border:1px solid #D4D4D8;border-radius:8px;padding:7px 10px;font:12px 'HarmonyOS Sans SC';} QLineEdit:focus{border-color:#0A84FF;}")
         form.addWidget(edit);actions=QHBoxLayout();actions.addStretch(1)
-        cancel=button('取消',variant='secondary',parent=self.card);cancel.clicked.connect(self.reject)
+        cancel=button('取消',variant='secondary',parent=self.card);cancel.setAutoDefault(False);cancel.clicked.connect(self.reject)
         self.confirm=button('确定',variant='primary',parent=self.card);self.confirm.clicked.connect(self._commit)
+        self.confirm.setAutoDefault(True);self.confirm.setDefault(True)
         actions.addWidget(cancel);actions.addWidget(self.confirm);form.addLayout(actions);layout.addWidget(self.card)
         edit.editingFinished.disconnect(shelf.commit_rename)
         edit.returnPressed.disconnect(shelf.commit_rename)
-        edit.returnPressed.connect(self._commit)
         self.rejected.connect(edit.hide)
 
     def _commit(self):

@@ -58,13 +58,13 @@ class FeedbackTests(unittest.TestCase):
         self.shelf.presentation_kind='drag';self.shelf._layout_header(self.shelf.card.width());flush()
         zone=self.shelf.zones['permanent']
         self.assertTrue(self.shelf.brand_logo.isVisible());self.assertTrue(self.shelf.cloud_button.isVisible())
-        self.assertTrue(self.shelf.account_button.isHidden());self.assertTrue(self.shelf.lan_button.isHidden())
-        self.assertAlmostEqual(zone.caption.geometry().center().x(),zone.rect().center().x(),delta=1)
-        self.assertLess(zone.caption.geometry().bottom(),zone.height()-20)
-        self.assertGreaterEqual(zone.caption.y()-zone.hint.geometry().bottom(),14)
+        self.assertTrue(self.shelf.account_button.isHidden());self.assertTrue(self.shelf.lan_button.isVisible())
+        self.assertTrue(self.shelf.network_status.isVisible())
+        self.assertTrue(zone.rect().contains(zone.caption.geometry()))
+        self.assertEqual(zone.mapTo(self.shelf,zone.caption.geometry().center()).y(),self.shelf.lan_button.geometry().center().y())
         zone._track_pill_hover(zone.caption.geometry().center());QTest.qWait(330)
         self.assertFalse(self.shelf.expanded)
-        for widget in (self.shelf.pin_button,self.shelf.menu_button,self.shelf.expand_button):self.assertTrue(widget.isHidden())
+        for widget in (self.shelf.close_button,self.shelf.pin_button,self.shelf.menu_button,self.shelf.expand_button):self.assertTrue(widget.isHidden())
         self.shelf.presentation_kind='dock';self.shelf._layout_header(self.shelf.card.width());flush()
         self.assertGreater(zone.caption.x(),zone.width()//2)
         self.assertEqual(zone.mapTo(self.shelf,zone.caption.geometry().center()).y(),self.shelf.lan_button.geometry().center().y())
@@ -171,7 +171,7 @@ class SettingsFeedbackTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='flickdock-settings-1815-') as root,patch.object(app_settings,'_startup_runtime_allowed',return_value=False),patch('window_chrome.WindowChrome._available',return_value=QRect(0,0,1920,1080)):
             dialog=app_settings.SettingsDialog(app_settings.SettingsStore(Path(root)))
             service=Service();service.signed_in=False;service.account=None
-            panel=AccountPanel(service);dialog.set_account_panel(panel);dialog.show();flush()
+            panel=AccountPanel(service);dialog.set_account_panel(panel);dialog.select_category('账号与设备');dialog.show();flush()
             panel.show_auth();flush();panel._status_changed('账号登录失败，请检查账号和密码。'*3);flush()
             button=panel.submit_button
             self.assertTrue(panel.auth_dialog.surface.rect().contains(button.mapTo(panel.auth_dialog.surface,button.rect().bottomRight())))
@@ -182,9 +182,10 @@ class SettingsFeedbackTests(unittest.TestCase):
             for _ in range(8):flush()
             self.assertEqual(len(panel._rows_by_id),4)
             for row in panel._rows_by_id.values():
+                panel.devices_scroll.ensureWidgetVisible(row,0,0);flush()
                 for ancestor in (panel.devices_body,panel.signed_in_page,panel,dialog.account_slot):
                     self.assertTrue(ancestor.rect().contains(row.mapTo(ancestor,row.rect().bottomRight())),(ancestor.objectName(),row.geometry(),ancestor.size()))
-            self.assertLessEqual(dialog._reference_top.height(),max(dialog._reference_appearance.sizeHint().height(),panel.sizeHint().height())+4)
+            self.assertGreaterEqual(dialog.account_slot.height(),panel.sizeHint().height())
             current=panel._rows_by_id['current']
             marker=current.findChild(QWidget,'accountCurrentDevice');rename=panel.device_rename_buttons['current']
             self.assertLess(marker.mapTo(current,marker.rect().topRight()).x(),rename.mapTo(current,rename.rect().topLeft()).x())
@@ -192,18 +193,18 @@ class SettingsFeedbackTests(unittest.TestCase):
             service.devices.extend(dict(id='extra'+str(i),name='额外设备 '+str(i),platform='windows') for i in range(8))
             service.list_devices()
             for _ in range(10):flush()
-            self.assertGreater(dialog._reference_top.height(),dialog._reference_appearance.sizeHint().height())
+            self.assertGreater(panel.devices_scroll.verticalScrollBar().maximum(),0)
             service.devices=original;service.list_devices()
             for _ in range(10):flush()
-            self.assertLessEqual(dialog._reference_top.height(),dialog._reference_appearance.sizeHint().height()+4)
+            self.assertEqual(len(panel._rows_by_id),4);self.assertGreaterEqual(dialog.account_slot.height(),panel.sizeHint().height())
             dialog.set_update_state('checking');QTest.qWait(12)
             self.assertTrue(dialog.update_activity.isVisible());dialog.set_update_state('latest');flush()
             self.assertTrue(dialog.update_activity.isHidden());self.assertFalse(dialog.update_activity._clock.isValid())
             dialog.set_update_state('checking');self.assertLess(dialog.update_activity._clock.elapsed(),10)
             dialog.set_update_state('latest')
             scroll=dialog.scroll.verticalScrollBar();scroll.setValue(scroll.maximum());flush()
-            last=dialog.body_layout.itemAt(dialog.body_layout.count()-1).widget()
-            self.assertIsNotNone(last);self.assertLessEqual(dialog.body.height()-last.geometry().bottom(),32)
+            last=next(dialog.body_layout.itemAt(index).widget() for index in range(dialog.body_layout.count()-1,-1,-1) if dialog.body_layout.itemAt(index).widget().isVisible())
+            self.assertLessEqual(dialog.body.height(),max(dialog.scroll.viewport().height(),last.geometry().bottom()+32))
             for slider in dialog.findChildren(QSlider):
                 self.assertGreaterEqual(slider.height(),24)
                 for value in (slider.minimum(),slider.maximum()):

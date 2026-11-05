@@ -1,12 +1,13 @@
 """Two small views of the same current clipboard; no second clipboard watcher."""
 from pathlib import Path
-from PySide6.QtCore import QObject,Signal,QThreadPool,QBuffer,QIODevice,QSize,Qt,QRectF,QEvent
+from PySide6.QtCore import QObject,Signal,QThreadPool,QBuffer,QIODevice,QSize,Qt,QRectF,QEvent,QMimeData
 from PySide6.QtGui import QImage,QImageReader,QPainter,QPainterPath,QColor,QPen
 from PySide6.QtWidgets import QApplication,QPushButton,QLabel,QHBoxLayout,QPlainTextEdit,QStackedWidget,QWidget
 from app_settings import ReferenceModalDialog,SettingsCloseButton
 from native_ui_common import colors,icon
 from sync_files import DiskWork
 from transfer_visuals import draw_cloud_status_badge,CloudStatusBadge,CLOUD_STATUS_LABELS
+from shiboken6 import isValid
 import ui_theme
 
 
@@ -123,7 +124,7 @@ class ClipboardPreview(ReferenceModalDialog):
         super().__init__(manager.shelf,surface_width=600,modal=False)
         self.setWindowFlag(Qt.WindowStaysOnTopHint,True)
         self.manager=manager;self.presenter=manager.clipboard_presenter
-        self._outside_watch=False
+        self._moving=False;self._moved_revision=None
         self.setWindowTitle('FlickDock · 剪贴板预览')
         head=QHBoxLayout();self.title=QLabel('剪贴板预览',self.body);head.addWidget(self.title,1)
         self.badge=CloudStatusBadge(self.body);head.addWidget(self.badge)
@@ -136,28 +137,44 @@ class ClipboardPreview(ReferenceModalDialog):
         from image_preview import ImagePreview
         self.image=ImagePreview(self.content);self.content.addWidget(self.image)
         self.info=QLabel(self.content);self.info.setWordWrap(True);self.info.setAlignment(Qt.AlignCenter);self.content.addWidget(self.info)
-        self.status=QLabel(self.body);self.body_layout.addWidget(self.status)
+        footer=QHBoxLayout();self.status=QLabel(self.body);footer.addWidget(self.status,1)
+        from reference_widgets import button
+        self.shelf_button=button('转入搁架文件','plus',variant='secondary',parent=self.body)
+        self.shelf_button.clicked.connect(self._move_to_shelf);footer.addWidget(self.shelf_button);self.body_layout.addLayout(footer)
         self.presenter.changed.connect(self.refresh);self.refresh()
-        # Include text viewports and image children, which consume mouse events
-        # before they can reach the dialog's own mouseReleaseEvent.
-        for widget in (self,*self.findChildren(QWidget)):widget.installEventFilter(self)
         manager.shelf.installEventFilter(self)
 
     def eventFilter(self,watched,event):
         if watched is self.manager.shelf and event.type() in (QEvent.Hide,QEvent.Close):
             self.hide()
             return super().eventFilter(watched,event)
-        inside=isinstance(watched,QWidget) and (watched is self or self.isAncestorOf(watched))
-        if event.type()==QEvent.MouseButtonPress and self.isVisible() and isinstance(watched,QWidget) and not inside:
-            owner=watched
-            while isinstance(owner,QWidget) and not isinstance(owner,ClipboardButton):owner=owner.parentWidget()
-            if not isinstance(owner,ClipboardButton):self.close()
-        if event.type()==QEvent.MouseButtonRelease and self.isVisible() and inside:
-            self.close();return True
         return super().eventFilter(watched,event)
 
-    def _application_state(self,state):
-        if state!=Qt.ApplicationActive and self.isVisible():self.close()
+    def _move_to_shelf(self):
+        value=self.presenter.state.get('value');revision=self.presenter.state.get('revision')
+        if value is None or self._moving or revision==self._moved_revision:return
+        self._moving=True;self.refresh()
+        def finished():
+            if not isValid(self):return
+            self._moving=False;self._moved_revision=revision;self.refresh()
+        def failed(error='无法转入搁架，请重试。'):
+            if not isValid(self):return
+            self._moving=False;self.refresh();self.status.setText(str(error))
+        kind,data=value
+        if kind=='files':
+            try:self.manager.shelf.import_paths('permanent',list(data),on_committed=finished,on_failed=failed,force_copy=True)
+            except (OSError,ValueError) as error:failed(error)
+            return
+        mime=QMimeData()
+        if kind=='text':
+            mime.setText(data['text'])
+            if data.get('html'):mime.setHtml(data['html'])
+        elif data.get('raw'):mime.setData(data.get('mime') or 'image/png',data['raw'])
+        else:mime.setImageData(data['image'])
+        try:accepted=self.manager.shelf.receive_mime('permanent',mime,source='paste')
+        except (OSError,ValueError) as error:failed(error);return
+        if accepted:finished()
+        else:failed()
 
     def refresh(self):
         model=self.presenter;value=model.state.get('value');phase=model.state.get('phase','local')
@@ -165,6 +182,11 @@ class ClipboardPreview(ReferenceModalDialog):
         self.close_button.dark=self.manager.settings.theme=='dark'
         self.setStyleSheet(f"QDialog{{background:transparent;}} QLabel{{background:transparent;color:{c['text']};font-size:12px;}} QPlainTextEdit{{background:{c['card']};color:{c['text']};border:1px solid {c['border']};border-radius:8px;padding:10px;}} QPushButton#settingsClose{{background:transparent;border:0;border-radius:8px;padding:0;}} QPushButton#settingsClose:hover{{background:{c['hover']};}} QPushButton#settingsClose:pressed{{background:{c['control']};}}")
         self.badge.set_status(phase);status=clipboard_status(model.state);self.status.setText(status)
+        moved=self._moved_revision==model.state.get('revision')
+        self.shelf_button.setEnabled(value is not None and not self._moving and not moved)
+        self.shelf_button.setText('正在转入…' if self._moving else '已转入搁架' if moved else '转入搁架文件')
+        from reference_widgets import refresh_tree
+        refresh_tree(self.shelf_button)
         self.badge.setToolTip(status);self.badge.setAccessibleName(status)
         if not value:self.info.setText('剪贴板暂无可预览内容');self.content.setCurrentWidget(self.info)
         elif value[0]=='text':
@@ -181,15 +203,9 @@ class ClipboardPreview(ReferenceModalDialog):
 
     def showEvent(self,event):
         self.presenter.request_large();self.refresh();super().showEvent(event)
-        if not self._outside_watch:
-            app=QApplication.instance();app.installEventFilter(self);app.applicationStateChanged.connect(self._application_state)
-            self._outside_watch=True
 
     def closeEvent(self,event):
         self.presenter._large_requested=False;super().closeEvent(event)
 
     def hideEvent(self,event):
-        if self._outside_watch:
-            app=QApplication.instance();app.removeEventFilter(self);app.applicationStateChanged.disconnect(self._application_state)
-            self._outside_watch=False
         self.presenter._large_requested=False;super().hideEvent(event)

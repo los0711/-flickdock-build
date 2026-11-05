@@ -74,8 +74,7 @@ class LanHigLayoutTests(unittest.TestCase):
 
     def test_click_and_keyboard_use_native_file_picker_folder_stays_in_context_menu(self):
         source=self.files(1)[0]
-        self.assertFalse(any(button.text() in ('添加文件','添加文件夹')
-                             for button in self.panel.findChildren(QPushButton)))
+        self.assertTrue(self.panel.add_files.isVisible())
         with patch('lan_panel.QFileDialog.getOpenFileNames',return_value=([source],'')) as picker:
             QTest.mouseClick(self.panel.drop_zone.title,Qt.MouseButton.LeftButton)
             self.settle()
@@ -101,13 +100,13 @@ class LanHigLayoutTests(unittest.TestCase):
         self.load_busy_state()
         panel=self.panel
         self.assertEqual(len(panel.queue_rows),10)
-        self.assertTrue(all(row.height()==36 for row in panel.queue_rows))
+        self.assertTrue(all(row.height()==44 for row in panel.queue_rows))
         self.assertGreater(panel.queue_scroll.verticalScrollBar().maximum(),0)
         panel.queue_scroll.ensureWidgetVisible(panel.queue_rows[-1]);self.settle()
         self.assertTrue(panel.queue_scroll.viewport().rect().intersects(
             panel.queue_rows[-1].rect().translated(panel.queue_rows[-1].mapTo(panel.queue_scroll.viewport(),QPoint(0,0)))))
         self.assertEqual(len(panel.history_rows),12)
-        self.assertTrue(all(row.height()==52 for row in panel.history_rows))
+        self.assertTrue(all(row.height()==56 for row in panel.history_rows))
         self.assertGreater(panel.history_scroll.verticalScrollBar().maximum(),0)
         panel.history_scroll.ensureWidgetVisible(panel.history_rows[-1]);self.settle()
         last=panel.history_rows[-1]
@@ -172,8 +171,8 @@ class LanHigLayoutTests(unittest.TestCase):
                         for button in row['frame'].findChildren(QPushButton):
                             if button.isVisible():
                                 self.assertTrue(row['frame'].rect().contains(button.mapTo(row['frame'],button.rect().bottomRight())))
-                    illustration=panel.drop_zone.illustration
-                    center=illustration.mapTo(panel.drop_zone,illustration.rect().center())
+                    self.assertTrue(panel.drop_zone.illustration.isHidden())
+                    center=panel.drop_zone.title.mapTo(panel.drop_zone,panel.drop_zone.title.rect().center())
                     self.assertLessEqual(abs(center.x()-panel.drop_zone.rect().center().x()),1)
                     image=self.dialog.grab().toImage()
                     self.assertEqual(image.pixelColor(25,image.height()//2).alpha(),255)

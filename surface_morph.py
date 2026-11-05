@@ -7,14 +7,14 @@ from PySide6.QtGui import QColor, QPainter, QPainterPath, QPixmap, QTransform, Q
 from PySide6.QtWidgets import QWidget
 
 
-def paint_surface_shadow(painter,rect,cache,blur=28.0,offset=None,color=None):
+def paint_surface_shadow(painter,rect,cache,blur=28.0,offset=None,color=None,*,radius=None):
     """Paint the same fixed-width shadow for live and animated surfaces."""
     offset=QPoint(0,7) if offset is None else offset
     color=QColor(18,31,53,40) if color is None else QColor(color)
     if color.alpha() == 0:
         return
     dpr=painter.device().devicePixelRatioF()
-    radius=16.0 if sys.platform=='darwin' else 10.0
+    if radius is None:radius=16.0 if sys.platform=='darwin' else 10.0
     spread=blur*.65
     margin=round(blur+max(abs(offset.x()),abs(offset.y()))+3)
     inset_x=math.ceil(radius+spread+abs(offset.x())+2)
@@ -269,8 +269,9 @@ class SurfaceMorph(QObject):
         self.animation = QVariantAnimation(self)
         # One shared clock drives geometry and content. Only an explicit
         # overview open opts into a small, preallocated elastic overshoot.
-        curve=QEasingCurve(QEasingCurve.Type.OutCubic)
-        self.animation.setEasingCurve(curve)
+        self._geometry_curve=QEasingCurve(QEasingCurve.Type.OutCubic)
+        self._content_curve=QEasingCurve(QEasingCurve.Type.OutCubic)
+        self.animation.setEasingCurve(QEasingCurve.Linear)
         self.animation.valueChanged.connect(self._frame)
         self.animation.finished.connect(self._finish)
         self._done = None
@@ -309,15 +310,16 @@ class SurfaceMorph(QObject):
         if elastic:
             from ui_transitions import OVERVIEW_OPEN_OVERSHOOT
             curve.setOvershoot(OVERVIEW_OPEN_OVERSHOOT)
-        self.animation.setEasingCurve(curve)
+        self._geometry_curve=curve
         self.animation.setDuration(duration)
         self.animation.setStartValue(0.0)
         self.animation.setEndValue(1.0)
         self.animation.start()
 
     def _frame(self, progress):
-        t=float(progress)
-        self.progress=t
+        clock=max(0.,min(1.,float(progress)))
+        t=self._geometry_curve.valueForProgress(clock)
+        self.progress=self._content_curve.valueForProgress(clock)
         a, b = self._from, self._to
         def blend(x, y): return round(x + (y - x) * t)
         width, height = blend(a.width(), b.width()), blend(a.height(), b.height())

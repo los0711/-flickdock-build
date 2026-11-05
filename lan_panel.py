@@ -21,13 +21,15 @@ from flickdock_icons import draw_glyph
 from platform_native import remove_host_window_shadow
 from native_ui_common import colors as ui_colors, icon as ui_icon, reference_font, reduced_motion
 from async_images import ImageCache
-from transfer_workbench import FileArtwork, reveal_file
+from transfer_workbench import FileArtwork, reveal_file, TRANSFER_CORNER_RADIUS_PX
 
 WORKBENCH_GAP_PX = 12
 WORKBENCH_MARGIN_PX = 16
 CARD_MARGIN_PX = 12
 QUEUE_ROW_HEIGHT_PX = 44
 QUEUE_MAX_HEIGHT_PX = 144
+CODE_REFRESH_POLL_MS = 250
+CODE_PROGRESS_MAX = 1000
 
 
 def _label(value='', parent=None, *, muted=False):
@@ -91,36 +93,26 @@ class _StatusLabel(QLabel):
         self.setText('')
 
 
-class _CodeCountdown(QWidget):
-    """Server-derived code refresh deadline, shown as a quiet circular timer."""
+class _CodeExpiryBar(QProgressBar):
+    """The existing server refresh deadline, without a second countdown value."""
     def __init__(self,service,button,parent=None):
-        super().__init__(parent);self.service=service;self.button=button;self.dark=False
-        self.setFixedSize(40,40);self.setAccessibleName('接收码自动刷新倒计时')
-        self._timer=QTimer(self);self._timer.setInterval(250);self._timer.timeout.connect(self._tick)
+        super().__init__(parent);self.service=service;self.button=button;self._refresh_requested=False
+        self.setRange(0,CODE_PROGRESS_MAX);self.setTextVisible(False);self.setFixedHeight(3)
+        self.setAccessibleName('接收码刷新进度');self.setAccessibleDescription('进度条走完后自动刷新接收码')
+        self._timer=QTimer(self);self._timer.setInterval(CODE_REFRESH_POLL_MS);self._timer.timeout.connect(self._tick)
     def _tick(self):
         identity=self.service.code_identity()
         self.button.setText(identity.get('code') or ('重试连接' if identity.get('error') else '刷新中…' if identity.get('online') else '连接中…'))
         self.button.setEnabled(bool(identity.get('code') or identity.get('error')))
-        self.update()
+        remaining=max(0.,identity.get('refresh_remaining',0));duration=max(1.,identity.get('refresh_duration',240))
+        self.setValue(round(CODE_PROGRESS_MAX*min(1.,remaining/duration)))
+        if remaining>0:self._refresh_requested=False
+        elif identity.get('code') and identity.get('online') and not self._refresh_requested:
+            self._refresh_requested=True;self.service.check_code()
     def showEvent(self,event):
         super().showEvent(event);self._tick();self._timer.start()
     def hideEvent(self,event):
         self._timer.stop();super().hideEvent(event)
-    def paintEvent(self,event):
-        state=self.service.code_identity();remaining=max(0.,state.get('refresh_remaining',0))
-        duration=max(1.,state.get('refresh_duration',240))
-        value=str(math.ceil(remaining)) if state.get('code') and remaining else '…' if state.get('online') else '—'
-        self.setToolTip(f'{math.ceil(remaining)} 秒后自动刷新接收码' if remaining else '正在刷新接收码' if state.get('online') else '远程服务连接中')
-        self.setAccessibleDescription(self.toolTip())
-        painter=QPainter(self);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        rect=QRectF(3,3,34,34);pen=QPen(QColor('#374450' if self.dark else '#DCE6EF'),2.5)
-        painter.setPen(pen);painter.drawEllipse(rect)
-        pen.setColor(QColor('#63B3FF' if self.dark else '#0878E8'));pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        painter.setPen(pen)
-        if remaining:painter.drawArc(rect,90*16,-round(360*16*min(1.,remaining/duration)))
-        painter.setPen(QColor('#C7D3DE' if self.dark else '#42566A'))
-        font=QFont(reference_font());font.setPixelSize(10);font.setWeight(QFont.Weight.Medium);painter.setFont(font)
-        painter.drawText(self.rect(),Qt.AlignmentFlag.AlignCenter,value)
 
 
 def _size(value):
@@ -260,7 +252,7 @@ class _DevicesCombo(QComboBox):
         popup.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint,True)
         popup.setAutoFillBackground(True)
         dark=bool(getattr(self.itemDelegate(),'dark',False))
-        popup.setStyleSheet('QFrame{background:'+('#242426' if dark else '#FFFFFF')+';border:1px solid '+('#424248' if dark else '#D4D4D8')+';border-radius:10px;}')
+        popup.setStyleSheet('QFrame{background:'+('#242426' if dark else '#FFFFFF')+';border:0;border-radius:'+str(TRANSFER_CORNER_RADIUS_PX)+'px;}')
         super().showPopup()
         self.view().viewport().installEventFilter(self)
 
@@ -313,7 +305,7 @@ class _DeviceDelegate(QStyledItemDelegate):
         background = '#344357' if self.dark else '#eaf2fe'
         if selected:
             painter.setPen(Qt.PenStyle.NoPen); painter.setBrush(QColor(background))
-            painter.drawRoundedRect(QRectF(option.rect.adjusted(5, 3, -5, -3)), 9, 9)
+            painter.drawRoundedRect(QRectF(option.rect.adjusted(5, 3, -5, -3)), TRANSFER_CORNER_RADIUS_PX, TRANSFER_CORNER_RADIUS_PX)
         icon_color = '#8fbbff' if self.dark else '#3178d9'
         platform=index.data(Qt.ItemDataRole.UserRole+1)
         if platform=='windows':
@@ -406,7 +398,7 @@ class _DropZone(QFrame):
 
     def border_path(self):
         rect=QRectF(self.rect()).adjusted(1,1,-1,-1)
-        path=QPainterPath();path.addRoundedRect(rect,min(12,rect.width()/2,rect.height()/2),min(12,rect.width()/2,rect.height()/2))
+        path=QPainterPath();path.addRoundedRect(rect,min(TRANSFER_CORNER_RADIUS_PX,rect.width()/2,rect.height()/2),min(TRANSFER_CORNER_RADIUS_PX,rect.width()/2,rect.height()/2))
         return path
 
     def paintEvent(self,event):
@@ -545,7 +537,7 @@ class _OfferIcon(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor('#304761' if self.dark else '#e5f0ff'))
-        painter.drawRoundedRect(QRectF(0, 0, 38, 38), 11, 11)
+        painter.drawRoundedRect(QRectF(0, 0, 38, 38), TRANSFER_CORNER_RADIUS_PX, TRANSFER_CORNER_RADIUS_PX)
         draw_glyph(painter, 'receive', QRectF(9, 9, 20, 20),
                    '#90bdff' if self.dark else '#2373dd', 1.8)
 
@@ -724,6 +716,7 @@ class LanPanel(QFrame):
         target.addWidget(self.scan_indicator); target.addWidget(self.peer_count)
         send.addLayout(target)
         self.devices = _DevicesCombo(self); self.devices.setMinimumHeight(32); self.devices.setMinimumWidth(0)
+        self.devices.setObjectName('lanDevicePicker')
         self.devices.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.devices.setMinimumContentsLength(10); self.devices.setMaxVisibleItems(8)
         self.devices_view = QListView(self.devices)
@@ -742,54 +735,46 @@ class LanPanel(QFrame):
         self.use_lan_button.clicked.connect(self._recommend_lan);self.nearby_hint.hide()
         if self._wan:send.addWidget(self.nearby_hint)
         self.peer_code_label=_label('对方接收码',self.send_column)
-        self.peer_code_label.setObjectName('lanSection');self.peer_code_label.setVisible(self._wan)
-        if self._wan:send.addWidget(self.peer_code_label)
+        self.peer_code_label.setObjectName('lanMuted');self.peer_code_label.setVisible(self._wan)
         self.peer_code_input=QLineEdit(self.send_column)
-        self.peer_code_input.setPlaceholderText('输入 8 位本机码或 4 位一次性码')
+        self.peer_code_input.setPlaceholderText('输入对方接收码')
+        self.peer_code_input.setToolTip('支持 8 位本机接收码或 4 位一次性接收码')
         self.peer_code_input.setAccessibleName('对方的接收码');self.peer_code_input.setMaxLength(8)
         self.peer_code_input.setMinimumHeight(30);self.peer_code_input.setVisible(self._wan)
-        if self._wan:send.addWidget(self.peer_code_input)
         self.devices.currentIndexChanged.connect(self._target_changed)
         self.peer_code_input.textChanged.connect(self._target_changed)
-        send.addStretch(1)
         self.send_code = QFrame(self.send_column); self.send_code.setObjectName('lanSendCode')
-        send_code_layout=QHBoxLayout(self.send_code);send_code_layout.setContentsMargins(14,8,14,8)
-        send_code_label=_label('本机接收码' if self._wan else '确认码',self.send_code,muted=True);send_code_layout.addWidget(send_code_label,1)
+        if self._wan:
+            local_code=QVBoxLayout(self.send_code);local_code.setContentsMargins(0,0,0,0);local_code.setSpacing(4)
+            local_code.addWidget(_label('本机接收码',self.send_code,muted=True))
+            send_code_layout=QHBoxLayout();send_code_layout.setContentsMargins(0,0,0,0);send_code_layout.setSpacing(4);local_code.addLayout(send_code_layout)
+        else:
+            send_code_layout=QHBoxLayout(self.send_code);send_code_layout.setContentsMargins(12,6,12,6)
+            send_code_layout.addWidget(_label('确认码',self.send_code,muted=True),1)
         self.send_code_value=_CopyCodeButton('—',self.send_code);self.send_code_value.setObjectName('lanSendCodeValue')
         self.send_code_value.setSizePolicy(QSizePolicy.Policy.Preferred,QSizePolicy.Policy.Preferred)
         self.send_code_value.setAccessibleName('点击复制本机接收码' if self._wan else '点击复制确认码')
         send_code_layout.addWidget(self.send_code_value)
-        self.code_countdown=None
+        self.code_progress=None
         if self._wan and callable(getattr(service,'code_identity',None)):
             self.send_code_value.code_provider=lambda:service.code_identity().get('code','')
             if callable(getattr(service,'reconnect',None)):
                 self.send_code_value.clicked.connect(lambda:service.reconnect() if not service.code_identity().get('code') else None)
-            self.code_countdown=_CodeCountdown(service,self.send_code_value,self.send_code)
-            send_code_layout.addWidget(self.code_countdown)
+            self.code_progress=_CodeExpiryBar(service,self.send_code_value,self.send_code)
+            local_code.addWidget(self.code_progress)
         if self._wan and hasattr(service,'identity_changed'):
             service.identity_changed.connect(self._code_identity_changed)
             self._code_identity_changed(service.code_identity() if callable(getattr(service,'code_identity',None))
                                         else dict(code=getattr(service,'code','')))
-        send.addWidget(self.send_code)
-        if self._wan and hasattr(service,'custom_code_changed'):
-            custom_row=QHBoxLayout();custom_row.setSpacing(6)
-            self.custom_input=QLineEdit(self.send_column);self.custom_input.setMaxLength(4)
-            from PySide6.QtCore import QRegularExpression
-            from PySide6.QtGui import QRegularExpressionValidator
-            self.custom_input.setValidator(QRegularExpressionValidator(QRegularExpression("[0-9]{0,4}"),self.custom_input))
-            self.custom_input.setInputMethodHints(Qt.ImhDigitsOnly)
-            self.custom_input.setPlaceholderText('自定义一次性接收码 · 4 位数字')
-            self.custom_input.setAccessibleName('自定义一次性接收码')
-            self.custom_set=_button('设置',self.send_column);self.custom_cancel=_button('取消',self.send_column)
-            self.custom_set.clicked.connect(self._set_custom);self.custom_cancel.clicked.connect(self._cancel_custom)
-            custom_row.addWidget(self.custom_input,1);custom_row.addWidget(self.custom_set);custom_row.addWidget(self.custom_cancel)
-            send.addLayout(custom_row)
-            status_row=QHBoxLayout();status_row.setSpacing(8)
-            self.custom_value=_CopyCodeButton('—',self.send_column)
-            self.custom_value.code_provider=lambda:service.custom_identity().get('code','') if service.custom_identity().get('status')=='available' and service.custom_identity().get('online') else ''
-            self.custom_status=_label('',self.send_column,muted=True)
-            status_row.addWidget(self.custom_value);status_row.addWidget(self.custom_status,1);send.addLayout(status_row)
-            service.custom_code_changed.connect(self._custom_changed);self._custom_changed(service.custom_identity())
+        if self._wan:
+            self.pairing_card=QFrame(self.send_column);self.pairing_card.setObjectName('lanPairingCard')
+            pair=QHBoxLayout(self.pairing_card);pair.setContentsMargins(12,10,12,10);pair.setSpacing(12)
+            pair.addWidget(self.send_code,1)
+            remote=QWidget(self.pairing_card);remote_layout=QVBoxLayout(remote);remote_layout.setContentsMargins(0,0,0,0);remote_layout.setSpacing(4)
+            remote_layout.addWidget(self.peer_code_label);self.peer_code_input.setFixedHeight(36);remote_layout.addWidget(self.peer_code_input);remote_layout.addStretch(1)
+            pair.addWidget(remote,1);send.addWidget(self.pairing_card)
+        else:send.addWidget(self.send_code)
+        send.addStretch(1)
         self.send_button = _button('发送', self); self.send_button.setObjectName('lanPrimary')
         self.send_button.setProperty('pressScale',True)
         self.send_button.setMinimumHeight(34)
@@ -1126,12 +1111,12 @@ class LanPanel(QFrame):
             QFrame#lanSendColumn {{ background:{faint}; border:0; border-right:1px solid {c['divider']}; }}
             QFrame#lanPayloadArea {{background:{c['surface']};border:0;border-bottom:1px solid {c['divider']};}}
             QFrame#lanActivityColumn, QFrame#lanQueueBody, QFrame#lanHistoryGroup {{ background:transparent; border:0; }}
-            QFrame#lanQueueRow, QFrame#lanHistoryRow {{ background:{faint}; border:1px solid {border}; border-radius:12px; }}
+            QFrame#lanQueueRow, QFrame#lanHistoryRow {{ background:{faint}; border:1px solid {border}; border-radius:{TRANSFER_CORNER_RADIUS_PX}px; }}
             QFrame#lanHistoryDivider {{ background:transparent; border:0; max-height:0; }}
-            QFrame#lanTransferRow {{ background:{c['card']}; border:1px solid {border}; border-radius:12px; }}
+            QFrame#lanTransferRow {{ background:{c['card']}; border:1px solid {border}; border-radius:{TRANSFER_CORNER_RADIUS_PX}px; }}
             QFrame#lanTransferRow[offerFrame="true"] {{ background:transparent; border:0; }}
-            QFrame#lanOfferCard {{ background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 rgba(10,132,255,51),stop:1 rgba(86,125,175,26)); border:1px solid rgba(10,132,255,102); border-radius:16px; }}
-            QFrame#lanPanel QLabel#lanOfferKicker {{ color:white; background:{accent}; border-radius:8px; font-size:11px; font-weight:700; padding:2px 8px; }}
+            QFrame#lanOfferCard {{ background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 rgba(10,132,255,51),stop:1 rgba(86,125,175,26)); border:1px solid rgba(10,132,255,102); border-radius:{TRANSFER_CORNER_RADIUS_PX}px; }}
+            QFrame#lanPanel QLabel#lanOfferKicker {{ color:white; background:{accent}; border-radius:{TRANSFER_CORNER_RADIUS_PX}px; font-size:11px; font-weight:700; padding:2px 8px; }}
             QFrame#lanPanel QLabel#lanOfferPeer {{ color:{color}; font-size:12px; font-weight:700; }}
             QFrame#lanPanel QLabel#lanOfferFile {{ color:{muted}; font-size:12px; }}
             QFrame#lanPanel QLabel#lanOfferMeta {{ color:{muted}; font-size:11px; }}
@@ -1149,43 +1134,48 @@ class LanPanel(QFrame):
             QFrame#lanPanel QLabel#lanHistoryState[statusKind="cancelled"] {{ color:{c['orange']}; }}
             QFrame#lanPanel QLabel#lanHistoryState[statusKind="failed"] {{ color:{c['red']}; }}
             QFrame#lanPanel QLabel#lanHistoryState[statusKind="other"] {{ color:{muted}; }}
-            QFrame#lanPanel QPushButton#lanHistoryRemove {{ background:transparent; border:0; border-radius:6px; color:{c['muted']}; padding:0; font-size:12px; }}
+            QFrame#lanPanel QPushButton#lanHistoryRemove {{ background:transparent; border:0; border-radius:{TRANSFER_CORNER_RADIUS_PX}px; color:{c['muted']}; padding:0; font-size:12px; }}
             QFrame#lanPanel QPushButton#lanHistoryRemove:hover {{ background:{c['hover']}; color:{color}; }}
             QFrame#lanDropZone {{ background:transparent; border:0; }}
             QFrame#lanDropZone QLabel#lanDropTitle {{ font-size:12px; font-weight:500; color:{color}; }}
             QFrame#lanDropZone QLabel#lanDropHint {{ font-size:11px; color:{muted}; }}
-            QFrame#lanSendCode {{ background:{c['card']}; border:1px solid {border}; border-radius:12px; }}
+            QFrame#lanSendCode {{ background:{c['card']}; border:1px solid {border}; border-radius:{TRANSFER_CORNER_RADIUS_PX}px; }}
             QFrame#lanPanel QPushButton#lanSendCodeValue {{ color:{c['cyan'] if self._dark else accent}; font-size:16px; font-weight:700; font-family:monospace; }}
-            QFrame#lanPanel QPushButton {{ color:{color}; background:{c['control']}; border:1px solid transparent; border-radius:8px; padding:4px 12px; font-size:12px; }}
+            QFrame#lanPanel QPushButton {{ color:{color}; background:{c['control']}; border:1px solid transparent; border-radius:{TRANSFER_CORNER_RADIUS_PX}px; padding:4px 12px; font-size:12px; }}
             QFrame#lanPanel QPushButton#lanTextButton {{ color:{muted}; background:transparent; border:0; padding:2px 4px; min-height:18px; }}
             QFrame#lanPanel QPushButton#lanTextButton:hover {{ color:{accent}; background:{c['hover']}; }}
-            QFrame#lanPanel QPushButton#lanPrimary {{ color:white; background:{accent}; border-color:transparent; border-radius:12px; font-weight:700; }}
+            QFrame#lanPanel QPushButton#lanPrimary {{ color:white; background:{accent}; border-color:transparent; border-radius:{TRANSFER_CORNER_RADIUS_PX}px; font-weight:700; }}
             QFrame#lanPanel QPushButton#lanPrimary:disabled {{ color:{c['muted']}; background:{c['control']}; border-color:transparent; }}
             QFrame#lanPanel QPushButton[accessibleName="取消传输"] {{ color:{c['red']}; background:transparent; border:0; padding:0; }}
             QFrame#lanPanel QPushButton:hover {{ background:{c['hover']}; }}
             QFrame#lanPanel QPushButton:pressed {{ background:{c['selected']}; }}
             QFrame#lanPanel QPushButton:disabled {{ color:{c['muted']}; }}
-            QFrame#lanPanel QComboBox {{ color:{color}; background:{field}; border:1px solid {c['input_border']}; border-radius:8px; padding:5px 28px 5px 10px; font-size:12px; }}
+            QFrame#lanPanel QComboBox {{ color:{color}; background:{field}; border:1px solid {c['input_border']}; border-radius:{TRANSFER_CORNER_RADIUS_PX}px; padding:5px 28px 5px 10px; font-size:12px; }}
             QFrame#lanPanel QComboBox::drop-down {{ border:0; width:26px; }}
             QFrame#lanPanel QComboBox::down-arrow {{ image:none; width:0; }}
-            QFrame#lanPanel QAbstractItemView {{ background:{field}; color:{color}; border:1px solid {border}; border-radius:8px; padding:4px; outline:0; }}
-            QFrame#lanPanel QLineEdit {{ color:{color}; background:{c['control']}; border:0; border-radius:4px; padding:3px 6px; font-size:11px; font-family:monospace; }}
+            QFrame#lanPanel QAbstractItemView {{ background:{field}; color:{color}; border:1px solid {border}; border-radius:{TRANSFER_CORNER_RADIUS_PX}px; padding:4px; outline:0; }}
+            QFrame#lanPanel QLineEdit {{ color:{color}; background:{c['control']}; border:0; border-radius:{TRANSFER_CORNER_RADIUS_PX}px; padding:3px 6px; font-size:11px; font-family:monospace; }}
             QFrame#lanPanel QPushButton[accessibleName="上一页传输"], QFrame#lanPanel QPushButton[accessibleName="下一页传输"] {{ min-width:24px; max-width:24px; min-height:24px; max-height:24px; padding:0; }}
             QFrame#lanPanel QProgressBar {{ border:0; background:{c['control']}; height:6px; max-height:6px; border-radius:3px; }}
             QFrame#lanPanel QProgressBar::chunk {{ background:{c['cyan']}; border-radius:3px; }}
         """
         style+=f'''
-            QFrame#lanPayloadArea,QFrame#lanSendColumn,QFrame#lanWorkbenchCard {{background:{c['card']};border:0;border-radius:14px;}}
+            QFrame#lanPayloadArea,QFrame#lanSendColumn,QFrame#lanWorkbenchCard {{background:{c['card']};border:0;border-radius:{TRANSFER_CORNER_RADIUS_PX}px;}}
             QWidget#lanLeftContent {{background:transparent;border:0;}}
-            QFrame#lanQueueRow,QFrame#lanHistoryRow,QFrame#lanTransferRow {{background:{c['control']};border:0;border-radius:10px;}}
-            QFrame#lanSendCode {{background:{c['control']};border:0;border-radius:10px;}}
-            QFrame#lanDropZone {{background:{c['control']};border:0;border-radius:9px;}}
+            QFrame#lanQueueRow,QFrame#lanHistoryRow,QFrame#lanTransferRow {{background:{c['control']};border:0;border-radius:{TRANSFER_CORNER_RADIUS_PX}px;}}
+            QFrame#lanSendCode {{background:{c['control']};border:0;border-radius:{TRANSFER_CORNER_RADIUS_PX}px;}}
+            QFrame#lanPairingCard {{background:{c['control']};border:0;border-radius:{TRANSFER_CORNER_RADIUS_PX}px;}}
+            QFrame#lanPairingCard QFrame#lanSendCode {{background:transparent;border:0;}}
+            QFrame#lanDropZone {{background:{c['control']};border:0;border-radius:{TRANSFER_CORNER_RADIUS_PX}px;}}
             QFrame#lanDropZone:hover {{background:{c['hover']};}}
-            QFrame#lanPanel QPushButton#lanQueueRemove {{background:transparent;border:0;border-radius:7px;padding:0;}}
+            QFrame#lanPanel QPushButton#lanQueueRemove {{background:transparent;border:0;border-radius:{TRANSFER_CORNER_RADIUS_PX}px;padding:0;}}
             QFrame#lanPanel QPushButton#lanQueueRemove:hover {{background:{c['hover']};}}
             QFrame#lanPanel QPushButton#lanRevealFile {{background:transparent;padding:0;}}
             QFrame#lanPanel QPushButton#lanRevealFile:hover {{background:{c['hover']};}}
             QFrame#lanPanel QComboBox {{border:0;}}
+            QFrame#lanPanel QComboBox#lanDevicePicker {{background:{c['hover']};border:0;border-radius:{TRANSFER_CORNER_RADIUS_PX}px;}}
+            QFrame#lanPanel QComboBox#lanDevicePicker:hover {{background:{c['selected']};}}
+            QFrame#lanPanel QComboBox#lanDevicePicker:disabled {{color:{c['muted']};background:{c['control']};}}
             QFrame#lanPanel QComboBox:focus,QFrame#lanPanel QLineEdit:focus {{border:1px solid {c['link']};}}
             QFrame#lanPanel QLabel#lanOfferKicker {{background:{c['action']};color:{c['on_action']};}}
             QFrame#lanPanel QPushButton#lanTextButton:hover {{color:{c['link']};}}
@@ -1222,7 +1212,6 @@ class LanPanel(QFrame):
             row.remove_button.setIcon(ui_icon('trash',c['secondary']));row.reveal_button.setIcon(ui_icon('folder',c['secondary']))
         for button in (self.previous_page,self.next_page):
             button.dark=self._dark;button.update()
-        if self.code_countdown:self.code_countdown.dark=self._dark;self.code_countdown.update()
         self.drop_zone.illustration.dark=self._dark;self.drop_zone.illustration.update()
         self.scan_indicator.dark=self._dark;self.scan_indicator.update()
 
@@ -1269,25 +1258,8 @@ class LanPanel(QFrame):
         self.send_button.setEnabled(bool(peers))
 
     def _code_identity_changed(self,identity):
-        if self.code_countdown:self.code_countdown._tick()
+        if self.code_progress:self.code_progress._tick()
         else:self.send_code_value.setText(identity.get('code') or '连接中…')
-    def _set_custom(self):
-        try:self.service.set_custom_code(self.custom_input.text())
-        except (ValueError,OSError) as error:self.custom_status.setText(str(error))
-
-    def _cancel_custom(self):
-        try:self.service.cancel_custom_code()
-        except (ValueError,OSError) as error:self.custom_status.setText(str(error))
-
-    def _custom_changed(self,value):
-        status=value.get('status','empty');online=bool(value.get('online'))
-        text={'available':'可用 · 10 分钟内有效','connecting':'正在建立会话','expired':'已过期','used':'已使用','cancelled':'已取消','empty':'可自定义一次性接收码'}.get(status,'')
-        self.custom_value.setText(value.get('code') or '—')
-        self.custom_value.setEnabled(online and status=='available')
-        self.custom_cancel.setEnabled(online and status in ('available','connecting'))
-        self.custom_set.setEnabled(online)
-        if status=='available':text=f'可用 · {max(0,int(value.get("remaining",0)))} 秒'
-        self.custom_status.setText(str(value.get('error') or (text if online else '远程服务未连接')))
 
     def _target_changed(self,*_):
         if not self._wan:return
@@ -1696,6 +1668,7 @@ class LanDialog(QDialog):
         mode_band=QWidget(self.card);mode_band_layout=QVBoxLayout(mode_band);mode_band_layout.setContentsMargins(WORKBENCH_MARGIN_PX,8,WORKBENCH_MARGIN_PX,0);mode_band_layout.addWidget(self.mode_segment)
         content.addWidget(mode_band)
         self.panel_stack=QStackedWidget(self.card)
+        self.panel_stack.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Ignored)
         from file_metadata import FileMetadataCache
         self.file_metadata=FileMetadataCache(self)
         self.panel = LanPanel(service, self.panel_stack, theme=settings.theme, settings=settings,metadata_cache=self.file_metadata)
@@ -1779,7 +1752,7 @@ class LanDialog(QDialog):
         p.fillRect(event.rect(),Qt.transparent)
         p.setCompositionMode(QPainter.CompositionMode_SourceOver)
         paint_surface_shadow(p,QRectF(self.card.geometry()),self._shadow_cache,
-            blur=18,offset=QPointF(0,4),
+            radius=TRANSFER_CORNER_RADIUS_PX,blur=18,offset=QPointF(0,4),
             color=QColor(0,0,0,78) if self._theme=='dark' else QColor(15,23,42,32))
         p.end()
 
@@ -1800,14 +1773,14 @@ class LanDialog(QDialog):
         surface,ink,hover=c['surface'],c['text'],c['hover']
         self.back_button.setIcon(ui_icon('left',c['secondary']))
         self.card.setStyleSheet(f'''
-            QFrame#lanDialogCard {{ background:{surface}; border:1px solid {c['glass_border']}; border-radius:{c['radius']}px; }}
+            QFrame#lanDialogCard {{ background:{surface}; border:1px solid {c['glass_border']}; border-radius:{TRANSFER_CORNER_RADIUS_PX}px; }}
             QWidget#lanTitleBar {{ background:transparent; border:0; border-bottom:1px solid {c['divider']}; }}
             QLabel#lanDialogTitle {{ color:{ink}; font:700 15px '{font_family}'; background:transparent; border:0; }}
-            QPushButton#lanDialogClose,QPushButton#lanDialogBack {{ background:transparent; color:{c['secondary']}; border:0; border-radius:8px;
+            QPushButton#lanDialogClose,QPushButton#lanDialogBack {{ background:transparent; color:{c['secondary']}; border:0; border-radius:{TRANSFER_CORNER_RADIUS_PX}px;
                                           font:12px '{font_family}'; padding:0; }}
             QPushButton#lanDialogBack {{ background:{c['control']};padding:4px 10px; }}
-            QFrame#transferModeGroup {{background:{c['control']};border:0;border-radius:10px;}}
-            QPushButton#transferModeSegment {{background:transparent;color:{c['secondary']};border:0;border-radius:7px;padding:7px 10px;font:12px '{font_family}';}}
+            QFrame#transferModeGroup {{background:{c['control']};border:0;border-radius:{TRANSFER_CORNER_RADIUS_PX}px;}}
+            QPushButton#transferModeSegment {{background:transparent;color:{c['secondary']};border:0;border-radius:{TRANSFER_CORNER_RADIUS_PX}px;padding:7px 10px;font:12px '{font_family}';}}
             QPushButton#transferModeSegment:checked {{background:{c['hover']};color:{ink};}}
             QPushButton#transferModeSegment:hover {{background:{c['selected']};}}
             QPushButton#transferModeSegment:focus {{border:1px solid {c['link']};}}

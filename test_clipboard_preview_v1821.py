@@ -81,37 +81,55 @@ class PreviewTests(unittest.TestCase):
         self.manager.show_clipboard_preview();self.shelf.hide();workspace.flush()
         self.assertFalse(dialog.isVisible());self.assertIsNone(dialog._window_fade.pending)
 
-    def test_click_outside_closes_and_releases_application_watch(self):
+    def test_click_outside_keeps_the_preview_open(self):
         popup=self.overview()
         self.manager.show_clipboard_preview();dialog=self.manager.clipboard_preview_dialog
-        self.assertTrue(dialog._outside_watch)
         QTest.mouseClick(popup.search_edit,Qt.LeftButton,pos=QPoint(4,4));workspace.flush()
-        self.assertFalse(dialog.isVisible());self.assertFalse(dialog._outside_watch)
-        popup.clipboard_button.click();workspace.flush()
         self.assertTrue(dialog.isVisible())
-        dialog._application_state(Qt.ApplicationInactive);workspace.flush()
-        self.assertFalse(dialog.isVisible());self.assertFalse(dialog._outside_watch)
+        dialog.close_button.click();workspace.until(lambda:not dialog.isVisible())
 
-    def test_click_any_preview_area_closes_without_changing_clipboard(self):
+    def test_preview_contents_stay_open_and_explicit_close_preserves_clipboard(self):
         self.clip.text('original text')
         workspace.until(lambda:self.model.state.get('phase')=='synced')
         self.manager.show_clipboard_preview();dialog=self.manager.clipboard_preview_dialog
-        targets=(dialog.title,dialog.badge,dialog.text.viewport(),dialog.status,dialog.surface,dialog.close_button,dialog)
+        targets=(dialog.title,dialog.badge,dialog.text.viewport(),dialog.status,dialog.surface,dialog)
         for target in targets:
             if not dialog.isVisible():self.manager.show_clipboard_preview()
             workspace.flush();QTest.mouseClick(target,Qt.LeftButton,pos=QPoint(2,2));workspace.flush()
-            self.assertFalse(dialog.isVisible(),target.objectName())
-            self.assertFalse(self.model._large_requested)
+            self.assertTrue(dialog.isVisible(),target.objectName())
+            self.assertEqual(self.clip.mimeData().text(),'original text')
         image=QImage(80,60,QImage.Format_RGB32);image.fill(QColor('#4267a1'))
         mime=QMimeData();mime.setImageData(image);self.clip.setMimeData(mime)
         workspace.until(lambda:self.model.state.get('phase')=='synced')
-        self.manager.show_clipboard_preview();workspace.until(lambda:not self.model.large.isNull())
+        workspace.until(lambda:not self.model.large.isNull())
         QTest.mouseClick(dialog.image,Qt.LeftButton,pos=QPoint(10,10));workspace.flush()
-        self.assertFalse(dialog.isVisible())
+        self.assertTrue(dialog.isVisible())
         self.clip.clear();workspace.until(lambda:self.model.state.get('value') is None)
-        self.manager.show_clipboard_preview();workspace.flush()
+        workspace.flush()
         QTest.mouseClick(dialog.info,Qt.LeftButton,pos=QPoint(2,2));workspace.flush()
-        self.assertFalse(dialog.isVisible());self.assertIsNone(self.model.state.get('value'))
+        self.assertTrue(dialog.isVisible());self.assertIsNone(self.model.state.get('value'))
+        self.assertFalse(dialog.shelf_button.isEnabled())
+        dialog.close_button.click();workspace.until(lambda:not dialog.isVisible())
+
+    def test_move_to_shelf_preserves_text_and_copies_files_outside_clipboard_cache(self):
+        from pathlib import Path
+        self.clip.text('保留原始文字\nhttps://example.invalid')
+        workspace.until(lambda:self.model.state.get('phase')=='synced')
+        self.manager.show_clipboard_preview();dialog=self.manager.clipboard_preview_dialog
+        before=set(self.shelf.files['permanent']);original_mime=self.clip.mimeData();dialog.shelf_button.click()
+        workspace.until(lambda:len(set(self.shelf.files['permanent'])-before)==1)
+        ref=next(iter(set(self.shelf.files['permanent'])-before))
+        self.assertEqual(self.shelf.content.text(ref),'保留原始文字\nhttps://example.invalid')
+        self.assertIs(self.clip.mimeData(),original_mime);self.assertFalse(dialog.shelf_button.isEnabled())
+        source=self.base/'clipboard-file.bin';source.write_bytes(b'original clipboard file bytes')
+        mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(source))]);self.clip.setMimeData(mime)
+        workspace.until(lambda:self.model.state.get('phase')=='synced' and dialog.shelf_button.isEnabled())
+        before=set(self.shelf.files['permanent']);dialog.shelf_button.click()
+        workspace.until(lambda:not dialog._moving and not self.shelf.copy_jobs)
+        copied=Path(next(iter(set(self.shelf.files['permanent'])-before)))
+        self.assertNotEqual(copied,source);self.assertEqual(copied.read_bytes(),source.read_bytes())
+        self.assertTrue(copied.is_relative_to(self.settings.capture_dir));self.assertEqual(source.read_bytes(),b'original clipboard file bytes')
+        self.assertIs(self.clip.mimeData(),mime);self.assertTrue(dialog.isVisible())
 
     def test_active_transfer_moves_clipboard_above_strip_and_entire_button_clicks(self):
         popup=self.overview();button=popup.clipboard_button

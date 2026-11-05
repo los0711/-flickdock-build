@@ -73,6 +73,22 @@ class ClipboardTests(unittest.TestCase):
         for client in self.clients:client.close()
         until(lambda:all(not client._jobs for client in self.clients));flush();self.temp.cleanup()
 
+    def test_newer_remote_copy_receives_while_an_older_local_upload_is_stalled(self):
+        receiver=self.clients[1];original=receiver.api.request;held=[]
+        def stalled(method,path,callback,**options):
+            if method=='POST' and path=='/v1/clipboard':held.append(callback);return object()
+            return original(method,path,callback,**options)
+        receiver.api.request=stalled
+        self.clips[1].text('older local copy awaiting upload')
+        until(lambda:bool(held) and receiver._pending is not None)
+        old=receiver._pending;time.sleep(.02)
+        self.clips[0].text('newer remote copy')
+        until(lambda:self.clips[2].mimeData().text()=='newer remote copy')
+        until(lambda:self.clips[1].mimeData().text()=='newer remote copy')
+        self.assertIsNone(receiver._pending);self.assertEqual(receiver.view['id'],self.hub.head['id'])
+        held[0]({'clipboard':dict(id=old['id'],ready=True,copied_at=old['intent']['at'])},None);flush()
+        self.assertEqual(self.clips[1].mimeData().text(),'newer remote copy')
+
     def test_latest_copy_from_any_device_replaces_and_paste_never_consumes(self):
         self.clips[0].text('first 中文\r\n');until(lambda:self.clips[1].mimeData().text()=='first 中文\r\n')
         first=self.hub.head['id'];self.clips[1].text('second https://example.invalid')

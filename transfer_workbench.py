@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QLabel
 from flickdock_icons import document_pixmap
 
 FILE_ART_SIZE_PX = 32
+TRANSFER_CORNER_RADIUS_PX = 10
 
 
 class FileArtwork(QLabel):

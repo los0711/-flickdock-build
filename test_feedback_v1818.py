@@ -50,7 +50,7 @@ class FeedbackTests(unittest.TestCase):
             lan=LanTransferService(discovery=False);wan=WanTransferService(Path(directory)/'wan',enabled=False)
             dialog=LanDialog(lan,store);dialog.show();flush()
             manager=SimpleNamespace(shelf=SimpleNamespace(_release_reveal_level=lambda:None),lan=lan,wan=wan,
-                lan_dialog=dialog,wan_dialog=dialog,settings=store,_lan_selected=lambda:[],_center_dialog=Mock())
+                lan_dialog=dialog,wan_dialog=dialog,settings=store,_lan_selected=lambda:[],_center_dialog=Mock(),_send_account_from_lan=lambda peer,paths:None)
             manager._show_transfer_dialog=lambda service:flickdock.ShelfManager._show_transfer_dialog(manager,service)
             manager.show_lan_dialog=lambda:flickdock.ShelfManager.show_lan_dialog(manager)
             manager.show_wan_dialog=lambda:flickdock.ShelfManager.show_wan_dialog(manager)
@@ -144,12 +144,12 @@ class FeedbackTests(unittest.TestCase):
         for count in (0,1,2,4):
             with tempfile.TemporaryDirectory() as directory,patch.object(app_settings,'_startup_runtime_allowed',return_value=False):
                 service=Service();service.devices=[dict(id=str(i),name='设备 '+str(i),platform='windows',current=i==0) for i in range(count)]
-                dialog=app_settings.SettingsDialog(app_settings.SettingsStore(Path(directory)));panel=AccountPanel(service);dialog.set_account_panel(panel);dialog.show();flush()
+                dialog=app_settings.SettingsDialog(app_settings.SettingsStore(Path(directory)));panel=AccountPanel(service);dialog.set_account_panel(panel);dialog.select_category('账号与设备');dialog.show();flush()
                 try:
                     panel.set_sync_status('搁架已同步。');service.status_changed.emit('设备名称修改成功。');flush()
                     signed=QRect(panel.signed_in_page.mapTo(panel,QPoint()),panel.signed_in_page.size())
                     status=QRect(panel.status_label.mapTo(panel,QPoint()),panel.status_label.size())
-                    devices=QRect(panel.devices_body.mapTo(panel,QPoint()),panel.devices_body.size())
+                    devices=QRect(panel.devices_scroll.mapTo(panel,QPoint()),panel.devices_scroll.size())
                     self.assertLess(devices.bottom(),status.top(),count)
                     self.assertTrue(panel.rect().contains(status),count)
                     self.assertTrue(panel.profile_frame.rect().contains(QRect(panel.sync_status_label.mapTo(panel.profile_frame,QPoint()),panel.sync_status_label.size())),count)
@@ -261,22 +261,23 @@ class FeedbackTests(unittest.TestCase):
         for theme in ('light','dark'):
             with tempfile.TemporaryDirectory() as directory,patch.object(app_settings,'_startup_runtime_allowed',return_value=False):
                 dialog=app_settings.SettingsDialog(app_settings.SettingsStore(Path(directory)))
-                panel=AccountPanel(Service(),theme=theme);dialog.set_account_panel(panel);dialog.show();flush()
+                panel=AccountPanel(Service(),theme=theme);dialog.set_account_panel(panel);dialog.select_category('账号与设备');dialog.show();flush()
                 try:
                     panel.set_sync_status('搁架已同步。');panel.service.status_changed.emit('设备名称修改成功。')
                     panel.device_rename_buttons['other'].click();flush()
                     form=panel._rename_forms['other'];row=panel._rows_by_id['other']
-                    self.assertTrue(form.isWindow());self.assertEqual(row.height(),44)
+                    self.assertTrue(form.isWindow());self.assertEqual(row.height(),60)
                     self.assertTrue(form.screen().availableGeometry().contains(form.frameGeometry()))
                     for label in (panel.username_label,panel.sync_status_label):
                         bounds=QRect(label.mapTo(panel.profile_frame,QPoint()),label.size())
                         self.assertTrue(panel.profile_frame.rect().contains(bounds),(label.text(),bounds,panel.profile_frame.rect()))
                     signed=QRect(panel.signed_in_page.mapTo(panel,QPoint()),panel.signed_in_page.size())
                     status=QRect(panel.status_label.mapTo(panel,QPoint()),panel.status_label.size())
-                    devices=QRect(panel.devices_body.mapTo(panel,QPoint()),panel.devices_body.size())
+                    devices=QRect(panel.devices_scroll.mapTo(panel,QPoint()),panel.devices_scroll.size())
                     self.assertLess(devices.bottom(),status.top())
                     self.assertTrue(panel.rect().contains(status));self.assertTrue(panel.rect().contains(signed))
-                    self.assertFalse(panel.profile_frame.geometry().intersects(panel.devices_body.geometry()))
+                    profile=QRect(panel.profile_frame.mapTo(panel,QPoint()),panel.profile_frame.size())
+                    self.assertFalse(profile.intersects(devices))
                 finally:dialog.close();dialog.deleteLater();flush()
 
     def test_idle_status_counts_only_present_blocked_items_not_tombstones_or_paused_uploads(self):
@@ -286,7 +287,7 @@ class FeedbackTests(unittest.TestCase):
             'paused':dict(dirty=True,paused_upload=True,ref='paused'),
             'stale':dict(dirty=True,ref='gone',fingerprint='old',blocked_fingerprint='old')}
         engine=SimpleNamespace(upload_enabled=True,receive_enabled=True,state=dict(entries=entries),running=True,transfer=None,
-            _clipboard_priority=False,_lane_context=None,upload_lanes=SimpleNamespace(active={},retry_at={}),clipboard_bridge=None,
+            _clipboard_priority=False,_lane_context=None,upload_lanes=SimpleNamespace(active={},retry_at={},blocked=lambda _:False),clipboard_bridge=None,
             _cycle_direction='',_refresh_again=False,_notify_transfers=lambda:None,_pending_removal=lambda:None,_paused=lambda _:False,
             adapter=SimpleNamespace(snapshot=lambda:dict(permanent=['blocked'])),status_changed=SimpleNamespace(emit=statuses.append))
         for identity,entry in entries.items():entry['id']=identity

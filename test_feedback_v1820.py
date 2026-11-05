@@ -64,14 +64,16 @@ class FeedbackTests(unittest.TestCase):
             self.assertIn('drop gap original text',shelf.content.texts.values())
         finally:bridge.close();bridge.deleteLater();fixture.tearDown()
 
-    def test_shake_static_held_drag_expires_but_deliberate_movement_rearms(self):
-        shelf=SimpleNamespace(visual_geometry=lambda:QRect(100,100,428,427),
-            _shake_pointer=QPoint(200,200),_shake_last_interaction=10.,last_activity=100.)
-        self.assertFalse(flickdock.ShelfWindow.shake_idle_expired(shelf,QPoint(200,200),12.9,True))
-        self.assertTrue(flickdock.ShelfWindow.shake_idle_expired(shelf,QPoint(200,200),13.1,True))
-        self.assertFalse(flickdock.ShelfWindow.shake_idle_expired(shelf,QPoint(220,210),13.2,True))
-        self.assertEqual(shelf._shake_last_interaction,13.2)
-        self.assertTrue(flickdock.ShelfWindow.shake_idle_expired(shelf,QPoint(1000,1000),14.1,False))
+    def test_shake_only_expires_after_three_seconds_outside_and_entry_pauses_expiry(self):
+        shelf=SimpleNamespace(_shake_outside_since=10.)
+        expired=lambda point,now,inside:flickdock.ShelfWindow.shake_idle_expired(shelf,point,now,inside)
+        self.assertFalse(expired(QPoint(1000,1000),12.9,False))
+        self.assertTrue(expired(QPoint(1400,1000),13.,False))
+        self.assertFalse(expired(QPoint(200,200),13.1,True))
+        self.assertFalse(expired(QPoint(200,200),50.,True))
+        self.assertFalse(expired(QPoint(1000,1000),51.,False))
+        self.assertFalse(expired(QPoint(1400,1000),53.9,False))
+        self.assertTrue(expired(QPoint(1000,1400),54.,False))
 
     def test_completed_old_update_cleanup_retains_unknown_current_and_unfinished(self):
         with tempfile.TemporaryDirectory() as directory:

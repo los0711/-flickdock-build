@@ -689,8 +689,6 @@ class ClipboardSync(QObject):
 
     def refresh(self):
         if not self._active():return
-        if self._pending:
-            self._refresh_again=True;return
         if self._fetching:self._refresh_again=True;return
         self._refresh_again=False
         self._fetching=True;generation=self._generation
@@ -745,6 +743,7 @@ class ClipboardSync(QObject):
                         if signature(self._snapshot())!=self._last_local_signature:
                             self._schedule_change()
                         else:
+                            self._supersede_upload_for_receive(identity)
                             if self._apply(value,directory,identity=identity):
                                 self._seen=identity
                                 self._applied_version=max(self._applied_version,head_version(head))
@@ -777,6 +776,17 @@ class ClipboardSync(QObject):
         if self._pushed_head:
             pushed,self._pushed_head=self._pushed_head,None;latest(pushed,None)
         else:self._request('GET','/v1/clipboard',latest)
+
+    def _supersede_upload_for_receive(self,identity):
+        pending=self._pending or self._local_retry
+        if pending is None or pending['id']==identity:return
+        # The head order and native clipboard fence were checked before the
+        # download and again after verification. A stalled older upload must
+        # not keep this device from receiving the account's newer clipboard.
+        self.file_jobs.supersede()
+        self._epoch+=1;self._generation+=1
+        self._pending=None;self._local_retry=None;self.retry.stop()
+        self._cancel_replaced_work();self._priority_flags(waiting=False)
 
     def _finish_refresh(self):
         self._fetching=False
