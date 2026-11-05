@@ -70,7 +70,7 @@ def main():
         finished=True;timer.stop();deadline.stop()
         report.update(ok=not error,error=error,seconds=round(time.monotonic()-started,3),native_candidates=dict(counters))
         report.update(authenticated=account.signed_in,signaling_connected=wan._connected,
-                      account_bound=wan._bound_identity is not None,phase=phase)
+                      account_bound=wan._bound_identity is not None,phase=phase,cloud_backed_up=bool(sync.view.get('backed_up')))
         sync.close();mesh.close();wan.close();events.close();account.close()
         args.output.parent.mkdir(parents=True,exist_ok=True)
         args.output.write_text(json.dumps(report,indent=2),encoding='utf8')
@@ -142,7 +142,9 @@ def main():
                         report['stable_seconds']=round(time.monotonic()-(peer_seen or started),3);finish()
                     return
             elif phase in ('cleanup','cleanup_delivered'):
-                if phase=='cleanup_delivered' and sync.view.get('backed_up'):finish()
+                # Cleanup only retires the fixture's R2 body. It may win the
+                # cloud-vs-peer race; direct delivery was proved above already.
+                if sync.view.get('backed_up'):finish()
                 return
             available=mesh.available()
             if any(row.get('account_device') and row.get('online') for row in wan.peers()) and peer_seen is None:peer_seen=time.monotonic()
