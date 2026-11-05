@@ -15,7 +15,7 @@ from uuid import uuid4
 
 from PySide6.QtCore import QObject,QTimer,Signal
 from nearby_transport import NearbyStream,try_nearby
-from peer_rpc import PeerRpc,PeerUnavailable,RPC_BLOCK_BYTES
+from peer_rpc import PeerRpc,PeerUnavailable,RPC_BLOCK_BYTES,RPC_REQUESTS_PER_PEER
 from peer_stream import PeerBroker
 from selection_archive import _source_reader
 
@@ -29,7 +29,7 @@ OBJECT_MAX_BYTES=1024**3
 NOTIFY_BATCH=32
 MAX_BACKGROUND_WORK=32
 SOURCE_REGISTRY_LIMIT=4096
-FETCH_PIPELINE_REQUESTS=4
+FETCH_PIPELINE_REQUESTS=RPC_REQUESTS_PER_PEER-1
 LOG=logging.getLogger(__name__)
 UDP_RELAY_GRACE_SECONDS=8
 PENDING_SIGNAL_LIMIT=128
@@ -72,6 +72,7 @@ class PeerSync(QObject):
         self._states={};self._retry={};self._objects={};self._offers={};self._sources=OrderedDict();self._outbox=OrderedDict();self._fetches={}
         self._connection_view={}
         self._prefer_tls={};self._binding_epoch=None
+        self._relay_pending=set()
         self._pending_signals=deque();self._pending_signal_bytes=0
         self._registry_lock=threading.RLock();self._source_lock=threading.Lock()
         self._slots=threading.BoundedSemaphore(MAX_BACKGROUND_WORK)
@@ -108,6 +109,7 @@ class PeerSync(QObject):
         for job,_,_ in self._fetches.values():job.cancel.set()
         with self._registry_lock:self._objects.clear();self._offers.clear();self._sources.clear()
         self._outbox.clear();self._retry.clear();self._prefer_tls.clear();self._binding_epoch=None
+        self._relay_pending.clear()
         if self.broker is not None:self.broker.close();self.broker=None
         if identity is None:self.timer.stop();self.flush.stop()
         else:self.timer.start();self._reconcile()
@@ -178,6 +180,7 @@ class PeerSync(QObject):
             if (state['rpc'] is None and not state.get('cloud_starting') and not state.get('relay_configured') and self._signaling_ready()
                     and getattr(self.wan,'_sync_ice',[]) and now-state['started']>=DIRECT_CONNECT_GRACE_SECONDS
                     and self.wan.device_id<peer):
+                self._relay_pending.add(peer)
                 self._drop(peer,retry=False);continue
             if (state['rpc'] is None and not state.get('cloud_starting') and state.get('relay_configured') and state.get('relay_transport')=='udp'
                     and now-state['started']>=UDP_RELAY_GRACE_SECONDS and self.wan.device_id<peer):
@@ -200,7 +203,8 @@ class PeerSync(QObject):
             if row.get('online'):
                 info['route']='cloud' if 'mesh-v1' not in row.get('features',[]) else 'connecting'
             if state is not None and state['rpc'] is not None and self._authorized(state) and not state['rpc'].closed.is_set():
-                info=state['rpc'].stream.connection_info()
+                connected=state['rpc'].stream.connection_info()
+                if connected['route'] in ('lan','p2p','relay','cloud'):info=connected
             result[identity]=info
         return result
 
@@ -255,7 +259,10 @@ class PeerSync(QObject):
                     urls=server.get('urls',[])
                     if isinstance(urls,list):servers.extend(url for url in urls if url in ('stun:stun.cloudflare.com:3478',))
                 from wan_transfer import _turn_http_proxy
-                servers.extend(getattr(self.wan,'_sync_ice',[]));state['relay_configured']=any(isinstance(row,dict) for row in servers)
+                # Preparing a proxied TURN/TLS tunnel can block for seconds.
+                # The first ICE attempt must start directly, independent of it.
+                if peer in self._relay_pending or self._qa_force_relay:servers.extend(getattr(self.wan,'_sync_ice',[]))
+                state['relay_configured']=any(isinstance(row,dict) for row in servers)
                 proxies={str(row['port']):_turn_http_proxy(row['port']) for row in servers if isinstance(row,dict) and row['relayType']=='TurnTls'}
                 raw.control(dict(type='init',iceServers=servers,initiator=state['initiator'],
                     preferTls=self._prefer_tls.get(peer,any(proxies.values())),proxies=proxies,forceRelay=self._qa_force_relay))
@@ -280,7 +287,9 @@ class PeerSync(QObject):
             try:state['raw'].control(payload)
             except OSError:self._drop(state['peer'])
         elif kind=='sync_lease':state['leased']=time.monotonic()
-        elif kind in ('sync_closed','sync_error'):self._drop(state['peer'])
+        elif kind in ('sync_closed','sync_error'):
+            if state['rpc'] is None and not state.get('relay_configured'):self._relay_pending.add(state['peer'])
+            self._drop(state['peer'])
 
     def _handle_native(self,value):
         state=value['state'];event=value['event']
@@ -328,6 +337,7 @@ class PeerSync(QObject):
             if state.get('adaptive') is not None and not state['adaptive'].closed:return
             if state.get('cloud_starting'):return
             if state['rpc'] is None and not state.get('relay_configured') and getattr(self.wan,'_sync_ice',[]) and state.get('initiator'):
+                self._relay_pending.add(state['peer'])
                 self._drop(state['peer'],retry=False);return
             if state['rpc'] is None and not self._qa_force_relay and getattr(self.wan,'cloud_routes',None) is not None:
                 state['native_failed']=True
@@ -400,6 +410,7 @@ class PeerSync(QObject):
         state['rpc']=PeerRpc(stream,self._provide,lambda value:self._notification.emit(dict(state=state,value=value)),
                             self._submit,lambda:self._authorized(state))
         self._retry.pop(state['peer'],None)
+        self._relay_pending.discard(state['peer'])
         with self._registry_lock:offers=list(self._offers.values())
         for topic,record,valid in offers:
             if valid() and self.can_upload(topic):self._queue_offer(state['peer'],topic,record)

@@ -3,7 +3,7 @@ import math
 import time
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import QLabel, QWidget
+from PySide6.QtWidgets import QLabel, QWidget,QHBoxLayout
 import ui_theme
 
 
@@ -207,12 +207,73 @@ def draw_ring(painter,rect,state):
     pen.setColor(QColor('#3989ef'));pen.setCapStyle(Qt.PenCapStyle.RoundCap);painter.setPen(pen)
     received,total=state.get('received',0),state.get('total',0)
     if total>0:
-        angle=-max(.015,min(1,received/total))*5760
-        painter.drawArc(rect,90*16,round(angle))
+        if received>0:painter.drawArc(rect,90*16,-round(min(1,received/total)*5760))
     else:
         start=round((time.monotonic()*240%360)*16)
         painter.drawArc(rect,start,-100*16)
     painter.restore()
+
+
+class TransferProgressRing(QWidget):
+    """A shared display-clock ring; byte completion is distinct from commit."""
+    def __init__(self,parent=None):
+        super().__init__(parent)
+        from display_frames import FramePulse
+        self.state=dict(phase='idle',received=0,total=0)
+        self.setFixedSize(18,18);self.clock=FramePulse(self);self.clock.timeout.connect(self.update)
+
+    def set_transfer(self,state):
+        if state==self.state:return
+        self.state=dict(state);self._sync_clock();self.update()
+
+    def _sync_clock(self):
+        from native_ui_common import reduced_motion
+        phase=self.state['phase']
+        waiting=phase in ('preparing','verifying') or phase in ('uploading','delivering') and not self.state['total']
+        if waiting and self.isVisible() and not reduced_motion():self.clock.start()
+        else:self.clock.stop()
+
+    def showEvent(self,event):super().showEvent(event);self._sync_clock()
+    def hideEvent(self,event):self.clock.stop();super().hideEvent(event)
+
+    def paintEvent(self,event):
+        painter=QPainter(self);painter.setRenderHint(QPainter.Antialiasing)
+        phase=self.state['phase'];rect=QRectF(self.rect()).adjusted(2,2,-2,-2)
+        if phase in ('idle','complete','error'):
+            painter.setPen(QPen(QColor(ui_theme.color('secondary') if phase=='idle' else '#25966c' if phase=='complete' else '#d04c59'),1.6))
+            painter.setBrush(Qt.NoBrush);painter.drawEllipse(rect)
+            if phase=='complete':
+                painter.drawLine(QPointF(5,9),QPointF(8,12));painter.drawLine(QPointF(8,12),QPointF(13,6))
+        else:
+            state=self.state
+            if phase in ('preparing','verifying'):state=dict(received=0,total=0)
+            draw_ring(painter,QRectF(self.rect()),state)
+        painter.end()
+
+
+class ClipboardProgressRow(QWidget):
+    def __init__(self,parent=None):
+        super().__init__(parent)
+        layout=QHBoxLayout(self);layout.setContentsMargins(0,0,0,0);layout.setSpacing(4)
+        self.rings={};self.labels={};self.active=False
+        for key in ('cloud','devices'):
+            ring=TransferProgressRing(self);label=QLabel(self)
+            label.setStyleSheet('font-size:10px;background:transparent;border:0;')
+            self.rings[key]=ring;self.labels[key]=label;layout.addWidget(ring);layout.addWidget(label)
+            layout.addStretch(1)
+        self.hide()
+
+    def set_state(self,state):
+        from clipboard_delivery import sync_progress
+        progress=sync_progress(state)
+        self.active=any(row['phase'] not in ('idle','complete','error') for row in progress.values())
+        for key,value in progress.items():self.rings[key].set_transfer(value)
+        cloud=progress['cloud'];phase=cloud['phase']
+        label={'idle':'云端','preparing':'云端准备','verifying':'云端确认','complete':'云端已备份','error':'云端待重试'}.get(phase,'云端同步')
+        if phase=='uploading' and cloud['total']>0:label=f'云端 {min(100,cloud["received"]*100//cloud["total"])}%'
+        self.labels['cloud'].setText(label)
+        devices=progress['devices'];self.labels['devices'].setText(f'设备 {devices["received"]}/{devices["total"]}')
+        self.setVisible(bool(state.get('id') and state.get('value') is not None and state.get('phase')!='size_limit'))
 
 
 def draw_progress_badge(painter,rect,state):

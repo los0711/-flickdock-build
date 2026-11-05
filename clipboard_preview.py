@@ -12,6 +12,13 @@ import ui_theme
 
 
 def clipboard_status(state):
+    if state.get('native_format_issue')=='VIRTUAL_FILE_SIZE_LIMIT':return '此文件不能同步 · 超过 20 MB 同步上限'
+    if state.get('native_format_issue')=='VIRTUAL_FILE_SINGLE_ONLY':return '仅支持同步单个文件 · 保留上次已确认内容'
+    if state.get('native_format_issue') in ('VIRTUAL_FILE_INVALID_NAME','VIRTUAL_FILE_INVALID_DESCRIPTOR','VIRTUAL_FILE_SIZE_UNKNOWN'):
+        return '当前文件格式无法读取 · 保留上次已确认内容'
+    if str(state.get('native_format_issue','')).startswith('VIRTUAL_FILE_'):return '正在读取跨应用文件 · 保留上次已确认内容'
+    if state.get('receive_pending'):return '内容已接收 · 正在等待写入系统剪贴板'
+    if state.get('native_read_pending'):return '正在读取系统剪贴板 · 保留上次已确认内容'
     if state.get('phase')=='size_limit':
         value=state.get('value')
         return ('此文件不能同步' if value and value[0]=='files' else '此内容不能同步')+' · 超过 20 MB 同步上限'
@@ -150,6 +157,8 @@ class ClipboardPreview(ReferenceModalDialog):
         for route,title in (('lan','局域网'),('p2p','P2P'),('cloud','R2'),('relay','TURN')):
             badge=QLabel(self.body);badge.setAccessibleName(title+' 同步设备数');self.route_badges[route]=badge;routes.addWidget(badge)
         routes.addStretch(1);self.body_layout.addLayout(routes)
+        from transfer_visuals import ClipboardProgressRow
+        self.progress=ClipboardProgressRow(self.body);self.body_layout.addWidget(self.progress)
         footer=QHBoxLayout();self.status=QLabel(self.body);footer.addWidget(self.status,1)
         from reference_widgets import button
         self.shelf_button=button('转入搁架文件','plus',variant='secondary',parent=self.body)
@@ -195,6 +204,7 @@ class ClipboardPreview(ReferenceModalDialog):
         self.close_button.dark=self.manager.settings.theme=='dark'
         self.setStyleSheet(f"QDialog{{background:transparent;}} QLabel{{background:transparent;color:{c['text']};font-size:12px;}} QPlainTextEdit{{background:{c['card']};color:{c['text']};border:1px solid {c['border']};border-radius:8px;padding:10px;}} QPushButton#settingsClose{{background:transparent;border:0;border-radius:8px;padding:0;}} QPushButton#settingsClose:hover{{background:{c['hover']};}} QPushButton#settingsClose:pressed{{background:{c['control']};}}")
         self.badge.set_status(phase);status=clipboard_status(model.state);self.status.setText(status)
+        self.progress.set_state(model.state)
         for route,title in (('lan','局域网'),('p2p','P2P'),('cloud','R2'),('relay','TURN')):
             counts=model.state.get('deliveries',{}).get(route,dict(success=0,total=0));badge=self.route_badges[route]
             badge.setText(f'{title} {counts["success"]}/{counts["total"]}')

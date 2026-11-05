@@ -31,6 +31,7 @@ class ReleaseError(ValueError):
 VERSION_RE=re.compile(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z')
 HASH_RE=re.compile(r'[0-9a-f]{64}\Z')
 RUNTIME_SOURCES=(
+    'virtual_clipboard.py',
     'video_assets.py','video_runtime.py','video_cdn.py','video_links.py','video_worker.py','video_formats.py','video_covers.py','video_jobs.py','video_controller.py','video_panel.py','video_prompt.py',
     'flickdock.py','app_settings.py','async_images.py','capture_files.py',
     'download_writer.py','file_metadata.py','transfer_entry.py','receive_notice.py','gui_watchdog.py',
@@ -51,6 +52,8 @@ RUNTIME_SOURCES=(
     'adaptive_stream.py','route_policy.py','cloud_pipe.py',
 )
 MAINTAINED_TESTS=(
+    'test_virtual_clipboard.py',
+    'test_peer_backpressure.py',
     'test_p2p_priority.py','test_receive_notice.py',
     'test_display_frames.py',
     'test_preview_continuity.py',
@@ -105,6 +108,7 @@ MAINTAINED_TESTS=(
     'test_remote_transfer_actions_v1812.py','test_wan_transfer_v1816.py',
 )
 SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
+    'ci_cross_native.py','.github/workflows/cross-native.yml',
     '.github/workflows/native-clipboard.yml',
     'FlickDock.spec','FlickDock.iss','version_info.txt','ChineseSimplified.isl','windows-network.ps1',
     'flickdock.ico','THIRD_PARTY_NOTICES.md','font_manifest.json','bundle_policy.py',

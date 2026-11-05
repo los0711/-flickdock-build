@@ -11,6 +11,23 @@ from intake_notice import ClipboardNotice,NOTICE_MARGIN_PX
 
 
 class CopyNoticeTests(unittest.TestCase):
+    def test_progress_rings_refresh_without_reopening_and_dismissal_suppresses_late_success(self):
+        card=ClipboardNotice(SimpleNamespace(settings=SimpleNamespace(theme='dark',clipboard_success_notice=True)))
+        state=dict(id='progress-copy',phase='uploading',local_copy=True,value=('files',['original.bin']),
+                   cloud_transfer=dict(phase='uploading',received=10,total=100),deliveries={'p2p':dict(success=0,total=2)})
+        try:
+            with patch('native_ui_common.reduced_motion',return_value=True),patch.object(card._window_fade,'reopen',wraps=card._window_fade.reopen) as reopen:
+                card.update_delivery(state);QTest.qWait(180);flush()
+                self.assertTrue(card.isVisible());self.assertEqual(card.progress.labels['cloud'].text(),'云端 10%')
+                self.assertEqual(card.progress.labels['devices'].text(),'设备 0/2');expiry=card.timer.remainingTime()
+                card.update_delivery(dict(state,cloud_transfer=dict(phase='verifying',received=100,total=100)))
+                self.assertEqual(card.progress.labels['cloud'].text(),'云端确认')
+                self.assertLessEqual(card.timer.remainingTime(),expiry);self.assertEqual(reopen.call_count,1)
+                card.dismiss();flush()
+                card.schedule_result(True,dict(state,phase='synced',backed_up=True));QTest.qWait(180);flush()
+                self.assertFalse(card.isVisible());self.assertEqual(reopen.call_count,1)
+        finally:card.hide();card.deleteLater();flush()
+
     def test_success_route_counts_update_in_place_without_reopening_or_extending_expiry(self):
         card=ClipboardNotice(SimpleNamespace(settings=SimpleNamespace(theme='dark',clipboard_success_notice=True)))
         counts={'lan':{'success':0,'total':1},'p2p':{'success':0,'total':2},'cloud':{'success':0,'total':1}}

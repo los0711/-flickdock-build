@@ -33,7 +33,7 @@ class Events(QObject):
 
 
 class Hub:
-    def __init__(self):self.head=None;self.pending=None;self.body=None;self.events=[];self.calls=[];self.delivery=None
+    def __init__(self):self.head=None;self.pending=None;self.body=None;self.events=[];self.calls=[];self.delivery=None;self.version=0
     def api(self,device):
         hub=self
         class Api:
@@ -51,7 +51,8 @@ class Hub:
                             if 'route' in data:hub.delivery['receipts'][device]=data['route']
                             result={'delivery':dict(hub.delivery)}
                     elif path=='/v1/clipboard' and method=='POST':
-                        hub.pending=dict(id=kw['data']['id'],device=device,ready=False,copied_at=kw['data']['copied_at']);result={'clipboard':dict(hub.pending)}
+                        hub.version+=1
+                        hub.pending=dict(id=kw['data']['id'],device=device,ready=False,version=hub.version,copied_at=kw['data']['copied_at']);result={'clipboard':dict(hub.pending)}
                     elif path=='/v1/clipboard':result={'clipboard':dict(hub.head) if hub.head else None,'delivery':hub.delivery}
                     elif method=='PUT':
                         if not hub.pending or hub.pending['id'] not in path:error=RuntimeError('replaced')
@@ -75,6 +76,60 @@ class Hub:
 
 
 class ClipboardTests(unittest.TestCase):
+    def test_nonempty_unreadable_native_formats_never_erase_the_confirmed_file_preview(self):
+        sender=self.clients[0];source=self.base/'confirmed-file.bin';source.write_bytes(b'confirmed')
+        mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(source))]);self.clips[0].setMimeData(mime)
+        until(lambda:sender._pending is None and sender.view['phase']=='synced')
+        previous=sender.view['value'];identity=sender.view['id'];sender._sequence=lambda:100;sender._last_sequence=99
+        with patch.object(sender,'_is_native',True),patch.object(self.clips[0],'mimeData',return_value=QMimeData()),patch('clipboard_sync.native_format_count',return_value=4):
+            for _ in range(8):sender._changed()
+            self.assertIs(sender.view['value'],previous);self.assertEqual(sender.view['id'],identity)
+            self.assertTrue(sender.view['native_read_pending']);self.assertEqual(sender._last_sequence,99)
+        sender.change_debounce.stop()
+
+    def test_stalled_clipboard_upload_releases_priority_and_real_progress_renews_it(self):
+        sender=self.clients[0];original=sender.api.request;held=[];events=[]
+        sender.activity_changed.connect(events.append)
+        def request(method,path,callback,**options):
+            if method=='PUT':held.append((method,path,callback,options));return object()
+            return original(method,path,callback,**options)
+        sender.api.request=request
+        source=self.base/'stalled-priority.bin';source.write_bytes(os.urandom(128*1024))
+        mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(source))]);self.clips[0].setMimeData(mime)
+        until(lambda:bool(held));self.assertTrue(sender._priority_active())
+        until(lambda:not sender._priority_active(),seconds=2)
+        method,path,callback,options=held.pop();size=Path(options['source']).stat().st_size
+        options['progress'](min(size-1,8192),size)
+        self.assertTrue(sender._priority_active());self.assertEqual(events[-3:],[True,False,True])
+        options['progress'](size,size);self.assertFalse(sender._priority_active())
+        original(method,path,callback,**options)
+        until(lambda:sender._pending is None)
+
+    def test_unreadable_native_clipboard_does_not_erase_a_confirmed_preview(self):
+        sender=self.clients[0];self.clips[0].text('confirmed preview')
+        until(lambda:sender._pending is None and sender.view.get('phase')=='synced')
+        previous=sender.view['value'];sender._sequence=lambda:123456
+        with patch.object(self.clips[0],'mimeData',return_value=None):
+            for _ in range(7):sender._changed()
+            self.assertEqual(sender.view['value'],previous)
+            self.assertTrue(sender.view['native_read_pending'])
+        self.clips[0].text('readable new copy');sender._changed()
+        until(lambda:sender._pending is None and sender.view.get('value')==('text',dict(text='readable new copy',html='')))
+        self.assertFalse(sender.view['native_read_pending'])
+
+    def test_waiting_for_clipboard_metadata_does_not_throttle_bulk_transfers(self):
+        sender=self.clients[0];original=sender.api.request;held=[];activity=[]
+        sender.activity_changed.connect(activity.append)
+        def request(method,path,callback,**options):
+            if method=='POST' and path=='/v1/clipboard':held.append((method,path,callback,options));return object()
+            return original(method,path,callback,**options)
+        sender.api.request=request
+        self.clips[0].text('metadata latency must not limit a different file transfer')
+        until(lambda:bool(held));self.assertIsNotNone(sender._pending)
+        self.assertFalse(sender._priority_active());self.assertNotIn(True,activity)
+        method,path,callback,options=held.pop();original(method,path,callback,**options)
+        until(lambda:sender._pending is None)
+
     def test_uploaded_body_waiting_for_confirmation_releases_bulk_bandwidth_priority(self):
         sender=self.clients[0];original=sender.api.request;held=[]
         def request(method,path,callback,**options):

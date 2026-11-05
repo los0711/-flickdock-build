@@ -9,11 +9,14 @@ from clipboard_sync import MAX_BYTES,MAX_ARCHIVE_BYTES,signature,unpack,unpack_i
 
 class ClipboardPeerBridge(QObject):
     def __init__(self,client,mesh):
-        super().__init__(client);self.client=client;self.mesh=mesh;self.jobs={};self.latest=None;self.confirmed=None
+        super().__init__(client);self.client=client;self.mesh=mesh;self.jobs={};self.latest=None;self.confirmed=None;self.incoming=None
         mesh.offered.connect(self._offered);mesh.applied.connect(self._acknowledged)
+        mesh.connections_changed.connect(client.deliveries.set_connections)
+        client.deliveries.set_connections(mesh.connection_snapshot())
 
     def reset(self):
-        self.cancel_fetches();self.latest=None;self.confirmed=None
+        self.cancel_fetches();self.latest=None;self.confirmed=None;self.incoming=None
+        self.client.deliveries.set_connections(self.mesh.connection_snapshot())
 
     def cancel_fetches(self):
         for job in self.jobs.values():job.cancel.set()
@@ -35,8 +38,11 @@ class ClipboardPeerBridge(QObject):
         if item.get('inline'):
             record['inline']=item['inline']['body'];source=base64.b64decode(record['inline'],validate=True)
         else:source=item['path']
-        epoch=client._epoch;generation=client._generation
-        valid=lambda:(client._active() and client._epoch==epoch and client._generation==generation
+        epoch=client._epoch
+        # Observation generations also change while another app delays native
+        # rendering. Only a confirmed new copy/session epoch or a new logical
+        # clipboard ID revokes a body that other devices are already fetching.
+        valid=lambda:(client._active() and client._epoch==epoch
                       and client.view.get('id')==record['id'])
         if self.mesh.publish('clipboard',record,source,valid=valid):pending['peer_published']=True
 
@@ -87,17 +93,18 @@ class ClipboardPeerBridge(QObject):
                 or not 0<head['size']<(MAX_ARCHIVE_BYTES if head.get('kind') in ('text','files') else MAX_BYTES)
                 or not self._eligible(head)):return
         client=self.client;epoch=client._epoch;generation=client._generation
+        order=head['copied_at'],head['id']
+        if self.incoming is not None and order<self.incoming:return
+        self.incoming=order
         def ready(value,directory):
-            if epoch!=client._epoch or generation!=client._generation or not self._eligible(head):return
-            if signature(client._snapshot())!=client._last_local_signature:
-                client._schedule_change();return
-            client._epoch+=1;client._generation+=1;client._pending=None;client._local_retry=None
-            client._cancel_replaced_work();client._fetching=False;client._priority_flags(waiting=False,receiving=False)
-            if client._apply(value,directory,identity=head['id']):
-                client._seen=head['id'];client._observed_clock=max(client._observed_clock,head['copied_at'])
-                self.latest=(head['copied_at'],head['id']);client._set_view(value,'peer',head['id'],route=head.get('delivery_route',''),backed_up=False)
+            def valid():
+                return epoch==client._epoch and generation==client._generation and self.incoming==order and self._eligible(head)
+            if not valid():return
+            def applied():
+                self.latest=order
                 client.deliveries.received(head,head.get('delivery_route',''))
                 self.mesh.acknowledge(peer,'clipboard',head)
+            client._accept_received(head,value,directory,valid=valid,applied=applied)
         if head['kind']=='text' and isinstance(head.get('inline'),str) and head['size']<=32768:
             try:value=unpack_inline(head)
             except (ValueError,TypeError,UnicodeError):return
@@ -116,9 +123,12 @@ class ClipboardPeerBridge(QObject):
                 if value is not None:
                     head['delivery_route']=job.route;ready(value,directory)
             client._work(lambda _:unpack(head['kind'],path,directory),prepared)
-        job=self.mesh.fetch('clipboard',head,path,downloaded,preferred=peer)
+        job=self.mesh.fetch('clipboard',head,path,downloaded,preferred=peer,
+                            progress=lambda received,total:client._priority_flags() if epoch==client._epoch and generation==client._generation else None)
         if job is not None:
             self.jobs[head['id']]=job;client._priority_flags(peer_receiving=True)
 
     def fetch_cloud_body(self,head,path,callback):
-        return self.mesh.fetch('clipboard',head,path,callback)
+        generation=self.client._generation
+        return self.mesh.fetch('clipboard',head,path,callback,
+            progress=lambda received,total:self.client._priority_flags() if generation==self.client._generation else None)

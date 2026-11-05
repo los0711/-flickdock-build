@@ -75,6 +75,7 @@ def run(argv,load_font):
                     assert len(offers)==1 and len(services[0].peers())==len(services[1].peers())==1
                     routes=[row.get('route') for row in states if row.get('state')=='complete' and row.get('route')]
                     assert routes and len(set(routes))==1,'Missing selected-candidate route'
+                    assert routes[0]!='lan','Remote transfer must not promote to LAN'
                     if force_relay:assert routes[0]=='relay','Forced relay test did not use a TURN candidate'
                     report.update(verified_bytes=original.stat().st_size,sha256=expected,empty_folders_preserved=True,code_pairing=True,receiver_consent=True,recent_devices=True,route=routes[0],route_source='native-selected-candidate-pair')
                     finish()

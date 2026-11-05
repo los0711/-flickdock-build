@@ -65,6 +65,37 @@ class Hub:
 
 
 class PeerSyncTests(unittest.TestCase):
+    def test_native_format_conversion_does_not_revoke_a_file_other_devices_are_fetching(self):
+        cloud=ClipboardHub();syncs=[];clips=[];gate=threading.Event();entered=threading.Event()
+        sender_mesh=self.clients[0];original_provide=sender_mesh._provide
+        def delayed(*args):
+            entered.set();gate.wait(3);return original_provide(*args)
+        for state in sender_mesh.available():state['rpc'].provider=delayed
+        try:
+            for index,mesh in enumerate(self.clients):
+                account=mesh.account;token=account.api.token;api=cloud.api(account.device_id);api.token=token;original=api.request
+                def request(method,path,callback,original=original,**options):
+                    if method=='PUT':return object()
+                    return original(method,path,callback,**options)
+                api.request=request;account.api=api;events=Events();cloud.events.append(events);clip=Clipboard();clips.append(clip)
+                client=ClipboardSync(account,events,self.base/f'format-conversion-{index}',clipboard=clip)
+                client.peer_bridge=ClipboardPeerBridge(client,mesh);syncs.append(client)
+            flush();source=self.base/'actual-file.bin';source.write_bytes(os.urandom(512*1024))
+            mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(source))]);clips[0].setMimeData(mime)
+            until(entered.is_set);sender=syncs[0];identity=sender.view['id'];epoch=sender._epoch
+            with patch.object(clips[0],'mimeData',return_value=None):
+                sender._schedule_change();gate.set()
+                until(lambda:all(clip.mimeData().hasUrls() for clip in clips[1:]),seconds=5)
+                self.assertEqual(sender._epoch,epoch);self.assertEqual(sender.view['id'],identity)
+                self.assertIsNotNone(sender.view['value'])
+            sender._changed()
+            for clip in clips[1:]:self.assertEqual(Path(clip.mimeData().urls()[0].toLocalFile()).read_bytes(),source.read_bytes())
+            self.assertFalse(any(method=='GET' and path.endswith('/content') for method,path in cloud.calls))
+        finally:
+            gate.set()
+            for client in syncs:client.close()
+            until(lambda:all(not client._jobs for client in syncs))
+
     def test_native_error_diagnostic_retains_an_available_adaptive_connection(self):
         client=self.clients[0];state=next(iter(client._states.values()));rpc=state['rpc']
         client._handle_native(dict(state=state,event=dict(type='error',message='QA native diagnostic')))
@@ -295,8 +326,14 @@ class PeerSyncTests(unittest.TestCase):
                 client=ClipboardSync(account,events,self.base/f'clipboard-{index}',clipboard=clip)
                 client.peer_bridge=ClipboardPeerBridge(client,mesh);syncs.append(client)
             syncs[0].copy_result.connect(lambda ok,context:feedback.append((ok,context)))
-            flush();clips[0].text('设备直连优先\n保留完整文本')
-            until(lambda:all(clip.mimeData().text()=='设备直连优先\n保留完整文本' for clip in clips),seconds=10)
+            flush();native_write=clips[1].setMimeData;attempts=[]
+            def temporarily_busy(mime):
+                attempts.append(True)
+                if len(attempts)>1:native_write(mime)
+            with patch.object(clips[1],'setMimeData',side_effect=temporarily_busy):
+                clips[0].text('设备直连优先\n保留完整文本')
+                until(lambda:all(clip.mimeData().text()=='设备直连优先\n保留完整文本' for clip in clips),seconds=10)
+            self.assertEqual(len(attempts),2,'Retry the verified peer content without waiting for cloud backup')
             self.assertIsNone(cloud.head)
             self.assertEqual(syncs[1].view['phase'],'peer');self.assertEqual(syncs[2].view['phase'],'peer')
             until(lambda:syncs[0].view['phase']=='peer')

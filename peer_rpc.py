@@ -1,6 +1,7 @@
 """Bounded full-duplex requests over an authenticated account byte stream."""
 from __future__ import annotations
 from dataclasses import dataclass
+import heapq
 import json
 import logging
 from queue import Empty,Full,PriorityQueue,Queue
@@ -15,7 +16,7 @@ from transfer_priority import bulk_delay,clipboard_priority_active
 RPC_HEADER_BYTES=65536
 RPC_BLOCK_BYTES=1024*1024
 RPC_REQUESTS_PER_PEER=8
-RPC_QUEUED_BYTES=4*1024*1024
+RPC_QUEUED_BYTES=8*1024*1024
 RPC_QUEUED_MESSAGES=256
 RPC_TIMEOUT_SECONDS=30.
 LOG=logging.getLogger(__name__)
@@ -39,22 +40,23 @@ class PeerRpc:
         self.closed=threading.Event();self._lock=threading.Condition();self._pending={};self._serving=0
         self.error=''
         self._outgoing=PriorityQueue(RPC_QUEUED_MESSAGES);self._queued_bytes=0;self._sequence=0
+        self._requests=[];self._request_sequence=0;self._reserved_bytes=0
         stream.settimeout(.25)
         threading.Thread(target=self._reader,daemon=True,name='FlickDock-peer-rpc-reader').start()
         threading.Thread(target=self._writer,daemon=True,name='FlickDock-peer-rpc-writer').start()
 
     def _alive(self):return not self.closed.is_set() and not self.stream.closed and self.authorized()
 
-    def _enqueue(self,header,body=b'',*,priority=1,wait=False):
+    def _enqueue(self,header,body=b'',*,priority=1,wait=False,reservation=0):
         if not self._alive():raise PeerUnavailable('同账号连接已关闭或授权已失效。')
         encoded=json.dumps(dict(header,data_size=len(body)),separators=(',',':'),ensure_ascii=False).encode('utf8')
         if len(encoded)>RPC_HEADER_BYTES or len(body)>RPC_BLOCK_BYTES:raise ValueError('Peer RPC packet exceeds limit')
-        packet=struct.pack('!I',len(encoded))+encoded+body;deadline=time.monotonic()+1
+        packet=struct.pack('!I',len(encoded))+encoded+body;deadline=time.monotonic()+RPC_TIMEOUT_SECONDS
         with self._lock:
             # A clipboard response has its own bounded reserve even when
             # several shelf blocks have filled the ordinary output budget.
-            limit=RPC_QUEUED_BYTES+(RPC_BLOCK_BYTES if priority==0 else 0)
-            while self._queued_bytes+len(packet)>limit:
+            limit=RPC_QUEUED_BYTES+(RPC_BLOCK_BYTES if priority==0 else RPC_HEADER_BYTES if not body else 0)
+            while self._queued_bytes+self._reserved_bytes-reservation+len(packet)>limit:
                 if not wait:return False
                 if not self._alive():raise PeerUnavailable('同账号连接已关闭。')
                 remaining=deadline-time.monotonic()
@@ -81,7 +83,7 @@ class PeerRpc:
             self._pending[identifier]=reply
         try:
             queued=self._enqueue(dict(type='request',id=identifier,topic=topic,sha256=digest,offset=offset,count=count),
-                                 priority=0 if topic=='clipboard' else 2,wait=True)
+                                 priority=0 if topic=='clipboard' else 1,wait=True)
             if not queued:raise PeerUnavailable('设备请求队列已满。')
         except (OSError,ValueError):
             with self._lock:self._pending.pop(identifier,None);self._lock.notify_all()
@@ -148,9 +150,9 @@ class PeerRpc:
                     with self._lock:
                         if self._serving>=RPC_REQUESTS_PER_PEER:raise ValueError('Peer request limit exceeded')
                         self._serving+=1
-                    if not self.submit(lambda header=header:self._serve(header)):
-                        with self._lock:self._serving-=1
-                        raise PeerUnavailable('设备同步工作队列已满。')
+                        self._request_sequence+=1
+                        heapq.heappush(self._requests,(0 if header['topic']=='clipboard' else 2,self._request_sequence,header))
+                    self._dispatch_requests()
                 elif kind=='notify' and not body:
                     value=header.get('value')
                     if not isinstance(value,dict):raise ValueError('Invalid peer notification')
@@ -158,7 +160,20 @@ class PeerRpc:
                 else:raise ValueError('Invalid peer RPC message')
         except (OSError,EOFError,ValueError,KeyError,TypeError,RecursionError) as error:self.close('reader: '+repr(error))
 
-    def _serve(self,header):
+    def _dispatch_requests(self):
+        # Reserve response memory before entering the shared disk pool. A slow
+        # network must never park every provider worker waiting for queue space.
+        with self._lock:
+            while self._requests and self._alive():
+                priority,sequence,header=self._requests[0]
+                capacity=header['count']+RPC_HEADER_BYTES+4
+                limit=RPC_QUEUED_BYTES+(RPC_BLOCK_BYTES if priority==0 else 0)
+                if self._queued_bytes+self._reserved_bytes+capacity>limit:break
+                heapq.heappop(self._requests);self._reserved_bytes+=capacity
+                if not self.submit(lambda header=header,capacity=capacity:self._serve(header,capacity)):
+                    self._reserved_bytes-=capacity;heapq.heappush(self._requests,(priority,sequence,header));break
+
+    def _serve(self,header,capacity):
         try:
             if not self._alive():return
             try:
@@ -168,16 +183,20 @@ class PeerRpc:
                 LOG.debug('Peer body is unavailable',exc_info=True)
                 body=b'';response=dict(type='response',id=header['id'],ok=False,error='设备内容已更新或暂不可用。')
             if not self._alive():return
-            if not self._enqueue(response,body,priority=0 if header['topic']=='clipboard' else 2,wait=True):
+            if not self._enqueue(response,body,priority=0 if header['topic']=='clipboard' else 2,reservation=capacity):
                 raise PeerUnavailable('设备响应队列已满。')
         except (OSError,ValueError) as error:self.close('provider: '+repr(error))
         finally:
-            with self._lock:self._serving-=1
+            with self._lock:
+                self._serving-=1;self._reserved_bytes-=capacity
+                self._lock.notify_all()
+            self._dispatch_requests()
 
     def _writer(self):
         last_bulk=time.monotonic()
         try:
             while self._alive():
+                self._dispatch_requests()
                 with self._lock:
                     with self._outgoing.mutex:
                         priority=self._outgoing.queue[0][0] if self._outgoing.queue else None

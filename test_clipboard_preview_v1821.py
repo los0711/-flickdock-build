@@ -12,6 +12,21 @@ from flickdock import ShelfManager
 
 
 class PreviewTests(unittest.TestCase):
+    def test_empty_preview_tracks_live_connections_without_copying_or_cloud_requests(self):
+        from uuid import uuid4
+        first,second=str(uuid4()),str(uuid4());before=list(self.hub.calls)
+        self.manager.show_clipboard_preview();dialog=self.manager.clipboard_preview_dialog
+        self.client.deliveries.set_connections({first:dict(route='lan'),second:dict(route='p2p')})
+        workspace.flush()
+        self.assertIsNone(self.model.state['value'])
+        self.assertEqual(dialog.route_badges['lan'].text(),'局域网 0/1')
+        self.assertEqual(dialog.route_badges['p2p'].text(),'P2P 0/1')
+        self.client.deliveries.set_connections({first:dict(route='lan'),second:dict(route='disconnected')})
+        workspace.flush()
+        self.assertEqual(dialog.route_badges['lan'].text(),'局域网 0/1')
+        self.assertEqual(dialog.route_badges['p2p'].text(),'P2P 0/0')
+        self.assertEqual(self.hub.calls,before)
+
     def test_route_badges_show_success_over_targets_without_recopying_or_redecoding(self):
         self.clip.text('receipt metadata never changes the original clipboard')
         workspace.until(lambda:self.model.state.get('phase')=='synced')

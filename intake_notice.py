@@ -14,6 +14,7 @@ NOTICE_MARGIN_PX=16
 NOTICE_RADIUS_PX=14
 NOTICE_PADDING_PX=12
 NOTICE_DURATION_MS=2200
+NOTICE_PROGRESS_DURATION_MS=6000
 RESULT_COALESCE_MS=160
 HEADER_HEIGHT_PX=22
 LOGO_SIZE_PX=20
@@ -25,7 +26,7 @@ PREVIEW_MAX_CHARS=2048
 
 def copy_status(ok,context):
     if context.get('phase')=='size_limit':return '超过 20 MB 同步上限 · 内容保留在本机'
-    if not ok:return '同步未完成 · 内容保留在本机'
+    if ok is False:return '同步未完成 · 内容保留在本机'
     counts=context.get('deliveries',{})
     routes=[('lan','局域网'),('p2p','P2P'),('cloud','R2')]
     if counts.get('relay',{}).get('total',0):routes.append(('relay','TURN'))
@@ -68,36 +69,43 @@ class ClipboardNotice(QWidget):
         self.status=QLabel(self.card);self.status.setObjectName('copyStatus');self.status.setTextFormat(Qt.PlainText)
         self.status.setWordWrap(True)
         self.status.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Preferred);footer.addWidget(self.status,1);layout.addLayout(footer)
+        from transfer_visuals import ClipboardProgressRow
+        self.progress=ClipboardProgressRow(self.card);layout.addWidget(self.progress)
         self._pending_result=None
         self._current_result=None
+        self._dismissed_id=None
         self._result_timer=QTimer(self);self._result_timer.setSingleShot(True);self._result_timer.setInterval(RESULT_COALESCE_MS)
         self._result_timer.timeout.connect(self._deliver_result)
         self.timer=QTimer(self);self.timer.setSingleShot(True);self.timer.timeout.connect(self.dismiss)
         self._window_fade=WindowFade(self)
 
     def dismiss(self):
+        context=self._current_result[1] if self._current_result is not None else self._pending_result[1] if self._pending_result is not None else {}
+        self._dismissed_id=context.get('id');self._result_timer.stop();self._pending_result=None
         self.timer.stop();fade_hide(self)
 
     def supersede(self):
+        if self._current_result is not None:self._dismissed_id=self._current_result[1].get('id')
         self._result_timer.stop();self._pending_result=None;self._current_result=None;self.hide()
 
     def schedule_result(self,ok,context):
+        if context.get('id') and context['id']==self._dismissed_id:return
         self._pending_result=(ok,dict(context));self._result_timer.start()
 
     def update_delivery(self,state):
         if not self.manager.settings.clipboard_success_notice:self.supersede();return
         identity=state.get('id')
-        if not identity:return
+        if not identity or identity==self._dismissed_id:return
         if self._pending_result is not None:
             ok,context=self._pending_result
-            if ok and context.get('id')==identity:context['deliveries']=state.get('deliveries',{})
-        if self._current_result is None or not self.isVisible():return
+            if context.get('id')==identity:context.update(state)
+        if self._current_result is None or not self.isVisible():
+            if self._pending_result is None and state.get('local_copy') and state.get('phase')=='uploading':
+                self.schedule_result(None,state)
+            return
         ok,context=self._current_result
-        if not ok or context.get('id')!=identity:return
-        updated=dict(context,deliveries=state.get('deliveries',{}))
-        if copy_status(True,updated)==copy_status(True,context):return
-        self._current_result=(ok,updated);self._render_status(ok,updated)
-        self.adjustSize();self._place(self.screen().availableGeometry())
+        if context.get('id')!=identity:return
+        self.show_result(ok,dict(context,**state))
 
     def _render_status(self,ok,context):
         text=copy_status(ok,context);self.status.setAccessibleDescription(text);self.status.setText(text)
@@ -113,8 +121,12 @@ class ClipboardNotice(QWidget):
 
     def show_result(self,ok,context):
         if not getattr(self.manager.settings,'clipboard_success_notice',True):return
+        if context.get('id') and context['id']==self._dismissed_id:return
+        same=bool(self.isVisible() and self._current_result is not None and context.get('id')==self._current_result[1].get('id'))
+        was_active=self.progress.active
+        self.progress.set_state(context)
         c=colors(self.manager.settings.theme);limited=context.get('phase')=='size_limit'
-        tint=c['link'] if limited else c['green' if ok else 'red']
+        tint=c['link'] if limited or ok is None or self.progress.active else c['green' if ok else 'red']
         self.card.setStyleSheet(f'''
             QFrame#clipboardNotice{{background:{c['surface']};border:0;border-radius:{NOTICE_RADIUS_PX}px;}}
             QLabel{{color:{c['text']};border:0;background:transparent;font-size:11px;}}
@@ -127,9 +139,10 @@ class ClipboardNotice(QWidget):
         self.close_button.dark=self.manager.settings.theme=='dark';self.close_button.update()
         self.ensurePolished()
         kind=context.get('value',('text',{}))[0]
-        self.message.setText(('此文件不能同步' if kind=='files' else '此图片不能同步' if kind=='image' else '此内容不能同步') if limited else '复制已同步' if ok else '复制同步失败')
+        self.message.setText(('此文件不能同步' if kind=='files' else '此图片不能同步' if kind=='image' else '此内容不能同步') if limited else '正在同步剪贴板' if ok is None or self.progress.active else '复制已同步' if ok else '复制同步失败')
+        self.status_icon.setVisible(ok is not None)
         self.status_icon.setPixmap(icon('circle-check' if ok else 'circle-alert',tint).pixmap(STATUS_ICON_SIZE_PX,STATUS_ICON_SIZE_PX))
-        screen=QGuiApplication.screenAt(QPoint(*context.get('point',(0,0)))) or QGuiApplication.primaryScreen();area=screen.availableGeometry()
+        screen=QGuiApplication.screenAt(QPoint(*(context.get('point') or (0,0)))) or QGuiApplication.primaryScreen();area=screen.availableGeometry()
         self.setFixedWidth(min(NOTICE_WIDTH_PX,max(1,area.width()-2*NOTICE_MARGIN_PX)))
         available=self.width()-2*NOTICE_PADDING_PX
         self.preview.setText(self.preview.fontMetrics().elidedText(copy_preview(context.get('value')),Qt.ElideRight,available))
@@ -137,8 +150,11 @@ class ClipboardNotice(QWidget):
         self._render_status(ok,context)
         self.adjustSize()
         self._place(area)
-        self.timer.stop();self._window_fade.reopen();self._current_result=(ok,dict(context))
-        self.show();self.raise_();self.timer.start(NOTICE_DURATION_MS)
+        self._current_result=(ok,dict(context))
+        if not same:
+            self._window_fade.reopen();self.show();self.raise_()
+            self.timer.start(NOTICE_PROGRESS_DURATION_MS if self.progress.active else NOTICE_DURATION_MS)
+        elif was_active and not self.progress.active:self.timer.start(NOTICE_DURATION_MS)
 
     def hideEvent(self,event):
         self.timer.stop();self._current_result=None;super().hideEvent(event)

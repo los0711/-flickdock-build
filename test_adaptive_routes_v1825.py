@@ -1,6 +1,7 @@
 """Real socket bytes, measured selection, interruption, flow control and fences."""
 import hashlib
 import os
+import queue
 import socket
 import threading
 import time
@@ -62,6 +63,32 @@ class RoutePolicyTests(unittest.TestCase):
 
 
 class AdaptiveTests(unittest.TestCase):
+    def test_remote_mode_attaches_native_without_attempting_a_lan_socket(self):
+        self.streams[0].allow_lan=False
+        with patch('nearby_transport.try_nearby',side_effect=AssertionError('Remote transfer attempted LAN')):
+            self.streams[0].attach_native(self.raw[0],'send')
+        self.transfer(os.urandom(512*1024+13))
+        self.assertEqual(self.streams[0].route,'p2p');self.assertNotIn('lan',self.streams[0]._paths)
+
+    def test_queued_records_keep_a_slow_but_progressing_direct_path(self):
+        packets=queue.Queue();original=self.raw[0].sendall;closing=threading.Event();errors=[]
+        def drain():
+            while not closing.is_set():
+                try:packet=packets.get(timeout=.05)
+                except queue.Empty:continue
+                if HEADER.unpack(packet[:HEADER.size])[0]==DATA:time.sleep(.025)
+                try:original(packet)
+                except OSError as error:
+                    if not closing.is_set():errors.append(error)
+                    return
+        worker=threading.Thread(target=drain);worker.start();self.workers.append(worker)
+        try:
+            with patch.object(self.raw[0],'sendall',side_effect=packets.put),patch('adaptive_stream.STALL_SECONDS',.15),patch('adaptive_stream.PATH_CONNECT_SECONDS',.3):
+                self.transfer(os.urandom(2*1024*1024+17))
+            self.assertFalse(self.streams[0]._paths['primary'].dead);self.assertFalse(errors)
+            self.assertEqual(self.streams[0].route,'p2p')
+        finally:closing.set();worker.join(2)
+
     def setUp(self):
         self.cancel=threading.Event();self.authorized=True;self.streams=[];self.events=[[],[]]
         first,second=socket.socketpair();self.raw=[Stream(first),Stream(second)]

@@ -54,15 +54,18 @@ class PathState:
     latency:float=0.
     sample_at:float=0.
     sample_bytes:int=0
+    unacknowledged:int=0
+    progress_at:float=0.
 
 
 class AdaptiveStream:
     def __init__(self,raw,nearby,*,initiator,cancel,authorized=lambda:True,
-                 secondary=None,cloud=None,primary=True,prefer_tls=False,signal_out=None,event=lambda value:None):
+                 secondary=None,cloud=None,primary=True,prefer_tls=False,signal_out=None,event=lambda value:None,allow_lan=True):
         self.raw=raw;self.cancel=cancel;self.authorized=authorized;self.secondary=secondary
         self.initiator=initiator;self.event=event;self.policy=RoutePolicy()
         self.cloud=cloud;self._cloud_starting=False;self._cloud_retry=0.
         self.signal_out=signal_out
+        self.allow_lan=allow_lan
         self._condition=threading.Condition(threading.RLock());self._send_lock=threading.Lock()
         self._paths={};self._pending=OrderedDict();self._reorder={};self._input=deque()
         self._input_bytes=0;self._pending_bytes=0;self._sequence=0;self._received_sequence=0
@@ -107,7 +110,7 @@ class AdaptiveStream:
 
     def attach_native(self,raw,role):
         from nearby_transport import try_nearby
-        nearby=try_nearby(raw,role,self.cancel)
+        nearby=try_nearby(raw,role,self.cancel) if self.allow_lan else raw
         self.attach_prepared(raw,nearby)
 
     def attach_prepared(self,raw,nearby):
@@ -148,7 +151,11 @@ class AdaptiveStream:
     def _failed(self,path):
         with self._condition:
             if path.dead:return
-            path.dead=True;self.policy.choose(self._live());self._condition.notify_all()
+            path.dead=True
+            for record in self._pending.values():
+                if record['path']==path.key:record['path']=None
+            path.unacknowledged=0
+            self.policy.choose(self._live());self._condition.notify_all()
         LOG.info('Adaptive %s connection ended',path.route)
         try:
             if hasattr(path.stream,'shutdown'):path.stream.shutdown()
@@ -225,6 +232,8 @@ class AdaptiveStream:
                 self._acked_payload+=record['payload'];self._pending_bytes-=len(record['body'])
                 path=self._paths.get(record['path'])
                 if path is not None:
+                    path.unacknowledged-=len(record['body']);path.progress_at=time.perf_counter()
+                    if path.unacknowledged<0:raise RuntimeError('Adaptive pending-byte accounting diverged')
                     if not path.sample_at:path.sample_at=record['sent']
                     path.sample_bytes+=len(record['body']);elapsed=time.perf_counter()-path.sample_at
                     if elapsed>=1. and path.sample_bytes>=BULK_BYTES:
@@ -257,6 +266,11 @@ class AdaptiveStream:
                        and p.latency>0 and time.perf_counter()-p.pinged<PING_INTERVAL_SECONDS*2]
                 if quick:path=min(quick,key=lambda p:p.latency);key=path.key
             if path is None or path.dead:return
+            if record['path']!=key:
+                previous=self._paths.get(record['path'])
+                if previous is not None:previous.unacknowledged-=len(record['body'])
+                if not path.unacknowledged:path.progress_at=time.perf_counter()
+                path.unacknowledged+=len(record['body'])
             record.update(path=key,sent=time.perf_counter())
         try:
             self._frame(path,DATA,sequence,record['body'])
@@ -320,7 +334,7 @@ class AdaptiveStream:
                         from nearby_transport import try_nearby
                         if direct_only and candidate.route=='relay':failed();return
                         with self._condition:lan=self._paths.get('lan')
-                        nearby=candidate if candidate.route=='relay' or lan is not None and not lan.dead else try_nearby(candidate,'send' if self.initiator else 'receive',self.cancel)
+                        nearby=candidate if not self.allow_lan or candidate.route=='relay' or lan is not None and not lan.dead else try_nearby(candidate,'send' if self.initiator else 'receive',self.cancel)
                         if not self._alive() or identifier!=self._secondary_id:
                             if nearby is not candidate:nearby.stream.close()
                             candidate.shutdown();return
@@ -388,11 +402,10 @@ class AdaptiveStream:
             now=time.perf_counter()
             try:
                 with self._condition:
-                    stalled={record['path'] for record in self._pending.values()
-                             if now-record['sent']>=STALL_SECONDS}
-                    expired=[self._paths[key] for key in stalled if key in self._paths and not self._paths[key].dead]
-                # Closing a persistently unacknowledged path makes recovery
-                # explicit. Retransmitting forever cannot establish liveness.
+                    expired=[path for path in self._paths.values() if not path.dead
+                             and path.unacknowledged and now-path.progress_at>=STALL_SECONDS]
+                # A queued window can take longer than the stall deadline on a
+                # healthy WAN. Only absence of acknowledgement progress fails it.
                 for failed in expired:self._failed(failed)
                 with self._condition:
                     for key,path in self._paths.items():
@@ -409,16 +422,9 @@ class AdaptiveStream:
                     if route and route!=self._reported:
                         self._reported=route;self.event(dict(type='route',route=route))
                     retry=[(number,record) for number,record in self._pending.items()
-                           if record['path'] not in live or now-record['sent']>STALL_SECONDS
+                           if record['path'] not in live
                            or changed and record['path']!=self.policy.current and len(record['body'])>LATENCY_MESSAGE_BYTES]
                     active=bool(self._pending) or self._last_send>0 and now-self._last_send<ACTIVE_SECONDS
-                if retry:
-                    with self._condition:
-                        current=self.policy.current
-                        alternatives=[key for key in live if key!=current]
-                        if alternatives and any(record['path']==current and now-record['sent']>STALL_SECONDS for _,record in retry):
-                            self.policy.current=max(alternatives,key=lambda key:self.policy.samples[key].rate if key in self.policy.samples else 0.)
-                            self.policy.changed=now
                 for number,record in retry:self._transmit(number,record)
                 with self._condition:
                     cloud_path=self._paths.get('cloud')

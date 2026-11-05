@@ -25,6 +25,23 @@ class Account(QObject):
         self.api=SimpleNamespace(token=uuid4().hex)
 
 class P2PPriorityTests(unittest.TestCase):
+    def test_account_direct_ice_starts_before_any_proxy_turn_preparation(self):
+        mesh,_=self.make_mesh();peer='e'*64;raw=Mock();raw.closed=False
+        mesh.broker=Mock();mesh.broker.closed=False;mesh.broker.stream.return_value=raw
+        self.service._sync_ice=[dict(hostname='turn.cloudflare.com',port=443,relayType='TurnTls',username='qa',password='qa')]
+        value=dict(type='sync_begin',id=uuid4().hex,peer=dict(id=peer),account=mesh.identity[0],initiator=True,
+                   iceServers=[dict(urls=['stun:stun.cloudflare.com:3478'])])
+        with patch('wan_transfer._turn_http_proxy',return_value=None):
+            mesh._signal(value)
+            first=raw.control.call_args.args[0]
+            self.assertEqual(first['iceServers'],['stun:stun.cloudflare.com:3478'])
+            state=mesh._states[peer]
+            mesh._handle_native(dict(state=state,event=dict(type='state',state='failed')))
+            self.assertIn(peer,mesh._relay_pending)
+            mesh._signal(dict(value,id=uuid4().hex))
+            second=raw.control.call_args.args[0]
+            self.assertTrue(any(isinstance(row,dict) and row.get('relayType')=='TurnTls' for row in second['iceServers']))
+
     def setUp(self):
         self.temp=TemporaryDirectory();self.base=Path(self.temp.name);self.identifier=uuid4().hex
         self.service=WanTransferService(self.base,enabled=False);self.sent=[];self.jobs=[];self.mesh=None

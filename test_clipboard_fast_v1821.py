@@ -35,6 +35,18 @@ class InlineHub(Hub):
 
 
 class ClipboardFastTests(unittest.TestCase):
+    def test_authenticated_inline_push_applies_while_followup_cloud_request_is_stalled(self):
+        receiver=self.clients[1];until(lambda:not receiver._fetching)
+        original=receiver._request;held=[]
+        def request(method,path,callback,**options):
+            if method=='GET' and path=='/v1/clipboard':held.append(callback);return object()
+            return original(method,path,callback,**options)
+        with patch.object(receiver,'_request',side_effect=request):
+            started=time.monotonic();self.clips[0].text('paste without another cloud round trip')
+            until(lambda:self.clips[1].mimeData().text()=='paste without another cloud round trip',seconds=1)
+            self.assertLess(time.monotonic()-started,.75)
+            self.assertEqual(receiver._seen,self.hub.head['id'])
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.hub=InlineHub();self.clients=[];self.clips=[]
         for index in range(2):
@@ -95,7 +107,7 @@ class ClipboardFastTests(unittest.TestCase):
             self.clips[0].text('copy after updating')
             until(lambda:self.clips[1].mimeData().text()=='copy after updating')
 
-    def test_confirmation_error_retries_without_waiting_for_poll(self):
+    def test_metadata_refresh_error_preserves_already_pasteable_content_and_recovers(self):
         receiver=self.clients[1];until(lambda:not receiver._fetching)
         original=receiver._request;failed=[]
         def request(method,path,callback,**options):
@@ -104,7 +116,10 @@ class ClipboardFastTests(unittest.TestCase):
             return original(method,path,callback,**options)
         with patch.object(receiver,'_request',side_effect=request):
             self.clips[0].text('retry final confirmation')
+            until(lambda:self.clips[1].mimeData().text()=='retry final confirmation')
+            receiver.refresh()
             until(lambda:failed and receiver.retry.isActive())
+            self.assertEqual(self.clips[1].mimeData().text(),'retry final confirmation')
             receiver.retry.stop();receiver._retry()
             until(lambda:self.clips[1].mimeData().text()=='retry final confirmation')
 

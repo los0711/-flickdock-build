@@ -16,6 +16,15 @@ SHA256=re.compile('[a-f0-9]{64}')
 LOG=logging.getLogger(__name__)
 
 
+def sync_progress(state):
+    cloud=state.get('cloud_transfer') or (dict(phase='complete',received=1,total=1) if state.get('backed_up') else dict(phase='idle',received=0,total=0))
+    counts=state.get('deliveries',{})
+    total=sum(row['total'] for row in counts.values());received=sum(row['success'] for row in counts.values())
+    active=state.get('value') is not None and bool(state.get('id')) and state.get('phase') not in ('local','size_limit')
+    phase='idle' if not active or not total else 'complete' if received==total else 'delivering'
+    return dict(cloud=cloud,devices=dict(phase=phase,received=received,total=total))
+
+
 def route_map(value):
     if not isinstance(value,dict) or len(value)>MAX_TARGETS:raise ValueError('Invalid clipboard delivery targets')
     if any(not isinstance(device,str) or not UUID.fullmatch(device) or route not in ROUTES for device,route in value.items()):
@@ -38,6 +47,7 @@ class ClipboardDeliveries(QObject):
         super().__init__(client);self.client=client;self.path=Path(base)/'clipboard-delivery.json'
         self.current=None;self.cloud_ready=False;self.pending_route=None;self.dirty=False;self.inflight=False;self.attempt=0;self.published=False;self.blocked=False
         self.cloud_snapshot=None
+        self.connections=None
         self.retry=QTimer(self);self.retry.setSingleShot(True);self.retry.timeout.connect(self.flush)
         try:
             with self.path.open('rb') as stream:raw=stream.read(MAX_METADATA_BYTES+1)
@@ -143,7 +153,35 @@ class ClipboardDeliveries(QObject):
         client._request('POST',f'/v1/clipboard/{identity}/delivery',done,data=data)
 
     def summary(self,identity):
-        if self.current is None or self.current['id']!=identity:return {}
-        plan=dict(self.current['plan'],**self.current['receipts']);receipts=self.current['receipts']
+        current=self.current if self.current is not None and self.current['id']==identity else None
+        receipts=current['receipts'] if current else {}
+        if self.connections is None:
+            plan=dict(current['plan'],**receipts) if current else {}
+        else:
+            plan=dict(self.connections)
+            if current:
+                plan.pop(current['origin'],None)
+                # This device is an online recipient, even though its mesh
+                # snapshot intentionally contains only the other devices.
+                device=self.client.account.device_id
+                if device!=current['origin'] and (device in current['plan'] or device in receipts):
+                    plan[device]=receipts.get(device,current['plan'].get(device,'cloud'))
+                plan={device:receipts.get(device,route) for device,route in plan.items()}
+        receipts={device:route for device,route in receipts.items() if device in plan}
         return {route:dict(success=sum(value==route for value in receipts.values()),
                            total=sum(value==route for value in plan.values())) for route in ROUTES}
+
+    def set_connections(self,snapshot):
+        if not isinstance(snapshot,dict) or len(snapshot)>MAX_TARGETS:raise ValueError('Invalid device connection snapshot')
+        connections={}
+        for device,info in snapshot.items():
+            if not isinstance(device,str) or not UUID.fullmatch(device) or not isinstance(info,dict):
+                raise ValueError('Invalid device connection identity')
+            route=info.get('route')
+            if route in ('connecting','cloud'):connections[device]='cloud'
+            elif route in ROUTES:connections[device]=route
+            elif route!='disconnected':raise ValueError('Invalid device connection state')
+        if self.connections==connections:return
+        self.connections=connections
+        view=self.client.view
+        self.client._set_view(view['value'],view['phase'],view['id'])

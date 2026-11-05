@@ -644,16 +644,14 @@ class WanTransferService(LanTransferService):
         return self._adaptive_stream(raw,'receive',self._stopped)
     def _adaptive_stream(self,raw,role,cancel,*,primary=True):
         from adaptive_stream import AdaptiveStream
-        from nearby_transport import try_nearby
         identifier,state=next((key,value) for key,value in self._pending.items() if value.get('bridge') is raw)
         if state.get('adaptive') is not None:return state['adaptive']
-        nearby=raw if self._qa_force_relay or not primary else try_nearby(raw,role,cancel)
         # The published file protocol stays unchanged. Both endpoints must
         # agree before adding route records outside its byte stream.
-        if primary and not raw.adaptive_capable:return nearby
+        if primary and not raw.adaptive_capable:return raw
         with self._lock:
             if state.get('adaptive') is not None:
-                if primary:state['adaptive'].attach_prepared(raw,nearby)
+                if primary:state['adaptive'].attach_prepared(raw,raw)
                 return state['adaptive']
             def alternative(event,configuration):
                 if configuration['directOnly'] and self._qa_force_relay:return None
@@ -673,7 +671,7 @@ class WanTransferService(LanTransferService):
             def signal(value):
                 if not self._connected:return False
                 self._native.emit(dict(id=identifier,generation=state['generation'],event=dict(type='route_signal',value=value)));return True
-            stream=AdaptiveStream(raw,nearby,initiator=role=='send',cancel=cancel,primary=primary,
+            stream=AdaptiveStream(raw,raw,initiator=role=='send',cancel=cancel,primary=primary,allow_lan=False,
                 authorized=lambda:not self._closing and not state.get('cancelled') and self._pending.get(identifier) is state and state.get('bridge') is raw,
                 secondary=alternative,prefer_tls=state.get('relay_transport')!='tls',signal_out=signal,
                 cloud=None if self._qa_force_relay or self.cloud_routes is None else cloud,

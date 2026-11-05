@@ -21,6 +21,10 @@ if __name__=='__main__' and '--video-worker' in sys.argv:
     from video_worker import run
     raise SystemExit(run())
 
+if __name__=='__main__' and '--virtual-clipboard-worker' in sys.argv:
+    from virtual_clipboard import run
+    raise SystemExit(run(sys.argv[sys.argv.index('--virtual-clipboard-worker')+1]))
+
 from PySide6.QtCore import (QEasingCurve, QPoint, QRect, QRectF, QSize, QEvent, Qt, QMimeData,
                              QPropertyAnimation, QTimer, QUrl, QThreadPool)
 from PySide6.QtGui import (QColor, QCursor, QDrag, QFont, QFontDatabase, QGuiApplication, QImage,
@@ -3398,9 +3402,14 @@ class ShelfManager:
         self.clipboard_notice.schedule_result(ok,context)
 
     def _clipboard_notice_state(self,state):
-        if self._quitting or not hasattr(self,'clipboard_notice'):return
+        if self._quitting:return
         if not self.settings.clipboard_success_notice or not self._clipboard_runtime_enabled():
-            self.clipboard_notice.supersede();return
+            if hasattr(self,'clipboard_notice'):self.clipboard_notice.supersede()
+            return
+        if not hasattr(self,'clipboard_notice'):
+            if not state.get('local_copy') or state.get('phase')!='uploading':return
+            from intake_notice import ClipboardNotice
+            self.clipboard_notice=ClipboardNotice(self)
         self.clipboard_notice.update_delivery(state)
 
     def show_clipboard_preview(self):
