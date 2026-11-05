@@ -19,12 +19,13 @@ class SignalingTests(unittest.TestCase):
         self.service.status_changed.connect(self.messages.append)
     def tearDown(self):
         self.service.close();self.service.deleteLater();QCoreApplication.sendPostedEvents(None,QEvent.DeferredDelete);APP.processEvents();self.temp.cleanup()
-    def test_initial_handshake_has_a_deadline_and_switches_to_verified_alternate_origin(self):
+    def test_initial_handshake_has_a_deadline_and_retries_the_public_domain(self):
         opened=[]
         with patch.object(self.service.socket,'open',side_effect=lambda request:opened.append(request.url().toString())):
             self.service._connect();self.assertTrue(self.service.connect_timeout.isActive())
             self.service._connection_timed_out();self.service.retry.stop();self.service._connect()
-        self.assertEqual(opened,['wss://'+value.removeprefix('https://')+'/v1/wan/connect' for value in SIGNAL_ORIGINS])
+        expected='wss://'+SIGNAL_ORIGINS[0].removeprefix('https://')+'/v1/wan/connect'
+        self.assertEqual(opened,[expected,expected]);self.assertEqual(SIGNAL_ORIGINS,('https://flickdock.cc.cd',))
         self.assertTrue(any('超时' in value for value in self.messages))
     def test_error_is_visible_and_code_control_allows_retry_without_login(self):
         dialog=LanDialog(self.service,app_settings.SettingsStore(self.base/'settings'));dialog.show();APP.processEvents()

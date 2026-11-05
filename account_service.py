@@ -14,7 +14,7 @@ from PySide6.QtWidgets import QApplication
 
 from account_store import SessionStore
 from cloud_api import CloudApi
-from cloud_config import DEFAULT_CLOUD_URL
+from cloud_config import DEFAULT_CLOUD_URL,SESSION_REALM
 
 
 AUTH_KDF = {'name':'scrypt','N':16384,'r':8,'p':5,'dkLen':32}
@@ -122,7 +122,7 @@ class AccountService(QObject):
         application = QApplication.instance()
         native = application is not None and application.platformName() not in ('offscreen','minimal')
         self.api = api or CloudApi(origin, self)
-        self.store = store or SessionStore(base, origin, enabled=native)
+        self.store = store or SessionStore(base,SESSION_REALM if origin==DEFAULT_CLOUD_URL else origin,enabled=native)
         self.account, self.device_id = None, ''
         self.busy, self.epoch = False, 0
         self._closed=False

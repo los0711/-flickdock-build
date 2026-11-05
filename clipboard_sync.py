@@ -556,7 +556,8 @@ class ClipboardSync(QObject):
             self._set_view(self.view['value'],(phase or 'synced') if ok else 'error',pending['id'])
         if pending.get('feedback_result') is ok:return
         pending['feedback_result']=ok
-        context=dict(pending.get('feedback',{}),id=pending['id'])
+        context=dict(pending.get('feedback',{}),id=pending['id'],route=self.view['route'],
+                     delivered=bool(pending.get('peer_delivered')),backed_up=self.view['backed_up'])
         self.copy_result.emit(ok,context)
 
     def _prepare_local(self):

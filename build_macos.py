@@ -213,13 +213,14 @@ def main(arguments=None):
     with tempfile.TemporaryDirectory(prefix='flickdock-cocoa-preflight-') as directory:
         run([python,ROOT/'test_mac_cocoa_spaces.py','--output',Path(directory)/'cocoa.json'],
             env=dict(env,HOME=directory,QT_QPA_PLATFORM='cocoa',FLICKDOCK_CI_COCOA_SMOKE='1'))
+        cocoa_preflight=json.loads((Path(directory)/'cocoa.json').read_text(encoding='utf8'))
     run([python,ROOT/'p2p_assets.py'],env=env)
     run([python,ROOT/'video_assets.py'],env=env)
     if options.sign_identity:
         env['FLICKDOCK_CODESIGN_IDENTITY'] = options.sign_identity
     if options.entitlements:
         env['FLICKDOCK_ENTITLEMENTS'] = str(options.entitlements.resolve())
-    run([python, '-m', 'unittest', 'test_window_zoom_v1824', 'test_surface_source_cache', 'test_mac_install', 'test_preview_continuity', 'test_display_frames', 'test_video_matrix', 'test_receive_notice', 'test_p2p_priority', 'test_platform_startup', 'test_platform_native', 'test_mac_window_order_v1810', 'test_mac_updates',
+    run([python, '-m', 'unittest', 'test_window_zoom_v1824', 'test_surface_source_cache', 'test_mac_install', 'test_preview_continuity', 'test_display_frames', 'test_video_matrix', 'test_receive_notice', 'test_copy_notice_v1824', 'test_p2p_priority', 'test_platform_startup', 'test_platform_native', 'test_mac_window_order_v1810', 'test_mac_updates',
          'test_macos_native_entry', 'test_update_macos_controller', 'test_mac_build',
          'test_shelf_sync_v180', 'test_sync_review_v180', 'test_account_security_v180',
          'test_lan_transfer_v181', 'test_lan_dialog_v183', 'test_shelf_transfers_v181',
@@ -383,6 +384,7 @@ def main(arguments=None):
           architecture=options.target_arch, signed=bool(options.sign_identity), dmg_verified=True,
           notarized=bool(options.notary_profile),zip_roundtrip_verified=True,pkg_payload_verified=True,
           frozen=frozen, artifacts=artifacts,
+          native_source_cocoa=cocoa_preflight,
           native_update_runtime=(json.loads(update_runtime_path.read_text()) if update_runtime_path.is_file() else None)),
           ensure_ascii=False, indent=2), encoding='utf-8')
     print(report)

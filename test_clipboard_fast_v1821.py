@@ -180,6 +180,7 @@ class ClipboardFastTests(unittest.TestCase):
         self.assertEqual(sent,[])
         until(lambda:self.clips[1].mimeData().text()=='sender acknowledgement')
         self.assertEqual(len(sent),1);self.assertTrue(sent[0][0]);self.assertEqual(sent[0][1]['id'],self.hub.head['id'])
+        self.assertTrue(sent[0][1]['backed_up']);self.assertFalse(sent[0][1]['delivered']);self.assertEqual(sent[0][1]['route'],'')
         self.assertEqual(received,[])
 
     def test_failed_publish_reports_failure_then_success_after_real_retry(self):

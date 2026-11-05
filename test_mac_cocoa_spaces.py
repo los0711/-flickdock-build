@@ -1,8 +1,8 @@
 """CI-only Cocoa probe for the conflicting macOS Spaces collection behaviors.
 
 Run with a native macOS Python/PySide6/PyObjC environment, QT_QPA_PLATFORM=cocoa,
-and a disposable HOME. It opens only two empty test windows; no app instance,
-global hotkeys, login item, network service, or user data is touched.
+and a disposable HOME. It opens empty ordering fixtures and one actual shelf
+with generated text; no manager, global hooks, login item or network is used.
 """
 from __future__ import annotations
 
@@ -163,10 +163,52 @@ def main() -> int:
     negative.close()
     external.activateWithOptions_(AppKit.NSApplicationActivateIgnoringOtherApps)
     for observer in observers:center.removeObserver_(observer)
+    # Exercise the product's real tree and native input map. Empty QWidget
+    # ordering probes cannot detect a duplicated shelf or a stale Cocoa mask.
+    import tempfile
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    from PySide6.QtCore import QPoint
+    from PySide6.QtTest import QTest
+    import flickdock
+    from app_settings import SettingsStore
+    flickdock.load_font(application)
+    with tempfile.TemporaryDirectory(prefix='flickdock-cocoa-shelf-') as directory:
+        manager=SimpleNamespace(motion=True,settings=SettingsStore(Path(directory)),save=lambda:None,
+            update_handles=lambda:None,activate_shelf=lambda _:None,_quitting=False,outgoing_drag=False)
+        shelf=flickdock.ShelfWindow(manager,1);manager.shelf=shelf;shelf.pinned=True
+        ref=shelf.content.add_text('Cocoa native click target');shelf.files['permanent']=[ref];shelf.refresh()
+        area=application.primaryScreen().availableGeometry()
+        def shelf_window():return objc.objc_object(c_void_p=ctypes.c_void_p(int(shelf.winId()))).window()
+        def settle_shelf():pump_until(lambda:not shelf.geometry_morph.active and not shelf.presentation._timer.isActive())
+        def hit_target(button):
+            point=button.mapToGlobal(button.rect().center());hit=application.widgetAt(point)
+            if hit is not button and not (hit is not None and button.isAncestorOf(hit)):
+                raise AssertionError('Cocoa input mismatch for '+button.accessibleName()+': '+str(type(hit)))
+        try:
+            with patch('native_ui_common.reduced_motion',return_value=False):
+                shelf._show_at(QPoint(area.right()-359,area.top()+4),'manual',QPoint());settle_shelf()
+                number=shelf_window().windowNumber();canvas=shelf.geometry()
+                hit_target(shelf.expand_button)
+                shelf.show_contents();settle_shelf();application.processEvents()
+                if shelf_window().windowNumber()!=number or shelf.geometry()!=canvas:
+                    raise AssertionError('Cocoa expansion replaced or rebased the native shelf')
+                visible=[window for window in AppKit.NSApplication.sharedApplication().windows()
+                         if window.isVisible() and str(window.title())==shelf.windowTitle()]
+                if len(visible)!=1:raise AssertionError('Multiple native shelf windows are visible: '+str(len(visible)))
+                hit_target(shelf.popup.select_all_button);hit_target(shelf.popup.search_edit)
+                QTest.mouseClick(shelf.popup.select_all_button,Qt.LeftButton);application.processEvents()
+                if ref not in shelf.popup.selected:raise AssertionError('Cocoa overview selection button ignored the click')
+                shelf.collapse_contents();settle_shelf();hit_target(shelf.lan_button);hit_target(shelf.expand_button)
+                if shelf_window().windowNumber()!=number:raise AssertionError('Cocoa collapse replaced the shelf window')
+                shelf_interactions=dict(unique_native_shelf=True,stable_native_canvas=True,overview_input=True,compact_input=True)
+        finally:
+            shelf.presentation.stop();shelf.geometry_morph.stop();shelf.hide_immediately()
+            shelf.resolver.close();shelf.image_cache.close();shelf.file_metadata.close();shelf.deleteLater();application.processEvents()
     application.quit()
     result = json.dumps({'ok': True, 'qt_platform': application.platformName(),
                          'cases': results,'startup_timeline':timeline,'notifications':notifications,
-                         'forced_activation_detected':True}, ensure_ascii=False)
+                         'forced_activation_detected':True,'shelf_interactions':shelf_interactions}, ensure_ascii=False)
     if arguments.output is not None:
         arguments.output.write_text(result, encoding='utf-8')
     print(result)

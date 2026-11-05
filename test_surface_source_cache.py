@@ -1,7 +1,8 @@
 """Actual Qt source invalidation while animated transforms reuse QWidget pixels."""
 import unittest
 from unittest.mock import patch
-from PySide6.QtCore import QCoreApplication,QEvent,QObject
+from PySide6.QtCore import QCoreApplication,QEvent,QObject,QPoint,Qt
+from PySide6.QtWidgets import QLabel
 from PySide6.QtGui import QColor
 import test_html_native_workspace as workspace
 
@@ -47,6 +48,23 @@ class SourceCacheTests(unittest.TestCase):
         self.assertNotEqual(effect._source_cache.size(),previous)
         self.shelf.hide();self.shelf.show();self.shelf.show_contents();self.shelf.geometry_morph.complete();self.paint()
         self.assertEqual(effect._source_cache.deviceIndependentSize().toSize(),self.shelf.card.size())
+
+    def test_blocked_native_transaction_still_captures_real_descendant_pixels(self):
+        from surface_morph import SurfaceSnapshot
+        marker=QLabel('Visible content',self.shelf.card);marker.setGeometry(80,160,180,40)
+        marker.setStyleSheet('background:#e12378;color:white');marker.show();workspace.flush()
+        explicitly_blocked=QLabel('blocked',self.shelf.card);explicitly_blocked.setUpdatesEnabled(False)
+        snapshot=SurfaceSnapshot(self.shelf)
+        try:
+            with self.shelf._surface_transaction():
+                self.assertFalse(self.shelf.updatesEnabled());self.assertFalse(marker.updatesEnabled())
+                image=snapshot.capture_live(self.shelf.card,()).toImage()
+                self.assertFalse(self.shelf.updatesEnabled());self.assertFalse(marker.updatesEnabled())
+                self.assertFalse(explicitly_blocked.updatesEnabled());self.assertTrue(explicitly_blocked.testAttribute(Qt.WA_ForceUpdatesDisabled))
+                ratio=image.devicePixelRatio();point=marker.pos()+QPoint(2,2)
+                self.assertEqual(image.pixelColor(round(point.x()*ratio),round(point.y()*ratio)).name(),'#e12378')
+            self.assertTrue(marker.updatesEnabled());self.assertFalse(explicitly_blocked.updatesEnabled())
+        finally:marker.deleteLater();explicitly_blocked.deleteLater();snapshot.deleteLater();workspace.flush()
 
 
 if __name__=='__main__':unittest.main(verbosity=2)

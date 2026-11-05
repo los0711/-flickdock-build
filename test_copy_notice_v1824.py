@@ -2,7 +2,9 @@
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock,patch
+from PySide6.QtCore import QRect,Qt
 from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QLineEdit
 from test_html_native_workspace import APP,flush
 from flickdock import ShelfManager
 from intake_notice import ClipboardNotice
@@ -31,6 +33,47 @@ class CopyNoticeTests(unittest.TestCase):
                 settings.clipboard_success_notice=False;card.supersede()
                 self.assertFalse(card.isVisible());self.assertIsNone(card._pending_result)
                 self.assertFalse(card._result_timer.isActive())
+        finally:card.hide();card.deleteLater();flush()
+
+    def test_close_button_dismisses_with_nonactivating_window_flags(self):
+        editor=QLineEdit();editor.setText('保留正在编辑的内容');editor.show();editor.activateWindow();editor.setFocus();flush()
+        card=ClipboardNotice(SimpleNamespace(settings=SimpleNamespace(theme='dark',clipboard_success_notice=True)))
+        try:
+            card.show_result(True,dict(value=('text',{'text':'沿海公路，开往山海之间'}),delivered=True,route='p2p'));flush()
+            self.assertTrue(card.windowFlags()&Qt.WindowDoesNotAcceptFocus)
+            self.assertTrue(card.testAttribute(Qt.WA_ShowWithoutActivating));self.assertEqual(card.close_button.focusPolicy(),Qt.NoFocus)
+            self.assertIn('P2P 直连',card.status.text());self.assertIn('另一台设备',card.status.text())
+            QTest.mouseClick(card.close_button,Qt.LeftButton);flush()
+            self.assertFalse(card.isVisible());self.assertFalse(card.timer.isActive())
+            self.assertEqual(editor.text(),'保留正在编辑的内容')
+        finally:card.deleteLater();editor.deleteLater();flush()
+
+    def test_narrow_display_and_both_themes_keep_plain_text_and_controls_inside_card(self):
+        screen=SimpleNamespace(availableGeometry=lambda:QRect(100,200,320,400))
+        card=ClipboardNotice(SimpleNamespace(settings=SimpleNamespace(theme='dark',clipboard_success_notice=True)))
+        try:
+            for theme in ('dark','light'):
+                card.manager.settings.theme=theme
+                with patch('intake_notice.QGuiApplication.screenAt',return_value=screen):
+                    card.show_result(True,dict(value=('text',{'text':'<b>原始文本</b>\n'+('长内容'*500)}),backed_up=True));flush()
+                self.assertTrue(screen.availableGeometry().contains(card.geometry()))
+                self.assertEqual(card.preview.textFormat(),Qt.PlainText);self.assertIn('<b>',card.preview.text())
+                self.assertEqual(card.preview.toolTip(),'');self.assertNotIn('\n',card.preview.text())
+                self.assertEqual(card.status.text(),'云端 · 已备份剪贴板')
+                for child in (card.logo,card.message,card.preview,card.status,card.close_button):
+                    self.assertTrue(card.card.rect().contains(child.geometry()),child.objectName())
+                self.assertGreater(card.preview.y(),card.message.geometry().bottom())
+                self.assertGreater(card.status.y(),card.preview.geometry().bottom())
+                self.assertEqual(card.card.layout().contentsMargins().left(),18)
+        finally:card.hide();card.deleteLater();flush()
+
+    def test_failure_does_not_invent_network_cause_or_recipient_delivery(self):
+        card=ClipboardNotice(SimpleNamespace(settings=SimpleNamespace(theme='dark',clipboard_success_notice=True)))
+        try:
+            card.show_result(False,dict(value=('files',['missing-original.bin','other.bin'])));flush()
+            self.assertEqual(card.preview.text(),'missing-original.bin · 共 2 项')
+            self.assertIn('内容保留在本机',card.status.text());self.assertNotIn('另一台设备',card.status.text())
+            card.timer.start(10);QTest.qWait(40);flush();self.assertFalse(card.isVisible())
         finally:card.hide();card.deleteLater();flush()
 
 

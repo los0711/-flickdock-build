@@ -7,6 +7,7 @@ import plistlib
 import tempfile
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from PySide6.QtWidgets import QApplication
 
@@ -15,6 +16,31 @@ from platform_startup import (APPROVED_KEY, RUN_KEY, CallbackBackend, LaunchAgen
                               startup_runtime_allowed)
 
 APP = QApplication.instance() or QApplication([])
+
+
+class SingleInstanceTests(unittest.TestCase):
+    def test_busy_live_instance_never_loses_its_endpoint(self):
+        from instance_guard import InstanceGuard
+        with tempfile.TemporaryDirectory(prefix='flickdock-instance-') as directory:
+            first=InstanceGuard(APP,directory);second=InstanceGuard(APP,directory)
+            try:
+                self.assertTrue(first.acquire())
+                with patch('instance_guard.QLocalSocket.waitForConnected',return_value=False),patch('instance_guard.QLocalServer.removeServer') as remove:
+                    self.assertFalse(second.acquire());remove.assert_not_called()
+                self.assertTrue(first.server.isListening())
+            finally:second.close();first.close()
+
+    def test_second_launch_activates_owner_and_close_releases_ownership(self):
+        from instance_guard import InstanceGuard
+        from PySide6.QtTest import QTest
+        with tempfile.TemporaryDirectory(prefix='flickdock-instance-') as directory:
+            first=InstanceGuard(APP,directory);second=InstanceGuard(APP,str(Path(directory)/'.'));events=[]
+            try:
+                first.activated.connect(lambda:events.append('show'))
+                self.assertTrue(first.acquire());self.assertFalse(second.acquire())
+                QTest.qWait(20);APP.processEvents();self.assertEqual(events,['show'])
+                first.close();self.assertTrue(second.acquire())
+            finally:second.close();first.close()
 
 
 class Registry:

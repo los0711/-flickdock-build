@@ -90,6 +90,15 @@ class SurfaceSnapshot(QWidget):
         enabled=effect.isEnabled() if effect else False
         for button,_ in visibility: button.hide()
         if effect: effect.setEnabled(False)
+        # The native owner stays update-blocked during a surface transaction.
+        # QWidget.render skips descendants with inherited WA_UpdatesDisabled,
+        # even when rendering to a pixmap: that captured an empty endpoint and
+        # left opaque child holes black. Lift only inherited subtree flags for
+        # this offscreen render; preserve explicitly blocked widgets and never
+        # enable the native owner or publish an intermediate layout.
+        blocked=[widget for widget in (card,*card.findChildren(QWidget))
+                 if widget.testAttribute(Qt.WA_UpdatesDisabled) and not widget.testAttribute(Qt.WA_ForceUpdatesDisabled)]
+        for widget in blocked:widget.setAttribute(Qt.WA_UpdatesDisabled,False)
         try:
             card.ensurePolished()
             # QWidget.render prepares dirty descendant layouts in Qt. Walking
@@ -105,6 +114,7 @@ class SurfaceSnapshot(QWidget):
             self.capture_count+=1
             return image
         finally:
+            for widget in blocked:widget.setAttribute(Qt.WA_UpdatesDisabled,True)
             if effect: effect.setEnabled(enabled)
             for button,visible in visibility: button.setVisible(visible)
 

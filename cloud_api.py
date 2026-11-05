@@ -173,7 +173,7 @@ class CloudApi(QObject):
             if destination and callable(getattr(reply,'setReadBufferSize',None)):reply.setReadBufferSize(1024*1024)
             if _deadline is not None:state['budget']=min(state['budget'],max(1,round((_deadline-time.monotonic())*1000)))
             deadline=state['deadline']=time.monotonic()+state['budget']/1000
-            if self.origin in CLOUD_ORIGINS and not _fallback_used:
+            if len(CLOUD_ORIGINS)>1 and self.origin in CLOUD_ORIGINS and not _fallback_used:
                 state['retry']=lambda remaining,done:self.request(method,path,done,data=data,raw=raw,source=source,
                     source_offset=source_offset,source_size=source_size,headers=dict(headers) if headers else None,
                     authenticated=authenticated,destination=destination,expected=expected,timeout_ms=remaining,
@@ -422,7 +422,7 @@ class CloudApi(QObject):
         if error is not None:
             from network_diagnostics import record_event
             record_event(self.diagnostics_dir,'cloud','request',getattr(error,'code','') or 'REQUEST_FAILED',status,details=getattr(error,'details',None))
-        if (not self._closed and error is not None and getattr(error,'code','')=='NETWORK_UNREACHABLE'
+        if (len(CLOUD_ORIGINS)>1 and not self._closed and error is not None and getattr(error,'code','')=='NETWORK_UNREACHABLE'
                 and state['origin'] in CLOUD_ORIGINS):
             # Slots can cancel/close synchronously while the new entrance is
             # announced. Keep the original key cancellable throughout handoff.

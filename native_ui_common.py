@@ -273,6 +273,8 @@ _SVG_BODY = {
     'refresh': '<circle opacity="0.25" cx="12" cy="12" r="9" stroke="currentColor" stroke-width="3"/><path opacity="0.90" fill="currentColor" stroke="none" d="M4 12a8 8 0 018-8V1C5.925 1 1 5.925 1 12h3z"/>',
     'play': '<path d="M4 3l9 5-9 5V3z"/>',
     'check': '<path d="m5 12 4 4L19 6"/>',
+    'circle-check': '<circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/>',
+    'circle-alert': '<circle cx="12" cy="12" r="9"/><path d="M12 7v6M12 17h.01"/>',
     'close': '<path d="m6 6 12 12M18 6 6 18"/>',
     'trash': '<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/>',
     'package': '<path d="m12 3 9 5-9 5-9-5 9-5ZM3 8v10l9 5 9-5V8M12 13v10M7.5 5.5l9 5"/>',

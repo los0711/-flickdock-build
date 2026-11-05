@@ -226,7 +226,7 @@ class PeerSyncTests(unittest.TestCase):
         self.assertFalse(done);self.assertFalse(target.exists());self.assertFalse(list(self.base.glob('*.part')))
 
     def test_clipboard_arrives_over_peer_before_cloud_upload_then_confirms_backup(self):
-        cloud=ClipboardHub();clips=[];syncs=[];uploads=[]
+        cloud=ClipboardHub();clips=[];syncs=[];uploads=[];feedback=[]
         try:
             for index,mesh in enumerate(self.clients):
                 account=mesh.account;token=account.api.token;api=cloud.api(account.device_id);api.token=token
@@ -238,11 +238,14 @@ class PeerSyncTests(unittest.TestCase):
                 events=Events();cloud.events.append(events);clip=Clipboard();clips.append(clip)
                 client=ClipboardSync(account,events,self.base/f'clipboard-{index}',clipboard=clip)
                 client.peer_bridge=ClipboardPeerBridge(client,mesh);syncs.append(client)
+            syncs[0].copy_result.connect(lambda ok,context:feedback.append((ok,context)))
             flush();clips[0].text('设备直连优先\n保留完整文本')
             until(lambda:all(clip.mimeData().text()=='设备直连优先\n保留完整文本' for clip in clips),seconds=10)
             self.assertIsNone(cloud.head)
             self.assertEqual(syncs[1].view['phase'],'peer');self.assertEqual(syncs[2].view['phase'],'peer')
             until(lambda:syncs[0].view['phase']=='peer')
+            self.assertEqual(len(feedback),1);self.assertTrue(feedback[0][0]);self.assertTrue(feedback[0][1]['delivered'])
+            self.assertFalse(feedback[0][1]['backed_up']);self.assertIn(feedback[0][1]['route'],('lan','p2p','relay'))
             self.assertIn(syncs[1].view['route'],('lan','p2p','relay'))
             until(lambda:bool(uploads))
             self.assertEqual(len(uploads),1)
@@ -250,6 +253,7 @@ class PeerSyncTests(unittest.TestCase):
             until(lambda:all(client.view['phase']=='synced' for client in syncs),seconds=10)
             self.assertTrue(syncs[1].view['backed_up']);self.assertIn(syncs[1].view['route'],('lan','p2p','relay'))
             self.assertEqual(sum(method=='PUT' for method,_ in cloud.calls),1)
+            self.assertEqual(len(feedback),1)
         finally:
             for client in syncs:client.close()
             until(lambda:all(not client._jobs for client in syncs))

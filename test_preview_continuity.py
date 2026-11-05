@@ -109,5 +109,18 @@ class PreviewContinuityTests(unittest.TestCase):
         self.assertEqual(shelf.visible_state,'hiding')
         workspace.until(lambda:not shelf.isVisible())
 
+    def test_unplayed_seek_track_remains_visible_in_both_themes(self):
+        from media_preview import MediaPreview
+        import ui_theme
+        view=MediaPreview(motion=False);view.resize(380,260);view.show()
+        try:
+            for theme in ('dark','light'):
+                ui_theme.set_theme(theme);view.apply_theme()
+                slider=view.seek_slider;slider.setRange(0,100);slider.setValue(25);slider.setEnabled(True);workspace.flush()
+                image=slider.grab().toImage();ratio=image.devicePixelRatio()
+                pixel=image.pixelColor(round(slider.width()*.8*ratio),round(slider.height()*.5*ratio))
+                self.assertEqual(pixel.alpha(),255);self.assertEqual(pixel.name(),ui_theme.color('media_track'))
+        finally:view.close();view.deleteLater();ui_theme.set_theme('dark');workspace.flush()
+
 
 if __name__=='__main__':unittest.main(verbosity=2)

@@ -192,7 +192,7 @@ class WanTransferService(LanTransferService):
     def _connection_timed_out(self):
         from network_diagnostics import record_event
         record_event(self.base,'remote','signaling','CONNECT_TIMEOUT')
-        self._connection_error='远程连接超时，正在切换备用入口。'
+        self._connection_error='远程连接超时，正在重试。'
         self._abort_signaling();self._disconnected()
     def reconnect(self):
         if self._closing or not self.enabled or time.monotonic()-self._manual_retry_at<1:return

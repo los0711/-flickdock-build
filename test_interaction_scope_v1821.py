@@ -186,7 +186,7 @@ class UtilityPreferenceTests(unittest.TestCase):
                     self.assertTrue(notice.windowFlags()&Qt.WindowStaysOnTopHint);self.assertTrue(notice.testAttribute(Qt.WA_ShowWithoutActivating))
                 notice.dismiss();self.assertFalse(notice.isVisible())
             finally:
-                until(lambda:not notice.jobs);notice.deleteLater();flush()
+                notice.deleteLater();flush()
 
     def test_rapid_copy_notice_discards_superseded_results(self):
         from intake_notice import ClipboardNotice

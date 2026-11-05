@@ -28,6 +28,16 @@ class SecurityTests(unittest.TestCase):
         self.assertEqual(bytes(derive_auth_key(bytearray(b'frozen-qa-known-password'),b'\x01'*16)).hex(),
             '61a958177a02aa9f93c69ce6fbf35b66442e1bf16c556bd6405b89b86dd4a6fa')
 
+    def test_public_transport_host_keeps_backend_credentials_isolated_from_other_services(self):
+        from cloud_config import DEFAULT_CLOUD_URL,SESSION_REALM
+        service=AccountService(self.temp.name)
+        custom=AccountService(self.temp.name,origin='https://isolated.invalid')
+        try:
+            self.assertEqual(service.api.origin,'https://flickdock.cc.cd')
+            self.assertEqual(service.store.key,SessionStore(self.temp.name,SESSION_REALM,enabled=False).key)
+            self.assertNotEqual(service.store.key,custom.store.key)
+        finally:service.close();custom.close()
+
     def test_untrusted_kdf_parameters_never_schedule_work(self):
         for mutate in [lambda x:x['kdf'].update(N=1048576),lambda x:x['kdf'].update(p=5000),
                        lambda x:x['kdf'].update(dkLen=128),lambda x:x.update(salt='bad'),
