@@ -46,14 +46,19 @@ def main():
         mime=QMimeData();mime.setData(DESCRIPTOR_MIME,raw);mime.setData(CONTENT_MIME,body);return mime
     try:
         payload=os.urandom(512*1024+13);source=root/'原始文件.zip';source.write_bytes(payload)
+        report['phase']='local-file-url'
         mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(source))]);clipboard.setMimeData(mime)
-        until(lambda:client.view.get('value')==('files',[str(source)]))
+        def source_visible():
+            value=client.view.get('value')
+            return value is not None and value[0]=='files' and len(value[1])==1 and Path(value[1][0])==source
+        until(source_visible);original_value=client.view['value'];report['phase']='equivalent-virtual'
         revision=client.view['revision'];clipboard.setMimeData(virtual(source.name,payload))
         until(lambda:client._virtual_value is not None)
-        assert client.view['value']==('files',[str(source)]) and client.view['revision']==revision
+        assert client.view['value']==original_value and client.view['revision']==revision
         assert source.read_bytes()==payload
         report['equivalent_virtual_format_keeps_original_path_and_revision']=True
         first_key=client._virtual_value[0];second=os.urandom(512*1024+7)
+        report['phase']='new-virtual'
         clipboard.setMimeData(virtual('另一份文件.zip',second))
         until(lambda:client._virtual_value is not None and client._virtual_value[0]!=first_key)
         value=client.view['value'];assert value[0]=='files' and len(value[1])==1
