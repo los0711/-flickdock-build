@@ -136,7 +136,8 @@ class SettingsAccountTests(unittest.TestCase):
             self.dialog,QPoint(0,self.dialog.startup_checkbox.height())).y()
         footer_top=self.dialog.save_button.mapTo(self.dialog,QPoint()).y()
         self.assertLess(startup_bottom,footer_top)
-    def test_inline_update_animation_and_real_download_progress(self):
+    @patch('native_ui_common.reduced_motion',return_value=False)
+    def test_inline_update_animation_and_real_download_progress(self,_reduced_motion):
         self.dialog.set_update_state('installing',version='1.8.1');APP.processEvents()
         bar=self.dialog.update_activity
         self.assertTrue(bar.active);self.assertIsNone(bar.fraction);self.assertTrue(bar._timer.isActive())
@@ -148,6 +149,17 @@ class SettingsAccountTests(unittest.TestCase):
         self.assertFalse(bar.active);self.assertFalse(bar.isVisible());self.assertEqual(self.dialog.update_button.text(),'立即更新')
         self.dialog.set_update_state('verifying');self.dialog.hide();APP.processEvents()
         self.assertFalse(bar._timer.isActive())
+
+    def test_update_feedback_is_visible_and_static_when_reduced_motion_is_enabled(self):
+        with patch('native_ui_common.reduced_motion',return_value=True):
+            self.dialog.set_update_state('checking');APP.processEvents()
+            bar=self.dialog.update_activity
+            self.assertTrue(bar.active);self.assertTrue(bar.isVisible())
+            self.assertFalse(bar._timer.isActive())
+            image=bar.grab().toImage();QTest.qWait(30)
+            self.assertEqual(image,bar.grab().toImage())
+            self.dialog.set_update_state('downloading',received=25,total=100)
+            self.assertEqual(bar.fraction,.25);self.assertFalse(bar._timer.isActive())
     def test_account_and_lan_slot_layout_order_and_theme(self):
         class Lan(QWidget):
             def apply_theme(self,theme):self.theme=theme
