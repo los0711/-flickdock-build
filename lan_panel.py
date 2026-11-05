@@ -676,6 +676,7 @@ class LanPanel(QFrame):
         self.left_column.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Expanding)
         left_outer=QVBoxLayout(self.left_column);left_outer.setContentsMargins(0,0,0,0);left_outer.setSpacing(8)
         self.left_content=QWidget(self.left_column)
+        self.left_content.setObjectName('lanLeftContent');self.left_content.setAttribute(Qt.WA_StyledBackground,True)
         left=QVBoxLayout(self.left_content);left.setContentsMargins(0,0,0,0);left.setSpacing(WORKBENCH_GAP_PX)
         left.setSizeConstraint(QLayout.SetMinimumSize)
         columns.addWidget(self.left_column,1)
@@ -802,6 +803,7 @@ class LanPanel(QFrame):
         send.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         left.addWidget(self.send_column,1)
         self.send_scroll.setWidget(self.left_content);left_outer.addWidget(self.send_scroll,1)
+        self.left_content.setAutoFillBackground(False);self.send_scroll.viewport().setAutoFillBackground(False)
         left_outer.addWidget(self.send_button)
 
         self.activity_column = QFrame(self); self.activity_column.setObjectName('lanActivityColumn')
@@ -1174,6 +1176,7 @@ class LanPanel(QFrame):
         """
         style+=f'''
             QFrame#lanPayloadArea,QFrame#lanSendColumn,QFrame#lanWorkbenchCard {{background:{c['card']};border:0;border-radius:14px;}}
+            QWidget#lanLeftContent {{background:transparent;border:0;}}
             QFrame#lanQueueRow,QFrame#lanHistoryRow,QFrame#lanTransferRow {{background:{c['control']};border:0;border-radius:10px;}}
             QFrame#lanSendCode {{background:{c['control']};border:0;border-radius:10px;}}
             QFrame#lanDropZone {{background:{c['control']};border:0;border-radius:9px;}}
