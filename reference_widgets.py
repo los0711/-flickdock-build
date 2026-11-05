@@ -476,7 +476,7 @@ class RenameDialog(QDialog):
         form=QVBoxLayout(self.card);form.setContentsMargins(20,20,20,20);form.setSpacing(16)
         header=QHBoxLayout();header.addWidget(label('重命名文件',14,600,parent=self.card),1)
         close=ToolbarButton('close',self.card,motion=shelf.manager.motion);close.setFixedSize(32,32);close.clicked.connect(self.reject);header.addWidget(close);form.addLayout(header)
-        form.addWidget(label('输入新的文件名，扩展名保持不变。',12,400,'secondary',self.card))
+        form.addWidget(label('修改扩展名可能导致文件不可用',12,400,'secondary',self.card))
         edit=shelf.rename_edit;edit.setParent(self.card);edit.setFixedHeight(34)
         css(edit,"QLineEdit{background:#242426;color:#F5F5F7;border:1px solid #3F3F46;border-radius:8px;padding:7px 10px;font:12px 'HarmonyOS Sans SC';} QLineEdit:focus{border-color:#0A84FF;}",
             "QLineEdit{background:#FFFFFF;color:#1D1D1F;border:1px solid #D4D4D8;border-radius:8px;padding:7px 10px;font:12px 'HarmonyOS Sans SC';} QLineEdit:focus{border-color:#0A84FF;}")
@@ -485,11 +485,12 @@ class RenameDialog(QDialog):
         self.confirm=button('确定',variant='primary',parent=self.card);self.confirm.clicked.connect(self._commit)
         actions.addWidget(cancel);actions.addWidget(self.confirm);form.addLayout(actions);layout.addWidget(self.card)
         edit.editingFinished.disconnect(shelf.commit_rename)
-        edit.returnPressed.connect(self.accept)
+        edit.returnPressed.disconnect(shelf.commit_rename)
+        edit.returnPressed.connect(self._commit)
         self.rejected.connect(edit.hide)
 
     def _commit(self):
-        self.shelf.commit_rename();self.accept()
+        if self.shelf.commit_rename():self.accept()
 
     def paintEvent(self,event):
         from surface_morph import paint_surface_shadow

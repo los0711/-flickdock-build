@@ -1,10 +1,8 @@
 FlickDock video extraction and download libraries
 
-FFmpeg Windows runtime: BtbN LGPL build, FFmpeg 9.0.2 commit 7adfbe40dc.
-Binary and build source: https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-10-31-12-59
-FFmpeg source: https://github.com/FFmpeg/FFmpeg/tree/7adfbe40dc
-FFmpeg is a separate subprocess. LGPL-3.0.txt and GPL-3.0.txt are included.
-macOS build: imageio-ffmpeg 0.6.0 platform wheel, separate GPL FFmpeg process.
+Download/merge runtime on Windows and macOS: FFmpeg 7.1 from imageio-ffmpeg 0.6.0 platform wheels.
+Fetched on first download and verified against pinned archive and executable SHA256 values.
+The executable is a separate GPL FFmpeg process. GPL-3.0.txt is included.
 Binary source and licensing: https://github.com/imageio/imageio-ffmpeg
 
 

@@ -16,11 +16,11 @@ from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest, QSslSocket,QNetworkProxyFactory,QNetworkProxy
 
 
-# Stable public release URL; Gitee redirects raw files to its public CDN.
+# The site serves publisher-signed metadata; GitHub hosts new release assets.
 DEFAULT_MANIFEST_URL = 'https://flickdock-site.roger000416.workers.dev/updates/latest.json'
-MAC_MANIFEST_BASE = 'https://gitee.com/rooogerluo/flick-dock-releases/raw/master/updates/'
+MAC_MANIFEST_BASE = 'https://raw.githubusercontent.com/los0711/-flickdock-build/main/updates/'
 WORKER_MANIFEST_BASE='https://flickdock-site.roger000416.workers.dev/updates/'
-DEFAULT_ALLOWED_HOSTS = frozenset({'gitee.com', 'raw.giteeusercontent.com', 'foruda.gitee.com','flickdock-site.roger000416.workers.dev'})
+DEFAULT_ALLOWED_HOSTS = frozenset({'github.com','raw.githubusercontent.com','release-assets.githubusercontent.com','objects.githubusercontent.com','gitee.com','raw.giteeusercontent.com','foruda.gitee.com','flickdock-site.roger000416.workers.dev'})
 MAX_MANIFEST_BYTES = 128 * 1024
 MAX_INSTALLER_BYTES = 1024 * 1024 * 1024
 MAX_REDIRECTS = 5

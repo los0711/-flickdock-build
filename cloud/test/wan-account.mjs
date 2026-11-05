@@ -47,16 +47,23 @@ try{
   assert.match((await sc.wait(row=>row.type==='error'&&row.id===unrelated.id)).message,/首次传输/);
   const pipe=randomBytes(16).toString('hex'),pipePath='/v1/wan/cloud/'+pipe;
   async function transport(method,path,account,body,expected=200,extra={}){
-    const response=await fetch(origin+path,{method,headers:{Authorization:'Bearer '+account.token,'Content-Type':body instanceof Uint8Array?'application/octet-stream':'application/json',...extra},body:body===undefined?undefined:body instanceof Uint8Array?body:JSON.stringify(body)});
+    const response=await fetch(origin+path,{method,headers:{Authorization:'Bearer '+account.token,'X-FlickDock-Cloud-Protocol':'notify-v1','Content-Type':body instanceof Uint8Array?'application/octet-stream':'application/json',...extra},body:body===undefined?undefined:body instanceof Uint8Array?body:JSON.stringify(body)});
+    assert.equal(response.status,expected);
+    // A size limit may reject before reading an oversized request body.
+    if(expected===413){await response.body.cancel();return {};}
     let result;
     try{result=await response.json();}catch(error){throw new Error(method+' '+path+' response '+response.status,{cause:error});}
     assert.equal(response.status,expected,JSON.stringify(result));return result;
   }
   await transport('POST',pipePath,a,{peer:sb.id},201,{'X-Wan-Credential':sa.credential});
+  const retired=await fetch(origin+pipePath+'/0/0',{headers:{Authorization:'Bearer '+b.token}});assert.equal(retired.status,426);
+  const idleStarted=Date.now();const idle=await transport('GET',pipePath+'/0/0',b);assert.equal(idle.ready,false);assert(Date.now()-idleStarted<2000);
   await transport('GET',pipePath+'/0/0',c,undefined,410);
   const original=randomBytes(1024*1024),checksum=hash(original);
   await transport('PUT',pipePath+'/0/0',b,original,403,{'X-Content-SHA256':checksum});
   await transport('PUT',pipePath+'/0/0',a,original,200,{'X-Content-SHA256':checksum});
+  await sb.wait(row=>row.type==='cloud_data'&&row.id===pipe);
+  assert(!sc.messages.some(row=>row.type==='cloud_data'&&row.id===pipe));
   await transport('PUT',pipePath+'/0/0',a,original,200,{'X-Content-SHA256':checksum});
   await transport('GET',pipePath+'/0/0',a,undefined,403);
   const block=await transport('GET',pipePath+'/0/0',b);assert(block.ready);assert.deepEqual(Buffer.from(block.body,'base64'),original);
@@ -73,7 +80,7 @@ try{
   for(const path of pipes)await transport('DELETE',path,a);
   console.log('PASS cloud transport original R2 bytes, owner/account/direction isolation, idempotent writes, read acknowledgements and cleanup');
   sb.send({type:'accept',id:request.id});const connected=await sa.wait(row=>row.type==='begin'&&row.id===request.id);
-  const route={kind:'start',id:randomBytes(16).toString('hex')};
+  const route={kind:'start',id:randomBytes(16).toString('hex'),directOnly:true};
   sa.send({type:'path_signal',id:request.id,generation:connected.generation,value:route});
   assert.deepEqual((await sb.wait(row=>row.type==='path_signal'&&row.id===request.id)).value,route);
   sa.send({type:'path_signal',id:request.id,generation:connected.generation,value:{kind:'file',id:route.id,body:'not allowed'}});

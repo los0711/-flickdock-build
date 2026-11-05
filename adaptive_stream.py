@@ -22,8 +22,8 @@ HEADER=struct.Struct('!BQI')
 DATA,ACK,PROBE,PROBE_ACK,SIGNAL,PING,PONG=range(7)
 MAX_RECORD_BYTES=64*1024
 BLOCK_BYTES=MAX_RECORD_BYTES-HEADER.size
-WINDOW_BYTES=4*1024*1024
-RECEIVE_BYTES=8*1024*1024
+WINDOW_BYTES=16*1024*1024
+RECEIVE_BYTES=32*1024*1024
 PROBE_BYTES=256*1024
 PROBE_INTERVAL_SECONDS=30.
 PROBE_TIMEOUT_SECONDS=12.
@@ -34,6 +34,7 @@ ACTIVE_SECONDS=5.
 BULK_BYTES=128*1024
 LATENCY_MESSAGE_BYTES=16*1024
 PING_INTERVAL_SECONDS=30.
+CLOUD_IDLE_PING_SECONDS=300.
 LOG=logging.getLogger(__name__)
 
 
@@ -70,7 +71,7 @@ class AdaptiveStream:
         self._payload=0;self._acked_payload=0;self._offset=0;self._payload_origin=0
         self._timeout=1.;self._closed=False;self._probe=None;self._probe_number=0
         self._last_send=0.;self._empty_since=0.;self._secondary=None;self._secondary_id=''
-        self._secondary_started=0.;self._secondary_retry=0.;self._prefer_tls=prefer_tls
+        self._secondary_started=0.;self._secondary_retry={'p2p':time.perf_counter()+1.,'relay':0.};self._secondary_route='';self._prefer_tls=prefer_tls
         self._reported='';self._selected_key=None;self._next_probe=0.;self._probe_data=os.urandom(PROBE_BYTES)
         if nearby is not raw:
             raw.release_owned_socket(nearby.stream)
@@ -292,14 +293,18 @@ class AdaptiveStream:
             self.policy.observe(path.key,PROBE_BYTES,time.perf_counter()-probe[2]);self._probe=None
             self.policy.choose(self._live())
 
-    def _launch_secondary(self,identifier):
+    def _launch_secondary(self,identifier,*,direct_only):
         if not self.secondary:return
-        previous=self._secondary
-        if previous is not None:
-            path=self._paths.get('secondary')
-            if path is not None and not path.dead:return
-            previous.shutdown()
-        self._secondary_id=identifier;self._secondary_started=time.perf_counter()
+        with self._condition:
+            if self._secondary is not None:return
+            self._secondary_id=identifier;self._secondary_started=time.perf_counter()
+            target='p2p' if direct_only else 'relay';self._secondary_route=target
+        def failed():
+            with self._condition:
+                if identifier!=self._secondary_id:return
+                candidate=self._secondary;self._secondary=None;self._secondary_id=''
+                self._secondary_retry[target]=time.perf_counter()+PATH_RETRY_SECONDS
+            if candidate is not None:candidate.shutdown()
         def event(value):
             if not self._alive() or identifier!=self._secondary_id:return
             kind=value.get('type')
@@ -310,26 +315,38 @@ class AdaptiveStream:
                     candidate=self._secondary
                     def connected():
                         from nearby_transport import try_nearby
+                        if direct_only and candidate.route=='relay':failed();return
                         with self._condition:lan=self._paths.get('lan')
                         nearby=candidate if candidate.route=='relay' or lan is not None and not lan.dead else try_nearby(candidate,'send' if self.initiator else 'receive',self.cancel)
-                        if not self._alive() or identifier!=self._secondary_id:candidate.shutdown();return
+                        if not self._alive() or identifier!=self._secondary_id:
+                            if nearby is not candidate:nearby.stream.close()
+                            candidate.shutdown();return
                         if nearby is not candidate:
                             candidate.release_owned_socket(nearby.stream)
                             with self._condition:old=self._paths.pop('lan',None)
                             if old is not None:old.stream.close()
                             self._add('lan','lan',nearby.stream)
-                        with self._condition:self._paths.pop('secondary',None)
-                        self._add('secondary','relay' if candidate.route=='relay' else 'p2p',candidate)
+                        route='relay' if candidate.route=='relay' else 'p2p';key='secondary-'+route
+                        with self._condition:
+                            existing=self._paths.get(key)
+                            if existing is not None and not existing.dead:candidate.shutdown()
+                            else:
+                                self._paths.pop(key,None);self._add(key,route,candidate)
+                            self._secondary=None;self._secondary_id=''
+                            self._secondary_retry[target]=time.perf_counter()+PATH_RETRY_SECONDS
                     self._thread(connected,'candidate-ready')
                 elif kind in ('closed','error') or kind=='state' and value.get('state')=='failed':
-                    self._secondary_retry=time.perf_counter()+PATH_RETRY_SECONDS
+                    failed()
             except (OSError,ValueError):LOG.debug('Alternative route signaling ended',exc_info=True)
         configured=self.secondary(event,dict(type='init',initiator=self.initiator,preferTls=self._prefer_tls,
-            forceRelay=self.raw.route!='relay'))
+            forceRelay=not direct_only,directOnly=direct_only))
         if configured is None:
-            self._secondary=None;self._secondary_retry=time.perf_counter()+PATH_RETRY_SECONDS;return
-        self._secondary,configuration=configured
-        self._secondary.control(configuration)
+            failed();return
+        candidate,configuration=configured
+        with self._condition:
+            if not self._alive() or identifier!=self._secondary_id:candidate.shutdown();return
+            self._secondary=candidate
+        candidate.control(configuration)
 
     def _secondary_signal(self,value):
         if not isinstance(value,dict) or not re.fullmatch('[a-f0-9]{32}',str(value.get('id',''))):raise ValueError('Invalid alternative route identity')
@@ -343,7 +360,8 @@ class AdaptiveStream:
             return
         if value.get('kind')=='start':
             if self.initiator:raise ValueError('Unexpected alternative route initiator')
-            self._launch_secondary(value['id'])
+            if not isinstance(value.get('directOnly'),bool):raise ValueError('Invalid alternative route mode')
+            self._launch_secondary(value['id'],direct_only=value['directOnly'])
         elif value.get('kind')=='candidate' and value['id']==self._secondary_id and self._secondary is not None:
             payload=value.get('payload')
             if not isinstance(payload,dict) or payload.get('type') not in ('description','candidate'):raise ValueError('Invalid alternative route signal')
@@ -367,8 +385,8 @@ class AdaptiveStream:
             now=time.perf_counter()
             try:
                 with self._condition:
-                    for key in ('primary','secondary'):
-                        path=self._paths.get(key)
+                    for key,path in self._paths.items():
+                        if key!='primary' and not key.startswith('secondary-'):continue
                         if path is not None and not path.dead and path.stream.route in ('direct','relay'):
                             path.route='relay' if path.stream.route=='relay' else 'p2p'
                     live=self._live();self.policy.choose(live)
@@ -396,16 +414,22 @@ class AdaptiveStream:
                 if (self.initiator and self.cloud and active and not self._cloud_starting and now>=self._cloud_retry
                         and (cloud_path is None or cloud_path.dead)):
                     self._cloud_starting=True;self._thread(self._open_cloud,'cloud-open')
-                if self.initiator and self.secondary and active and now>=self._secondary_retry:
-                    alternative=self._paths.get('secondary')
-                    if self._secondary is None or alternative is not None and alternative.dead:
-                        identifier=uuid4().hex;self._signal(dict(kind='start',id=identifier));self._launch_secondary(identifier)
-                    elif alternative is None and now-self._secondary_started>PATH_CONNECT_SECONDS:
-                        self._secondary.shutdown();self._secondary=None;self._prefer_tls=not self._prefer_tls
-                        self._secondary_retry=now+1.
+                if self.initiator and self.secondary:
+                    if self._secondary is not None and now-self._secondary_started>PATH_CONNECT_SECONDS:
+                        with self._condition:
+                            candidate=self._secondary;self._secondary=None;self._secondary_id=''
+                            self._secondary_retry[self._secondary_route]=now+PATH_RETRY_SECONDS
+                        candidate.shutdown()
+                    with self._condition:
+                        routes=set(self._live().values())
+                        missing=next((route for route in ('p2p','relay') if route not in routes
+                            and (route=='p2p' or active) and now>=self._secondary_retry[route]),None)
+                    if self._secondary is None and missing:
+                        identifier=uuid4().hex;direct=missing=='p2p'
+                        self._signal(dict(kind='start',id=identifier,directOnly=direct));self._launch_secondary(identifier,direct_only=direct)
                 with self._condition:
                     if self._probe and now-self._probe[2]>PROBE_TIMEOUT_SECONDS:self._probe=None
-                    pings=[p for p in self._paths.values() if not p.dead and now-p.pinged>PING_INTERVAL_SECONDS]
+                    pings=[p for p in self._paths.values() if not p.dead and now-p.pinged>(CLOUD_IDLE_PING_SECONDS if p.route=='cloud' and not active else PING_INTERVAL_SECONDS)]
                     for candidate in pings:candidate.ping_number+=1;candidate.pinged=now
                     choices=sorted((p for p in self._paths.values() if not p.dead and now-p.probed>=(2. if p.probes<2 else PROBE_INTERVAL_SECONDS)),
                         key=lambda p:(p.key!=self.policy.current,p.probed))

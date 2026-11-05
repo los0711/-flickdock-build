@@ -145,5 +145,16 @@ class AdaptiveTests(unittest.TestCase):
         self.assertEqual(self.streams[0].recv(10),b'')
         with self.assertRaises(ConnectionError):self.streams[0].sendall(b'private')
 
+    def test_idle_relay_still_attempts_direct_only_and_keeps_working_path_on_failure(self):
+        self.raw[0].route=self.raw[1].route='relay'
+        attempts=[];signals=[]
+        def alternative(callback,configuration):
+            attempts.append(configuration);return None
+        self.streams[0].secondary=alternative;self.streams[0].signal_out=lambda value:signals.append(value) or True
+        until(lambda:bool(attempts),3)
+        self.assertTrue(attempts[0]['directOnly']);self.assertFalse(attempts[0]['forceRelay'])
+        self.assertTrue(signals[0]['directOnly']);self.assertFalse(self.streams[0]._paths['primary'].dead)
+        self.transfer(b'working relay survives unavailable direct path')
+
 
 if __name__=='__main__':unittest.main()

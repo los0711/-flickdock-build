@@ -339,6 +339,9 @@ class WanTransferService(LanTransferService):
             if kind=='error' and value.get('requestType') in ('custom_set','custom_cancel','custom_status'):
                 if identifier and identifier!=self._custom_operation:return
                 self.custom_code_changed.emit(dict(self.custom_identity(),error=str(value.get('message') or '接收码设置失败。')));return
+            if kind=='cloud_data':
+                if isinstance(identifier,str) and re.fullmatch('[a-f0-9]{32}',identifier):self.cloud_routes.notify(identifier)
+                return
             if kind=='account_state':
                 if value.get('nonce')==self._account_nonce:
                     self._account_ack=True;self._bind_account()
@@ -651,9 +654,13 @@ class WanTransferService(LanTransferService):
                 if primary:state['adaptive'].attach_prepared(raw,nearby)
                 return state['adaptive']
             def alternative(event,configuration):
+                if configuration['directOnly'] and self._qa_force_relay:return None
                 if self._qa_force_relay:configuration['forceRelay']=True
                 servers=list(self._sync_ice or state.get('ice_servers',[]))
                 if 'stun:stun.cloudflare.com:3478' not in servers:servers.insert(0,'stun:stun.cloudflare.com:3478')
+                if configuration['directOnly']:
+                    servers=[row for row in servers if isinstance(row,str) and row.startswith(('stun:','stuns:'))]
+                    configuration['preferTls']=False
                 if configuration['forceRelay'] and not any(isinstance(row,dict) for row in servers):return None
                 proxies={str(row['port']):_turn_http_proxy(row['port']) for row in servers if isinstance(row,dict) and row['relayType']=='TurnTls'}
                 configuration.update(iceServers=servers,proxies=proxies)

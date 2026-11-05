@@ -267,9 +267,8 @@ class SurfaceMorph(QObject):
         self.prepare = prepare
         self.settle = settle
         self.animation = QVariantAnimation(self)
-        # Native bounds and crossfade progress share one monotonic trajectory.
-        # The reveal Spring supplies the elastic feedback without a second
-        # resize reversal after the target image has already become opaque.
+        # One shared clock drives geometry and content. Only an explicit
+        # overview open opts into a small, preallocated elastic overshoot.
         curve=QEasingCurve(QEasingCurve.Type.OutCubic)
         self.animation.setEasingCurve(curve)
         self.animation.valueChanged.connect(self._frame)
@@ -292,7 +291,7 @@ class SurfaceMorph(QObject):
             self.settle(QRect(self.current))
         self.update(QRect(self.current))
 
-    def animate(self, rect, finished=None, duration=230):
+    def animate(self, rect, finished=None, duration=230, *, elastic=False):
         self.stop(settle=False)
         self._from = QRect(self.current)
         self._to = QRect(rect)
@@ -306,6 +305,11 @@ class SurfaceMorph(QObject):
             return
         if self.prepare:
             self.prepare(QRect(self._from), QRect(self._to))
+        curve=QEasingCurve(QEasingCurve.OutBack if elastic else QEasingCurve.OutCubic)
+        if elastic:
+            from ui_transitions import OVERVIEW_OPEN_OVERSHOOT
+            curve.setOvershoot(OVERVIEW_OPEN_OVERSHOOT)
+        self.animation.setEasingCurve(curve)
         self.animation.setDuration(duration)
         self.animation.setStartValue(0.0)
         self.animation.setEndValue(1.0)

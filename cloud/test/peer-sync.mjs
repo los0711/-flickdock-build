@@ -12,7 +12,7 @@ try {
   for(let i=0;i<150&&!origin;i++){if(server.exitCode!==null)throw Error(logs);await pause(250)}
   assert(origin,logs);
   async function api(method,path,token,data,status=200) {
-    const response=await fetch(origin+path,{method,headers:{'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{})},body:data===undefined?undefined:JSON.stringify(data)});
+    const response=await fetch(origin+path,{method,headers:{'Content-Type':'application/json',...(path.startsWith('/v1/wan/cloud/')?{'X-FlickDock-Cloud-Protocol':'notify-v1'}:{}),...(token?{Authorization:'Bearer '+token}:{})},body:data===undefined?undefined:JSON.stringify(data)});
     const value=await response.json();assert.equal(response.status,status,JSON.stringify(value));return value;
   }
   async function sign(username,login=false) {

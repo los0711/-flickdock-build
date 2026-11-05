@@ -122,17 +122,17 @@ class LanDialogTests(unittest.TestCase):
         value=card.findChild(QPushButton,'lanOfferCodeValue');self.assertEqual(value.text(),'ABCD2345')
         value.click();self.assertEqual(APP.clipboard().text(),'ABCD2345')
 
-    def test_remote_eta_and_turn_usage_survive_terminal_history(self):
+    def test_remote_eta_and_route_survive_terminal_history_without_usage_counter(self):
         panel=self.dialog.panel;panel._wan=True
         event=dict(id='turn-qa',direction='send',peer='Mac',state='transferring',total=20_000_000,received=2_000_000,route='relay',relay_bytes=2_050_000)
         with patch('lan_panel.time.monotonic',return_value=10):panel._progress(event)
         event.update(received=4_000_000,relay_bytes=4_100_000)
         with patch('lan_panel.time.monotonic',return_value=11):panel._progress(event)
         detail=panel._rows['turn-qa']['detail'].text()
-        self.assertIn('剩余约 8 秒',detail);self.assertIn('TURN:4.1MB',detail)
+        self.assertIn('剩余约 8 秒',detail);self.assertIn('TURN 中继',detail);self.assertNotIn('TURN:',detail)
         event.update(state='cancelled',relay_bytes=4_200_000);panel._progress(event)
         self.assertEqual(panel._history[0]['relay_bytes'],4_200_000)
-        self.assertIn('TURN:4.2MB',panel.history_rows[0].title.accessibleName())
+        self.assertIn('TURN 中继',panel.history_rows[0].title.accessibleName());self.assertNotIn('TURN:',panel.history_rows[0].title.accessibleName())
 
     def test_destination_and_recent_transfer_survive_window_reopen(self):
         destination=self.root/'chosen';destination.mkdir()
@@ -227,12 +227,11 @@ class LanDialogTests(unittest.TestCase):
                          {panel.send_scroll,panel.activity_scroll,panel.queue_scroll,panel.history_scroll})
         self.assertIs(panel.queue_scroll.widget(),panel.queue_body)
         self.assertIs(panel.history_scroll.widget(),panel.history_body)
-        self.assertIs(panel.send_scroll.widget(),panel.send_column)
+        self.assertIs(panel.send_scroll.widget(),panel.left_content)
         self.assertEqual(panel.send_scroll.verticalScrollBar().maximum(),0)
         self.assertIs(panel.activity_scroll.widget(),panel.activity_column)
         self.assertTrue(panel.drop_zone.isVisible())
-        self.assertFalse(any(button.text() in ('添加文件','添加文件夹')
-                             for button in panel.findChildren(QPushButton)))
+        self.assertTrue(panel.add_files.isVisible())
         self.assertEqual(panel.drop_zone.focusPolicy(),Qt.FocusPolicy.StrongFocus)
         self.assertTrue(panel.receive_path.isVisible())
         self.assertTrue(panel.history_label.isVisible())

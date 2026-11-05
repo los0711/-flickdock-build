@@ -17,7 +17,7 @@ The application loads its bundled HarmonyOS Sans SC family; Apple font files are
 
 Cloud account credentials use keyring 25.7.0 with the native Windows Credential Manager or macOS Keychain backend. keyring, jaraco dependencies, more-itertools and pywin32-ctypes retain their original licenses in licenses/Cloud-Client-LICENSES.txt. CPython's native scrypt implementation requires OpenSSL libcrypto under the Apache License 2.0; see licenses/OpenSSL-LICENSE.txt. No credential service secrets are distributed with the client.
 
-Media decoding uses Windows-installed codecs through Windows Media Foundation. The distribution does not include the Qt FFmpeg media plugin or FFmpeg codec DLLs.
+Media previews use the Qt FFmpeg plugin on Windows and Qt's Darwin backend on macOS. Qt multimedia libraries remain separate and replaceable.
 
 Wide-area file transfer uses the unmodified Node.js 24.12.0 runtime, node-datachannel 0.33.6 and libdatachannel 0.24.6. Node's complete notices are bundled at `p2p/runtime/Node-LICENSE.txt`. The native addon and libdatachannel are provided under MPL 2.0; corresponding source is available at https://github.com/murat-dogan/node-datachannel/tree/v0.33.6 and https://github.com/paullouisageneau/libdatachannel/tree/v0.24.6. Native transport dependencies and their license texts are retained in `licenses/WebRTC-LICENSES.txt`. These libraries are separate replaceable runtime files; FlickDock does not modify their source.
 
@@ -28,4 +28,4 @@ Publisher signature verification uses cryptography 50.0.2 (Apache-2.0 / BSD-3-Cl
 
 视频解析使用 yt-dlp 2026.10.26（Unlicense）与 yt-dlp-ejs 0.8.0，复用应用现有 Node 24.12.0 运行时，不远程执行附加组件。推荐依赖的许可证汇总于 licenses/Video-LICENSES.txt。
 
-Windows 下载与音视频合并工具为独立目录下的 FFmpeg 9.0.2（7adfbe40dc）BtbN LGPL 构建，来源：https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-10-31-12-59 。原始源码：https://github.com/FFmpeg/FFmpeg/tree/7adfbe40dc ，构建配置由该上游项目公开。构建时校验固定归档 SHA256；原版 LGPL-3.0 和 GPL-3.0 许可一并提供。该独立进程不替换 Qt 播放器的 FFmpeg 动态库。macOS 视频工具由 imageio-ffmpeg 0.6.0 的平台轮子提供，独立 FFmpeg 可执行文件遵循其 GPL 许可；BSD 包装器源码及二进制构建来源：https://github.com/imageio/imageio-ffmpeg 。
+下载与音视频合并使用 imageio-ffmpeg 0.6.0 平台轮子提供的独立 FFmpeg 7.1 可执行文件（GPL）。首次下载时按固定归档和可执行文件 SHA256 校验后存入应用数据目录，不随安装包重复分发，也不替换 Qt 播放器的动态库。二进制、对应源码与构建说明：https://github.com/imageio/imageio-ffmpeg 。原版 GPL-3.0 许可保留于 licenses/Video-LICENSES.txt。

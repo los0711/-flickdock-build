@@ -27,6 +27,7 @@ class AccountProfileLayoutTests(unittest.TestCase):
         self.service.account=dict(id='fixture',username='Roger',login_alias='id:legacy-account-identity')
         self.panel=AccountPanel(self.service)
         self.dialog.set_account_panel(self.panel)
+        self.dialog.select_category('账号与设备')
         self.panel.set_sync_status('可同步内容已同步；1 项暂留本机，请检查文件大小或原文件所在位置。')
         self.dialog.show()
 

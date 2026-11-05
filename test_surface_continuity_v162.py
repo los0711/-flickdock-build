@@ -65,8 +65,10 @@ with tempfile.TemporaryDirectory(prefix='flickdock-continuity-') as tmp:
     for ms in range(231):
         morph._frame(morph.animation.easingCurve().valueForProgress(ms/230))
         widths.append(morph.current.width());heights.append(morph.current.height())
-    assert widths==sorted(widths) and heights==sorted(heights)
-    assert min(widths)==compact_width and max(widths)==expanded_width
+    assert widths[0]==compact_width and widths[-1]==expanded_width
+    assert min(widths)==compact_width and expanded_width<=max(widths)<=expanded_width+max(16,(expanded_width-compact_width)*.02)
+    assert heights[-1]<=max(heights)<=heights[-1]+max(12,(heights[-1]-heights[0])*.02)
+    expand_overshoot=max(widths)-expanded_width
     morph.complete();shelf.presentation.jump(dict(sx=1,sy=1,dx=0,dy=0,alpha=1))
     shelf.collapse_contents();morph.animation.pause()
     widths=[]
@@ -77,7 +79,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-continuity-') as tmp:
     assert not snapshot.active and shelf.pin_button._presentation_scale==(1,1)
     result={'platform':app.platformName(),'dpr':shelf.devicePixelRatioF(),
             'first_frame_edge_delta_dip':edge_delta,'shadow_alpha_max_delta':shadow_delta,
-            'expand_overshoot_px':0,'collapse_undershoot_px':0}
+            'expand_overshoot_px':expand_overshoot,'collapse_undershoot_px':0}
     Path(__file__).with_name('surface-continuity-v162.json').write_text(json.dumps(result,indent=2),encoding='utf8')
     print('SURFACE_CONTINUITY_V162_OK',json.dumps(result))
     shelf.image_cache.close();shelf.resolver.close();shelf.hide()

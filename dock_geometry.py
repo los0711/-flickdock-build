@@ -1,5 +1,6 @@
 """Screen-edge trigger and reveal geometry in device-independent pixels."""
 from PySide6.QtCore import QRect, QSize
+from PySide6.QtGui import QRegion
 
 
 def trigger_rect(area, edge='right', position=8, length=76, thickness=8):
@@ -33,10 +34,19 @@ def reveal_rect(area, trigger, size, edge='right'):
     return QRect(x, y, width, height)
 
 
-def dock_hover_rect(surface, trigger, edge):
+def dock_hover_region(surface, trigger, edge):
     surface, trigger = QRect(surface), QRect(trigger)
-    if edge == 'left': surface.setLeft(min(surface.left(), trigger.left()))
-    elif edge == 'right': surface.setRight(max(surface.right(), trigger.right()))
-    elif edge == 'top': surface.setTop(min(surface.top(), trigger.top()))
-    else: surface.setBottom(max(surface.bottom(), trigger.bottom()))
-    return surface.united(trigger)
+    region=QRegion(surface)|QRegion(trigger)
+    # The bridge occupies only the overlapping span. A bounding rectangle
+    # also includes invisible corners above/below a long trigger bar.
+    if edge in ('left','right'):
+        top,bottom=max(surface.top(),trigger.top()),min(surface.bottom(),trigger.bottom())
+        if bottom>=top:
+            left,right=min(surface.left(),trigger.left()),max(surface.right(),trigger.right())
+            region|=QRegion(QRect(left,top,right-left+1,bottom-top+1))
+    else:
+        left,right=max(surface.left(),trigger.left()),min(surface.right(),trigger.right())
+        if right>=left:
+            top,bottom=min(surface.top(),trigger.top()),max(surface.bottom(),trigger.bottom())
+            region|=QRegion(QRect(left,top,right-left+1,bottom-top+1))
+    return region

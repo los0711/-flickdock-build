@@ -20,6 +20,8 @@ from cloud_api import CloudApi,CloudError
 CHUNK_BYTES=1024*1024
 QUEUE_BYTES=4*CHUNK_BYTES
 CALL_TIMEOUT_SECONDS=18.
+RECOVERY_POLL_SECONDS=300.
+CLOUD_PROTOCOL='notify-v1'
 LOG=logging.getLogger(__name__)
 
 
@@ -41,7 +43,7 @@ class CloudPipeApi(QObject):
     def __init__(self,account,credential,parent=None,*,network_api=None):
         super().__init__(parent);self.account=account;self.credential=credential;self.closed=False
         self.api=network_api
-        self._calls={};self._lock=threading.Lock()
+        self._calls={};self._watchers={};self._lock=threading.Lock()
         self.requested.connect(self._request,Qt.ConnectionType.QueuedConnection)
         self.cancelled.connect(self._cancel,Qt.ConnectionType.QueuedConnection)
 
@@ -69,7 +71,22 @@ class CloudPipeApi(QObject):
             self.api=CloudApi(self.account.api.origin,self,allow_test_http=self.account.api._allow_test_http)
         self.api.token=job.identity[2]
         def done(result,error):self._complete(job,result,error)
-        job.key=self.api.request(job.method,job.path,done,timeout_ms=15000,**job.options)
+        options=dict(job.options);headers=dict(options.pop('headers',{}));headers['X-FlickDock-Cloud-Protocol']=CLOUD_PROTOCOL
+        job.key=self.api.request(job.method,job.path,done,timeout_ms=15000,headers=headers,**options)
+
+    def watch(self,identifier,event):
+        with self._lock:self._watchers.setdefault(identifier,set()).add(event)
+
+    def unwatch(self,identifier,event):
+        with self._lock:
+            events=self._watchers.get(identifier)
+            if events is not None:
+                events.discard(event)
+                if not events:self._watchers.pop(identifier)
+
+    def notify(self,identifier=None):
+        with self._lock:events=list(self._watchers.get(identifier,())) if identifier else [event for group in self._watchers.values() for event in group]
+        for event in events:event.set()
 
     def _complete(self,job,result,error):
         with self._lock:active=self._calls.pop(id(job),None)
@@ -97,6 +114,7 @@ class CloudPipeApi(QObject):
 
     def close(self):
         self.closed=True
+        self.notify()
         with self._lock:jobs=list(self._calls.values())
         for job in jobs:self._cancel(job)
         if self.api is not None:self.api.close()
@@ -110,6 +128,7 @@ class CloudPipeStream:
         self._cipher=AESGCM(self.key);self.side=0 if initiator else 1;self.closed=False;self.error=''
         self._cancel=threading.Event();self._condition=threading.Condition();self._send_lock=threading.Lock()
         self._out=deque();self._out_bytes=0;self._input=deque();self._input_bytes=0;self._timeout=1.
+        self._notified=threading.Event();self.api.watch(self.identifier,self._notified)
         for work,name in ((self._writer,'write'),(self._reader,'read')):
             threading.Thread(target=work,daemon=True,name='FlickDock-cloud-route-'+name).start()
 
@@ -150,7 +169,7 @@ class CloudPipeStream:
             except CloudError as error:
                 if error.code=='CLOUD_WINDOW' and time.perf_counter()<deadline:self._cancel.wait(.1);continue
                 attempts+=1
-                if error.status in (400,401,403,409,410,413,429) or attempts>=3:raise
+                if error.status in (400,401,403,409,410,413,426,429) or attempts>=3:raise
                 self._cancel.wait(.25*attempts)
         raise ConnectionError('云端传输已关闭。')
 
@@ -178,8 +197,10 @@ class CloudPipeStream:
         side=1-self.side;sequence=0
         try:
             while not self.closed:
+                self._notified.clear()
                 result=self._request('GET',side,sequence)
-                if result.get('ready') is not True:continue
+                if result.get('ready') is not True:
+                    self._notified.wait(RECOVERY_POLL_SECONDS);continue
                 encoded=result.get('body')
                 if not isinstance(encoded,str) or len(encoded)>((CHUNK_BYTES+18)//3)*4:raise ValueError('Cloud transport block too large')
                 encrypted=base64.b64decode(encoded,validate=True)
@@ -198,6 +219,7 @@ class CloudPipeStream:
         with self._condition:
             if self.closed:return
             self.closed=True;self._cancel.set();self._out.clear();self._out_bytes=0;self._condition.notify_all()
+        self._notified.set();self.api.unwatch(self.identifier,self._notified)
         def remove():
             try:self.api.call('DELETE','/v1/wan/cloud/'+self.identifier,threading.Event())
             except (OSError,CloudError):pass

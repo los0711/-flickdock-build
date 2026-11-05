@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QFram
                                QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QLineEdit, QPushButton,
                                QVBoxLayout, QGridLayout, QKeySequenceEdit, QScrollArea, QWidget, QSizePolicy,
                                QAbstractSpinBox, QPlainTextEdit, QSlider, QSpinBox, QColorDialog, QStyledItemDelegate, QLayout)
-from PySide6.QtWidgets import QStyle, QStyleOptionButton, QProxyStyle, QListView
+from PySide6.QtWidgets import QStyle, QStyleOptionButton, QProxyStyle, QListView, QListWidget
 from PySide6.QtSvg import QSvgRenderer
 
 from app_version import APP_VERSION
@@ -1470,7 +1470,10 @@ class SettingsDialog(QDialog):
             header.insertWidget(0,traffic)
         root.addWidget(self.title_bar);root.addWidget(self.update_activity)
         root.addWidget(self.update_notes_area)
-        root.addWidget(self.scroll,1)
+        navigation_body=QWidget(self.surface);navigation=QHBoxLayout(navigation_body);navigation.setContentsMargins(14,8,0,0);navigation.setSpacing(0)
+        self.category_list=QListWidget(navigation_body);self.category_list.setObjectName('settingsCategories');self.category_list.setFixedWidth(146)
+        self.category_list.setAccessibleName('设置分类');self.category_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        navigation.addWidget(self.category_list);navigation.addWidget(self.scroll,1);root.addWidget(navigation_body,1)
         # Keep fractional-DPI child borders inside the scrolling viewport,
         # separated from the fixed footer by an opaque surface gutter.
         self.scroll.setViewportMargins(0,0,0,2)
@@ -1478,17 +1481,13 @@ class SettingsDialog(QDialog):
         # scrollbar occupies that space inside the right-hand 20px inset.
         self.body_layout.setContentsMargins(21,20,15,12);self.body_layout.setSpacing(16)
         self._empty_layout(self.body_layout)
-        top=_MeasuredSettingsFrame(self.body);top_grid=QGridLayout(top);top_grid.setContentsMargins(0,0,0,0);top_grid.setSpacing(16)
-        for col in range(12):top_grid.setColumnStretch(col,1)
-        self.account_slot=QWidget(top);self.account_slot_layout=QVBoxLayout(self.account_slot)
+        self.account_slot=QWidget(self.body);self.account_slot_layout=QVBoxLayout(self.account_slot)
         self.account_slot_layout.setContentsMargins(0,0,0,0);self.account_slot_layout.setSpacing(0)
         self.account_placeholder=self._card();placeholder=QVBoxLayout(self.account_placeholder)
         placeholder.setContentsMargins(16,16,16,16);placeholder.addWidget(QLabel('账号与同步',self.account_placeholder))
         self.account_slot_layout.addWidget(self.account_placeholder)
-        top_grid.addWidget(self.account_slot,0,0,1,8);top_grid.addWidget(appearance,0,8,1,4)
-        self._reference_top=top;self._reference_appearance=appearance;top.installEventFilter(self)
-        self._settings_top_grid=top_grid
-        self.body_layout.addWidget(top)
+        self._reference_top=self.account_slot;self._reference_appearance=appearance
+        self.body_layout.addWidget(self.account_slot);self.body_layout.addWidget(appearance)
         al=appearance.layout();self._empty_layout(al);al.setContentsMargins(16,16,16,16);al.setSpacing(12)
         al.setAlignment(Qt.AlignmentFlag.AlignTop)
         heading=QLabel('外观与视图',appearance);heading.setObjectName('settingsSection');al.addWidget(heading)
@@ -1530,7 +1529,6 @@ class SettingsDialog(QDialog):
         self.shake_sensitivity_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons);self.shake_sensitivity_spin.setFixedSize(64,28)
         sl.addWidget(self.shake_sensitivity_spin);self.shake_sensitivity_reset_button.setFixedSize(28,28);sl.addWidget(self.shake_sensitivity_reset_button)
         dl.addWidget(sensitivity_panel);self.dock_position_hint.hide();self.shake_effort_label.hide();self.body_layout.addWidget(dock)
-        lower=_MeasuredSettingsFrame(self.body);lower_grid=QHBoxLayout(lower);lower_grid.setContentsMargins(0,0,0,0);lower_grid.setSpacing(16)
         kl=shortcuts.layout();self._empty_layout(kl);kl.setContentsMargins(16,16,16,16);kl.setSpacing(12)
         kl.setAlignment(Qt.AlignmentFlag.AlignTop)
         self._pointer_paste_panel=shortcuts
@@ -1547,7 +1545,11 @@ class SettingsDialog(QDialog):
         self.automatic_updates_checkbox.setAccessibleName('自动检查并后台下载更新')
         self.automatic_updates_checkbox.setToolTip('自动检查并后台下载更新；安装前提示重启，不中断正在进行的传输。')
         self.automatic_updates_checkbox.toggled.connect(self._automatic_updates_changed)
-        kl.addWidget(self._reference_toggle(self.automatic_updates_checkbox,'自动更新',shortcuts))
+        updates=self._card();ul=QVBoxLayout(updates);ul.setContentsMargins(16,16,16,16);ul.setSpacing(12)
+        updates_title=QLabel('更新与关于',updates);updates_title.setObjectName('settingsSection');ul.addWidget(updates_title)
+        ul.addWidget(self._reference_toggle(self.automatic_updates_checkbox,'自动更新',updates))
+        ul.addWidget(self.update_button)
+        release=QLabel('FlickDock '+APP_VERSION,updates);release.setObjectName('settingsDetail');ul.addWidget(release)
         self.startup_status_label.setParent(shortcuts);self.startup_status_label.hide()
         self._pointer_paste_permission=None
         cl=cloud.layout();self._empty_layout(cl);cl.setContentsMargins(16,16,16,16);cl.setSpacing(10)
@@ -1560,18 +1562,25 @@ class SettingsDialog(QDialog):
         self.retention_description=QLabel('云端文件保存时间\n小于 100 MB：上传成功后保留 24 小时。\n100 MB 及以上：上传成功后保留 2 小时。\n从完整上传成功时计时；到期仅清理云端副本，本机原文件和已下载的文件不受影响。',cloud)
         self.retention_description.setObjectName('settingsDetail');self.retention_description.setWordWrap(True)
         self.retention_description.setTextFormat(Qt.PlainText);cl.addWidget(self.retention_description)
-        self._empty_layout(storage.layout());storage.hide()
-        cl.addWidget(self._reference_segment(self.capture_mode_combo,('快捷方式','复制到保存位置')))
+        sl=storage.layout();self._empty_layout(sl);sl.setContentsMargins(16,16,16,16);sl.setSpacing(12)
+        storage_title=QLabel('文件与保存',storage);storage_title.setObjectName('settingsSection');sl.addWidget(storage_title)
+        sl.addWidget(self._reference_segment(self.capture_mode_combo,('快捷方式','复制到保存位置')))
         path=QHBoxLayout();path.setSpacing(8);self.folder_edit.setMinimumHeight(28);self.folder_edit.setMaximumHeight(28);path.addWidget(self.folder_edit,1)
-        browse=QPushButton('浏览…',cloud);browse.setMinimumHeight(28);browse.setObjectName('settingsBrowse');browse.setAutoDefault(False);browse.clicked.connect(self.choose_directory);path.addWidget(browse);cl.addLayout(path)
-        video_heading=QLabel('视频解析',cloud);video_heading.setObjectName('settingsSection');cl.addWidget(video_heading)
-        cl.addWidget(self._reference_toggle(self.video_prompt_checkbox,'复制视频链接时提示解析',cloud))
-        lower_grid.addWidget(shortcuts,1);lower_grid.addWidget(cloud,1);self.body_layout.addWidget(lower)
+        browse=QPushButton('浏览…',storage);browse.setMinimumHeight(28);browse.setObjectName('settingsBrowse');browse.setAutoDefault(False);browse.clicked.connect(self.choose_directory);path.addWidget(browse);sl.addLayout(path)
+        video=self._card();vl=QVBoxLayout(video);vl.setContentsMargins(16,16,16,16);vl.setSpacing(12)
+        video_heading=QLabel('视频解析',video);video_heading.setObjectName('settingsSection');vl.addWidget(video_heading)
+        vl.addWidget(self._reference_toggle(self.video_prompt_checkbox,'复制视频链接时提示解析',video))
+        video_note=QLabel('视频保存位置可在总览的「视频解析」中更改。',video);video_note.setObjectName('settingsDetail');video_note.setWordWrap(True);vl.addWidget(video_note)
+        self.setting_categories=(('常规',(shortcuts,)),('账号与设备',(self.account_slot,)),('外观与交互',(appearance,dock)),('同步与剪贴板',(cloud,)),('文件与保存',(storage,)),('视频解析',(video,)),('更新与关于',(updates,)))
+        for label,sections in self.setting_categories:
+            self.category_list.addItem(label)
+            for section in sections:
+                if self.body_layout.indexOf(section)<0:self.body_layout.addWidget(section)
         self.body_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.body_layout.setSizeConstraints(QLayout.SizeConstraint.SetMinimumSize,QLayout.SizeConstraint.SetNoConstraint)
         self._body_fit_timer=QTimer(self);self._body_fit_timer.setSingleShot(True)
         self._body_fit_timer.timeout.connect(self._fit_settings_body)
-        self._settings_adaptive=(dr,trigger,empty,selectors,selector_panels,lower_grid)
+        self._settings_adaptive=(dr,trigger,empty,selectors,selector_panels)
         self.body.installEventFilter(self)
         self.scroll.viewport().installEventFilter(self)
         root.addWidget(self.error_label)
@@ -1590,6 +1599,23 @@ class SettingsDialog(QDialog):
         self.display_trigger_editor.load_values()
         self.update_activity.setVisible(self.update_activity.active)
         self.update_notes_area.hide()
+        self._category_scroll={};self._category_index=-1;self._category_generation=0
+        self.category_list.currentRowChanged.connect(self._select_category);self.category_list.setCurrentRow(0)
+
+    def _select_category(self,index):
+        if not 0<=index<len(self.setting_categories):return
+        self._category_scroll[self._category_index]=self.scroll.verticalScrollBar().value()
+        self._category_index=index;self._category_generation+=1;generation=self._category_generation
+        for number,(_,sections) in enumerate(self.setting_categories):
+            for section in sections:section.setVisible(number==index)
+        self.body_layout.invalidate();self.body_layout.activate();self._fit_settings_body()
+        def restore():
+            if generation==self._category_generation:self.scroll.verticalScrollBar().setValue(self._category_scroll.get(index,0))
+        QTimer.singleShot(0,self,restore)
+
+    def select_category(self,label):
+        index=next(index for index,(title,_) in enumerate(self.setting_categories) if title==label)
+        self.category_list.setCurrentRow(index)
 
     @property
     def update_state(self):
@@ -1764,21 +1790,10 @@ class SettingsDialog(QDialog):
         if getattr(self,'_settings_layout_width',None)==width:return
         self._settings_layout_width=width
         narrow=width<700
-        grid=self._settings_top_grid
-        grid.removeWidget(self.account_slot);grid.removeWidget(self._reference_appearance)
-        if narrow:
-            self.account_slot.setMinimumWidth(0);self.account_slot.setMaximumWidth(16777215)
-            self._reference_appearance.setMinimumWidth(0);self._reference_appearance.setMaximumWidth(16777215)
-            grid.addWidget(self.account_slot,0,0,1,12);grid.addWidget(self._reference_appearance,1,0,1,12)
-        else:
-            left=max(0,(2*width-16)//3)
-            self.account_slot.setFixedWidth(left);self._reference_appearance.setFixedWidth(max(0,width-16-left))
-            grid.addWidget(self.account_slot,0,0,1,8);grid.addWidget(self._reference_appearance,0,8,1,4)
-        dr,trigger,empty,selectors,panels,lower=self._settings_adaptive
+        dr,trigger,empty,selectors,panels=self._settings_adaptive
         dr.removeWidget(empty);dr.addWidget(empty,1 if narrow else 0,0 if narrow else 1)
         for i,panel in enumerate(panels):
             selectors.removeWidget(panel);selectors.addWidget(panel,i if narrow else 0,0 if narrow else i)
-        lower.setDirection(QHBoxLayout.Direction.TopToBottom if narrow else QHBoxLayout.Direction.LeftToRight)
         self._fit_settings_top()
 
     def _fit_settings_body(self):
@@ -1795,7 +1810,7 @@ class SettingsDialog(QDialog):
             if section is None or section.isHidden():continue
             inner=section.layout()
             wrapped=inner.totalHeightForWidth(section.width()) if inner is not None and inner.hasHeightForWidth() else -1
-            height=section.height() if section is self._reference_top else max(section.sizeHint().height(),section.minimumSizeHint().height(),wrapped)
+            height=max(section.sizeHint().height(),section.minimumSizeHint().height(),wrapped)
             if section.minimumHeight()!=height or section.maximumHeight()!=height:section.setFixedHeight(height)
             heights.append(height)
         height=margins.top()+margins.bottom()+sum(heights)+max(0,len(heights)-1)*layout.spacing()
@@ -1804,13 +1819,6 @@ class SettingsDialog(QDialog):
 
     def _fit_settings_top(self):
         if not hasattr(self,'_reference_top'):return
-        panel=self._account_panel or self.account_placeholder
-        width=max(1,self.account_slot.width())
-        left=max(panel.minimumSizeHint().height(),panel.heightForWidth(width) if panel.hasHeightForWidth() else panel.sizeHint().height())
-        right=self._reference_appearance.layout().sizeHint().height()+2
-        narrow=self.scroll.viewport().width()-36<700
-        height=left+right+16 if narrow else max(left,right)
-        self._reference_top.setFixedHeight(max(1,height))
         self.body_layout.invalidate();self.body_layout.activate();self._fit_settings_body()
 
     def _card(self):
@@ -2260,7 +2268,14 @@ class SettingsDialog(QDialog):
         ref_edge='rgba(255,255,255,18)' if dark else 'rgba(0,0,0,18)'
         ref_control='rgba(255,255,255,15)' if dark else 'rgba(0,0,0,14)'
         ref_input='#242426' if dark else '#FFFFFF'
+        from native_ui_common import colors
+        semantic=colors(theme)
         style+=f'''
+            QListWidget#settingsCategories {{background:transparent;color:{semantic['secondary']};border:0;font-size:13px;padding:4px;outline:0;}}
+            QListWidget#settingsCategories::item {{padding:11px 10px;border:1px solid transparent;border-radius:8px;margin-bottom:4px;}}
+            QListWidget#settingsCategories::item:hover {{background:{semantic['hover']};}}
+            QListWidget#settingsCategories::item:selected {{background:{semantic['selected']};color:{semantic['text']};}}
+            QListWidget#settingsCategories::item:focus {{border-color:{semantic['link']};}}
             QDialog#flickdockSettings QLabel,QDialog#flickdockSettings QCheckBox {{font-size:12px;}}
             QDialog#flickdockSettings QLabel#settingsTitle {{font-size:15px;font-weight:600;}}
             QDialog#flickdockSettings QLabel#settingsSection {{font-size:12px;font-weight:600;}}
@@ -2281,8 +2296,6 @@ class SettingsDialog(QDialog):
             QFrame#settingsFooter {{border-top:1px solid {ref_edge};background:{'#141416' if dark else '#F4F5F9'};border-bottom-left-radius:10px;border-bottom-right-radius:10px;}}
         '''
         for switch in self.findChildren(SettingsToggleSwitch):switch.dark=dark;switch.update()
-        from native_ui_common import colors
-        semantic=colors(theme)
         style+=f'''
             QDialog#flickdockSettings QLabel,QDialog#flickdockSettings QCheckBox {{font-size:13px;}}
             QDialog#flickdockSettings QLabel#settingsTitle {{font-size:16px;font-weight:600;}}

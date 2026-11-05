@@ -365,7 +365,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
   }
   if(path.startsWith('/v1/wan/cloud/')){
     const headers=new Headers({'X-Wan-Account':owner.id,'X-Wan-Account-Device':owner.device_id,'X-Wan-Session':owner.token_hash});
-    for(const name of ['Content-Type','Content-Length','X-Content-SHA256']){const value=request.headers.get(name);if(value!==null)headers.set(name,value);}
+    for(const name of ['Content-Type','Content-Length','X-Content-SHA256','X-FlickDock-Cloud-Protocol']){const value=request.headers.get(name);if(value!==null)headers.set(name,value);}
     const credential=request.headers.get('X-Wan-Credential');
     if(credential&&/^[a-f0-9]{64}$/.test(credential))headers.set('X-Wan-Device',sha(credential));
     return env.WAN.get(env.WAN.idFromName('flickdock-wan-v1')).fetch(new Request('https://internal/cloud/'+path.slice('/v1/wan/cloud/'.length),{method,headers,body:request.body}));

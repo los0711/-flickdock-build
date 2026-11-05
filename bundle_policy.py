@@ -51,8 +51,6 @@ def _policy_reason(destination, source):
     dest = _normal(destination)
     name = Path(source).name.lower()
     parts = dest.split('/')
-    if '/assets/video-tools/' in _normal(source) and not dest.startswith('assets/video-tools/'):
-        return 'isolate video subprocess DLLs from the Qt playback runtime'
     if name in SYSTEM_ONLY:
         return 'uses Windows system ICU; do not shadow it with Poppler ICU'
     if '/plugins/' in '/'+dest:
@@ -122,8 +120,6 @@ def filter_bundle(binaries,datas):
             roots.add(index);root_reasons[index]='selected runtime-loaded Qt plugin'
         elif _normal(entry[0]).startswith('p2p/') and name in ('node.exe','node_datachannel.node'):
             roots.add(index);root_reasons[index]='native WebRTC data-channel runtime'
-        elif _normal(entry[0]).startswith('assets/video-tools/') and name in ('ffmpeg.exe','ffprobe.exe'):
-            roots.add(index);root_reasons[index]='isolated video command-line runtime'
     keep,queue,dependencies,unbundled = set(roots),list(roots),{},set()
     while queue:
         index = queue.pop()

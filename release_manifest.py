@@ -31,7 +31,7 @@ class ReleaseError(ValueError):
 VERSION_RE=re.compile(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z')
 HASH_RE=re.compile(r'[0-9a-f]{64}\Z')
 RUNTIME_SOURCES=(
-    'video_assets.py','video_links.py','video_worker.py','video_jobs.py','video_panel.py','video_prompt.py',
+    'video_assets.py','video_runtime.py','video_cdn.py','video_links.py','video_worker.py','video_jobs.py','video_panel.py','video_prompt.py',
     'flickdock.py','app_settings.py','async_images.py','capture_files.py',
     'download_writer.py','file_metadata.py','transfer_entry.py','gui_watchdog.py',
     'confirm_clear.py','content_grid.py','content_resolver.py','content_stack.py',
@@ -45,12 +45,13 @@ RUNTIME_SOURCES=(
     'platform_startup.py','platform_native.py','mac_updates.py','mac_entry.py','runtime_macos.py','mac_permissions.py','mac_permissions_ui.py',
     'account_store.py','cloud_api.py','cloud_config.py','cloud_events.py','account_service.py','account_panel.py',
     'shelf_sync.py','shared_clipboard_files.py','sync_files.py','sync_adapter.py','verify_cloud.py','shortcut_preview.py',
-    'lan_transfer.py','lan_panel.py','transfer_visuals.py','owned_files.py','verify_transfers.py',
+    'lan_transfer.py','lan_panel.py','transfer_visuals.py','transfer_workbench.py','owned_files.py','verify_transfers.py',
     'wan_transfer.py','webrtc_stream.py','nearby_transport.py','verify_wan.py','windows_network.py',
     'peer_stream.py','peer_rpc.py','peer_sync.py','peer_clipboard.py','peer_shelf.py','tls_stream.py','verify_peers.py',
     'adaptive_stream.py','route_policy.py','cloud_pipe.py',
 )
 MAINTAINED_TESTS=(
+    'test_workbench_v1823.py',
     'test_video_v1823.py',
     'test_sync_parallel_receive_v1823.py',
     'test_sync_priority_v1823.py',
@@ -122,7 +123,7 @@ SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'cloud/src/vendor/hash-wasm-sha256-4.12.0.json','cloud/src/vendor/hash-wasm-4.12.0-LICENSE.txt',
     'cloud/test/integration.mjs','cloud/test/shared-file.mjs','cloud/test/hash-state.mjs','cloud/test/upload-cancel.mjs','cloud/test/wan-codes.mjs','cloud/test/wan-connect.mjs','cloud/test/wan-account.mjs','cloud/test/peer-sync.mjs','cloud/test/peer-runtime.mjs','cloud/test/account-names.mjs','cloud/test/qa-server.mjs','cloud/test/clipboard.mjs','cloud/test/clipboard-expiry.mjs',
     '.github/workflows/macos-build.yml','.github/workflows/native-clipboard.yml','ci_installer_close.py','ci_assets.py','p2p_assets.py',
-    'p2p/bridge.mjs','p2p/rtc-peer.mjs','p2p/sync-mesh.mjs','p2p/turn_tls.mjs','p2p/test-turn-tls.mjs','p2p/package.json','p2p/package-lock.json','p2p/node-shasums.json',
+    'p2p/bridge.mjs','p2p/rtc-peer.mjs','p2p/sync-mesh.mjs','p2p/turn_tls.mjs','p2p/test-turn-tls.mjs','p2p/test-rtc-lifecycle.mjs','p2p/package.json','p2p/package-lock.json','p2p/node-shasums.json',
     'website/wrangler.jsonc','website/worker.mjs','website/package.json','website/package-lock.json',
     'website/README.md','website/CHINA_DEPLOYMENT.md','website/test/check-site.mjs','website/test/check-gateway.mjs',
     'website/scripts/build-retiehe.mjs',
@@ -479,7 +480,7 @@ def create_release(*,root: Path,installer: Path,version: str,notes: str,download
         if signer is not None:
             from update_signatures import sign_manifest
             manifest=sign_manifest(manifest,signer)
-        elif version_tuple(version)>=(1,8,21) and host in ('gitee.com','flickdock-site.roger000416.workers.dev'):
+        elif version_tuple(version)>=(1,8,21) and host in ('github.com','gitee.com','flickdock-site.roger000416.workers.dev'):
             raise ValueError('A publisher signature is required for this official release')
         validate_manifest(manifest,approved,platform='win32')
         if len((json.dumps(manifest,ensure_ascii=False,indent=2)+'\n').encode('utf8'))>MAX_MANIFEST_BYTES:

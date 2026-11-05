@@ -42,7 +42,7 @@ from cloud_connectivity import CloudConnectivity
 from surface_morph import SurfaceMorph, SurfaceSnapshot
 from content_grid import IconItem,GRID_CARD_HEIGHT_PX,GRID_CARD_MIN_WIDTH_PX,GRID_COLUMN_WIDTH_PX
 from shake_detector import ShakeDetector, config_for_sensitivity
-from dock_geometry import trigger_rect, reveal_rect, dock_hover_rect
+from dock_geometry import trigger_rect, reveal_rect, dock_hover_region
 from image_preview import ImagePreview
 from media_preview import MediaPreview
 from content_resolver import ContentResolver
@@ -1523,7 +1523,7 @@ class ShelfWindow(QWidget):
         self.account_button = AvatarButton('user', self.card, motion=self.manager.motion)
         self.account_button.setToolTip('账号与设置')
         self.account_button.setAccessibleName('打开账号与设置')
-        self.account_button.clicked.connect(lambda:self.manager.show_settings())
+        self.account_button.clicked.connect(lambda:self.manager.show_settings(category='账号与设备'))
         self.cloud_button = ToolbarButton('cloud', self.card, motion=self.manager.motion)
         self.cloud_button.clicked.connect(self.show_cloud_menu)
         from reference_widgets import NetworkStatus
@@ -1684,7 +1684,9 @@ class ShelfWindow(QWidget):
 
     def _reserved_surface_rect(self,origin,target=None):
         target=self._expansion_rect(origin) if target is None else target
-        bounds=origin.united(target).adjusted(-16,-12,16,12)
+        pad_x=max(16,math.ceil(abs(target.width()-origin.width())*.02)+8)
+        pad_y=max(12,math.ceil(abs(target.height()-origin.height())*.02)+8)
+        bounds=origin.united(target).adjusted(-pad_x,-pad_y,pad_x,pad_y)
         if sys.platform=='darwin':
             # AppKit constrains an oversized/above-menu-bar native canvas on
             # ordering. Reserve within the work area before showing it, so
@@ -2515,7 +2517,8 @@ class ShelfWindow(QWidget):
         remove_host_window_shadow(self)
         self._raise_for_reveal()
         self.touch()
-        self.presentation.animate({"sx": 1, "sy": 1, "alpha": 1, "dx": 0, "dy": 0}, response=.24, damping=.72)
+        from ui_transitions import SHELF_REVEAL_RESPONSE_SECONDS,SHELF_REVEAL_DAMPING
+        self.presentation.animate({"sx": 1, "sy": 1, "alpha": 1, "dx": 0, "dy": 0},response=SHELF_REVEAL_RESPONSE_SECONDS,damping=SHELF_REVEAL_DAMPING)
         self.manager.update_handles()
 
     def _raise_for_reveal(self):
@@ -2650,8 +2653,8 @@ class ShelfWindow(QWidget):
             # edge target (notably at the macOS menu-bar edge). Include both
             # envelopes so neither a native enter/leave event nor a morph
             # frame can turn one stationary pointer into an outside pointer.
-            rect=dock_hover_rect(rect.united(self._dock_target_rect()).adjusted(-6,-6,6,6),
-                                 trigger,self._dock_edge())
+            from PySide6.QtGui import QRegion
+            rect=dock_hover_region(rect.adjusted(-6,-6,6,6),trigger,self._dock_edge())|QRegion(self._dock_target_rect().adjusted(-6,-6,6,6))
         return rect.contains(point)
 
     def intake_blocks_overview(self):
@@ -2689,7 +2692,8 @@ class ShelfWindow(QWidget):
         self.popup.show()
         presentation={"sx": 1, "sy": 1, "alpha": 1, "dx": 0, "dy": 0}
         if animate:
-            self.geometry_morph.animate(destination)
+            from ui_transitions import OVERVIEW_OPEN_DURATION_MS
+            self.geometry_morph.animate(destination,duration=OVERVIEW_OPEN_DURATION_MS,elastic=True)
             self.presentation.animate(presentation,response=.19,damping=1)
         else:
             self.geometry_morph.jump(destination)
@@ -2924,43 +2928,44 @@ class ShelfWindow(QWidget):
         from reference_widgets import refresh_tree
         refresh_tree(dialog)
         dialog.move(self.visual_geometry().center()-QPoint(dialog.width()//2,dialog.height()//2))
-        self.rename_edit.setText(Path(ref).stem)
+        self.rename_edit.setText(Path(ref).name)
         dialog.show();dialog.raise_();dialog.activateWindow()
         self.rename_edit.show()
         self.rename_edit.raise_()
         self.rename_edit.setFocus()
-        self.rename_edit.selectAll()
+        self.rename_edit.setSelection(0,len(Path(ref).stem))
         self.touch()
 
     def commit_rename(self):
         ref=getattr(self,'_rename_ref',None)
         if not self.rename_edit.isVisible() or ref not in self.files['permanent']:
-            return
+            return False
         new_name = self.rename_edit.text().strip()
-        self.rename_edit.hide()
-        if not new_name or any(c in new_name for c in '<>:"/\\|?*'):
-            return
+        if not new_name or new_name in ('.','..') or new_name.endswith('.') or any(c in new_name for c in '<>:"/\\|?*') or any(ord(c)<32 for c in new_name):
+            QMessageBox.warning(self,APP_NAME,'请输入有效的完整文件名。');return False
         src = Path(ref)
-        target = src.with_name(new_name + src.suffix)
+        target = src.with_name(new_name)
         if target == src:
-            return
-        if target.exists():
+            self.rename_edit.hide();return True
+        if target.exists() and not (src.name.casefold()==target.name.casefold() and os.path.samefile(src,target)):
             QMessageBox.warning(self, APP_NAME, "目标文件名已经存在")
-            return
+            return False
         try:
             if self.popup and self.popup.preview.media.path==ref:self.popup.preview.media.release_source()
             src.rename(target)
-            self.files['permanent']=[str(target) if old==ref else old for old in self.files['permanent']]
-            if ref in self.content.metadata:self.content.metadata[str(target)]=self.content.metadata.pop(ref)
-            self.image_cache.forget(ref);self.preview_cache.pop(ref,None)
-            if self.popup:
-                if ref in self.popup.selected:self.popup.selected.remove(ref);self.popup.selected.add(str(target))
-                if self.popup.primary_selection==ref:self.popup.primary_selection=str(target)
-                self.popup.preview.current_path=None
-            self.refresh()
-            self.manager.save()
-        except Exception as ex:
-            QMessageBox.warning(self, APP_NAME, f"重命名失败：{ex}")
+        except OSError as ex:
+            QMessageBox.warning(self,APP_NAME,f'重命名失败：{ex}');return False
+        self.rename_edit.hide()
+        self.files['permanent']=[str(target) if old==ref else old for old in self.files['permanent']]
+        if ref in self.content.metadata:self.content.metadata[str(target)]=self.content.metadata.pop(ref)
+        self.image_cache.forget(ref);self.preview_cache.pop(ref,None)
+        if self.popup:
+            if ref in self.popup.selected:self.popup.selected.remove(ref);self.popup.selected.add(str(target))
+            if self.popup.primary_selection==ref:self.popup.primary_selection=str(target)
+            self.popup.preview.current_path=None
+        self.refresh()
+        self.manager.save()
+        return True
 
     def mousePressEvent(self, event):
         self.touch()
@@ -3617,7 +3622,7 @@ class ShelfManager:
         area=screen.availableGeometry()
         dialog.move(area.center()-QPoint(dialog.width()//2,dialog.height()//2))
 
-    def show_settings(self):
+    def show_settings(self,*,category=None):
         if self.update_notice is not None:
             self.update_notice.hide()
         self.reset_drag_gesture()
@@ -3642,6 +3647,7 @@ class ShelfManager:
         self.settings_dialog.set_update_state(self.updates.state,**self.updates.state_payload)
         self._render_settings_update(self.updates.state,self.updates.state_payload)
         self.account_panel.set_sync_status(self._sync_status)
+        if category:self.settings_dialog.select_category(category)
         self._center_dialog(self.settings_dialog)
         self.settings_dialog.show()
         self.update_handles()
@@ -3844,7 +3850,8 @@ class ShelfManager:
             self.shelf.show_contents(target=target,animate=False)
             self.shelf.presentation.jump({'sx':.97 if self.motion else 1,'sy':.97 if self.motion else 1,'alpha':0,'dx':0,'dy':0})
             self.shelf.show();self.shelf._raise_for_reveal()
-            self.shelf.presentation.animate({'sx':1,'sy':1,'alpha':1,'dx':0,'dy':0},response=.19,damping=1)
+            from ui_transitions import SHELF_REVEAL_RESPONSE_SECONDS,SHELF_REVEAL_DAMPING
+            self.shelf.presentation.animate({'sx':1,'sy':1,'alpha':1,'dx':0,'dy':0},response=SHELF_REVEAL_RESPONSE_SECONDS,damping=SHELF_REVEAL_DAMPING)
         self.shelf.activateWindow();self.shelf.setFocus()
 
     def reset_drag_gesture(self):

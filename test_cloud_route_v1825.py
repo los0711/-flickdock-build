@@ -13,22 +13,34 @@ from test_html_native_workspace import APP,until
 
 
 class MemoryCloud:
-    def __init__(self):self.blocks={};self.condition=threading.Condition();self.closed=False
+    def __init__(self):self.blocks={};self.condition=threading.Condition();self.closed=False;self.watchers={};self.reads=0
+    def watch(self,identifier,event):self.watchers.setdefault(identifier,set()).add(event)
+    def unwatch(self,identifier,event):self.watchers.get(identifier,set()).discard(event)
+    def notify(self):
+        for group in self.watchers.values():
+            for event in tuple(group):event.set()
     def call(self,method,path,cancel,**options):
         parts=path.split('/');position=tuple(parts[-2:])
         with self.condition:
             if len(parts)<7:
                 if method=='DELETE':self.closed=True;self.condition.notify_all()
                 return {}
-            if method=='PUT':self.blocks[position]=options['raw'];self.condition.notify_all();return {}
+            if method=='PUT':self.blocks[position]=options['raw'];self.condition.notify_all();self.notify();return {}
             if method=='DELETE':return {}
-            while position not in self.blocks:
-                if cancel.is_set() or self.closed:raise ConnectionError('Closed')
-                self.condition.wait(.02)
+            self.reads+=1
+            if position not in self.blocks:return dict(ready=False)
             return dict(ready=True,body=base64.b64encode(self.blocks[position]).decode('ascii'))
 
 
 class CloudRouteTests(unittest.TestCase):
+    def test_idle_reader_makes_no_repeated_requests_and_wakes_on_data(self):
+        api=MemoryCloud();descriptor=dict(id=uuid4().hex,key=os.urandom(32).hex())
+        receiver=CloudPipeStream(api,descriptor,False);sender=CloudPipeStream(api,descriptor,True)
+        try:
+            until(lambda:api.reads>=2);before=api.reads;time.sleep(.3)
+            self.assertEqual(api.reads,before)
+            sender.sendall(b'immediate clipboard data');self.assertEqual(receiver.recv(64),b'immediate clipboard data')
+        finally:sender.shutdown();receiver.shutdown()
     def test_both_directions_preserve_original_bytes_and_store_only_ciphertext(self):
         api=MemoryCloud();descriptor=dict(id=uuid4().hex,key=os.urandom(32).hex())
         sender=CloudPipeStream(api,descriptor,True);receiver=CloudPipeStream(api,descriptor,False)

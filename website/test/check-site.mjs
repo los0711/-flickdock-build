@@ -14,16 +14,15 @@ assert.notEqual(config.name, 'flickdock-cloud');
 assert.equal(config.assets.directory, './public');
 assert.equal(config.workers_dev, true);
 
-const downloads = [...html.matchAll(/href="(https:\/\/gitee\.com\/rooogerluo\/[^\"]+\.(?:exe|dmg))"/g)].map(match => match[1]);
+const downloads = [...html.matchAll(/href="(https:\/\/github\.com\/los0711\/-flickdock-build\/releases\/download\/v1\.8\.23\/[^\"]+\.(?:exe|dmg))"/g)].map(match => match[1]);
 assert.equal(downloads.length, 3, 'home page has three direct installer links');
-assert(downloads.includes('https://gitee.com/rooogerluo/flick-dock-windows-releases/releases/download/v1.8.12/FlickDock-Setup-1.8.12.exe'));
-assert(downloads.some(url => url.endsWith('/FlickDock-1.8.12-macOS-arm64.dmg')));
-assert(downloads.some(url => url.endsWith('/FlickDock-1.8.12-macOS-x86_64.dmg')));
-assert.equal(downloads.filter(url => url.includes('/flick-dock-macos-releases-2/releases/download/v1.8.12/')).length, 2);
-assert(html.includes('aria-label="下载 Windows 安装包 1.8.12"'));
-assert(html.includes('安装程序 · 1.8.12'));
-assert(downloads.every(url => url.startsWith('https://gitee.com/rooogerluo/')));
-assert(html.includes('href="https://gitee.com/rooogerluo/flick-dock-releases"'), 'domestic fallback links to the public release page');
+assert(downloads.includes('https://github.com/los0711/-flickdock-build/releases/download/v1.8.23/FlickDock-Setup-1.8.23.exe'));
+assert(downloads.some(url => url.endsWith('/FlickDock-1.8.23-macOS-arm64.dmg')));
+assert(downloads.some(url => url.endsWith('/FlickDock-1.8.23-macOS-x86_64.dmg')));
+assert(downloads.every(url => url.startsWith('https://github.com/los0711/-flickdock-build/releases/download/v1.8.23/')));
+assert(html.includes('aria-label="下载 Windows 安装包 1.8.23"'));
+assert(html.includes('安装程序 · 1.8.23'));
+assert(html.includes('href="https://github.com/los0711/-flickdock-build/releases/tag/v1.8.23"'), 'download help links to the published release');
 
 for (const [, path] of html.matchAll(/(?:src|href)="(\/(?:assets\/[^\"]+|styles\.css|site\.js))"/g)) {
   assert(existsSync(resolve(project, 'public', path.slice(1))), `missing public asset: ${path}`);

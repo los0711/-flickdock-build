@@ -20,7 +20,7 @@ const ID=/^[a-f0-9]{64}$/,TRANSFER=/^[a-f0-9]{32}$/;
 const stun=[{urls:['stun:stun.cloudflare.com:3478']}];
 function routeSignal(input:any):object|null{
   if(!input||!check(input.id,TRANSFER))return null;
-  if(input.kind==='start')return {kind:'start',id:input.id};
+  if(input.kind==='start'&&typeof input.directOnly==='boolean')return {kind:'start',id:input.id,directOnly:input.directOnly};
   if(input.kind==='cloud'&&check(input.key,ID))return {kind:'cloud',id:input.id,key:input.key};
   const value=input.payload;
   if(input.kind!=='candidate'||!value||typeof value!=='object')return null;
@@ -48,7 +48,7 @@ export async function wanRoute(request:Request,env:WanEnv):Promise<Response>{
 
 export class WanHub extends DurableObject<WanEnv>{
   private syncIceJobs=new Map<string,Promise<object>>();
-  private cloudPipes=new CloudPipes(this.ctx,this.env,id=>this.binding(id));
+  private cloudPipes=new CloudPipes(this.ctx,this.env,id=>this.binding(id),(signal,account,id)=>{const socket=this.socket(signal);if(socket&&(socket.deserializeAttachment() as Seat).account===account)this.send(socket,{type:'cloud_data',id});});
   private async scheduleCleanup(){
     const next=Date.now()+30000,current=await this.ctx.storage.getAlarm();
     if(current===null||current>next)await this.ctx.storage.setAlarm(next);

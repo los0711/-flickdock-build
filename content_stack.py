@@ -3,7 +3,12 @@ from pathlib import Path
 from PySide6.QtCore import QRectF, Qt, QVariantAnimation, QEasingCurve, QAbstractAnimation
 from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap
 from flickdock_icons import content_color, device_pixel_ratio, document_pixmap
-from flickdock_motion import ContentTile
+from flickdock_motion import ContentTile,Spring
+
+FAN_PIVOT_X_PX=74.24
+FAN_PIVOT_Y_PX=57.6
+FAN_FRONT_ANGLE_DEGREES=5.
+FAN_LAYER_ANGLE_DEGREES=3.6
 from transfer_visuals import draw_progress_badge
 
 
@@ -96,6 +101,31 @@ class StackTile(ContentTile):
         self.landing.setEasingCurve(QEasingCurve.Type.OutBack)
         self.landing.valueChanged.connect(self._arrive)
         self.landing.finished.connect(self._landing_finished)
+        self.spread=Spring(self,{'spread':0},lambda _:self.update(),motion)
+
+    def set_hover(self,value):
+        super().set_hover(value)
+        from native_ui_common import reduced_motion
+        from ui_transitions import STACK_SPREAD_RESPONSE_SECONDS,STACK_SPREAD_DAMPING
+        if not self.motion or reduced_motion():self.spread.jump({'spread':0});return
+        if value and self.refs and set(self._layers)!=set(self.refs):
+            self._layers={ref:stack_pixmap(self.repository,self.refs,128,dpr=self.devicePixelRatioF(),
+                preview_cache=self.preview_cache,front_art=self._front_art,layer_ref=ref) for ref in self.refs}
+        self.spread.animate({'spread':float(bool(value and self.refs))},response=STACK_SPREAD_RESPONSE_SECONDS,damping=STACK_SPREAD_DAMPING)
+
+    def hideEvent(self,event):
+        self.spread.jump({'spread':0});super().hideEvent(event)
+
+    def _spread_pixmap(self,value):
+        ratio=self.devicePixelRatioF();result=QPixmap(round(128*ratio),round(128*ratio));result.setDevicePixelRatio(ratio);result.fill(Qt.transparent)
+        painter=QPainter(result);painter.setRenderHints(QPainter.Antialiasing|QPainter.SmoothPixmapTransform)
+        for index,ref in enumerate(self.refs):
+            layer=self._layers.get(ref)
+            if layer is None:continue
+            depth=len(self.refs)-1-index;painter.save();painter.translate(FAN_PIVOT_X_PX,FAN_PIVOT_Y_PX)
+            painter.rotate(value*(FAN_FRONT_ANGLE_DEGREES if depth==0 else -depth*FAN_LAYER_ANGLE_DEGREES));painter.translate(-FAN_PIVOT_X_PX,-FAN_PIVOT_Y_PX)
+            painter.translate(-depth*3.6*value,depth*value);painter.drawPixmap(0,0,layer);painter.restore()
+        painter.end();return result
 
     def _arrive(self,value):
         self.arrival=float(value);self.update()
@@ -246,6 +276,8 @@ class StackTile(ContentTile):
             ratio=self.devicePixelRatioF()
             if self.landing.state()==QAbstractAnimation.State.Running:
                 self._pixmap=stack_pixmap(self.repository,self.refs,128,dpr=ratio,preview_cache=self.preview_cache,arrival=self.arrival,front_art=self._front_art)
+            elif self.spread.values['spread']>.001 and set(self._layers)==set(self.refs):
+                self._pixmap=self._spread_pixmap(self.spread.values['spread'])
             else:
                 if ratio!=self._stack_dpr:
                     self._stack_cache=stack_pixmap(self.repository,self.refs,128,dpr=ratio,preview_cache=self.preview_cache)

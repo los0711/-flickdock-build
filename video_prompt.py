@@ -8,8 +8,10 @@ from reference_widgets import button
 from native_ui_common import colors
 from sync_files import DiskWork
 from video_links import LinkPromptHistory,candidate_link,recognized_video
+from flickdock_icons import app_icon
 
 PROMPT_DURATION_MS=5000
+PROMPT_LOGO_SIZE_PX=24
 
 
 class VideoLinkPrompt(ReferenceModalDialog):
@@ -18,6 +20,9 @@ class VideoLinkPrompt(ReferenceModalDialog):
         self.setWindowFlags(Qt.Tool|Qt.FramelessWindowHint|Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setWindowTitle('视频链接解析')
+        header=QHBoxLayout();self.logo=QLabel(self.body);self.logo.setFixedSize(PROMPT_LOGO_SIZE_PX,PROMPT_LOGO_SIZE_PX)
+        self.logo.setPixmap(app_icon().pixmap(PROMPT_LOGO_SIZE_PX,PROMPT_LOGO_SIZE_PX));self.logo.setAccessibleName('FlickDock')
+        header.addWidget(self.logo);header.addStretch();self.body_layout.addLayout(header)
         self.heading=QLabel('检测到视频链接，是否解析？',self.body);self.heading.setTextFormat(Qt.PlainText);self.body_layout.addWidget(self.heading)
         self.site=QLabel(self.body);self.site.setTextFormat(Qt.PlainText);self.site.setWordWrap(True);self.body_layout.addWidget(self.site)
         actions=QHBoxLayout();actions.addStretch()

@@ -10,9 +10,7 @@ sys.path.insert(0, str(root))
 from app_version import APP_VERSION
 from p2p_assets import bundle_assets
 p2p_binaries,p2p_datas=bundle_assets()
-from video_assets import bundle_assets as video_bundle_assets
 from PyInstaller.utils.hooks import collect_all
-video_binaries,video_datas=video_bundle_assets()
 yt_datas,yt_binaries,yt_hidden=collect_all('yt_dlp')
 ejs_datas,ejs_binaries,ejs_hidden=collect_all('yt_dlp_ejs')
 
@@ -32,8 +30,8 @@ architecture = os.environ.get('FLICKDOCK_TARGET_ARCH') or None
 icon = root / 'build' / 'macos' / 'FlickDock.icns'
 if not icon.is_file():
     raise FileNotFoundError('Run build_macos.py first to generate the original SVG icon.')
-analysis = Analysis([str(root / 'mac_entry.py')], pathex=[str(root)], binaries=p2p_binaries+video_binaries+yt_binaries+ejs_binaries,
-    datas=[(str(path), destination) for path, destination in assets]+p2p_datas+video_datas+yt_datas+ejs_datas,
+analysis = Analysis([str(root / 'mac_entry.py')], pathex=[str(root)], binaries=p2p_binaries+yt_binaries+ejs_binaries,
+    datas=[(str(path), destination) for path, destination in assets]+p2p_datas+yt_datas+ejs_datas,
     hiddenimports=['Quartz', 'Quartz.CoreGraphics', 'Foundation', 'objc', '_hashlib',
                    'ssl', '_ssl', 'ctypes', 'ctypes.util', 'verify_transfers',
                    'keyring.backends.macOS', 'keyring.backends.macOS.api',

@@ -329,9 +329,13 @@ class PeerSync(QObject):
         from adaptive_stream import AdaptiveStream
         raw=state['raw']
         def alternative(event,configuration):
+            if configuration['directOnly'] and self._qa_force_relay:return None
             if self._qa_force_relay:configuration['forceRelay']=True
             servers=list(getattr(self.wan,'_sync_ice',[]))
             if 'stun:stun.cloudflare.com:3478' not in servers:servers.insert(0,'stun:stun.cloudflare.com:3478')
+            if configuration['directOnly']:
+                servers=[row for row in servers if isinstance(row,str) and row.startswith(('stun:','stuns:'))]
+                configuration['preferTls']=False
             if configuration['forceRelay'] and not any(isinstance(row,dict) for row in servers):return None
             from wan_transfer import _turn_http_proxy
             proxies={str(row['port']):_turn_http_proxy(row['port']) for row in servers if isinstance(row,dict) and row['relayType']=='TurnTls'}

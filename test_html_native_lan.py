@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QFontDatabase
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton
 
 from app_settings import SettingsStore
@@ -48,7 +49,7 @@ class NativeLanTests(unittest.TestCase):
         self.assertEqual(self.dialog.minimumSize().toTuple(),(min(824,area.width()-16),min(660,area.height()-16)))
         self.assertEqual(self.dialog.title_bar.height(),48)
         panel=self.dialog.panel
-        self.assertAlmostEqual(panel.send_column.width()/panel.activity_column.width(),5/7,delta=.015)
+        self.assertAlmostEqual(panel.left_column.width()/panel.activity_scroll.width(),1,delta=.005)
         self.assertFalse(self.dialog.isModal())
         seen=[];self.dialog.overview_requested.connect(lambda:seen.append('overview'))
         self.dialog.back_button.click();self.assertEqual(seen,['overview'])
@@ -94,9 +95,11 @@ class NativeLanTests(unittest.TestCase):
                          'received':106*1024**2,'total':148*1024**2})
         panel.show_offer({'id':'incoming','peer':"Roger's MacBook Pro",'count':3,
                          'names':['Design_System_v2.fig'],'total':86*1024**2,'code':'849249'})
-        APP.processEvents()
+        QTest.qWait(30)
         self.assertGreaterEqual(self.dialog.card.height(),540)
-        for widget in (panel.history_scroll,panel.receive_path,panel.devices,panel.send_button):
+        self.assertTrue(panel.destination_bar.rect().contains(panel.receive_path.mapTo(panel.destination_bar,panel.receive_path.rect().bottomRight())))
+        self.assertTrue(panel.left_column.rect().contains(panel.send_button.mapTo(panel.left_column,panel.send_button.rect().bottomRight())))
+        for widget in (panel.history_scroll,panel.devices_list):
             scroll=next(area for area in (panel.send_scroll,panel.activity_scroll)
                         if area.widget().isAncestorOf(widget))
             viewport=scroll.viewport();bar=scroll.verticalScrollBar()

@@ -53,6 +53,8 @@ jobs:
       - name: Verify transfer isolation, display metadata and finite animation lifecycle
         run: |
           build/macos-venv/bin/python -m unittest test_stability_v1822 test_resources_v1822.ResourceTests test_motion_resources_v1822.MotionTests test_motion_resources_v1822.DisplayMetadataTests test_motion_resources_v1822.MacVolumeTests test_receive_lifecycle_v1822.ReceiveLifecycleTests test_transfer_entry_v1822.EntryTests test_small_upload_lane.SmallLaneTests -q
+          build/macos-venv/bin/python -m unittest test_workbench_v1823 -q
+          p2p/runtime/node p2p/test-rtc-lifecycle.mjs
       - name: Measure verified local LAN loopback transfer
         run: |
           build/macos-venv/bin/python bench_lan_throughput_v183.py --size-mib 128 --output "../outputs/mac-lan-${{ matrix.arch }}.json"

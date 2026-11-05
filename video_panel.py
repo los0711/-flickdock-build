@@ -17,6 +17,7 @@ MAX_DOWNLOADS=2
 
 class VideoController(QObject):
     changed=Signal()
+    preview_requested=Signal(object)
     def __init__(self,manager):
         super().__init__(manager.app);self.manager=manager;self.entries=[];self.jobs=set();self.extracting=None
         self.generation=0;self.message='支持主流视频站点、X、Facebook；其他网站也可粘贴链接尝试。';self.closed=False;self.priority=False
@@ -128,30 +129,43 @@ class VideoCard(QFrame):
         self.choice.currentIndexChanged.connect(self._select);actions.addWidget(self.choice,1)
         self.choice.setAccessibleName('下载画质与音质')
         self.download=button('下载','download','secondary',parent=self);self.transfer=button('','send',parent=self);self.shelf=button('','plus',parent=self)
+        self.preview=button('','play',parent=self);self.preview.setAccessibleName('预览已下载的视频或音频');self.preview.setToolTip('下载完成后预览')
+        self.preview.clicked.connect(lambda:controller.preview_requested.emit(row))
         self.transfer.setAccessibleName('下载并传输');self.transfer.setToolTip('传输文件');self.shelf.setAccessibleName('下载并加入搁架');self.shelf.setToolTip('加入搁架')
         for control,action in ((self.download,'download'),(self.transfer,'transfer'),(self.shelf,'shelf')):
             control.clicked.connect(lambda checked=False,action=action:controller.action(row,action));actions.addWidget(control)
         self.cancel_button=button('','close',parent=self);self.cancel_button.setAccessibleName('取消下载');self.cancel_button.clicked.connect(lambda:controller.cancel(row));actions.addWidget(self.cancel_button)
+        actions.insertWidget(2,self.preview)
         layout.addLayout(actions)
         self.progress=QProgressBar(self);self.progress.setFixedHeight(4);self.progress.setTextVisible(False);layout.addWidget(self.progress)
         self.status=QLabel(self);self.status.setObjectName('videoMeta');self.status.setTextFormat(Qt.PlainText);self.status.setWordWrap(True);layout.addWidget(self.status)
         self.refresh()
 
-    def _select(self):self.row['choice']=self.choice.currentData();self.row['path']=None
+    def _select(self):
+        self.row.update(choice=self.choice.currentData(),path=None,status='ready',progress=None,received=0,total=None,speed=None,error='')
+        self.row['actions'].clear();self.refresh()
 
     def refresh(self):
         row=self.row;duration=row.get('duration');minutes=f'{int(duration)//60}:{int(duration)%60:02}' if duration is not None else ''
-        self.meta.setText(' · '.join(part for part in (row.get('uploader',''),minutes) if part))
+        option=next(value for value in row['options'] if value['id']==row['choice'])
+        size=option.get('bytes');size_label='大小未知'
+        if row.get('path') and row['status']=='complete':size=row['received'];approximate=False
+        else:approximate=option.get('approximate',False)
+        if size:
+            from lan_panel import _size as human_size
+            size_label=('约 ' if approximate else '')+human_size(size)
+        self.meta.setText(' · '.join(part for part in (row.get('uploader',''),minutes,size_label) if part))
         busy=row.get('job') is not None or row['status']=='queued';self.choice.setEnabled(not busy)
         self.cancel_button.setVisible(busy);self.progress.setVisible(busy)
         self.download.setText('打开' if row['status']=='complete' and row.get('path') else '下载')
         self.download.setEnabled(not busy)
+        self.preview.setEnabled(bool(row.get('path')) and row['status']=='complete')
         if row['progress'] is None:
             from native_ui_common import reduced_motion
             if reduced_motion():self.progress.hide()
             else:self.progress.setRange(0,0)
         else:self.progress.setRange(0,1000);self.progress.setValue(round(row['progress']*1000))
-        labels={'ready':'选择下载、传输或加入搁架。','queued':'等待下载…','downloading':'正在下载…','processing':'正在整理音视频…','complete':'下载完成','cancelled':'已取消','error':row.get('error','下载失败。')}
+        labels={'ready':'选择下载、传输或加入搁架。','queued':'等待下载…','preparing':'首次使用，正在准备下载组件…','selecting':'正在选择下载线路…','downloading':'正在下载…','processing':'正在整理音视频…','complete':'下载完成','cancelled':'已取消','error':row.get('error','下载失败。')}
         text=labels.get(row['status'],'')
         if row['status']=='downloading':
             if row['progress'] is not None:text=f'{row["progress"]:.0%}'
@@ -173,6 +187,14 @@ class VideoDialog(ReferenceModalDialog):
         prompt_row=QHBoxLayout();self.prompt=SettingsToggleSwitch('复制视频链接时提示解析',self.body);prompt_row.addWidget(self.prompt);prompt_row.addStretch();self.body_layout.addLayout(prompt_row)
         self.prompt.toggled.connect(self._prompt_changed)
         self.message=QLabel(self.body);self.message.setObjectName('videoMeta');self.message.setTextFormat(Qt.PlainText);self.message.setWordWrap(True);self.body_layout.addWidget(self.message)
+        from media_preview import MediaPreview
+        self._preview_key=None
+        self.preview_box=QFrame(self.body);self.preview_box.setObjectName('videoResult')
+        preview_layout=QVBoxLayout(self.preview_box);preview_layout.setContentsMargins(12,12,12,12);preview_layout.setSpacing(8)
+        self.preview_title=QLabel('下载完成后，可在此预览视频与音频。',self.preview_box);self.preview_title.setTextFormat(Qt.PlainText);self.preview_title.setObjectName('videoMeta');self.preview_title.setWordWrap(True)
+        preview_layout.addWidget(self.preview_title);self.media=MediaPreview(self.preview_box,motion=bool(getattr(manager,'motion',True)))
+        self.media.setMinimumHeight(220);self.media.hide();preview_layout.addWidget(self.media);self.body_layout.addWidget(self.preview_box)
+        controller.preview_requested.connect(self._preview)
         self.results=QVBoxLayout();self.results.setSpacing(10);self.body_layout.addLayout(self.results)
         folder_row=QHBoxLayout();folder_row.setSpacing(8);self.folder=QLabel(self.body);self.folder.setObjectName('videoMeta');self.folder.setTextFormat(Qt.PlainText);self.folder.setWordWrap(True);folder_row.addWidget(self.folder,1)
         change=button('更改位置',parent=self.body);change.clicked.connect(self._choose_folder);folder_row.addWidget(change)
@@ -180,6 +202,16 @@ class VideoDialog(ReferenceModalDialog):
         controller.changed.connect(self.refresh);manager.settings.changed.connect(self.refresh);self.refresh()
 
     def _parse(self):self.controller.parse(self.url.text())
+    def _preview(self,row):
+        if row not in self.controller.entries or not row.get('path'):return
+        self._preview_key=row['key'];self.preview_title.setText(row['title']);self.media.show();self.media.set_source(row['path']);self.adjustSize()
+        QTimer.singleShot(0,self,lambda:self.scroll.ensureWidgetVisible(self.preview_box,8,8))
+
+    def hideEvent(self,event):
+        self._clear_preview();super().hideEvent(event)
+
+    def _clear_preview(self):
+        self._preview_key=None;self.media.release_source();self.media.hide();self.preview_title.setText('下载完成后，可在此预览视频与音频。')
     def _prompt_changed(self,value):
         try:self.manager.settings.update(video_link_prompt=value)
         except (ValueError,OSError) as error:self.controller.message=str(error);self.refresh()
@@ -197,12 +229,14 @@ class VideoDialog(ReferenceModalDialog):
     def refresh(self):
         self.set_surface_theme(self.manager.settings.theme);dark=self.manager.settings.theme=='dark';self.close_button.dark=dark;self.prompt.dark=dark
         c=colors(self.manager.settings.theme)
+        self.media.apply_theme(self.manager.settings.theme)
         self.setStyleSheet(f'QLabel{{color:{c["text"]};background:transparent;font-size:12px;}} QLabel#videoHeading{{font-size:18px;font-weight:600;}} QLabel#videoTitle{{font-size:13px;font-weight:600;}} QLabel#videoMeta{{font-size:11px;color:{c["secondary"]};}} QFrame#videoResult{{background:{c["card"]};border:0;border-radius:12px;}} QLineEdit{{background:{c["control"]};color:{c["text"]};border:0;border-radius:8px;padding:9px;}} QProgressBar{{background:{c["control"]};border:0;border-radius:2px;}} QProgressBar::chunk{{background:{c["link"]};border-radius:2px;}}')
         self.setStyleSheet(self.styleSheet()+f'QComboBox{{background:{c["control"]};color:{c["text"]};border:0;border-radius:8px;padding:5px 30px 5px 10px;min-height:22px;}} QComboBox:disabled{{color:{c["muted"]};}} QComboBox:focus{{border:1px solid {c["link"]};}} QComboBox::drop-down{{border:0;width:28px;background:transparent;}} QComboBox::down-arrow{{image:none;}} QPushButton#settingsClose{{background:transparent;border:0;border-radius:8px;padding:0;}} QPushButton#settingsClose:hover{{background:{c["hover"]};}} QPushButton#settingsClose:pressed{{background:{c["selected"]};}}')
         blocked=self.prompt.blockSignals(True);self.prompt.setChecked(self.manager.settings.video_link_prompt);self.prompt.blockSignals(blocked)
         self.folder.setText('保存位置：'+self.manager.settings.video_download_dir);self.message.setText(self.controller.message)
         busy=self.controller.extracting is not None;self.parse_button.setEnabled(not busy);self.parse_button.setText('解析中…' if busy else '解析');self.stop_button.setVisible(busy)
         keys={row['key'] for row in self.controller.entries}
+        if self._preview_key is not None and (self._preview_key not in keys or not any(row['key']==self._preview_key and row.get('path') for row in self.controller.entries)):self._clear_preview()
         for key in list(self.cards):
             if key not in keys:card=self.cards.pop(key);self.results.removeWidget(card);card.hide();card.deleteLater()
         for row in self.controller.entries:

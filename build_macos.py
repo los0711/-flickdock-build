@@ -183,7 +183,7 @@ def main(arguments=None):
         if not python.is_file():
             venv.EnvBuilder(with_pip=True).create(environment)
         run([python, '-m', 'pip', 'install', 'PySide6==6.12.0', 'PyInstaller==6.22.3',
-             'pyobjc-framework-Quartz>=11,<13', 'keyring==25.7.0','yt-dlp[default]==2026.10.26','imageio-ffmpeg==0.6.0'])
+             'pyobjc-framework-Quartz>=11,<13', 'keyring==25.7.0','yt-dlp[default]==2026.10.26'])
         if options.target_arch=='x86_64':
             # Intel currently builds this dependency from source. Dynamic
             # Homebrew OpenSSL can collide with Python's same-named dylibs

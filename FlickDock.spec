@@ -9,9 +9,7 @@ sys.path.insert(0,str(root))
 from bundle_policy import filter_bundle
 from p2p_assets import bundle_assets
 p2p_binaries,p2p_datas=bundle_assets()
-from video_assets import bundle_assets as video_bundle_assets
 from PyInstaller.utils.hooks import collect_all
-video_binaries,video_datas=video_bundle_assets()
 yt_datas,yt_binaries,yt_hidden=collect_all('yt_dlp')
 ejs_datas,ejs_binaries,ejs_hidden=collect_all('yt_dlp_ejs')
 
@@ -38,8 +36,8 @@ unused_qt=['QtWebEngineCore','QtWebEngineWidgets','QtWebEngineQuick','QtPdf','Qt
            'QtQmlWorkerScript','QtVirtualKeyboard','QtOpenGL','QtOpenGLWidgets',
            'QtSvgWidgets','QtSql','QtPrintSupport','QtHelp','QtTest']
 a=Analysis(
-    [str(root/'flickdock.py')],pathex=[str(root)],binaries=p2p_binaries+video_binaries+yt_binaries+ejs_binaries,
-    datas=[(str(source),destination) for source,destination in asset_files]+p2p_datas+video_datas+yt_datas+ejs_datas,
+    [str(root/'flickdock.py')],pathex=[str(root)],binaries=p2p_binaries+yt_binaries+ejs_binaries,
+    datas=[(str(source),destination) for source,destination in asset_files]+p2p_datas+yt_datas+ejs_datas,
     # scrypt for cloud accounts needs _hashlib/libcrypto. Keep the native
     # dependency closure; the network transport still uses Qt/Schannel.
     hiddenimports=['PySide6.QtSvg','PySide6.QtMultimedia','PySide6.QtMultimediaWidgets','PySide6.QtWebSockets',

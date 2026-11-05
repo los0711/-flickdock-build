@@ -67,7 +67,7 @@ def public_request(url,allow_local=False):
         raise ValueError('视频链接指向本机或局域网，已停止请求。')
 
 
-def media_options(info):
+def media_options(info,ydl):
     formats=[row for row in info.get('formats',[]) if isinstance(row,dict) and not row.get('has_drm')]
     video_exts={'mp4','mkv','mov','m4v','webm','flv','ts'};audio_exts={'mp3','m4a','aac','opus','ogg','flac','wav','wma'}
     sources=formats or [info]
@@ -82,6 +82,16 @@ def media_options(info):
                 result.append(dict(id=str(height),label=f'视频 · 最高 {height}p',format=f'bv*[height<={height}]+ba/b[height<={height}]'))
     if any(row.get('acodec')!='none' and (row.get('acodec') is not None or row.get('ext') in video_exts|audio_exts) for row in sources):
         result.append(dict(id='audio',label='音频 · 原始音质',format='ba/b'))
+    for option in result:
+        selected=ydl._select_formats(formats or [info],ydl.build_format_selector(option['format']))
+        tracks=[track for item in selected for track in item.get('requested_formats',[item])]
+        sizes=[];approximate=False
+        for track in tracks:
+            exact=track.get('filesize');estimate=track.get('filesize_approx')
+            size=exact if type(exact) in (int,float) and math.isfinite(exact) and exact>0 else estimate
+            if type(size) not in (int,float) or not math.isfinite(size) or size<=0:sizes=[];break
+            sizes.append(round(size));approximate|=size!=exact
+        option.update(bytes=sum(sizes) if sizes else None,approximate=approximate or option['id']=='audio')
     return result
 
 
@@ -110,23 +120,36 @@ def downloader(request,progress):
         def _create_instance(self,*args,**kwargs):
             opener=super()._create_instance(*args,**kwargs);opener.add_handler(Guard());return opener
     class PublicDownloader(YoutubeDL):
+        def __init__(self,params):
+            super().__init__(params)
+            from video_cdn import BilibiliMirrorsIE
+            self.add_info_extractor(BilibiliMirrorsIE(self))
+
+        def dl(self,name,info,subtitle=False,test=False):
+            from video_cdn import select_cdn
+            if info.get('_flickdock_cdn_urls'):
+                emit('progress',phase='selecting',bytes=0,total=None,speed=None);select_cdn(self,info)
+            return super().dl(name,info,subtitle=subtitle,test=test)
+
         def build_request_director(self,handlers,preferences=None):
             return super().build_request_director([PublicUrllibRH],preferences)
     class Logger:
         def debug(self,message):pass
         def warning(self,message):emit('warning',message=re.sub(r'\x1b\[[0-9;]*m','',str(message))[:600])
         def error(self,message):pass
-    tools=ROOT/'assets/video-tools'
+    tools=None
+    if request['action']=='download':
+        from video_runtime import ensure_video_runtime
+        tools=ensure_video_runtime(lambda **value:emit('progress',**value))
     node=ROOT/'p2p/runtime'/('node.exe' if sys.platform=='win32' else 'node')
     params=dict(logger=Logger(),quiet=True,no_warnings=False,noprogress=True,noplaylist=True,
         playlistend=MAX_RESULTS,skip_download=False,ignoreerrors=False,socket_timeout=SOCKET_TIMEOUT_SECONDS,
         retries=2,fragment_retries=2,extractor_retries=1,concurrent_fragment_downloads=4,
         cachedir=False,windowsfilenames=True,trim_file_name=160,overwrites=False,
-        format='bv*+ba/b',ffmpeg_location=str(tools),js_runtimes={'node':{'path':str(node)}},remote_components=[],
+        format='bv*+ba/b',ffmpeg_location=str(tools) if tools else None,js_runtimes={'node':{'path':str(node)}},remote_components=[],
         hls_prefer_native=True,external_downloader={'default':'native'},progress_hooks=[progress],max_filesize=MAX_DOWNLOAD_BYTES,
         postprocessor_hooks=[lambda state:emit('progress',phase='processing',bytes=0,total=None,speed=None)],
         compat_opts={'no-certifi'},enable_file_urls=False)
-    if not (tools/('ffmpeg.exe' if sys.platform=='win32' else 'ffmpeg')).is_file():raise ValueError('视频下载组件缺失，请重新安装 FlickDock。')
     return PublicDownloader(params)
 
 
@@ -151,7 +174,7 @@ def execute(request):
             info=ydl.extract_info(url,download=False);rows=[]
             for entry in media_entries(info):
                 if entry.get('has_drm') or not filter_formats(entry):continue
-                options=media_options(entry)
+                options=media_options(entry,ydl)
                 if not options:continue
                 page=entry.get('webpage_url') or entry.get('original_url') or url
                 public_request(page,allow_local)
@@ -172,7 +195,7 @@ def execute(request):
             entry=next((entry for entry in media_entries(info) if str(entry.get('id',''))==request['id']),None)
             if entry is None:raise ValueError('视频内容已变化，请重新解析该链接。')
             if not filter_formats(entry):raise ValueError('该视频的下载协议暂不支持，或内容正在直播。')
-            option=next((row for row in media_options(entry) if row['id']==request.get('option')),None)
+            option=next((row for row in media_options(entry,ydl) if row['id']==request.get('option')),None)
             if option is None:raise ValueError('该画质已不可用，请重新解析该链接。')
             ydl.params.update(format=option['format'],paths={'home':str(stage)},outtmpl={'default':'%(title).90B [%(id).40B].%(ext)s'})
             if option['id']=='audio':
