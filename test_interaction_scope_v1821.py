@@ -105,7 +105,7 @@ class UtilityPreferenceTests(unittest.TestCase):
                 if event.type()==QEvent.Paint:self.paints+=1
                 return False
         with tempfile.TemporaryDirectory() as directory:
-            manager=SimpleNamespace(settings=SettingsStore(Path(directory)),motion=False,_dock_preview_values=None,
+            manager=SimpleNamespace(settings=SettingsStore(Path(directory)),motion=False,_dock_preview_values=None,shelves=[],
                 _quitting=False,settings_open=lambda:True,_settings_prompt_active=lambda:False,
                 dock_preview=SimpleNamespace(hide=Mock()),settings_edge_hint=SimpleNamespace(hide=Mock()))
             edge=DockHandle(manager,APP.primaryScreen());manager.edge=edge;manager.edges={'primary':edge}
