@@ -3,6 +3,7 @@ import os
 os.environ['QT_QPA_PLATFORM']='offscreen'
 
 import unittest
+import time
 from math import ceil
 from unittest.mock import patch
 from PySide6.QtCore import QAbstractAnimation,QCoreApplication,QEvent,QPoint,QRect,QRectF,QTimer,Qt
@@ -70,11 +71,14 @@ class DisplayFramesTests(unittest.TestCase):
         first.stop();second.stop();flush();self.assertFalse(clock.pulses)
 
     def test_hidden_window_has_no_frame_loop_and_show_resumes_it(self):
-        pulse=FramePulse(self.window);pulse.start();flush();clock=pulse.clock
+        delivered=[];pulse=FramePulse(self.window);pulse.timeout.connect(lambda:delivered.append(True))
+        pulse.start();flush();clock=pulse.clock
         self.window.hide();flush()
         with patch.object(clock.handle,'requestUpdate') as request:
             clock.pending=False;clock.request_next();self.assertEqual(request.call_count,0)
-        self.window.show();flush();self.assertTrue(pulse.isActive());self.assertTrue(clock.pending)
+        before=len(delivered);self.window.show();flush();deadline=time.monotonic()+1.
+        while len(delivered)==before and time.monotonic()<deadline:QTest.qWait(10)
+        self.assertTrue(pulse.isActive());self.assertGreater(len(delivered),before)
         pulse.stop()
 
     def test_reparented_surface_leaves_the_previous_native_clock(self):
