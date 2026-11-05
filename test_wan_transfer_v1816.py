@@ -4,7 +4,7 @@ from unittest.mock import patch
 from pathlib import Path
 from uuid import uuid4
 from PySide6.QtWidgets import QApplication
-from PySide6.QtCore import QCoreApplication,QEvent
+from PySide6.QtCore import QCoreApplication,QEvent,QPoint
 from wan_transfer import WanTransferService
 from webrtc_stream import WebRTCStream
 
@@ -90,7 +90,7 @@ class WanRecovery(unittest.TestCase):
         self.assertEqual(self.service._transfers,{})
         self.service._peers['d'*64]['online']=True;self.service._disconnected()
         self.assertFalse(changes[-1][0]['online'])
-    def test_code_circle_and_delete_button_use_live_identity_in_both_themes(self):
+    def test_code_progress_and_delete_button_use_live_identity_in_both_themes(self):
         from app_settings import SettingsStore
         from lan_panel import LanDialog
         self.service._connected=True
@@ -102,16 +102,18 @@ class WanRecovery(unittest.TestCase):
                     recent=[dict(id='d'*64,name='Mac',online=True)])
                 panel=dialog.panel
                 for theme in ('light','dark'):
-                    dialog.apply_theme(theme);APP.processEvents();self.assertFalse(panel.code_countdown.grab().isNull())
+                    dialog.apply_theme(theme);APP.processEvents();self.assertFalse(panel.code_progress.grab().isNull())
                     self.assertTrue(panel.send_code_value.isEnabled())
                     self.assertEqual(panel.send_code_value.text(),'ABCD2345')
-                    self.assertLessEqual(abs(panel.send_code_value.geometry().center().y()-panel.code_countdown.geometry().center().y()),1)
+                    self.assertFalse(panel.code_progress.isTextVisible())
+                    self.assertGreater(panel.code_progress.mapTo(panel,QPoint()).y(),panel.send_code_value.mapTo(panel,panel.send_code_value.rect().bottomLeft()).y())
                 panel.devices.remove_requested.emit('d'*64);self.assertEqual(self.sent[-1],dict(type='remove',peer='d'*64))
                 self.message(type='peers',peers=[]);self.assertEqual(panel.devices.count(),0)
-            QApplication.clipboard().setText('not a code')
-            with patch('wan_transfer.time.monotonic',return_value=1301):
-                panel.send_code_value._copy();self.assertEqual(QApplication.clipboard().text(),'not a code')
-                panel.code_countdown._tick();self.assertFalse(panel.send_code_value.isEnabled())
+            from unittest.mock import Mock
+            clipboard=Mock()
+            with patch('wan_transfer.time.monotonic',return_value=1301),patch.object(QApplication,'clipboard',return_value=clipboard):
+                panel.send_code_value._copy();clipboard.setText.assert_not_called()
+                panel.code_progress._tick();self.assertFalse(panel.send_code_value.isEnabled())
         finally:dialog.close();dialog.deleteLater();APP.processEvents()
     def test_request_not_acknowledged_by_local_queue(self):
         state=self.state();state.pop('requested');request=dict(state['request'])
