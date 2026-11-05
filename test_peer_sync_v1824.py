@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 import time
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 from uuid import uuid4
 from PySide6.QtCore import QObject,Signal,QTimer,QMimeData,QUrl
 from PySide6.QtGui import QImage,QColor
@@ -33,9 +34,10 @@ class Wan(QObject):
     def __init__(self,hub,account,index):
         super().__init__();self.hub=hub;self.account=account;self.device_id=f'{index:064x}'
         self._connected=False;self._bound_identity=(account.device_id,account.api.token)
+        self.features=['mesh-v1','routes-v1']
     def peers(self):
         return [dict(id=wan.device_id,name='QA device',online=wan._connected and wan.account.signed_in,
-                     account_device_id=wan.account.device_id,features=['mesh-v1','routes-v1'],
+                     account_device_id=wan.account.device_id,features=wan.features,
                      account_device=wan.account.account['id']==self.account.account['id'])
                 for wan in self.hub.wans if wan is not self]
     def _send_signal(self,value):self.hub.forward(self,value);return True
@@ -61,6 +63,50 @@ class Hub:
 
 
 class PeerSyncTests(unittest.TestCase):
+    def test_one_copy_uses_lan_p2p_and_r2_for_different_devices_without_duplicate_cloud_bodies(self):
+        from peer_sync import try_nearby
+        from adaptive_stream import AdaptiveStream
+        cloud=ClipboardHub();syncs=[];clips=[]
+        fourth=Account(self.clients[0].account.account['id']);fourth_wan=Wan(self.hub,fourth,4)
+        fourth_wan.features=[];fourth_wan._connected=True;self.hub.wans.append(fourth_wan)
+        lan_pair={self.clients[0].wan.device_id,self.clients[1].wan.device_id}
+        def nearby(raw,role,cancel):
+            first,second=self.hub.links[raw.identifier]
+            return try_nearby(raw,role,cancel) if {first.device_id,second.device_id}==lan_pair else raw
+        def adaptive(raw,nearby,**options):
+            if nearby is not raw:options['primary']=False
+            return AdaptiveStream(raw,nearby,**options)
+        for mesh in self.clients:
+            for peer in list(mesh._states):mesh._drop(peer,retry=False)
+        flush()
+        with patch('peer_sync.try_nearby',side_effect=nearby),patch('adaptive_stream.AdaptiveStream',side_effect=adaptive):
+            for mesh in self.clients:mesh._reconcile()
+            until(lambda:all(len(mesh.available())==2 for mesh in self.clients),seconds=20)
+            self.assertEqual(self.clients[0].route_for_peer(self.clients[1].wan.device_id),'lan')
+            self.assertEqual(self.clients[0].route_for_peer(self.clients[2].wan.device_id),'p2p')
+            try:
+                for index,account in enumerate([mesh.account for mesh in self.clients]+[fourth]):
+                    token=account.api.token;api=cloud.api(account.device_id);api.token=token;account.api=api
+                    events=Events();cloud.events.append(events);clip=Clipboard();clips.append(clip)
+                    client=ClipboardSync(account,events,self.base/f'mixed-clipboard-{index}',clipboard=clip)
+                    if index<3:client.peer_bridge=ClipboardPeerBridge(client,self.clients[index])
+                    syncs.append(client)
+                flush();original=self.base/'single-original-under-20MB.bin';body=os.urandom(512*1024+19);original.write_bytes(body)
+                mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(original))]);clips[0].setMimeData(mime)
+                until(lambda:all(clip.mimeData().hasUrls() for clip in clips),seconds=20)
+                try:until(lambda:all(sum(row['success'] for row in client.view.get('deliveries',{}).values())==3 for client in syncs),seconds=10)
+                except AssertionError as error:
+                    raise AssertionError([(client.view.get('deliveries'),client.deliveries.cloud_ready,client.deliveries.dirty,
+                                           client.deliveries.pending_route,client.deliveries.inflight) for client in syncs]) from error
+                for clip in clips:self.assertEqual(Path(clip.mimeData().urls()[0].toLocalFile()).read_bytes(),body)
+                for route in ('lan','p2p','cloud'):self.assertEqual(syncs[0].view['deliveries'][route],{'success':1,'total':1})
+                self.assertEqual(sum(method=='GET' and path.endswith('/content') for method,path in cloud.calls),1)
+                self.assertEqual(sum(method=='PUT' for method,_ in cloud.calls),1)
+                self.assertEqual(original.read_bytes(),body)
+            finally:
+                for client in syncs:client.close()
+                until(lambda:all(not client._jobs for client in syncs))
+
     def test_cloud_head_does_not_download_again_while_same_peer_clipboard_is_in_flight(self):
         cloud=ClipboardHub();syncs=[];clips=[];gate=threading.Event();fetches=[];feedback=[]
         for state in self.clients[0]._states.values():
@@ -244,6 +290,8 @@ class PeerSyncTests(unittest.TestCase):
             self.assertIsNone(cloud.head)
             self.assertEqual(syncs[1].view['phase'],'peer');self.assertEqual(syncs[2].view['phase'],'peer')
             until(lambda:syncs[0].view['phase']=='peer')
+            until(lambda:sum(row['success'] for row in syncs[0].view.get('deliveries',{}).values())==2)
+            self.assertEqual(sum(row['total'] for row in syncs[0].view['deliveries'].values()),2)
             self.assertEqual(len(feedback),1);self.assertTrue(feedback[0][0]);self.assertTrue(feedback[0][1]['delivered'])
             self.assertFalse(feedback[0][1]['backed_up']);self.assertIn(feedback[0][1]['route'],('lan','p2p','relay'))
             self.assertIn(syncs[1].view['route'],('lan','p2p','relay'))
@@ -253,6 +301,8 @@ class PeerSyncTests(unittest.TestCase):
             until(lambda:all(client.view['phase']=='synced' for client in syncs),seconds=10)
             self.assertTrue(syncs[1].view['backed_up']);self.assertIn(syncs[1].view['route'],('lan','p2p','relay'))
             self.assertEqual(sum(method=='PUT' for method,_ in cloud.calls),1)
+            until(lambda:all(sum(row['success'] for row in client.view.get('deliveries',{}).values())==2 for client in syncs))
+            self.assertEqual(sum(method=='GET' and path.endswith('/content') for method,path in cloud.calls),0)
             self.assertEqual(len(feedback),1)
         finally:
             for client in syncs:client.close()

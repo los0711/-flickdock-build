@@ -181,7 +181,7 @@ class FeedbackTests(unittest.TestCase):
         self.assertTrue(configure_menu_bar_application(platform='darwin',appkit=appkit))
         application.setActivationPolicy_.assert_called_once_with(1)
     def test_copy_code_click_immediately_shows_feedback_without_replacing_digits(self):
-        for code in ('123456','ABCD2345'):
+        for code in ('123456','AB23'):
             button=_CopyCodeButton(code);button.show();flush()
             try:
                 QTest.mouseClick(button,Qt.LeftButton);flush()

@@ -12,6 +12,22 @@ from flickdock import ShelfManager
 
 
 class PreviewTests(unittest.TestCase):
+    def test_route_badges_show_success_over_targets_without_recopying_or_redecoding(self):
+        self.clip.text('receipt metadata never changes the original clipboard')
+        workspace.until(lambda:self.model.state.get('phase')=='synced')
+        self.shelf.zones['permanent'].clipboard_button.click();workspace.flush()
+        dialog=self.manager.clipboard_preview_dialog;before=list(self.hub.calls);revision=self.model.state['revision']
+        counts={'lan':{'success':1,'total':1},'p2p':{'success':1,'total':2},'cloud':{'success':0,'total':1},'relay':{'success':0,'total':0}}
+        with patch.object(self.model,'_decode') as decode:
+            self.model._update(dict(self.model.state,deliveries=counts));workspace.flush();decode.assert_not_called()
+        self.assertEqual(dialog.route_badges['lan'].text(),'局域网 1/1')
+        self.assertEqual(dialog.route_badges['p2p'].text(),'P2P 1/2')
+        self.assertEqual(dialog.route_badges['cloud'].text(),'R2 0/1')
+        self.assertFalse(dialog.route_badges['relay'].isVisible())
+        self.assertEqual(self.shelf.zones['permanent'].clipboard_button.accessibleDescription(),'本次内容已同步成功 2 台设备')
+        self.assertEqual(self.model.state['revision'],revision);self.assertEqual(self.hub.calls,before)
+        self.assertEqual(self.clip.mimeData().text(),'receipt metadata never changes the original clipboard')
+
     def setUp(self):
         workspace.WorkspaceTests.setUp(self)
         self.patches.enter_context(patch.object(workspace.Screen,'geometry',workspace.Screen.availableGeometry,create=True))

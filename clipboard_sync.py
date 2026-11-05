@@ -263,6 +263,8 @@ class ClipboardSync(QObject):
         self._pushed_head=None
         self._prepared_receive=None
         self._view_revision=0;self.view=dict(value=self._snapshot(),phase='local',id='',revision=0,permission_required=not self._native_access)
+        from clipboard_delivery import ClipboardDeliveries
+        self.deliveries=ClipboardDeliveries(self,base)
         self._applied_version=0;self._receiving_version=0
         self.pool=QThreadPool(self);self.pool.setMaxThreadCount(2)
         self._ignored=None;self._last_sequence=object();self._last_local_signature=object();self._seen='';self._keys=set();self._jobs={};self._pending=None;self._fetching=False;self._refresh_again=False
@@ -286,6 +288,8 @@ class ClipboardSync(QObject):
         events.clipboard_changed.connect(self.refresh)
         payload=getattr(events,'clipboard_payload',None)
         if payload is not None:payload.connect(self._pushed)
+        delivery=getattr(events,'clipboard_delivery',None)
+        if delivery is not None:delivery.connect(self.deliveries.merge)
         events.socket.connected.connect(self.refresh)
         from shared_clipboard_files import ClipboardFileJobs
         self.file_jobs=ClipboardFileJobs(self,base)
@@ -404,6 +408,7 @@ class ClipboardSync(QObject):
         if self._pending is pending:
             self._seen=pending['id'];self._applied_version=max(self._applied_version,head_version(head))
             self._copy_result(pending,True);self._pending=None
+            self.deliveries.committed(head)
         raw=item.get('raw_file')
         if raw and pending.get('shared_files'):self.file_jobs.update(pending,'ready',raw['size'])
         elif raw:self.file_jobs.update(pending,'unavailable')
@@ -438,6 +443,7 @@ class ClipboardSync(QObject):
         if not force and identity==self._identity:
             self.refresh();return
         if self.peer_bridge is not None:self.peer_bridge.reset()
+        self.deliveries.reset()
         files=getattr(self,'file_jobs',None)
         if files is not None:files.save()
         self._identity=identity;self._ignored=None;self._local_retry=None;self._local_fence=None
@@ -526,7 +532,8 @@ class ClipboardSync(QObject):
         same=bool(identity and identity==self.view.get('id'))
         delivery=route if route is not None else self.view.get('route','') if same else ''
         backup=backed_up if backed_up is not None else phase=='synced' or same and self.view.get('backed_up',False)
-        state=dict(value=value,phase=phase,id=identity,revision=self._view_revision,permission_required=not self._native_accessible(),route=delivery,backed_up=backup)
+        state=dict(value=value,phase=phase,id=identity,revision=self._view_revision,permission_required=not self._native_accessible(),route=delivery,backed_up=backup,
+                   deliveries=self.deliveries.summary(identity))
         if state==self.view:return
         self.view=state
         self.view_changed.emit(dict(self.view))
@@ -671,6 +678,7 @@ class ClipboardSync(QObject):
             if not self._valid_task(pending):return
             count=min(raw_file['size'],max(0,sent)) if raw_file else sent
             self.file_jobs.update(pending,'verifying' if sent>=total else 'uploading',count)
+            if total>0 and sent>=total:self._priority_flags(waiting=True)
         self._request('PUT',f'/v1/clipboard/{pending["id"]}/content',uploaded,source=item['path'],headers=headers,
                       progress=progress,_task=pending,**options)
 
@@ -718,6 +726,7 @@ class ClipboardSync(QObject):
             if self.peer_bridge is not None and not self.peer_bridge.accept_cloud_head(head):self._finish_refresh();return
             if identity==self._seen:
                 if head.get('ready') and self.view.get('phase')=='peer':self._set_view(self.view['value'],'synced',identity)
+                self.deliveries.committed(head,result.get('delivery') if isinstance(result,dict) else None)
                 self._finish_refresh();return
             if type(head.get('version')) is int and head['version']<=self._applied_version:self._finish_refresh();return
             if self._local_fence is not None:
@@ -744,6 +753,7 @@ class ClipboardSync(QObject):
             self._priority_flags(receiving=True)
             def prepared(value):
                 if generation!=self._generation:self._finish_refresh();return
+                self._priority_flags(receiving=False)
                 if value is None:self._finish_refresh();self.retry.start();return
                 self._prepared_receive=((identity,kind,size,sha),value,directory)
                 def confirmed(result,error):
@@ -760,14 +770,17 @@ class ClipboardSync(QObject):
                                 self._seen=identity
                                 self._applied_version=max(self._applied_version,head_version(head))
                                 self._set_view(value,'synced',identity,route=head.get('delivery_route','cloud'))
+                                self.deliveries.received(head,head.get('delivery_route','cloud'))
+                                self.deliveries.committed(current,result.get('delivery') if isinstance(result,dict) else None)
                                 self._prepared_receive=None
                             else:self._set_view(value,'error',identity);self.retry.start(5000)
                     else:self._refresh_again=True
                     self._finish_refresh()
                 self._request('GET','/v1/clipboard',confirmed)
             def downloaded(result,error):
-                if error:self._finish_refresh();self.retry.start();return
                 if generation!=self._generation:self._finish_refresh();return
+                self._priority_flags(receiving=False)
+                if error:self._finish_refresh();self.retry.start();return
                 self._work(lambda _:unpack(kind,path,directory),prepared)
             if cached:prepared(cached[1])
             elif is_inline:

@@ -1,9 +1,12 @@
 """A child-surface drop chooser; never a second native popup or shelf import."""
-from PySide6.QtCore import QObject,QEvent,QPoint,QRect,QRectF,Qt,QTimer,QVariantAnimation,QEasingCurve
-from PySide6.QtGui import QColor,QPainter,QPen
+from PySide6.QtCore import QObject,QEvent,QPoint,QRect,QRectF,Qt,QTimer,QEasingCurve
+from PySide6.QtGui import QColor,QPainter,QPainterPath
 from PySide6.QtWidgets import QApplication,QWidget
 from shiboken6 import isValid
 from native_ui_common import reduced_motion,icon
+from display_frames import DisplayAnimation
+
+TRANSFER_DROP_FEEDBACK_MS=160
 
 
 def original_paths(mime):
@@ -18,23 +21,27 @@ class TransferDropSurface(QWidget):
     def __init__(self,parent):
         super().__init__(parent);self.active=None;self.press=0.;self.setAcceptDrops(True)
         self.setAttribute(Qt.WA_ShowWithoutActivating);self.hide()
+        from native_ui_common import DropBorderMotion
+        self.border_motion=DropBorderMotion(self)
+
+    def set_target(self,target):
+        self.active=target;self.border_motion.set_active(self.isVisible())
 
     def target(self,point):
         if not self.rect().contains(point):return None
         return 'lan' if point.y()<self.height()/2 else 'wan'
 
     def paintEvent(self,event):
-        from reference_widgets import palette,ink
+        from reference_widgets import palette
         c=palette();p=QPainter(self);p.setRenderHint(QPainter.Antialiasing)
         for i,(mode,label,glyph) in enumerate((('lan','局域网传输','nearby'),('wan','远程传输','web'))):
             selected=self.active==mode
             rect=QRectF(3,3+i*52,self.width()-6,48)
             if selected and self.press:rect=rect.adjusted(self.press*3,self.press*2,-self.press*3,-self.press*2)
-            p.setBrush(QColor(c['surface']));p.setPen(QPen(ink(c['border']),1));p.drawRoundedRect(rect,8,8)
-            if selected:
-                fill=QColor(c['link']);fill.setAlpha(24);p.setBrush(fill)
-                pen=QPen(QColor(c['link']),1.4,Qt.DashLine);pen.setDashPattern([4,3]);p.setPen(pen)
-                p.drawRoundedRect(rect.adjusted(1,1,-1,-1),7,7)
+            p.setBrush(QColor(c['surface']));p.setPen(Qt.NoPen);p.drawRoundedRect(rect,8,8)
+            path=QPainterPath();path.addRoundedRect(rect.adjusted(1,1,-1,-1),7,7)
+            from ui_theme import current_theme
+            self.border_motion.paint(p,path,dark=current_theme()=='dark',highlight=selected)
             icon(glyph,c['link'] if selected else c['secondary']).paint(p,QRect(16,19+i*52,16,16))
             p.setPen(QColor(c['text'] if selected else c['secondary']))
             p.drawText(rect.adjusted(40,0,-6,0),Qt.AlignVCenter|Qt.AlignLeft,label)
@@ -46,7 +53,7 @@ class TransferEntryRouter(QObject):
         super().__init__(root);self.root=root;self.button=button;self.deliver=deliver
         self.surface=TransferDropSurface(root);self._dropping=False
         self.leave=QTimer(self);self.leave.setSingleShot(True);self.leave.timeout.connect(self.reset)
-        self.feedback=QVariantAnimation(self);self.feedback.setDuration(160)
+        self.feedback=DisplayAnimation(self);self.feedback.setDuration(TRANSFER_DROP_FEEDBACK_MS)
         self.feedback.setStartValue(1.);self.feedback.setEndValue(0.)
         self.feedback.setEasingCurve(QEasingCurve.OutCubic)
         self.feedback.valueChanged.connect(self._press);self.feedback.finished.connect(self.reset)
@@ -59,7 +66,7 @@ class TransferEntryRouter(QObject):
     def _press(self,value):self.surface.press=float(value);self.surface.update()
 
     def reset(self):
-        self.leave.stop();self.surface.hide();self.surface.active=None
+        self.leave.stop();self.surface.hide();self.surface.set_target(None)
         self.surface.press=0.;self._dropping=False
 
     def _show(self):
@@ -87,7 +94,7 @@ class TransferEntryRouter(QObject):
             return False
         self.leave.stop()
         if not self.surface.isVisible():self._show()
-        self.surface.active=self.surface.target(self.surface.mapFrom(self.root,point));self.surface.update()
+        self.surface.set_target(self.surface.target(self.surface.mapFrom(self.root,point)))
         if kind==QEvent.Drop:
             mode=self.surface.active
             if mode is None:self.reset();event.ignore();return True

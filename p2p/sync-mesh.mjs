@@ -24,11 +24,23 @@ function control(value) {
   let row=peers.get(id);
   if(value.type==='init') {
     if(row||peers.size>=MAX_PEERS)throw new Error('Invalid peer initialization');
-    const peer=createPeer(event=>frame('J',{id,event}),(data,done)=>frame('B',Buffer.concat([Buffer.from(id,'hex'),data]),done),()=>{
+    const peer=createPeer(event=>frame('J',{id,event}),(data,done)=>{
+      row.output.push({remaining:data.length,done});row.outputBytes+=data.length;
+      frame('B',Buffer.concat([Buffer.from(id,'hex'),data]));
+    },()=>{
+      row.output.length=0;row.outputBytes=0;
       peers.delete(id);frame('J',{id,event:{type:'closed'}});
     });
-    row={peer,ready:null,writes:Promise.resolve(),pending:0};peers.set(id,row);
+    row={peer,ready:null,writes:Promise.resolve(),pending:0,output:[],outputBytes:0};peers.set(id,row);
     row.ready=peer.control(value).catch(error=>failure(id,error));
+  } else if(row&&value.type==='consume') {
+    if(!Number.isSafeInteger(value.count)||value.count<=0||value.count>row.outputBytes)throw new Error('Invalid application receive credit');
+    let remaining=value.count;row.outputBytes-=remaining;
+    while(remaining){
+      const next=row.output[0],count=Math.min(next.remaining,remaining);
+      next.remaining-=count;remaining-=count;
+      if(!next.remaining){row.output.shift();next.done();}
+    }
   } else if(row)row.ready.then(()=>row.peer.control(value)).catch(error=>failure(id,error));
 }
 process.on('uncaughtException',error=>{process.stderr.write('Native mesh exception: '+String(error.message||error)+'\n');stop();});process.on('SIGTERM',stop);
@@ -48,6 +60,7 @@ try {
         const data=Buffer.from(body.subarray(16));row.pending+=data.length;
         if(row.pending>MAX_PENDING_BYTES){failure(id,new Error('Peer send queue exceeded'));continue;}
         row.writes=row.writes.then(()=>row.ready).then(()=>row.peer.send(data))
+          .then(()=>frame('J',{id,event:{type:'ipc_sent',count:data.length}}))
           .catch(error=>failure(id,error)).finally(()=>{row.pending-=data.length;});
       } else throw new Error('Invalid mesh IPC packet');
     }

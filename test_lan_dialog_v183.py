@@ -106,21 +106,21 @@ class LanDialogTests(unittest.TestCase):
         panel.send_code_value.setText('1 2 3 4 5 6');panel.send_code_value.click()
         self.assertEqual(APP.clipboard().text(),'123456')
         self.assertEqual(panel.send_code_value.text(),'1 2 3 4 5 6')
-        panel._wan=True;panel.peer_code_input.setText('ABCD2345')
+        panel._wan=True;panel.peer_code_input.setText('AB23')
         file=self.root/'queued.dat';file.write_bytes(b'content');panel.queue_paths([str(file)])
         panel.send_button.click()
         self.assertEqual(panel.peer_code_input.text(),'')
-        self.assertEqual(self.service.sent[-1],('ABCD2345',[str(file)]))
+        self.assertEqual(self.service.sent[-1],('AB23',[str(file)]))
 
     def test_remote_offer_displays_sender_device_code_and_copies_it(self):
         from PySide6.QtWidgets import QLabel
         panel=self.dialog.panel;panel._wan=True
-        panel.show_offer(dict(id='device-code',peer='远程电脑',names=['file.txt'],count=1,total=12,code='',device_code='ABCD2345'))
+        panel.show_offer(dict(id='device-code',peer='远程电脑',names=['file.txt'],count=1,total=12,code='',device_code='AB23'))
         APP.processEvents();card=panel._rows['device-code']['extra']
         caption=card.findChild(QLabel,'lanOfferCodeCaption')
         self.assertEqual(caption.text(),'设备码');self.assertTrue(caption.isVisible())
-        value=card.findChild(QPushButton,'lanOfferCodeValue');self.assertEqual(value.text(),'ABCD2345')
-        value.click();self.assertEqual(APP.clipboard().text(),'ABCD2345')
+        value=card.findChild(QPushButton,'lanOfferCodeValue');self.assertEqual(value.text(),'AB23')
+        value.click();self.assertEqual(APP.clipboard().text(),'AB23')
 
     def test_remote_eta_and_route_survive_terminal_history_without_usage_counter(self):
         panel=self.dialog.panel;panel._wan=True

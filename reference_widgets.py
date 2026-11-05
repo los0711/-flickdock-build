@@ -604,9 +604,16 @@ class MiniStack(StackTile):
         super().__init__(parent,motion)
         self.shelf=shelf
         self._card_art={};self._card_dpr=0
+        from native_ui_common import DropBorderMotion
+        self.border_motion=DropBorderMotion(self)
+
+    def set_hover(self,value):
+        super().set_hover(value)
+        self.border_motion.set_active(value and not self.refs)
 
     def set_stack(self,repository,refs,preview_cache=None):
         super().set_stack(repository,refs,preview_cache)
+        self.border_motion.set_active(self._hovered and not self.refs)
         self._cache_cards()
 
     def _cache_cards(self):
@@ -643,9 +650,8 @@ class MiniStack(StackTile):
         p=QPainter(self);p.setRenderHints(QPainter.Antialiasing|QPainter.SmoothPixmapTransform)
         if not self.refs:
             r=QRectF((self.width()-176)/2,28,176,128)
-            active=self._hovered or bool(getattr(self.parent(),'drop_highlight',False))
-            color=palette()['link'] if active else palette()['border']
-            p.setPen(QPen(ink(color),1,Qt.DashLine));p.setBrush(ink(palette()['card']));p.drawRoundedRect(r,16,16)
+            path=QPainterPath();path.addRoundedRect(r,16,16)
+            self.border_motion.paint(p,path,dark=ui_theme.current_theme()=='dark',idle_fill=ink(palette()['card']))
             icon('upload',palette()['secondary']).paint(p,QRect(round(r.center().x()-12),round(r.center().y()-31),24,24))
             f=p.font()
             f.setPixelSize(13);p.setFont(f);p.setPen(QColor(palette()['text']));p.drawText(r.adjusted(0,34,0,0),Qt.AlignCenter,'点击选择文件');p.end();return
@@ -905,5 +911,9 @@ def build_preview(view,elided_type,image_type,media_type,content_type):
     view.group_art=QLabel(view.group_view);view.group_art.setFixedSize(96,80);view.group_art.setAlignment(Qt.AlignCenter);group.addWidget(view.group_art,0,Qt.AlignCenter)
     view.group_title=label('',14,600,parent=view.group_view);view.group_title.setAlignment(Qt.AlignCenter);group.addWidget(view.group_title)
     view.group_copy=button('复制所选',variant='secondary',parent=view.group_view);view.group_copy.setFixedHeight(34);view.group_copy.clicked.connect(view.copy_current);group.addWidget(view.group_copy)
-    view.group_zip=button('打包为 ZIP...',variant='primary',parent=view.group_view);view.group_zip.setFixedHeight(34);view.group_zip.clicked.connect(view.popup.compress_selected);group.addWidget(view.group_zip);group.addStretch(1)
+    view.group_zip=button('打包为 ZIP…',variant='secondary',parent=view.group_view);view.group_zip.setFixedHeight(34);view.group_zip.clicked.connect(view.popup.compress_selected);group.addWidget(view.group_zip)
+    view.group_send=button('发送文件',variant='primary',parent=view.group_view);view.group_send.setFixedHeight(34)
+    view.group_send.clicked.connect(lambda:view.popup.send_refs(view.popup.chosen_refs()));group.addWidget(view.group_send)
+    view.group_remove=button('移出搁架',variant='danger',parent=view.group_view);view.group_remove.setFixedHeight(34)
+    view.group_remove.clicked.connect(view.popup.remove_selected);group.addWidget(view.group_remove);group.addStretch(1)
     view.group_view.hide()

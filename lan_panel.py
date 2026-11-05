@@ -88,7 +88,8 @@ class _CopyCodeButton(_PressButton):
         current=self.code_provider() if self.code_provider else self.text()
         if not current:return
         code=''.join(current.split())
-        if not (len(code) in (4,6) and code.isascii() and code.isdigit() or len(code)==8 and code.isascii() and code.isalnum()):return
+        from wan_transfer import RECEIVE_CODE
+        if not (len(code)==6 and code.isascii() and code.isdigit() or RECEIVE_CODE.fullmatch(code)):return
         self.setText(current)
         QApplication.clipboard().setText(code)
         self.setToolTip('已复制');self._feedback.start(1600)
@@ -411,8 +412,8 @@ class _DropZone(QFrame):
         self.setAccessibleName('选择要发送的文件；也可拖入文件或文件夹')
         self._active = False
         self._hovered=False
-        self._ants_timer=QTimer(self);self._ants_timer.setInterval(33)
-        self._ants_timer.timeout.connect(self.update)
+        from native_ui_common import DropBorderMotion
+        self.border_motion=DropBorderMotion(self)
         layout = QVBoxLayout(self); layout.setContentsMargins(16, 16, 16, 16); layout.setSpacing(10)
         layout.addStretch(1)
         illustration = _DropIllustration(self)
@@ -432,28 +433,25 @@ class _DropZone(QFrame):
         path=QPainterPath();path.addRoundedRect(rect,min(TRANSFER_CORNER_RADIUS_PX,rect.width()/2,rect.height()/2),min(TRANSFER_CORNER_RADIUS_PX,rect.width()/2,rect.height()/2))
         return path
 
+    def set_drag_active(self,active):
+        self._active=bool(active)
+        self.border_motion.set_active(self._active or self._hovered)
+        self.illustration.update()
+
     def paintEvent(self,event):
         painter=QPainter(self);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        dark=self.illustration.dark;active=self._active or self._hovered
+        dark=self.illustration.dark
         path=self.border_path()
-        painter.fillPath(path,QColor(10,132,255,13) if active else QColor(255,255,255,7) if dark else QColor(0,0,0,5))
-        width=1.2;pen=QPen(QColor('#0A84FF') if active else QColor(255,255,255,55) if dark else QColor(0,0,0,48),width)
-        # Divide the closed path into whole cycles. The closing corner gets
-        # exactly the same dash/gap as the straight edges, at every width/DPR.
-        length=path.length();cycle=length/max(1,round(length/8))
-        pen.setDashPattern([cycle*.52/width,cycle*.48/width])
-        pen.setCapStyle(Qt.PenCapStyle.FlatCap);pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        if self._active and not reduced_motion():pen.setDashOffset((time.perf_counter()*12/width)%(cycle/width))
-        painter.setPen(pen);painter.setBrush(Qt.BrushStyle.NoBrush);painter.drawPath(path)
+        self.border_motion.paint(painter,path,dark=dark,idle_fill=QColor(255,255,255,7) if dark else QColor(0,0,0,5))
 
     def enterEvent(self,event):
-        self._hovered=True;self.update();super().enterEvent(event)
+        self._hovered=True;self.border_motion.set_active(True);super().enterEvent(event)
 
     def leaveEvent(self,event):
-        self._hovered=False;self.update();super().leaveEvent(event)
+        self._hovered=False;self.border_motion.set_active(self._active);super().leaveEvent(event)
 
     def hideEvent(self,event):
-        self._ants_timer.stop();super().hideEvent(event)
+        self._hovered=False;self._active=False;self.border_motion.set_active(False);super().hideEvent(event)
 
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
@@ -477,9 +475,7 @@ class _DropZone(QFrame):
 
     def dragEnterEvent(self, event):
         if self._paths(event):
-            self._active = True; self.setProperty('dragActive', True); self.style().unpolish(self); self.style().polish(self)
-            self.illustration.update()
-            if not reduced_motion():self._ants_timer.start()
+            self.set_drag_active(True)
             self.update()
             event.setDropAction(Qt.DropAction.CopyAction); event.accept()
         else: event.ignore()
@@ -489,9 +485,7 @@ class _DropZone(QFrame):
         else: event.ignore()
 
     def dragLeaveEvent(self, event):
-        self._active = False; self.setProperty('dragActive', False); self.style().unpolish(self); self.style().polish(self)
-        self.illustration.update()
-        self._ants_timer.stop();self.update()
+        self.set_drag_active(False)
         event.accept()
 
     def dropEvent(self, event):
@@ -769,9 +763,9 @@ class LanPanel(QFrame):
         self.peer_code_label=_label('对方接收码',self.send_column)
         self.peer_code_label.setObjectName('lanMuted');self.peer_code_label.setVisible(self._wan)
         self.peer_code_input=QLineEdit(self.send_column)
-        self.peer_code_input.setPlaceholderText('输入对方接收码')
-        self.peer_code_input.setToolTip('支持 8 位本机接收码或 4 位一次性接收码')
-        self.peer_code_input.setAccessibleName('对方的接收码');self.peer_code_input.setMaxLength(8)
+        self.peer_code_input.setPlaceholderText('4 位字母和数字')
+        self.peer_code_input.setToolTip('输入对方当前的 4 位接收码，由字母和数字组成')
+        self.peer_code_input.setAccessibleName('对方的接收码');self.peer_code_input.setMaxLength(4)
         self.peer_code_input.setMinimumHeight(30);self.peer_code_input.setVisible(self._wan)
         self.devices.currentIndexChanged.connect(self._target_changed)
         self.peer_code_input.textChanged.connect(self._target_changed)
@@ -1651,13 +1645,11 @@ class _TransferDropRouter(QObject):
             zone.dragLeaveEvent(event);return True
         paths=zone._paths(event)
         if not paths:
-            zone._active=False;zone._ants_timer.stop();zone.update();event.ignore();return True
+            zone.set_drag_active(False);event.ignore();return True
         if kind==QEvent.Type.Drop:
             zone.dragLeaveEvent(event);self.dialog.panel.queue_paths(paths)
         else:
-            zone._active=True
-            if not reduced_motion():zone._ants_timer.start()
-            zone.update()
+            zone.set_drag_active(True)
         event.setDropAction(Qt.DropAction.CopyAction);event.accept();return True
 
 
@@ -1717,9 +1709,9 @@ class LanDialog(QDialog):
         title_row.addWidget(title)
         self.ready_label=_label('已就绪',self.title_bar);self.ready_label.setObjectName('transferReady')
         self.ready_label.setWordWrap(False);self.ready_label.setAttribute(Qt.WA_TransparentForMouseEvents)
-        title_row.addWidget(self.ready_label)
         self.back_button=_button('返回总览',self.title_bar);self.back_button.setObjectName('lanDialogBack')
         self.back_button.setIcon(ui_icon('left'));self.back_button.clicked.connect(lambda:self._navigate('overview'));title_row.addWidget(self.back_button)
+        title_row.addWidget(self.ready_label)
         title_row.addStretch(1)
         content.addWidget(self.title_bar)
         self.mode_segment=QFrame(self.card);self.mode_segment.setObjectName('transferModeGroup')

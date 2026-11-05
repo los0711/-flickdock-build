@@ -57,7 +57,8 @@ export class AccountEvents extends DurableObject<Env> {
     if(url.pathname==='/intake')return intakeRequest(request,this.ctx,
       ()=>this.fetch(new Request('https://internal/publish',{method:'POST',body:JSON.stringify({type:'content',device:request.headers.get('X-Device-Id')||''})})));
     if(url.pathname.startsWith('/clipboard'))return clipboardRequest(request,this.ctx,this.env,
-      kind=>budget(this.env,kind,1),(device,clipboard)=>this.fetch(new Request('https://internal/publish',{method:'POST',body:JSON.stringify({type:'clipboard',device,clipboard})})));
+      kind=>budget(this.env,kind,1),(device,clipboard)=>this.fetch(new Request('https://internal/publish',{method:'POST',body:JSON.stringify({type:'clipboard',device,clipboard})})),
+      (device,delivery)=>this.fetch(new Request('https://internal/publish',{method:'POST',body:JSON.stringify({type:'clipboard_delivery',device,delivery})})));
     if(url.pathname==='/connect'&&request.headers.get('Upgrade')?.toLowerCase()==='websocket'){
       const pair=new WebSocketPair();const [client,server]=Object.values(pair);
       this.ctx.acceptWebSocket(server);
@@ -73,8 +74,8 @@ export class AccountEvents extends DurableObject<Env> {
       return new Response(null,{status:204});
     }
     if(url.pathname==='/publish'&&request.method==='POST'){
-      const data=await request.json() as {type?:string;device?:string;progress?:Row;clipboard?:Row};
-      if(!['content','devices','progress','clipboard'].includes(data.type||''))return new Response(null,{status:400});
+      const data=await request.json() as {type?:string;device?:string;progress?:Row;clipboard?:Row;delivery?:Row};
+      if(!['content','devices','progress','clipboard','clipboard_delivery'].includes(data.type||''))return new Response(null,{status:400});
       if(data.type==='progress'&&data.progress){
         const value=data.progress,previous=this.progressSent.get(value.upload_id),now=Date.now();
         if(previous&&now-previous.at<750&&value.received_bytes>=previous.bytes&&value.received_bytes<value.total)return new Response(null,{status:204});
@@ -82,6 +83,7 @@ export class AccountEvents extends DurableObject<Env> {
         if(this.progressSent.size>100)this.progressSent.delete(this.progressSent.keys().next().value!);
       }
       const message=JSON.stringify({schema_version:1,type:data.type,...(data.type==='progress'?data.progress:{}),
+        ...(data.type==='clipboard_delivery'?{delivery:data.delivery}:{}),
         ...(data.type==='clipboard'&&data.clipboard?{version:data.clipboard.version}:{})});
       const inline=data.type==='clipboard'&&typeof data.clipboard?.inline==='string'?
         JSON.stringify({schema_version:1,type:'clipboard_inline',clipboard:data.clipboard,server_time:Date.now()}):null;

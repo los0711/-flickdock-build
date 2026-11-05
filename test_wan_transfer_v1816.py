@@ -32,27 +32,27 @@ class WanRecovery(unittest.TestCase):
 
     def test_incoming_request_uses_the_signaled_sender_device_code(self):
         offers=[];self.service.offer_received.connect(offers.append)
-        self.message(type='request',peer=dict(id='d'*64,name='发送方'),token='b'*64,digest='c'*64,total='12',count=1,names=['file.txt'],deviceCode='ABCD2345')
-        self.assertEqual(offers[0]['device_code'],'ABCD2345')
+        self.message(type='request',peer=dict(id='d'*64,name='发送方'),token='b'*64,digest='c'*64,total='12',count=1,names=['file.txt'],deviceCode='AB23')
+        self.assertEqual(offers[0]['device_code'],'AB23')
     def test_refresh_deadline_restarts_from_server_identity_not_socket_start(self):
         self.service._connected=True;identities=[];self.service.identity_changed.connect(identities.append)
         with patch('wan_transfer.time.monotonic',return_value=1000):
-            self.message(type='identity',code='ABCD2345',serverNow=100000,refreshAt=340000,expires=400000,recent=[])
+            self.message(type='identity',code='AB23',serverNow=100000,refreshAt=340000,expires=400000,recent=[])
         with patch('wan_transfer.time.monotonic',return_value=1239):
             self.service.check_code();self.assertFalse(self.sent)
             self.assertEqual(self.service.code_identity()['refresh_remaining'],1)
         with patch('wan_transfer.time.monotonic',return_value=1241):
             self.service.check_code();self.assertEqual(self.sent[-1],dict(type='refresh'))
             self.service.check_code();self.assertEqual(len(self.sent),1)
-            self.message(type='identity',code='EFGH6789',serverNow=500000,refreshAt=740000,expires=800000,recent=[])
+            self.message(type='identity',code='EF67',serverNow=500000,refreshAt=740000,expires=800000,recent=[])
         with patch('wan_transfer.time.monotonic',return_value=1242):
             self.assertEqual(self.service.code_identity()['refresh_remaining'],239)
-            self.assertEqual(self.service.code_identity()['code'],'EFGH6789')
-        self.assertEqual(identities[-1]['code'],'EFGH6789')
+            self.assertEqual(self.service.code_identity()['code'],'EF67')
+        self.assertEqual(identities[-1]['code'],'EF67')
     def test_unanswered_refresh_reconnects_instead_of_leaving_an_expired_code(self):
         self.service._connected=True
         with patch('wan_transfer.time.monotonic',return_value=1000):
-            self.message(type='identity',code='ABCD2345',serverNow=0,refreshAt=240000,expires=300000,recent=[])
+            self.message(type='identity',code='AB23',serverNow=0,refreshAt=240000,expires=300000,recent=[])
         with patch('wan_transfer.time.monotonic',return_value=1240):self.service.check_code()
         with patch('wan_transfer.time.monotonic',return_value=1253):self.service.check_code()
         self.assertFalse(self.service._connected);self.assertEqual(self.service.code_identity()['code'],'')
@@ -60,7 +60,7 @@ class WanRecovery(unittest.TestCase):
         self.service._connected=True;workers=[];outgoing=[]
         self.service._thread=lambda target,*args:workers.append((target,args))
         self.service._outgoing=lambda *args:outgoing.append(args)
-        identifier=self.service.send('ABCD2345',[str(self.root)])
+        identifier=self.service.send('AB23',[str(self.root)])
         self.assertEqual(self.sent[0]['type'],'prepare');self.assertFalse(outgoing)
         self.service._message(json.dumps(dict(schema_version=1,type='prepared',id=identifier,peer=dict(id='d'*64,name='Mac'))))
         workers[0][0](*workers[0][1])
@@ -71,7 +71,7 @@ class WanRecovery(unittest.TestCase):
         self.service._connected=True;workers=[];events=[]
         self.service._thread=lambda target,*args:workers.append((target,args))
         self.service.progress.connect(events.append)
-        identifier=self.service.send('ABCD2345',[str(self.root)])
+        identifier=self.service.send('AB23',[str(self.root)])
         self.service.cancel(identifier);workers[0][0](*workers[0][1]);APP.processEvents()
         self.assertFalse(self.service._transfers[identifier].active)
         self.assertEqual(events[-1]['state'],'cancelled')
@@ -98,13 +98,13 @@ class WanRecovery(unittest.TestCase):
         try:
             dialog.show();APP.processEvents()
             with patch('wan_transfer.time.monotonic',return_value=1000):
-                self.message(type='identity',code='ABCD2345',serverNow=0,refreshAt=240000,expires=300000,
+                self.message(type='identity',code='AB23',serverNow=0,refreshAt=240000,expires=300000,
                     recent=[dict(id='d'*64,name='Mac',online=True)])
                 panel=dialog.panel
                 for theme in ('light','dark'):
                     dialog.apply_theme(theme);APP.processEvents();self.assertFalse(panel.code_progress.grab().isNull())
                     self.assertTrue(panel.send_code_value.isEnabled())
-                    self.assertEqual(panel.send_code_value.text(),'ABCD2345')
+                    self.assertEqual(panel.send_code_value.text(),'AB23')
                     self.assertFalse(panel.code_progress.isTextVisible())
                     self.assertGreater(panel.code_progress.mapTo(panel,QPoint()).y(),panel.send_code_value.mapTo(panel,panel.send_code_value.rect().bottomLeft()).y())
                 panel.devices.remove_requested.emit('d'*64);self.assertEqual(self.sent[-1],dict(type='remove',peer='d'*64))

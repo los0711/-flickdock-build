@@ -44,10 +44,10 @@ for(const inline of [true,false]){
     new Request('https://internal/clipboard',{method:'POST',headers,body:JSON.stringify({id:nextId,protocol:2,sequence:1,copied_at:pending.copied_at,
       inline:{kind:'text',size:content.length,sha256:digest,body:content.toString('base64')}})}):
     new Request('https://internal/clipboard/'+nextId+'/content',{method:'PUT',headers:{...headers,'Content-Length':String(content.length),'X-Clipboard-Kind':'text','X-Content-SHA256':digest},body:content});
-  const response=await clipboardRequest(request,ctx,provider,async()=>{},async()=>{});
+  const response=await clipboardRequest(request,ctx,provider,async()=>{},async()=>{},async()=>{});
   assert.equal(response.status,inline?201:200);const ready=(await response.json()).clipboard;
   assert.equal(ready.id,nextId);assert.equal(ready.version,4);assert.equal(ready.ready,true);
-  const latest=await clipboardRequest(new Request('https://internal/clipboard',{headers}),ctx,provider,async()=>{},async()=>{});
+  const latest=await clipboardRequest(new Request('https://internal/clipboard',{headers}),ctx,provider,async()=>{},async()=>{},async()=>{});
   assert.equal((await latest.json()).clipboard.version,4);
   await Promise.all(tasks);
   console.log('PASS expiry during '+(inline?'inline reservation':'R2 upload')+' publishes a strictly newer ready version');

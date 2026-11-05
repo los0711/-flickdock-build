@@ -18,6 +18,7 @@ class CloudEvents(QObject):
     devices_changed = Signal()
     clipboard_changed = Signal()
     clipboard_payload = Signal(dict)
+    clipboard_delivery = Signal(dict)
     transfer_progress = Signal(dict)
 
     def __init__(self, account, parent=None, *, enabled=True):
@@ -85,6 +86,11 @@ class CloudEvents(QObject):
         try: value=json.loads(message)
         except (ValueError,TypeError): return
         if not isinstance(value,dict) or value.get('schema_version')!=1:return
+        if value.get('type')=='clipboard_delivery':
+            from clipboard_delivery import delivery_state
+            try:receipt=delivery_state(value.get('delivery'))
+            except ValueError:return
+            self.clipboard_delivery.emit(receipt);return
         if value.get('type')=='clipboard_inline':
             head=value.get('clipboard')
             if (not isinstance(head,dict) or head.get('kind')!='text' or not head.get('ready') or

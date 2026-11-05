@@ -18,11 +18,8 @@ class OverviewDropRouter(QObject):
         shelf=self.popup.shelf
         target=getattr(self.popup,'empty_drop',None)
         if target is not None and target.isVisible():
-            target._active=(kind in (QEvent.Type.DragEnter,QEvent.Type.DragMove)
-                            and shelf.accepts_content_drop(event))
-            if target._active:target._ants_timer.start()
-            else:target._ants_timer.stop()
-            target.update()
+            target.set_drag_active(kind in (QEvent.Type.DragEnter,QEvent.Type.DragMove)
+                                   and shelf.accepts_content_drop(event))
         if kind==QEvent.Type.DragEnter:shelf.dragEnterEvent(event)
         elif kind==QEvent.Type.DragMove:shelf.dragMoveEvent(event)
         elif kind==QEvent.Type.DragLeave:shelf.dragLeaveEvent(event)

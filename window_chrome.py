@@ -10,6 +10,7 @@ from shiboken6 import isValid
 
 _dock_windows=weakref.WeakSet()
 _chromes=weakref.WeakSet()
+WINDOW_CONTROL_RADIUS_PX=7
 
 
 def ensure_native_resize(window):
@@ -69,7 +70,7 @@ class _WindowButton(QPushButton):
         self._keyboard_focus=False
         self.setFixedSize(44,32);self.setAutoDefault(False);self.setDefault(False)
         self.setAccessibleName({'min':'最小化','max':'最大化或还原','close':'关闭窗口'}[role]);self.setToolTip(self.accessibleName())
-        self.setStyleSheet('QPushButton{border:0;border-radius:0;background:transparent;padding:0;}')
+        self.setStyleSheet(f'QPushButton{{border:0;border-radius:{WINDOW_CONTROL_RADIUS_PX}px;background:transparent;padding:0;}}')
         self.clicked.connect(self._activate)
     @property
     def glyph_rect(self):
@@ -90,7 +91,9 @@ class _WindowButton(QPushButton):
         from native_ui_common import colors
         p=QPainter(self);p.setRenderHint(QPainter.Antialiasing)
         c=colors('dark' if self.dark else 'light') if hasattr(self,'dark') else colors(self.owner._theme) if hasattr(self.owner,'_theme') else palette()
-        if self.underMouse():p.fillRect(self.rect(),ink('#E81123' if self.role=='close' else c['hover']))
+        if self.underMouse():
+            p.setPen(Qt.NoPen);p.setBrush(ink('#E81123' if self.role=='close' else c['hover']))
+            p.drawRoundedRect(QRectF(self.rect()).adjusted(2,2,-2,-2),WINDOW_CONTROL_RADIUS_PX,WINDOW_CONTROL_RADIUS_PX)
         p.setPen(QPen(QColor('white' if self.role=='close' and self.underMouse() else c['secondary']),1.2))
         x,y=self.width()//2,self.height()//2
         if self.role=='min':p.drawLine(x-5,y+2,x+5,y+2)
@@ -99,7 +102,7 @@ class _WindowButton(QPushButton):
         else:p.drawRect(x-5,y-5,10,10)
         if self.hasFocus() and self._keyboard_focus:
             p.setPen(QPen(QColor(c['blue']),1.5));p.setBrush(Qt.NoBrush)
-            p.drawRect(QRectF(self.rect()).adjusted(2,2,-2,-2))
+            p.drawRoundedRect(QRectF(self.rect()).adjusted(2,2,-2,-2),WINDOW_CONTROL_RADIUS_PX,WINDOW_CONTROL_RADIUS_PX)
         p.end()
 
 

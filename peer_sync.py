@@ -199,10 +199,14 @@ class PeerSync(QObject):
             state=self._states.get(row['id'])
             if row.get('online'):
                 info['route']='cloud' if 'mesh-v1' not in row.get('features',[]) else 'connecting'
-                if state is not None and state['rpc'] is not None and self._authorized(state) and not state['rpc'].closed.is_set():
-                    info=state['rpc'].stream.connection_info()
+            if state is not None and state['rpc'] is not None and self._authorized(state) and not state['rpc'].closed.is_set():
+                info=state['rpc'].stream.connection_info()
             result[identity]=info
         return result
+
+    def account_device_for_peer(self,peer):
+        return next((row.get('account_device_id','') for row in self.wan.peers()
+                     if row.get('account_device') and row.get('id')==peer),'')
 
     def route_for_peer(self,peer):
         state=self._states.get(peer)

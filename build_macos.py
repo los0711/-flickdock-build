@@ -237,6 +237,7 @@ def main(arguments=None):
     # process, matching the standalone frozen-client gate below.
     run([python,'-m','unittest','test_wan_transfer_v1816','-v'],env=env)
     run([python,'-m','unittest','test_nearby_transport_v1818','-v'],env=env)
+    run([python,'-m','unittest','test_peer_transport_v1824','test_peer_sync_v1824','-v'],env=env)
     run([python,'-m','unittest','test_wan_signaling_v1818','-v'],env=env)
     run([python,'-m','unittest','test_cloud_failover_v1818','-v'],env=env)
     run([python,'-m','unittest','test_stream_upload_v1816','-v'],env=env)

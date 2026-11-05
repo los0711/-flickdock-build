@@ -51,15 +51,15 @@ class WorkbenchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             wan=WanTransferService(Path(directory)/'wan',enabled=False);button=_CopyCodeButton();bar=_CodeExpiryBar(wan,button)
             try:
-                wan._connected=True;wan.code='12345678';wan._code_duration=20;wan._code_refresh_at=1010;wan._code_expires_at=1100
+                wan._connected=True;wan.code='AB23';wan._code_duration=20;wan._code_refresh_at=1010;wan._code_expires_at=1100
                 with patch('wan_transfer.time.monotonic',return_value=1000):bar._tick()
-                self.assertEqual(bar.value(),500);self.assertFalse(bar.isTextVisible());self.assertEqual(button.text(),'12345678')
+                self.assertEqual(bar.value(),500);self.assertFalse(bar.isTextVisible());self.assertEqual(button.text(),'AB23')
                 with patch('wan_transfer.time.monotonic',return_value=1010),patch.object(wan,'_send_signal',return_value=True) as send:
                     for _ in range(20):bar._tick()
                     send.assert_called_once_with({'type':'refresh'});self.assertEqual(bar.value(),0)
-                wan.code='87654321';wan._code_refresh_at=1031;wan._refresh_sent_at=0
+                wan.code='EF67';wan._code_refresh_at=1031;wan._refresh_sent_at=0
                 with patch('wan_transfer.time.monotonic',return_value=1011):bar._tick()
-                self.assertEqual(bar.value(),1000);self.assertEqual(button.text(),'87654321')
+                self.assertEqual(bar.value(),1000);self.assertEqual(button.text(),'EF67')
                 bar.show();QTest.qWait(5);bar.hide();self.assertFalse(bar._timer.isActive())
             finally:bar.deleteLater();button.deleteLater();wan.close();wan.deleteLater();QTest.qWait(10)
 

@@ -4,12 +4,13 @@ import json
 import logging
 import os
 from pathlib import Path
-from queue import Empty,Full,Queue
+from queue import Empty,Full,PriorityQueue
 import re
 import struct
 import subprocess
 import sys
 import threading
+import time
 
 from webrtc_stream import WebRTCStream
 
@@ -17,6 +18,9 @@ MAX_PEERS=38
 IPC_CHUNK_BYTES=64*1024
 IPC_MAX_PACKET_BYTES=131089
 IPC_QUEUE_FRAMES=256
+IPC_CONTROL_FRAMES=128
+IPC_SEND_WINDOW_BYTES=2*1024*1024
+IPC_RECEIVE_WINDOW_BYTES=16*1024*1024+IPC_CHUNK_BYTES
 LOG=logging.getLogger(__name__)
 
 
@@ -24,6 +28,7 @@ class PeerStream(WebRTCStream):
     def __init__(self,broker,identifier,on_signal):
         self.broker=broker;self.identifier=identifier
         self._initialize_buffers(on_signal)
+        self._ipc_pending=0
 
     def _write(self,kind,data):
         if self.closed:raise ConnectionError('同账号设备连接已关闭。')
@@ -31,8 +36,37 @@ class PeerStream(WebRTCStream):
             value=json.loads(data);value['id']=self.identifier;self.broker.control(value)
         else:
             for offset in range(0,len(data),IPC_CHUNK_BYTES):
-                self.broker.write(b'B',bytes.fromhex(self.identifier)+data[offset:offset+IPC_CHUNK_BYTES],timeout=self._timeout)
+                part=data[offset:offset+IPC_CHUNK_BYTES];deadline=time.monotonic()+max(30.,self._timeout)
+                with self._condition:
+                    while self._ipc_pending+len(part)>IPC_SEND_WINDOW_BYTES and not self.closed:
+                        remaining=deadline-time.monotonic()
+                        if remaining<=0:raise TimeoutError('同账号设备长时间未接收数据。')
+                        self._condition.wait(remaining)
+                    if self.closed:raise ConnectionError('同账号设备连接已关闭。')
+                    self._ipc_pending+=len(part)
+                try:self.broker.write(b'B',bytes.fromhex(self.identifier)+part,timeout=max(30.,self._timeout))
+                except OSError:
+                    with self._condition:self._ipc_pending-=len(part);self._condition.notify_all()
+                    raise
             with self._condition:self._sent_position+=len(data)
+
+    def _accepted(self,count):
+        with self._condition:
+            if self.closed:return
+            if type(count) is not int or not 0<count<=self._ipc_pending:raise ValueError('Invalid peer IPC credit')
+            self._ipc_pending-=count;self._condition.notify_all()
+
+    def _accept_packet(self,packet):
+        if packet[:1]!=b'B':return super()._accept_packet(packet)
+        with self._condition:
+            if self.closed:return
+            if self._size+len(packet)-1>IPC_RECEIVE_WINDOW_BYTES:raise ValueError('Peer exceeded application receive credit')
+            self._data.append(packet[1:]);self._size+=len(packet)-1;self._condition.notify_all()
+
+    def recv_into(self,target):
+        count=super().recv_into(target)
+        if count and not self.closed:self.broker.consume(self.identifier,count)
+        return count
 
     def _ended(self):
         with self._condition:
@@ -52,7 +86,9 @@ class PeerBroker:
         executable=Path(node) if node else folder/'runtime'/('node.exe' if sys.platform=='win32' else 'node')
         if not executable.is_file() or not (folder/'sync-mesh.mjs').is_file():
             raise RuntimeError('同账号直连组件缺失，请重新安装。')
-        self._lock=threading.RLock();self._streams={};self.closed=False;self._queue=Queue(IPC_QUEUE_FRAMES)
+        self._lock=threading.RLock();self._condition=threading.Condition(self._lock)
+        self._streams={};self.closed=False;self._queue=PriorityQueue(IPC_QUEUE_FRAMES+IPC_CONTROL_FRAMES)
+        self._payload_queued=0;self._sequence=0;self._consumed={}
         self._process=subprocess.Popen([str(executable),'--use-system-ca',str(folder/'sync-mesh.mjs')],
             stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,cwd=folder,
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform=='win32' else 0,
@@ -72,10 +108,26 @@ class PeerBroker:
         if self.closed:raise ConnectionError('Peer runtime closed')
         if len(data)+1>IPC_MAX_PACKET_BYTES:raise ValueError('Peer IPC packet exceeds limit')
         packet=struct.pack('!I',len(data)+1)+kind+data
-        try:
-            if timeout is None:self._queue.put_nowait(packet)
-            else:self._queue.put(packet,timeout=max(.05,timeout))
-        except Full:raise ConnectionError('同账号直连发送队列已满。') from None
+        with self._condition:
+            deadline=time.monotonic()+max(.05,timeout or 0.)
+            while kind==b'B' and self._payload_queued>=IPC_QUEUE_FRAMES:
+                if self.closed:raise ConnectionError('Peer runtime closed')
+                remaining=deadline-time.monotonic()
+                if timeout is None or remaining<=0:raise ConnectionError('同账号直连发送队列已满。')
+                self._condition.wait(remaining)
+            self._enqueue(0 if kind==b'J' else 1,packet)
+
+    def _enqueue(self,priority,packet):
+        self._sequence+=1
+        try:self._queue.put_nowait((priority,self._sequence,packet))
+        except Full:raise ConnectionError('同账号直连控制队列已满。') from None
+        if priority:self._payload_queued+=1
+
+    def consume(self,identifier,count):
+        with self._condition:
+            if self.closed or identifier not in self._streams:return
+            if identifier not in self._consumed:self._enqueue(0,identifier)
+            self._consumed[identifier]=self._consumed.get(identifier,0)+count
 
     def control(self,value):self.write(b'J',json.dumps(value,separators=(',',':')).encode('utf8'))
 
@@ -86,8 +138,13 @@ class PeerBroker:
     def _write(self):
         try:
             while not self.closed:
-                try:packet=self._queue.get(timeout=.2)
+                try:priority,_,packet=self._queue.get(timeout=.2)
                 except Empty:continue
+                with self._condition:
+                    if priority:self._payload_queued-=1;self._condition.notify_all()
+                    elif isinstance(packet,str):
+                        body=json.dumps(dict(type='consume',id=packet,count=self._consumed.pop(packet)),separators=(',',':')).encode()
+                        packet=struct.pack('!I',len(body)+1)+b'J'+body
                 self._process.stdin.write(packet);self._process.stdin.flush()
         except (OSError,ValueError) as error:
             if not self.closed:LOG.warning('Peer native IPC writer ended: %r',error)
@@ -116,7 +173,8 @@ class PeerBroker:
                 else:raise ValueError('Invalid peer IPC type')
                 with self._lock:stream=self._streams.get(identifier)
                 if stream is not None:
-                    if packet[:1]==b'J' and event.get('type')=='closed':
+                    if packet[:1]==b'J' and event.get('type')=='ipc_sent':stream._accepted(event.get('count'))
+                    elif packet[:1]==b'J' and event.get('type')=='closed':
                         with self._lock:self._streams.pop(identifier,None)
                         stream._ended()
                     else:stream._accept_packet(data)
@@ -134,6 +192,7 @@ class PeerBroker:
         with self._lock:
             if self.closed:return
             self.closed=True;streams=list(self._streams.values());self._streams.clear()
+            self._condition.notify_all()
         for stream in streams:stream._ended()
         def reap():
             if self._process.poll() is None:self._process.terminate()

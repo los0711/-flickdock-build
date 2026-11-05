@@ -13,6 +13,36 @@ import test_html_native_workspace as workspace
 
 
 class PreviewContinuityTests(unittest.TestCase):
+    def test_group_actions_send_all_selected_and_remove_only_shelf_entries(self):
+        popup=self.fixture.overview();refs=self.fixture.paths[:2]
+        popup.select_item(refs[0]);popup.select_item(refs[1],toggle=True);workspace.flush()
+        preview=popup.preview
+        self.assertTrue(preview.group_view.isVisible())
+        self.assertEqual(preview.group_zip._reference_style,preview.group_copy._reference_style)
+        self.assertNotEqual(preview.group_send._reference_style,preview.group_copy._reference_style)
+        self.assertNotEqual(preview.group_remove._reference_style,preview.group_copy._reference_style)
+        preview.group_send.click()
+        self.assertEqual(self.fixture.events,[('lan',refs)])
+        preview.group_remove.click();workspace.flush()
+        self.assertEqual(self.shelf.files['permanent'],self.fixture.paths[2:])
+        self.assertTrue(all(Path(ref).read_bytes()==f'original {index}'.encode()
+                            for index,ref in enumerate(self.fixture.paths)))
+
+    def test_both_item_views_offer_lan_and_remote_actions_for_entire_selection(self):
+        popup=self.fixture.overview();refs=self.fixture.paths[:2]
+        for mode in ('list','icons'):
+            popup.change_view_mode(mode);workspace.flush()
+            workspace.until(lambda:popup._build_cursor==len(popup.visible_refs()))
+            popup.select_item(refs[0]);popup.select_item(refs[1],toggle=True)
+            for title,route in (('使用局域网传输','lan'),('使用远程传输','wan')):
+                def execute(menu,_position):
+                    action=next(action for action in menu.actions() if action.text()==title)
+                    self.assertTrue(action.isEnabled());action.trigger()
+                with patch('flickdock.AnimatedMenu.exec',new=execute):
+                    popup.show_item_menu(refs[0],QPoint())
+                self.assertEqual(self.fixture.events[-1],(route,refs))
+            popup.selected.clear();popup.primary_selection=None
+
     def test_native_body_double_click_opens_once_and_keeps_the_file_selected_in_both_views(self):
         popup=self.fixture.overview();ref=self.fixture.paths[0]
         with patch('PySide6.QtGui.QDesktopServices.openUrl',return_value=True) as opened:

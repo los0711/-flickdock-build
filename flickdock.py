@@ -446,6 +446,12 @@ class PreviewPane(QFrame):
         self.copy_path_button.setEnabled(ready);self.send_button.setEnabled(ready)
         self.zip_button.setEnabled(ready and self.shelf.archive_job is None and not self.shelf._archive_choosing)
         self.remove_button.setEnabled(present)
+        refs=self.popup.chosen_refs()
+        group_ready=bool(refs) and all(not self.shelf.content.is_pending(item) for item in refs)
+        self.group_copy.setEnabled(group_ready)
+        self.group_zip.setEnabled(group_ready and self.shelf.archive_job is None and not self.shelf._archive_choosing)
+        self.group_send.setEnabled(group_ready)
+        self.group_remove.setEnabled(bool(refs))
 
     def _current_file_path(self):
         return self.file_path_for(self.current_path)
@@ -951,8 +957,20 @@ class ContentsPopup(QFrame):
         finally:self.shelf._menu_open=False;menu.deleteLater();self.shelf.touch()
 
     def send_item(self,ref):
-        path=self.preview.file_path_for(ref)
-        if path is not None:self.shelf.manager.queue_transfer_paths('lan',[path])
+        self.send_refs([ref])
+
+    def send_refs(self,refs,mode='lan'):
+        paths=[]
+        for ref in tuple(refs):
+            path=self.preview.file_path_for(ref)
+            if path is None:
+                if self.preview.group_view.isVisible():self.preview.group_title.setText('部分所选文件暂不可用')
+                return
+            paths.append(path)
+        if paths:self.shelf.manager.queue_transfer_paths(mode,paths)
+
+    def remove_selected(self):
+        for ref in tuple(self.chosen_refs()):self.shelf.remove_path('permanent',ref)
 
     def visible_refs(self):
         transfers=self.shelf.content.transfers
@@ -1377,6 +1395,9 @@ class ContentsPopup(QFrame):
             menu.addAction('在文件夹中显示',lambda:self.shelf.reveal_ref(ref))
             menu.addAction('复制文件路径',lambda:QApplication.clipboard().setText(ref))
         menu.addAction('复制所选内容',lambda:self.shelf.copy_items(refs))
+        ready=all(not self.shelf.content.is_pending(item) for item in refs)
+        menu.addAction('使用局域网传输',lambda:self.send_refs(refs,'lan')).setEnabled(ready)
+        menu.addAction('使用远程传输',lambda:self.send_refs(refs,'wan')).setEnabled(ready)
         action=menu.addAction('将所选内容打包为 ZIP…',lambda:self.shelf.compress_refs(refs))
         action.setEnabled(self.shelf.archive_job is None)
         if len(refs)==1 and not self.shelf.content.is_text(ref):

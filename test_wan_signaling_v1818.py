@@ -13,6 +13,24 @@ import app_settings
 APP=QApplication.instance() or QApplication([])
 
 class SignalingTests(unittest.TestCase):
+    def test_valid_identity_clears_connecting_text_and_ready_follows_back_button(self):
+        dialog=LanDialog(self.service,app_settings.SettingsStore(self.base/'settings'));dialog.show();APP.processEvents()
+        try:
+            with patch.object(self.service.socket,'open'):
+                self.service._connect()
+            self.assertIn('正在连接',dialog.panel.status_label.text())
+            self.service._connected=True
+            self.service._message(json.dumps(dict(schema_version=1,type='identity',code='AB23',recent=[],serverNow=0,expires=300000,refreshAt=240000)))
+            APP.processEvents()
+            self.assertEqual(dialog.panel.status_label.text(),'')
+            self.assertFalse(dialog.panel.status_label.isVisible())
+            self.assertTrue(dialog.ready_label.isVisible())
+            self.assertGreater(dialog.ready_label.x(),dialog.back_button.geometry().right())
+            dialog.panel.status_label.setText('原文件不可用')
+            self.service._message(json.dumps(dict(schema_version=1,type='identity',code='EF67',recent=[],serverNow=0,expires=300000,refreshAt=240000)))
+            self.assertEqual(dialog.panel.status_label.text(),'原文件不可用')
+        finally:dialog.close();dialog.deleteLater();APP.processEvents()
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.base=Path(self.temp.name)
         self.service=WanTransferService(self.base,enabled=True);self.messages=[]
@@ -40,9 +58,9 @@ class SignalingTests(unittest.TestCase):
         finally:dialog.close();dialog.deleteLater();APP.processEvents()
     def test_successful_identity_stops_deadline_and_resets_backoff(self):
         self.service._connected=True;self.service._connect_attempt=6;self.service._connection_error='previous error';self.service.connect_timeout.start()
-        self.service._message(json.dumps(dict(schema_version=1,type='identity',code='ABCD2345',recent=[],serverNow=0,expires=300000,refreshAt=240000)))
+        self.service._message(json.dumps(dict(schema_version=1,type='identity',code='AB23',recent=[],serverNow=0,expires=300000,refreshAt=240000)))
         self.assertFalse(self.service.connect_timeout.isActive());self.assertEqual(self.service._connect_attempt,0)
-        self.assertEqual(self.service.code_identity()['code'],'ABCD2345');self.assertFalse(self.service.code_identity()['error'])
+        self.assertEqual(self.service.code_identity()['code'],'AB23');self.assertFalse(self.service.code_identity()['error'])
     def test_repeated_failures_back_off_instead_of_consuming_a_shared_nat_hourly_allowance(self):
         waits=[]
         for _ in range(12):

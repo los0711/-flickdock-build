@@ -7,16 +7,16 @@ type SyncIce={id:string;account:string;device:string;session:string;expires:numb
 type Device={id:string;name:string;platform:string;online?:boolean;last?:number;lan_id?:string;account_device?:boolean;account_device_id?:string;features?:string[]};
 type Seat=Device&{ip:string;connected:number;window:number;messages:number;last_seen?:number;watching?:string[];account?:string;auth_nonce?:string;account_active?:boolean;sync_links?:Record<string,string>;sync_window?:number;sync_messages?:number};
 type Binding={account:string;device:string;session:string;lan_id:string;nonce:string};
-type CustomRef={code:string;nonce:string};
-type CodeRow={device:string;expires:number;epoch?:number;custom?:boolean;nonce?:string;status?:'available'|'used'|'cancelled';lease?:string};
-type OwnCustom=CustomRef&{expires:number;status:'available'|'used'|'cancelled'};
-type Pairing={sender:string;receiver:string;token:string;expires:number;custom?:CustomRef};
-type Session={id:string;sender:Device;receiver:Device;token:string;digest:string;total:string;count:number;names:string[];accepted:boolean;generation:number;expires:number;done:string[];connected?:string[];sender_code?:string;custom?:CustomRef;custom_consumed?:boolean};
+type CodeRow={device:string;expires:number;epoch:number};
+type Pairing={sender:string;receiver:string;token:string;expires:number};
+type Session={id:string;sender:Device;receiver:Device;token:string;digest:string;total:string;count:number;names:string[];accepted:boolean;generation:number;expires:number;done:string[];connected?:string[];sender_code?:string};
 export interface WanEnv extends RelayBudgetEnv {WAN:DurableObjectNamespace<WanHub>;DB:D1Database;FILES:R2Bucket;R2_CLASS_A_BUDGET?:string;R2_CLASS_B_BUDGET?:string;TURN_KEY_ID?:string;TURN_KEY_TOKEN?:string;TURN_ENABLED?:string;}
 const json=(value:object,status=200)=>Response.json({schema_version:1,...value},{status,headers:{'Cache-Control':'no-store'}});
 const hash=async(value:string)=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value))),b=>b.toString(16).padStart(2,'0')).join('');
 const check=(value:unknown,pattern:RegExp):value is string=>typeof value==='string'&&pattern.test(value);
 const ID=/^[a-f0-9]{64}$/,TRANSFER=/^[a-f0-9]{32}$/;
+const CODE_ALPHABET='23456789ABCDEFGHJKLMNPQRSTUVWXYZ',CODE_LENGTH=4,CODE_ATTEMPTS=64;
+const RECEIVE_CODE=/^(?=.*[2-9])(?=.*[A-HJ-NP-Z])[23456789A-HJ-NP-Z]{4}$/;
 const stun=[{urls:['stun:stun.cloudflare.com:3478']}];
 function routeSignal(input:any):object|null{
   if(!input||!check(input.id,TRANSFER))return null;
@@ -228,86 +228,39 @@ export class WanHub extends DurableObject<WanEnv>{
   }
   private async code(socket:WebSocket){
     const seat=socket.deserializeAttachment() as Seat;
-    const alphabet='23456789ABCDEFGHJKLMNPQRSTUVWXYZ';let code='';
+    let code='';
     const serverNow=Date.now(),expires=serverNow+300000,refreshAt=serverNow+240000;
     // Refresh leaves the previous code valid for its original remaining minute.
     // Redeeming either alias invalidates all aliases in the same epoch.
-    for(let attempt=0;attempt<16;attempt++){
-      code='';for(const byte of crypto.getRandomValues(new Uint8Array(8)))code+=alphabet[byte%alphabet.length];
+    for(let attempt=0;attempt<CODE_ATTEMPTS;attempt++){
+      code='';for(const byte of crypto.getRandomValues(new Uint8Array(CODE_LENGTH)))code+=CODE_ALPHABET[byte%CODE_ALPHABET.length];
+      if(!RECEIVE_CODE.test(code)){if(attempt===CODE_ATTEMPTS-1)throw new Error('接收码暂不可用，请重试。');continue;}
       const saved=await this.ctx.storage.transaction(async tx=>{
         const old=await tx.get<CodeRow>('code:'+code);if(old&&old.expires>serverNow)return false;
         const epoch=await tx.get<number>('code-epoch:'+seat.id)||0;
         await tx.put({['code:'+code]:{device:seat.id,expires,epoch},['own-code:'+seat.id]:code});return true;
       });
-      if(saved)break;if(attempt===15)throw new Error('接收码暂不可用，请重试。');
+      if(saved)break;if(attempt===CODE_ATTEMPTS-1)throw new Error('接收码暂不可用，请重试。');
     }
     this.send(socket,{type:'identity',device:publicDevice(seat),code,expires,refreshAt,serverNow,recent:await this.recent(seat.id)});
   }
-  private async customStatus(socket:WebSocket,operation?:string){
-    const seat=socket.deserializeAttachment() as Seat,own=await this.ctx.storage.get<OwnCustom>('own-custom:'+seat.id);
-    const row=own?await this.ctx.storage.get<CodeRow>('code:'+own.code):undefined;
-    const status=own?.status==='available'?(own.expires<=Date.now()?'expired':row?.nonce===own.nonce&&row.lease?'connecting':'available'):own?.status||'empty';
-    this.send(socket,{type:'custom_code',operation,code:own?.code||'',nonce:own?.nonce||'',expires:own?.expires||0,
-      status,serverNow:Date.now()});
-  }
-  private async setCustom(socket:WebSocket,request:{id:unknown;code:unknown}){
-    const seat=socket.deserializeAttachment() as Seat;
-    await this.limited('custom:'+seat.id,8,60000);await this.limited('custom-ip:'+seat.ip,24,60000);
-    if(!check(request.id,TRANSFER)||!check(request.code,/^[0-9]{4}$/))throw new Error('一次性接收码需为 4 位数字。');
-    const code=request.code,nonce=crypto.randomUUID().replaceAll('-',''),now=Date.now();
-    await this.ctx.storage.transaction(async tx=>{
-      if(this.socket(seat.id)!==socket)throw new Error('连接已更新，请重试。');
-      const old=await tx.get<CodeRow>('code:'+code),own=await tx.get<OwnCustom>('own-custom:'+seat.id);
-      if(old&&old.expires>now){
-        if(old.custom&&old.device===seat.id&&old.status==='available'&&own?.code===code&&own.nonce===old.nonce)return;
-        throw new Error('该接收码已被使用，请更换');
-      }
-      if(own&&own.code!==code){
-        const previous=await tx.get<CodeRow>('code:'+own.code);
-        if(previous?.custom&&previous.device===seat.id&&previous.nonce===own.nonce&&previous.status==='available'){
-          previous.status='cancelled';await tx.put('code:'+own.code,previous);
-        }
-      }
-      const value:OwnCustom={code,nonce,expires:now+600000,status:'available'};
-      await tx.put({['code:'+code]:{device:seat.id,expires:value.expires,custom:true,nonce,status:'available'} satisfies CodeRow,
-        ['own-custom:'+seat.id]:value});
-    });
-    await this.customStatus(socket,request.id);
-  }
-  private async cancelCustom(socket:WebSocket,request:{id:unknown;nonce:unknown}){
-    const seat=socket.deserializeAttachment() as Seat;
-    await this.limited('custom:'+seat.id,8,60000);
-    if(!check(request.id,TRANSFER)||!check(request.nonce,TRANSFER))throw new Error('接收码状态无效。');
-    await this.ctx.storage.transaction(async tx=>{
-      const own=await tx.get<OwnCustom>('own-custom:'+seat.id);
-      if(!own||own.nonce!==request.nonce)throw new Error('接收码状态已更新，请重试。');
-      const row=await tx.get<CodeRow>('code:'+own.code);
-      if(row?.custom&&row.device===seat.id&&row.nonce===own.nonce&&row.status==='available'){
-        row.status='cancelled';await tx.put('code:'+own.code,row);
-      }
-      if(own.status!=='used'){own.status='cancelled';await tx.put('own-custom:'+seat.id,own);}
-    });
-    await this.customStatus(socket,request.id);
-  }
   private async claimCode(code:unknown,seat:Seat,prepare?:{id:string;token:string}){
-    if(!check(code,/^(?:[0-9]{4}|[23456789A-HJ-NP-Z]{8})$/))throw new Error('接收码无效或已过期，请复制对方当前的接收码。');
+    if(!check(code,RECEIVE_CODE))throw new Error('接收码无效或已过期，请复制对方当前的接收码。');
     return this.ctx.storage.transaction(async tx=>{
       if(prepare){
         const existing=await tx.get<Pairing>('pairing:'+prepare.id);
         if(existing){
           if(existing.sender!==seat.id||existing.token!==prepare.token||existing.expires<=Date.now())throw new Error('接收码验证已失效，请重新发起。');
-          return {receiver:existing.receiver,custom:existing.custom};
+          return {receiver:existing.receiver};
         }
         if(await tx.get('pairing-cancel:'+seat.id+':'+prepare.id))throw new Error('已取消传输。');
       }
       const key='code:'+code,row=await tx.get<CodeRow>(key);
-      if(!row||row.expires<=Date.now()||row.device===seat.id||(!row.custom&&(row.epoch||0)!==(await tx.get<number>('code-epoch:'+row.device)||0)))throw new Error('接收码无效或已过期，请复制对方当前的接收码。');
-      if(row.custom&&(row.status!=='available'||row.lease))throw new Error(row.status==='used'?'接收码已使用，请获取新的接收码。':'接收码不可用或正在建立连接，请稍后重试。');
+      if(!row||row.expires<=Date.now()||row.device===seat.id||row.epoch!==(await tx.get<number>('code-epoch:'+row.device)||0))throw new Error('接收码无效或已过期，请复制对方当前的接收码。');
       if(!this.socket(row.device))throw new Error('对方设备不在线。');
-      const custom=row.custom?{code,nonce:row.nonce!}:undefined;
-      if(!custom){await tx.put('code-epoch:'+row.device,(row.epoch||0)+1);await tx.delete(key);}
-      if(prepare)await tx.put('pairing:'+prepare.id,{sender:seat.id,receiver:row.device,token:prepare.token,expires:Date.now()+600000,...(custom?{custom}:{})} satisfies Pairing);
-      return {receiver:row.device,custom};
+      await tx.put('code-epoch:'+row.device,row.epoch+1);await tx.delete(key);
+      if(prepare)await tx.put('pairing:'+prepare.id,{sender:seat.id,receiver:row.device,token:prepare.token,expires:Date.now()+600000} satisfies Pairing);
+      return {receiver:row.device};
     });
   }
   private async session(id:unknown,seat:Seat){
@@ -334,27 +287,8 @@ export class WanHub extends DurableObject<WanEnv>{
     }else this.send(socket,{type:'waiting',id:value.id,peer:value.receiver});
   }
   private async removeSession(value:Session){
-    await this.ctx.storage.transaction(async tx=>{
-      if(value.custom){
-        const row=await tx.get<CodeRow>('code:'+value.custom.code);
-        if(row?.custom&&row.nonce===value.custom.nonce&&row.lease===value.id&&row.status==='available'){
-          delete row.lease;await tx.put('code:'+value.custom.code,row);
-        }
-      }
-      await tx.delete(['session:'+value.id,'pending:'+value.sender.id+':'+value.id,'pending:'+value.receiver.id+':'+value.id]);
-    });
+    await this.ctx.storage.delete(['session:'+value.id,'pending:'+value.sender.id+':'+value.id,'pending:'+value.receiver.id+':'+value.id]);
     await this.revokeSession(value.id);
-    const receiver=this.socket(value.receiver.id);if(value.custom&&receiver)await this.customStatus(receiver);
-  }
-  private async consumeCustom(tx:DurableObjectTransaction,value:Session){
-    if(!value.custom||value.custom_consumed)return false;
-    value.custom_consumed=true;
-    const row=await tx.get<CodeRow>('code:'+value.custom.code);
-    if(!row?.custom||row.nonce!==value.custom.nonce||row.lease!==value.id||row.status!=='available')return false;
-    row.status='used';await tx.put('code:'+value.custom.code,row);
-    const own=await tx.get<OwnCustom>('own-custom:'+value.receiver.id);
-    if(own?.nonce===value.custom.nonce){own.status='used';await tx.put('own-custom:'+value.receiver.id,own);return true;}
-    return false;
   }
   async webSocketMessage(socket:WebSocket,message:string|ArrayBuffer){
     let request:any;
@@ -434,7 +368,7 @@ export class WanHub extends DurableObject<WanEnv>{
         seat.name=String(request.name||'未命名设备').replace(/[\x00-\x1f]/g,'').slice(0,64);
         seat.platform=['windows','macos','linux'].includes(request.platform)?request.platform:'other';socket.serializeAttachment(seat);
         if(check(request.lan_id,/^[a-f0-9]{32}$/)){seat.lan_id=request.lan_id;socket.serializeAttachment(seat);}
-        await this.ctx.storage.put('device:'+seat.id,publicDevice(seat));await this.code(socket);await this.customStatus(socket);await this.presence(seat.id);
+        await this.ctx.storage.put('device:'+seat.id,publicDevice(seat));await this.code(socket);await this.presence(seat.id);
         const pending=await this.ctx.storage.list<{expires:number}>({prefix:'pending:'+seat.id+':',limit:64});
         for(const [key,row] of pending){
           if(row.expires<Date.now())continue;
@@ -444,9 +378,6 @@ export class WanHub extends DurableObject<WanEnv>{
         return;
       }
       if(request.type==='refresh'){await this.code(socket);return;}
-      if(request.type==='custom_set'){await this.setCustom(socket,request);return;}
-      if(request.type==='custom_cancel'){await this.cancelCustom(socket,request);return;}
-      if(request.type==='custom_status'){await this.customStatus(socket);return;}
       if(request.type==='recent'){this.send(socket,{type:'peers',peers:await this.recent(seat.id)});return;}
       if(request.type==='remove'){
         if(!check(request.peer,ID))throw new Error('设备无效。');
@@ -467,8 +398,8 @@ export class WanHub extends DurableObject<WanEnv>{
         }else{
           await this.limited('request:'+seat.id,15,60000);await this.limited('guess:'+seat.ip,30,60000);
           const resolved=await this.claimCode(request.code,seat,{id:request.id,token:request.token});
-          pairing={sender:seat.id,receiver:resolved.receiver,token:request.token,expires:Date.now()+600000,...(resolved.custom?{custom:resolved.custom}:{})};
-          const target=this.socket(resolved.receiver);if(target&&!resolved.custom)await this.code(target);
+          pairing={sender:seat.id,receiver:resolved.receiver,token:request.token,expires:Date.now()+600000};
+          const target=this.socket(resolved.receiver);if(target)await this.code(target);
         }
         const peer=this.peer(pairing.receiver);if(!peer)throw new Error('对方设备不在线。');
         this.send(socket,{type:'prepared',id:request.id,peer});return;
@@ -494,13 +425,13 @@ export class WanHub extends DurableObject<WanEnv>{
           await this.replay(socket,previous);return;
         }
         if(!request.prepared){await this.limited('request:'+seat.id,15,60000);await this.limited('guess:'+seat.ip,30,60000);}
-        let target:string,custom:CustomRef|undefined;
+        let target:string;
         if(request.prepared){
           const pairing=await this.ctx.storage.get<Pairing>('pairing:'+request.id);
           if(!pairing||pairing.sender!==seat.id||pairing.token!==request.token||pairing.expires<=Date.now())throw new Error('接收码验证已失效，请重新发起。');
-          target=pairing.receiver;custom=pairing.custom;
+          target=pairing.receiver;
         }else if(request.code){
-          const resolved=await this.claimCode(request.code,seat);target=resolved.receiver;custom=resolved.custom;
+          const resolved=await this.claimCode(request.code,seat);target=resolved.receiver;
         }else{
           const self=await this.binding(seat.id),other=check(request.peer,ID)?await this.binding(request.peer):null;
           const sameAccount=!!(self&&other&&self.account===other.account&&self.device!==other.device);
@@ -517,17 +448,13 @@ export class WanHub extends DurableObject<WanEnv>{
         const receiver=this.peer(target),recipient=this.socket(target);
         if(!receiver||!recipient)throw new Error('对方设备不在线。');
         if(await this.ctx.storage.get('session:'+request.id))throw new Error('传输请求已存在。');
-        const value:Session={id:request.id,sender:publicDevice(seat),receiver,token:request.token,digest:request.digest,total:request.total,count:request.count,names:request.names,accepted:false,generation:0,expires:Date.now()+86400000,done:[],sender_code:await this.ctx.storage.get<string>('own-code:'+seat.id)||'',...(custom?{custom}:{})};
+        const value:Session={id:request.id,sender:publicDevice(seat),receiver,token:request.token,digest:request.digest,total:request.total,count:request.count,names:request.names,accepted:false,generation:0,expires:Date.now()+86400000,done:[],sender_code:await this.ctx.storage.get<string>('own-code:'+seat.id)||''};
         const already=await this.ctx.storage.transaction(async tx=>{
           if(await tx.get('pairing-cancel:'+seat.id+':'+request.id))throw new Error('已取消传输。');
           const previous=await tx.get<Session>('session:'+value.id);
           if(previous){
             if(previous.sender.id!==seat.id||previous.token!==value.token||previous.digest!==value.digest||previous.total!==value.total||previous.count!==value.count||JSON.stringify(previous.names)!==JSON.stringify(value.names))throw new Error('传输请求冲突。');
             return previous;
-          }
-          if(custom){
-            const row=await tx.get<CodeRow>('code:'+custom.code);
-            if(!row?.custom||row.nonce!==custom.nonce||row.device!==target||row.status!=='available'||row.expires<=Date.now()||row.lease)throw new Error('接收码已失效或正在建立连接，请重试。');
           }
           await tx.put({['session:'+value.id]:value,['pending:'+value.sender.id+':'+value.id]:{expires:value.expires},['pending:'+value.receiver.id+':'+value.id]:{expires:value.expires}});
           await tx.delete('pairing:'+request.id);return null;
@@ -536,7 +463,7 @@ export class WanHub extends DurableObject<WanEnv>{
         const from=await this.binding(seat.id),to=await this.binding(target);
         const sameAccount=!!(from&&to&&from.account===to.account&&from.device!==to.device);
         if(!this.send(recipient,{type:'request',id:value.id,peer:value.sender,account_device:sameAccount,...(sameAccount?{account_id:from!.account}:{}),deviceCode:value.sender_code,token:value.token,digest:value.digest,total:value.total,count:value.count,names:value.names}))throw new Error('对方设备不在线，无法发送。');
-        this.send(socket,{type:'waiting',id:value.id,peer:receiver});if(request.code&&!request.prepared&&!custom)await this.code(recipient);return;
+        this.send(socket,{type:'waiting',id:value.id,peer:receiver});if(request.code&&!request.prepared)await this.code(recipient);return;
       }
       const value=await this.session(request.id,seat),other=value.sender.id===seat.id?value.receiver.id:value.sender.id;
       if(request.type==='accept'){
@@ -545,15 +472,9 @@ export class WanHub extends DurableObject<WanEnv>{
         const accepted=await this.ctx.storage.transaction(async tx=>{
           const latest=await tx.get<Session>('session:'+value.id);if(!latest)throw new Error('传输请求已失效。');
           if(latest.accepted)return latest;
-          if(latest.custom){
-            const row=await tx.get<CodeRow>('code:'+latest.custom.code);
-            if(!row?.custom||row.device!==seat.id||row.nonce!==latest.custom.nonce||row.status!=='available'||row.expires<=Date.now()||row.lease&&row.lease!==latest.id)throw new Error('接收码已失效或正在建立另一会话。');
-            row.lease=latest.id;await tx.put('code:'+latest.custom.code,row);
-          }
           latest.accepted=true;latest.generation++;await tx.put('session:'+latest.id,latest);return latest;
         });Object.assign(value,accepted);
         await this.remember(value);
-        if(value.custom)await this.customStatus(socket);
         await this.publish(value,{type:'begin',initiator:value.sender.id,iceServers:stun,relayAllowed:this.env.TURN_ENABLED==='true'});return;
       }
       if(request.type==='reject'||request.type==='cancel'){
@@ -579,14 +500,13 @@ export class WanHub extends DurableObject<WanEnv>{
         await this.publish(value,{type:'begin',initiator:value.sender.id,iceServers:stun,relayAllowed:this.env.TURN_ENABLED==='true'});return;
       }
       if(request.type==='connected'){
-        const consumed=await this.ctx.storage.transaction(async tx=>{
+        await this.ctx.storage.transaction(async tx=>{
           const latest=await tx.get<Session>('session:'+value.id);
           if(!latest?.accepted||request.generation!==latest.generation)throw new Error('连接信令已过期。');
           latest.connected=Array.from(new Set([...(latest.connected||[]),seat.id]));
-          const used=latest.connected.length===2?await this.consumeCustom(tx,latest):false;
-          await tx.put('session:'+latest.id,latest);return used;
+          await tx.put('session:'+latest.id,latest);
         });
-        const receiver=this.socket(value.receiver.id);if(consumed&&receiver)await this.customStatus(receiver);return;
+        return;
       }
       if(request.type==='relay'){
         if(seat.id!==value.sender.id||request.generation!==value.generation)throw new Error('连接请求已失效。');
@@ -616,12 +536,8 @@ export class WanHub extends DurableObject<WanEnv>{
         const result=await this.ctx.storage.transaction(async tx=>{
           const latest=await tx.get<Session>('session:'+value.id);if(!latest?.accepted)throw new Error('传输请求已失效。');
           if(!latest.done.includes(seat.id))latest.done.push(seat.id);
-          // Completion also proves an established session if an earlier
-          // connected acknowledgement was lost during signaling reconnect.
-          const consumed=seat.id===latest.receiver.id?await this.consumeCustom(tx,latest):false;
-          await tx.put('session:'+latest.id,latest);return {latest,consumed};
+          await tx.put('session:'+latest.id,latest);return {latest};
         });Object.assign(value,result.latest);
-        const receiver=this.socket(value.receiver.id);if(result.consumed&&receiver)await this.customStatus(receiver);
         if(value.done.length===2){
           value.expires=Date.now()+600000;await this.ctx.storage.put('session:'+value.id,value);
           await this.ctx.storage.delete(['pending:'+value.sender.id+':'+value.id,'pending:'+value.receiver.id+':'+value.id]);
@@ -736,7 +652,7 @@ export class WanHub extends DurableObject<WanEnv>{
       paged=blocked?await this.revokeAll():await this.revokePending();
       credentialCount=(await this.ctx.storage.list({prefix:'credential:',limit:1})).size;
     }
-    for(const prefix of ['sync-ice:','code:','pairing:','pairing-cancel:','session:','pending:','ip:','connect:','request:','guess:','retry:','relay:','custom:','custom-ip:']){
+    for(const prefix of ['sync-ice:','code:','pairing:','pairing-cancel:','session:','pending:','ip:','connect:','request:','guess:','retry:','relay:']){
       const cursor=await this.ctx.storage.get<string>('sweep:'+prefix);
       const rows=await this.ctx.storage.list<any>({prefix,limit:1000,...(cursor?{startAfter:cursor}:{})});
       const expired=[...rows].filter(([,row])=>(row.expires||row.until||now+1)<now).map(([key])=>key);

@@ -1,7 +1,7 @@
 """Two small views of the same current clipboard; no second clipboard watcher."""
 from pathlib import Path
 from PySide6.QtCore import QObject,Signal,QThreadPool,QBuffer,QIODevice,QSize,Qt,QRectF,QEvent,QMimeData
-from PySide6.QtGui import QImage,QImageReader,QPainter,QPainterPath,QColor,QPen
+from PySide6.QtGui import QImage,QImageReader,QPainter,QPainterPath,QColor,QPen,QFont
 from PySide6.QtWidgets import QApplication,QPushButton,QLabel,QHBoxLayout,QPlainTextEdit,QStackedWidget,QWidget
 from app_settings import ReferenceModalDialog,SettingsCloseButton
 from native_ui_common import colors,icon
@@ -102,6 +102,8 @@ class ClipboardButton(QPushButton):
         state=presenter.state if presenter is not None else {}
         self.setToolTip('剪贴板 · '+('需要设置 Mac 剪贴板权限，点击前往' if state.get('permission_required') else
             clipboard_status(state) if state.get('value') else '暂无可预览内容'))
+        count=sum(row['success'] for row in state.get('deliveries',{}).values())
+        self.setAccessibleDescription(f'本次内容已同步成功 {count} 台设备')
         self.update()
 
     def paintEvent(self,event):
@@ -118,7 +120,11 @@ class ClipboardButton(QPushButton):
             glyph='text' if value and value[0]=='text' else 'file' if value else 'copy'
             icon(glyph,c['secondary']).paint(p,7,7,18,18)
         if model and (value or model.state.get('permission_required')):
-            draw_cloud_status_badge(p,QRectF(21,21,10,10),'error' if model.state.get('permission_required') else model.state.get('phase','local'))
+            count=sum(row['success'] for row in model.state.get('deliveries',{}).values())
+            rect=QRectF(17.5,17.5,14,14);tint=c['link'] if count else c['secondary']
+            p.setPen(QPen(QColor(tint),1));p.setBrush(QColor(c['surface']));p.drawEllipse(rect)
+            font=QFont(p.font());font.setPixelSize(8);font.setWeight(QFont.DemiBold);p.setFont(font)
+            p.drawText(rect,Qt.AlignCenter,str(count))
         p.end()
 
 
@@ -140,6 +146,10 @@ class ClipboardPreview(ReferenceModalDialog):
         from image_preview import ImagePreview
         self.image=ImagePreview(self.content);self.content.addWidget(self.image)
         self.info=QLabel(self.content);self.info.setWordWrap(True);self.info.setAlignment(Qt.AlignCenter);self.content.addWidget(self.info)
+        routes=QHBoxLayout();routes.setSpacing(6);self.route_badges={}
+        for route,title in (('lan','局域网'),('p2p','P2P'),('cloud','R2'),('relay','TURN')):
+            badge=QLabel(self.body);badge.setAccessibleName(title+' 同步设备数');self.route_badges[route]=badge;routes.addWidget(badge)
+        routes.addStretch(1);self.body_layout.addLayout(routes)
         footer=QHBoxLayout();self.status=QLabel(self.body);footer.addWidget(self.status,1)
         from reference_widgets import button
         self.shelf_button=button('转入搁架文件','plus',variant='secondary',parent=self.body)
@@ -185,6 +195,12 @@ class ClipboardPreview(ReferenceModalDialog):
         self.close_button.dark=self.manager.settings.theme=='dark'
         self.setStyleSheet(f"QDialog{{background:transparent;}} QLabel{{background:transparent;color:{c['text']};font-size:12px;}} QPlainTextEdit{{background:{c['card']};color:{c['text']};border:1px solid {c['border']};border-radius:8px;padding:10px;}} QPushButton#settingsClose{{background:transparent;border:0;border-radius:8px;padding:0;}} QPushButton#settingsClose:hover{{background:{c['hover']};}} QPushButton#settingsClose:pressed{{background:{c['control']};}}")
         self.badge.set_status(phase);status=clipboard_status(model.state);self.status.setText(status)
+        for route,title in (('lan','局域网'),('p2p','P2P'),('cloud','R2'),('relay','TURN')):
+            counts=model.state.get('deliveries',{}).get(route,dict(success=0,total=0));badge=self.route_badges[route]
+            badge.setText(f'{title} {counts["success"]}/{counts["total"]}')
+            badge.setVisible(route!='relay' or counts['total']>0)
+            badge.setToolTip('本次内容已保存并写入剪贴板的设备数 / 本次目标连接数')
+            badge.setStyleSheet(f'QLabel{{background:{c["control"]};color:{c["link"] if counts["success"] else c["secondary"]};border:0;border-radius:6px;padding:3px 7px;font-size:10px;}}')
         moved=self._moved_revision==model.state.get('revision')
         self.shelf_button.setEnabled(value is not None and not self._moving and not moved)
         self.shelf_button.setText('正在转入…' if self._moving else '已转入搁架' if moved else '转入搁架文件')

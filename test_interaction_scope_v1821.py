@@ -205,20 +205,20 @@ class UtilityPreferenceTests(unittest.TestCase):
             finally:notice.hide();notice.deleteLater();flush()
 
 
-class CustomClientTests(unittest.TestCase):
-    def test_server_ack_only_custom_state_and_expiry(self):
+class ReceivingCodeClientTests(unittest.TestCase):
+    def test_codes_require_four_mixed_characters_and_custom_code_paths_are_removed(self):
+        from wan_transfer import RECEIVE_CODE
         with tempfile.TemporaryDirectory() as directory:
-            service=WanTransferService(directory,enabled=False);sent=[];service._connected=True
-            service._send_signal=lambda value:sent.append(value) or True
+            service=WanTransferService(directory,enabled=False);service._connected=True;messages=[]
+            service.status_changed.connect(messages.append)
             try:
-                service.set_custom_code('0123');operation=sent[-1]['id']
-                self.assertNotEqual(service.custom_identity().get('status'),'available')
-                with patch('wan_transfer.time.monotonic',return_value=10):
-                    service._message(json.dumps(dict(schema_version=1,type='custom_code',operation=operation,code='0123',nonce='a'*32,status='available',expires=610000,serverNow=10000)))
-                    self.assertEqual(service.custom_identity()['remaining'],600)
-                with patch('wan_transfer.time.monotonic',return_value=611):self.assertEqual(service.custom_identity()['status'],'expired')
-                service.cancel_custom_code();self.assertEqual(sent[-1]['nonce'],'a'*32)
-                with self.assertRaises(ValueError):service.set_custom_code('中文123456')
+                for code in ('AB23','2ABC','789Z'):self.assertIsNotNone(RECEIVE_CODE.fullmatch(code))
+                for code in ('1234','ABCD','ABCD2345','I023','中文23'):
+                    self.assertIsNone(RECEIVE_CODE.fullmatch(code))
+                    with self.assertRaises(ValueError):service.send(code,[])
+                self.assertFalse(hasattr(service,'set_custom_code'));self.assertFalse(hasattr(service,'custom_identity'))
+                service._message(json.dumps(dict(schema_version=1,type='identity',code='ABCD2345',recent=[])))
+                self.assertEqual(service.code,'');self.assertIn('版本不匹配',messages[-1])
             finally:service.close();service.deleteLater();flush()
 
     def test_each_dropdown_delete_does_not_change_selection(self):

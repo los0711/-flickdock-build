@@ -28,6 +28,10 @@ class ClipboardPeerBridge(QObject):
         if pending.get('peer_published') or type(at) is not int:return
         record={key:item[key] for key in ('kind','size','sha256')}
         record.update(id=pending['id'],copied_at=at,origin_device=client.account.device_id)
+        record['delivery_plan']={device:info['route'] if info['route'] in ('lan','p2p','relay') else 'cloud'
+                                 for device,info in self.mesh.connection_snapshot().items()
+                                 if info['route']!='disconnected'}
+        client.deliveries.begin(record)
         if item.get('inline'):
             record['inline']=item['inline']['body'];source=base64.b64decode(record['inline'],validate=True)
         else:source=item['path']
@@ -39,6 +43,7 @@ class ClipboardPeerBridge(QObject):
     def _acknowledged(self,topic,record,peer):
         client=self.client;pending=client._pending
         if topic!='clipboard' or record['id']!=client.view.get('id'):return
+        client.deliveries.acknowledge(self.mesh.account_device_for_peer(peer),record.get('delivery_route',''))
         if pending is None:
             client._set_view(client.view['value'],'synced' if client.view.get('backed_up') else 'peer',record['id'],route=record.get('delivery_route',''))
             return
@@ -91,6 +96,7 @@ class ClipboardPeerBridge(QObject):
             if client._apply(value,directory,identity=head['id']):
                 client._seen=head['id'];client._observed_clock=max(client._observed_clock,head['copied_at'])
                 self.latest=(head['copied_at'],head['id']);client._set_view(value,'peer',head['id'],route=head.get('delivery_route',''),backed_up=False)
+                client.deliveries.received(head,head.get('delivery_route',''))
                 self.mesh.acknowledge(peer,'clipboard',head)
         if head['kind']=='text' and isinstance(head.get('inline'),str) and head['size']<=32768:
             try:value=unpack_inline(head)

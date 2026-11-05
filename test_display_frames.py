@@ -5,7 +5,8 @@ os.environ['QT_QPA_PLATFORM']='offscreen'
 import unittest
 from math import ceil
 from unittest.mock import patch
-from PySide6.QtCore import QAbstractAnimation,QCoreApplication,QEvent,QPoint,QRect,QTimer
+from PySide6.QtCore import QAbstractAnimation,QCoreApplication,QEvent,QPoint,QRect,QRectF,QTimer,Qt
+from PySide6.QtGui import QImage,QPainter,QPainterPath
 from PySide6.QtWidgets import QApplication,QWidget
 from PySide6.QtTest import QTest
 from shiboken6 import isValid
@@ -21,6 +22,31 @@ def flush():
     QCoreApplication.sendPostedEvents(None,QEvent.DeferredDelete)
 
 class DisplayFramesTests(unittest.TestCase):
+    def test_drop_targets_share_native_clock_stop_when_hidden_and_respect_reduced_motion(self):
+        from native_ui_common import DropBorderMotion
+        targets=[QWidget(self.window) for _ in range(3)]
+        borders=[DropBorderMotion(target) for target in targets]
+        for target in targets:target.resize(120,80);target.show()
+        with patch('native_ui_common.reduced_motion',return_value=False):
+            for border in borders:border.set_active(True)
+            flush();clock=borders[0].frames.clock
+            self.assertTrue(all(border.frames.clock is clock and border.frames.isActive() for border in borders))
+            self.assertFalse(any(border.findChildren(QTimer) for border in borders))
+            targets[0].hide();flush();self.assertFalse(borders[0].frames.isActive())
+            targets[0].show();flush();self.assertTrue(borders[0].frames.isActive())
+            path=QPainterPath();path.addRoundedRect(QRectF(1,1,118,78),12,12)
+            frames=[]
+            for stamp in (100.,100.15):
+                image=QImage(120,80,QImage.Format_ARGB32_Premultiplied);image.fill(Qt.transparent)
+                painter=QPainter(image)
+                with patch('native_ui_common.time.perf_counter',return_value=stamp):borders[0].paint(painter,path,dark=True)
+                painter.end();frames.append(image)
+            self.assertNotEqual(frames[0],frames[1]);self.assertEqual(frames[0].pixelColor(60,40).alpha(),13)
+            for border in borders:border.set_active(False)
+            flush();self.assertFalse(clock.pulses)
+        with patch('native_ui_common.reduced_motion',return_value=True):
+            borders[0].set_active(True);self.assertFalse(borders[0].frames.isActive())
+
     def setUp(self):
         self.window=QWidget();self.window.resize(320,200);self.window.show();flush()
 

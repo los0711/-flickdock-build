@@ -47,7 +47,7 @@ RUNTIME_SOURCES=(
     'shelf_sync.py','shared_clipboard_files.py','sync_files.py','sync_adapter.py','verify_cloud.py','shortcut_preview.py',
     'lan_transfer.py','lan_panel.py','transfer_visuals.py','transfer_workbench.py','owned_files.py','verify_transfers.py',
     'wan_transfer.py','webrtc_stream.py','nearby_transport.py','verify_wan.py','windows_network.py',
-    'peer_stream.py','peer_rpc.py','peer_sync.py','peer_clipboard.py','peer_shelf.py','tls_stream.py','verify_peers.py',
+    'peer_stream.py','peer_rpc.py','peer_sync.py','peer_clipboard.py','clipboard_delivery.py','peer_shelf.py','tls_stream.py','verify_peers.py',
     'adaptive_stream.py','route_policy.py','cloud_pipe.py',
 )
 MAINTAINED_TESTS=(
@@ -127,7 +127,7 @@ SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'cloud/src/cloud-pipe.ts','cloud/src/storage-budget.ts','TRANSPORT_V1825.md',
     'cloud/src/wasm.d.ts','cloud/src/vendor/hash-wasm-sha256-4.12.0.wasm',
     'cloud/src/vendor/hash-wasm-sha256-4.12.0.json','cloud/src/vendor/hash-wasm-4.12.0-LICENSE.txt',
-    'cloud/test/integration.mjs','cloud/test/shared-file.mjs','cloud/test/hash-state.mjs','cloud/test/upload-cancel.mjs','cloud/test/wan-codes.mjs','cloud/test/wan-connect.mjs','cloud/test/wan-account.mjs','cloud/test/peer-sync.mjs','cloud/test/peer-runtime.mjs','cloud/test/account-names.mjs','cloud/test/qa-server.mjs','cloud/test/clipboard.mjs','cloud/test/clipboard-expiry.mjs',
+    'cloud/test/integration.mjs','cloud/test/shared-file.mjs','cloud/test/hash-state.mjs','cloud/test/upload-cancel.mjs','cloud/test/wan-codes.mjs','cloud/test/wan-connect.mjs','cloud/test/wan-account.mjs','cloud/test/peer-sync.mjs','cloud/test/peer-runtime.mjs','cloud/test/account-names.mjs','cloud/test/qa-server.mjs','cloud/test/clipboard.mjs','cloud/test/clipboard-expiry.mjs','cloud/test/clipboard-delivery.mjs',
     '.github/workflows/macos-build.yml','.github/workflows/native-clipboard.yml','ci_installer_close.py','ci_assets.py','p2p_assets.py',
     'p2p/bridge.mjs','p2p/rtc-peer.mjs','p2p/sync-mesh.mjs','p2p/turn_tls.mjs','p2p/test-turn-tls.mjs','p2p/test-rtc-lifecycle.mjs','p2p/package.json','p2p/package-lock.json','p2p/node-shasums.json',
     'website/wrangler.jsonc','website/worker.mjs','website/package.json','website/package-lock.json',

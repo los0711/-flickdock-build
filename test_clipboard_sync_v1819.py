@@ -27,12 +27,13 @@ class Account(QObject):
 
 class Events(QObject):
     clipboard_changed=Signal()
+    clipboard_delivery=Signal(dict)
     connected=Signal()
     def __init__(self):super().__init__();self.socket=self
 
 
 class Hub:
-    def __init__(self):self.head=None;self.pending=None;self.body=None;self.events=[];self.calls=[]
+    def __init__(self):self.head=None;self.pending=None;self.body=None;self.events=[];self.calls=[];self.delivery=None
     def api(self,device):
         hub=self
         class Api:
@@ -40,9 +41,18 @@ class Hub:
                 key=object();hub.calls.append((method,path));
                 def deliver():
                     result=None;error=None
-                    if path=='/v1/clipboard' and method=='POST':
+                    if path.endswith('/delivery') and method=='POST':
+                        if not hub.head or hub.head['id'] not in path:error=RuntimeError('replaced')
+                        else:
+                            if not hub.delivery or hub.delivery['id']!=hub.head['id']:
+                                hub.delivery=dict(id=hub.head['id'],sha256=hub.head['sha256'],origin=hub.head['device'],plan={},receipts={})
+                            data=kw['data']
+                            if 'plan' in data:hub.delivery['plan']=dict(data['plan'])
+                            if 'route' in data:hub.delivery['receipts'][device]=data['route']
+                            result={'delivery':dict(hub.delivery)}
+                    elif path=='/v1/clipboard' and method=='POST':
                         hub.pending=dict(id=kw['data']['id'],device=device,ready=False,copied_at=kw['data']['copied_at']);result={'clipboard':dict(hub.pending)}
-                    elif path=='/v1/clipboard':result={'clipboard':dict(hub.head) if hub.head else None}
+                    elif path=='/v1/clipboard':result={'clipboard':dict(hub.head) if hub.head else None,'delivery':hub.delivery}
                     elif method=='PUT':
                         if not hub.pending or hub.pending['id'] not in path:error=RuntimeError('replaced')
                         else:
@@ -55,7 +65,9 @@ class Hub:
                             Path(kw['destination']).write_bytes(hub.body);result=str(kw['destination'])
                     if isinstance(result,dict):result['server_time']=round(time.time()*1000)
                     callback(result,error)
-                    if method in ('POST','PUT'):
+                    if path.endswith('/delivery') and result is not None:
+                        for event in hub.events:event.clipboard_delivery.emit(dict(hub.delivery))
+                    elif method in ('POST','PUT'):
                         for event in hub.events:event.clipboard_changed.emit()
                 QTimer.singleShot(0,deliver);return key
             def cancel(self,key):pass # Deliberately deliver late: generation guards must protect the slot.
@@ -63,6 +75,21 @@ class Hub:
 
 
 class ClipboardTests(unittest.TestCase):
+    def test_uploaded_body_waiting_for_confirmation_releases_bulk_bandwidth_priority(self):
+        sender=self.clients[0];original=sender.api.request;held=[]
+        def request(method,path,callback,**options):
+            if method=='PUT':held.append((method,path,callback,options));return object()
+            return original(method,path,callback,**options)
+        sender.api.request=request
+        source=self.base/'priority.bin';source.write_bytes(os.urandom(128*1024))
+        mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(source))]);self.clips[0].setMimeData(mime)
+        until(lambda:bool(held));self.assertTrue(sender._priority_active())
+        method,path,callback,options=held.pop();size=Path(options['source']).stat().st_size
+        options['progress'](size,size)
+        self.assertIsNotNone(sender._pending);self.assertFalse(sender._priority_active())
+        original(method,path,callback,**options)
+        until(lambda:sender._pending is None and self.clips[1].mimeData().hasUrls())
+
     def test_oversize_file_reports_policy_limit_once_without_upload_or_losing_local_clipboard(self):
         self.clips[0].text('previous usable clipboard')
         until(lambda:self.hub.head is not None and self.hub.head['ready'])
