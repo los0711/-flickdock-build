@@ -47,13 +47,13 @@ with tempfile.TemporaryDirectory(prefix='flickdock-morph-') as tmp:
         for index in range(3):
             for action in ['expand','collapse']:
                 monitor.reset();start=time.perf_counter();(shelf.show_contents if action=='expand' else shelf.collapse_contents)();entry=(time.perf_counter()-start)*1000
-                wait_until(app,lambda:shelf.geometry_morph.animation.state()==QAbstractAnimation.State.Stopped)
+                wait_until(app,lambda:not shelf.geometry_morph.active)
                 elapsed=(time.perf_counter()-start)*1000;monitor.active=False
                 results.append({'case':action+str(index),'entry_ms':round(entry,3),'total_ms':round(elapsed,3),'heartbeat_p95_ms':percentile(monitor.beats,.95),'heartbeat_max_ms':round(max(monitor.beats,default=0),3),'shadow_p95_ms':percentile(monitor.shadow,.95),'shadow_calls':len(monitor.shadow),'events':monitor.events})
         monitor.reset();start=time.perf_counter();shelf.show_contents()
         for delay,action in [(35,shelf.collapse_contents),(70,shelf.show_contents),(105,shelf.collapse_contents),(140,shelf.show_contents)]:QTimer.singleShot(delay,action)
         QTest.qWait(900);monitor.active=False
-        assert shelf.expanded and shelf.geometry_morph.animation.state()==QAbstractAnimation.State.Stopped
+        assert shelf.expanded and not shelf.geometry_morph.active
         results.append({'case':'rapid_interrupt','total_ms':round((time.perf_counter()-start)*1000,3),'heartbeat_p95_ms':percentile(monitor.beats,.95),'heartbeat_max_ms':round(max(monitor.beats,default=0),3),'shadow_p95_ms':percentile(monitor.shadow,.95),'shadow_calls':len(monitor.shadow),'events':monitor.events})
         path=Path(__file__).parent/('morph-'+(sys.argv[1] if len(sys.argv)>1 else 'measurement')+'.json');path.write_text(json.dumps(results,indent=2));print(path.name,json.dumps(results))
         shelf.hide_immediately();manager.quit()

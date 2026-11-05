@@ -69,7 +69,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-v163-terminal-') as profile:
 
     def land(action,name,pose=None):
         with patch.object(subject.QGuiApplication,'screenAt',return_value=screen):action()
-        morph=shelf.geometry_morph;morph.animation.pause()
+        morph=shelf.geometry_morph;morph.pause()
         if pose is None:pose=dict(sx=1,sy=1,dx=0,dy=0,alpha=1)
         shelf.presentation.jump(pose)
         snapshot=shelf._surface_snapshot
@@ -105,12 +105,12 @@ with tempfile.TemporaryDirectory(prefix='flickdock-v163-terminal-') as profile:
 
     for instant in (0,1,17,57,103,199,229):
         with patch.object(subject.QGuiApplication,'screenAt',return_value=screen):shelf.show_contents()
-        shelf.presentation.stop();shelf.geometry_morph.animation.pause()
+        shelf.presentation.stop();shelf.geometry_morph.pause()
         shelf.geometry_morph.animation.setCurrentTime(instant)
         before=QRect(shelf.visual_geometry())
         shelf.collapse_contents()
         assert shelf.visual_geometry()==before,('retarget teleported',instant)
-        shelf.geometry_morph.animation.pause()
+        shelf.geometry_morph.pause()
         shelf.geometry_morph.complete()
     callbacks=[]
     shelf.geometry_morph.animate(shelf.visual_geometry().translated(-8,0),lambda:callbacks.append(1))
@@ -129,7 +129,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-v163-terminal-') as profile:
     shelf.refresh()
     with patch.object(subject.QGuiApplication,'screenAt',return_value=screen):shelf.show_contents()
     shelf.presentation.jump(dict(sx=1,sy=1,dx=0,dy=0,alpha=1))
-    shelf.geometry_morph.animation.pause()
+    shelf.geometry_morph.pause()
     costs=[]
     for moment in range(0,231,16):
         shelf.geometry_morph.animation.setCurrentTime(moment)

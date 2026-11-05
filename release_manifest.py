@@ -31,11 +31,11 @@ class ReleaseError(ValueError):
 VERSION_RE=re.compile(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z')
 HASH_RE=re.compile(r'[0-9a-f]{64}\Z')
 RUNTIME_SOURCES=(
-    'video_assets.py','video_runtime.py','video_cdn.py','video_links.py','video_worker.py','video_jobs.py','video_panel.py','video_prompt.py',
+    'video_assets.py','video_runtime.py','video_cdn.py','video_links.py','video_worker.py','video_formats.py','video_covers.py','video_jobs.py','video_controller.py','video_panel.py','video_prompt.py',
     'flickdock.py','app_settings.py','async_images.py','capture_files.py',
-    'download_writer.py','file_metadata.py','transfer_entry.py','gui_watchdog.py',
+    'download_writer.py','file_metadata.py','transfer_entry.py','receive_notice.py','gui_watchdog.py',
     'confirm_clear.py','content_grid.py','content_resolver.py','content_stack.py',
-    'dock_geometry.py','dock_preview.py','drag_artwork.py','drag_probe.py',
+    'dock_geometry.py','dock_preview.py','display_frames.py','drag_artwork.py','drag_probe.py',
     'drop_routing.py','drop_bridge.py','flickdock_icons.py','flickdock_motion.py','global_hotkeys.py',
     'image_preview.py','instance_guard.py','media_preview.py','offscreen_verify.py',
     'runtime_media.py','selection_archive.py','shake_detector.py','shelf_content.py',
@@ -51,6 +51,9 @@ RUNTIME_SOURCES=(
     'adaptive_stream.py','route_policy.py','cloud_pipe.py',
 )
 MAINTAINED_TESTS=(
+    'test_p2p_priority.py','test_receive_notice.py',
+    'test_display_frames.py',
+    'test_video_matrix.py',
     'test_workbench_v1823.py',
     'test_video_v1823.py',
     'test_sync_parallel_receive_v1823.py',

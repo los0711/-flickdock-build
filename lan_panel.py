@@ -1343,6 +1343,16 @@ class LanPanel(QFrame):
         self._row_page += delta
         self._refresh_transfer_pages()
 
+    def focus_transfer(self,identifier,snapshot=None):
+        if identifier not in self._rows and snapshot:self._progress(snapshot)
+        row=self._rows.get(identifier)
+        if row is None:return
+        if row.get('finished'):
+            self.activity_scroll.ensureWidgetVisible(self.history_card,8,8);return
+        rows=sorted((value for value in self._rows.values() if not value.get('finished')),key=lambda value:-value['sequence'])
+        self._row_page=rows.index(row)//2;self._refresh_transfer_pages()
+        self.activity_scroll.ensureWidgetVisible(row['frame'],8,8)
+
     def _refresh_transfer_pages(self):
         # Terminal transfers belong in history; they never reserve active slots.
         for row in self._rows.values():
@@ -1648,6 +1658,9 @@ class LanDialog(QDialog):
         title.setWordWrap(False);title.setSizePolicy(QSizePolicy.Fixed,QSizePolicy.Preferred)
         title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         title_row.addWidget(title)
+        self.ready_label=_label('已就绪',self.title_bar);self.ready_label.setObjectName('transferReady')
+        self.ready_label.setWordWrap(False);self.ready_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+        title_row.addWidget(self.ready_label)
         self.back_button=_button('返回总览',self.title_bar);self.back_button.setObjectName('lanDialogBack')
         self.back_button.setIcon(ui_icon('left'));self.back_button.clicked.connect(lambda:self._navigate('overview'));title_row.addWidget(self.back_button)
         title_row.addStretch(1)
@@ -1680,6 +1693,13 @@ class LanDialog(QDialog):
         self.drop_router=_TransferDropRouter(self)
         from window_chrome import WindowChrome
         self.chrome=WindowChrome(self,self.title_bar,settings,'transfer',surface=self.card)
+        if self._wan:service.identity_changed.connect(self._update_ready)
+        self._update_ready()
+
+    def _update_ready(self,*_):
+        service=self.panel.service
+        identity=service.code_identity() if getattr(service,'mode','lan')=='wan' else {}
+        self.ready_label.setVisible(bool(identity.get('online') and identity.get('code')))
 
     def _navigate(self, target):
         self._navigate_after_close=target
@@ -1727,6 +1747,7 @@ class LanDialog(QDialog):
                 panel=LanPanel(service,self.panel_stack,theme=self._theme,settings=self._settings,metadata_cache=self.file_metadata)
                 panel.lan_recommended.connect(self.lan_recommended)
                 self._panels[service]=panel;self.panel_stack.addWidget(panel)
+                if getattr(service,'mode','lan')=='wan':service.identity_changed.connect(self._update_ready)
                 for widget in (panel,*panel.findChildren(QWidget)):widget.setAcceptDrops(True)
             self.panel=self._panels[service];self.panel.account_sender=self.account_sender;self._wan=getattr(service,'mode','lan')=='wan'
             self.panel.queue_paths(queued,replace=True)
@@ -1741,6 +1762,7 @@ class LanDialog(QDialog):
             if self._wan and callable(getattr(service,'check_code',None)):
                 service.check_code();self.panel._code_identity_changed(service.code_identity())
         finally:
+            self._update_ready()
             self.card.update();self.update()
         return self.panel
 
@@ -1776,6 +1798,7 @@ class LanDialog(QDialog):
             QFrame#lanDialogCard {{ background:{surface}; border:1px solid {c['glass_border']}; border-radius:{TRANSFER_CORNER_RADIUS_PX}px; }}
             QWidget#lanTitleBar {{ background:transparent; border:0; border-bottom:1px solid {c['divider']}; }}
             QLabel#lanDialogTitle {{ color:{ink}; font:700 15px '{font_family}'; background:transparent; border:0; }}
+            QLabel#transferReady {{ color:{c['green']}; font:500 11px '{font_family}'; background:transparent; border:0; }}
             QPushButton#lanDialogClose,QPushButton#lanDialogBack {{ background:transparent; color:{c['secondary']}; border:0; border-radius:{TRANSFER_CORNER_RADIUS_PX}px;
                                           font:12px '{font_family}'; padding:0; }}
             QPushButton#lanDialogBack {{ background:{c['control']};padding:4px 10px; }}

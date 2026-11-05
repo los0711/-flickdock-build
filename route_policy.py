@@ -1,4 +1,4 @@
-"""Measured route selection with hysteresis; no assumptions about WAN speed."""
+"""Prefer device delivery; measure direct paths without oscillating between them."""
 from dataclasses import dataclass
 import math
 import time
@@ -8,6 +8,13 @@ SWITCH_HOLD_SECONDS=5.
 SWITCH_GAIN=1.25
 REQUIRED_WINS=2
 ROUTE_ORDER={'lan':0,'p2p':1,'relay':2,'cloud':3}
+
+
+def preferred_routes(routes):
+    direct={key:route for key,route in routes.items() if route in ('lan','p2p')}
+    if direct:return direct
+    relay={key:route for key,route in routes.items() if route=='relay'}
+    return relay or routes
 
 
 @dataclass
@@ -31,6 +38,9 @@ class RoutePolicy:
 
     def choose(self,routes):
         """routes maps live connection identities to their actual transport."""
+        # A healthy device connection owns delivery. Cloud is a recovery path,
+        # not a challenger that can displace it after a short cached probe.
+        routes=preferred_routes(routes)
         now=self.clock()
         if self.current not in routes:
             self.current=min(routes,key=lambda key:(ROUTE_ORDER[routes[key]],key),default=None)

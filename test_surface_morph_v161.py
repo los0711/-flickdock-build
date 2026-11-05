@@ -48,7 +48,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-morph-test-') as tmp:
         assert len(popup.visible_refs())==125 and popup.count_label.text()=='125 项'
         assert not shelf.card.isHidden() and snapshot.active and snapshot.isHidden()
         size=shelf.card.size();captures=snapshot.capture_count
-        shelf.geometry_morph.animation.pause()
+        shelf.geometry_morph.pause()
         for moment in (25,65,100,145,190):
             shelf.geometry_morph.animation.setCurrentTime(moment);flush(app)
             visual=shelf.visual_geometry()
@@ -87,7 +87,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-morph-test-') as tmp:
             before=shelf.visual_geometry()
             shelf.expand_button.click()
             assert shelf.visual_geometry()==before,'reversal teleported to the old endpoint'
-            shelf.geometry_morph.animation.pause()
+            shelf.geometry_morph.pause()
             shelf.geometry_morph.animation.setCurrentTime(45);flush(app)
         shelf.geometry_morph.complete();flush(app)
         assert shelf.expanded and not snapshot.active and not shelf.card.isHidden()

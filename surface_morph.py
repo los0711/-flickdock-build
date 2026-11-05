@@ -2,9 +2,11 @@
 from collections import OrderedDict
 import math
 import sys
+import time
 from PySide6.QtCore import QObject, QPoint, QRect, QRectF, Qt, QEasingCurve, QVariantAnimation
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPixmap, QTransform, QRegion
 from PySide6.QtWidgets import QWidget
+from display_frames import FramePulse
 
 
 def paint_surface_shadow(painter,rect,cache,blur=28.0,offset=None,color=None,*,radius=None):
@@ -267,18 +269,21 @@ class SurfaceMorph(QObject):
         self.prepare = prepare
         self.settle = settle
         self.animation = QVariantAnimation(self)
+        self._frames = FramePulse(self)
+        self._frames.timeout.connect(self._advance)
+        self._started_at = 0.0
         # One shared clock drives geometry and content. Only an explicit
         # overview open opts into a small, preallocated elastic overshoot.
         self._geometry_curve=QEasingCurve(QEasingCurve.Type.OutCubic)
         self._content_curve=QEasingCurve(QEasingCurve.Type.OutCubic)
         self.animation.setEasingCurve(QEasingCurve.Linear)
         self.animation.valueChanged.connect(self._frame)
-        self.animation.finished.connect(self._finish)
         self._done = None
         self.progress=1.0
         self.active=False
 
     def stop(self, settle=True):
+        self._frames.stop()
         self.animation.stop()
         self._done = None
         self.active=False
@@ -314,7 +319,26 @@ class SurfaceMorph(QObject):
         self.animation.setDuration(duration)
         self.animation.setStartValue(0.0)
         self.animation.setEndValue(1.0)
-        self.animation.start()
+        # QVariantAnimation supplies Qt's interpolation, but its default
+        # unified 16 ms timer must not pace a high-refresh native surface.
+        self.animation.setCurrentTime(0)
+        self._frame(0.0)
+        self._started_at = time.perf_counter()
+        self._frames.start()
+
+    def pause(self):
+        self._frames.stop()
+
+    def resume(self):
+        if self.active:
+            self._started_at = time.perf_counter() - self.animation.currentTime() / 1000
+            self._frames.start()
+
+    def _advance(self):
+        elapsed = round((time.perf_counter() - self._started_at) * 1000)
+        self.animation.setCurrentTime(min(elapsed, self.animation.duration()))
+        if elapsed >= self.animation.duration():
+            self._finish()
 
     def _frame(self, progress):
         clock=max(0.,min(1.,float(progress)))
@@ -329,6 +353,7 @@ class SurfaceMorph(QObject):
 
     def _finish(self):
         if not self.active:return
+        self._frames.stop()
         self.animation.stop()
         self.active=False; self.progress=1.0
         self.current = QRect(self._to)

@@ -4,6 +4,7 @@ import {randomBytes} from 'node:crypto';
 import {adaptTurnServers} from './turn_tls.mjs';
 const LEGACY_WINDOW=4*1024*1024, LEGACY_MESSAGE=32*1024;
 const WINDOW=16*1024*1024, MESSAGE=64*1024;
+const MAX_PENDING_CANDIDATES=64;
 rtc.initLogger('Fatal',()=>{});
 rtc.setSctpSettings({recvBufferSize:32*1024*1024,sendBufferSize:16*1024*1024,maxChunksOnQueue:16384});
 
@@ -15,6 +16,8 @@ const flowNonce=randomBytes(16).toString('hex');
 const nearbyNonce=randomBytes(16).toString('hex');
 const routesNonce=randomBytes(16).toString('hex');
 let nearbyCapable=false,adaptiveCapable=false,lastRoute='';
+let remoteReady=false;
+const pendingCandidates=[];
 function frame(kind,body,done) {
   if(closed)return;
   if(kind==='B')outputBytes(body,done);else outputEvent(body);
@@ -32,6 +35,7 @@ function stats() {
 }
 function stop() {
   if(closed)return;stats();closed=true;wake();clearTimeout(creditTimer);clearInterval(statsTimer);
+  pendingCandidates.length=0;
   turnTransport?.close();
   try{channel?.close();pc?.close();}catch{}
   onClose();
@@ -121,8 +125,19 @@ async function control(value) {
       }
     }
     pc.setRemoteDescription(value.sdp,value.descriptionType);
+    remoteReady=true;
+    // Trickle ICE may overtake the SDP through asynchronous signaling. The
+    // native API requires a remote description before accepting candidates.
+    for(const candidate of pendingCandidates)pc.addRemoteCandidate(candidate.candidate,candidate.mid);
+    pendingCandidates.length=0;
   }
-  else if(value.type==='candidate')pc.addRemoteCandidate(value.candidate,value.mid);
+  else if(value.type==='candidate'){
+    if(remoteReady)pc.addRemoteCandidate(value.candidate,value.mid);
+    else{
+      if(pendingCandidates.length>=MAX_PENDING_CANDIDATES)throw new Error('Too many pending ICE candidates');
+      pendingCandidates.push({candidate:value.candidate,mid:value.mid});
+    }
+  }
   else if(value.type==='stats')stats();
   else if(value.type==='nearby'){
     if(!nearbyCapable||!channel?.isOpen())throw new Error('Nearby capability unavailable');

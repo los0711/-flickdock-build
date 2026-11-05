@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QGraphicsDropShadowEffect, QGraphicsEffect, QPushB
 
 from flickdock_icons import document_pixmap, draw_glyph
 from surface_morph import paint_surface_shadow, surface_clip
+from display_frames import FramePulse
 import ui_theme
 
 
@@ -36,9 +37,7 @@ class Spring(QObject):
         self._finished: Callable[[], None] | None = None
         self._last_tick = time.perf_counter()
         self._started_at = self._last_tick
-        self._timer = QTimer(self)
-        self._timer.setTimerType(Qt.TimerType.PreciseTimer)
-        self._timer.setInterval(16)
+        self._timer = FramePulse(self)
         self._timer.timeout.connect(self._tick)
 
     def animate(self, target: dict[str, float], finished: Callable[[], None] | None = None,

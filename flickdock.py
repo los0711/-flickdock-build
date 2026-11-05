@@ -3281,7 +3281,7 @@ class ShelfManager:
             can_upload=lambda topic:self.clipboard_sync.enabled if topic=='clipboard' else self.sync.upload_enabled,
             can_receive=lambda topic:self.clipboard_sync.enabled if topic=='clipboard' else self.sync.receive_enabled)
         self.clipboard_sync.peer_bridge=ClipboardPeerBridge(self.clipboard_sync,self.peer_sync)
-        from video_panel import VideoController
+        from video_controller import VideoController
         from video_prompt import VideoLinkWatcher
         self.video_controller=VideoController(self);self.video_watcher=VideoLinkWatcher(self)
         self.clipboard_sync.activity_changed.connect(self.video_controller.set_priority)
@@ -3289,6 +3289,8 @@ class ShelfManager:
         self.peer_sync.status_changed.connect(self._sync_status_changed)
         self.lan.peers_changed.connect(lambda _:self.wan.peers_changed.emit(self.wan.peers()))
         self.wan.offer_received.connect(self._wan_offer)
+        from receive_notice import SameAccountReceiveNotice
+        self.receive_notice=SameAccountReceiveNotice(self,self.wan)
         self.wan.start()
         self.account.account_changed.connect(self._lan_identity)
         self.account.devices_changed.connect(self._lan_devices)
@@ -3522,7 +3524,8 @@ class ShelfManager:
         if (offer.get('account_device') is True and self.account.signed_in
                 and offer.get('account_id')==self.account.account['id']
                 and self.wan._bound_identity==(self.account.device_id,self.account.api.token)):
-            try:self.wan.accept(offer['id'],self.settings.lan_receive_dir)
+            try:
+                if self.wan.accept(offer['id'],self.settings.lan_receive_dir):self.receive_notice.begin(offer)
             except (OSError,ValueError) as error:
                 self.wan.reject(offer['id']);self.wan.status_changed.emit('同账号文件未能接收：'+str(error))
             return
@@ -4122,6 +4125,7 @@ class ShelfManager:
         self.was_down=down
 
     def quit(self):
+        if hasattr(self,'receive_notice'):self.receive_notice.close()
         if hasattr(self,'intake_notice'):self.intake_notice.hide()
         if hasattr(self,'clipboard_notice'):self.clipboard_notice.supersede()
         if hasattr(self,'remote_intake_notice'):self.remote_intake_notice.hide()

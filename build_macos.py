@@ -220,7 +220,7 @@ def main(arguments=None):
         env['FLICKDOCK_CODESIGN_IDENTITY'] = options.sign_identity
     if options.entitlements:
         env['FLICKDOCK_ENTITLEMENTS'] = str(options.entitlements.resolve())
-    run([python, '-m', 'unittest', 'test_platform_startup', 'test_platform_native', 'test_mac_window_order_v1810', 'test_mac_updates',
+    run([python, '-m', 'unittest', 'test_display_frames', 'test_video_matrix', 'test_receive_notice', 'test_p2p_priority', 'test_platform_startup', 'test_platform_native', 'test_mac_window_order_v1810', 'test_mac_updates',
          'test_macos_native_entry', 'test_update_macos_controller', 'test_mac_build',
          'test_shelf_sync_v180', 'test_sync_review_v180', 'test_account_security_v180',
          'test_lan_transfer_v181', 'test_lan_dialog_v183', 'test_shelf_transfers_v181',

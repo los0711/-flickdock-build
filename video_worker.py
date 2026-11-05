@@ -11,9 +11,10 @@ import sys
 import threading
 import time
 import urllib.request
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit,urljoin
 
 from video_links import video_url
+from video_formats import media_options
 
 MAX_RESULTS=20
 MAX_DOWNLOAD_BYTES=16*1024**3
@@ -65,34 +66,6 @@ def public_request(url,allow_local=False):
     addresses=socket.getaddrinfo(parts.hostname,parts.port or (443 if parts.scheme=='https' else 80),type=socket.SOCK_STREAM)
     if not addresses or any(not ipaddress.ip_address(row[4][0]).is_global for row in addresses):
         raise ValueError('视频链接指向本机或局域网，已停止请求。')
-
-
-def media_options(info,ydl):
-    formats=[row for row in info.get('formats',[]) if isinstance(row,dict) and not row.get('has_drm')]
-    video_exts={'mp4','mkv','mov','m4v','webm','flv','ts'};audio_exts={'mp3','m4a','aac','opus','ogg','flac','wav','wma'}
-    sources=formats or [info]
-    has_video=any(row.get('vcodec')!='none' and (row.get('vcodec') is not None or row.get('ext') in video_exts) for row in sources)
-    result=[]
-    if has_video:
-        result.append(dict(id='best',label='视频 · 最佳画质',format='bv*+ba/b'))
-        heights=[row.get('height') for row in formats if type(row.get('height')) is int]
-        maximum=max(heights,default=0)
-        for height in (1080,720,480):
-            if maximum>height:
-                result.append(dict(id=str(height),label=f'视频 · 最高 {height}p',format=f'bv*[height<={height}]+ba/b[height<={height}]'))
-    if any(row.get('acodec')!='none' and (row.get('acodec') is not None or row.get('ext') in video_exts|audio_exts) for row in sources):
-        result.append(dict(id='audio',label='音频 · 原始音质',format='ba/b'))
-    for option in result:
-        selected=ydl._select_formats(formats or [info],ydl.build_format_selector(option['format']))
-        tracks=[track for item in selected for track in item.get('requested_formats',[item])]
-        sizes=[];approximate=False
-        for track in tracks:
-            exact=track.get('filesize');estimate=track.get('filesize_approx')
-            size=exact if type(exact) in (int,float) and math.isfinite(exact) and exact>0 else estimate
-            if type(size) not in (int,float) or not math.isfinite(size) or size<=0:sizes=[];break
-            sizes.append(round(size));approximate|=size!=exact
-        option.update(bytes=sum(sizes) if sizes else None,approximate=approximate or option['id']=='audio')
-    return result
 
 
 def media_entries(info):
@@ -155,7 +128,7 @@ def downloader(request,progress):
 
 def execute(request):
     action=request.get('action')
-    if action not in ('extract','download'):raise ValueError('视频任务类型无效。')
+    if action not in ('extract','download','thumbnail'):raise ValueError('视频任务类型无效。')
     url=request.get('url');allow_local=request.get('fixture_http') is True and os.environ.get('QT_QPA_PLATFORM')=='offscreen'
     public_request(url,allow_local)
     last=[0.]
@@ -170,6 +143,14 @@ def execute(request):
             emit('progress',phase='downloading',bytes=state.get('downloaded_bytes',0),total=total,speed=state.get('speed'))
         elif state['status']=='finished':emit('progress',phase='processing',bytes=state.get('downloaded_bytes',0),total=None,speed=None)
     with downloader(request,progress) as ydl:
+        if action=='thumbnail':
+            from video_covers import MAX_COVER_BYTES,normalize_cover
+            from yt_dlp.networking import Request
+            page=request.get('page_url')
+            if page:public_request(page,allow_local)
+            with ydl.urlopen(Request(url,headers={'Referer':page} if page else {})) as response:
+                body=response.read(MAX_COVER_BYTES+1)
+            emit('result',**normalize_cover(body));return
         if action=='extract':
             info=ydl.extract_info(url,download=False);rows=[]
             for entry in media_entries(info):
@@ -181,7 +162,8 @@ def execute(request):
                 duration=entry.get('duration')
                 rows.append(dict(id=str(entry.get('id',''))[:160],url=page,title=str(entry.get('title') or '未命名视频')[:300],
                     uploader=str(entry.get('uploader') or entry.get('extractor') or '')[:100],
-                    duration=duration if type(duration) in (float,int) and math.isfinite(duration) and duration>=0 else None,options=options))
+                    duration=duration if type(duration) in (float,int) and math.isfinite(duration) and duration>=0 else None,options=options,
+                    thumbnail_url=urljoin(page,str(entry['thumbnail']))[:8192] if entry.get('thumbnail') else ''))
             if not rows:raise ValueError('没有找到可下载的视频或音频。直播、受保护内容或需要登录的链接可能无法解析。')
             emit('result',entries=rows,limited=len(rows)==MAX_RESULTS)
             return
@@ -198,7 +180,7 @@ def execute(request):
             option=next((row for row in media_options(entry,ydl) if row['id']==request.get('option')),None)
             if option is None:raise ValueError('该画质已不可用，请重新解析该链接。')
             ydl.params.update(format=option['format'],paths={'home':str(stage)},outtmpl={'default':'%(title).90B [%(id).40B].%(ext)s'})
-            if option['id']=='audio':
+            if option['extract_audio']:
                 from yt_dlp.postprocessor import FFmpegExtractAudioPP
                 ydl.add_post_processor(FFmpegExtractAudioPP(ydl,preferredcodec='best'))
             complete=ydl.process_ie_result(entry,download=True)

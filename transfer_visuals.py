@@ -191,6 +191,11 @@ class TransferRateTracker:
         if seconds<3600:return f'剩余约 {math.ceil(seconds/60)} 分钟'
         return f'剩余约 {math.ceil(seconds/3600)} 小时'
 
+    def bytes_per_second(self,ref,now=None):
+        if now is None:now=self._clock()
+        sample=self._samples.get(ref)
+        return sample['rate'] if sample and now-sample['last_progress']<=self.STALE_SECONDS else None
+
 
 def draw_ring(painter,rect,state):
     if not state: return

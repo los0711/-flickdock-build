@@ -169,7 +169,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-expand-flash-v165-') as profi
             result=dict(controlled_native_flush=controlled,events=list(state.events),faults=list(state.faults),
                         source_alpha=source_alpha,target_alpha=target_alpha)
             results.append(result)
-            shelf.geometry_morph.animation.pause()
+            shelf.geometry_morph.pause()
             shelf.geometry_morph.complete()
             for spring in shelf.findChildren(Spring):spring.stop()
             shelf.image_cache.close();shelf.resolver.close();shelf.hide();state.owner=None

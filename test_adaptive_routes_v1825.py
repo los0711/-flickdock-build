@@ -45,7 +45,9 @@ class RoutePolicyTests(unittest.TestCase):
         policy.observe('local',100,1);policy.observe('storage',1000,1)
         self.assertEqual(policy.choose(routes),'local')
         clock[0]+=6;policy.observe('storage',1000,1)
-        self.assertEqual(policy.choose(routes),'storage')
+        self.assertEqual(policy.choose(routes),'local')
+        self.assertEqual(policy.choose({'storage':'cloud'}),'storage')
+        self.assertEqual(policy.choose({'storage':'cloud','direct':'p2p'}),'direct')
     def test_real_measurements_override_fixed_preference_with_dwell_and_no_oscillation(self):
         clock=[10.];policy=RoutePolicy(lambda:clock[0]);routes={'local':'lan','direct':'p2p','turn':'relay'}
         self.assertEqual(policy.choose(routes),'local')
@@ -53,7 +55,7 @@ class RoutePolicyTests(unittest.TestCase):
         for _ in range(100):self.assertEqual(policy.choose(routes),'local')
         clock[0]+=6;policy.observe('direct',1000,1)
         self.assertEqual(policy.choose(routes),'direct')
-        policy.observe('turn',1050,1);policy.observe('turn',1050,1);clock[0]+=6
+        policy.observe('turn',100000,1);policy.observe('turn',100000,1);clock[0]+=6
         self.assertEqual(policy.choose(routes),'direct')
         self.assertEqual(policy.choose({'turn':'relay'}),'turn')
         policy.observe('turn',1,float('nan'));self.assertTrue(policy.samples['turn'].rate>0)
@@ -94,6 +96,27 @@ class AdaptiveTests(unittest.TestCase):
         until(lambda:sender.payload_progress()==len(body))
         return bytes(result)
 
+    def test_healthy_direct_path_never_opens_the_cloud_as_a_speed_challenger(self):
+        calls=[];self.streams[0].cloud=lambda descriptor:calls.append(descriptor)
+        self.transfer(os.urandom(3*1024*1024+29))
+        time.sleep(.2)
+        self.assertFalse(calls);self.assertEqual(self.streams[0].route,'p2p')
+
+    def test_stalled_direct_path_falls_back_preserves_bytes_and_returns_to_recovered_p2p(self):
+        first,second=socket.socketpair();cloud=[Stream(first),Stream(second)];calls=[]
+        def fallback(descriptor):
+            calls.append(descriptor);self.streams[1]._add('cloud','cloud',cloud[1]);return cloud[0],{'id':'fixture','key':'fixture'}
+        self.streams[0].cloud=fallback;self.streams[0].signal_out=lambda value:True
+        original=self.raw[0].sendall
+        def blocked(data):
+            if HEADER.unpack(data[:HEADER.size])[0]!=DATA:original(data)
+        with patch.object(self.raw[0],'sendall',side_effect=blocked),patch('adaptive_stream.STALL_SECONDS',.12):
+            self.transfer(os.urandom(2*1024*1024+17))
+        self.assertEqual(len(calls),1);self.assertEqual(self.streams[0].route,'cloud')
+        self.add('recovered','p2p');self.streams[0].set_payload_offset(0)
+        self.transfer(os.urandom(2*1024*1024+31))
+        self.assertEqual(self.streams[0].route,'p2p');self.assertEqual(len(calls),1)
+
     def test_original_bytes_and_acknowledged_payload_survive_three_routes_and_path_loss(self):
         self.add('local','lan');self.add('turn','relay')
         self.assertEqual(self.streams[0].route,'lan')
@@ -109,27 +132,36 @@ class AdaptiveTests(unittest.TestCase):
         self.assertIn(self.streams[0].route,('p2p','relay'))
         self.assertLessEqual(self.streams[0]._pending_bytes,WINDOW_BYTES)
 
-    def test_automatic_probe_selects_faster_turn_over_slow_direct_and_records_all_three(self):
+    def test_faster_turn_waits_until_both_direct_paths_are_unavailable(self):
         self.raw[0].delay=.035;self.raw[1].delay=.035
         self.add('local','lan',.08);self.add('turn','relay',.001)
         self.transfer(os.urandom(2*1024*1024))
-        # Keep an active transfer window while the bounded probes settle.
-        deadline=time.monotonic()+8
-        while time.monotonic()<deadline and self.streams[0].route!='relay':
-            self.streams[0]._last_send=time.monotonic();time.sleep(.05)
-        self.assertEqual(self.streams[0].route,'relay',(self.streams[0].measurements(),self.streams[0]._probe,[(p.key,p.probes,p.probed) for p in self.streams[0]._paths.values()]))
+        until(lambda:self.streams[0].route=='p2p',8)
+        self.assertEqual(self.streams[0]._paths['turn'].probes,0)
+        for stream in self.streams:
+            stream._paths['primary'].stream.shutdown();stream._paths['local'].stream.shutdown()
+        until(lambda:self.streams[0].route=='relay')
+        self.streams[0].set_payload_offset(0);self.transfer(os.urandom(2*1024*1024+11))
         self.assertEqual({row['route'] for row in self.streams[0].measurements()},{'lan','p2p','relay'})
-        self.assertTrue(all(row['bytes_per_second'] is not None for row in self.streams[0].measurements()))
 
-    def test_cloud_is_selected_when_it_is_the_fastest_of_four_real_socket_paths(self):
-        self.raw[0].delay=.05;self.raw[1].delay=.05
-        self.add('local','lan',.08);self.add('turn','relay',.06);self.add('storage','cloud',.001)
+    def test_even_a_faster_lower_latency_cloud_path_cannot_take_native_payload_or_control(self):
+        self.add('storage','cloud')
+        with self.streams[0]._condition:
+            native=self.streams[0]._paths['primary'];storage=self.streams[0]._paths['storage']
+            native.latency=.04;storage.latency=.001
+            native.pinged=storage.pinged=time.perf_counter()
+            self.streams[0].policy.observe('primary',1024*1024,.1)
+            self.streams[0].policy.observe('storage',1024*1024,.001)
+        self.transfer(b'lightweight device message')
+        self.assertEqual(self.streams[0].sent_route,'p2p')
+        self.streams[0].set_payload_offset(0)
         self.transfer(os.urandom(2*1024*1024))
-        deadline=time.monotonic()+10
-        while time.monotonic()<deadline and self.streams[0].route!='cloud':
-            self.streams[0]._last_send=time.perf_counter();time.sleep(.05)
-        self.assertEqual(self.streams[0].route,'cloud',self.streams[0].measurements())
-        self.assertEqual({row['route'] for row in self.streams[0].measurements()},{'lan','p2p','relay','cloud'})
+        self.assertEqual(self.streams[0].route,'p2p')
+        self.assertEqual(self.streams[0]._paths['storage'].probes,0)
+        self.raw[0].shutdown();self.raw[1].shutdown()
+        until(lambda:self.streams[0].route=='cloud')
+        self.streams[0].set_payload_offset(0)
+        self.transfer(os.urandom(2*1024*1024+19))
 
     def test_duplicate_retries_deliver_each_byte_once_and_bad_ack_cannot_erase_pending(self):
         self.transfer(b'original')

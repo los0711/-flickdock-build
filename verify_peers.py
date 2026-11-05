@@ -122,7 +122,7 @@ def run(argv,load_font):
                 from types import SimpleNamespace
                 destination=root/'automatic-receive';destination.mkdir();done=[[],[]];prompts=[]
                 manager=SimpleNamespace(account=accounts[1],wan=wans[1],settings=SimpleNamespace(lan_receive_dir=str(destination)),
-                    show_wan_dialog=lambda:prompts.append('unexpected confirmation'))
+                    show_wan_dialog=lambda:prompts.append('unexpected confirmation'),receive_notice=SimpleNamespace(begin=lambda offer:None))
                 wans[1].offer_received.connect(lambda offer:ShelfManager._wan_offer(manager,offer))
                 for index in (0,1):wans[index].completed.connect(lambda value,index=index:done[index].append(value))
                 manual=root/'automatic-original.bin';manual_body=os.urandom(384*1024+13);manual.write_bytes(manual_body)

@@ -16,7 +16,7 @@ import threading
 import time
 from uuid import uuid4
 
-from route_policy import RoutePolicy,ROUTE_ORDER
+from route_policy import RoutePolicy,ROUTE_ORDER,preferred_routes
 
 HEADER=struct.Struct('!BQI')
 DATA,ACK,PROBE,PROBE_ACK,SIGNAL,PING,PONG=range(7)
@@ -233,6 +233,7 @@ class AdaptiveStream:
 
     def _send(self,data,payload):
         with self._send_lock:
+            self._last_send=time.perf_counter()
             view=memoryview(data)
             for offset in range(0,len(view),BLOCK_BYTES):
                 body=bytes(view[offset:offset+BLOCK_BYTES])
@@ -251,7 +252,9 @@ class AdaptiveStream:
         with self._condition:
             key=self.policy.current;path=self._paths.get(key)
             if len(record['body'])<=LATENCY_MESSAGE_BYTES:
-                quick=[p for p in self._paths.values() if not p.dead and p.latency>0 and time.perf_counter()-p.pinged<PING_INTERVAL_SECONDS*2]
+                eligible=preferred_routes(self._live())
+                quick=[p for p in self._paths.values() if p.key in eligible
+                       and p.latency>0 and time.perf_counter()-p.pinged<PING_INTERVAL_SECONDS*2]
                 if quick:path=min(quick,key=lambda p:p.latency);key=path.key
             if path is None or path.dead:return
             record.update(path=key,sent=time.perf_counter())
@@ -385,6 +388,13 @@ class AdaptiveStream:
             now=time.perf_counter()
             try:
                 with self._condition:
+                    stalled={record['path'] for record in self._pending.values()
+                             if now-record['sent']>=STALL_SECONDS}
+                    expired=[self._paths[key] for key in stalled if key in self._paths and not self._paths[key].dead]
+                # Closing a persistently unacknowledged path makes recovery
+                # explicit. Retransmitting forever cannot establish liveness.
+                for failed in expired:self._failed(failed)
+                with self._condition:
                     for key,path in self._paths.items():
                         if key!='primary' and not key.startswith('secondary-'):continue
                         if path is not None and not path.dead and path.stream.route in ('direct','relay'):
@@ -401,7 +411,7 @@ class AdaptiveStream:
                     retry=[(number,record) for number,record in self._pending.items()
                            if record['path'] not in live or now-record['sent']>STALL_SECONDS
                            or changed and record['path']!=self.policy.current and len(record['body'])>LATENCY_MESSAGE_BYTES]
-                    active=now-self._last_send<ACTIVE_SECONDS and self._sent_bytes>=BULK_BYTES
+                    active=bool(self._pending) or self._last_send>0 and now-self._last_send<ACTIVE_SECONDS
                 if retry:
                     with self._condition:
                         current=self.policy.current
@@ -410,10 +420,13 @@ class AdaptiveStream:
                             self.policy.current=max(alternatives,key=lambda key:self.policy.samples[key].rate if key in self.policy.samples else 0.)
                             self.policy.changed=now
                 for number,record in retry:self._transmit(number,record)
-                cloud_path=self._paths.get('cloud')
-                if (self.initiator and self.cloud and active and not self._cloud_starting and now>=self._cloud_retry
-                        and (cloud_path is None or cloud_path.dead)):
-                    self._cloud_starting=True;self._thread(self._open_cloud,'cloud-open')
+                with self._condition:
+                    cloud_path=self._paths.get('cloud')
+                    native_available=any(path.route!='cloud' and not path.dead for path in self._paths.values())
+                    open_cloud=(self.initiator and self.cloud and active and not native_available and not self._cloud_starting and now>=self._cloud_retry
+                                and (cloud_path is None or cloud_path.dead))
+                    if open_cloud:self._cloud_starting=True
+                if open_cloud:self._thread(self._open_cloud,'cloud-open')
                 if self.initiator and self.secondary:
                     if self._secondary is not None and now-self._secondary_started>PATH_CONNECT_SECONDS:
                         with self._condition:
@@ -422,16 +435,18 @@ class AdaptiveStream:
                         candidate.shutdown()
                     with self._condition:
                         routes=set(self._live().values())
-                        missing=next((route for route in ('p2p','relay') if route not in routes
+                        missing=next((route for route in ('p2p','relay') if route not in routes and (route!='relay' or not routes.intersection(('lan','p2p')))
                             and (route=='p2p' or active) and now>=self._secondary_retry[route]),None)
                     if self._secondary is None and missing:
                         identifier=uuid4().hex;direct=missing=='p2p'
                         self._signal(dict(kind='start',id=identifier,directOnly=direct));self._launch_secondary(identifier,direct_only=direct)
                 with self._condition:
                     if self._probe and now-self._probe[2]>PROBE_TIMEOUT_SECONDS:self._probe=None
-                    pings=[p for p in self._paths.values() if not p.dead and now-p.pinged>(CLOUD_IDLE_PING_SECONDS if p.route=='cloud' and not active else PING_INTERVAL_SECONDS)]
+                    pings=[p for p in self._paths.values() if not p.dead and now-p.pinged>(CLOUD_IDLE_PING_SECONDS if p.route=='cloud' and self.route!='cloud' else PING_INTERVAL_SECONDS)]
                     for candidate in pings:candidate.ping_number+=1;candidate.pinged=now
-                    choices=sorted((p for p in self._paths.values() if not p.dead and now-p.probed>=(2. if p.probes<2 else PROBE_INTERVAL_SECONDS)),
+                    eligible=preferred_routes(self._live())
+                    choices=sorted((p for p in self._paths.values() if p.key in eligible
+                                    and now-p.probed>=(2. if p.probes<2 else PROBE_INTERVAL_SECONDS)),
                         key=lambda p:(p.key!=self.policy.current,p.probed))
                     path=choices[0] if active and self._probe is None and choices and now>=self._next_probe else None
                     if path:

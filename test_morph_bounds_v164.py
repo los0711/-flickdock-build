@@ -86,7 +86,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-bounds-v164-') as profile:
     screen=SimpleNamespace(availableGeometry=lambda:QRect(0,0,1920,1080))
     with patch.object(subject.QGuiApplication,'screenAt',return_value=screen):shelf.show_contents()
     shelf.presentation.jump(dict(sx=1,sy=1,dx=0,dy=0,alpha=1))
-    shelf.geometry_morph.animation.pause()
+    shelf.geometry_morph.pause()
     # The same assertion must reject the controlled old presentation path.
     class LegacyMotionShadow(MotionShadow):
         def draw(self,painter):legacy_draw(self,painter)
@@ -112,7 +112,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-bounds-v164-') as profile:
         assert frame['alpha_beyond_shadow_below']<=2,frame
     shelf.geometry_morph.complete();shelf.collapse_contents()
     shelf.presentation.jump(dict(sx=1,sy=1,dx=0,dy=0,alpha=1))
-    shelf.geometry_morph.animation.pause()
+    shelf.geometry_morph.pause()
     collapse=[sample(shelf,p) for p in (0,.1,.3,.5,.9,1)]
     for frame in collapse:
         assert frame['max_bound_error_physical_px']<=2,frame
@@ -128,12 +128,12 @@ with tempfile.TemporaryDirectory(prefix='flickdock-bounds-v164-') as profile:
     for progress in (.1,.5,.9):
         with patch.object(subject.QGuiApplication,'screenAt',return_value=screen):shelf.show_contents()
         shelf.presentation.jump(dict(sx=1,sy=1,dx=0,dy=0,alpha=1))
-        shelf.geometry_morph.animation.pause()
+        shelf.geometry_morph.pause()
         previous=sample(shelf,progress);visual=QRect(shelf.visual_geometry())
         ratio=shelf.devicePixelRatioF()
         global_before=[value+round((shelf.x() if i%2==0 else shelf.y())*ratio)
                        for i,value in enumerate(previous['actual_physical_bounds'])]
-        shelf.collapse_contents();shelf.presentation.stop();shelf.geometry_morph.animation.pause()
+        shelf.collapse_contents();shelf.presentation.stop();shelf.geometry_morph.pause()
         after=sample(shelf,0)
         global_after=[value+round((shelf.x() if i%2==0 else shelf.y())*ratio)
                       for i,value in enumerate(after['actual_physical_bounds'])]

@@ -12,6 +12,7 @@ from PySide6.QtCore import QObject,QProcess,QTimer,Signal
 
 MAX_OUTPUT_BYTES=1024*1024
 EXTRACT_TIMEOUT_MS=150000
+THUMBNAIL_TIMEOUT_MS=20000
 DOWNLOAD_IDLE_TIMEOUT_MS=45000
 PROCESSING_TIMEOUT_MS=300000
 
@@ -76,7 +77,7 @@ class VideoJob(QObject):
         for key in ('NODE_OPTIONS','NODE_PATH','NODE_EXTRA_CA_CERTS','PYTHONPATH','PYTHONSTARTUP'):environment.remove(key)
         self.process.setProcessEnvironment(environment)
         self.process.start(sys.executable,arguments)
-        self.timer.start(EXTRACT_TIMEOUT_MS)
+        self.timer.start(THUMBNAIL_TIMEOUT_MS if self.request['action']=='thumbnail' else EXTRACT_TIMEOUT_MS)
 
     def _started(self):
         try:self.tree=ProcessTree(int(self.process.processId()))

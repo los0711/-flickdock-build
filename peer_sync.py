@@ -21,6 +21,7 @@ from selection_archive import _source_reader
 
 CONNECTION_TIMEOUT_SECONDS=30
 DIRECT_CONNECT_GRACE_SECONDS=12
+P2P_CONNECT_TIMEOUT_SECONDS=20.
 AUTH_LEASE_SECONDS=65
 AUTH_REFRESH_SECONDS=20
 RETRY_MAX_SECONDS=60
@@ -168,7 +169,8 @@ class PeerSync(QObject):
         self._prune_registry()
         for peer,state in list(self._states.items()):
             if (state['rpc'] is None and not state.get('upgrading') and state.get('initiator') and not self._qa_force_relay
-                    and self._signaling_ready() and now-state['started']>=3.):self._start_cloud(state)
+                    and self._signaling_ready() and (state.get('native_failed') or now-state['started']>=P2P_CONNECT_TIMEOUT_SECONDS)):
+                self._start_cloud(state)
             if now-state['leased']>=AUTH_LEASE_SECONDS or state['rpc'] is None and now-state['started']>=CONNECTION_TIMEOUT_SECONDS:
                 self._drop(peer);continue
             if state['rpc'] is not None and (state['rpc'].closed.is_set() or not self._authorized(state)):
@@ -283,6 +285,8 @@ class PeerSync(QObject):
             return
         kind=event.get('type')
         if kind=='cloud_ready':
+            if state.get('upgrading') or state['raw'].opened.is_set() or state['rpc'] is not None:
+                event['stream'].shutdown();return
             descriptor=event['descriptor']
             self.wan._send_signal(dict(type='sync_signal',id=state['id'],payload=dict(type='cloud',**descriptor)))
             self._attach_cloud(state,event['stream'])
@@ -315,9 +319,14 @@ class PeerSync(QObject):
             state['route']='relay' if event.get('route')=='relay' else 'p2p'
         elif kind=='transport':state['relay_transport']=event.get('relayTransport','direct')
         elif kind in ('closed','error') or kind=='state' and event.get('state') in ('failed','closed'):
+            from network_diagnostics import record_event
+            record_event(self.wan.base,'remote','peer_ice','WEBRTC_'+str(kind).upper())
             if state.get('adaptive') is not None and not state['adaptive'].closed:return
             if state.get('cloud_starting'):return
+            if state['rpc'] is None and not state.get('relay_configured') and getattr(self.wan,'_sync_ice',[]) and state.get('initiator'):
+                self._drop(state['peer'],retry=False);return
             if state['rpc'] is None and not self._qa_force_relay and getattr(self.wan,'cloud_routes',None) is not None:
+                state['native_failed']=True
                 if state.get('initiator'):self._start_cloud(state)
                 return
             if state['rpc'] is None and state.get('relay_configured'):
@@ -355,7 +364,8 @@ class PeerSync(QObject):
 
     def _start_cloud(self,state):
         api=getattr(self.wan,'cloud_routes',None)
-        if (api is None or state.get('cloud_starting') or state.get('cloud_attempts',0)>=3
+        if (api is None or not self._authorized(state) or state['rpc'] is not None or state.get('upgrading')
+                or state['raw'] is None or state['raw'].opened.is_set() or state.get('cloud_starting') or state.get('cloud_attempts',0)>=3
                 or time.monotonic()<state.get('cloud_retry_at',0)):return
         state['cloud_starting']=True;state['cloud_attempts']=state.get('cloud_attempts',0)+1
         def prepare():

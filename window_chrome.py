@@ -127,7 +127,8 @@ class WindowChrome(QObject):
         _chromes.add(self)
         window.finished.connect(lambda *_:dock_window_state(window,False))
         from ui_transitions import WindowFade
-        window._window_fade=WindowFade(window)
+        # ReferenceModalDialog already owns its show/close transition.
+        if not hasattr(window,'_window_fade'):window._window_fade=WindowFade(window)
 
     def _available(self):
         screen=QGuiApplication.screenAt(QCursor.pos()) or self.window.screen() or QGuiApplication.primaryScreen()

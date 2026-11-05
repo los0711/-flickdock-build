@@ -42,7 +42,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-continuity-') as tmp:
     app.processEvents()
     before=alpha_row(shelf,300,1390,1460)
     with patch.object(subject.QGuiApplication,'screenAt',return_value=screen):shelf.show_contents()
-    shelf.presentation.stop();shelf.geometry_morph.animation.pause()
+    shelf.presentation.stop();shelf.geometry_morph.pause()
     morph=shelf.geometry_morph;snapshot=shelf._surface_snapshot
     morph._frame(0);app.processEvents()
     after=alpha_row(shelf,300,1390,1460)
@@ -70,7 +70,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-continuity-') as tmp:
     assert heights[-1]<=max(heights)<=heights[-1]+max(12,(heights[-1]-heights[0])*.02)
     expand_overshoot=max(widths)-expanded_width
     morph.complete();shelf.presentation.jump(dict(sx=1,sy=1,dx=0,dy=0,alpha=1))
-    shelf.collapse_contents();morph.animation.pause()
+    shelf.collapse_contents();morph.pause()
     widths=[]
     for ms in range(231):
         morph._frame(morph.animation.easingCurve().valueForProgress(ms/230));widths.append(morph.current.width())

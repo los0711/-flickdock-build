@@ -17,7 +17,9 @@ from PySide6.QtWidgets import QApplication,QWidget
 from app_settings import SettingsStore,SettingsDialog
 from video_jobs import VideoJob
 from video_links import LinkPromptHistory,video_url,recognized_video,candidate_link
-from video_panel import VideoController,VideoDialog
+from video_controller import VideoController
+from video_panel import VideoDialog
+from PySide6.QtGui import QImage,QColor
 
 APP=QApplication.instance() or QApplication([]);APP.setQuitOnLastWindowClosed(False)
 
@@ -40,10 +42,12 @@ class VideoTests(unittest.TestCase):
             '-f','lavfi','-i','sine=frequency=440','-t','1.2','-c:v','mpeg4','-q:v','8','-c:a','aac',str(root/'sample.mp4')],capture_output=True,timeout=20)
         if result.returncode:raise AssertionError(result.stderr.decode('utf-8','replace'))
         cls.payload=(root/'sample.mp4').read_bytes()
+        cover=QImage(320,180,QImage.Format_RGB32);cover.fill(QColor('#456979'));cover.save(str(root/'cover.png'));cls.cover_payload=(root/'cover.png').read_bytes()
         class Handler(BaseHTTPRequestHandler):
             def log_message(self,*_):pass
             def response(self,body=False):
-                if self.path=='/page':data=b'<html><head><title>Fixture movie</title></head><body><video controls src="/sample.mp4"></video></body></html>';kind='text/html'
+                if self.path=='/page':data=b'<html><head><title>Fixture movie</title><meta property="og:image" content="/cover.png"></head><body><video controls src="/sample.mp4"></video></body></html>';kind='text/html'
+                elif self.path=='/cover.png':data=cls.cover_payload;kind='image/png'
                 else:data=cls.payload*(100 if self.path=='/slow.mp4' else 1);kind='video/mp4'
                 self.send_response(200);self.send_header('Content-Type',kind);self.send_header('Content-Length',str(len(data)));self.end_headers()
                 if not body:return
@@ -81,10 +85,10 @@ class VideoTests(unittest.TestCase):
         try:
             job.finished.connect(result.append);job.start();until(lambda:bool(result))
             self.assertFalse(result[0]['error'],result);entry=result[0]['result']['entries'][0]
-            self.assertEqual({row['id'] for row in entry['options']},{'best','audio'})
+            self.assertEqual({row['kind'] for row in entry['options']},{'video','audio'})
             with tempfile.TemporaryDirectory() as directory:
                 paths=[]
-                for option in ('best','best','audio'):
+                for option in (entry['options'][0]['id'],entry['options'][0]['id'],entry['options'][1]['id']):
                     done=[];request=dict(action='download',url=entry['url'],id=entry['id'],option=option,folder=directory,token=__import__('uuid').uuid4().hex,fixture_http=True)
                     worker=VideoJob(request)
                     try:
@@ -104,28 +108,29 @@ class VideoTests(unittest.TestCase):
             manager=SimpleNamespace(app=APP,settings=settings,shelf=shelf,queue_transfer_paths=lambda mode,paths:events.append(('transfer',paths)))
             controller=VideoController(manager);dialog=VideoDialog(manager,controller)
             def factory(request,parent):return VideoJob(dict(request,fixture_http=True),parent)
-            with patch('video_panel.VideoJob',side_effect=factory),patch('video_panel.video_url',side_effect=lambda value:value):
+            with patch('video_controller.VideoJob',side_effect=factory),patch('video_controller.video_url',side_effect=lambda value:value):
                 try:
-                    controller.parse(self.origin+'/page');until(lambda:controller.extracting is None)
+                    dialog.show();APP.processEvents();controller.parse(self.origin+'/page');until(lambda:controller.extracting is None)
                     self.assertEqual(len(controller.entries),1,controller.message)
-                    row=controller.entries[0];controller.action(row,'transfer');controller.action(row,'shelf')
+                    entry=controller.entries[0];row=entry['sources'][0];controller.action(row,'shelf')
                     until(lambda:row['status'] in ('complete','error'),30)
                     self.assertEqual(row['status'],'complete',row.get('error'))
-                    self.assertEqual({event[0] for event in events},{'shelf','transfer'})
+                    self.assertEqual({event[0] for event in events},{'shelf'})
                     self.assertEqual({event[1][0] for event in events},{row['path']})
                     self.assertTrue(Path(row['path']).is_file())
-                    dialog.show();APP.processEvents();dialog.cards[row['key']].preview.click()
-                    until(lambda:dialog.media._loaded or dialog.media._failed)
-                    self.assertFalse(dialog.media._failed,dialog.media.status_label.text())
-                    self.assertEqual(dialog.media.path,row['path']);self.assertTrue(dialog.media.audio_output.isMuted())
-                    dialog.hide();APP.processEvents();self.assertEqual(dialog.media.path,'')
+                    until(lambda:entry['cover_state'] in ('ready','error','unavailable'));self.assertEqual(entry['cover_state'],'ready',entry['cover_error'])
+                    dialog._preview(row)
+                    until(lambda:dialog.cover_preview.media._loaded or dialog.cover_preview.media._failed)
+                    self.assertFalse(dialog.cover_preview.media._failed,dialog.cover_preview.media.status_label.text())
+                    self.assertEqual(dialog.cover_preview.media.path,row['path']);self.assertTrue(dialog.cover_preview.media.audio_output.isMuted())
+                    dialog.hide();APP.processEvents();self.assertEqual(dialog.cover_preview.media.path,'')
                     dialog.prompt.setChecked(False);self.assertFalse(settings.video_link_prompt)
                     reloaded=SettingsStore(root/'profile');self.assertFalse(reloaded.video_link_prompt)
                     controller.parse(self.origin+'/slow.mp4');until(lambda:controller.extracting is None)
-                    row=controller.entries[-1];controller.action(row,'download')
+                    row=controller.entries[-1]['sources'][0];controller.action(row,'download')
                     until(lambda:row['received']>0);controller.cancel(row);until(lambda:row['job'] is None)
                     self.assertEqual(row['status'],'cancelled');self.assertFalse(list((root/'downloads').glob('.flickdock-download-*')))
-                    dialog.show();APP.processEvents();self.assertFalse(dialog.cards[row['key']].choice.isEnabled()==False)
+                    dialog.show();APP.processEvents();self.assertTrue(dialog.cards[row['key']].download.isEnabled())
                 finally:controller.close();dialog.hide();dialog.deleteLater();shelf.deleteLater();APP.processEvents()
 
 
