@@ -21,7 +21,10 @@ def main():
     account=AccountService(root/'account',store=Store());events=CloudEvents(account,enabled=False)
     clipboard=app.clipboard();clipboard.clear()
     client=ClipboardSync(account,events,root/'profile',enabled=False)
-    errors=[];sys.excepthook=lambda kind,error,trace:errors.append(kind.__name__)
+    errors=[]
+    def exception(kind,error,trace):
+        errors.append(kind.__name__);sys.__excepthook__(kind,error,trace)
+    sys.excepthook=exception
     report=dict(ok=False,platform=sys.platform,qt_platform=app.platformName(),native_clipboard=True,
                 disposable_runner=True,network_authenticated=False)
     def until(predicate):
@@ -31,6 +34,11 @@ def main():
             if errors:raise AssertionError('Qt callback failed: '+','.join(errors))
             if predicate():return
             time.sleep(.002)
+        report.update(timeout=True,native_format_issue=client.view.get('native_format_issue'),
+                      capture_active=client._virtual_capture is not None,
+                      native_retry=client._virtual_retry[0][0] if client._virtual_retry else None)
+        for log in (root/'profile').rglob('*diagnostic*'):
+            if log.is_file() and log.stat().st_size<65536:print('QA diagnostic:',log.name,log.read_text(encoding='utf8'))
         raise TimeoutError('Native virtual file did not materialize: '+str(client.view.get('native_format_issue')))
     def virtual(name,body):
         raw=bytearray(596);struct.pack_into('<II',raw,0,1,0x40);struct.pack_into('<II',raw,68,0,len(body))
