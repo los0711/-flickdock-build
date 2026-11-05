@@ -5,8 +5,10 @@ import {adaptTurnServers} from './turn_tls.mjs';
 const LEGACY_WINDOW=4*1024*1024, LEGACY_MESSAGE=32*1024;
 const WINDOW=16*1024*1024, MESSAGE=64*1024;
 const MAX_PENDING_CANDIDATES=64;
+// Use the library's HSTCP recovery for long-RTT paths with occasional loss.
+const SCTP_CONGESTION_HIGH_SPEED_TCP=1;
 rtc.initLogger('Fatal',()=>{});
-rtc.setSctpSettings({recvBufferSize:32*1024*1024,sendBufferSize:16*1024*1024,maxChunksOnQueue:16384});
+rtc.setSctpSettings({recvBufferSize:32*1024*1024,sendBufferSize:16*1024*1024,maxChunksOnQueue:16384,congestionControlModule:SCTP_CONGESTION_HIGH_SPEED_TCP});
 
 export const cleanup=()=>rtc.cleanup();
 export function createPeer(outputEvent,outputBytes,onClose) {

@@ -2,6 +2,11 @@ name: Native clipboard verification
 
 on:
   workflow_dispatch:
+    inputs:
+      cross_native:
+        description: Run only the isolated Windows to Mac direct-peer proof
+        type: boolean
+        default: false
   push:
     branches: [cloud-build]
 
@@ -10,7 +15,7 @@ permissions:
 
 jobs:
   cloud-contract:
-    if: github.repository == 'los0711/-flickdock-build'
+    if: github.repository == 'los0711/-flickdock-build' && !inputs.cross_native
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -24,7 +29,7 @@ jobs:
           npm run typecheck --prefix cloud
           npm test --prefix cloud
   clipboard:
-    if: github.repository == 'los0711/-flickdock-build'
+    if: github.repository == 'los0711/-flickdock-build' && !inputs.cross_native
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -100,4 +105,34 @@ jobs:
           path: |
             native-utility.json
             native-installer-close.json
+          retention-days: 3
+  native-peer:
+    if: github.repository == 'los0711/-flickdock-build' && inputs.cross_native
+    runs-on: macos-15
+    timeout-minutes: 12
+    env:
+      PYTHONUTF8: '1'
+      QT_QPA_PLATFORM: offscreen
+      FD_QA_CROSS_NATIVE: '1'
+      FLICKDOCK_QA_SYNC_JSON: ${{ secrets.FLICKDOCK_QA_CROSS_NATIVE }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          architecture: arm64
+      - name: Install locked native transport dependencies
+        run: |
+          python -m pip install PySide6==6.12.0 cryptography==50.0.2 keyring==25.7.0
+          python p2p_assets.py
+      - name: Verify a real Windows to Mac P2P stream and clipboard delivery
+        run: python ci_cross_native.py --role receiver --output cross-native-mac.json
+      - name: Retain only payload-free proof
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: cross-native-mac-${{ github.sha }}
+          path: cross-native-mac.json
           retention-days: 3

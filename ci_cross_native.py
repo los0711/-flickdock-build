@@ -39,7 +39,7 @@ def main():
     app=QApplication.instance() or QApplication([]);app.setQuitOnLastWindowClosed(False)
     temporary=tempfile.TemporaryDirectory(prefix='flickdock-cross-native-');root=Path(temporary.name)
     account=AccountService(root/'account',store=Store());events=CloudEvents(account)
-    wan=WanTransferService(root/'wan',device_name='Cross platform QA '+args.role,account_service=account)
+    wan=WanTransferService(root/'wan',device_name='Cross platform QA '+args.role);wan.attach_account(account)
     mesh=PeerSync(account,wan)
     from PySide6.QtCore import QObject,Signal
     class Clipboard(QObject):
@@ -62,13 +62,15 @@ def main():
                 role=args.role,platform=sys.platform,isolated_clipboards=True,os_credentials_written=False,
                 native_candidates={},routes=[],verified_bytes=0,text_received=False,file_received=False,pulses=0)
     counters=Counter();phase='discover';finished=False;job=None;peer_seen=None;stable_at=None;last_pulse=0
-    started=time.monotonic();published=False
+    started=time.monotonic();published=False;receiver_finished_at=None;transfer_started=None
 
     def finish(error=''):
         nonlocal finished
         if finished:return
         finished=True;timer.stop();deadline.stop()
         report.update(ok=not error,error=error,seconds=round(time.monotonic()-started,3),native_candidates=dict(counters))
+        report.update(authenticated=account.signed_in,signaling_connected=wan._connected,
+                      account_bound=wan._bound_identity is not None,phase=phase,cloud_backed_up=bool(sync.view.get('backed_up')))
         sync.close();mesh.close();wan.close();events.close();account.close()
         args.output.parent.mkdir(parents=True,exist_ok=True)
         args.output.write_text(json.dumps(report,indent=2),encoding='utf8')
@@ -90,9 +92,10 @@ def main():
     wan.sync_signal.connect(lambda value:candidate('remote',value.get('payload',{})) if value.get('type')=='sync_signal' else None)
 
     def offered(topic,value,peer):
-        nonlocal job,phase
+        nonlocal job,phase,transfer_started
         if args.role!='receiver' or topic!='shelf':return
         if value.get('id')==record['id'] and job is None:
+            transfer_started=time.monotonic()
             if value.get('sha256')!=digest or value.get('size')!=record['size']:finish('INVALID_QA_OFFER');return
             def downloaded(path,error):
                 nonlocal phase
@@ -100,6 +103,8 @@ def main():
                 with Path(path).open('rb') as stream:actual=hashlib.file_digest(stream,'sha256').hexdigest()
                 if actual!=digest or job.route!='p2p':finish('NATIVE_FILE_HASH_OR_ROUTE');return
                 report.update(verified_bytes=record['size'],sha256=actual)
+                report['file_seconds']=round(time.monotonic()-transfer_started,3)
+                report['file_mib_per_second']=round(record['size']/1024**2/max(.001,time.monotonic()-transfer_started),3)
                 mesh.acknowledge(peer,'shelf',dict(value,delivery_route=job.route));phase='text'
             job=mesh.fetch('shelf',value,root/'received.bin',downloaded,preferred=peer)
             if job is None:finish('NATIVE_FILE_NO_SOURCE')
@@ -126,18 +131,21 @@ def main():
     mesh.applied.connect(acknowledged)
 
     def poll():
-        nonlocal phase,published,peer_seen,last_pulse
+        nonlocal phase,published,peer_seen,last_pulse,receiver_finished_at
         try:
             if args.role=='receiver':
                 value=sync.view.get('value')
-                if value and value[0]=='text' and value[1]['text']==cleanup:
-                    if not report['file_received'] or not report['text_received'] or report['verified_bytes']!=record['size']:
-                        finish('INCOMPLETE_CROSS_PLATFORM_PROOF')
-                    else:
+                if (value and value[0]=='text' and value[1]['text']==cleanup
+                        and report['file_received'] and report['text_received'] and report['verified_bytes']==record['size']):
+                    if receiver_finished_at is None:receiver_finished_at=time.monotonic()
+                    if time.monotonic()-receiver_finished_at>=.5:
                         report['stable_seconds']=round(time.monotonic()-(peer_seen or started),3);finish()
                     return
-            elif phase=='cleanup_delivered' and sync.view.get('backed_up'):
-                finish();return
+            elif phase in ('cleanup','cleanup_delivered'):
+                # Cleanup only retires the fixture's R2 body. It may win the
+                # cloud-vs-peer race; direct delivery was proved above already.
+                if sync.view.get('backed_up'):finish()
+                return
             available=mesh.available()
             if any(row.get('account_device') and row.get('online') for row in wan.peers()) and peer_seen is None:peer_seen=time.monotonic()
             for state in available:
@@ -163,9 +171,11 @@ def main():
                     report['stable_seconds']=round(now-stable_at,3);phase='cleanup';mime=QMimeData();mime.setText(cleanup);clip.setMimeData(mime)
         except (OSError,ValueError,RuntimeError) as error:finish(type(error).__name__.upper())
     timer=QTimer();timer.setInterval(50);timer.timeout.connect(poll)
+    sys.excepthook=lambda kind,value,trace:finish('QA_CALLBACK_'+kind.__name__.upper())
     deadline=QTimer();deadline.setSingleShot(True);deadline.timeout.connect(lambda:finish('CROSS_PLATFORM_TIMEOUT_'+phase.upper()))
     deadline.start(600000 if args.role=='source' else 240000);timer.start()
-    if args.role=='source':account.register(secret['username'],secret['password'])
+    wan.start()
+    if args.role=='source' and os.environ.get('FD_QA_CROSS_LOGIN')!='1':account.register(secret['username'],secret['password'])
     else:account.login(secret['username'],secret['password'])
     QTimer.singleShot(30000,lambda:finish('QA_AUTH_FAILED') if not account.signed_in else None)
     result=app.exec()
