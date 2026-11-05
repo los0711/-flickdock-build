@@ -62,7 +62,7 @@ def main():
                 role=args.role,platform=sys.platform,isolated_clipboards=True,os_credentials_written=False,
                 native_candidates={},routes=[],verified_bytes=0,text_received=False,file_received=False,pulses=0)
     counters=Counter();phase='discover';finished=False;job=None;peer_seen=None;stable_at=None;last_pulse=0
-    started=time.monotonic();published=False
+    started=time.monotonic();published=False;receiver_finished_at=None;transfer_started=None
 
     def finish(error=''):
         nonlocal finished
@@ -92,9 +92,10 @@ def main():
     wan.sync_signal.connect(lambda value:candidate('remote',value.get('payload',{})) if value.get('type')=='sync_signal' else None)
 
     def offered(topic,value,peer):
-        nonlocal job,phase
+        nonlocal job,phase,transfer_started
         if args.role!='receiver' or topic!='shelf':return
         if value.get('id')==record['id'] and job is None:
+            transfer_started=time.monotonic()
             if value.get('sha256')!=digest or value.get('size')!=record['size']:finish('INVALID_QA_OFFER');return
             def downloaded(path,error):
                 nonlocal phase
@@ -102,6 +103,8 @@ def main():
                 with Path(path).open('rb') as stream:actual=hashlib.file_digest(stream,'sha256').hexdigest()
                 if actual!=digest or job.route!='p2p':finish('NATIVE_FILE_HASH_OR_ROUTE');return
                 report.update(verified_bytes=record['size'],sha256=actual)
+                report['file_seconds']=round(time.monotonic()-transfer_started,3)
+                report['file_mib_per_second']=round(record['size']/1024**2/max(.001,time.monotonic()-transfer_started),3)
                 mesh.acknowledge(peer,'shelf',dict(value,delivery_route=job.route));phase='text'
             job=mesh.fetch('shelf',value,root/'received.bin',downloaded,preferred=peer)
             if job is None:finish('NATIVE_FILE_NO_SOURCE')
@@ -128,7 +131,7 @@ def main():
     mesh.applied.connect(acknowledged)
 
     def poll():
-        nonlocal phase,published,peer_seen,last_pulse
+        nonlocal phase,published,peer_seen,last_pulse,receiver_finished_at
         try:
             if args.role=='receiver':
                 value=sync.view.get('value')
@@ -136,10 +139,13 @@ def main():
                     if not report['file_received'] or not report['text_received'] or report['verified_bytes']!=record['size']:
                         finish('INCOMPLETE_CROSS_PLATFORM_PROOF')
                     else:
-                        report['stable_seconds']=round(time.monotonic()-(peer_seen or started),3);finish()
+                        if receiver_finished_at is None:receiver_finished_at=time.monotonic()
+                        if time.monotonic()-receiver_finished_at>=.5:
+                            report['stable_seconds']=round(time.monotonic()-(peer_seen or started),3);finish()
                     return
-            elif phase=='cleanup_delivered' and sync.view.get('backed_up'):
-                finish();return
+            elif phase in ('cleanup','cleanup_delivered'):
+                if phase=='cleanup_delivered' and sync.view.get('backed_up'):finish()
+                return
             available=mesh.available()
             if any(row.get('account_device') and row.get('online') for row in wan.peers()) and peer_seen is None:peer_seen=time.monotonic()
             for state in available:
@@ -169,7 +175,7 @@ def main():
     deadline=QTimer();deadline.setSingleShot(True);deadline.timeout.connect(lambda:finish('CROSS_PLATFORM_TIMEOUT_'+phase.upper()))
     deadline.start(600000 if args.role=='source' else 240000);timer.start()
     wan.start()
-    if args.role=='source':account.register(secret['username'],secret['password'])
+    if args.role=='source' and os.environ.get('FD_QA_CROSS_LOGIN')!='1':account.register(secret['username'],secret['password'])
     else:account.login(secret['username'],secret['password'])
     QTimer.singleShot(30000,lambda:finish('QA_AUTH_FAILED') if not account.signed_in else None)
     result=app.exec()
