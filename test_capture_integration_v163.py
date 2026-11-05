@@ -92,6 +92,8 @@ with tempfile.TemporaryDirectory(prefix='flickdock-copy-integration-') as tempor
         source.unlink()
         shelf._show_at(QPoint(60, 80), 'manual', QPoint())
         shelf.show_contents()
+        assert shelf.popup.preview.current_path is None
+        shelf.popup.select_item(str(copied))
         if shelf.popup._narrow_layout and not shelf.popup._narrow_preview:shelf.popup.toggle_narrow_preview()
         viewer = shelf.popup.preview.media;viewer.toggle_mute()
         wait_until(lambda: not viewer.surface.image.isNull() or viewer._failed)
@@ -109,6 +111,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-copy-integration-') as tempor
         assert shelf.receive_mime('permanent', mime(reference))
         assert shelf.files['permanent'] == [str(reference)] and not shelf.copy_jobs
         shelf._show_at(QPoint(60, 80), 'manual', QPoint());shelf.show_contents()
+        shelf.popup.select_item(str(reference))
         if shelf.popup._narrow_layout and not shelf.popup._narrow_preview:shelf.popup.toggle_narrow_preview()
         viewer = shelf.popup.preview.media
         wait_until(lambda: viewer.path == str(reference) and (not viewer.surface.image.isNull() or viewer._failed))

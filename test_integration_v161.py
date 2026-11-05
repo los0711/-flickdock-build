@@ -219,7 +219,7 @@ with tempfile.TemporaryDirectory(prefix="flickdock-v161-integration-") as tempor
             assert tuple(popup.preview._group_refs) == tuple(popup.chosen_refs())
             row = rows[refs[3]]
             QApplication.sendEvent(row, QEnterEvent(QPointF(2, 2), QPointF(2, 2), QPointF(2, 2)))
-            assert popup.preview.current_path == row.path and not popup.preview._group_refs
+            assert tuple(popup.preview._group_refs) == tuple(popup.chosen_refs())
             QApplication.sendEvent(row, QEvent(QEvent.Type.Leave)); flush(app)
             assert tuple(popup.preview._group_refs) == tuple(popup.chosen_refs())
             exported = []

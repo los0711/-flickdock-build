@@ -217,9 +217,10 @@ class WorkspaceTests(unittest.TestCase):
         popup.search_edit.setText('report');popup.set_category('text');flush()
         self.shelf.collapse_contents();self.shelf.show_contents();flush()
         self.assertEqual(popup.category,'all');self.assertFalse(popup.selected)
-        self.assertIsNone(popup.primary_selection);self.assertIsNone(popup.hovered_ref)
+        self.assertIsNone(popup.primary_selection)
         self.assertEqual(popup.search_edit.text(),'');self.assertEqual(popup.scroll.verticalScrollBar().value(),0)
-        self.assertEqual(popup.preview.current_path,popup.visible_refs()[0])
+        self.assertIsNone(popup.preview.current_path)
+        self.assertIs(popup.preview.stack.currentWidget(),popup.preview.empty_preview)
         self.assertEqual(self.settings.view_mode,'icons');self.assertTrue(popup.view_grid.isChecked())
 
     def test_sidebar_count_capsules_center_one_two_and_three_digits(self):
@@ -356,7 +357,7 @@ class WorkspaceTests(unittest.TestCase):
         self.assertTrue(any('添加文件' in text for text in page));self.assertTrue(any('打包全部' in text for text in page))
         self.assertFalse(any('重命名' in text for text in page))
 
-    def test_deselect_all_retires_group_preview_and_copies_current_single_item(self):
+    def test_deselect_all_clears_group_preview_and_only_selected_item_can_be_copied(self):
         popup=self.overview()
         popup.toggle_select_all_visible();flush()
         self.assertEqual(set(popup.selected),set(self.paths))
@@ -367,12 +368,15 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(popup.chosen_refs(),[])
         self.assertFalse(popup.preview._group_refs)
         self.assertFalse(popup.preview.group_view.isVisible())
-        self.assertIn(popup.preview.current_path,self.paths)
+        self.assertIsNone(popup.preview.current_path)
+        self.assertIs(popup.preview.stack.currentWidget(),popup.preview.empty_preview)
         self.assertFalse(popup.zip_button.isEnabled())
         self.assertEqual(popup.preview.copy_button.glyph,'copy')
         copied=[]
         with patch.object(self.shelf,'copy_items',side_effect=lambda refs:copied.append(tuple(refs))):
             popup.preview.copy_button.click();flush()
+            self.assertEqual(copied,[])
+            popup.select_item(self.paths[2]);popup.preview.copy_button.click();flush()
         self.assertEqual(copied,[(popup.preview.current_path,)])
 
 

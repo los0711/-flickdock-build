@@ -400,13 +400,14 @@ class TransferUITests(unittest.TestCase):
         popup.set_category('uploading');self.assertIn(pending,popup.visible_refs())
 
     def test_selected_preview_uses_cloud_status_text_without_header_mark(self):
+        self.settings.update(capture_mode='reference')
         path=str(self.file('状态预览.txt'))
         self.shelf.add_paths('permanent',[path])
         state={'value':'pending'}
         self.manager.sync=SimpleNamespace(upload_time_for_ref=lambda _:None,
             sync_status_for_ref=lambda ref:state['value'],
             sync_statuses_for_refs=lambda refs:{ref:state['value'] for ref in refs})
-        popup=self.overview()
+        popup=self.overview();popup.select_item(path)
         self.assertEqual(popup.preview.current_path,path)
         self.assertEqual(popup.preview.status_value.text(),subject.CLOUD_STATUS_LABELS['pending'])
         state['value']='synced'
@@ -436,17 +437,18 @@ class TransferUITests(unittest.TestCase):
         subject.ShelfManager._transfers_changed(self.manager,[]);flush()
         self.assertEqual(self.shelf.display_refs(),[]);self.assertTrue(self.shelf.expand_button.isEnabled())
         self.assertFalse(self.shelf.content.transfers)
-    def test_hovering_pending_then_restoring_completed_selection_clears_stale_progress(self):
+    def test_selecting_pending_then_completed_group_clears_stale_progress(self):
+        self.settings.update(capture_mode='reference')
         paths=[str(self.file('所选一.bin')),str(self.file('所选二.bin'))]
         self.shelf.add_paths('permanent',paths)
         pending=self.pending('其他设备正在上传.mp4',remote=True)
-        popup=self.overview();popup.select_item(paths[0]);popup.select_item(paths[1],toggle=True)
-        self.assertEqual(set(popup.chosen_refs()),set(paths))
-        popup.hover_item(pending);self.assertFalse(popup.preview.copy_button.isEnabled())
+        popup=self.overview();popup.select_item(pending)
+        self.assertFalse(popup.preview.copy_button.isEnabled())
         self.assertTrue(popup.preview.transfer_row.isVisible())
-        popup.end_hover(pending);flush()
+        popup.select_item(paths[0]);popup.select_item(paths[1],toggle=True);flush()
+        self.assertEqual(set(popup.chosen_refs()),set(paths))
         self.assertTrue(popup.preview.copy_button.isEnabled(),'restored completed selection must remain copyable')
-        self.assertFalse(popup.preview.transfer_row.isVisible(),'remote hover progress cannot remain on completed selected group')
+        self.assertFalse(popup.preview.transfer_row.isVisible(),'remote progress cannot remain on completed selected group')
         self.shelf.content.transfers[paths[1]]={'id':'selected-upload','phase':'uploading','received':10,'total':100}
         self.shelf.transfers_updated();self.shelf._repaint_transfers();flush()
         self.assertFalse(popup.preview.transfer_row.isVisible(),'a repaint must not restore individual progress over a selected group')

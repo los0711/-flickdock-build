@@ -53,6 +53,8 @@ def run_overview(argv,load_font):
             while (popup._build_cursor<len(popup.visible_refs()) or not popup.retirement.is_idle) and time.monotonic()<deadline:
                 app.processEvents();time.sleep(.002)
             assert popup._build_cursor==len(popup.visible_refs())
+            assert popup.preview.current_path is None and popup.preview.stack.currentWidget() is popup.preview.empty_preview
+            report['selection_required_preview']=True
             popup.select_item(str(archive));app.processEvents()
             preview=popup.preview
             assert len(preview.action_buttons)==6

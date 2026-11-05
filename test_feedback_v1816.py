@@ -155,6 +155,8 @@ class FeedbackTests(unittest.TestCase):
         self.assertIn(ref,view.visible_refs());self.assertFalse(view.empty_state.isVisible())
         self.assertEqual(view.nav_counts['all'].text(),'1');self.assertEqual(view.count_label.text(),'1 项')
         view.set_category('images');flush();self.assertIn(ref,view.visible_refs())
+        self.assertIsNone(view.preview.current_path)
+        view.select_item(ref)
         self.assertEqual(view.preview.current_path,ref);self.assertFalse(view.preview.open_button.isEnabled())
         self.assertEqual(self.shelf.zones['permanent'].caption.text(),'1 项')
         state['received']=400000

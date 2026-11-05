@@ -413,6 +413,7 @@ class PreviewPane(QFrame):
         self._copy_feedback.timeout.connect(lambda:self.copy_button.set_glyph('copy'))
         self._path_copy_feedback=QTimer(self);self._path_copy_feedback.setSingleShot(True)
         self._path_copy_feedback.timeout.connect(lambda:self.copy_path_button.setText('复制路径'))
+        self.copy_button.setEnabled(False)
         self.update_action_states()
 
     def _playing_changed(self, playing):
@@ -509,6 +510,20 @@ class PreviewPane(QFrame):
             self.icon.set_content('file',pixmap=self.shelf.item_pixmap(ref,128,dpr=self.devicePixelRatioF()))
             self.stack.setCurrentWidget(self.icon)
 
+    def clear_preview(self):
+        if self.current_path is None and self.stack.currentWidget() is self.empty_preview:return
+        self.shelf.surface_effect.invalidate_source()
+        self.current_path=None;self._group_refs=();self._pending_preview=False
+        self.media.release_source();self.image.clear_source();self.text.clear()
+        self.icon.set_content('empty');self.group_art.clear();self.group_view.hide()
+        self._copy_feedback.stop();self._path_copy_feedback.stop()
+        self.copy_button.set_glyph('copy');self.copy_button.setEnabled(False)
+        self.copy_path_button.setText('复制路径')
+        for item in (self.name,self.info,self.upload_time,self.path_label,self.status_value,self.transfer_meta):item.setText('')
+        self.transfer_row.hide();self.transfer_overlay.hide()
+        self.stack.setCurrentWidget(self.empty_preview)
+        self.update_action_states()
+
     def show_path(self, ref, force=False):
         if self.current_path==ref and not force and not getattr(self,'_group_refs',()): return
         self.shelf.surface_effect.invalidate_source()
@@ -516,6 +531,9 @@ class PreviewPane(QFrame):
         self.group_view.hide()
         self.media.stop()
         self.current_path=ref
+        metadata=self.shelf.content.metadata.get(ref,{})
+        self.popup._preview_metadata={key:metadata.get(key) for key in ('preview_image','text_file')}
+        self.popup._preview_metadata['text']=self.shelf.content.texts.get(ref)
         self._path_copy_feedback.stop();self.copy_path_button.setText('复制路径')
         self.path_label.setText('原生文字' if self.shelf.content.is_text(ref) else ref)
         self.update_action_states()
@@ -647,11 +665,6 @@ class PreviewPane(QFrame):
         self._copy_feedback.start(850)
         self.shelf.touch()
 
-    def enterEvent(self,event):
-        self.popup.hovered_ref=None
-        self.popup.restore_selected_preview()
-        super().enterEvent(event)
-
     def hideEvent(self,event):
         if self.current_path and self.stack.currentWidget() is self.media:self._pending_preview=True
         self.media.stop()
@@ -722,14 +735,12 @@ class FileRow(QFrame):
 
     def enterEvent(self, event):
         self.remove_button.show()
-        self.popup.hover_item(self.path)
         self.popup.shelf.touch()
         self.motion.animate({"highlight": 1.0}, response=.14, damping=1)
         super().enterEvent(event)
 
     def leaveEvent(self, event):
         self.remove_button.show()
-        self.popup.end_hover(self.path)
         self.motion.animate({"highlight": 0.0}, response=.14, damping=1)
         super().leaveEvent(event)
 
@@ -800,7 +811,7 @@ class ContentsPopup(QFrame):
     def __init__(self,shelf,mode="permanent"):
         super().__init__(shelf.card)
         self.shelf,self.mode=shelf,"permanent"
-        self.selected=set();self.primary_selection=None;self.hovered_ref=None;self.category='all'
+        self.selected=set();self.primary_selection=None;self.category='all'
         self._cloud_statuses={}
         self.sort_key=None;self.sort_direction=0
         self._item_widgets={}
@@ -882,10 +893,7 @@ class ContentsPopup(QFrame):
         if not self.visible_refs():return
         self._narrow_preview=not self._narrow_preview
         if self._narrow_preview:
-            self.hovered_ref=None
-            chosen=self.chosen_refs()
-            if len(chosen)>1:self.preview.show_group(chosen)
-            else:self.preview.show_path(self.primary_selection or self.visible_refs()[0],force=True)
+            self.restore_selected_preview()
         self._sync_body_visibility()
         if self._narrow_preview:self.preview.resume_preview()
         self.shelf.touch()
@@ -893,7 +901,8 @@ class ContentsPopup(QFrame):
     def reset_for_open(self):
         """Reset navigation and selection without rebuilding unchanged items."""
         previous_selected=set(self.selected)
-        self.category='all';self.selected.clear();self.primary_selection=None;self.hovered_ref=None
+        self.category='all';self.selected.clear();self.primary_selection=None
+        self.preview.clear_preview()
         self._narrow_preview=False
         self.search_edit.blockSignals(True);self.search_edit.clear();self.search_edit.blockSignals(False)
         self.category_picker.setText('全部')
@@ -905,7 +914,6 @@ class ContentsPopup(QFrame):
             if isinstance(item,IconItem):item.set_selected(False)
             elif isinstance(item,FileRow):item.update()
         refs=self.visible_refs()
-        if refs and not self._narrow_layout:self.preview.show_path(refs[0])
         self._sync_body_visibility(refs);self.update_selection_actions();self.update_transfer_status()
 
     def open_category_menu(self):
@@ -1054,7 +1062,7 @@ class ContentsPopup(QFrame):
 
     def set_category(self,key):
         if key not in self.category_buttons: return
-        self.category=key; self.hovered_ref=None;self._narrow_preview=False
+        self.category=key;self._narrow_preview=False
         for name,button in self.sidebar_buttons.items():button.setChecked(name==key)
         self.category_picker.setText(next(label for item,label in self.CATEGORIES if item==key))
         self.transfer_summary.setVisible(bool(self.shelf.content.transfers) and key=='uploading')
@@ -1107,7 +1115,6 @@ class ContentsPopup(QFrame):
             for ref,w in old_widgets.items():
                 if self._item_widgets.get(ref) is not w:self.retirement.retire(w)
             self._layout_animation=(positions,animate)
-        if self.hovered_ref not in refs:self.hovered_ref=None
         self.selected.intersection_update(refs)
         if self.primary_selection not in self.selected: self.primary_selection=next((r for r in refs if r in self.selected),None)
         self.title.setText("FlickDock");self.count_label.setText(f"{len(self.shelf.display_refs())} 项")
@@ -1185,10 +1192,8 @@ class ContentsPopup(QFrame):
         # widgets wait until the transition ends, with a small per-tick budget.
             self._append_batch(initial=True)
         if refs:
-            preferred=getattr(self,'_preferred_preview',None);self._preferred_preview=None
-            current=self.primary_selection or (preferred if preferred in refs else
-                self.preview.current_path if self.preview.current_path in refs else refs[0])
-            if not (self._narrow_layout and not self._narrow_preview):
+            current=self.primary_selection
+            if len(self.chosen_refs())==1 and not (self._narrow_layout and not self._narrow_preview):
                 # The preview owns media handles. A name/size update must not
                 # reopen it; a changed cover or text payload may refresh it.
                 old_meta=getattr(self,'_preview_metadata',{})
@@ -1198,12 +1203,11 @@ class ContentsPopup(QFrame):
                 self._preview_metadata=new_meta
                 if current in changed:
                     self.preview.name.setText(content.title(current))
-                self.restore_selected_preview()
         else:
-            self.preview.media.stop()
             self.empty_title.setText('搁架是空的' if not self.shelf.has_files() else '没有这类内容')
             self.empty_hint.setVisible(not self.shelf.has_files())
             self.empty_symbol.setPixmap(glyph_pixmap('shelf',42,ui_theme.color('secondary'),dpr=self.devicePixelRatioF()))
+        self.restore_selected_preview()
         self._sync_body_visibility(refs)
         self.scroll.verticalScrollBar().setValue(position)
         self.update_selection_actions()
@@ -1329,36 +1333,19 @@ class ContentsPopup(QFrame):
             else: self.selected.add(ref)
         elif ref not in self.selected: self.selected={ref}
         self.primary_selection=ref if ref in self.selected else next((r for r in self.visible_refs() if r in self.selected),None)
-        self.hovered_ref=None
         self.restore_selected_preview()
         for item in self.rows_body.findChildren(QWidget):
             if hasattr(item,'set_selected'): item.set_selected(item.path in self.selected)
             elif isinstance(item,FileRow): item.update()
         self.update_selection_actions()
 
-    def hover_item(self,ref):
-        if self._narrow_layout and not self._narrow_preview:return
-        self.hovered_ref=ref; self.preview.show_path(ref)
-
-    def end_hover(self,ref):
-        if self.hovered_ref==ref: self.hovered_ref=None
-        QTimer.singleShot(0,self.restore_selected_preview)
-
     def restore_selected_preview(self):
-        if self._narrow_layout and not self._narrow_preview:return
-        if self.hovered_ref is not None:return
         chosen=self.chosen_refs()
+        if self.primary_selection not in self.visible_refs():
+            self.preview.clear_preview();self._preview_metadata={};return
+        if self._narrow_layout and not self._narrow_preview:return
         if len(chosen)>1:self.preview.show_group(chosen)
-        elif self.primary_selection in self.visible_refs(): self.preview.show_path(self.primary_selection)
-        elif not chosen:
-            refs=self.visible_refs()
-            self.preview.group_view.hide()
-            if refs:
-                current=self.preview.current_path if self.preview.current_path in refs else refs[0]
-                self.preview.show_path(current)
-            else:
-                self.preview._group_refs=()
-                self.preview.current_path=None
+        else:self.preview.show_path(self.primary_selection)
 
     def compress_selected(self):
         self.shelf.compress_refs(self.chosen_refs())
@@ -1419,9 +1406,6 @@ class ContentsPopup(QFrame):
         self.preview.refresh_cloud_status()
 
     def remove_path(self,ref): self.shelf.remove_path('permanent',ref)
-
-    def leaveEvent(self,event):
-        self.hovered_ref=None; self.restore_selected_preview(); super().leaveEvent(event)
 
 class ShelfWindow(QWidget):
     def __init__(self, manager: "ShelfManager", number: int, data: dict | None = None):
@@ -2034,9 +2018,9 @@ class ShelfWindow(QWidget):
         spec=owned_copy_spec(owned_ref,metadata,self.manager.settings.capture_dir)
         if spec is None:return
         if self.popup:
-            if self.popup.preview.media.path==ref:self.popup.preview.media.release_source()
             if self.popup.preview.current_path==ref:
-                self.popup.preview.image.clear_source();self.popup.preview.current_path=None
+                self.popup.preview.clear_preview()
+            elif self.popup.preview.media.path==ref:self.popup.preview.media.release_source()
         self.image_cache.forget(ref)
         job=DiskWork(delete_owned_copy,spec);self._delete_jobs.add(job)
         def done(result,error):
@@ -2248,15 +2232,11 @@ class ShelfWindow(QWidget):
             if not downloading:self.cancel_transfer(path)
             return
         if not downloading and hasattr(self.manager,'sync'):self.manager.sync.cancel_upload(path,remove=True)
-        if self.popup and self.popup.preview.media.path==path:
-            self.popup.preview.media.release_source()
-            self.popup.preview.current_path=None
+        if self.popup:
+            if self.popup.preview.current_path==path:self.popup.preview.clear_preview()
+            elif self.popup.preview.media.path==path:self.popup.preview.media.release_source()
         self.preview_cache.pop(path,None)
         self.image_cache.forget(path)
-        if self.popup and self.popup.preview.current_path==path:
-            self.popup.preview.image.clear_source()
-            self.popup.preview.current_path=None
-            self.popup.preview._pending_preview=False
         if self.archive_job:
             related=path in self._archive_refs
             if not related and not self.content.is_text(path):
@@ -2282,11 +2262,7 @@ class ShelfWindow(QWidget):
         for job in getattr(self,'_intake_limit_jobs',()):job.cancel.set()
         for job in tuple(self.copy_jobs):job.cancel()
         if self.popup:
-            self.popup.preview.media.release_source()
-            self.popup.preview.current_path=None
-            self.popup.preview._group_refs=()
-            self.popup.preview._pending_preview=False
-            self.popup.preview.image.clear_source()
+            self.popup.preview.clear_preview()
         self.preview_cache.clear()
         self.image_cache.clear()
         self._pending_image_paths.clear()
@@ -2703,6 +2679,7 @@ class ShelfWindow(QWidget):
     def _show_contents(self,mode,target,*,animate=True):
         if self.property('flickdockConfirmationActive'): return
         if not self.expanded:self._dismiss_clipboard_preview()
+        if self.popup is not None:self.popup.preview.clear_preview()
         if animate:self._capture_morph_source()
         self._transition_preparing=animate
         self.visible_state = "floating"
@@ -2710,8 +2687,6 @@ class ShelfWindow(QWidget):
             self.popup = ContentsPopup(self)
         self.refresh_account_identity()
         self.popup.reset_for_open()
-        self.popup.hovered_ref=None
-        self.popup.restore_selected_preview()
         self.expanded = True
         self.zones["permanent"].hide()
         self.status_label.hide()
@@ -2742,6 +2717,7 @@ class ShelfWindow(QWidget):
         if not self.expanded:
             return
         self._dismiss_clipboard_preview()
+        self.popup.preview.media.stop()
         self._capture_morph_source()
         self._transition_preparing=True
         self.expanded = False

@@ -160,14 +160,13 @@ with tempfile.TemporaryDirectory(prefix="flickdock-v16-") as temporary:
             assert native in popup.visible_refs() and str(original) in popup.visible_refs()
             popup.set_category("all")
             popup.select_item(native)
-            popup.hover_item(str(document))
-            assert popup.preview.current_path == str(document)
-            popup.end_hover(str(document)); flush(app)
             assert popup.preview.current_path == native and popup.primary_selection == native
             assert popup.preview.text.toPlainText() == shelf.content.text(native)
-            popup.hover_item(str(image)); popup.hover_item(str(vector)); popup.end_hover(str(image)); flush(app)
+            popup.select_item(str(document));flush(app)
+            assert popup.preview.current_path == str(document)
+            popup.select_item(str(image));popup.select_item(str(vector));flush(app)
             assert popup.preview.current_path == str(vector)
-            popup.end_hover(str(vector)); flush(app)
+            popup.select_item(native);flush(app)
             assert popup.preview.current_path == native
             manager.settings.update(view_mode="icons")
             wait_until(app,lambda: popup._build_cursor==len(popup.visible_refs()) and popup.retirement.is_idle)

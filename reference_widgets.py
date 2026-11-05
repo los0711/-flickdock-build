@@ -419,7 +419,6 @@ class MarqueeSelection(QObject):
             ref=getattr(item,'path',None)
             if ref and item.isVisible() and rect.intersects(item.geometry()):hits.add(ref)
         view.selected=self.base|hits;view.primary_selection=next((ref for ref in view.visible_refs() if ref in view.selected),None)
-        view.hovered_ref=None
         for item in view.rows_body.findChildren(QWidget,options=Qt.FindDirectChildrenOnly):
             if hasattr(item,'set_selected'):item.set_selected(item.path in view.selected)
             else:item.update()
@@ -873,7 +872,10 @@ def build_preview(view,elided_type,image_type,media_type,content_type):
         "QPlainTextEdit{background:#FFFFFF;color:#1D1D1F;border:0;border-radius:12px;padding:14px;font:13px 'HarmonyOS Sans SC';}")
     view.image=image_type(view);view.image.set_loader(view.shelf.image_cache);view.image.source_ready.connect(view._image_source_ready)
     view.media=media_type(view,motion=view.shelf.manager.motion);view.media.frame_ready.connect(view._poster_ready);view.media.playing_changed.connect(view._playing_changed)
-    for item in (view.icon,view.text,view.image,view.media):view.stack.addWidget(item)
+    view.empty_preview=label('选中文件后显示预览',11,400,'secondary',view.stack)
+    view.empty_preview.setAlignment(Qt.AlignCenter)
+    for item in (view.icon,view.text,view.image,view.media,view.empty_preview):view.stack.addWidget(item)
+    view.stack.setCurrentWidget(view.empty_preview)
     body.addWidget(view.stack,1)
     status=QFrame(content);status.setObjectName('referenceStatus')
     css(status,'QFrame#referenceStatus{background:rgba(255,255,255,7);border:1px solid rgba(255,255,255,15);border-radius:12px;}',

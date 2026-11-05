@@ -196,11 +196,15 @@ def main() -> int:
                 visible=[window for window in AppKit.NSApplication.sharedApplication().windows()
                          if window.isVisible() and str(window.title())==shelf.windowTitle()]
                 if len(visible)!=1:raise AssertionError('Multiple native shelf windows are visible: '+str(len(visible)))
+                if shelf.popup.preview.current_path is not None:raise AssertionError('Cocoa overview opened an unselected file')
                 hit_target(shelf.popup.select_all_button);hit_target(shelf.popup.search_edit)
                 QTest.mouseClick(shelf.popup.select_all_button,Qt.LeftButton);application.processEvents()
                 if ref not in shelf.popup.selected:raise AssertionError('Cocoa overview selection button ignored the click')
+                if shelf.popup.preview.current_path!=ref:raise AssertionError('Cocoa selected file did not load its preview')
                 shelf.collapse_contents();settle_shelf();hit_target(shelf.lan_button);hit_target(shelf.expand_button)
                 if shelf_window().windowNumber()!=number:raise AssertionError('Cocoa collapse replaced the shelf window')
+                shelf.show_contents();settle_shelf()
+                if shelf.popup.preview.current_path is not None:raise AssertionError('Cocoa overview restored stale selected content')
                 shelf_interactions=dict(unique_native_shelf=True,stable_native_canvas=True,overview_input=True,compact_input=True)
         finally:
             shelf.presentation.stop();shelf.geometry_morph.stop();shelf.hide_immediately()

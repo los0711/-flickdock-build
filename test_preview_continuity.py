@@ -3,8 +3,8 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
-from PySide6.QtCore import QEvent,QPoint,Qt
-from PySide6.QtGui import QImage,QMouseEvent
+from PySide6.QtCore import QEvent,QPoint,QPointF,QRectF,Qt
+from PySide6.QtGui import QColor,QEnterEvent,QImage,QMouseEvent,QPainter,QPixmap
 
 import reference_widgets
 import test_html_native_workspace as workspace
@@ -17,6 +17,89 @@ class PreviewContinuityTests(unittest.TestCase):
         self.shelf=self.fixture.shelf
 
     def tearDown(self):self.fixture.tearDown()
+
+    def test_overview_requires_selection_and_never_reveals_old_preview_on_reopen(self):
+        for mode in ('list','icons'):
+            self.fixture.settings.update(view_mode=mode)
+            popup=self.fixture.overview();preview=popup.preview
+            self.assertIsNone(preview.current_path)
+            self.assertIs(preview.stack.currentWidget(),preview.empty_preview)
+            ref=self.fixture.paths[0];item=popup._item_widgets[ref]
+            with patch.object(preview,'show_path',wraps=preview.show_path) as show:
+                point=QPointF(item.rect().center())
+                item.enterEvent(QEnterEvent(point,point,point));item.leaveEvent(QEvent(QEvent.Leave))
+                workspace.flush();show.assert_not_called()
+            popup.select_item(ref)
+            self.assertEqual(preview.current_path,ref)
+            self.assertEqual(preview.text.toPlainText(),'original 0')
+            self.shelf.collapse_contents();self.shelf.geometry_morph.complete()
+            self.fixture.overview();workspace.flush()
+            self.assertIsNone(preview.current_path)
+            self.assertIs(preview.stack.currentWidget(),preview.empty_preview)
+            preview.resize(preview.width()+1,preview.height());workspace.flush()
+            self.assertEqual(preview.name.full_text,'');self.assertEqual(preview.path_label.full_text,'')
+            self.assertEqual(preview.text.toPlainText(),'');self.assertFalse(preview.copy_button.isEnabled())
+            self.assertTrue(all(not button.isEnabled() for button in preview.action_buttons))
+
+    def test_deselect_releases_media_and_late_image_cannot_replace_empty_preview(self):
+        popup=self.fixture.overview();preview=popup.preview
+        path=self.fixture.base/'movie.mp4';path.write_bytes(b'decoder fixture');ref=str(path)
+        self.shelf.add_paths('permanent',[ref]);workspace.flush()
+        with patch.object(preview.media,'_load_player',return_value=True):popup.select_item(ref)
+        self.assertEqual(preview.media.path,ref)
+        popup.select_item(ref,toggle=True)
+        self.assertEqual(preview.media.path,'');self.assertIsNone(preview.media.player)
+        self.assertTrue(preview.media.surface.image.isNull())
+        preview._image_source_ready(self.fixture.paths[0],True)
+        self.assertIs(preview.stack.currentWidget(),preview.empty_preview)
+        self.assertIsNone(preview.current_path)
+
+    def test_empty_shelf_expands_without_reusing_previous_selection_or_image(self):
+        popup=self.fixture.overview();popup.select_item(self.fixture.paths[0])
+        self.shelf.remove_all('permanent');workspace.flush()
+        self.shelf.collapse_contents();self.shelf.geometry_morph.complete()
+        self.shelf.manager.motion=True;self.shelf.geometry_morph.motion=True
+        self.shelf.show_contents();self.shelf.geometry_morph.pause()
+        snapshot=self.shelf._surface_snapshot
+        self.assertLess(snapshot.source.deviceIndependentSize().width(),snapshot.target.deviceIndependentSize().width())
+        for progress in (0.,.08,.3,.6,1.):
+            self.shelf.geometry_morph._frame(progress);workspace.flush()
+            self.assertIsNone(popup.preview.current_path)
+            self.assertEqual(popup.preview.text.toPlainText(),'')
+            self.assertEqual(popup.preview.media.path,'')
+            self.assertTrue(popup.empty_state.isVisible())
+        self.shelf.geometry_morph.complete()
+        self.assertFalse(snapshot.active);self.assertTrue(snapshot.source.isNull())
+
+    def test_moving_container_never_scales_compact_content_and_discards_it_early(self):
+        from surface_morph import SurfaceSnapshot
+        snapshot=SurfaceSnapshot(self.shelf)
+        try:
+            for ratio in (1.,1.25,2.):
+                source=QPixmap(round(100*ratio),round(80*ratio));source.setDevicePixelRatio(ratio);source.fill(QColor('#202024'))
+                painter=QPainter(source);painter.fillRect(QRectF(10,20,20,20),QColor('#ff0033'));painter.end()
+                target=QPixmap(round(400*ratio),round(300*ratio));target.setDevicePixelRatio(ratio);target.fill(QColor('#2040aa'))
+                snapshot.source=source;snapshot.target=target
+                image=QImage(round(300*ratio),round(240*ratio),QImage.Format_ARGB32_Premultiplied);image.setDevicePixelRatio(ratio)
+                def render(progress):
+                    snapshot.mix=progress;image.fill(Qt.transparent);painter=QPainter(image)
+                    snapshot.paint_frame(painter,QRectF(0,0,300,240));painter.end()
+                render(.06)
+                marker=image.pixelColor(round(215*ratio),round(25*ratio))
+                stretched=image.pixelColor(round(40*ratio),round(75*ratio))
+                self.assertGreater(marker.red(),140);self.assertLess(stretched.red(),70)
+                # Once overview sections have entered, no compact text/card
+                # pixels remain, even though the container is still moving.
+                render(.6)
+                self.assertEqual(image.pixelColor(round(215*ratio),round(25*ratio)),QColor('#2040aa'))
+                self.assertEqual(image.pixelColor(round(40*ratio),round(75*ratio)),QColor('#2040aa'))
+                snapshot.target_sections=[(QRectF(0,0,400,300),QPoint())]
+                image.fill(Qt.transparent);painter=QPainter(image)
+                snapshot.paint_frame(painter,QRectF(0,0,260,200));painter.end()
+                self.assertEqual(image.pixelColor(round(280*ratio),round(80*ratio)).alpha(),0)
+                self.assertEqual(image.pixelColor(round(180*ratio),round(220*ratio)).alpha(),0)
+                snapshot.target_sections=[]
+        finally:snapshot.deleteLater();workspace.flush()
 
     def test_video_morph_and_rest_share_poster_without_intermediate_format_icon(self):
         popup=self.fixture.overview();preview=popup.preview

@@ -109,15 +109,12 @@ class IconItem(QWidget):
             self._dwell_hint=DwellHint(self)
         if self.popup.shelf.manager.motion:self._dwell_hint.enter()
         self.remove_button.show()
-        if hasattr(self.popup, 'hover_item'): self.popup.hover_item(self.ref)
-        else: self.popup.preview.show_path(self.ref)
         self.popup.shelf.touch()
         self.motion.animate({"hover": 1}, response=.14, damping=1)
         super().enterEvent(event)
 
     def leaveEvent(self, event):
         self.remove_button.setVisible(self.hasFocus() and self._keyboard_focus)
-        if hasattr(self.popup, 'end_hover'): self.popup.end_hover(self.ref)
         self.motion.animate({"hover": 0}, response=.14, damping=1)
         super().leaveEvent(event)
 
