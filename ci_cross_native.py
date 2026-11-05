@@ -39,7 +39,7 @@ def main():
     app=QApplication.instance() or QApplication([]);app.setQuitOnLastWindowClosed(False)
     temporary=tempfile.TemporaryDirectory(prefix='flickdock-cross-native-');root=Path(temporary.name)
     account=AccountService(root/'account',store=Store());events=CloudEvents(account)
-    wan=WanTransferService(root/'wan',device_name='Cross platform QA '+args.role,account_service=account)
+    wan=WanTransferService(root/'wan',device_name='Cross platform QA '+args.role);wan.attach_account(account)
     mesh=PeerSync(account,wan)
     from PySide6.QtCore import QObject,Signal
     class Clipboard(QObject):
@@ -69,6 +69,8 @@ def main():
         if finished:return
         finished=True;timer.stop();deadline.stop()
         report.update(ok=not error,error=error,seconds=round(time.monotonic()-started,3),native_candidates=dict(counters))
+        report.update(authenticated=account.signed_in,signaling_connected=wan._connected,
+                      account_bound=wan._bound_identity is not None,phase=phase)
         sync.close();mesh.close();wan.close();events.close();account.close()
         args.output.parent.mkdir(parents=True,exist_ok=True)
         args.output.write_text(json.dumps(report,indent=2),encoding='utf8')
@@ -163,8 +165,10 @@ def main():
                     report['stable_seconds']=round(now-stable_at,3);phase='cleanup';mime=QMimeData();mime.setText(cleanup);clip.setMimeData(mime)
         except (OSError,ValueError,RuntimeError) as error:finish(type(error).__name__.upper())
     timer=QTimer();timer.setInterval(50);timer.timeout.connect(poll)
+    sys.excepthook=lambda kind,value,trace:finish('QA_CALLBACK_'+kind.__name__.upper())
     deadline=QTimer();deadline.setSingleShot(True);deadline.timeout.connect(lambda:finish('CROSS_PLATFORM_TIMEOUT_'+phase.upper()))
     deadline.start(600000 if args.role=='source' else 240000);timer.start()
+    wan.start()
     if args.role=='source':account.register(secret['username'],secret['password'])
     else:account.login(secret['username'],secret['password'])
     QTimer.singleShot(30000,lambda:finish('QA_AUTH_FAILED') if not account.signed_in else None)
