@@ -262,7 +262,7 @@ class ClipboardSync(QObject):
         self._identity=self._session_identity()
         self._pushed_head=None
         self._prepared_receive=None
-        self._view_revision=0;self.view=dict(value=self._snapshot(),phase='local',id='',revision=0,permission_required=not self._native_access)
+        self._view_revision=0;self.view=dict(value=self._snapshot(),phase='local',id='',revision=0,permission_required=not self._native_access,deliveries={})
         from clipboard_delivery import ClipboardDeliveries
         self.deliveries=ClipboardDeliveries(self,base)
         self._applied_version=0;self._receiving_version=0
@@ -569,7 +569,8 @@ class ClipboardSync(QObject):
         if pending.get('feedback_result') is ok:return
         pending['feedback_result']=ok
         context=dict(pending.get('feedback',{}),id=pending['id'],route=self.view['route'],
-                     delivered=bool(pending.get('peer_delivered')),backed_up=self.view['backed_up'],phase=self.view['phase'])
+                     delivered=bool(pending.get('peer_delivered')),backed_up=self.view['backed_up'],phase=self.view['phase'],
+                     deliveries=self.view['deliveries'])
         self.copy_result.emit(ok,context)
 
     def _prepare_local(self):

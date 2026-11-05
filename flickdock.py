@@ -3273,6 +3273,7 @@ class ShelfManager:
         self.sync.attach_clipboard(self.clipboard_sync)
         self.clipboard_sync.activity_changed.connect(self.sync.set_clipboard_priority)
         self.clipboard_sync.copy_result.connect(self._clipboard_copy_result)
+        self.clipboard_sync.view_changed.connect(self._clipboard_notice_state)
         self.clipboard_sync.copy_started.connect(self._clipboard_copy_started)
         self.clipboard_sync.native_access_changed.connect(self._refresh_paste_permission)
         from clipboard_preview import ClipboardPresenter
@@ -3395,6 +3396,12 @@ class ShelfManager:
             from intake_notice import ClipboardNotice
             self.clipboard_notice=ClipboardNotice(self)
         self.clipboard_notice.schedule_result(ok,context)
+
+    def _clipboard_notice_state(self,state):
+        if self._quitting or not hasattr(self,'clipboard_notice'):return
+        if not self.settings.clipboard_success_notice or not self._clipboard_runtime_enabled():
+            self.clipboard_notice.supersede();return
+        self.clipboard_notice.update_delivery(state)
 
     def show_clipboard_preview(self):
         if self._quitting:return

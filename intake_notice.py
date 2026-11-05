@@ -26,11 +26,10 @@ PREVIEW_MAX_CHARS=2048
 def copy_status(ok,context):
     if context.get('phase')=='size_limit':return '超过 20 MB 同步上限 · 内容保留在本机'
     if not ok:return '同步未完成 · 内容保留在本机'
-    if context.get('delivered'):
-        route={'lan':'局域网','p2p':'P2P 直连','relay':'TURN 中继','cloud':'云端'}.get(context.get('route'),'设备同步')
-        return route+' · 已发送到另一台设备'
-    if context.get('backed_up'):return '云端 · 已备份剪贴板'
-    return '剪贴板内容已同步'
+    counts=context.get('deliveries',{})
+    routes=[('lan','局域网'),('p2p','P2P'),('cloud','R2')]
+    if counts.get('relay',{}).get('total',0):routes.append(('relay','TURN'))
+    return ' · '.join(f'{title} {counts.get(route,{}).get("success",0)}/{counts.get(route,{}).get("total",0)}' for route,title in routes)
 
 
 def copy_preview(value):
@@ -67,8 +66,10 @@ class ClipboardNotice(QWidget):
         footer=QHBoxLayout();footer.setSpacing(STATUS_GAP_PX)
         self.status_icon=QLabel(self.card);self.status_icon.setFixedSize(STATUS_ICON_SIZE_PX,STATUS_ICON_SIZE_PX);footer.addWidget(self.status_icon)
         self.status=QLabel(self.card);self.status.setObjectName('copyStatus');self.status.setTextFormat(Qt.PlainText)
+        self.status.setWordWrap(True)
         self.status.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Preferred);footer.addWidget(self.status,1);layout.addLayout(footer)
         self._pending_result=None
+        self._current_result=None
         self._result_timer=QTimer(self);self._result_timer.setSingleShot(True);self._result_timer.setInterval(RESULT_COALESCE_MS)
         self._result_timer.timeout.connect(self._deliver_result)
         self.timer=QTimer(self);self.timer.setSingleShot(True);self.timer.timeout.connect(self.dismiss)
@@ -78,10 +79,31 @@ class ClipboardNotice(QWidget):
         self.timer.stop();fade_hide(self)
 
     def supersede(self):
-        self._result_timer.stop();self._pending_result=None;self.hide()
+        self._result_timer.stop();self._pending_result=None;self._current_result=None;self.hide()
 
     def schedule_result(self,ok,context):
         self._pending_result=(ok,dict(context));self._result_timer.start()
+
+    def update_delivery(self,state):
+        if not self.manager.settings.clipboard_success_notice:self.supersede();return
+        identity=state.get('id')
+        if not identity:return
+        if self._pending_result is not None:
+            ok,context=self._pending_result
+            if ok and context.get('id')==identity:context['deliveries']=state.get('deliveries',{})
+        if self._current_result is None or not self.isVisible():return
+        ok,context=self._current_result
+        if not ok or context.get('id')!=identity:return
+        updated=dict(context,deliveries=state.get('deliveries',{}))
+        if copy_status(True,updated)==copy_status(True,context):return
+        self._current_result=(ok,updated);self._render_status(ok,updated)
+        self.adjustSize();self._place(self.screen().availableGeometry())
+
+    def _render_status(self,ok,context):
+        text=copy_status(ok,context);self.status.setAccessibleDescription(text);self.status.setText(text)
+
+    def _place(self,area):
+        self.move(area.left()+(area.width()-self.width())//2,area.bottom()-self.height()-NOTICE_MARGIN_PX+1)
 
     def _deliver_result(self):
         result,self._pending_result=self._pending_result,None
@@ -111,11 +133,12 @@ class ClipboardNotice(QWidget):
         self.setFixedWidth(min(NOTICE_WIDTH_PX,max(1,area.width()-2*NOTICE_MARGIN_PX)))
         available=self.width()-2*NOTICE_PADDING_PX
         self.preview.setText(self.preview.fontMetrics().elidedText(copy_preview(context.get('value')),Qt.ElideRight,available))
-        status=copy_status(ok,context);self.status.setAccessibleDescription(status)
-        self.status.setText(self.status.fontMetrics().elidedText(status,Qt.ElideRight,available-STATUS_ICON_SIZE_PX-STATUS_GAP_PX))
+        self.status.setFixedWidth(max(1,available-STATUS_ICON_SIZE_PX-STATUS_GAP_PX))
+        self._render_status(ok,context)
         self.adjustSize()
-        self.move(area.left()+(area.width()-self.width())//2,area.bottom()-self.height()-NOTICE_MARGIN_PX+1)
-        self.timer.stop();self._window_fade.reopen();self.show();self.raise_();self.timer.start(NOTICE_DURATION_MS)
+        self._place(area)
+        self.timer.stop();self._window_fade.reopen();self._current_result=(ok,dict(context))
+        self.show();self.raise_();self.timer.start(NOTICE_DURATION_MS)
 
     def hideEvent(self,event):
-        self.timer.stop();super().hideEvent(event)
+        self.timer.stop();self._current_result=None;super().hideEvent(event)

@@ -11,6 +11,42 @@ from intake_notice import ClipboardNotice,NOTICE_MARGIN_PX
 
 
 class CopyNoticeTests(unittest.TestCase):
+    def test_success_route_counts_update_in_place_without_reopening_or_extending_expiry(self):
+        card=ClipboardNotice(SimpleNamespace(settings=SimpleNamespace(theme='dark',clipboard_success_notice=True)))
+        counts={'lan':{'success':0,'total':1},'p2p':{'success':0,'total':2},'cloud':{'success':0,'total':1}}
+        first=dict(counts,lan={'success':1,'total':1})
+        latest=dict(first,p2p={'success':2,'total':2},cloud={'success':1,'total':1})
+        try:
+            with patch('native_ui_common.reduced_motion',return_value=True),patch.object(card._window_fade,'reopen',wraps=card._window_fade.reopen) as reopen:
+                card.schedule_result(True,dict(id='latest-copy',value=('text',{'text':'original copy'}),deliveries=counts))
+                card.update_delivery(dict(id='latest-copy',deliveries=first))
+                QTest.qWait(180);flush();self.assertTrue(card.isVisible())
+                self.assertEqual(card.status.text(),'局域网 1/1 · P2P 0/2 · R2 0/1')
+                expiry=card.timer.remainingTime();QTest.qWait(20)
+                card.update_delivery(dict(id='latest-copy',deliveries=latest));flush()
+                self.assertEqual(card.status.text(),'局域网 1/1 · P2P 2/2 · R2 1/1')
+                self.assertLessEqual(card.timer.remainingTime(),expiry);self.assertEqual(reopen.call_count,1)
+                card.update_delivery(dict(id='older-copy',deliveries=counts))
+                self.assertEqual(card.status.text(),'局域网 1/1 · P2P 2/2 · R2 1/1')
+                card.dismiss();flush();card.update_delivery(dict(id='latest-copy',deliveries=first))
+                self.assertFalse(card.isVisible());self.assertFalse(card.timer.isActive());self.assertEqual(reopen.call_count,1)
+        finally:card.hide();card.deleteLater();flush()
+
+    def test_success_counts_never_elide_a_route_on_narrow_displays_in_both_themes(self):
+        screen=SimpleNamespace(availableGeometry=lambda:QRect(100,200,320,400))
+        counts={route:{'success':10,'total':20} for route in ('lan','p2p','cloud','relay')}
+        card=ClipboardNotice(SimpleNamespace(settings=SimpleNamespace(theme='dark',clipboard_success_notice=True)))
+        try:
+            for theme in ('dark','light'):
+                card.manager.settings.theme=theme
+                with patch('intake_notice.QGuiApplication.screenAt',return_value=screen):
+                    card.show_result(True,dict(id='copy',value=('text',{'text':'original'}),deliveries=counts));flush()
+                self.assertEqual(card.status.text(),'局域网 10/20 · P2P 10/20 · R2 10/20 · TURN 10/20')
+                self.assertTrue(card.card.rect().contains(card.status.geometry()));self.assertTrue(screen.availableGeometry().contains(card.geometry()))
+                self.assertGreaterEqual(card.status.height(),card.status.heightForWidth(card.status.width()))
+                self.assertLessEqual(card.height(),120)
+        finally:card.hide();card.deleteLater();flush()
+
     def test_disabled_manager_never_constructs_a_card_for_either_result(self):
         manager=SimpleNamespace(_quitting=False,_clipboard_runtime_enabled=lambda:True,
                                 settings=SimpleNamespace(clipboard_success_notice=False))
@@ -39,10 +75,10 @@ class CopyNoticeTests(unittest.TestCase):
         editor=QLineEdit();editor.setText('保留正在编辑的内容');editor.show();editor.activateWindow();editor.setFocus();flush()
         card=ClipboardNotice(SimpleNamespace(settings=SimpleNamespace(theme='dark',clipboard_success_notice=True)))
         try:
-            card.show_result(True,dict(value=('text',{'text':'沿海公路，开往山海之间'}),delivered=True,route='p2p'));flush()
+            card.show_result(True,dict(value=('text',{'text':'沿海公路，开往山海之间'}),delivered=True,route='p2p',deliveries={'p2p':{'success':1,'total':1}}));flush()
             self.assertTrue(card.windowFlags()&Qt.WindowDoesNotAcceptFocus)
             self.assertTrue(card.testAttribute(Qt.WA_ShowWithoutActivating));self.assertEqual(card.close_button.focusPolicy(),Qt.NoFocus)
-            self.assertIn('P2P 直连',card.status.text());self.assertIn('另一台设备',card.status.text())
+            self.assertEqual(card.status.text(),'局域网 0/0 · P2P 1/1 · R2 0/0')
             QTest.mouseClick(card.close_button,Qt.LeftButton);flush()
             self.assertFalse(card.isVisible());self.assertFalse(card.timer.isActive())
             self.assertEqual(editor.text(),'保留正在编辑的内容')
@@ -59,7 +95,7 @@ class CopyNoticeTests(unittest.TestCase):
                 self.assertTrue(screen.availableGeometry().contains(card.geometry()))
                 self.assertEqual(card.preview.textFormat(),Qt.PlainText);self.assertIn('<b>',card.preview.text())
                 self.assertEqual(card.preview.toolTip(),'');self.assertNotIn('\n',card.preview.text())
-                self.assertEqual(card.status.text(),'云端 · 已备份剪贴板')
+                self.assertEqual(card.status.text(),'局域网 0/0 · P2P 0/0 · R2 0/0')
                 for child in (card.logo,card.message,card.preview,card.status,card.close_button):
                     self.assertTrue(card.card.rect().contains(child.geometry()),child.objectName())
                 self.assertGreater(card.preview.y(),card.message.geometry().bottom())
