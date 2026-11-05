@@ -179,6 +179,12 @@ with tempfile.TemporaryDirectory(prefix='flickdock-clock-v164-') as temporary:
             global phase
             phase=name;begin=moment();beat()
             invoke(action,name)
+            if preview:
+                assert shelf.popup.preview.current_path is None,'overview reopened an unselected file'
+                # Decoder/image work belongs to an explicit user selection,
+                # after the container lands, rather than the expansion clock.
+                spin_until(lambda:content_complete() and not shelf.presentation._timer.isActive())
+                shelf.popup.select_item(images[0])
             spin_until(lambda:content_complete() and (not preview or shelf.popup.preview.image.image is not None))
             # Include the settled view and the first deferred work callbacks.
             spin_until(lambda:moment()-begin>=650)
@@ -190,8 +196,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-clock-v164-') as temporary:
         run(manager.show_shortcut,'shortcut_collapse')
         run(manager.show_overview,'warm_overview',preview=True)
         run(shelf.collapse_contents,'warm_collapse')
-        shelf.image_cache.clear();shelf.popup.preview.image.clear_source();shelf.popup.preview.current_path=None
-        shelf.popup.selected={images[0]};shelf.popup.primary_selection=images[0]
+        shelf.image_cache.clear();shelf.popup.preview.clear_preview()
         run(manager.show_overview,'cold_image_overview',preview=True)
         run(manager.show_shortcut,'image_shortcut_collapse')
         phase='rapid_reversals';begin=moment();beat()
