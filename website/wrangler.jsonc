@@ -1,8 +1,10 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "flickdock-site",
+  "account_id": "59153da0809ff3d18297d943e1ef5b56",
   "compatibility_date": "2026-10-27",
   "workers_dev": true,
+  "routes": [{"pattern":"flickdock.cc.cd","custom_domain":true}],
   "main": "worker.mjs",
   "services": [{"binding":"WAN_SERVICE","service":"flickdock-cloud","entrypoint":"AppGateway"}],
   "assets": {

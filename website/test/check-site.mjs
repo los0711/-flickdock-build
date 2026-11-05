@@ -14,15 +14,19 @@ assert.notEqual(config.name, 'flickdock-cloud');
 assert.equal(config.assets.directory, './public');
 assert.equal(config.workers_dev, true);
 
-const downloads = [...html.matchAll(/href="(https:\/\/github\.com\/los0711\/-flickdock-build\/releases\/download\/v1\.8\.23\/[^\"]+\.(?:exe|dmg))"/g)].map(match => match[1]);
-assert.equal(downloads.length, 3, 'home page has three direct installer links');
-assert(downloads.includes('https://github.com/los0711/-flickdock-build/releases/download/v1.8.23/FlickDock-Setup-1.8.23.exe'));
-assert(downloads.some(url => url.endsWith('/FlickDock-1.8.23-macOS-arm64.dmg')));
-assert(downloads.some(url => url.endsWith('/FlickDock-1.8.23-macOS-x86_64.dmg')));
-assert(downloads.every(url => url.startsWith('https://github.com/los0711/-flickdock-build/releases/download/v1.8.23/')));
-assert(html.includes('aria-label="下载 Windows 安装包 1.8.23"'));
-assert(html.includes('安装程序 · 1.8.23'));
-assert(html.includes('href="https://github.com/los0711/-flickdock-build/releases/tag/v1.8.23"'), 'download help links to the published release');
+assert.equal(config.account_id, '59153da0809ff3d18297d943e1ef5b56');
+assert.deepEqual(config.routes, [{ pattern: 'flickdock.cc.cd', custom_domain: true }]);
+const section = html.slice(html.indexOf('<section id="download"')).split('</section>')[0];
+const downloads = [...section.matchAll(/<a[^>]*href="([^"]+)"[^>]*data-installer="([^"]+)"[^>]*>([^<]+)<\/a>/g)];
+assert.equal(downloads.length, 3, 'bottom download area keeps exactly three platform links');
+const installers = Object.fromEntries(downloads.map(match => [match[2], { url: match[1], label: match[3] }]));
+assert.equal(installers.windows.url, 'https://gitee.com/rooogerluo/flick-dock-windows-releases/releases/download/v1.8.23/FlickDock-Setup-1.8.23.exe');
+assert.equal(installers['mac-arm'].url, 'https://gitee.com/rooogerluo/flick-dock-macos-releases-7/releases/download/v1.8.23/FlickDock-1.8.23-macOS-arm64.pkg');
+assert.equal(installers['mac-intel'].url, 'https://gitee.com/rooogerluo/flick-dock-macos-releases-7/releases/download/v1.8.22/FlickDock-1.8.22-macOS-x86_64.pkg');
+assert(installers['mac-intel'].label.includes('已停止更新'));
+assert(!section.includes('data-ui-action="download-windows"') && !section.includes('data-ui-action="download-macos"'), 'remove only the duplicated bottom pair');
+assert.equal((html.match(/data-ui-action="download-windows"/g) || []).length, 1, 'keep the original hero download control');
+assert.equal((html.match(/data-ui-action="download-macos"/g) || []).length, 1);
 
 for (const [, path] of html.matchAll(/(?:src|href)="(\/(?:assets\/[^\"]+|styles\.css|site\.js))"/g)) {
   assert(existsSync(resolve(project, 'public', path.slice(1))), `missing public asset: ${path}`);
@@ -31,8 +35,8 @@ for (const [, target] of html.matchAll(/href="#([^"]+)"/g)) {
   assert(html.includes(`id="${target}"`), `broken in-page link: #${target}`);
 }
 assert(html.includes('aria-live="polite"'));
-assert(html.includes('Apple 签名或公证'));
-assert(css.includes('prefers-reduced-motion: reduce'));
-assert(js.includes("text/flickdock-demo"), 'demo accepts only its own sample drag payload');
+assert(/prefers-reduced-motion:\s*reduce/.test(css));
+assert(html.includes('id="demo-tabs"') && html.includes('id="theme-btn-dark"') && html.includes('id="theme-btn-light"'));
+assert(js.includes('siteIconSources') && js.includes('URL.createObjectURL'), 'keep the live site self-contained icons');
 assert(!js.includes('fetch('), 'the marketing page must not call the cloud sync API');
 console.log('FlickDock site: config, downloads, assets, navigation, demo and accessibility checks passed.');
