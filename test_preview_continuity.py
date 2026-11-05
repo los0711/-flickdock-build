@@ -1,5 +1,6 @@
 """Visible preview continuity, cached intake frames and bounded hover behavior."""
 from pathlib import Path
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -204,6 +205,30 @@ class PreviewContinuityTests(unittest.TestCase):
                 pixel=image.pixelColor(round(slider.width()*.8*ratio),round(slider.height()*.5*ratio))
                 self.assertEqual(pixel.alpha(),255);self.assertEqual(pixel.name(),ui_theme.color('media_track'))
         finally:view.close();view.deleteLater();ui_theme.set_theme('dark');workspace.flush()
+
+    def test_upload_only_uses_top_progress_and_keeps_cancel_and_receive_feedback(self):
+        popup=self.fixture.overview();ref=self.fixture.paths[1];popup.select_item(ref)
+        preview=popup.preview
+        self.shelf.manager.sync=SimpleNamespace(download_transfers={},upload_time_for_ref=lambda _:None,
+            sync_status_for_ref=lambda _:'local',sync_statuses_for_refs=lambda refs:{ref:'local' for ref in refs},
+            is_upload_paused=lambda _:False)
+        state=dict(id='preview-transfer',phase='uploading',received=50,total=100,remote=False)
+        self.shelf.content.transfers[ref]=state
+        for phase in ('queued','validating','uploading','verifying','retrying'):
+            state['phase']=phase;preview.update_transfer_status();workspace.flush()
+            self.assertFalse(preview.transfer_overlay.isVisible(),phase)
+            self.assertTrue(preview.transfer_row.isVisible(),phase)
+            self.assertIn('50%',preview.transfer_meta.text(),phase)
+            self.assertEqual(preview.cancel_transfer.text(),'取消上传')
+        with patch.object(self.shelf,'cancel_transfer') as cancel:
+            preview.cancel_transfer.click();cancel.assert_called_once_with(ref)
+        state.update(phase='downloading',remote=True)
+        self.shelf.manager.sync.download_transfers[state['id']]=object()
+        preview.update_transfer_status();workspace.flush()
+        self.assertTrue(preview.transfer_overlay.isVisible())
+        self.assertEqual(preview.cancel_transfer.text(),'取消下载')
+        self.shelf.content.transfers.clear();preview.update_transfer_status();workspace.flush()
+        self.assertFalse(preview.transfer_overlay.isVisible());self.assertFalse(preview.transfer_row.isVisible())
 
 
 if __name__=='__main__':unittest.main(verbosity=2)

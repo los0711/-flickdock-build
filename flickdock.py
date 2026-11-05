@@ -612,17 +612,18 @@ class PreviewPane(QFrame):
             self.transfer_row.hide();self.transfer_overlay.hide();return
         state=self.shelf.content.transfers.get(self.current_path)
         self.transfer_row.setVisible(bool(state))
-        self.transfer_overlay.setGeometry(self.stack.rect());self.transfer_overlay.setVisible(bool(state))
-        if state:self.transfer_overlay.raise_();self.transfer_overlay.update()
-        if not state:self.transfer_meta.clear();return
+        if not state:
+            self.transfer_overlay.hide();self.transfer_meta.clear();return
+        copying=state.get('phase')=='copying'
+        receiving=self.shelf._receiving_transfer(state)
+        self.transfer_overlay.setGeometry(self.stack.rect());self.transfer_overlay.setVisible(copying or receiving)
+        if copying or receiving:self.transfer_overlay.raise_();self.transfer_overlay.update()
         total,received=state.get('total',0),state.get('received',0)
         self.transfer_progress.setRange(0,1000 if total else 0)
         if total:self.transfer_progress.setValue(round(1000*min(1,received/total)))
         fraction=transfer_fraction(state)
         progress=f'{round(fraction*100)}% · ' if fraction is not None else ''
         self.transfer_meta.setText(progress+self.shelf.transfer_rates.remaining_text(self.current_path,state))
-        copying=state.get('phase')=='copying'
-        receiving=self.shelf._receiving_transfer(state)
         self.cancel_transfer.setText('取消复制' if copying else '取消下载' if receiving else '取消上传')
         self.cancel_transfer.setEnabled(True)
         if self.shelf.content.is_pending(self.current_path):

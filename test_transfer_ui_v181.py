@@ -260,7 +260,9 @@ class TransferUITests(unittest.TestCase):
             preview_active=opaque_artwork(popup.preview.stack)
             state=self.shelf.content.transfers.pop(ref);preview_normal=opaque_artwork(popup.preview.stack)
             self.shelf.content.transfers[ref]=state
-            self.assertNotEqual(preview_active,preview_normal,'right preview needs small transfer feedback')
+            self.assertEqual(preview_active,preview_normal,'upload feedback must not cover the preview controls')
+            self.assertTrue(popup.preview.transfer_row.isVisible())
+            self.assertIn('25%',popup.preview.transfer_meta.text())
             self.shelf.open_path(ref)
         payload=self.shelf.content.mime_for([ref]);self.assertFalse(payload.hasUrls());self.assertFalse(payload.hasText())
         with patch.object(subject,'QDrag',side_effect=AssertionError('Pending content cannot drag')),\
