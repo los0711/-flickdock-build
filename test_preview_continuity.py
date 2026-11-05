@@ -13,6 +13,7 @@ import test_html_native_workspace as workspace
 class PreviewContinuityTests(unittest.TestCase):
     def setUp(self):
         self.fixture=workspace.WorkspaceTests();self.fixture.setUp()
+        self.fixture.patches.enter_context(patch('native_ui_common.reduced_motion',return_value=False))
         self.shelf=self.fixture.shelf
 
     def tearDown(self):self.fixture.tearDown()
