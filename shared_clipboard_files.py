@@ -67,9 +67,7 @@ class ClipboardFileJobs(QObject):
         if error is not None:task['_file_error']=str(error)
         elif phase!='retrying':task.pop('_file_error',None)
         if self.client.view.get('id')==task['id']:
-            raw=(task.get('package') or {}).get('raw_file') or {}
-            self.client.view.update(received=task.get('_file_received',0),total=raw.get('size',task['source_stat'][2]))
-            self.client.view_changed.emit(dict(self.client.view))
+            self.client._set_view(self.client.view['value'],self.client.view['phase'],task['id'])
         if phase in ('ready','retrying','unavailable'):self.save()
         if previous==phase:self.progress_changed.emit()
         else:self.changed.emit()

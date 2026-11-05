@@ -129,7 +129,7 @@ class VideoTests(unittest.TestCase):
                     controller.parse(self.origin+'/slow.mp4');until(lambda:controller.extracting is None)
                     row=controller.entries[-1]['sources'][0];controller.action(row,'download')
                     until(lambda:row['received']>0);controller.cancel(row);until(lambda:row['job'] is None)
-                    self.assertEqual(row['status'],'cancelled');self.assertFalse(list((root/'downloads').glob('.flickdock-download-*')))
+                    self.assertEqual(row['status'],'cancelled',row.get('error'));self.assertFalse(list((root/'downloads').glob('.flickdock-download-*')))
                     dialog.show();APP.processEvents();self.assertTrue(dialog.cards[row['key']].download.isEnabled())
                 finally:controller.close();dialog.hide();dialog.deleteLater();shelf.deleteLater();APP.processEvents()
 

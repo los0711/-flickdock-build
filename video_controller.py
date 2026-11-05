@@ -2,8 +2,9 @@
 import base64
 from pathlib import Path
 import shutil
+import time
 from uuid import uuid4
-from PySide6.QtCore import QObject,Signal
+from PySide6.QtCore import QObject,QTimer,Signal
 from PySide6.QtGui import QImage
 from video_jobs import VideoJob
 from video_links import video_url
@@ -11,6 +12,8 @@ from transfer_workbench import reveal_file
 
 MAX_DOWNLOADS=2
 MAX_COVER_DOWNLOADS=2
+FILE_RELEASE_RETRY_MS=25
+FILE_RELEASE_TIMEOUT_SECONDS=5
 
 class VideoController(QObject):
     changed=Signal()
@@ -132,9 +135,20 @@ class VideoController(QObject):
             row.update(status=value.get('phase','downloading'),received=received,total=total,speed=value.get('speed'),progress=min(1.,received/total) if total else None)
             self.changed.emit()
         def complete(result):
-            self.jobs.discard(job);job.deleteLater();stage=folder/('.flickdock-download-'+token)
-            if stage.is_dir() and not stage.is_symlink() and not (hasattr(stage,'is_junction') and stage.is_junction()) and stage.resolve().parent==folder.resolve():shutil.rmtree(stage)
-            row['job']=None
+            stage=folder/('.flickdock-download-'+token);deadline=time.monotonic()+FILE_RELEASE_TIMEOUT_SECONDS
+            def cleanup():
+                try:
+                    if stage.is_dir() and not stage.is_symlink() and not (hasattr(stage,'is_junction') and stage.is_junction()) and stage.resolve().parent==folder.resolve():shutil.rmtree(stage)
+                except OSError as error:
+                    # Windows can retain a terminated process's file handles
+                    # briefly after its exit notification. Retry only that case.
+                    if getattr(error,'winerror',None)==32 and time.monotonic()<deadline:
+                        QTimer.singleShot(FILE_RELEASE_RETRY_MS,self,cleanup);return
+                    result.update(error='下载临时文件清理失败：'+str(error),cancelled=False)
+                settled(result)
+            cleanup()
+        def settled(result):
+            self.jobs.discard(job);job.deleteLater();row['job']=None
             if self.closed:return
             if result['error']:row.update(status='cancelled' if result['cancelled'] and not job.error else 'error',error=result['error'])
             else:

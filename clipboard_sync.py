@@ -711,6 +711,10 @@ class ClipboardSync(QObject):
                    receive_pending=self._prepared_receive is not None,
                    native_format_issue=self._native_format_issue,
                    point=task.get('feedback',{}).get('point') if local and task is not None else self.view.get('point') if same else None)
+        shared=self.file_jobs.tasks.get(identity)
+        if shared is not None:
+            raw=(shared.get('package') or {}).get('raw_file') or {}
+            state.update(received=shared.get('_file_received',0),total=raw.get('size',shared['source_stat'][2]))
         if state==self.view:return
         self.view=state
         self.view_changed.emit(dict(self.view))

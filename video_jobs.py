@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import signal
 import sys
+import time
 
 from PySide6.QtCore import QObject,QProcess,QTimer,Signal
 
@@ -15,6 +16,8 @@ EXTRACT_TIMEOUT_MS=150000
 THUMBNAIL_TIMEOUT_MS=20000
 DOWNLOAD_IDLE_TIMEOUT_MS=45000
 PROCESSING_TIMEOUT_MS=300000
+PROCESS_TREE_SETTLE_MS=10
+PROCESS_TREE_STOP_SECONDS=5
 
 
 class ProcessTree:
@@ -34,6 +37,8 @@ class ProcessTree:
         kernel.SetInformationJobObject.argtypes=[wintypes.HANDLE,ctypes.c_int,ctypes.c_void_p,wintypes.DWORD]
         kernel.AssignProcessToJobObject.argtypes=[wintypes.HANDLE,wintypes.HANDLE]
         kernel.CloseHandle.argtypes=[wintypes.HANDLE]
+        kernel.TerminateJobObject.argtypes=[wintypes.HANDLE,wintypes.UINT]
+        kernel.QueryInformationJobObject.argtypes=[wintypes.HANDLE,ctypes.c_int,ctypes.c_void_p,wintypes.DWORD,ctypes.c_void_p]
         self.kernel=kernel;handle=kernel.CreateJobObjectW(None,None)
         if not handle:raise ctypes.WinError(ctypes.get_last_error())
         process=kernel.OpenProcess(0x101,False,pid)
@@ -46,12 +51,26 @@ class ProcessTree:
         finally:
             if process:kernel.CloseHandle(process)
 
-    def close(self):
+    def stop(self):
         if self.handle is not None:
-            self.kernel.CloseHandle(self.handle);self.handle=None
+            if not self.kernel.TerminateJobObject(self.handle,1):raise ctypes.WinError(ctypes.get_last_error())
         elif sys.platform!='win32' and self.pid:
             try:os.killpg(self.pid,signal.SIGKILL)
             except ProcessLookupError:pass
+
+    def stopped(self):
+        if self.handle is None:return True
+        class Accounting(ctypes.Structure):
+            _fields_=[('times',ctypes.c_longlong*4),('faults',wintypes.DWORD),('total',wintypes.DWORD),
+                      ('active',wintypes.DWORD),('terminated',wintypes.DWORD)]
+        value=Accounting()
+        if not self.kernel.QueryInformationJobObject(self.handle,1,ctypes.byref(value),ctypes.sizeof(value),None):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return value.active==0
+
+    def close(self):
+        if self.handle is not None:
+            self.kernel.CloseHandle(self.handle);self.handle=None
         self.pid=0
 
 
@@ -64,6 +83,8 @@ class VideoJob(QObject):
         self.priority=False
         self.buffer=bytearray();self.stderr=bytearray();self.result=None;self.error='';self.cancelled=False;self.done=False;self.tree=None
         self.timer=QTimer(self);self.timer.setSingleShot(True);self.timer.timeout.connect(self._timeout)
+        self.settle=QTimer(self);self.settle.setInterval(PROCESS_TREE_SETTLE_MS);self.settle.timeout.connect(self._settle_finished)
+        self.exit_result=None
         if sys.platform!='win32':self.process.setUnixProcessParameters(QProcess.UnixProcessFlag.CreateNewSession)
         self.process.started.connect(self._started);self.process.readyReadStandardOutput.connect(self._read)
         self.process.readyReadStandardError.connect(self._read_error);self.process.finished.connect(self._finished)
@@ -121,7 +142,7 @@ class VideoJob(QObject):
     def cancel(self):
         if self.done:return
         self.cancelled=True
-        if self.tree:self.tree.close()
+        if self.tree:self.tree.stop()
         self.process.kill()
 
     def _process_error(self,error):
@@ -129,8 +150,19 @@ class VideoJob(QObject):
             self.error='无法启动视频组件：'+self.process.errorString();self._finished(-1,QProcess.ExitStatus.CrashExit)
 
     def _finished(self,code,status):
-        if self.done:return
-        self._read();self._read_error();self.done=True;self.timer.stop()
+        if self.done or self.exit_result is not None:return
+        self._read();self._read_error();self.timer.stop()
+        self.exit_result=(code,status);self.stop_deadline=time.monotonic()+PROCESS_TREE_STOP_SECONDS
+        if self.tree:self.tree.stop()
+        self._settle_finished()
+
+    def _settle_finished(self):
+        # A killed worker can exit before its FFmpeg descendants release their
+        # file handles. Wait for the owned job, without blocking the GUI thread.
+        if self.tree and not self.tree.stopped():
+            if time.monotonic()<self.stop_deadline:self.settle.start();return
+            self.error='视频任务的子进程未能及时结束；临时文件可能仍在使用。'
+        self.settle.stop();self.done=True;code,status=self.exit_result
         if self.tree:self.tree.close()
         if not self.error and not self.cancelled and (code!=0 or status!=QProcess.ExitStatus.NormalExit or self.result is None):
             self.error='视频组件异常退出。'+self.stderr.decode('utf-8','replace')[-500:]
