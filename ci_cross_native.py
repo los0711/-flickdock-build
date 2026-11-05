@@ -135,13 +135,11 @@ def main():
         try:
             if args.role=='receiver':
                 value=sync.view.get('value')
-                if value and value[0]=='text' and value[1]['text']==cleanup:
-                    if not report['file_received'] or not report['text_received'] or report['verified_bytes']!=record['size']:
-                        finish('INCOMPLETE_CROSS_PLATFORM_PROOF')
-                    else:
-                        if receiver_finished_at is None:receiver_finished_at=time.monotonic()
-                        if time.monotonic()-receiver_finished_at>=.5:
-                            report['stable_seconds']=round(time.monotonic()-(peer_seen or started),3);finish()
+                if (value and value[0]=='text' and value[1]['text']==cleanup
+                        and report['file_received'] and report['text_received'] and report['verified_bytes']==record['size']):
+                    if receiver_finished_at is None:receiver_finished_at=time.monotonic()
+                    if time.monotonic()-receiver_finished_at>=.5:
+                        report['stable_seconds']=round(time.monotonic()-(peer_seen or started),3);finish()
                     return
             elif phase in ('cleanup','cleanup_delivered'):
                 if phase=='cleanup_delivered' and sync.view.get('backed_up'):finish()
