@@ -15,7 +15,7 @@ from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMenu, QToolButton,
                                QPushButton, QSizePolicy, QVBoxLayout, QWidget, QLayout, QScrollArea)
 
-DEVICE_LIST_MAX_HEIGHT=260
+DEVICE_LIST_PREFERRED_HEIGHT=260
 
 
 def _label(text='', parent=None, *, muted=False):
@@ -206,7 +206,8 @@ class AccountPanel(QFrame):
         if not hasattr(self,'signed_in_page') or self.signed_in_page.isHidden():
             return self.layout().totalHeightForWidth(width) if self.layout() else -1
         margins=self.layout().contentsMargins()
-        height=self.signed_in_page.minimumHeight()+margins.top()+margins.bottom()+2
+        signed=self.signed_in_page.layout();content_width=max(1,width-margins.left()-margins.right())
+        height=max(signed.minimumSize().height(),signed.totalHeightForWidth(content_width))+margins.top()+margins.bottom()+2
         if self.status_label.parentWidget() is self and not self.status_label.isHidden():
             height+=max(self.status_label.sizeHint().height(),self.status_label.heightForWidth(max(1,width-34)))+self.layout().spacing()
         return height
@@ -215,6 +216,9 @@ class AccountPanel(QFrame):
         size=super().sizeHint()
         if hasattr(self,'signed_in_page') and not self.signed_in_page.isHidden():size.setHeight(self.heightForWidth(self.width()))
         return size
+
+    def minimumSizeHint(self):
+        return QSize(0,self.heightForWidth(max(1,self.width())))
 
     def __init__(self,service,parent=None,*,theme='light',email_binding=False):
         super().__init__(parent)
@@ -227,7 +231,7 @@ class AccountPanel(QFrame):
         self.setObjectName('accountPanel')
         self.setFont(reference_font())
         self.setMinimumWidth(0)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Preferred)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Expanding)
         self._mode='login';self._account_id='';self._busy=bool(service.busy)
         self._feedback_scope='';self._feedback_timers={};self._feedback_animations={}
         self._devices={};self.device_buttons={};self._device_rows=[];self._rows_by_id={}
@@ -389,7 +393,7 @@ class AccountPanel(QFrame):
         unsigned_text.addWidget(unsigned_name);unsigned_text.addWidget(_label('在设备之间同步搁架',self.unsigned_profile_button,muted=True))
         unsigned.addLayout(unsigned_text,1);unsigned.addWidget(_label('›',self.unsigned_profile_button,muted=True))
         self.unsigned_profile_button.clicked.connect(self.show_auth)
-        root.addWidget(self.unsigned_profile_button);root.addWidget(self.signed_in_page);root.addWidget(self.status_label)
+        root.addWidget(self.unsigned_profile_button);root.addWidget(self.signed_in_page,1);root.addWidget(self.status_label)
         signed=self.signed_in_page.layout();self._empty_layout(signed);signed.setSpacing(12);signed.setAlignment(Qt.AlignmentFlag.AlignTop)
         root.setAlignment(Qt.AlignmentFlag.AlignTop)
         root.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
@@ -428,10 +432,11 @@ class AccountPanel(QFrame):
         self.devices_scroll=QScrollArea(self.signed_in_page)
         self.devices_scroll.setObjectName('accountDevicesScroll');self.devices_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.devices_scroll.setWidgetResizable(True)
+        self.devices_scroll.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Ignored)
         self.devices_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.devices_scroll.setStyleSheet('QScrollArea{background:transparent;border:0;} QScrollArea>QWidget>QWidget{background:transparent;} QScrollBar:vertical{width:6px;background:transparent;} QScrollBar::handle:vertical{background:rgba(142,142,147,90);border-radius:3px;min-height:24px;} QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;} QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{background:transparent;}')
         self.devices_scroll.setWidget(self.devices_body)
-        signed.addWidget(self.devices_scroll);self.devices_body.show()
+        signed.addWidget(self.devices_scroll,1);self.devices_body.show()
         root.removeWidget(self.status_label)
         signed.addWidget(self.status_label)
         self.devices_heading_label.hide();self.refresh_button.hide()
@@ -478,6 +483,7 @@ class AccountPanel(QFrame):
         # The measured fixed heights bound wrapping; keep layout ownership of
         # positions so Cocoa and Qt cannot retain different child coordinates.
         signed.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
+        root.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint);self.setMinimumSize(0,0)
         self.signed_in_page.setMinimumSize(0,0)
 
     @staticmethod
@@ -562,6 +568,7 @@ class AccountPanel(QFrame):
             self._devices_changed([])
             if signed:self.sync_status_label.setText('正在准备同步…')
         self.unsigned_profile_button.setVisible(not signed);self.signed_in_page.setVisible(signed)
+        self.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Expanding if signed else QSizePolicy.Preferred)
         self.status_label.setVisible(signed and bool(self.status_label.text()))
         if signed:
             self.close_auth()
@@ -885,25 +892,22 @@ class AccountPanel(QFrame):
             row._connection_label.setAccessibleName(text)
 
     def _queue_fit(self):
-        if not self._fit_timer.isActive():self._fit_timer.start(0)
+        if self.isVisible() and not self._fit_timer.isActive():self._fit_timer.start(0)
 
     def _fit_signed_content(self):
-        if self.signed_in_page.isHidden():
-            self.height_changed.emit();return
-        width=max(1,self.signed_in_page.width())
-        # Let the profile layout measure its wrapped subtitle at this width.
-        # A changing fixed height became part of QWidgetItemV2's cached HFW,
-        # leaving a stale 44px allocation for a subsequently 60px profile.
-        devices=max(0,self.devices_layout.minimumSize().height()+2)
-        self.devices_body.setFixedHeight(devices)
-        self.devices_scroll.setFixedHeight(min(DEVICE_LIST_MAX_HEIGHT,devices))
-        # Layout owns child positions on every platform. Manual setGeometry
-        # raced Cocoa's next layout pass and placed status text over controls.
-        signed=self.signed_in_page.layout();signed.invalidate()
-        self.signed_in_page.setFixedHeight(max(signed.minimumSize().height(),signed.sizeHint().height(),signed.totalHeightForWidth(width)))
-        signed.activate()
-        self.layout().invalidate();self.layout().activate();self.updateGeometry()
-        self.height_changed.emit()
+        if not self.isVisible():return
+        if not self.signed_in_page.isHidden():
+            devices=max(0,self.devices_layout.minimumSize().height()+2)
+            self.devices_body.setFixedHeight(devices)
+            self.devices_scroll.setMinimumHeight(min(DEVICE_LIST_PREFERRED_HEIGHT,devices))
+            signed=self.signed_in_page.layout()
+            signed.activate()
+        self.layout().activate()
+        height=self.heightForWidth(max(1,self.width()))
+        # Invalidating the layout or notifying an unchanged height here sends
+        # another LayoutRequest back to this timer and to Settings indefinitely.
+        if height!=getattr(self,'_reported_height',None):
+            self._reported_height=height;self.updateGeometry();self.height_changed.emit()
 
     def _edit_device_name(self,key,*_):
         if self._busy or not self.service.signed_in or key not in self._devices:return
@@ -977,7 +981,11 @@ class AccountPanel(QFrame):
         self.password_edit.clear()
         self.close_auth()
         self._reset_password();self._cancel_rename()
+        self._fit_timer.stop()
         super().hideEvent(event)
+
+    def showEvent(self,event):
+        super().showEvent(event);self._queue_fit()
 
     def apply_theme(self,theme):
         if getattr(self,'_applied_theme',None)==theme:return

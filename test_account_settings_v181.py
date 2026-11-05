@@ -44,7 +44,7 @@ class SettingsAccountTests(unittest.TestCase):
         self.store=app_settings.SettingsStore(Path(self.temp.name))
         self.dialog=app_settings.SettingsDialog(self.store)
         self.service=Service();self.panel=AccountPanel(self.service,email_binding=False)
-        self.dialog.set_account_panel(self.panel);self.dialog.resize(892,632);self.dialog.show();APP.processEvents()
+        self.dialog.set_account_panel(self.panel);self.dialog.select_category('账号与设备');self.dialog.resize(892,632);self.dialog.show();APP.processEvents()
     def tearDown(self):
         self.dialog.close();self.dialog.deleteLater();APP.processEvents()
         self.runtime.stop();self.screen.stop();self.temp.cleanup()
@@ -89,23 +89,27 @@ class SettingsAccountTests(unittest.TestCase):
             self.assertEqual(self.panel._editing_device,'')
         self.assertNotIn('current',self.panel.device_buttons)
     def test_wheel_cannot_change_any_settings_control_but_scrolls_parent(self):
-        controls=[*self.dialog.findChildren(QComboBox),*self.dialog.findChildren(QSpinBox),*self.dialog.findChildren(QSlider)]
-        self.assertGreaterEqual(len(controls),13)
-        for focused in (False,True):
-            for widget in controls:
-                self.dialog.scroll.ensureWidgetVisible(widget);APP.processEvents()
-                if focused:widget.setFocus()
-                else:self.dialog.save_button.setFocus()
-                before=widget.currentIndex() if isinstance(widget,QComboBox) else widget.value()
-                self.wheel(widget)
-                after=widget.currentIndex() if isinstance(widget,QComboBox) else widget.value()
-                self.assertEqual(before,after,(widget.accessibleName(),focused))
+        tested=0
+        for category,_ in self.dialog.setting_categories:
+            self.dialog.select_category(category);APP.processEvents()
+            controls=[widget for cls in (QComboBox,QSpinBox,QSlider) for widget in self.dialog.findChildren(cls) if widget.isVisible()]
+            for focused in (False,True):
+                for widget in controls:
+                    self.dialog.scroll.ensureWidgetVisible(widget);APP.processEvents()
+                    if focused:widget.setFocus()
+                    else:self.dialog.save_button.setFocus()
+                    before=widget.currentIndex() if isinstance(widget,QComboBox) else widget.value()
+                    self.wheel(widget)
+                    after=widget.currentIndex() if isinstance(widget,QComboBox) else widget.value()
+                    self.assertEqual(before,after,(widget.accessibleName(),focused));tested+=1
+        self.assertGreater(tested,0)
+        self.dialog.select_category('外观与交互');APP.processEvents()
         self.dialog.scroll.verticalScrollBar().setValue(0)
-        self.wheel(self.dialog.theme_combo)
+        self.wheel(self.dialog.shake_sensitivity_spin)
         self.assertGreater(self.dialog.scroll.verticalScrollBar().value(),0)
-        combo=self.dialog.theme_combo;before=combo.currentIndex();combo.setFocus()
-        QTest.keyClick(combo,Qt.Key.Key_Down if before==0 else Qt.Key.Key_Up)
-        self.assertNotEqual(combo.currentIndex(),before)
+        control=self.dialog.shake_sensitivity_spin;before=control.value();control.setFocus()
+        QTest.keyClick(control,Qt.Key.Key_Up if before<control.maximum() else Qt.Key.Key_Down)
+        self.assertNotEqual(control.value(),before)
     def test_fresh_empty_trigger_enabled_saved_opt_out_preserved(self):
         self.assertTrue(self.store.keep_empty_handle)
         self.store.update(keep_empty_handle=False)
@@ -162,8 +166,8 @@ class SettingsAccountTests(unittest.TestCase):
             self.assertEqual(self.panel.devices_body.objectName(),'accountDevices')
             self.assertEqual(len(self.panel.devices_body.findChildren(QWidget,'accountDeviceSeparator')),0)
             rows=list(self.panel._rows_by_id.values())
-            self.assertEqual(rows[0].geometry().top(),rows[1].geometry().top())
-            self.assertLess(rows[0].geometry().right(),rows[1].geometry().left())
+            self.assertEqual(rows[0].geometry().left(),rows[1].geometry().left())
+            self.assertLess(rows[0].geometry().bottom(),rows[1].geometry().top())
             for row in self.panel._rows_by_id.values():
                 self.assertTrue(self.panel.devices_body.rect().contains(row.geometry()))
             for widget in self.panel.findChildren(QWidget):

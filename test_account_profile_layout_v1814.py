@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from PySide6.QtCore import QPoint
+from PySide6.QtTest import QSignalSpy,QTest
 from PySide6.QtWidgets import QLabel
 
 import app_settings
@@ -17,6 +18,32 @@ from test_account_settings_v181 import APP, Service
 
 
 class AccountProfileLayoutTests(unittest.TestCase):
+    def test_device_card_and_inner_viewport_fill_available_settings_height(self):
+        self.dialog.resize(892,820);self.settle()
+        viewport=self.dialog.scroll.viewport()
+        self.assertGreaterEqual(self.panel.height(),viewport.height()-36)
+        self.assertGreater(self.panel.devices_scroll.height(),260)
+        self.service.devices.extend(dict(id=f'fill-{index}',name=f'设备 {index}',platform='windows') for index in range(20))
+        self.service.list_devices();self.settle()
+        self.assertGreater(self.panel.devices_scroll.verticalScrollBar().maximum(),0)
+        self.assertGreaterEqual(self.panel.height(),viewport.height()-36)
+        self.dialog.resize(892,632);self.settle()
+        self.assertLessEqual(self.panel.height(),viewport.height()+8)
+
+    def test_idle_and_hidden_account_layouts_quiesce_and_refresh_on_next_show(self):
+        self.settle();spy=QSignalSpy(self.panel.height_changed)
+        QTest.qWait(150);self.settle()
+        self.assertLessEqual(spy.count(),1)
+        self.assertFalse(self.panel._fit_timer.isActive())
+        self.dialog.hide();self.settle();before=spy.count()
+        self.service.devices[1]['name']='离屏更新后的 MacBook Air'
+        self.service.list_devices();QTest.qWait(150);self.settle()
+        self.assertEqual(spy.count(),before)
+        self.assertFalse(self.panel._fit_timer.isActive())
+        self.dialog.show();self.settle()
+        self.assertEqual(self.panel._rows_by_id['other'].findChild(AccountNameLabel,'accountDeviceName').text(),'离屏更新后的 MacBook Air')
+        self.assertTrue(self.panel.devices_scroll.isVisible())
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(prefix='flickdock-account-layout-')
         self.runtime=patch.object(app_settings,'_startup_runtime_allowed',return_value=False)

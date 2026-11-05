@@ -170,11 +170,12 @@ class WindowFade(QObject):
         self.zoom.setEnabled(True);self.zoom.scale=self.scale
         self.animation.setStartValue(QPointF(self.window.windowOpacity(),self.scale))
         self.animation.setEndValue(QPointF(target,1. if target else WINDOW_MIN_SCALE))
-        self._awaiting_capture=self.zoom.snapshot.isNull()
+        self._awaiting_capture=target!=0 and self.zoom.snapshot.isNull()
+        self.zoom.notify_capture=self._awaiting_capture
         if self._awaiting_capture:
             # Layout/font rendering can cost tens of milliseconds on first
             # open. Start time only after that first image has been painted.
-            self.zoom.notify_capture=True;self.zoom.update()
+            self.zoom.update()
         else:self.animation.start()
 
     @Slot()

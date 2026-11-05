@@ -711,9 +711,9 @@ def build_overview(view,preview_type):
     head.addWidget(view.header_status)
     root.addWidget(view.header)
     body=QHBoxLayout();body.setContentsMargins(0,0,0,0);body.setSpacing(0);view.body_layout=body
-    view.sidebar=QFrame(view);view.sidebar.setFixedWidth(210)
-    css(view.sidebar,'QFrame{background:#151517;border:0;border-right:1px solid rgba(255,255,255,15);}',
-        'QFrame{background:#F2F4F8;border:0;border-right:1px solid rgba(0,0,0,15);}')
+    view.sidebar=QFrame(view);view.sidebar.setObjectName('referenceSidebar');view.sidebar.setFixedWidth(210)
+    css(view.sidebar,'QFrame#referenceSidebar{background:#151517;border:0;border-right:1px solid rgba(255,255,255,15);}',
+        'QFrame#referenceSidebar{background:#F2F4F8;border:0;border-right:1px solid rgba(0,0,0,15);}')
     side=QVBoxLayout(view.sidebar);side.setContentsMargins(10,10,10,10);side.setSpacing(2)
     view.category_group=QButtonGroup(view);view.category_group.setExclusive(True);view.category_buttons={};view.sidebar_buttons={};view.nav_counts={}
     glyphs={'all':'all','images':'image','video':'video','audio':'audio','text':'text','files':'file','links':'web','uploading':'transferring'}

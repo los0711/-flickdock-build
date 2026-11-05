@@ -2,7 +2,7 @@
 from weakref import WeakSet
 import time
 
-from PySide6.QtCore import QAbstractAnimation,QEvent,QMetaObject,QObject,Qt,Signal,Slot,QVariantAnimation
+from PySide6.QtCore import QAbstractAnimation,QEvent,QMetaObject,QObject,Qt,QTimer,Signal,Slot,QVariantAnimation
 from PySide6.QtWidgets import QWidget
 from shiboken6 import isValid
 
@@ -131,6 +131,11 @@ class DisplayAnimation(QObject):
         self._values=QVariantAnimation(self)
         self._values.valueChanged.connect(self.valueChanged.emit)
         self._frames=FramePulse(self);self._frames.timeout.connect(self._advance)
+        # Native paint requests may pause while a window is occluded. A finite
+        # transition still owns a completion deadline, independent of painting;
+        # this is one endpoint event, never a per-frame polling timer.
+        self._completion=QTimer(self);self._completion.setSingleShot(True);self._completion.setTimerType(Qt.PreciseTimer)
+        self._completion.timeout.connect(lambda:self._update_time(self.duration()) if self._state==self.Running else None)
         self._state=self.Stopped;self._started_at=0.
 
     def _configure(self,method,*args):
@@ -157,22 +162,26 @@ class DisplayAnimation(QObject):
         self._started_at=time.perf_counter()
         self.valueChanged.emit(self.currentValue())
         if self.duration()==0:self._complete()
-        elif self._state==self.Running:self._frames.start()
+        elif self._state==self.Running:self._frames.start();self._arm_completion()
+
+    def _arm_completion(self):
+        self._completion.start(max(0,self.duration()-self.currentTime()))
 
     def stop(self):
-        self._frames.stop();self._state=self.Stopped
+        self._frames.stop();self._completion.stop();self._state=self.Stopped
 
     def pause(self):
-        if self._state==self.Running:self._frames.stop();self._state=self.Paused
+        if self._state==self.Running:self._frames.stop();self._completion.stop();self._state=self.Paused
 
     def resume(self):
         if self._state==self.Paused:
             self._state=self.Running;self._started_at=time.perf_counter()-self.currentTime()/1000
-            self._frames.start()
+            self._frames.start();self._arm_completion()
 
     def setCurrentTime(self,value):
         if self._state==self.Running:self._started_at=time.perf_counter()-int(value)/1000
         self._update_time(value)
+        if self._state==self.Running:self._arm_completion()
 
     def _update_time(self,value):
         value=max(0,min(self.duration(),int(value)))

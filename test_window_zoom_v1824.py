@@ -8,6 +8,22 @@ from ui_transitions import WindowFade,WINDOW_MIN_SCALE,UTILITY_TRANSITION_MS
 
 
 class WindowZoomTests(unittest.TestCase):
+    def test_close_finishes_without_waiting_for_an_occluded_windows_first_paint(self):
+        from app_settings import SettingsDialog
+        import test_html_native_workspace as workspace
+        fixture=workspace.WorkspaceTests();fixture.setUp();window=SettingsDialog(fixture.settings)
+        try:
+            with patch.object(WindowFade,'enabled',return_value=True):
+                window.show();fade=window._window_fade
+                window.setUpdatesEnabled(False);fade.zoom.snapshot=__import__('PySide6.QtGui',fromlist=['QPixmap']).QPixmap()
+                window.reject()
+                self.assertFalse(fade._awaiting_capture)
+                # No native animation frames can be delivered in this case.
+                fade.animation._frames.stop()
+                until(lambda:not window.isVisible(),seconds=1)
+                self.assertIsNone(fade.pending);self.assertTrue(fade.zoom.snapshot.isNull())
+        finally:window.setUpdatesEnabled(True);window.hide();window.deleteLater();fixture.tearDown()
+
     def test_first_paint_prepares_pixels_before_the_opening_clock_and_late_capture_cannot_reopen(self):
         from PySide6.QtCore import QAbstractAnimation
         window=QWidget();window.resize(640,420);fade=WindowFade(window)

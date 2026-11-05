@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 from PySide6.QtCore import QCoreApplication, QEvent, QPoint, Qt
 from PySide6.QtGui import QContextMenuEvent
+from PySide6.QtTest import QSignalSpy,QTest
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QLabel, QMenu, QPushButton
 
@@ -24,6 +25,27 @@ from test_html_native_lan import APP, FakeLan
 
 
 class LanHigLayoutTests(unittest.TestCase):
+    def test_activity_layout_settles_instead_of_invalidating_itself_forever(self):
+        self.settle();spy=QSignalSpy(self.panel._activity_fit_timer.timeout)
+        QTest.qWait(150);self.settle()
+        self.assertLessEqual(spy.count(),1)
+        self.assertFalse(self.panel._activity_fit_timer.isActive())
+        self.dialog.hide();self.settle();before=spy.count()
+        QTest.qWait(150);self.settle()
+        self.assertEqual(spy.count(),before)
+
+    def test_light_workbench_has_separate_surfaces_and_mode_selection_has_no_blue_outline(self):
+        for theme in ('dark','light'):
+            self.dialog.apply_theme(theme);control=self.dialog.mode_buttons['lan']
+            QTest.mouseClick(control,Qt.LeftButton);self.settle()
+            image=control.grab().toImage();ratio=image.devicePixelRatio()
+            pixel=image.pixelColor(round(control.width()/2*ratio),round(1*ratio))
+            self.assertLess(abs(pixel.blue()-pixel.red()),50)
+            if theme=='light':
+                image=self.panel.queue_area.grab().toImage();ratio=image.devicePixelRatio()
+                pixel=image.pixelColor(round(self.panel.queue_area.width()/2*ratio),round((self.panel.queue_area.height()-4)*ratio))
+                self.assertEqual(pixel.name(),'#eef0f4')
+
     def setUp(self):
         self.screen=patch('window_chrome.WindowChrome._available',return_value=__import__('PySide6.QtCore',fromlist=['QRect']).QRect(0,0,1920,1080));self.screen.start()
         self.temp=tempfile.TemporaryDirectory(prefix='flickdock-lan-hig-')

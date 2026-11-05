@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -11,6 +12,7 @@ os.environ['APPDATA'] = _import_profile.name
 
 from PySide6.QtCore import QMimeData, QPoint, Qt, QUrl
 from PySide6.QtGui import QDragEnterEvent
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
 import app_settings
@@ -21,6 +23,30 @@ APP = QApplication.instance() or QApplication([])
 
 
 class TriggerReliabilityTests(unittest.TestCase):
+    def test_edge_hover_recovers_after_closing_animated_settings_with_account_panel(self):
+        from account_panel import AccountPanel
+        from test_account_settings_v181 import Service
+        from ui_transitions import WindowFade
+        manager=self.manager
+        dialog=app_settings.SettingsDialog(manager.settings);manager.settings_dialog=dialog
+        dialog.preview_changed.connect(manager.preview_dock);dialog.finished.connect(manager._settings_closed)
+        dialog.set_account_panel(AccountPanel(Service(),dialog));dialog.select_category('账号与设备')
+        def settle(predicate):
+            deadline=time.monotonic()+3
+            while not predicate() and time.monotonic()<deadline:APP.processEvents();QTest.qWait(5)
+            self.assertTrue(predicate())
+        with patch.object(WindowFade,'enabled',return_value=True),patch('native_ui_common.reduced_motion',return_value=False):
+            dialog.show();settle(lambda:not dialog._window_fade._awaiting_capture and dialog._window_fade.animation.state()==dialog._window_fade.animation.Stopped)
+            self.assertIsNotNone(manager._dock_preview_values)
+            dialog.close();settle(lambda:not dialog.isVisible())
+        self.assertIsNone(manager._dock_preview_values);self.assertFalse(manager.settings_open())
+        manager.edge_suppressed=True
+        with patch.object(flickdock.QCursor,'pos',return_value=manager.edge.activation_region().center()+QPoint(-100,0)),patch.object(flickdock,'native_input_available',return_value=False):manager.poll()
+        self.assertFalse(manager.edge_suppressed)
+        with patch.object(flickdock.QCursor,'pos',return_value=manager.edge.activation_region().center()),patch.object(flickdock,'native_input_available',return_value=False):manager.poll()
+        self.assertTrue(manager.shelf.isVisible())
+        self.assertEqual(manager.shelf.presentation_kind,'dock')
+
     def setUp(self):
         self.profile = tempfile.TemporaryDirectory(prefix='flickdock-trigger-v1810-')
         self.patches = [

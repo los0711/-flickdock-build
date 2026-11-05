@@ -3,7 +3,7 @@ import os,tempfile,unittest
 from pathlib import Path
 from unittest.mock import patch
 os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
-from PySide6.QtCore import QPoint,QRect
+from PySide6.QtCore import QPoint,QRect,Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication,QLabel
 from app_settings import SettingsStore,SettingsDialog
@@ -15,6 +15,38 @@ APP=QApplication.instance() or QApplication([])
 
 
 class WorkbenchTests(unittest.TestCase):
+    def test_same_account_has_blue_badge_and_nearby_recommendation_is_green(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base=Path(directory);wan=WanTransferService(base/'wan',enabled=False)
+            window=LanDialog(wan,SettingsStore(base/'profile'));window.apply_theme('light');window.show();QTest.qWait(30)
+            panel=window.panel
+            try:
+                panel._peers_changed([dict(id='peer',name='MacBook Air',platform='macos',online=False,account_device=True),dict(id='online',name='Windows',platform='windows',online=True,account_device=True)])
+                self.assertEqual(panel.devices.currentText(),'MacBook Air')
+                self.assertTrue(panel.devices.currentData(Qt.UserRole+3))
+                self.assertIn('同账号',panel.devices.currentData(Qt.AccessibleTextRole))
+                panel.devices.showPopup();QTest.qWait(20)
+                image=panel.devices.view().grab().toImage();ratio=image.devicePixelRatio()
+                blue=sum(image.pixelColor(x,y).name()=='#0062cc' for x in range(round(49*ratio),round(94*ratio)) for y in range(round(6*ratio),round(29*ratio)))
+                self.assertGreater(blue,10)
+                second=panel.devices.view().visualRect(panel.devices.model().index(1,0))
+                pixels=[image.pixelColor(x,y) for x in range(round(49*ratio),round(180*ratio)) for y in range(round((second.top()+29)*ratio),round((second.top()+47)*ratio))]
+                green=sum(pixel.green()>pixel.red()+12 and pixel.green()>pixel.blue()+8 for pixel in pixels)
+                self.assertGreater(green,5)
+                first=panel.devices.view().visualRect(panel.devices.model().index(0,0))
+                with patch.object(wan,'remove_peer') as remove:
+                    QTest.mouseClick(panel.devices.view().viewport(),Qt.LeftButton,pos=QPoint(first.right()-26,first.center().y()))
+                    remove.assert_called_once_with('peer')
+                panel.devices.hidePopup()
+                with patch.object(wan,'nearby_peer',return_value={'id':'lan-peer'}):panel._target_changed()
+                QTest.qWait(20);self.assertTrue(panel.nearby_hint.isVisible())
+                label=panel.nearby_hint.findChild(QLabel)
+                self.assertEqual(label.palette().color(label.foregroundRole()).name(),'#187a43')
+                image=panel.nearby_hint.grab().toImage();ratio=image.devicePixelRatio()
+                pixel=image.pixelColor(round(100*ratio),round((panel.nearby_hint.height()-3)*ratio))
+                self.assertEqual(pixel.name(),'#e3f5ea')
+            finally:window.hide();window.deleteLater();wan.close();wan.deleteLater();QTest.qWait(20)
+
     def test_code_progress_uses_server_deadline_and_requests_one_refresh_without_countdown_text(self):
         with tempfile.TemporaryDirectory() as directory:
             wan=WanTransferService(Path(directory)/'wan',enabled=False);button=_CopyCodeButton();bar=_CodeExpiryBar(wan,button)

@@ -1811,6 +1811,8 @@ class SettingsDialog(QDialog):
             inner=section.layout()
             wrapped=inner.totalHeightForWidth(section.width()) if inner is not None and inner.hasHeightForWidth() else -1
             height=max(section.sizeHint().height(),section.minimumSizeHint().height(),wrapped)
+            if section is self.account_slot and inner.expandingDirections() & Qt.Vertical:
+                height=max(height,self.scroll.viewport().height()-margins.top()-margins.bottom())
             if section.minimumHeight()!=height or section.maximumHeight()!=height:section.setFixedHeight(height)
             heights.append(height)
         height=margins.top()+margins.bottom()+sum(heights)+max(0,len(heights)-1)*layout.spacing()
@@ -1819,7 +1821,7 @@ class SettingsDialog(QDialog):
 
     def _fit_settings_top(self):
         if not hasattr(self,'_reference_top'):return
-        self.body_layout.invalidate();self.body_layout.activate();self._fit_settings_body()
+        self.body_layout.activate();self._fit_settings_body()
 
     def _card(self):
         card = QFrame(self)
@@ -2290,7 +2292,7 @@ class SettingsDialog(QDialog):
             QDialog#flickdockSettings QPushButton#settingsClose {{border-radius:8px;padding:0;}}
             QDialog#flickdockSettings QLineEdit,QDialog#flickdockSettings QComboBox,QDialog#flickdockSettings QSpinBox {{background:{ref_input};font-size:12px;padding:3px 8px;}}
             QDialog#flickdockSettings QSpinBox QLineEdit {{padding:0;border:0;}}
-            QDialog#flickdockSettings QKeySequenceEdit {{background:{ref_input};font-size:12px;}}
+            QDialog#flickdockSettings QKeySequenceEdit {{background:{'#171719' if dark else '#E2E5EB'};font-size:12px;}}
             QDialog#flickdockSettings QKeySequenceEdit QLineEdit {{padding:2px 5px;}}
             QDialog#flickdockSettings QPushButton {{font-size:12px;padding:4px 10px;background:{ref_control};border:0;}}
             QFrame#settingsFooter {{border-top:1px solid {ref_edge};background:{'#141416' if dark else '#F4F5F9'};border-bottom-left-radius:10px;border-bottom-right-radius:10px;}}
