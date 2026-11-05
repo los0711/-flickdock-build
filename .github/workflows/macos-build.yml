@@ -2,6 +2,13 @@ name: macOS build mirror
 
 on:
   workflow_dispatch:
+    inputs:
+      architecture:
+        description: Native architecture to build
+        type: choice
+        required: true
+        default: both
+        options: [both, arm64, x86_64]
   push:
     branches: [cloud-build]
 
@@ -21,14 +28,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - runner: macos-15
-            arch: arm64
-            python_arch: arm64
-          - runner: macos-15-intel
-            arch: x86_64
-            python_arch: x64
-    runs-on: ${{ matrix.runner }}
+        arch: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.architecture != 'both' && format('["{0}"]', inputs.architecture) || '["arm64","x86_64"]') }}
+    runs-on: ${{ matrix.arch == 'arm64' && 'macos-15' || 'macos-15-intel' }}
     env:
       QT_QPA_PLATFORM: offscreen
       PYTHONUTF8: '1'
@@ -40,7 +41,7 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
-          architecture: ${{ matrix.python_arch }}
+          architecture: ${{ matrix.arch == 'arm64' && 'arm64' || 'x64' }}
       - name: Build and verify native application, ZIP, DMG and installer
         run: |
           python ci_assets.py

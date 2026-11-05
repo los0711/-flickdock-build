@@ -19,6 +19,7 @@ import venv
 import zipfile
 
 ROOT = Path(__file__).resolve().parent
+MAX_RELEASE_ASSET_BYTES = 2 * 1024 ** 3
 
 
 def run(arguments, *, env=None):
@@ -375,8 +376,8 @@ def main(arguments=None):
             raise RuntimeError('macOS installer metadata does not match this build')
         if _bundle_inventory(app)!=_bundle_inventory(expanded/'Payload'/app.name):
             raise RuntimeError('Native PKG round trip changed bundle bytes, symlinks or permissions')
-    if any(item.stat().st_size>100000000 for item in (archive,dmg,installer)):
-        raise RuntimeError('Native package exceeds the public download service 100 MB attachment limit')
+    if any(item.stat().st_size>=MAX_RELEASE_ASSET_BYTES for item in (archive,dmg,installer)):
+        raise RuntimeError('Native package exceeds the release host 2 GiB attachment limit')
     artifacts = [dict(name=item.name, bytes=item.stat().st_size, sha256=_checksum(item))
                  for item in (archive, dmg, installer)]
     report.write_text(json.dumps(dict(ok=True, host=platform.platform(), version=APP_VERSION,
