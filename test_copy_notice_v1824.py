@@ -7,7 +7,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QLineEdit
 from test_html_native_workspace import APP,flush
 from flickdock import ShelfManager
-from intake_notice import ClipboardNotice
+from intake_notice import ClipboardNotice,NOTICE_MARGIN_PX
 
 
 class CopyNoticeTests(unittest.TestCase):
@@ -64,7 +64,26 @@ class CopyNoticeTests(unittest.TestCase):
                     self.assertTrue(card.card.rect().contains(child.geometry()),child.objectName())
                 self.assertGreater(card.preview.y(),card.message.geometry().bottom())
                 self.assertGreater(card.status.y(),card.preview.geometry().bottom())
-                self.assertEqual(card.card.layout().contentsMargins().left(),18)
+                self.assertEqual(card.card.layout().contentsMargins().left(),12)
+        finally:card.hide();card.deleteLater();flush()
+
+    def test_size_limit_is_a_compact_blue_notice_centered_above_the_reserved_dock_area(self):
+        area=QRect(-1440,24,1440,800)
+        screen=SimpleNamespace(availableGeometry=lambda:area)
+        card=ClipboardNotice(SimpleNamespace(settings=SimpleNamespace(theme='dark',clipboard_success_notice=True)))
+        try:
+            for theme in ('dark','light'):
+                card.manager.settings.theme=theme
+                with patch('intake_notice.QGuiApplication.screenAt',return_value=screen):
+                    card.show_result(False,dict(phase='size_limit',value=('files',['large-video.mp4'])));flush()
+                self.assertEqual(card.message.text(),'此文件不能同步')
+                self.assertIn('超过 20 MB',card.status.text());self.assertNotIn('失败',card.status.text())
+                from native_ui_common import colors
+                self.assertIn('color:'+colors(theme)['link'],card.card.styleSheet())
+                self.assertLessEqual(card.width(),320);self.assertLessEqual(card.height(),100)
+                self.assertLessEqual(abs(card.geometry().center().x()-area.center().x()),1)
+                self.assertEqual(area.bottom()-card.geometry().bottom(),NOTICE_MARGIN_PX)
+                self.assertTrue(area.contains(card.geometry()))
         finally:card.hide();card.deleteLater();flush()
 
     def test_failure_does_not_invent_network_cause_or_recipient_delivery(self):

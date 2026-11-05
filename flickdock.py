@@ -759,6 +759,7 @@ class FileRow(QFrame):
             for child in self.popup.rows_body.findChildren(FileRow):
                 child.update()
             self.motion.animate({"highlight": 1.0}, response=.1, damping=1)
+            event.accept();return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
@@ -770,14 +771,20 @@ class FileRow(QFrame):
         super().mouseMoveEvent(event)
 
     def mouseDoubleClickEvent(self, event):
-        self.popup.shelf.open_path(self.path)
-        self.popup.shelf.touch()
+        if event.button()==Qt.LeftButton:
+            self._pending_deselect=False;self.did_drag=False
+            self.popup.select_item(self.path)
+            self.popup.shelf.open_path(self.path);self.popup.shelf.touch()
+            # QWidget's default double-click handler re-enters mousePressEvent,
+            # which would arm deselection again before the final release.
+            event.accept();return
         super().mouseDoubleClickEvent(event)
 
     def mouseReleaseEvent(self,event):
         if event.button()==Qt.MouseButton.LeftButton and not self.did_drag and getattr(self,'_pending_deselect',False):
             self.popup.select_item(self.path,toggle=True)
         self._pending_deselect=False
+        if event.button()==Qt.LeftButton:event.accept();return
         super().mouseReleaseEvent(event)
 
     def contextMenuEvent(self,event):

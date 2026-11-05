@@ -170,7 +170,7 @@ class UtilityPreferenceTests(unittest.TestCase):
                     self.assertTrue(display_values(store,third)['enabled'])
             finally:editor.deleteLater();flush()
 
-    def test_copy_card_coalesces_and_uses_real_preview_types_at_top_right(self):
+    def test_copy_card_coalesces_and_uses_real_preview_types_at_bottom_center(self):
         from intake_notice import ClipboardNotice
         from PySide6.QtGui import QImage,QColor
         with tempfile.TemporaryDirectory() as directory,patch('native_ui_common.reduced_motion',return_value=True):
@@ -182,7 +182,7 @@ class UtilityPreferenceTests(unittest.TestCase):
                     notice.show_result(True,dict(value=value,point=(10,10)));flush()
                     self.assertEqual(notice.message.text(),'复制已同步');self.assertTrue(notice.preview.text())
                     area=APP.primaryScreen().availableGeometry()
-                    self.assertEqual(notice.pos(),QPoint(area.right()-notice.width()-15,area.top()+16))
+                    self.assertEqual(notice.pos(),QPoint(area.left()+(area.width()-notice.width())//2,area.bottom()-notice.height()-15))
                     self.assertTrue(notice.windowFlags()&Qt.WindowStaysOnTopHint);self.assertTrue(notice.testAttribute(Qt.WA_ShowWithoutActivating))
                 notice.dismiss();self.assertFalse(notice.isVisible())
             finally:

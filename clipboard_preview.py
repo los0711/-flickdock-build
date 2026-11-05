@@ -12,6 +12,9 @@ import ui_theme
 
 
 def clipboard_status(state):
+    if state.get('phase')=='size_limit':
+        value=state.get('value')
+        return ('此文件不能同步' if value and value[0]=='files' else '此内容不能同步')+' · 超过 20 MB 同步上限'
     if state.get('route')=='cloud':return '已通过云端通道送达'+(' · 已备份' if state.get('backed_up') else '')
     routes={'lan':'局域网','p2p':'P2P 直连','relay':'TURN 中继'}
     route=routes.get(state.get('route'))

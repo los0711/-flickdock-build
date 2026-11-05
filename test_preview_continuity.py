@@ -6,12 +6,33 @@ from unittest.mock import patch
 
 from PySide6.QtCore import QEvent,QPoint,QPointF,QRectF,Qt
 from PySide6.QtGui import QColor,QEnterEvent,QImage,QMouseEvent,QPainter,QPixmap
+from PySide6.QtTest import QTest
 
 import reference_widgets
 import test_html_native_workspace as workspace
 
 
 class PreviewContinuityTests(unittest.TestCase):
+    def test_native_body_double_click_opens_once_and_keeps_the_file_selected_in_both_views(self):
+        popup=self.fixture.overview();ref=self.fixture.paths[0]
+        with patch('PySide6.QtGui.QDesktopServices.openUrl',return_value=True) as opened:
+            for mode in ('list','icons'):
+                popup.change_view_mode(mode);workspace.flush()
+                workspace.until(lambda:popup._build_cursor==len(popup.visible_refs()))
+                popup.selected.clear();popup.primary_selection=None;popup.restore_selected_preview()
+                item=popup._item_widgets[ref];point=item.mapTo(self.shelf,item.rect().center())
+                QTest.mouseClick(self.shelf.windowHandle(),Qt.LeftButton,pos=point);workspace.flush()
+                self.assertIn(ref,popup.selected);opened.assert_not_called()
+                QTest.mouseDClick(self.shelf.windowHandle(),Qt.LeftButton,pos=point)
+                QTest.mouseRelease(self.shelf.windowHandle(),Qt.LeftButton,pos=point);workspace.flush()
+                opened.assert_called_once()
+                self.assertEqual(Path(opened.call_args.args[0].toLocalFile()),Path(ref).resolve())
+                self.assertIn(ref,popup.selected);self.assertEqual(popup.preview.current_path,ref)
+                opened.reset_mock()
+                QTest.mouseDClick(item,Qt.RightButton,pos=item.rect().center())
+                QTest.mouseRelease(item,Qt.RightButton,pos=item.rect().center());workspace.flush()
+                opened.assert_not_called()
+
     def setUp(self):
         self.fixture=workspace.WorkspaceTests();self.fixture.setUp()
         self.fixture.patches.enter_context(patch('native_ui_common.reduced_motion',return_value=False))

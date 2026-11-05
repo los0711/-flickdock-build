@@ -63,6 +63,23 @@ class Hub:
 
 
 class ClipboardTests(unittest.TestCase):
+    def test_oversize_file_reports_policy_limit_once_without_upload_or_losing_local_clipboard(self):
+        self.clips[0].text('previous usable clipboard')
+        until(lambda:self.hub.head is not None and self.hub.head['ready'])
+        previous=self.hub.head['id'];before=len(self.hub.calls);results=[]
+        sender=self.clients[0];sender.copy_result.connect(lambda ok,context:results.append((ok,context)))
+        source=self.base/'large-video.mp4'
+        with source.open('wb') as stream:stream.truncate(MAX_BYTES+1)
+        mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(source))]);self.clips[0].setMimeData(mime)
+        until(lambda:any(context.get('phase')=='size_limit' for _,context in results))
+        self.assertEqual(len(results),1);self.assertFalse(results[0][0])
+        self.assertEqual(sender.view['phase'],'size_limit');self.assertIsNone(sender._pending)
+        self.assertFalse(sender.retry.isActive());self.assertEqual(self.hub.head['id'],previous)
+        self.assertFalse(any(method in ('POST','PUT') for method,_ in self.hub.calls[before:]))
+        self.assertEqual(Path(self.clips[0].mimeData().urls()[0].toLocalFile()),source)
+        for _ in range(4):self.clips[0].dataChanged.emit();flush()
+        self.assertEqual(len(results),1);self.assertEqual(source.stat().st_size,MAX_BYTES+1)
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.base=Path(self.temp.name);self.hub=Hub();self.clients=[];self.clips=[]
         for i in range(3):

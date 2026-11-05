@@ -9,19 +9,22 @@ from native_ui_common import colors,icon
 from platform_native import keep_tool_visible_when_inactive
 from ui_transitions import WindowFade,fade_hide
 
-NOTICE_WIDTH_PX=380
+NOTICE_WIDTH_PX=320
 NOTICE_MARGIN_PX=16
-NOTICE_RADIUS_PX=18
-NOTICE_PADDING_PX=18
+NOTICE_RADIUS_PX=14
+NOTICE_PADDING_PX=12
 NOTICE_DURATION_MS=2200
 RESULT_COALESCE_MS=160
-HEADER_HEIGHT_PX=25
-LOGO_SIZE_PX=23
-STATUS_ICON_SIZE_PX=15
+HEADER_HEIGHT_PX=22
+LOGO_SIZE_PX=20
+STATUS_ICON_SIZE_PX=13
+BODY_GAP_PX=6
+STATUS_GAP_PX=5
 PREVIEW_MAX_CHARS=2048
 
 
 def copy_status(ok,context):
+    if context.get('phase')=='size_limit':return '超过 20 MB 同步上限 · 内容保留在本机'
     if not ok:return '同步未完成 · 内容保留在本机'
     if context.get('delivered'):
         route={'lan':'局域网','p2p':'P2P 直连','relay':'TURN 中继','cloud':'云端'}.get(context.get('route'),'设备同步')
@@ -57,11 +60,11 @@ class ClipboardNotice(QWidget):
         self.close_button=SettingsCloseButton(self.card,glyph_size=13);self.close_button.setFixedSize(HEADER_HEIGHT_PX,HEADER_HEIGHT_PX)
         self.close_button.setFocusPolicy(Qt.NoFocus);self.close_button.setAccessibleName('关闭复制同步提示');self.close_button.setToolTip('关闭提示')
         self.close_button.clicked.connect(self.dismiss);head.addWidget(self.close_button);layout.addLayout(head)
-        layout.addSpacing(11)
+        layout.addSpacing(BODY_GAP_PX)
         self.preview=QLabel(self.card);self.preview.setTextFormat(Qt.PlainText)
         self.preview.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Preferred);layout.addWidget(self.preview)
-        layout.addSpacing(8)
-        footer=QHBoxLayout();footer.setSpacing(5)
+        layout.addSpacing(STATUS_GAP_PX)
+        footer=QHBoxLayout();footer.setSpacing(STATUS_GAP_PX)
         self.status_icon=QLabel(self.card);self.status_icon.setFixedSize(STATUS_ICON_SIZE_PX,STATUS_ICON_SIZE_PX);footer.addWidget(self.status_icon)
         self.status=QLabel(self.card);self.status.setObjectName('copyStatus');self.status.setTextFormat(Qt.PlainText)
         self.status.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Preferred);footer.addWidget(self.status,1);layout.addLayout(footer)
@@ -88,11 +91,12 @@ class ClipboardNotice(QWidget):
 
     def show_result(self,ok,context):
         if not getattr(self.manager.settings,'clipboard_success_notice',True):return
-        c=colors(self.manager.settings.theme);tint=c['green' if ok else 'red']
+        c=colors(self.manager.settings.theme);limited=context.get('phase')=='size_limit'
+        tint=c['link'] if limited else c['green' if ok else 'red']
         self.card.setStyleSheet(f'''
             QFrame#clipboardNotice{{background:{c['surface']};border:0;border-radius:{NOTICE_RADIUS_PX}px;}}
-            QLabel{{color:{c['text']};border:0;background:transparent;font-size:12px;}}
-            QLabel#copyHeading{{font-size:13px;font-weight:600;}}
+            QLabel{{color:{c['text']};border:0;background:transparent;font-size:11px;}}
+            QLabel#copyHeading{{font-size:12px;font-weight:600;color:{tint if limited else c['text']};}}
             QLabel#copyStatus{{font-size:11px;color:{tint};}}
             QPushButton#settingsClose{{background:transparent;border:0;border-radius:5px;}}
             QPushButton#settingsClose:hover{{background:{c['hover']};}}
@@ -100,15 +104,17 @@ class ClipboardNotice(QWidget):
         ''')
         self.close_button.dark=self.manager.settings.theme=='dark';self.close_button.update()
         self.ensurePolished()
-        self.message.setText('复制已同步' if ok else '复制同步失败')
+        kind=context.get('value',('text',{}))[0]
+        self.message.setText(('此文件不能同步' if kind=='files' else '此图片不能同步' if kind=='image' else '此内容不能同步') if limited else '复制已同步' if ok else '复制同步失败')
         self.status_icon.setPixmap(icon('circle-check' if ok else 'circle-alert',tint).pixmap(STATUS_ICON_SIZE_PX,STATUS_ICON_SIZE_PX))
         screen=QGuiApplication.screenAt(QPoint(*context.get('point',(0,0)))) or QGuiApplication.primaryScreen();area=screen.availableGeometry()
         self.setFixedWidth(min(NOTICE_WIDTH_PX,max(1,area.width()-2*NOTICE_MARGIN_PX)))
         available=self.width()-2*NOTICE_PADDING_PX
         self.preview.setText(self.preview.fontMetrics().elidedText(copy_preview(context.get('value')),Qt.ElideRight,available))
         status=copy_status(ok,context);self.status.setAccessibleDescription(status)
-        self.status.setText(self.status.fontMetrics().elidedText(status,Qt.ElideRight,available-STATUS_ICON_SIZE_PX-5))
-        self.adjustSize();self.move(area.right()-self.width()-NOTICE_MARGIN_PX+1,area.top()+NOTICE_MARGIN_PX)
+        self.status.setText(self.status.fontMetrics().elidedText(status,Qt.ElideRight,available-STATUS_ICON_SIZE_PX-STATUS_GAP_PX))
+        self.adjustSize()
+        self.move(area.left()+(area.width()-self.width())//2,area.bottom()-self.height()-NOTICE_MARGIN_PX+1)
         self.timer.stop();self._window_fade.reopen();self.show();self.raise_();self.timer.start(NOTICE_DURATION_MS)
 
     def hideEvent(self,event):

@@ -15,6 +15,10 @@ SYNC_MARKER='application/x-flickdock-cloud-clipboard'
 TEXT_MAGIC=b'FDCLIP2\0'
 
 
+class ClipboardSizeLimit(ValueError):
+    """The local content exceeds policy, rather than a transport failing."""
+
+
 def head_version(head):
     version=head.get('version',0) if isinstance(head,dict) else 0
     return version if type(version) is int and 0<=version<=2**53-1 else 0
@@ -87,18 +91,19 @@ def package(value,directory,cancel=None):
     kind,data=value;raw_file=None
     if kind=='text':
         text=data['text'].encode('utf8');html=data.get('html','').encode('utf8')
-        if len(text)+len(html)>=MAX_BYTES:return None
+        if len(text)+len(html)>=MAX_BYTES:raise ClipboardSizeLimit('剪贴板内容超过 20 MB 同步上限。')
         # No JSON escaping inflation for control characters, line endings or
         # near-limit text. The original UTF-8 and HTML remain lossless.
         blob=TEXT_MAGIC+struct.pack('!I',len(text))+text+html
         path.write_bytes(blob)
     elif kind=='image':
         if 'raw' in data:
-            if len(data['raw'])>=MAX_BYTES:return None
+            if len(data['raw'])>=MAX_BYTES:raise ClipboardSizeLimit('图片超过 20 MB 同步上限。')
             path.write_bytes(data['raw'])
         else:
             buffer=QBuffer();buffer.open(QIODevice.OpenModeFlag.WriteOnly)
-            if not data['image'].save(buffer,'PNG') or buffer.size()>=MAX_BYTES:return None
+            if not data['image'].save(buffer,'PNG'):return None
+            if buffer.size()>=MAX_BYTES:raise ClipboardSizeLimit('图片超过 20 MB 同步上限。')
             path.write_bytes(bytes(buffer.data()))
     else:
         entries=[];total=0;roots=set()
@@ -117,7 +122,7 @@ def package(value,directory,cancel=None):
                 if child.is_dir():entries.append((child,name+'/'));continue
                 if not child.is_file():return None
                 total+=child.stat().st_size
-                if total>=MAX_BYTES:return None
+                if total>=MAX_BYTES:raise ClipboardSizeLimit('文件超过 20 MB 同步上限。')
                 entries.append((child,name))
         written=0
         with zipfile.ZipFile(path,'w',compression=zipfile.ZIP_STORED) as archive:
@@ -131,7 +136,7 @@ def package(value,directory,cancel=None):
                         if cancel.is_set():return None
                         written+=len(chunk)
                         copied+=len(chunk)
-                        if written>=MAX_BYTES:return None
+                        if written>=MAX_BYTES:raise ClipboardSizeLimit('文件超过 20 MB 同步上限。')
                         target.write(chunk);raw_hash.update(chunk)
                 after=child.stat()
                 if copied!=before.st_size or (before.st_size,before.st_mtime_ns)!=(after.st_size,after.st_mtime_ns):return None
@@ -553,11 +558,11 @@ class ClipboardSync(QObject):
                 or pending.get('generation',self._generation)!=self._generation):return
         if not ok and pending.get('peer_delivered'):return
         if self.view.get('id')==pending['id']:
-            self._set_view(self.view['value'],(phase or 'synced') if ok else 'error',pending['id'])
+            self._set_view(self.view['value'],phase or ('synced' if ok else 'error'),pending['id'])
         if pending.get('feedback_result') is ok:return
         pending['feedback_result']=ok
         context=dict(pending.get('feedback',{}),id=pending['id'],route=self.view['route'],
-                     delivered=bool(pending.get('peer_delivered')),backed_up=self.view['backed_up'])
+                     delivered=bool(pending.get('peer_delivered')),backed_up=self.view['backed_up'],phase=self.view['phase'])
         self.copy_result.emit(ok,context)
 
     def _prepare_local(self):
@@ -570,6 +575,9 @@ class ClipboardSync(QObject):
         self._local_retry=None;self._pending=pending
         def prepared(result):
             if not self._valid_task(pending):return
+            if isinstance(result,ClipboardSizeLimit):
+                self.file_jobs.update(pending,'unavailable')
+                self._copy_result(pending,False,phase='size_limit');self._clear_task(pending);return
             if result is None:
                 self.file_jobs.update(pending,'unavailable');self._copy_result(pending,False);self._clear_task(pending);return
             pending['package']=result;pending['prepared']=True;self.file_jobs.prepared(pending);self._stage(pending)
@@ -579,7 +587,10 @@ class ClipboardSync(QObject):
         except OSError:
             self._copy_result(pending,False)
             pending['value']=value;self._local_retry=pending;self._pending=None;self.retry.start();return
-        pending['_job']=self._work(lambda cancel:package(value,directory,cancel),prepared)
+        def prepare(cancel):
+            try:return package(value,directory,cancel)
+            except ClipboardSizeLimit as limit:return limit
+        pending['_job']=self._work(prepare,prepared)
 
     def _stage(self,pending):
         if not self._valid_task(pending):return

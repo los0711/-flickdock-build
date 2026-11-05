@@ -144,6 +144,7 @@ class IconItem(QWidget):
             else:self.popup.preview.show_path(getattr(self.popup, 'primary_selection', None) or self.ref)
             self.motion.animate({"down": 1}, response=.12, damping=1)
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            event.accept();return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
@@ -162,12 +163,18 @@ class IconItem(QWidget):
         self._pending_deselect=False
         self.motion.animate({"down": 0}, response=.20, damping=.8)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
+        if event.button()==Qt.LeftButton:event.accept();return
         super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
+            if QRectF(4,4,32,32).contains(event.position()):
+                self.mousePressEvent(event);return
+            self._pending_deselect=False;self.did_drag=False
+            self.popup.select_item(self.ref)
             self.popup.shelf.open_path(self.ref)
             self.popup.shelf.touch()
+            event.accept();return
         super().mouseDoubleClickEvent(event)
 
     def keyPressEvent(self, event):

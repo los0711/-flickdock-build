@@ -114,8 +114,8 @@ class SharedUpdateTests(unittest.TestCase):
             self.assertFalse(view.windowFlags()&Qt.WindowTransparentForInput)
             view.show_result(False,dict(point=area.center().toTuple(),fullscreen=True))
             self.assertEqual(view.message.text(),'复制同步失败')
-            self.assertEqual(view.x(),area.right()-view.width()-15)
-            self.assertEqual(view.y(),area.top()+16);view.timer.start(20)
+            self.assertEqual(view.x(),area.left()+(area.width()-view.width())//2)
+            self.assertEqual(view.y(),area.bottom()-view.height()-15);view.timer.start(20)
             deadline=time.monotonic()+1
             while view.isVisible() and time.monotonic()<deadline:QTest.qWait(10)
             self.assertFalse(view.isVisible())
