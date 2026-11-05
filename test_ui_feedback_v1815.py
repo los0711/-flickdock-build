@@ -205,7 +205,11 @@ class SettingsFeedbackTests(unittest.TestCase):
             scroll=dialog.scroll.verticalScrollBar();scroll.setValue(scroll.maximum());flush()
             last=next(dialog.body_layout.itemAt(index).widget() for index in range(dialog.body_layout.count()-1,-1,-1) if dialog.body_layout.itemAt(index).widget().isVisible())
             self.assertLessEqual(dialog.body.height(),max(dialog.scroll.viewport().height(),last.geometry().bottom()+32))
-            for slider in dialog.findChildren(QSlider):
+            dialog.select_category('外观与交互');flush()
+            sliders=[slider for slider in dialog.findChildren(QSlider) if slider.isVisible()]
+            self.assertIn(dialog.shake_sensitivity_slider,sliders)
+            self.assertGreater(len(sliders),1)
+            for slider in sliders:
                 self.assertGreaterEqual(slider.height(),24)
                 for value in (slider.minimum(),slider.maximum()):
                     slider.setValue(value);option=QStyleOptionSlider();slider.initStyleOption(option)

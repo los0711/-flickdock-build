@@ -28,7 +28,7 @@ class FeedbackTests(unittest.TestCase):
             configure_reference_font(APP)
             dialog=app_settings.SettingsDialog(app_settings.SettingsStore(Path(directory)))
             service=Service();service.account=dict(id='fixture',username='Roger',login_alias='id:legacy-account-identity')
-            panel=AccountPanel(service);dialog.set_account_panel(panel)
+            panel=AccountPanel(service);dialog.set_account_panel(panel);dialog.select_category('账号与设备')
             panel.set_sync_status('可同步内容已同步；1 项暂留本机，请检查文件大小或原文件所在位置。')
             dialog.show();flush()
             try:

@@ -69,10 +69,11 @@ class DisplayFramesTests(unittest.TestCase):
         for hz in (60,120,144,240):
             with self.subTest(hz=hz),patch('native_ui_common.reduced_motion',return_value=False):
                 samples=[];spring=Spring(self.window,{'x':0},lambda value:samples.append(value['x']))
-                with patch('flickdock_motion.time.perf_counter',return_value=100.0):spring.animate({'x':100})
-                flush();clock=spring._timer.clock
-                for frame in range(1,round(hz*.2)+1):
-                    with patch('flickdock_motion.time.perf_counter',return_value=100.0+frame/hz):
+                now=[100.0]
+                with patch('flickdock_motion.time.perf_counter',side_effect=lambda:now[0]):
+                    spring.animate({'x':100});flush();clock=spring._timer.clock
+                    for frame in range(1,round(hz*.2)+1):
+                        now[0]=100.0+frame/hz
                         clock.eventFilter(clock.handle,QEvent(QEvent.UpdateRequest))
                 expected=round(hz*.2)
                 self.assertEqual(len(samples),expected)

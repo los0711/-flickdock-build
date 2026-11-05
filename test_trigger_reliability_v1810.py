@@ -36,9 +36,13 @@ class TriggerReliabilityTests(unittest.TestCase):
             while not predicate() and time.monotonic()<deadline:APP.processEvents();QTest.qWait(5)
             self.assertTrue(predicate())
         with patch.object(WindowFade,'enabled',return_value=True),patch('native_ui_common.reduced_motion',return_value=False):
-            dialog.show();settle(lambda:not dialog._window_fade._awaiting_capture and dialog._window_fade.animation.state()==dialog._window_fade.animation.Stopped)
+            # Reproduce a window without a first paint, as when settings is
+            # occluded. This also avoids relying on offscreen native exposure.
+            dialog.setUpdatesEnabled(False);dialog.show();APP.processEvents()
+            self.assertTrue(dialog._window_fade._awaiting_capture)
             self.assertIsNotNone(manager._dock_preview_values)
-            dialog.close();settle(lambda:not dialog.isVisible())
+            dialog.close();dialog._window_fade.animation._frames.stop()
+            settle(lambda:not dialog.isVisible());dialog.setUpdatesEnabled(True)
         self.assertIsNone(manager._dock_preview_values);self.assertFalse(manager.settings_open())
         manager.edge_suppressed=True
         with patch.object(flickdock.QCursor,'pos',return_value=manager.edge.activation_region().center()+QPoint(-100,0)),patch.object(flickdock,'native_input_available',return_value=False):manager.poll()
