@@ -99,7 +99,7 @@ class NativeLanTests(unittest.TestCase):
         self.assertGreaterEqual(self.dialog.card.height(),540)
         self.assertTrue(panel.destination_bar.rect().contains(panel.receive_path.mapTo(panel.destination_bar,panel.receive_path.rect().bottomRight())))
         self.assertTrue(panel.left_column.rect().contains(panel.send_button.mapTo(panel.left_column,panel.send_button.rect().bottomRight())))
-        for widget in (panel.history_scroll,panel.devices_list):
+        for widget in (panel.history_scroll,panel.devices):
             scroll=next(area for area in (panel.send_scroll,panel.activity_scroll)
                         if area.widget().isAncestorOf(widget))
             viewport=scroll.viewport();bar=scroll.verticalScrollBar()

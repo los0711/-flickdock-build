@@ -23,11 +23,11 @@ from native_ui_common import colors as ui_colors, icon as ui_icon, reference_fon
 from async_images import ImageCache
 from transfer_workbench import FileArtwork, reveal_file
 
-WORKBENCH_GAP_PX = 14
-WORKBENCH_MARGIN_PX = 18
-CARD_MARGIN_PX = 16
-QUEUE_ROW_HEIGHT_PX = 50
-QUEUE_MAX_HEIGHT_PX = 168
+WORKBENCH_GAP_PX = 12
+WORKBENCH_MARGIN_PX = 16
+CARD_MARGIN_PX = 12
+QUEUE_ROW_HEIGHT_PX = 44
+QUEUE_MAX_HEIGHT_PX = 144
 
 
 def _label(value='', parent=None, *, muted=False):
@@ -347,38 +347,6 @@ class _DeviceDelegate(QStyledItemDelegate):
         painter.restore()
 
 
-class _DeviceList(QListView):
-    remove_requested=Signal(str)
-
-    def __init__(self,parent=None,*,removable=False):
-        super().__init__(parent);self.removable=removable;self._remove_pressed=None
-        self.setObjectName('lanDeviceList');self.setSpacing(2);self.setMinimumHeight(62);self.setMaximumHeight(180)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.setAccessibleName('可发送的设备')
-
-    def _remove_at(self,event):
-        index=self.indexAt(event.position().toPoint())
-        return index if self.removable and index.isValid() and self.visualRect(index).adjusted(self.visualRect(index).width()-34,0,-4,0).contains(event.position().toPoint()) else None
-
-    def mousePressEvent(self,event):
-        index=self._remove_at(event)
-        if index is not None and event.button()==Qt.LeftButton:
-            self._remove_pressed=index.data(Qt.UserRole);event.accept();return
-        super().mousePressEvent(event)
-
-    def mouseReleaseEvent(self,event):
-        index=self._remove_at(event);pressed=self._remove_pressed;self._remove_pressed=None
-        if pressed:
-            if index is not None and index.data(Qt.UserRole)==pressed:self.remove_requested.emit(pressed)
-            event.accept();return
-        super().mouseReleaseEvent(event)
-
-    def keyPressEvent(self,event):
-        if self.removable and event.key()==Qt.Key_Delete and self.currentIndex().isValid():
-            self.remove_requested.emit(self.currentIndex().data(Qt.UserRole));event.accept();return
-        super().keyPressEvent(event)
-
-
 class _DropIllustration(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent); self.setFixedSize(28, 28); self.dark = False
@@ -587,8 +555,8 @@ class _HistoryRemoveButton(QPushButton):
         super().__init__(parent)
         self.dark = False
         self.setObjectName('lanHistoryRemove')
-        self.setFixedSize(34, 24)
-        self.setText('删除')
+        self.setFixedSize(28, 28)
+        self.setIcon(ui_icon('trash'));self.setIconSize(QSize(15,15))
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAutoDefault(False)
         self.setDefault(False)
@@ -606,7 +574,7 @@ class _HistoryRow(QFrame):
     def __init__(self, record, artwork_cache, parent=None):
         super().__init__(parent)
         self.setObjectName('lanHistoryRow')
-        self.setFixedHeight(70)
+        self.setFixedHeight(56)
         direction = record['direction']
         state = record['state']
         peer = record['peer'].strip() or '未知设备'
@@ -619,14 +587,14 @@ class _HistoryRow(QFrame):
         if isinstance(count, int) and count > 0:
             name = f'{name} · {count} 项'
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(14, 5, 10, 5)
-        layout.setSpacing(10)
+        layout.setContentsMargins(10, 6, 8, 6)
+        layout.setSpacing(8)
         self.icon = FileArtwork(artwork_cache, self)
         paths=record.get('paths',[])
         self.icon.set_source(paths[0] if paths else '',record.get('name',''))
         layout.addWidget(self.icon, 0, Qt.AlignmentFlag.AlignVCenter)
         lines = QVBoxLayout()
-        lines.setSpacing(1)
+        lines.setSpacing(1);lines.setAlignment(Qt.AlignVCenter)
         self.title = _ElidedLabel(title, self)
         self.title.setObjectName('lanHistoryTitle')
         self.detail = _ElidedLabel(name, self)
@@ -658,7 +626,7 @@ class _HistoryRow(QFrame):
         transport=_transport_label(record)
         self.title.setText((error if error else peer + ' · ' + record['when'])+transport)
         layout.addLayout(trailing)
-        self.reveal_button=_button('在文件夹打开',self)
+        self.reveal_button=_button('',self);self.reveal_button.setFixedSize(28,28);self.reveal_button.setIconSize(QSize(16,16))
         self.reveal_button.setIcon(ui_icon('folder'));self.reveal_button.setObjectName('lanRevealFile')
         self.reveal_button.setAccessibleName('在文件夹打开 '+record.get('name','文件'))
         self.reveal_button.setVisible(state=='完成')
@@ -702,25 +670,25 @@ class LanPanel(QFrame):
         self.setObjectName('lanPanel'); self.setFont(QFont(reference_font().family(), 10))
         self.setMinimumHeight(0)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        layout = QVBoxLayout(self); layout.setContentsMargins(WORKBENCH_MARGIN_PX, 14, WORKBENCH_MARGIN_PX, 12); layout.setSpacing(WORKBENCH_GAP_PX)
+        layout = QVBoxLayout(self); layout.setContentsMargins(WORKBENCH_MARGIN_PX, 10, WORKBENCH_MARGIN_PX, 10); layout.setSpacing(WORKBENCH_GAP_PX)
         columns = QHBoxLayout(); columns.setContentsMargins(0,0,0,0); columns.setSpacing(WORKBENCH_GAP_PX)
         self.left_column=QWidget(self)
         self.left_column.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Expanding)
-        left_outer=QVBoxLayout(self.left_column);left_outer.setContentsMargins(0,0,0,0);left_outer.setSpacing(10)
+        left_outer=QVBoxLayout(self.left_column);left_outer.setContentsMargins(0,0,0,0);left_outer.setSpacing(8)
         self.left_content=QWidget(self.left_column)
         left=QVBoxLayout(self.left_content);left.setContentsMargins(0,0,0,0);left.setSpacing(WORKBENCH_GAP_PX)
         left.setSizeConstraint(QLayout.SetMinimumSize)
         columns.addWidget(self.left_column,1)
         self.queue_area=QFrame(self);self.queue_area.setObjectName('lanPayloadArea')
         payload=QVBoxLayout(self.queue_area);payload.setContentsMargins(CARD_MARGIN_PX,CARD_MARGIN_PX,CARD_MARGIN_PX,CARD_MARGIN_PX);payload.setSpacing(10)
-        self.drop_zone=_DropZone(self.queue_area);self.drop_zone.setFixedHeight(54)
+        self.drop_zone=_DropZone(self.queue_area);self.drop_zone.setFixedHeight(44)
         self.drop_zone.illustration.hide()
         self.drop_zone.layout().setContentsMargins(10,8,10,8);self.drop_zone.layout().setSpacing(0)
         self.drop_zone.dropped.connect(self.queue_paths);self.drop_zone.clicked.connect(self._pick_files)
         self.drop_zone.setContextMenuPolicy(Qt.CustomContextMenu);self.drop_zone.customContextMenuRequested.connect(self._pick_menu)
         queue_column=QWidget(self.queue_area);queue_box=QVBoxLayout(queue_column)
         self.queue_column=queue_column
-        queue_box.setContentsMargins(0,0,0,0);queue_box.setSpacing(8)
+        queue_box.setContentsMargins(0,0,0,0);queue_box.setSpacing(6)
         send_heading=QHBoxLayout();send_heading.setContentsMargins(0,0,0,0)
         self.send_heading_label=_label('待发送项目',queue_column);self.send_heading_label.setObjectName('lanSection')
         send_heading.addWidget(self.send_heading_label,1)
@@ -739,7 +707,7 @@ class LanPanel(QFrame):
         self.queue_scroll.setMaximumHeight(QUEUE_MAX_HEIGHT_PX);queue_box.addWidget(self.queue_scroll)
         payload.addWidget(queue_column);payload.addWidget(self.drop_zone);left.addWidget(self.queue_area)
         self.send_column=QFrame(self);self.send_column.setObjectName('lanSendColumn')
-        send=QVBoxLayout(self.send_column);send.setContentsMargins(CARD_MARGIN_PX,CARD_MARGIN_PX,CARD_MARGIN_PX,CARD_MARGIN_PX);send.setSpacing(10)
+        send=QVBoxLayout(self.send_column);send.setContentsMargins(CARD_MARGIN_PX,CARD_MARGIN_PX,CARD_MARGIN_PX,CARD_MARGIN_PX);send.setSpacing(8)
         target = QHBoxLayout()
         target_label = _label('发送到附近设备', self.send_column); target_label.setObjectName('lanSection')
         self.target_label=target_label
@@ -754,7 +722,7 @@ class LanPanel(QFrame):
         target.addStretch(1)
         target.addWidget(self.scan_indicator); target.addWidget(self.peer_count)
         send.addLayout(target)
-        self.devices = _DevicesCombo(self); self.devices.setMinimumHeight(36); self.devices.setMinimumWidth(0)
+        self.devices = _DevicesCombo(self); self.devices.setMinimumHeight(32); self.devices.setMinimumWidth(0)
         self.devices.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.devices.setMinimumContentsLength(10); self.devices.setMaxVisibleItems(8)
         self.devices_view = QListView(self.devices)
@@ -764,13 +732,7 @@ class LanPanel(QFrame):
         self.devices.setView(self.devices_view)
         self.devices.removable=self._wan;self.device_delegate.removable=self._wan
         self.devices.remove_requested.connect(self._remove_recent)
-        self.devices.hide()
-        self.devices_list=_DeviceList(self.send_column,removable=self._wan);self.devices_list.setModel(self.devices.model())
-        self.list_delegate=_DeviceDelegate(self.devices_list);self.list_delegate.removable=self._wan;self.devices_list.setItemDelegate(self.list_delegate)
-        self.devices_list.selectionModel().currentChanged.connect(lambda index,previous:self.devices.setCurrentIndex(index.row()) if index.isValid() else None)
-        self.devices_list.remove_requested.connect(self._remove_recent)
-        self.devices.currentIndexChanged.connect(self._sync_device_selection)
-        send.addWidget(self.devices_list)
+        send.addWidget(self.devices)
         self.nearby_hint=QFrame(self.send_column);nearby_row=QHBoxLayout(self.nearby_hint)
         nearby_row.setContentsMargins(0,2,0,2);nearby_row.setSpacing(8)
         nearby_text=_label('已在局域网发现此设备，推荐使用局域网传输',self.nearby_hint,muted=True)
@@ -784,7 +746,7 @@ class LanPanel(QFrame):
         self.peer_code_input=QLineEdit(self.send_column)
         self.peer_code_input.setPlaceholderText('输入 8 位本机码或 4 位一次性码')
         self.peer_code_input.setAccessibleName('对方的接收码');self.peer_code_input.setMaxLength(8)
-        self.peer_code_input.setMinimumHeight(36);self.peer_code_input.setVisible(self._wan)
+        self.peer_code_input.setMinimumHeight(30);self.peer_code_input.setVisible(self._wan)
         if self._wan:send.addWidget(self.peer_code_input)
         self.devices.currentIndexChanged.connect(self._target_changed)
         self.peer_code_input.textChanged.connect(self._target_changed)
@@ -829,7 +791,7 @@ class LanPanel(QFrame):
             service.custom_code_changed.connect(self._custom_changed);self._custom_changed(service.custom_identity())
         self.send_button = _button('发送', self); self.send_button.setObjectName('lanPrimary')
         self.send_button.setProperty('pressScale',True)
-        self.send_button.setMinimumHeight(36)
+        self.send_button.setMinimumHeight(34)
         self.send_button.clicked.connect(self._send)
         # The WAN form has additional receive-code fields. Keep its natural
         # minimum height and scroll on short screens instead of letting Qt
@@ -1058,6 +1020,7 @@ class LanPanel(QFrame):
         self._queue_rendered=True
         count = len(self._queued_paths)
         self.drop_zone.title.setText('拖入文件/文件夹，或点击添加')
+        self.drop_zone.setFixedHeight(34 if count else 44)
         self.drop_zone.hint.hide()
         self.clear_queue.setEnabled(bool(count))
         self.send_button.setText(f'发送 {count} 项' if count else '发送文件')
@@ -1146,7 +1109,6 @@ class LanPanel(QFrame):
         self._applied_theme=theme
         self._dark = theme == 'dark'
         self.device_delegate.dark = self._dark
-        self.list_delegate.dark = self._dark
         c=ui_colors(theme)
         self.setProperty('uiTheme',theme)
         font=reference_font()
@@ -1218,23 +1180,22 @@ class LanPanel(QFrame):
             QFrame#lanDropZone:hover {{background:{c['hover']};}}
             QFrame#lanPanel QPushButton#lanQueueRemove {{background:transparent;border:0;border-radius:7px;padding:0;}}
             QFrame#lanPanel QPushButton#lanQueueRemove:hover {{background:{c['hover']};}}
-            QFrame#lanPanel QPushButton#lanRevealFile {{font-size:10px;padding:3px 6px;}}
+            QFrame#lanPanel QPushButton#lanRevealFile {{background:transparent;padding:0;}}
+            QFrame#lanPanel QPushButton#lanRevealFile:hover {{background:{c['hover']};}}
             QFrame#lanPanel QComboBox {{border:0;}}
-            QFrame#lanPanel QListView#lanDeviceList {{background:{c['control']};border:0;border-radius:10px;padding:0;}}
-            QFrame#lanPanel QListView#lanDeviceList:focus {{border:1px solid {c['link']};}}
             QFrame#lanPanel QComboBox:focus,QFrame#lanPanel QLineEdit:focus {{border:1px solid {c['link']};}}
             QFrame#lanPanel QLabel#lanOfferKicker {{background:{c['action']};color:{c['on_action']};}}
             QFrame#lanPanel QPushButton#lanTextButton:hover {{color:{c['link']};}}
             QFrame#lanPanel QPushButton[keyboardFocus="true"] {{border:1px solid {c['link']};}}
             QFrame#lanPanel QPushButton#lanOfferAccept {{background:{c['action']};color:{c['on_action']};}}
-            QFrame#lanPanel QLabel {{font-size:13px;}}
-            QFrame#lanPanel QLabel#lanSection {{font-size:13px;font-weight:600;}}
-            QFrame#lanPanel QLabel#lanDropTitle {{font-size:13px;}}
-            QFrame#lanPanel QLabel#lanHistoryTitle {{font-size:12px;color:{c['secondary']};}}
-            QFrame#lanPanel QLabel#lanHistoryDetail {{font-size:13px;}}
-            QFrame#lanPanel QLabel#lanHistoryState {{font-size:11px;}}
-            QFrame#lanPanel QPushButton, QFrame#lanPanel QComboBox {{font-size:13px;}}
-            QFrame#lanPanel QLineEdit {{font-size:12px;}}
+            QFrame#lanPanel QLabel {{font-size:12px;}}
+            QFrame#lanPanel QLabel#lanSection {{font-size:12px;font-weight:600;}}
+            QFrame#lanPanel QLabel#lanDropTitle {{font-size:11px;}}
+            QFrame#lanPanel QLabel#lanHistoryTitle {{font-size:10px;color:{c['secondary']};}}
+            QFrame#lanPanel QLabel#lanHistoryDetail {{font-size:12px;}}
+            QFrame#lanPanel QLabel#lanHistoryState {{font-size:10px;}}
+            QFrame#lanPanel QPushButton, QFrame#lanPanel QComboBox {{font-size:12px;}}
+            QFrame#lanPanel QLineEdit {{font-size:11px;}}
             QScrollArea#lanSendScroll, QScrollArea#lanActivityScroll, QScrollArea#lanQueueScroll, QScrollArea#lanHistoryScroll {{background:transparent;border:0;}}
             QScrollArea#lanSendScroll > QWidget, QScrollArea#lanActivityScroll > QWidget {{background:transparent;}}
             QScrollArea#lanQueueScroll > QWidget > QWidget, QScrollArea#lanHistoryScroll > QWidget > QWidget {{background:transparent;}}
@@ -1255,6 +1216,7 @@ class LanPanel(QFrame):
         for row in self.history_rows:
             row.icon.dark = self._dark; row.icon.update()
             row.remove_button.dark = self._dark; row.remove_button.update()
+            row.remove_button.setIcon(ui_icon('trash',c['secondary']));row.reveal_button.setIcon(ui_icon('folder',c['secondary']))
         for button in (self.previous_page,self.next_page):
             button.dark=self._dark;button.update()
         if self.code_countdown:self.code_countdown.dark=self._dark;self.code_countdown.update()
@@ -1284,7 +1246,6 @@ class LanPanel(QFrame):
             self.scan_indicator.online=any(p.get('online') for p in peers)
             self.scan_indicator.set_scanning(False);self.send_button.setEnabled(True)
             self._target_changed()
-            self._sync_device_selection()
             return
         selected = self.devices.currentData(); self.devices.clear()
         for peer in peers:
@@ -1303,13 +1264,6 @@ class LanPanel(QFrame):
         if not peers: self.devices.addItem('附近暂无设备', '')
         self.devices.setEnabled(bool(peers))
         self.send_button.setEnabled(bool(peers))
-        self._sync_device_selection()
-
-    def _sync_device_selection(self,*_):
-        index=self.devices.model().index(self.devices.currentIndex(),0)
-        self.devices_list.setCurrentIndex(index)
-        self.devices_list.setEnabled(self.devices.isEnabled())
-        self.devices_list.setFixedHeight(min(180,max(62,self.devices.count()*60)))
 
     def _code_identity_changed(self,identity):
         if self.code_countdown:self.code_countdown._tick()
