@@ -257,7 +257,7 @@ class WanTransferService(LanTransferService):
         now=time.monotonic()
         if self._refresh_sent_at and now-self._refresh_sent_at>=12:
             self.socket.abort();self._disconnected();return
-        if now>=self._code_refresh_at and not self._refresh_sent_at:
+        if self.code and now>=self._code_refresh_at and not self._refresh_sent_at:
             if self._send_signal(dict(type='refresh')):self._refresh_sent_at=now
         if self.code and now>=self._code_expires_at:
             self.code='';self.identity_changed.emit(self.code_identity())
@@ -335,7 +335,7 @@ class WanTransferService(LanTransferService):
                     refresh=max(0.,min(expires,(float(value.get('refreshAt',server_now+240000))-server_now)/1000))
                     self.code=str(value.get('code') or '')
                     if not RECEIVE_CODE.fullmatch(self.code):
-                        self.code='';self.connect_timeout.stop()
+                        self.code='';self._refresh_sent_at=0.;self.code_timer.stop();self.connect_timeout.stop()
                         self._connection_error='远程传输服务版本不匹配，请更新服务端。'
                         self.status_changed.emit(self._connection_error);self.identity_changed.emit(self.code_identity());return
                     self.connect_timeout.stop();self._connect_attempt=0;self._connection_error=''

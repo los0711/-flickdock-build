@@ -219,6 +219,10 @@ class ReceivingCodeClientTests(unittest.TestCase):
                 self.assertFalse(hasattr(service,'set_custom_code'));self.assertFalse(hasattr(service,'custom_identity'))
                 service._message(json.dumps(dict(schema_version=1,type='identity',code='ABCD2345',recent=[])))
                 self.assertEqual(service.code,'');self.assertIn('版本不匹配',messages[-1])
+                with patch.object(service,'_send_signal') as signal:
+                    for _ in range(50):service.check_code()
+                    signal.assert_not_called()
+                self.assertFalse(service.code_timer.isActive())
             finally:service.close();service.deleteLater();flush()
 
     def test_each_dropdown_delete_does_not_change_selection(self):
