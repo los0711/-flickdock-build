@@ -125,17 +125,16 @@ def _create_dmg(staging,dmg):
         time.sleep(2*(attempt+1))
 
 
+from mac_install import INSTALL_CLOSE_JXA
+
 PKG_PREINSTALL='''#!/bin/sh
 set -eu
-# Never replace the executable of a running instance, including older copies.
-while /usr/bin/pgrep -x FlickDock >/dev/null 2>&1; do
-  console_user=$(/usr/bin/stat -f %Su /dev/console)
-  case "$console_user" in root|loginwindow|'') echo '请先退出 FlickDock，再重新安装。' >&2; exit 1;; esac
-  console_uid=$(/usr/bin/id -u "$console_user")
-  /bin/launchctl asuser "$console_uid" /usr/bin/sudo -u "$console_user" /usr/bin/osascript <<'APPLESCRIPT' || exit 1
-display dialog "FlickDock 正在运行。请先退出已打开的 FlickDock，然后点击继续。安装程序会覆盖 /Applications 中的旧版本。" buttons {"取消安装", "继续"} default button "继续" cancel button "取消安装" with title "安装 FlickDock" with icon caution
-APPLESCRIPT
-done
+console_user=$(/usr/bin/stat -f %Su /dev/console)
+case "$console_user" in root|loginwindow|'') echo '请登录桌面后安装 FlickDock。' >&2; exit 1;; esac
+console_uid=$(/usr/bin/id -u "$console_user")
+/bin/launchctl asuser "$console_uid" /usr/bin/sudo -u "$console_user" /usr/bin/osascript -l JavaScript - 0 <<'FLICKDOCK_INSTALL_CLOSE'
+'''+INSTALL_CLOSE_JXA+'''
+FLICKDOCK_INSTALL_CLOSE
 exit 0
 '''
 
@@ -220,7 +219,7 @@ def main(arguments=None):
         env['FLICKDOCK_CODESIGN_IDENTITY'] = options.sign_identity
     if options.entitlements:
         env['FLICKDOCK_ENTITLEMENTS'] = str(options.entitlements.resolve())
-    run([python, '-m', 'unittest', 'test_preview_continuity', 'test_display_frames', 'test_video_matrix', 'test_receive_notice', 'test_p2p_priority', 'test_platform_startup', 'test_platform_native', 'test_mac_window_order_v1810', 'test_mac_updates',
+    run([python, '-m', 'unittest', 'test_mac_install', 'test_preview_continuity', 'test_display_frames', 'test_video_matrix', 'test_receive_notice', 'test_p2p_priority', 'test_platform_startup', 'test_platform_native', 'test_mac_window_order_v1810', 'test_mac_updates',
          'test_macos_native_entry', 'test_update_macos_controller', 'test_mac_build',
          'test_shelf_sync_v180', 'test_sync_review_v180', 'test_account_security_v180',
          'test_lan_transfer_v181', 'test_lan_dialog_v183', 'test_shelf_transfers_v181',

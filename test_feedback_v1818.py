@@ -5,7 +5,8 @@ import tempfile,unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock,patch
-from PySide6.QtCore import QEvent,QPoint,QRect,Qt,QObject
+from PySide6.QtCore import QEvent,QPoint,QPointF,QRect,Qt,QObject
+from PySide6.QtGui import QEnterEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QToolTip
 from test_html_native_workspace import APP,flush,until
@@ -231,7 +232,8 @@ class FeedbackTests(unittest.TestCase):
             for kind in ('dock','drag'):
                 shelf.presentation_kind=kind
                 APP.sendEvent(zone,QEvent(QEvent.Leave));flush();normal=blue_pixels()
-                APP.sendEvent(zone,QEvent(QEvent.Enter));flush()
+                point=zone.icon.geometry().center()
+                APP.sendEvent(zone,QEnterEvent(QPointF(point),QPointF(point),QPointF(zone.mapToGlobal(point))));flush()
                 self.assertNotIn('#0A84FF',zone.styleSheet())
                 self.assertGreater(blue_pixels(),normal+15)
                 self.assertIsNone(shelf.popup)

@@ -4,7 +4,7 @@ os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 os.environ['QT_SCALE_FACTOR'] = '1.25'
 os.environ['QT_MEDIA_BACKEND'] = 'ffmpeg'
 
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 import hashlib
 from pathlib import Path
 import shutil
@@ -49,8 +49,9 @@ with tempfile.TemporaryDirectory(prefix='flickdock-copy-integration-') as tempor
          patch.object(subject.ctypes.windll.user32, 'UnregisterHotKey', side_effect=AssertionError('Native hotkey unregistration')), \
          patch.object(subject, 'native_window_move_active', return_value=False), \
          patch.object(subject.QCursor, 'pos', return_value=QPoint(20, 20)), \
-         patch.object(app_settings, '_read_startup_value'), patch.object(app_settings, '_write_startup_value'):
-        manager = subject.ShelfManager(app);manager.timer.stop();shelf = manager.shelf;shelf.pinned = True
+         patch.object(app_settings, '_read_startup_value'), patch.object(app_settings, '_write_startup_value'), ExitStack() as cleanup:
+        manager = subject.ShelfManager(app);cleanup.callback(manager.quit)
+        manager.timer.stop();shelf = manager.shelf;shelf.pinned = True
         assert isinstance(manager.hotkeys.backend, _NoopBackend)
         assert manager.settings.capture_mode == 'reference'
         manager.settings.update(capture_mode='copy', capture_dir=str(store))
@@ -90,7 +91,9 @@ with tempfile.TemporaryDirectory(prefix='flickdock-copy-integration-') as tempor
         assert source.is_file()
         source.unlink()
         shelf._show_at(QPoint(60, 80), 'manual', QPoint())
-        shelf.show_contents();viewer = shelf.popup.preview.media;viewer.toggle_mute()
+        shelf.show_contents()
+        if shelf.popup._narrow_layout and not shelf.popup._narrow_preview:shelf.popup.toggle_narrow_preview()
+        viewer = shelf.popup.preview.media;viewer.toggle_mute()
         wait_until(lambda: not viewer.surface.image.isNull() or viewer._failed)
         assert not viewer._failed, viewer.status_label.toolTip()
         assert viewer.path == str(copied) and viewer.audio_output.isMuted()
@@ -106,6 +109,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-copy-integration-') as tempor
         assert shelf.receive_mime('permanent', mime(reference))
         assert shelf.files['permanent'] == [str(reference)] and not shelf.copy_jobs
         shelf._show_at(QPoint(60, 80), 'manual', QPoint());shelf.show_contents()
+        if shelf.popup._narrow_layout and not shelf.popup._narrow_preview:shelf.popup.toggle_narrow_preview()
         viewer = shelf.popup.preview.media
         wait_until(lambda: viewer.path == str(reference) and (not viewer.surface.image.isNull() or viewer._failed))
         assert not viewer._failed
@@ -154,6 +158,6 @@ with tempfile.TemporaryDirectory(prefix='flickdock-copy-integration-') as tempor
         wait_until(lambda: not shelf.copy_jobs)
         assert not shelf.files['permanent']
         print('PASS success queued before clear cannot resurrect any reference afterward')
-        shelf.remove_all('permanent');manager.quit()
+        shelf.remove_all('permanent');cleanup.close()
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 print('CAPTURE_INTEGRATION_V163_OK')

@@ -28,10 +28,8 @@ def _dmg_launch(source,target,*,runner=subprocess.run,launcher=subprocess.Popen)
 display dialog "将 FlickDock 安装到“应用程序”并替换旧版本后打开？以后将从这个位置启动。" buttons {"取消", "安装并打开"} default button "安装并打开" cancel button "取消" with title "安装 FlickDock"
 tell application "Finder" to duplicate (POSIX file (item 1 of argv)) to (POSIX file (item 2 of argv)) with replacing
 end run'''
-        running=runner(['/usr/bin/pgrep','-x','FlickDock'],capture_output=True,text=True)
-        if any(pid.isdigit() and int(pid)!=os.getpid() for pid in running.stdout.split()):
-            close='display dialog "请先退出正在运行的 FlickDock，再打开安装镜像安装新版本。" buttons {"好"} default button "好" with title "FlickDock 正在运行"'
-            runner(['/usr/bin/osascript','-e',close],capture_output=True);return True
+        from mac_install import close_for_replacement
+        if not close_for_replacement(runner=runner):return True
         copied=runner(['/usr/bin/osascript','-e',script,str(source),str(target.parent)],capture_output=True)
         if copied.returncode:return True
         installed=metadata(target)

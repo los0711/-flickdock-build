@@ -164,10 +164,12 @@ class FeedbackTests(unittest.TestCase):
         self.assertFalse(self.shelf.content.mime_for([ref]).hasUrls())
 
     def test_dock_drop_zone_blue_border_follows_hover_without_opening_overview(self):
-        from PySide6.QtCore import QEvent
+        from PySide6.QtCore import QEvent,QPointF
+        from PySide6.QtGui import QEnterEvent
         zone=self.shelf.zones['permanent'] if hasattr(self.shelf,'zones') else self.shelf.drop_zone
         self.shelf.presentation_kind='dock'
-        APP.sendEvent(zone,QEvent(QEvent.Enter));flush()
+        point=zone.icon.geometry().center()
+        APP.sendEvent(zone,QEnterEvent(QPointF(point),QPointF(point),QPointF(zone.mapToGlobal(point))));flush()
         self.assertNotIn('#0A84FF',zone.styleSheet());self.assertTrue(zone.icon._hovered);self.assertIsNone(self.shelf.popup)
         APP.sendEvent(zone,QEvent(QEvent.Leave));flush()
         self.assertNotIn('#0A84FF',zone.styleSheet())
