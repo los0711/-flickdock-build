@@ -170,9 +170,12 @@ class VideoPreview(ReferenceModalDialog):
 class VideoDialog(ReferenceModalDialog):
     def __init__(self,manager,controller):
         self._layout_ready=False
-        super().__init__(manager.shelf,surface_width=940,modal=False)
+        # A topmost shelf must not make this independent utility window inherit
+        # its native owner z-order. The manager owns this dialog's lifecycle.
+        super().__init__(None,surface_width=940,modal=False)
+        self.setFont(manager.shelf.font())
         self.manager=manager;self.controller=controller;self.results={};self.cards={};self._theme=None;self.cover_preview=None
-        self.setWindowTitle('FlickDock · 视频解析');self.setWindowFlag(Qt.WindowStaysOnTopHint,True);self.setMinimumSize(VIDEO_WINDOW_MIN_SIZE)
+        self.setWindowTitle('FlickDock · 视频解析');self.setMinimumSize(VIDEO_WINDOW_MIN_SIZE)
         self.body_layout.setContentsMargins(18,10,18,16);self.body_layout.setSpacing(20)
         self.title_bar=QWidget(self.surface);self.title_bar.setFixedHeight(44)
         header=QHBoxLayout(self.title_bar);header.setContentsMargins(18,0,4,0);header.setSpacing(12)
@@ -206,7 +209,7 @@ class VideoDialog(ReferenceModalDialog):
             header.insertWidget(0,traffic);self.close_button.hide()
         self.chrome.default_size=QSize(VIDEO_WINDOW_SIZE)
         self._layout_ready=True;self.resize(VIDEO_WINDOW_SIZE)
-        controller.changed.connect(self.refresh);controller.parsed.connect(self.show_cover);controller.preview_requested.connect(self._preview)
+        controller.changed.connect(self.refresh);controller.preview_requested.connect(self._preview)
         manager.settings.changed.connect(self.refresh);self.refresh()
 
     def sizeHint(self):

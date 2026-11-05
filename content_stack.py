@@ -4,11 +4,15 @@ from PySide6.QtCore import QRectF, Qt, QVariantAnimation, QEasingCurve, QAbstrac
 from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap
 from flickdock_icons import content_color, device_pixel_ratio, document_pixmap
 from flickdock_motion import ContentTile,Spring
+from ui_transitions import STACK_LANDING_DURATION_MS,STACK_PULSE_TIMEOUT_MS
 
 FAN_PIVOT_X_PX=74.24
 FAN_PIVOT_Y_PX=57.6
 FAN_FRONT_ANGLE_DEGREES=5.
 FAN_LAYER_ANGLE_DEGREES=3.6
+FAN_LAYER_OFFSET_X_PX=3.6
+MINI_FAN_LAYER_OFFSET_Y_PX=3.
+STACK_ARRIVAL_OFFSET_PX=18.
 from transfer_visuals import draw_progress_badge
 
 
@@ -80,6 +84,7 @@ def stack_pixmap(repository, refs, size=110, *, dpr=None, preview_cache=None, ar
 
 class StackTile(ContentTile):
     """Cached stack with an interruptible, short incoming-card landing."""
+    pulse_timeout_ms=STACK_PULSE_TIMEOUT_MS
     def __init__(self,parent=None,motion=True):
         super().__init__(parent,motion)
         self.repository=None;self.refs=();self.preview_cache={};self.arrival=1.0
@@ -97,13 +102,14 @@ class StackTile(ContentTile):
         self.removal.valueChanged.connect(self._remove_frame)
         self.removal.finished.connect(self._remove_finished)
         self.landing=QVariantAnimation(self)
-        self.landing.setDuration(260)
+        self.landing.setDuration(STACK_LANDING_DURATION_MS)
         self.landing.setEasingCurve(QEasingCurve.Type.OutBack)
         self.landing.valueChanged.connect(self._arrive)
         self.landing.finished.connect(self._landing_finished)
         self.spread=Spring(self,{'spread':0},lambda _:self.update(),motion)
 
     def set_hover(self,value):
+        if bool(value)==self._hovered:return
         super().set_hover(value)
         from native_ui_common import reduced_motion
         from ui_transitions import STACK_SPREAD_RESPONSE_SECONDS,STACK_SPREAD_DAMPING
@@ -124,11 +130,25 @@ class StackTile(ContentTile):
             if layer is None:continue
             depth=len(self.refs)-1-index;painter.save();painter.translate(FAN_PIVOT_X_PX,FAN_PIVOT_Y_PX)
             painter.rotate(value*(FAN_FRONT_ANGLE_DEGREES if depth==0 else -depth*FAN_LAYER_ANGLE_DEGREES));painter.translate(-FAN_PIVOT_X_PX,-FAN_PIVOT_Y_PX)
-            painter.translate(-depth*3.6*value,depth*value);painter.drawPixmap(0,0,layer);painter.restore()
+            painter.translate(-depth*FAN_LAYER_OFFSET_X_PX*value,depth*value);painter.drawPixmap(0,0,layer);painter.restore()
         painter.end();return result
 
     def _arrive(self,value):
         self.arrival=float(value);self.update()
+
+    def _arrival_pixmap(self):
+        ratio=self.devicePixelRatioF();result=QPixmap(round(128*ratio),round(128*ratio));result.setDevicePixelRatio(ratio);result.fill(Qt.transparent)
+        painter=QPainter(result);painter.setRenderHints(QPainter.Antialiasing|QPainter.SmoothPixmapTransform)
+        for ref in self.refs:
+            layer=self._layers.get(ref)
+            if layer is None:continue
+            painter.save()
+            if ref==self.refs[-1]:
+                value=self.arrival;painter.translate(0,-STACK_ARRIVAL_OFFSET_PX*128/100*(1-value));painter.translate(FAN_PIVOT_X_PX,FAN_PIVOT_Y_PX)
+                painter.rotate(7*(1-value));painter.scale(.94+.06*value,.94+.06*value);painter.translate(-FAN_PIVOT_X_PX,-FAN_PIVOT_Y_PX)
+                painter.setOpacity(max(0,min(1,.35+.65*value)))
+            painter.drawPixmap(0,0,layer);painter.restore()
+        painter.end();return result
 
     def _remove_frame(self,value):
         self._exit_progress=float(value);self.update()
@@ -275,7 +295,7 @@ class StackTile(ContentTile):
         elif self.repository is not None and self.refs:
             ratio=self.devicePixelRatioF()
             if self.landing.state()==QAbstractAnimation.State.Running:
-                self._pixmap=stack_pixmap(self.repository,self.refs,128,dpr=ratio,preview_cache=self.preview_cache,arrival=self.arrival,front_art=self._front_art)
+                self._pixmap=self._arrival_pixmap()
             elif self.spread.values['spread']>.001 and set(self._layers)==set(self.refs):
                 self._pixmap=self._spread_pixmap(self.spread.values['spread'])
             else:

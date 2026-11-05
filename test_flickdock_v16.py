@@ -62,7 +62,7 @@ class FakeResolver(QObject):
         self.cancel_all()
 
 
-def fake_media_source(self, path):
+def fake_media_source(self, path, **_options):
     self.path = str(path)
     self._integration_source = str(path)
 

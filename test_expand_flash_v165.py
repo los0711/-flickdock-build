@@ -124,7 +124,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-expand-flash-v165-') as profi
                 return original_show()
             with patch.object(shelf,'show',first_show):shelf._show_at(QPoint(1400,160),'manual',QPoint())
             shelf.presentation.jump(dict(sx=1,sy=1,dx=0,dy=0,alpha=1))
-            shelf.zones['permanent'].icon.landing.setCurrentTime(260)
+            shelf.zones['permanent'].icon.landing.setCurrentTime(shelf.zones['permanent'].icon.landing.duration())
             app.processEvents()
             original_geometry=shelf.setGeometry
             original_card_geometry=shelf.card.setGeometry

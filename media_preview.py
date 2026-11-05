@@ -322,7 +322,7 @@ class MediaPreview(QWidget):
         """)
         self.update()
 
-    def set_source(self, path):
+    def set_source(self, path, *, poster=None, defer=False):
         value = str(Path(path).resolve()) if path else ""
         if not value:
             self.release_source()
@@ -349,11 +349,22 @@ class MediaPreview(QWidget):
             self._poster_sent = False
             self._resume_position = 0
             self._set_duration(0)
-        self.surface.fallback = file_pixmap(value, 110)
-        self.surface.update()
         self._video = Path(value).suffix.lower() in VIDEO_SUFFIXES
+        if self._video and self.surface.image.isNull() and poster is not None and not poster.isNull():
+            self.surface.image = QImage(poster)
+        # A format icon between selection and the first frame looks like a
+        # second item. Videos keep one stable surface throughout decoder setup.
+        self.surface.fallback = None if self._video else file_pixmap(value, 110)
+        self.surface.update()
         self._failed = False
-        self._load_player(poster=self._video and self.surface.image.isNull())
+        if defer:
+            self.play_button.setEnabled(False)
+            self.seek_slider.setEnabled(False)
+            self.open_button.setEnabled(True)
+            self.status_label.setText('正在读取媒体…' if self.surface.image.isNull() else '')
+            self.status_label.setVisible(self.surface.image.isNull())
+        else:
+            self._load_player(poster=self._video)
 
     def _load_player(self, *, poster=False, play=False):
         """Create a fresh native source only for selection or explicit playback."""

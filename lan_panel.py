@@ -687,7 +687,7 @@ class LanPanel(QFrame):
         send_heading.addWidget(self.send_heading_label,1)
         self.add_files=_button('添加文件',queue_column);self.add_files.setIcon(ui_icon('plus'));self.add_files.clicked.connect(self._pick_files)
         send_heading.addWidget(self.add_files)
-        self.clear_queue=_button('清空',queue_column);self.clear_queue.setObjectName('lanTextButton')
+        self.clear_queue=_button('清空',queue_column);self.clear_queue.setObjectName('lanClearButton')
         self.clear_queue.setToolTip('清除待发送列表');self.clear_queue.clicked.connect(lambda:self.queue_paths([],replace=True))
         send_heading.addWidget(self.clear_queue);queue_box.addLayout(send_heading)
         self.queue_body=QFrame(queue_column);self.queue_body.setObjectName('lanQueueBody')
@@ -832,7 +832,10 @@ class LanPanel(QFrame):
         self.history_card=QFrame(self.activity_column);self.history_card.setObjectName('lanWorkbenchCard')
         history=QVBoxLayout(self.history_card);history.setContentsMargins(CARD_MARGIN_PX,CARD_MARGIN_PX,CARD_MARGIN_PX,CARD_MARGIN_PX);history.setSpacing(10)
         section = _label('传输历史', self.history_card); section.setObjectName('lanSection')
-        history.addWidget(section)
+        history_heading=QHBoxLayout();history_heading.addWidget(section,1)
+        self.clear_history=_button('清空',self.history_card);self.clear_history.setObjectName('lanClearButton')
+        self.clear_history.setAccessibleName('清空传输历史');self.clear_history.setToolTip('清空历史记录，保留已接收的文件')
+        self.clear_history.clicked.connect(self._clear_history);history_heading.addWidget(self.clear_history);history.addLayout(history_heading)
         self.history_body = QFrame(self.activity_column)
         self.history_body.setObjectName('lanHistoryGroup')
         self.history_layout = QVBoxLayout(self.history_body)
@@ -959,6 +962,7 @@ class LanPanel(QFrame):
             if temporary.exists(): temporary.unlink()
 
     def _render_history(self):
+        self.clear_history.setEnabled(bool(self._history))
         for widget in self.history_rows:
             self.history_layout.removeWidget(widget)
             widget.deleteLater()
@@ -982,6 +986,13 @@ class LanPanel(QFrame):
             widget.reveal_requested.connect(self._reveal_file)
             self.history_layout.addWidget(widget)
             self.history_rows.append(widget)
+
+    def _clear_history(self):
+        previous=self._history;self._history=[]
+        try:self._save_history()
+        except OSError as error:
+            self._history=previous;self.status_label.setText('无法清空传输历史：'+str(error));return
+        self._render_history()
 
     def _delete_history_record(self, index):
         """Forget one completed transfer without touching its files or live transfer."""
@@ -1173,12 +1184,16 @@ class LanPanel(QFrame):
             QFrame#lanPanel QPushButton#lanRevealFile {{background:transparent;padding:0;}}
             QFrame#lanPanel QPushButton#lanRevealFile:hover {{background:{c['hover']};}}
             QFrame#lanPanel QComboBox {{border:0;}}
-            QFrame#lanPanel QComboBox#lanDevicePicker {{background:{c['hover']};border:0;border-radius:{TRANSFER_CORNER_RADIUS_PX}px;}}
+            QFrame#lanPanel QComboBox#lanDevicePicker {{background:{'#343438' if self._dark else '#E5E5EA'};border:0;border-radius:{TRANSFER_CORNER_RADIUS_PX}px;}}
             QFrame#lanPanel QComboBox#lanDevicePicker:hover {{background:{c['selected']};}}
             QFrame#lanPanel QComboBox#lanDevicePicker:disabled {{color:{c['muted']};background:{c['control']};}}
             QFrame#lanPanel QComboBox:focus,QFrame#lanPanel QLineEdit:focus {{border:1px solid {c['link']};}}
             QFrame#lanPanel QLabel#lanOfferKicker {{background:{c['action']};color:{c['on_action']};}}
             QFrame#lanPanel QPushButton#lanTextButton:hover {{color:{c['link']};}}
+            QFrame#lanPanel QPushButton#lanClearButton {{background:transparent;border:0;color:{c['secondary']};}}
+            QFrame#lanPanel QPushButton#lanClearButton:hover {{background:rgba(255,69,58,30);color:{c['red']};}}
+            QFrame#lanPanel QPushButton#lanClearButton:pressed {{background:rgba(255,69,58,48);color:{c['red']};}}
+            QFrame#lanPanel QPushButton#lanClearButton:disabled {{color:{c['muted']};background:transparent;}}
             QFrame#lanPanel QPushButton[keyboardFocus="true"] {{border:1px solid {c['link']};}}
             QFrame#lanPanel QPushButton#lanOfferAccept {{background:{c['action']};color:{c['on_action']};}}
             QFrame#lanPanel QLabel {{font-size:12px;}}

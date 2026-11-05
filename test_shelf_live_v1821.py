@@ -82,7 +82,7 @@ class LiveShelfTests(unittest.TestCase):
             identity='handoff-'+mode;pending='flickdock:transfer:'+identity
             transfer=dict(id=identity,remote=True,phase='downloading',name=mode+'.png',kind='file',total=1024,received=100)
             subject.ShelfManager._transfers_changed(self.manager,[transfer]);until(lambda:pending in popup._item_widgets)
-            tile.landing.setCurrentTime(260);popup.select_item(pending);old=popup._item_widgets[pending]
+            tile.landing.setCurrentTime(tile.landing.duration());popup.select_item(pending);old=popup._item_widgets[pending]
             image=QImage(64,64,QImage.Format_RGB32);image.fill(QColor('#2478ab'))
             path=self.base/(mode+'.png');image.save(str(path));ref=str(path)
             view=adapter.snapshot();view['permanent'].append(ref);view['metadata'][ref]={'_cloud_item_id':identity,'title':path.name}
@@ -179,7 +179,7 @@ class LiveShelfTests(unittest.TestCase):
     def test_compact_delete_parallel_fade_and_no_false_arrival(self):
         tile=StackTile(self.shelf,motion=True);tile.resize(170,140);tile.show()
         tile.set_stack(self.shelf.content,self.paths)
-        tile.landing.setCurrentTime(260)
+        tile.landing.setCurrentTime(tile.landing.duration())
         tile.set_stack(self.shelf.content,self.paths[:1])
         self.assertEqual(tile.refs,tuple(self.paths[:1]))
         self.assertEqual(tile.removal.duration(),200)
@@ -200,7 +200,7 @@ class LiveShelfTests(unittest.TestCase):
         repository=self.shelf.content
         refs=list(self.paths)
         for index,ref in enumerate(refs):repository.metadata.setdefault(ref,{})['_cloud_item_id']=f'known-{index}'
-        tile.set_stack(repository,refs);tile.landing.setCurrentTime(260)
+        tile.set_stack(repository,refs);tile.landing.setCurrentTime(tile.landing.duration())
         front=tile.refs[-1];repository.quiet_cloud_refresh=True
         for index in range(12):
             ref=f'flickdock:transfer:backfill-{index}'

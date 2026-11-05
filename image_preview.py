@@ -66,6 +66,9 @@ class ImagePreview(QWidget):
                 self.image = None if image.isNull() else image
                 self.update()
                 return self.image is not None
+            thumbnail = self._loader.image(path, 128)
+            if thumbnail is not None and not thumbnail.isNull():
+                self.image = thumbnail
             self._loading = self._loader.request(path, 2048)
             self.update()
             return self._loading

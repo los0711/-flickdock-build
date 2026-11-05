@@ -124,10 +124,32 @@ class TriggerReliabilityTests(unittest.TestCase):
              patch.object(manager._drag_probe_detector, 'update', return_value=False), \
              patch.object(manager.drag_gate, 'sustain_for_shake') as probe:
             manager.poll()
+            self.assertEqual(manager.shelf.visible_state,'hiding')
+            from test_html_native_workspace import until
+            until(lambda:not manager.shelf.isVisible())
+            manager.poll()
         self.assertFalse(manager.shelf.isVisible(), 'an obscured shelf must release the edge immediately')
         self.assertTrue(manager.edge.isVisible())
         self.assertTrue(manager.lan_dialog.isVisible(), 'LAN transfer remains independently usable')
         probe.assert_called_once_with(browser_point)
+
+    def test_external_press_above_overview_keeps_animated_exit_when_app_deactivates(self):
+        manager=self.manager;shelf=manager.shelf
+        manager.show_overview();shelf.geometry_morph.stop()
+        shelf.presentation.motion=True;manager.motion=True
+        manager._app_was_active=True;manager._button_mask=0
+        outside=QPoint(shelf.visual_geometry().center().x(),shelf.visual_geometry().top()-40)
+        with patch.object(QApplication,'applicationState',return_value=Qt.ApplicationState.ApplicationInactive), \
+             patch.object(flickdock.QCursor,'pos',return_value=outside), \
+             patch.object(flickdock,'mouse_buttons_mask',return_value=1), \
+             patch.object(flickdock,'native_input_available',return_value=False):
+            manager.poll()
+        self.assertTrue(shelf.isVisible())
+        self.assertEqual(shelf.visible_state,'hiding')
+        self.assertEqual(shelf.presentation._targets['alpha'],0)
+        from test_html_native_workspace import until
+        until(lambda:not shelf.isVisible())
+        self.assertTrue(manager.edge.isVisible())
 
     def test_edge_reveal_works_while_lan_is_open_and_after_it_closes(self):
         manager = self.manager

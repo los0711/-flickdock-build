@@ -16,7 +16,8 @@ from PySide6.QtWidgets import (QLabel, QPushButton, QWidget, QFrame, QHBoxLayout
 import ui_theme
 from native_ui_common import (colors, icon, keyboard_focus_visible, readable_qss,
     SHELF_HEADER_BUTTON_SIZE_PX, SHELF_HEADER_BUTTON_GAP_PX, SHELF_HEADER_RIGHT_MARGIN_PX)
-from content_stack import StackTile
+from content_stack import (StackTile,FAN_FRONT_ANGLE_DEGREES,FAN_LAYER_ANGLE_DEGREES,
+    FAN_LAYER_OFFSET_X_PX,MINI_FAN_LAYER_OFFSET_Y_PX,STACK_ARRIVAL_OFFSET_PX)
 from flickdock_motion import FeedbackButton
 from transfer_visuals import TransferIconLabel, CLOUD_STATUS_LABELS
 from lan_panel import _DropZone
@@ -603,6 +604,40 @@ class MiniStack(StackTile):
     def __init__(self,shelf,parent=None,motion=True):
         super().__init__(parent,motion)
         self.shelf=shelf
+        self._card_art={};self._card_dpr=0
+
+    def set_stack(self,repository,refs,preview_cache=None):
+        super().set_stack(repository,refs,preview_cache)
+        self._cache_cards()
+
+    def _cache_cards(self):
+        ratio=self.devicePixelRatioF();cards={};content=self.shelf.content
+        for ref in self.refs:
+            metadata=getattr(self.shelf,'file_metadata',None);info=metadata.request(ref) if metadata is not None else None
+            cached=self.shelf.preview_cache.get(ref);cache=getattr(self.shelf,'image_cache',None)
+            cover=content.metadata.get(ref,{}).get('preview_image')
+            decoded=cache.image(cover or ref,128) if cache is not None else None
+            directory=getattr(self.shelf,'_directory_sizes',{}).get(ref)
+            key=(content.title(ref),len(content.text(ref) or '') if content.is_text(ref) else None,
+                 tuple(info.get(key) for key in ('size','mtime_ns','exists','error','is_dir')) if info else None,
+                 directory[1] if directory else None,content.transfers.get(ref,{}).get('total'),
+                 cached.cacheKey() if cached is not None else None,decoded.cacheKey() if decoded is not None else None,
+                 cover,ratio,self.font().toString(),ui_theme.current_theme())
+            previous=self._card_art.get(ref)
+            cards[ref]=previous if previous is not None and previous[0]==key else (key,self._render_card(ref,ratio))
+        self._card_art=cards;self._card_dpr=ratio
+
+    def _render_card(self,ref,ratio):
+        result=QPixmap(round(192*ratio),round(128*ratio));result.setDevicePixelRatio(ratio);result.fill(Qt.transparent)
+        p=QPainter(result);p.setRenderHints(QPainter.Antialiasing|QPainter.SmoothPixmapTransform);c=palette()
+        p.setPen(QPen(QColor(255,255,255,38) if ui_theme.current_theme()=='dark' else QColor(0,0,0,26),1))
+        p.setBrush(QColor('#242426' if ui_theme.current_theme()=='dark' else '#FFFFFF'));p.drawRoundedRect(QRectF(.5,.5,191,127),16,16)
+        p.drawPixmap(14,14,thumbnail(self.shelf,ref,40))
+        title=self.shelf.content.title(ref);f=QFont(self.font());f.setPixelSize(14 if sys.platform=='win32' else 12);f.setWeight(QFont.DemiBold);p.setFont(f);p.setPen(QColor(c['text']))
+        p.drawText(QRectF(14,77,164,20),Qt.AlignVCenter,p.fontMetrics().elidedText(title,Qt.ElideRight,164))
+        f.setPixelSize(12 if sys.platform=='win32' else 10);f.setWeight(QFont.Normal);p.setFont(f);p.setPen(QColor(c['secondary']));p.drawText(QRectF(14,99,164,18),Qt.AlignVCenter,item_detail(self.shelf,ref).split(' · ')[0])
+        ext=Path(title).suffix.lstrip('.').upper() or ('TEXT' if self.shelf.content.is_text(ref) else 'FILE')
+        p.drawText(QRectF(100,14,78,18),Qt.AlignRight|Qt.AlignVCenter,ext[:7]);p.end();return result
 
     def paintEvent(self,event):
         p=QPainter(self);p.setRenderHints(QPainter.Antialiasing|QPainter.SmoothPixmapTransform)
@@ -614,23 +649,19 @@ class MiniStack(StackTile):
             icon('upload',palette()['secondary']).paint(p,QRect(round(r.center().x()-12),round(r.center().y()-31),24,24))
             f=p.font()
             f.setPixelSize(13);p.setFont(f);p.setPen(QColor(palette()['text']));p.drawText(r.adjusted(0,34,0,0),Qt.AlignCenter,'点击选择文件');p.end();return
-        c=palette();v=self.spring.values
+        v=self.spring.values
+        if self._card_dpr!=self.devicePixelRatioF():self._cache_cards()
+        spread=self.spread.values['spread']
         center=QPointF(self.width()/2,self.height()/2)
         p.translate(center.x(),center.y()+v['y']);p.scale(v['sx'],v['sy']);p.translate(-center)
         refs=list(reversed(self.refs));transforms=((0,1,0,1),(-7,.95,-2,.9),(-14,.9,2.2,.75),(-20,.85,-1.5,.58),(-26,.8,1,.4))
         for idx in reversed(range(len(refs))):
             ref=refs[idx];dy,scale,angle,opacity=transforms[idx]
-            p.save();p.setOpacity(opacity);p.translate(center.x(),center.y()+dy);p.rotate(angle);p.scale(scale,scale);p.translate(-96,-64)
-            if idx==0:p.translate(0,-18*(1-self.arrival))
-            p.setPen(QPen(QColor(255,255,255,38) if ui_theme.current_theme()=='dark' else QColor(0,0,0,26),1))
-            p.setBrush(QColor('#242426' if ui_theme.current_theme()=='dark' else '#FFFFFF'));p.drawRoundedRect(QRectF(.5,.5,191,127),16,16)
-            p.drawPixmap(14,14,thumbnail(self.shelf,ref,40))
+            p.save();p.setOpacity(opacity);p.translate(center.x()-idx*FAN_LAYER_OFFSET_X_PX*spread,center.y()+dy+idx*MINI_FAN_LAYER_OFFSET_Y_PX*spread)
+            p.rotate(angle+spread*(FAN_FRONT_ANGLE_DEGREES if idx==0 else -idx*FAN_LAYER_ANGLE_DEGREES));p.scale(scale,scale);p.translate(-96,-64)
+            if idx==0:p.translate(0,-STACK_ARRIVAL_OFFSET_PX*(1-self.arrival))
+            p.drawPixmap(0,0,self._card_art[ref][1])
             draw_status(p,QRectF(40,40,16,16),getattr(self.shelf.manager,'sync',None).sync_status_for_ref(ref) if hasattr(getattr(self.shelf.manager,'sync',None),'sync_status_for_ref') else 'local')
-            title=self.shelf.content.title(ref);f=QFont(self.font());f.setPixelSize(14 if sys.platform=='win32' else 12);f.setWeight(QFont.DemiBold);p.setFont(f);p.setPen(QColor(c['text']))
-            p.drawText(QRectF(14,77,164,20),Qt.AlignVCenter,p.fontMetrics().elidedText(title,Qt.ElideRight,164))
-            f.setPixelSize(12 if sys.platform=='win32' else 10);f.setWeight(QFont.Normal);p.setFont(f);p.setPen(QColor(c['secondary']));p.drawText(QRectF(14,99,164,18),Qt.AlignVCenter,item_detail(self.shelf,ref).split(' · ')[0])
-            ext=Path(title).suffix.lstrip('.').upper() or ('TEXT' if self.shelf.content.is_text(ref) else 'FILE')
-            p.drawText(QRectF(100,14,78,18),Qt.AlignRight|Qt.AlignVCenter,ext[:7])
             state=getattr(self.repository,'transfers',{}).get(ref)
             if idx==0 and state:
                 from transfer_visuals import draw_progress_badge

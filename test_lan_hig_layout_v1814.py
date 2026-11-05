@@ -134,6 +134,26 @@ class LanHigLayoutTests(unittest.TestCase):
         self.assertEqual((width,height),(14,14))
         self.assertLessEqual(abs(y+height/2-self.panel.devices.height()/2),.5)
 
+    def test_clear_history_persists_without_touching_queue_live_task_or_received_files(self):
+        self.load_busy_state();panel=self.panel
+        paths=list(panel._queued_paths)
+        panel.clear_history.click();self.settle()
+        self.assertEqual(panel._history,[])
+        self.assertEqual(json.loads(panel._history_path.read_text(encoding='utf-8')),[])
+        self.assertFalse(panel.clear_history.isEnabled())
+        self.assertIn('active',panel._rows)
+        self.assertEqual(panel._queued_paths,paths)
+        self.assertTrue(all(Path(path).is_file() for path in paths))
+
+    def test_failed_history_clear_keeps_records_and_explains_disk_error(self):
+        self.load_busy_state();panel=self.panel;previous=list(panel._history)
+        with patch.object(panel,'_save_history',side_effect=PermissionError('fixture read-only directory')):
+            panel.clear_history.click()
+        self.assertEqual(panel._history,previous)
+        self.assertEqual(len(panel.history_rows),len(previous))
+        self.assertTrue(panel.clear_history.isEnabled())
+        self.assertIn('无法清空',panel.status_label.text())
+
     def test_busy_default_and_minimum_windows_keep_actions_complete_and_surface_opaque(self):
         self.load_busy_state()
         panel=self.panel

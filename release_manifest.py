@@ -53,6 +53,7 @@ RUNTIME_SOURCES=(
 MAINTAINED_TESTS=(
     'test_p2p_priority.py','test_receive_notice.py',
     'test_display_frames.py',
+    'test_preview_continuity.py',
     'test_video_matrix.py',
     'test_workbench_v1823.py',
     'test_video_v1823.py',

@@ -126,6 +126,7 @@ with tempfile.TemporaryDirectory(prefix="flickdock-media-") as temporary, \
     preview.frame_ready.connect(lambda path, image: frames.append((path, image.copy())))
     preview.set_source(video)
     assert preview.player.play_calls == 1 and preview.audio_output.muted
+    assert preview.surface.image.isNull() and preview.surface.fallback is None
     assert not events
     image = QImage(64, 40, QImage.Format.Format_ARGB32)
     image.fill(0xff2584ed)
@@ -168,7 +169,7 @@ with tempfile.TemporaryDirectory(prefix="flickdock-media-") as temporary, \
 
     stale_player, stale_sink = preview.player, preview.video_sink
     preview.set_source(second)
-    assert stale_player.stop_calls >= 1 and preview.surface.image.isNull()
+    assert stale_player.stop_calls >= 1 and preview.surface.image.isNull() and preview.surface.fallback is None
     stale_sink.videoFrameChanged.emit(QVideoFrame(red))
     assert preview.surface.image.isNull() and len(frames) == 1
     preview.video_sink.videoFrameChanged.emit(QVideoFrame(image))
@@ -186,6 +187,14 @@ with tempfile.TemporaryDirectory(prefix="flickdock-media-") as temporary, \
     assert events[-1] is True
     preview.release_source()
     assert preview.path == "" and preview.player is None and not preview.play_button.isEnabled()
+    preview.set_source(video,poster=image,defer=True)
+    assert preview.player is None and preview.surface.image==image and preview.surface.fallback is None
+    assert not preview.play_button.isEnabled()
+    preview.set_source(video,poster=image)
+    assert preview.surface.image==image and preview.player.play_calls==1
+    preview.video_sink.videoFrameChanged.emit(QVideoFrame(red))
+    assert preview.surface.image.pixelColor(0,0).name()=='#ed483b'
+    preview.release_source()
     preview.hide(); preview.show(); preview.toggle_playback()
     assert preview.player is None
     print("PASS changing/hiding releases native source; a remembered poster replays lazily and removed refs never reopen")

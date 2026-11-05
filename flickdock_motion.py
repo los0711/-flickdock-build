@@ -359,6 +359,8 @@ class ContentTile(QWidget):
     Content replacement clears both text and pixmap state, preventing old drag
     images from remaining as an orphaned label. No effect objects are replaced.
     """
+    pulse_timeout_ms=650
+
     def __init__(self, parent: QWidget | None = None, motion: bool = True):
         super().__init__(parent)
         self.motion = motion
@@ -454,7 +456,7 @@ class ContentTile(QWidget):
         self._pulse_completion=self._try_complete_pulse
         # Hover retargets can keep a Spring busy. Intake completion has its own
         # bounded lifetime and does not belong to Spring.animate's callback.
-        self._pulse_deadline.start(650 if self.motion else 180)
+        self._pulse_deadline.start(self.pulse_timeout_ms if self.motion else 180)
         if self.motion:
             self.spring.kick({"sx": 2.8 if success else -2.2,
                               "sy": -3.5 if success else 2.7,

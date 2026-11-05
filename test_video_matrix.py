@@ -89,8 +89,12 @@ class VideoMatrixTests(unittest.TestCase):
         QTest.mouseRelease(self.dialog.title_bar,Qt.LeftButton,pos=point+QPoint(24,15));APP.processEvents()
         self.assertNotEqual(self.dialog.pos(),start)
 
-    def test_parse_success_opens_real_cover_and_hide_closes_owned_preview(self):
+    def test_parse_success_stays_inline_and_explicit_cover_closes_with_its_window(self):
         self.controller.parsed.emit(self.entry);APP.processEvents()
+        self.assertIsNone(self.dialog.cover_preview)
+        self.assertIsNone(self.dialog.parentWidget())
+        self.assertFalse(self.dialog.windowFlags()&Qt.WindowStaysOnTopHint)
+        self.dialog.results[self.entry['key']].cover.click();APP.processEvents()
         preview=self.dialog.cover_preview;self.assertTrue(preview.isVisible());self.assertIs(preview.image.image,self.entry['cover'])
         self.dialog.hide();APP.processEvents();self.assertFalse(preview.isVisible())
         self.controller.parsed.emit(self.entry);APP.processEvents();self.assertFalse(preview.isVisible())

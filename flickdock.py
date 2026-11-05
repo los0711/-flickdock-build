@@ -321,7 +321,7 @@ class DropZone(QFrame):
         self.shelf.touch()
         self._pointer_hovered=True;self._apply_style()
         self.feedback.animate({"hover": 1.0}, response=.14, damping=1.0)
-        self.icon.set_hover(True)
+        self.icon.set_hover(self.drop_highlight or self.icon.geometry().contains(event.position().toPoint()))
         super().enterEvent(event)
 
     def leaveEvent(self, event):
@@ -355,6 +355,7 @@ class DropZone(QFrame):
     def mouseMoveEvent(self, event):
         self.shelf.touch()
         self._track_pill_hover(event.position().toPoint(), event.buttons())
+        self.icon.set_hover(self.drop_highlight or self.icon.geometry().contains(event.position().toPoint()))
         if not self.shelf.intake_blocks_overview() and self._click_armed and event.buttons() & Qt.MouseButton.LeftButton and self.paths and not self.did_drag and (event.position().toPoint() - self.origin).manhattanLength() > 8:
             self.did_drag = True
             self.icon.set_pressed(False)
@@ -491,11 +492,7 @@ class PreviewPane(QFrame):
 
     def _show_image(self,path):
         if not self.image.set_source(path):return False
-        if self.image.image is not None or self.image.renderer is not None:
-            self.stack.setCurrentWidget(self.image)
-        else:
-            self.icon.set_content('file',pixmap=self.shelf.item_pixmap(self.current_path,128,dpr=self.devicePixelRatioF()))
-            self.stack.setCurrentWidget(self.icon)
+        self.stack.setCurrentWidget(self.image)
         return True
 
     def _image_source_ready(self,path,success):
@@ -529,14 +526,18 @@ class PreviewPane(QFrame):
             self._pending_preview=False
             return
         self.copy_button.setEnabled(True)
-        # Decode images and construct native media only after the surface has
-        # landed. The endpoint snapshot needs just a lightweight format card.
+        # Prepare the same preview surface used at rest, while leaving native
+        # decoder setup until the compositor has landed.
         category=self.shelf.content.category(ref)
         self._pending_preview=(self.shelf.content_transition_active() and
             category not in ('images','text','links'))
         if self._pending_preview:
-            self.icon.set_content('file',pixmap=self.shelf.item_pixmap(ref,128,dpr=self.devicePixelRatioF()))
-            self.stack.setCurrentWidget(self.icon)
+            if category in ('video','audio') and MediaPreview.can_preview(ref):
+                self.media.set_source(ref,poster=self.shelf.preview_cache.get(ref),defer=True)
+                self.stack.setCurrentWidget(self.media)
+            else:
+                self.icon.set_content('file',pixmap=self.shelf.item_pixmap(ref,128,dpr=self.devicePixelRatioF()))
+                self.stack.setCurrentWidget(self.icon)
             self.info.setText('')
             return
         raw=self.shelf.content.text(ref)
@@ -564,8 +565,8 @@ class PreviewPane(QFrame):
         elif self.shelf.content.category(ref)=='images' and self._show_image(ref):
             self.info.setText("矢量图像" if source.suffix.lower() in ('.svg','.svgz') else kind(ref)+" 图像")
         elif self.shelf.content.category(ref) in ('video','audio') and MediaPreview.can_preview(ref):
+            self.media.set_source(ref,poster=self.shelf.preview_cache.get(ref))
             self.stack.setCurrentWidget(self.media)
-            self.media.set_source(ref)
             self.info.setText("视频" if self.shelf.content.category(ref)=='video' else "音频")
         elif text_snippet(ref,1) is not None:
             try:
@@ -2592,13 +2593,11 @@ class ShelfWindow(QWidget):
         if self.isVisible():
             if self.presentation_kind=='drag':
                 self.manager.auto_shown=None
-                self._show_at(self._dock_target_rect().topLeft(),'dock',QPoint())
+                self.hide_immediately()
+            else:
+                # A hover return interrupts the dock spring at its current anchor.
+                self._show_at(self.visual_geometry().topLeft(),'dock',QPoint())
                 return
-            # A hover return interrupts the presentation spring in place. The
-            # original overview was constrained from the compact anchor; a new
-            # expanded reveal_rect here would change its vertical anchor.
-            self._show_at(self.visual_geometry().topLeft(),'dock',QPoint())
-            return
         compact=self._dock_target_rect()
         rect=self._expansion_rect(compact) if expanded else compact
         with self._surface_transaction():
@@ -2618,7 +2617,9 @@ class ShelfWindow(QWidget):
         if explicit:
             self.manager.edge_suppressed = True
             self.manager.suppressed_region = QRect(self.manager.edge.geometry())
-        self.geometry_morph.stop()
+        # Closing midway keeps the currently composited frame. Settling the
+        # live tree here would replace it with a resized endpoint for one frame.
+        self.geometry_morph.stop(settle=False)
         if self.popup: self.popup.preview.media.stop()
         self.visible_state = "hiding"
         if self.presentation_kind=='dock' and not self.expanded and self.manager.motion:self._toolbar_entrance.conceal()
@@ -3693,7 +3694,7 @@ class ShelfManager:
         from video_panel import VideoDialog
         if self.video_dialog is None:self.video_dialog=VideoDialog(self,self.video_controller)
         if url is not None:self.video_dialog.url.setText(url);self.video_controller.parse(url)
-        self.video_dialog.refresh();self._center_dialog(self.video_dialog);self.video_dialog.show();self.video_dialog.raise_()
+        self.video_dialog.refresh();self._center_dialog(self.video_dialog);self.video_dialog.show();self.video_dialog.raise_();self.video_dialog.activateWindow()
 
     def queue_transfer_paths(self,mode,paths):
         self._show_transfer_dialog(self.wan if mode=='wan' else self.lan)
@@ -4065,9 +4066,7 @@ class ShelfManager:
                 if (shelf.isVisible() and not shelf.pinned and not shelf.dragging
                         and not shelf.incoming_drop and not shelf._archive_choosing and not shelf.picker_hold_active(now)
                         and not confirmation_active(shelf) and not self.outgoing_drag):
-                    # Qt-visible windows can already be behind a full-screen
-                    # browser. Retire them before the edge handoff this tick.
-                    shelf.hide_immediately();retired=True
+                    shelf.hide_animated(explicit=True);retired=True
             if retired:self.update_handles()
         if self.edge.isVisible() and self.edge.activation_region().contains(pos) and not self.edge_suppressed and not self.shelf.isVisible(): self.show_docked()
         for shelf in self.shelves:
@@ -4082,8 +4081,7 @@ class ShelfManager:
             inside=shelf.hover_region_contains(pos)
             if new_press and in_settings:shelf._release_reveal_level()
             if new_press and not inside and not in_settings and not press_blocked and not shelf.pinned and not self.outgoing_drag:
-                if app_active:shelf.hide_animated(explicit=True)
-                else:shelf.hide_immediately();self.update_handles()
+                shelf.hide_animated(explicit=True)
                 continue
             if shelf.dragging or shelf.incoming_drop or shelf.pinned: continue
             if shelf.presentation_kind=='dock' and not blocked and not self.outgoing_drag:
