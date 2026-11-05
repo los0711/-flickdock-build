@@ -7,6 +7,10 @@ on:
         description: Run only the isolated Windows to Mac direct-peer proof
         type: boolean
         default: false
+      virtual_clipboard:
+        description: Run only isolated native Windows virtual-file clipboard verification
+        type: boolean
+        default: false
   push:
     branches: [cloud-build]
 
@@ -15,7 +19,7 @@ permissions:
 
 jobs:
   cloud-contract:
-    if: github.repository == 'los0711/-flickdock-build' && !inputs.cross_native
+    if: github.repository == 'los0711/-flickdock-build' && !inputs.cross_native && !inputs.virtual_clipboard
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -29,7 +33,7 @@ jobs:
           npm run typecheck --prefix cloud
           npm test --prefix cloud
   clipboard:
-    if: github.repository == 'los0711/-flickdock-build' && !inputs.cross_native
+    if: github.repository == 'los0711/-flickdock-build' && !inputs.cross_native && !inputs.virtual_clipboard
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -135,4 +139,30 @@ jobs:
         with:
           name: cross-native-mac-${{ github.sha }}
           path: cross-native-mac.json
+          retention-days: 3
+  native-virtual:
+    if: github.repository == 'los0711/-flickdock-build' && inputs.virtual_clipboard
+    runs-on: windows-latest
+    timeout-minutes: 7
+    env:
+      PYTHONUTF8: '1'
+      QT_QPA_PLATFORM: windows
+      FD_QA_NATIVE_VIRTUAL: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Install locked Qt clipboard dependencies
+        run: python -m pip install PySide6==6.12.0 cryptography==50.0.2 keyring==25.7.0
+      - name: Verify real Windows OLE delayed virtual-file rendering
+        run: python ci_native_virtual_clipboard.py
+      - name: Retain payload-free native proof
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-virtual-${{ github.sha }}
+          path: native-virtual-clipboard.json
           retention-days: 3
