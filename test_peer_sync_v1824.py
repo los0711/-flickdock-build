@@ -3,6 +3,7 @@ import os
 import threading
 os.environ['QT_QPA_PLATFORM']='offscreen'
 import hashlib
+import json
 import copy
 from contextlib import contextmanager
 from pathlib import Path
@@ -33,6 +34,7 @@ class Wan(QObject):
     sync_signal=Signal(dict)
     def __init__(self,hub,account,index):
         super().__init__();self.hub=hub;self.account=account;self.device_id=f'{index:064x}'
+        self.base=hub.base/f'wan-{index}'
         self._connected=False;self._bound_identity=(account.device_id,account.api.token)
         self.features=['mesh-v1','routes-v1']
     def peers(self):
@@ -44,7 +46,7 @@ class Wan(QObject):
 
 
 class Hub:
-    def __init__(self):self.wans=[];self.links={}
+    def __init__(self,base):self.base=Path(base);self.wans=[];self.links={}
     def forward(self,sender,value):
         kind=value['type'];identifier=value['id']
         def emit(wan,packet):QTimer.singleShot(0,lambda:wan.sync_signal.emit(packet))
@@ -63,6 +65,13 @@ class Hub:
 
 
 class PeerSyncTests(unittest.TestCase):
+    def test_native_error_diagnostic_retains_an_available_adaptive_connection(self):
+        client=self.clients[0];state=next(iter(client._states.values()));rpc=state['rpc']
+        client._handle_native(dict(state=state,event=dict(type='error',message='QA native diagnostic')))
+        rows=json.loads((client.wan.base/'network-diagnostics.json').read_text(encoding='utf8'))
+        self.assertEqual(rows[-1]['code'],'WEBRTC_ERROR')
+        self.assertIs(state['rpc'],rpc);self.assertEqual(len(client.available()),2)
+
     def test_one_copy_uses_lan_p2p_and_r2_for_different_devices_without_duplicate_cloud_bodies(self):
         from peer_sync import try_nearby
         from adaptive_stream import AdaptiveStream
@@ -179,13 +188,14 @@ class PeerSyncTests(unittest.TestCase):
         client._tick();self.assertFalse(client.available());self.assertFalse(client._states)
 
     def setUp(self):
-        self.temp=TemporaryDirectory();self.base=Path(self.temp.name);self.hub=Hub();self.clients=[];group=str(uuid4())
+        self.temp=TemporaryDirectory();self.base=Path(self.temp.name);self.hub=Hub(self.base);self.clients=[];group=str(uuid4())
+        self.addCleanup(self._close_clients)
         for index in range(1,4):
             account=Account(group);wan=Wan(self.hub,account,index);self.hub.wans.append(wan)
             self.clients.append(PeerSync(account,wan))
         for wan in self.hub.wans:wan._connected=True;wan.peers_changed.emit(wan.peers())
         until(lambda:all(len(client.available())==2 for client in self.clients),seconds=20)
-    def tearDown(self):
+    def _close_clients(self):
         for client in self.clients:client.close()
         until(lambda:all(not client._fetches for client in self.clients))
         for client in self.clients:client.deleteLater()
