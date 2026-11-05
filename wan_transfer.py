@@ -449,6 +449,7 @@ class WanTransferService(LanTransferService):
             if previous.route=='relay':state['relay_bytes_prior']=state.get('relay_bytes_prior',0)+sum(previous.traffic().values())
             previous.shutdown()
         generation=value['generation'];state['generation']=generation;state['ready'].clear();state.pop('error',None)
+        state['cloud_starting']=False;state['native_attaching']=False
         state['requested']=True;state['retry_inflight']=False
         state['relay_allowed']=bool(value.get('relayAllowed'));state['connect_started']=time.monotonic()
         state['relay_requested']=False;state.pop('network_error',None)

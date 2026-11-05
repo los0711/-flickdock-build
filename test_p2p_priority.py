@@ -44,10 +44,12 @@ class P2PPriorityTests(unittest.TestCase):
     def native(self,**event):self.service._handle_native(dict(id=self.identifier,generation=self.state['generation'],event=event))
 
     def test_direct_negotiation_has_no_early_cloud_timer(self):
+        self.state.update(cloud_starting=True,native_attaching=True)
         with patch('wan_transfer.WebRTCStream',return_value=self.bridge),patch('wan_transfer.QTimer.singleShot') as timer:
             self.service._begin(self.identifier,self.state,dict(generation=2,iceServers=[],relayAllowed=True,adaptive=True))
         self.assertEqual([call.args[0] for call in timer.call_args_list],[DIRECT_CONNECT_GRACE_MS,P2P_CONNECT_TIMEOUT_MS])
         self.assertFalse(self.jobs);self.service.cloud_routes.open.assert_not_called()
+        self.assertFalse(self.state['cloud_starting']);self.assertFalse(self.state['native_attaching'])
 
     def test_direct_failure_attempts_turn_before_cloud_and_turn_rejection_recovers(self):
         self.native(type='state',state='failed')
