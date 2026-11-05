@@ -23,7 +23,7 @@ class Peer(QObject):
     def __init__(self):
         super().__init__();self.api=self;self.token='fixture-token';self.account={'id':str(uuid4())};self.device_id=str(uuid4())
         self.head=None;self.staged={};self.heads={};self.holds={};self.objects={};self.items={};self.active={};self.held={}
-        self.calls=[];self.puts=[];self.payload_bytes=0;self.cancelled=[];self.hold_reply=False;self.replies={}
+        self.calls=[];self.puts=[];self.payload_bytes=0;self.cancelled=[];self.hold_reply=False;self.replies={};self.deliveries={}
     @property
     def signed_in(self):return bool(self.token)
     def request(self,method,path,callback,**options):
@@ -35,7 +35,8 @@ class Peer(QObject):
         def deliver():
             if key not in self.active:return
             data=options.get('data') or {}
-            if path=='/v1/clipboard' and method=='GET':respond({'clipboard':self.head});return
+            if path=='/v1/clipboard' and method=='GET':
+                respond({'clipboard':self.head,'delivery':self.deliveries.get(self.head['id']) if self.head else None});return
             if path=='/v1/clipboard' and method=='POST':
                 identity=data['id']
                 if identity in self.heads and self.heads[identity].get('ready'):
@@ -49,6 +50,13 @@ class Peer(QObject):
                 respond(dict(clipboard=pending,shared_files=True));return
             if path.startswith('/v1/clipboard/'):
                 identity=path.split('/')[3]
+                if path.endswith('/delivery') and method=='POST':
+                    if not self.head or self.head['id']!=identity or self.head['sha256']!=data['sha256']:
+                        respond(error=CloudError('replaced',409,'CLIPBOARD_REPLACED'));return
+                    receipt=self.deliveries.setdefault(identity,dict(id=identity,sha256=self.head['sha256'],origin=self.head['device'],plan={},receipts={}))
+                    if 'plan' in data:receipt['plan']=dict(data['plan'])
+                    if 'route' in data:receipt['receipts'][self.device_id]=data['route']
+                    respond({'delivery':copy.deepcopy(receipt)});return
                 if path.endswith('/retain'):
                     self.holds.setdefault(identity,set()).add(data['item_id'])
                     respond(dict(retained=True,clipboard=self.heads.get(identity),shared_files=True));return

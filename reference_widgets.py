@@ -611,6 +611,10 @@ class MiniStack(StackTile):
         super().set_hover(value)
         self.border_motion.set_active(value and not self.refs)
 
+    def hideEvent(self,event):
+        self._hovered=False;self.border_motion.set_active(False)
+        super().hideEvent(event)
+
     def set_stack(self,repository,refs,preview_cache=None):
         super().set_stack(repository,refs,preview_cache)
         self.border_motion.set_active(self._hovered and not self.refs)

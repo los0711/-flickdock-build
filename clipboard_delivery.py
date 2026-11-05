@@ -78,6 +78,8 @@ class ClipboardDeliveries(QObject):
             candidate['plan']=dict(self.current['plan'],**candidate['plan'])
             if candidate==self.current:return
         else:
+            # Cloud commit hints can arrive while the same peer body is still
+            # being unpacked. Keep that hint until its exact ID/hash is applied.
             cached=self.cloud_snapshot
             self.reset();self.cloud_snapshot=cached
         if candidate['origin']==self.client.account.device_id:self.dirty=True
@@ -100,6 +102,8 @@ class ClipboardDeliveries(QObject):
         except ValueError:return
         self.cloud_snapshot=incoming
         if self.current is None or any(incoming[key]!=self.current[key] for key in ('id','sha256','origin')):return
+        # This account-authenticated event is emitted only for a committed head;
+        # it confirms backup without another body request or a polling delay.
         self.cloud_ready=True
         updated=dict(incoming,plan=dict(self.current['plan'],**incoming['plan']),receipts=dict(self.current['receipts'],**incoming['receipts']))
         if updated!=self.current:self.current=updated;self._changed()
