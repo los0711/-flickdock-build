@@ -1,7 +1,7 @@
 """Expanded formats, owned cover decoding, real Qt geometry and source actions."""
 import os
 os.environ['QT_QPA_PLATFORM']='offscreen'
-import base64,tempfile,unittest
+import base64,sys,tempfile,unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -64,7 +64,10 @@ class VideoMatrixTests(unittest.TestCase):
     def test_all_sources_have_three_persistent_icon_actions_and_no_dropdown(self):
         self.assertEqual(len(self.dialog.cards),6);self.assertFalse(self.dialog.findChildren(QComboBox))
         self.assertTrue(self.dialog.parse_button.icon().isNull());self.assertEqual(self.dialog.parse_button.text(),'解析')
-        self.assertEqual(set(self.dialog.chrome.buttons),{'min','max','close'})
+        if sys.platform=='darwin':
+            self.assertEqual(len(self.dialog.traffic_buttons),3)
+            self.assertTrue(all(control.isVisible() for control in self.dialog.traffic_buttons))
+        else:self.assertEqual(set(self.dialog.chrome.buttons),{'min','max','close'})
         for card in self.dialog.cards.values():
             self.assertEqual(len(card.findChildren(QPushButton)),3)
             self.assertEqual([button.text() for button in (card.download,card.shelf,card.folder)],['','',''])

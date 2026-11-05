@@ -1,5 +1,6 @@
 """Movable media window, expanded source matrix and an owned cover/player dialog."""
 from pathlib import Path
+import sys
 from PySide6.QtCore import QRect,QSize,Qt
 from PySide6.QtGui import QPainter,QColor
 from PySide6.QtWidgets import QCheckBox,QFrame,QGridLayout,QHBoxLayout,QLabel,QLineEdit,QPushButton,QVBoxLayout,QWidget
@@ -14,6 +15,7 @@ VIDEO_WINDOW_SIZE=QSize(980,740)
 VIDEO_WINDOW_MIN_SIZE=QSize(600,420)
 SOURCE_GRID_BREAKPOINT_PX=580
 SOURCE_CARD_SPACING_PX=10
+MAC_WINDOW_CONTROLS=(('close','#FF5F56','关闭视频解析'),('min','#FFBD2E','最小化'),('max','#27C93F','最大化或还原'))
 
 def plain_label(text,parent,name='videoMeta'):
     label=QLabel(text,parent);label.setObjectName(name);label.setTextFormat(Qt.PlainText)
@@ -190,6 +192,18 @@ class VideoDialog(ReferenceModalDialog):
         change=button('更改位置',parent=footer);change.clicked.connect(self._choose_folder);folder_row.addWidget(change);self.folder_button=change
         foot.addLayout(folder_row);self.surface.layout().addWidget(footer)
         self.chrome=WindowChrome(self,self.title_bar,manager.settings,'video',surface=self.surface)
+        self.traffic_buttons=[]
+        if sys.platform=='darwin':
+            from native_ui_common import toggle_window_zoom
+            from window_chrome import minimize_utility
+            traffic=QWidget(self.title_bar);controls=QHBoxLayout(traffic);controls.setContentsMargins(0,0,0,0);controls.setSpacing(8)
+            actions={'close':self.close,'min':lambda:minimize_utility(self),'max':lambda:toggle_window_zoom(self)}
+            for role,tint,description in MAC_WINDOW_CONTROLS:
+                control=QPushButton(traffic);control.setFixedSize(12,12);control.setAutoDefault(False)
+                control.setAccessibleName(description);control.setToolTip(description)
+                control.setStyleSheet(f'QPushButton{{background:{tint};border:0;border-radius:6px;padding:0;}}')
+                control.clicked.connect(actions[role]);controls.addWidget(control);self.traffic_buttons.append(control)
+            header.insertWidget(0,traffic);self.close_button.hide()
         self.chrome.default_size=QSize(VIDEO_WINDOW_SIZE)
         self._layout_ready=True;self.resize(VIDEO_WINDOW_SIZE)
         controller.changed.connect(self.refresh);controller.parsed.connect(self.show_cover);controller.preview_requested.connect(self._preview)

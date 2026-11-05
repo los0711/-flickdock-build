@@ -56,7 +56,7 @@ class ReceiveNoticeTests(unittest.TestCase):
     def test_manager_only_auto_accepts_and_notifies_the_authenticated_same_account(self):
         from flickdock import ShelfManager
         ShelfManager._wan_offer(self.manager,self.offer)
-        self.wan.accept.assert_called_once_with(self.offer['id'],self.root)
+        self.wan.accept.assert_called_once_with(self.offer['id'],self.root.resolve())
         self.manager.show_wan_dialog.assert_not_called();self.assertTrue(self.notice.toast.isVisible())
         self.assertTrue(self.notice.toast.testAttribute(Qt.WA_ShowWithoutActivating))
         self.assertEqual(self.notice.toast.width(),390)
