@@ -120,12 +120,17 @@ class MotionShadow(QGraphicsDropShadowEffect):
     The widget's hit bounds stay stable. Only its painted presentation moves,
     so pointer interaction and layout don't jitter as the surface springs.
     """
-    def __init__(self, widget: QWidget, alpha: int = 45):
+    def __init__(self, widget: QWidget, alpha: int = 45, *, cache_while=None):
         super().__init__(widget)
         self.sx = self.sy = 1.0
         self.dx = self.dy = 0.0
         self._shadow_cache=OrderedDict()
         self._surface_snapshot=None
+        self._source_cache=QPixmap()
+        self._source_offset=QPoint()
+        self._source_bounds=QRectF()
+        self._source_dpr=0.
+        self._cache_while=cache_while
         self.setBlurRadius(28)
         self.setOffset(0, 7)
         self.setColor(QColor(18, 31, 53, alpha))
@@ -137,14 +142,26 @@ class MotionShadow(QGraphicsDropShadowEffect):
         self.updateBoundingRect()
         self.update()
 
+    def sourceChanged(self,flags):
+        self.invalidate_source()
+        super().sourceChanged(flags)
+
+    def invalidate_source(self):
+        # QWidget sourcePixmap is not cached by Qt. Reuse only for a finite
+        # transition: its controller invalidates on data changes, and every
+        # resting frame returns to Qt's live subtree (including native video).
+        self._source_cache=QPixmap()
+
     def begin_surface_morph(self,snapshot) -> None:
         """Keep this effect as the sole compositor throughout the resize."""
         self._surface_snapshot=snapshot
+        self._source_cache=QPixmap()
         self.updateBoundingRect()
         self.update()
 
     def end_surface_morph(self) -> None:
         self._surface_snapshot=None
+        self._source_cache=QPixmap()
         self.updateBoundingRect()
         self.update()
 
@@ -189,8 +206,13 @@ class MotionShadow(QGraphicsDropShadowEffect):
             # overview; use that endpoint until the final live-source handoff.
             source=snapshot.target
         else:
-            source=self.sourcePixmap(Qt.CoordinateSystem.LogicalCoordinates,offset,
-                                     QGraphicsEffect.PixmapPadMode.NoPad)
+            ratio=self.parent().devicePixelRatioF()
+            if self._cache_while is None or not self._cache_while():self.invalidate_source()
+            if self._source_cache.isNull() or self._source_bounds!=bounds or self._source_dpr!=ratio:
+                self._source_cache=self.sourcePixmap(Qt.CoordinateSystem.LogicalCoordinates,self._source_offset,
+                                                     QGraphicsEffect.PixmapPadMode.NoPad)
+                self._source_bounds=QRectF(bounds);self._source_dpr=ratio
+            source=self._source_cache;offset=self._source_offset
         def draw_live(target):
             if active and snapshot.mix<1:snapshot.draw_target(target,QRectF(QPointF(),bounds.size()))
             else:target.drawPixmap(QPointF(offset),source)

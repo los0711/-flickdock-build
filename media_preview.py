@@ -181,6 +181,9 @@ class _VideoSurface(QWidget):
         self.image = QImage()
         self.fallback = None
         self.native = None
+        self.status_label=QLabel(self)
+        self.status_label.setWordWrap(True)
+        self.status_label.setAlignment(Qt.AlignHCenter|Qt.AlignBottom)
         self.setMinimumHeight(100)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -205,6 +208,7 @@ class _VideoSurface(QWidget):
         super().resizeEvent(event)
         if self.native is not None:
             self.native.setGeometry(self.rect())
+        self.status_label.setGeometry(self.rect().adjusted(12,12,-12,-12))
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -256,9 +260,9 @@ class MediaPreview(QWidget):
         root.setSpacing(7)
         self.surface = _VideoSurface(self)
         root.addWidget(self.surface, 1)
-        self.status_label = QLabel(self)
-        self.status_label.setWordWrap(True)
-        root.addWidget(self.status_label)
+        # Loading/errors are overlays. A temporary layout row changes the
+        # video viewport's size when the first frame hides the message.
+        self.status_label = self.surface.status_label
         self.seek_slider = _SeekSlider(Qt.Orientation.Horizontal, self)
         self.seek_slider.setRange(0, 0)
         self.seek_slider.setAccessibleName("播放进度")

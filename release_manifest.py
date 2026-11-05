@@ -54,6 +54,7 @@ MAINTAINED_TESTS=(
     'test_p2p_priority.py','test_receive_notice.py',
     'test_display_frames.py',
     'test_preview_continuity.py',
+    'test_surface_source_cache.py',
     'test_mac_install.py',
     'test_video_matrix.py',
     'test_workbench_v1823.py',

@@ -1,8 +1,9 @@
 """Utility-window transitions, separate from the native shelf compositor."""
-from PySide6.QtCore import QCoreApplication,QEvent,QObject,QPoint,QPointF,QRectF,Qt,QTimer,QVariantAnimation,QEasingCurve
+from PySide6.QtCore import QCoreApplication,QEvent,QObject,QPoint,QPointF,QRectF,Qt,QTimer,QEasingCurve,Signal,Slot
 from PySide6.QtGui import QGuiApplication,QPainter,QPixmap
 from PySide6.QtWidgets import QWidget,QGraphicsEffect
 from shiboken6 import isValid
+from display_frames import DisplayAnimation
 
 UTILITY_TRANSITION_MS=180
 WINDOW_MIN_SCALE=.96
@@ -34,7 +35,7 @@ class DwellHint(QObject):
         super().__init__(owner);self.owner=owner;self.value=0.
         self.wait=QTimer(self);self.wait.setSingleShot(True);self.wait.setInterval(1400)
         self.wait.timeout.connect(self._start)
-        self.animation=QVariantAnimation(self);self.animation.setDuration(240)
+        self.animation=DisplayAnimation(self);self.animation.setDuration(240)
         self.animation.setEasingCurve(exit_curve())
         self.animation.setKeyValueAt(0.,0.);self.animation.setKeyValueAt(.45,1.);self.animation.setKeyValueAt(1.,0.)
         self.animation.valueChanged.connect(self._frame);owner.installEventFilter(self)
@@ -64,7 +65,7 @@ class ToolbarEntrance(QObject):
     """One finite clock for all compact header glyphs, with fixed hit regions."""
     def __init__(self,owner,controls):
         super().__init__(owner);self.owner=owner;self.controls=controls;self.progress=1.
-        self.animation=QVariantAnimation(self);self.animation.setDuration(240)
+        self.animation=DisplayAnimation(self);self.animation.setDuration(240)
         self.animation.valueChanged.connect(self._frame);self.curve=exit_curve()
         owner.installEventFilter(self)
 
@@ -102,10 +103,14 @@ def fade_hide(window):
 
 class _WindowZoom(QGraphicsEffect):
     """Transform one captured surface without resizing its native window."""
+    captured=Signal()
     def __init__(self,parent):
-        super().__init__(parent);self.scale=1.;self.snapshot=QPixmap();self.setEnabled(False)
+        super().__init__(parent);self.scale=1.;self.snapshot=QPixmap();self.notify_capture=False;self.setEnabled(False)
 
     def reset(self):self.snapshot=QPixmap();self.scale=1.;self.setEnabled(False)
+
+    def sourceChanged(self,flags):
+        self.snapshot=QPixmap();super().sourceChanged(flags)
 
     def draw(self,painter):
         if self.snapshot.isNull():
@@ -115,14 +120,16 @@ class _WindowZoom(QGraphicsEffect):
         painter.save();painter.setRenderHint(QPainter.SmoothPixmapTransform)
         painter.translate(center);painter.scale(self.scale,self.scale);painter.translate(-center)
         painter.drawPixmap(QPointF(self.offset),self.snapshot);painter.restore()
+        if self.notify_capture:
+            self.notify_capture=False;self.captured.emit()
 
 
 class WindowFade(QObject):
     """Keep native focus, shadow and hit testing; never animate geometry."""
     def __init__(self,window):
         super().__init__(window);self.window=window;self.pending=None;self.completing=False
-        self.scale=1.;self.zoom=None
-        self.animation=QVariantAnimation(self);self.animation.setDuration(UTILITY_TRANSITION_MS)
+        self.scale=1.;self.zoom=None;self._awaiting_capture=False
+        self.animation=DisplayAnimation(self);self.animation.setDuration(UTILITY_TRANSITION_MS)
         self.animation.setEasingCurve(exit_curve())
         self.animation.valueChanged.connect(self._frame)
         self.animation.finished.connect(self._finished);window.installEventFilter(self)
@@ -136,6 +143,7 @@ class WindowFade(QObject):
             self.zoom.scale=self.scale;self.zoom.update()
 
     def _reset_zoom(self):
+        self._awaiting_capture=False
         self.scale=1.
         if self.zoom is not None:self.zoom.reset()
 
@@ -156,9 +164,22 @@ class WindowFade(QObject):
         self.animation.stop()
         if self.zoom is None:
             self.zoom=_WindowZoom(self.window);self.window.setGraphicsEffect(self.zoom)
+            self.zoom.captured.connect(self._captured,Qt.QueuedConnection)
         self.zoom.setEnabled(True);self.zoom.scale=self.scale
         self.animation.setStartValue(QPointF(self.window.windowOpacity(),self.scale))
-        self.animation.setEndValue(QPointF(target,1. if target else WINDOW_MIN_SCALE));self.animation.start()
+        self.animation.setEndValue(QPointF(target,1. if target else WINDOW_MIN_SCALE))
+        self._awaiting_capture=self.zoom.snapshot.isNull()
+        if self._awaiting_capture:
+            # Layout/font rendering can cost tens of milliseconds on first
+            # open. Start time only after that first image has been painted.
+            self.zoom.notify_capture=True;self.zoom.update()
+        else:self.animation.start()
+
+    @Slot()
+    def _captured(self):
+        if (self._awaiting_capture and isValid(self.window) and self.window.isVisible()
+                and not self.zoom.snapshot.isNull()):
+            self._awaiting_capture=False;self.animation.start()
 
     def defer_done(self,result,callback):
         if self.completing or not self.window.isVisible() or not self.enabled():return False
@@ -189,7 +210,7 @@ class SnapshotFade(QWidget):
         super().__init__(parent);self.snapshot=None;self.alpha=0.0
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
         self.setAttribute(Qt.WA_NoSystemBackground);self.hide()
-        self.animation=QVariantAnimation(self);self.animation.setDuration(180)
+        self.animation=DisplayAnimation(self);self.animation.setDuration(180)
         self.animation.setEasingCurve(exit_curve());self.animation.valueChanged.connect(self._frame)
         self.animation.finished.connect(self.finish)
         parent.installEventFilter(self)

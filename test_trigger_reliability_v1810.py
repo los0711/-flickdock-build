@@ -168,6 +168,21 @@ class TriggerReliabilityTests(unittest.TestCase):
             manager.update_handles()
             self.assertTrue(manager.edge.isVisible())
 
+    def test_video_open_releases_shelf_native_level_before_raising_the_independent_window(self):
+        from video_panel import VideoDialog
+        manager=self.manager;manager.show_overview();manager.shelf._native_revealed=True
+        order=[];show=VideoDialog.show
+        def open_window(dialog):order.append('show');return show(dialog)
+        with patch.object(flickdock,'lower_shelf_after_reveal',side_effect=lambda shelf:order.append('lower') or True), \
+             patch.object(VideoDialog,'show',open_window),patch.object(VideoDialog,'raise_') as raised:
+            manager.show_video_dialog()
+            self.assertEqual(order[:2],['lower','show'])
+            self.assertFalse(manager.shelf._native_revealed)
+            self.assertFalse(manager.video_dialog.windowFlags()&Qt.WindowStaysOnTopHint)
+            self.assertIsNone(manager.video_dialog.parentWidget())
+            manager.show_overview()
+            self.assertEqual(raised.call_count,1,'A later overview entry raised the video window again')
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

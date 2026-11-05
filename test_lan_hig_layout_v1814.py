@@ -154,6 +154,33 @@ class LanHigLayoutTests(unittest.TestCase):
         self.assertTrue(panel.clear_history.isEnabled())
         self.assertIn('无法清空',panel.status_label.text())
 
+    def test_open_device_popup_has_its_own_opaque_background_and_keeps_keyboard_selection(self):
+        from PySide6.QtGui import QColor
+        combo=self.panel.devices
+        for index in range(3):combo.addItem('同账号 · 设备 '+str(index),'fixture-'+str(index))
+        for theme,background in (('dark','#303034'),('light','#F1F1F4')):
+            self.dialog.apply_theme(theme);combo.setCurrentIndex(0);combo.showPopup();self.settle()
+            view=combo.view();popup=view.window();image=view.viewport().grab().toImage()
+            position=view.visualRect(view.model().index(1,0)).center()
+            self.assertEqual(image.pixelColor(8,position.y()).alpha(),255)
+            self.assertEqual(image.pixelColor(8,position.y()),QColor(background))
+            self.assertFalse(popup.testAttribute(Qt.WA_TranslucentBackground))
+            QTest.keyClick(view,Qt.Key_Down);QTest.keyClick(view,Qt.Key_Return)
+            self.assertEqual(combo.currentIndex(),1);self.assertFalse(popup.isVisible())
+
+    def test_empty_queue_heading_stays_at_top_and_drop_target_fills_then_compacts(self):
+        from lan_panel import CARD_MARGIN_PX,QUEUE_EMPTY_HEIGHT_PX,DROP_ZONE_COMPACT_HEIGHT_PX
+        panel=self.panel;paths=self.files(1)
+        for count in (0,1,0,1,0):
+            panel.queue_paths(paths[:count],replace=True);self.settle()
+            heading=panel.add_files.mapTo(panel.queue_area,QPoint()).y()
+            self.assertEqual(heading,CARD_MARGIN_PX)
+            self.assertEqual(panel.drop_zone.geometry().bottom(),panel.queue_area.height()-CARD_MARGIN_PX-1)
+            if count:self.assertEqual(panel.drop_zone.height(),DROP_ZONE_COMPACT_HEIGHT_PX)
+            else:
+                self.assertEqual(panel.queue_area.height(),QUEUE_EMPTY_HEIGHT_PX)
+                self.assertGreater(panel.drop_zone.height(),90)
+
     def test_busy_default_and_minimum_windows_keep_actions_complete_and_surface_opaque(self):
         self.load_busy_state()
         panel=self.panel

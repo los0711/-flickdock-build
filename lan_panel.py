@@ -10,7 +10,7 @@ import time
 from collections import deque
 
 from PySide6.QtCore import QByteArray, QEvent, QObject, QPoint, QRect, QRectF, QSize, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QFont, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QPainter, QPainterPath, QPalette,QPen
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog, QFrame, QGraphicsDropShadowEffect,
                                QHBoxLayout, QLayout, QLabel, QLineEdit, QProgressBar, QPushButton,
@@ -28,6 +28,8 @@ WORKBENCH_MARGIN_PX = 16
 CARD_MARGIN_PX = 12
 QUEUE_ROW_HEIGHT_PX = 44
 QUEUE_MAX_HEIGHT_PX = 144
+QUEUE_EMPTY_HEIGHT_PX = 164
+DROP_ZONE_COMPACT_HEIGHT_PX = 34
 CODE_REFRESH_POLL_MS = 250
 CODE_PROGRESS_MAX = 1000
 
@@ -247,12 +249,16 @@ class _DevicesCombo(QComboBox):
         self.setStyle(self._popup_style);self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
     def showPopup(self):
-        popup=self.view().window()
-        popup.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground,False)
-        popup.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint,True)
-        popup.setAutoFillBackground(True)
+        view=self.view();popup=view.window()
+        from native_ui_common import rounded_popup
         dark=bool(getattr(self.itemDelegate(),'dark',False))
-        popup.setStyleSheet('QFrame{background:'+('#242426' if dark else '#FFFFFF')+';border:0;border-radius:'+str(TRANSFER_CORNER_RADIUS_PX)+'px;}')
+        background='#303034' if dark else '#F1F1F4'
+        for surface in (popup,view,view.viewport()):
+            palette=surface.palette()
+            palette.setColor(QPalette.ColorRole.Window,QColor(background));palette.setColor(QPalette.ColorRole.Base,QColor(background))
+            surface.setPalette(palette);surface.setAutoFillBackground(True)
+        popup.setStyleSheet('QFrame,QAbstractItemView{background:'+background+';border:0;border-radius:'+str(TRANSFER_CORNER_RADIUS_PX)+'px;}')
+        rounded_popup(popup,TRANSFER_CORNER_RADIUS_PX)
         super().showPopup()
         self.view().viewport().installEventFilter(self)
 
@@ -683,6 +689,7 @@ class LanPanel(QFrame):
         self.queue_column=queue_column
         queue_box.setContentsMargins(0,0,0,0);queue_box.setSpacing(6)
         send_heading=QHBoxLayout();send_heading.setContentsMargins(0,0,0,0)
+        self.send_heading=send_heading
         self.send_heading_label=_label('待发送项目',queue_column);self.send_heading_label.setObjectName('lanSection')
         send_heading.addWidget(self.send_heading_label,1)
         self.add_files=_button('添加文件',queue_column);self.add_files.setIcon(ui_icon('plus'));self.add_files.clicked.connect(self._pick_files)
@@ -906,10 +913,14 @@ class LanPanel(QFrame):
         if hasattr(self,'_activity_fit_timer'):self._fit_queue();self._fit_activity()
 
     def _fit_queue(self):
-        self.queue_column.layout().invalidate();self.queue_column.layout().activate()
-        payload=self.queue_area.layout();payload.invalidate()
-        height=max(payload.minimumSize().height(),payload.totalHeightForWidth(max(1,self.queue_area.width())))
-        if self.queue_area.height()!=height:self.queue_area.setFixedHeight(height)
+        queue=self.queue_column.layout();payload=self.queue_area.layout()
+        heading=max(self.send_heading.sizeHint().height(),self.add_files.minimumHeight())
+        column=heading+(queue.spacing()+self.queue_scroll.height() if self._queued_paths else 0)
+        margins=payload.contentsMargins();fixed=margins.top()+margins.bottom()+payload.spacing()+column
+        drop=DROP_ZONE_COMPACT_HEIGHT_PX if self._queued_paths else max(DROP_ZONE_COMPACT_HEIGHT_PX,QUEUE_EMPTY_HEIGHT_PX-fixed)
+        self.queue_column.setFixedHeight(column);self.drop_zone.setFixedHeight(drop)
+        height=fixed+drop
+        if self.queue_area.minimumHeight()!=height or self.queue_area.maximumHeight()!=height:self.queue_area.setFixedHeight(height)
 
     def _fit_activity(self):
         width=max(1,self.activity_scroll.viewport().width())
@@ -1018,7 +1029,6 @@ class LanPanel(QFrame):
         self._queue_rendered=True
         count = len(self._queued_paths)
         self.drop_zone.title.setText('拖入文件/文件夹，或点击添加')
-        self.drop_zone.setFixedHeight(34 if count else 44)
         self.drop_zone.hint.hide()
         self.clear_queue.setEnabled(bool(count))
         self.send_button.setText(f'发送 {count} 项' if count else '发送文件')

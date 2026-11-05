@@ -479,6 +479,7 @@ class PreviewPane(QFrame):
             self.shelf.remove_path('permanent',self.current_path)
 
     def _poster_ready(self, path, image):
+        self.shelf.surface_effect.invalidate_source()
         if not image.isNull():
             # This is a thumbnail cache, separate from the visible full-quality
             # video surface. Bound both dimensions and total native image bytes.
@@ -496,6 +497,7 @@ class PreviewPane(QFrame):
         return True
 
     def _image_source_ready(self,path,success):
+        self.shelf.surface_effect.invalidate_source()
         ref=self.current_path
         if not ref or getattr(self,'_group_refs',()):return
         expected=self.shelf.content.metadata.get(ref,{}).get('preview_image') or ref
@@ -509,6 +511,7 @@ class PreviewPane(QFrame):
 
     def show_path(self, ref, force=False):
         if self.current_path==ref and not force and not getattr(self,'_group_refs',()): return
+        self.shelf.surface_effect.invalidate_source()
         self._group_refs=()
         self.group_view.hide()
         self.media.stop()
@@ -613,6 +616,7 @@ class PreviewPane(QFrame):
     def show_group(self,refs):
         refs=tuple(refs)
         if getattr(self,'_group_refs',())==refs: return
+        self.shelf.surface_effect.invalidate_source()
         self.media.stop();self._pending_preview=False;self._group_refs=refs;self.current_path=refs[-1]
         self.refresh_cloud_status()
         self.copy_button.setEnabled(True);self.transfer_row.hide();self.transfer_overlay.hide()
@@ -661,7 +665,8 @@ class FileRow(QFrame):
         self.popup,self.path=popup,path;self.setAcceptDrops(True);self.origin=QPoint();self.did_drag=False
         self.setFixedHeight(FILE_ROW_HEIGHT_PX);self.setMouseTracking(True);self.setCursor(Qt.OpenHandCursor);self.setFocusPolicy(Qt.StrongFocus)
         self._keyboard_focus=False
-        self.motion=Spring(self,{'highlight':0},lambda _:self.update(),motion=popup.shelf.manager.motion)
+        self._highlighted=False
+        self.motion=Spring(self,{'highlight':0},self._hover_frame,motion=popup.shelf.manager.motion)
         row=QHBoxLayout(self);row.setContentsMargins(12,8,8,8);row.setSpacing(12)
         self.selection_check=SelectionCheck(self);self.selection_check.setFixedSize(40,40);self.selection_check.setChecked(path in popup.selected)
         self.selection_check.setAccessibleName('选择 '+popup.shelf.content.title(path))
@@ -679,6 +684,11 @@ class FileRow(QFrame):
         self.remove_button=ToolbarButton('close',self,motion=popup.shelf.manager.motion);self.remove_button.setFixedSize(32,32);self.remove_button.setToolTip('从搁架移除');self.remove_button.setAccessibleName('从搁架移除 '+popup.shelf.content.title(path));self.remove_button.clicked.connect(lambda:popup.remove_path(self.path))
         policy=self.remove_button.sizePolicy();policy.setRetainSizeWhenHidden(True);self.remove_button.setSizePolicy(policy)
         row.addWidget(self.remove_button);self.remove_button.show();self.refresh_cloud_status()
+
+    def _hover_frame(self,values):
+        highlighted=values['highlight']>.3
+        if highlighted!=self._highlighted:
+            self._highlighted=highlighted;self.popup.shelf.surface_effect.invalidate_source();self.update()
 
     def refresh_content(self):
         from reference_widgets import item_detail
@@ -1272,6 +1282,7 @@ class ContentsPopup(QFrame):
         return [ref for ref in self.shelf.files['permanent'] if ref in self.selected]
 
     def update_selection_actions(self):
+        self.shelf.surface_effect.invalidate_source()
         count=len(self.chosen_refs());busy=self.shelf.archive_job is not None
         self.preview.update_action_states()
         choosing=self.shelf._archive_choosing
@@ -1494,7 +1505,8 @@ class ShelfWindow(QWidget):
         set_ui_style(self.card, "QFrame#shelfCard {background:#ffffff;border:0;border-radius:24px;}")
         # The native host remains transparent; this is the card's rounded
         # shadow, confined to the reserved animation surface margins.
-        self.surface_effect = MotionShadow(self.card, alpha=42)
+        self.surface_effect = MotionShadow(self.card, alpha=42,
+            cache_while=lambda:self.expanded and self.presentation._timer.isActive() and not self.incoming_drop and not self.preview_playing)
         self.surface_effect.setBlurRadius(13)
         self.surface_effect.setOffset(0, 4)
         self.card.setGraphicsEffect(self.surface_effect)
@@ -1788,6 +1800,7 @@ class ShelfWindow(QWidget):
 
     def _flush_images(self):
         if self.content_transition_active(): return
+        self.surface_effect.invalidate_source()
         ready=self._pending_image_paths;self._pending_image_paths=set()
         refs=[ref for ref in self.files['permanent'] if ref in ready or
               self.content.metadata.get(ref,{}).get('preview_image') in ready]
@@ -1983,6 +1996,7 @@ class ShelfWindow(QWidget):
             self.popup.preview.update_transfer_status()
 
     def transfers_updated(self):
+        self.surface_effect.invalidate_source()
         self.transfer_rates.observe(self.content.transfers)
         if self.content.transfers and not self._transfer_timer.isActive():self._transfer_timer.start()
         self.expand_button.setEnabled(True)
@@ -2032,6 +2046,7 @@ class ShelfWindow(QWidget):
 
     def refresh(self):
         from reference_widgets import refresh_tree
+        self.surface_effect.invalidate_source()
         theme=self.manager.settings.theme
         if getattr(self,'_tree_theme',None)!=theme:
             refresh_tree(self);self._tree_theme=theme
@@ -2086,6 +2101,7 @@ class ShelfWindow(QWidget):
 
     def _file_information_ready(self,ref):
         if ref not in self.files['permanent']:self._missing_refs.pop(ref,None);return
+        self.surface_effect.invalidate_source()
         info=self.file_metadata.request(ref) or {}
         if not info.get('exists') and info.get('errno') in (2,20) and info.get('local_volume') is True:
             candidate=self._missing_refs.get(ref)
@@ -3694,6 +3710,7 @@ class ShelfManager:
         from video_panel import VideoDialog
         if self.video_dialog is None:self.video_dialog=VideoDialog(self,self.video_controller)
         if url is not None:self.video_dialog.url.setText(url);self.video_controller.parse(url)
+        self.shelf._release_reveal_level()
         self.video_dialog.refresh();self._center_dialog(self.video_dialog);self.video_dialog.show();self.video_dialog.raise_();self.video_dialog.activateWindow()
 
     def queue_transfer_paths(self,mode,paths):

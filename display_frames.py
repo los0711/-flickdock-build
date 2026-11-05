@@ -1,7 +1,8 @@
 """One native update-request clock per QWidget window, idle without animations."""
 from weakref import WeakSet
+import time
 
-from PySide6.QtCore import QEvent, QMetaObject, QObject, Qt, Signal, Slot
+from PySide6.QtCore import QAbstractAnimation,QEvent,QMetaObject,QObject,Qt,Signal,Slot,QVariantAnimation
 from PySide6.QtWidgets import QWidget
 from shiboken6 import isValid
 
@@ -109,3 +110,77 @@ class FramePulse(QObject):
 
     def isActive(self):
         return self.active
+
+
+class DisplayAnimation(QObject):
+    """Qt value interpolation paced by the owning window's native frame clock.
+
+    QVariantAnimation remains the value/easing engine, but is never started
+    on Qt's fixed unified timer. This is the same clock used by shelf springs
+    and geometry, including pauses, seeks and interrupted window transitions.
+    """
+    valueChanged=Signal(object)
+    finished=Signal()
+    State=QAbstractAnimation.State
+    Stopped=State.Stopped
+    Running=State.Running
+    Paused=State.Paused
+
+    def __init__(self,parent):
+        super().__init__(parent)
+        self._values=QVariantAnimation(self)
+        self._values.valueChanged.connect(self.valueChanged.emit)
+        self._frames=FramePulse(self);self._frames.timeout.connect(self._advance)
+        self._state=self.Stopped;self._started_at=0.
+
+    def _configure(self,method,*args):
+        previous=self._values.blockSignals(True)
+        try:method(*args)
+        finally:self._values.blockSignals(previous)
+
+    def setDuration(self,value):self._configure(self._values.setDuration,value)
+    def duration(self):return self._values.duration()
+    def setEasingCurve(self,value):self._configure(self._values.setEasingCurve,value)
+    def easingCurve(self):return self._values.easingCurve()
+    def setStartValue(self,value):self._configure(self._values.setStartValue,value)
+    def startValue(self):return self._values.startValue()
+    def setEndValue(self,value):self._configure(self._values.setEndValue,value)
+    def endValue(self):return self._values.endValue()
+    def setKeyValueAt(self,step,value):self._configure(self._values.setKeyValueAt,step,value)
+    def currentTime(self):return self._values.currentTime()
+    def currentValue(self):return self._values.currentValue()
+    def state(self):return self._state
+
+    def start(self):
+        self.stop();self._state=self.Running
+        self._configure(self._values.setCurrentTime,0)
+        self._started_at=time.perf_counter()
+        self.valueChanged.emit(self.currentValue())
+        if self.duration()==0:self._complete()
+        elif self._state==self.Running:self._frames.start()
+
+    def stop(self):
+        self._frames.stop();self._state=self.Stopped
+
+    def pause(self):
+        if self._state==self.Running:self._frames.stop();self._state=self.Paused
+
+    def resume(self):
+        if self._state==self.Paused:
+            self._state=self.Running;self._started_at=time.perf_counter()-self.currentTime()/1000
+            self._frames.start()
+
+    def setCurrentTime(self,value):
+        if self._state==self.Running:self._started_at=time.perf_counter()-int(value)/1000
+        self._update_time(value)
+
+    def _update_time(self,value):
+        value=max(0,min(self.duration(),int(value)))
+        self._values.setCurrentTime(value)
+        if value==self.duration() and self._state!=self.Stopped:self._complete()
+
+    def _advance(self):
+        if self._state==self.Running:self._update_time(round((time.perf_counter()-self._started_at)*1000))
+
+    def _complete(self):
+        self.stop();self.finished.emit()

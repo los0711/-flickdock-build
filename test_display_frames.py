@@ -9,7 +9,7 @@ from PySide6.QtCore import QAbstractAnimation,QCoreApplication,QEvent,QPoint,QRe
 from PySide6.QtWidgets import QApplication,QWidget
 from PySide6.QtTest import QTest
 from shiboken6 import isValid
-from display_frames import FramePulse
+from display_frames import FramePulse,DisplayAnimation
 from flickdock_motion import Spring
 from surface_morph import SurfaceMorph
 
@@ -105,5 +105,32 @@ class DisplayFramesTests(unittest.TestCase):
         morph=SurfaceMorph(self.window,QRect(0,0,100,100),lambda rect:None)
         with patch('native_ui_common.reduced_motion',return_value=True):morph.animate(QRect(0,0,400,300))
         self.assertFalse(morph.active);self.assertFalse(morph._frames.isActive())
+
+    def test_window_animation_interpolation_uses_every_native_frame_without_unified_timer(self):
+        for hz in (60,75,120,144,240):
+            with self.subTest(hz=hz):
+                animation=DisplayAnimation(self.window);animation.setDuration(180)
+                animation.setStartValue(0.);animation.setEndValue(1.)
+                samples=[];done=[];animation.valueChanged.connect(samples.append);animation.finished.connect(lambda:done.append(True))
+                now=[100.]
+                with patch('display_frames.time.perf_counter',side_effect=lambda:now[0]):
+                    animation.start();animation._frames.stop()
+                    for frame in range(1,ceil(hz*.18)+1):now[0]=100.+frame/hz;animation._advance()
+                self.assertEqual(animation._values.state(),QAbstractAnimation.Stopped)
+                self.assertGreaterEqual(len(set(samples)),ceil(hz*.18))
+                self.assertEqual(samples[-1],1.);self.assertEqual(done,[True])
+                self.assertEqual(animation.state(),QAbstractAnimation.Stopped)
+                animation.deleteLater();flush()
+
+    def test_window_animation_pause_seek_and_reversal_keep_the_current_frame(self):
+        animation=DisplayAnimation(self.window);animation.setDuration(240);animation.setStartValue(0.);animation.setEndValue(1.)
+        animation.start();animation.pause();animation.setCurrentTime(80)
+        value=animation.currentValue();animation.stop()
+        self.assertEqual(animation.currentValue(),value)
+        animation.setStartValue(value);animation.setEndValue(0.);animation.start()
+        self.assertEqual(animation.currentValue(),value)
+        animation.setCurrentTime(240);self.assertEqual(animation.currentValue(),0.)
+        self.assertEqual(animation.state(),QAbstractAnimation.Stopped);self.assertFalse(animation._frames.isActive())
+        animation.deleteLater();flush()
 
 if __name__=='__main__':unittest.main()

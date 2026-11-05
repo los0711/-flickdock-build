@@ -199,6 +199,20 @@ with tempfile.TemporaryDirectory(prefix="flickdock-media-") as temporary, \
     assert preview.player is None
     print("PASS changing/hiding releases native source; a remembered poster replays lazily and removed refs never reopen")
 
+    # Exercise the real layout across asynchronous loading and first-frame
+    # visibility changes, rather than checking only the decoder's state.
+    def delayed_source(player,url):player.source=url
+    with patch.object(FakePlayer,'setSource',delayed_source):
+        preview.set_source(video);app.processEvents();loading_bounds=preview.surface.geometry()
+        preview.player.mediaStatusChanged.emit(NativePlayer.MediaStatus.LoadedMedia);app.processEvents()
+        assert preview.surface.geometry()==loading_bounds
+        preview.video_sink.videoFrameChanged.emit(QVideoFrame(image));app.processEvents()
+        assert preview.surface.geometry()==loading_bounds
+        preview.player.errorOccurred.emit(NativePlayer.Error.FormatError,'fixture error');app.processEvents()
+        assert preview.surface.geometry()==loading_bounds
+    preview.release_source()
+    print('PASS loading, first frame and error messages never resize the video viewport')
+
     preview.show()
     preview.set_source(audio)
     assert preview.player.play_calls == 0 and preview.audio_output.muted

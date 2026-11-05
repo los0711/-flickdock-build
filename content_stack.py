@@ -1,10 +1,11 @@
 """Latest-first, five-card content artwork shared by compact and drag previews."""
 from pathlib import Path
-from PySide6.QtCore import QRectF, Qt, QVariantAnimation, QEasingCurve, QAbstractAnimation
+from PySide6.QtCore import QRectF, Qt, QEasingCurve, QAbstractAnimation
 from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap
 from flickdock_icons import content_color, device_pixel_ratio, document_pixmap
 from flickdock_motion import ContentTile,Spring
 from ui_transitions import STACK_LANDING_DURATION_MS,STACK_PULSE_TIMEOUT_MS
+from display_frames import DisplayAnimation
 
 FAN_PIVOT_X_PX=74.24
 FAN_PIVOT_Y_PX=57.6
@@ -94,14 +95,14 @@ class StackTile(ContentTile):
         self._quiet_anchor=None;self._quiet_keys=set();self._all_keys=set()
         self._layers={};self._exit_from={};self._exit_to={};self._exit_order=()
         self._exit_depths={};self._exit_progress=1.0
-        self.removal=QVariantAnimation(self);self.removal.setDuration(200)
+        self.removal=DisplayAnimation(self);self.removal.setDuration(200)
         curve=QEasingCurve(QEasingCurve.Type.BezierSpline)
         from PySide6.QtCore import QPointF
         curve.addCubicBezierSegment(QPointF(.23,1),QPointF(.32,1),QPointF(1,1))
         self.removal.setEasingCurve(curve)
         self.removal.valueChanged.connect(self._remove_frame)
         self.removal.finished.connect(self._remove_finished)
-        self.landing=QVariantAnimation(self)
+        self.landing=DisplayAnimation(self)
         self.landing.setDuration(STACK_LANDING_DURATION_MS)
         self.landing.setEasingCurve(QEasingCurve.Type.OutBack)
         self.landing.valueChanged.connect(self._arrive)
