@@ -65,6 +65,14 @@ class PreviewContinuityTests(unittest.TestCase):
         self.assertNotEqual(tile._card_art[ref][1].cacheKey(),previous[ref])
         self.assertEqual(tile._card_art[self.fixture.paths[1]][1].cacheKey(),previous[self.fixture.paths[1]])
 
+    def test_native_text_card_never_requests_disk_existence_metadata(self):
+        content=self.shelf.content;ref=content.add_text('Native text is an item, never a disk pathname')
+        tile=self.shelf.zones['permanent'].icon
+        with patch.object(self.shelf.file_metadata,'request',side_effect=AssertionError('Virtual text entered missing-file cleanup')):
+            tile.set_stack(content,[ref],self.shelf.preview_cache)
+            tile.grab()
+        self.assertEqual(tile.refs,(ref,))
+
     def test_pointer_hover_is_limited_to_cards_and_drop_highlight_covers_whole_zone(self):
         zone=self.shelf.zones['permanent'];tile=zone.icon
         tile.motion=True;tile.spread.motion=True

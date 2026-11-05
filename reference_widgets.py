@@ -613,7 +613,8 @@ class MiniStack(StackTile):
     def _cache_cards(self):
         ratio=self.devicePixelRatioF();cards={};content=self.shelf.content
         for ref in self.refs:
-            metadata=getattr(self.shelf,'file_metadata',None);info=metadata.request(ref) if metadata is not None else None
+            metadata=getattr(self.shelf,'file_metadata',None)
+            info=metadata.request(ref) if metadata is not None and not content.is_text(ref) else None
             cached=self.shelf.preview_cache.get(ref);cache=getattr(self.shelf,'image_cache',None)
             cover=content.metadata.get(ref,{}).get('preview_image')
             decoded=cache.image(cover or ref,128) if cache is not None else None
