@@ -216,6 +216,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify finite original-engine jobs on the native operating system
         if: inputs.cloud_only != true
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: |
           npm ci --prefix cloud --no-audit --no-fund
           python -m unittest test_syncthing_lan test_syncthing_engine test_manual_payload test_manual_cloud test_syncthing_wan -q
