@@ -4,7 +4,7 @@ export default {
   async fetch(request,env){
     const path=new URL(request.url).pathname;
     if(path.startsWith('/v1/')){
-      if(!['GET','POST','PUT','DELETE','OPTIONS'].includes(request.method))return new Response('Method not allowed',{status:405});
+      if(!['GET','POST','PUT','PATCH','DELETE','OPTIONS'].includes(request.method))return new Response('Method not allowed',{status:405});
       if(path==='/v1/wan/connect'&&request.headers.get('Upgrade')?.toLowerCase()!=='websocket')return new Response('WebSocket required',{status:400});
       // No arbitrary upstream URL, cookie forwarding or public proxy route.
       const headers=new Headers(request.headers);headers.delete('Cookie');headers.delete('Referer');

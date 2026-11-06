@@ -19,6 +19,8 @@ await gateway.fetch(new Request('https://site.invalid/v1/uploads/fixture/parts/0
 assert.equal(requests.at(-1).method,'PUT');assert.equal(new URL(requests.at(-1).url).search,'?version=7');
 const sha=value=>createHash('sha256').update(value).digest('hex');assert.equal(sha(payloads.at(-1)),sha(Buffer.concat(Array.from({length:chunks},()=>bytes))));
 assert.equal((await gateway.fetch(new Request('https://site.invalid/v1/wan/connect'),env)).status,400);
-assert.equal((await gateway.fetch(new Request('https://site.invalid/v1/auth/login',{method:'PATCH'}),env)).status,405);
+await gateway.fetch(new Request('https://site.invalid/v1/devices/fixture',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'Synthetic QA device'})}),env);
+assert.equal(requests.at(-1).method,'PATCH');assert.deepEqual(JSON.parse(new TextDecoder().decode(payloads.at(-1))),{name:'Synthetic QA device'});
+assert.equal((await gateway.fetch(new Request('https://site.invalid/v1/auth/login',{method:'PROPFIND'}),env)).status,405);
 assert.equal(await (await gateway.fetch(new Request('https://site.invalid/untrusted-proxy?url=https://example.invalid'),env)).text(),'asset');
-assert.equal(requests.length,3);console.log('PASS fixed binding/original client IP, private header stripping, streamed PUT/full SHA, query/WS101 preservation, route boundaries');
+assert.equal(requests.length,4);console.log('PASS fixed binding/original client IP, private header stripping, streamed PUT/full SHA, PATCH device updates, query/WS101 preservation, route boundaries');

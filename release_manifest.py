@@ -110,7 +110,7 @@ MAINTAINED_TESTS=(
     'test_remote_transfer_actions_v1812.py','test_wan_transfer_v1816.py',
 )
 SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
-    'ci_cross_device.py','syncthing_assets.py','test_syncthing_engine.py','test_manual_payload.py',
+    'ci_cross_device.py','ci_upload_profile.py','syncthing_assets.py','test_syncthing_engine.py','test_manual_payload.py',
     
     '.github/workflows/native-clipboard.yml',
     'FlickDock.spec','FlickDock.iss','version_info.txt','ChineseSimplified.isl','windows-network.ps1',
