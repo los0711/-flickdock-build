@@ -24,6 +24,10 @@ on:
         description: Isolate original-kernel connectivity without repeating cloud file traffic
         type: boolean
         default: false
+      cloud_only:
+        description: Verify automatic native clipboard and shelf sync without manual transport
+        type: boolean
+        default: false
   push:
     branches: [cloud-build]
 
@@ -190,6 +194,7 @@ jobs:
       FD_QA_SIDE: ${{ matrix.side }}
       FD_QA_VPN_MODE: ${{ inputs.vpn_mode || 'none' }}
       FD_QA_KERNEL_ONLY: ${{ inputs.kernel_only && 'true' || 'false' }}
+      FD_QA_CLOUD_ONLY: ${{ inputs.cloud_only && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
@@ -203,12 +208,14 @@ jobs:
         if: runner.os == 'macOS'
         run: python -m pip install 'pyobjc-framework-Quartz>=11,<13'
       - name: Prepare the verified original Syncthing binary
+        if: inputs.cloud_only != true
         shell: pwsh
         run: |
           $env:FLICKDOCK_BUILD_CACHE = Join-Path $env:RUNNER_TEMP 'flickdock-cache'
           python syncthing_assets.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify finite original-engine jobs on the native operating system
+        if: inputs.cloud_only != true
         run: python -m unittest test_syncthing_lan test_syncthing_engine test_manual_payload -q
       - name: Prepare the verified proxy core before enabling the private node
         if: inputs.vpn_mode == 'both' || inputs.vpn_mode == matrix.side

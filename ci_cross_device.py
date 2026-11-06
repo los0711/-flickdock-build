@@ -108,6 +108,8 @@ def main():
     if side not in ('a','b') or pair not in ('win-mac','win-win','mac-mac'):raise ValueError('Invalid cross-device pair')
     if not run.isdigit() or not attempt.isdigit():raise ValueError('Invalid workflow identity')
     other='b' if side=='a' else 'a'
+    cloud_only=os.environ.get('FD_QA_CLOUD_ONLY')=='true'
+    if cloud_only and os.environ.get('FD_QA_KERNEL_ONLY')=='true':raise ValueError('Select either cloud-only or kernel-only verification')
     parser=argparse.ArgumentParser();parser.add_argument('mode',choices=('bootstrap','run'));parser.add_argument('--root',type=Path,required=True)
     args=parser.parse_args();root=args.root.resolve();root.mkdir(parents=True,exist_ok=True)
     if not root.is_relative_to(Path(os.environ['RUNNER_TEMP']).resolve()):raise ValueError('QA profile must belong to this runner')
@@ -138,7 +140,7 @@ def main():
         cloud_only_automatic_sync=True,checks=[],api_failures=failures,http_payloads=[],proxy=proxy,
         proxy_pair_mode=os.environ.get('FD_QA_VPN_MODE','none'),
         timing_scope='Per-peer step elapsed includes coordination; HTTP payload timings are recorded separately',
-        manual_scope='Original Syncthing engine + finite job adapter; application manual-transfer entry not yet wired')
+        manual_scope='Not run: isolated cloud-only verification' if cloud_only else 'Original Syncthing engine + finite job adapter; application manual-transfer entry not yet wired')
     report_path=root/'report.json'
     sys.excepthook=lambda kind,value,trace:failures.append(dict(phase=phase,callback_error=kind.__name__))
     def until(predicate,seconds=STEP_TIMEOUT_SECONDS):
@@ -199,18 +201,20 @@ def main():
             if not account.signed_in:raise RuntimeError('Disposable account authentication failed')
             private=dict(token=account.api.token,device_id=account.device_id,account=account.account)
             session=root/'session.json';session.write_text(json.dumps(private),encoding='utf8');session.chmod(0o600)
-            phase='kernel_bootstrap';engine=SyncthingEngine(root/'kernel',mode='lan');engine.start()
-            source=root/'manual-source.bin';fixture(source,32*MIB,f'{run}-{attempt}-{pair}-{side}-manual')
-            payload=prepare([source],root/'payload',threading.Event())
-            public=dict(side=side,pair=pair,platform=platform,run=run,attempt=attempt,account_device_id=account.device_id,kernel_id=engine.device_id,
-                        descriptor=payload['descriptor'],total=payload['total'],count=payload['count'],names=payload['names'])
+            public=dict(side=side,pair=pair,platform=platform,run=run,attempt=attempt,account_device_id=account.device_id)
+            if not cloud_only:
+                phase='kernel_bootstrap';engine=SyncthingEngine(root/'kernel',mode='lan');engine.start()
+                source=root/'manual-source.bin';fixture(source,32*MIB,f'{run}-{attempt}-{pair}-{side}-manual')
+                payload=prepare([source],root/'payload',threading.Event())
+                public.update(kernel_id=engine.device_id,descriptor=payload['descriptor'],total=payload['total'],count=payload['count'],names=payload['names'])
             (root/'public.json').write_text(json.dumps(public),encoding='utf8')
             print(json.dumps(dict(ok=True,side=side,phase='bootstrap',synthetic_fixture=True)),flush=True)
             return 0
         phase='peer_bootstrap';peer=artifact(other,run,attempt,pair);own=json.loads((root/'public.json').read_bytes())
         session=json.loads((root/'session.json').read_bytes());account.api.token=session['token'];account.device_id=session['device_id'];account.account=session['account']
-        phase='kernel_prepare';engine=SyncthingEngine(root/'kernel',mode='remote');engine.start()
-        assert engine.device_id==own['kernel_id']
+        if not cloud_only:
+            phase='kernel_prepare';engine=SyncthingEngine(root/'kernel',mode='remote');engine.start()
+            assert engine.device_id==own['kernel_id']
         events=CloudEvents(account);clip=app.clipboard();clipboard=ClipboardSync(account,events,root/'clipboard',clipboard=clip)
         adapter=Adapter();shelf=ShelfSync(root/'shelf',account,adapter)
         shelf.attach_clipboard(clipboard);clipboard.activity_changed.connect(shelf.set_clipboard_priority)
@@ -306,8 +310,9 @@ def main():
             stage+=1;barrier(stage)
         # Cloud tests finish before the direct-only kernel test, so a CI NAT
         # limitation cannot be misreported as a clipboard or R2 regression.
-        phase='kernel_start';assert engine.device_id==own['kernel_id']
-        if not kernel_only:await_announcement()
+        if not cloud_only:
+            phase='kernel_start';assert engine.device_id==own['kernel_id']
+            if not kernel_only:await_announcement()
         def worker(action):
             finished=[]
             def execute():
@@ -317,7 +322,7 @@ def main():
             until(lambda:bool(finished),seconds=240);thread.join(1)
             if finished[0][1]:raise finished[0][1]
             return finished[0][0]
-        for sender in ('a','b'):
+        for sender in (() if cloud_only else ('a','b')):
             phase='manual_'+sender;start=time.perf_counter();task='fd-manual-'+uuid5(NAMESPACE_URL,f'{run}/{attempt}/{pair}/{sender}').hex
             cancel=threading.Event();job=None;shared=False;error=None;received_bytes=0;diagnostics=None
             try:
@@ -349,7 +354,7 @@ def main():
             until(lambda:clipboard._seen!=before and clipboard._pending is None and clipboard.view.get('backed_up'))
         stage+=1;barrier(stage)
         call('POST','/v1/auth/logout',data={})
-        report['ok']=all(check['ok'] for check in report['checks']) and len(report['checks'])==(2 if kernel_only else 12)
+        report['ok']=all(check['ok'] for check in report['checks']) and len(report['checks'])==(10 if cloud_only else 2 if kernel_only else 12)
         report['phase']='completed';report_path.write_text(json.dumps(report,indent=2),encoding='utf8')
         print(json.dumps(dict(ok=report['ok'],side=side,checks=len(report['checks']))),flush=True)
         return 0 if report['ok'] else 1
