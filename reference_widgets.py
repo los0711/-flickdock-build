@@ -8,7 +8,7 @@ import sys
 import re
 
 from PySide6.QtCore import QObject, QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QVariantAnimation
-from PySide6.QtGui import QColor, QFont, QIcon, QPalette, QImage, QPainter, QPainterPath, QPen, QPixmap, QLinearGradient
+from PySide6.QtGui import QColor, QFont, QIcon, QPalette, QImage, QPainter, QPainterPath, QPen, QPixmap, QLinearGradient, QTransform
 from PySide6.QtWidgets import (QLabel, QPushButton, QWidget, QFrame, QHBoxLayout,
     QVBoxLayout, QScrollArea, QLineEdit, QProgressBar, QButtonGroup, QSizePolicy, QGridLayout,
     QStackedWidget, QPlainTextEdit, QCheckBox, QApplication, QDialog, QRubberBand)
@@ -651,6 +651,29 @@ class MiniStack(StackTile):
         ext=Path(title).suffix.lstrip('.').upper() or ('TEXT' if self.shelf.content.is_text(ref) else 'FILE')
         p.drawText(QRectF(100,14,78,18),Qt.AlignRight|Qt.AlignVCenter,ext[:7]);p.end();return result
 
+    def presentation_cards(self):
+        v=self.spring.values;spread=self.spread.values['spread']
+        center=QPointF(self.width()/2,self.height()/2)
+        base=QTransform();base.translate(center.x(),center.y()+v['y']);base.scale(v['sx'],v['sy']);base.translate(-center.x(),-center.y())
+        refs=list(reversed(self.refs));frames=[]
+        transforms=((0,1,0,1),(-7,.95,-2,.9),(-14,.9,2.2,.75),(-20,.85,-1.5,.58),(-26,.8,1,.4))
+        for idx in reversed(range(len(refs))):
+            dy,scale,angle,opacity=transforms[idx]
+            local=QTransform();local.translate(center.x()-idx*FAN_LAYER_OFFSET_X_PX*spread,center.y()+dy+idx*MINI_FAN_LAYER_OFFSET_Y_PX*spread)
+            local.rotate(angle+spread*(FAN_FRONT_ANGLE_DEGREES if idx==0 else -idx*FAN_LAYER_ANGLE_DEGREES));local.scale(scale,scale);local.translate(-96,-64)
+            if idx==0:local.translate(0,-STACK_ARRIVAL_OFFSET_PX*(1-self.arrival))
+            frames.append((refs[idx],local*base,opacity if ui_theme.current_theme()=='dark' else 1.,idx==0))
+        return frames
+
+    def paint_card(self,painter,ref,front):
+        painter.drawPixmap(0,0,self._card_art[ref][1])
+        sync=getattr(self.shelf.manager,'sync',None)
+        draw_status(painter,QRectF(40,40,16,16),sync.sync_status_for_ref(ref) if hasattr(sync,'sync_status_for_ref') else 'local')
+        state=getattr(self.repository,'transfers',{}).get(ref)
+        if front and state:
+            from transfer_visuals import draw_progress_badge
+            draw_progress_badge(painter,QRectF(162,40,16,16),state)
+
     def paintEvent(self,event):
         p=QPainter(self);p.setRenderHints(QPainter.Antialiasing|QPainter.SmoothPixmapTransform)
         if not self.refs:
@@ -660,24 +683,10 @@ class MiniStack(StackTile):
             icon('upload',palette()['secondary']).paint(p,QRect(round(r.center().x()-12),round(r.center().y()-31),24,24))
             f=p.font()
             f.setPixelSize(13);p.setFont(f);p.setPen(QColor(palette()['text']));p.drawText(r.adjusted(0,34,0,0),Qt.AlignCenter,'点击选择文件');p.end();return
-        v=self.spring.values
         if self._card_dpr!=self.devicePixelRatioF() or self._card_theme!=ui_theme.current_theme():self._cache_cards()
-        spread=self.spread.values['spread']
-        center=QPointF(self.width()/2,self.height()/2)
-        p.translate(center.x(),center.y()+v['y']);p.scale(v['sx'],v['sy']);p.translate(-center)
-        refs=list(reversed(self.refs));transforms=((0,1,0,1),(-7,.95,-2,.9),(-14,.9,2.2,.75),(-20,.85,-1.5,.58),(-26,.8,1,.4))
-        for idx in reversed(range(len(refs))):
-            ref=refs[idx];dy,scale,angle,opacity=transforms[idx]
-            p.save();p.setOpacity(opacity if ui_theme.current_theme()=='dark' else 1.);p.translate(center.x()-idx*FAN_LAYER_OFFSET_X_PX*spread,center.y()+dy+idx*MINI_FAN_LAYER_OFFSET_Y_PX*spread)
-            p.rotate(angle+spread*(FAN_FRONT_ANGLE_DEGREES if idx==0 else -idx*FAN_LAYER_ANGLE_DEGREES));p.scale(scale,scale);p.translate(-96,-64)
-            if idx==0:p.translate(0,-STACK_ARRIVAL_OFFSET_PX*(1-self.arrival))
-            p.drawPixmap(0,0,self._card_art[ref][1])
-            draw_status(p,QRectF(40,40,16,16),getattr(self.shelf.manager,'sync',None).sync_status_for_ref(ref) if hasattr(getattr(self.shelf.manager,'sync',None),'sync_status_for_ref') else 'local')
-            state=getattr(self.repository,'transfers',{}).get(ref)
-            if idx==0 and state:
-                from transfer_visuals import draw_progress_badge
-                draw_progress_badge(p,QRectF(162,40,16,16),state)
-            p.restore()
+        for ref,transform,opacity,front in self.presentation_cards():
+            p.save();p.setOpacity(opacity);p.setTransform(transform,True)
+            self.paint_card(p,ref,front);p.restore()
         p.end()
 
 

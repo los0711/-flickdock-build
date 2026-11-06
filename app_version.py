@@ -2,4 +2,4 @@
 
 APP_NAME = "FlickDock"
 APP_VERSION = "1.8.25"
-APP_BUILD = "1.8.25-syncthing-test3"
+APP_BUILD = "1.8.25-syncthing-test4"

@@ -285,7 +285,8 @@ export class WanHub extends DurableObject<WanEnv>{
         ...(value.native?{account_device:!!(from&&to&&from.account===to.account&&from.device!==to.device)}:{})});
       if(value.native){
         const source=seat.id===value.sender.id?value.native.receiver:value.native.sender;
-        for(const metadata of [source,...(seat.id===value.receiver.id?[value.native.cloud]:[]),
+        const peer=seat.id===value.sender.id?value.native.receiverPeer:value.native.senderPeer;
+        for(const metadata of [peer,source,...(seat.id===value.receiver.id?[value.native.cloud]:[]),
             ...(value.native.fallback?[{kind:'fallback'}]:[]),...(value.native.saved?[{kind:'saved'}]:[])])
           if(metadata)this.send(socket,{type:'native_signal',id:value.id,generation:value.generation,value:metadata});
       }
@@ -526,7 +527,15 @@ export class WanHub extends DurableObject<WanEnv>{
           const latest=await tx.get<Session>('session:'+value.id);
           if(!latest?.native||!latest.accepted||latest.generation!==request.generation)throw Error('传输内核信令已失效。');
           const state=latest.native;
-          if(metadata.kind==='native'){
+          if(metadata.kind==='peer'){
+            const previous=sender?state.senderPeer:state.receiverPeer;
+            const content=sender?state.sender:state.receiver;
+            if(previous&&JSON.stringify(previous)!==JSON.stringify(metadata)||content&&content.device_id!==metadata.device_id)
+              throw Error('传输设备身份已改变。');
+            if(sender)state.senderPeer=metadata;else state.receiverPeer=metadata;
+          }else if(metadata.kind==='native'){
+            const peer=sender?state.senderPeer:state.receiverPeer;
+            if(peer&&peer.device_id!==metadata.device_id)throw Error('传输设备身份已改变。');
             const previous=sender?state.sender:state.receiver;
             if(previous&&JSON.stringify(previous)!==JSON.stringify(metadata))throw Error('传输设备或文件内容已改变。');
             if(sender)state.sender=metadata;else state.receiver=metadata;

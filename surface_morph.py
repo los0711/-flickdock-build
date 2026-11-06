@@ -81,6 +81,7 @@ class SurfaceSnapshot(QWidget):
         self._shadows=OrderedDict()
         self.capture_count=0
         self.target_sections=[]
+        self.elements=None
         self.hide()
 
     def capture_live(self,card,controls):
@@ -133,7 +134,9 @@ class SurfaceSnapshot(QWidget):
             painter.end()
         return image
 
-    def begin(self,source,target,origin,present=True,target_rect=None):
+    def begin(self,source,target,origin,present=True,target_rect=None,*,source_elements=(),target_elements=()):
+        from surface_elements import SharedElements
+        self.elements=SharedElements(source_elements,target_elements)
         self.target_sections=[]
         self.source,self.target=source,target
         self.active=True; self.mix=0; self.rect_global=QRect(origin)
@@ -152,6 +155,24 @@ class SurfaceSnapshot(QWidget):
         self.active=False; self.hide()
         self.target_sections=[]
         self.source=QPixmap(); self.target=QPixmap()
+        self.elements=None
+
+    def current_elements(self):
+        if not self.active or self.elements is None:return []
+        rect=QRectF(0,0,self.rect_global.width()-28,self.rect_global.height()-27)
+        first,last=self._element_offsets(rect)
+        return self.elements.current(self.mix,first,last,self.owner.devicePixelRatioF())
+
+    def _element_offsets(self,rect):
+        first=self.source.deviceIndependentSize();last=self.target.deviceIndependentSize()
+        from PySide6.QtCore import QPointF
+        return (QPointF(rect.right()-first.width(),rect.top()),
+                QPointF(rect.right()-last.width(),rect.top()))
+
+    def _clip_endpoint(self,painter,rect,source,offset):
+        if self.elements is None:return
+        path=QPainterPath();path.addRect(rect)
+        painter.setClipPath(path.subtracted(self.elements.mask(source,offset)),Qt.ClipOperation.IntersectClip)
 
     def _effect(self):
         return getattr(self.owner,'surface_effect',None)
@@ -205,12 +226,11 @@ class SurfaceSnapshot(QWidget):
         painter.restore()
 
     def paint_frame(self,painter,rect,live_draw=None,target_size=None):
-        """Reveal natural-size layouts inside the moving surface.
+        """Move identity-matched layers above the two natural-size layouts.
 
-        Scaling the compact screenshot to the overview stretches its text and
-        cards across unrelated sections, including the empty state. Only the
-        container changes size; endpoint content stays right/top anchored and
-        the outgoing layout exits early. The native host never changes size.
+        Endpoint regions occupied by shared elements are excluded, so each
+        file is drawn once. Unmatched layout chrome fades at natural size;
+        the native host and the entire live widget tree remain fixed.
         """
         from ui_transitions import SURFACE_SOURCE_FADE_END,SURFACE_TARGET_FADE_END
         painter.save()
@@ -220,22 +240,29 @@ class SurfaceSnapshot(QWidget):
         # One stationary-radius backing owns opacity for the entire transition.
         import ui_theme
         painter.fillRect(rect,QColor(ui_theme.color('surface')))
+        source_offset,target_offset=self._element_offsets(rect)
         if self.mix>0:
             logical=target_size if target_size is not None else self.target.deviceIndependentSize()
             target_rect=QRectF(rect.right()-logical.width(),rect.top(),logical.width(),logical.height())
             painter.save()
+            self._clip_endpoint(painter,rect,False,target_offset)
             painter.setOpacity(min(1,self.mix/SURFACE_TARGET_FADE_END))
             if self.mix>=1 and live_draw is not None:
                 painter.translate(target_rect.topLeft());live_draw(painter)
             elif not self.target.isNull():
-                self.draw_target(painter,target_rect)
+                if self.elements and self.elements.keys:
+                    painter.drawPixmap(target_rect,self.target,QRectF(self.target.rect()))
+                else:self.draw_target(painter,target_rect)
             painter.restore()
         if self.mix<SURFACE_SOURCE_FADE_END and not self.source.isNull():
             logical=self.source.deviceIndependentSize()
             source_rect=QRectF(rect.right()-logical.width(),rect.top(),logical.width(),logical.height())
             painter.save();painter.setOpacity(1-self.mix/SURFACE_SOURCE_FADE_END)
+            self._clip_endpoint(painter,rect,True,source_offset)
             painter.drawPixmap(source_rect,self.source,QRectF(self.source.rect()))
             painter.restore()
+        if self.elements is not None:
+            self.elements.paint(painter,self.mix,source_offset,target_offset)
         painter.restore()
 
     def _paint_content(self,painter,rect):

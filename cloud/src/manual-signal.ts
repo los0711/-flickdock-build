@@ -4,13 +4,14 @@ const DEVICE=/^[A-Z2-7]{7}(?:-[A-Z2-7]{7}){7}$/;
 const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const SHA=/^[a-f0-9]{64}$/;
 export type NativeOffer={kind:'native';device_id:string;addresses:string[];content?:{size:number;sha256:string}};
+export type NativePeer={kind:'peer';device_id:string;addresses:string[]};
 export type CloudFile={kind:'r2';id:string;version:number;size:number;sha256:string};
-export type NativeSignal=NativeOffer|CloudFile|{kind:'fallback'|'saved'}|{kind:'progress';received:number;total:number};
-export type NativeState={sender?:NativeOffer;receiver?:NativeOffer;cloud?:CloudFile;fallback?:boolean;saved?:boolean};
+export type NativeSignal=NativeOffer|NativePeer|CloudFile|{kind:'fallback'|'saved'}|{kind:'progress';received:number;total:number};
+export type NativeState={senderPeer?:NativePeer;receiverPeer?:NativePeer;sender?:NativeOffer;receiver?:NativeOffer;cloud?:CloudFile;fallback?:boolean;saved?:boolean};
 const positive=(value:unknown):value is number=>typeof value==='number'&&Number.isSafeInteger(value)&&value>0;
 export function manualSignal(input:any,sender:boolean):NativeSignal{
   if(!input||typeof input!=='object'||Array.isArray(input))throw Error('传输内核信令无效。');
-  if(input.kind==='native'){
+  if(input.kind==='native'||input.kind==='peer'){
     if(typeof input.device_id!=='string'||!DEVICE.test(input.device_id)||!Array.isArray(input.addresses)||!input.addresses.length||input.addresses.length>12)
       throw Error('传输内核设备信息无效。');
     const addresses=input.addresses.map((address:unknown)=>{
@@ -22,6 +23,10 @@ export function manualSignal(input:any,sender:boolean):NativeSignal{
         ||url.username||url.password||url.pathname||url.search||url.hash)throw Error('传输地址无效。');
       return address;
     });
+    if(input.kind==='peer'){
+      if(input.content!==undefined)throw Error('设备预连接不能携带文件内容。');
+      return {kind:'peer',device_id:input.device_id,addresses};
+    }
     let content;
     if(sender){
       if(!positive(input.content?.size)||typeof input.content?.sha256!=='string'||!SHA.test(input.content.sha256))throw Error('发送内容描述无效。');

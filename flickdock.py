@@ -1782,7 +1782,12 @@ class ShelfWindow(QWidget):
         self._layout_header(self.card.width())
         if self.expanded:self.popup.prepare_transition()
         target_image=snapshot.capture_live(self.card,controls)
-        snapshot.begin(source,target_image,origin,present=False,target_rect=target)
+        from surface_elements import capture as capture_elements
+        source_elements=getattr(self,'_morph_from_elements',())
+        self._morph_from_elements=()
+        target_elements=capture_elements(self,target_image)
+        snapshot.begin(source,target_image,origin,present=False,target_rect=target,
+                       source_elements=source_elements,target_elements=target_elements)
         if self.expanded:
             for name,offset in OVERVIEW_SECTION_OFFSETS_PX:
                 widget=getattr(self.popup,name)
@@ -1796,6 +1801,7 @@ class ShelfWindow(QWidget):
         self.surface_effect.end_surface_morph()
         if snapshot is not None: snapshot.finish()
         self._morph_from_image=None
+        self._morph_from_elements=()
         self._morph_host_active=False
         self._transition_preparing=False
         if not self.geometry().contains(rect):self.setGeometry(rect)
@@ -1880,6 +1886,9 @@ class ShelfWindow(QWidget):
         snapshot=getattr(self,'_surface_snapshot',None)
         if snapshot is None: snapshot=self._surface_snapshot=SurfaceSnapshot(self)
         self._morph_from_image=snapshot.capture_current(self.card,(self.cloud_button,self.network_status,self.lan_button,self.pin_button,self.expand_button,self.menu_button,self.close_button))
+        from surface_elements import capture as capture_elements
+        self._morph_from_elements=(snapshot.current_elements() if snapshot.active else
+                                   capture_elements(self,self._morph_from_image))
 
     def visual_geometry(self): return QRect(self.geometry_morph.current)
 

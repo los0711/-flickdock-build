@@ -31,6 +31,16 @@ class AddressTests(unittest.TestCase):
 
 @unittest.skipUnless(BINARY.is_file(),'Official Syncthing binary is prepared by the native build gate')
 class OfficialEngineTests(unittest.TestCase):
+    def test_remote_profile_lets_original_kernel_race_tcp_and_quic_without_enabling_relays(self):
+        with tempfile.TemporaryDirectory(prefix='native-parallel-wan-') as directory:
+            engine=SyncthingEngine(Path(directory),mode='remote',binary=BINARY,loopback=True)
+            try:
+                engine.start();options=engine.request('GET','/rest/config/options')
+                self.assertEqual(options['connectionPriorityTcpWan'],options['connectionPriorityQuicWan'])
+                self.assertFalse(options['relaysEnabled']);self.assertFalse(options['globalAnnounceEnabled'])
+                self.assertLess(options['connectionPriorityTcpLan'],options['connectionPriorityQuicLan'])
+            finally:engine.close()
+
     def test_authorized_peers_connect_before_any_folder_or_file_is_shared(self):
         with tempfile.TemporaryDirectory(prefix='native-pair-only-') as directory:
             root=Path(directory);a=SyncthingEngine(root/'a',mode='lan',binary=BINARY,loopback=True)

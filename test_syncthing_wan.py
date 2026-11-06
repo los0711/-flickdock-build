@@ -86,9 +86,26 @@ class NativeWanTests(LocalCloudFixture,unittest.TestCase):
                 self.assertFalse(entered.is_set(),'Disk preparation must follow real receiver consent')
                 self.services[1].accept(identifier,target);until(entered.is_set,3)
                 until(lambda:any(side==0 and row['id']==identifier and row.get('accepted') for side,row in self.progress),3)
+                until(lambda:all(service.engine.connections().get(other.engine.device_id,{}).get('connected')
+                      for service,other in ((self.services[0],self.services[1]),(self.services[1],self.services[0]))),8)
+                for service in self.services:self.assertEqual(service.engine.request('GET','/rest/config/folders'),[])
                 self.assertEqual(list(target.iterdir()),[]);release.set();self.wait_completed(identifier)
         finally:release.set()
         self.assertEqual((target/source.name).read_bytes(),source.read_bytes())
+
+    def test_replayed_peer_preflight_cannot_replace_the_pinned_native_identity(self):
+        service=self.services[0];identifier='4'*32
+        state=service._state('send',dict(id='5'*64,name='receiver'));state['generation']=1
+        service._pending[identifier]=state;service._transfers[identifier]=_Transfer(identifier,'send','receiver')
+        device='-'.join(['AAAAAAA']*8);other='-'.join(['BBBBBBB']*8)
+        message=dict(generation=1,value=dict(kind='peer',device_id=device,addresses=['tcp://127.0.0.1:22000']))
+        service._transfer_message('native_signal',identifier,state,message)
+        self.assertEqual(state['native_peer']['device_id'],device);self.assertNotIn('native',state)
+        with self.assertRaisesRegex(ValueError,'身份'):
+            service._transfer_message('native_signal',identifier,state,dict(generation=1,value=dict(kind='native',device_id=other,addresses=['tcp://127.0.0.1:22000'])))
+        state['peer_out']=dict(type='native_signal',id=identifier,generation=1,value=dict(kind='peer',device_id=device,addresses=['tcp://127.0.0.1:22001']))
+        sent=[];service._send_signal=lambda value:sent.append(value) or True
+        service._recover_signaling();self.assertIn(state['peer_out'],sent)
 
     def test_unsupported_receiver_fails_the_waiting_worker_immediately(self):
         service=self.services[0];identifier='c'*32

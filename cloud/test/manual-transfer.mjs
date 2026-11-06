@@ -45,14 +45,21 @@ try{
   signal(sa,native);assert.match((await sa.wait(row=>row.type==='error'&&row.requestType==='native_signal')).message,/确认/);
   sb.send({type:'accept',id:request.id});const begin=await sa.wait(row=>row.type==='begin'&&row.id===request.id);
   assert.equal(begin.transport,'syncthing-v2');assert.equal(begin.account_device,true);assert.equal(begin.iceServers,undefined);
+  const senderPeer={kind:'peer',device_id:native.device_id,addresses:['dynamic']};
+  const receiverPeer={kind:'peer',device_id:Array(8).fill('BBBBBBB').join('-'),addresses:['dynamic']};
+  signal(sa,senderPeer);assert.deepEqual((await sb.wait(row=>row.type==='native_signal'&&row.value.kind==='peer')).value,senderPeer);
+  signal(sb,receiverPeer);assert.deepEqual((await sa.wait(row=>row.type==='native_signal'&&row.value.kind==='peer')).value,receiverPeer);
   const pre=sb.messages.length;signal(sb,{kind:'saved'});await sb.wait(row=>row.type==='error'&&row.requestType==='native_signal',pre);
   signal(sa,native);assert.deepEqual((await sb.wait(row=>row.type==='native_signal'&&row.value.kind==='native')).value,native);
   const bad=async(peer,value,generation=1)=>{const index=peer.messages.length;signal(peer,value,generation);return peer.wait(row=>row.type==='error'&&row.requestType==='native_signal',index)};
+  await bad(sa,{...senderPeer,device_id:receiverPeer.device_id});
+  await bad(sa,{...senderPeer,content:native.content});
+  await bad(sa,{...native,device_id:receiverPeer.device_id});
   await bad(sa,{...native,content:{...native.content,sha256:'f'.repeat(64)}});
   await bad(sb,{kind:'saved'},0);await bad(sc,{kind:'saved'});
   await bad(sb,native);await bad(sa,{kind:'progress',received:1,total:5});
   await bad(sb,{kind:'progress',received:1,total:6});
-  console.log('PASS native consent, generation, peer role, immutable content and sender-only progress restrictions');
+  console.log('PASS early peer exchange without content, immutable peer identity, native consent, generation, peer role, immutable content and sender-only progress restrictions');
   async function upload(kind){
     const id=randomUUID(),created=await api('POST','/v1/uploads',a.token,{item_id:id,base_version:0,kind,name:'content.zip',mime_type:'application/zip',size:5,sha256:hash('hello'),fast_upload:true},201);
     if(created.instant)return created.record;

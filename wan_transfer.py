@@ -51,6 +51,7 @@ class WanTransferService(SyncthingLanService):
         for value in tuple(self._outbox.values()):self._send_signal(value)
         for identifier,state in tuple(self._pending.items()):
             if state.get('done'):self._send_signal(dict(type='complete',id=identifier));continue
+            if state.get('peer_out'):self._send_signal(state['peer_out'])
             if state.get('native_out'):self._send_signal(state['native_out'])
             if state.get('cloud_out') and self._bound_identity==self._account_identity() and self._bound_identity is not None:
                 self._send_signal(state['cloud_out'])
@@ -63,6 +64,7 @@ class WanTransferService(SyncthingLanService):
         if value.get('type')=='request' and state:state['request']=value
         if value.get('type')=='native_signal' and state:
             kind=value['value']['kind']
+            if kind=='peer':state['peer_out']=value
             if kind=='native':state['native_out']=value
             if kind=='r2':
                 state['cloud_out']=value
@@ -113,12 +115,15 @@ class WanTransferService(SyncthingLanService):
                 state['worker']=True;transfer.active=True;self._thread(self._receive,transfer,state)
         elif kind=='native_signal' and value.get('generation')==state['generation']:
             metadata=value['value'];signal=metadata['kind']
-            if signal=='native':
+            if signal in ('peer','native'):
                 native=dict(device_id=check_device(metadata['device_id']),addresses=check_addresses(metadata['addresses'],'lan' if self.engine.loopback else 'remote'))
-                if state['role']=='receive':native['content']=descriptor(metadata['content'])
+                if signal=='peer' and metadata.get('content') is not None:raise ValueError('设备预连接不能携带文件内容。')
+                if signal=='native' and state['role']=='receive':native['content']=descriptor(metadata['content'])
                 elif metadata.get('content') is not None:raise ValueError('接收端不能更改发送文件。')
-                if state.get('native') and state['native']!=native:raise ValueError('传输设备或文件内容已改变。')
-                state['native']=native
+                key='native_peer' if signal=='peer' else 'native';other='native' if signal=='peer' else 'native_peer'
+                if state.get(key) and state[key]!=native:raise ValueError('传输设备或文件内容已改变。')
+                if state.get(other) and state[other]['device_id']!=native['device_id']:raise ValueError('传输设备身份已改变。')
+                state[key]=native
             elif signal=='fallback':state['fallback'].set()
             elif signal=='saved' and state['role']=='send':state['saved'].set()
             elif signal=='r2' and state['role']=='receive':
@@ -164,6 +169,15 @@ class WanTransferService(SyncthingLanService):
             if remaining<=0:raise TimeoutError('等待远程设备响应超时。')
             state['wake'].wait(min(.1,remaining));state['wake'].clear()
 
+    def _exchange_peer(self,transfer,state):
+        # Receiver consent precedes any native peer registration. No folder is
+        # shared here: the original kernel can authenticate/dial while the
+        # sender creates its immutable snapshot on the same worker afterwards.
+        self.engine.start()
+        self._signal(transfer.transfer_id,dict(kind='peer',device_id=self.engine.device_id,addresses=self.engine.addresses()))
+        self._wait(transfer,state,lambda:bool(state.get('native_peer')),SIGNAL_SECONDS)
+        peer=state['native_peer'];self.engine.pair(peer['device_id'],peer['addresses'])
+
     def _send(self,transfer,state,paths):
         identifier=transfer.transfer_id;shared=False;record=None
         try:
@@ -176,6 +190,7 @@ class WanTransferService(SyncthingLanService):
             request.update(dict(prepared=True) if state.get('prepared_ok') else dict(peer=state['peer']['id']))
             self._command.emit(request);self._wait(transfer,state,lambda:state['ready'].is_set(),CONSENT_SECONDS)
             self._notify(transfer,'preparing',accepted=True)
+            self._exchange_peer(transfer,state)
             stage=self._stage(transfer,self.base,'send-'+identifier)
             payload=prepare(paths,stage/'payload',transfer.cancel,selection=selection);state['payload']=payload
             try:self.engine.start();device=self.engine.device_id;addresses=self.engine.addresses()
@@ -228,12 +243,14 @@ class WanTransferService(SyncthingLanService):
         identifier=transfer.transfer_id;job=None
         try:
             self._notify(transfer,'preparing',accepted=True)
+            self._exchange_peer(transfer,state)
+            self._signal(identifier,dict(kind='native',device_id=self.engine.device_id,addresses=self.engine.addresses()))
             self._wait(transfer,state,lambda:bool(state.get('native')),PREPARATION_TIMEOUT_SECONDS)
             native=state['native'];spec=native['content'];target=state['destination']
             if shutil.disk_usage(target).free<transfer.total+spec['size']+1024*1024:raise ValueError('接收位置的可用空间不足。')
             stage=self._stage(transfer,target,'.flickdock-receiving-'+identifier)
             try:
-                self.engine.start();self._signal(identifier,dict(kind='native',device_id=self.engine.device_id,addresses=self.engine.addresses()))
+                self.engine.start()
                 if state['fallback'].is_set():raise DirectUnavailable('对方已请求云端兜底。')
                 folder=stage/'network';folder.mkdir()
                 last=[0.]

@@ -28,6 +28,7 @@ START_TIMEOUT_SECONDS=20
 START_POLL_SECONDS=.05
 API_TIMEOUT_SECONDS=8
 API_MAX_BYTES=4*1024*1024
+WAN_DIRECT_PRIORITY=30
 DEVICE_ID=re.compile(r'[A-Z2-7]{7}(?:-[A-Z2-7]{7}){7}')
 TASK_ID=re.compile(r'fd-manual-[a-f0-9]{32}')
 PRIVATE_NETWORKS=('0.0.0.0/8','10.0.0.0/8','100.64.0.0/10','127.0.0.0/8',
@@ -129,6 +130,12 @@ class SyncthingEngine:
                 natEnabled=str(remote).lower(),relaysEnabled='false',announceLANAddresses='false',
                 startBrowser='false',autoUpgradeIntervalH='0',urAccepted='-1',crashReportingEnabled='false',
                 maxSendKbps='0',maxRecvKbps='0',progressUpdateIntervalS='1',setLowPriority='false').items():value(options,name,text)
+        if self.mode=='remote':
+            # Upstream dials equal-priority targets concurrently. Its default
+            # TCP/QUIC WAN tiers are serial, so an unreachable TCP candidate
+            # can consume a full dial timeout before usable QUIC is attempted.
+            for name in ('connectionPriorityTcpWan','connectionPriorityQuicWan'):
+                value(options,name,str(WAN_DIRECT_PRIORITY))
         # A generated config contains no user paths; write it atomically before
         # starting the upstream process, never edit its live XML configuration.
         temporary=path.with_suffix('.new');tree.write(temporary,encoding='utf-8',xml_declaration=True)
