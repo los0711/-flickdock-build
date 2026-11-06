@@ -328,10 +328,14 @@ export async function clipboardRequest(request:Request,ctx:DurableObjectState,en
     const abort=new AbortController(),fixed=new FixedLengthStream(size),pumping=request.body.pipeTo(fixed.writable,{signal:abort.signal});
     try{await Promise.all([pumping,env.FILES.put(key(attempt),fixed.readable,{sha256:rawFile?.sha256||sha256,httpMetadata:{contentType:'application/octet-stream'}})]);}
     catch(error){abort.abort();await fixed.readable.cancel().catch(()=>{});await pumping.catch(()=>{});throw error;}
-    const valid=await env.DB.prepare('SELECT 1 valid FROM sessions s JOIN devices d ON d.id=s.device_id WHERE s.token_hash=? AND s.account_id=? AND s.device_id=? AND s.expires_at>? AND d.revoked_at IS NULL')
-      .bind(request.headers.get('X-Clipboard-Session')||'',account,device,Date.now()).first();
-    if(!valid)return fail(401,'UNAUTHORIZED');
-    if(rawFile)await registerClipboardFile(env,{id,account,device,object_key:key(attempt),upload_id:attemptId},rawFile);
+    const session=request.headers.get('X-Clipboard-Session')||'';
+    if(rawFile){
+      if(!await registerClipboardFile(env,{id,account,device,session,object_key:key(attempt),upload_id:attemptId},rawFile))return fail(401,'UNAUTHORIZED');
+    }else{
+      const valid=await env.DB.prepare('SELECT 1 valid FROM sessions s JOIN devices d ON d.id=s.device_id WHERE s.token_hash=? AND s.account_id=? AND s.device_id=? AND s.expires_at>? AND d.revoked_at IS NULL')
+        .bind(session,account,device,Date.now()).first();
+      if(!valid)return fail(401,'UNAUTHORIZED');
+    }
     let previous:Head|undefined;
     const result=await ctx.storage.transaction(async tx=>{
       const active=await tx.get<Head>('clipboard-head');
@@ -345,13 +349,14 @@ export async function clipboardRequest(request:Request,ctx:DurableObjectState,en
       const hold=await tx.get<Hold>('clipboard-hold:'+id);
       if(latest?.id!==id){
         if(!rawFile||!hold||hold.device!==device||hold.expires<=Date.now()||!hold.items.length)return null;
-        await tx.put('clipboard-shared-ready:'+id,ready);await tx.put('clipboard-held-head:'+id,ready);return ready;
+        await tx.put('clipboard-shared-ready:'+id,ready);await tx.put('clipboard-held-head:'+id,ready);await tx.delete(attemptEntry);return ready;
       }
       previous=active;await tx.put('clipboard-head',ready);
       if(active)await tx.delete('clipboard-delivery:'+active.id);
       if(rawFile)await tx.put('clipboard-shared-ready:'+id,ready);
       await tx.delete('clipboard-pending');
       if(active)await tx.put(retiredKey(active),active);
+      await tx.delete(attemptEntry);
       return ready;
     });
     if(!result)return fail(409,'CLIPBOARD_REPLACED');
@@ -362,7 +367,6 @@ export async function clipboardRequest(request:Request,ctx:DurableObjectState,en
     if((await ctx.storage.get<Head>('clipboard-head'))?.id===id)ctx.waitUntil(notify(device,result));
     return json({clipboard:result,shared_files:true});
   }finally{
-    if(!committed)await retire(ctx,env,attempt);
-    await ctx.storage.delete(attemptEntry);
+    if(!committed){await retire(ctx,env,attempt);await ctx.storage.delete(attemptEntry);}
   }
 }

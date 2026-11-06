@@ -55,6 +55,7 @@ try{
  async function put(id,name,data,wrong=false){const zip=zipFile(name,data),envelope={name,size:data.length,sha256:wrong?'0'.repeat(64):hash(data),prefix:zip.prefix,suffix:zip.suffix};const response=await fetch(base+'/v1/clipboard/'+id+'/content',{method:'PUT',headers:{Authorization:'Bearer '+a.token,'Content-Type':'application/octet-stream','X-Clipboard-Kind':'files','X-Content-SHA256':hash(zip.archive),'X-Clipboard-Raw-File':JSON.stringify(envelope)},body:data});return {status:response.status,body:await response.json(),zip,envelope};}
  const data=Buffer.alloc(5*1024*1024+137,0x63),name='original.txt';data.write('Uncompressed ORIGINAL file bytes\n');
  const id=await stage(),item=randomUUID();await retain(id,item);const first=await put(id,name,data);assert.equal(first.status,200,JSON.stringify(first));
+ assert(!Object.keys((await snapshot()).do).some(key=>key.startsWith('clipboard-attempt:')),'Winning publication retires its attempt in the same transaction');
  const oldGet=await fetch(base+'/v1/clipboard/'+id+'/content',{headers:{Authorization:'Bearer '+b.token,'User-Agent':'FlickDock/1.8.20 (CloudSync)'}});assert.equal(oldGet.status,200);const archive=Buffer.from(await oldGet.arrayBuffer());assert.deepEqual(archive,first.zip.archive);assert.equal(hash(archive),oldGet.headers.get('X-Content-SHA256'));
  let snap=await snapshot();assert.equal(snap.objects.length,1);assert.equal(snap.objects[0].size,data.length);assert.equal(snap.allocations.length,1);
  checks.push({name:'one raw R2 original + legacy ZIP bytes/SHA compatibility',ok:true,snapshot:snap});
@@ -126,6 +127,21 @@ try{
  const sharedResponse=await fetch(base+'/v1/clipboard/'+detached+'/shared',{headers:{Authorization:'Bearer '+a.token}});assert([200,404].includes(sharedResponse.status));const shared=await sharedResponse.json();const uploadExists=afterFailure.uploads.some(u=>u.id===shared.clipboard?.upload_id);
  if(shared.clipboard?.ready&&!uploadExists)findings.push({name:'shared endpoint advertises deleted detached upload as ready after final release',shared,uploadExists});
  if(expectFixed){assert.equal(leaked.length,0);assert(!shared.clipboard?.ready);checks.push({name:'released detached GET no longer advertises ready',ok:true});}
+ const revoked=await sign(username,true),revokedId=randomUUID();copiedAt=Math.max(copiedAt+1,Date.now());
+ await req('POST','/v1/clipboard',{id:revokedId,protocol:2,sequence:1,copied_at:copiedAt},revoked.token,201);
+ const beforeRevocation=await snapshot(),revokedBody=Buffer.alloc(2*1024*1024,0x37),revokedZip=zipFile('revoked.bin',revokedBody);
+ const revokedFile={name:'revoked.bin',size:revokedBody.length,sha256:hash(revokedBody),prefix:revokedZip.prefix,suffix:revokedZip.suffix};
+ let finishRevoked;const revokedDone=new Promise(resolve=>finishRevoked=resolve);
+ const revokedRequest=httpRequest(base+'/v1/clipboard/'+revokedId+'/content',{method:'PUT',headers:{Authorization:'Bearer '+revoked.token,'Content-Length':revokedBody.length,'Content-Type':'application/octet-stream','X-Clipboard-Kind':'files','X-Content-SHA256':hash(revokedZip.archive),'X-Clipboard-Raw-File':JSON.stringify(revokedFile)}},response=>{response.resume();response.on('end',()=>finishRevoked(response.statusCode));});
+ revokedRequest.on('error',error=>finishRevoked(error.code));revokedRequest.write(revokedBody.subarray(0,128*1024));
+ const oldAllocations=new Set(beforeRevocation.allocations.map(row=>row.id));let started=false;
+ for(let i=0;i<100;i++){if((await snapshot()).allocations.some(row=>!oldAllocations.has(row.id))){started=true;break}await sleep(25)}
+ assert(started,'Payload allocation must exist before revoking the sending session');
+ await req('DELETE','/v1/devices/'+revoked.device_id,undefined,a.token);revokedRequest.end(revokedBody.subarray(128*1024));
+ assert.equal(await revokedDone,401,'A session revoked during upload cannot publish a verified raw file');
+ const afterRevocation=await snapshot();assert(!afterRevocation.allocations.some(row=>!oldAllocations.has(row.id)));
+ assert(!afterRevocation.uploads.some(row=>row.id===afterRevocation.do['clipboard-head']?.upload_id&&afterRevocation.do['clipboard-head']?.id===revokedId));
+ checks.push({name:'revocation during raw upload remains fenced by the registration transaction',ok:true});
  console.log(JSON.stringify({checks:checks.map(c=>({name:c.name,ok:c.ok})),findings:findings.map(f=>f.name)},null,2));
 }catch(error){failure=error.stack;console.error(failure);process.exitCode=1;}
 finally{

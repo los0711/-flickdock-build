@@ -1,7 +1,9 @@
 /** Exercise the exact production alarm with a controllable clock, no cloud. */
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
-import {clipboardAlarm} from '../src/clipboard.ts';
+import {registerHooks} from 'node:module';
+registerHooks({resolve(specifier,context,next){return next(specifier==='./shared-file'?specifier+'.ts':specifier,context);}});
+const {clipboardAlarm,clipboardRequest}=await import('../src/clipboard.ts');
 const id=randomUUID(),account=randomUUID(),now=Date.now(),data=new Map([['clipboard-head',{id,account,device:randomUUID(),version:7,at:now,ready:true,size:8,kind:'image'}]]),deleted=[],freed=[];
 const storage={async get(key){return data.get(key)},async put(key,value){data.set(key,value)},async delete(key){data.delete(key)},
   async list({prefix,limit}){return new Map([...data].filter(([key])=>key.startsWith(prefix)).slice(0,limit))},
@@ -16,7 +18,6 @@ try{
   console.log('PASS exact 24-hour alarm clears clipboard object and allocation without a paste');
 }finally{Date.now=original}
 /** Alarm/commit ordering must not reuse a version already applied by clients. */
-import {clipboardRequest} from '../src/clipboard.ts';
 for(const inline of [true,false]){
  const oldId=randomUUID(),nextId=randomUUID(),device=randomUUID(),clock=now+86400001;
  data.clear();data.set('clipboard-head',{id:oldId,account,device,version:1,at:now,ready:true,size:8,kind:'text'});
