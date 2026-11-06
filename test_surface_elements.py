@@ -24,6 +24,7 @@ def difference(first,last):
 class SharedElementTests(unittest.TestCase):
     def setUp(self):
         self.fixture=workspace.WorkspaceTests();self.fixture.setUp();self.shelf=self.fixture.shelf
+        self.fixture.patches.enter_context(patch('native_ui_common.reduced_motion',return_value=False))
         self.shelf.manager.motion=True;self.shelf.geometry_morph.motion=True
 
     def tearDown(self):self.fixture.tearDown()
@@ -82,10 +83,10 @@ class SharedElementTests(unittest.TestCase):
         self.assertFalse(any(key[0]=='file' for key in self.shelf._surface_snapshot.elements.keys))
 
     def test_reduced_motion_changes_to_live_endpoint_without_starting_compositor(self):
-        self.shelf.geometry_morph.motion=False
-        self.shelf.show_contents()
-        self.assertFalse(self.shelf.geometry_morph.active);self.assertFalse(self.shelf._morph_host_active)
-        self.shelf.collapse_contents();self.assertFalse(self.shelf.geometry_morph.active)
+        with patch('native_ui_common.reduced_motion',return_value=True):
+            self.shelf.show_contents()
+            self.assertFalse(self.shelf.geometry_morph.active);self.assertFalse(self.shelf._morph_host_active)
+            self.shelf.collapse_contents();self.assertFalse(self.shelf.geometry_morph.active)
 
     def test_light_and_dark_endpoint_pixels_match_the_live_layout_without_preview_ghosts(self):
         import ui_theme
