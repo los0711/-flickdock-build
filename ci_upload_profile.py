@@ -29,6 +29,13 @@ def main():
         def clear(self):pass
     with tempfile.TemporaryDirectory(prefix='flickdock-upload-',dir=os.environ['RUNNER_TEMP']) as directory:
         root=Path(directory);account=AccountService(root,store=Store());account.device_name='Disposable upload profiler'
+        transport=account.api.request
+        def traced(method,path,callback,**options):
+            def done(value,error):
+                if error:report['request_failures'].append(dict(method=method,route=path.split('/')[1:3],status=getattr(error,'status',0),code=getattr(error,'code','')))
+                callback(value,error)
+            return transport(method,path,done,**options)
+        account.api.request=traced
         def call(method,path,**options):
             result=[];account.api.request(method,path,lambda value,error:result.append((value,error)),**options)
             until(lambda:bool(result))

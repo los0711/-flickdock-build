@@ -70,6 +70,32 @@ def fixture(path,size,seed):
     return digest.hexdigest()
 
 
+def kernel_diagnostics(engine,peer):
+    """Record categories and counts, never device certificates, addresses or logs."""
+    import ipaddress
+    from collections import Counter
+    def category(error):
+        text=str(error or '').lower()
+        return [word for word in ('timeout','refused','unreachable','network not allowed','no route','certificate','tls','unexpected device','not found','403','429') if word in text]
+    try:
+        status=engine.request('GET','/rest/system/status');discovery=engine.request('GET','/rest/system/discovery')
+        sources=status.get('discoveryStatus',{});listeners=status.get('connectionServiceStatus',{})
+        counts=Counter()
+        for address in discovery.get(peer,[]):
+            url=urlsplit(address)
+            try:scope='public' if ipaddress.ip_address(url.hostname or '').is_global else 'private'
+            except ValueError:scope='hostname'
+            counts[url.scheme+'_'+scope]+=1
+        return dict(discovery_enabled=status.get('discoveryEnabled'),discovery_methods=len(sources),
+            discovery_errors=[category(value.get('error')) for value in sources.values() if value.get('error')],
+            listeners=[dict(protocol=urlsplit(key).scheme,error=category(value.get('error')),
+                            wan_addresses=len(value.get('wanAddresses',[]))) for key,value in listeners.items()],
+            discovered_peer_addresses=dict(counts),dial_attempts=len(status.get('lastDialStatus',{})),
+            dial_errors=[category(value.get('error')) for value in status.get('lastDialStatus',{}).values()],
+            connected=engine.connections().get(peer,{}).get('connected',False))
+    except Exception as error:return dict(diagnostic_error_type=type(error).__name__)
+
+
 def main():
     if (os.environ.get('GITHUB_ACTIONS')!='true' or os.environ.get('GITHUB_REPOSITORY')!=REPOSITORY
             or os.environ.get('RUNNER_OS') not in ('Windows','macOS')):
@@ -85,7 +111,7 @@ def main():
     secret=json.loads(os.environ.pop('FLICKDOCK_QA_SYNC_JSON'))
     if (set(secret)!=set(('username','password','probe')) or not re.fullmatch(r'cross-qa-[a-f0-9]{16}',secret['username'])
             or not re.fullmatch(r'[a-f0-9]{32}',secret['probe'])):raise ValueError('Only disposable QA identities are accepted')
-    secret['username']='cross-qa-'+hashlib.sha256((secret['username']+pair).encode()).hexdigest()[:16]
+    secret['username']='cross-qa-'+hashlib.sha256((secret['username']+run+pair).encode()).hexdigest()[:16]
     # Reuse the independent native pasteboard reader without changing the
     # native platform selected for this actual CI process.
     from verify_clipboard import assert_native_paste
@@ -101,10 +127,13 @@ def main():
     from syncthing_jobs import ReceiveJob,deliver
     from manual_payload import prepare
     app=QApplication.instance() or QApplication([]);app.setQuitOnLastWindowClosed(False)
+    from ci_vpn import verify_qt_proxy
+    proxy=verify_qt_proxy()
     phase='initializing';failures=[]
     report=dict(ok=False,side=side,pair=pair,platform=platform,run=run,attempt=attempt,source_commit=os.environ['GITHUB_SHA'],
         native_clipboard=True,separate_operating_systems=True,region_asserted=False,os_credentials_written=False,
-        cloud_only_automatic_sync=True,checks=[],api_failures=failures,http_payloads=[],
+        cloud_only_automatic_sync=True,checks=[],api_failures=failures,http_payloads=[],proxy=proxy,
+        proxy_pair_mode=os.environ.get('FD_QA_VPN_MODE','none'),
         timing_scope='Per-peer step elapsed includes coordination; HTTP payload timings are recorded separately',
         manual_scope='Original Syncthing engine + finite job adapter; application manual-transfer entry not yet wired')
     report_path=root/'report.json'
@@ -275,7 +304,7 @@ def main():
             return finished[0][0]
         for sender in ('a','b'):
             phase='manual_'+sender;start=time.perf_counter();task='fd-manual-'+uuid5(NAMESPACE_URL,f'{run}/{attempt}/{pair}/{sender}').hex
-            cancel=threading.Event();job=None;shared=False;error=None;received_bytes=0
+            cancel=threading.Event();job=None;shared=False;error=None;received_bytes=0;diagnostics=None
             try:
                 if side==sender:
                     engine.share(task,root/'payload',peer['kernel_id'],['dynamic'],send=True);shared=True
@@ -289,12 +318,13 @@ def main():
                     digest=fixture(expected,32*MIB,f'{run}-{attempt}-{pair}-{sender}-manual')
                     with received.open('rb') as stream:assert hashlib.file_digest(stream,'sha256').hexdigest()==digest
                     received_bytes=received.stat().st_size
-            except BaseException as failure:error=type(failure).__name__
+            except BaseException as failure:
+                error=type(failure).__name__;diagnostics=worker(lambda:kernel_diagnostics(engine,peer['kernel_id']))
             finally:
                 if job is not None:job.close()
             report['checks'].append(dict(name='manual_original_syncthing',sender=sender,ok=error is None,
                 local_role='sender' if side==sender else 'receiver',error_type=error,verified_bytes=received_bytes,seconds=round(time.perf_counter()-start,3),public_relays=False,
-                verified_by_peer_report_required=side==sender))
+                verified_by_peer_report_required=side==sender,diagnostics=diagnostics))
             stage+=1;barrier(stage)
             if shared:engine.unshare(task)
             report_path.write_text(json.dumps(report,indent=2),encoding='utf8')

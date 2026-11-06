@@ -15,6 +15,11 @@ on:
         description: Use the private QA node as the native system HTTP proxy
         type: boolean
         default: false
+      vpn_mode:
+        description: System-proxy states for the separate peer tests
+        type: choice
+        options: [none, a, b, both]
+        default: none
   push:
     branches: [cloud-build]
 
@@ -179,6 +184,7 @@ jobs:
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
       FD_QA_PAIR: ${{ matrix.pair }}
       FD_QA_SIDE: ${{ matrix.side }}
+      FD_QA_VPN_MODE: ${{ inputs.vpn_mode || 'none' }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
@@ -197,13 +203,22 @@ jobs:
           $env:FLICKDOCK_BUILD_CACHE = Join-Path $env:RUNNER_TEMP 'flickdock-cache'
           python syncthing_assets.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Prepare the verified proxy core before enabling the private node
+        if: inputs.vpn_mode == 'both' || inputs.vpn_mode == matrix.side
+        run: python ci_vpn.py prepare
       - name: Prepare private sessions and public synthetic fixture metadata
         shell: pwsh
         env:
           FLICKDOCK_QA_SYNC_JSON: ${{ secrets.FLICKDOCK_QA_DUAL_NATIVE }}
           GITHUB_TOKEN: ${{ github.token }}
+          FLICKDOCK_QA_VPN_NODE: ${{ secrets.FLICKDOCK_QA_VPN_NODE }}
         run: |
-          python ci_cross_device.py bootstrap --root (Join-Path $env:RUNNER_TEMP 'flickdock-dual-native')
+          if ($env:FD_QA_VPN_MODE -eq 'both' -or $env:FD_QA_VPN_MODE -eq $env:FD_QA_SIDE) {
+            python ci_vpn.py run -- python ci_cross_device.py bootstrap --root (Join-Path $env:RUNNER_TEMP 'flickdock-dual-native')
+          } else {
+            Remove-Item Env:FLICKDOCK_QA_VPN_NODE -ErrorAction SilentlyContinue
+            python ci_cross_device.py bootstrap --root (Join-Path $env:RUNNER_TEMP 'flickdock-dual-native')
+          }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Exchange public device identities with the other runner
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -217,14 +232,22 @@ jobs:
         env:
           FLICKDOCK_QA_SYNC_JSON: ${{ secrets.FLICKDOCK_QA_DUAL_NATIVE }}
           GITHUB_TOKEN: ${{ github.token }}
+          FLICKDOCK_QA_VPN_NODE: ${{ secrets.FLICKDOCK_QA_VPN_NODE }}
         run: |
-          python ci_cross_device.py run --root (Join-Path $env:RUNNER_TEMP 'flickdock-dual-native')
+          if ($env:FD_QA_VPN_MODE -eq 'both' -or $env:FD_QA_VPN_MODE -eq $env:FD_QA_SIDE) {
+            python ci_vpn.py run -- python ci_cross_device.py run --root (Join-Path $env:RUNNER_TEMP 'flickdock-dual-native')
+          } else {
+            Remove-Item Env:FLICKDOCK_QA_VPN_NODE -ErrorAction SilentlyContinue
+            python ci_cross_device.py run --root (Join-Path $env:RUNNER_TEMP 'flickdock-dual-native')
+          }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Retain only sanitized verification results
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: dual-results-${{ matrix.pair }}-${{ matrix.side }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/flickdock-dual-native/report.json
+          path: |
+            ${{ runner.temp }}/flickdock-dual-native/report.json
+            ${{ runner.temp }}/flickdock-vpn/proxy-report.json
           if-no-files-found: warn
           retention-days: 3

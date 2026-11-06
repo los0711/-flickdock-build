@@ -4,11 +4,13 @@ import argparse
 import ctypes
 import gzip
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
 import secrets
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -134,25 +136,33 @@ def main():
         request=urllib.request.Request(f'http://127.0.0.1:{controller}'+path,headers={'Authorization':'Bearer '+token})
         with local.open(request,timeout=5) as response:return json.loads(response.read(1024*1024))
     process=None;system=SystemProxy(mixed);report=dict(ok=False,mode='system_http_proxy',tun=False,platform=sys.platform)
+    temporary=tempfile.TemporaryDirectory(prefix='profile-',dir=root)
     try:
-        with tempfile.TemporaryDirectory(prefix='profile-',dir=root) as directory:
-            path=Path(directory)/'config.json';path.write_text(json.dumps(config),encoding='utf8');path.chmod(0o600)
-            process=subprocess.Popen([str(root/('mihomo.exe' if sys.platform=='win32' else 'mihomo')),'-d',directory,'-f',str(path)],
-                                     stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
-            deadline=time.monotonic()+15
-            while True:
-                if process.poll() is not None:raise RuntimeError('Isolated proxy core failed to start')
-                try:api('/version');break
-                except OSError:
-                    if time.monotonic()>deadline:raise TimeoutError('Isolated proxy core did not become ready')
-                    time.sleep(.05)
-            system.enable();before=api('/connections');env=dict(os.environ,FD_QA_PROXY_PORT=str(mixed))
-            code=subprocess.run(child,env=env,timeout=1500).returncode
-            after=api('/connections');report.update(child_exit=code,upload_bytes=max(0,after['uploadTotal']-before['uploadTotal']),
-                download_bytes=max(0,after['downloadTotal']-before['downloadTotal']))
-            report['ok']=code==0 and report['upload_bytes']+report['download_bytes']>0
-            if code==0 and not report['ok']:raise RuntimeError('No traffic passed through the selected node')
-            return code if code else (0 if report['ok'] else 1)
+        directory=temporary.name;path=Path(directory)/'config.json';path.write_text(json.dumps(config),encoding='utf8');path.chmod(0o600)
+        process=subprocess.Popen([str(root/('mihomo.exe' if sys.platform=='win32' else 'mihomo')),'-d',directory,'-f',str(path)],
+                                 stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+        deadline=time.monotonic()+15
+        while True:
+            if process.poll() is not None:raise RuntimeError('Isolated proxy core failed to start')
+            try:api('/version');break
+            except OSError:
+                if time.monotonic()>deadline:raise TimeoutError('Isolated proxy core did not become ready')
+                time.sleep(.05)
+        connection=http.client.HTTPSConnection('127.0.0.1',mixed,timeout=15,context=ssl.create_default_context())
+        try:
+            started=time.monotonic();connection.set_tunnel('flickdock.cc.cd',443)
+            connection.request('GET','/v1/health',headers={'User-Agent':'FlickDock/1.8.25 (CloudSync)'})
+            response=connection.getresponse();response.read(4096)
+            report['node_health']=dict(status=response.status,seconds=round(time.monotonic()-started,3))
+            if response.status!=200:raise RuntimeError('Private node failed the service health check')
+        finally:connection.close()
+        system.enable();before=api('/connections');env=dict(os.environ,FD_QA_PROXY_PORT=str(mixed))
+        code=subprocess.run(child,env=env,timeout=1500).returncode
+        after=api('/connections');report.update(child_exit=code,upload_bytes=max(0,after['uploadTotal']-before['uploadTotal']),
+            download_bytes=max(0,after['downloadTotal']-before['downloadTotal']))
+        report['ok']=code==0 and report['upload_bytes']+report['download_bytes']>0
+        if code==0 and not report['ok']:raise RuntimeError('No traffic passed through the selected node')
+        return code if code else (0 if report['ok'] else 1)
     except Exception as error:report['error_type']=type(error).__name__;return 1
     finally:
         try:system.restore();report['system_proxy_restored']=True
@@ -161,6 +171,7 @@ def main():
                 process.terminate()
                 try:process.wait(5)
                 except subprocess.TimeoutExpired:process.kill();process.wait(5)
+            temporary.cleanup()
             (root/'proxy-report.json').write_text(json.dumps(report,indent=2),encoding='utf8')
             print(json.dumps(report),flush=True)
 
