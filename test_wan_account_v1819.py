@@ -40,7 +40,7 @@ class AccountTransferTests(unittest.TestCase):
                 self.assertTrue(self.wan._pending[identifier]['awaiting_binding'])
                 manager.show_wan_dialog.assert_not_called();manager.receive_notice.begin.assert_not_called()
                 account.callbacks[-1]({'bound':True},None)
-                self.assertEqual(self.wan._pending[identifier]['destination'],self.root)
+                self.assertEqual(self.wan._pending[identifier]['destination'],self.root.resolve())
                 manager.show_wan_dialog.assert_not_called();manager.receive_notice.begin.assert_called_once()
                 self.wan._present_offer(identifier);manager.receive_notice.begin.assert_called_once()
             finally:self.wan.offer_received.disconnect(handler)
