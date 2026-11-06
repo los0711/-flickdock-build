@@ -131,7 +131,7 @@ SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'cloud/src/cloud-pipe.ts','cloud/src/storage-budget.ts','TRANSPORT_V1825.md',
     'cloud/src/wasm.d.ts','cloud/src/vendor/hash-wasm-sha256-4.12.0.wasm',
     'cloud/src/vendor/hash-wasm-sha256-4.12.0.json','cloud/src/vendor/hash-wasm-4.12.0-LICENSE.txt',
-    'cloud/test/integration.mjs','cloud/test/shared-file.mjs','cloud/test/hash-state.mjs','cloud/test/upload-cancel.mjs','cloud/test/wan-codes.mjs','cloud/test/wan-connect.mjs','cloud/test/wan-account.mjs','cloud/test/peer-sync.mjs','cloud/test/peer-runtime.mjs','cloud/test/account-names.mjs','cloud/test/qa-server.mjs','cloud/test/clipboard.mjs','cloud/test/clipboard-expiry.mjs','cloud/test/clipboard-delivery.mjs',
+    'cloud/test/integration.mjs','cloud/test/shared-file.mjs','cloud/test/hash-state.mjs','cloud/test/upload-cancel.mjs','cloud/test/wan-codes.mjs','cloud/test/wan-connect.mjs','cloud/test/wan-account.mjs','cloud/test/peer-sync.mjs','cloud/test/account-names.mjs','cloud/test/qa-server.mjs','cloud/test/clipboard.mjs','cloud/test/clipboard-expiry.mjs','cloud/test/clipboard-delivery.mjs',
     '.github/workflows/macos-build.yml','.github/workflows/native-clipboard.yml','ci_installer_close.py','ci_assets.py','p2p_assets.py',
     'p2p/bridge.mjs','p2p/package.json','p2p/package-lock.json','p2p/node-shasums.json',
     'website/wrangler.jsonc','website/worker.mjs','website/package.json','website/package-lock.json',

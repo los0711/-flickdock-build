@@ -4245,9 +4245,6 @@ def main():
     if '--verify-clipboard' in sys.argv:
         from verify_clipboard import main as verify_clipboard
         return verify_clipboard()
-    if '--verify-peers' in sys.argv:
-        from verify_peers import run
-        return run(sys.argv,load_font)
     if '--verify-wan' in sys.argv:
         from verify_wan import run
         return run(sys.argv,load_font)

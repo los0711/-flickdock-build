@@ -30,6 +30,8 @@ class CloudOnlyTests(unittest.TestCase):
             tree=ast.parse((ROOT/name).read_text(encoding='utf8'))
             attributes={node.attr for node in ast.walk(tree) if isinstance(node,ast.Attribute)}
             self.assertFalse({'peer_sync','peer_bridge','attach_peer'}&attributes,name)
+            imports={node.module for node in ast.walk(tree) if isinstance(node,ast.ImportFrom)}
+            self.assertNotIn('verify_peers',imports)
 
     def test_manual_worker_is_the_exact_v1817_source(self):
         self.assertEqual(hashlib.sha256((ROOT/'p2p/bridge.mjs').read_bytes()).hexdigest(),V1817_BRIDGE_SHA256)
