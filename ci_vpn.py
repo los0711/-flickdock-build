@@ -129,7 +129,7 @@ def main():
         node['name']='private-qa-'+str(index+1)
         for key in ('dialer-proxy','interface-name','routing-mark'):node.pop(key,None)
     mixed=free_port();controller=free_port();token=secrets.token_hex(32)
-    config={'mixed-port':mixed,'allow-lan':False,'bind-address':'127.0.0.1','mode':'rule','log-level':'silent','ipv6':False,
+    config={'mixed-port':mixed,'allow-lan':False,'bind-address':'127.0.0.1','mode':'rule','log-level':'warning','ipv6':False,
             'external-controller':f'127.0.0.1:{controller}','secret':token,'tun':{'enable':False},'dns':{'enable':False},
             'geo-auto-update':False,'find-process-mode':'off','global-client-fingerprint':'chrome','proxies':nodes,
             'proxy-groups':[{'name':'QA','type':'select','proxies':[node['name'] for node in nodes]}],'rules':['MATCH,QA']}
@@ -141,10 +141,11 @@ def main():
             value=response.read(1024*1024);return json.loads(value) if value else None
     process=None;system=SystemProxy(mixed);report=dict(ok=False,mode='system_http_proxy',tun=False,platform=sys.platform)
     temporary=tempfile.TemporaryDirectory(prefix='profile-',dir=root)
+    diagnostic=(Path(temporary.name)/'private-core.log').open('w+b')
     try:
         directory=temporary.name;path=Path(directory)/'config.json';path.write_text(json.dumps(config),encoding='utf8');path.chmod(0o600)
         process=subprocess.Popen([str(root/('mihomo.exe' if sys.platform=='win32' else 'mihomo')),'-d',directory,'-f',str(path)],
-                                 stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+                                 stdout=diagnostic,stderr=subprocess.STDOUT,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
         deadline=time.monotonic()+15
         while True:
             if process.poll() is not None:raise RuntimeError('Isolated proxy core failed to start')
@@ -182,6 +183,8 @@ def main():
                 process.terminate()
                 try:process.wait(5)
                 except subprocess.TimeoutExpired:process.kill();process.wait(5)
+            diagnostic.seek(0);message=diagnostic.read(2*1024*1024).decode('utf8','replace').lower();diagnostic.close()
+            report['core_error_categories']={word:message.count(word) for word in ('timeout','refused','unreachable','no route','certificate','handshake','eof','lookup','resolve','reset') if word in message}
             temporary.cleanup()
             (root/'proxy-report.json').write_text(json.dumps(report,indent=2),encoding='utf8')
             print(json.dumps(report),flush=True)
