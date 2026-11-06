@@ -112,16 +112,20 @@ class StackTile(ContentTile):
     def set_hover(self,value):
         if bool(value)==self._hovered:return
         super().set_hover(value)
+        self._retarget_spread()
+
+    def _retarget_spread(self):
         from native_ui_common import reduced_motion
         from ui_transitions import STACK_SPREAD_RESPONSE_SECONDS,STACK_SPREAD_DAMPING
         if not self.motion or reduced_motion():self.spread.jump({'spread':0});return
-        if value and self.refs and set(self._layers)!=set(self.refs):
+        if self._hovered and self.refs and set(self._layers)!=set(self.refs):
             self._layers={ref:stack_pixmap(self.repository,self.refs,128,dpr=self.devicePixelRatioF(),
                 preview_cache=self.preview_cache,front_art=self._front_art,layer_ref=ref) for ref in self.refs}
-        self.spread.animate({'spread':float(bool(value and self.refs))},response=STACK_SPREAD_RESPONSE_SECONDS,damping=STACK_SPREAD_DAMPING)
+        target=float(bool(self._hovered and self.refs))
+        self.spread.animate({'spread':target},response=STACK_SPREAD_RESPONSE_SECONDS,damping=STACK_SPREAD_DAMPING)
 
     def hideEvent(self,event):
-        self.spread.jump({'spread':0});super().hideEvent(event)
+        self._hovered=False;self.spread.jump({'spread':0});super().hideEvent(event)
 
     def _spread_pixmap(self,value):
         ratio=self.devicePixelRatioF();result=QPixmap(round(128*ratio),round(128*ratio));result.setDevicePixelRatio(ratio);result.fill(Qt.transparent)
@@ -287,6 +291,7 @@ class StackTile(ContentTile):
             self.landing.stop();self.landing.setStartValue(min(.8,start));self.landing.setEndValue(1.0);self.landing.start()
         elif not new_refs:
             self.landing.stop();self.arrival=1
+        if previous!=new_refs:self._retarget_spread()
 
     def paintEvent(self,event):
         original_kind=self._kind

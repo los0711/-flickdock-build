@@ -337,6 +337,21 @@ class DropZone(QFrame):
         self.icon.set_hover(False)
         super().leaveEvent(event)
 
+    def showEvent(self,event):
+        super().showEvent(event)
+        # Cocoa can reveal a tool window beneath a stationary pointer without
+        # delivering Enter. Reconcile once after layout, without a polling loop.
+        QTimer.singleShot(0,self,self._reconcile_card_hover)
+
+    def _reconcile_card_hover(self):
+        if not self.isVisible():return
+        cursor=QCursor.pos();point=self.mapFromGlobal(cursor);hit=QApplication.widgetAt(cursor)
+        inside=self.rect().contains(point) and (hit is None or hit.window() is self.window())
+        if inside!=self._pointer_hovered:
+            self._pointer_hovered=inside;self._apply_style()
+            self.feedback.animate({'hover':float(inside)},response=.14,damping=1.0)
+        self.icon.set_hover(self.drop_highlight or inside and self.icon.geometry().contains(point))
+
     def hideEvent(self, event):
         self._click_armed=False;self._pointer_hovered=False;self._apply_style()
         self._pill_hovered = False

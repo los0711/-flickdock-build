@@ -9,7 +9,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from adaptive_stream import AdaptiveStream,HEADER,DATA,ACK,WINDOW_BYTES
+from adaptive_stream import AdaptiveStream,HEADER,DATA,ACK,PROBE,WINDOW_BYTES
 from route_policy import RoutePolicy
 
 
@@ -63,6 +63,34 @@ class RoutePolicyTests(unittest.TestCase):
 
 
 class AdaptiveTests(unittest.TestCase):
+    def test_active_path_uses_real_payload_measurements_without_reverse_probe_head_of_line(self):
+        # Model an ordered native channel whose large diagnostic message is
+        # awaiting retransmission. Its later ACKs cannot pass that message.
+        packets=queue.Queue(128);release=threading.Event();closing=threading.Event();errors=[]
+        original=self.raw[1].sendall
+        def drain():
+            while not closing.is_set():
+                try:packet=packets.get(timeout=.02)
+                except queue.Empty:continue
+                if HEADER.unpack(packet[:HEADER.size])[0]==PROBE:
+                    while not closing.is_set() and not release.wait(.02):pass
+                if closing.is_set():return
+                try:original(packet)
+                except OSError as error:
+                    if not closing.is_set():errors.append(type(error).__name__)
+                    return
+        worker=threading.Thread(target=drain);worker.start();self.workers.append(worker)
+        try:
+            with patch.object(self.raw[1],'sendall',side_effect=packets.put_nowait):
+                self.streams[1].sendall(b'request');self.assertEqual(self.streams[0].recv(7),b'request')
+                time.sleep(.25)
+                body=os.urandom(1024*1024);self.streams[0].send_payload(body);received=bytearray()
+                while len(received)<len(body):received.extend(self.streams[1].recv(len(body)-len(received)))
+                self.assertEqual(hashlib.sha256(received).digest(),hashlib.sha256(body).digest())
+                until(lambda:self.streams[0].payload_progress()==len(body),.7)
+                self.assertFalse(errors);self.assertEqual(self.streams[0].route,'p2p')
+        finally:closing.set();release.set();worker.join(2)
+
     def test_remote_mode_attaches_native_without_attempting_a_lan_socket(self):
         self.streams[0].allow_lan=False
         with patch('nearby_transport.try_nearby',side_effect=AssertionError('Remote transfer attempted LAN')):

@@ -13,6 +13,24 @@ import test_html_native_workspace as workspace
 
 
 class PreviewContinuityTests(unittest.TestCase):
+    def test_hover_started_before_files_arrive_retargets_the_existing_stack_spring(self):
+        tile=self.shelf.zones['permanent'].icon;tile.motion=True;tile.spread.motion=True
+        with patch('native_ui_common.reduced_motion',return_value=False):
+            tile.set_stack(self.shelf.content,[]);tile.set_hover(True)
+            self.assertTrue(tile._hovered);self.assertEqual(tile.spread._targets['spread'],0)
+            tile.set_stack(self.shelf.content,self.fixture.paths[:3])
+            tile.set_hover(True)
+            self.assertEqual(tile.spread._targets['spread'],1)
+            tile.set_hover(False);self.assertEqual(tile.spread._targets['spread'],0)
+
+    def test_reopening_beneath_stationary_pointer_recovers_a_missing_native_enter(self):
+        zone=self.shelf.zones['permanent'];tile=zone.icon;tile.motion=True;tile.spread.motion=True
+        zone.hide();workspace.flush();self.assertFalse(tile._hovered)
+        position=zone.mapToGlobal(tile.geometry().center())
+        with patch('flickdock.QCursor.pos',return_value=position),patch('native_ui_common.reduced_motion',return_value=False):
+            zone.show();workspace.flush()
+            self.assertTrue(tile._hovered);self.assertEqual(tile.spread._targets['spread'],1)
+
     def test_hidden_empty_preview_discards_hover_so_reopening_does_not_start_an_idle_border_loop(self):
         self.shelf.remove_all('permanent');workspace.flush();tile=self.shelf.zones['permanent'].icon
         tile.set_hover(True);self.assertTrue(tile.border_motion.frames.isActive())

@@ -2,4 +2,4 @@
 
 APP_NAME = "FlickDock"
 APP_VERSION = "1.8.25"
-APP_BUILD = "1.8.25-test4-clipboard-slot"
+APP_BUILD = "1.8.25-test5-shelf-clipboard"

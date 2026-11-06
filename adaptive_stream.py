@@ -501,9 +501,12 @@ class AdaptiveStream:
                     pings=[p for p in self._paths.values() if not p.dead and now-p.pinged>(CLOUD_IDLE_PING_SECONDS if p.route=='cloud' and self.route!='cloud' else PING_INTERVAL_SECONDS)]
                     for candidate in pings:candidate.ping_number+=1;candidate.pinged=now
                     eligible=preferred_routes(self._live())
-                    choices=sorted((p for p in self._paths.values() if p.key in eligible
+                    # The active route is measured by real payload ACKs. A
+                    # bulk probe on its reverse ordered stream can hold all
+                    # subsequent ACKs behind retransmission of the probe.
+                    choices=sorted((p for p in self._paths.values() if p.key in eligible and p.key!=self.policy.current
                                     and now-p.probed>=(2. if p.probes<2 else PROBE_INTERVAL_SECONDS)),
-                        key=lambda p:(p.key!=self.policy.current,p.probed))
+                        key=lambda p:p.probed)
                     path=choices[0] if active and self._probe is None and choices and now>=self._next_probe else None
                     if path:
                         self._probe_number+=1;number=self._probe_number
