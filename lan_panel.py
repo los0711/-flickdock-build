@@ -1559,7 +1559,7 @@ class LanPanel(QFrame):
         elif state=='connecting':
             row['bar'].setRange(0,0);row['detail'].setText({'relay':'正在尝试中继连接…','cloud':'正在连接云端传输…'}.get(data.get('route'),'正在建立 P2P 直连…'))
         elif state=='preparing':
-            row['bar'].hide();row['detail'].setText('对方已接受 · 正在准备文件…' if data.get('accepted') and data['direction']=='send'
+            row['bar'].hide();row['detail'].setText('P2P 已连接 · 正在建立文件索引…' if data.get('phase')=='indexing' else '对方已接受 · 正在准备文件…' if data.get('accepted') and data['direction']=='send'
                                                    else '已接受 · 等待对方准备文件…' if data.get('accepted') else '正在准备文件…')
         elif state=='reconnecting':
             row['bar'].setRange(0,0);row['detail'].setText('连接中断，正在续传…')

@@ -13,6 +13,25 @@ import test_html_native_workspace as workspace
 
 
 class PreviewContinuityTests(unittest.TestCase):
+    def test_clear_all_then_trigger_preview_retires_old_surface_and_card_pixels(self):
+        self.shelf.manager.motion=True;self.shelf.geometry_morph.motion=True
+        with patch('native_ui_common.reduced_motion',return_value=False):
+            self.shelf.show_contents();self.shelf.geometry_morph.pause()
+            snapshot=self.shelf._surface_snapshot
+            self.assertTrue(snapshot.active)
+            self.shelf.remove_all('permanent')
+            self.shelf.hide()
+            self.shelf._show_at(self.shelf._dock_target,'dock',QPoint())
+            tile=self.shelf.zones['permanent'].icon
+            self.assertFalse(snapshot.active)
+            self.assertTrue(snapshot.source.isNull());self.assertTrue(snapshot.target.isNull())
+            self.assertEqual(tile.refs,());self.assertFalse(tile._card_art)
+            self.assertFalse(tile._exit_from);self.assertFalse(tile._exit_to)
+            self.assertEqual(tile._kind,'empty')
+            self.assertEqual(self.shelf.display_refs(),[])
+            self.assertIsNone(self.shelf.popup.preview.current_path)
+            self.assertFalse(self.shelf.popup.item_transitions.ghosts)
+
     def test_hover_started_before_files_arrive_retargets_the_existing_stack_spring(self):
         tile=self.shelf.zones['permanent'].icon;tile.motion=True;tile.spread.motion=True
         with patch('native_ui_common.reduced_motion',return_value=False):
@@ -168,7 +187,7 @@ class PreviewContinuityTests(unittest.TestCase):
                 self.assertGreater(marker.red(),140);self.assertLess(stretched.red(),70)
                 # Once overview sections have entered, no compact text/card
                 # pixels remain, even though the container is still moving.
-                render(.6)
+                render(.8)
                 self.assertEqual(image.pixelColor(round(215*ratio),round(25*ratio)),QColor('#2040aa'))
                 self.assertEqual(image.pixelColor(round(40*ratio),round(75*ratio)),QColor('#2040aa'))
                 snapshot.target_sections=[(QRectF(0,0,400,300),QPoint())]

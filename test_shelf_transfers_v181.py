@@ -158,6 +158,43 @@ class Adapter(BaseAdapter):
 
 
 class TransferTests(unittest.TestCase):
+    def test_text_revision_retires_materialized_old_text_before_single_restore(self):
+        service,adapter,receiver=self.replica('device-b')
+        until(lambda:not receiver.running)
+        identity=str(uuid4());ref='flickdock:text:'+identity
+        adapter.view=dict(permanent=[ref],texts={ref:'old text'},
+                          metadata={ref:dict(title='old.txt',text_file='old-owned.txt',_cloud_item_id=identity)})
+        receiver.state['entries'][identity]=dict(id=identity,ref=ref,dirty=False,deleted=False,version=1)
+        snapshots=[];restore=adapter.restore
+        def observed(value):snapshots.append(copy.deepcopy(value));restore(value)
+        adapter.restore=observed
+        receiver._add_ref(ref,'new text','new.txt',cloud_identity=identity,replacing=ref)
+        self.assertEqual(len(snapshots),1);self.assertEqual(adapter.removed,[ref])
+        self.assertEqual(adapter.view['permanent'],[ref]);self.assertEqual(adapter.view['texts'][ref],'new text')
+        self.assertNotIn('text_file',adapter.view['metadata'][ref])
+        self.assertEqual(adapter.view['metadata'][ref]['_cloud_item_id'],identity)
+
+    def test_new_revision_replaces_visible_file_in_one_restore(self):
+        service,adapter,sender=self.replica('device-a',initial=True)
+        until(lambda:not sender.running and bool(self.server.account('account-A')['items']))
+        remote,view,receiver=self.replica('device-b')
+        until(lambda:not receiver.running and bool(view.view['permanent']))
+        old=view.view['permanent'][0];snapshots=[];restore=view.restore
+        def observed(value):
+            snapshots.append(copy.deepcopy(value));restore(value)
+        view.restore=observed
+        newer=b'new original bytes\0'+self.payload
+        self.source.write_bytes(newer);sender.local_changed()
+        until(lambda:not sender.running)
+        receiver.tick()
+        until(lambda:not receiver.running and view.view['permanent']!=[old])
+        self.assertEqual(len(snapshots),1,'One logical revision must publish one complete view')
+        self.assertEqual(len(snapshots[0]['permanent']),1)
+        current=view.view['permanent'][0]
+        self.assertEqual(Path(current).read_bytes(),newer)
+        self.assertNotIn(old,view.view['metadata'])
+        self.assertEqual(view.removed,[old]);self.assertTrue(self.source.is_file())
+
     def test_other_device_sees_placeholder_before_disk_worker_finishes(self):
         service,adapter,sender=self.replica('device-a')
         other,remote,receiver=self.replica('device-b')

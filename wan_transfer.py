@@ -22,6 +22,7 @@ ACK_SECONDS=180
 REQUEST_RECEIPT_SECONDS=3600
 PREPARATION_TIMEOUT_SECONDS=3600
 PROGRESS_SECONDS=1.
+ACCOUNT_BIND_SECONDS=15
 
 
 class _DirectCancel:
@@ -93,8 +94,9 @@ class WanTransferService(SyncthingLanService):
             self._pending[identifier]=state
             transfer=_Transfer(identifier,'receive',peer['name'],total=total,token=value['token'],manifest_hash=value['digest'])
             self._transfers[identifier]=transfer
-            self.offer_received.emit(dict(id=identifier,peer=peer['name'],host='远程',code='',total=total,count=count,names=names,
-                account_device=state['account_device'],account_id=state['account_id'],device_code=value.get('deviceCode','')))
+            state['offer']=dict(id=identifier,peer=peer['name'],host='远程',code='',total=total,count=count,names=names,
+                account_device=state['account_device'],account_id=state['account_id'],device_code=value.get('deviceCode',''))
+            self._present_offer(identifier)
             return
         if not state:return
         transfer=self._transfers[identifier]
@@ -145,6 +147,24 @@ class WanTransferService(SyncthingLanService):
         elif kind=='settled' or kind=='resumed' and value.get('settled'):
             if transfer.finished:self._pending.pop(identifier,None)
 
+    def _present_offer(self,identifier):
+        state=self._pending[identifier];transfer=self._transfers[identifier]
+        if state.get('offer_presented') or state.get('destination') or transfer.cancel.is_set():return
+        account=self.account_service
+        same=(state['account_device'] and account is not None and account.signed_in
+              and state['account_id']==account.account['id'])
+        from network_diagnostics import record_event
+        if same and self._bound_identity!=self._account_identity():
+            # Server binding/presence may beat its HTTP acknowledgement to Qt.
+            # Keep the verified offer pending instead of downgrading it to a
+            # manual consent prompt. The session fence is still mandatory.
+            state['awaiting_binding']=True;self._bind_account()
+            record_event(self.base,'remote','offer','SAME_ACCOUNT_BIND_PENDING')
+            return
+        state['awaiting_binding']=False;state['offer_presented']=True
+        record_event(self.base,'remote','offer','SAME_ACCOUNT_READY' if same else 'MANUAL_ACCOUNT_NOT_PROVEN')
+        self.offer_received.emit(state['offer'])
+
     def send(self,peer_id,paths):
         if not self._connected:raise ValueError('远程服务尚未连接，请稍后重试。')
         peer=self._peers.get(peer_id)
@@ -188,6 +208,9 @@ class WanTransferService(SyncthingLanService):
             request=dict(type='request',id=identifier,token=transfer.token,digest=hashlib.sha256(json.dumps(selection['entries'],sort_keys=True).encode()).hexdigest(),
                 total=str(selection['total']),count=selection['count'],names=selection['names'][:12])
             request.update(dict(prepared=True) if state.get('prepared_ok') else dict(peer=state['peer']['id']))
+            identity=self._account_identity()
+            if identity is not None:
+                self._wait(transfer,state,lambda:self._bound_identity==identity,ACCOUNT_BIND_SECONDS)
             self._command.emit(request);self._wait(transfer,state,lambda:state['ready'].is_set(),CONSENT_SECONDS)
             self._notify(transfer,'preparing',accepted=True)
             self._exchange_peer(transfer,state)
@@ -205,12 +228,15 @@ class WanTransferService(SyncthingLanService):
             task='fd-manual-'+identifier
             if not state['fallback'].is_set():
                 native=state['native'];self.engine.share(task,payload['folder'],native['device_id'],native['addresses'],send=True);shared=True
-                started=time.monotonic()
+                started=time.monotonic();state['last_progress']=started;connection_reported=False
                 while not state['saved'].is_set() and not state['fallback'].is_set():
                     if transfer.cancel.is_set() or self._stopped.is_set():raise InterruptedError('已取消传输。')
                     if state.get('error'):raise ValueError(state['error'])
                     state['wake'].wait(.1);state['wake'].clear()
                     connected=self.engine.connections().get(native['device_id'],{}).get('connected') is True
+                    if connected and not connection_reported:
+                        connection_reported=True
+                        if transfer.done==0:self._notify(transfer,'preparing',phase='indexing',accepted=True,route='direct')
                     now=time.monotonic()
                     if not connected and now-started>SIGNAL_SECONDS or connected and now-state['last_progress']>ACK_SECONDS:
                         state['fallback'].set();self._signal(identifier,dict(kind='fallback'))
@@ -260,7 +286,8 @@ class WanTransferService(SyncthingLanService):
                     if now-last[0]>=PROGRESS_SECONDS or done==total:
                         last[0]=now;self._signal(identifier,dict(kind='progress',received=done,total=total))
                 job=ReceiveJob(self.engine,'fd-manual-'+identifier,folder,native['device_id'],native['addresses'],spec,
-                               cancel=_DirectCancel(transfer,state),progress=progress)
+                               cancel=_DirectCancel(transfer,state),progress=progress,
+                               on_connected=lambda:self._notify(transfer,'preparing',phase='indexing',accepted=True,route='direct'))
                 payload=job.receive()
             except (DirectUnavailable,InterruptedError) as error:
                 if transfer.cancel.is_set():raise
@@ -409,6 +436,8 @@ class WanTransferService(SyncthingLanService):
                 if getattr(error,'status',0)!=401:self.bind_retry.start()
                 return
             self._bound_identity=identity;self._send_signal(dict(type='recent'));self._recover_signaling()
+            for identifier,state in tuple(self._pending.items()):
+                if state.get('awaiting_binding'):self._present_offer(identifier)
             self.peers_changed.emit(self.peers())
         key=self.account_service.api.request('POST','/v1/wan/account',done,
             data={'credential':self._credential,'lan_id':self.lan_id,'nonce':self._account_nonce},timeout_ms=12000)

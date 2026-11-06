@@ -63,6 +63,25 @@ def surface_clip(rect):
     return path
 
 
+def visible_render_widgets(root):
+    """Walk only the clipped widget branches that QWidget.render can paint.
+
+    Hidden overview rows retain thousands of children after the first visit.
+    Lifting their inherited update flags emits events even though none of those
+    widgets contributes pixels to this endpoint.
+    """
+    pending=[(root,root.rect())]
+    while pending:
+        widget,clip=pending.pop()
+        if widget.testAttribute(Qt.WA_ForceUpdatesDisabled):continue
+        yield widget
+        for child in widget.findChildren(QWidget,options=Qt.FindDirectChildrenOnly):
+            if child.isHidden() or child.isWindow():continue
+            visible=clip.intersected(child.geometry())
+            if not visible.isEmpty():
+                pending.append((child,visible.translated(-child.x(),-child.y())))
+
+
 class SurfaceSnapshot(QWidget):
     """Two endpoint renders, one cached shadow, no descendant layout per frame.
 
@@ -96,7 +115,7 @@ class SurfaceSnapshot(QWidget):
         # left opaque child holes black. Lift only inherited subtree flags for
         # this offscreen render; preserve explicitly blocked widgets and never
         # enable the native owner or publish an intermediate layout.
-        blocked=[widget for widget in (card,*card.findChildren(QWidget))
+        blocked=[widget for widget in visible_render_widgets(card)
                  if widget.testAttribute(Qt.WA_UpdatesDisabled) and not widget.testAttribute(Qt.WA_ForceUpdatesDisabled)]
         for widget in blocked:widget.setAttribute(Qt.WA_UpdatesDisabled,False)
         try:
@@ -136,7 +155,7 @@ class SurfaceSnapshot(QWidget):
 
     def begin(self,source,target,origin,present=True,target_rect=None,*,source_elements=(),target_elements=()):
         from surface_elements import SharedElements
-        self.elements=SharedElements(source_elements,target_elements)
+        self.elements=SharedElements(source_elements,target_elements,source_size=source.deviceIndependentSize(),target_size=target.deviceIndependentSize())
         self.target_sections=[]
         self.source,self.target=source,target
         self.active=True; self.mix=0; self.rect_global=QRect(origin)

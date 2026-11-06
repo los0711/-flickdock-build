@@ -95,6 +95,7 @@ class CloudStatusBadge(QWidget):
 
 def transfer_fraction(state):
     """Return a known progress fraction; unknown sizes never imply a percentage."""
+    if state.get('remote') and state.get('phase') in ('remote','preparing'):return None
     try:
         total=max(0,int(state.get('total') or 0))
         received=max(0,int(state.get('received') or 0))
@@ -106,6 +107,7 @@ def transfer_fraction(state):
 def transfer_phase_label(state):
     phase=state.get('phase')
     return ('正在复制' if phase=='copying' else '正在下载' if phase=='downloading'
+            else '等待对方上传' if phase=='remote' or phase=='preparing' and state.get('remote')
             else '等待云端确认' if phase=='verifying'
             else '等待重试' if phase=='retrying'
             else '校验原文件' if phase=='validating'
@@ -157,7 +159,7 @@ class TransferRateTracker:
             if key!='__aggregate__' and key not in refs:self._samples.pop(key,None)
         for ref,state in transfers.items():
             phase=state.get('phase')
-            if phase in ('queued','preparing'):
+            if phase in ('queued','preparing','remote'):
                 self._samples.pop(ref,None)
                 continue
             received,total=self._numbers(state)
@@ -177,6 +179,7 @@ class TransferRateTracker:
         if now is None:now=self._clock()
         phase=state.get('phase')
         if phase=='queued':return '等待开始'
+        if phase=='remote' or phase=='preparing' and state.get('remote'):return '等待对方上传'
         if phase=='preparing':return '准备中'
         if phase=='verifying':return '等待云端确认'
         if phase=='retrying':return '等待重试'
@@ -205,6 +208,8 @@ def draw_ring(painter,rect,state):
     painter.save();painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     pen=QPen(QColor(ui_theme.color('border')),2.4);painter.setPen(pen)
     painter.setBrush(Qt.BrushStyle.NoBrush);painter.drawEllipse(rect)
+    if state.get('remote') and state.get('phase') in ('remote','preparing'):
+        painter.restore();return
     pen.setColor(QColor('#3989ef'));pen.setCapStyle(Qt.PenCapStyle.RoundCap);painter.setPen(pen)
     received,total=state.get('received',0),state.get('total',0)
     if total>0:

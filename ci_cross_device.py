@@ -13,6 +13,7 @@ import re
 import sys
 import threading
 import time
+from types import SimpleNamespace
 from urllib.error import HTTPError,URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler,Request,build_opener
@@ -214,17 +215,23 @@ def main():
         if not cloud_only:
             phase='manual_prepare';wan=WanTransferService(root/'manual',device_name=account.device_name)
             assert wan.device_id==own['wan_id'];wan.attach_account(account);wan.start()
-        manual_completed=[];manual_progress=[];manual_accepted={}
+        manual_completed=[];manual_progress=[];manual_accepted={};auto_accepted=set();manual_prompts=[]
         if wan:
             wan.completed.connect(manual_completed.append);wan.progress.connect(manual_progress.append)
             def accepted_progress(value):
                 if value.get('accepted'):manual_accepted.setdefault(value['id'],time.perf_counter())
             wan.progress.connect(accepted_progress)
+            from flickdock import ShelfManager
+            target=root/('delivered-'+other);target.mkdir(exist_ok=True)
+            manager=SimpleNamespace(account=account,wan=wan,settings=SimpleNamespace(lan_receive_dir=str(target)),
+                receive_notice=SimpleNamespace(begin=lambda offer:auto_accepted.add(offer['id'])),
+                show_wan_dialog=lambda:manual_prompts.append(True),
+                wan_dialog=SimpleNamespace(panel=SimpleNamespace(show_offer=lambda offer:wan.reject(offer['id']))))
             def accept_manual(offer):
                 state=wan._pending[offer['id']]
                 if (offer.get('account_device') and offer.get('account_id')==account.account['id']
                         and state['peer']['id']==peer['wan_id']):
-                    target=root/('delivered-'+other);target.mkdir(exist_ok=True);wan.accept(offer['id'],target)
+                    ShelfManager._wan_offer(manager,offer)
                 else:wan.reject(offer['id'])
             wan.offer_received.connect(accept_manual)
         events=CloudEvents(account);clip=app.clipboard();clipboard=ClipboardSync(account,events,root/'clipboard',clipboard=clip)
@@ -342,6 +349,8 @@ def main():
             report['checks'].append(dict(name='manual_application_syncthing_r2',sender=sender,ok=error is None,
                 local_role='sender' if side==sender else 'receiver',error_type=error,verified_bytes=received_bytes,
                 receiver_save_ack=side==sender and error is None,route=routes[-1] if routes else None,
+                same_account_auto_accepted=identity in auto_accepted if side!=sender else None,
+                manual_confirmation_required=bool(manual_prompts),
                 accepted_seconds=round(manual_accepted[identity]-started,3) if identity in manual_accepted else None,
                 seconds=round(time.perf_counter()-started,3),public_relays=False,diagnostics=diagnostics))
             stage+=1;barrier(stage);report_path.write_text(json.dumps(report,indent=2),encoding='utf8')

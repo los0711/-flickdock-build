@@ -6,7 +6,8 @@ import tempfile
 import time
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch,Mock
+from types import SimpleNamespace
 
 from wan_transfer import WanTransferService,RECEIVE_CODE
 from syncthing_jobs import DirectUnavailable
@@ -21,6 +22,34 @@ PROFILE_RELEASE_POLL_SECONDS=.025
 
 @unittest.skipUnless(BINARY.is_file(),'Official original kernel is required')
 class NativeWanTests(LocalCloudFixture,unittest.TestCase):
+    def test_actual_online_presence_before_binding_reply_never_prompts_same_account_receiver(self):
+        from flickdock import ShelfManager
+        api=self.accounts[1].api;request=api.request;held=[]
+        def delayed(method,path,callback,**options):
+            if path=='/v1/wan/account':
+                def keep(result,error):held.append(lambda:callback(result,error))
+                return request(method,path,keep,**options)
+            return request(method,path,callback,**options)
+        receiver=self.services[1];target=self.root/'auto-received';target.mkdir()
+        manager=SimpleNamespace(account=self.accounts[1],wan=receiver,settings=SimpleNamespace(lan_receive_dir=str(target)),
+            receive_notice=SimpleNamespace(begin=Mock()),show_wan_dialog=Mock(),wan_dialog=SimpleNamespace(panel=SimpleNamespace(show_offer=Mock())))
+        receiver.offer_received.connect(lambda offer:ShelfManager._wan_offer(manager,offer))
+        source=self.root/'stream.bin';source.write_bytes(bytes(range(256))*32768)
+        try:
+            with patch.object(api,'request',side_effect=delayed):
+                for service,account in zip(self.services,self.accounts):service.attach_account(account);service.start()
+                until(lambda:held and self.services[0]._bound_identity==self.services[0]._account_identity()
+                      and any(row.get('online') for row in self.services[0].peers()),25)
+                self.assertIsNone(receiver._bound_identity)
+                identifier=self.services[0].send(receiver.device_id,[source])
+                until(lambda:receiver._pending.get(identifier,{}).get('awaiting_binding'),5)
+                manager.show_wan_dialog.assert_not_called();self.assertFalse(self.offers)
+                callback=held.pop(0);callback();self.wait_completed(identifier)
+            manager.show_wan_dialog.assert_not_called();manager.receive_notice.begin.assert_called_once()
+            self.assertEqual((target/source.name).read_bytes(),source.read_bytes())
+        finally:
+            for callback in held:callback()
+
     def setUp(self):
         self.temporary=tempfile.TemporaryDirectory(prefix='native-wan-');self.root=Path(self.temporary.name).resolve()
         self.services=[WanTransferService(self.root/name,device_name=name,origin=self.origin,binary=BINARY,

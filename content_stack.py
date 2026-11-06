@@ -125,7 +125,9 @@ class StackTile(ContentTile):
         self.spread.animate({'spread':target},response=STACK_SPREAD_RESPONSE_SECONDS,damping=STACK_SPREAD_DAMPING)
 
     def hideEvent(self,event):
-        self._hovered=False;self.spread.jump({'spread':0});super().hideEvent(event)
+        self._hovered=False;self.spread.jump({'spread':0})
+        self.removal.stop();self._remove_finished()
+        super().hideEvent(event)
 
     def _spread_pixmap(self,value):
         ratio=self.devicePixelRatioF();result=QPixmap(round(128*ratio),round(128*ratio));result.setDevicePixelRatio(ratio);result.fill(Qt.transparent)
@@ -277,7 +279,7 @@ class StackTile(ContentTile):
         if animate:
             self._layers={ref:stack_pixmap(repository,new_refs,128,dpr=ratio,preview_cache=self.preview_cache,
                 front_art=self._front_art,layer_ref=ref) for ref in new_refs}
-            if previous!=new_refs and (removed or self.removal.state()==QAbstractAnimation.Running):
+            if previous!=new_refs and self.isVisible() and (removed or self.removal.state()==QAbstractAnimation.Running):
                 self.removal.stop();self.landing.stop();self.arrival=1.0
                 self._exit_from=old_layers;self._exit_to=self._layers
                 self._exit_order=tuple(dict.fromkeys((*old_layers,*new_refs)))

@@ -50,6 +50,9 @@ class LanDialogTests(unittest.TestCase):
         panel._progress(value);row=panel._rows[value['id']]
         self.assertTrue(row['bar'].isHidden());self.assertEqual(row['detail'].text(),'正在准备文件…')
         value['accepted']=True;panel._progress(value)
+        value['phase']='indexing';panel._progress(value)
+        self.assertTrue(row['bar'].isHidden());self.assertEqual(row['detail'].text(),'P2P 已连接 · 正在建立文件索引…')
+        value.pop('phase');panel._progress(value)
         self.assertTrue(row['bar'].isHidden());self.assertEqual(row['detail'].text(),'对方已接受 · 正在准备文件…')
         value.update(state='transferring',received=1024,total=4096)
         panel._progress(value)

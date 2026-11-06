@@ -146,6 +146,27 @@ class LiveShelfTests(unittest.TestCase):
         QTest.qWait(240);flush()
         self.assertFalse(motion.ghosts);self.assertFalse(motion.overlay.isVisible())
 
+    def test_last_delete_empty_target_fades_and_rises_six_pixels_then_restores_native_layout(self):
+        self.manager.motion=True;popup=self.overview();adapter=ShelfAdapter(self.manager)
+        view=adapter.snapshot();view['permanent']=[];adapter.restore(view);flush()
+        entrance=popup.empty_entrance
+        self.assertTrue(entrance.active);self.assertTrue(entrance.effect.isEnabled())
+        self.assertGreaterEqual(popup.empty_drop.y(),entrance.origin.y())
+        self.assertLessEqual(popup.empty_drop.y()-entrance.origin.y(),6)
+        self.assertGreaterEqual(entrance.effect.opacity(),0);self.assertLess(entrance.effect.opacity(),1)
+        QTest.qWait(240);flush()
+        self.assertFalse(entrance.active);self.assertFalse(entrance.effect.isEnabled())
+        self.assertEqual(popup.empty_drop.pos(),entrance.origin)
+        self.assertTrue(popup.empty_drop.isVisible())
+
+    def test_incoming_content_interrupts_empty_entrance_without_leaving_a_dimmed_drop_target(self):
+        self.manager.motion=True;popup=self.overview();adapter=ShelfAdapter(self.manager)
+        view=adapter.snapshot();view['permanent']=[];adapter.restore(view);flush()
+        self.assertTrue(popup.empty_entrance.active)
+        view['permanent']=self.paths[:1];adapter.restore(view);flush()
+        self.assertFalse(popup.empty_entrance.active);self.assertFalse(popup.empty_entrance.effect.isEnabled())
+        self.assertFalse(popup.empty_state.isVisible());self.assertIn(self.paths[0],popup._item_widgets)
+
     def test_metadata_during_batch_build_does_not_stall_or_leak_height(self):
         popup=self.overview();adapter=ShelfAdapter(self.manager)
         view=adapter.snapshot()
@@ -194,6 +215,17 @@ class LiveShelfTests(unittest.TestCase):
         tile.removal.setCurrentTime(200)
         self.assertFalse(tile._exit_from);self.assertFalse(tile._exit_to)
         self.assertFalse(a.isNull())
+
+    def test_hidden_compact_stack_does_not_replay_deleted_file_exit_layers(self):
+        tile=StackTile(self.shelf,motion=True);tile.resize(170,140);tile.show()
+        tile.set_stack(self.shelf.content,self.paths)
+        tile.landing.setCurrentTime(tile.landing.duration())
+        tile.set_stack(self.shelf.content,self.paths[:1]);tile.hide()
+        self.assertFalse(tile._exit_from);self.assertFalse(tile._exit_to)
+        tile.set_stack(self.shelf.content,[]);tile.set_content('empty');tile.show()
+        self.assertEqual(tile.removal.state(),tile.removal.State.Stopped)
+        self.assertFalse(tile._exit_from);self.assertFalse(tile._exit_to)
+        self.assertEqual(tile.refs,());self.assertEqual(tile._kind,'empty')
 
     def test_reconnect_backfill_keeps_front_then_live_arrival_is_animated(self):
         tile=StackTile(self.shelf,motion=True);tile.resize(170,140);tile.show()

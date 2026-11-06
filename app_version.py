@@ -1,5 +1,5 @@
 """Single runtime version shared by the UI and release tools."""
 
 APP_NAME = "FlickDock"
-APP_VERSION = "1.8.25"
-APP_BUILD = "1.8.25-syncthing-test4"
+APP_VERSION = "1.8.26"
+APP_BUILD = "1.8.26"

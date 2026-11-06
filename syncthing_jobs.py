@@ -15,10 +15,11 @@ class DirectUnavailable(ConnectionError):
 
 
 class ReceiveJob:
-    def __init__(self,engine,identifier,folder,peer,addresses,spec,*,cancel,progress):
+    def __init__(self,engine,identifier,folder,peer,addresses,spec,*,cancel,progress,on_connected=None):
         self.engine=engine;self.identifier=check_task(identifier);self.folder=Path(folder)
         self.peer=peer;self.addresses=addresses;self.spec=descriptor(spec)
         self.cancel=cancel;self.progress=progress;self.shared=False
+        self.on_connected=on_connected
 
     def receive(self):
         if self.cancel.is_set():raise InterruptedError('已取消传输。')
@@ -31,7 +32,9 @@ class ReceiveJob:
             if target.is_file() and target.stat().st_size==self.spec['size']:
                 self.progress(self.spec['size'],self.spec['size']);return target
             rows=self.engine.connections();peer=rows.get(self.peer,{})
-            connected=connected or peer.get('connected') is True
+            if not connected and peer.get('connected') is True:
+                connected=True
+                if self.on_connected is not None and not self.cancel.is_set():self.on_connected()
             now=time.monotonic()
             if not connected and now-start>CONNECT_TIMEOUT_SECONDS:raise DirectUnavailable('直连暂未建立。')
             if connected and now-last_progress>PAYLOAD_IDLE_TIMEOUT_SECONDS:raise DirectUnavailable('直连长时间没有收到文件数据。')

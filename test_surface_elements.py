@@ -22,6 +22,26 @@ def difference(first,last):
 
 
 class SharedElementTests(unittest.TestCase):
+    def test_capture_walk_excludes_hidden_and_clipped_widget_subtrees(self):
+        from PySide6.QtCore import QRect
+        from PySide6.QtWidgets import QWidget
+        from surface_morph import visible_render_widgets
+        root=QWidget();root.resize(200,100)
+        visible=QWidget(root);visible.setGeometry(10,10,50,50)
+        hidden=QWidget(root);hidden.hide();hidden_child=QWidget(hidden)
+        clipped=QWidget(root);clipped.setGeometry(300,0,20,20);clipped_child=QWidget(clipped)
+        partial=QWidget(root);partial.setGeometry(190,0,50,50)
+        inside=QWidget(partial);inside.setGeometry(0,0,5,5)
+        outside=QWidget(partial);outside.setGeometry(30,0,5,5)
+        explicit=QWidget(root);explicit.setGeometry(0,0,10,10);explicit.setUpdatesEnabled(False)
+        root.show();workspace.flush()
+        try:
+            walked=set(visible_render_widgets(root))
+            self.assertEqual(walked,{root,visible,partial,inside})
+            self.assertNotIn(hidden_child,walked);self.assertNotIn(clipped_child,walked)
+            self.assertNotIn(outside,walked);self.assertFalse(explicit.updatesEnabled())
+        finally:root.close();root.deleteLater();workspace.flush()
+
     def setUp(self):
         self.fixture=workspace.WorkspaceTests();self.fixture.setUp();self.shelf=self.fixture.shelf
         self.fixture.patches.enter_context(patch('native_ui_common.reduced_motion',return_value=False))
@@ -33,13 +53,13 @@ class SharedElementTests(unittest.TestCase):
         self.shelf.show_contents();self.shelf.geometry_morph.pause();self.shelf.presentation.stop()
         return self.shelf._surface_snapshot
 
-    def test_list_and_grid_match_real_file_ids_without_repainting_widgets_each_frame(self):
+    def test_file_cards_use_original_endpoint_fades_without_repainting_widgets_each_frame(self):
         for mode in ('list','icons'):
             with self.subTest(mode=mode):
                 self.shelf.manager.settings.update(view_mode=mode)
                 snapshot=self.expand();elements=snapshot.elements
-                self.assertEqual({key[1] for key in elements.roots if key[0]=='file'},set(self.fixture.paths))
-                self.assertIn(('brand',),elements.keys);self.assertIn(('clipboard',),elements.keys)
+                self.assertFalse(any(key[0]=='file' for key in elements.keys))
+                self.assertNotIn(('brand',),elements.keys);self.assertNotIn(('clipboard',),elements.keys)
                 native=self.shelf.geometry();live=self.shelf.card.geometry();captures=snapshot.capture_count
                 with patch.object(snapshot,'capture_live',side_effect=AssertionError('per-frame widget capture')):
                     for fraction in (.03,.12,.3,.55,.8,.99):
@@ -61,22 +81,22 @@ class SharedElementTests(unittest.TestCase):
                 if key in positions:self.assertLess((rect.center()-positions[key].center()).manhattanLength(),.01)
         self.shelf.geometry_morph.complete()
 
-    def test_empty_drop_target_is_shared_and_does_not_create_file_preview_content(self):
+    def test_empty_state_and_long_distance_controls_fade_in_place_without_file_preview_content(self):
         self.shelf.remove_all('permanent');workspace.flush()
         snapshot=self.expand()
-        self.assertIn(('empty','drop','skin'),snapshot.elements.roots)
+        self.assertFalse(snapshot.elements.keys,'Unrelated empty-state text and distant controls must use the endpoint fades')
         self.assertFalse(any(key[0]=='file' for key in snapshot.elements.keys))
         for fraction in (.1,.5,.9):self.shelf.geometry_morph._frame(fraction);render(snapshot)
         self.assertIsNone(self.shelf.popup.preview.current_path)
         self.shelf.geometry_morph.complete()
         self.assertEqual(self.shelf.popup.preview.stack.currentWidget(),self.shelf.popup.preview.empty_preview)
 
-    def test_same_name_files_stay_distinct_and_hidden_scrolled_rows_are_not_matched(self):
+    def test_files_remain_in_their_layout_when_category_changes(self):
         folder=self.fixture.base/'other';folder.mkdir();other=folder/'report.txt';other.write_text('different file')
         self.shelf.add_paths('permanent',[str(other)]);workspace.flush()
         snapshot=self.expand()
         roots={key[1] for key in snapshot.elements.roots if key[0]=='file'}
-        self.assertIn(str(other),roots);self.assertIn(self.fixture.paths[0],roots)
+        self.assertFalse(roots)
         self.shelf.geometry_morph.complete();workspace.flush()
         self.shelf.popup.set_category('images');workspace.flush()
         self.shelf.collapse_contents();self.shelf.geometry_morph.pause();self.shelf.presentation.stop()

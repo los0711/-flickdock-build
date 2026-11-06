@@ -1242,9 +1242,9 @@ class ShelfSync(QObject):
                 if fence['superseded'] or self._remote_heads.get(identity,{}).get('version',0)>record['version']:
                     if self._receive_fences.get(identity) is fence:self.download_transfers.pop(identity,None)
                     self._notify_transfers();callback();return
-                if current: self._remove_ref(current['ref'])
                 if text is not None: ref = 'flickdock:text:'+identity
-                self._add_ref(ref,text,record['name'],remote_order=remote_order,cloud_identity=identity)
+                self._add_ref(ref,text,record['name'],remote_order=remote_order,cloud_identity=identity,
+                              replacing=current['ref'] if current else None)
                 entries[identity] = {'id':identity,'ref':ref,'version':record['version'],
                     'sha256':record['sha256'],'name':record['name'],'kind':record['kind'],
                     'size':record['size'],'mime_type':record.get('mime_type','application/octet-stream'),
@@ -1487,8 +1487,19 @@ class ShelfSync(QObject):
     def _set_title(self,ref,name):
         self._change_view(lambda view:view.setdefault('metadata',{}).setdefault(ref,{}).update(title=name))
 
-    def _add_ref(self,ref,text,name,*,remote_order=None,cloud_identity=None):
+    def _add_ref(self,ref,text,name,*,remote_order=None,cloud_identity=None,replacing=None):
+        # Publish one complete view. Removing the old revision first exposes an
+        # empty frame and loses the cloud identity needed by the live widgets.
+        if replacing and any(e.get('ref')==replacing and e.get('dirty') and not e.get('deleted')
+                             for e in self.state['entries'].values()):replacing=None
+        if replacing and (replacing!=ref or text is not None) and hasattr(self.adapter,'remove_owned'):
+            self.adapter.remove_owned(replacing)
         def change(view):
+            if replacing:
+                view['permanent']=[ref if value==replacing else value for value in view['permanent']]
+                if replacing!=ref or text is not None:
+                    view.setdefault('texts',{}).pop(replacing,None)
+                    view.setdefault('metadata',{}).pop(replacing,None)
             if cloud_identity:view.setdefault('metadata',{}).setdefault(ref,{})['_cloud_item_id']=cloud_identity
             if ref not in view['permanent']:
                 position=len(view['permanent'])

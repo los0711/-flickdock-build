@@ -29,6 +29,19 @@ subject.load_font(APP)
 
 
 class TransferRateTests(unittest.TestCase):
+    def test_remote_upload_is_waiting_not_a_first_local_download(self):
+        from transfer_visuals import transfer_fraction
+        tracker=TransferRateTracker()
+        for phase in ('remote','preparing'):
+            state=dict(remote=True,phase=phase,received=500,total=1000)
+            tracker.observe({'item':state})
+            self.assertIsNone(transfer_fraction(state))
+            self.assertEqual(transfer_phase_label(state),'等待对方上传')
+            self.assertEqual(tracker.remaining_text('item',state),'等待对方上传')
+        state.update(phase='downloading',received=200)
+        self.assertEqual(transfer_fraction(state),.2)
+        self.assertEqual(transfer_phase_label(state),'正在下载')
+
     def test_eta_uses_observed_progress_and_disappears_when_stalled_or_reset(self):
         clock=[0.0];tracker=TransferRateTracker(clock=lambda:clock[0])
         state={'phase':'uploading','received':0,'total':16*1024*1024}

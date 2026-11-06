@@ -644,6 +644,8 @@ class PreviewPane(QFrame):
         self.transfer_overlay.setGeometry(self.stack.rect());self.transfer_overlay.setVisible(copying or receiving)
         if copying or receiving:self.transfer_overlay.raise_();self.transfer_overlay.update()
         total,received=state.get('total',0),state.get('received',0)
+        waiting_remote=state.get('remote') and state.get('phase') in ('remote','preparing')
+        self.transfer_progress.setVisible(not waiting_remote)
         self.transfer_progress.setRange(0,1000 if total else 0)
         if total:self.transfer_progress.setValue(round(1000*min(1,received/total)))
         fraction=transfer_fraction(state)
@@ -854,6 +856,9 @@ class ContentsPopup(QFrame):
         self._build_timer.timeout.connect(self._append_batch)
         from reference_widgets import build_overview
         build_overview(self,PreviewPane)
+        from ui_transitions import EmptyStateEntrance
+        self.empty_entrance=EmptyStateEntrance(self.empty_drop,lambda:self.shelf.manager.motion)
+        self._empty_entry_epoch=0;self._body_had_refs=None
         self._responsive_timer=QTimer(self);self._responsive_timer.setSingleShot(True)
         self._responsive_timer.timeout.connect(self._apply_responsive_layout)
         self.scroll.viewport().installEventFilter(self)
@@ -908,7 +913,16 @@ class ContentsPopup(QFrame):
 
     def _sync_body_visibility(self,refs=None):
         has_refs=bool(self.visible_refs() if refs is None else refs)
+        previous=getattr(self,'_body_had_refs',None);self._body_had_refs=has_refs
         self.empty_state.setVisible(not has_refs)
+        if hasattr(self,'empty_entrance') and previous!=has_refs:
+            self._empty_entry_epoch+=1;epoch=self._empty_entry_epoch
+            if has_refs:self.empty_entrance.finish()
+            elif previous is True and self.isVisible() and not self.shelf.content_transition_active():
+                def enter_empty():
+                    if epoch==self._empty_entry_epoch and not self._body_had_refs and not self.shelf.content_transition_active():
+                        self.empty_state.layout().activate();self.empty_entrance.begin()
+                QTimer.singleShot(0,self,enter_empty)
         self.narrow_view_button.setVisible(self._narrow_layout and has_refs)
         self.narrow_view_button.setText('返回内容' if self._narrow_preview else '预览')
         self.narrow_view_button.setAccessibleName('返回内容列表' if self._narrow_preview else '查看选中内容的预览')
@@ -1314,6 +1328,7 @@ class ContentsPopup(QFrame):
 
     def prepare_transition(self):
         """Capture one complete viewport; defer only rows outside that viewport."""
+        self.empty_entrance.finish()
         for section in (self,self.middle,self.scroll):
             layout=section.layout()
             if layout is not None:layout.activate()
@@ -1326,6 +1341,13 @@ class ContentsPopup(QFrame):
                 self._build_append(index,self._build_refs[index]);self._build_installed.add(index)
         while self._build_cursor<len(self._build_refs) and self._build_cursor in self._build_installed:self._build_cursor+=1
         self.rows_layout.activate()
+
+    def hideEvent(self,event):
+        self._build_timer.stop()
+        self.empty_entrance.finish()
+        transitions=getattr(self,'item_transitions',None)
+        if transitions is not None:transitions.finish()
+        super().hideEvent(event)
 
     def chosen_refs(self):
         return [ref for ref in self.shelf.files['permanent'] if ref in self.selected]
@@ -2566,11 +2588,14 @@ class ShelfWindow(QWidget):
             # surface becomes visible. Expansion then never moves its HWND
             # while Windows still holds the old compact backing-store image.
             self.setGeometry(self._reserved_surface_rect(rect,reserve))
-        if self.geometry_morph.current != rect:
-            if was_visible:self.geometry_morph.animate(rect)
-            else:self.geometry_morph.jump(rect)
-        elif not was_visible:
-            self._apply_geometry(rect)
+        if not was_visible:
+            # A new reveal owns fresh repository pixels, never an interrupted
+            # compositor or a removal frame retained while the widget hid.
+            self.geometry_morph.jump(rect)
+            self.zones['permanent'].refresh()
+            self.surface_effect.invalidate_source()
+        elif self.geometry_morph.current != rect:
+            self.geometry_morph.animate(rect)
         if not was_visible:
             self.presentation.jump({"sx": .95 if self.manager.motion else 1, "sy": .91 if self.manager.motion else 1,
                                     "alpha": 0, "dx": offset.x() if self.manager.motion else 0, "dy": offset.y() if self.manager.motion else 0})

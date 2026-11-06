@@ -1,7 +1,7 @@
 """Utility-window transitions, separate from the native shelf compositor."""
 from PySide6.QtCore import QCoreApplication,QEvent,QObject,QPoint,QPointF,QRectF,Qt,QTimer,QEasingCurve,Signal,Slot
 from PySide6.QtGui import QGuiApplication,QPainter,QPixmap
-from PySide6.QtWidgets import QWidget,QGraphicsEffect
+from PySide6.QtWidgets import QWidget,QGraphicsEffect,QGraphicsOpacityEffect
 from shiboken6 import isValid
 from display_frames import DisplayAnimation
 
@@ -12,12 +12,15 @@ SHELF_REVEAL_RESPONSE_SECONDS=.34
 SHELF_REVEAL_DAMPING=.60
 OVERVIEW_OPEN_DURATION_MS=360
 OVERVIEW_OPEN_OVERSHOOT=.55
-SURFACE_SOURCE_FADE_END=.18
-SURFACE_TARGET_FADE_END=.55
+SURFACE_SOURCE_FADE_END=.45
+SURFACE_TARGET_FADE_END=.72
 STACK_SPREAD_RESPONSE_SECONDS=.72
 STACK_SPREAD_DAMPING=.88
 STACK_LANDING_DURATION_MS=440
 STACK_PULSE_TIMEOUT_MS=950
+SHARED_ELEMENT_MAX_TRAVEL_PX=600
+EMPTY_STATE_ENTRY_MS=180
+EMPTY_STATE_ENTRY_OFFSET_PX=6
 
 
 def motion_allowed():
@@ -29,6 +32,40 @@ def exit_curve():
     curve=QEasingCurve(QEasingCurve.BezierSpline)
     curve.addCubicBezierSegment(QPointF(.23,1),QPointF(.32,1),QPointF(1,1))
     return curve
+
+
+class EmptyStateEntrance(QObject):
+    """One reusable, interruptible entrance for a small native empty target."""
+    def __init__(self,widget,motion):
+        super().__init__(widget);self.widget=widget;self.motion=motion
+        assert widget.graphicsEffect() is None
+        self.effect=QGraphicsOpacityEffect(widget);self.effect.setEnabled(False);widget.setGraphicsEffect(self.effect)
+        self.animation=DisplayAnimation(self);self.animation.setDuration(EMPTY_STATE_ENTRY_MS)
+        self.animation.setEasingCurve(exit_curve());self.animation.valueChanged.connect(self._frame)
+        self.animation.finished.connect(self.finish);self.active=False;self.origin=QPoint()
+        widget.installEventFilter(self)
+
+    def begin(self):
+        self.finish()
+        if not self.motion() or not motion_allowed() or not self.widget.isVisible():return
+        self.origin=QPoint(self.widget.pos());self.active=True;self.effect.setEnabled(True)
+        self.animation.setStartValue(0.);self.animation.setEndValue(1.);self._frame(0.)
+        self.animation.start()
+
+    def _frame(self,value):
+        if not self.active:return
+        progress=max(0.,min(1.,float(value)))
+        self.effect.setOpacity(progress)
+        self.widget.move(self.origin+QPoint(0,round(EMPTY_STATE_ENTRY_OFFSET_PX*(1-progress))))
+
+    def finish(self):
+        if not self.active:return
+        self.active=False;self.animation.stop();self.effect.setOpacity(1.);self.effect.setEnabled(False)
+        self.widget.move(self.origin);self.widget.update()
+
+    def eventFilter(self,watched,event):
+        if event.type() in (QEvent.Hide,QEvent.Resize):self.finish()
+        return False
 
 
 class DwellHint(QObject):
