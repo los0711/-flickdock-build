@@ -1,14 +1,19 @@
 """Actual TLS consent and two original native kernels, without desktop input."""
 import hashlib
+import json
 import os
 from pathlib import Path
 import tempfile
+import socket
 import time
 import unittest
+from unittest.mock import Mock,patch
 
 from PySide6.QtWidgets import QApplication
 from syncthing_lan import SyncthingLanService
 from test_syncthing_engine import BINARY
+from lan_transfer import _Transfer,_send_json,PROTOCOL
+from syncthing_engine import EngineError
 
 app=QApplication.instance() or QApplication([])
 
@@ -22,11 +27,49 @@ def until(predicate,timeout=30):
     raise TimeoutError('Original-engine LAN transfer did not finish')
 
 
+class CleanupBoundaryTests(unittest.TestCase):
+    def test_busy_stage_cleanup_retries_without_reverting_a_saved_transfer(self):
+        with tempfile.TemporaryDirectory(prefix='native-lan-busy-') as directory:
+            root=Path(directory).resolve();target=root/'target';target.mkdir();original=target/'original.bin';original.write_bytes(b'saved')
+            service=SyncthingLanService(root/'service',bind_host='127.0.0.1',discovery=False)
+            transfer=_Transfer('a'*32,'receive','peer',finished=True);transfer.destination=target;service._transfers[transfer.transfer_id]=transfer
+            stage=service._stage(transfer,target,'.flickdock-receiving-'+transfer.transfer_id);(stage/'temporary.bin').write_bytes(b'owned')
+            try:
+                with patch('syncthing_lan.shutil.rmtree',side_effect=PermissionError('Native kernel still owns a handle')):
+                    self.assertFalse(service._cleanup(transfer))
+                self.assertTrue(transfer.finished);self.assertTrue(stage.is_dir());self.assertEqual(original.read_bytes(),b'saved')
+                service._cleanup_due[transfer.transfer_id]=0;service._expire()
+                self.assertIsNone(transfer.stage);self.assertFalse(stage.exists());self.assertEqual(service._owned_stages,{})
+                self.assertEqual(original.read_bytes(),b'saved')
+            finally:service.close();service._shutdown.join(5)
+
+    def test_control_socket_closes_when_kernel_job_cleanup_fails(self):
+        with tempfile.TemporaryDirectory(prefix='native-lan-cleanup-') as directory:
+            root=Path(directory).resolve();target=root/'target';target.mkdir()
+            service=SyncthingLanService(root/'service',bind_host='127.0.0.1',discovery=False)
+            client,server=socket.socketpair();identifier='a'*32;token='b'*64
+            entries=[dict(path='file.bin',kind='file',size=17)]
+            native=dict(transport='syncthing-v2',device_id='-'.join(['AAAAAAA']*8),port=22000,content=dict(size=100,sha256='c'*64))
+            transfer=_Transfer(identifier,'receive','peer',entries=entries,token=token,
+                manifest_hash=hashlib.sha256(json.dumps(entries,sort_keys=True).encode()).hexdigest(),total=17)
+            transfer.destination=target;transfer.accepted.set();service._transfers[identifier]=transfer;service._native_specs[identifier]=native
+            service._slots.acquire();service._incoming_stream=lambda raw:raw
+            job=Mock();job.receive.side_effect=EngineError('read failed');job.close.side_effect=EngineError('cleanup failed')
+            _send_json(client,dict(protocol=PROTOCOL,id=identifier,token=token,entries=entries,native=native))
+            try:
+                with patch('syncthing_lan.ReceiveJob',return_value=job),self.assertRaisesRegex(EngineError,'cleanup failed'):
+                    service._incoming(server,'127.0.0.1')
+                self.assertEqual(server.fileno(),-1);self.assertFalse(transfer.active)
+                self.assertTrue(transfer.receiver_idle.is_set());self.assertEqual(list(target.iterdir()),[])
+            finally:
+                client.close();server.close();service.close();service._shutdown.join(5)
+
+
 @unittest.skipUnless(BINARY.is_file(),'Prepare the official kernel first')
 class NativeLanTests(unittest.TestCase):
     def test_cancel_before_consent_does_not_publish_or_delete_originals(self):
         with tempfile.TemporaryDirectory(prefix='native-lan-cancel-') as directory:
-            root=Path(directory);a=SyncthingLanService(root/'a',bind_host='127.0.0.1',discovery=False,binary=BINARY)
+            root=Path(directory).resolve();a=SyncthingLanService(root/'a',bind_host='127.0.0.1',discovery=False,binary=BINARY)
             b=SyncthingLanService(root/'b',bind_host='127.0.0.1',discovery=False,binary=BINARY)
             offers=[];finished=[];source=root/'original.bin';source.write_bytes(b'original bytes')
             b.offer_received.connect(offers.append);b.completed.connect(finished.append)
@@ -44,7 +87,7 @@ class NativeLanTests(unittest.TestCase):
 
     def test_both_directions_consent_collision_and_exact_original_bytes(self):
         with tempfile.TemporaryDirectory(prefix='native-lan-') as directory:
-            root=Path(directory);a=SyncthingLanService(root/'a',device_name='A',bind_host='127.0.0.1',discovery=False,binary=BINARY)
+            root=Path(directory).resolve();a=SyncthingLanService(root/'a',device_name='A',bind_host='127.0.0.1',discovery=False,binary=BINARY)
             b=SyncthingLanService(root/'b',device_name='B',bind_host='127.0.0.1',discovery=False,binary=BINARY)
             finished=[];progress=[];offers=[]
             for service in (a,b):service.completed.connect(finished.append);service.progress.connect(progress.append)

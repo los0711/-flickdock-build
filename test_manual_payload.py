@@ -13,7 +13,7 @@ from manual_payload import prepare,extract,publish
 class ManualPayloadTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(prefix='flickdock-manual-payload-')
-        self.root=Path(self.temp.name);self.cancel=threading.Event()
+        self.root=Path(self.temp.name).resolve();self.cancel=threading.Event()
         self.original=self.root/'文件.bin';self.original.write_bytes(bytes(range(256))*4096)
         self.folder=self.root/'目录';self.folder.mkdir();(self.folder/'空目录').mkdir();(self.folder/'空文件').touch()
     def tearDown(self):self.temp.cleanup()
