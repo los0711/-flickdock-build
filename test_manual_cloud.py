@@ -11,6 +11,7 @@ import threading
 import time
 from types import SimpleNamespace
 import unittest
+from collections import deque
 from uuid import uuid4
 
 from PySide6.QtWidgets import QApplication
@@ -46,14 +47,19 @@ class LocalCloudFixture:
     @classmethod
     def setUpClass(cls):
         cls.server=subprocess.Popen([str(NODE),str(ROOT/'cloud/test/qa-server.mjs')],cwd=ROOT,
-            stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
+            stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,
             creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
         cls.addClassCleanup(cls.stop_server)
-        output=queue.Queue()
+        output=queue.Queue();diagnostics=deque(maxlen=24)
         def read():
             for line in cls.server.stdout:
-                if line.startswith(b'http://127.0.0.1:'):output.put(line.decode().strip());break
-        threading.Thread(target=read,daemon=True).start();cls.origin=output.get(timeout=75)
+                diagnostics.append(line.decode('utf8','replace')[:1024])
+                if line.startswith(b'http://127.0.0.1:'):output.put(line.decode().strip());return
+            output.put(None)
+        threading.Thread(target=read,daemon=True).start()
+        try:cls.origin=output.get(timeout=75)
+        except queue.Empty as error:raise RuntimeError('Local Worker did not become ready: '+''.join(diagnostics)) from error
+        if cls.origin is None:raise RuntimeError('Local Worker exited before readiness: '+''.join(diagnostics))
         cls.accounts=[]
         for name,login in [('manual-'+uuid4().hex,False),('',True),('outside-'+uuid4().hex,False)]:
             if login:name=cls.username
@@ -78,7 +84,7 @@ class LocalCloudFixture:
 
     @classmethod
     def stop_server(cls):
-        if cls.server.poll() is None:cls.server.communicate(b'stop',timeout=20)
+        cls.server.communicate(b'stop' if cls.server.poll() is None else None,timeout=20)
 
     def worker(self,function):
         result=[]
@@ -92,6 +98,32 @@ class LocalCloudFixture:
 
 
 class ManualCloudTests(LocalCloudFixture,unittest.TestCase):
+    def test_actual_replaced_copy_resolves_identical_committed_body_without_false_failure(self):
+        from clipboard_sync import ClipboardSync,inline_text
+        from test_clipboard_sync_v1819 import Clipboard,Events
+        from unittest.mock import patch
+        text='verified real Worker replacement fixture';item=inline_text(('text',dict(text=text,html='')))
+        with tempfile.TemporaryDirectory(prefix='actual-clipboard-conflict-') as directory:
+            clipboard=Clipboard();client=ClipboardSync(self.accounts[0],Events(),Path(directory),clipboard=clipboard)
+            results=[];client.copy_result.connect(lambda ok,context:results.append((ok,context)))
+            try:
+                APP.processEvents();until(lambda:not client._fetching)
+                client.poll.stop()
+                winner=self.call(self.accounts[1].api,'POST','/v1/clipboard',data=dict(id=str(uuid4()),protocol=2,
+                    sequence=1,copied_at=round(time.time()*1000)+1000,inline=item['inline']))['clipboard']
+                with patch.object(client,'_resolve_replaced',wraps=client._resolve_replaced) as resolve:
+                    clipboard.text(text);client._changed()
+                    until(lambda:client._pending is None and client.view['phase']=='synced')
+                    self.assertEqual(resolve.call_count,1)
+                self.assertEqual(client.view['id'],winner['id']);self.assertTrue(client.view['backed_up'])
+                self.assertEqual([ok for ok,context in results],[True]);self.assertEqual(clipboard.mimeData().text(),text)
+                until(lambda:not client.deliveries.inflight)
+                current=self.call(self.accounts[0].api,'GET','/v1/clipboard')
+                self.assertEqual(current['clipboard']['id'],winner['id'])
+                self.assertEqual(current['delivery']['receipts'].get(self.accounts[0].device_id),'cloud')
+            finally:
+                client.close();until(lambda:not client._jobs)
+
     def test_verified_transfer_is_hidden_from_shelf_and_preserves_originals(self):
         with tempfile.TemporaryDirectory(prefix='manual-r2-') as directory:
             root=Path(directory).resolve();source=root/'original.bin';source.write_bytes(bytes(range(256))*32768)

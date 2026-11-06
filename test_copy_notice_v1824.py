@@ -148,5 +148,15 @@ class CopyNoticeTests(unittest.TestCase):
             card.timer.start(10);QTest.qWait(40);flush();self.assertFalse(card.isVisible())
         finally:card.hide();card.deleteLater();flush()
 
+    def test_superseded_copy_is_neutral_and_never_claims_success_or_upload_failure(self):
+        card=ClipboardNotice(SimpleNamespace(settings=SimpleNamespace(theme='dark',clipboard_success_notice=True)))
+        try:
+            card.show_result(False,dict(phase='superseded',value=('text',{'text':'an older copy'})));flush()
+            self.assertEqual(card.message.text(),'已有更新的复制');self.assertIn('接替',card.status.text())
+            self.assertNotIn('失败',card.message.text());self.assertNotIn('已同步',card.status.text())
+            from native_ui_common import colors
+            self.assertIn('color:'+colors('dark')['link'],card.card.styleSheet())
+        finally:card.hide();card.deleteLater();flush()
+
 
 if __name__=='__main__':unittest.main(verbosity=2)

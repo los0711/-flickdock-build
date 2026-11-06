@@ -8,7 +8,10 @@ from unittest.mock import patch
 from PySide6.QtCore import QObject,Signal,QMimeData,QTimer,QUrl
 from PySide6.QtGui import QImage,QColor
 from test_html_native_workspace import APP,until,flush
-from clipboard_sync import ClipboardSync,package,unpack,snapshot,MAX_BYTES
+from clipboard_sync import ClipboardSync,package,unpack,snapshot,MAX_BYTES,inline_text
+from cloud_api import CloudError
+from uuid import uuid4
+import base64
 
 
 class Clipboard(QObject):
@@ -76,6 +79,51 @@ class Hub:
 
 
 class ClipboardTests(unittest.TestCase):
+    def _replace_first_copy(self,remote_text):
+        client=self.clients[0];original=client.api.request;replaced=[]
+        def request(method,path,callback,**options):
+            if method=='POST' and path=='/v1/clipboard' and not replaced:
+                item=inline_text(('text',dict(text=remote_text,html='')))
+                self.hub.version+=1
+                self.hub.head=dict(id=str(uuid4()),device='1',version=self.hub.version,ready=True,
+                    kind='text',size=item['size'],sha256=item['sha256'],inline=item['inline']['body'],
+                    copied_at=options['data']['copied_at']+1)
+                self.hub.body=base64.b64decode(item['inline']['body']);replaced.append(True)
+                QTimer.singleShot(0,lambda:callback(None,CloudError('replaced',409,'CLIPBOARD_REPLACED')))
+                return object()
+            return original(method,path,callback,**options)
+        client.api.request=request
+        return client
+
+    def test_identical_cloud_winner_confirms_actual_content_without_false_failure_or_native_rewrite(self):
+        client=self._replace_first_copy('same clipboard from both devices');results=[];changes=[]
+        client.copy_result.connect(lambda ok,context:results.append((ok,context)))
+        self.clips[0].dataChanged.connect(lambda:changes.append(True))
+        self.clips[0].text('same clipboard from both devices')
+        until(lambda:client._pending is None and client.view['phase']=='synced')
+        self.assertEqual(client.view['id'],self.hub.head['id']);self.assertTrue(client.view['backed_up'])
+        self.assertEqual([ok for ok,_ in results],[True]);self.assertEqual(len(changes),1)
+        self.assertEqual(sum(method=='PUT' for method,path in self.hub.calls),0)
+
+    def test_different_newer_copy_retires_old_intent_without_failure_or_republishing(self):
+        client=self._replace_first_copy('newer remote contents');results=[]
+        client.copy_result.connect(lambda ok,context:results.append((ok,context)))
+        self.clips[0].text('older local contents')
+        until(lambda:self.clips[0].mimeData().text()=='newer remote contents' and client._pending is None)
+        self.assertTrue(results);self.assertTrue(all(context['phase']=='superseded' for ok,context in results))
+        self.assertFalse(client.retry.isActive());self.assertTrue(client.view['backed_up'])
+
+    def test_real_transport_failure_still_reports_failure_and_keeps_native_copy(self):
+        client=self.clients[0];original=client.api.request;results=[]
+        def request(method,path,callback,**options):
+            if method=='POST' and path=='/v1/clipboard':
+                QTimer.singleShot(0,lambda:callback(None,CloudError('server failure',503,'UNAVAILABLE')));return object()
+            return original(method,path,callback,**options)
+        client.api.request=request;client.copy_result.connect(lambda ok,context:results.append((ok,context)))
+        self.clips[0].text('native copy survives a real error');until(lambda:bool(results))
+        self.assertEqual(results[0][0],False);self.assertEqual(results[0][1]['phase'],'error')
+        self.assertEqual(self.clips[0].mimeData().text(),'native copy survives a real error')
+
     def test_nonempty_unreadable_native_formats_never_erase_the_confirmed_file_preview(self):
         sender=self.clients[0];source=self.base/'confirmed-file.bin';source.write_bytes(b'confirmed')
         mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(source))]);self.clips[0].setMimeData(mime)

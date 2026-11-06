@@ -16,16 +16,17 @@ CLOUD_STATUS_LABELS = {
     'paused': '云端上传已暂停',
     'error': '云端上传失败',
     'size_limit': '超过 20 MB 同步上限',
+    'superseded': '本次同步已由更新的复制接替',
 }
 _CLOUD_STATUS_COLORS = {
     'peer': '#287fe2',
     'synced': '#25966c', 'uploading': '#287fe2', 'pending': '#5684bd',
-    'local': '#8391a3', 'paused': '#bd822e', 'error': '#d04c59', 'size_limit': '#287fe2',
+    'local': '#8391a3', 'paused': '#bd822e', 'error': '#d04c59', 'size_limit': '#287fe2', 'superseded':'#287fe2',
 }
 _CLOUD_STATUS_DARK_COLORS = {
     'peer': '#75b7ff',
     'synced': '#67d7a4', 'uploading': '#75b7ff', 'pending': '#9dc5f7',
-    'local': '#b6c5d8', 'paused': '#efbb70', 'error': '#ff8d97', 'size_limit': '#75b7ff',
+    'local': '#b6c5d8', 'paused': '#efbb70', 'error': '#ff8d97', 'size_limit': '#75b7ff', 'superseded':'#75b7ff',
 }
 
 

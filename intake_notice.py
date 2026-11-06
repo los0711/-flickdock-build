@@ -26,6 +26,7 @@ PREVIEW_MAX_CHARS=2048
 
 def copy_status(ok,context):
     if context.get('phase')=='size_limit':return '超过 20 MB 同步上限 · 内容保留在本机'
+    if context.get('phase')=='superseded':return '本次同步已由更新的复制接替'
     if ok is False:return '同步未完成 · 内容保留在本机'
     if ok is None or context.get('phase')=='uploading':return '正在同步到云端'
     return '已同步到云端'
@@ -124,8 +125,8 @@ class ClipboardNotice(QWidget):
         same=bool(self.isVisible() and self._current_result is not None and context.get('id')==self._current_result[1].get('id'))
         was_active=self.progress.active
         self.progress.set_state(context)
-        c=colors(self.manager.settings.theme);limited=context.get('phase')=='size_limit'
-        tint=c['link'] if limited or ok is None or self.progress.active else c['green' if ok else 'red']
+        c=colors(self.manager.settings.theme);limited=context.get('phase')=='size_limit';superseded=context.get('phase')=='superseded'
+        tint=c['link'] if limited or superseded or ok is None or self.progress.active else c['green' if ok else 'red']
         self.card.setStyleSheet(f'''
             QFrame#clipboardNotice{{background:{c['surface']};border:0;border-radius:{NOTICE_RADIUS_PX}px;}}
             QLabel{{color:{c['text']};border:0;background:transparent;font-size:11px;}}
@@ -138,7 +139,7 @@ class ClipboardNotice(QWidget):
         self.close_button.dark=self.manager.settings.theme=='dark';self.close_button.update()
         self.ensurePolished()
         kind=context.get('value',('text',{}))[0]
-        self.message.setText(('此文件不能同步' if kind=='files' else '此图片不能同步' if kind=='image' else '此内容不能同步') if limited else '正在同步剪贴板' if ok is None or self.progress.active else '复制已同步' if ok else '复制同步失败')
+        self.message.setText(('此文件不能同步' if kind=='files' else '此图片不能同步' if kind=='image' else '此内容不能同步') if limited else '已有更新的复制' if superseded else '正在同步剪贴板' if ok is None or self.progress.active else '复制已同步' if ok else '复制同步失败')
         self.status_icon.setVisible(ok is not None)
         self.status_icon.setPixmap(icon('circle-check' if ok else 'circle-alert',tint).pixmap(STATUS_ICON_SIZE_PX,STATUS_ICON_SIZE_PX))
         screen=QGuiApplication.screenAt(QPoint(*(context.get('point') or (0,0)))) or QGuiApplication.primaryScreen();area=screen.availableGeometry()

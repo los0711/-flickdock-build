@@ -7,7 +7,7 @@ import unittest
 import zipfile
 from unittest.mock import patch
 
-from manual_payload import prepare,extract,publish
+from manual_payload import prepare,extract,publish,plan
 
 
 class ManualPayloadTests(unittest.TestCase):
@@ -80,6 +80,12 @@ class ManualPayloadTests(unittest.TestCase):
         with self.assertRaises(InterruptedError):
             prepare([self.original,self.folder],self.root/'cancelled',self.cancel,lambda done,total:self.cancel.set())
         self.assertFalse((self.root/'cancelled').exists());self.assertEqual(self.original.read_bytes(),before)
+
+    def test_source_change_after_offer_is_rejected_before_snapshot_publication(self):
+        selection=plan([self.original],self.cancel);self.original.write_bytes(b'changed after consent request')
+        with self.assertRaisesRegex(ValueError,'已改变'):
+            prepare([self.original],self.root/'changed',self.cancel,selection=selection)
+        self.assertFalse((self.root/'changed').exists())
 
 
 if __name__=='__main__':unittest.main()

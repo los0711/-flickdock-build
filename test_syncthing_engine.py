@@ -31,6 +31,19 @@ class AddressTests(unittest.TestCase):
 
 @unittest.skipUnless(BINARY.is_file(),'Official Syncthing binary is prepared by the native build gate')
 class OfficialEngineTests(unittest.TestCase):
+    def test_authorized_peers_connect_before_any_folder_or_file_is_shared(self):
+        with tempfile.TemporaryDirectory(prefix='native-pair-only-') as directory:
+            root=Path(directory);a=SyncthingEngine(root/'a',mode='lan',binary=BINARY,loopback=True)
+            b=SyncthingEngine(root/'b',mode='lan',binary=BINARY,loopback=True)
+            try:
+                a.start();b.start();a.pair(b.device_id,[b.local_address('127.0.0.1')]);b.pair(a.device_id,[a.local_address('127.0.0.1')])
+                deadline=time.monotonic()+15
+                while not all(x.connections().get(y.device_id,{}).get('connected') for x,y in ((a,b),(b,a))):
+                    if time.monotonic()>=deadline:self.fail('Original engine did not preconnect authorized peers')
+                    time.sleep(.025)
+                for engine in (a,b):self.assertEqual(engine.request('GET','/rest/config/folders'),[])
+            finally:a.close();b.close()
+
     def test_qt_quit_reaps_both_native_kernels_before_interpreter_exit(self):
         with tempfile.TemporaryDirectory(prefix='flickdock-native-exit-') as directory:
             root=Path(directory).resolve();report=root/'result.json'

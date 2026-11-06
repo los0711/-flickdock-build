@@ -10,7 +10,7 @@ from lan_transfer import _Transfer
 from syncthing_lan import SyncthingLanService
 from syncthing_engine import check_device,check_addresses,EngineError
 from syncthing_jobs import ReceiveJob,DirectUnavailable,deliver
-from manual_payload import prepare,descriptor
+from manual_payload import prepare,descriptor,plan
 from manual_cloud import ManualCloud
 from selection_archive import _is_link
 from cloud_config import DEFAULT_CLOUD_URL,CLOUD_ORIGINS
@@ -20,6 +20,7 @@ CONSENT_SECONDS=210
 SIGNAL_SECONDS=45
 ACK_SECONDS=180
 REQUEST_RECEIPT_SECONDS=3600
+PREPARATION_TIMEOUT_SECONDS=3600
 PROGRESS_SECONDS=1.
 
 
@@ -155,9 +156,10 @@ class WanTransferService(SyncthingLanService):
 
     def _wait(self,transfer,state,predicate,seconds):
         deadline=time.monotonic()+seconds
-        while not predicate():
+        while True:
             if transfer.cancel.is_set() or self._stopped.is_set():raise InterruptedError('已取消传输。')
             if state.get('error'):raise ValueError(state['error'])
+            if predicate():return
             remaining=deadline-time.monotonic()
             if remaining<=0:raise TimeoutError('等待远程设备响应超时。')
             state['wake'].wait(min(.1,remaining));state['wake'].clear()
@@ -167,13 +169,15 @@ class WanTransferService(SyncthingLanService):
         try:
             if state.get('prepare'):self._wait(transfer,state,lambda:state['prepared'].is_set(),25)
             if state.get('error'):raise ValueError(state['error'])
-            self._notify(transfer,'preparing');stage=self._stage(transfer,self.base,'send-'+identifier)
-            payload=prepare(paths,stage/'payload',transfer.cancel,self._preparation_progress(transfer));state['payload']=payload;transfer.total=payload['total']
-            transfer.entries=payload['entries'];transfer.peer=state['peer']['name']
-            request=dict(type='request',id=identifier,token=transfer.token,digest=hashlib.sha256(json.dumps(payload['entries'],sort_keys=True).encode()).hexdigest(),
-                total=str(payload['total']),count=payload['count'],names=payload['names'][:12])
+            self._notify(transfer,'preparing');selection=plan(paths,transfer.cancel)
+            transfer.total=selection['total'];transfer.entries=selection['entries'];transfer.peer=state['peer']['name']
+            request=dict(type='request',id=identifier,token=transfer.token,digest=hashlib.sha256(json.dumps(selection['entries'],sort_keys=True).encode()).hexdigest(),
+                total=str(selection['total']),count=selection['count'],names=selection['names'][:12])
             request.update(dict(prepared=True) if state.get('prepared_ok') else dict(peer=state['peer']['id']))
             self._command.emit(request);self._wait(transfer,state,lambda:state['ready'].is_set(),CONSENT_SECONDS)
+            self._notify(transfer,'preparing',accepted=True)
+            stage=self._stage(transfer,self.base,'send-'+identifier)
+            payload=prepare(paths,stage/'payload',transfer.cancel,selection=selection);state['payload']=payload
             try:self.engine.start();device=self.engine.device_id;addresses=self.engine.addresses()
             except (OSError,EngineError):
                 # The native identity remains mandatory for an accepted snapshot.
@@ -223,7 +227,8 @@ class WanTransferService(SyncthingLanService):
     def _receive(self,transfer,state):
         identifier=transfer.transfer_id;job=None
         try:
-            self._wait(transfer,state,lambda:bool(state.get('native')),SIGNAL_SECONDS)
+            self._notify(transfer,'preparing',accepted=True)
+            self._wait(transfer,state,lambda:bool(state.get('native')),PREPARATION_TIMEOUT_SECONDS)
             native=state['native'];spec=native['content'];target=state['destination']
             if shutil.disk_usage(target).free<transfer.total+spec['size']+1024*1024:raise ValueError('接收位置的可用空间不足。')
             stage=self._stage(transfer,target,'.flickdock-receiving-'+identifier)

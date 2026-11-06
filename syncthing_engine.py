@@ -193,10 +193,8 @@ class SyncthingEngine:
         self.start();address=ipaddress.ip_address(host)
         return f'tcp://[{address}]:{self.port}' if address.version==6 else f'tcp://{address}:{self.port}'
 
-    def share(self,task,folder,peer,addresses,*,send):
-        check_task(task);check_device(peer);addresses=check_addresses(addresses,'lan' if self.loopback else self.mode)
-        path=Path(folder).resolve(strict=True)
-        if not path.is_dir() or path.is_symlink():raise ValueError('传输任务文件夹无效。')
+    def pair(self,peer,addresses):
+        check_device(peer);addresses=check_addresses(addresses,'lan' if self.loopback else self.mode)
         self.start()
         with self._configuration:
             device=self.request('GET','/rest/config/defaults/device')
@@ -204,6 +202,13 @@ class SyncthingEngine:
                           autoAcceptFolders=False,introducer=False,compression='metadata',
                           allowedNetworks=REMOTE_NETWORKS if self.mode=='remote' and not self.loopback else [])
             self.request('POST','/rest/config/devices',device)
+
+    def share(self,task,folder,peer,addresses,*,send):
+        check_task(task)
+        path=Path(folder).resolve(strict=True)
+        if not path.is_dir() or path.is_symlink():raise ValueError('传输任务文件夹无效。')
+        with self._configuration:
+            self.pair(peer,addresses)
             config=self.request('GET','/rest/config/defaults/folder')
             config.update(id=task,label='FlickDock manual transfer',path=str(path),
                           type='sendonly' if send else 'receiveonly',rescanIntervalS=0,

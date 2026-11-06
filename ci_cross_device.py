@@ -214,9 +214,12 @@ def main():
         if not cloud_only:
             phase='manual_prepare';wan=WanTransferService(root/'manual',device_name=account.device_name)
             assert wan.device_id==own['wan_id'];wan.attach_account(account);wan.start()
-        manual_completed=[];manual_progress=[]
+        manual_completed=[];manual_progress=[];manual_accepted={}
         if wan:
             wan.completed.connect(manual_completed.append);wan.progress.connect(manual_progress.append)
+            def accepted_progress(value):
+                if value.get('accepted'):manual_accepted.setdefault(value['id'],time.perf_counter())
+            wan.progress.connect(accepted_progress)
             def accept_manual(offer):
                 state=wan._pending[offer['id']]
                 if (offer.get('account_device') and offer.get('account_id')==account.account['id']
@@ -339,6 +342,7 @@ def main():
             report['checks'].append(dict(name='manual_application_syncthing_r2',sender=sender,ok=error is None,
                 local_role='sender' if side==sender else 'receiver',error_type=error,verified_bytes=received_bytes,
                 receiver_save_ack=side==sender and error is None,route=routes[-1] if routes else None,
+                accepted_seconds=round(manual_accepted[identity]-started,3) if identity in manual_accepted else None,
                 seconds=round(time.perf_counter()-started,3),public_relays=False,diagnostics=diagnostics))
             stage+=1;barrier(stage);report_path.write_text(json.dumps(report,indent=2),encoding='utf8')
         phase='cleanup'

@@ -11,13 +11,14 @@ import time
 
 from lan_transfer import (LanTransferService,_Transfer,PROTOCOL,_hex,_local_address,
                           _read_json,_send_json,_validate_manifest,_authentication_code)
-from manual_payload import prepare,descriptor
+from manual_payload import prepare,descriptor,plan
 from selection_archive import _is_link
 from syncthing_engine import SyncthingEngine,check_device
 from syncthing_jobs import ReceiveJob,deliver
 
-TRANSPORT='syncthing-v2'
+TRANSPORT='syncthing-v3'
 CONSENT_TIMEOUT_SECONDS=180
+PREPARATION_TIMEOUT_SECONDS=3600
 CONTROL_IDLE_TIMEOUT_SECONDS=150
 CONTROL_RETRIES=3
 PROGRESS_SECONDS=.1
@@ -27,10 +28,10 @@ SHUTDOWN_WORKER_GRACE_SECONDS=3
 
 
 def native_offer(value):
-    if (not isinstance(value,dict) or set(value)!=set(('transport','device_id','port','content'))
+    if (not isinstance(value,dict) or set(value)!=set(('transport','device_id','port'))
             or value.get('transport')!=TRANSPORT or type(value.get('port')) is not int
             or not 0<value['port']<65536):raise ValueError('局域网传输内核信息无效。')
-    return dict(transport=TRANSPORT,device_id=check_device(value['device_id']),port=value['port'],content=descriptor(value['content']))
+    return dict(transport=TRANSPORT,device_id=check_device(value['device_id']),port=value['port'])
 
 
 def address(host,port):
@@ -43,7 +44,7 @@ class SyncthingLanService(LanTransferService):
         super().__init__(parent,**options)
         self.base=Path(base);self.base.mkdir(parents=True,exist_ok=True)
         self.engine=SyncthingEngine(self.base/'kernel',mode='lan',binary=binary,loopback=self.bind_host=='127.0.0.1')
-        self._payloads={};self._native_specs={};self._shutdown=None
+        self._payloads={};self._native_specs={};self._native_contents={};self._shutdown=None
         self._owned_stages={};self._cleanup_due={}
 
     def _stage(self,transfer,parent,name):
@@ -83,33 +84,39 @@ class SyncthingLanService(LanTransferService):
         transfer=self._transfers.get(identifier);spec=self._native_specs.get(identifier)
         if transfer is None or spec is None:return False
         target=Path(destination).expanduser().resolve(strict=True)
-        if shutil.disk_usage(target).free<transfer.total+spec['content']['size']+SPACE_MARGIN_BYTES:
+        if shutil.disk_usage(target).free<transfer.total+SPACE_MARGIN_BYTES:
             raise ValueError('接收位置需要同时保存下载临时文件和校验后的文件，可用空间不足。')
         return super().accept(identifier,target)
 
     def _outgoing(self,transfer,peer,paths):
-        shared=False
+        shared=False;payload=None
         try:
             self._notify(transfer,'preparing',route='lan')
-            stage=self._stage(transfer,self.base,'send-'+transfer.transfer_id)
-            payload=prepare(paths,stage/'payload',transfer.cancel,self._preparation_progress(transfer));self._payloads[transfer.transfer_id]=payload
-            transfer.total=payload['total'];transfer.token=secrets.token_hex(32)
-            own=dict(transport=TRANSPORT,device_id=self.engine.device_id,port=self.engine.port,content=payload['descriptor'])
+            selection=plan(paths,transfer.cancel);transfer.entries=selection['entries']
+            transfer.total=selection['total'];transfer.token=secrets.token_hex(32)
+            own=dict(transport=TRANSPORT,device_id=self.engine.device_id,port=self.engine.port)
             offer=dict(protocol=PROTOCOL,id=transfer.transfer_id,token=transfer.token,sender=self.device_name,
-                       entries=payload['entries'],native=own)
-            if self.account_authorizer:self.account_authorizer.prepare(transfer,peer,payload['entries'])
+                       entries=selection['entries'],native=own)
+            if self.account_authorizer:self.account_authorizer.prepare(transfer,peer,selection['entries'])
             task='fd-manual-'+transfer.transfer_id
             for attempt in range(CONTROL_RETRIES):
                 stream=None
                 try:
                     if transfer.cancel.is_set() or self._stopped.is_set():raise InterruptedError('已取消传输。')
-                    stream=self._connect_peer(peer,transfer,payload['entries']);transfer.socket=stream
+                    stream=self._connect_peer(peer,transfer,selection['entries']);transfer.socket=stream
                     stream.settimeout(1);code=_authentication_code(stream,transfer.transfer_id)
                     _send_json(stream,offer);self._notify(transfer,'waiting',code=code,route='lan')
                     reply=_read_json(stream,transfer.cancel,timeout=CONSENT_TIMEOUT_SECONDS+15)
+                    if reply.get('state')=='complete':self._sent(transfer,paths,code);return
                     if reply.get('state')!='ready':raise ValueError('接收方未接受这项传输。')
                     remote=native_offer(reply.get('native'))
-                    if remote['content']!=payload['descriptor']:raise ValueError('接收方确认了不同的文件内容。')
+                    self.engine.pair(remote['device_id'],[address(peer['host'],remote['port'])])
+                    if payload is None:
+                        self._notify(transfer,'preparing',route='lan',accepted=True)
+                        stage=self._stage(transfer,self.base,'send-'+transfer.transfer_id)
+                        payload=prepare(paths,stage/'payload',transfer.cancel,selection=selection)
+                        self._payloads[transfer.transfer_id]=payload
+                    _send_json(stream,dict(state='content',content=payload['descriptor']))
                     self.engine.share(task,payload['folder'],remote['device_id'],[address(peer['host'],remote['port'])],send=True);shared=True
                     while True:
                         reply=_read_json(stream,transfer.cancel,timeout=CONTROL_IDLE_TIMEOUT_SECONDS)
@@ -118,10 +125,7 @@ class SyncthingLanService(LanTransferService):
                             if type(received) is not int or not 0<=received<=transfer.total:raise ValueError('接收进度无效。')
                             transfer.done=max(transfer.done,received);self._notify(transfer,'transferring',route='lan',code=code)
                         elif reply.get('state')=='complete':
-                            transfer.done=transfer.total;transfer.finished=True
-                            self._notify(transfer,'complete',route='lan',code=code)
-                            self.completed.emit(dict(id=transfer.transfer_id,direction='send',peer=transfer.peer,paths=[str(path) for path in paths],total=transfer.total))
-                            return
+                            self._sent(transfer,paths,code);return
                         else:raise ValueError('接收方未能完成文件保存。')
                 except (ConnectionError,TimeoutError,OSError):
                     if transfer.cancel.is_set() or self._stopped.is_set() or attempt+1==CONTROL_RETRIES:raise
@@ -140,15 +144,10 @@ class SyncthingLanService(LanTransferService):
                 self._cleanup(transfer)
                 transfer.active=False;transfer.updated=time.monotonic()
 
-    def _preparation_progress(self,transfer):
-        last=[0.]
-        def progress(done,total):
-            now=time.monotonic()
-            if done==total or now-last[0]>=PROGRESS_SECONDS:
-                last[0]=now
-                self._notify(transfer,'preparing',prepared=done,preparation_total=total,
-                             route='direct' if getattr(self,'mode','lan')=='wan' else 'lan')
-        return progress
+    def _sent(self,transfer,paths,code):
+        transfer.done=transfer.total;transfer.finished=True
+        self._notify(transfer,'complete',route='lan',code=code)
+        self.completed.emit(dict(id=transfer.transfer_id,direction='send',peer=transfer.peer,paths=[str(path) for path in paths],total=transfer.total))
 
     def _incoming(self,raw,host):
         stream=None;transfer=None;acquired=False;job=None;terminal=None
@@ -183,9 +182,18 @@ class SyncthingLanService(LanTransferService):
                 if self._stopped.is_set() or transfer.cancel.is_set():raise InterruptedError('已取消传输。')
                 if time.monotonic()>deadline:raise TimeoutError('接收请求已超时。')
             if transfer.cancel.is_set() or self._stopped.is_set() or transfer.destination is None:raise InterruptedError('已拒绝传输。')
-            own=dict(transport=TRANSPORT,device_id=self.engine.device_id,port=self.engine.port,content=native['content'])
-            _send_json(stream,dict(state='ready',native=own))
             if transfer.finished:_send_json(stream,dict(state='complete'));return
+            self.engine.pair(native['device_id'],[address(host,native['port'])])
+            own=dict(transport=TRANSPORT,device_id=self.engine.device_id,port=self.engine.port)
+            _send_json(stream,dict(state='ready',native=own))
+            self._notify(transfer,'preparing',route='lan',accepted=True)
+            content=_read_json(stream,transfer.cancel,timeout=PREPARATION_TIMEOUT_SECONDS)
+            if set(content)!=set(('state','content')) or content['state']!='content':raise ValueError('发送文件描述无效。')
+            spec=descriptor(content['content'])
+            if identifier in self._native_contents and self._native_contents[identifier]!=spec:raise ValueError('恢复传输时文件内容已改变。')
+            self._native_contents[identifier]=spec
+            if shutil.disk_usage(transfer.destination).free<transfer.total+spec['size']+SPACE_MARGIN_BYTES:
+                raise ValueError('接收位置的可用空间不足。')
             if transfer.stage is None:
                 self._stage(transfer,transfer.destination,'.flickdock-receiving-'+identifier)
             stage=Path(transfer.stage);network=stage/'network';network.mkdir(exist_ok=True)
@@ -196,11 +204,11 @@ class SyncthingLanService(LanTransferService):
                 if now-last[0]>=PROGRESS_SECONDS or received==size:
                     last[0]=now;_send_json(stream,dict(state='progress',received=transfer.done))
                     self._notify(transfer,'transferring',route='lan')
-            job=ReceiveJob(self.engine,'fd-manual-'+identifier,network,native['device_id'],[address(host,native['port'])],native['content'],
+            job=ReceiveJob(self.engine,'fd-manual-'+identifier,network,native['device_id'],[address(host,native['port'])],spec,
                            cancel=transfer.cancel,progress=progress)
             payload=job.receive();job.close();job=None
             offer=dict(total=total,count=sum(row['kind']=='file' for row in entries),names=[row['path'] for row in entries if '/' not in row['path']],entries=entries)
-            transfer.result_paths=deliver(payload,stage,transfer.destination,native['content'],offer,transfer.cancel)
+            transfer.result_paths=deliver(payload,stage,transfer.destination,spec,offer,transfer.cancel)
             transfer.done=total;transfer.finished=True
             self._notify(transfer,'complete',route='lan')
             self.completed.emit(dict(id=identifier,direction='receive',peer=transfer.peer,paths=transfer.result_paths,total=total))
@@ -234,6 +242,7 @@ class SyncthingLanService(LanTransferService):
         super()._expire()
         with self._lock:
             self._native_specs={key:value for key,value in self._native_specs.items() if key in self._transfers}
+            self._native_contents={key:value for key,value in self._native_contents.items() if key in self._transfers}
 
     def close(self):
         if self._shutdown is not None:return

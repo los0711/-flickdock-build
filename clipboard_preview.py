@@ -19,6 +19,7 @@ def clipboard_status(state):
     if str(state.get('native_format_issue','')).startswith('VIRTUAL_FILE_'):return '正在读取跨应用文件 · 保留上次已确认内容'
     if state.get('receive_pending'):return '内容已接收 · 正在等待写入系统剪贴板'
     if state.get('native_read_pending'):return '正在读取系统剪贴板 · 保留上次已确认内容'
+    if state.get('phase')=='superseded':return '本次同步已由更新的复制接替'
     if state.get('phase')=='size_limit':
         value=state.get('value')
         return ('此文件不能同步' if value and value[0]=='files' else '此内容不能同步')+' · 超过 20 MB 同步上限'

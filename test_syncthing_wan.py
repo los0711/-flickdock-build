@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import time
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -13,6 +14,9 @@ from lan_transfer import _Transfer
 from test_manual_cloud import LocalCloudFixture,until,APP
 from test_syncthing_engine import BINARY
 from syncthing_engine import EngineError
+
+PROFILE_RELEASE_TIMEOUT_SECONDS=2
+PROFILE_RELEASE_POLL_SECONDS=.025
 
 
 @unittest.skipUnless(BINARY.is_file(),'Official original kernel is required')
@@ -31,7 +35,14 @@ class NativeWanTests(LocalCloudFixture,unittest.TestCase):
     def tearDown(self):
         for service in self.services:service.close()
         until(lambda:all(service._shutdown and not service._shutdown.is_alive() for service in self.services),20)
-        self.temporary.cleanup()
+        # Windows filesystem filters can retain the last SQLite I/O handle
+        # briefly after the owned native job has fully exited.
+        deadline=time.monotonic()+PROFILE_RELEASE_TIMEOUT_SECONDS
+        while True:
+            try:self.temporary.cleanup();break
+            except PermissionError as error:
+                if getattr(error,'winerror',None)!=32 or time.monotonic()>=deadline:raise
+                time.sleep(PROFILE_RELEASE_POLL_SECONDS)
 
     def connect(self,account=False):
         if account:
@@ -59,6 +70,25 @@ class NativeWanTests(LocalCloudFixture,unittest.TestCase):
             self.assertEqual(hashlib.sha256((target/'original (2).bin').read_bytes()).hexdigest(),expected)
             self.assertEqual((target/original.name).read_bytes(),b'existing')
         self.assertTrue(original.is_file());self.assertTrue(all(row.get('route')!='cloud' for side,row in self.progress))
+
+    def test_receiver_accepts_before_large_snapshot_io_starts(self):
+        self.connect();source=self.root/'large.bin';source.write_bytes(bytes(range(256))*32768)
+        target=self.root/'early-received';target.mkdir();entered=threading.Event();release=threading.Event()
+        from manual_payload import prepare as snapshot
+        def held(*args,**options):
+            entered.set()
+            if not release.wait(15):raise TimeoutError('QA snapshot was not released')
+            return snapshot(*args,**options)
+        try:
+            with patch('wan_transfer.prepare',side_effect=held):
+                identifier=self.services[0].send(self.services[1].code,[source])
+                until(lambda:any(side==1 and offer['id']==identifier for side,offer in self.offers),3)
+                self.assertFalse(entered.is_set(),'Disk preparation must follow real receiver consent')
+                self.services[1].accept(identifier,target);until(entered.is_set,3)
+                until(lambda:any(side==0 and row['id']==identifier and row.get('accepted') for side,row in self.progress),3)
+                self.assertEqual(list(target.iterdir()),[]);release.set();self.wait_completed(identifier)
+        finally:release.set()
+        self.assertEqual((target/source.name).read_bytes(),source.read_bytes())
 
     def test_unsupported_receiver_fails_the_waiting_worker_immediately(self):
         service=self.services[0];identifier='c'*32

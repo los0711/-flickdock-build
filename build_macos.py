@@ -163,6 +163,8 @@ def main(arguments=None):
     parser.add_argument('--notary-profile', default='')
     parser.add_argument('--entitlements', type=Path)
     parser.add_argument('--use-current-python', action='store_true')
+    parser.add_argument('--skip-public-update-check',action='store_true',
+                        help='Build an unpublished test package without downloading an older public installer')
     parser.add_argument('--icon-only', type=Path, help=argparse.SUPPRESS)
     options = parser.parse_args(arguments)
     if sys.platform != 'darwin':
@@ -267,12 +269,15 @@ def main(arguments=None):
         if not transfers.get('ok') or not transfers.get('frozen') or transfers.get('version') != APP_VERSION:
             raise RuntimeError('Frozen macOS original-file/TLS/cancellation verification failed')
         frozen['lan_transfers'] = transfers
-        update_path=Path(profile)/'public-update.json'
-        run([binary,'--verify-update','--verify-current','1.8.14','--verify-output',update_path],env=dict(env,XDG_CONFIG_HOME=profile,APPDATA=profile))
-        update=json.loads(update_path.read_text(encoding='utf8'))
-        if not update.get('ok') or not update.get('frozen') or not update.get('verified_download') or update.get('installer_executed'):
-            raise RuntimeError('Frozen Mac public update check/download failed')
-        frozen['public_updates']=update
+        if options.skip_public_update_check:
+            frozen['public_updates']=dict(skipped=True,reason='Unpublished test package; current public installer download is outside this verification')
+        else:
+            update_path=Path(profile)/'public-update.json'
+            run([binary,'--verify-update','--verify-current','1.8.14','--verify-output',update_path],env=dict(env,XDG_CONFIG_HOME=profile,APPDATA=profile))
+            update=json.loads(update_path.read_text(encoding='utf8'))
+            if not update.get('ok') or not update.get('frozen') or not update.get('verified_download') or update.get('installer_executed'):
+                raise RuntimeError('Frozen Mac public update check/download failed')
+            frozen['public_updates']=update
         frozen['wan_transfers']={}
         import queue,threading
         worker=subprocess.Popen([str(ROOT/'p2p/runtime/node'),str(ROOT/'cloud/test/qa-server.mjs')],cwd=ROOT,env=env,

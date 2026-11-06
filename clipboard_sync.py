@@ -2,7 +2,7 @@
 from __future__ import annotations
 import base64,hashlib,json,os,shutil,struct,sys,tempfile,threading,time,zipfile
 from pathlib import Path,PurePosixPath
-from uuid import uuid4
+from uuid import UUID,uuid4
 from PySide6.QtCore import QObject,QRunnable,QThreadPool,QTimer,Signal,QMimeData,QUrl,QBuffer,QIODevice,Qt
 from PySide6.QtGui import QImage,QPixmap,QImageReader
 from PySide6.QtWidgets import QApplication
@@ -552,6 +552,9 @@ class ClipboardSync(QObject):
         if self._virtual_capture is not None and self._virtual_capture[1].cancelled.is_set():self._virtual_capture=None
 
     def _task_error(self,pending,error):
+        from network_diagnostics import record_event
+        record_event(self._clock_path.parent,'cloud','clipboard_submit',str(getattr(error,'code','') or type(error).__name__),
+                     getattr(error,'status',0),details={'phase':'content' if pending.get('staged') else 'metadata'})
         if self.view.get('id')==pending['id'] and pending.get('generation',self._generation)==self._generation:
             previous=self._cloud_progress or {}
             self._set_cloud_progress(pending['id'],previous.get('received',0),previous.get('total',0),'error')
@@ -559,15 +562,42 @@ class ClipboardSync(QObject):
         if getattr(self,'file_jobs',None) is not None:self.file_jobs.fail(pending,error)
         if self._pending is pending and pending.get('generation',self._generation)==self._generation:self._priority_flags(waiting=True);self.retry.start()
 
-    def _task_ready(self,pending,head):
+    def _resolve_replaced(self,pending,error):
+        if pending.get('resolving_replacement'):return
+        pending['resolving_replacement']=True
+        def resolved(result,failure):
+            pending.pop('resolving_replacement',None)
+            if not self._valid_task(pending):return
+            if failure:self._task_error(pending,failure);return
+            head=result.get('clipboard') if isinstance(result,dict) else None
+            item=pending['package'];held=self.file_jobs.held(pending)
+            if (not held and self._pending is pending and isinstance(head,dict) and head.get('ready')
+                    and head.get('kind')==item['kind'] and head.get('size')==item['size'] and head.get('sha256')==item['sha256']):
+                try:canonical=str(UUID(head.get('id','')))
+                except (ValueError,TypeError,AttributeError):self._task_error(pending,ValueError('云端剪贴板标识无效。'));return
+                if canonical!=head['id'] or not head_version(head):self._task_error(pending,ValueError('云端剪贴板版本无效。'));return
+                self._task_ready(pending,head,equivalent=True)
+                if self._snapshot_available and signature(self._snapshot())==signature(self.view['value']):
+                    self.deliveries.received(head,'cloud')
+                return
+            self._set_cloud_progress(pending['id'],0,0,'superseded')
+            self._copy_result(pending,False,phase='superseded')
+            self._clear_task(pending)
+            if held:self.file_jobs.fail(pending,error)
+            else:self.file_jobs.update(pending,'unavailable')
+            self.refresh()
+        self._request('GET','/v1/clipboard',resolved,_task=pending)
+
+    def _task_ready(self,pending,head,*,equivalent=False):
         item=pending['package']
-        if (not isinstance(head,dict) or head.get('id')!=pending['id'] or not head.get('ready')
+        if (not isinstance(head,dict) or (not equivalent and head.get('id')!=pending['id']) or not head.get('ready')
                 or head.get('sha256')!=item['sha256'] or head.get('size')!=item['size']):
             self._task_error(pending,ValueError('剪贴板提交校验失败。'));return
         if self._pending is pending:
-            self._seen=pending['id'];self._applied_version=max(self._applied_version,head_version(head))
+            self._seen=head['id'];self._applied_version=max(self._applied_version,head_version(head))
             if self.view.get('id')==pending['id']:self._set_view(self.view['value'],'synced',pending['id'],backed_up=True)
             self._copy_result(pending,True);self._pending=None
+            if equivalent:self._set_view(self.view['value'],'synced',head['id'],backed_up=True)
             self.deliveries.committed(head)
         raw=item.get('raw_file')
         if raw and pending.get('shared_files'):self.file_jobs.update(pending,'ready',raw['size'])
@@ -797,6 +827,7 @@ class ClipboardSync(QObject):
         def staged(result,error):
             if not self._valid_task(pending):return
             if error:
+                if getattr(error,'code','')=='CLIPBOARD_REPLACED':self._resolve_replaced(pending,error);return
                 if use_inline and getattr(error,'status',0) in (400,413):
                     pending['inline_fallback']=True;self._stage(pending);return
                 self._task_error(pending,error)
@@ -844,6 +875,7 @@ class ClipboardSync(QObject):
             if not self._valid_task(pending):return
             pending['uploading']=False
             if error:
+                if getattr(error,'code','')=='CLIPBOARD_REPLACED':self._resolve_replaced(pending,error);return
                 self._task_error(pending,error)
                 if getattr(error,'status',0) in (403,409) and not self.file_jobs.held(pending):self._clear_task(pending);self.refresh()
                 return

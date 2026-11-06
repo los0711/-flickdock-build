@@ -47,9 +47,17 @@ def descriptor(value):
     return dict(value)
 
 
-def prepare(paths,folder,cancel,progress=None):
+def plan(paths,cancel):
     from lan_transfer import _make_manifest
     entries,sources,total=_make_manifest(paths,cancel)
+    return dict(entries=entries,sources=sources,total=total,
+                names=[row['path'] for row in entries if '/' not in row['path']],
+                count=sum(row['kind']=='file' for row in entries))
+
+
+def prepare(paths,folder,cancel,progress=None,*,selection=None):
+    selection=plan(paths,cancel) if selection is None else selection
+    entries,sources,total=(selection[key] for key in ('entries','sources','total'))
     folder=Path(folder);folder.mkdir(parents=True,exist_ok=False,mode=0o700)
     target=folder/'content.zip'
     try:
@@ -81,8 +89,7 @@ def prepare(paths,folder,cancel,progress=None):
         if cancel.is_set():raise InterruptedError('已取消传输。')
         spec=descriptor(dict(size=writer.size,sha256=writer.digest.hexdigest()))
         return dict(folder=folder,path=target,descriptor=spec,entries=entries,total=total,
-                    names=[row['path'] for row in entries if '/' not in row['path']],
-                    count=sum(row['kind']=='file' for row in entries))
+                    names=selection['names'],count=selection['count'])
     except BaseException:
         # Only the exact folder created above is owned by this call.
         if folder.is_dir() and not _is_link(folder):shutil.rmtree(folder)

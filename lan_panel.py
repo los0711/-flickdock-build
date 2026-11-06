@@ -1527,6 +1527,7 @@ class LanPanel(QFrame):
             previous=row.pop('history_record',None)
             if previous in self._history:self._history.remove(previous);self._render_history()
             row.update(finished=False,recorded=False);row['bar'].show();row['cancel'].show();self._refresh_transfer_pages()
+        if state in ('transferring','waiting','connecting','reconnecting'):row['bar'].show()
         if state == 'transferring':
             sample=self._samples.get(identifier)
             if sample is None or received<sample['points'][-1][1]:
@@ -1557,13 +1558,11 @@ class LanPanel(QFrame):
             row['detail'].setText('等待接收方确认' if self._wan else f"等待接收方确认 · 确认码 {data.get('code', '')}")
         elif state=='connecting':
             row['bar'].setRange(0,0);row['detail'].setText({'relay':'正在尝试中继连接…','cloud':'正在连接云端传输…'}.get(data.get('route'),'正在建立 P2P 直连…'))
-        elif state in ('preparing', 'reconnecting'):
-            prepared=data.get('prepared');preparation_total=data.get('preparation_total',0)
-            if state=='preparing' and preparation_total>0 and type(prepared) is int:
-                row['bar'].setRange(0,1000);row['bar'].setValue(min(1000,prepared*1000//preparation_total))
-                row['detail'].setText(f'正在准备文件 · {_size(prepared)} / {_size(preparation_total)}')
-            else:
-                row['bar'].setRange(0, 0); row['detail'].setText('正在准备传输…' if state == 'preparing' else '连接中断，正在续传…')
+        elif state=='preparing':
+            row['bar'].hide();row['detail'].setText('对方已接受 · 正在准备文件…' if data.get('accepted') and data['direction']=='send'
+                                                   else '已接受 · 等待对方准备文件…' if data.get('accepted') else '正在准备文件…')
+        elif state=='reconnecting':
+            row['bar'].setRange(0,0);row['detail'].setText('连接中断，正在续传…')
         elif state in ('cancelled', 'error', 'complete','interrupted'):
             self._samples.pop(identifier,None)
             row['finished'] = True;row['terminal_state']=state; row['cancel'].hide()

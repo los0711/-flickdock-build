@@ -43,6 +43,18 @@ class LanDialogTests(unittest.TestCase):
         self.dialog.close();self.dialog.deleteLater();APP.processEvents()
         self.profile.cleanup()
 
+    def test_preparation_has_only_a_static_label_until_real_payload_progress(self):
+        panel=self.dialog.panel
+        value=dict(id='phase-fixture',direction='send',peer='fixture',state='preparing',received=0,total=0,
+                   prepared=123456,preparation_total=1000000)
+        panel._progress(value);row=panel._rows[value['id']]
+        self.assertTrue(row['bar'].isHidden());self.assertEqual(row['detail'].text(),'正在准备文件…')
+        value['accepted']=True;panel._progress(value)
+        self.assertTrue(row['bar'].isHidden());self.assertEqual(row['detail'].text(),'对方已接受 · 正在准备文件…')
+        value.update(state='transferring',received=1024,total=4096)
+        panel._progress(value)
+        self.assertFalse(row['bar'].isHidden());self.assertEqual(row['bar'].value(),250)
+
     def test_local_file_drop_queues_original_and_sends_to_selected_device(self):
         source=self.root/'原文件.png';source.write_bytes(b'\x89PNG original')
         mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(source))])

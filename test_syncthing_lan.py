@@ -6,6 +6,7 @@ from pathlib import Path
 import tempfile
 import socket
 import time
+import threading
 import unittest
 from unittest.mock import Mock,patch
 
@@ -49,13 +50,15 @@ class CleanupBoundaryTests(unittest.TestCase):
             service=SyncthingLanService(root/'service',bind_host='127.0.0.1',discovery=False)
             client,server=socket.socketpair();identifier='a'*32;token='b'*64
             entries=[dict(path='file.bin',kind='file',size=17)]
-            native=dict(transport='syncthing-v2',device_id='-'.join(['AAAAAAA']*8),port=22000,content=dict(size=100,sha256='c'*64))
+            native=dict(transport='syncthing-v3',device_id='-'.join(['AAAAAAA']*8),port=22000)
             transfer=_Transfer(identifier,'receive','peer',entries=entries,token=token,
                 manifest_hash=hashlib.sha256(json.dumps(entries,sort_keys=True).encode()).hexdigest(),total=17)
             transfer.destination=target;transfer.accepted.set();service._transfers[identifier]=transfer;service._native_specs[identifier]=native
             service._slots.acquire();service._incoming_stream=lambda raw:raw
+            service.engine.pair=Mock()
             job=Mock();job.receive.side_effect=EngineError('read failed');job.close.side_effect=EngineError('cleanup failed')
             _send_json(client,dict(protocol=PROTOCOL,id=identifier,token=token,entries=entries,native=native))
+            _send_json(client,dict(state='content',content=dict(size=100,sha256='c'*64)))
             try:
                 with patch('syncthing_lan.ReceiveJob',return_value=job),self.assertRaisesRegex(EngineError,'cleanup failed'):
                     service._incoming(server,'127.0.0.1')
@@ -67,6 +70,31 @@ class CleanupBoundaryTests(unittest.TestCase):
 
 @unittest.skipUnless(BINARY.is_file(),'Prepare the official kernel first')
 class NativeLanTests(unittest.TestCase):
+    def test_consent_and_original_engine_connection_precede_snapshot_disk_io(self):
+        with tempfile.TemporaryDirectory(prefix='native-lan-early-') as directory:
+            root=Path(directory).resolve();a=SyncthingLanService(root/'a',bind_host='127.0.0.1',discovery=False,binary=BINARY)
+            b=SyncthingLanService(root/'b',bind_host='127.0.0.1',discovery=False,binary=BINARY)
+            source=root/'original.bin';source.write_bytes(bytes(range(256))*32768);target=root/'received';target.mkdir()
+            entered=threading.Event();release=threading.Event();offers=[];finished=[]
+            b.offer_received.connect(offers.append)
+            for service in (a,b):service.completed.connect(finished.append)
+            from manual_payload import prepare as snapshot
+            def held(*args,**options):
+                entered.set()
+                if not release.wait(25):raise TimeoutError('QA snapshot was not released')
+                return snapshot(*args,**options)
+            try:
+                a.start();b.start();until(lambda:a.port and b.port);a.remember_peer(b.own_peer())
+                with patch('syncthing_lan.prepare',side_effect=held):
+                    identifier=a.send(b.device_id,[source]);until(lambda:bool(offers),3)
+                    self.assertFalse(entered.is_set());b.accept(identifier,target);until(entered.is_set,3)
+                    until(lambda:a.engine.connections().get(b.engine.device_id,{}).get('connected') is True,10)
+                    self.assertEqual(list(target.iterdir()),[]);release.set()
+                    until(lambda:sum(row['id']==identifier for row in finished)==2)
+                self.assertEqual((target/source.name).read_bytes(),source.read_bytes())
+            finally:
+                release.set();a.close();b.close();a._shutdown.join(15);b._shutdown.join(15)
+
     def test_cancel_before_consent_does_not_publish_or_delete_originals(self):
         with tempfile.TemporaryDirectory(prefix='native-lan-cancel-') as directory:
             root=Path(directory).resolve();a=SyncthingLanService(root/'a',bind_host='127.0.0.1',discovery=False,binary=BINARY)
