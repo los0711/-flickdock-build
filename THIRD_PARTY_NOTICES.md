@@ -19,7 +19,9 @@ Cloud account credentials use keyring 25.7.0 with the native Windows Credential 
 
 Media previews use the Qt FFmpeg plugin on Windows and Qt's Darwin backend on macOS. Qt multimedia libraries remain separate and replaceable.
 
-Wide-area file transfer uses the unmodified Node.js 24.12.0 runtime, node-datachannel 0.33.6 and libdatachannel 0.24.6. Node's complete notices are bundled at `p2p/runtime/Node-LICENSE.txt`. The native addon and libdatachannel are provided under MPL 2.0; corresponding source is available at https://github.com/murat-dogan/node-datachannel/tree/v0.33.6 and https://github.com/paullouisageneau/libdatachannel/tree/v0.24.6. Native transport dependencies and their license texts are retained in `licenses/WebRTC-LICENSES.txt`. These libraries are separate replaceable runtime files; FlickDock does not modify their source.
+Manual file transfer uses the unmodified Syncthing v2.1.7 executable under MPL 2.0. Corresponding source is available at https://github.com/syncthing/syncthing/tree/v2.1.7. Its original executable, complete license notices, authors and README are bundled in `syncthing/runtime`. FlickDock controls it through its official REST API and does not modify its source or use its public relay service.
+
+Video parsing uses the unmodified Node.js 24.12.0 runtime for JavaScript challenges. Node's complete notices are bundled at `p2p/runtime/Node-LICENSE.txt`. Node is not used for file transmission.
 
 Publisher signature verification uses cryptography 50.0.2 (Apache-2.0 / BSD-3-Clause). Complete licenses are included in licenses/Release-Crypto-LICENSES.txt.
 

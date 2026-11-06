@@ -9,6 +9,9 @@ sys.path.insert(0,str(root))
 from bundle_policy import filter_bundle
 from p2p_assets import bundle_assets
 p2p_binaries,p2p_datas=bundle_assets()
+from syncthing_assets import bundle_assets as native_assets
+native_binaries,native_datas=native_assets()
+p2p_binaries+=native_binaries;p2p_datas+=native_datas
 from PyInstaller.utils.hooks import collect_all
 yt_datas,yt_binaries,yt_hidden=collect_all('yt_dlp')
 ejs_datas,ejs_binaries,ejs_hidden=collect_all('yt_dlp_ejs')
@@ -16,7 +19,7 @@ ejs_datas,ejs_binaries,ejs_hidden=collect_all('yt_dlp_ejs')
 font_names=['HarmonyOS_Sans_SC_Regular.ttf']
 license_names=['HarmonyOS-Sans-LICENSE.txt','Python-LICENSE.txt',
                'FFmpeg-LICENSE.txt','LGPL-3.0.txt','GPL-3.0.txt','PyInstaller-COPYING.txt',
-               'OpenSSL-LICENSE.txt','Cloud-Client-LICENSES.txt','Lucide-LICENSE.txt','WebRTC-LICENSES.txt','Release-Crypto-LICENSES.txt','Video-LICENSES.txt']
+               'OpenSSL-LICENSE.txt','Cloud-Client-LICENSES.txt','Lucide-LICENSE.txt','Release-Crypto-LICENSES.txt','Video-LICENSES.txt']
 asset_files=[(root/'fonts'/name,'fonts') for name in font_names]
 asset_files += [(root/'licenses'/name,'licenses') for name in license_names]
 asset_files += [(root/'THIRD_PARTY_NOTICES.md','.'),(root/'font_manifest.json','.')]

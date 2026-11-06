@@ -247,7 +247,7 @@ class IconItem(QWidget):
         painter.translate(center.x(), center.y())
         painter.scale(scale, scale)
         painter.translate(-center.x(), -center.y())
-        painter.setBrush(ink(c['selected'] if actual else c['card_hover'] if v['hover']>.3 else c['card']))
+        painter.setBrush(ink(c['file_card_selected'] if actual else c['file_card_hover'] if v['hover']>.3 else c['file_card']))
         painter.setPen(QPen(ink(c['selected_border'] if actual else c['border']),1))
         painter.drawRoundedRect(QRectF(self.rect()).adjusted(.5,.5,-.5,-.5),c['card_radius'],c['card_radius'])
         if self.hasFocus() and self._keyboard_focus:

@@ -6,7 +6,7 @@ from PySide6.QtWidgets import QApplication,QPushButton,QLabel,QHBoxLayout,QPlain
 from app_settings import ReferenceModalDialog,SettingsCloseButton
 from native_ui_common import colors,icon
 from sync_files import DiskWork
-from transfer_visuals import draw_cloud_status_badge,CloudStatusBadge,CLOUD_STATUS_LABELS
+from transfer_visuals import CloudStatusBadge,CLOUD_STATUS_LABELS
 from shiboken6 import isValid
 import ui_theme
 
@@ -120,8 +120,6 @@ class ClipboardButton(QPushButton):
         else:
             glyph='text' if value and value[0]=='text' else 'file' if value else 'copy'
             icon(glyph,c['secondary']).paint(p,7,7,18,18)
-        if model and (value or model.state.get('permission_required')):
-            draw_cloud_status_badge(p,QRectF(20,20,12,12),model.state.get('phase','local'))
         p.end()
 
 

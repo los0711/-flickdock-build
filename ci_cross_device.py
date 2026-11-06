@@ -81,7 +81,8 @@ def kernel_diagnostics(engine,peer):
         status=engine.request('GET','/rest/system/status');discovery=engine.request('GET','/rest/system/discovery')
         sources=status.get('discoveryStatus',{});listeners=status.get('connectionServiceStatus',{})
         counts=Counter()
-        for address in discovery.get(peer,[]):
+        cached=discovery.get(peer,{})
+        for address in cached.get('addresses',[]) if isinstance(cached,dict) else cached:
             url=urlsplit(address)
             try:scope='public' if ipaddress.ip_address(url.hostname or '').is_global else 'private'
             except ValueError:scope='hostname'
@@ -128,9 +129,7 @@ def main():
     from cloud_events import CloudEvents
     from clipboard_sync import ClipboardSync,snapshot
     from shelf_sync import ShelfSync
-    from syncthing_engine import SyncthingEngine
-    from syncthing_jobs import ReceiveJob,deliver
-    from manual_payload import prepare
+    from wan_transfer import WanTransferService
     app=QApplication.instance() or QApplication([]);app.setQuitOnLastWindowClosed(False)
     from ci_vpn import verify_qt_proxy
     proxy=verify_qt_proxy()
@@ -140,7 +139,7 @@ def main():
         cloud_only_automatic_sync=True,checks=[],api_failures=failures,http_payloads=[],proxy=proxy,
         proxy_pair_mode=os.environ.get('FD_QA_VPN_MODE','none'),
         timing_scope='Per-peer step elapsed includes coordination; HTTP payload timings are recorded separately',
-        manual_scope='Not run: isolated cloud-only verification' if cloud_only else 'Original Syncthing engine + finite job adapter; application manual-transfer entry not yet wired')
+        manual_scope='Not run: isolated cloud-only verification' if cloud_only else 'Application manual-transfer entry: original Syncthing, same-account R2 fallback, actual save acknowledgement')
     report_path=root/'report.json'
     sys.excepthook=lambda kind,value,trace:failures.append(dict(phase=phase,callback_error=kind.__name__))
     def until(predicate,seconds=STEP_TIMEOUT_SECONDS):
@@ -190,7 +189,7 @@ def main():
         value,error=result[0]
         if error:raise RuntimeError('Cloud request failed: '+str(getattr(error,'code','')))
         return value
-    events=None;clipboard=None;shelf=None;engine=None
+    events=None;clipboard=None;shelf=None;wan=None
     try:
         if args.mode=='bootstrap':
             phase='authentication'
@@ -203,18 +202,27 @@ def main():
             session=root/'session.json';session.write_text(json.dumps(private),encoding='utf8');session.chmod(0o600)
             public=dict(side=side,pair=pair,platform=platform,run=run,attempt=attempt,account_device_id=account.device_id)
             if not cloud_only:
-                phase='kernel_bootstrap';engine=SyncthingEngine(root/'kernel',mode='lan');engine.start()
+                phase='manual_bootstrap';wan=WanTransferService(root/'manual',enabled=False)
                 source=root/'manual-source.bin';fixture(source,32*MIB,f'{run}-{attempt}-{pair}-{side}-manual')
-                payload=prepare([source],root/'payload',threading.Event())
-                public.update(kernel_id=engine.device_id,descriptor=payload['descriptor'],total=payload['total'],count=payload['count'],names=payload['names'])
+                public.update(wan_id=wan.device_id)
             (root/'public.json').write_text(json.dumps(public),encoding='utf8')
             print(json.dumps(dict(ok=True,side=side,phase='bootstrap',synthetic_fixture=True)),flush=True)
             return 0
         phase='peer_bootstrap';peer=artifact(other,run,attempt,pair);own=json.loads((root/'public.json').read_bytes())
         session=json.loads((root/'session.json').read_bytes());account.api.token=session['token'];account.device_id=session['device_id'];account.account=session['account']
         if not cloud_only:
-            phase='kernel_prepare';engine=SyncthingEngine(root/'kernel',mode='remote');engine.start()
-            assert engine.device_id==own['kernel_id']
+            phase='manual_prepare';wan=WanTransferService(root/'manual',device_name=account.device_name)
+            assert wan.device_id==own['wan_id'];wan.attach_account(account);wan.start()
+        manual_completed=[];manual_progress=[]
+        if wan:
+            wan.completed.connect(manual_completed.append);wan.progress.connect(manual_progress.append)
+            def accept_manual(offer):
+                state=wan._pending[offer['id']]
+                if (offer.get('account_device') and offer.get('account_id')==account.account['id']
+                        and state['peer']['id']==peer['wan_id']):
+                    target=root/('delivered-'+other);target.mkdir(exist_ok=True);wan.accept(offer['id'],target)
+                else:wan.reject(offer['id'])
+            wan.offer_received.connect(accept_manual)
         events=CloudEvents(account);clip=app.clipboard();clipboard=ClipboardSync(account,events,root/'clipboard',clipboard=clip)
         adapter=Adapter();shelf=ShelfSync(root/'shelf',account,adapter)
         shelf.attach_clipboard(clipboard);clipboard.activity_changed.connect(shelf.set_clipboard_priority)
@@ -238,14 +246,9 @@ def main():
         from PySide6.QtNetwork import QAbstractSocket
         phase='event_socket';until(lambda:events.socket.state()==QAbstractSocket.SocketState.ConnectedState,seconds=60)
         kernel_only=os.environ.get('FD_QA_KERNEL_ONLY')=='true';report['cloud_tested']=not kernel_only
-        def await_announcement():
-            deadline=time.monotonic()+20
-            while True:
-                status=engine.request('GET','/rest/system/status')
-                if any(key.startswith('global@') and value.get('error') is None for key,value in status.get('discoveryStatus',{}).items()):return
-                if time.monotonic()>deadline:raise TimeoutError('Original kernel did not finish its first announcement')
-                pump(.25)
-        if kernel_only:phase='kernel_announcement';await_announcement()
+        if wan:
+            phase='manual_signaling'
+            until(lambda:wan._bound_identity==wan._account_identity() and any(row['id']==peer['wan_id'] and row.get('online') for row in wan.peers()),seconds=60)
         barrier(1)
         stage=1
         def record(name,sender,started,**fields):
@@ -308,46 +311,33 @@ def main():
             assert source.is_file(),'Removing a shelf item deleted a local original'
             record('shelf_delete',sender,start,original_preserved=True)
             stage+=1;barrier(stage)
-        # Cloud tests finish before the direct-only kernel test, so a CI NAT
-        # limitation cannot be misreported as a clipboard or R2 regression.
-        if not cloud_only:
-            phase='kernel_start';assert engine.device_id==own['kernel_id']
-            if not kernel_only:await_announcement()
-        def worker(action):
-            finished=[]
-            def execute():
-                try:finished.append((action(),None))
-                except BaseException as error:finished.append((None,error))
-            thread=threading.Thread(target=execute,daemon=True);thread.start()
-            until(lambda:bool(finished),seconds=240);thread.join(1)
-            if finished[0][1]:raise finished[0][1]
-            return finished[0][0]
         for sender in (() if cloud_only else ('a','b')):
-            phase='manual_'+sender;start=time.perf_counter();task='fd-manual-'+uuid5(NAMESPACE_URL,f'{run}/{attempt}/{pair}/{sender}').hex
-            cancel=threading.Event();job=None;shared=False;error=None;received_bytes=0;diagnostics=None
+            phase='manual_'+sender;started=time.perf_counter();error=None;received_bytes=0;identity=None;diagnostics=None
             try:
-                if side==sender:
-                    engine.share(task,root/'payload',peer['kernel_id'],['dynamic'],send=True);shared=True
-                else:
-                    stage_root=root/('manual-receive-'+sender);stage_root.mkdir();network=stage_root/'network';network.mkdir()
-                    destination=root/('delivered-'+sender);destination.mkdir()
-                    job=ReceiveJob(engine,task,network,peer['kernel_id'],['dynamic'],peer['descriptor'],cancel=cancel,progress=lambda count,total:None)
-                    payload=worker(job.receive);job.close()
-                    paths=worker(lambda:deliver(payload,stage_root,destination,peer['descriptor'],peer,cancel))
-                    received=Path(paths[0]);expected=root/('expected-'+sender+'.bin')
+                if side==sender:identity=wan.send(peer['wan_id'],[root/'manual-source.bin'])
+                direction='send' if side==sender else 'receive'
+                def completed():
+                    bad=next((row for row in manual_progress if row['direction']==direction and row['state']=='error'),None)
+                    if bad:raise RuntimeError('Manual application transfer failed')
+                    return next((row for row in manual_completed if row['direction']==direction),None)
+                until(lambda:bool(completed()),seconds=240);result=completed();identity=result['id']
+                if side!=sender:
+                    received=Path(result['paths'][0]);expected=root/('expected-'+sender+'.bin')
                     digest=fixture(expected,32*MIB,f'{run}-{attempt}-{pair}-{sender}-manual')
                     with received.open('rb') as stream:assert hashlib.file_digest(stream,'sha256').hexdigest()==digest
                     received_bytes=received.stat().st_size
+                until(lambda:not wan._transfers[identity].active,seconds=30)
             except BaseException as failure:
-                error=type(failure).__name__;diagnostics=worker(lambda:kernel_diagnostics(engine,peer['kernel_id']))
-            finally:
-                if job is not None:job.close()
-            report['checks'].append(dict(name='manual_original_syncthing',sender=sender,ok=error is None,
-                local_role='sender' if side==sender else 'receiver',error_type=error,verified_bytes=received_bytes,seconds=round(time.perf_counter()-start,3),public_relays=False,
-                verified_by_peer_report_required=side==sender,diagnostics=diagnostics))
-            stage+=1;barrier(stage)
-            if shared:engine.unshare(task)
-            report_path.write_text(json.dumps(report,indent=2),encoding='utf8')
+                error=type(failure).__name__
+                if wan.engine.device_id:
+                    try:diagnostics=kernel_diagnostics(wan.engine,wan._pending.get(identity,{}).get('native',{}).get('device_id',''))
+                    except Exception:diagnostics=dict(available=False)
+            routes=[row.get('route') for row in manual_progress if row.get('id')==identity and row.get('route')]
+            report['checks'].append(dict(name='manual_application_syncthing_r2',sender=sender,ok=error is None,
+                local_role='sender' if side==sender else 'receiver',error_type=error,verified_bytes=received_bytes,
+                receiver_save_ack=side==sender and error is None,route=routes[-1] if routes else None,
+                seconds=round(time.perf_counter()-started,3),public_relays=False,diagnostics=diagnostics))
+            stage+=1;barrier(stage);report_path.write_text(json.dumps(report,indent=2),encoding='utf8')
         phase='cleanup'
         if side=='a' and not kernel_only:
             before=clipboard._seen;mime=QMimeData();mime.setText('FlickDock disposable QA finished '+run);clip.setMimeData(mime)
@@ -367,7 +357,9 @@ def main():
         if clipboard is not None:clipboard.close()
         if shelf is not None:shelf.close()
         if events is not None:events.close()
-        if engine is not None:engine.close()
+        if wan is not None:
+            wan.close();deadline=time.monotonic()+12
+            while wan._shutdown and wan._shutdown.is_alive() and time.monotonic()<deadline:pump(.05)
         account.close()
 
 

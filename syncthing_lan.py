@@ -23,6 +23,7 @@ CONTROL_RETRIES=3
 PROGRESS_SECONDS=.1
 SPACE_MARGIN_BYTES=1024*1024
 CLEANUP_RETRY_SECONDS=30
+SHUTDOWN_WORKER_GRACE_SECONDS=3
 
 
 def native_offer(value):
@@ -228,9 +229,13 @@ class SyncthingLanService(LanTransferService):
         if self._shutdown is not None:return
         super().close()
         def shutdown():
-            deadline=time.monotonic()+3
+            deadline=time.monotonic()+SHUTDOWN_WORKER_GRACE_SECONDS
             for thread in tuple(self._threads):thread.join(max(0,deadline-time.monotonic()))
             self.engine.close()
+            deadline=time.monotonic()+SHUTDOWN_WORKER_GRACE_SECONDS
+            for thread in tuple(self._threads):thread.join(max(0,deadline-time.monotonic()))
             with self._lock:retired=[item for item in self._transfers.values() if not item.active and (item.finished or item.cancel.is_set())]
             for transfer in retired:self._cleanup(transfer)
-        self._shutdown=threading.Thread(target=shutdown,daemon=True,name='FlickDock-native-LAN-close');self._shutdown.start()
+        # macOS has no Windows Job Object. Keep Python alive until the owned
+        # kernel releases its profile, even after Qt's event loop has exited.
+        self._shutdown=threading.Thread(target=shutdown,daemon=False,name='FlickDock-native-LAN-close');self._shutdown.start()

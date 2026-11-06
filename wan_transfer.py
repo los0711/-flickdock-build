@@ -1,41 +1,320 @@
-"""Anonymous code pairing, consent and native WebRTC file transport.
-
-The LAN file protocol is reused over a framed ordered DTLS DataChannel.
-Stable device credentials and signaling are separate from cloud login.
-"""
-import hashlib,json,os,re,secrets,shutil,socket,sys,threading,time
+"""Manual remote consent/signaling; bytes use original Syncthing or account R2."""
+from __future__ import annotations
+import hashlib,json,os,re,secrets,shutil,sys,threading,time
 from pathlib import Path
 from uuid import uuid4
 from PySide6.QtCore import QTimer,QUrl,Signal
 from PySide6.QtNetwork import QNetworkRequest
 from PySide6.QtWebSockets import QWebSocket
-from lan_transfer import LanTransferService,_Transfer,_validate_manifest
+from lan_transfer import _Transfer
+from syncthing_lan import SyncthingLanService
+from syncthing_engine import check_device,check_addresses,EngineError
+from syncthing_jobs import ReceiveJob,DirectUnavailable,deliver
+from manual_payload import prepare,descriptor
+from manual_cloud import ManualCloud
 from selection_archive import _is_link
-from webrtc_stream import WebRTCStream
 from cloud_config import DEFAULT_CLOUD_URL,CLOUD_ORIGINS
 SIGNAL_ORIGINS=CLOUD_ORIGINS
-DIRECT_CONNECT_GRACE_MS=8000
-REMOTE_CONNECT_ATTEMPT_SECONDS=45.
 RECEIVE_CODE=re.compile(r'(?=.*[2-9])(?=.*[A-HJ-NP-Z])[23456789A-HJ-NP-Z]{4}')
+CONSENT_SECONDS=210
+SIGNAL_SECONDS=45
+ACK_SECONDS=180
+REQUEST_RECEIPT_SECONDS=3600
+PROGRESS_SECONDS=1.
 
 
+class _DirectCancel:
+    def __init__(self,transfer,state):self.transfer=transfer;self.state=state
+    def is_set(self):return self.transfer.cancel.is_set() or self.state['fallback'].is_set()
 
-class WanTransferService(LanTransferService):
+class WanTransferService(SyncthingLanService):
     lan_authorization=Signal(dict)
     identity_changed=Signal(dict)
     _command=Signal(dict)
-    _native=Signal(dict)
     mode='wan'
-    def __init__(self,base,parent=None,*,device_name='',enabled=True,origin=DEFAULT_CLOUD_URL,node=None,allow_test_origin=False,qa_force_relay=False):
-        super().__init__(parent,device_name=device_name,discovery=False)
-        self.base=Path(base);self.enabled=enabled;self.origin=origin;self.node=node;self.code=''
+
+    def start(self):
+        if self.enabled and not self._connected and not self.retry.isActive():self.retry.start(0)
+        if self.enabled and not self._warming:
+            self._warming=True
+            def warm():
+                try:self.engine.start()
+                except (OSError,EngineError) as error:self.status_changed.emit(str(error))
+            self._thread(warm)
+
+    def _state(self,role,peer):
+        return dict(role=role,peer=peer,ready=threading.Event(),wake=threading.Event(),fallback=threading.Event(),
+                    saved=threading.Event(),prepared=threading.Event(),generation=0,last_progress=time.monotonic())
+
+    def _recover_signaling(self):
+        for value in tuple(self._outbox.values()):self._send_signal(value)
+        for identifier,state in tuple(self._pending.items()):
+            if state.get('done'):self._send_signal(dict(type='complete',id=identifier));continue
+            if state.get('native_out'):self._send_signal(state['native_out'])
+            if state.get('cloud_out') and self._bound_identity==self._account_identity() and self._bound_identity is not None:
+                self._send_signal(state['cloud_out'])
+            if state['role']=='send' and state.get('request'):self._send_signal(state['request'])
+            elif state['role']=='send' and state.get('prepare'):self._send_signal(state['prepare'])
+            elif state['role']=='receive' and state.get('destination'):self._send_signal(dict(type='accept',id=identifier))
+
+    def _handle_command(self,value):
+        state=self._pending.get(value.get('id'))
+        if value.get('type')=='request' and state:state['request']=value
+        if value.get('type')=='native_signal' and state:
+            kind=value['value']['kind']
+            if kind=='native':state['native_out']=value
+            if kind=='r2':
+                state['cloud_out']=value
+                if self._bound_identity is None or self._bound_identity!=self._account_identity():return
+        if value.get('type') in ('complete','cancel','reject'):
+            self._outbox[(value['id'],value['type'])]=value
+            while len(self._outbox)>64:self._outbox.pop(next(iter(self._outbox)))
+        self._send_signal(value)
+
+    def _signal(self,identifier,metadata):
+        self._command.emit(dict(type='native_signal',id=identifier,generation=self._pending[identifier]['generation'],value=metadata))
+
+    def _transfer_message(self,kind,identifier,state,value):
+        if kind=='request':
+            if not re.fullmatch('[a-f0-9]{32}',str(identifier)) or identifier in self._pending or len(self._pending)>=32:return
+            peer=value['peer'];total=int(value['total']);count=value['count'];names=value['names']
+            if (not isinstance(peer,dict) or not re.fullmatch('[a-f0-9]{64}',str(peer.get('id','')))
+                    or 'syncthing-v2' not in peer.get('features',[]) or not 0<=total<(1<<63)
+                    or type(count) is not int or not 0<=count<=100000 or not isinstance(names,list) or not 1<=len(names)<=12
+                    or any(not isinstance(name,str) or not name or len(name)>255 or re.search(r'[\\/\x00-\x1f]',name) for name in names)
+                    or not re.fullmatch('[a-f0-9]{64}',str(value.get('digest','')))
+                    or not re.fullmatch('[a-f0-9]{64}',str(value.get('token','')))):
+                self._send_signal(dict(type='reject',id=identifier));raise ValueError('请让两端使用当前版本的传输内核。')
+            state=self._state('receive',peer);state.update(total=total,count=count,names=names,digest=value['digest'],token=value['token'],
+                account_device=value.get('account_device') is True,account_id=value.get('account_id',''))
+            self._pending[identifier]=state
+            transfer=_Transfer(identifier,'receive',peer['name'],total=total,token=value['token'],manifest_hash=value['digest'])
+            self._transfers[identifier]=transfer
+            self.offer_received.emit(dict(id=identifier,peer=peer['name'],host='远程',code='',total=total,count=count,names=names,
+                account_device=state['account_device'],account_id=state['account_id'],device_code=value.get('deviceCode','')))
+            return
+        if not state:return
+        transfer=self._transfers[identifier]
+        if kind=='prepared':
+            peer=value['peer']
+            if 'syncthing-v2' not in peer.get('features',[]):raise ValueError('请让接收端更新到当前版本。')
+            state['peer']=peer;state['prepared_ok']=True;state['prepared'].set()
+        elif kind=='waiting':
+            state['peer']=value['peer'];transfer.peer=value['peer']['name'];self._notify(transfer,'waiting')
+        elif kind in ('begin','resumed') and not value.get('settled'):
+            if kind=='begin' and value.get('transport')!='syncthing-v2':
+                self.cancel(identifier);raise ValueError('服务端尚未启用当前传输内核。')
+            generation=value['generation']
+            if type(generation) is not int or generation<1 or generation<state['generation']:return
+            state['generation']=generation;state['ready'].set()
+            if kind=='begin' or value.get('account_device') is True:state['account_device']=value.get('account_device') is True
+            if state['role']=='receive' and not state.get('worker') and state.get('destination'):
+                state['worker']=True;transfer.active=True;self._thread(self._receive,transfer,state)
+        elif kind=='native_signal' and value.get('generation')==state['generation']:
+            metadata=value['value'];signal=metadata['kind']
+            if signal=='native':
+                native=dict(device_id=check_device(metadata['device_id']),addresses=check_addresses(metadata['addresses'],'lan' if self.engine.loopback else 'remote'))
+                if state['role']=='receive':native['content']=descriptor(metadata['content'])
+                elif metadata.get('content') is not None:raise ValueError('接收端不能更改发送文件。')
+                if state.get('native') and state['native']!=native:raise ValueError('传输设备或文件内容已改变。')
+                state['native']=native
+            elif signal=='fallback':state['fallback'].set()
+            elif signal=='saved' and state['role']=='send':state['saved'].set()
+            elif signal=='r2' and state['role']=='receive':
+                from uuid import UUID
+                item=str(UUID(metadata['id']))
+                if item!=metadata['id'] or type(metadata['version']) is not int or metadata['version']<1:raise ValueError('云端文件版本无效。')
+                spec=descriptor({key:metadata[key] for key in ('size','sha256')})
+                if not state.get('native') or state['native']['content']!=spec:raise ValueError('云端文件与直连文件不一致。')
+                state['cloud']=dict(id=item,version=metadata['version'],kind='transfer',**spec);state['fallback'].set()
+            elif signal=='progress' and state['role']=='send':
+                total=metadata['total'];received=metadata['received'];spec=state['payload']['descriptor']
+                if type(received) is not int or total!=spec['size'] or not 0<=received<=total:raise ValueError('接收进度无效。')
+                transfer.done=max(transfer.done,int(transfer.total*received/total));state['last_progress']=time.monotonic();self._notify(transfer,'transferring')
+            else:raise ValueError('远程传输状态无效。')
+            state['wake'].set()
+        elif kind=='cancelled':self.cancel(identifier,remote=True)
+        elif kind=='error':
+            state['error']=str(value.get('message') or '远程传输失败。');state['wake'].set();state['prepared'].set();state['ready'].set()
+        elif kind=='settled' or kind=='resumed' and value.get('settled'):
+            if transfer.finished:self._pending.pop(identifier,None)
+
+    def send(self,peer_id,paths):
+        if not self._connected:raise ValueError('远程服务尚未连接，请稍后重试。')
+        peer=self._peers.get(peer_id)
+        if not peer and not RECEIVE_CODE.fullmatch(str(peer_id)):raise ValueError('请选择在线设备或输入四位接收码。')
+        if peer and (not peer.get('online') or 'syncthing-v2' not in peer.get('features',[])):raise ValueError('请确认对方在线并使用当前版本。')
+        identifier=uuid4().hex;peer=dict(peer or dict(code=peer_id,name='接收码 '+peer_id))
+        with self._lock:
+            if sum(item.active and item.direction=='send' for item in self._transfers.values())>=2:raise ValueError('请等待当前传输完成。')
+            transfer=_Transfer(identifier,'send',peer['name'],active=True,token=secrets.token_hex(32));self._transfers[identifier]=transfer
+            state=self._state('send',peer);self._pending[identifier]=state
+        if peer.get('code'):
+            state['prepare']=dict(type='prepare',id=identifier,token=transfer.token,code=peer['code']);self._send_signal(state['prepare'])
+        self._thread(self._send,transfer,state,list(paths));return identifier
+
+    def _wait(self,transfer,state,predicate,seconds):
+        deadline=time.monotonic()+seconds
+        while not predicate():
+            if transfer.cancel.is_set() or self._stopped.is_set():raise InterruptedError('已取消传输。')
+            if state.get('error'):raise ValueError(state['error'])
+            remaining=deadline-time.monotonic()
+            if remaining<=0:raise TimeoutError('等待远程设备响应超时。')
+            state['wake'].wait(min(.1,remaining));state['wake'].clear()
+
+    def _send(self,transfer,state,paths):
+        identifier=transfer.transfer_id;shared=False;record=None
+        try:
+            if state.get('prepare'):self._wait(transfer,state,lambda:state['prepared'].is_set(),25)
+            if state.get('error'):raise ValueError(state['error'])
+            self._notify(transfer,'preparing');stage=self._stage(transfer,self.base,'send-'+identifier)
+            payload=prepare(paths,stage/'payload',transfer.cancel);state['payload']=payload;transfer.total=payload['total']
+            transfer.entries=payload['entries'];transfer.peer=state['peer']['name']
+            request=dict(type='request',id=identifier,token=transfer.token,digest=hashlib.sha256(json.dumps(payload['entries'],sort_keys=True).encode()).hexdigest(),
+                total=str(payload['total']),count=payload['count'],names=payload['names'][:12])
+            request.update(dict(prepared=True) if state.get('prepared_ok') else dict(peer=state['peer']['id']))
+            self._command.emit(request);self._wait(transfer,state,lambda:state['ready'].is_set(),CONSENT_SECONDS)
+            try:self.engine.start();device=self.engine.device_id;addresses=self.engine.addresses()
+            except (OSError,EngineError):
+                # The native identity remains mandatory for an accepted snapshot.
+                # If the bundled engine cannot start, fail visibly instead of
+                # advertising a made-up peer or silently changing the transport.
+                raise
+            self._signal(identifier,dict(kind='native',device_id=device,addresses=addresses,content=payload['descriptor']))
+            self._notify(transfer,'connecting',route='direct')
+            self._wait(transfer,state,lambda:bool(state.get('native')) or state['fallback'].is_set(),SIGNAL_SECONDS)
+            task='fd-manual-'+identifier
+            if not state['fallback'].is_set():
+                native=state['native'];self.engine.share(task,payload['folder'],native['device_id'],native['addresses'],send=True);shared=True
+                started=time.monotonic()
+                while not state['saved'].is_set() and not state['fallback'].is_set():
+                    if transfer.cancel.is_set() or self._stopped.is_set():raise InterruptedError('已取消传输。')
+                    if state.get('error'):raise ValueError(state['error'])
+                    state['wake'].wait(.1);state['wake'].clear()
+                    connected=self.engine.connections().get(native['device_id'],{}).get('connected') is True
+                    now=time.monotonic()
+                    if not connected and now-started>SIGNAL_SECONDS or connected and now-state['last_progress']>ACK_SECONDS:
+                        state['fallback'].set();self._signal(identifier,dict(kind='fallback'))
+            if state['fallback'].is_set() and not state['saved'].is_set():
+                if shared:self.engine.unshare(task);shared=False
+                if not self.cloud or not self._same_account(state):raise ConnectionError('无法建立直连；云端兜底需要两端登录同一账号。')
+                state['route']='cloud';self._notify(transfer,'transferring',route='cloud')
+                record=self.cloud.upload(payload,transfer.cancel,lambda done,total:self._cloud_progress(transfer,done,total))
+                self._signal(identifier,dict(kind='r2',**{key:record[key] for key in ('id','version','size','sha256')}))
+                self._wait(transfer,state,lambda:state['saved'].is_set(),REQUEST_RECEIPT_SECONDS)
+            self._finish(transfer,paths)
+        except Exception as error:self._failed(transfer,state,error)
+        finally:
+            try:
+                if shared:self.engine.unshare('fd-manual-'+identifier)
+                if record:self.cloud.retire(record)
+            except Exception as error:self.status_changed.emit('传输清理未完成：'+str(error)[:180])
+            finally:
+                self._cleanup(transfer);transfer.active=False;transfer.updated=time.monotonic()
+
+    def _same_account(self,state):
+        peer=state['peer']
+        return bool(self.account_service and self.account_service.signed_in and self._bound_identity==self._account_identity()
+                    and (state.get('account_device') or peer.get('account_device')))
+
+    def _cloud_progress(self,transfer,received,total):
+        transfer.done=min(transfer.total,int(transfer.total*received/total));self._notify(transfer,'transferring',route='cloud')
+
+    def _receive(self,transfer,state):
+        identifier=transfer.transfer_id;job=None
+        try:
+            self._wait(transfer,state,lambda:bool(state.get('native')),SIGNAL_SECONDS)
+            native=state['native'];spec=native['content'];target=state['destination']
+            if shutil.disk_usage(target).free<transfer.total+spec['size']+1024*1024:raise ValueError('接收位置的可用空间不足。')
+            stage=self._stage(transfer,target,'.flickdock-receiving-'+identifier)
+            try:
+                self.engine.start();self._signal(identifier,dict(kind='native',device_id=self.engine.device_id,addresses=self.engine.addresses()))
+                if state['fallback'].is_set():raise DirectUnavailable('对方已请求云端兜底。')
+                folder=stage/'network';folder.mkdir()
+                last=[0.]
+                def progress(done,total):
+                    transfer.done=min(transfer.total,int(transfer.total*done/total));self._notify(transfer,'transferring',route='direct')
+                    now=time.monotonic()
+                    if now-last[0]>=PROGRESS_SECONDS or done==total:
+                        last[0]=now;self._signal(identifier,dict(kind='progress',received=done,total=total))
+                job=ReceiveJob(self.engine,'fd-manual-'+identifier,folder,native['device_id'],native['addresses'],spec,
+                               cancel=_DirectCancel(transfer,state),progress=progress)
+                payload=job.receive()
+            except (DirectUnavailable,InterruptedError) as error:
+                if transfer.cancel.is_set():raise
+                if isinstance(error,InterruptedError) and not state['fallback'].is_set():raise
+                if job:job.close();job=None
+                if not self.cloud or not self._same_account(state):raise ConnectionError('无法建立直连；云端兜底需要两端登录同一账号。') from error
+                state['fallback'].set();self._signal(identifier,dict(kind='fallback'));state['route']='cloud'
+                self._notify(transfer,'connecting',route='cloud')
+                self._wait(transfer,state,lambda:bool(state.get('cloud')),REQUEST_RECEIPT_SECONDS)
+                payload=self.cloud.download(state['cloud'],stage/'r2',transfer.cancel,
+                    lambda done,total:self._cloud_progress(transfer,done,total))
+            paths=deliver(payload,stage,target,spec,state,transfer.cancel)
+            transfer.finished=True;state['saved'].set();self._signal(identifier,dict(kind='saved'));self._finish(transfer,paths)
+        except Exception as error:self._failed(transfer,state,error)
+        finally:
+            try:
+                if job:job.close()
+            finally:
+                self._cleanup(transfer);transfer.active=False;transfer.updated=time.monotonic();transfer.receiver_idle.set()
+
+    def _finish(self,transfer,paths):
+        transfer.done=transfer.total;transfer.finished=True;transfer.result_paths=[str(path) for path in paths]
+        self._notify(transfer,'complete');self.completed.emit(dict(id=transfer.transfer_id,direction=transfer.direction,peer=transfer.peer,
+            paths=transfer.result_paths,total=transfer.total))
+
+    def _failed(self,transfer,state,error):
+        state['error']=str(error);self._notify(transfer,'cancelled' if transfer.cancel.is_set() else 'error',message=str(error))
+        self._command.emit(dict(type='cancel',id=transfer.transfer_id))
+
+    def accept(self,identifier,destination):
+        state=self._pending.get(identifier)
+        if not state or state['role']!='receive' or state.get('destination'):return False
+        target=Path(destination).expanduser().resolve(strict=True)
+        if not target.is_dir() or _is_link(target):raise ValueError('请选择可写入的接收文件夹。')
+        state['destination']=target;self._transfers[identifier].destination=target
+        self._send_signal(dict(type='accept',id=identifier));return True
+
+    def reject(self,identifier):self.cancel(identifier)
+
+    def cancel(self,identifier,*,remote=False):
+        state=self._pending.get(identifier);transfer=self._transfers.get(identifier)
+        if transfer:
+            if transfer.finished:return
+            transfer.cancel.set()
+        if state:
+            state['error']='已取消传输。';state['wake'].set();state['prepared'].set();state['ready'].set()
+            if not remote:self._command.emit(dict(type='cancel',id=identifier))
+        if transfer and not transfer.active:self._notify(transfer,'cancelled')
+
+    def _completed_wan(self,value):
+        state=self._pending.get(value['id'])
+        if state:state['done']=True
+        self._command.emit(dict(type='complete',id=value['id']))
+
+    def _notify(self,transfer,state,**extra):
+        pending=self._pending.get(transfer.transfer_id,{})
+        extra['route']=pending.get('route',extra.get('route','direct'))
+        super()._notify(transfer,state,**extra)
+
+    def close(self):
+        if self._closing:return
+        self._closing=True;self.retirement_timer.stop();self.retry.stop();self.poll.stop();self.code_timer.stop();self.connect_timeout.stop();self.bind_retry.stop()
+        if self._bind_key and self.account_service:self.account_service.api.cancel(self._bind_key)
+        if self.cloud:self.cloud.close()
+        self.socket.abort();super().close()
+    def __init__(self,base,parent=None,*,device_name='',enabled=True,origin=DEFAULT_CLOUD_URL,binary=None,allow_test_origin=False,loopback=False):
+        super().__init__(base,parent,device_name=device_name,discovery=False,binary=binary)
+        if loopback and os.environ.get('QT_QPA_PLATFORM')!='offscreen':raise ValueError('Loopback is only available to isolated QA')
+        self.engine.mode='remote';self.engine.loopback=loopback;self._warming=False;self.cloud=None
+        self.base=Path(base);self.enabled=enabled;self.origin=origin;self.code=''
         self._code_refresh_at=0.;self._code_expires_at=0.;self._code_duration=240.;self._refresh_sent_at=0.
         self._last_signal=0.;self._peer_poll_count=0
         self.account_service=None;self.lan_id='';self.nearby_peers_provider=lambda:[]
         self._bind_epoch=0;self._bind_key=None;self._bound_identity=None;self._pending_identity=None
         self._account_nonce='';self._account_ack=False
         self.allow_test_origin=allow_test_origin
-        self._qa_force_relay=bool(qa_force_relay and os.environ.get('QT_QPA_PLATFORM')=='offscreen')
         self._credential='';self._pending={};self._outbox={};self._connected=False;self._closing=False
         self._origins=SIGNAL_ORIGINS if origin==DEFAULT_CLOUD_URL else (origin,)
         self._origin_index=0;self._connect_attempt=0;self._connection_error='';self._manual_retry_at=0.
@@ -50,7 +329,7 @@ class WanTransferService(LanTransferService):
         self.socket=QWebSocket(parent=self)
         self.socket.connected.connect(self._hello);self.socket.disconnected.connect(self._disconnected)
         self.socket.errorOccurred.connect(self._socket_error);self.socket.textMessageReceived.connect(self._message)
-        self._command.connect(self._handle_command);self._native.connect(self._handle_native)
+        self._command.connect(self._handle_command)
         self.retry=QTimer(self);self.retry.setSingleShot(True);self.retry.timeout.connect(self._connect)
         self.poll=QTimer(self);self.poll.setInterval(15000);self.poll.timeout.connect(self._heartbeat)
         self.code_timer=QTimer(self);self.code_timer.setInterval(1000);self.code_timer.timeout.connect(self.check_code)
@@ -62,25 +341,34 @@ class WanTransferService(LanTransferService):
         self.retirement_timer.timeout.connect(self._retire_terminal);self.retirement_timer.start()
         self.bind_retry=QTimer(self);self.bind_retry.setSingleShot(True);self.bind_retry.setInterval(5000);self.bind_retry.timeout.connect(self._bind_account)
 
+
+
     def attach_account(self,account,*,lan_id='',nearby_peers=None):
-        self.account_service=account;self.lan_id=lan_id
+        self.cloud=ManualCloud(account,self);self.account_service=account;self.lan_id=lan_id
         if nearby_peers:self.nearby_peers_provider=nearby_peers
         account.account_changed.connect(self._account_changed)
         account.devices_changed.connect(lambda _:self._send_signal(dict(type='recent')))
         self._account_changed()
 
+
     def _account_identity(self):
         account=self.account_service
         return (account.device_id,account.api.token) if account and account.signed_in else None
 
+
     def _account_changed(self,*_,force=False):
         identity=self._account_identity()
         if not force and identity is not None and identity in (self._bound_identity,self._pending_identity):return
+        previous=self._bound_identity or self._pending_identity
+        if previous is not None and previous!=identity:
+            for identifier,transfer in tuple(self._transfers.items()):
+                if not transfer.finished:self.cancel(identifier)
         self._bind_epoch+=1;self.bind_retry.stop();self._bound_identity=None
         if self._bind_key and self.account_service:self.account_service.api.cancel(self._bind_key)
         self._bind_key=None;self._pending_identity=identity
         self._account_nonce=secrets.token_hex(16);self._account_ack=False
         self._send_signal(dict(type='account_state',nonce=self._account_nonce,active=identity is not None))
+
 
     def _bind_account(self):
         identity=self._account_identity()
@@ -93,20 +381,18 @@ class WanTransferService(LanTransferService):
             if error:
                 if getattr(error,'status',0)!=401:self.bind_retry.start()
                 return
-            self._bound_identity=identity;self._send_signal(dict(type='recent'))
+            self._bound_identity=identity;self._send_signal(dict(type='recent'));self._recover_signaling()
             self.peers_changed.emit(self.peers())
         key=self.account_service.api.request('POST','/v1/wan/account',done,
             data={'credential':self._credential,'lan_id':self.lan_id,'nonce':self._account_nonce},timeout_ms=12000)
         if self._bind_key is pending:self._bind_key=key
 
 
-
     def nearby_peer(self,identifier):
         peer=self._peers.get(identifier,{})
         return next((row for row in self.nearby_peers_provider() if row.get('id')==peer.get('lan_id')),None)
 
-    def start(self):
-        if self.enabled and not self._connected and not self.retry.isActive():self.retry.start(0)
+
     def _connect(self):
         if self._closing or not self.enabled:return
         if not self._credential:
@@ -121,30 +407,41 @@ class WanTransferService(LanTransferService):
         self._connection_error='';self.identity_changed.emit(self.code_identity())
         self.status_changed.emit('正在连接远程传输服务…');self.connect_timeout.start();self.socket.open(request)
 
+
     def _abort_signaling(self):
         previous=self.socket.blockSignals(True)
         try:self.socket.abort()
         finally:self.socket.blockSignals(previous)
+
+
     def _socket_error(self,*_):
         from network_diagnostics import record_event
         record_event(self.base,'remote','signaling',getattr(self.socket.error(),'name','SOCKET_ERROR'))
         self._connection_error='远程连接失败：'+str(self.socket.errorString())[:180]
         self._abort_signaling();self._disconnected()
+
+
     def _connection_timed_out(self):
         from network_diagnostics import record_event
         record_event(self.base,'remote','signaling','CONNECT_TIMEOUT')
         self._connection_error='远程连接超时，正在重试。'
         self._abort_signaling();self._disconnected()
+
+
     def reconnect(self):
         if self._closing or not self.enabled or time.monotonic()-self._manual_retry_at<1:return
         self._manual_retry_at=time.monotonic();self.retry.stop();self.connect_timeout.stop()
         self._abort_signaling();self._connected=False;self._connect_attempt=0
         self._origin_index=(self._origin_index+1)%len(self._origins);self.retry.start(0)
+
+
     def _hello(self):
         self._connected=True;self.retry.stop();self.poll.start();self.code_timer.start()
         self._last_signal=time.monotonic()
-        self._send_signal(dict(type='hello',name=self.device_name,platform='macos' if sys.platform=='darwin' else 'windows',lan_id=self.lan_id))
+        self._send_signal(dict(type='hello',name=self.device_name,platform='macos' if sys.platform=='darwin' else 'windows',lan_id=self.lan_id,features=['syncthing-v2']))
         self._account_changed(force=True)
+
+
     def _disconnected(self,*_):
         self.connect_timeout.stop()
         self._connected=False;self.poll.stop();self.code_timer.stop();self.code=''
@@ -158,6 +455,8 @@ class WanTransferService(LanTransferService):
             if not self._connection_error:self._connection_error='远程连接已断开，正在重试。'
             self.status_changed.emit(self._connection_error)
         self.identity_changed.emit(self.code_identity())
+
+
     def _heartbeat(self):
         if not self._connected:return
         if time.monotonic()-self._last_signal>40:
@@ -166,12 +465,15 @@ class WanTransferService(LanTransferService):
         self._peer_poll_count+=1
         if self._peer_poll_count%4==0:self._send_signal(dict(type='recent'))
 
+
     def _retire_terminal(self):
         if self._closing or self._retirement_running:return
         now=time.monotonic()
         with self._lock:
+            for key,value in tuple(self._transfers.items()):
+                if not value.active and now-value.updated>600 and (value.finished or value.cancel.is_set()):self._pending.pop(key,None)
             candidates=[(key,value) for key,value in self._transfers.items()
-                        if not value.active and key not in self._pending and now-value.updated>1800]
+                        if not value.active and (self._cleanup_due.get(key,float('inf'))<=now or key not in self._pending and now-value.updated>1800)]
         if not candidates:return
         self._retirement_running=True
         def release():
@@ -181,18 +483,24 @@ class WanTransferService(LanTransferService):
                     # not run on Qt or while holding the shared task lock.
                     if self._cleanup(value):
                         with self._lock:
-                            if self._transfers.get(key) is value and not value.active and key not in self._pending:
+                            if self._transfers.get(key) is value and not value.active and key not in self._pending and now-value.updated>1800:
                                 self._transfers.pop(key,None)
             finally:self._retirement_running=False
         self._thread(release)
+
+
     def peers(self):
         rows=super().peers()
         return rows if self._connected else [dict(row,online=False) for row in rows]
+
+
     def code_identity(self):
         now=time.monotonic();valid=self._connected and self.code and now<self._code_expires_at
         return dict(code=self.code if valid else '',online=self._connected,error=self._connection_error,
             refresh_remaining=max(0.,self._code_refresh_at-now),refresh_duration=self._code_duration,
             expires_remaining=max(0.,self._code_expires_at-now),refreshing=bool(self._refresh_sent_at))
+
+
     def check_code(self):
         if not self._connected:return
         now=time.monotonic()
@@ -202,50 +510,23 @@ class WanTransferService(LanTransferService):
             if self._send_signal(dict(type='refresh')):self._refresh_sent_at=now
         if self.code and now>=self._code_expires_at:
             self.code='';self.identity_changed.emit(self.code_identity())
+
+
     def remove_peer(self,identifier):
         if identifier not in self._peers:return
         if not self._send_signal(dict(type='remove',peer=identifier)):
             raise ValueError('远程服务尚未连接，请稍后再试。')
+
+
     def _send_signal(self,value):
         if self._connected:
             return self.socket.sendTextMessage(json.dumps(value,separators=(',',':')))>0
         return False
-    def _recover_signaling(self):
-        for key,value in list(self._outbox.items()):
-            self._send_signal(value)
-        for identifier,state in list(self._pending.items()):
-            if state.get('done'):
-                self._send_signal(dict(type='complete',id=identifier));continue
-            bridge=state.get('bridge')
-            if bridge and bridge.opened.is_set() and not bridge.closed:
-                self._send_signal(dict(type='connected',id=identifier,generation=state['generation']));continue
-            if state['role']=='send' and state.get('request'):
-                self._send_signal(state['request'])
-            elif state['role']=='send' and state.get('prepare') and not state.get('prepared_ok'):
-                self._send_signal(state['prepare'])
-            elif state['role']=='receive' and state.get('destination'):
-                self._send_signal(dict(type='accept',id=identifier))
-    def _request_retry(self,identifier,state):
-        if state.get('retry_inflight'):return
-        if self._send_signal(dict(type='retry',id=identifier)):state['retry_inflight']=True
-    def _handle_command(self,value):
-        if value.pop('_retire',False):
-            state=self._pending.pop(value['id'],None)
-            if state and state.get('bridge'):state['bridge'].shutdown()
-        elif value.pop('_connect',False):
-            identifier=value['id'];state=self._pending.get(identifier)
-            if not state:return
-            state['request']=value
-            if state.get('requested'):self._request_retry(identifier,state)
-            else:self._send_signal(value)
-        elif value.get('type') in ('cancel','reject','complete'):
-            self._outbox[(value['id'],value['type'])]=value
-            while len(self._outbox)>64:self._outbox.pop(next(iter(self._outbox)))
-            self._send_signal(value)
-        else:self._send_signal(value)
+
 
     def _message(self,message):
         if len(message)>100000:return
+        state=None
         try:
             value=json.loads(message)
             if value.get('schema_version')!=1:return
@@ -283,244 +564,11 @@ class WanTransferService(LanTransferService):
                         self.status_changed.emit('')
                         self._recover_signaling()
                 return
-            if kind=='request':
-                if any(key[0]==identifier and key[1] in ('cancel','reject') for key in self._outbox):
-                    self._send_signal(dict(type='cancel',id=identifier));return
-                if not re.fullmatch('[a-f0-9]{32}',str(identifier)) or identifier in self._pending or len(self._pending)>=32:return
-                total=int(value['total']);peer=value['peer']
-                if (total<0 or not isinstance(peer,dict) or not re.fullmatch('[a-f0-9]{64}',str(peer.get('id','')))
-                        or not re.fullmatch('[a-f0-9]{64}',str(value.get('token','')))
-                        or not re.fullmatch('[a-f0-9]{64}',str(value.get('digest','')))):return
-                self._pending[identifier]=dict(role='receive',peer=peer,token=value['token'],digest=value['digest'],total=total,count=value['count'],names=value['names'],ready=threading.Event(),generation=0)
-                device_code=str(value.get('deviceCode') or '')
-                if not RECEIVE_CODE.fullmatch(device_code):device_code=''
-                self._pending[identifier]['account_device']=value.get('account_device') is True
-                self._pending[identifier]['account_id']=value.get('account_id','')
-                self.offer_received.emit(dict(id=identifier,peer=peer['name'],host='远程',code='',account_device=value.get('account_device') is True,
-                    account_id=value.get('account_id',''),
-                    device_code=device_code,total=total,count=value['count'],names=value['names']))
-                return
-            if not state:return
-            if kind=='prepared':
-                peer=value.get('peer',{})
-                if state['role']!='send' or not re.fullmatch('[a-f0-9]{64}',str(peer.get('id',''))):return
-                state['peer']=peer;state['prepared_ok']=True;state['prepared'].set()
-            elif kind=='waiting':
-                state['requested']=True
-                state['peer']=value['peer'];transfer=self._transfers.get(identifier)
-                if transfer:transfer.peer=value['peer']['name'];self._notify(transfer,'waiting')
-            elif kind=='resumed':
-                state['requested']=True
-                if value.get('settled'):
-                    if state.get('done'):self._pending.pop(identifier,None)
-                elif state['role']=='send' and value.get('accepted') and not state.get('done'):
-                    bridge=state.get('bridge')
-                    generation=value.get('generation',0)
-                    if generation<state.get('generation',0) or state.get('retry_inflight'):return
-                    if not bridge or not bridge.opened.is_set() or bridge.closed:
-                        self._request_retry(identifier,state)
-            elif kind=='settled':
-                if state.get('done'):self._pending.pop(identifier,None)
-            elif kind=='begin':self._begin(identifier,state,value)
-            elif kind in ('description','candidate') and value.get('generation')==state.get('generation'):
-                bridge=state.get('bridge')
-                if bridge:bridge.control({key:item for key,item in value.items() if key not in ('id','generation','schema_version')})
-            elif kind=='cancelled':
-                state['error']='对方已取消或拒绝传输。';state['ready'].set()
-                self.cancel(identifier,remote=True)
-            elif kind=='error':
-                if value.get('generation') is not None and value['generation']!=state.get('generation'):return
-                if value.get('requestType') in ('description','candidate','connected'):return
-                bridge=state.get('bridge')
-                if value.get('requestType')=='relay' and bridge and bridge.opened.is_set() and not bridge.closed:return
-                state['error']=str(value.get('message') or '远程连接失败。');state['ready'].set();self.status_changed.emit(state['error'])
-                if state.get('prepared'):state['prepared'].set()
-                if state['role']=='receive' and identifier not in self._transfers:
-                    self.progress.emit(dict(id=identifier,state='error',direction='receive',peer=state['peer']['name'],received=0,total=state.get('total',0),message=state['error']))
-                    self._handle_command(dict(_retire=True,id=identifier))
-        except (OSError,ValueError,KeyError,TypeError):self.status_changed.emit('远程连接状态无效，请重新连接。')
+            self._transfer_message(kind,identifier,state,value)
+        except (OSError,ValueError,KeyError,TypeError) as error:
+            problem='远程连接状态无效：'+str(error)[:180]
+            if state:
+                state['error']=problem
+                for key in ('wake','ready','prepared'):state[key].set()
+            self.status_changed.emit(problem)
 
-    def _begin(self,identifier,state,value):
-        if state.get('cancelled'):return
-        previous=state.get('bridge')
-        if state.get('done') and state['role']=='send':return
-        if value.get('relayAttempt') and previous and previous.opened.is_set() and not previous.closed:return
-        if previous:
-            if previous.route=='relay':state['relay_bytes_prior']=state.get('relay_bytes_prior',0)+sum(previous.traffic().values())
-            previous.shutdown()
-        generation=value['generation'];state['generation']=generation;state['ready'].clear();state.pop('error',None)
-        state['requested']=True;state['retry_inflight']=False
-        state['relay_allowed']=bool(value.get('relayAllowed'));state['connect_started']=time.monotonic()
-        state['relay_requested']=False;state.pop('network_error',None)
-        urls=[]
-        for server in value['iceServers']:
-            for url in server.get('urls',[]):
-                parsed=re.fullmatch(r'(stun|turn|turns):([\w.-]+):(\d+)(?:\?transport=(udp|tcp))?',url)
-                if not parsed:continue
-                scheme,host,port,transport=parsed.groups()
-                if host not in ('stun.cloudflare.com','turn.cloudflare.com'):continue
-                if scheme=='stun':urls.append(url)
-                else:urls.append(dict(hostname=host,port=int(port),username=server['username'],password=server['credential'],relayType='TurnTls' if scheme=='turns' else 'TurnTcp' if transport=='tcp' else 'TurnUdp'))
-        bridge=WebRTCStream(lambda event:self._native.emit(dict(id=identifier,generation=generation,event=event)),node=self.node)
-        state['bridge']=bridge
-        bridge.control(dict(type='init',iceServers=urls,initiator=state['role']=='send',forceRelay=self._qa_force_relay))
-        if state['role']=='send':
-            transfer=self._transfers.get(identifier)
-            if transfer:self._notify(transfer,'connecting',route='relay' if value.get('relayAttempt') else 'direct')
-            if value.get('relayAllowed'):QTimer.singleShot(DIRECT_CONNECT_GRACE_MS,lambda:self._relay_if_needed(identifier,generation))
-
-    def _relay_if_needed(self,identifier,generation):
-        state=self._pending.get(identifier)
-        if state and state['generation']==generation and not state['bridge'].opened.is_set():
-            if not state.get('relay_allowed'):return
-            state['relay_allowed']=False
-            state['relay_requested']=True
-            self.status_changed.emit('直连暂未成功，正在尝试中继…')
-            self._send_signal(dict(type='relay',id=identifier,generation=generation))
-    def _handle_native(self,value):
-        identifier=value['id'];state=self._pending.get(identifier)
-        if not state or state.get('generation')!=value['generation']:return
-        event=value['event'];kind=event.get('type')
-        if kind in ('description','candidate'):
-            self._send_signal(dict(id=identifier,generation=state['generation'],**event))
-        elif kind=='open':
-            state['route']=event['route'];state['ready'].set()
-            self._send_signal(dict(type='connected',id=identifier,generation=state['generation']))
-            self.status_changed.emit('P2P 直连已建立。' if event['route']=='direct' else '中继连接已建立。')
-            if state['role']=='receive':
-                if self._slots.acquire(blocking=False):self._thread(self._incoming,state['bridge'],state['peer']['id'])
-                else:self.cancel(identifier)
-        elif kind in ('error','closed') or kind=='state' and event.get('state')=='failed':
-            if not state['bridge'].opened.is_set():
-                if state.get('relay_requested'):return
-                if state['role']=='send' and state.get('relay_allowed'):
-                    self._relay_if_needed(identifier,state['generation'])
-                else:
-                    state['error']='P2P 连接未能建立，请检查网络后重试。';state['network_error']=True;state['ready'].set()
-            if kind=='error':self.status_changed.emit(str(event.get('message') or 'WebRTC 连接中断。'))
-
-    def _begin_failed(self,identifier,state,message,code):
-        from network_diagnostics import record_event
-        record_event(self.base,'remote','component',code)
-        state['error']=message;state['ready'].set();self.status_changed.emit(message)
-        if state.get('prepared'):state['prepared'].set()
-        self._send_signal(dict(type='cancel',id=identifier))
-        if state.get('role')=='receive' and identifier not in self._transfers:
-            self.progress.emit(dict(id=identifier,state='error',direction='receive',peer=state['peer']['name'],
-                                    received=0,total=state.get('total',0),message=message))
-            self._handle_command(dict(_retire=True,id=identifier))
-
-
-
-    def send(self,peer_id,paths):
-        if not self._connected:raise ValueError('远程服务尚未连接，请稍后再试。')
-        peer=self._peers.get(peer_id)
-        if not peer and not RECEIVE_CODE.fullmatch(str(peer_id)):raise ValueError('请输入有效的接收码，或选择最近设备。')
-        if peer and not peer.get('online'):raise ValueError('对方设备不在线，无法发送。')
-        identifier=uuid4().hex;peer=dict(peer or dict(code=peer_id,name='接收码 '+peer_id))
-        with self._lock:
-            if sum(t.active and t.direction=='send' for t in self._transfers.values())>=2:raise ValueError('请等待当前传输完成。')
-            transfer=_Transfer(identifier,'send',peer['name'],active=True);transfer.token=secrets.token_hex(32)
-            transfer.remote_peer=peer;self._transfers[identifier]=transfer
-            self._pending[identifier]=dict(role='send',peer=peer,ready=threading.Event(),generation=0)
-        if peer.get('code'):
-            state=self._pending[identifier];state['prepared']=threading.Event()
-            state['prepare']=dict(type='prepare',id=identifier,token=transfer.token,code=peer['code'])
-            self._send_signal(state['prepare'])
-            self._thread(self._prepared_outgoing,transfer,list(paths))
-        else:self._thread(self._outgoing,transfer,peer,list(paths))
-        return identifier
-    def _prepared_outgoing(self,transfer,paths):
-        state=self._pending.get(transfer.transfer_id)
-        if not state:
-            self._notify(transfer,'cancelled' if transfer.cancel.is_set() else 'error',message='已取消传输。',phase='prepare')
-            transfer.active=False;transfer.updated=time.monotonic();return
-        self._notify(transfer,'preparing');deadline=time.monotonic()+25
-        while not state['prepared'].wait(.1):
-            if self._stopped.is_set() or transfer.cancel.is_set():break
-            if time.monotonic()>=deadline:
-                state['error']='接收码验证超时，请检查网络后重试。';break
-        if state.get('prepared_ok') and not transfer.cancel.is_set() and not state.get('error'):
-            transfer.peer=state['peer']['name'];self._outgoing(transfer,state['peer'],paths);return
-        self._command.emit(dict(type='cancel',id=transfer.transfer_id))
-        self._notify(transfer,'cancelled' if transfer.cancel.is_set() else 'error',
-            message=state.get('error') or '已取消传输。',phase='prepare')
-        transfer.active=False;transfer.updated=time.monotonic()
-    def _connect_peer(self,peer,transfer,entries):
-        state=self._pending[transfer.transfer_id];state['ready'].clear();state.pop('error',None);state.pop('connect_started',None)
-        request=dict(type='request',id=transfer.transfer_id,token=transfer.token,digest=hashlib.sha256(json.dumps(entries,sort_keys=True).encode()).hexdigest(),
-            total=str(transfer.total),count=sum(row['kind']=='file' for row in entries),names=[row['path'] for row in entries if '/' not in row['path']][:12])
-        request.update(dict(prepared=True) if state.get('prepared_ok') else dict(code=peer['code']) if peer.get('code') else dict(peer=peer['id']))
-        self._command.emit(dict(_connect=True,**request));deadline=time.monotonic()+210
-        while not state['ready'].wait(.1):
-            if self._stopped.is_set() or transfer.cancel.is_set():raise InterruptedError('已取消传输。')
-            if time.monotonic()>deadline:raise TimeoutError('对方未确认或连接未成功，请重新发起。')
-            if state.get('connect_started') and time.monotonic()-state['connect_started']>REMOTE_CONNECT_ATTEMPT_SECONDS:raise TimeoutError('无法建立远程连接，请重试。')
-        if state.get('error'):
-            if state.pop('network_error',False):raise ConnectionError(state['error'])
-            raise ValueError(state['error'])
-        return state['bridge']
-    def _incoming_stream(self,raw):return raw
-    def _stream_code(self,stream,identifier):return ''
-    def _incoming_offer(self,transfer,host,code):
-        state=self._pending.get(transfer.transfer_id)
-        if (not state or state['role']!='receive' or not state.get('destination') or state['peer']['id']!=host
-                or state['digest']!=transfer.manifest_hash or state['token']!=transfer.token
-                or state['total']!=transfer.total or state['count']!=sum(e['kind']=='file' for e in transfer.entries)
-                or state['names']!=[e['path'] for e in transfer.entries if '/' not in e['path']][:12]):
-            transfer.cancel.set();transfer.accepted.set();self._transfers.pop(transfer.transfer_id,None)
-            self.progress.emit(dict(id=transfer.transfer_id,state='error',direction='receive',peer=transfer.peer,received=0,total=transfer.total,message='收到的文件清单与已确认的请求不符。'))
-            self._command.emit(dict(type='cancel',id=transfer.transfer_id))
-            self._command.emit(dict(_retire=True,id=transfer.transfer_id))
-            raise ValueError('收到的文件清单与已确认的请求不符。')
-        transfer.peer=state['peer']['name'];transfer.destination=state['destination'];transfer.accepted.set()
-    def accept(self,identifier,destination):
-        state=self._pending.get(identifier)
-        if not state or state['role']!='receive' or state.get('destination'):return False
-        path=Path(destination).expanduser().resolve(strict=True)
-        if not path.is_dir() or _is_link(path):raise ValueError('请选择可写入的接收文件夹。')
-        if shutil.disk_usage(path).free<state['total']+1024*1024:raise ValueError('接收位置的可用空间不足。')
-        state['destination']=path;self._send_signal(dict(type='accept',id=identifier));return True
-    def cancel(self,identifier,*,remote=False):
-        active=bool(self._transfers.get(identifier) and self._transfers[identifier].active)
-        state=self._pending.get(identifier)
-        if state:
-            state['cancelled']=True
-            state['error']='已取消传输。';state['ready'].set()
-            if not remote:self._command.emit(dict(type='cancel',id=identifier))
-            if state.get('bridge'):state['bridge'].shutdown()
-        if identifier in self._transfers:super().cancel(identifier)
-        elif state:self.progress.emit(dict(id=identifier,state='cancelled',direction=state['role'],peer=state['peer']['name'],received=0,total=state.get('total',0)))
-        # An active worker publishes its terminal wire counters before the
-        # queued retire command removes the bridge context.
-        if not active:self._pending.pop(identifier,None)
-    def _cancel_remote(self,transfer):self._command.emit(dict(type='cancel',id=transfer.transfer_id))
-    def _completed_wan(self,value):
-        state=self._pending.get(value['id'])
-        if state:state['done']=True
-        self._command.emit(dict(type='complete',id=value['id']))
-        def retire():
-            transfer=self._transfers.get(value['id'])
-            if transfer and transfer.finished:self._pending.pop(value['id'],None)
-        # Keep the receiver's idempotent final acknowledgement available beyond
-        # the protocol's 45-second ACK timeout and all bounded sender retries.
-        QTimer.singleShot(600000,retire)
-    def _notify(self,transfer,state,**extra):
-        pending=self._pending.get(transfer.transfer_id,{})
-        if pending.get('route'):extra['route']=pending['route']
-        bridge=pending.get('bridge');relay_bytes=pending.get('relay_bytes_prior',0)
-        if bridge and threading.current_thread() is not threading.main_thread() and state in ('error','cancelled','interrupted'):
-            bridge.close(abort=True)
-        if bridge and bridge.route=='relay':
-            final=state in ('complete','error','cancelled','interrupted') and threading.current_thread() is not threading.main_thread()
-            relay_bytes+=sum(bridge.traffic(refresh=final).values())
-        extra['relay_bytes']=relay_bytes
-        super()._notify(transfer,state,**extra)
-        if state in ('error','cancelled'):self._command.emit(dict(_retire=True,id=transfer.transfer_id))
-    def close(self):
-        self.retirement_timer.stop()
-        self._closing=True;self.retry.stop();self.poll.stop();self.code_timer.stop();self.connect_timeout.stop();self.bind_retry.stop()
-        if self._bind_key and self.account_service:self.account_service.api.cancel(self._bind_key)
-        self.socket.abort();super().close()
-        for state in self._pending.values():
-            if state.get('bridge'):state['bridge'].shutdown()

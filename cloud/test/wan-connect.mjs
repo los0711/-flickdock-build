@@ -1,7 +1,7 @@
 /** Reconnects keep anonymous identity; shared NAT new-device abuse stays bounded. */
 import assert from 'node:assert/strict';
 import {registerHooks} from 'node:module';
-registerHooks({resolve(s,c,next){return s==='cloudflare:workers'?{url:'wan-test:workers',shortCircuit:true}:next(['./relay-budget','./cloud-pipe','./storage-budget'].includes(s)?s+'.ts':s,c);},
+registerHooks({resolve(s,c,next){return s==='cloudflare:workers'?{url:'wan-test:workers',shortCircuit:true}:next(['./relay-budget','./manual-signal','./cloud-pipe','./storage-budget'].includes(s)?s+'.ts':s,c);},
   load(u,c,next){return u==='wan-test:workers'?{format:'module',shortCircuit:true,source:'export class DurableObject {constructor(ctx,env){this.ctx=ctx;this.env=env;}}'}:next(u,c);}});
 const {WanHub}=await import('../src/wan.ts');
 const realNow=Date.now,NativeResponse=globalThis.Response;let now=100000;Date.now=()=>now;

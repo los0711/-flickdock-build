@@ -107,7 +107,7 @@ function announce(env:Env,ctx:ExecutionContext,owner:Row,type:'content'|'devices
     body:JSON.stringify({type,device:owner.device_id||''})}).catch(()=>undefined));
 }
 function announceProgress(env:Env,ctx:ExecutionContext,owner:Row,value:Row,received:number){
-  if(!env.EVENTS)return;
+  if(!env.EVENTS||value.kind==='transfer')return;
   const stub=env.EVENTS.get(env.EVENTS.idFromName(owner.id));
   ctx.waitUntil(stub.fetch('https://internal/publish',{method:'POST',body:JSON.stringify({type:'progress',device:owner.device_id||'',
     progress:{upload_id:value.id,received_bytes:Math.min(value.size,received),total:value.size,at:Date.now()}})}).catch(()=>undefined));
@@ -222,7 +222,7 @@ async function auth(request:Request,env:Env){
 async function item(env:Env,accountId:string,id:string){return first(env,'SELECT * FROM items WHERE account_id=? AND id=?',accountId,id);}
 function record(row:Row){return {id:row.id,version:row.version,deleted:!!row.deleted,kind:row.kind,name:row.name,mime_type:row.mime_type,size:row.size,sha256:row.sha256,updated_at:iso(row.updated_at),expires_at:row.expires_at?iso(row.expires_at):null};}
 async function transfers(env:Env,accountId:string){
-  const values=await rows(env,"SELECT u.*,d.name device_name FROM uploads u LEFT JOIN devices d ON d.id=u.device_id WHERE u.account_id=? AND u.state IN ('pending','verifying') AND u.expires_at>? ORDER BY u.rowid DESC LIMIT 10",accountId,Date.now());
+  const values=await rows(env,"SELECT u.*,d.name device_name FROM uploads u LEFT JOIN devices d ON d.id=u.device_id WHERE u.account_id=? AND u.kind<>'transfer' AND u.state IN ('pending','verifying') AND u.expires_at>? ORDER BY u.rowid DESC LIMIT 10",accountId,Date.now());
   const active=values.map(value=>({upload_id:value.id,item_id:value.item_id,base_version:value.base_version,kind:value.kind,name:value.name,mime_type:value.mime_type,size:value.size,sha256:value.sha256,received_bytes:value.verified_size,next_part:value.next_part,chunk_size:value.chunk_size,part_count:value.part_count,state:value.state,expires_at:iso(value.expires_at),device_id:value.device_id??null,device_name:value.device_name??null}));
   if(!env.EVENTS)return active;
   const response=await env.EVENTS.get(env.EVENTS.idFromName(accountId)).fetch('https://internal/intake');
@@ -454,7 +454,9 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
     const cursor=url.searchParams.get('cursor')||'0',limit=Number(url.searchParams.get('limit')||'100');
     if(!/^(0|[1-9][0-9]*)$/.test(cursor)||!Number.isSafeInteger(Number(cursor)))fail(400,'INVALID_CURSOR','Invalid cursor');integer(limit,'limit',1,200);
     const all=await rows(env,'SELECT seq,record FROM changes WHERE account_id=? AND seq>? ORDER BY seq LIMIT ?',owner.id,Number(cursor),limit+1),page=all.slice(0,limit);
-    return json({changes:page.map(c=>({cursor:String(c.seq),record:JSON.parse(c.record)})),cursor:page.length?String(page.at(-1)!.seq):cursor,has_more:all.length>limit,transfers:await transfers(env,owner.id)});
+    // Manual R2 jobs use the same verified storage pipeline, but never become
+    // shelf items. Advance over their log rows so pagination cannot stall.
+    return json({changes:page.map(c=>({cursor:String(c.seq),record:JSON.parse(c.record)})).filter(c=>c.record.kind!=='transfer'),cursor:page.length?String(page.at(-1)!.seq):cursor,has_more:all.length>limit,transfers:await transfers(env,owner.id)});
   }
   if(method==='POST'&&path==='/v1/sync/intake'){
     const input=await body(request,['items']);
@@ -476,7 +478,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
     const required=['item_id','base_version','kind','name','mime_type','size','sha256'];
     const input=await body(request,[...required,'upload_id','fast_upload','fast_multipart','reuse_only'],required);
     const id=uuid(input.item_id,'item_id'),base=integer(input.base_version,'base_version'),kind=text(input.kind,'kind',1,8),name=text(input.name,'name',1,255),mime=text(input.mime_type,'mime_type',1,127),size=integer(input.size,'size'),hash=digest(input.sha256);
-    if(!['file','text','url'].includes(kind)||!/^[a-zA-Z0-9!#$&^_.+-]+\/[a-zA-Z0-9!#$&^_.+-]+$/.test(mime))fail(400,'INVALID_REQUEST','Unknown kind or MIME type');
+    if(!['file','text','url','transfer'].includes(kind)||!/^[a-zA-Z0-9!#$&^_.+-]+\/[a-zA-Z0-9!#$&^_.+-]+$/.test(mime))fail(400,'INVALID_REQUEST','Unknown kind or MIME type');
     // Persisting this optional UUID before POST lets a client recover a lost
     // initialization reply without reserving the entire file size twice.
     if(input.reuse_only!==undefined&&typeof input.reuse_only!=='boolean')fail(400,'INVALID_REQUEST','reuse_only must be boolean');
@@ -520,7 +522,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
         if(result[0].meta.changes){
           if(!result[1].meta.changes)fail(409,'VERSION_CONFLICT','Item changed before instant reuse');
           const current=(await item(env,owner.id,id))!;
-          announce(env,ctx,owner,'content');
+          if(kind!=='transfer')announce(env,ctx,owner,'content');
           if(previous?.active_upload&&previous.active_upload!==source.id)
             ctx.waitUntil(purgeUpload(env,previous.active_upload).catch(()=>undefined));
           return json({instant:true,record:record(current)},201);
@@ -537,7 +539,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
         query(env,'INSERT INTO allocations(id,account_id,size) VALUES(?,?,?)',uploadId,owner.id,size),
         query(env,'INSERT INTO uploads(id,account_id,item_id,base_version,kind,name,mime_type,size,sha256,chunk_size,part_count,state,expires_at,computed_sha256,device_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',uploadId,owner.id,id,base,kind,name,mime,size,hash,chunk,partCount,'pending',expires,size===0?sha(new Uint8Array()):null,owner.device_id),
       ]);
-      announce(env,ctx,owner,'content');
+      if(kind!=='transfer')announce(env,ctx,owner,'content');
       return json({upload_id:uploadId,chunk_size:chunk,part_count:partCount,expires_at:iso(expires)},201);
     }catch(error){
       // A concurrent retry may have won after the initial existence check.
@@ -631,7 +633,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
         // The receiver already saw the upload reservation. A hint on every
         // 1 MiB part caused one changefeed GET per part on each other device.
         // Coarse milestones keep remote progress live without that fan-out.
-        if(released&&!last&&(partIndex+1)%32===0)announce(env,ctx,owner,'content');
+        if(released&&!last&&value.kind!=='transfer'&&(partIndex+1)%32===0)announce(env,ctx,owner,'content');
         if(!released){const latest=await first(env,'SELECT ready FROM parts WHERE upload_id=? AND idx=?',id,partIndex);if(!latest?.ready){await findUpload(env,owner,id);fail(409,'UPLOAD_NOT_PENDING','Upload changed while writing the part');}}
       }catch(error){
         announceProgress(env,ctx,owner,value,value.verified_size);
@@ -671,7 +673,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
       const result=await query(env,"UPDATE uploads SET state='committed',lease=NULL,lease_until=0 WHERE id=? AND state='verifying' AND lease=?",id,lease).run();
       if(!result.meta.changes)fail(409,'UPLOAD_NOT_PENDING','Upload changed while verifying');
     }catch(error){await query(env,"UPDATE uploads SET state='pending',lease=NULL,lease_until=0 WHERE id=? AND state='verifying' AND lease=?",id,lease).run();await findUpload(env,owner,id);if(String(error).includes('VERSION_CONFLICT'))await conflict(env,owner,value.item_id);throw error;}
-    announce(env,ctx,owner,'content');
+    if(value.kind!=='transfer')announce(env,ctx,owner,'content');
     // A replacement is already committed and visible. Reclaim its old R2
     // bytes after replying so a slow purge cannot delay the sender's receipt
     // or the other device's change hint. Readers hold leases during cleanup.
@@ -687,7 +689,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
   }
   if(method==='DELETE'&&match){
     const id=uuid(match[1]);
-    const existing=await first(env,'SELECT account_id,item_id,state FROM uploads WHERE id=?',id);
+    const existing=await first(env,'SELECT account_id,item_id,state,kind FROM uploads WHERE id=?',id);
     if(existing&&existing.account_id!==owner.id)fail(404,'NOT_FOUND','Upload not found');
     await endIntake(env,owner,id);
     const now=Date.now();
@@ -705,7 +707,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
     }
     // The upload is already hidden by its garbage state. Let peers remove
     // their pending placeholder while R2 deletion completes.
-    announce(env,ctx,owner,'content');await purgeUpload(env,id);return json({cancelled:true});
+    if(existing?.kind!=='transfer')announce(env,ctx,owner,'content');await purgeUpload(env,id);return json({cancelled:true});
   }
   match=path.match(/^\/v1\/items\/([^/]+)$/);
   if(method==='DELETE'&&match){
@@ -713,7 +715,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
     const current=await item(env,owner.id,id);if(current?.deleted&&current.version===base+1)return json({record:record(current)});
     const result=await query(env,'UPDATE items SET deleted=1,version=version+1,active_upload=NULL,size=0,sha256=NULL,expires_at=NULL,updated_at=? WHERE account_id=? AND id=? AND version=? AND deleted=0',Date.now(),owner.id,id,base).run();
     if(!result.meta.changes)await conflict(env,owner,id);
-    announce(env,ctx,owner,'content');
+    if(current?.kind!=='transfer')announce(env,ctx,owner,'content');
     if(current?.active_upload)await purgeUpload(env,current.active_upload);
     return json({record:record((await item(env,owner.id,id))!)});
   }

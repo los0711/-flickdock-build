@@ -77,7 +77,7 @@ from clipboard_sync import ClipboardSync
 from account_panel import AccountPanel
 from shelf_sync import ShelfSync
 from sync_adapter import ShelfAdapter
-from lan_transfer import LanTransferService
+from syncthing_lan import SyncthingLanService
 from lan_panel import LanDialog
 import ui_theme
 from reference_widgets import ToolbarButton
@@ -751,7 +751,7 @@ class FileRow(QFrame):
         c=palette();chosen=self.path in self.popup.selected
         self.selection_check.blockSignals(True);self.selection_check.setChecked(chosen);self.selection_check.blockSignals(False)
         p=QPainter(self);p.setRenderHint(QPainter.Antialiasing)
-        p.setBrush(ink(c['selected'] if chosen else c['card_hover'] if self.motion.values['highlight']>.3 else c['card']))
+        p.setBrush(ink(c['file_card_selected'] if chosen else c['file_card_hover'] if self.motion.values['highlight']>.3 else c['file_card']))
         p.setPen(QPen(ink(c['selected_border'] if chosen else c['border']),1))
         p.drawRoundedRect(QRectF(self.rect()).adjusted(.5,.5,-.5,-.5),c['card_radius'],c['card_radius'])
         if self.hasFocus() and self._keyboard_focus:
@@ -3311,11 +3311,13 @@ class ShelfManager:
         self.events.socket.errorOccurred.connect(lambda _error:self.sync.set_event_stream_online(False))
         self._sync_transfer_refs=set()
         self.sync.transfers_changed.connect(self._transfers_changed)
-        self.lan=LanTransferService(self.app,device_name=self.account.device_name)
+        self.lan=SyncthingLanService(BASE/'manual-lan',self.app,device_name=self.account.device_name)
+        self.app.aboutToQuit.connect(self.lan.close)
         self.lan.offer_received.connect(self._lan_offer)
         from wan_transfer import WanTransferService
         self.wan=WanTransferService(BASE,self.app,device_name=self.account.device_name,
             enabled=not self.cocoa_smoke and self.app.platformName() not in ('offscreen','minimal'))
+        self.app.aboutToQuit.connect(self.wan.close)
         self.wan.attach_account(self.account,lan_id=self.lan.device_id,nearby_peers=self.lan.peers)
         from lan_account import LanAccountAuthorizer
         self.lan_account=LanAccountAuthorizer(self.lan,self.wan)

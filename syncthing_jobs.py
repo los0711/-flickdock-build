@@ -55,5 +55,5 @@ def deliver(payload,stage,destination,spec,offer,cancel):
     """Publish only after archive integrity and the accepted offer both match."""
     output=Path(stage)/'verified'
     roots=extract(payload,output,spec,total=offer['total'],count=offer['count'],names=offer['names'],cancel=cancel,
-                  expected_entries=offer.get('entries'))
+                  expected_entries=offer.get('entries'),manifest_digest=offer.get('digest'))
     return publish(output,destination,roots,cancel)

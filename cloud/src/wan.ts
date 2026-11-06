@@ -1,6 +1,7 @@
 import {DurableObject} from 'cloudflare:workers';
 import {relayUsage,relayBudget,type RelayBudgetEnv} from './relay-budget';
 import {CloudPipes} from './cloud-pipe';
+import {manualSignal,type NativeState} from './manual-signal';
 type RelayGate={epoch:number;blocked:boolean};
 type Credential={username:string;expires:number;revoke_pending?:boolean};
 type SyncIce={id:string;account:string;device:string;session:string;expires:number;iceServers:unknown[]};
@@ -9,7 +10,7 @@ type Seat=Device&{ip:string;connected:number;window:number;messages:number;last_
 type Binding={account:string;device:string;session:string;lan_id:string;nonce:string};
 type CodeRow={device:string;expires:number;epoch:number};
 type Pairing={sender:string;receiver:string;token:string;expires:number};
-type Session={id:string;sender:Device;receiver:Device;token:string;digest:string;total:string;count:number;names:string[];accepted:boolean;generation:number;expires:number;done:string[];connected?:string[];sender_code?:string};
+type Session={id:string;sender:Device;receiver:Device;token:string;digest:string;total:string;count:number;names:string[];accepted:boolean;generation:number;expires:number;done:string[];connected?:string[];sender_code?:string;native?:NativeState};
 export interface WanEnv extends RelayBudgetEnv {WAN:DurableObjectNamespace<WanHub>;DB:D1Database;FILES:R2Bucket;R2_CLASS_A_BUDGET?:string;R2_CLASS_B_BUDGET?:string;TURN_KEY_ID?:string;TURN_KEY_TOKEN?:string;TURN_ENABLED?:string;}
 const json=(value:object,status=200)=>Response.json({schema_version:1,...value},{status,headers:{'Cache-Control':'no-store'}});
 const hash=async(value:string)=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value))),b=>b.toString(16).padStart(2,'0')).join('');
@@ -279,7 +280,15 @@ export class WanHub extends DurableObject<WanEnv>{
   private async replay(socket:WebSocket,value:Session){
     const seat=socket.deserializeAttachment() as Seat;
     if(value.accepted){
-      this.send(socket,{type:'resumed',id:value.id,accepted:true,generation:value.generation,settled:value.done.length===2});
+      const from=value.native?await this.binding(value.sender.id):null,to=value.native?await this.binding(value.receiver.id):null;
+      this.send(socket,{type:'resumed',id:value.id,accepted:true,generation:value.generation,settled:value.done.length===2,
+        ...(value.native?{account_device:!!(from&&to&&from.account===to.account&&from.device!==to.device)}:{})});
+      if(value.native){
+        const source=seat.id===value.sender.id?value.native.receiver:value.native.sender;
+        for(const metadata of [source,...(seat.id===value.receiver.id?[value.native.cloud]:[]),
+            ...(value.native.fallback?[{kind:'fallback'}]:[]),...(value.native.saved?[{kind:'saved'}]:[])])
+          if(metadata)this.send(socket,{type:'native_signal',id:value.id,generation:value.generation,value:metadata});
+      }
     }else if(seat.id===value.receiver.id){
       const from=await this.binding(value.sender.id),to=await this.binding(value.receiver.id);
       const same=!!(from&&to&&from.account===to.account&&from.device!==to.device);
@@ -380,7 +389,7 @@ export class WanHub extends DurableObject<WanEnv>{
         await this.unbind(seat.id,request.active);this.send(socket,{type:'account_state',nonce:request.nonce});return;
       }
       if(request.type==='hello'){
-        if(request.features!==undefined&&(!Array.isArray(request.features)||request.features.length>4||request.features.some((value:unknown)=>value!=='routes-v1'&&value!=='mesh-v1')))
+        if(request.features!==undefined&&(!Array.isArray(request.features)||request.features.length>4||request.features.some((value:unknown)=>!['routes-v1','mesh-v1','syncthing-v2'].includes(String(value)))))
           throw new Error('传输能力声明无效。');
         seat.features=request.features===undefined?[]:[...new Set<string>(request.features)];
         seat.name=String(request.name||'未命名设备').replace(/[\x00-\x1f]/g,'').slice(0,64);
@@ -466,7 +475,8 @@ export class WanHub extends DurableObject<WanEnv>{
         const receiver=this.peer(target),recipient=this.socket(target);
         if(!receiver||!recipient)throw new Error('对方设备不在线。');
         if(await this.ctx.storage.get('session:'+request.id))throw new Error('传输请求已存在。');
-        const value:Session={id:request.id,sender:publicDevice(seat),receiver,token:request.token,digest:request.digest,total:request.total,count:request.count,names:request.names,accepted:false,generation:0,expires:Date.now()+86400000,done:[],sender_code:await this.ctx.storage.get<string>('own-code:'+seat.id)||''};
+        const native=seat.features?.includes('syncthing-v2')&&receiver.features?.includes('syncthing-v2');
+        const value:Session={id:request.id,sender:publicDevice(seat),receiver,token:request.token,digest:request.digest,total:request.total,count:request.count,names:request.names,accepted:false,generation:0,expires:Date.now()+86400000,done:[],sender_code:await this.ctx.storage.get<string>('own-code:'+seat.id)||'',...(native?{native:{}}:{})};
         const already=await this.ctx.storage.transaction(async tx=>{
           if(await tx.get('pairing-cancel:'+seat.id+':'+request.id))throw new Error('已取消传输。');
           const previous=await tx.get<Session>('session:'+value.id);
@@ -493,12 +503,43 @@ export class WanHub extends DurableObject<WanEnv>{
           latest.accepted=true;latest.generation++;await tx.put('session:'+latest.id,latest);return latest;
         });Object.assign(value,accepted);
         await this.remember(value);
-        await this.publish(value,{type:'begin',initiator:value.sender.id,iceServers:stun,relayAllowed:this.env.TURN_ENABLED==='true'});return;
+        const from=value.native?await this.binding(value.sender.id):null,to=value.native?await this.binding(value.receiver.id):null;
+        await this.publish(value,value.native?{type:'begin',initiator:value.sender.id,transport:'syncthing-v2',account_device:!!(from&&to&&from.account===to.account&&from.device!==to.device)}:{type:'begin',initiator:value.sender.id,iceServers:stun,relayAllowed:this.env.TURN_ENABLED==='true'});return;
       }
       if(request.type==='reject'||request.type==='cancel'){
         await this.publish(value,{type:'cancelled'});await this.removeSession(value);return;
       }
       if(!value.accepted)throw new Error('接收方尚未确认。');
+      if(request.type==='native_signal'){
+        if(!value.native||request.generation!==value.generation)throw Error('传输内核信令已失效。');
+        const sender=seat.id===value.sender.id,metadata=manualSignal(request.value,sender);
+        if(metadata.kind==='progress'&&metadata.total!==value.native.sender?.content?.size)throw Error('接收进度与发送内容不一致。');
+        if(metadata.kind==='saved'&&(!value.native.sender?.content||!value.native.receiver&&!value.native.cloud))throw Error('传输内容尚未建立。');
+        if(metadata.kind==='r2'){
+          const from=await this.binding(value.sender.id),to=await this.binding(value.receiver.id);
+          if(!from||!to||from.account!==to.account||from.device===to.device)throw Error('云端兜底需要两端登录同一账号。');
+          const file=await this.env.DB.prepare('SELECT version,size,sha256,kind,deleted FROM items WHERE account_id=? AND id=?').bind(from.account,metadata.id).first<any>();
+          if(!file||file.deleted||file.kind!=='transfer'||file.version!==metadata.version||file.size!==metadata.size||file.sha256!==metadata.sha256)
+            throw Error('云端文件未保存或已改变。');
+        }
+        if(metadata.kind!=='progress')await this.ctx.storage.transaction(async tx=>{
+          const latest=await tx.get<Session>('session:'+value.id);
+          if(!latest?.native||!latest.accepted||latest.generation!==request.generation)throw Error('传输内核信令已失效。');
+          const state=latest.native;
+          if(metadata.kind==='native'){
+            const previous=sender?state.sender:state.receiver;
+            if(previous&&JSON.stringify(previous)!==JSON.stringify(metadata))throw Error('传输设备或文件内容已改变。');
+            if(sender)state.sender=metadata;else state.receiver=metadata;
+          }else if(metadata.kind==='r2'){
+            if(!state.sender?.content||state.sender.content.size!==metadata.size||state.sender.content.sha256!==metadata.sha256)
+              throw Error('云端文件与直连内容不一致。');
+            state.cloud=metadata;
+          }else if(metadata.kind==='fallback')state.fallback=true;
+          else if(metadata.kind==='saved')state.saved=true;
+          await tx.put('session:'+latest.id,latest);
+        });
+        const target=this.socket(other);if(target)this.send(target,{type:'native_signal',id:value.id,generation:value.generation,value:metadata});return;
+      }
       if(request.type==='path_signal'){
         if(request.generation!==value.generation)throw new Error('连接信令已过期。');
         const metadata=routeSignal(request.value);if(!metadata)throw new Error('线路信令无效。');

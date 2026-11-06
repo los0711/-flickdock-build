@@ -37,6 +37,7 @@ jobs:
           architecture: arm64
       - name: Build and verify native application, ZIP, DMG and installer
         run: |
+          npm ci --prefix cloud --no-audit --no-fund
           python ci_assets.py
           python build_macos.py --target-arch '${{ matrix.arch }}'
       - name: Test real cloud sync from frozen macOS client

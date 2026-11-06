@@ -216,7 +216,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify finite original-engine jobs on the native operating system
         if: inputs.cloud_only != true
-        run: python -m unittest test_syncthing_lan test_syncthing_engine test_manual_payload -q
+        run: |
+          npm ci --prefix cloud --no-audit --no-fund
+          python -m unittest test_syncthing_lan test_syncthing_engine test_manual_payload test_manual_cloud test_syncthing_wan -q
       - name: Prepare the verified proxy core before enabling the private node
         if: inputs.vpn_mode == 'both' || inputs.vpn_mode == matrix.side
         run: python ci_vpn.py prepare

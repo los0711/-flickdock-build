@@ -93,7 +93,7 @@ class NativeLanTests(unittest.TestCase):
             for service in (a,b):service.completed.connect(finished.append);service.progress.connect(progress.append)
             try:
                 a.start();b.start();until(lambda:a.port and b.port)
-                for index,(sender,receiver) in enumerate(((a,b),(b,a))):
+                for index,(sender,receiver) in enumerate(((a,b),(b,a))*3):
                     source=root/('source-'+str(index));source.mkdir();original=source/'中文.bin'
                     data=os.urandom(6*1024*1024+17);original.write_bytes(data);(source/'zero').touch();(source/'empty').mkdir()
                     destination=root/('received-'+str(index));destination.mkdir();(destination/source.name).mkdir()
@@ -105,7 +105,16 @@ class NativeLanTests(unittest.TestCase):
                     identifier=sender.send(receiver.device_id,[source]);until(lambda:len(offers)>index)
                     selected,offer,target=offers[index]
                     self.assertEqual(offer['id'],identifier);self.assertFalse(any(row['id']==identifier for row in finished))
-                    self.assertTrue(selected.accept(identifier,target));until(lambda:sum(row['id']==identifier for row in finished)==2)
+                    self.assertTrue(selected.accept(identifier,target))
+                    try:until(lambda:sum(row['id']==identifier for row in finished)==2)
+                    except TimeoutError as error:
+                        diagnostic=dict(round=index,progress=progress,finished=finished,kernels=[])
+                        for owner in (a,b):
+                            status=owner.engine.request('GET','/rest/system/status')
+                            diagnostic['kernels'].append(dict(connections=owner.engine.connections(),
+                                dial=status.get('lastDialStatus'),listeners=status.get('connectionServiceStatus'),
+                                folders=owner.engine.request('GET','/rest/config/folders')))
+                        raise AssertionError(json.dumps(diagnostic,ensure_ascii=False)) from error
                     received=next(row for row in finished if row['id']==identifier and row['direction']=='receive')
                     output=Path(received['paths'][0]);self.assertEqual(output.name,source.name+' (2)')
                     self.assertEqual(hashlib.sha256((output/original.name).read_bytes()).digest(),hashlib.sha256(data).digest())
@@ -114,6 +123,9 @@ class NativeLanTests(unittest.TestCase):
                     until(lambda:not sender._transfers[identifier].active)
                     self.assertEqual(sender.engine.request('GET','/rest/config/folders'),[])
                     self.assertEqual(receiver.engine.request('GET','/rest/config/folders'),[])
+                    identities={sender.engine.device_id,receiver.engine.device_id}
+                    for owner in (sender,receiver):
+                        self.assertEqual({row['deviceID'] for row in owner.engine.request('GET','/rest/config/devices')},identities)
                     self.assertFalse(any(row['id']==identifier and row.get('state')=='error' for row in progress))
                     self.assertTrue(all(row.get('route')=='lan' for row in progress if row['id']==identifier))
                     receiver.offer_received.disconnect(slot)

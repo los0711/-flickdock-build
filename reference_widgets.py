@@ -603,7 +603,7 @@ class MiniStack(StackTile):
     def __init__(self,shelf,parent=None,motion=True):
         super().__init__(parent,motion)
         self.shelf=shelf
-        self._card_art={};self._card_dpr=0
+        self._card_art={};self._card_dpr=0;self._card_theme=None
         from native_ui_common import DropBorderMotion
         self.border_motion=DropBorderMotion(self)
 
@@ -622,7 +622,8 @@ class MiniStack(StackTile):
 
     def _cache_cards(self):
         ratio=self.devicePixelRatioF();cards={};content=self.shelf.content
-        for ref in self.refs:
+        for index,ref in enumerate(self.refs):
+            depth=len(self.refs)-1-index
             metadata=getattr(self.shelf,'file_metadata',None)
             info=metadata.request(ref) if metadata is not None and not content.is_text(ref) else None
             cached=self.shelf.preview_cache.get(ref);cache=getattr(self.shelf,'image_cache',None)
@@ -633,16 +634,16 @@ class MiniStack(StackTile):
                  tuple(info.get(key) for key in ('size','mtime_ns','exists','error','is_dir')) if info else None,
                  directory[1] if directory else None,content.transfers.get(ref,{}).get('total'),
                  cached.cacheKey() if cached is not None else None,decoded.cacheKey() if decoded is not None else None,
-                 cover,ratio,self.font().toString(),ui_theme.current_theme())
+                 cover,ratio,self.font().toString(),ui_theme.current_theme(),depth)
             previous=self._card_art.get(ref)
-            cards[ref]=previous if previous is not None and previous[0]==key else (key,self._render_card(ref,ratio))
-        self._card_art=cards;self._card_dpr=ratio
+            cards[ref]=previous if previous is not None and previous[0]==key else (key,self._render_card(ref,ratio,depth))
+        self._card_art=cards;self._card_dpr=ratio;self._card_theme=ui_theme.current_theme()
 
-    def _render_card(self,ref,ratio):
+    def _render_card(self,ref,ratio,depth):
         result=QPixmap(round(192*ratio),round(128*ratio));result.setDevicePixelRatio(ratio);result.fill(Qt.transparent)
         p=QPainter(result);p.setRenderHints(QPainter.Antialiasing|QPainter.SmoothPixmapTransform);c=palette()
-        p.setPen(QPen(QColor(255,255,255,38) if ui_theme.current_theme()=='dark' else QColor(0,0,0,26),1))
-        p.setBrush(QColor('#242426' if ui_theme.current_theme()=='dark' else '#FFFFFF'));p.drawRoundedRect(QRectF(.5,.5,191,127),16,16)
+        p.setPen(QPen(QColor(255,255,255,38),1) if ui_theme.current_theme()=='dark' else Qt.NoPen)
+        p.setBrush(QColor(c['stack_cards'][depth]));p.drawRoundedRect(QRectF(.5,.5,191,127),16,16)
         p.drawPixmap(14,14,thumbnail(self.shelf,ref,40))
         title=self.shelf.content.title(ref);f=QFont(self.font());f.setPixelSize(14 if sys.platform=='win32' else 12);f.setWeight(QFont.DemiBold);p.setFont(f);p.setPen(QColor(c['text']))
         p.drawText(QRectF(14,77,164,20),Qt.AlignVCenter,p.fontMetrics().elidedText(title,Qt.ElideRight,164))
@@ -660,14 +661,14 @@ class MiniStack(StackTile):
             f=p.font()
             f.setPixelSize(13);p.setFont(f);p.setPen(QColor(palette()['text']));p.drawText(r.adjusted(0,34,0,0),Qt.AlignCenter,'点击选择文件');p.end();return
         v=self.spring.values
-        if self._card_dpr!=self.devicePixelRatioF():self._cache_cards()
+        if self._card_dpr!=self.devicePixelRatioF() or self._card_theme!=ui_theme.current_theme():self._cache_cards()
         spread=self.spread.values['spread']
         center=QPointF(self.width()/2,self.height()/2)
         p.translate(center.x(),center.y()+v['y']);p.scale(v['sx'],v['sy']);p.translate(-center)
         refs=list(reversed(self.refs));transforms=((0,1,0,1),(-7,.95,-2,.9),(-14,.9,2.2,.75),(-20,.85,-1.5,.58),(-26,.8,1,.4))
         for idx in reversed(range(len(refs))):
             ref=refs[idx];dy,scale,angle,opacity=transforms[idx]
-            p.save();p.setOpacity(opacity);p.translate(center.x()-idx*FAN_LAYER_OFFSET_X_PX*spread,center.y()+dy+idx*MINI_FAN_LAYER_OFFSET_Y_PX*spread)
+            p.save();p.setOpacity(opacity if ui_theme.current_theme()=='dark' else 1.);p.translate(center.x()-idx*FAN_LAYER_OFFSET_X_PX*spread,center.y()+dy+idx*MINI_FAN_LAYER_OFFSET_Y_PX*spread)
             p.rotate(angle+spread*(FAN_FRONT_ANGLE_DEGREES if idx==0 else -idx*FAN_LAYER_ANGLE_DEGREES));p.scale(scale,scale);p.translate(-96,-64)
             if idx==0:p.translate(0,-STACK_ARRIVAL_OFFSET_PX*(1-self.arrival))
             p.drawPixmap(0,0,self._card_art[ref][1])

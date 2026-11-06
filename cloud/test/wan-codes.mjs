@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import {registerHooks} from 'node:module';
 registerHooks({
-  resolve(specifier,context,next){return specifier==='cloudflare:workers'?{url:'wan-test:workers',shortCircuit:true}:next(['./relay-budget','./cloud-pipe','./storage-budget'].includes(specifier)?specifier+'.ts':specifier,context);},
+  resolve(specifier,context,next){return specifier==='cloudflare:workers'?{url:'wan-test:workers',shortCircuit:true}:next(['./relay-budget','./manual-signal','./cloud-pipe','./storage-budget'].includes(specifier)?specifier+'.ts':specifier,context);},
   load(url,context,next){return url==='wan-test:workers'?{format:'module',shortCircuit:true,source:'export class DurableObject {constructor(ctx,env){this.ctx=ctx;this.env=env;}}'}:next(url,context);},
 });
 const {WanHub}=await import('../src/wan.ts');

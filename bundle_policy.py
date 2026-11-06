@@ -118,8 +118,10 @@ def filter_bundle(binaries,datas):
             roots.add(index);root_reasons[index]='Python runtime or analysed extension module'
         elif '/plugins/' in '/'+_normal(entry[0]):
             roots.add(index);root_reasons[index]='selected runtime-loaded Qt plugin'
-        elif _normal(entry[0]).startswith('p2p/') and name in ('node.exe','node_datachannel.node'):
-            roots.add(index);root_reasons[index]='native WebRTC data-channel runtime'
+        elif _normal(entry[0])=='p2p/runtime/node.exe' and name=='node.exe':
+            roots.add(index);root_reasons[index]='original JavaScript runtime for video parsing'
+        elif _normal(entry[0])=='syncthing/runtime/syncthing.exe' and name=='syncthing.exe':
+            roots.add(index);root_reasons[index]='original Syncthing manual-transfer runtime'
     keep,queue,dependencies,unbundled = set(roots),list(roots),{},set()
     while queue:
         index = queue.pop()

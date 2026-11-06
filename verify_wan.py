@@ -1,4 +1,4 @@
-"""Explicit isolated original-folder WebRTC verification; no cloud login."""
+"""Explicit isolated original Syncthing verification; no cloud login."""
 from pathlib import Path
 import hashlib,json,os,sys,tempfile,time
 
@@ -13,8 +13,7 @@ def run(argv,load_font):
     output=Path(argv[argv.index('--verify-output')+1]);origin=os.environ.get('FLICKDOCK_QA_WAN_ORIGIN',DEFAULT_CLOUD_URL)
     local=origin.startswith('http://127.0.0.1:')
     if origin!=DEFAULT_CLOUD_URL and not local:raise ValueError('QA origin must be loopback')
-    force_relay='--wan-force-relay' in argv
-    report=dict(ok=False,version=APP_VERSION,frozen=bool(getattr(sys,'frozen',False)),account_login=False,origin=origin,installer_executed=False,forced_relay_test=force_relay)
+    report=dict(ok=False,version=APP_VERSION,frozen=bool(getattr(sys,'frozen',False)),account_login=False,origin=origin,installer_executed=False)
     with tempfile.TemporaryDirectory(prefix='flickdock-wan-original-') as temporary:
         root=Path(temporary);source=root/'原文件夹';(source/'空目录').mkdir(parents=True)
         block=os.urandom(1024*1024);original=source/'原始素材.bin'
@@ -22,7 +21,7 @@ def run(argv,load_font):
             for _ in range(32):stream.write(block)
         with original.open('rb') as stream:expected=hashlib.file_digest(stream,'sha256').hexdigest()
         destination=root/'接收';destination.mkdir()
-        services=[WanTransferService(root/str(index),device_name='FlickDock QA '+str(index),origin=origin,allow_test_origin=local,qa_force_relay=force_relay) for index in range(2)]
+        services=[WanTransferService(root/str(index),device_name='FlickDock QA '+str(index),origin=origin,allow_test_origin=local,loopback=local) for index in range(2)]
         completed=[[],[]];offers=[];states=[];started=time.perf_counter();finished=False;identifier=''
         def finish(error=''):
             nonlocal finished
@@ -39,16 +38,10 @@ def run(argv,load_font):
                 assert services[1].accept(offer['id'],destination)
             except Exception as error:finish(type(error).__name__+': '+str(error))
         services[1].offer_received.connect(receive)
-        def native_diagnostic(peer,value):
-            event=value.get('event',{})
-            if event.get('type')=='transport':
-                report.setdefault('native_transports',[]).append(dict(peer=peer,generation=value.get('generation'),
-                    transport=event.get('relayTransport'),proxy_used=bool(event.get('proxyUsed')),elapsed_seconds=time.perf_counter()-started))
         for index,service in enumerate(services):
             service.completed.connect(lambda value,index=index:completed[index].append(value))
             service.progress.connect(lambda value,index=index:states.append(dict(peer=index,elapsed_seconds=time.perf_counter()-started,
                 **{key:value.get(key) for key in ('state','route','received','total')})))
-            service._native.connect(lambda value,index=index:native_diagnostic(index,value))
             service.status_changed.connect(lambda value:print(value,flush=True))
         def poll():
             nonlocal identifier
@@ -62,8 +55,7 @@ def run(argv,load_font):
                     routes=[row.get('route') for row in states if row.get('state')=='complete' and row.get('route')]
                     assert routes and len(set(routes))==1,'Missing selected-candidate route'
                     assert routes[0]!='lan','Remote transfer must not promote to LAN'
-                    if force_relay:assert routes[0]=='relay','Forced relay test did not use a TURN candidate'
-                    report.update(verified_bytes=original.stat().st_size,sha256=expected,empty_folders_preserved=True,code_pairing=True,receiver_consent=True,recent_devices=True,route=routes[0],route_source='native-selected-candidate-pair')
+                    report.update(verified_bytes=original.stat().st_size,sha256=expected,empty_folders_preserved=True,code_pairing=True,receiver_consent=True,recent_devices=True,route=routes[0],route_source='original-syncthing-with-receiver-save-ack')
                     finish()
                 for service in services:
                     for transfer in service._transfers.values():
@@ -72,4 +64,12 @@ def run(argv,load_font):
         timer=QTimer();timer.setInterval(25);timer.timeout.connect(poll);timer.start()
         deadline=QTimer();deadline.setSingleShot(True);deadline.timeout.connect(lambda:(report.update(states=states[-15:]),finish('WAN verification timed out')));deadline.start(180000)
         for service in services:service.start()
-        return app.exec()
+        code=app.exec()
+        for service in services:service.close()
+        end=time.monotonic()+20
+        while any(service._shutdown and service._shutdown.is_alive() for service in services) and time.monotonic()<end:
+            app.processEvents();time.sleep(.01)
+        if any(service._shutdown and service._shutdown.is_alive() for service in services):
+            report.update(ok=False,error='Original transfer kernel did not release its owned profile');code=1
+        output.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf8')
+        return code

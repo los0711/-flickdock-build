@@ -26,7 +26,7 @@ SolidCompression=yes
 ; A tray window can hide on WM_CLOSE while its process still owns the bundle.
 ; Keep Restart Manager's confirmation, then finish closing only this app's EXEs.
 CloseApplications=force
-CloseApplicationsFilter=FlickDock.exe,node.exe
+CloseApplicationsFilter=FlickDock.exe,node.exe,syncthing.exe
 RestartApplications=no
 SetupLogging=yes
 VersionInfoVersion={#AppVersion}

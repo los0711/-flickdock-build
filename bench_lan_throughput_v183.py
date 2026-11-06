@@ -13,7 +13,7 @@ import time
 
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 from PySide6.QtWidgets import QApplication
-from lan_transfer import LanTransferService
+from syncthing_lan import SyncthingLanService
 
 
 def run(size_mib=128):
@@ -25,8 +25,8 @@ def run(size_mib=128):
         block=os.urandom(1024*1024)
         with source.open('wb') as output:
             for _ in range(size_mib):output.write(block)
-        sender=LanTransferService(device_name='Loopback sender',bind_host='127.0.0.1',discovery=False)
-        receiver=LanTransferService(device_name='Loopback receiver',bind_host='127.0.0.1',discovery=False)
+        sender=SyncthingLanService(root/'sender',device_name='Loopback sender',bind_host='127.0.0.1',discovery=False)
+        receiver=SyncthingLanService(root/'receiver',device_name='Loopback receiver',bind_host='127.0.0.1',discovery=False)
         offers=[];received=[];sent=[];errors=[]
         receiver.offer_received.connect(offers.append)
         receiver.completed.connect(received.append);sender.completed.connect(sent.append)
@@ -67,13 +67,14 @@ def run(size_mib=128):
                 raise AssertionError('Received original bytes differ')
             return {'ok':True,'size_mib':size_mib,'seconds':round(elapsed,3),
                     'mib_per_second':round(size_mib/elapsed,2),'sha256_verified':True,
-                    'path_direct':True,'transport':'TLS over 127.0.0.1',
+                    'path_direct':True,'transport':'original Syncthing v2.1.7 over 127.0.0.1',
                     'platform':platform.platform(),'python':platform.python_version(),
                     'socket':connection,'scope':'local cached-disk loopback; not Wi-Fi throughput'}
         finally:
             sender.close();receiver.close()
             for service in (sender,receiver):
                 for thread in list(service._threads):thread.join(timeout=1.2)
+                if service._shutdown:service._shutdown.join(8)
             app.processEvents()
 
 

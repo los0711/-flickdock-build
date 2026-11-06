@@ -1,4 +1,4 @@
-"""Cloud-only sync boundaries and the restored manual-transfer contract."""
+"""Cloud-only automatic sync and the original native manual-transfer boundary."""
 import ast
 import hashlib
 from pathlib import Path
@@ -13,7 +13,6 @@ from clipboard_delivery import ROUTES
 from test_clipboard_sync_v1819 import Account,Clipboard,Events,Hub,APP,until
 
 ROOT=Path(__file__).parent
-V1817_BRIDGE_SHA256='da29e73a73f4992cf8cf0fc16ee82c759872b57f7c33a1388687079687d007c9'
 
 
 class CloudOnlyTests(unittest.TestCase):
@@ -33,16 +32,19 @@ class CloudOnlyTests(unittest.TestCase):
             imports={node.module for node in ast.walk(tree) if isinstance(node,ast.ImportFrom)}
             self.assertNotIn('verify_peers',imports)
 
-    def test_manual_worker_is_the_exact_v1817_source(self):
-        self.assertEqual(hashlib.sha256((ROOT/'p2p/bridge.mjs').read_bytes()).hexdigest(),V1817_BRIDGE_SHA256)
+    def test_manual_worker_uses_the_original_syncthing_and_four_character_code(self):
+        from syncthing_lan import SyncthingLanService
+        self.assertTrue(issubclass(WanTransferService,SyncthingLanService))
+        self.assertFalse((ROOT/'webrtc_stream.py').exists())
+        self.assertFalse((ROOT/'p2p/bridge.mjs').exists())
         self.assertTrue(RECEIVE_CODE.fullmatch('AB23'))
         for value in ('ABCD','2345','AB234567','AB2','AB2I'):
             self.assertIsNone(RECEIVE_CODE.fullmatch(value))
 
-    def test_manual_receive_stream_is_raw_without_lan_upgrade_or_route_records(self):
-        service=SimpleNamespace()
-        stream=object()
-        self.assertIs(WanTransferService._incoming_stream(service,stream),stream)
+    def test_manual_receive_has_no_custom_webrtc_stream_or_lan_upgrade(self):
+        source=(ROOT/'wan_transfer.py').read_text(encoding='utf8')
+        self.assertNotIn('WebRTCStream',source)
+        self.assertIn("self.engine.mode='remote'",source)
         self.assertFalse(hasattr(WanTransferService,'_adaptive_stream'))
         self.assertFalse(hasattr(WanTransferService,'_load_sync_ice'))
 

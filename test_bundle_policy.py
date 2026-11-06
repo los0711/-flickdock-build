@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import sys
 from bundle_policy import filter_bundle, pe_dependencies
+from syncthing_assets import bundle_assets as native_assets
 
 root=Path(__file__).resolve().parent
 hashlib_pyd=Path(importlib.util.find_spec('_hashlib').origin)
@@ -19,6 +20,10 @@ keep_b,keep_d,report=filter_bundle(binaries,datas)
 assert any(e[0]==crypto_name for e in keep_d)
 _,keep_d2,report2=filter_bundle([],datas)
 assert not keep_d2 and report2['removed_bytes']==crypto.stat().st_size
+native,_=native_assets()
+native_toc=[('syncthing/runtime/'+Path(source).name,source,'BINARY') for source,destination in native]
+kept,_,_=filter_bundle(native_toc,[])
+assert [row[0] for row in kept]==[row[0] for row in native_toc], 'Original transfer executable must survive bundle trimming'
 # The bundled font is the original one recorded by its license manifest.
 manifest=json.loads((root/'font_manifest.json').read_text(encoding='utf-8'))
 assert len(manifest['fonts'])==1

@@ -21,10 +21,11 @@ from urllib.parse import quote,urlsplit
 from urllib.request import HTTPRedirectHandler,ProxyHandler,Request,build_opener
 import xml.etree.ElementTree as ET
 
-from video_jobs import ProcessTree
+from video_jobs import ProcessTree,PROCESS_TREE_STOP_SECONDS
 
 KERNEL_VERSION='v2.1.7'
 START_TIMEOUT_SECONDS=20
+START_POLL_SECONDS=.05
 API_TIMEOUT_SECONDS=8
 API_MAX_BYTES=4*1024*1024
 DEVICE_ID=re.compile(r'[A-Z2-7]{7}(?:-[A-Z2-7]{7}){7}')
@@ -160,8 +161,14 @@ class SyncthingEngine:
                     try:
                         status=self.request('GET','/rest/system/status')
                         self.device_id=check_device(status['myID'])
-                        return self.device_id
-                    except (URLError,ConnectionError):time.sleep(.05)
+                        listener=f'tcp://{"127.0.0.1" if self.loopback else "0.0.0.0"}:{self.port}'
+                        ready=status['connectionServiceStatus'].get(listener)
+                        if ready and ready.get('error'):raise EngineError('传输内核无法监听连接，请检查端口和系统网络权限。')
+                        # REST can answer before the independent sync listener
+                        # binds. Do not announce a port that is not ready yet.
+                        if ready and (ready.get('lanAddresses') or ready.get('wanAddresses')):return self.device_id
+                    except (URLError,ConnectionError):pass
+                    time.sleep(START_POLL_SECONDS)
                 raise EngineError('Syncthing 传输内核启动超时。')
             except BaseException:
                 self._stop();raise
@@ -223,13 +230,28 @@ class SyncthingEngine:
     def connections(self):
         return self.request('GET','/rest/system/connections')['connections']
 
+    def addresses(self):
+        """Exchange native WAN candidates without waiting for discovery caches."""
+        if self.loopback:return [self.local_address('127.0.0.1')]
+        rows=self.request('GET','/rest/system/status')['connectionServiceStatus']
+        addresses=[]
+        for row in rows.values():
+            for value in row.get('wanAddresses',[]):
+                try:valid=check_addresses([value],'remote')
+                except ValueError:continue
+                addresses.extend(valid)
+        return list(dict.fromkeys(addresses))[:11]+['dynamic']
+
     def unshare(self,task):
         check_task(task)
         with self._configuration:
             peer=self._folders.get(task)
             if peer is None:return
             self.request('DELETE','/rest/config/folders/'+quote(task,safe=''));self._folders.pop(task)
-            if peer not in self._folders.values():self.request('DELETE','/rest/config/devices/'+quote(peer,safe=''))
+            # Syncthing asynchronously pauses a removed device. Removing and
+            # re-adding it between finite jobs can close the next job's live
+            # connection. Retain this manually authorized peer for this process;
+            # no folder remains shared, and startup clears all old peer records.
 
     def _stop(self):
         process=self.process
@@ -243,7 +265,14 @@ class SyncthingEngine:
                     else:process.kill()
                     process.wait(3)
             self.process=None
-        if self.tree is not None:self.tree.close();self.tree=None
+        if self.tree is not None:
+            tree=self.tree
+            if not tree.stopped():tree.stop()
+            deadline=time.monotonic()+PROCESS_TREE_STOP_SECONDS
+            while not tree.stopped():
+                if time.monotonic()>=deadline:raise EngineError('传输内核的子进程尚未退出；保留诊断信息。')
+                time.sleep(START_POLL_SECONDS)
+            tree.close();self.tree=None
         if self.log is not None:self.log.close();self.log=None
         self.device_id='';self._folders.clear()
 
