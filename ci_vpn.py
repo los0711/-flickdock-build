@@ -1,6 +1,7 @@
 """Bounded system-proxy QA on disposable hosted runners, never a user's PC."""
 from __future__ import annotations
 import argparse
+import concurrent.futures
 import ctypes
 import gzip
 import hashlib
@@ -123,7 +124,7 @@ def main():
     child=args.child[1:] if args.child[:1]==['--'] else args.child
     if not child:raise ValueError('Missing QA command')
     nodes=json.loads(os.environ.pop('FLICKDOCK_QA_VPN_NODE'))
-    if not isinstance(nodes,list) or not 1<=len(nodes)<=4:raise ValueError('Invalid private QA nodes')
+    if not isinstance(nodes,list) or not 1<=len(nodes)<=128:raise ValueError('Invalid private QA nodes')
     for index,node in enumerate(nodes):
         if not isinstance(node,dict) or node.get('type') not in ('vless','trojan'):raise ValueError('Invalid private QA node')
         node['name']='private-qa-'+str(index+1)
@@ -153,8 +154,17 @@ def main():
             except OSError:
                 if time.monotonic()>deadline:raise TimeoutError('Isolated proxy core did not become ready')
                 time.sleep(.05)
+        def available(node):
+            try:
+                result=api('/proxies/'+node['name']+'/delay?timeout=4000&url=https%3A%2F%2Fwww.gstatic.com%2Fgenerate_204')
+                return dict(alias=node['name'],ok=True,delay_ms=result['delay'])
+            except (OSError,ValueError) as error:return dict(alias=node['name'],ok=False,error_type=type(error).__name__)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:health=list(pool.map(available,nodes))
+        report['screened_nodes']=len(health);report['reachable_nodes']=sum(value['ok'] for value in health)
+        candidates=sorted((value for value in health if value['ok']),key=lambda value:value['delay_ms'])[:4]
         report['node_health']=[]
-        for node in nodes:
+        for candidate in candidates:
+            node=next(node for node in nodes if node['name']==candidate['alias'])
             api('/proxies/QA',{'name':node['name']})
             connection=http.client.HTTPSConnection('127.0.0.1',mixed,timeout=10,context=ssl.create_default_context())
             started=time.monotonic();result=dict(alias=node['name'],ok=False)

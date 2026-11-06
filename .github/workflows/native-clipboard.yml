@@ -203,6 +203,8 @@ jobs:
           $env:FLICKDOCK_BUILD_CACHE = Join-Path $env:RUNNER_TEMP 'flickdock-cache'
           python syncthing_assets.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify finite original-engine jobs on the native operating system
+        run: python -m unittest test_syncthing_engine test_manual_payload -q
       - name: Prepare the verified proxy core before enabling the private node
         if: inputs.vpn_mode == 'both' || inputs.vpn_mode == matrix.side
         run: python ci_vpn.py prepare
