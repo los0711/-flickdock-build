@@ -62,5 +62,24 @@ class ManualPayloadTests(unittest.TestCase):
                     names=job['names'],cancel=self.cancel,expected_entries=expected)
         self.assertFalse((self.root/'wrong-manifest').exists())
 
+    def test_preparation_is_not_throttled_by_network_priority_and_hashes_stream_once(self):
+        from transfer_priority import set_clipboard_priority
+        set_clipboard_priority(True);progress=[]
+        try:
+            with patch('manual_payload.digest_file',side_effect=AssertionError('Snapshot must not be read twice')), \
+                 patch('transfer_priority._bulk_ready.wait',side_effect=AssertionError('Local disk work must not wait for network bandwidth')):
+                job=prepare([self.original],self.root/'streamed',self.cancel,lambda done,total:progress.append((done,total)))
+        finally:set_clipboard_priority(False)
+        self.assertEqual(hashlib.sha256(job['path'].read_bytes()).hexdigest(),job['descriptor']['sha256'])
+        self.assertEqual(job['path'].stat().st_size,job['descriptor']['size'])
+        self.assertEqual(progress[-1],(self.original.stat().st_size,self.original.stat().st_size))
+        with zipfile.ZipFile(job['path']) as archive:self.assertEqual(archive.read(self.original.name),self.original.read_bytes())
+
+    def test_cancellation_during_snapshot_removes_only_owned_partial_output(self):
+        before=self.original.read_bytes()
+        with self.assertRaises(InterruptedError):
+            prepare([self.original,self.folder],self.root/'cancelled',self.cancel,lambda done,total:self.cancel.set())
+        self.assertFalse((self.root/'cancelled').exists());self.assertEqual(self.original.read_bytes(),before)
+
 
 if __name__=='__main__':unittest.main()

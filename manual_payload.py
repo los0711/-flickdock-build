@@ -1,6 +1,7 @@
 """Stable manual-transfer snapshots and atomic delivery, independent of transport."""
 from __future__ import annotations
 import hashlib
+import io
 import json
 import os
 from pathlib import Path,PurePosixPath
@@ -10,12 +11,23 @@ import stat
 import zipfile
 
 from selection_archive import _is_link,_source_reader
-from transfer_priority import yield_bulk_payload
 
 IO_BYTES=1024*1024
 MAX_PAYLOAD_BYTES=(1<<63)-1
 MAX_ENTRIES=100000
 SHA256=re.compile('[a-f0-9]{64}')
+
+
+class _SnapshotWriter:
+    """Use zipfile's streaming format so SHA includes each byte exactly once."""
+    def __init__(self,stream):self.stream=stream;self.digest=hashlib.sha256();self.size=0
+    def tell(self):return self.size
+    def seek(self,*args):raise io.UnsupportedOperation('Snapshot output is append-only')
+    def write(self,data):
+        written=self.stream.write(data)
+        if written!=len(data):raise OSError('传输临时文件未完整写入。')
+        self.digest.update(data);self.size+=written;return written
+    def flush(self):self.stream.flush()
 
 
 def digest_file(path,cancel):
@@ -35,13 +47,15 @@ def descriptor(value):
     return dict(value)
 
 
-def prepare(paths,folder,cancel):
+def prepare(paths,folder,cancel,progress=None):
     from lan_transfer import _make_manifest
     entries,sources,total=_make_manifest(paths,cancel)
     folder=Path(folder);folder.mkdir(parents=True,exist_ok=False,mode=0o700)
     target=folder/'content.zip'
     try:
-        with zipfile.ZipFile(target,'x',compression=zipfile.ZIP_STORED,allowZip64=True) as archive:
+        with target.open('xb') as output:
+          writer=_SnapshotWriter(output);prepared=0
+          with zipfile.ZipFile(writer,'w',compression=zipfile.ZIP_STORED,allowZip64=True) as archive:
             for row in entries:
                 if cancel.is_set():raise InterruptedError('已取消传输。')
                 name=row['path']+('/' if row['kind']=='directory' else '')
@@ -55,15 +69,17 @@ def prepare(paths,folder,cancel):
                     before=os.fstat(incoming.fileno())
                     if before.st_size!=size or before.st_mtime_ns!=modified:raise ValueError('原文件已改变，请重新发送。')
                     while block:=incoming.read(IO_BYTES):
-                        yield_bulk_payload(cancel)
                         if cancel.is_set():raise InterruptedError('已取消传输。')
                         copied+=len(block)
                         if copied>size:raise ValueError('原文件已改变，请重新发送。')
                         outgoing.write(block)
+                        prepared+=len(block)
+                        if progress:progress(prepared,total)
                     after=os.fstat(incoming.fileno())
                 if copied!=size or after.st_mtime_ns!=modified:raise ValueError('原文件已改变，请重新发送。')
-        with target.open('r+b') as stream:stream.flush();os.fsync(stream.fileno())
-        spec=descriptor(dict(size=target.stat().st_size,sha256=digest_file(target,cancel)))
+          output.flush();os.fsync(output.fileno())
+        if cancel.is_set():raise InterruptedError('已取消传输。')
+        spec=descriptor(dict(size=writer.size,sha256=writer.digest.hexdigest()))
         return dict(folder=folder,path=target,descriptor=spec,entries=entries,total=total,
                     names=[row['path'] for row in entries if '/' not in row['path']],
                     count=sum(row['kind']=='file' for row in entries))

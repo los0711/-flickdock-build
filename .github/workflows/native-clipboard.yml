@@ -224,6 +224,19 @@ jobs:
       - name: Prepare the verified proxy core before enabling the private node
         if: inputs.vpn_mode == 'both' || inputs.vpn_mode == matrix.side
         run: python ci_vpn.py prepare
+      - name: Allow original kernel TCP and QUIC on disposable Windows runner
+        if: runner.os == 'Windows' && inputs.cloud_only != true
+        shell: pwsh
+        run: |
+          $binary=(Resolve-Path 'syncthing/runtime/syncthing.exe').Path
+          $prefix="FlickDock-QA-$env:GITHUB_RUN_ID-$env:FD_QA_PAIR-$env:FD_QA_SIDE"
+          foreach($protocol in @('TCP','UDP')) {
+            foreach($direction in @('Inbound','Outbound')) {
+              New-NetFirewallRule -Name "$prefix-$protocol-$direction" -DisplayName "$prefix-$protocol-$direction" -Program $binary -Protocol $protocol -Direction $direction -Action Allow -Profile Any | Out-Null
+            }
+          }
+          if (@(Get-NetFirewallRule -Name "$prefix-*").Count -ne 4) { throw 'Original kernel firewall rules were not installed' }
+          'FD_QA_NATIVE_FIREWALL=true' >> $env:GITHUB_ENV
       - name: Prepare private sessions and public synthetic fixture metadata
         shell: pwsh
         env:
@@ -269,3 +282,9 @@ jobs:
             ${{ runner.temp }}/flickdock-vpn/proxy-report.json
           if-no-files-found: warn
           retention-days: 3
+      - name: Remove only this disposable Windows peer's firewall rules
+        if: always() && runner.os == 'Windows' && inputs.cloud_only != true
+        shell: pwsh
+        run: |
+          $prefix="FlickDock-QA-$env:GITHUB_RUN_ID-$env:FD_QA_PAIR-$env:FD_QA_SIDE"
+          Get-NetFirewallRule -Name "$prefix-*" -ErrorAction SilentlyContinue | Remove-NetFirewallRule

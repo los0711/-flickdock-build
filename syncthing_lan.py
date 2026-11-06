@@ -92,7 +92,7 @@ class SyncthingLanService(LanTransferService):
         try:
             self._notify(transfer,'preparing',route='lan')
             stage=self._stage(transfer,self.base,'send-'+transfer.transfer_id)
-            payload=prepare(paths,stage/'payload',transfer.cancel);self._payloads[transfer.transfer_id]=payload
+            payload=prepare(paths,stage/'payload',transfer.cancel,self._preparation_progress(transfer));self._payloads[transfer.transfer_id]=payload
             transfer.total=payload['total'];transfer.token=secrets.token_hex(32)
             own=dict(transport=TRANSPORT,device_id=self.engine.device_id,port=self.engine.port,content=payload['descriptor'])
             offer=dict(protocol=PROTOCOL,id=transfer.transfer_id,token=transfer.token,sender=self.device_name,
@@ -139,6 +139,16 @@ class SyncthingLanService(LanTransferService):
                 self._payloads.pop(transfer.transfer_id,None)
                 self._cleanup(transfer)
                 transfer.active=False;transfer.updated=time.monotonic()
+
+    def _preparation_progress(self,transfer):
+        last=[0.]
+        def progress(done,total):
+            now=time.monotonic()
+            if done==total or now-last[0]>=PROGRESS_SECONDS:
+                last[0]=now
+                self._notify(transfer,'preparing',prepared=done,preparation_total=total,
+                             route='direct' if getattr(self,'mode','lan')=='wan' else 'lan')
+        return progress
 
     def _incoming(self,raw,host):
         stream=None;transfer=None;acquired=False;job=None;terminal=None

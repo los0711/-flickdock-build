@@ -1558,7 +1558,12 @@ class LanPanel(QFrame):
         elif state=='connecting':
             row['bar'].setRange(0,0);row['detail'].setText({'relay':'正在尝试中继连接…','cloud':'正在连接云端传输…'}.get(data.get('route'),'正在建立 P2P 直连…'))
         elif state in ('preparing', 'reconnecting'):
-            row['bar'].setRange(0, 0); row['detail'].setText('正在准备传输…' if state == 'preparing' else '连接中断，正在续传…')
+            prepared=data.get('prepared');preparation_total=data.get('preparation_total',0)
+            if state=='preparing' and preparation_total>0 and type(prepared) is int:
+                row['bar'].setRange(0,1000);row['bar'].setValue(min(1000,prepared*1000//preparation_total))
+                row['detail'].setText(f'正在准备文件 · {_size(prepared)} / {_size(preparation_total)}')
+            else:
+                row['bar'].setRange(0, 0); row['detail'].setText('正在准备传输…' if state == 'preparing' else '连接中断，正在续传…')
         elif state in ('cancelled', 'error', 'complete','interrupted'):
             self._samples.pop(identifier,None)
             row['finished'] = True;row['terminal_state']=state; row['cancel'].hide()

@@ -12,6 +12,7 @@ from syncthing_jobs import DirectUnavailable
 from lan_transfer import _Transfer
 from test_manual_cloud import LocalCloudFixture,until,APP
 from test_syncthing_engine import BINARY
+from syncthing_engine import EngineError
 
 
 @unittest.skipUnless(BINARY.is_file(),'Official original kernel is required')
@@ -89,6 +90,20 @@ class NativeWanTests(LocalCloudFixture,unittest.TestCase):
         until(lambda:not self.services[0]._transfers[identifier].active,20)
         feed=self.call(self.accounts[1].api,'GET','/v1/sync/changes?cursor=0')
         self.assertEqual(feed['changes'],[]);self.assertEqual(feed['transfers'],[])
+
+    def test_engine_error_remains_visible_after_server_cancel_echo(self):
+        self.connect();source=self.root/'failure.bin';source.write_bytes(b'failure fixture')
+        target=self.root/'received';target.mkdir();receiver=self.services[1]
+        receiver.offer_received.connect(lambda offer:receiver.accept(offer['id'],target))
+        with patch.object(receiver.engine,'share',side_effect=EngineError('QA native listener failure')):
+            identifier=self.services[0].send(receiver.code,[source])
+            until(lambda:any(side==1 and row['id']==identifier and row['state']=='error' for side,row in self.progress),30)
+            until(lambda:all(identifier in s._transfers and not s._transfers[identifier].active for s in self.services),15)
+            for _ in range(10):APP.processEvents();time.sleep(.02)
+        rows=[row for side,row in self.progress if side==1 and row['id']==identifier]
+        self.assertEqual(rows[-1]['state'],'error');self.assertIn('native listener failure',rows[-1]['message'])
+        self.assertTrue(receiver._transfers[identifier].cancel.is_set());self.assertTrue(source.is_file())
+        self.assertTrue(receiver._pending[identifier]['failed'])
 
 
 if __name__=='__main__':unittest.main()

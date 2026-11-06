@@ -5,21 +5,20 @@ $ErrorActionPreference='Stop'
 try {
     $appRoot=[IO.Path]::GetFullPath($InstallDirectory)
     $appExe=Join-Path $appRoot 'FlickDock.exe'
-    $nodeExe=Join-Path $appRoot '_internal\p2p\runtime\node.exe'
+    $kernelExe=Join-Path $appRoot '_internal\syncthing\runtime\syncthing.exe'
+    $retiredNodeExe=Join-Path $appRoot '_internal\p2p\runtime\node.exe'
     $policy=New-Object -ComObject HNetCfg.FwPolicy2
     $digest=[Security.Cryptography.SHA256]::Create()
     try { $key=([BitConverter]::ToString($digest.ComputeHash([Text.Encoding]::UTF8.GetBytes($appRoot.ToLowerInvariant())))).Replace('-','').Substring(0,16) } finally { $digest.Dispose() }
     $group='FlickDock-'+$key
-    if($Action -eq 'Remove') {
-        $owned=@($policy.Rules | Where-Object { $_.Grouping -eq $group -and ($_.ApplicationName -ieq $appExe -or $_.ApplicationName -ieq $nodeExe) })
-        foreach($rule in $owned) { $policy.Rules.Remove($rule.Name) }
-        exit 0
-    }
-    if (!(Test-Path -LiteralPath $appExe -PathType Leaf) -or !(Test-Path -LiteralPath $nodeExe -PathType Leaf)) { throw '安装文件不完整，请重新安装 FlickDock。' }
+    $owned=@($policy.Rules | Where-Object { $_.Grouping -eq $group -and ($_.ApplicationName -ieq $appExe -or $_.ApplicationName -ieq $kernelExe -or $_.ApplicationName -ieq $retiredNodeExe) })
+    if($Action -ne 'Remove' -and (!(Test-Path -LiteralPath $appExe -PathType Leaf) -or !(Test-Path -LiteralPath $kernelExe -PathType Leaf))) { throw '安装文件不完整，请重新安装 FlickDock。' }
+    foreach($rule in $owned) { $policy.Rules.Remove($rule.Name) }
+    if($Action -eq 'Remove') { exit 0 }
     # A user declining Windows' automatic first-listen prompt creates explicit
     # deny rules. Remove denies for these exact paths only. Managed rules cannot
     # be changed here and remain subject to the administrator's policy.
-    $blocked=@($policy.Rules | Where-Object { $_.Action -eq 0 -and $_.ApplicationName -and ($_.ApplicationName -ieq $appExe -or $_.ApplicationName -ieq $nodeExe) })
+    $blocked=@($policy.Rules | Where-Object { $_.Action -eq 0 -and $_.ApplicationName -and ($_.ApplicationName -ieq $appExe -or $_.ApplicationName -ieq $kernelExe) })
     foreach($rule in $blocked) { try { $policy.Rules.Remove($rule.Name) } catch {} }
     $definitions=@(
         @('LAN-TCP-In',$appExe,6,1,'LocalSubnet','*'),
@@ -27,9 +26,10 @@ try {
         @('LAN-TCP-Out',$appExe,6,2,'LocalSubnet','*'),
         @('LAN-UDP-Out',$appExe,17,2,'LocalSubnet','*'),
         @('Cloud-HTTPS-Out',$appExe,6,2,'*','443'),
-        @('P2P-UDP-In',$nodeExe,17,1,'*','*'),
-        @('P2P-UDP-Out',$nodeExe,17,2,'*','*'),
-        @('TURN-TLS-Out',$nodeExe,6,2,'*','443')
+        @('Native-TCP-In',$kernelExe,6,1,'*','*'),
+        @('Native-TCP-Out',$kernelExe,6,2,'*','*'),
+        @('Native-UDP-In',$kernelExe,17,1,'*','*'),
+        @('Native-UDP-Out',$kernelExe,17,2,'*','*')
     )
     foreach($definition in $definitions) {
         $name=$group+'-'+$definition[0]
@@ -42,7 +42,7 @@ try {
         $rule.Profiles=2147483647; $rule.Action=1; $rule.Enabled=$true
         $policy.Rules.Add($rule)
     }
-    $remaining=@($policy.Rules | Where-Object { $_.Enabled -and $_.Action -eq 0 -and $_.ApplicationName -and ($_.ApplicationName -ieq $appExe -or $_.ApplicationName -ieq $nodeExe) })
+    $remaining=@($policy.Rules | Where-Object { $_.Enabled -and $_.Action -eq 0 -and $_.ApplicationName -and ($_.ApplicationName -ieq $appExe -or $_.ApplicationName -ieq $kernelExe) })
     if($remaining.Count) { throw '仍有系统策略阻止 FlickDock，请联系设备管理员放行。' }
     if(!$Quiet) {
         Add-Type -AssemblyName System.Windows.Forms

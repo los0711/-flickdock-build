@@ -137,6 +137,7 @@ def main():
     report=dict(ok=False,side=side,pair=pair,platform=platform,run=run,attempt=attempt,source_commit=os.environ['GITHUB_SHA'],
         native_clipboard=True,separate_operating_systems=True,region_asserted=False,os_credentials_written=False,
         cloud_only_automatic_sync=True,checks=[],api_failures=failures,http_payloads=[],proxy=proxy,
+        native_firewall_prepared=os.environ.get('FD_QA_NATIVE_FIREWALL')=='true',
         proxy_pair_mode=os.environ.get('FD_QA_VPN_MODE','none'),
         timing_scope='Per-peer step elapsed includes coordination; HTTP payload timings are recorded separately',
         manual_scope='Not run: isolated cloud-only verification' if cloud_only else 'Application manual-transfer entry: original Syncthing, same-account R2 fallback, actual save acknowledgement')
@@ -333,6 +334,8 @@ def main():
                     try:diagnostics=kernel_diagnostics(wan.engine,wan._pending.get(identity,{}).get('native',{}).get('device_id',''))
                     except Exception:diagnostics=dict(available=False)
             routes=[row.get('route') for row in manual_progress if row.get('id')==identity and row.get('route')]
+            if diagnostics is None and 'cloud' in routes and wan.engine.device_id:
+                diagnostics=kernel_diagnostics(wan.engine,wan._pending.get(identity,{}).get('native',{}).get('device_id',''))
             report['checks'].append(dict(name='manual_application_syncthing_r2',sender=sender,ok=error is None,
                 local_role='sender' if side==sender else 'receiver',error_type=error,verified_bytes=received_bytes,
                 receiver_save_ack=side==sender and error is None,route=routes[-1] if routes else None,

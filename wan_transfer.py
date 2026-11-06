@@ -168,7 +168,7 @@ class WanTransferService(SyncthingLanService):
             if state.get('prepare'):self._wait(transfer,state,lambda:state['prepared'].is_set(),25)
             if state.get('error'):raise ValueError(state['error'])
             self._notify(transfer,'preparing');stage=self._stage(transfer,self.base,'send-'+identifier)
-            payload=prepare(paths,stage/'payload',transfer.cancel);state['payload']=payload;transfer.total=payload['total']
+            payload=prepare(paths,stage/'payload',transfer.cancel,self._preparation_progress(transfer));state['payload']=payload;transfer.total=payload['total']
             transfer.entries=payload['entries'];transfer.peer=state['peer']['name']
             request=dict(type='request',id=identifier,token=transfer.token,digest=hashlib.sha256(json.dumps(payload['entries'],sort_keys=True).encode()).hexdigest(),
                 total=str(payload['total']),count=payload['count'],names=payload['names'][:12])
@@ -265,7 +265,9 @@ class WanTransferService(SyncthingLanService):
             paths=transfer.result_paths,total=transfer.total))
 
     def _failed(self,transfer,state,error):
+        state['failed']=not transfer.cancel.is_set()
         state['error']=str(error);self._notify(transfer,'cancelled' if transfer.cancel.is_set() else 'error',message=str(error))
+        if state['failed']:transfer.cancel.set()
         self._command.emit(dict(type='cancel',id=transfer.transfer_id))
 
     def accept(self,identifier,destination):
@@ -280,6 +282,9 @@ class WanTransferService(SyncthingLanService):
 
     def cancel(self,identifier,*,remote=False):
         state=self._pending.get(identifier);transfer=self._transfers.get(identifier)
+        # The server echoes our failure cleanup as cancelled. It must not erase
+        # the originating error or turn a failed history entry into a user cancel.
+        if remote and state and state.get('failed'):return
         if transfer:
             if transfer.finished:return
             transfer.cancel.set()
