@@ -86,7 +86,10 @@ def kernel_diagnostics(engine,peer):
             try:scope='public' if ipaddress.ip_address(url.hostname or '').is_global else 'private'
             except ValueError:scope='hostname'
             counts[url.scheme+'_'+scope]+=1
+        configuration=engine.request('GET','/rest/config/devices/'+peer)
         return dict(discovery_enabled=status.get('discoveryEnabled'),discovery_methods=len(sources),
+            peer_paused=configuration.get('paused'),dynamic_address='dynamic' in configuration.get('addresses',[]),
+            discovery_cache_devices=len(discovery),
             discovery_errors=[category(value.get('error')) for value in sources.values() if value.get('error')],
             listeners=[dict(protocol=urlsplit(key).scheme,error=category(value.get('error')),
                             wan_addresses=len(value.get('wanAddresses',[]))) for key,value in listeners.items()],
@@ -196,7 +199,7 @@ def main():
             if not account.signed_in:raise RuntimeError('Disposable account authentication failed')
             private=dict(token=account.api.token,device_id=account.device_id,account=account.account)
             session=root/'session.json';session.write_text(json.dumps(private),encoding='utf8');session.chmod(0o600)
-            phase='kernel_bootstrap';engine=SyncthingEngine(root/'kernel',mode='remote');engine.start()
+            phase='kernel_bootstrap';engine=SyncthingEngine(root/'kernel',mode='lan');engine.start()
             source=root/'manual-source.bin';fixture(source,32*MIB,f'{run}-{attempt}-{pair}-{side}-manual')
             payload=prepare([source],root/'payload',threading.Event())
             public=dict(side=side,pair=pair,platform=platform,run=run,attempt=attempt,account_device_id=account.device_id,kernel_id=engine.device_id,
@@ -206,6 +209,8 @@ def main():
             return 0
         phase='peer_bootstrap';peer=artifact(other,run,attempt,pair);own=json.loads((root/'public.json').read_bytes())
         session=json.loads((root/'session.json').read_bytes());account.api.token=session['token'];account.device_id=session['device_id'];account.account=session['account']
+        phase='kernel_prepare';engine=SyncthingEngine(root/'kernel',mode='remote');engine.start()
+        assert engine.device_id==own['kernel_id']
         events=CloudEvents(account);clip=app.clipboard();clipboard=ClipboardSync(account,events,root/'clipboard',clipboard=clip)
         adapter=Adapter();shelf=ShelfSync(root/'shelf',account,adapter)
         shelf.attach_clipboard(clipboard);clipboard.activity_changed.connect(shelf.set_clipboard_priority)
@@ -228,13 +233,22 @@ def main():
             raise TimeoutError('Peer coordination timed out')
         from PySide6.QtNetwork import QAbstractSocket
         phase='event_socket';until(lambda:events.socket.state()==QAbstractSocket.SocketState.ConnectedState,seconds=60)
+        kernel_only=os.environ.get('FD_QA_KERNEL_ONLY')=='true';report['cloud_tested']=not kernel_only
+        def await_announcement():
+            deadline=time.monotonic()+20
+            while True:
+                status=engine.request('GET','/rest/system/status')
+                if any(key.startswith('global@') and value.get('error') is None for key,value in status.get('discoveryStatus',{}).items()):return
+                if time.monotonic()>deadline:raise TimeoutError('Original kernel did not finish its first announcement')
+                pump(.25)
+        if kernel_only:phase='kernel_announcement';await_announcement()
         barrier(1)
         stage=1
         def record(name,sender,started,**fields):
             report['checks'].append(dict(name=name,sender=sender,receiver='b' if sender=='a' else 'a',
                                          ok=True,local_role='sender' if side==sender else 'receiver',seconds=round(time.perf_counter()-started,3),**fields))
             report_path.write_text(json.dumps(report,indent=2),encoding='utf8')
-        for sender in ('a','b'):
+        for sender in (() if kernel_only else ('a','b')):
             for kind in ('text','image','file'):
                 phase=f'clipboard_{sender}_{kind}';start=time.perf_counter();seed=f'FD2-{run}-{attempt}-{pair}-{sender}-{kind}'
                 expected=None;mime=QMimeData()
@@ -292,7 +306,8 @@ def main():
             stage+=1;barrier(stage)
         # Cloud tests finish before the direct-only kernel test, so a CI NAT
         # limitation cannot be misreported as a clipboard or R2 regression.
-        phase='kernel_start';engine=SyncthingEngine(root/'kernel',mode='remote');engine.start();assert engine.device_id==own['kernel_id']
+        phase='kernel_start';assert engine.device_id==own['kernel_id']
+        if not kernel_only:await_announcement()
         def worker(action):
             finished=[]
             def execute():
@@ -329,12 +344,12 @@ def main():
             if shared:engine.unshare(task)
             report_path.write_text(json.dumps(report,indent=2),encoding='utf8')
         phase='cleanup'
-        if side=='a':
+        if side=='a' and not kernel_only:
             before=clipboard._seen;mime=QMimeData();mime.setText('FlickDock disposable QA finished '+run);clip.setMimeData(mime)
             until(lambda:clipboard._seen!=before and clipboard._pending is None and clipboard.view.get('backed_up'))
         stage+=1;barrier(stage)
         call('POST','/v1/auth/logout',data={})
-        report['ok']=all(check['ok'] for check in report['checks']) and len(report['checks'])==12
+        report['ok']=all(check['ok'] for check in report['checks']) and len(report['checks'])==(2 if kernel_only else 12)
         report['phase']='completed';report_path.write_text(json.dumps(report,indent=2),encoding='utf8')
         print(json.dumps(dict(ok=report['ok'],side=side,checks=len(report['checks']))),flush=True)
         return 0 if report['ok'] else 1

@@ -72,7 +72,7 @@ def prepare(paths,folder,cancel):
         raise
 
 
-def extract(payload,output,spec,*,total,count,names,cancel):
+def extract(payload,output,spec,*,total,count,names,cancel,expected_entries=None):
     from lan_transfer import _validate_manifest,_portable_path
     spec=descriptor(spec);payload=Path(payload);output=Path(output)
     if (_is_link(payload) or not payload.is_file() or payload.stat().st_size!=spec['size']
@@ -92,6 +92,8 @@ def extract(payload,output,spec,*,total,count,names,cancel):
                 _portable_path(path)
                 entries.append(dict(path=path,kind='directory' if info.is_dir() else 'file',size=info.file_size))
             actual=_validate_manifest(entries)
+            if expected_entries is not None and entries!=expected_entries:
+                raise ValueError('收到的文件清单与已确认的请求不一致。')
             roots=[row['path'] for row in entries if '/' not in row['path']]
             if actual!=total or sum(row['kind']=='file' for row in entries)!=count or roots[:12]!=names[:12]:
                 raise ValueError('收到的文件与已确认的请求不一致。')

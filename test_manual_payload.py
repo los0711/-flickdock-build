@@ -54,6 +54,13 @@ class ManualPayloadTests(unittest.TestCase):
         self.assertEqual(list(target.iterdir()),[])
         self.assertTrue(self.original.is_file())
         self.assertTrue((self.root/'verified'/roots[0]).exists())
+    def test_complete_accepted_manifest_is_checked_before_extracting(self):
+        job=self.snapshot();expected=[dict(row) for row in job['entries']]
+        expected[-1]['path']='目录/another-name'
+        with self.assertRaisesRegex(ValueError,'清单'):
+            extract(job['path'],self.root/'wrong-manifest',job['descriptor'],total=job['total'],count=job['count'],
+                    names=job['names'],cancel=self.cancel,expected_entries=expected)
+        self.assertFalse((self.root/'wrong-manifest').exists())
 
 
 if __name__=='__main__':unittest.main()

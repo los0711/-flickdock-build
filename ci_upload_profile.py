@@ -5,17 +5,23 @@ from uuid import uuid4
 
 def main():
     if os.environ.get('GITHUB_ACTIONS')!='true' or os.environ.get('GITHUB_REPOSITORY')!='los0711/-flickdock-build':raise RuntimeError('Disposable authorized CI only')
+    secret=json.loads(os.environ.pop('FLICKDOCK_QA_SYNC_JSON'))
+    return profile(secret,run=os.environ['GITHUB_RUN_ID'],attempt=os.environ['GITHUB_RUN_ATTEMPT'],
+        platform=os.environ['RUNNER_OS'],commit=os.environ['GITHUB_SHA'],root_base=Path(os.environ['RUNNER_TEMP']),
+        output=Path(os.environ['RUNNER_TEMP'])/'flickdock-upload-profile.json')
+
+
+def profile(secret,*,run,attempt,platform,commit,root_base,output,proxy=None):
+    """Synthetic account and R2 objects only; never reads the system clipboard."""
     os.environ['QT_QPA_PLATFORM']='offscreen'
     from PySide6.QtWidgets import QApplication
     from account_service import AccountService
     import cloud_api
-    app=QApplication([]);secret=json.loads(os.environ.pop('FLICKDOCK_QA_SYNC_JSON'))
+    app=QApplication([])
     from ci_vpn import verify_qt_proxy
-    proxy=verify_qt_proxy()
-    run=os.environ['GITHUB_RUN_ID'];attempt=os.environ['GITHUB_RUN_ATTEMPT'];platform=os.environ['RUNNER_OS']
+    if proxy is None:proxy=verify_qt_proxy()
     name='cross-qa-'+hashlib.sha256((secret['username']+run+attempt+platform+'upload-profile').encode()).hexdigest()[:16]
-    report=dict(ok=False,platform=platform,source_commit=os.environ['GITHUB_SHA'],cases=[],request_failures=[],native_ui=False,proxy=proxy)
-    output=Path(os.environ['RUNNER_TEMP'])/'flickdock-upload-profile.json'
+    report=dict(ok=False,platform=platform,source_commit=commit,cases=[],request_failures=[],native_ui=False,proxy=proxy)
     def until(predicate,seconds=180):
         deadline=time.monotonic()+seconds
         while time.monotonic()<deadline:
@@ -27,7 +33,7 @@ def main():
         def load(self):return None
         def save(self,value):pass
         def clear(self):pass
-    with tempfile.TemporaryDirectory(prefix='flickdock-upload-',dir=os.environ['RUNNER_TEMP']) as directory:
+    with tempfile.TemporaryDirectory(prefix='flickdock-upload-',dir=root_base) as directory:
         root=Path(directory);account=AccountService(root,store=Store());account.device_name='Disposable upload profiler'
         transport=account.api.request
         def traced(method,path,callback,**options):
