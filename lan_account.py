@@ -1,7 +1,7 @@
-"""Authorize unattended LAN reception over the existing authenticated mesh.
+"""Account-verified consent tickets for manual LAN transfers.
 
-Only the short-lived capability travels over the mesh. File bytes always use
-the selected LAN service's pinned TLS socket, independent of the mesh route.
+Only bounded authorization metadata uses signaling. File bytes stay on the
+selected LAN TLS connection; this service never opens a P2P or sync channel.
 """
 import hashlib,json,re,secrets,threading,time
 from PySide6.QtCore import QObject,Signal
@@ -20,15 +20,26 @@ def manifest_digest(entries):
 class LanAccountAuthorizer(QObject):
     _prepare=Signal(object)
 
-    def __init__(self,lan,mesh):
-        super().__init__(lan);self.lan=lan;self.mesh=mesh;self._lock=threading.RLock()
+    def __init__(self,lan,wan):
+        super().__init__(lan);self.lan=lan;self.wan=wan;self._lock=threading.RLock()
         self._identity=None;self._peers={};self._waiting={};self._tickets={}
-        self._prepare.connect(self._send);mesh.control_received.connect(self._receive)
-        mesh.account.account_changed.connect(self._refresh);mesh.wan.peers_changed.connect(self._refresh)
+        self._prepare.connect(self._send);wan.lan_authorization.connect(self._receive)
+        wan.account_service.account_changed.connect(self._refresh);wan.peers_changed.connect(self._refresh)
         self._refresh();lan.account_authorizer=self
 
+    def _session(self):
+        account=self.wan.account_service
+        return (account.account['id'],account.device_id,account.api.token) if account.signed_in else None
+
+    def _active(self):
+        return (not self.wan._closing and self.wan._connected and self._session() is not None
+                and self.wan._bound_identity==self.wan._account_identity())
+
+    def _signal(self,peer,value):
+        return self.wan._send_signal(dict(type='lan_authorization',peer=peer,value=value))
+
     def _refresh(self,*_):
-        identity=self.mesh._session();rows=self.mesh.wan.peers()
+        identity=self._session();rows=self.wan.peers()
         with self._lock:
             if identity!=self._identity:
                 for waiting in self._waiting.values():
@@ -57,16 +68,18 @@ class LanAccountAuthorizer(QObject):
 
     def _send(self,waiting):
         with self._lock:
-            if waiting['identity']!=self._identity or self.mesh.closed or not self.mesh._active():
+            if waiting['identity']!=self._identity or not self._active():
                 waiting['error']='账号连接已失效。';waiting['done'].set();return
-        if not self.mesh.send_control(waiting['peer'],waiting['payload']):
-            waiting['error']='同账号验证连接尚未就绪；局域网模式不会改用远程传输。';waiting['done'].set()
+        if not self._signal(waiting['peer'],waiting['payload']):
+            waiting['error']='同账号身份验证服务尚未就绪，请稍后重试。';waiting['done'].set()
 
-    def _receive(self,peer,value):
+    def _receive(self,message):
+        peer=message.get('peer');value=message.get('value')
+        if not isinstance(value,dict) or not HEX64.fullmatch(str(peer)):return
         if value.get('type')!='lan-transfer' or not HEX32.fullmatch(str(value.get('id',''))):return
         now=time.monotonic()
         with self._lock:
-            if not self.mesh._active() or self._identity!=self.mesh._session():return
+            if not self._active() or self._identity!=self._session():return
             if value.get('action')=='accepted':
                 waiting=self._waiting.get(value['id'])
                 if waiting is not None and waiting['peer']==peer and waiting['identity']==self._identity:
@@ -81,12 +94,12 @@ class LanAccountAuthorizer(QObject):
             if previous is not None and any(previous[key]!=value[key] for key in ('token','digest')):return
             if previous is None and len(self._tickets)>=MAX_TICKETS:return
             self._tickets[value['id']]=dict(token=value['token'],digest=value['digest'],peer=peer,name=source['name'],at=now,identity=self._identity)
-        self.mesh.send_control(peer,dict(type='lan-transfer',action='accepted',id=value['id']))
+        self._signal(peer,dict(type='lan-transfer',action='accepted',id=value['id']))
 
     def incoming(self,transfer):
         with self._lock:
             ticket=self._tickets.get(transfer.transfer_id)
-            if (ticket is None or self.mesh.closed or ticket['identity']!=self.mesh._session()
+            if (ticket is None or not self._active() or ticket['identity']!=self._session()
                     or time.monotonic()-ticket['at']>=TICKET_LIFETIME_SECONDS
                     or not secrets.compare_digest(ticket['token'],transfer.token)
                     or not secrets.compare_digest(ticket['digest'],transfer.manifest_hash)):return None

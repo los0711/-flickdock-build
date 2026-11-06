@@ -878,16 +878,15 @@ class AccountPanel(QFrame):
         self._update_device_connections()
 
     def _update_device_connections(self):
-        labels={'lan':'局域网','p2p':'P2P 直连','relay':'TURN 中继','cloud':'云端','connecting':'连接中','disconnected':'未连接'}
+        labels={'cloud':'云端在线','disconnected':'离线'}
         platforms={'windows':'Windows','macos':'Mac','linux':'Linux'}
         for identity,row in self._rows_by_id.items():
             device=self._devices[identity];platform=platforms.get(str(device.get('platform','')),'其他设备')
             if row._current_device:text=platform+' · (本机)'
             else:
                 info=self._device_connections.get(identity,{})
-                route=labels.get(info.get('route'),'未连接');latency=info.get('latency_ms')
-                delay=str(round(latency))+' ms' if type(latency) in (float,int) and math.isfinite(latency) and 0<=latency<60000 else '—'
-                text=platform+' · '+route+' · '+delay
+                route=labels.get(info.get('route'),'状态未知')
+                text=platform+' · '+route
             row._connection_label.setText(text)
             row._connection_label.setAccessibleName(text)
 

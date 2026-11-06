@@ -49,19 +49,5 @@ class AccountTransferTests(unittest.TestCase):
         self.assertEqual([row['type'] for row in self.sent],['hello','account_state'])
         self.assertFalse(self.sent[-1]['active']);first=self.sent[-1]['nonce']
         self.wan._hello();self.assertNotEqual(self.sent[-1]['nonce'],first)
-    def test_first_remote_dialog_forwards_recommendation_without_dropping_draft(self):
-        self.wan._peers={'b'*64:dict(id='b'*64,name='Mac',platform='macos',online=True,account_device=True,lan_id='c'*32)}
-        self.wan.nearby_peers_provider=lambda:[dict(id='c'*32,name='Mac')]
-        dialog=LanDialog(self.wan,SettingsStore(self.root/'settings'));received=[]
-        dialog.lan_recommended.connect(lambda paths,peer:received.append((paths,peer)))
-        try:
-            source=self.root/'original.txt';source.write_text('original')
-            panel=dialog.panel;panel.queue_paths([source]);panel._recommend_lan()
-            self.assertEqual(received,[([str(source)],'c'*32)])
-            self.assertEqual(panel._queued_paths,[str(source)])
-            self.assertEqual(panel.devices.itemText(0),'Mac')
-            self.assertTrue(panel.devices.itemData(0,Qt.UserRole+3))
-            self.assertIn('同账号',panel.devices.itemData(0,Qt.AccessibleTextRole))
-        finally:dialog.close();dialog.deleteLater();APP.processEvents()
 
 if __name__=='__main__':unittest.main()

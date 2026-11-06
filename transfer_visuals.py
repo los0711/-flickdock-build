@@ -256,7 +256,7 @@ class ClipboardProgressRow(QWidget):
         super().__init__(parent)
         layout=QHBoxLayout(self);layout.setContentsMargins(0,0,0,0);layout.setSpacing(4)
         self.rings={};self.labels={};self.active=False
-        for key in ('cloud','devices'):
+        for key in ('cloud',):
             ring=TransferProgressRing(self);label=QLabel(self)
             label.setStyleSheet('font-size:10px;background:transparent;border:0;')
             self.rings[key]=ring;self.labels[key]=label;layout.addWidget(ring);layout.addWidget(label)
@@ -272,7 +272,6 @@ class ClipboardProgressRow(QWidget):
         label={'idle':'云端','preparing':'云端准备','verifying':'云端确认','complete':'云端已备份','error':'云端待重试'}.get(phase,'云端同步')
         if phase=='uploading' and cloud['total']>0:label=f'云端 {min(100,cloud["received"]*100//cloud["total"])}%'
         self.labels['cloud'].setText(label)
-        devices=progress['devices'];self.labels['devices'].setText(f'设备 {devices["received"]}/{devices["total"]}')
         self.setVisible(bool(state.get('id') and state.get('value') is not None and state.get('phase')!='size_limit'))
 
 

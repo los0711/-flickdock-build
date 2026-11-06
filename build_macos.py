@@ -220,10 +220,10 @@ def main(arguments=None):
         env['FLICKDOCK_CODESIGN_IDENTITY'] = options.sign_identity
     if options.entitlements:
         env['FLICKDOCK_ENTITLEMENTS'] = str(options.entitlements.resolve())
-    run([python, '-m', 'unittest', 'test_window_zoom_v1824', 'test_surface_source_cache', 'test_mac_install', 'test_preview_continuity', 'test_display_frames', 'test_video_matrix', 'test_receive_notice', 'test_copy_notice_v1824', 'test_p2p_priority', 'test_virtual_clipboard', 'test_peer_backpressure', 'test_platform_startup', 'test_platform_native', 'test_mac_window_order_v1810', 'test_mac_updates',
+    run([python, '-m', 'unittest', 'test_cloud_only_v1825','test_window_zoom_v1824', 'test_surface_source_cache', 'test_mac_install', 'test_preview_continuity', 'test_display_frames', 'test_video_matrix', 'test_receive_notice', 'test_copy_notice_v1824', 'test_virtual_clipboard', 'test_platform_startup', 'test_platform_native', 'test_mac_window_order_v1810', 'test_mac_updates',
          'test_macos_native_entry', 'test_update_macos_controller', 'test_mac_build',
          'test_shelf_sync_v180', 'test_sync_review_v180', 'test_account_security_v180',
-         'test_lan_transfer_v181', 'test_lan_dialog_v183', 'test_lan_account_v1825', 'test_secondary_signaling_v1825', 'test_shelf_transfers_v181',
+         'test_lan_transfer_v181', 'test_lan_dialog_v183', 'test_lan_account_v1825', 'test_shelf_transfers_v181',
          'test_account_profile_layout_v1814', 'test_account_settings_v181', 'test_lan_hig_layout_v1814',
          'test_html_native_lan', 'test_html_native_dialogs',
          'test_ui_feedback_v1815', 'test_directory_sync_v1815', 'test_feedback_v1816','test_feedback_v1818',
@@ -236,8 +236,6 @@ def main(arguments=None):
     # Native WebRTC and QWebSocket lifetimes are verified in their own Qt
     # process, matching the standalone frozen-client gate below.
     run([python,'-m','unittest','test_wan_transfer_v1816','-v'],env=env)
-    run([python,'-m','unittest','test_nearby_transport_v1818','-v'],env=env)
-    run([python,'-m','unittest','test_peer_transport_v1824','test_peer_sync_v1824','-v'],env=env)
     run([python,'-m','unittest','test_wan_signaling_v1818','-v'],env=env)
     run([python,'-m','unittest','test_cloud_failover_v1818','-v'],env=env)
     run([python,'-m','unittest','test_stream_upload_v1816','-v'],env=env)

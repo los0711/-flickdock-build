@@ -145,49 +145,10 @@ class WanRecovery(unittest.TestCase):
         self.assertTrue(state['done']);self.assertIn(self.identifier,self.service._pending)
         self.message(type='settled');self.assertNotIn(self.identifier,self.service._pending)
 
-    def test_failed_tls_allocation_switches_next_generation_to_supplied_udp(self):
-        state=self.state();fake=unittest.mock.Mock();fake.opened.is_set.return_value=False
-        state.update(bridge=fake,relay_transport='tls',relay_allowed=False)
-        self.service._handle_native(dict(id=self.identifier,generation=1,event=dict(type='state',state='failed')))
-        self.assertTrue(state['ready'].is_set());self.assertFalse(state['udp_failed'])
-        with patch('wan_transfer.WebRTCStream',return_value=fake):
-            self.service._begin(self.identifier,state,dict(generation=2,iceServers=[],relayAllowed=False))
-        self.assertFalse(fake.control.call_args.args[0]['preferTls'])
 
-    def test_direct_session_does_not_resolve_a_proxy(self):
-        state=self.state();fake=unittest.mock.Mock()
-        with patch('wan_transfer.WebRTCStream',return_value=fake),patch('wan_transfer._turn_http_proxy',side_effect=AssertionError('Direct P2P must not query proxy')):
-            self.service._begin(self.identifier,state,dict(generation=2,iceServers=[],relayAllowed=False))
-        self.assertEqual(fake.control.call_args.args[0]['proxies'],{})
 
-    def test_turn_uses_qt_proxy_selection_and_honors_bypass(self):
-        from PySide6.QtNetwork import QNetworkProxy
-        from wan_transfer import _turn_http_proxy
-        proxy=QNetworkProxy(QNetworkProxy.ProxyType.HttpProxy,'127.0.0.1',7890,'qa-user','qa-secret')
-        bypass=QNetworkProxy(QNetworkProxy.ProxyType.NoProxy)
-        with patch('wan_transfer.QNetworkProxyFactory.proxyForQuery',return_value=[proxy,bypass]) as query:
-            self.assertEqual(_turn_http_proxy(5349),dict(type='http',host='127.0.0.1',port=7890,username='qa-user',password='qa-secret'))
-            self.assertEqual(query.call_args.args[0].url().host(),'turn.cloudflare.com')
-            self.assertEqual(query.call_args.args[0].url().port(),5349)
-        with patch('wan_transfer.QNetworkProxyFactory.proxyForQuery',return_value=[bypass,proxy]):self.assertIsNone(_turn_http_proxy(443))
-        proxy.setType(QNetworkProxy.ProxyType.Socks5Proxy)
-        with patch('wan_transfer.QNetworkProxyFactory.proxyForQuery',return_value=[proxy]):
-            self.assertEqual(_turn_http_proxy(443)['type'],'socks5')
 
-    def test_selected_proxy_is_forwarded_to_the_native_tls_adapter(self):
-        state=self.state();fake=unittest.mock.Mock();proxy=dict(type='http',host='127.0.0.1',port=7890)
-        servers=[dict(urls=['turns:turn.cloudflare.com:443?transport=tcp','turns:turn.cloudflare.com:5349?transport=tcp'],username='qa',credential='private')]
-        with patch('wan_transfer.WebRTCStream',return_value=fake),patch('wan_transfer._turn_http_proxy',side_effect=lambda port:proxy if port==443 else None):
-            self.service._begin(self.identifier,state,dict(generation=2,iceServers=servers,relayAllowed=False))
-        self.assertEqual(fake.control.call_args.args[0]['proxies'],{'443':proxy,'5349':None})
 
-class TurnTLS(unittest.TestCase):
-    def test_real_adapter_framing_and_transport_failure_contracts(self):
-        root=Path(__file__).parent/'p2p';node=root/'runtime'/('node.exe' if sys.platform=='win32' else 'node')
-        if not node.is_file():self.skipTest('Build host must prepare pinned WebRTC assets')
-        result=subprocess.run([str(node),'--test',str(root/'test-turn-tls.mjs')],cwd=root,capture_output=True,text=True,timeout=30)
-        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-        self.assertIn('pass 17',result.stdout)
 
 class NativeStream(unittest.TestCase):
     def setUp(self):
@@ -222,24 +183,6 @@ class NativeStream(unittest.TestCase):
         self.peers[0].sendall(original);self.peers[0].close();receiver.join(10)
         self.assertFalse(receiver.is_alive());self.assertEqual(failure,[]);self.assertEqual(hashlib.sha256(received).digest(),hashlib.sha256(original).digest())
 
-    def test_network_progress_counts_only_acknowledged_file_bytes(self):
-        header=b'manifest-header';body=os.urandom(2*1024*1024);trailer=b'sha256-trailer'
-        original=header+body+trailer;received=bytearray()
-        def consume():
-            while len(received)<len(original):
-                try:part=self.peers[1].recv(65536)
-                except TimeoutError:continue
-                if not part:break
-                received.extend(part)
-        thread=threading.Thread(target=consume,daemon=True);thread.start()
-        self.peers[0].sendall(header);self.peers[0].set_payload_offset(123)
-        self.peers[0].send_payload(body);self.peers[0].sendall(trailer);thread.join(8)
-        deadline=time.monotonic()+3
-        while self.peers[0].payload_progress()<123+len(body) and time.monotonic()<deadline:
-            self.peers[0].traffic(refresh=True);time.sleep(.01)
-        self.assertEqual(bytes(received),original)
-        self.assertEqual(self.peers[0].payload_progress(),123+len(body))
-        self.assertFalse(self.peers[0]._payload_spans)
 
     def test_native_file_pipeline_preserves_folder_bytes_and_native_usage(self):
         from lan_transfer import LanTransferService,_Transfer

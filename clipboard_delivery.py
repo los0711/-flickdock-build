@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from PySide6.QtCore import QObject,QTimer
 
-ROUTES=('lan','p2p','relay','cloud')
+ROUTES=('cloud',)
 MAX_TARGETS=100
 RECEIPT_RETRY_INITIAL_MS=2500
 RECEIPT_RETRY_MAX_MS=300000
@@ -18,11 +18,7 @@ LOG=logging.getLogger(__name__)
 
 def sync_progress(state):
     cloud=state.get('cloud_transfer') or (dict(phase='complete',received=1,total=1) if state.get('backed_up') else dict(phase='idle',received=0,total=0))
-    counts=state.get('deliveries',{})
-    total=sum(row['total'] for row in counts.values());received=sum(row['success'] for row in counts.values())
-    active=state.get('value') is not None and bool(state.get('id')) and state.get('phase') not in ('local','size_limit')
-    phase='idle' if not active or not total else 'complete' if received==total else 'delivering'
-    return dict(cloud=cloud,devices=dict(phase=phase,received=received,total=total))
+    return dict(cloud=cloud)
 
 
 def route_map(value):
@@ -88,11 +84,12 @@ class ClipboardDeliveries(QObject):
             candidate['plan']=dict(self.current['plan'],**candidate['plan'])
             if candidate==self.current:return
         else:
-            # Cloud commit hints can arrive while the same peer body is still
-            # being unpacked. Keep that hint until its exact ID/hash is applied.
+            # Keep the committed receipt until its exact ID/hash is applied.
             cached=self.cloud_snapshot
             self.reset();self.cloud_snapshot=cached
-        if candidate['origin']==self.client.account.device_id:self.dirty=True
+        if candidate['origin']==self.client.account.device_id:
+            if plan is None and self.connections is not None:candidate['plan']=dict(self.connections)
+            self.dirty=True
         self.current=candidate;self._changed()
         if self.cloud_snapshot is not None:self.merge(self.cloud_snapshot)
 
@@ -117,9 +114,6 @@ class ClipboardDeliveries(QObject):
         self.cloud_ready=True
         updated=dict(incoming,plan=dict(self.current['plan'],**incoming['plan']),receipts=dict(self.current['receipts'],**incoming['receipts']))
         if updated!=self.current:self.current=updated;self._changed()
-        view=self.client.view
-        if view.get('id')==incoming['id'] and view.get('phase')=='peer':
-            self.client._set_view(view['value'],'synced',view['id'],backed_up=True)
         self.flush()
 
     def committed(self,head,delivery=None):
@@ -161,7 +155,7 @@ class ClipboardDeliveries(QObject):
             plan=dict(self.connections)
             if current:
                 plan.pop(current['origin'],None)
-                # This device is an online recipient, even though its mesh
+                # This device is an online recipient, even though its presence
                 # snapshot intentionally contains only the other devices.
                 device=self.client.account.device_id
                 if device!=current['origin'] and (device in current['plan'] or device in receipts):
@@ -178,8 +172,7 @@ class ClipboardDeliveries(QObject):
             if not isinstance(device,str) or not UUID.fullmatch(device) or not isinstance(info,dict):
                 raise ValueError('Invalid device connection identity')
             route=info.get('route')
-            if route in ('connecting','cloud'):connections[device]='cloud'
-            elif route in ROUTES:connections[device]=route
+            if route=='cloud':connections[device]='cloud'
             elif route!='disconnected':raise ValueError('Invalid device connection state')
         if self.connections==connections:return
         self.connections=connections

@@ -23,26 +23,12 @@ def run(argv,load_font):
         with original.open('rb') as stream:expected=hashlib.file_digest(stream,'sha256').hexdigest()
         destination=root/'接收';destination.mkdir()
         services=[WanTransferService(root/str(index),device_name='FlickDock QA '+str(index),origin=origin,allow_test_origin=local,qa_force_relay=force_relay) for index in range(2)]
-        if '--wan-tls-first' in argv:
-            for service in services:
-                original_begin=service._begin
-                def begin(identifier,state,value,original=original_begin):state['udp_failed']=True;return original(identifier,state,value)
-                service._begin=begin
         completed=[[],[]];offers=[];states=[];started=time.perf_counter();finished=False;identifier=''
         def finish(error=''):
             nonlocal finished
             if finished:return
             finished=True;timer.stop();deadline.stop()
             report.update(ok=not error,error=error,elapsed_seconds=time.perf_counter()-started)
-            report['stream_diagnostics']=[]
-            for service in services:
-                for state in service._pending.values():
-                    adaptive=state.get('adaptive')
-                    if adaptive is not None:
-                        report['stream_diagnostics'].append(dict(sequence=adaptive._sequence,received_sequence=adaptive._received_sequence,
-                            pending_bytes=adaptive._pending_bytes,input_bytes=adaptive._input_bytes,reorder=len(adaptive._reorder),
-                            sent=adaptive._sent_bytes,acked=adaptive._acked_bytes,measurements=adaptive.measurements(),
-                            paths=[dict(route=p.route,dead=p.dead,sent=p.sent,received=p.received) for p in adaptive._paths.values()]))
             for service in services:service.close()
             output.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf8');app.exit(1 if error else 0)
         def receive(offer):

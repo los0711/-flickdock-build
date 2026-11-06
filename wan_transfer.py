@@ -7,52 +7,21 @@ import hashlib,json,os,re,secrets,shutil,socket,sys,threading,time
 from pathlib import Path
 from uuid import uuid4
 from PySide6.QtCore import QTimer,QUrl,Signal
-from PySide6.QtNetwork import QNetworkRequest,QNetworkProxy,QNetworkProxyFactory,QNetworkProxyQuery
+from PySide6.QtNetwork import QNetworkRequest
 from PySide6.QtWebSockets import QWebSocket
 from lan_transfer import LanTransferService,_Transfer,_validate_manifest
 from selection_archive import _is_link
 from webrtc_stream import WebRTCStream
 from cloud_config import DEFAULT_CLOUD_URL,CLOUD_ORIGINS
 SIGNAL_ORIGINS=CLOUD_ORIGINS
-DIRECT_CONNECT_GRACE_MS=12000
-P2P_CONNECT_TIMEOUT_MS=20000
+DIRECT_CONNECT_GRACE_MS=8000
 REMOTE_CONNECT_ATTEMPT_SECONDS=45.
 RECEIVE_CODE=re.compile(r'(?=.*[2-9])(?=.*[A-HJ-NP-Z])[23456789A-HJ-NP-Z]{4}')
 
-def ice_configuration(servers):
-    if not isinstance(servers,list) or len(servers)>16:raise ValueError('Invalid ICE servers')
-    result=[]
-    for server in servers:
-        if not isinstance(server,dict):raise ValueError('Invalid ICE server')
-        urls=server.get('urls',[])
-        if not isinstance(urls,list):raise ValueError('Invalid ICE URLs')
-        for url in urls:
-            if not isinstance(url,str):raise ValueError('Invalid ICE URL')
-            parsed=re.fullmatch(r'(stun|turn|turns):([\w.-]+):(\d+)(?:\?transport=(udp|tcp))?',url)
-            if not parsed:raise ValueError('Invalid ICE URL')
-            scheme,host,port,transport=parsed.groups();port=int(port)
-            if host not in ('stun.cloudflare.com','turn.cloudflare.com') or not 1<=port<=65535:raise ValueError('Untrusted ICE endpoint')
-            if scheme=='stun':result.append(url)
-            else:
-                username,password=server.get('username'),server.get('credential')
-                if not all(isinstance(value,str) and 1<=len(value)<=4096 for value in (username,password)):raise ValueError('Invalid TURN credentials')
-                result.append(dict(hostname=host,port=port,username=username,password=password,
-                    relayType='TurnTls' if scheme=='turns' else 'TurnTcp' if transport=='tcp' else 'TurnUdp'))
-    return result
 
-def _turn_http_proxy(port):
-    # Match Qt's existing destination-specific proxy/bypass selection. Proxy
-    # credentials travel only through the private child-process IPC channel.
-    for proxy in QNetworkProxyFactory.proxyForQuery(QNetworkProxyQuery(QUrl('https://turn.cloudflare.com:'+str(port)))):
-        if proxy.type()==QNetworkProxy.ProxyType.NoProxy:return None
-        if proxy.type() in (QNetworkProxy.ProxyType.HttpProxy,QNetworkProxy.ProxyType.Socks5Proxy):
-            return dict(type='http' if proxy.type()==QNetworkProxy.ProxyType.HttpProxy else 'socks5',
-                        host=proxy.hostName(),port=proxy.port(),username=proxy.user(),password=proxy.password())
-    return None
 
 class WanTransferService(LanTransferService):
-    sync_signal=Signal(dict)
-    sync_ice_changed=Signal()
+    lan_authorization=Signal(dict)
     identity_changed=Signal(dict)
     _command=Signal(dict)
     _native=Signal(dict)
@@ -65,10 +34,9 @@ class WanTransferService(LanTransferService):
         self.account_service=None;self.lan_id='';self.nearby_peers_provider=lambda:[]
         self._bind_epoch=0;self._bind_key=None;self._bound_identity=None;self._pending_identity=None
         self._account_nonce='';self._account_ack=False
-        self._sync_ice=[];self._sync_ice_expires=0.;self._sync_ice_retry=0.;self._sync_ice_key=None;self.server_clock_anchor=None
         self.allow_test_origin=allow_test_origin
         self._qa_force_relay=bool(qa_force_relay and os.environ.get('QT_QPA_PLATFORM')=='offscreen')
-        self._credential='';self._pending={};self._outbox={};self._connected=False;self._closing=False;self.cloud_routes=None
+        self._credential='';self._pending={};self._outbox={};self._connected=False;self._closing=False
         self._origins=SIGNAL_ORIGINS if origin==DEFAULT_CLOUD_URL else (origin,)
         self._origin_index=0;self._connect_attempt=0;self._connection_error='';self._manual_retry_at=0.
         try:
@@ -96,9 +64,6 @@ class WanTransferService(LanTransferService):
 
     def attach_account(self,account,*,lan_id='',nearby_peers=None):
         self.account_service=account;self.lan_id=lan_id
-        from cloud_pipe import CloudPipeApi
-        if self.cloud_routes is not None:self.cloud_routes.close()
-        self.cloud_routes=CloudPipeApi(account,self._credential,self)
         if nearby_peers:self.nearby_peers_provider=nearby_peers
         account.account_changed.connect(self._account_changed)
         account.devices_changed.connect(lambda _:self._send_signal(dict(type='recent')))
@@ -111,11 +76,7 @@ class WanTransferService(LanTransferService):
     def _account_changed(self,*_,force=False):
         identity=self._account_identity()
         if not force and identity is not None and identity in (self._bound_identity,self._pending_identity):return
-        previous=self._pending_identity or self._bound_identity
         self._bind_epoch+=1;self.bind_retry.stop();self._bound_identity=None
-        if self._sync_ice_key and self.account_service:self.account_service.api.cancel(self._sync_ice_key)
-        self._sync_ice_key=None
-        if identity!=previous:self._sync_ice=[];self._sync_ice_expires=0.;self.server_clock_anchor=None
         if self._bind_key and self.account_service:self.account_service.api.cancel(self._bind_key)
         self._bind_key=None;self._pending_identity=identity
         self._account_nonce=secrets.token_hex(16);self._account_ack=False
@@ -132,32 +93,13 @@ class WanTransferService(LanTransferService):
             if error:
                 if getattr(error,'status',0)!=401:self.bind_retry.start()
                 return
-            self._bound_identity=identity;self._load_sync_ice();self._send_signal(dict(type='recent'))
+            self._bound_identity=identity;self._send_signal(dict(type='recent'))
             self.peers_changed.emit(self.peers())
         key=self.account_service.api.request('POST','/v1/wan/account',done,
             data={'credential':self._credential,'lan_id':self.lan_id,'nonce':self._account_nonce},timeout_ms=12000)
         if self._bind_key is pending:self._bind_key=key
 
-    def _load_sync_ice(self):
-        if (not self._connected or not self._bound_identity or self._closing or self._sync_ice_key
-                or time.monotonic()<self._sync_ice_retry or self._sync_ice_expires-time.monotonic()>300):return
-        epoch=self._bind_epoch;pending=object();self._sync_ice_key=pending
-        def done(result,error):
-            if epoch!=self._bind_epoch or self._closing:return
-            self._sync_ice_key=None
-            if error:
-                self._sync_ice_retry=time.monotonic()+30
-                from network_diagnostics import record_event
-                record_event(self.base,'remote','sync_ice','RELAY_CREDENTIALS_UNAVAILABLE',getattr(error,'status',0));return
-            try:
-                configuration=ice_configuration(result['iceServers']);expires=result['expires'];now=result['serverNow']
-                if type(expires) is not int or type(now) is not int or not now<expires<=now+21600000:raise ValueError('Invalid ICE expiry')
-            except (KeyError,TypeError,ValueError):
-                self._sync_ice_retry=time.monotonic()+30;self.status_changed.emit('同账号中继配置无效，保留当前直连。');return
-            self._sync_ice=configuration;self._sync_ice_expires=time.monotonic()+(expires-now)/1000
-            self.sync_ice_changed.emit()
-        key=self.account_service.api.request('POST','/v1/wan/ice',done,data={'credential':self._credential},timeout_ms=25000)
-        if self._sync_ice_key is pending:self._sync_ice_key=key
+
 
     def nearby_peer(self,identifier):
         peer=self._peers.get(identifier,{})
@@ -201,7 +143,7 @@ class WanTransferService(LanTransferService):
     def _hello(self):
         self._connected=True;self.retry.stop();self.poll.start();self.code_timer.start()
         self._last_signal=time.monotonic()
-        self._send_signal(dict(type='hello',name=self.device_name,platform='macos' if sys.platform=='darwin' else 'windows',lan_id=self.lan_id,features=['routes-v1','mesh-v1']))
+        self._send_signal(dict(type='hello',name=self.device_name,platform='macos' if sys.platform=='darwin' else 'windows',lan_id=self.lan_id))
         self._account_changed(force=True)
     def _disconnected(self,*_):
         self.connect_timeout.stop()
@@ -217,7 +159,6 @@ class WanTransferService(LanTransferService):
             self.status_changed.emit(self._connection_error)
         self.identity_changed.emit(self.code_identity())
     def _heartbeat(self):
-        self._load_sync_ice()
         if not self._connected:return
         if time.monotonic()-self._last_signal>40:
             self.socket.abort();self._disconnected();return
@@ -309,14 +250,9 @@ class WanTransferService(LanTransferService):
             value=json.loads(message)
             if value.get('schema_version')!=1:return
             self._last_signal=time.monotonic()
-            server_now=value.get('serverNow')
-            if type(server_now) is int and 0<server_now<=2**53-1:self.server_clock_anchor=(time.monotonic(),server_now)
             kind=value.get('type');identifier=value.get('id');state=self._pending.get(identifier)
-            if isinstance(kind,str) and kind.startswith('sync_'):
-                self.sync_signal.emit(value);return
-            if kind=='cloud_data':
-                if isinstance(identifier,str) and re.fullmatch('[a-f0-9]{32}',identifier):self.cloud_routes.notify(identifier)
-                return
+            if kind=='lan_authorization':
+                self.lan_authorization.emit(value);return
             if kind=='account_state':
                 if value.get('nonce')==self._account_nonce:
                     self._account_ack=True;self._bind_account()
@@ -386,13 +322,6 @@ class WanTransferService(LanTransferService):
             elif kind=='settled':
                 if state.get('done'):self._pending.pop(identifier,None)
             elif kind=='begin':self._begin(identifier,state,value)
-            elif kind=='path_signal' and value.get('generation')==state.get('generation'):
-                if state.get('adaptive') is not None:state['adaptive']._secondary_signal(value.get('value'))
-            elif kind=='cloud_path' and value.get('generation')==state.get('generation'):
-                if (not state.get('cancelled') and state['role']=='receive' and state.get('destination') and self.cloud_routes is not None
-                        and re.fullmatch('[a-f0-9]{32}',str(value.get('pipe',''))) and re.fullmatch('[a-f0-9]{64}',str(value.get('key','')))):
-                    configured=self.cloud_routes.open(state['peer']['id'],dict(id=value['pipe'],key=value['key']),self._stopped,False)
-                    if configured is not None:self._attach_cloud(identifier,state,configured[0])
             elif kind in ('description','candidate') and value.get('generation')==state.get('generation'):
                 bridge=state.get('bridge')
                 if bridge:bridge.control({key:item for key,item in value.items() if key not in ('id','generation','schema_version')})
@@ -404,10 +333,6 @@ class WanTransferService(LanTransferService):
                 if value.get('requestType') in ('description','candidate','connected'):return
                 bridge=state.get('bridge')
                 if value.get('requestType')=='relay' and bridge and bridge.opened.is_set() and not bridge.closed:return
-                if value.get('requestType')=='relay' and state['role']=='send':
-                    state['relay_requested']=False
-                    self._bootstrap_cloud(identifier,state['generation'])
-                    if state.get('cloud_starting'):return
                 state['error']=str(value.get('message') or '远程连接失败。');state['ready'].set();self.status_changed.emit(state['error'])
                 if state.get('prepared'):state['prepared'].set()
                 if state['role']=='receive' and identifier not in self._transfers:
@@ -419,53 +344,34 @@ class WanTransferService(LanTransferService):
         if state.get('cancelled'):return
         previous=state.get('bridge')
         if state.get('done') and state['role']=='send':return
-        if value.get('relayAttempt') and ((previous and previous.opened.is_set() and not previous.closed) or state.get('adaptive') is not None and not state['adaptive'].closed):return
+        if value.get('relayAttempt') and previous and previous.opened.is_set() and not previous.closed:return
         if previous:
-            adaptive=state.pop('adaptive',None)
-            if adaptive is not None:adaptive.shutdown()
             if previous.route=='relay':state['relay_bytes_prior']=state.get('relay_bytes_prior',0)+sum(previous.traffic().values())
             previous.shutdown()
         generation=value['generation'];state['generation']=generation;state['ready'].clear();state.pop('error',None)
-        state['cloud_starting']=False;state['native_attaching']=False
         state['requested']=True;state['retry_inflight']=False
         state['relay_allowed']=bool(value.get('relayAllowed'));state['connect_started']=time.monotonic()
         state['relay_requested']=False;state.pop('network_error',None)
-        state['relay_transport']=''
-        state['adaptive_allowed']=value.get('adaptive') is True
-        try:urls=ice_configuration(value['iceServers']);state['ice_servers']=urls
-        except ValueError:
-            self._begin_failed(identifier,state,'远程连接配置无效，请重新连接。','ICE_CONFIGURATION');return
-        try:bridge=WebRTCStream(lambda event:self._native.emit(dict(id=identifier,generation=generation,event=event)),node=self.node)
-        except (OSError,RuntimeError) as error:
-            self._begin_failed(identifier,state,'远程传输组件启动失败，请检查安装完整性和系统权限。',
-                               'COMPONENT_'+type(error).__name__.upper());return
+        urls=[]
+        for server in value['iceServers']:
+            for url in server.get('urls',[]):
+                parsed=re.fullmatch(r'(stun|turn|turns):([\w.-]+):(\d+)(?:\?transport=(udp|tcp))?',url)
+                if not parsed:continue
+                scheme,host,port,transport=parsed.groups()
+                if host not in ('stun.cloudflare.com','turn.cloudflare.com'):continue
+                if scheme=='stun':urls.append(url)
+                else:urls.append(dict(hostname=host,port=int(port),username=server['username'],password=server['credential'],relayType='TurnTls' if scheme=='turns' else 'TurnTcp' if transport=='tcp' else 'TurnUdp'))
+        bridge=WebRTCStream(lambda event:self._native.emit(dict(id=identifier,generation=generation,event=event)),node=self.node)
         state['bridge']=bridge
-        try:
-            proxies={str(port):_turn_http_proxy(port) for port in sorted({row['port'] for row in urls if isinstance(row,dict) and row.get('relayType')=='TurnTls'})}
-            prefer_tls=bool(state['udp_failed']) if 'udp_failed' in state else any(proxies.values())
-            bridge.control(dict(type='init',iceServers=urls,initiator=state['role']=='send',forceRelay=self._qa_force_relay,preferTls=prefer_tls,proxies=proxies))
-        except (OSError,RuntimeError):
-            bridge.shutdown();self._begin_failed(identifier,state,'远程传输组件初始化失败，请重试或重新安装当前版本。','INIT_FAILED');return
+        bridge.control(dict(type='init',iceServers=urls,initiator=state['role']=='send',forceRelay=self._qa_force_relay))
         if state['role']=='send':
             transfer=self._transfers.get(identifier)
             if transfer:self._notify(transfer,'connecting',route='relay' if value.get('relayAttempt') else 'direct')
             if value.get('relayAllowed'):QTimer.singleShot(DIRECT_CONNECT_GRACE_MS,lambda:self._relay_if_needed(identifier,generation))
-            QTimer.singleShot(P2P_CONNECT_TIMEOUT_MS,lambda:self._p2p_timed_out(identifier,generation))
 
-    def _p2p_timed_out(self,identifier,generation):
-        state=self._pending.get(identifier)
-        if (not state or state.get('generation')!=generation or state.get('cancelled') or state.get('done')
-                or state['ready'].is_set() or state['bridge'].opened.is_set()):return
-        if state.get('adaptive') is not None and not state['adaptive'].closed:return
-        from network_diagnostics import record_event
-        record_event(self.base,'remote','ice','P2P_CONNECT_TIMEOUT')
-        self._bootstrap_cloud(identifier,generation)
     def _relay_if_needed(self,identifier,generation):
         state=self._pending.get(identifier)
         if state and state['generation']==generation and not state['bridge'].opened.is_set():
-            if state.get('adaptive') is not None and not state['adaptive'].closed:return
-            if state.get('cloud_starting'):
-                QTimer.singleShot(1000,lambda:self._relay_if_needed(identifier,generation));return
             if not state.get('relay_allowed'):return
             state['relay_allowed']=False
             state['relay_requested']=True
@@ -473,75 +379,18 @@ class WanTransferService(LanTransferService):
             self._send_signal(dict(type='relay',id=identifier,generation=generation))
     def _handle_native(self,value):
         identifier=value['id'];state=self._pending.get(identifier)
-        if not state or state.get('generation')!=value['generation']:
-            if value['event'].get('type')=='cloud_ready':value['event']['stream'].shutdown()
-            return
+        if not state or state.get('generation')!=value['generation']:return
         event=value['event'];kind=event.get('type')
-        if state.get('cancelled'):
-            if kind=='cloud_ready':event['stream'].shutdown()
-            return
-        if (kind=='closed' and type(event.get('exit_code')) is int and event['exit_code']!=0
-                and not state['bridge'].opened.is_set() and not self._closing):
-            self._begin_failed(identifier,state,'远程传输组件异常退出，请检查安装完整性和系统权限。',
-                               str(event.get('reason','UNKNOWN')));return
-        if kind=='cloud_ready':
-            state['cloud_starting']=False;descriptor=event['descriptor']
-            if state['ready'].is_set() or state['bridge'].opened.is_set():
-                event['stream'].shutdown();return
-            self._send_signal(dict(type='cloud_path',id=identifier,generation=state['generation'],pipe=descriptor['id'],key=descriptor['key']))
-            self._attach_cloud(identifier,state,event['stream'])
-        elif kind=='cloud_error':
-            state['cloud_starting']=False
-            if not state['ready'].is_set() and not state['bridge'].opened.is_set():
-                state['error']='P2P 连接未能建立，云端兜底也暂不可用，请重试。';state['network_error']=True;state['ready'].set()
-        elif kind=='route_signal':
-            if not self._send_signal(dict(type='path_signal',id=identifier,generation=state['generation'],value=event['value'])):
-                self._thread(state['adaptive'].send_inband,event['value'])
-        elif kind in ('description','candidate'):
+        if kind in ('description','candidate'):
             self._send_signal(dict(id=identifier,generation=state['generation'],**event))
-        elif kind=='transport':
-            state['relay_transport']=event.get('relayTransport','')
-            if event.get('tlsFallback'):state['tls_failed']=True
         elif kind=='open':
-            if state.get('adaptive') is not None:
-                if not state.get('native_attaching'):
-                    state['native_attaching']=True
-                    self._thread(state['adaptive'].attach_native,state['bridge'],'send' if state['role']=='send' else 'receive')
-                return
             state['route']=event['route'];state['ready'].set()
             self._send_signal(dict(type='connected',id=identifier,generation=state['generation']))
             self.status_changed.emit('P2P 直连已建立。' if event['route']=='direct' else '中继连接已建立。')
             if state['role']=='receive':
-                state['incoming_started']=True
                 if self._slots.acquire(blocking=False):self._thread(self._incoming,state['bridge'],state['peer']['id'])
                 else:self.cancel(identifier)
-        elif kind=='path' and event.get('route') in ('direct','relay'):
-            if state.get('adaptive') is not None:return
-            state['route']=event['route']
-            self.status_changed.emit('已切换为 P2P 直连。' if event['route']=='direct' else '已切换为 TURN 中继。')
-        elif kind=='route':
-            state['route']='direct' if event['route']=='p2p' else event['route']
-            self.status_changed.emit('已自动选择'+{'lan':'局域网','p2p':'P2P 直连','relay':'TURN 中继','cloud':'云端'}[event['route']]+'。')
-        elif kind=='stats':
-            transfer=self._transfers.get(identifier)
-            if transfer and state.get('progress_state')=='transferring' and not transfer.cancel.is_set():
-                self._notify(transfer,'transferring')
         elif kind in ('error','closed') or kind=='state' and event.get('state')=='failed':
-            from network_diagnostics import record_event
-            bridge=state.get('bridge')
-            record_event(self.base,'remote','ice','WEBRTC_'+str(kind).upper(),
-                         details=bridge.diagnostics() if bridge is not None else dict(pc_state='uninitialized'))
-            if state.get('adaptive') is not None and not state['adaptive'].closed:return
-            if not state['bridge'].opened.is_set() and state['role']=='send' and state.get('relay_allowed'):
-                self._relay_if_needed(identifier,state['generation']);return
-            if state.get('relay_requested'):return
-            if state['role']=='send' and self.cloud_routes is not None and not self._qa_force_relay:
-                self._bootstrap_cloud(identifier,state['generation'])
-                if state.get('cloud_starting'):return
-            # A TLS handshake alone does not prove that TURN allocation works.
-            # The next bounded, resumable attempt can try the supplied UDP row.
-            if state.get('relay_transport') in ('udp','tls') and not state.get('done'):
-                state['udp_failed']=state['relay_transport']=='udp'
             if not state['bridge'].opened.is_set():
                 if state.get('relay_requested'):return
                 if state['role']=='send' and state.get('relay_allowed'):
@@ -561,38 +410,7 @@ class WanTransferService(LanTransferService):
                                     received=0,total=state.get('total',0),message=message))
             self._handle_command(dict(_retire=True,id=identifier))
 
-    def _bootstrap_cloud(self,identifier,generation):
-        state=self._pending.get(identifier)
-        if (state is None or state.get('generation')!=generation or state['role']!='send' or state['ready'].is_set()
-                or state.get('cancelled') or state.get('done') or self._closing or state['bridge'].opened.is_set()
-                or not state.get('adaptive_allowed') or state.get('cloud_starting') or self.cloud_routes is None):return
-        self.status_changed.emit('P2P 暂不可用，正在连接云端兜底…')
-        state['cloud_starting']=True
-        transfer=self._transfers.get(identifier);cancel=transfer.cancel if transfer else self._stopped
-        def prepare():
-            try:
-                configured=self.cloud_routes.open(state['peer']['id'],None,cancel,True)
-                if configured is not None:
-                    stream,descriptor=configured
-                    self._native.emit(dict(id=identifier,generation=generation,event=dict(type='cloud_ready',stream=stream,descriptor=descriptor)));return
-            except (OSError,ValueError):
-                from network_diagnostics import record_event
-                record_event(self.base,'remote','cloud-route','CLOUD_BOOTSTRAP_UNAVAILABLE')
-            self._native.emit(dict(id=identifier,generation=generation,event=dict(type='cloud_error')))
-        self._thread(prepare)
 
-    def _attach_cloud(self,identifier,state,stream):
-        if state.get('cancelled') or self._closing:stream.shutdown();return
-        adaptive=state.get('adaptive')
-        if adaptive is None:adaptive=self._adaptive_stream(state['bridge'],state['role'],self._stopped,primary=False)
-        with adaptive._condition:old=adaptive._paths.pop('cloud',None)
-        if old is not None:old.stream.shutdown()
-        adaptive._add('cloud','cloud',stream);state['route']='direct' if adaptive.route=='p2p' else adaptive.route;state.pop('error',None);state['ready'].set()
-        self._send_signal(dict(type='connected',id=identifier,generation=state['generation']))
-        if state['role']=='receive' and not state.get('incoming_started'):
-            state['incoming_started']=True
-            if self._slots.acquire(blocking=False):self._thread(self._incoming,state['bridge'],state['peer']['id'])
-            else:self.cancel(identifier)
 
     def send(self,peer_id,paths):
         if not self._connected:raise ValueError('远程服务尚未连接，请稍后再试。')
@@ -641,44 +459,8 @@ class WanTransferService(LanTransferService):
         if state.get('error'):
             if state.pop('network_error',False):raise ConnectionError(state['error'])
             raise ValueError(state['error'])
-        return self._adaptive_stream(state['bridge'],'send',transfer.cancel)
-    def _incoming_stream(self,raw):
-        return self._adaptive_stream(raw,'receive',self._stopped)
-    def _adaptive_stream(self,raw,role,cancel,*,primary=True):
-        from adaptive_stream import AdaptiveStream
-        identifier,state=next((key,value) for key,value in self._pending.items() if value.get('bridge') is raw)
-        if state.get('adaptive') is not None:return state['adaptive']
-        # The published file protocol stays unchanged. Both endpoints must
-        # agree before adding route records outside its byte stream.
-        if primary and not raw.adaptive_capable:return raw
-        with self._lock:
-            if state.get('adaptive') is not None:
-                if primary:state['adaptive'].attach_prepared(raw,raw)
-                return state['adaptive']
-            def alternative(event,configuration):
-                if configuration['directOnly'] and self._qa_force_relay:return None
-                if self._qa_force_relay:configuration['forceRelay']=True
-                servers=list(self._sync_ice or state.get('ice_servers',[]))
-                if 'stun:stun.cloudflare.com:3478' not in servers:servers.insert(0,'stun:stun.cloudflare.com:3478')
-                if configuration['directOnly']:
-                    servers=[row for row in servers if isinstance(row,str) and row.startswith(('stun:','stuns:'))]
-                    configuration['preferTls']=False
-                if configuration['forceRelay'] and not any(isinstance(row,dict) for row in servers):return None
-                proxies={str(row['port']):_turn_http_proxy(row['port']) for row in servers if isinstance(row,dict) and row['relayType']=='TurnTls'}
-                configuration.update(iceServers=servers,proxies=proxies)
-                return WebRTCStream(event,node=self.node),configuration
-            def cloud(descriptor):
-                if self.cloud_routes is None:return None
-                return self.cloud_routes.open(state['peer']['id'],descriptor,cancel,role=='send')
-            def signal(value):
-                if not self._connected:return False
-                self._native.emit(dict(id=identifier,generation=state['generation'],event=dict(type='route_signal',value=value)));return True
-            stream=AdaptiveStream(raw,raw,initiator=role=='send',cancel=cancel,primary=primary,allow_lan=False,
-                authorized=lambda:not self._closing and not state.get('cancelled') and self._pending.get(identifier) is state and state.get('bridge') is raw,
-                secondary=alternative,prefer_tls=state.get('relay_transport')!='tls',signal_out=signal,
-                cloud=None if self._qa_force_relay or self.cloud_routes is None else cloud,
-                event=lambda event:self._native.emit(dict(id=identifier,generation=state['generation'],event=event)))
-            state['adaptive']=stream;return stream
+        return state['bridge']
+    def _incoming_stream(self,raw):return raw
     def _stream_code(self,stream,identifier):return ''
     def _incoming_offer(self,transfer,host,code):
         state=self._pending.get(transfer.transfer_id)
@@ -705,7 +487,6 @@ class WanTransferService(LanTransferService):
         if state:
             state['cancelled']=True
             state['error']='已取消传输。';state['ready'].set()
-            if state.get('adaptive') is not None:state['adaptive'].shutdown()
             if not remote:self._command.emit(dict(type='cancel',id=identifier))
             if state.get('bridge'):state['bridge'].shutdown()
         if identifier in self._transfers:super().cancel(identifier)
@@ -726,22 +507,12 @@ class WanTransferService(LanTransferService):
         QTimer.singleShot(600000,retire)
     def _notify(self,transfer,state,**extra):
         pending=self._pending.get(transfer.transfer_id,{})
-        pending['progress_state']=state
         if pending.get('route'):extra['route']=pending['route']
-        adaptive=pending.get('adaptive')
-        if adaptive is not None:
-            if adaptive.route:extra['route']='direct' if adaptive.route=='p2p' else adaptive.route
-            extra['route_measurements']=adaptive.measurements()
         bridge=pending.get('bridge');relay_bytes=pending.get('relay_bytes_prior',0)
-        worker=threading.current_thread() is not threading.main_thread()
-        if bridge and worker and state in ('error','cancelled','interrupted'):
-            # A failed writer may close before stdout's last stats frame is
-            # consumed. Drain in the transfer worker before publishing history;
-            # retiring this context must never wait for a process on the GUI.
+        if bridge and threading.current_thread() is not threading.main_thread() and state in ('error','cancelled','interrupted'):
             bridge.close(abort=True)
-        if adaptive is not None:relay_bytes+=adaptive.relay_traffic()
-        elif bridge and bridge.route=='relay':
-            final=state in ('complete','error','cancelled','interrupted') and worker
+        if bridge and bridge.route=='relay':
+            final=state in ('complete','error','cancelled','interrupted') and threading.current_thread() is not threading.main_thread()
             relay_bytes+=sum(bridge.traffic(refresh=final).values())
         extra['relay_bytes']=relay_bytes
         super()._notify(transfer,state,**extra)
@@ -749,9 +520,7 @@ class WanTransferService(LanTransferService):
     def close(self):
         self.retirement_timer.stop()
         self._closing=True;self.retry.stop();self.poll.stop();self.code_timer.stop();self.connect_timeout.stop();self.bind_retry.stop()
-        if self.cloud_routes is not None:self.cloud_routes.close()
         if self._bind_key and self.account_service:self.account_service.api.cancel(self._bind_key)
         self.socket.abort();super().close()
         for state in self._pending.values():
-            if state.get('adaptive'):state['adaptive'].shutdown()
             if state.get('bridge'):state['bridge'].shutdown()

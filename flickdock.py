@@ -3317,20 +3317,13 @@ class ShelfManager:
         self.wan=WanTransferService(BASE,self.app,device_name=self.account.device_name,
             enabled=not self.cocoa_smoke and self.app.platformName() not in ('offscreen','minimal'))
         self.wan.attach_account(self.account,lan_id=self.lan.device_id,nearby_peers=self.lan.peers)
-        from peer_sync import PeerSync
-        from peer_clipboard import ClipboardPeerBridge
-        self.peer_sync=PeerSync(self.account,self.wan,self.app,
-            can_upload=lambda topic:self.clipboard_sync.enabled if topic=='clipboard' else self.sync.upload_enabled,
-            can_receive=lambda topic:self.clipboard_sync.enabled if topic=='clipboard' else self.sync.receive_enabled)
         from lan_account import LanAccountAuthorizer
-        self.lan_account=LanAccountAuthorizer(self.lan,self.peer_sync)
-        self.clipboard_sync.peer_bridge=ClipboardPeerBridge(self.clipboard_sync,self.peer_sync)
+        self.lan_account=LanAccountAuthorizer(self.lan,self.wan)
+        self.wan.peers_changed.connect(self._cloud_device_connections_changed)
         from video_controller import VideoController
         from video_prompt import VideoLinkWatcher
         self.video_controller=VideoController(self);self.video_watcher=VideoLinkWatcher(self)
         self.clipboard_sync.activity_changed.connect(self.video_controller.set_priority)
-        self.sync.attach_peer(self.peer_sync)
-        self.peer_sync.status_changed.connect(self._sync_status_changed)
         self.lan.peers_changed.connect(lambda _:self.wan.peers_changed.emit(self.wan.peers()))
         self.wan.offer_received.connect(self._wan_offer)
         from receive_notice import SameAccountReceiveNotice
@@ -3538,6 +3531,13 @@ class ShelfManager:
     def _update_notice_state_changed(self, state, payload):
         if self.update_notice is not None:self.update_notice.set_state(state,**payload)
 
+    def _cloud_device_connections_changed(self,peers):
+        # Presence metadata does not create device-to-device sync connections.
+        snapshot={row['account_device_id']:dict(route='cloud' if row.get('online') else 'disconnected')
+                  for row in peers if row.get('account_device') is True and row.get('account_device_id')}
+        self.clipboard_sync.deliveries.set_connections(snapshot)
+        if getattr(self,'account_panel',None) is not None:self.account_panel.set_device_connections(snapshot)
+
     def _sync_status_changed(self,text):
         self._sync_status = text
         if self.settings_dialog and hasattr(self,'account_panel'):
@@ -3711,8 +3711,7 @@ class ShelfManager:
             self.settings_dialog.update_requested.connect(self._settings_update_clicked)
             self.updates.state_changed.connect(self._render_settings_update)
             self.account_panel = AccountPanel(self.account,self.settings_dialog,theme=self.settings.theme,email_binding=False)
-            self.peer_sync.connections_changed.connect(self.account_panel.set_device_connections)
-            self.account_panel.set_device_connections(self.peer_sync.connection_snapshot())
+            self._cloud_device_connections_changed(self.wan.peers())
             self.settings_dialog.set_account_panel(self.account_panel)
             self.settings_dialog.preview_changed.connect(self.preview_dock)
             self.settings_dialog.gesture_preview_changed.connect(self.preview_shake)
@@ -3893,7 +3892,6 @@ class ShelfManager:
         if changed & {'sync_upload_enabled','sync_receive_enabled'}:
             self.sync.set_directions(self.settings.sync_upload_enabled,self.settings.sync_receive_enabled)
         if changed & {'clipboard_sync_enabled','clipboard_notice_seen','sync_upload_enabled','sync_receive_enabled'}:
-            self.peer_sync.refresh()
             self.shelf.refresh_cloud_button()
         if changed & {'dock_edge','dock_position','dock_length','dock_thickness','dock_color','dock_opacity','trigger_visible','display_triggers'}:
             self._position_edges()
@@ -4190,7 +4188,6 @@ class ShelfManager:
         if self.update_notice is not None:
             self.update_notice.hide()
         if hasattr(self,'lan'):self.lan.close()
-        if hasattr(self,'peer_sync'):self.peer_sync.close()
         if hasattr(self,'video_watcher'):self.video_watcher.close()
         if hasattr(self,'video_controller'):self.video_controller.close()
         if self.video_dialog:self.video_dialog.close()

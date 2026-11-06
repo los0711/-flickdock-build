@@ -38,6 +38,16 @@ try{
   sa.send({type:'recent'});
   const peers=await sa.wait(row=>row.type==='peers'&&row.peers.some(peer=>peer.id===sb.id&&peer.online));
   const peer=peers.peers.find(row=>row.id===sb.id);assert.equal(peer.account_device,true);assert.equal(peer.lan_id,'b'.repeat(32));assert.equal(peer.name,'Mac');
+  const ticket={type:'lan-transfer',action:'prepare',id:randomBytes(16).toString('hex'),token:'a'.repeat(64),digest:'b'.repeat(64),fingerprint:'c'.repeat(64)};
+  sa.send({type:'lan_authorization',peer:sb.id,value:ticket});
+  const authorized=await sb.wait(row=>row.type==='lan_authorization'&&row.value.id===ticket.id);
+  assert.equal(authorized.peer,sa.id);assert.deepEqual(authorized.value,ticket);
+  sb.send({type:'lan_authorization',peer:sa.id,value:{type:'lan-transfer',action:'accepted',id:ticket.id}});
+  await sa.wait(row=>row.type==='lan_authorization'&&row.value.action==='accepted'&&row.value.id===ticket.id);
+  const before=sc.messages.length;
+  sc.send({type:'lan_authorization',peer:sb.id,value:ticket});
+  await sc.wait(row=>row.type==='error',before);
+  console.log('PASS LAN consent metadata uses authenticated signaling only; cross-account rejected');
   const spec=()=>({type:'request',id:randomBytes(16).toString('hex'),token:randomBytes(32).toString('hex'),digest:'d'.repeat(64),total:'12',count:1,names:['original.txt']});
   const request={...spec(),peer:sb.id};sa.send(request);
   const ownOffer=await sb.wait(row=>row.type==='request'&&row.id===request.id);

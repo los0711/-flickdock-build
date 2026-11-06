@@ -27,10 +27,9 @@ PREVIEW_MAX_CHARS=2048
 def copy_status(ok,context):
     if context.get('phase')=='size_limit':return '超过 20 MB 同步上限 · 内容保留在本机'
     if ok is False:return '同步未完成 · 内容保留在本机'
-    counts=context.get('deliveries',{})
-    routes=[('lan','局域网'),('p2p','P2P'),('cloud','R2')]
-    if counts.get('relay',{}).get('total',0):routes.append(('relay','TURN'))
-    return ' · '.join(f'{title} {counts.get(route,{}).get("success",0)}/{counts.get(route,{}).get("total",0)}' for route,title in routes)
+    if ok is None or context.get('phase')=='uploading':return '正在同步到云端'
+    return '已同步到云端'
+
 
 
 def copy_preview(value):

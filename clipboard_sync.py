@@ -262,17 +262,16 @@ class ClipboardSync(QObject):
 
     def _priority_work(self):
         return bool(self._pending is not None and getattr(self,'_priority_sending',False) and not getattr(self,'_priority_waiting',False)
-                    or getattr(self,'_content_fetching',False) or getattr(self,'_peer_fetching',False))
+                    or getattr(self,'_content_fetching',False))
 
     def _priority_expired(self):
         before=self._priority_active();self._priority_granted=False
         if before:self.activity_changed.emit(False)
 
-    def _priority_flags(self,*,waiting=None,receiving=None,peer_receiving=None,sending=None):
+    def _priority_flags(self,*,waiting=None,receiving=None,sending=None):
         before=self._priority_active()
         if waiting is not None:self._priority_waiting=waiting
         if receiving is not None:self._content_fetching=receiving
-        if peer_receiving is not None:self._peer_fetching=peer_receiving
         if sending is not None:self._priority_sending=sending
         self._priority_granted=self._priority_work()
         if self._priority_granted:self._priority_timer.start(CLIPBOARD_PRIORITY_LEASE_MS)
@@ -286,7 +285,6 @@ class ClipboardSync(QObject):
         self._is_native=clipboard is None or clipboard is QApplication.clipboard()
         self._sequence=native_sequence if self._is_native else lambda:None
         self.enabled=enabled;self.closed=False;self._epoch=0;self._generation=0;self._applying=False
-        self.peer_bridge=None
         self._native_access=self._native_accessible()
         self._clock_anchor=None;self._local_clock_anchor=(time.monotonic(),round(time.time()*1000))
         self._observed_clock=0;self._local_fence=None;self._local_retry=None
@@ -463,7 +461,7 @@ class ClipboardSync(QObject):
     def _copy_timestamp(self,intent):
         if intent['at'] is None:
             # Keep a copy's order immutable. An unavailable cloud clock must
-            # never gate an authenticated device-to-device delivery. The
+            # never gate a copy while the cloud clock is unavailable. The
             # monotonic anchor also prevents wall-clock changes during a copy.
             mono,server=self._clock_anchor or self._local_clock_anchor
             intent['at']=max(round(server+(intent['mono']-mono)*1000),intent['floor']+1)
@@ -515,12 +513,12 @@ class ClipboardSync(QObject):
         head=pending['head'];self._prepared_receive=None;self.retry.stop()
         self.file_jobs.supersede();self._epoch+=1;self._generation+=1;self._pending=None;self._local_retry=None
         self._cancel_replaced_work();self._fetching=False
-        self._priority_flags(waiting=False,receiving=False,peer_receiving=False)
+        self._priority_flags(waiting=False,receiving=False)
         self._seen=head['id'];self._applied_version=max(self._applied_version,head_version(head))
         self._observed_clock=max(self._observed_clock,head.get('copied_at',head.get('at',0)))
         known=self._known_cloud_head
         backed_up=bool(known and known[1:]==(head['id'],head['sha256']))
-        self._set_view(value,'synced' if backed_up else 'peer',head['id'],route=head.get('delivery_route','cloud'),backed_up=backed_up)
+        self._set_view(value,'synced',head['id'],route='cloud',backed_up=backed_up)
         from network_diagnostics import record_event
         record_event(self._clock_path.parent,'remote','clipboard_apply','NATIVE_WRITE_VERIFIED')
         pending['applied']()
@@ -543,7 +541,6 @@ class ClipboardSync(QObject):
         if self._pending is pending:self._pending=None
 
     def _cancel_replaced_work(self):
-        if self.peer_bridge is not None:self.peer_bridge.cancel_fetches()
         retained=[task for task in self.file_jobs.tasks.values() if self.file_jobs.held(task)]
         keys=set().union(*(task.get('_keys',set()) for task in retained)) if retained else set()
         for task in self.file_jobs.tasks.values():
@@ -605,7 +602,6 @@ class ClipboardSync(QObject):
         identity=self._session_identity()
         if not force and identity==self._identity:
             self.refresh();return
-        if self.peer_bridge is not None:self.peer_bridge.reset()
         self.deliveries.reset()
         files=getattr(self,'file_jobs',None)
         if files is not None:files.save()
@@ -757,13 +753,12 @@ class ClipboardSync(QObject):
         # is active. Its completion must not emit stale clipboard feedback.
         if (self.view.get('id')!=pending['id']
                 or pending.get('generation',self._generation)!=self._generation):return
-        if not ok and pending.get('peer_delivered'):return
         if self.view.get('id')==pending['id']:
             self._set_view(self.view['value'],phase or ('synced' if ok else 'error'),pending['id'])
         if pending.get('feedback_result') is ok:return
         pending['feedback_result']=ok
         context=dict(pending.get('feedback',{}),id=pending['id'],route=self.view['route'],
-                     delivered=bool(pending.get('peer_delivered')),backed_up=self.view['backed_up'],phase=self.view['phase'],
+                     delivered=any(row['success'] for row in self.view['deliveries'].values()),backed_up=self.view['backed_up'],phase=self.view['phase'],
                      deliveries=self.view['deliveries'],cloud_transfer=self.view['cloud_transfer'],local_copy=self.view['local_copy'])
         self.copy_result.emit(ok,context)
 
@@ -798,13 +793,7 @@ class ClipboardSync(QObject):
     def _stage(self,pending):
         if not self._valid_task(pending):return
         if time.time()-pending['created_at']>=86400:self._clear_task(pending);self.refresh();return
-        if self._clock_anchor is None and self.peer_bridge is not None:self.peer_bridge.calibrate()
         self._copy_timestamp(pending['intent'])
-        if self.peer_bridge is not None:
-            self.peer_bridge.publish(pending)
-            if not pending.get('peer_grace_done') and self.peer_bridge.mesh.available():
-                pending['peer_grace_done']=True
-                QTimer.singleShot(120,self,lambda:self._stage(pending));return
         def staged(result,error):
             if not self._valid_task(pending):return
             if error:
@@ -895,12 +884,10 @@ class ClipboardSync(QObject):
         head=value.get('clipboard') if isinstance(value,dict) else None
         if not isinstance(head,dict) or type(head.get('version')) is not int:return
         if head['version']<=self._applied_version or head.get('id')==self._seen:return
-        if self.peer_bridge is not None and not self.peer_bridge.accept_cloud_head(head):return
         self._observe_cloud_head(head)
         previous=(self._pushed_head or {}).get('clipboard',{})
         if head['version']>previous.get('version',0):self._pushed_head=value
-        same_peer_body=self.peer_bridge is not None and self.peer_bridge.in_flight(head)
-        if self._fetching and not self._pending and head['version']>self._receiving_version and not same_peer_body:
+        if self._fetching and not self._pending and head['version']>self._receiving_version:
             # A different committed copy supersedes a stale body download;
             # retain the last usable native clipboard until this one verifies.
             self._epoch+=1;self._generation+=1
@@ -924,9 +911,7 @@ class ClipboardSync(QObject):
             if not isinstance(head,dict) or generation!=self._generation:self._finish_refresh();return
             identity=head.get('id','')
             if not isinstance(identity,str) or len(identity)!=36 or any(c not in '0123456789abcdef-' for c in identity):self._finish_refresh();return
-            if self.peer_bridge is not None and not self.peer_bridge.accept_cloud_head(head):self._finish_refresh();return
             if identity==self._seen:
-                if head.get('ready') and self.view.get('phase')=='peer':self._set_view(self.view['value'],'synced',identity)
                 self.deliveries.committed(head,result.get('delivery') if isinstance(result,dict) else None)
                 self._finish_refresh();return
             if type(head.get('version')) is int and head['version']<=self._applied_version:self._finish_refresh();return
@@ -941,8 +926,6 @@ class ClipboardSync(QObject):
                 self._finish_refresh();return
             kind,size,sha=head.get('kind'),head.get('size'),head.get('sha256')
             if kind not in ('text','image','files') or type(size) is not int or not 0<size<(MAX_ARCHIVE_BYTES if kind in ('files','text') else MAX_BYTES) or not isinstance(sha,str) or len(sha)!=64:self._finish_refresh();return
-            if self.peer_bridge is not None and self.peer_bridge.in_flight(head):
-                self._finish_refresh();self.retry.start(5000);return
             is_inline=kind=='text' and isinstance(head.get('inline'),str) and size<=32768
             cached=self._prepared_receive
             if cached is not None and (cached['head']['id'],cached['head']['sha256'])==(identity,sha):
@@ -963,7 +946,7 @@ class ClipboardSync(QObject):
                 # are rechecked at apply time; another GET adds an RTT without
                 # making the following native write atomic with a remote copy.
                 def applied():
-                    self.deliveries.received(head,head.get('delivery_route','cloud'))
+                    self.deliveries.received(head,'cloud')
                     self.deliveries.committed(head,result.get('delivery') if isinstance(result,dict) else None)
                 self._accept_received(head,value,directory,valid=lambda:self._cloud_receive_valid(head,generation),applied=applied)
                 self._finish_refresh()
@@ -985,13 +968,7 @@ class ClipboardSync(QObject):
                         if generation==self._generation and received>last_received:
                             last_received=received;self._priority_flags()
                     self._request('GET',f'/v1/clipboard/{identity}/content',downloaded,destination=path,expected={'size':size,'sha256':sha},progress=progress)
-                def direct_body(result,error):
-                    if generation!=self._generation:return
-                    if error is None:
-                        head['delivery_route']=job.route;downloaded(result,None)
-                    else:cloud_body()
-                job=self.peer_bridge.fetch_cloud_body(head,path,direct_body) if self.peer_bridge is not None else None
-                if job is None:cloud_body()
+                cloud_body()
         if self._pushed_head:
             pushed,self._pushed_head=self._pushed_head,None;latest(pushed,None)
         else:self._request('GET','/v1/clipboard',latest)

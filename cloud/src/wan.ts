@@ -354,6 +354,24 @@ export class WanHub extends DurableObject<WanEnv>{
           throw new Error('未知同账号连接指令。');
         }catch(error){this.send(socket,{type:'sync_error',id:request.id,message:error instanceof Error?error.message:'同账号连接失败。'});return;}
       }
+      if(request.type==='lan_authorization'){
+        if(!check(request.peer,ID)||request.peer===seat.id)throw new Error('局域网接收设备无效。');
+        const self=await this.binding(seat.id),other=await this.binding(request.peer),target=this.socket(request.peer);
+        if(!self||!other||self.account!==other.account||self.device===other.device||!target)
+          throw new Error('局域网免确认仅允许已认证的同账号在线设备。');
+        const source=socket.deserializeAttachment() as Seat,recipient=target.deserializeAttachment() as Seat;
+        if(this.socket(seat.id)!==socket||source.auth_nonce!==self.nonce||recipient.auth_nonce!==other.nonce
+            ||!source.account_active||!recipient.account_active)throw new Error('账号授权已改变。');
+        const value=request.value;
+        if(!value||value.type!=='lan-transfer'||!check(value.id,TRANSFER))throw new Error('局域网授权标识无效。');
+        let metadata:object;
+        if(value.action==='prepare'&&check(value.token,ID)&&check(value.digest,ID)&&check(value.fingerprint,ID))
+          metadata={type:'lan-transfer',action:'prepare',id:value.id,token:value.token,digest:value.digest,fingerprint:value.fingerprint};
+        else if(value.action==='accepted')metadata={type:'lan-transfer',action:'accepted',id:value.id};
+        else throw new Error('局域网授权内容无效。');
+        // Consent metadata only: never SDP, file content or a preconnected stream.
+        this.send(target,{type:'lan_authorization',peer:seat.id,value:metadata});return;
+      }
       if(request.type==='ping'){this.send(socket,{type:'pong'});return;}
       if(request.type==='account_logout'){await this.unbind(seat.id);return;}
       if(request.type==='account_state'){
