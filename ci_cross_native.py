@@ -22,6 +22,22 @@ from wan_transfer import WanTransferService
 from app_version import APP_VERSION
 
 
+import logging
+import adaptive_stream as _adaptive
+_logger=logging.getLogger('adaptive_stream');_logger.setLevel(logging.DEBUG);_logger.propagate=False
+_handler=logging.StreamHandler();_handler.setFormatter(logging.Formatter('Adaptive %(message)s'));_logger.addHandler(_handler)
+_original_failed=_adaptive.AdaptiveStream._failed
+def _trace_failed(self,path):
+    with self._condition:
+        if not path.dead:
+            print(json.dumps(dict(qa_path_failure=True,caller=sys._getframe(1).f_code.co_name,route=path.route,
+                unacknowledged=path.unacknowledged,ack_idle_seconds=round(time.perf_counter()-path.progress_at,3),
+                sent=path.sent,received=path.received,native_closed=path.stream.closed,
+                native=path.stream.diagnostics() if hasattr(path.stream,'diagnostics') else {})),flush=True)
+    return _original_failed(self,path)
+_adaptive.AdaptiveStream._failed=_trace_failed
+
+
 class Store:
     def load(self):return None
     def save(self,value):pass
