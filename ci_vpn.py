@@ -122,19 +122,23 @@ def main():
     if args.command=='prepare':prepare(root);print(json.dumps(dict(ok=True,version=VERSION)));return 0
     child=args.child[1:] if args.child[:1]==['--'] else args.child
     if not child:raise ValueError('Missing QA command')
-    node=json.loads(os.environ.pop('FLICKDOCK_QA_VPN_NODE'))
-    if not isinstance(node,dict) or node.get('type') not in ('vless','trojan'):raise ValueError('Invalid private QA node')
-    node['name']='private-qa-node'
-    for key in ('dialer-proxy','interface-name','routing-mark'):node.pop(key,None)
+    nodes=json.loads(os.environ.pop('FLICKDOCK_QA_VPN_NODE'))
+    if not isinstance(nodes,list) or not 1<=len(nodes)<=4:raise ValueError('Invalid private QA nodes')
+    for index,node in enumerate(nodes):
+        if not isinstance(node,dict) or node.get('type') not in ('vless','trojan'):raise ValueError('Invalid private QA node')
+        node['name']='private-qa-'+str(index+1)
+        for key in ('dialer-proxy','interface-name','routing-mark'):node.pop(key,None)
     mixed=free_port();controller=free_port();token=secrets.token_hex(32)
     config={'mixed-port':mixed,'allow-lan':False,'bind-address':'127.0.0.1','mode':'rule','log-level':'silent','ipv6':False,
             'external-controller':f'127.0.0.1:{controller}','secret':token,'tun':{'enable':False},'dns':{'enable':False},
-            'geo-auto-update':False,'find-process-mode':'off','proxies':[node],
-            'proxy-groups':[{'name':'QA','type':'select','proxies':['private-qa-node']}],'rules':['MATCH,QA']}
+            'geo-auto-update':False,'find-process-mode':'off','global-client-fingerprint':'chrome','proxies':nodes,
+            'proxy-groups':[{'name':'QA','type':'select','proxies':[node['name'] for node in nodes]}],'rules':['MATCH,QA']}
     local=urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    def api(path):
-        request=urllib.request.Request(f'http://127.0.0.1:{controller}'+path,headers={'Authorization':'Bearer '+token})
-        with local.open(request,timeout=5) as response:return json.loads(response.read(1024*1024))
+    def api(path,data=None):
+        request=urllib.request.Request(f'http://127.0.0.1:{controller}'+path,method='PUT' if data is not None else 'GET',
+            data=json.dumps(data).encode() if data is not None else None,headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'})
+        with local.open(request,timeout=5) as response:
+            value=response.read(1024*1024);return json.loads(value) if value else None
     process=None;system=SystemProxy(mixed);report=dict(ok=False,mode='system_http_proxy',tun=False,platform=sys.platform)
     temporary=tempfile.TemporaryDirectory(prefix='profile-',dir=root)
     try:
@@ -148,14 +152,21 @@ def main():
             except OSError:
                 if time.monotonic()>deadline:raise TimeoutError('Isolated proxy core did not become ready')
                 time.sleep(.05)
-        connection=http.client.HTTPSConnection('127.0.0.1',mixed,timeout=15,context=ssl.create_default_context())
-        try:
-            started=time.monotonic();connection.set_tunnel('flickdock.cc.cd',443)
-            connection.request('GET','/v1/health',headers={'User-Agent':'FlickDock/1.8.25 (CloudSync)'})
-            response=connection.getresponse();response.read(4096)
-            report['node_health']=dict(status=response.status,seconds=round(time.monotonic()-started,3))
-            if response.status!=200:raise RuntimeError('Private node failed the service health check')
-        finally:connection.close()
+        report['node_health']=[]
+        for node in nodes:
+            api('/proxies/QA',{'name':node['name']})
+            connection=http.client.HTTPSConnection('127.0.0.1',mixed,timeout=10,context=ssl.create_default_context())
+            started=time.monotonic();result=dict(alias=node['name'],ok=False)
+            try:
+                connection.set_tunnel('flickdock.cc.cd',443)
+                connection.request('GET','/v1/health',headers={'User-Agent':'FlickDock/1.8.25 (CloudSync)'})
+                response=connection.getresponse();response.read(4096)
+                result.update(status=response.status,ok=response.status==200)
+            except (OSError,http.client.HTTPException) as error:result['error_type']=type(error).__name__
+            finally:connection.close()
+            result['seconds']=round(time.monotonic()-started,3);report['node_health'].append(result)
+            if result['ok']:break
+        else:raise RuntimeError('Private nodes failed the service health check')
         system.enable();before=api('/connections');env=dict(os.environ,FD_QA_PROXY_PORT=str(mixed))
         code=subprocess.run(child,env=env,timeout=1500).returncode
         after=api('/connections');report.update(child_exit=code,upload_bytes=max(0,after['uploadTotal']-before['uploadTotal']),
