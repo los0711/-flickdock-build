@@ -38,10 +38,18 @@ class DownloadRecoveryTests(unittest.TestCase):
                         cursor=int(self.path.split('cursor=')[1].split('&')[0])
                         self.json(dict(changes=[dict(cursor='1',record=record)] if not cursor else [],cursor='1',has_more=False,transfers=[]));return
                     if self.path.endswith('/content'):
-                        assert self.headers.get('X-FlickDock-Range-Bytes')=='4194304'
+                        fast=self.headers.get('X-FlickDock-Fast-Content')=='1'
+                        assert fast or self.headers.get('X-FlickDock-Range-Bytes')=='4194304'
                         with lock:counts['metadata']+=1
-                        self.json(dict(record=record,chunk_size=chunk,part_count=(len(payload)+chunk-1)//chunk));return
+                        size=len(payload) if fast else chunk
+                        self.json(dict(record=record,chunk_size=size,part_count=(len(payload)+size-1)//size));return
                     if '/parts/' in self.path:
+                        if self.headers.get('X-FlickDock-Fast-Content')=='1':
+                            with lock:counts['truncated_fast']+=1
+                            self.send_response(200);self.send_header('Content-Type','application/octet-stream')
+                            self.send_header('Content-Length',str(len(payload)));self.send_header('X-Content-SHA256',record['sha256']);self.end_headers()
+                            self.wfile.write(payload[:128*1024]);self.wfile.flush()
+                            self.connection.shutdown(socket.SHUT_WR);self.close_connection=True;return
                         assert self.headers.get('X-FlickDock-Range-Bytes')=='4194304'
                         index=int(self.path.split('/parts/')[1].split('?')[0]);data=payload[index*chunk:(index+1)*chunk]
                         with lock:counts[index]+=1;attempt=counts[index]
@@ -75,6 +83,7 @@ class DownloadRecoveryTests(unittest.TestCase):
                     output=next(Path(ref) for ref in adapter.view['permanent'] if Path(ref).name=='original.bin')
                     self.assertEqual(output.read_bytes(),payload)
                     self.assertEqual(counts[0],1);self.assertEqual(counts[2],1);self.assertEqual(counts[1],4)
+                    self.assertEqual(counts['truncated_fast'],1)
                     self.assertGreaterEqual(counts['metadata'],2)
                     self.assertTrue(any('等待重试' in value for value in statuses),statuses)
                     self.assertTrue(any(any(row.get('received',0)>0 for row in rows) for rows in snapshots))

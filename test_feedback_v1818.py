@@ -290,7 +290,7 @@ class FeedbackTests(unittest.TestCase):
             'stale':dict(dirty=True,ref='gone',fingerprint='old',blocked_fingerprint='old')}
         engine=SimpleNamespace(upload_enabled=True,receive_enabled=True,state=dict(entries=entries),running=True,transfer=None,
             _clipboard_priority=False,_lane_context=None,upload_lanes=SimpleNamespace(active={},retry_at={},blocked=lambda _:False),clipboard_bridge=None,
-            _cycle_direction='',_refresh_again=False,_notify_transfers=lambda:None,_pending_removal=lambda:None,_paused=lambda _:False,
+            _cycle_direction='',_refresh_again=False,_notify_transfers=lambda:None,_retire_item_removals=lambda:None,_paused=lambda _:False,
             adapter=SimpleNamespace(snapshot=lambda:dict(permanent=['blocked'])),status_changed=SimpleNamespace(emit=statuses.append))
         for identity,entry in entries.items():entry['id']=identity
         ShelfSync._push_next(engine);self.assertEqual(statuses[-1],'搁架已同步。')

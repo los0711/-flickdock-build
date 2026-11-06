@@ -19,6 +19,8 @@ from transfer_priority import bulk_delay
 
 UPLOAD_READ_BYTES=64*1024
 PRIORITY_POLL_MS=25
+DOWNLOAD_DRAIN_BYTES=256*1024
+DISK_BACKPRESSURE_RETRY_MS=5
 
 
 class CloudError(Exception):
@@ -264,7 +266,9 @@ class CloudApi(QObject):
                             state['drain_scheduled']=False;self._drain(key)
                     QTimer.singleShot(PRIORITY_POLL_MS,self,resume_priority)
                 return
-            budget = UPLOAD_READ_BYTES if bulk else 512 * 1024
+            # Yield to Qt between bounded batches without imposing a network
+            # rate limit. Disk backpressure and clipboard priority still apply.
+            budget = DOWNLOAD_DRAIN_BYTES if bulk else 512 * 1024
             while reply.bytesAvailable() and budget > 0:
                 limit=min(65536,budget)
                 if state['destination'] is not None and status==200:
@@ -288,7 +292,8 @@ class CloudApi(QObject):
                 def resume():
                     if key not in self._requests:return
                     state['drain_scheduled']=False;self._drain(key)
-                QTimer.singleShot(10,resume)
+                disk_full=(state['writer'] is not None and state['writer'].capacity()==0)
+                QTimer.singleShot(DISK_BACKPRESSURE_RETRY_MS if disk_full else 0,resume)
         except Exception as error:
             self._finish(key, error=error if isinstance(error, CloudError) else CloudError('无法保存同步文件。'))
 

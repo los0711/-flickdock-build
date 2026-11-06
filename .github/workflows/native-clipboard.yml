@@ -2,6 +2,11 @@ name: Native clipboard verification
 
 on:
   workflow_dispatch:
+    inputs:
+      cross_device:
+        description: Run separate Windows and Apple-silicon peers in all three pairings
+        type: boolean
+        default: false
   push:
     branches: [cloud-build]
 
@@ -10,7 +15,7 @@ permissions:
 
 jobs:
   cloud-contract:
-    if: github.repository == 'los0711/-flickdock-build'
+    if: github.repository == 'los0711/-flickdock-build' && inputs.cross_device != true
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -24,7 +29,7 @@ jobs:
           npm run typecheck --prefix cloud
           npm test --prefix cloud
   clipboard:
-    if: github.repository == 'los0711/-flickdock-build'
+    if: github.repository == 'los0711/-flickdock-build' && inputs.cross_device != true
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -100,4 +105,75 @@ jobs:
           path: |
             native-utility.json
             native-installer-close.json
+          retention-days: 3
+  cross-device:
+    if: github.repository == 'los0711/-flickdock-build' && inputs.cross_device == true
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {pair: win-mac, side: a, runner: windows-latest}
+          - {pair: win-mac, side: b, runner: macos-15}
+          - {pair: win-win, side: a, runner: windows-latest}
+          - {pair: win-win, side: b, runner: windows-latest}
+          - {pair: mac-mac, side: a, runner: macos-15}
+          - {pair: mac-mac, side: b, runner: macos-15}
+    runs-on: ${{ matrix.runner }}
+    env:
+      PYTHONUTF8: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+      FD_QA_PAIR: ${{ matrix.pair }}
+      FD_QA_SIDE: ${{ matrix.side }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Install the existing production Qt and account dependencies
+        run: python -m pip install PySide6==6.12.0 keyring==25.7.0 cryptography==50.0.2
+      - name: Install native Apple pasteboard bindings
+        if: runner.os == 'macOS'
+        run: python -m pip install 'pyobjc-framework-Quartz>=11,<13'
+      - name: Prepare the verified original Syncthing binary
+        shell: pwsh
+        run: |
+          $env:FLICKDOCK_BUILD_CACHE = Join-Path $env:RUNNER_TEMP 'flickdock-cache'
+          python syncthing_assets.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Prepare private sessions and public synthetic fixture metadata
+        shell: pwsh
+        env:
+          FLICKDOCK_QA_SYNC_JSON: ${{ secrets.FLICKDOCK_QA_DUAL_NATIVE }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python ci_cross_device.py bootstrap --root (Join-Path $env:RUNNER_TEMP 'flickdock-dual-native')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Exchange public device identities with the other runner
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: dual-bootstrap-${{ matrix.pair }}-${{ matrix.side }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/flickdock-dual-native/public.json
+          if-no-files-found: error
+          retention-days: 1
+      - name: Verify both directions of native clipboard, shelf and original Syncthing transfers
+        shell: pwsh
+        env:
+          FLICKDOCK_QA_SYNC_JSON: ${{ secrets.FLICKDOCK_QA_DUAL_NATIVE }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python ci_cross_device.py run --root (Join-Path $env:RUNNER_TEMP 'flickdock-dual-native')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Retain only sanitized verification results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: dual-results-${{ matrix.pair }}-${{ matrix.side }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/flickdock-dual-native/report.json
+          if-no-files-found: warn
           retention-days: 3

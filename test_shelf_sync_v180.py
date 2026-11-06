@@ -414,7 +414,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-priority-delete-v180-') as te
             until(lambda:not engine.running and server.account(scenario)['items'][identity]['record']['deleted'])
             assert engine.state['not_before']==transfer_deadline
         else:
-            assert server.account(scenario)['items'][identity]['record']['deleted']
+            until(lambda:server.account(scenario)['items'][identity]['record']['deleted'])
             assert sum(m=='DELETE' for _,m,_ in server.calls[calls:])==2
         engine.close();print('PASS priority cloud delete '+scenario+' independent of transfer backoff')
 

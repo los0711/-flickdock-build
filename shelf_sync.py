@@ -24,6 +24,10 @@ from sync_files import (DiskWork, DIRECTORY_MIME, assemble_parts, fingerprint, r
                         stage_item, unpack_directory,MAX_FILE_BYTES)
 
 MAX_CONCURRENT_RECEIVES=3
+MAX_CONCURRENT_REMOVALS=3
+REMOVAL_CONFLICT_RETRY_SECONDS=30
+QT_TIMER_MAX_MS=2147483647
+LARGE_DOWNLOAD_RANGE_THRESHOLD_BYTES=90*1024*1024
 
 
 def _upload_timestamp(value):
@@ -97,6 +101,7 @@ class ShelfSync(QObject):
         self.retry_ms = 15000; self.transfer = None
         self.cleanup_attempts = {}
         self._cleanup_inflight = set()
+        self._item_removals=set()
         self._cleanup_retry=QTimer(self);self._cleanup_retry.setSingleShot(True)
         self._cleanup_retry.timeout.connect(self._retire_abandoned_uploads)
         self.remote_transfers=[]
@@ -231,6 +236,7 @@ class ShelfSync(QObject):
         self.download_transfers.clear()
         self._part_cache.clear();self._progress_persisted=0.0
         self._cleanup_inflight.clear();self._cleanup_retry.stop()
+        self._item_removals.clear()
         for job in tuple(self.jobs): job.cancel.set()
         for key in tuple(self.requests): self.api.cancel(key)
         self.requests.clear()
@@ -541,6 +547,7 @@ class ShelfSync(QObject):
         self.running=False;self.transfer=None
         self._part_cache.clear()
         self._cleanup_inflight.clear();self._cleanup_retry.stop()
+        self._item_removals.clear()
         self._intake_announced=set()
         for key in tuple(self.requests):self.api.cancel(key)
         self.requests.clear()
@@ -712,7 +719,7 @@ class ShelfSync(QObject):
         return True
 
     def _request(self, method, path, callback, **kwargs):
-        epoch = self.epoch; holder = []; lane=self._lane_context
+        epoch = self.epoch; holder = []; lane=None if str(method).upper()=='DELETE' else self._lane_context
         owner=lane.get('id') if lane is not None else None
         if str(method).upper()!='DELETE' and path=='/v1/uploads':owner=(kwargs.get('data') or {}).get('item_id')
         elif str(method).upper()!='DELETE' and path.startswith('/v1/uploads/'):
@@ -900,11 +907,44 @@ class ShelfSync(QObject):
         self.status_changed.emit('云端清理暂时中断，删除操作已保留并会自动重试。')
         self._after_cleanup()
 
-    def _pending_removal(self):
-        if self._paused('cleanup_not_before'): return None
-        entry=next((e for e in self.state['entries'].values() if e.get('dirty') and e.get('deleted')
-                     and e.get('version',0)>0 and e.get('cleanup_conflict_version') != e.get('version')),None)
-        return entry
+    def _retire_item_removals(self):
+        # UI removal is already journalled before save()/local_changed(). Its
+        # control request must not depend on the bulk cycle noticing it again.
+        if self.closed or not self.state or not self.account_id or not self.service.signed_in or not self.upload_enabled:return
+        if self._paused('cleanup_not_before'):
+            self._cleanup_retry.start(min(QT_TIMER_MAX_MS,max(1,round((self.state['cleanup_not_before']-time.time())*1000))))
+            return
+        for entry in tuple(self.state['entries'].values()):
+            identity=entry['id'];version=entry.get('version',0)
+            if (len(self._item_removals)>=MAX_CONCURRENT_REMOVALS or identity in self._item_removals or not entry.get('dirty')
+                    or not entry.get('deleted') or version<=0 or entry.get('cleanup_conflict_version')==version):continue
+            self._item_removals.add(identity)
+            self.cleanup_attempts[identity]=self.cleanup_attempts.get(identity,0)+1
+            def removed(result,error,identity=identity,version=version):
+                self._item_removals.discard(identity)
+                current=self.state['entries'].get(identity)
+                if error and getattr(error,'status',0) not in (404,409):
+                    self.state['cleanup_not_before']=time.time()+self._retry_delay(error)
+                    self.status_changed.emit('云端删除未完成，操作已保留并会自动重试。')
+                elif error and getattr(error,'status',0)==409:
+                    problem=getattr(error,'details',{})
+                    problem=problem.get('error',problem) if isinstance(problem,dict) else {}
+                    record=problem.get('current_record') if isinstance(problem,dict) else None
+                    if current and current.get('deleted') and current.get('version')==version:
+                        if (isinstance(record,dict) and record.get('id')==identity and type(record.get('version')) is int
+                                and version<=record['version']<=9007199254740991):
+                            if record.get('deleted'):self.state['entries'].pop(identity,None)
+                            else:
+                                current['version']=record['version'];current.pop('cleanup_conflict_version',None)
+                                if self.cleanup_attempts[identity]>=2:self.state['cleanup_not_before']=time.time()+REMOVAL_CONFLICT_RETRY_SECONDS
+                        else:current['cleanup_conflict_version']=version
+                elif current and current.get('deleted'):
+                    self.state['entries'].pop(identity,None);self._forget_download(identity)
+                    self.cleanup_attempts.pop(identity,None)
+                self._persist();self._notify_transfers()
+                wait=max(0,self.state.get('cleanup_not_before',0)-time.time())
+                self._cleanup_retry.start(min(QT_TIMER_MAX_MS,max(1,round(wait*1000))))
+            self._request('DELETE','/v1/items/'+quote(identity,safe=''),removed,data={'base_version':version},priority='high')
 
     def _owned_stage(self, transfer):
         try:
@@ -961,42 +1001,14 @@ class ShelfSync(QObject):
             self._schedule_after_pause('cleanup_not_before')
             return
         self.state.pop('cleanup_not_before',None)
-        removal = self._pending_removal()
-        if removal:
-            identity, version = removal['id'],removal['version']
-            self.cleanup_attempts[identity] = self.cleanup_attempts.get(identity,0)+1
-            def removed(result,error):
-                current = self.state['entries'].get(identity)
-                if error and getattr(error,'status',0) not in (404,409):
-                    self._cleanup_error(error); return
-                if error and getattr(error,'status',0)==409:
-                    if current and current.get('version') == version:
-                        details = getattr(error,'details',{})
-                        problem = details.get('error',details) if isinstance(details,dict) else {}
-                        record = problem.get('current_record') if isinstance(problem,dict) else None
-                        if (isinstance(record,dict) and record.get('id') == identity
-                                and isinstance(record.get('version'),int) and version <= record['version'] <= 9007199254740991):
-                            if record.get('deleted'):
-                                self.state['entries'].pop(identity,None)
-                            else:
-                                current['version'] = record['version']; current.pop('cleanup_conflict_version',None)
-                                if self.cleanup_attempts[identity]>=2:
-                                    # Another device is actively changing this
-                                    # item. Keep its latest version and retry
-                                    # cleanup independently after a short pause.
-                                    self.state['cleanup_not_before'] = time.time()+30
-                                    self._persist(); self.debounce.start(30001); self._after_cleanup(); return
-                        else: current['cleanup_conflict_version'] = version
-                elif current and current.get('deleted'):
-                    self.state['entries'].pop(identity,None); self._forget_download(identity)
-                self._persist(); self._retire_uploads()
-            self._request('DELETE','/v1/items/'+quote(identity,safe=''),removed,data={'base_version':version}); return
+        self._retire_item_removals()
         self._retire_abandoned_uploads()
         self._persist();self._after_cleanup()
 
     def _retire_abandoned_uploads(self):
         # Explicit cancellation must reach the server without waiting for an
         # unrelated payload cycle. This lane never changes running/transfer.
+        self._retire_item_removals()
         if self.closed or not self.state or not self.account_id or not self.service.signed_in or self._cleanup_inflight:return
         if self._paused('cleanup_not_before'):
             delay=max(1,min(2147483647,int((self.state['cleanup_not_before']-time.time())*1000)+1))
@@ -1283,7 +1295,7 @@ class ShelfSync(QObject):
         previous=self.state.get('downloads',{}).get(record['id'],{})
         # Large multipart objects use the service's bounded range view. Some
         # routes cleanly terminate 64 MiB streams early, without an HTTP error.
-        small_parts=[record['size']>4*1024*1024 or
+        small_parts=[record['size']>LARGE_DOWNLOAD_RANGE_THRESHOLD_BYTES or
             previous.get('version')==record['version'] and 0<previous.get('chunk_size',0)<=4*1024*1024 and record['size']>4*1024*1024]
         def content_headers():return {'X-FlickDock-Range-Bytes':'4194304'} if small_parts[0] else {'X-FlickDock-Fast-Content':'1'}
         expected_target = self._download_target(record)
@@ -1349,8 +1361,6 @@ class ShelfSync(QObject):
                     if not active:
                         halted=True;self._persist();callback(None,failure[0])
                     return
-                if self._pending_removal() is not None:
-                    halted=True;self._interrupt_cycle();self.tick();return
                 if len(completed)==count and not active:
                     if not assembling:
                         assembling=True;self._persist()
@@ -1523,8 +1533,7 @@ class ShelfSync(QObject):
             if not isinstance(transfer,dict) or not self._resume_matches(transfer):
                 self._forget_resume(identity)
         active = {x.get('upload_id') for x in resumes.values()}
-        if self._pending_removal() is not None:
-            self._retire_uploads(); return
+        self._retire_item_removals()
         lane_ids=set(self.upload_lanes.active)
         pending = next((e for e in self.state['entries'].values() if e['id'] not in lane_ids and not self.upload_lanes.blocked(e['id']) and (not self.clipboard_bridge or not self.clipboard_bridge.waiting(e)) and self.upload_lanes.retry_at.get(e['id'],0)<=time.monotonic() and e.get('dirty') and not e.get('paused_upload') and
                         ((e.get('deleted') and e.get('version',0)==0 and not self.state.get('pending_uploads')) or (not e.get('deleted') and

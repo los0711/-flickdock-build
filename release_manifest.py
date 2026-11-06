@@ -31,6 +31,7 @@ class ReleaseError(ValueError):
 VERSION_RE=re.compile(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z')
 HASH_RE=re.compile(r'[0-9a-f]{64}\Z')
 RUNTIME_SOURCES=(
+    'syncthing_engine.py','syncthing_jobs.py','manual_payload.py',
     'virtual_clipboard.py',
     'video_assets.py','video_runtime.py','video_cdn.py','video_links.py','video_worker.py','video_formats.py','video_covers.py','video_jobs.py','video_controller.py','video_panel.py','video_prompt.py',
     'flickdock.py','app_settings.py','async_images.py','capture_files.py',
@@ -52,6 +53,7 @@ RUNTIME_SOURCES=(
     
 )
 MAINTAINED_TESTS=(
+    'test_cloud_delete_v1825.py','test_cloud_events_v1825.py','test_cloud_stream_v1825.py',
     'test_cloud_only_v1825.py','test_virtual_clipboard.py',
     
     'test_receive_notice.py',
@@ -108,6 +110,7 @@ MAINTAINED_TESTS=(
     'test_remote_transfer_actions_v1812.py','test_wan_transfer_v1816.py',
 )
 SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
+    'ci_cross_device.py','syncthing_assets.py','test_syncthing_engine.py','test_manual_payload.py',
     
     '.github/workflows/native-clipboard.yml',
     'FlickDock.spec','FlickDock.iss','version_info.txt','ChineseSimplified.isl','windows-network.ps1',

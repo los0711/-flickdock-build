@@ -7,10 +7,16 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 
 from PySide6.QtCore import QObject, QTimer, QUrl, Signal
 from PySide6.QtNetwork import QNetworkRequest
 from PySide6.QtWebSockets import QWebSocket
+
+
+HEARTBEAT_INTERVAL_MS=25000
+HEARTBEAT_TIMEOUT_MS=10000
+CONNECT_TIMEOUT_MS=12000
 
 
 class CloudEvents(QObject):
@@ -29,11 +35,15 @@ class CloudEvents(QObject):
         self._identity = ''
         self._attempt = 0
         self._inline_version=0
+        self._probe_payload=None
         self.socket = QWebSocket(parent=self)
         self.socket.connected.connect(self._connected)
         self.socket.disconnected.connect(self._disconnected)
         self.socket.textMessageReceived.connect(self._message)
         self.socket.errorOccurred.connect(self._disconnected)
+        self.socket.pong.connect(self._pong)
+        self.heartbeat=QTimer(self);self.heartbeat.setSingleShot(True);self.heartbeat.timeout.connect(self._ping)
+        self.watchdog=QTimer(self);self.watchdog.setSingleShot(True);self.watchdog.timeout.connect(self._stalled)
         self.retry = QTimer(self); self.retry.setSingleShot(True)
         self.retry.timeout.connect(self._connect)
         self.content_debounce = QTimer(self); self.content_debounce.setSingleShot(True)
@@ -46,7 +56,8 @@ class CloudEvents(QObject):
             origin_signal.connect(lambda _:self._account_changed(account.account) if account.signed_in else None)
 
     def _account_changed(self, account):
-        self.retry.stop(); self.content_debounce.stop(); self.devices_debounce.stop()
+        self.retry.stop(); self.heartbeat.stop();self.watchdog.stop();self._probe_payload=None
+        self.content_debounce.stop(); self.devices_debounce.stop()
         self.socket.abort()
         self._attempt = 0
         self._inline_version=0
@@ -63,9 +74,11 @@ class CloudEvents(QObject):
         url.setScheme('wss'); url.setPath('/v1/events')
         request = QNetworkRequest(url)
         request.setRawHeader(b'Authorization', ('Bearer '+self.account.api.token).encode('ascii'))
+        self.watchdog.start(CONNECT_TIMEOUT_MS)
         self.socket.open(request)
 
     def _connected(self):
+        self.watchdog.stop();self._probe_payload=None;self.heartbeat.start(HEARTBEAT_INTERVAL_MS)
         recovered = self._attempt > 0
         self._attempt = 0
         # Login already fetches shelf changes and devices. Reconcile only
@@ -75,11 +88,28 @@ class CloudEvents(QObject):
             self.devices_debounce.start(50)
 
     def _disconnected(self, *_args):
+        self.heartbeat.stop();self.watchdog.stop();self._probe_payload=None
         if self.closed or not self.enabled or not self._identity or not self.account.signed_in or self.retry.isActive():
             return
         # Back off to at most one reconnect per five minutes during outages.
         self._attempt = min(self._attempt+1, 9)
         self.retry.start(min(300000, 1000 * (2 ** (self._attempt-1))))
+
+    def _ping(self):
+        if self.closed or not self._identity or not self.account.signed_in:return
+        self._probe_payload=secrets.token_bytes(12)
+        self.watchdog.start(HEARTBEAT_TIMEOUT_MS)
+        self.socket.ping(self._probe_payload)
+
+    def _pong(self,_elapsed,payload):
+        if self._probe_payload is None or bytes(payload)!=self._probe_payload:return
+        self._probe_payload=None;self.watchdog.stop();self.heartbeat.start(HEARTBEAT_INTERVAL_MS)
+
+    def _stalled(self):
+        # A half-open socket otherwise looks online and suppresses reconciliation
+        # for five minutes. WebSocket control pings do not wake the cloud DO.
+        if self.closed:return
+        self.socket.abort();self._disconnected()
 
     def _message(self, message):
         if len(message)>65536: return
@@ -112,6 +142,6 @@ class CloudEvents(QObject):
             self.transfer_progress.emit(value)
 
     def close(self):
-        self.closed=True; self.retry.stop()
+        self.closed=True; self.retry.stop();self.heartbeat.stop();self.watchdog.stop();self._probe_payload=None
         self.content_debounce.stop(); self.devices_debounce.stop()
         self.socket.abort()
