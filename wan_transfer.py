@@ -528,7 +528,9 @@ class WanTransferService(LanTransferService):
                 self._notify(transfer,'transferring')
         elif kind in ('error','closed') or kind=='state' and event.get('state')=='failed':
             from network_diagnostics import record_event
-            record_event(self.base,'remote','ice','WEBRTC_'+str(kind).upper())
+            bridge=state.get('bridge')
+            record_event(self.base,'remote','ice','WEBRTC_'+str(kind).upper(),
+                         details=bridge.diagnostics() if bridge is not None else dict(pc_state='uninitialized'))
             if state.get('adaptive') is not None and not state['adaptive'].closed:return
             if not state['bridge'].opened.is_set() and state['role']=='send' and state.get('relay_allowed'):
                 self._relay_if_needed(identifier,state['generation']);return

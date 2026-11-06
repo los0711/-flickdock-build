@@ -10,7 +10,7 @@ from network_diagnostics import record_event
 
 class ClipboardPeerBridge(QObject):
     def __init__(self,client,mesh):
-        super().__init__(client);self.client=client;self.mesh=mesh;self.jobs={};self.latest=None;self.confirmed=None;self.incoming=None
+        super().__init__(client);self.client=client;self.mesh=mesh;self.jobs={};self.latest=None;self.confirmed=None;self.incoming=None;self._receiving=None
         mesh.offered.connect(self._offered);mesh.applied.connect(self._acknowledged)
         mesh.connections_changed.connect(client.deliveries.set_connections)
         client.deliveries.set_connections(mesh.connection_snapshot())
@@ -21,7 +21,7 @@ class ClipboardPeerBridge(QObject):
 
     def cancel_fetches(self):
         for job in self.jobs.values():job.cancel.set()
-        self.jobs.clear();self.client._priority_flags(peer_receiving=False)
+        self.jobs.clear();self._receiving=None;self.client._priority_flags(peer_receiving=False)
 
     def calibrate(self):
         anchor=getattr(self.mesh.wan,'server_clock_anchor',None)
@@ -61,13 +61,15 @@ class ClipboardPeerBridge(QObject):
         client._copy_result(pending,True,phase='peer');client._priority_flags(waiting=True)
 
     def in_flight(self,head):
-        job=self.jobs.get(head['id'])
-        return job is not None and not job.cancel.is_set() and job.sha256==head['sha256']
+        # A single logical item also owns unpacking and delayed native writes,
+        # not just the network handle. A matching backup commit cannot revoke it.
+        return self._receiving==(self.client._epoch,head.get('id'),head.get('sha256'))
 
     def accept_cloud_head(self,head):
         if not isinstance(head,dict):return True
         copied_at=head.get('copied_at',head.get('at',0))
         if type(copied_at) is not int:return self.latest is None
+        if self.incoming is not None and copied_at<self.incoming[0]:return False
         if self.latest is not None and copied_at<self.latest[0]:return False
         if head.get('ready'):
             self.confirmed=(copied_at,head.get('id'))
@@ -99,11 +101,13 @@ class ClipboardPeerBridge(QObject):
         order=head['copied_at'],head['id']
         if self.incoming is not None and order<self.incoming:return
         self.incoming=order
+        client._observed_clock=max(client._observed_clock,head['copied_at'])
         def ready(value,directory):
             def valid():
                 return epoch==client._epoch and self.incoming==order and self._eligible(head)
             if not valid():return
             def applied():
+                self._receiving=None
                 self.latest=order
                 client.deliveries.received(head,head.get('delivery_route',''))
                 self.mesh.acknowledge(peer,'clipboard',head)
@@ -111,27 +115,33 @@ class ClipboardPeerBridge(QObject):
         if head['kind']=='text' and isinstance(head.get('inline'),str) and head['size']<=32768:
             try:value=unpack_inline(head)
             except (ValueError,TypeError,UnicodeError):return
+            self.cancel_fetches();self._receiving=(epoch,head['id'],head['sha256'])
             ready(value,client.cache);return
         if head['id'] in self.jobs:return
         self.cancel_fetches()
+        self._receiving=(epoch,head['id'],head['sha256'])
         try:directory=client._directory()
-        except OSError:return
+        except OSError:self._receiving=None;return
         path=directory/'peer-clipboard.bin'
         def downloaded(result,error):
             self.jobs.pop(head['id'],None)
             client._priority_flags(peer_receiving=bool(self.jobs))
             if epoch!=client._epoch:return
             if error is not None:
+                self._receiving=None
                 record_event(client._clock_path.parent,'remote','clipboard_receive','OBJECT_FETCH_FAILED',details=dict(cause=type(error).__name__))
                 client.refresh();return
             def prepared(value):
                 if value is not None:
                     head['delivery_route']=job.route;ready(value,directory)
+                elif self._receiving==(epoch,head['id'],head['sha256']):
+                    self._receiving=None;client.refresh()
             client._work(lambda _:unpack(head['kind'],path,directory),prepared)
         job=self.mesh.fetch('clipboard',head,path,downloaded,preferred=peer,
                             progress=lambda received,total:client._priority_flags() if epoch==client._epoch else None)
         if job is not None:
             self.jobs[head['id']]=job;client._priority_flags(peer_receiving=True)
+        else:self._receiving=None
 
     def fetch_cloud_body(self,head,path,callback):
         generation=self.client._generation

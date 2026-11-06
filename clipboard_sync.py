@@ -895,11 +895,13 @@ class ClipboardSync(QObject):
         head=value.get('clipboard') if isinstance(value,dict) else None
         if not isinstance(head,dict) or type(head.get('version')) is not int:return
         if head['version']<=self._applied_version or head.get('id')==self._seen:return
+        if self.peer_bridge is not None and not self.peer_bridge.accept_cloud_head(head):return
         self._observe_cloud_head(head)
         previous=(self._pushed_head or {}).get('clipboard',{})
         if head['version']>previous.get('version',0):self._pushed_head=value
-        if self._fetching and not self._pending and head['version']>self._receiving_version:
-            # A new committed small copy supersedes a stale body download;
+        same_peer_body=self.peer_bridge is not None and self.peer_bridge.in_flight(head)
+        if self._fetching and not self._pending and head['version']>self._receiving_version and not same_peer_body:
+            # A different committed copy supersedes a stale body download;
             # retain the last usable native clipboard until this one verifies.
             self._epoch+=1;self._generation+=1
             self._cancel_replaced_work()

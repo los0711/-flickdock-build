@@ -12,6 +12,7 @@ class Peer{
   constructor(){state.channel=new Channel();}
   getSelectedCandidatePair(){return state.pair;} bytesSent(){return 0;} bytesReceived(){return 0;}
   onLocalDescription(){} onLocalCandidate(){} onStateChange(){} onDataChannel(){}
+  onIceStateChange(){} onGatheringStateChange(){}
   createDataChannel(){return state.channel;} close(){state.closed++;}
 }
 state.rtc={initLogger(){},setSctpSettings(){},PeerConnection:Peer,cleanup(){}};

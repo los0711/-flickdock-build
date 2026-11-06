@@ -65,6 +65,38 @@ class Hub:
 
 
 class PeerSyncTests(unittest.TestCase):
+    def test_matching_cloud_commit_cannot_cancel_peer_receive_behind_metadata_request(self):
+        cloud=ClipboardHub();syncs=[];clips=[];gate=threading.Event();held=[]
+        for state in self.clients[0].available():
+            provider=state['rpc'].provider
+            def delayed(*args,provider=provider):gate.wait(5);return provider(*args)
+            state['rpc'].provider=delayed
+        try:
+            for index,mesh in enumerate(self.clients):
+                account=mesh.account;api=cloud.api(account.device_id);api.token=account.api.token;account.api=api
+                events=Events();cloud.events.append(events);clip=Clipboard();clips.append(clip)
+                client=ClipboardSync(account,events,self.base/f'commit-race-{index}',clipboard=clip)
+                client.peer_bridge=ClipboardPeerBridge(client,mesh);syncs.append(client)
+            until(lambda:all(not client._fetching for client in syncs));receiver=syncs[1];original=receiver._request
+            def request(method,path,callback,**options):
+                if method=='GET' and path=='/v1/clipboard':held.append(callback);return object()
+                return original(method,path,callback,**options)
+            receiver._request=request;receiver.refresh();self.assertTrue(held)
+            source=self.base/'commit-race.bin';body=os.urandom(512*1024+71);source.write_bytes(body)
+            mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(source))]);clips[0].setMimeData(mime)
+            until(lambda:cloud.head is not None and bool(receiver.peer_bridge.jobs));epoch=receiver._epoch
+            job=next(iter(receiver.peer_bridge.jobs.values()))
+            receiver._pushed(dict(clipboard=dict(cloud.head),server_time=round(time.time()*1000)))
+            self.assertEqual(receiver._epoch,epoch,'A commit for the same body is not a new clipboard copy')
+            self.assertFalse(job.cancel.is_set())
+            held.pop(0)(dict(clipboard=dict(cloud.head)),None);gate.set()
+            until(lambda:clips[1].mimeData().hasUrls(),seconds=3)
+            self.assertEqual(Path(clips[1].mimeData().urls()[0].toLocalFile()).read_bytes(),body)
+        finally:
+            gate.set()
+            for client in syncs:client.close()
+            until(lambda:all(not client._jobs for client in syncs))
+
     def test_unreadable_receiver_native_notification_does_not_discard_a_verified_file(self):
         cloud=ClipboardHub();syncs=[];clips=[];gate=threading.Event();entered=threading.Event()
         sender=self.clients[0];original=sender._provide

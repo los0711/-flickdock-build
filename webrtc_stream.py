@@ -26,6 +26,7 @@ class WebRTCStream:
         self._controls=deque();self._writes=deque();self._write_bytes=0;self._control_bytes=0
         self._closed=False;self._timeout=1.;self.opened=threading.Event();self.route='';self.on_signal=on_signal
         self.adaptive_capable=False
+        self._diagnostics=dict(pc_state='new',ice_state='new',gathering_state='new',local_candidates=0,remote_candidates=0)
         self._nearby_context={};self._nearby_messages=deque();self._nearby_delivered=0;self._sockets=[]
         self._traffic={'sent':0,'received':0};self._stats_generation=0;self.last_activity=time.monotonic()
         self._sent_position=0;self._payload_spans=deque();self._payload_delivered=0
@@ -52,7 +53,13 @@ class WebRTCStream:
         except subprocess.TimeoutExpired:exit_code=None
         self._stderr_done.wait(.1)
         return {'type':'closed','exit_code':exit_code,'reason':self._stderr_code}
-    def control(self,value):self._write(b'C' if value.get('type')=='close' else b'J',json.dumps(value,separators=(',',':')).encode())
+    def control(self,value):
+        if value.get('type')=='candidate':
+            with self._condition:self._diagnostics['remote_candidates']+=1
+        self._write(b'C' if value.get('type')=='close' else b'J',json.dumps(value,separators=(',',':')).encode())
+
+    def diagnostics(self):
+        with self._condition:return dict(self._diagnostics)
     def _write(self,kind,data):
         with self._condition:
             deadline=time.monotonic()+max(30,self._timeout)
@@ -117,6 +124,10 @@ class WebRTCStream:
                 self._data.append(packet[1:]);self._size+=len(packet)-1;self._condition.notify_all()
         elif packet[:1]==b'J':
             value=json.loads(packet[1:])
+            with self._condition:
+                key={'state':'pc_state','ice-state':'ice_state','gathering-state':'gathering_state'}.get(value.get('type'))
+                if key is not None:self._diagnostics[key]=value.get('state','unknown')
+                elif value.get('type')=='candidate':self._diagnostics['local_candidates']+=1
             if value.get('type') in ('capabilities','open'):self.adaptive_capable=value.get('adaptive') is True
             if value.get('type')=='open':
                 self.route=value['route'];self._nearby_context=value.get('nearby',{});self.opened.set()

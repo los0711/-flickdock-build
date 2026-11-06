@@ -109,6 +109,8 @@ async function control(value) {
     pc.onLocalDescription((sdp,type)=>event({type:'description',sdp:sdp.replace(/^a=x-flickdock-(?:flow|nearby|routes):[^\r\n]*\r?\n?/gm,'').trimEnd()+`\r\na=x-flickdock-flow:2 ${flowNonce} ${WINDOW} ${MESSAGE}\r\na=x-flickdock-nearby:1 ${nearbyNonce}\r\na=x-flickdock-routes:1 ${routesNonce}\r\n`,descriptionType:type}));
     pc.onLocalCandidate((candidate,mid)=>event({type:'candidate',candidate,mid}));
     pc.onStateChange(state=>{event({type:'state',state});if(state==='failed')stop();});
+    pc.onIceStateChange(state=>event({type:'ice-state',state}));
+    pc.onGatheringStateChange(state=>event({type:'gathering-state',state}));
     pc.onDataChannel(guarded(bind));
     if(value.initiator)bind(pc.createDataChannel('flickdock-file-v1',{protocol:'flickdock-file-v1'}));
   } else if(value.type==='description') {

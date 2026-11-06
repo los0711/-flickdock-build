@@ -29,12 +29,12 @@ def record_event(base,component,phase,code,status=0,details=None):
                              status=int(status),platform=sys.platform,version=APP_VERSION,build=APP_BUILD))
             if isinstance(details,dict):
                 safe={}
-                for name in ('received_size','expected_size','network_error','errno'):
+                for name in ('received_size','expected_size','network_error','errno','local_candidates','remote_candidates'):
                     value=details.get(name)
                     if type(value) is int and 0<=value<=2**53:safe[name]=value
                 for name in ('hash_matches','reply_finished','header_digest_valid'):
                     if type(details.get(name)) is bool:safe[name]=details[name]
-                for name in ('phase','cause','location','response_length'):
+                for name in ('phase','cause','location','response_length','pc_state','ice_state','gathering_state'):
                     value=details.get(name)
                     if isinstance(value,str) and re.fullmatch(r'[A-Za-z0-9_.:-]{0,90}',value):safe[name]=value
                 if safe:rows[-1]['details']=safe

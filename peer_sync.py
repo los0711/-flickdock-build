@@ -334,7 +334,8 @@ class PeerSync(QObject):
         elif kind=='transport':state['relay_transport']=event.get('relayTransport','direct')
         elif kind in ('closed','error') or kind=='state' and event.get('state') in ('failed','closed'):
             from network_diagnostics import record_event
-            record_event(self.wan.base,'remote','peer_ice','WEBRTC_'+str(kind).upper())
+            diagnostic=state['raw'].diagnostics() if state['raw'] is not None else dict(pc_state='uninitialized')
+            record_event(self.wan.base,'remote','peer_ice','WEBRTC_'+str(kind).upper(),details=diagnostic)
             if state.get('adaptive') is not None and not state['adaptive'].closed:return
             if state.get('cloud_starting'):return
             if state['rpc'] is None and not state.get('relay_configured') and getattr(self.wan,'_sync_ice',[]) and state.get('initiator'):
