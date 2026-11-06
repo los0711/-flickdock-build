@@ -3307,6 +3307,8 @@ class ShelfManager:
         self.peer_sync=PeerSync(self.account,self.wan,self.app,
             can_upload=lambda topic:self.clipboard_sync.enabled if topic=='clipboard' else self.sync.upload_enabled,
             can_receive=lambda topic:self.clipboard_sync.enabled if topic=='clipboard' else self.sync.receive_enabled)
+        from lan_account import LanAccountAuthorizer
+        self.lan_account=LanAccountAuthorizer(self.lan,self.peer_sync)
         self.clipboard_sync.peer_bridge=ClipboardPeerBridge(self.clipboard_sync,self.peer_sync)
         from video_controller import VideoController
         from video_prompt import VideoLinkWatcher
@@ -3318,6 +3320,7 @@ class ShelfManager:
         self.wan.offer_received.connect(self._wan_offer)
         from receive_notice import SameAccountReceiveNotice
         self.receive_notice=SameAccountReceiveNotice(self,self.wan)
+        self.lan_receive_notice=SameAccountReceiveNotice(self,self.lan)
         self.wan.start()
         self.account.account_changed.connect(self._lan_identity)
         self.account.devices_changed.connect(self._lan_devices)
@@ -3555,6 +3558,12 @@ class ShelfManager:
             self.account.device_name=current['name'];self._lan_identity(self.account.account)
 
     def _lan_offer(self,offer):
+        if offer.get('account_device') is True and self.account.signed_in and offer.get('account_id')==self.account.account['id']:
+            try:
+                if self.lan.accept(offer['id'],self.settings.lan_receive_dir):self.lan_receive_notice.begin(offer)
+            except (OSError,ValueError) as error:
+                self.lan.reject(offer['id']);self.lan.status_changed.emit('同账号局域网文件未能接收：'+str(error))
+            return
         self.show_lan_dialog()
         self.lan_dialog.panel.show_offer(offer)
 
@@ -3568,13 +3577,6 @@ class ShelfManager:
                 self.wan.reject(offer['id']);self.wan.status_changed.emit('同账号文件未能接收：'+str(error))
             return
         self.show_wan_dialog();self.wan_dialog.panel.show_offer(offer)
-
-    def _send_account_from_lan(self,identifier,paths):
-        if not self.account.signed_in:return None
-        peer=next((row for row in self.wan.peers() if row.get('account_device') and row.get('online')
-                   and row.get('lan_id')==identifier),None)
-        if peer is None:return None
-        self.show_wan_dialog();return self.wan_dialog.panel.send_paths(peer['id'],paths)
 
     def _lan_selected(self):
         refs=self.shelf.popup.chosen_refs() if self.shelf.popup else []
@@ -3758,9 +3760,7 @@ class ShelfManager:
             dialog.lan_recommended.connect(self._use_recommended_lan)
             dialog.mini_requested.connect(self.show_shortcut)
             dialog.dock_requested.connect(lambda:self.shelf.hide_animated(explicit=True))
-        dialog.account_sender=self._send_account_from_lan
         dialog.set_service(service).set_paths_provider(self._lan_selected)
-        dialog.panel.account_sender=self._send_account_from_lan
         self.lan_dialog=self.wan_dialog=dialog
         if not dialog.isVisible():
             self._center_dialog(dialog)
@@ -4162,6 +4162,7 @@ class ShelfManager:
 
     def quit(self):
         if hasattr(self,'receive_notice'):self.receive_notice.close()
+        if hasattr(self,'lan_receive_notice'):self.lan_receive_notice.close()
         if hasattr(self,'intake_notice'):self.intake_notice.hide()
         if hasattr(self,'clipboard_notice'):self.clipboard_notice.supersede()
         if hasattr(self,'remote_intake_notice'):self.remote_intake_notice.hide()

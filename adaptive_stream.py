@@ -30,6 +30,9 @@ PROBE_TIMEOUT_SECONDS=12.
 STALL_SECONDS=8.
 PATH_CONNECT_SECONDS=15.
 PATH_RETRY_SECONDS=30.
+EARLY_SECONDARY_SIGNALS=64
+EARLY_SECONDARY_BYTES=128*1024
+RETIRED_SECONDARY_ATTEMPTS=64
 ACTIVE_SECONDS=5.
 BULK_BYTES=128*1024
 LATENCY_MESSAGE_BYTES=16*1024
@@ -73,8 +76,10 @@ class AdaptiveStream:
         self.sent_route='';self.received_route=''
         self._payload=0;self._acked_payload=0;self._offset=0;self._payload_origin=0
         self._timeout=1.;self._closed=False;self._probe=None;self._probe_number=0
-        self._last_send=0.;self._empty_since=0.;self._secondary=None;self._secondary_id=''
+        self._last_send=0.;self._empty_since=0.;self._secondary=None;self._secondary_id='';self._secondary_ready=False
         self._secondary_started=0.;self._secondary_retry={'p2p':time.perf_counter()+1.,'relay':0.};self._secondary_route='';self._prefer_tls=prefer_tls
+        self._early_secondary=deque();self._early_secondary_bytes=0
+        self._retired_secondary=deque(maxlen=RETIRED_SECONDARY_ATTEMPTS)
         self._reported='';self._selected_key=None;self._next_probe=0.;self._probe_data=os.urandom(PROBE_BYTES)
         if nearby is not raw:
             raw.release_owned_socket(nearby.stream)
@@ -313,13 +318,14 @@ class AdaptiveStream:
     def _launch_secondary(self,identifier,*,direct_only):
         if not self.secondary:return
         with self._condition:
-            if self._secondary is not None:return
-            self._secondary_id=identifier;self._secondary_started=time.perf_counter()
+            if self._secondary is not None or self._secondary_id:return
+            self._secondary_id=identifier;self._secondary_started=time.perf_counter();self._secondary_ready=False
             target='p2p' if direct_only else 'relay';self._secondary_route=target
         def failed():
             with self._condition:
                 if identifier!=self._secondary_id:return
-                candidate=self._secondary;self._secondary=None;self._secondary_id=''
+                self._retire_secondary(identifier)
+                candidate=self._secondary;self._secondary=None;self._secondary_id='';self._secondary_ready=False
                 self._secondary_retry[target]=time.perf_counter()+PATH_RETRY_SECONDS
             if candidate is not None:candidate.shutdown()
         def event(value):
@@ -349,7 +355,8 @@ class AdaptiveStream:
                             if existing is not None and not existing.dead:candidate.shutdown()
                             else:
                                 self._paths.pop(key,None);self._add(key,route,candidate)
-                            self._secondary=None;self._secondary_id=''
+                            self._retire_secondary(identifier)
+                            self._secondary=None;self._secondary_id='';self._secondary_ready=False
                             self._secondary_retry[target]=time.perf_counter()+PATH_RETRY_SECONDS
                     self._thread(connected,'candidate-ready')
                 elif kind in ('closed','error') or kind=='state' and value.get('state')=='failed':
@@ -364,9 +371,40 @@ class AdaptiveStream:
             if not self._alive() or identifier!=self._secondary_id:candidate.shutdown();return
             self._secondary=candidate
         candidate.control(configuration)
+        with self._condition:
+            if not self._alive() or identifier!=self._secondary_id:return
+            self._secondary_ready=True;pending=self._take_secondary_signals(identifier)
+        for payload in pending:
+            if not self._alive() or identifier!=self._secondary_id:return
+            candidate.control(payload)
+
+    def _take_secondary_signals(self,identifier):
+        now=time.perf_counter();ready=[];keep=deque();size=0
+        for when,identity,payload,length in self._early_secondary:
+            if now-when>=PATH_CONNECT_SECONDS:continue
+            if identity==identifier:ready.append(payload)
+            else:keep.append((when,identity,payload,length));size+=length
+        self._early_secondary=keep;self._early_secondary_bytes=size
+        return ready
+
+    def _retire_secondary(self,identifier):
+        if identifier and identifier not in self._retired_secondary:self._retired_secondary.append(identifier)
+        self._take_secondary_signals(identifier)
+
+    def _queue_secondary_signal(self,identifier,payload):
+        self._take_secondary_signals('')
+        if identifier in self._retired_secondary:return
+        if any(identity==identifier and value==payload for _,identity,value,_ in self._early_secondary):return
+        length=len(json.dumps(payload,separators=(',',':')).encode('utf8'))
+        if len(self._early_secondary)>=EARLY_SECONDARY_SIGNALS or self._early_secondary_bytes+length>EARLY_SECONDARY_BYTES:
+            self._retire_secondary(identifier)
+            LOG.warning('Alternative route signal buffer reached its bound')
+            return
+        self._early_secondary.append((time.perf_counter(),identifier,payload,length));self._early_secondary_bytes+=length
 
     def _secondary_signal(self,value):
         if not isinstance(value,dict) or not re.fullmatch('[a-f0-9]{32}',str(value.get('id',''))):raise ValueError('Invalid alternative route identity')
+        if not self._alive():return
         if value.get('kind')=='cloud':
             if self.initiator or not self.cloud or not re.fullmatch('[a-f0-9]{64}',str(value.get('key',''))):return
             configured=self.cloud(dict(id=value['id'],key=value['key']))
@@ -378,11 +416,22 @@ class AdaptiveStream:
         if value.get('kind')=='start':
             if self.initiator:raise ValueError('Unexpected alternative route initiator')
             if not isinstance(value.get('directOnly'),bool):raise ValueError('Invalid alternative route mode')
+            with self._condition:
+                if value['id'] in self._retired_secondary or value['id']==self._secondary_id:return
+                old=self._secondary
+                if self._secondary_id:self._retire_secondary(self._secondary_id)
+                self._secondary=None;self._secondary_id='';self._secondary_ready=False
+            if old is not None:old.shutdown()
             self._launch_secondary(value['id'],direct_only=value['directOnly'])
-        elif value.get('kind')=='candidate' and value['id']==self._secondary_id and self._secondary is not None:
+        elif value.get('kind')=='candidate':
             payload=value.get('payload')
             if not isinstance(payload,dict) or payload.get('type') not in ('description','candidate'):raise ValueError('Invalid alternative route signal')
-            self._secondary.control(payload)
+            if len(json.dumps(payload,separators=(',',':')).encode('utf8'))>32*1024:raise ValueError('Alternative route signal exceeds limit')
+            with self._condition:
+                if value['id'] in self._retired_secondary:return
+                candidate=self._secondary if value['id']==self._secondary_id and self._secondary_ready else None
+                if candidate is None:self._queue_secondary_signal(value['id'],payload);return
+            candidate.control(payload)
         # Signals from an earlier connection generation may already be in flight.
 
     def _open_cloud(self):
@@ -436,7 +485,8 @@ class AdaptiveStream:
                 if self.initiator and self.secondary:
                     if self._secondary is not None and now-self._secondary_started>PATH_CONNECT_SECONDS:
                         with self._condition:
-                            candidate=self._secondary;self._secondary=None;self._secondary_id=''
+                            self._retire_secondary(self._secondary_id)
+                            candidate=self._secondary;self._secondary=None;self._secondary_id='';self._secondary_ready=False
                             self._secondary_retry[self._secondary_route]=now+PATH_RETRY_SECONDS
                         candidate.shutdown()
                     with self._condition:
@@ -486,7 +536,8 @@ class AdaptiveStream:
     def shutdown(self,*_):
         with self._condition:
             if self._closed:return
-            self._closed=True;self._condition.notify_all();paths=list(self._paths.values())
+            self._closed=True;self._early_secondary.clear();self._early_secondary_bytes=0
+            self._condition.notify_all();paths=list(self._paths.values())
         for path in paths:
             if hasattr(path.stream,'shutdown'):path.stream.shutdown()
             else:path.stream.close()

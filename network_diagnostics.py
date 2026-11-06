@@ -2,7 +2,7 @@
 import json,os,re,sys,threading,time
 from pathlib import Path
 from uuid import uuid4
-from app_version import APP_VERSION
+from app_version import APP_VERSION,APP_BUILD
 
 _lock=threading.Lock()
 _last={}
@@ -26,7 +26,7 @@ def record_event(base,component,phase,code,status=0,details=None):
                     if isinstance(existing,list):rows=existing[-63:]
                 except (OSError,ValueError):pass
             rows.append(dict(at=round(time.time()),component=component,phase=phase.upper(),code=code.upper(),
-                             status=int(status),platform=sys.platform,version=APP_VERSION))
+                             status=int(status),platform=sys.platform,version=APP_VERSION,build=APP_BUILD))
             if isinstance(details,dict):
                 safe={}
                 for name in ('received_size','expected_size','network_error','errno'):

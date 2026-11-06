@@ -51,7 +51,7 @@ class FeedbackTests(unittest.TestCase):
             lan=LanTransferService(discovery=False);wan=WanTransferService(Path(directory)/'wan',enabled=False)
             dialog=LanDialog(lan,store);dialog.show();flush()
             manager=SimpleNamespace(shelf=SimpleNamespace(_release_reveal_level=lambda:None),lan=lan,wan=wan,
-                lan_dialog=dialog,wan_dialog=dialog,settings=store,_lan_selected=lambda:[],_center_dialog=Mock(),_send_account_from_lan=lambda peer,paths:None)
+                lan_dialog=dialog,wan_dialog=dialog,settings=store,_lan_selected=lambda:[],_center_dialog=Mock())
             manager._show_transfer_dialog=lambda service:flickdock.ShelfManager._show_transfer_dialog(manager,service)
             manager.show_lan_dialog=lambda:flickdock.ShelfManager.show_lan_dialog(manager)
             manager.show_wan_dialog=lambda:flickdock.ShelfManager.show_wan_dialog(manager)

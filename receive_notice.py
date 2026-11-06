@@ -88,7 +88,7 @@ class SameAccountReceiveNotice(QObject):
         if self.closed or offer['id'] in self.records:return
         names=offer.get('names') or []
         record=dict(id=offer['id'],peer=str(offer['peer'])[:160],count=offer['count'],name=Path(str(names[0])).name if names else '',
-            total=offer['total'],received=0,state='connecting',route='',paths=[],dismissed=False,announced=False,snapshot=None)
+            total=offer['total'],received=0,state='connecting',route='' if self.service is self.manager.wan else 'lan',paths=[],dismissed=False,announced=False,snapshot=None)
         record['snapshot']=dict(id=record['id'],direction='receive',peer=record['peer'],total=record['total'],received=0,state='connecting',name=record['name'])
         self.records[record['id']]=record
         while len(self.records)>MAX_NOTICE_RECORDS:
@@ -134,7 +134,11 @@ class SameAccountReceiveNotice(QObject):
             try:reveal_file(record['paths'][0])
             except (OSError,IndexError) as error:record['message']=str(error);self._present(record)
         else:
-            self.manager.show_wan_dialog();self.manager.wan_dialog.panel.focus_transfer(record['id'],record['snapshot'])
+            if self.service is self.manager.wan:
+                self.manager.show_wan_dialog();panel=self.manager.wan_dialog.panel
+            else:
+                self.manager.show_lan_dialog();panel=self.manager.lan_dialog.panel
+            panel.focus_transfer(record['id'],record['snapshot'])
 
     def _refresh(self):
         if self.toast and self.toast.isVisible() and self.current in self.records:self._present(self.records[self.current])

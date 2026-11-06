@@ -670,7 +670,6 @@ class LanPanel(QFrame):
     def __init__(self, service, parent=None, *, theme='light', settings=None,metadata_cache=None):
         super().__init__(parent)
         self.service = service; self.settings = settings; self._paths_provider = None
-        self.account_sender=None
         self._wan=getattr(service,'mode','lan')=='wan'
         self._rows = {}; self._offers = {}; self._queued_paths = []; self._row_sequence = 0
         from file_metadata import FileMetadataCache
@@ -1339,11 +1338,6 @@ class LanPanel(QFrame):
             paths, _ = QFileDialog.getOpenFileNames(self, '选择要发送的文件')
         if not paths: return
         try:
-            if not self._wan and self.account_sender is not None:
-                identifier=self.account_sender(peer,paths)
-                if identifier is not None:
-                    if identifier:self.queue_paths([],replace=True)
-                    return
             identifier = self.service.send(peer, paths)
             if self._wan:self.peer_code_input.clear()
             self._set_history_context(identifier, paths)
@@ -1675,7 +1669,6 @@ class LanDialog(QDialog):
     def __init__(self, service, settings, parent=None):
         super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
         self._settings=settings;self._panels={};self._theme=settings.theme
-        self.account_sender=None
         self._close_prompt=None;self._closing_confirmed=False;self._navigate_after_close=None
         self.finished.connect(self._finish_navigation)
         self._wan=getattr(service,'mode','lan')=='wan'
@@ -1798,7 +1791,7 @@ class LanDialog(QDialog):
                 self._panels[service]=panel;self.panel_stack.addWidget(panel)
                 if getattr(service,'mode','lan')=='wan':service.identity_changed.connect(self._update_ready)
                 for widget in (panel,*panel.findChildren(QWidget)):widget.setAcceptDrops(True)
-            self.panel=self._panels[service];self.panel.account_sender=self.account_sender;self._wan=getattr(service,'mode','lan')=='wan'
+            self.panel=self._panels[service];self._wan=getattr(service,'mode','lan')=='wan'
             self.panel.queue_paths(queued,replace=True)
             self.mode_buttons['wan' if self._wan else 'lan'].setChecked(True)
             if not hasattr(self,'_page_fade'):

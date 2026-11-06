@@ -288,7 +288,8 @@ class ClipboardSync(QObject):
         self.enabled=enabled;self.closed=False;self._epoch=0;self._generation=0;self._applying=False
         self.peer_bridge=None
         self._native_access=self._native_accessible()
-        self._clock_anchor=None;self._observed_clock=0;self._local_fence=None;self._local_retry=None
+        self._clock_anchor=None;self._local_clock_anchor=(time.monotonic(),round(time.time()*1000))
+        self._observed_clock=0;self._local_fence=None;self._local_retry=None
         self._clock_path=Path(base)/'clipboard-clock.json';self._copy_clock=0
         try:self._copy_clock=int(json.loads(self._clock_path.read_text(encoding='utf8'))['sequence'])
         except (OSError,ValueError,KeyError,TypeError):pass
@@ -460,8 +461,11 @@ class ClipboardSync(QObject):
             self._copy_notified_mono=time.monotonic();self._generation+=1;self.change_debounce.start()
 
     def _copy_timestamp(self,intent):
-        if intent['at'] is None and self._clock_anchor is not None:
-            mono,server=self._clock_anchor
+        if intent['at'] is None:
+            # Keep a copy's order immutable. An unavailable cloud clock must
+            # never gate an authenticated device-to-device delivery. The
+            # monotonic anchor also prevents wall-clock changes during a copy.
+            mono,server=self._clock_anchor or self._local_clock_anchor
             intent['at']=max(round(server+(intent['mono']-mono)*1000),intent['floor']+1)
         return intent['at']
 
@@ -503,6 +507,8 @@ class ClipboardSync(QObject):
         if self._snapshot_available and actual not in (self._last_local_signature,signature(value)):
             self._prepared_receive=None;self._schedule_change();return
         if not self._snapshot_available or not self._apply(value,pending['directory'],identity=pending['head']['id']):
+            from network_diagnostics import record_event
+            record_event(self._clock_path.parent,'remote','clipboard_apply','NATIVE_WRITE_UNCONFIRMED')
             pending['attempts']+=1
             self.retry.start(min(NATIVE_READ_RETRY_MAX_MS,NATIVE_READ_RETRY_INITIAL_MS*2**min(pending['attempts']-1,4)))
             self._set_view(self.view['value'],self.view['phase'],self.view['id']);return
@@ -515,6 +521,8 @@ class ClipboardSync(QObject):
         known=self._known_cloud_head
         backed_up=bool(known and known[1:]==(head['id'],head['sha256']))
         self._set_view(value,'synced' if backed_up else 'peer',head['id'],route=head.get('delivery_route','cloud'),backed_up=backed_up)
+        from network_diagnostics import record_event
+        record_event(self._clock_path.parent,'remote','clipboard_apply','NATIVE_WRITE_VERIFIED')
         pending['applied']()
 
     def _next_sequence(self):
@@ -605,7 +613,7 @@ class ClipboardSync(QObject):
         self._pushed_head=None;self._known_cloud_head=None;self._cloud_progress=None
         self._prepared_receive=None
         self._applied_version=0;self._receiving_version=0
-        self._clock_anchor=None;self._observed_clock=0
+        self._clock_anchor=None;self._local_clock_anchor=(time.monotonic(),round(time.time()*1000));self._observed_clock=0
         # A session switch is not a Copy action. Establish a native baseline so
         # a delayed notification cannot export the previous account's content.
         self._last_local_signature=signature(self._snapshot());self._last_sequence=self._sequence()
@@ -791,12 +799,7 @@ class ClipboardSync(QObject):
         if not self._valid_task(pending):return
         if time.time()-pending['created_at']>=86400:self._clear_task(pending);self.refresh();return
         if self._clock_anchor is None and self.peer_bridge is not None:self.peer_bridge.calibrate()
-        if self._copy_timestamp(pending['intent']) is None:
-            def calibrated(result,error):
-                if not self._valid_task(pending):return
-                if error or self._clock_anchor is None:self._task_error(pending,error or ValueError('云端时钟校准失败。'))
-                else:self._stage(pending)
-            self._request('GET','/v1/clipboard',calibrated,_task=pending);return
+        self._copy_timestamp(pending['intent'])
         if self.peer_bridge is not None:
             self.peer_bridge.publish(pending)
             if not pending.get('peer_grace_done') and self.peer_bridge.mesh.available():

@@ -5,6 +5,7 @@ import re
 from PySide6.QtCore import QObject
 
 from clipboard_sync import MAX_BYTES,MAX_ARCHIVE_BYTES,signature,unpack,unpack_inline
+from network_diagnostics import record_event
 
 
 class ClipboardPeerBridge(QObject):
@@ -45,6 +46,7 @@ class ClipboardPeerBridge(QObject):
         valid=lambda:(client._active() and client._epoch==epoch
                       and client.view.get('id')==record['id'])
         if self.mesh.publish('clipboard',record,source,valid=valid):pending['peer_published']=True
+        if pending.get('peer_published'):record_event(client._clock_path.parent,'remote','clipboard_send','OBJECT_PUBLISHED')
 
     def _acknowledged(self,topic,record,peer):
         client=self.client;pending=client._pending
@@ -92,13 +94,14 @@ class ClipboardPeerBridge(QObject):
                 or not isinstance(head.get('origin_device'),str) or not 1<=len(head['origin_device'])<=128
                 or not 0<head['size']<(MAX_ARCHIVE_BYTES if head.get('kind') in ('text','files') else MAX_BYTES)
                 or not self._eligible(head)):return
-        client=self.client;epoch=client._epoch;generation=client._generation
+        client=self.client;epoch=client._epoch
+        record_event(client._clock_path.parent,'remote','clipboard_receive','OBJECT_OFFERED')
         order=head['copied_at'],head['id']
         if self.incoming is not None and order<self.incoming:return
         self.incoming=order
         def ready(value,directory):
             def valid():
-                return epoch==client._epoch and generation==client._generation and self.incoming==order and self._eligible(head)
+                return epoch==client._epoch and self.incoming==order and self._eligible(head)
             if not valid():return
             def applied():
                 self.latest=order
@@ -117,14 +120,16 @@ class ClipboardPeerBridge(QObject):
         def downloaded(result,error):
             self.jobs.pop(head['id'],None)
             client._priority_flags(peer_receiving=bool(self.jobs))
-            if epoch!=client._epoch or generation!=client._generation:return
-            if error is not None:client.refresh();return
+            if epoch!=client._epoch:return
+            if error is not None:
+                record_event(client._clock_path.parent,'remote','clipboard_receive','OBJECT_FETCH_FAILED',details=dict(cause=type(error).__name__))
+                client.refresh();return
             def prepared(value):
                 if value is not None:
                     head['delivery_route']=job.route;ready(value,directory)
             client._work(lambda _:unpack(head['kind'],path,directory),prepared)
         job=self.mesh.fetch('clipboard',head,path,downloaded,preferred=peer,
-                            progress=lambda received,total:client._priority_flags() if epoch==client._epoch and generation==client._generation else None)
+                            progress=lambda received,total:client._priority_flags() if epoch==client._epoch else None)
         if job is not None:
             self.jobs[head['id']]=job;client._priority_flags(peer_receiving=True)
 

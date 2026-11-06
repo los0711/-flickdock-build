@@ -65,6 +65,54 @@ class Hub:
 
 
 class PeerSyncTests(unittest.TestCase):
+    def test_unreadable_receiver_native_notification_does_not_discard_a_verified_file(self):
+        cloud=ClipboardHub();syncs=[];clips=[];gate=threading.Event();entered=threading.Event()
+        sender=self.clients[0];original=sender._provide
+        def provide(*args):entered.set();gate.wait(3);return original(*args)
+        for state in sender.available():state['rpc'].provider=provide
+        try:
+            for index,mesh in enumerate(self.clients):
+                account=mesh.account;token=account.api.token;api=cloud.api(account.device_id);api.token=token;account.api=api
+                api.request=lambda *args,**kwargs:object()
+                clip=Clipboard();clips.append(clip);client=ClipboardSync(account,Events(),self.base/f'receiver-formats-{index}',clipboard=clip)
+                client.peer_bridge=ClipboardPeerBridge(client,mesh);syncs.append(client)
+            flush();source=self.base/'receiver-file.bin';body=os.urandom(512*1024+37);source.write_bytes(body)
+            mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(source))]);clips[0].setMimeData(mime);until(entered.is_set)
+            receiver=syncs[1];epoch=receiver._epoch;generation=receiver._generation
+            receiver._sequence=lambda:7;receiver._last_sequence=6
+            with patch.object(clips[1],'mimeData',return_value=None):receiver._schedule_change()
+            self.assertGreater(receiver._generation,generation);self.assertEqual(receiver._epoch,epoch)
+            gate.set();until(lambda:all(clip.mimeData().hasUrls() for clip in clips[1:]),seconds=3)
+            self.assertEqual(Path(clips[1].mimeData().urls()[0].toLocalFile()).read_bytes(),body)
+            self.assertEqual(receiver._seen,syncs[0].view['id'])
+        finally:
+            gate.set()
+            for client in syncs:client.close()
+            until(lambda:all(not client._jobs for client in syncs))
+
+    def test_clipboard_reaches_online_peers_without_waiting_for_the_cloud_clock(self):
+        cloud=ClipboardHub();syncs=[];clips=[]
+        try:
+            for index,mesh in enumerate(self.clients):
+                account=mesh.account;token=account.api.token;api=cloud.api(account.device_id);api.token=token
+                # The cloud is unreachable; the authenticated native mesh is
+                # already connected and must carry the single-item shelf.
+                api.request=lambda *args,**kwargs:object();account.api=api
+                clip=Clipboard();clips.append(clip)
+                client=ClipboardSync(account,Events(),self.base/f'no-cloud-clock-{index}',clipboard=clip)
+                client.peer_bridge=ClipboardPeerBridge(client,mesh);syncs.append(client)
+            flush();clips[0].text('native clipboard without a cloud round trip')
+            until(lambda:all(clip.mimeData().text()=='native clipboard without a cloud round trip' for clip in clips[1:]),seconds=2)
+            source=self.base/'single-slot.bin';source.write_bytes(os.urandom(512*1024+17))
+            mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(source))]);clips[0].setMimeData(mime)
+            until(lambda:all(clip.mimeData().hasUrls() for clip in clips[1:]),seconds=3)
+            for clip in clips[1:]:self.assertEqual(Path(clip.mimeData().urls()[0].toLocalFile()).read_bytes(),source.read_bytes())
+            for mesh in self.clients:
+                self.assertLessEqual(sum(topic=='clipboard' for topic,_ in mesh._offers),1)
+        finally:
+            for client in syncs:client.close()
+            until(lambda:all(not client._jobs for client in syncs))
+
     def test_native_format_conversion_does_not_revoke_a_file_other_devices_are_fetching(self):
         cloud=ClipboardHub();syncs=[];clips=[];gate=threading.Event();entered=threading.Event()
         sender_mesh=self.clients[0];original_provide=sender_mesh._provide

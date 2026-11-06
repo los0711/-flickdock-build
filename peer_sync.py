@@ -58,6 +58,7 @@ class PeerSync(QObject):
     applied=Signal(str,object,str)
     status_changed=Signal(str)
     connections_changed=Signal(object)
+    control_received=Signal(str,object)
     _native=Signal(object)
     _ready=Signal(object)
     _notification=Signal(object)
@@ -419,6 +420,11 @@ class PeerSync(QObject):
     def _handle_notification(self,event):
         state=event['state'];value=event['value']
         if not self._authorized(state):return
+        if value.get('kind')=='control':
+            payload=value.get('value')
+            if isinstance(payload,dict) and len(json.dumps(payload,separators=(',',':')).encode('utf8'))<=8192:
+                self.control_received.emit(state['peer'],payload)
+            return
         topic=value.get('topic');record=value.get('record')
         if topic not in ('shelf','clipboard'):return
         if value.get('kind')=='inventory':
@@ -525,6 +531,14 @@ class PeerSync(QObject):
     def available(self):
         return [state for state in self._states.values() if state['rpc'] is not None and self._authorized(state)
                 and not state['rpc'].closed.is_set()]
+
+    def send_control(self,peer,value):
+        if not isinstance(value,dict) or len(json.dumps(value,separators=(',',':')).encode('utf8'))>8192:
+            raise ValueError('Invalid device control message')
+        state=self._states.get(peer)
+        if state is None or not self._authorized(state) or state['rpc'] is None:return False
+        try:return state['rpc'].send_notify(dict(kind='control',value=value),priority=0)
+        except PeerUnavailable:return False
 
     def fetch(self,topic,record,target,callback,*,preferred=None,progress=None):
         if not valid_object(record):raise ValueError('Invalid peer object metadata')

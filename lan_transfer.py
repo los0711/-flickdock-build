@@ -388,6 +388,7 @@ class LanTransferService(QObject):
         self._listener = None; self._discovery_socket = None; self._certificate_dir = None
         self._slots = threading.BoundedSemaphore(4); self._context = None; self._starting = False
         self.startup_diagnostic = {}
+        self.account_authorizer=None
 
     def _thread(self, function, *args):
         thread = threading.Thread(target=function, args=args, daemon=True, name='FlickDock-LAN')
@@ -591,9 +592,10 @@ class LanTransferService(QObject):
     def _stream_code(self,stream,identifier):return _authentication_code(stream,identifier)
 
     def _incoming_offer(self,transfer,host,code):
+        account=self.account_authorizer.incoming(transfer) if self.account_authorizer else None
         self.offer_received.emit({'id':transfer.transfer_id,'peer':transfer.peer,'host':host,'code':code,
             'total':transfer.total,'count':sum(e['kind']=='file' for e in transfer.entries),
-            'names':[e['path'] for e in transfer.entries if '/' not in e['path']]})
+            'names':[e['path'] for e in transfer.entries if '/' not in e['path']],**(account or {})})
 
     def _outgoing(self, transfer, peer, paths):
         stream = None
@@ -607,6 +609,7 @@ class LanTransferService(QObject):
             offer = dict(protocol=PROTOCOL, id=transfer.transfer_id, token=token,pipeline=1 if getattr(self,'mode','lan')=='wan' else 0,
                          sender=self.device_name, entries=entries)
             files = [row for row in entries if row['kind'] == 'file']
+            if self.account_authorizer:self.account_authorizer.prepare(transfer,peer,entries)
             for attempt in range(3):
                 receipts=None
                 if transfer.cancel.is_set(): raise InterruptedError('已取消传输。')
