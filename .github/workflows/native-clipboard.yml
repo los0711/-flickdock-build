@@ -11,6 +11,10 @@ on:
         description: Diagnose actual Qt upload progress versus cloud confirmation
         type: boolean
         default: false
+      vpn_profile:
+        description: Use the private QA node as the native system HTTP proxy
+        type: boolean
+        default: false
   push:
     branches: [cloud-build]
 
@@ -131,15 +135,27 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install PySide6==6.12.0 keyring==25.7.0 cryptography==50.0.2
       - name: Compare original native Qt file and sliced file uploads
+        if: inputs.vpn_profile != true
         env:
           FLICKDOCK_QA_SYNC_JSON: ${{ secrets.FLICKDOCK_QA_DUAL_NATIVE }}
         run: python ci_upload_profile.py
+      - name: Download and verify the original isolated proxy core before enabling it
+        if: inputs.vpn_profile == true
+        run: python ci_vpn.py prepare
+      - name: Profile real cloud traffic through the private node and native system proxy
+        if: inputs.vpn_profile == true
+        env:
+          FLICKDOCK_QA_SYNC_JSON: ${{ secrets.FLICKDOCK_QA_DUAL_NATIVE }}
+          FLICKDOCK_QA_VPN_NODE: ${{ secrets.FLICKDOCK_QA_VPN_NODE }}
+        run: python ci_vpn.py run -- python ci_upload_profile.py
       - name: Retain sanitized transfer timings
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: upload-profile-${{ matrix.runner }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/flickdock-upload-profile.json
+          path: |
+            ${{ runner.temp }}/flickdock-upload-profile.json
+            ${{ runner.temp }}/flickdock-vpn/proxy-report.json
           retention-days: 3
   cross-device:
     if: github.repository == 'los0711/-flickdock-build' && inputs.cross_device == true

@@ -10,9 +10,11 @@ def main():
     from account_service import AccountService
     import cloud_api
     app=QApplication([]);secret=json.loads(os.environ.pop('FLICKDOCK_QA_SYNC_JSON'))
+    from ci_vpn import verify_qt_proxy
+    proxy=verify_qt_proxy()
     run=os.environ['GITHUB_RUN_ID'];attempt=os.environ['GITHUB_RUN_ATTEMPT'];platform=os.environ['RUNNER_OS']
     name='cross-qa-'+hashlib.sha256((secret['username']+run+attempt+platform+'upload-profile').encode()).hexdigest()[:16]
-    report=dict(ok=False,platform=platform,source_commit=os.environ['GITHUB_SHA'],cases=[],request_failures=[],native_ui=False)
+    report=dict(ok=False,platform=platform,source_commit=os.environ['GITHUB_SHA'],cases=[],request_failures=[],native_ui=False,proxy=proxy)
     output=Path(os.environ['RUNNER_TEMP'])/'flickdock-upload-profile.json'
     def until(predicate,seconds=180):
         deadline=time.monotonic()+seconds
