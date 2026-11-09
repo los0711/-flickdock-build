@@ -120,7 +120,7 @@ class TriggerReliabilityTests(unittest.TestCase):
         manager=self.manager;manager.motion=False;manager.settings.update(trigger_view='compact')
         shelf=manager.shelf;shelf.show_transient(QPoint(160,180),reason='drag');manager.auto_shown=shelf
         manager.update_handles();self.assertTrue(manager.edge.isVisible())
-        for control in (shelf.cloud_button,shelf.network_status,shelf.lan_button,shelf.zones['permanent'].clipboard_button):
+        for control in (shelf.lan_button,shelf.zones['permanent'].clipboard_button):
             self.assertTrue(control.isVisible())
         for control in (shelf.pin_button,shelf.expand_button,shelf.menu_button,shelf.close_button):
             self.assertFalse(control.isVisible())

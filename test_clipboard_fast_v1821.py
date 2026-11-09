@@ -53,6 +53,7 @@ class ClipboardFastTests(unittest.TestCase):
             clip=Clipboard();account=Account(self.hub.api(str(index)),str(index))
             events=CloudEvents(account,enabled=False);self.hub.events.append(events)
             self.clients.append(ClipboardSync(account,events,Path(self.temp.name)/str(index),clipboard=clip));self.clips.append(clip)
+        for client in self.clients:client.scheduler.set_connected(True)
         flush()
 
     def tearDown(self):
@@ -138,6 +139,7 @@ class ClipboardFastTests(unittest.TestCase):
         sender=self.clients[0];sender.close()
         clip=Clipboard();events=self.hub.events[0]
         restarted=ClipboardSync(sender.account,events,Path(self.temp.name)/'restart',clipboard=clip)
+        restarted.scheduler.set_connected(True)
         self.clients.append(restarted)
         until(lambda:clip.mimeData().text()=='own copy before updating')
         self.assertEqual(restarted._seen,self.hub.head['id'])

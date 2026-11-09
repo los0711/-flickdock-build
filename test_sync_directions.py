@@ -148,7 +148,7 @@ class Adapter:
 
 with tempfile.TemporaryDirectory(prefix='flickdock-directions-') as directory:
     cloud=Cloud();service=Service(cloud);adapter=Adapter()
-    engine=ShelfSync(directory,service,adapter,poll_ms=600000)
+    engine=ShelfSync(directory,service,adapter)
     assert engine.set_directions(False,False)
     service.account_changed.emit({'id':'direction-account'})
     assert spin(lambda:engine.state is not None and bool(engine.state['entries']))
@@ -194,7 +194,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-fast-receive-') as directory:
     cloud=Cloud();service=Service(cloud);adapter=Adapter()
     original='R'*(5*1024*1024)
     cloud.add(uuid4().hex,original,name='large-remote-text')
-    engine=ShelfSync(directory,service,adapter,poll_ms=600000)
+    engine=ShelfSync(directory,service,adapter)
     engine.set_directions(False,True)
     service.account_changed.emit({'id':'fast-receive-account'})
     assert spin(lambda:original in adapter.view['texts'].values(),10)
@@ -206,7 +206,7 @@ print('PASS fast single-part remote content is accepted and verified')
 
 with tempfile.TemporaryDirectory(prefix='flickdock-directions-inflight-') as directory:
     cloud=Cloud();cloud.hold_upload=True
-    service=Service(cloud);engine=ShelfSync(directory,service,Adapter(),poll_ms=600000)
+    service=Service(cloud);engine=ShelfSync(directory,service,Adapter())
     engine.set_directions(True,False)
     service.account_changed.emit({'id':'direction-account'})
     assert spin(lambda:bool(cloud.held) and engine.running)
@@ -224,7 +224,7 @@ print('PASS disabling upload cancels its in-flight request and resumes the journ
 
 with tempfile.TemporaryDirectory(prefix='flickdock-directions-hint-') as directory:
     cloud=Cloud();cloud.hold_pull=True
-    service=Service(cloud);engine=ShelfSync(directory,service,Adapter(),poll_ms=600000)
+    service=Service(cloud);engine=ShelfSync(directory,service,Adapter())
     engine.set_directions(False,True)
     service.account_changed.emit({'id':'direction-account'})
     assert spin(lambda:bool(cloud.held_pulls) and engine.running)
@@ -242,7 +242,7 @@ for failed, next_enabled in (('pull',(True,False)),('upload',(False,True))):
         cloud=Cloud();service=Service(cloud);adapter=Adapter()
         if failed=='pull':cloud.fail_next_pull=True
         else:cloud.fail_next_upload=True
-        engine=ShelfSync(directory,service,adapter,poll_ms=600000)
+        engine=ShelfSync(directory,service,adapter)
         engine.set_directions(failed=='upload',failed=='pull')
         service.account_changed.emit({'id':'direction-account'})
         assert spin(lambda:not engine.running and engine.state and engine.state.get('not_before',0)>time.time())
@@ -259,7 +259,7 @@ for failed, next_enabled in (('pull',(True,False)),('upload',(False,True))):
 
 with tempfile.TemporaryDirectory(prefix='flickdock-directions-conflict-') as directory:
     cloud=Cloud();service=Service(cloud);adapter=Adapter('本机更新')
-    engine=ShelfSync(directory,service,adapter,poll_ms=600000)
+    engine=ShelfSync(directory,service,adapter)
     engine.set_directions(True,False)
     # Existing remote version is unknown locally while inbound sync is off.
     identity=uuid4().hex

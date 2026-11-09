@@ -272,31 +272,6 @@ class ToolbarButton(FeedbackButton):
         p.end()
 
 
-class NetworkStatus(QWidget):
-    """Cloud reachability, independent of login and sync-direction switches."""
-    def __init__(self,manager,parent=None):
-        super().__init__(parent);self.setFixedSize(32,32);self.sx=self.sy=1
-        self.setAttribute(Qt.WA_AlwaysShowToolTips,True)
-        self.environment=dict(getattr(getattr(getattr(manager,'connectivity',None),'environment',None),'state',{}))
-        self.set_state(getattr(getattr(manager,'connectivity',None),'state','checking'))
-
-    def set_state(self,state):
-        self.state=state
-        message={'online':'云端网络畅通','offline':'云端网络不可达，暂时无法读取云端文件','checking':'正在检查云端网络…'}.get(state,'正在检查云端网络…')
-        self.setToolTip(message);self.setAccessibleName(message);self.update()
-
-    def set_environment(self,state):
-        self.environment=dict(state);self.set_state(self.state)
-
-    def set_presentation_scale(self,sx,sy):self.sx,self.sy=sx,sy;self.update()
-
-    def paintEvent(self,event):
-        painter=QPainter(self);painter.setRenderHint(QPainter.Antialiasing);painter.translate(self.width()/2,self.height()/2);painter.scale(self.sx,self.sy)
-        c=palette();tint=c['green'] if self.state=='online' else c['red'] if self.state=='offline' else c['muted']
-        icon('web',tint).paint(painter,QRect(-8,-8,16,16))
-        painter.end()
-
-
 class LanButton(ToolbarButton):
     """One footer target for the LAN symbol and caption."""
     def paintEvent(self,event):

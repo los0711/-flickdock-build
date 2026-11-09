@@ -228,7 +228,7 @@ class TransferTests(unittest.TestCase):
         if initial: adapter.add(str(self.source))
         service.api.hold_part = hold_part; service.api.hold_init = hold_init
         service.api.hold_download_part = hold_download_part
-        engine = ShelfSync(base or self.root / device, service, adapter, poll_ms=600000)
+        engine = ShelfSync(base or self.root / device, service, adapter)
         self.engines.append(engine); service.signin('account-A')
         return service, adapter, engine
 
@@ -278,7 +278,7 @@ class TransferTests(unittest.TestCase):
         self.assertTrue(self.source.exists()); self.assertIn(('account-A', uid), self.server.receipts)
         self.assertFalse(self.server.account('account-A')['items'])
         engine.close(); calls = len(self.server.calls)
-        restarted = ShelfSync(self.root / 'device-a', service, adapter, poll_ms=600000)
+        restarted = ShelfSync(self.root / 'device-a', service, adapter)
         self.engines.append(restarted); service.signin('account-A')
         until(lambda: not restarted.running)
         self.assertTrue(restarted.state['entries'][identifier]['paused_upload'])
@@ -412,7 +412,7 @@ class TransferTests(unittest.TestCase):
         self.server.receipts.discard(('account-A',uid))
         stale=time.time()-8*86400;os.utime(stage,(stale,stale))
         before=len(self.server.calls)
-        restarted=ShelfSync(self.root/'device-a',service,adapter,poll_ms=600000)
+        restarted=ShelfSync(self.root/'device-a',service,adapter)
         self.engines.append(restarted);service.signin('account-A')
         until(lambda:not restarted.running and restarted.state['entries'][identifier].get('paused_upload'))
         calls=self.server.calls[before:]
@@ -438,7 +438,7 @@ class TransferTests(unittest.TestCase):
         # have expired while this origin stayed offline. Its old UUID is unsafe.
         stale=time.time()-8*86400;os.utime(stage,(stale,stale));service.api.release()
         before=len(self.server.calls)
-        restarted=ShelfSync(self.root/'device-a',service,adapter,poll_ms=600000)
+        restarted=ShelfSync(self.root/'device-a',service,adapter)
         self.engines.append(restarted);service.signin('account-A')
         until(lambda:not restarted.running and restarted.state['entries'][identifier].get('paused_upload'))
         self.assertFalse(any(method=='POST' and path=='/v1/uploads' for _,method,path in self.server.calls[before:]))
@@ -478,7 +478,7 @@ class TransferTests(unittest.TestCase):
             # Cancellation receipts must survive closing before its cleanup
             # request is dispatched, just like the durable upload journal.
             engine.close()
-            engine = ShelfSync(self.root / 'device-a', service, adapter, poll_ms=600000)
+            engine = ShelfSync(self.root / 'device-a', service, adapter)
             self.engines.append(engine); service.signin('account-A')
         until(lambda: not engine.running and not engine.state.get('pending_uploads'))
         self.assertEqual(adapter.view['permanent'], [str(self.source)],
@@ -607,7 +607,7 @@ class TransferTests(unittest.TestCase):
         self.assertFalse(self.server.account('account-A')['items'][identity]['record']['deleted'])
         self.assertEqual(self.server.account('account-A')['items'][identity]['data'],self.payload)
         other.close();calls=len(self.server.calls)
-        restarted=ShelfSync(self.root/'device-b',other_service,other_adapter,poll_ms=600000)
+        restarted=ShelfSync(self.root/'device-b',other_service,other_adapter)
         self.engines.append(restarted);other_service.signin('account-A');until(lambda:not restarted.running)
         self.assertEqual(restarted.state.get('ignored_versions',{}).get(identity),1)
         self.assertEqual(other_adapter.view['permanent'],[])

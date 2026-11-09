@@ -180,6 +180,7 @@ class ClipboardFileJobs(QObject):
         task['_file_retry_at']=time.monotonic()+5;self.retry.start(5001)
 
     def _retry(self):
+        if not self.client.scheduler.connected:return
         later=False
         for task in tuple(self.tasks.values()):
             if self.valid(task) and task.get('releases'):

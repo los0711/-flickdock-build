@@ -76,7 +76,7 @@ jobs:
       - name: Verify interrupted receive, native file identity and proxy validation
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m unittest test_clipboard_sync_v1819 test_clipboard_history_v1823 test_transfer_entry_v1822 test_video_matrix -q
+        run: python -m unittest test_sync_scheduler test_cloud_events_v1825 test_clipboard_sync_v1819 test_clipboard_history_v1823 test_transfer_entry_v1822 test_video_matrix -q
       - name: Reproduce asynchronous metadata reconciliation before framework warmup
         if: runner.os == 'macOS'
         shell: bash

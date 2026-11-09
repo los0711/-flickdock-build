@@ -147,7 +147,7 @@ class TransferUITests(unittest.TestCase):
         self.assertIs(popup.category_buttons['all'].parent(),popup.sidebar)
         self.assertGreater(popup.empty_state.width(),300)
         self.assertTrue(all(button.property('flatToolbar') for button in
-            (self.shelf.cloud_button,self.shelf.lan_button,self.shelf.pin_button,
+            (self.shelf.lan_button,self.shelf.pin_button,
              self.shelf.expand_button,self.shelf.menu_button,self.shelf.close_button)))
 
     def test_mini_count_pill_hover_never_opens_without_a_click(self):

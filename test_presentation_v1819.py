@@ -11,7 +11,6 @@ from PySide6.QtTest import QTest
 from test_html_native_workspace import APP,flush,until
 import test_html_native_workspace as workspace
 import flickdock,app_settings
-from cloud_connectivity import CloudConnectivity
 from settings_edge_hint import SettingsEdgeHint
 
 
@@ -118,16 +117,6 @@ class SettingsNetworkTests(unittest.TestCase):
                 self.assertFalse(settings.isVisible());self.assertFalse(hint.isVisible())
                 self.assertNotEqual(store.capture_dir,'unsaved-draft');self.assertEqual(settings.result(),QDialog.Rejected)
             finally:hint.close();settings.close();hint.deleteLater();settings.deleteLater();flush()
-
-    def test_health_probe_uses_file_service_route_and_recovers_without_login(self):
-        api=SimpleNamespace(request=Mock(return_value='probe'),cancel=Mock());monitor=CloudConnectivity(api,enabled=False)
-        states=[];monitor.changed.connect(states.append)
-        monitor.check();args=api.request.call_args
-        self.assertEqual(args.args[:2],('GET','/v1/health'));self.assertFalse(args.kwargs['authenticated'])
-        args.args[2]({'service':'flickdock-cloud'},None);self.assertEqual(monitor.state,'online')
-        monitor.check();api.request.call_args.args[2](None,RuntimeError('network unavailable'));self.assertEqual(monitor.state,'offline')
-        monitor.check();api.request.call_args.args[2]({'service':'flickdock-cloud'},None);self.assertEqual(states,['online','offline','online'])
-        monitor.check();monitor.close();api.cancel.assert_called_once_with('probe')
 
     def test_check_button_does_not_move_keyboard_focus_to_close(self):
         with tempfile.TemporaryDirectory() as directory:

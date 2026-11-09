@@ -78,7 +78,7 @@ class SmallLaneTests(unittest.TestCase):
             for index in range(6):
                 path=root/f'{index}.txt';path.write_bytes(f'original-{index}'.encode())
                 adapter.view['permanent'].append(str(path))
-            engine=ShelfSync(root/'profile',service,adapter,poll_ms=600000)
+            engine=ShelfSync(root/'profile',service,adapter)
             engine.set_directions(True,False);service.account_changed.emit({'id':'fixture'})
             try:
                 self.assertTrue(spin(lambda:len(api.held)==3))
@@ -107,7 +107,7 @@ class SmallLaneTests(unittest.TestCase):
             with self.subTest(code=code),tempfile.TemporaryDirectory() as directory:
                 root=Path(directory);bulk=root/'large.bin';bulk.write_bytes(b'L'*(5*1024*1024))
                 api=Api();service=Service(api);adapter=Adapter();adapter.view['permanent']=[str(bulk)]
-                engine=ShelfSync(root/'profile',service,adapter,poll_ms=600000)
+                engine=ShelfSync(root/'profile',service,adapter)
                 engine.set_directions(True,False);service.account_changed.emit({'id':'fixture'})
                 try:
                     self.assertTrue(spin(lambda:bool(api.held)));held=set(api.held)
@@ -131,7 +131,7 @@ class SmallLaneTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);bulk=root/'large.bin';bulk.write_bytes(b'L'*(5*1024*1024))
             api=Api();service=Service(api);adapter=Adapter();adapter.view['permanent']=[str(bulk)]
-            engine=ShelfSync(root/'profile',service,adapter,poll_ms=600000)
+            engine=ShelfSync(root/'profile',service,adapter)
             engine.set_directions(True,False);service.account_changed.emit({'id':'fixture'})
             try:
                 self.assertTrue(spin(lambda:bool(api.held)))
@@ -151,7 +151,7 @@ class SmallLaneTests(unittest.TestCase):
     def test_account_switch_discards_late_small_callbacks(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);api=Api();service=Service(api);adapter=Adapter()
-            engine=ShelfSync(root,service,adapter,poll_ms=600000)
+            engine=ShelfSync(root,service,adapter)
             engine.set_directions(True,False);service.account_changed.emit({'id':'first'})
             token=dict(id='stale');engine.upload_lanes.active[token['id']]=token
             events=[]
@@ -165,7 +165,7 @@ class SmallLaneTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);bulk=root/'large.bin';bulk.write_bytes(b'L'*(5*1024*1024))
             api=Api();service=Service(api);adapter=Adapter();adapter.view['permanent']=[str(bulk)]
-            engine=ShelfSync(root/'profile',service,adapter,poll_ms=600000)
+            engine=ShelfSync(root/'profile',service,adapter)
             engine.set_directions(True,False);service.account_changed.emit({'id':'fixture'})
             try:
                 self.assertTrue(spin(lambda:bool(api.held)));held=set(api.held)
@@ -185,7 +185,7 @@ class SmallLaneTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);bulk=root/'large.bin';bulk.write_bytes(b'L'*(5*1024*1024))
             api=Api();service=Service(api);adapter=Adapter();adapter.view['permanent']=[str(bulk)]
-            engine=ShelfSync(root/'profile',service,adapter,poll_ms=600000);statuses=[];engine.status_changed.connect(statuses.append)
+            engine=ShelfSync(root/'profile',service,adapter);statuses=[];engine.status_changed.connect(statuses.append)
             engine.set_directions(True,False);service.account_changed.emit({'id':'fixture'})
             try:
                 self.assertTrue(spin(lambda:bool(api.held)))

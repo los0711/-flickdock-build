@@ -42,7 +42,6 @@ from app_settings import SettingsStore, SettingsDialog
 from global_hotkeys import HotkeyManager
 from pointer_paste import PointerPasteController,pointer_over_shelf
 from settings_edge_hint import SettingsEdgeHint
-from cloud_connectivity import CloudConnectivity
 from surface_morph import SurfaceMorph, SurfaceSnapshot
 from content_grid import IconItem,GRID_CARD_HEIGHT_PX,GRID_CARD_MIN_WIDTH_PX,GRID_COLUMN_WIDTH_PX
 from shake_detector import ShakeDetector, config_for_sensitivity
@@ -1608,11 +1607,6 @@ class ShelfWindow(QWidget):
         self.account_button.setToolTip('账号与设置')
         self.account_button.setAccessibleName('打开账号与设置')
         self.account_button.clicked.connect(lambda:self.manager.show_settings(category='账号与设备'))
-        self.cloud_button = ToolbarButton('cloud', self.card, motion=self.manager.motion)
-        self.cloud_button.clicked.connect(self.show_cloud_menu)
-        from reference_widgets import NetworkStatus
-        self.network_status=NetworkStatus(self.manager,self.card)
-        self.refresh_cloud_button()
         self.expand_button = ToolbarButton("expand", self.card, motion=self.manager.motion)
         self.expand_button.setToolTip("展开内容")
         self.expand_button.clicked.connect(self.toggle_contents)
@@ -1627,7 +1621,7 @@ class ShelfWindow(QWidget):
         self.rename_edit.returnPressed.connect(self.commit_rename)
         self.rename_edit.editingFinished.connect(self.commit_rename)
         self.rename_edit.hide()
-        for button in (self.cloud_button,self.network_status,self.pin_button,self.expand_button,self.menu_button,self.close_button):
+        for button in (self.pin_button,self.expand_button,self.menu_button,self.close_button):
             button.setProperty('flatToolbar',True)
             button.setParent(self)
         for button in (self.lan_button,self.account_button):
@@ -1651,11 +1645,11 @@ class ShelfWindow(QWidget):
         self._layout_header(CARD_W)
 
         from ui_transitions import ToolbarEntrance
-        self._toolbar_entrance=ToolbarEntrance(self,lambda:[self.close_button,self.menu_button,self.expand_button,self.pin_button,self.cloud_button])
+        self._toolbar_entrance=ToolbarEntrance(self,lambda:[self.close_button,self.menu_button,self.expand_button,self.pin_button])
 
     def _visible_header_controls(self):
-        if self.presentation_kind=='drag' and not self.expanded:return (self.cloud_button,self.network_status)
-        return (self.cloud_button,self.network_status,self.pin_button,self.expand_button,self.menu_button,self.close_button)
+        if self.presentation_kind=='drag' and not self.expanded:return ()
+        return (self.pin_button,self.expand_button,self.menu_button,self.close_button)
 
     def _layout_header(self,width):
         expanded=self.expanded
@@ -1688,13 +1682,6 @@ class ShelfWindow(QWidget):
             zone.clipboard_button.move(x-42,y);zone.clipboard_button.setVisible(not expanded)
             zone.hint.move(40,188)
 
-    def refresh_cloud_button(self):
-        enabled = self.manager.settings.sync_upload_enabled and self.manager.settings.sync_receive_enabled
-        self.cloud_button.set_glyph_tint('#229f69' if enabled else '#dc5262')
-        state = '已开启' if enabled else '已关闭部分方向'
-        self.cloud_button.setToolTip(f'云同步：{state}')
-        self.cloud_button.setAccessibleName(f'云同步：{state}，打开设置')
-
     def show_cloud_menu(self):
         if confirmation_active(self):
             return
@@ -1720,7 +1707,7 @@ class ShelfWindow(QWidget):
                                    self._set_sync_direction(name, checked, item))
         self._menu_open = True
         try:
-            anchor=self.cloud_button
+            anchor=self.menu_button
             menu.exec(anchor.mapToGlobal(QPoint(0, anchor.height()+6)))
         finally:
             self._menu_open = False
@@ -1787,7 +1774,7 @@ class ShelfWindow(QWidget):
         snapshot=getattr(self,'_surface_snapshot',None)
         if snapshot is None:
             snapshot=self._surface_snapshot=SurfaceSnapshot(self)
-        controls=(self.cloud_button,self.network_status,self.lan_button,self.pin_button,self.expand_button,self.menu_button,self.close_button)
+        controls=(self.lan_button,self.pin_button,self.expand_button,self.menu_button,self.close_button)
         source=getattr(self,'_morph_from_image',None)
         if source is None: source=snapshot.capture_current(self.card,controls)
         self._morph_from_image=None
@@ -1907,7 +1894,7 @@ class ShelfWindow(QWidget):
         if not self.geometry_morph.motion: return
         snapshot=getattr(self,'_surface_snapshot',None)
         if snapshot is None: snapshot=self._surface_snapshot=SurfaceSnapshot(self)
-        self._morph_from_image=snapshot.capture_current(self.card,(self.cloud_button,self.network_status,self.lan_button,self.pin_button,self.expand_button,self.menu_button,self.close_button))
+        self._morph_from_image=snapshot.capture_current(self.card,(self.lan_button,self.pin_button,self.expand_button,self.menu_button,self.close_button))
         from surface_elements import capture as capture_elements
         self._morph_from_elements=(snapshot.current_elements() if snapshot.active else
                                    capture_elements(self,self._morph_from_image))
@@ -2862,6 +2849,7 @@ class ShelfWindow(QWidget):
         self._menu_open = True
         self._add_mode_actions(menu, "permanent")
         menu.addSeparator()
+        menu.addAction("云端同步…", self.show_cloud_menu)
         menu.addAction("设置…", self.manager.show_settings)
         menu.addAction("收起到屏幕边缘", lambda: self.hide_animated(explicit=True))
         try:
@@ -3063,9 +3051,7 @@ class ShelfWindow(QWidget):
         if event.button()==Qt.MouseButton.LeftButton:
             # Cocoa can deliver a toolbar-edge press to the frameless host.
             # Reserve the entire painted button target before title dragging.
-            if self.network_status.isVisible() and self.network_status.geometry().contains(event.position().toPoint()):
-                self.drag_origin=None;event.accept();return
-            for button in (self.cloud_button,self.pin_button,self.expand_button,self.menu_button,self.close_button):
+            for button in (self.pin_button,self.expand_button,self.menu_button,self.close_button):
                 if button.isVisible() and button.geometry().contains(event.position().toPoint()):
                     self.drag_origin=None
                     if button.isEnabled():
@@ -3304,12 +3290,10 @@ class ShelfManager:
             self.account = AccountService(BASE, store=SessionStore(BASE, DEFAULT_CLOUD_URL, enabled=False))
         else:
             self.account = AccountService(BASE)
-        self.connectivity=CloudConnectivity(self.account.api,self.app,
-            enabled=not self.cocoa_smoke and self.app.platformName() not in ('offscreen','minimal'))
         self.account.api.diagnostics_dir=BASE
-        self.connectivity.changed.connect(self._network_status_changed)
-        self.connectivity.environment_changed.connect(self._network_environment_changed)
-        self.sync = ShelfSync(BASE,self.account,ShelfAdapter(self))
+        from sync_scheduler import SyncScheduler
+        self.sync_scheduler=SyncScheduler(self.app,connected=False)
+        self.sync = ShelfSync(BASE,self.account,ShelfAdapter(self),scheduler=self.sync_scheduler)
         self.sync.metadata_changed.connect(lambda ref:self.shelf.popup.preview.refresh_cloud_status()
             if self.shelf.popup is not None and self.shelf.popup.preview.current_path==ref else None)
         self.sync.set_directions(self.settings.sync_upload_enabled,self.settings.sync_receive_enabled)
@@ -3322,7 +3306,7 @@ class ShelfManager:
         self.events.transfer_progress.connect(self.sync.remote_progress)
         self.events.devices_changed.connect(self.account.list_devices)
         self.clipboard_sync=ClipboardSync(self.account,self.events,BASE,self.app,
-            enabled=self._clipboard_runtime_enabled())
+            enabled=self._clipboard_runtime_enabled(),scheduler=self.sync_scheduler)
         self.sync.attach_clipboard(self.clipboard_sync)
         self.clipboard_sync.activity_changed.connect(self.sync.set_clipboard_priority)
         self.clipboard_sync.copy_result.connect(self._clipboard_copy_result)
@@ -3336,13 +3320,6 @@ class ShelfManager:
         from transfer_priority import set_clipboard_priority
         self.clipboard_sync.activity_changed.connect(set_clipboard_priority)
         self._clipboard_intro=None
-        # A healthy event socket keeps the quiet five-minute reconciliation.
-        # While disconnected, ShelfSync uses a bounded fallback so a missed
-        # upload completion or cancellation cannot leave another device stale.
-        self.sync.set_event_stream_online(False)
-        self.events.socket.connected.connect(lambda:self.sync.set_event_stream_online(True))
-        self.events.socket.disconnected.connect(lambda:self.sync.set_event_stream_online(False))
-        self.events.socket.errorOccurred.connect(lambda _error:self.sync.set_event_stream_online(False))
         self._sync_transfer_refs=set()
         self.sync.transfers_changed.connect(self._transfers_changed)
         self.lan=SyncthingLanService(BASE/'manual-lan',self.app,device_name=self.account.device_name)
@@ -3717,14 +3694,6 @@ class ShelfManager:
                 self.show_mac_permissions if mac else self.pointer_paste.request_permission,unified=mac,
                 listener_pending=mac and self.pointer_paste.listener_pending)
 
-    def _network_status_changed(self,state):
-        for shelf in self.shelves:
-            if hasattr(shelf,'network_status'):shelf.network_status.set_state(state)
-
-    def _network_environment_changed(self,state):
-        for shelf in self.shelves:
-            if hasattr(shelf,'network_status'):shelf.network_status.set_environment(state)
-
 
     def _center_dialog(self,dialog):
         if hasattr(dialog,'chrome'):dialog.chrome.prepare_open()
@@ -3916,7 +3885,6 @@ class ShelfManager:
             ui_theme.set_theme(self.settings.theme)
             ui_theme.apply_application(self.app, FONT_FAMILY)
             self.shelf.refresh()
-            self.shelf.refresh_cloud_button()
             if self.shelf.popup:self.shelf.popup.preview.media.apply_theme()
             if self.settings_dialog:self.settings_dialog.apply_theme(self.settings.theme)
             if self.lan_dialog:self.lan_dialog.apply_theme(self.settings.theme)
@@ -3927,8 +3895,6 @@ class ShelfManager:
             if self.update_dialog is not None:self.update_dialog.apply_theme(self.settings.theme)
         if changed & {'sync_upload_enabled','sync_receive_enabled'}:
             self.sync.set_directions(self.settings.sync_upload_enabled,self.settings.sync_receive_enabled)
-        if changed & {'clipboard_sync_enabled','clipboard_notice_seen','sync_upload_enabled','sync_receive_enabled'}:
-            self.shelf.refresh_cloud_button()
         if changed & {'dock_edge','dock_position','dock_length','dock_thickness','dock_color','dock_opacity','trigger_visible','display_triggers'}:
             self._position_edges()
         if 'shake_sensitivity' in changed:self._apply_shake_sensitivity()
@@ -4229,13 +4195,14 @@ class ShelfManager:
         if self.video_dialog:self.video_dialog.close()
         if hasattr(self,'wan'):self.wan.close()
         self._quitting=True
-        self.pointer_paste.close();self.connectivity.close();self.settings_edge_hint.close()
+        self.pointer_paste.close();self.settings_edge_hint.close()
         self._intake_sync_timer.stop()
         self.timer.stop()
         self.update_timer.stop()
         self.updates.close()
         self.sync.close()
         self.clipboard_sync.close();self.events.close();self.drop_bridge.hide();self.drop_bridge.deleteLater()
+        self.sync_scheduler.close()
         self.account.close()
         self.hotkeys.close()
         if self.settings_dialog:

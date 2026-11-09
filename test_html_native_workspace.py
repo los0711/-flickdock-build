@@ -169,14 +169,6 @@ class WorkspaceTests(unittest.TestCase):
             self.assertGreater(sum(image.pixelColor(x,y).alpha()>0 for x in range(8,24) for y in range(8,24)),8,status)
         self.assertEqual(len(set(renderings)),6)
         popup.preview.show_group((self.paths[0],self.paths[1]));self.assertEqual(popup.preview.status_value.text(),'')
-        for enabled,hex_color in ((True,'#229f69'),(False,'#dc5262')):
-            self.settings.update(sync_upload_enabled=enabled);self.shelf.refresh_cloud_button();flush()
-            image=self.shelf.cloud_button.grab().toImage();ratio=image.devicePixelRatio()
-            target=QColor(hex_color)
-            matching=sum(max(abs(a-b) for a,b in zip(image.pixelColor(x,y).getRgb()[:3],target.getRgb()[:3]))<12
-                for x in range(round(4*ratio),round(22*ratio)) for y in range(round(7*ratio),round(25*ratio)))
-            self.assertGreater(matching,5)
-
     def test_compact_and_expanded_trailing_controls_keep_identical_offsets_and_full_menu(self):
         controls=(self.shelf.pin_button,self.shelf.expand_button,self.shelf.menu_button,self.shelf.close_button)
         def positions():
@@ -195,7 +187,7 @@ class WorkspaceTests(unittest.TestCase):
         self.shelf.collapse_contents();self.shelf.presentation_kind='drag';self.shelf._layout_header(subject.CARD_W)
         for control in (self.shelf.account_button,self.shelf.account_caption,self.shelf.lan_caption):
             self.assertFalse(control.isVisible())
-        for control in (self.shelf.cloud_button,self.shelf.network_status,self.shelf.lan_button):
+        for control in (self.shelf.lan_button,):
             self.assertTrue(control.isVisible())
         for control in controls:self.assertFalse(control.isVisible())
         self.assertTrue(self.shelf.zones['permanent'].caption.isVisible())

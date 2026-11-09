@@ -47,11 +47,11 @@ class OverviewControlsTests(unittest.TestCase):
         self.assertTrue(self.shelf.rename_edit.hasFocus())
         dialog.reject();fixture.flush();self.assertEqual(self.shelf.files['permanent'],self.paths)
 
-    def test_cloud_and_network_offsets_match_compact_header(self):
+    def test_remaining_toolbar_offsets_match_compact_header(self):
         compact={key:self.shelf.card.geometry().right()-self.bounds(control,self.shelf).right()
-                 for key,control in (('cloud',self.shelf.cloud_button),('network',self.shelf.network_status))}
+                 for key,control in (('pin',self.shelf.pin_button),('expand',self.shelf.expand_button),('menu',self.shelf.menu_button),('close',self.shelf.close_button))}
         popup=self.overview()
-        for key,control in (('cloud',self.shelf.cloud_button),('network',self.shelf.network_status)):
+        for key,control in (('pin',self.shelf.pin_button),('expand',self.shelf.expand_button),('menu',self.shelf.menu_button),('close',self.shelf.close_button)):
             self.assertEqual(self.shelf.card.geometry().right()-control.geometry().right(),compact[key])
 
     def test_compact_entry_prewarms_overview_without_showing_or_mutating_content(self):

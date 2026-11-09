@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "test:push-idle": "node test/push-idle.mjs",
     "test": "node test/hash-state.mjs && node test/upload-cancel.mjs && node test/wan-codes.mjs && node test/wan-connect.mjs && node test/wan-account.mjs && node test/manual-transfer.mjs && node test/peer-sync.mjs && node test/account-names.mjs && node test/clipboard-delivery.mjs && node test/clipboard-expiry.mjs && node test/clipboard.mjs && node test/shared-file.mjs && node test/integration.mjs",
     "dev": "wrangler dev --local",
     "deploy": "wrangler deploy"

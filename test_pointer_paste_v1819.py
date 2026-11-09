@@ -58,8 +58,8 @@ class PasteIntakeTests(unittest.TestCase):
         self.assertEqual(self.shelf.content.mime_for([ref]).text(),raw)
         self.assertFalse(self.shelf.content.mime_for([ref]).hasUrls())
 
-    def test_network_indicator_click_is_informational_and_does_not_start_drag(self):
-        QTest.mouseClick(self.shelf.network_status,Qt.LeftButton);flush()
+    def test_header_button_click_does_not_start_drag(self):
+        QTest.mouseClick(self.shelf.pin_button,Qt.LeftButton);flush()
         self.assertIsNone(self.shelf.drag_origin)
 
     def test_encoded_photo_preserves_every_original_byte(self):

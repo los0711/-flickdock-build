@@ -76,7 +76,7 @@ def run(argv,load_font):
                     callback(result,error)
                 return transport(method,path,completed,**kwargs)
             service.api.request=traced
-        engines=[ShelfSync(root/str(i),services[i],adapters[i],poll_ms=600000) for i in range(2)]
+        engines=[ShelfSync(root/str(i),services[i],adapters[i]) for i in range(2)]
         finished=False;phase='register'
         def finish(error=''):
             nonlocal finished

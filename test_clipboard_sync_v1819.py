@@ -32,7 +32,12 @@ class Events(QObject):
     clipboard_changed=Signal()
     clipboard_delivery=Signal(dict)
     connected=Signal()
+    disconnected=Signal()
+    errorOccurred=Signal(object)
     def __init__(self):super().__init__();self.socket=self
+    def state(self):
+        from PySide6.QtNetwork import QAbstractSocket
+        return QAbstractSocket.SocketState.ConnectedState
 
 
 class Hub:

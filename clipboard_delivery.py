@@ -127,6 +127,7 @@ class ClipboardDeliveries(QObject):
 
     def flush(self):
         state=self.current;client=self.client
+        if not client.scheduler.connected:return
         if not self.dirty or not state or self.inflight or self.blocked or self.retry.isActive() or not self.cloud_ready or not client._active():return
         if client.view.get('id')!=state['id']:return
         identity=state['id'];digest=state['sha256'];self.inflight=True

@@ -69,7 +69,7 @@ class DownloadRecoveryTests(unittest.TestCase):
         server=ThreadingHTTPServer(('127.0.0.1',0),Handler);thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
         with tempfile.TemporaryDirectory(prefix='flickdock-http-ranges-') as folder:
             api=CloudApi(f'http://127.0.0.1:{server.server_port}',allow_test_http=True);api.token='isolated-fixture'
-            account=Account(api);adapter=Adapter();engine=ShelfSync(folder,account,adapter,poll_ms=600000)
+            account=Account(api);adapter=Adapter();engine=ShelfSync(folder,account,adapter)
             statuses=[];snapshots=[];engine.status_changed.connect(statuses.append);engine.transfers_changed.connect(snapshots.append)
             engine._retry_delay=lambda error:.05;engine.set_directions(False,True)
             qt_errors=[]

@@ -13,7 +13,7 @@ class ParallelReceiveTests(unittest.TestCase):
         records.append(dict(cursor='6',record=dict(records[0]['record'],version=2)))
         with tempfile.TemporaryDirectory() as directory:
             service=fixture.Service(records,{})
-            engine=ShelfSync(directory,service,fixture.Adapter(),poll_ms=600000)
+            engine=ShelfSync(directory,service,fixture.Adapter())
             engine.set_directions(False,True);started=[];held={}
             def receive(record,callback,*,remote_order=None):
                 key=(record['id'],record['version']);self.assertNotIn(record['id'],{identity for identity,_ in held})

@@ -57,9 +57,9 @@ class FeedbackTests(unittest.TestCase):
     def test_compact_footer_logo_cloud_and_hover_do_not_open_workspace(self):
         self.shelf.presentation_kind='drag';self.shelf._layout_header(self.shelf.card.width());flush()
         zone=self.shelf.zones['permanent']
-        self.assertTrue(self.shelf.brand_logo.isVisible());self.assertTrue(self.shelf.cloud_button.isVisible())
+        self.assertTrue(self.shelf.brand_logo.isVisible());self.assertFalse(hasattr(self.shelf,'cloud_button'))
         self.assertTrue(self.shelf.account_button.isHidden());self.assertTrue(self.shelf.lan_button.isVisible())
-        self.assertTrue(self.shelf.network_status.isVisible())
+        self.assertFalse(hasattr(self.shelf,'network_status'))
         self.assertTrue(zone.rect().contains(zone.caption.geometry()))
         self.assertEqual(zone.mapTo(self.shelf,zone.caption.geometry().center()).y(),self.shelf.lan_button.geometry().center().y())
         zone._track_pill_hover(zone.caption.geometry().center());QTest.qWait(330)
@@ -86,7 +86,7 @@ class FeedbackTests(unittest.TestCase):
         self.shelf.pin_button.setChecked(before)
         QTest.mouseClick(self.shelf.pin_button,Qt.LeftButton,pos=QPoint(1,1));flush()
         self.assertNotEqual(self.shelf.pinned,before)
-        for control in (self.shelf.pin_button,self.shelf.expand_button,self.shelf.menu_button,self.shelf.cloud_button,self.shelf.close_button):
+        for control in (self.shelf.pin_button,self.shelf.expand_button,self.shelf.menu_button,self.shelf.close_button):
             for point in (QPoint(1,1),control.rect().bottomRight()-QPoint(1,1)):
                 self.assertTrue(control.hitButton(point))
 

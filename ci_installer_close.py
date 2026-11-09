@@ -15,7 +15,7 @@ def main():
     root=Path(__file__).resolve().parent;script=(root/'FlickDock.iss').read_text(encoding='utf8')
     mode=re.search(r'^CloseApplications=(\w+)$',script,re.M).group(1)
     filter=re.search(r'^CloseApplicationsFilter=(.+)$',script,re.M).group(1).strip()
-    assert mode=='force' and set(filter.split(','))=={'FlickDock.exe','node.exe'}
+    assert mode=='force' and set(filter.split(','))=={'FlickDock.exe','node.exe','syncthing.exe'}
     candidates=[shutil.which('ISCC.exe'),str(Path(os.environ.get('ProgramFiles(x86)','C:/Program Files (x86)'))/'Inno Setup 6/ISCC.exe'),
                 str(Path(os.environ['LOCALAPPDATA'])/'Programs/Inno Setup 6/ISCC.exe')]
     for base in (Path(os.environ.get('ProgramFiles(x86)','C:/Program Files (x86)')),Path(os.environ['LOCALAPPDATA'])/'Programs'):

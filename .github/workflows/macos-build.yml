@@ -74,7 +74,7 @@ jobs:
               with patch.object(sys,'frozen',frozen,create=True),patch.object(sys,'executable',executable):
                   suite=unittest.defaultTestLoader.loadTestsFromModule(test_video_v1823)
                   result=unittest.TextTestRunner(verbosity=2).run(suite)
-              assert result.wasSuccessful() and result.testsRun==3 and not result.skipped
+              assert result.wasSuccessful() and result.testsRun==4 and not result.skipped
               results.append(dict(frozen=frozen,tests=result.testsRun,ok=True))
           Path('../outputs/mac-video-${{ matrix.arch }}.json').write_text(json.dumps(dict(ok=True,architecture='${{ matrix.arch }}',checks=results),indent=2))
           PY

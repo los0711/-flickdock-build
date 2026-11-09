@@ -88,6 +88,7 @@ export class AccountEvents extends DurableObject<Env> {
       const inline=data.type==='clipboard'&&typeof data.clipboard?.inline==='string'?
         JSON.stringify({schema_version:1,type:'clipboard_inline',clipboard:data.clipboard,server_time:Date.now()}):null;
       for(const socket of this.ctx.getWebSockets()){
+        if(socket.readyState!==WebSocket.OPEN)continue;
         const attachment=socket.deserializeAttachment();
         if(!attachment?.expires||attachment.expires<=Date.now()){try{socket.close(4001,'Session expired');}catch{}continue;}
         if(attachment.device===data.device)continue;
@@ -96,6 +97,17 @@ export class AccountEvents extends DurableObject<Env> {
       return new Response(null,{status:204});
     }
     return new Response(null,{status:404});
+  }
+  webSocketMessage(socket:WebSocket,message:string|ArrayBuffer){
+    // Commits still pass through the authenticated, versioned HTTP endpoints.
+    // Protocol-level control frames are handled by Cloudflare, without waking us.
+    if(socket.readyState===WebSocket.OPEN)socket.close(typeof message==='string'&&message.length<=1024?1008:1009,'Server notifications only');
+  }
+  webSocketClose(socket:WebSocket,_code:number,_reason:string,_wasClean:boolean){
+    if(socket.readyState===WebSocket.OPEN)socket.close(1000,'Closed');
+  }
+  webSocketError(socket:WebSocket,_error:unknown){
+    if(socket.readyState===WebSocket.OPEN)socket.close(1011,'Notification connection error');
   }
   async alarm(){await clipboardAlarm(this.ctx,this.env);}
 }

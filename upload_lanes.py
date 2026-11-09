@@ -75,7 +75,7 @@ class UploadLanes:
 
     def _continue(self):
         owner = self.owner
-        if owner.closed or owner._clipboard_priority:
+        if owner.closed or owner._clipboard_priority or not owner.scheduler.connected:
             return
         if owner.running and owner.transfer is None and owner._cycle_direction=='upload':
             owner._push_next()
@@ -102,7 +102,7 @@ class UploadLanes:
 
     def kick(self):
         owner = self.owner
-        if (owner.closed or not owner.running or owner._lane_context
+        if (owner.closed or not owner.scheduler.connected or not owner.running or owner._lane_context
                 or owner._clipboard_priority or not owner.upload_enabled
                 or not owner.service.signed_in or owner._retry_paused()
                 or owner._paused('quota_not_before')):

@@ -130,7 +130,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-sync-v180-') as temp:
     original=root/'原始图片.svg';original.write_text('<svg xmlns="http://www.w3.org/2000/svg"/>',encoding='utf8')
     folder=root/'资料';folder.mkdir();(folder/'笔记.md').write_text('跨设备资料',encoding='utf8')
     adapters[0].add(str(original));adapters[0].add('flickdock:text:local','文字可直接拖入输入框');adapters[0].add(str(folder))
-    engines=[ShelfSync(root/str(i),services[i],adapters[i],poll_ms=600000) for i in range(2)]
+    engines=[ShelfSync(root/str(i),services[i],adapters[i]) for i in range(2)]
     for service in services:service.signin('account-A')
     until(lambda:not engines[0].running and len(server.account('account-A')['items'])==3)
     engines[1].tick()
@@ -147,7 +147,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-sync-v180-') as temp:
     # Offline journal: change the text locally, restart and upload later.
     engines[0].close();adapters[1].view['texts'][next(iter(received['texts']))]='离线修改'
     engines[1].local_changed();engines[1].close()
-    restarted=ShelfSync(root/'1',services[1],adapters[1],poll_ms=600000);engines[1]=restarted
+    restarted=ShelfSync(root/'1',services[1],adapters[1]);engines[1]=restarted
     services[1].signin('account-A')
     until(lambda:not restarted.running and any(x['data']== '离线修改'.encode() for x in server.account('account-A')['items'].values()))
     print('PASS durable outbox/cursor restart')
@@ -224,7 +224,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-resume-v180-') as temp:
     # Includes arbitrary metadata bytes: original payload must survive exactly.
     payload=b'\x89PNG\r\n\x1a\n'+bytes(range(256))*1500+b'original metadata\x00'
     source.write_bytes(payload);adapter.add(str(source))
-    engine=ShelfSync(root/'client',service,adapter,poll_ms=600000)
+    engine=ShelfSync(root/'client',service,adapter)
     server.fail_index=1;server.fail_after_accept=True;service.signin('resume-A')
     until(lambda:not engine.running and bool(engine.state.get('resumable_uploads')))
     transfer=next(iter(engine.state['resumable_uploads'].values()))
@@ -236,7 +236,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-resume-v180-') as temp:
     persisted=json.loads(engine._profile('resume-A').read_text(encoding='utf8'))
     assert persisted['resumable_uploads'][identity]['upload_id']==upload_id
     engine.state['not_before']=0;engine.close();assert stage.exists()
-    engine=ShelfSync(root/'client',service,adapter,poll_ms=600000);service.signin('resume-A')
+    engine=ShelfSync(root/'client',service,adapter);service.signin('resume-A')
     until(lambda:not engine.running and bool(server.account('resume-A')['items']))
     assert server.account('resume-A')['items'][identity]['data']==payload
     assert sum(m=='POST' and p=='/v1/uploads' for _,m,p in server.calls)==1
@@ -247,14 +247,14 @@ with tempfile.TemporaryDirectory(prefix='flickdock-resume-v180-') as temp:
 
     # Daily limits are persisted, so timer ticks/restarts do not hammer the API.
     service=Service(server);adapter=Adapter();adapter.add(str(source))
-    engine=ShelfSync(root/'quota',service,adapter,poll_ms=600000)
+    engine=ShelfSync(root/'quota',service,adapter)
     server.fail_index=1;server.fail_after_accept=False;server.rate_limit=True;service.signin('quota-A')
     until(lambda:not engine.running and engine.state.get('not_before',0)>time.time()+3500)
     transfer=next(iter(engine.state['resumable_uploads'].values()));stage=Path(transfer['path']);uid=transfer['upload_id']
     calls=len(server.calls)
     for _ in range(5):engine.tick();app.processEvents()
     assert len(server.calls)==calls and stage.exists()
-    engine.close();engine=ShelfSync(root/'quota',service,adapter,poll_ms=600000);service.signin('quota-A')
+    engine.close();engine=ShelfSync(root/'quota',service,adapter);service.signin('quota-A')
     app.processEvents();engine.tick();assert len(server.calls)==calls
     # A different account never resumes or sends another account's snapshot.
     service.signin('quota-B');until(lambda:not engine.running)
@@ -268,7 +268,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-resume-v180-') as temp:
     # Changing/deleting a local item retires its old cloud allocation and stage.
     for mutation in ('edit','delete','expired','corrupt'):
         service=Service(server);adapter=Adapter();adapter.add(str(source))
-        engine=ShelfSync(root/mutation,service,adapter,poll_ms=600000)
+        engine=ShelfSync(root/mutation,service,adapter)
         server.fail_index=1;server.rate_limit=False;service.signin('case-'+mutation)
         until(lambda:not engine.running and bool(engine.state.get('resumable_uploads')))
         transfer=next(iter(engine.state['resumable_uploads'].values()));old=transfer['upload_id'];stage=Path(transfer['path'])
@@ -300,7 +300,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-resume-v180-') as temp:
         print('PASS interrupted upload '+mutation+' safely retires old snapshot/allocation')
 
     service=Service(server);adapter=Adapter();adapter.add(str(source))
-    engine=ShelfSync(root/'commit',service,adapter,poll_ms=600000)
+    engine=ShelfSync(root/'commit',service,adapter)
     server.fail_commit=True;service.signin('commit-A')
     until(lambda:not engine.running and bool(server.account('commit-A')['items']))
     transfer=next(iter(engine.state['resumable_uploads'].values()));stage=Path(transfer['path'])
@@ -312,7 +312,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-resume-v180-') as temp:
     engine.close();print('PASS committed revision with lost reply retires journal without duplicate')
 
     service=Service(server);adapter=Adapter();adapter.add(str(source))
-    engine=ShelfSync(root/'owned',service,adapter,poll_ms=600000)
+    engine=ShelfSync(root/'owned',service,adapter)
     server.fail_index=1;service.signin('owned-A')
     until(lambda:not engine.running and bool(engine.state.get('resumable_uploads')))
     transfer=next(iter(engine.state['resumable_uploads'].values()))
@@ -337,7 +337,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-download-resume-v180-') as te
     for corrupt in (False,True):
         account='download-corrupt' if corrupt else 'download-restart';identity=uuid4().hex
         record=seed(account,identity,1,payload);service=Service(server);adapter=Adapter()
-        base=root/account;engine=ShelfSync(base,service,adapter,poll_ms=600000)
+        base=root/account;engine=ShelfSync(base,service,adapter)
         server.fail_download=2;service.signin(account)
         until(lambda:not engine.running and engine.state.get('not_before',0)>time.time()+3500)
         cached=engine.state['downloads'][identity];target=engine._download_target(dict(record))
@@ -346,7 +346,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-download-resume-v180-') as te
         if corrupt:part0.write_bytes(b'x'*65536)
         engine.state['not_before']=0;engine.close()
         assert part0.exists() and part1.exists()
-        engine=ShelfSync(base,service,adapter,poll_ms=600000);service.signin(account)
+        engine=ShelfSync(base,service,adapter);service.signin(account)
         until(lambda:not engine.running and len(adapter.view['permanent'])==1)
         assert Path(adapter.view['permanent'][0]).read_bytes()==payload
         calls=[p for token,m,p in server.calls if token==account and m=='GET' and '/parts/' in p]
@@ -358,7 +358,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-download-resume-v180-') as te
     # A later server revision supersedes an interrupted one; old cached parts
     # are removed and the cursor can advance past the obsolete change record.
     account='download-version';identity=uuid4().hex;record=seed(account,identity,1,payload)
-    service=Service(server);adapter=Adapter();engine=ShelfSync(root/account,service,adapter,poll_ms=600000)
+    service=Service(server);adapter=Adapter();engine=ShelfSync(root/account,service,adapter)
     server.fail_download=2;service.signin(account)
     until(lambda:not engine.running and bool(engine.state.get('downloads')))
     old_target=engine._download_target(record);old_part=old_target.with_name('.'+old_target.name+'.chunk-0')
@@ -372,7 +372,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-download-resume-v180-') as te
     # Account B must not reuse A's chunks even when the item id is identical.
     account='download-A';identity=uuid4().hex;record=seed(account,identity,1,payload)
     seed('download-B',identity,1,payload+b'belongs to B')
-    service=Service(server);adapter=Adapter();engine=ShelfSync(root/'accounts',service,adapter,poll_ms=600000)
+    service=Service(server);adapter=Adapter();engine=ShelfSync(root/'accounts',service,adapter)
     server.fail_download=2;service.signin(account)
     until(lambda:not engine.running and engine.state.get('not_before',0)>time.time()+3500)
     target=engine._download_target(record);part0=target.with_name('.'+target.name+'.chunk-0')
@@ -390,7 +390,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-priority-delete-v180-') as te
     root=Path(temp);source=root/'keep-original.png';payload=b'original bytes'+bytes(range(256))*1200;source.write_bytes(payload)
     for scenario in ('normal','cleanup-budget','version-conflict'):
         server=FaultServer();service=Service(server);adapter=Adapter();adapter.add(str(source))
-        engine=ShelfSync(root/scenario,service,adapter,poll_ms=600000);service.signin(scenario)
+        engine=ShelfSync(root/scenario,service,adapter);service.signin(scenario)
         until(lambda:not engine.running and bool(server.account(scenario)['items']))
         identity=next(iter(server.account(scenario)['items']))
         server.block_reads=True;engine.tick()
@@ -420,7 +420,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-priority-delete-v180-') as te
 
     for scenario in ('partial-upload','lost-commit'):
         server=FaultServer();service=Service(server);adapter=Adapter();adapter.add(str(source))
-        engine=ShelfSync(root/scenario,service,adapter,poll_ms=600000)
+        engine=ShelfSync(root/scenario,service,adapter)
         if scenario=='partial-upload':server.fail_index=1;server.rate_limit=True
         else:server.fail_commit=True
         service.signin(scenario)
@@ -434,12 +434,12 @@ with tempfile.TemporaryDirectory(prefix='flickdock-priority-delete-v180-') as te
         engine.close();print('PASS priority cancel/deletion '+scenario+' without a transfer GET')
 
     server=FaultServer();service=Service(server);adapter=Adapter();adapter.add(str(source))
-    engine=ShelfSync(root/'lost-init',service,adapter,poll_ms=600000);server.fail_initialize=True;service.signin('lost-init')
+    engine=ShelfSync(root/'lost-init',service,adapter);server.fail_initialize=True;service.signin('lost-init')
     until(lambda:not engine.running and len(server.uploads)==1 and bool(engine.state.get('resumable_uploads')))
     transfer=next(iter(engine.state['resumable_uploads'].values()));uid=transfer['upload_id'];stage=Path(transfer['path'])
     assert len(uid)==36 and 'chunk_size' not in transfer and stage.read_bytes()==payload
     engine.state['not_before']=0;engine.close()
-    engine=ShelfSync(root/'lost-init',service,adapter,poll_ms=600000);service.signin('lost-init')
+    engine=ShelfSync(root/'lost-init',service,adapter);service.signin('lost-init')
     until(lambda:not engine.running and bool(server.account('lost-init')['items']))
     assert len(server.uploads)==1 and uid in server.uploads
     assert next(iter(server.account('lost-init')['items'].values()))['data']==payload
@@ -451,7 +451,7 @@ print('SHELF_PRIORITY_DELETE_V180_OK')
 with tempfile.TemporaryDirectory(prefix='flickdock-recovery-v180-') as temp:
     root=Path(temp);source=root/'original.png';payload=bytes(range(256))*600;source.write_bytes(payload)
     server=FaultServer();service=Service(server);adapter=Adapter();adapter.add(str(source))
-    engine=ShelfSync(root/'churn',service,adapter,poll_ms=600000);service.signin('churn')
+    engine=ShelfSync(root/'churn',service,adapter);service.signin('churn')
     until(lambda:not engine.running and bool(server.account('churn')['items']))
     identity=next(iter(server.account('churn')['items']));server.block_reads=True
     engine.state['not_before']=time.time()+3600;deadline=engine.state['not_before']
@@ -469,7 +469,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-recovery-v180-') as temp:
     print('PASS repeated delete CAS conflicts consume owner versions with bounded independent cleanup retry')
 
     server=FaultServer();service=Service(server);adapter=Adapter();adapter.add(str(source))
-    engine=ShelfSync(root/'verifying',service,adapter,poll_ms=600000);server.fail_verifying=True;service.signin('verifying')
+    engine=ShelfSync(root/'verifying',service,adapter);server.fail_verifying=True;service.signin('verifying')
     until(lambda:not engine.running and any(u['state']=='verifying' for u in server.uploads.values()))
     transfer=next(iter(engine.state['resumable_uploads'].values()));uid=transfer['upload_id']
     engine.state['not_before']=0;engine.tick()
@@ -489,7 +489,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-recovery-v180-') as temp:
                     size=len(payload),sha256=hashlib.sha256(payload).hexdigest())
         server.account(account)['items'][identity]=dict(record=copy.deepcopy(record),data=payload)
         server.account(account)['changes'].append(dict(cursor='1',record=record))
-        engine=ShelfSync(root/interruption,service,adapter,poll_ms=600000)
+        engine=ShelfSync(root/interruption,service,adapter)
         entered=threading.Event()
         if interruption=='io-error':
             class BrokenPath(type(Path())):
@@ -518,7 +518,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-recovery-v180-') as temp:
         finally:
             sync_module.assemble_parts=real_assemble;file_module.Path=real_path
         if interruption=='close':
-            engine=ShelfSync(root/interruption,service,adapter,poll_ms=600000);service.signin(account)
+            engine=ShelfSync(root/interruption,service,adapter);service.signin(account)
         elif interruption=='account-switch':service.signin(account)
         else:engine.state['deferred_downloads'][identity]['retry_at']=0;engine.tick()
         until(lambda:not engine.running and bool(adapter.view['permanent']))
@@ -556,7 +556,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-instant-sync-') as folder:
     root=Path(folder);payload=b'original duplicate bytes'+bytes(range(256))*4096
     first=root/'first.bin';second=root/'second.bin';first.write_bytes(payload);second.write_bytes(payload)
     server=InstantServer();service=Service(server);adapter=Adapter();adapter.add(str(first));adapter.add(str(second))
-    engine=ShelfSync(root/'profile',service,adapter,poll_ms=600000);service.signin('instant-account')
+    engine=ShelfSync(root/'profile',service,adapter);service.signin('instant-account')
     until(lambda:not engine.running and len(server.account('instant-account')['items'])==2)
     assert len(server.uploads)==1,'Identical content was uploaded twice'
     assert not engine.state['resumable_uploads'] and not engine.state['pending_uploads']

@@ -140,7 +140,7 @@ def test_later_small_item_arrives_before_held_large_download():
              {'cursor':'2','record':file_record(small_id,'newer-small.bin',small_blob)}]
     with tempfile.TemporaryDirectory(prefix='flickdock-receive-priority-') as root:
         service=Service(changes,{large_id:large_blob,small_id:small_blob})
-        adapter=Adapter();engine=ShelfSync(root,service,adapter,poll_ms=600000)
+        adapter=Adapter();engine=ShelfSync(root,service,adapter)
         try:
             service.account_changed.emit({'id':'priority-account'})
             assert spin(lambda:len(adapter.view['permanent'])==1 and bool(service.api.held))
@@ -168,7 +168,7 @@ def test_revisions_and_tombstone_of_same_item_keep_order():
              {'cursor':'3','record':small}]
     with tempfile.TemporaryDirectory(prefix='flickdock-receive-order-') as root:
         service=Service(changes,{})
-        adapter=Adapter();engine=ShelfSync(root,service,adapter,poll_ms=600000)
+        adapter=Adapter();engine=ShelfSync(root,service,adapter)
         received=[]
         def fake_receive(record, callback, *, remote_order=None):
             received.append((record['id'],record['version'],remote_order))
@@ -191,7 +191,7 @@ def test_cancel_retrying_complete_download_unblocks_next_item():
         service=Service(changes,{first_id:first_blob,second_id:second_blob})
         service.api.fail_after_complete_once=first_id
         service.api.corrupt_completed_body=True
-        adapter=Adapter();engine=ShelfSync(root,service,adapter,poll_ms=600000)
+        adapter=Adapter();engine=ShelfSync(root,service,adapter)
         seen=[]
         engine.transfers_changed.connect(lambda rows:seen.append(rows))
         try:
@@ -220,7 +220,7 @@ def test_removed_between_change_page_and_metadata_clears_transfer():
     with tempfile.TemporaryDirectory(prefix='flickdock-removed-before-download-') as root:
         service=Service(changes,{identity:blob})
         service.api.missing_content.add(identity)
-        adapter=Adapter();engine=ShelfSync(root,service,adapter,poll_ms=600000)
+        adapter=Adapter();engine=ShelfSync(root,service,adapter)
         seen=[];engine.transfers_changed.connect(lambda rows:seen.append(rows))
         try:
             service.account_changed.emit({'id':'removed-before-download-account'})
@@ -237,7 +237,7 @@ def test_fast_multi_part_101_mib_arrives_only_after_full_original_sha_check():
     changes=[{'cursor':'1','record':file_record(identity,'original-101MiB.bin',original)}]
     with tempfile.TemporaryDirectory(prefix='flickdock-fast-multipart-receive-') as root:
         service=Service(changes,{identity:original})
-        adapter=Adapter();engine=ShelfSync(root,service,adapter,poll_ms=600000)
+        adapter=Adapter();engine=ShelfSync(root,service,adapter)
         try:
             service.account_changed.emit({'id':'fast-multipart-account'})
             assert spin(lambda:len(service.api.held)==4,seconds=8)

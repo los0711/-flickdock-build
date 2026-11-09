@@ -61,7 +61,7 @@ class CloudStreamTests(unittest.TestCase):
         worker=Thread(target=server.serve_forever,daemon=True);worker.start()
         with tempfile.TemporaryDirectory(prefix='flickdock-stream-') as root:
             api=CloudApi(f'http://127.0.0.1:{server.server_port}',allow_test_http=True);api.token='disposable'
-            engine=ShelfSync(root,Service(api),Adapter(),poll_ms=600000)
+            engine=ShelfSync(root,Service(api),Adapter())
             engine.account_id='isolated';engine.owner='isolated'
             engine.state=dict(entries={},downloads={},cursor='0')
             engine.download_transfers[record['id']]=dict(record,received=0)

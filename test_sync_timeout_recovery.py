@@ -91,7 +91,7 @@ for label, first_error in (
 ):
     with tempfile.TemporaryDirectory(prefix='flickdock-sync-timeout-recovery-') as directory:
         service = Service(first_error)
-        engine = ShelfSync(directory, service, Adapter(), poll_ms=600000)
+        engine = ShelfSync(directory, service, Adapter())
         # Compress the production backoff while keeping the real Qt debounce
         # and account-scoped sync state machine.
         engine._retry_delay = lambda error: .2

@@ -8,6 +8,7 @@ from PySide6.QtGui import QImage,QPixmap,QImageReader
 from PySide6.QtWidgets import QApplication
 from platform_native import native_input_available
 from clipboard_identity import signature
+from sync_scheduler import SyncScheduler
 from virtual_clipboard import describe as describe_virtual,capture as capture_virtual,VirtualClipboardError
 
 MAX_BYTES=20*1024*1024
@@ -17,6 +18,9 @@ TEXT_MAGIC=b'FDCLIP2\0'
 NATIVE_READ_RETRY_INITIAL_MS=100
 NATIVE_READ_RETRY_MAX_MS=1000
 CLIPBOARD_PRIORITY_LEASE_MS=350
+TEXT_COPY_COALESCE_MS=8
+BINARY_COPY_COALESCE_MS=60
+MAC_CLIPBOARD_OBSERVE_MS=50
 
 
 class ClipboardSizeLimit(ValueError):
@@ -276,11 +280,12 @@ class ClipboardSync(QObject):
         self._priority_granted=self._priority_work()
         if self._priority_granted:self._priority_timer.start(CLIPBOARD_PRIORITY_LEASE_MS)
         else:self._priority_timer.stop()
+        self._update_schedule()
         if before!=self._priority_active():self.activity_changed.emit(self._priority_active())
 
-    def __init__(self,account,events,base,parent=None,*,enabled=True,clipboard=None):
+    def __init__(self,account,events,base,parent=None,*,enabled=True,clipboard=None,scheduler=None):
         super().__init__(parent);self.account=account;self.api=account.api;self.clipboard=clipboard or QApplication.clipboard()
-        self._priority_granted=False;self._priority_timer=QTimer(self);self._priority_timer.setSingleShot(True)
+        self._priority_granted=False;self._content_fetching=False;self._priority_timer=QTimer(self);self._priority_timer.setSingleShot(True)
         self._priority_timer.timeout.connect(self._priority_expired)
         self._is_native=clipboard is None or clipboard is QApplication.clipboard()
         self._sequence=native_sequence if self._is_native else lambda:None
@@ -303,6 +308,10 @@ class ClipboardSync(QObject):
         self._applied_version=0;self._receiving_version=0
         self.pool=QThreadPool(self);self.pool.setMaxThreadCount(2)
         self._ignored=None;self._last_sequence=object();self._last_local_signature=object();self._seen='';self._keys=set();self._jobs={};self._pending=None;self._fetching=False;self._refresh_again=False
+        self.scheduler=scheduler if scheduler is not None else SyncScheduler(self,connected=False)
+        self._owns_scheduler=scheduler is None;self._metadata_probe=None
+        self._retry_on_reconnect=False;self._resume_dependent_jobs=True
+        self.schedule=self.scheduler.register('clipboard',self._scheduled_check)
         self.cache=Path(base)/'clipboard-cache';self.cache.mkdir(parents=True,exist_ok=True)
         self._directories=[];self._current_directory=None
         for directory in self.cache.glob('clip-*'):
@@ -312,27 +321,27 @@ class ClipboardSync(QObject):
                 if lease.get('flickdock_clipboard')==1 and isinstance(lease.get('created_at'),(int,float)):
                     self._directories.append((directory,lease['created_at']))
             except (OSError,ValueError,AttributeError):pass
-        self.poll=QTimer(self);self.poll.setInterval(30000);self.poll.timeout.connect(self._tick)
         self.retry=QTimer(self);self.retry.setSingleShot(True);self.retry.setInterval(5000);self.retry.timeout.connect(self._retry)
-        self.mac_poll=QTimer(self);self.mac_poll.setInterval(200);self.mac_poll.timeout.connect(self._mac_changed);self._mac_count=None
-        self.change_debounce=QTimer(self);self.change_debounce.setSingleShot(True);self.change_debounce.setInterval(60)
+        self.mac_poll=QTimer(self);self.mac_poll.setInterval(MAC_CLIPBOARD_OBSERVE_MS);self.mac_poll.timeout.connect(self._mac_changed);self._mac_count=None
+        self.change_debounce=QTimer(self);self.change_debounce.setSingleShot(True);self.change_debounce.setInterval(BINARY_COPY_COALESCE_MS)
         self.change_debounce.timeout.connect(self._changed)
         self.clipboard.dataChanged.connect(self._schedule_change)
         self._last_local_signature=signature(self._snapshot());self._last_sequence=self._sequence()
         account.account_changed.connect(self._account_changed)
-        events.clipboard_changed.connect(self.refresh)
+        events.clipboard_changed.connect(self.request_refresh)
         payload=getattr(events,'clipboard_payload',None)
         if payload is not None:payload.connect(self._pushed)
         delivery=getattr(events,'clipboard_delivery',None)
         if delivery is not None:delivery.connect(self.deliveries.merge)
-        events.socket.connected.connect(self.refresh)
         from shared_clipboard_files import ClipboardFileJobs
         self.file_jobs=ClipboardFileJobs(self,base)
+        self.scheduler.connection_changed.connect(self._connection_changed)
+        self.scheduler.bind_socket(events.socket)
+        self._update_schedule()
         if enabled:
             QTimer.singleShot(0,self._cleanup)
-            self.poll.start()
             if sys.platform=='darwin' and self._is_native:self._mac_changed(initial=True);self.mac_poll.start()
-            QTimer.singleShot(0,self.refresh)
+            self.schedule.request()
 
     def _mac_changed(self,initial=False):
         if not self.enabled or self.closed:return
@@ -354,11 +363,6 @@ class ClipboardSync(QObject):
         self._native_format_issue=''
         if not self._native_accessible():return None
         try:
-            if self._is_native and sys.platform=='darwin' and native_input_available():
-                from mac_clipboard import read_snapshot
-                self._snapshot_available,value=read_snapshot()
-                if not self._snapshot_available:self._native_format_issue='NATIVE_FORMAT_NOT_READY'
-                return value
             mime=self.clipboard.mimeData()
             if mime is None:return None
             self._native_format_issue=''
@@ -444,9 +448,8 @@ class ClipboardSync(QObject):
         if self.closed or self.enabled==enabled:return
         self.enabled=enabled;self.change_debounce.stop();self._account_changed(force=True)
         if enabled:
-            self.poll.start()
             if sys.platform=='darwin' and self._is_native:self._mac_changed(initial=True);self.mac_poll.start()
-        else:self.poll.stop();self.mac_poll.stop()
+        else:self.mac_poll.stop()
 
     def _schedule_change(self):
         if not self._active() and not self.closed:
@@ -463,7 +466,8 @@ class ClipboardSync(QObject):
             # Stop an in-flight remote read before the native notification's
             # coalescing delay; the user's newer local copy always wins.
             self._native_receive_interrupted|=self._fetching or self._prepared_receive is not None
-            self._copy_notified_mono=time.monotonic();self._generation+=1;self.change_debounce.start()
+            self._copy_notified_mono=time.monotonic();self._generation+=1
+            self.change_debounce.start(TEXT_COPY_COALESCE_MS if value is not None and value[0]=='text' else BINARY_COPY_COALESCE_MS)
 
     def _copy_timestamp(self,intent):
         if intent['at'] is None:
@@ -538,7 +542,41 @@ class ClipboardSync(QObject):
         os.replace(temporary,self._clock_path)
         return self._copy_clock
 
-    def _tick(self):self.file_jobs.expire();self._cleanup();self.refresh()
+    def _update_schedule(self):
+        active=self._pending is not None or self._local_retry is not None or self._content_fetching or self._prepared_receive is not None
+        finishing=self._prepared_receive is not None or bool(self._cloud_progress and self._cloud_progress['phase']=='verifying')
+        self.schedule.configure(enabled=self._active(),transferring=active,finishing=finishing)
+
+    def request_refresh(self):self.schedule.request()
+
+    def _connection_changed(self,online):
+        self._resume_dependent_jobs=True
+        if not online:
+            if self._prepared_receive is None:self.retry.stop()
+            self.file_jobs.retry.stop();self.deliveries.retry.stop()
+            self._retry_on_reconnect=self._pending is not None or self._local_retry is not None
+
+    def _scheduled_check(self):
+        self.file_jobs.expire()
+        if self._resume_dependent_jobs:
+            self._resume_dependent_jobs=False;self.file_jobs._retry();self.deliveries.flush()
+        if self._retry_on_reconnect:
+            self._retry_on_reconnect=False
+            if self._pending is not None or self._local_retry is not None:self.retry.start(0)
+        if self._fetching:
+            # The content stream owns its bytes. A progress check reads only
+            # the latest version so a missed newer hint can replace it safely.
+            if self._content_fetching and self._metadata_probe is None:
+                marker=object();self._metadata_probe=marker;generation=self._generation
+                def checked(result,error):
+                    if self._metadata_probe is not marker:return
+                    self._metadata_probe=None
+                    if error or generation!=self._generation:return
+                    head=result.get('clipboard') if isinstance(result,dict) else None
+                    if isinstance(head,dict) and head_version(head)>self._receiving_version:self._pushed(result)
+                self._request('GET','/v1/clipboard',checked)
+            return
+        self._cleanup();self.refresh()
 
     def _valid_task(self,pending):
         return (self._active() and self._pending is pending or
@@ -546,8 +584,10 @@ class ClipboardSync(QObject):
 
     def _clear_task(self,pending):
         if self._pending is pending:self._pending=None
+        self._update_schedule()
 
     def _cancel_replaced_work(self):
+        self._metadata_probe=None
         retained=[task for task in self.file_jobs.tasks.values() if self.file_jobs.held(task)]
         keys=set().union(*(task.get('_keys',set()) for task in retained)) if retained else set()
         for task in self.file_jobs.tasks.values():
@@ -638,7 +678,8 @@ class ClipboardSync(QObject):
     def _account_changed(self,*_,force=False):
         identity=self._session_identity()
         if not force and identity==self._identity:
-            self.refresh();return
+            self.request_refresh();return
+        self.schedule.configure(enabled=False)
         self.deliveries.reset()
         files=getattr(self,'file_jobs',None)
         if files is not None:files.save()
@@ -663,7 +704,8 @@ class ClipboardSync(QObject):
             files.journal=None;files.tasks={};files.reset(load=not self.closed)
         if not self.closed:
             value=self._snapshot();self._set_view(value if self._snapshot_available else self.view['value'],'local')
-        if self._active():QTimer.singleShot(0,self.refresh)
+        self._update_schedule()
+        if self._active():self.schedule.request()
 
     def _directory(self):
         path=Path(tempfile.mkdtemp(prefix='clip-',dir=self.cache));created=time.time()
@@ -717,7 +759,7 @@ class ClipboardSync(QObject):
             # we could tell it was a duplicate. Resume that receive now instead
             # of leaving it cancelled until the next 30-second poll.
             if self._native_receive_interrupted and self._pending is None and self._local_retry is None:
-                self._native_receive_interrupted=False;self.refresh()
+                self._native_receive_interrupted=False;self.request_refresh()
             return
         if sequence is not None:
             if sequence==self._last_sequence:return
@@ -767,6 +809,7 @@ class ClipboardSync(QObject):
         if shared is not None:
             raw=(shared.get('package') or {}).get('raw_file') or {}
             state.update(received=shared.get('_file_received',0),total=raw.get('size',shared['source_stat'][2]))
+        self._update_schedule()
         if state==self.view:return
         self.view=state
         self.view_changed.emit(dict(self.view))
@@ -813,6 +856,7 @@ class ClipboardSync(QObject):
     def _prepare_local(self):
         pending=self._local_retry
         if not pending or not self._active():return
+        if not self.scheduler.connected:self._retry_on_reconnect=True;self.schedule.request();return
         try:
             if pending['sequence'] is None:pending['sequence']=self._next_sequence()
         except OSError:
@@ -840,6 +884,7 @@ class ClipboardSync(QObject):
 
     def _stage(self,pending):
         if not self._valid_task(pending):return
+        if not self.scheduler.connected:self._retry_on_reconnect=True;self.schedule.request();return
         if time.time()-pending['created_at']>=86400:self._clear_task(pending);self.refresh();return
         self._copy_timestamp(pending['intent'])
         def staged(result,error):
@@ -867,6 +912,7 @@ class ClipboardSync(QObject):
 
     def _upload(self,pending):
         if not self._valid_task(pending) or not pending['staged'] or not pending['prepared'] or pending.get('uploading'):return
+        if not self.scheduler.connected:self._retry_on_reconnect=True;self.schedule.request();return
         if time.time()-pending['created_at']>=86400:self._pending=None;self.refresh();return
         item=pending['package']
         if item is None:self._pending=None;return
@@ -921,6 +967,9 @@ class ClipboardSync(QObject):
         if self._prepared_receive is not None:
             identity=self._prepared_receive['head']['id'];self._apply_received()
             if self._prepared_receive is not None or self._seen==identity:return
+        if not self.scheduler.connected:
+            self._retry_on_reconnect=self._pending is not None or self._local_retry is not None
+            self.schedule.request();return
         if self._local_retry:self._prepare_local();return
         if self._pending:
             self._priority_flags(waiting=False)
@@ -947,6 +996,7 @@ class ClipboardSync(QObject):
 
     def refresh(self):
         if not self._active():return
+        if not self.scheduler.connected:self.schedule.request();return
         if self._fetching:self._refresh_again=True;return
         self._refresh_again=False
         self._fetching=True;generation=self._generation
@@ -1027,7 +1077,7 @@ class ClipboardSync(QObject):
         self._fetching=False
         self._priority_flags(receiving=False)
         if self._refresh_again:
-            self._refresh_again=False;QTimer.singleShot(0,self.refresh)
+            self._refresh_again=False;self.schedule.request()
 
     def _apply(self,value,directory,*,identity=None):
         if not self._native_accessible(force=True):return False
@@ -1082,6 +1132,7 @@ class ClipboardSync(QObject):
         finally:self._applying=previous
 
     def _cleanup(self):
+        self._update_schedule()
         # Native applications may still hold the last file clipboard's paths
         # after Paste. Retain local downloads for a day, never delete originals.
         if self.closed:return
@@ -1108,6 +1159,9 @@ class ClipboardSync(QObject):
 
     def close(self):
         if self.closed:return
-        self.closed=True;self._priority_timer.stop();self.poll.stop();self.retry.stop();self.mac_poll.stop();self.change_debounce.stop();self._account_changed(force=True)
+        self.closed=True;self._priority_timer.stop();self.retry.stop();self.mac_poll.stop();self.change_debounce.stop();self._account_changed(force=True)
+        self.schedule.close()
+        self.scheduler.connection_changed.disconnect(self._connection_changed)
+        if self._owns_scheduler:self.scheduler.close()
         try:self.clipboard.dataChanged.disconnect(self._schedule_change)
         except RuntimeError:pass

@@ -20,6 +20,7 @@ from PySide6.QtCore import QObject, QThreadPool, QTimer, Qt, Signal
 from account_store import atomic_json
 from selection_archive import _source_reader
 from upload_lanes import UploadLanes
+from sync_scheduler import SyncScheduler,SyncTiming,TRANSFER_INTERVAL_MS,FINISHING_INTERVAL_MS
 from sync_files import (DiskWork, DIRECTORY_MIME, assemble_parts, fingerprint, read_part, read_utf8, safe_name,
                         stage_item, unpack_directory,MAX_FILE_BYTES)
 
@@ -86,8 +87,7 @@ class ShelfSync(QObject):
     transfers_changed = Signal(list)
     metadata_changed = Signal(str)
 
-    def __init__(self, base, service, adapter, parent=None, *, poll_ms=300000,
-                 remote_poll_ms=4000, disconnected_poll_ms=25000):
+    def __init__(self, base, service, adapter, parent=None, *, scheduler=None,progress_interval_ms=TRANSFER_INTERVAL_MS):
         super().__init__(parent)
         self.root = Path(base)/'cloud-shelves'; self.root.mkdir(parents=True,exist_ok=True)
         self.service, self.api, self.adapter = service, service.api, adapter
@@ -115,10 +115,8 @@ class ShelfSync(QObject):
         self.download_transfers={}
         self._interactive=False
         self._clipboard_priority=False
-        self._base_poll_ms=poll_ms
-        self._remote_poll_ms=remote_poll_ms
-        self._disconnected_poll_ms=disconnected_poll_ms
-        self._event_stream_online=True
+        self.scheduler=scheduler if scheduler is not None else SyncScheduler(self)
+        self._owns_scheduler=scheduler is None;self._schedule_transfers=[]
         self.catching_up=True
         self._progress_persisted=0.0
         self._part_cache={}
@@ -129,17 +127,13 @@ class ShelfSync(QObject):
         self._cycle_direction='receive'
         self.upload_enabled=True
         self.receive_enabled=True
-        self.timer = QTimer(self); self.timer.setInterval(poll_ms); self.timer.timeout.connect(self.tick)
+        self.schedule=self.scheduler.register('shelf',self._scheduled_check,timing=SyncTiming(
+            transfer_ms=progress_interval_ms,finishing_ms=min(progress_interval_ms,FINISHING_INTERVAL_MS)))
+        self.scheduler.connection_changed.connect(self._connection_changed)
         self.debounce = QTimer(self); self.debounce.setSingleShot(True); self.debounce.timeout.connect(self.tick)
         # Backoff deadlines are wall-clock boundaries. Qt's default coarse
         # timer may fire early and repeatedly pull before the deadline.
         self.debounce.setTimerType(Qt.TimerType.PreciseTimer)
-        # The socket is the fast path. If its commit hint is lost after a
-        # pending upload was observed, bounded polling keeps the other device
-        # from waiting for the five-minute idle reconciliation. No active
-        # remote upload means no extra requests.
-        self.remote_poll = QTimer(self); self.remote_poll.setSingleShot(True)
-        self.remote_poll.timeout.connect(self.request_refresh)
         service.account_changed.connect(self.select_account)
 
     def attach_clipboard(self,client):
@@ -167,7 +161,6 @@ class ShelfSync(QObject):
             self.remote_transfers=[]
             self._live_upload_progress.clear()
             self.download_transfers.clear()
-            self.remote_poll.stop()
         self._persist()
         self._notify_transfers()
         if self.account_id and self.service.signed_in and (upload_enabled or receive_enabled):
@@ -220,9 +213,10 @@ class ShelfSync(QObject):
         if self.closed: return
         target = account.get('id') if isinstance(account,dict) else None
         if target == self.account_id and self.state is not None:
-            if self.service.signed_in and not self.timer.isActive(): self.timer.start()
+            self._update_schedule()
             return
-        self.epoch += 1; self.timer.stop(); self.debounce.stop(); self.remote_poll.stop()
+        self.epoch += 1; self.schedule.configure(enabled=False); self.debounce.stop()
+        self._schedule_transfers=[]
         self._metadata_pending.clear();self._metadata_retry.clear()
         self.catching_up=True
         self.upload_lanes.reset()
@@ -262,8 +256,8 @@ class ShelfSync(QObject):
         finally: self.applying = False
         self._persist()
         if target:
-            self.local_changed(); self.timer.start(); self.debounce.start(1)
-            self._schedule_remote_poll()
+            self.local_changed(); self.debounce.start(1)
+            self._update_schedule()
         else: self.status_changed.emit('未登录；内容仅保留在这台设备。')
 
     def local_changed(self):
@@ -354,51 +348,37 @@ class ShelfSync(QObject):
         self._interactive=value
         # WebSocket hints wake the journal immediately. Opening an interactive
         # window needs one reconciliation, not another GET every ten seconds.
-        self.timer.setInterval(self._base_poll_ms)
         if value and self.service.signed_in:self.debounce.start(1)
 
     def set_event_stream_online(self,online):
-        """Poll sparingly while live change hints cannot be delivered."""
-        online=bool(online)
-        if online==self._event_stream_online:return
-        self._event_stream_online=online
-        # Backfilled history is data reconciliation, not a sequence of new
-        # arrivals. Keep this flag until the final page has been applied.
-        self.catching_up=True
-        self._schedule_remote_poll()
-        if online and self.account_id and self.receive_enabled:
-            # One reconciliation catches commits that happened while the
-            # socket was down, even if their pending reservation was unseen.
-            self.request_refresh()
+        self.scheduler.set_connected(online)
 
-    def _schedule_remote_poll(self):
-        """Recheck only pending uploads from another device if a hint goes missing."""
-        device_id=getattr(self.service,'device_id',None)
-        remote=[item for item in self.remote_transfers
-                if not device_id or item.get('device_id') != device_id]
-        if not self.receive_enabled or not self.account_id or not self.service.signed_in:
-            self.remote_poll.stop()
-            return
-        # When all R2 parts are accepted, the last server commit should be
-        # imminent. Otherwise a few seconds between checks is sufficient and
-        # does not fan out one request per progress packet.
-        if remote:
-            ready=any(item.get('state') == 'verifying' or
-                      item.get('size',0) == item.get('received_bytes',-1)
-                      for item in remote)
-            self.remote_poll.start(min(self._remote_poll_ms,1500) if ready
-                                   else self._remote_poll_ms)
-        elif not self._event_stream_online:
-            self.remote_poll.start(self._disconnected_poll_ms)
-        else:self.remote_poll.stop()
+    def _connection_changed(self,online):
+        self.catching_up=True
+
+    def _update_schedule(self):
+        remote=[row for row in self.remote_transfers if row.get('device_id')!=getattr(self.service,'device_id',None)] if self.receive_enabled else []
+        active=[row for row in self._schedule_transfers if row['phase'] not in ('retrying','paused','error')]
+        finishing=any(row.get('state')=='verifying' or row.get('size',0)==row.get('received_bytes',-1) for row in remote)
+        finishing=finishing or any(row['phase'] in ('verifying','validating') for row in active)
+        self.schedule.configure(enabled=not self.closed and bool(self.account_id) and self.service.signed_in
+            and (self.upload_enabled or self.receive_enabled),transferring=bool(remote or active),finishing=finishing)
+
+    def _scheduled_check(self):
+        if self.receive_enabled:self._refresh_remote()
+        else:self.tick()
 
     def request_refresh(self):
+        self.schedule.request()
+
+    def _refresh_remote(self):
         if self.closed or not self.account_id or not self.service.signed_in or not self.receive_enabled:return
+        if not self.scheduler.connected:self.schedule.request();return
         if self.running:
             self._refresh_again=True
             cooldown=getattr(self,'_remote_snapshot_not_before',(None,0))
             if cooldown[0]==self.epoch and cooldown[1]>time.monotonic():
-                self.remote_poll.start(max(1,round((cooldown[1]-time.monotonic())*1000)))
+                self.schedule.defer(max(1,round((cooldown[1]-time.monotonic())*1000)))
                 return
             # A long local upload/download must not postpone visibility of a
             # different device's pending files. Read only transfer metadata;
@@ -419,7 +399,7 @@ class ShelfSync(QObject):
                     delay=(self._retry_delay(error) if getattr(error,'status',0)==429 or self._quota_error(error)
                            else min(8,.5*2**min(failures-1,4)))
                     self._remote_snapshot_not_before=(self.epoch,time.monotonic()+delay)
-                    self.remote_poll.start(max(1,min(2147483647,round(delay*1000))))
+                    self.schedule.defer(max(1,min(2147483647,round(delay*1000))))
                     return
                 self._remote_snapshot_failures=0
                 changes=result.get('changes',[])
@@ -431,8 +411,8 @@ class ShelfSync(QObject):
                 if isinstance(remote,list) and len(remote)<=100:
                     self.remote_transfers=[r for r in remote if isinstance(r,dict) and type(r.get('size')) is int
                         and r['size']>=0 and isinstance(r.get('item_id'),str) and isinstance(r.get('upload_id'),str)]
-                    self._schedule_remote_poll();self._notify_transfers()
-                if result.get('has_more') or self._remote_snapshot_dirty:self.remote_poll.start(1)
+                    self._update_schedule();self._notify_transfers()
+                if result.get('has_more') or self._remote_snapshot_dirty:self.schedule.request(1)
             self._request('GET','/v1/sync/changes?cursor='+cursor+'&limit=100',visible)
         else:self.debounce.start(1)
 
@@ -533,6 +513,7 @@ class ShelfSync(QObject):
                     self.state.get('ignored_versions',{}).get(identity,0)>=record['version']):continue
             transfers.append(dict(id=identity,ref=entry.get('ref'),name=record.get('name',''),kind=record.get('kind','file'),
                 received=0,total=record['size'],phase='downloading',remote=True))
+        self._schedule_transfers=transfers;self._update_schedule()
         self.transfers_changed.emit(transfers)
 
     def _interrupt_cycle(self):
@@ -864,6 +845,7 @@ class ShelfSync(QObject):
 
     def tick(self):
         if self.closed or self.running or not self.account_id or not self.service.signed_in: return
+        if not self.scheduler.connected:self.schedule.request();return
         if not self.upload_enabled and not self.receive_enabled:
             self.status_changed.emit('云同步已暂停；内容保留在本机。')
             return
@@ -1065,7 +1047,7 @@ class ShelfSync(QObject):
             if isinstance(remote,list) and len(remote)<=100:
                 self.remote_transfers=[r for r in remote if isinstance(r,dict) and isinstance(r.get('size'),int)
                     and r.get('size',-1)>=0 and isinstance(r.get('item_id'),str) and isinstance(r.get('upload_id'),str)]
-                self._schedule_remote_poll()
+                self._update_schedule()
             if not isinstance(changes,list) or len(changes)>100: self._error(ValueError('云同步记录无效。')); return
             self._observe_remote_changes(changes)
             pending = list(enumerate(changes))
@@ -1802,7 +1784,9 @@ class ShelfSync(QObject):
         self._receive_wake=None;self._receive_batch_generation+=1
         self.upload_lanes.reset()
         self.service.account_changed.disconnect(self.select_account)
-        self.timer.stop(); self.debounce.stop(); self.remote_poll.stop();self._cleanup_retry.stop()
+        self.schedule.close();self.scheduler.connection_changed.disconnect(self._connection_changed)
+        if self._owns_scheduler:self.scheduler.close()
+        self.debounce.stop();self._cleanup_retry.stop()
         for key in tuple(self.requests): self.api.cancel(key)
         for job in tuple(self.jobs): job.cancel.set()
         self.pool.waitForDone(3000)

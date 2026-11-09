@@ -52,29 +52,6 @@ class ClipboardPermissionTests(unittest.TestCase):
     def setUp(self):fast.ClipboardFastTests.setUp(self)
     def tearDown(self):fast.ClipboardFastTests.tearDown(self)
 
-    def test_background_snapshot_reads_current_cocoa_content_without_qt_activation_cache(self):
-        receiver=self.clients[1];clip=self.clips[1];receiver._is_native=True
-        board=Mock();board.types.return_value=['public.file-url']
-        url=SimpleNamespace(path=lambda:'/private/var/cache/received.bin',isFileURL=lambda:True)
-        board.readObjectsForClasses_options_.return_value=[url]
-        modules={'AppKit':SimpleNamespace(NSPasteboard=SimpleNamespace(generalPasteboard=lambda:board)),
-                 'Foundation':SimpleNamespace(NSURL=object)}
-        with patch.dict('sys.modules',modules),patch('clipboard_sync.sys.platform','darwin'),\
-             patch('clipboard_sync.native_input_available',return_value=True),\
-             patch.object(receiver,'_native_accessible',return_value=True),\
-             patch.object(clip,'mimeData',side_effect=AssertionError('Qt cached pasteboard must not be used')):
-            self.assertEqual(receiver._snapshot(),('files',['/private/var/cache/received.bin']))
-            self.assertTrue(receiver._snapshot_available)
-            board.types.return_value=['public.png'];board.dataForType_.return_value=b'original-image-bytes'
-            self.assertEqual(receiver._snapshot(),('image',dict(raw=b'original-image-bytes',mime='image/png')))
-            board.types.return_value=['public.utf8-plain-text'];board.stringForType_.return_value='current native text'
-            self.assertEqual(receiver._snapshot(),('text',dict(text='current native text',html='')))
-            board.types.return_value=['public.file-url'];board.readObjectsForClasses_options_.return_value=[]
-            self.assertIsNone(receiver._snapshot());self.assertFalse(receiver._snapshot_available)
-            board.types.return_value=[]
-            self.assertIsNone(receiver._snapshot());self.assertTrue(receiver._snapshot_available)
-        receiver._is_native=False
-
     def test_denied_reads_do_not_upload_or_change_local_copy_and_grant_restores_latest(self):
         sender,receiver=self.clients;clip=self.clips[1]
         with patch.object(receiver,'_native_accessible',return_value=False):
