@@ -108,7 +108,6 @@ class ManualCloudTests(LocalCloudFixture,unittest.TestCase):
             results=[];client.copy_result.connect(lambda ok,context:results.append((ok,context)))
             try:
                 APP.processEvents();until(lambda:not client._fetching)
-                client.poll.stop()
                 winner=self.call(self.accounts[1].api,'POST','/v1/clipboard',data=dict(id=str(uuid4()),protocol=2,
                     sequence=1,copied_at=round(time.time()*1000)+1000,inline=item['inline']))['clipboard']
                 with patch.object(client,'_resolve_replaced',wraps=client._resolve_replaced) as resolve:

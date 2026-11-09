@@ -49,6 +49,7 @@ class PreviewTests(unittest.TestCase):
         self.manager.clipboard_presenter=self.model;self.manager.clipboard_preview_dialog=None
         self.manager.show_clipboard_preview=lambda:ShelfManager.show_clipboard_preview(self.manager)
         for zone in self.shelf.zones.values():zone.clipboard_button.refresh()
+        workspace.until(lambda:self.client.schedule.requested_due is None and not self.client._fetching)
         workspace.flush()
 
     def tearDown(self):
