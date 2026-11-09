@@ -102,6 +102,9 @@ class DisplayFramesTests(unittest.TestCase):
                 now=[100.0]
                 with patch('flickdock_motion.time.perf_counter',side_effect=lambda:now[0]):
                     spring.animate({'x':100});flush();clock=spring._timer.clock
+                    # Native startup may deliver a paint during flush; count
+                    # only the deterministic display frames injected below.
+                    samples.clear()
                     for frame in range(1,round(hz*.2)+1):
                         now[0]=100.0+frame/hz
                         clock.eventFilter(clock.handle,QEvent(QEvent.UpdateRequest))
