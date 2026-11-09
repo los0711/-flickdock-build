@@ -115,7 +115,6 @@ SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'ci_cross_device.py','ci_upload_profile.py','ci_vpn.py','syncthing_assets.py','test_syncthing_engine.py','test_manual_payload.py',
     
     '.github/workflows/native-clipboard.yml',
-    '.github/workflows/clipboard-regression.yml',
     'FlickDock.spec','FlickDock.iss','version_info.txt','ChineseSimplified.isl','windows-network.ps1',
     'flickdock.ico','THIRD_PARTY_NOTICES.md','font_manifest.json','bundle_policy.py',
     'release_manifest.py','release_macos.py','release_signing.py','package_source.py','PUBLISHING.md','README.md','AGENTS.md','UI_REFERENCE_IMPLEMENTATION.md','HIG_DESIGN.md','TRANSPORT_V1824.md','.gitignore','.gitattributes',
