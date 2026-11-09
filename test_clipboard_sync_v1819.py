@@ -94,7 +94,9 @@ class ClipboardTests(unittest.TestCase):
         sequence[0]=1
         with patch.object(receiver,'_snapshot',side_effect=unavailable):receiver._schedule_change()
         receiver.change_debounce.stop()
+        receiver._refresh_again=False
         held[0]();flush()
+        self.assertFalse(self.clips[1].mimeData().hasUrls())
         # The native owner is readable again and still has the same old data.
         receiver._changed();until(lambda:self.clips[1].mimeData().hasUrls(),seconds=3)
         received=Path(self.clips[1].mimeData().urls()[0].toLocalFile())
