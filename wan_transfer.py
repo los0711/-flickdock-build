@@ -285,7 +285,10 @@ class WanTransferService(LanTransferService):
                     expires=max(0.,min(300.,(float(value.get('expires',server_now+300000))-server_now)/1000))
                     refresh=max(0.,min(expires,(float(value.get('refreshAt',server_now+240000))-server_now)/1000))
                     self.code=str(value.get('code') or '')
-                    if not RECEIVE_CODE.fullmatch(self.code):self.code=''
+                    if not RECEIVE_CODE.fullmatch(self.code):
+                        self.code='';self._refresh_sent_at=0.;self.code_timer.stop();self.connect_timeout.stop()
+                        self._connection_error='远程传输服务版本不匹配，请更新服务端。'
+                        self.status_changed.emit(self._connection_error);self.identity_changed.emit(self.code_identity());return
                     self.connect_timeout.stop();self._connect_attempt=0;self._connection_error=''
                     self._code_refresh_at=now+refresh;self._code_expires_at=now+expires
                     self._code_duration=max(1.,refresh);self._refresh_sent_at=0.

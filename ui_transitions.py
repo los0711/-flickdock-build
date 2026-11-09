@@ -144,9 +144,9 @@ class _WindowZoom(QGraphicsEffect):
     """Transform one captured surface without resizing its native window."""
     captured=Signal()
     def __init__(self,parent):
-        super().__init__(parent);self.scale=1.;self.snapshot=QPixmap();self.notify_capture=False;self.setEnabled(False)
+        super().__init__(parent);self.scale=1.;self.opacity=1.;self.snapshot=QPixmap();self.notify_capture=False;self.setEnabled(False)
 
-    def reset(self):self.snapshot=QPixmap();self.scale=1.;self.setEnabled(False)
+    def reset(self):self.snapshot=QPixmap();self.scale=1.;self.opacity=1.;self.setEnabled(False)
 
     def sourceChanged(self,flags):
         self.snapshot=QPixmap();super().sourceChanged(flags)
@@ -156,7 +156,7 @@ class _WindowZoom(QGraphicsEffect):
             self.offset=QPoint()
             self.snapshot=self.sourcePixmap(Qt.LogicalCoordinates,self.offset,QGraphicsEffect.NoPad)
         bounds=self.sourceBoundingRect(Qt.LogicalCoordinates);center=bounds.center()
-        painter.save();painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        painter.save();painter.setRenderHint(QPainter.SmoothPixmapTransform);painter.setOpacity(self.opacity)
         painter.translate(center);painter.scale(self.scale,self.scale);painter.translate(-center)
         painter.drawPixmap(QPointF(self.offset),self.snapshot);painter.restore()
         if self.notify_capture:
@@ -167,7 +167,7 @@ class WindowFade(QObject):
     """Keep native focus, shadow and hit testing; never animate geometry."""
     def __init__(self,window):
         super().__init__(window);self.window=window;self.pending=None;self.completing=False
-        self.scale=1.;self.zoom=None;self._awaiting_capture=False
+        self.scale=1.;self.opacity=1.;self.zoom=None;self._awaiting_capture=False
         self.animation=DisplayAnimation(self);self.animation.setDuration(UTILITY_TRANSITION_MS)
         self.animation.setEasingCurve(exit_curve())
         self.animation.valueChanged.connect(self._frame)
@@ -177,13 +177,15 @@ class WindowFade(QObject):
         return QGuiApplication.platformName() not in ('offscreen','minimal') and motion_allowed()
 
     def _frame(self,value):
-        self.window.setWindowOpacity(value.x());self.scale=value.y()
+        # Blend and scale the same captured surface. Changing native window
+        # alpha on every frame adds a second platform composition/update path.
+        self.opacity=value.x();self.scale=value.y()
         if self.zoom is not None:
-            self.zoom.scale=self.scale;self.zoom.update()
+            self.zoom.scale=self.scale;self.zoom.opacity=self.opacity;self.zoom.update()
 
     def _reset_zoom(self):
         self._awaiting_capture=False
-        self.scale=1.
+        self.scale=1.;self.opacity=1.
         if self.zoom is not None:self.zoom.reset()
 
     def eventFilter(self,watched,event):
@@ -191,7 +193,7 @@ class WindowFade(QObject):
         if event.type()==QEvent.Show and not event.spontaneous() and not self.window.isMinimized():
             self.pending=None;self.animation.stop()
             if self.enabled():
-                self.scale=WINDOW_MIN_SCALE;self.window.setWindowOpacity(WINDOW_OPEN_OPACITY);self._start(1.0)
+                self.scale=WINDOW_MIN_SCALE;self.opacity=WINDOW_OPEN_OPACITY;self._start(1.0)
             else:self._reset_zoom();self.window.setWindowOpacity(1.0)
         elif event.type()==QEvent.Hide:
             self.animation.stop();self.pending=None;self._reset_zoom();self.window.setWindowOpacity(1.0)
@@ -204,8 +206,8 @@ class WindowFade(QObject):
         if self.zoom is None:
             self.zoom=_WindowZoom(self.window);self.window.setGraphicsEffect(self.zoom)
             self.zoom.captured.connect(self._captured,Qt.QueuedConnection)
-        self.zoom.setEnabled(True);self.zoom.scale=self.scale
-        self.animation.setStartValue(QPointF(self.window.windowOpacity(),self.scale))
+        self.zoom.setEnabled(True);self.zoom.scale=self.scale;self.zoom.opacity=self.opacity
+        self.animation.setStartValue(QPointF(self.opacity,self.scale))
         self.animation.setEndValue(QPointF(target,1. if target else WINDOW_MIN_SCALE))
         self._awaiting_capture=target!=0 and self.zoom.snapshot.isNull()
         self.zoom.notify_capture=self._awaiting_capture

@@ -72,7 +72,7 @@ MAINTAINED_TESTS=(
     'test_sync_scheduler.py',
     'test_upload_time_v1826.py',
     'test_lan_account_v1825.py',
-    'test_copy_notice_v1824.py','test_window_zoom_v1824.py',
+    'test_copy_notice_v1824.py','test_window_zoom_v1824.py','test_utility_feedback_v1828.py',
     'test_overview_controls_v1823.py',
     'test_stability_v1822.py','test_resources_v1822.py','test_transfer_entry_v1822.py','test_receive_lifecycle_v1822.py','test_motion_resources_v1822.py',
     'test_display_groups_v1821.py','test_transfer_layout_v1821.py','test_interaction_scope_v1821.py','test_shared_clipboard_files_v1821.py','test_download_ranges_v1821.py','test_remote_handoff_v1821.py',

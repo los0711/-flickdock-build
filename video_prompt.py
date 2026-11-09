@@ -9,6 +9,7 @@ from native_ui_common import colors
 from sync_files import DiskWork
 from video_links import LinkPromptHistory,candidate_link,recognized_video
 from flickdock_icons import app_icon
+from intake_notice import place_bottom_notice
 
 PROMPT_DURATION_MS=5000
 PROMPT_LOGO_SIZE_PX=24
@@ -16,7 +17,10 @@ PROMPT_LOGO_SIZE_PX=24
 
 class VideoLinkPrompt(ReferenceModalDialog):
     def __init__(self,manager):
-        super().__init__(manager.shelf,surface_width=350,modal=False);self.manager=manager;self.url=''
+        # A notification owns its screen position; modal parent centering must
+        # not move it back over the shelf during the native Show event.
+        super().__init__(None,surface_width=350,modal=False);self.manager=manager;self.url=''
+        self.setFont(manager.shelf.font())
         self.setWindowFlags(Qt.Tool|Qt.FramelessWindowHint|Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setWindowTitle('视频链接解析')
@@ -36,7 +40,7 @@ class VideoLinkPrompt(ReferenceModalDialog):
         self.setStyleSheet(f'QLabel{{background:transparent;color:{c["text"]};font-size:12px;}}')
         self.adjustSize();screen=QGuiApplication.screenAt(self.manager.shelf.frameGeometry().center()) or QGuiApplication.primaryScreen()
         if screen:
-            area=screen.availableGeometry();self.move(area.right()-self.width()-14,area.bottom()-self.height()-14)
+            place_bottom_notice(self,screen.availableGeometry())
         self.show();self.timer.start(PROMPT_DURATION_MS)
 
     def _accept(self):

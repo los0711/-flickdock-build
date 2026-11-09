@@ -4,7 +4,7 @@ import sys
 from PySide6.QtCore import QRect,QSize,Qt
 from PySide6.QtGui import QPainter,QColor
 from PySide6.QtWidgets import QCheckBox,QFrame,QGridLayout,QHBoxLayout,QLabel,QLineEdit,QPushButton,QVBoxLayout,QWidget
-from app_settings import ReferenceModalDialog,SettingsCloseButton
+from app_settings import ReferenceModalDialog,SettingsCloseButton,SettingsToggleSwitch
 from native_ui_common import colors
 from reference_widgets import button,refresh_tree,icon
 from image_preview import ImagePreview
@@ -16,6 +16,7 @@ VIDEO_WINDOW_MIN_SIZE=QSize(600,420)
 SOURCE_GRID_BREAKPOINT_PX=580
 SOURCE_CARD_SPACING_PX=10
 MAC_WINDOW_CONTROLS=(('close','#FF5F56','关闭视频解析'),('min','#FFBD2E','最小化'),('max','#27C93F','最大化或还原'))
+PROMPT_SWITCH_WIDTH_PX=260
 
 def plain_label(text,parent,name='videoMeta'):
     label=QLabel(text,parent);label.setObjectName(name);label.setTextFormat(Qt.PlainText)
@@ -190,7 +191,8 @@ class VideoDialog(ReferenceModalDialog):
         self.message=plain_label('',self.body);self.message.setWordWrap(True);self.body_layout.addWidget(self.message)
         self.result_layout=QVBoxLayout();self.result_layout.setSpacing(24);self.body_layout.addLayout(self.result_layout);self.body_layout.addStretch()
         footer=QWidget(self.surface);foot=QVBoxLayout(footer);foot.setContentsMargins(18,10,18,12);foot.setSpacing(9)
-        self.prompt=QCheckBox('复制视频链接时提示解析',footer);self.prompt.toggled.connect(self._prompt_changed);foot.addWidget(self.prompt)
+        self.prompt=SettingsToggleSwitch('复制视频链接时提示解析',footer);self.prompt.setFixedWidth(PROMPT_SWITCH_WIDTH_PX)
+        self.prompt.setAccessibleName('复制视频链接时提示解析');self.prompt.toggled.connect(self._prompt_changed);foot.addWidget(self.prompt,0,Qt.AlignLeft)
         folder_row=QHBoxLayout();self.folder=plain_label('',footer);self.folder.setMinimumWidth(0);folder_row.addWidget(self.folder,1)
         change=button('更改位置',parent=footer);change.clicked.connect(self._choose_folder);folder_row.addWidget(change);self.folder_button=change
         foot.addLayout(folder_row);self.surface.layout().addWidget(footer)
@@ -251,7 +253,8 @@ class VideoDialog(ReferenceModalDialog):
             self._theme=theme;self.set_surface_theme(theme);self.close_button.dark=dark;c=colors(theme)
             self.setStyleSheet(f'QLabel{{color:{c["text"]};background:transparent;font-size:12px;}} QLabel#videoTitle{{font-size:15px;font-weight:600;}} QLabel#videoSourceTitle{{font-size:12px;font-weight:600;}} QLabel#videoMeta{{font-size:11px;color:{c["secondary"]};}} QLabel#videoSuccess{{font-size:11px;color:{c["green"]};}} QFrame#videoSourceCard{{background:{c["card"]};border:0;border-radius:10px;}} QFrame#videoSourceCard:hover{{background:{c["hover"]};}} QLineEdit{{background:{c["control"]};color:{c["text"]};border:0;border-radius:10px;padding:10px 12px;}} QLineEdit:focus{{border:1px solid {c["link"]};}} QProgressBar{{background:{c["control"]};border:0;border-radius:1px;}} QProgressBar::chunk{{background:{c["link"]};border-radius:1px;}}')
             refresh_tree(self)
-            self.setStyleSheet(self.styleSheet()+f'QCheckBox{{font-size:11px;color:{c["secondary"]};spacing:8px;}} QCheckBox::indicator{{width:13px;height:13px;}} QFrame#videoSourceCard[downloadComplete="true"]{{background:{c["selected"]};}}')
+            self.prompt.dark=dark
+            self.setStyleSheet(self.styleSheet()+f'QCheckBox{{font-size:12px;color:{c["text"]};}} QFrame#videoSourceCard[downloadComplete="true"]{{background:{c["selected"]};}}')
         blocked=self.prompt.blockSignals(True);self.prompt.setChecked(self.manager.settings.video_link_prompt);self.prompt.blockSignals(blocked)
         from PySide6.QtGui import QFontMetrics
         folder='保存至 '+self.manager.settings.video_download_dir

@@ -24,6 +24,11 @@ STATUS_GAP_PX=5
 PREVIEW_MAX_CHARS=2048
 
 
+def place_bottom_notice(window,area):
+    """Use the work area so the taskbar/Dock remains clear on every screen."""
+    window.move(area.left()+(area.width()-window.width())//2,area.bottom()-window.height()-NOTICE_MARGIN_PX+1)
+
+
 def copy_status(ok,context):
     if context.get('phase')=='size_limit':return '超过 20 MB 同步上限 · 内容保留在本机'
     if context.get('phase')=='superseded':return '本次同步已由更新的复制接替'
@@ -111,7 +116,7 @@ class ClipboardNotice(QWidget):
         text=copy_status(ok,context);self.status.setAccessibleDescription(text);self.status.setText(text)
 
     def _place(self,area):
-        self.move(area.left()+(area.width()-self.width())//2,area.bottom()-self.height()-NOTICE_MARGIN_PX+1)
+        place_bottom_notice(self,area)
 
     def _deliver_result(self):
         result,self._pending_result=self._pending_result,None
