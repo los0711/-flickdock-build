@@ -44,7 +44,7 @@ RUNTIME_SOURCES=(
     'surface_morph.py','surface_elements.py','ui_theme.py','widget_retirement.py','item_transitions.py','ui_transitions.py','app_version.py',
     'native_ui_common.py','reference_widgets.py','pointer_paste.py','settings_edge_hint.py','cloud_connectivity.py','clipboard_sync.py','clipboard_identity.py','clipboard_preview.py','verify_clipboard.py','transfer_priority.py','upload_lanes.py','runtime_cleanup.py','window_chrome.py','intake_notice.py','display_triggers.py','shelf_intake_limit.py',
     'update_client.py','update_download.py','update_signatures.py','update_dialog.py','update_controller.py','update_notice.py','release_history.py','network_environment.py','network_diagnostics.py','ci_mac_update_runtime.py','ci_utility_windows.py',
-    'platform_startup.py','platform_native.py','mac_updates.py','mac_entry.py','runtime_macos.py','mac_permissions.py','mac_permissions_ui.py',
+    'platform_startup.py','platform_native.py','mac_updates.py','mac_entry.py','runtime_macos.py','mac_permissions.py','mac_permissions_ui.py','mac_clipboard.py',
     'account_store.py','cloud_api.py','cloud_config.py','cloud_events.py','account_service.py','account_panel.py',
     'shelf_sync.py','shared_clipboard_files.py','sync_files.py','sync_adapter.py','verify_cloud.py','shortcut_preview.py',
     'lan_transfer.py','lan_account.py','lan_panel.py','transfer_visuals.py','transfer_workbench.py','owned_files.py','verify_transfers.py',

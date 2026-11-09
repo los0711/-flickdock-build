@@ -354,6 +354,11 @@ class ClipboardSync(QObject):
         self._native_format_issue=''
         if not self._native_accessible():return None
         try:
+            if self._is_native and sys.platform=='darwin' and native_input_available():
+                from mac_clipboard import read_snapshot
+                self._snapshot_available,value=read_snapshot()
+                if not self._snapshot_available:self._native_format_issue='NATIVE_FORMAT_NOT_READY'
+                return value
             mime=self.clipboard.mimeData()
             if mime is None:return None
             self._native_format_issue=''

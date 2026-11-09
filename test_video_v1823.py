@@ -33,6 +33,28 @@ def until(predicate,seconds=15):
 
 
 class VideoTests(unittest.TestCase):
+    def test_actual_worker_extracts_public_url_through_system_proxy_without_local_dns(self):
+        from urllib.parse import urlsplit
+        requests=[];base=self.server.RequestHandlerClass
+        class Proxy(base):
+            def response(self,body=False):
+                requests.append(self.path);self.path=urlsplit(self.path).path
+                return super().response(body)
+        proxy=ThreadingHTTPServer(('127.0.0.1',0),Proxy);proxy.daemon_threads=True
+        thread=threading.Thread(target=proxy.serve_forever,daemon=True);thread.start()
+        endpoint=f'http://127.0.0.1:{proxy.server_port}'
+        environment={name:value for name,value in (('http_proxy',endpoint),('https_proxy',endpoint),
+            ('HTTP_PROXY',endpoint),('HTTPS_PROXY',endpoint),('all_proxy',''),('ALL_PROXY',''),('no_proxy',''),('NO_PROXY',''))}
+        result=[];job=VideoJob(dict(action='extract',url='http://flickdock-fixture.example/page'))
+        try:
+            with patch.dict(os.environ,environment):
+                job.finished.connect(result.append);job.start();until(lambda:bool(result))
+            self.assertFalse(result[0]['error'],result)
+            self.assertTrue(result[0]['result']['entries'][0]['options'])
+            self.assertTrue(requests);self.assertTrue(all(urlsplit(url).hostname=='flickdock-fixture.example' for url in requests))
+        finally:
+            job.cancel();job.deleteLater();proxy.shutdown();proxy.server_close();thread.join(3)
+
     @classmethod
     def setUpClass(cls):
         cls.fixture=tempfile.TemporaryDirectory(prefix='video-fixture-');root=Path(cls.fixture.name)
