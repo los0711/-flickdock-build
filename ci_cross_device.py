@@ -191,7 +191,7 @@ def main():
         value,error=result[0]
         if error:raise RuntimeError('Cloud request failed: '+str(getattr(error,'code','')))
         return value
-    events=None;clipboard=None;shelf=None;wan=None
+    events=None;clipboard=None;shelf=None;wan=None;scheduler=None
     try:
         if args.mode=='bootstrap':
             phase='authentication'
@@ -234,14 +234,14 @@ def main():
                     ShelfManager._wan_offer(manager,offer)
                 else:wan.reject(offer['id'])
             wan.offer_received.connect(accept_manual)
-        events=CloudEvents(account);clip=app.clipboard();clipboard=ClipboardSync(account,events,root/'clipboard',clipboard=clip)
-        adapter=Adapter();shelf=ShelfSync(root/'shelf',account,adapter)
+        from sync_scheduler import SyncScheduler
+        scheduler=SyncScheduler(app,connected=False)
+        events=CloudEvents(account);clip=app.clipboard();clipboard=ClipboardSync(account,events,root/'clipboard',clipboard=clip,scheduler=scheduler)
+        adapter=Adapter();shelf=ShelfSync(root/'shelf',account,adapter,scheduler=scheduler)
         shelf.attach_clipboard(clipboard);clipboard.activity_changed.connect(shelf.set_clipboard_priority)
         from transfer_priority import set_clipboard_priority
         clipboard.activity_changed.connect(set_clipboard_priority)
         events.content_changed.connect(shelf.request_refresh)
-        events.socket.connected.connect(lambda:shelf.set_event_stream_online(True))
-        events.socket.disconnected.connect(lambda:shelf.set_event_stream_online(False))
         account.account_changed.emit(dict(account.account))
         def barrier(stage):
             nonlocal phase
@@ -373,6 +373,7 @@ def main():
         if clipboard is not None:clipboard.close()
         if shelf is not None:shelf.close()
         if events is not None:events.close()
+        if scheduler is not None:scheduler.close()
         if wan is not None:
             wan.close();deadline=time.monotonic()+12
             while wan._shutdown and wan._shutdown.is_alive() and time.monotonic()<deadline:pump(.05)
