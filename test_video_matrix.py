@@ -30,6 +30,20 @@ def entry_fixture():
     return entry
 
 class VideoFormatTests(unittest.TestCase):
+    def test_proxy_resolved_public_domain_is_not_rejected_by_local_synthetic_dns(self):
+        from video_worker import public_request
+        url='https://www.youtube.com/watch?v=LXMlDlqCTR0'
+        for scheme in ('http','https','socks4a','socks5h'):
+            with self.subTest(scheme=scheme),patch('video_worker.socket.getaddrinfo',side_effect=AssertionError('Local DNS must not resolve proxy destinations')):
+                public_request(url,proxies={'https':scheme+'://127.0.0.1:7890'})
+        private=[(2,1,6,'',('198.18.0.9',443))]
+        for proxies in ({},{'https':'socks5://127.0.0.1:7890'},{'https':'http://127.0.0.1:7890','no':'*'}):
+            with self.subTest(proxies=proxies),patch('video_worker.socket.getaddrinfo',return_value=private):
+                with self.assertRaisesRegex(ValueError,'本机或局域网'):public_request(url,proxies=proxies)
+        for host in ('127.0.0.1','192.168.1.1','[::1]','localhost','router.local'):
+            with self.subTest(host=host),self.assertRaises(ValueError):
+                public_request('https://'+host+'/movie',proxies={'https':'http://127.0.0.1:7890'})
+
     def test_every_native_resolution_codec_and_audio_source_is_exposed(self):
         from yt_dlp import YoutubeDL
         formats=[]

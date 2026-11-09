@@ -79,6 +79,28 @@ class Hub:
 
 
 class ClipboardTests(unittest.TestCase):
+    def test_duplicate_delayed_native_notification_resumes_interrupted_cloud_receive(self):
+        receiver=self.clients[1];native_snapshot=receiver._snapshot;api=receiver.api.request
+        held=[];sequence=[0];receiver._sequence=lambda:sequence[0];receiver._last_sequence=0
+        def request(method,path,callback,**options):
+            if method=='GET' and path.endswith('/content') and not held:
+                held.append(lambda:api(method,path,callback,**options));return object()
+            return api(method,path,callback,**options)
+        receiver.api.request=request
+        source=self.base/'delayed-native.bin';source.write_bytes(b'actual received bytes')
+        mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(source))]);self.clips[0].setMimeData(mime)
+        until(lambda:bool(held))
+        def unavailable():receiver._snapshot_available=False;return None
+        sequence[0]=1
+        with patch.object(receiver,'_snapshot',side_effect=unavailable):receiver._schedule_change()
+        receiver.change_debounce.stop()
+        held[0]();flush()
+        # The native owner is readable again and still has the same old data.
+        receiver._changed();until(lambda:self.clips[1].mimeData().hasUrls(),seconds=3)
+        received=Path(self.clips[1].mimeData().urls()[0].toLocalFile())
+        self.assertEqual(received.read_bytes(),source.read_bytes())
+        self.assertEqual(receiver.view['phase'],'synced')
+
     def _replace_first_copy(self,remote_text):
         client=self.clients[0];original=client.api.request;replaced=[]
         def request(method,path,callback,**options):

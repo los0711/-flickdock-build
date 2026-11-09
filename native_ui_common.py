@@ -61,7 +61,7 @@ class DropBorderMotion(QObject):
         length=path.length();cycle=length/max(1,round(length/DROP_DASH_CYCLE_PX))
         pen.setDashPattern([cycle*.52/width,cycle*.48/width])
         pen.setCapStyle(Qt.FlatCap);pen.setJoinStyle(Qt.RoundJoin)
-        if self.active and not reduced_motion():pen.setDashOffset((time.perf_counter()*DROP_DASH_SPEED_PX_PER_SECOND/width)%(cycle/width))
+        if self.active and active and not reduced_motion():pen.setDashOffset((time.perf_counter()*DROP_DASH_SPEED_PX_PER_SECOND/width)%(cycle/width))
         painter.setPen(pen);painter.setBrush(Qt.NoBrush);painter.drawPath(path)
 
 

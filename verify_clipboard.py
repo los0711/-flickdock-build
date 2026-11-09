@@ -84,6 +84,16 @@ def main():
             for _ in range(10):assert received.read_bytes()==original.read_bytes()
             if NATIVE:
                 assert_native_paste('files',str(original))
+                # Receiving is a different native boundary from publishing.
+                # Keep the real OS clipboard as the receiver for this copy.
+                incoming=Path(directory)/'收到的文件 中文 #1.bin';incoming.write_bytes(bytes(range(251))*32768)
+                mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(incoming))]);publish(1,mime)
+                until(lambda:clients[0].view.get('phase')=='synced' and clients[0].view.get('value') is not None
+                      and clients[0].view['value'][0]=='files' and clients[0]._seen==clients[1]._seen)
+                received_native=Path(clients[0].view['value'][1][0])
+                assert received_native.name==incoming.name and received_native.read_bytes()==incoming.read_bytes()
+                assert_native_paste('files',str(received_native))
+                print('PASS actual native receiving file clipboard: non-ASCII name, original bytes, preview, native pasteboard')
                 mime=QMimeData();mime.setText('native return 中文');publish(1,mime)
                 until(lambda:clips[0].mimeData().text()=='native return 中文')
                 for _ in range(10):assert_native_paste('text','native return 中文')
@@ -142,7 +152,7 @@ def assert_native_paste(kind,expected=''):
         elif kind=='image':assert board.dataForType_(NSPasteboardTypePNG) or board.dataForType_(NSPasteboardTypeTIFF)
         else:
             paths=board.readObjectsForClasses_options_([NSURL],{'NSPasteboardURLReadingFileURLsOnlyKey':True})
-            assert paths and str(paths[0].path())==expected
+            assert paths and Path(str(paths[0].path())).resolve()==Path(expected).resolve()
     else:
         import ctypes
         from ctypes import wintypes as w

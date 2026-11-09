@@ -25,7 +25,7 @@ class TransferDropSurface(QWidget):
         self.border_motion=DropBorderMotion(self)
 
     def set_target(self,target):
-        self.active=target;self.border_motion.set_active(self.isVisible())
+        self.active=target;self.border_motion.set_active(target is not None)
 
     def target(self,point):
         if not self.rect().contains(point):return None

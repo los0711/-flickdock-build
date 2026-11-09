@@ -50,7 +50,9 @@ def signature(value):
     if kind=='files':
         versions=[]
         for path in data:
-            canonical=os.path.normcase(os.path.abspath(path))
+            # Cocoa can return /private/var for a file written through /var,
+            # or resolve another filesystem alias when exporting a file URL.
+            canonical=os.path.normcase(os.path.realpath(path))
             try:info=Path(path).stat();versions.append((canonical,info.st_size,info.st_mtime_ns))
             except OSError:versions.append((canonical,None,None))
         return kind,tuple(versions)

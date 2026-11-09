@@ -58,11 +58,20 @@ def worker_stdio():
     for stream in (sys.stdout,sys.stderr):stream.reconfigure(encoding='utf-8',errors='strict',write_through=True)
 
 
-def public_request(url,allow_local=False):
+def public_request(url,allow_local=False,*,proxies=None):
     parts=urlsplit(url)
     if parts.scheme=='data' and len(url)<=MAX_IPC_BYTES:return
     if allow_local and parts.scheme=='http' and parts.hostname=='127.0.0.1':return
     video_url(url)
+    from yt_dlp.utils.networking import select_proxy
+    if proxies is None:
+        proxies=urllib.request.getproxies()
+        if 'http' in proxies and 'https' not in proxies:proxies['https']=proxies['http']
+    proxy=select_proxy(url,proxies)
+    # HTTP CONNECT and remote-DNS SOCKS resolve the destination at the proxy.
+    # A local DNS query may instead return the proxy's synthetic IP, or fail
+    # entirely. Literal private URLs remain rejected by video_url above.
+    if proxy and urlsplit(proxy).scheme.lower() in ('http','https','socks4a','socks5h'):return
     addresses=socket.getaddrinfo(parts.hostname,parts.port or (443 if parts.scheme=='https' else 80),type=socket.SOCK_STREAM)
     if not addresses or any(not ipaddress.ip_address(row[4][0]).is_global for row in addresses):
         raise ValueError('视频链接指向本机或局域网，已停止请求。')
@@ -87,11 +96,13 @@ def downloader(request,progress):
     allow_local=request.get('fixture_http') is True and os.environ.get('QT_QPA_PLATFORM')=='offscreen'
     class Guard(urllib.request.BaseHandler):
         handler_order=50
-        def http_request(self,req):public_request(req.full_url,allow_local);return req
+        def __init__(self,proxies):self.proxies=proxies
+        def http_request(self,req):public_request(req.full_url,allow_local,proxies=self.proxies);return req
         https_request=http_request
     class PublicUrllibRH(UrllibRH):
-        def _create_instance(self,*args,**kwargs):
-            opener=super()._create_instance(*args,**kwargs);opener.add_handler(Guard());return opener
+        def _create_instance(self,proxies,cookiejar,legacy_ssl_support=None):
+            opener=super()._create_instance(proxies,cookiejar,legacy_ssl_support)
+            opener.add_handler(Guard(proxies));return opener
     class PublicDownloader(YoutubeDL):
         def __init__(self,params):
             super().__init__(params)

@@ -231,12 +231,12 @@ class _Signals(QObject):finished=Signal(object,object)
 
 class _Job(QRunnable):
     def __init__(self,action):
-        super().__init__();self.action=action;self.cancelled=threading.Event();self.signals=_Signals()
+        super().__init__();self.action=action;self.error=None;self.cancelled=threading.Event();self.signals=_Signals()
     def run(self):
         result=None
         try:
             if not self.cancelled.is_set():result=self.action(self.cancelled)
-        except (OSError,ValueError,RuntimeError,zipfile.BadZipFile):pass
+        except (OSError,ValueError,RuntimeError,zipfile.BadZipFile) as error:self.error=error
         self.signals.finished.emit(self,result)
 
 
@@ -294,6 +294,7 @@ class ClipboardSync(QObject):
         self._identity=self._session_identity()
         self._pushed_head=None;self._known_cloud_head=None
         self._prepared_receive=None
+        self._native_receive_interrupted=False
         self._snapshot_available=True;self._cloud_progress=None
         self._virtual_capture=None;self._virtual_value=None;self._virtual_retry=None;self._native_format_issue=''
         self._view_revision=0;self.view=dict(value=self._snapshot(),phase='local',id='',revision=0,permission_required=not self._native_access,deliveries={},native_read_pending=not self._snapshot_available)
@@ -456,6 +457,7 @@ class ClipboardSync(QObject):
             point=QCursor.pos();self._copy_point=(point.x(),point.y())
             # Stop an in-flight remote read before the native notification's
             # coalescing delay; the user's newer local copy always wins.
+            self._native_receive_interrupted|=self._fetching or self._prepared_receive is not None
             self._copy_notified_mono=time.monotonic();self._generation+=1;self.change_debounce.start()
 
     def _copy_timestamp(self,intent):
@@ -638,6 +640,7 @@ class ClipboardSync(QObject):
         self._identity=identity;self._ignored=None;self._local_retry=None;self._local_fence=None
         self._pushed_head=None;self._known_cloud_head=None;self._cloud_progress=None
         self._prepared_receive=None
+        self._native_receive_interrupted=False
         self._applied_version=0;self._receiving_version=0
         self._clock_anchor=None;self._local_clock_anchor=(time.monotonic(),round(time.time()*1000));self._observed_clock=0
         # A session switch is not a Copy action. Establish a native baseline so
@@ -671,6 +674,10 @@ class ClipboardSync(QObject):
 
     def _finished(self,job,result):
         callback=self._jobs.pop(job,None)
+        if job.error is not None and not job.cancelled.is_set():
+            from network_diagnostics import record_event
+            record_event(self._clock_path.parent,'cloud','clipboard-work',type(job.error).__name__,
+                         details={'errno':getattr(job.error,'errno',None)})
         if callback and not self.closed and not job.cancelled.is_set():callback(result)
         self._cleanup()
 
@@ -701,10 +708,16 @@ class ClipboardSync(QObject):
             if self._pending is not None and self._pending['id']==self.view['id']:
                 self._pending['generation']=self._generation
             self._set_view(self.view['value'],self.view['phase'],self.view.get('id',''))
+            # The unreadable notification fenced an in-flight receive before
+            # we could tell it was a duplicate. Resume that receive now instead
+            # of leaving it cancelled until the next 30-second poll.
+            if self._native_receive_interrupted and self._pending is None and self._local_retry is None:
+                self._native_receive_interrupted=False;self.refresh()
             return
         if sequence is not None:
             if sequence==self._last_sequence:return
             self._last_sequence=sequence
+        self._native_receive_interrupted=False
         self._current_directory=None;self.retry.stop()
         self._last_local_signature=sig
         self._local_fence=dict(mono=getattr(self,'_copy_notified_mono',time.monotonic()),at=None,floor=self._observed_clock)

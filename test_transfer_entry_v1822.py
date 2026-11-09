@@ -14,6 +14,23 @@ from wan_transfer import WanTransferService
 
 
 class EntryTests(unittest.TestCase):
+    def test_only_hovered_transfer_option_animates_its_border(self):
+        from transfer_entry import TransferDropSurface
+        root=QWidget();root.resize(240,160);surface=TransferDropSurface(root);surface.resize(220,108)
+        root.show();surface.show();flush()
+        try:
+            with patch('native_ui_common.reduced_motion',return_value=False):
+                surface.set_target(None)
+                self.assertFalse(surface.border_motion.frames.isActive())
+                surface.set_target('lan');self.assertTrue(surface.border_motion.frames.isActive())
+                with patch('native_ui_common.time.perf_counter',return_value=0):first=surface.grab().toImage()
+                with patch('native_ui_common.time.perf_counter',return_value=.1):second=surface.grab().toImage()
+                from PySide6.QtCore import QRect
+                self.assertNotEqual(first.copy(QRect(0,0,220,52)),second.copy(QRect(0,0,220,52)))
+                self.assertEqual(first.copy(QRect(0,55,220,52)),second.copy(QRect(0,55,220,52)))
+                surface.set_target(None);self.assertFalse(surface.border_motion.frames.isActive())
+        finally:root.hide();root.deleteLater();flush()
+
     def test_mode_transition_captures_the_painted_old_page_not_an_empty_surface(self):
         with tempfile.TemporaryDirectory() as directory:
             base=Path(directory);lan=FakeLan();wan=WanTransferService(base/'wan',enabled=False)

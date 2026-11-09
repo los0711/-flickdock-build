@@ -1,5 +1,7 @@
 """History format conversions are observations, not new Copy intents."""
 from contextlib import ExitStack
+import tempfile
+from pathlib import Path
 import unittest
 from uuid import uuid4
 from PySide6.QtCore import QBuffer,QIODevice,QMimeData
@@ -12,6 +14,18 @@ from test_clipboard_sync_v1819 import APP,until,flush
 
 
 class HistoryTests(unittest.TestCase):
+    def test_file_url_filesystem_alias_is_the_same_clipboard_content(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);source=root/'original.bin';source.write_bytes(b'original')
+            alias=root/'alias.bin'
+            try:alias.symlink_to(source)
+            except OSError as error:self.skipTest('Filesystem links unavailable: '+str(error.errno))
+            self.assertEqual(signature(('files',[str(source)])),signature(('files',[str(alias)])))
+            other=root/'other.bin';other.write_bytes(source.read_bytes())
+            self.assertNotEqual(signature(('files',[str(source)])),signature(('files',[str(other)])))
+            before=signature(('files',[str(source)]));source.write_bytes(b'changed file')
+            self.assertNotEqual(before,signature(('files',[str(alias)])))
+
     def setUp(self):
         fast_fixture.ClipboardFastTests.setUp(self)
         self.patches=ExitStack();self.sequences=[0,0];self.native_writes=[0,0]
