@@ -32,19 +32,19 @@ class CloudOnlyTests(unittest.TestCase):
             imports={node.module for node in ast.walk(tree) if isinstance(node,ast.ImportFrom)}
             self.assertNotIn('verify_peers',imports)
 
-    def test_manual_worker_uses_the_original_syncthing_and_four_character_code(self):
-        from syncthing_lan import SyncthingLanService
-        self.assertTrue(issubclass(WanTransferService,SyncthingLanService))
-        self.assertFalse((ROOT/'webrtc_stream.py').exists())
-        self.assertFalse((ROOT/'p2p/bridge.mjs').exists())
+    def test_manual_worker_uses_the_original_webrtc_and_four_character_code(self):
+        from lan_transfer import LanTransferService
+        self.assertTrue(issubclass(WanTransferService,LanTransferService))
+        self.assertTrue((ROOT/'webrtc_stream.py').is_file())
+        self.assertTrue((ROOT/'p2p/bridge.mjs').is_file())
         self.assertTrue(RECEIVE_CODE.fullmatch('AB23'))
         for value in ('ABCD','2345','AB234567','AB2','AB2I'):
             self.assertIsNone(RECEIVE_CODE.fullmatch(value))
 
     def test_manual_receive_has_no_custom_webrtc_stream_or_lan_upgrade(self):
         source=(ROOT/'wan_transfer.py').read_text(encoding='utf8')
-        self.assertNotIn('WebRTCStream',source)
-        self.assertIn("self.engine.mode='remote'",source)
+        self.assertIn('WebRTCStream',source)
+        self.assertNotIn('SyncthingEngine',source)
         self.assertFalse(hasattr(WanTransferService,'_adaptive_stream'))
         self.assertFalse(hasattr(WanTransferService,'_load_sync_ice'))
 

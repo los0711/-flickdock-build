@@ -12,7 +12,7 @@
 | `cloud/src/clipboard.ts` | 现有最新一份剪贴板、版本、内容和接收回执接口；协议不变 |
 | `cloud/wrangler.jsonc` | 现有 `EVENTS`/`AccountEvents` SQLite Durable Object 绑定和 exports 配置 |
 
-`syncthing_lan.py`、`wan_transfer.py`、`lan_account.py`、`syncthing_engine.py`、`manual_cloud.py` 与 `cloud/src/wan.ts` 的手动互传协议不改。自动同步不使用局域网/P2P。
+`lan_transfer.py`、`wan_transfer.py`、`lan_account.py`、`webrtc_stream.py` 与 `cloud/src/wan.ts` 的手动互传协议不改。自动同步不使用局域网/P2P。
 
 同账号设备始终以 `EVENTS.idFromName(owner.id)` 连接同一个固定 DO；其他账号使用不同实例。不能让所有用户共享一个未隔离的 `shared-clipboard` 实例。
 

@@ -10,9 +10,6 @@ sys.path.insert(0, str(root))
 from app_version import APP_VERSION
 from p2p_assets import bundle_assets
 p2p_binaries,p2p_datas=bundle_assets()
-from syncthing_assets import bundle_assets as native_assets
-native_binaries,native_datas=native_assets()
-p2p_binaries+=native_binaries;p2p_datas+=native_datas
 from PyInstaller.utils.hooks import collect_all
 yt_datas,yt_binaries,yt_hidden=collect_all('yt_dlp')
 ejs_datas,ejs_binaries,ejs_hidden=collect_all('yt_dlp_ejs')
@@ -22,7 +19,7 @@ assets = [(root / 'assets/ui/qtbase_zh_CN.qm', 'assets/ui')]
 assets += [(root / 'licenses' / name, 'licenses') for name in (
     'HarmonyOS-Sans-LICENSE.txt', 'Python-LICENSE.txt', 'FFmpeg-LICENSE.txt','LGPL-3.0.txt',
     'GPL-3.0.txt', 'PyInstaller-COPYING.txt','OpenSSL-LICENSE.txt','Cloud-Client-LICENSES.txt',
-    'Lucide-LICENSE.txt','Release-Crypto-LICENSES.txt','Video-LICENSES.txt')]
+    'Lucide-LICENSE.txt','Release-Crypto-LICENSES.txt','Video-LICENSES.txt','WebRTC-LICENSES.txt')]
 assets += [(root / 'THIRD_PARTY_NOTICES.md', '.'), (root / 'font_manifest.json', '.')]
 for path, destination in assets:
     if not path.is_file():

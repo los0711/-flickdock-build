@@ -14,7 +14,6 @@ import socket
 import ssl
 import sys
 import tempfile
-from contextlib import ExitStack
 import threading
 import time
 from uuid import uuid4
@@ -25,8 +24,8 @@ def run(argv, load_font):
         raise RuntimeError('Transfer verification requires explicit offscreen')
     from PySide6.QtWidgets import QApplication
     from app_version import APP_VERSION
-    from syncthing_lan import SyncthingLanService
-    from lan_transfer import _crypto_library
+    from lan_transfer import (LanTransferService, _read_json, _send_json,
+                              BLOCK_BYTES, PROTOCOL, _crypto_library)
     app = QApplication.instance() or QApplication([argv[0]])
     app.setQuitOnLastWindowClosed(False); load_font(app)
     output = Path(argv[argv.index('--verify-output') + 1]).resolve()
@@ -58,24 +57,16 @@ def run(argv, load_font):
             if not crypto_path.is_absolute() or not crypto_path.resolve().is_relative_to(bundle_root):
                 raise AssertionError('Frozen LAN runtime used external OpenSSL instead of its bundled library')
             report['libcrypto_from_bundle'] = True
-        with ExitStack() as cleanup:
-            folder=cleanup.enter_context(tempfile.TemporaryDirectory(prefix='flickdock-frozen-lan-'))
+        with tempfile.TemporaryDirectory(prefix='flickdock-frozen-lan-') as folder:
             root = Path(folder); destination = root / 'received'; destination.mkdir()
             source = root / 'original-image.png'
             payload = b'\x89PNG\r\n\x1a\noriginal metadata\0' + bytes(range(256)) * 32768 + b'preserve trailing bytes'
             source.write_bytes(payload); expected = hashlib.sha256(payload).hexdigest()
-            a = SyncthingLanService(root/'sender',device_name='QA sender',bind_host='127.0.0.1',discovery=False)
-            b = SyncthingLanService(root/'receiver',device_name='QA receiver',bind_host='127.0.0.1',discovery=False)
+            a = LanTransferService(device_name='QA sender', bind_host='127.0.0.1', discovery=False)
+            b = LanTransferService(device_name='QA receiver', bind_host='127.0.0.1', discovery=False)
             a.status_changed.connect(lambda message: report['tls_status'].append('sender: ' + str(message)))
             b.status_changed.connect(lambda message: report['tls_status'].append('receiver: ' + str(message)))
             services.extend((a, b)); offers = []; sent = []; received = []; a_states = []; b_states = []
-            def stop_native():
-                for service in services:service.close()
-                for service in services:
-                    if service._shutdown:
-                        service._shutdown.join(12)
-                        if service._shutdown.is_alive():raise RuntimeError('Original transfer kernel did not release its owned profile')
-            cleanup.callback(stop_native)
             a.progress.connect(a_states.append); b.progress.connect(b_states.append)
             a.completed.connect(sent.append); b.completed.connect(received.append); b.offer_received.connect(offers.append)
             report['phase'] = 'starting_tls'
@@ -98,25 +89,33 @@ def run(argv, load_font):
             report.update(original_bytes=len(payload), original_sha256=expected, received_sha256=digest,
                           original_image_metadata_preserved=True, original_filename_preserved=target.name == source.name)
             source.unlink(); report['original_handle_released'] = True
-            report['phase']='cancel_partial'
-            options=b.engine.request('GET','/rest/config/options')
-            options.update(maxRecvKbps=512,limitBandwidthInLan=True)
-            b.engine.request('PUT','/rest/config/options',options)
-            partial=root/'cancel-original.bin';partial.write_bytes(bytes(range(256))*131072)
-            partial_id=a.send(b.device_id,[partial]);wait(lambda:any(row['id']==partial_id for row in offers))
-            b.accept(partial_id,destination)
-            wait(lambda:b._transfers[partial_id].done>0,timeout=45)
-            if b._transfers[partial_id].finished:raise AssertionError('Cancellation fixture completed before cancellation')
-            b.cancel(partial_id);wait(lambda:not b._transfers[partial_id].active,timeout=20)
-            wait(lambda:not any(path.name.startswith('.flickdock-receiving-') for path in destination.iterdir()),timeout=40)
-            if not partial.is_file() or (destination/partial.name).exists():raise AssertionError('Cancellation changed an original or published incomplete content')
-            report['transport']='original Syncthing v2.1.7; authenticated TLS consent'
+            # Exercise the actual frozen TLS server with an interrupted prefix;
+            # then cancel and ensure only the incomplete transfer is removed.
+            report['phase'] = 'cancel_partial'
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            context.check_hostname = False; context.verify_mode = ssl.CERT_NONE
+            raw = socket.create_connection(('127.0.0.1', b.port), timeout=5)
+            try: stream = context.wrap_socket(raw, server_hostname='flickdock-lan')
+            except BaseException: raw.close(); raise
+            streams.append(stream); stream.settimeout(1)
+            partial_id = uuid4().hex; token = secrets.token_hex(32)
+            _send_json(stream, dict(protocol=PROTOCOL, id=partial_id, token=token, sender='QA partial sender',
+                                   entries=[dict(path='incomplete.bin', kind='file', size=BLOCK_BYTES * 4)]))
+            wait(lambda: any(row['id'] == partial_id for row in offers))
+            b.accept(partial_id, destination)
+            ready = _read_json(stream, threading.Event())
+            if ready.get('state') != 'ready': raise AssertionError('Receiver did not accept partial transfer')
+            stream.sendall(b'\x7f' * BLOCK_BYTES)
+            wait(lambda: b._transfers[partial_id].offset == BLOCK_BYTES)
+            b.cancel(partial_id); wait(lambda: not b._transfers[partial_id].active)
+            if any(path.name.startswith('.flickdock-receiving-') for path in destination.iterdir()):
+                raise AssertionError('Cancellation left incomplete files')
             if not target.exists() or hashlib.sha256(target.read_bytes()).hexdigest() != expected:
                 raise AssertionError('Cancelling a transfer changed another completed file')
             report.update(cancel_cleans_partial_file=True, completed_file_preserved=True,
                           progress_reported=any(row['state'] == 'transferring' for row in b_states), phase='complete', ok=True)
     except Exception as error:
-        report.update(ok=False,error=str(error))
+        report['error'] = str(error)
     finally:
         report['startup_diagnostics'] = [service.startup_diagnostic for service in services if service.startup_diagnostic]
         for stream in streams:
@@ -125,7 +124,6 @@ def run(argv, load_font):
         for service in services: service.close()
         for service in services:
             for thread in list(service._threads): thread.join(timeout=1.2)
-            if service._shutdown:service._shutdown.join(8)
         app.processEvents()
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf8')

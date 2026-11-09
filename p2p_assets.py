@@ -1,4 +1,4 @@
-"""Build-only original Node runtime for the video parser's JavaScript engine."""
+"""Build-only native WebRTC assets, pinned npm integrity and official Node SHA."""
 from pathlib import Path
 import hashlib,json,os,platform,shutil,subprocess,sys,tarfile,urllib.request,zipfile
 ROOT=Path(__file__).resolve().parent
@@ -29,15 +29,24 @@ def prepare():
     else:
         with zipfile.ZipFile(archive) as source:
             for member,out in ((prefix+'/node.exe',node),(prefix+'/LICENSE',runtime/'Node-LICENSE.txt')):out.write_bytes(source.read(member))
-    result=subprocess.run([str(node),'--version'],cwd=folder,capture_output=True,text=True,check=True)
-    if result.stdout.strip()!='v'+NODE_VERSION:raise ValueError('Original Node version mismatch')
+    npm=shutil.which('npm.cmd' if sys.platform=='win32' else 'npm')
+    if not npm:raise RuntimeError('npm is required only on the build host')
+    subprocess.run([npm,'ci','--ignore-scripts','--omit=dev','--no-audit','--no-fund'],cwd=folder,check=True)
+    result=subprocess.run([str(node),'--input-type=module','-e',"import rtc from 'node-datachannel'; console.log(JSON.stringify({node:process.versions.node,rtc:rtc.getLibraryVersion()}))"],cwd=folder,capture_output=True,text=True,check=True)
+    probe=json.loads(result.stdout);assert probe['node']==NODE_VERSION and probe['rtc']=='0.24.6',probe
     records=[]
     for path,destination in selected():records.append(dict(path=str(path.relative_to(ROOT)).replace('\\','/'),bytes=path.stat().st_size,sha256=checksum(path)))
-    (folder/'asset-manifest.json').write_text(json.dumps(dict(node=NODE_VERSION,platform=package,files=records),indent=2),encoding='utf8')
-    print(json.dumps(dict(ok=True,node=NODE_VERSION,platform=package,files=len(records))))
+    (folder/'asset-manifest.json').write_text(json.dumps(dict(node=NODE_VERSION,rtc=probe['rtc'],platform=package,files=records),indent=2),encoding='utf8')
+    print(json.dumps(dict(ok=True,node=NODE_VERSION,rtc=probe['rtc'],platform=package,files=len(records))))
 
 def selected():
-    names=['p2p/runtime/'+('node' if sys.platform=='darwin' else 'node.exe'),'p2p/runtime/Node-LICENSE.txt']
+    package,_=target();folder=ROOT/'p2p'
+    names=['p2p/bridge.mjs','p2p/turn_tls.mjs','p2p/package.json','p2p/runtime/'+('node' if sys.platform=='darwin' else 'node.exe'),'p2p/runtime/Node-LICENSE.txt']
+    for module in ('node-datachannel','detect-libc','@node-datachannel/'+package):
+        base=folder/'node_modules'/module
+        if not base.is_dir():raise FileNotFoundError('Missing native WebRTC package '+module)
+        for path in base.rglob('*'):
+            if path.is_file() and (path.suffix in ('.mjs','.cjs','.js','.json','.node') or path.name.upper().startswith(('LICENSE','COPYING'))):names.append(path.relative_to(ROOT).as_posix())
     result=[]
     for name in sorted(set(names)):
         path=ROOT/name
@@ -48,14 +57,12 @@ def selected():
 def bundle_assets():
     manifest=ROOT/'p2p/asset-manifest.json'
     if not manifest.is_file():raise FileNotFoundError('Run p2p_assets.py before building')
-    value=json.loads(manifest.read_bytes());entries=selected()
-    if value.get('node')!=NODE_VERSION or value.get('platform')!=target()[0]:raise ValueError('Node assets do not match the build target')
-    records={row['path']:row for row in value['files']}
-    if set(records)!={path.relative_to(ROOT).as_posix() for path,dest in entries}:raise ValueError('Node asset list differs')
-    data=[];binaries=[]
+    entries=selected();data=[];binaries=[]
+    expected=json.loads(manifest.read_bytes())
+    actual=[dict(path=path.relative_to(ROOT).as_posix(),bytes=path.stat().st_size,sha256=checksum(path)) for path,_ in entries]
+    if expected['node']!=NODE_VERSION or expected['rtc']!='0.24.6' or expected['files']!=actual:
+        raise ValueError('Prepared WebRTC assets changed after verification')
     for path,dest in entries:
-        row=records[path.relative_to(ROOT).as_posix()]
-        if path.stat().st_size!=row['bytes'] or checksum(path)!=row['sha256']:raise ValueError('Node asset checksum mismatch')
         (binaries if path.suffix in ('.exe','.node') or path.name=='node' else data).append((str(path),dest))
     data.append((str(manifest),'p2p'))
     return binaries,data

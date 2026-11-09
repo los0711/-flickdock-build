@@ -161,10 +161,10 @@ def verify_cocoa_interactions(edge, shelf):
     import tempfile
     from app_settings import SettingsStore
     from lan_panel import LanDialog
-    from syncthing_lan import SyncthingLanService
+    from lan_transfer import LanTransferService
     from wan_transfer import WanTransferService
     with tempfile.TemporaryDirectory(prefix='flickdock-cocoa-transfer-') as directory:
-        lan=SyncthingLanService(Path(directory)/'lan',discovery=False)
+        lan=LanTransferService(discovery=False)
         wan=WanTransferService(Path(directory)/'wan',enabled=False)
         dialog=LanDialog(lan,SettingsStore(Path(directory)/'settings'))
         try:

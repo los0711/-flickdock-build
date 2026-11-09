@@ -71,34 +71,6 @@ def fixture(path,size,seed):
     return digest.hexdigest()
 
 
-def kernel_diagnostics(engine,peer):
-    """Record categories and counts, never device certificates, addresses or logs."""
-    import ipaddress
-    from collections import Counter
-    def category(error):
-        text=str(error or '').lower()
-        return [word for word in ('timeout','refused','unreachable','network not allowed','no route','certificate','tls','unexpected device','not found','403','429') if word in text]
-    try:
-        status=engine.request('GET','/rest/system/status');discovery=engine.request('GET','/rest/system/discovery')
-        sources=status.get('discoveryStatus',{});listeners=status.get('connectionServiceStatus',{})
-        counts=Counter()
-        cached=discovery.get(peer,{})
-        for address in cached.get('addresses',[]) if isinstance(cached,dict) else cached:
-            url=urlsplit(address)
-            try:scope='public' if ipaddress.ip_address(url.hostname or '').is_global else 'private'
-            except ValueError:scope='hostname'
-            counts[url.scheme+'_'+scope]+=1
-        configuration=engine.request('GET','/rest/config/devices/'+peer)
-        return dict(discovery_enabled=status.get('discoveryEnabled'),discovery_methods=len(sources),
-            peer_paused=configuration.get('paused'),dynamic_address='dynamic' in configuration.get('addresses',[]),
-            discovery_cache_devices=len(discovery),
-            discovery_errors=[category(value.get('error')) for value in sources.values() if value.get('error')],
-            listeners=[dict(protocol=urlsplit(key).scheme,error=category(value.get('error')),
-                            wan_addresses=len(value.get('wanAddresses',[]))) for key,value in listeners.items()],
-            discovered_peer_addresses=dict(counts),dial_attempts=len(status.get('lastDialStatus',{})),
-            dial_errors=[category(value.get('error')) for value in status.get('lastDialStatus',{}).values()],
-            connected=engine.connections().get(peer,{}).get('connected',False))
-    except Exception as error:return dict(diagnostic_error_type=type(error).__name__)
 
 
 def main():
@@ -141,7 +113,7 @@ def main():
         native_firewall_prepared=os.environ.get('FD_QA_NATIVE_FIREWALL')=='true',
         proxy_pair_mode=os.environ.get('FD_QA_VPN_MODE','none'),
         timing_scope='Per-peer step elapsed includes coordination; HTTP payload timings are recorded separately',
-        manual_scope='Not run: isolated cloud-only verification' if cloud_only else 'Application manual-transfer entry: original Syncthing, same-account R2 fallback, actual save acknowledgement')
+        manual_scope='Not run: isolated cloud-only verification' if cloud_only else 'Application manual-transfer entry: original TLS/WebRTC stream, actual save acknowledgement')
     report_path=root/'report.json'
     sys.excepthook=lambda kind,value,trace:failures.append(dict(phase=phase,callback_error=kind.__name__))
     def until(predicate,seconds=STEP_TIMEOUT_SECONDS):
@@ -340,13 +312,8 @@ def main():
                 until(lambda:not wan._transfers[identity].active,seconds=30)
             except BaseException as failure:
                 error=type(failure).__name__
-                if wan.engine.device_id:
-                    try:diagnostics=kernel_diagnostics(wan.engine,wan._pending.get(identity,{}).get('native',{}).get('device_id',''))
-                    except Exception:diagnostics=dict(available=False)
             routes=[row.get('route') for row in manual_progress if row.get('id')==identity and row.get('route')]
-            if diagnostics is None and 'cloud' in routes and wan.engine.device_id:
-                diagnostics=kernel_diagnostics(wan.engine,wan._pending.get(identity,{}).get('native',{}).get('device_id',''))
-            report['checks'].append(dict(name='manual_application_syncthing_r2',sender=sender,ok=error is None,
+            report['checks'].append(dict(name='manual_application_original_webrtc',sender=sender,ok=error is None,
                 local_role='sender' if side==sender else 'receiver',error_type=error,verified_bytes=received_bytes,
                 receiver_save_ack=side==sender and error is None,route=routes[-1] if routes else None,
                 same_account_auto_accepted=identity in auto_accepted if side!=sender else None,
@@ -376,7 +343,7 @@ def main():
         if scheduler is not None:scheduler.close()
         if wan is not None:
             wan.close();deadline=time.monotonic()+12
-            while wan._shutdown and wan._shutdown.is_alive() and time.monotonic()<deadline:pump(.05)
+            while any(thread.is_alive() for thread in wan._threads) and time.monotonic()<deadline:pump(.05)
         account.close()
 
 

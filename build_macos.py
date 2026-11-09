@@ -217,7 +217,6 @@ def main(arguments=None):
             env=dict(env,HOME=directory,QT_QPA_PLATFORM='cocoa',FLICKDOCK_CI_COCOA_SMOKE='1'))
         cocoa_preflight=json.loads((Path(directory)/'cocoa.json').read_text(encoding='utf8'))
     run([python,ROOT/'p2p_assets.py'],env=env)
-    run([python,ROOT/'syncthing_assets.py'],env=env)
     run([python,ROOT/'video_assets.py'],env=env)
     if options.sign_identity:
         env['FLICKDOCK_CODESIGN_IDENTITY'] = options.sign_identity
@@ -236,8 +235,8 @@ def main(arguments=None):
          'test_pointer_paste_v1819','test_presentation_v1819','test_clipboard_sync_v1819','test_wan_account_v1819','test_update_notice_v1813','test_small_upload_lane','test_feedback_v1820',
          'test_display_groups_v1821','test_transfer_layout_v1821','test_interaction_scope_v1821','test_shared_clipboard_files_v1821','test_download_ranges_v1821','test_remote_handoff_v1821','test_mac_permissions_v1821','test_shelf_live_v1821','test_release_notes_v1821','test_clipboard_fast_v1821','test_clipboard_preview_v1821','test_utility_windows_v1821','test_update_signatures_v1821','-v'], env=env)
     run([python,'test_update_resume_v1821.py','-v'],env=env)
-    # Exercise both original kernels and the actual local R2 service.
-    run([python,'-m','unittest','test_syncthing_lan','test_syncthing_engine','test_manual_payload','test_manual_cloud','test_syncthing_wan','-v'],env=env)
+    # Exercise the original direct TLS and native WebRTC file streams.
+    run([python,'-m','unittest','test_original_transfer','test_wan_transfer_v1816','-v'],env=env)
     run([python,'-m','unittest','test_wan_signaling_v1818','-v'],env=env)
     run([python,'-m','unittest','test_cloud_failover_v1818','-v'],env=env)
     run([python,'-m','unittest','test_stream_upload_v1816','-v'],env=env)
@@ -291,9 +290,9 @@ def main(arguments=None):
             origin=ready.get(timeout=75);wan_path=Path(profile)/'wan-native.json'
             run([binary,'--verify-wan','--verify-output',wan_path],env=dict(env,XDG_CONFIG_HOME=profile,APPDATA=profile,FLICKDOCK_QA_WAN_ORIGIN=origin))
             wan=json.loads(wan_path.read_text(encoding='utf8'))
-            if not wan.get('ok') or not wan.get('frozen') or wan.get('route_source')!='original-syncthing-with-receiver-save-ack':
-                raise RuntimeError('Frozen Mac original Syncthing transfer failed')
-            frozen['wan_transfers']['original_syncthing_loopback']=wan
+            if not wan.get('ok') or not wan.get('frozen') or wan.get('route_source')!='native-selected-candidate-pair':
+                raise RuntimeError('Frozen Mac original WebRTC transfer failed')
+            frozen['wan_transfers']['original_webrtc_loopback']=wan
         finally:
             worker.communicate(b'stop',timeout=20)
     # Run the real Cocoa plugin and construct the shelf on the hosted Mac,

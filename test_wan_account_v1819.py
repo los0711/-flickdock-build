@@ -22,7 +22,7 @@ class Account(QObject):
 
 class AccountTransferTests(unittest.TestCase):
     def offer(self,identifier,total):
-        return dict(peer=dict(id='a'*64,name='Sender',features=['syncthing-v2']),total=str(total),count=1,
+        return dict(peer=dict(id='a'*64,name='Sender',features=[]),total=str(total),count=1,
             names=['file.bin'],digest='b'*64,token='c'*64,account_device=True,account_id='fixture-account')
 
     def test_same_account_small_and_large_offers_wait_for_bind_ack_then_auto_accept_once(self):
@@ -36,7 +36,7 @@ class AccountTransferTests(unittest.TestCase):
             handler=lambda offer: ShelfManager._wan_offer(manager,offer)
             self.wan.offer_received.connect(handler)
             try:
-                identifier=str(index+1)*32;self.wan._transfer_message('request',identifier,None,self.offer(identifier,total))
+                identifier=str(index+1)*32;self.wan._message(json.dumps(dict(schema_version=1,type='request',id=identifier,**self.offer(identifier,total))))
                 self.assertTrue(self.wan._pending[identifier]['awaiting_binding'])
                 manager.show_wan_dialog.assert_not_called();manager.receive_notice.begin.assert_not_called()
                 account.callbacks[-1]({'bound':True},None)
@@ -48,22 +48,19 @@ class AccountTransferTests(unittest.TestCase):
     def test_logout_rejects_a_deferred_same_account_offer_and_late_bind_ack(self):
         account=Account();self.wan.attach_account(account);self.wan.enabled=True;self.wan._connected=True;self.ack()
         offers=[];self.wan.offer_received.connect(offers.append);identifier='9'*32
-        self.wan._transfer_message('request',identifier,None,self.offer(identifier,5*1024**3));callback=account.callbacks[-1]
+        self.wan._message(json.dumps(dict(schema_version=1,type='request',id=identifier,**self.offer(identifier,5*1024**3))));callback=account.callbacks[-1]
         account.signed_in=False;account.account_changed.emit(None);callback({'bound':True},None)
-        self.assertTrue(self.wan._transfers[identifier].cancel.is_set());self.assertFalse(offers)
+        self.assertNotIn(identifier,self.wan._pending);self.assertFalse(offers)
 
-    def test_cancel_preserves_worker_state_until_native_job_releases_its_snapshot(self):
+    def test_cancel_wakes_original_stream_connect_waiter(self):
         from lan_transfer import _Transfer
         import threading
         identifier='d'*32;transfer=_Transfer(identifier,'send','Mac',active=True)
-        self.wan._pending[identifier]=self.wan._state('send',dict(name='Mac'))
-        self.wan._transfers[identifier]=transfer;events=[];self.wan.progress.connect(events.append)
-        self.wan._notify(transfer,'transferring');self.wan.cancel(identifier)
-        self.assertIn(identifier,self.wan._pending)
-        self.wan._notify(transfer,'cancelled')
-        self.assertTrue(transfer.cancel.is_set())
-        self.assertTrue(self.wan._pending[identifier]['wake'].is_set())
-        self.assertEqual([row['state'] for row in events],['transferring','cancelled'])
+        state=dict(role='send',peer=dict(name='Mac'),ready=threading.Event())
+        self.wan._pending[identifier]=state;self.wan._transfers[identifier]=transfer
+        self.wan.cancel(identifier)
+        self.assertTrue(transfer.cancel.is_set());self.assertTrue(state['ready'].is_set())
+        self.assertNotIn(identifier,self.wan._pending)
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.root=Path(self.temp.name)
         self.wan=WanTransferService(self.root/'wan',enabled=False);self.sent=[]

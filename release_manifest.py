@@ -31,7 +31,7 @@ class ReleaseError(ValueError):
 VERSION_RE=re.compile(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z')
 HASH_RE=re.compile(r'[0-9a-f]{64}\Z')
 RUNTIME_SOURCES=(
-    'syncthing_engine.py','syncthing_jobs.py','syncthing_lan.py','manual_payload.py','manual_cloud.py',
+    
     'virtual_clipboard.py',
     'video_assets.py','video_runtime.py','video_cdn.py','video_links.py','video_worker.py','video_formats.py','video_covers.py','video_jobs.py','video_controller.py','video_panel.py','video_prompt.py',
     'flickdock.py','app_settings.py','async_images.py','capture_files.py',
@@ -48,12 +48,12 @@ RUNTIME_SOURCES=(
     'account_store.py','cloud_api.py','cloud_config.py','cloud_events.py','account_service.py','account_panel.py',
     'shelf_sync.py','sync_scheduler.py','shared_clipboard_files.py','sync_files.py','sync_adapter.py','verify_cloud.py','shortcut_preview.py',
     'lan_transfer.py','lan_account.py','lan_panel.py','transfer_visuals.py','transfer_workbench.py','owned_files.py','verify_transfers.py',
-    'wan_transfer.py','verify_wan.py','windows_network.py',
+    'wan_transfer.py','webrtc_stream.py','verify_wan.py','windows_network.py',
     'clipboard_delivery.py',
     
 )
 MAINTAINED_TESTS=(
-    'test_syncthing_lan.py','test_syncthing_wan.py','test_manual_cloud.py',
+    
     'test_cloud_delete_v1825.py','test_cloud_events_v1825.py','test_cloud_stream_v1825.py',
     'test_cloud_only_v1825.py','test_virtual_clipboard.py',
     
@@ -79,7 +79,7 @@ MAINTAINED_TESTS=(
     'test_mac_permissions_v1821.py','test_shelf_live_v1821.py','test_release_notes_v1821.py','test_clipboard_fast_v1821.py','test_clipboard_preview_v1821.py','test_utility_windows_v1821.py','test_update_resume_v1821.py','test_update_signatures_v1821.py',
     'test_small_upload_lane.py','test_feedback_v1820.py',
     'test_pointer_paste_v1819.py','test_presentation_v1819.py','test_clipboard_sync_v1819.py','test_wan_account_v1819.py',
-    'test_feedback_v1818.py','test_wan_signaling_v1818.py','test_cloud_failover_v1818.py','test_windows_network_v1818.py',
+    'test_feedback_v1818.py','test_wan_signaling_v1818.py','test_original_transfer.py','test_wan_transfer_v1816.py','test_cloud_failover_v1818.py','test_windows_network_v1818.py',
     'test_app_settings.py','test_global_hotkeys.py','test_shelf_content.py',
     'test_content_grid.py','test_content_tile_completion.py','test_svg_hidpi.py',
     'test_shake_detector.py','test_drag_probe.py','test_content_resolver.py',
@@ -113,7 +113,7 @@ MAINTAINED_TESTS=(
     'test_remote_transfer_actions_v1812.py',
 )
 SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
-    'ci_cross_device.py','ci_upload_profile.py','ci_vpn.py','syncthing_assets.py','test_syncthing_engine.py','test_manual_payload.py',
+    'ci_cross_device.py','ci_upload_profile.py','ci_vpn.py',
     
     '.github/workflows/native-clipboard.yml',
     'FlickDock.spec','FlickDock.iss','version_info.txt','ChineseSimplified.isl','windows-network.ps1',
@@ -140,7 +140,7 @@ SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'cloud/src/vendor/hash-wasm-sha256-4.12.0.json','cloud/src/vendor/hash-wasm-4.12.0-LICENSE.txt',
     'cloud/test/integration.mjs','cloud/test/shared-file.mjs','cloud/test/hash-state.mjs','cloud/test/upload-cancel.mjs','cloud/test/wan-codes.mjs','cloud/test/wan-connect.mjs','cloud/test/wan-account.mjs','cloud/test/manual-transfer.mjs','cloud/test/peer-sync.mjs','cloud/test/account-names.mjs','cloud/test/qa-server.mjs','cloud/test/clipboard.mjs','cloud/test/clipboard-expiry.mjs','cloud/test/clipboard-delivery.mjs',
     '.github/workflows/macos-build.yml','.github/workflows/native-clipboard.yml','ci_installer_close.py','ci_assets.py','p2p_assets.py',
-    'p2p/node-shasums.json',
+    'p2p/node-shasums.json','p2p/package.json','p2p/package-lock.json','p2p/bridge.mjs','p2p/turn_tls.mjs','p2p/test-turn-tls.mjs','licenses/WebRTC-LICENSES.txt',
     'website/wrangler.jsonc','website/worker.mjs','website/package.json','website/package-lock.json',
     'website/README.md','website/CHINA_DEPLOYMENT.md','website/test/check-site.mjs','website/test/check-gateway.mjs',
     'website/scripts/build-retiehe.mjs',

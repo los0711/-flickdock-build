@@ -1,0 +1,7 @@
+{
+  "name": "flickdock-webrtc-transport",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {"node-datachannel": "0.33.6"}
+}

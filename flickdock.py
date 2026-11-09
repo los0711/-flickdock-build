@@ -76,7 +76,7 @@ from clipboard_sync import ClipboardSync
 from account_panel import AccountPanel
 from shelf_sync import ShelfSync
 from sync_adapter import ShelfAdapter
-from syncthing_lan import SyncthingLanService
+from lan_transfer import LanTransferService
 from lan_panel import LanDialog
 import ui_theme
 from reference_widgets import ToolbarButton
@@ -3322,7 +3322,7 @@ class ShelfManager:
         self._clipboard_intro=None
         self._sync_transfer_refs=set()
         self.sync.transfers_changed.connect(self._transfers_changed)
-        self.lan=SyncthingLanService(BASE/'manual-lan',self.app,device_name=self.account.device_name)
+        self.lan=LanTransferService(self.app,device_name=self.account.device_name)
         self.app.aboutToQuit.connect(self.lan.close)
         self.lan.offer_received.connect(self._lan_offer)
         from wan_transfer import WanTransferService

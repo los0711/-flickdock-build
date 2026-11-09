@@ -35,7 +35,7 @@ class WindowsNetworkTests(unittest.TestCase):
     def test_shipped_rules_cover_native_engine_and_retire_old_transport_without_touching_other_apps(self):
         script=Path(__file__).with_name('windows-network.ps1')
         with tempfile.TemporaryDirectory(prefix='FlickDock network rules ') as directory:
-            root=Path(directory);kernel=root/'_internal/syncthing/runtime/syncthing.exe';kernel.parent.mkdir(parents=True)
+            root=Path(directory);kernel=root/'_internal/p2p/runtime/node.exe';kernel.parent.mkdir(parents=True)
             kernel.touch();(root/'FlickDock.exe').touch()
             command=r'''
 class IsolatedRules : System.Collections.IEnumerable {
@@ -60,7 +60,7 @@ if($LASTEXITCODE -ne 0) { throw 'Initial repair failed' }
 $first=@($isolatedPolicy.Rules | Where-Object Grouping -Like 'FlickDock-*')
 $old=New-Object -ComObject HNetCfg.FWRule
 $old.Name=$first[0].Grouping+'-P2P-UDP-In';$old.Grouping=$first[0].Grouping
-$old.ApplicationName=Join-Path $install '_internal\p2p\runtime\node.exe';$isolatedPolicy.Rules.Add($old)
+$old.ApplicationName=Join-Path $install '_internal\syncthing\runtime\syncthing.exe';$isolatedPolicy.Rules.Add($old)
 & $script -InstallDirectory $install -Quiet
 if($LASTEXITCODE -ne 0) { throw 'Repeated repair failed' }
 $repaired=@($isolatedPolicy.Rules | ForEach-Object { $_ | Select-Object Name,ApplicationName,Protocol,Direction,Action,RemoteAddresses })
@@ -78,7 +78,7 @@ if($LASTEXITCODE -ne 0) { throw 'Removal failed' }
             rules=[r for r in value['repaired'] if r['ApplicationName']==str(kernel)]
             self.assertEqual({(r['Protocol'],r['Direction']) for r in rules},{(6,1),(6,2),(17,1),(17,2)})
             self.assertTrue(all(r['Action']==1 and r['RemoteAddresses']=='*' for r in rules))
-            self.assertFalse(any(r['ApplicationName'].endswith('node.exe') for r in value['repaired']))
+            self.assertFalse(any(r['ApplicationName'].endswith('syncthing.exe') for r in value['repaired']))
             self.assertEqual(value['remaining'],['other-application'])
 
 if __name__=='__main__':unittest.main()

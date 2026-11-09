@@ -211,12 +211,12 @@ jobs:
       - name: Install native Apple pasteboard bindings
         if: runner.os == 'macOS'
         run: python -m pip install 'pyobjc-framework-Quartz>=11,<13'
-      - name: Prepare the verified original Syncthing binary
+      - name: Prepare the original native WebRTC runtime
         if: inputs.cloud_only != true
         shell: pwsh
         run: |
           $env:FLICKDOCK_BUILD_CACHE = Join-Path $env:RUNNER_TEMP 'flickdock-cache'
-          python syncthing_assets.py
+          python p2p_assets.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify finite original-engine jobs on the native operating system
         if: inputs.cloud_only != true
@@ -224,15 +224,15 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: |
           npm ci --prefix cloud --no-audit --no-fund
-          python -m unittest test_syncthing_lan test_syncthing_engine test_manual_payload test_manual_cloud test_syncthing_wan -q
+          python -m unittest test_original_transfer test_wan_transfer_v1816 -q
       - name: Prepare the verified proxy core before enabling the private node
         if: inputs.vpn_mode == 'both' || inputs.vpn_mode == matrix.side
         run: python ci_vpn.py prepare
-      - name: Allow original kernel TCP and QUIC on disposable Windows runner
+      - name: Allow original kernel TCP and UDP on disposable Windows runner
         if: runner.os == 'Windows' && inputs.cloud_only != true
         shell: pwsh
         run: |
-          $binary=(Resolve-Path 'syncthing/runtime/syncthing.exe').Path
+          $binary=(Resolve-Path 'p2p/runtime/node.exe').Path
           $prefix="FlickDock-QA-$env:GITHUB_RUN_ID-$env:FD_QA_PAIR-$env:FD_QA_SIDE"
           foreach($protocol in @('TCP','UDP')) {
             foreach($direction in @('Inbound','Outbound')) {
@@ -262,7 +262,7 @@ jobs:
           path: ${{ runner.temp }}/flickdock-dual-native/public.json
           if-no-files-found: error
           retention-days: 1
-      - name: Verify both directions of native clipboard, shelf and original Syncthing transfers
+      - name: Verify both directions of native clipboard, shelf and original WebRTC transfers
         shell: pwsh
         env:
           FLICKDOCK_QA_SYNC_JSON: ${{ secrets.FLICKDOCK_QA_DUAL_NATIVE }}

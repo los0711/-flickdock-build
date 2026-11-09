@@ -5,8 +5,8 @@ $ErrorActionPreference='Stop'
 try {
     $appRoot=[IO.Path]::GetFullPath($InstallDirectory)
     $appExe=Join-Path $appRoot 'FlickDock.exe'
-    $kernelExe=Join-Path $appRoot '_internal\syncthing\runtime\syncthing.exe'
-    $retiredNodeExe=Join-Path $appRoot '_internal\p2p\runtime\node.exe'
+    $kernelExe=Join-Path $appRoot '_internal\p2p\runtime\node.exe'
+    $retiredNodeExe=Join-Path $appRoot '_internal\syncthing\runtime\syncthing.exe'
     $policy=New-Object -ComObject HNetCfg.FwPolicy2
     $digest=[Security.Cryptography.SHA256]::Create()
     try { $key=([BitConverter]::ToString($digest.ComputeHash([Text.Encoding]::UTF8.GetBytes($appRoot.ToLowerInvariant())))).Replace('-','').Substring(0,16) } finally { $digest.Dispose() }

@@ -1,5 +1,11 @@
 """Bundled release history remains readable after updating or while offline."""
 HISTORY=(
+    ('1.8.28',{'文件互传':(
+        '移除 Syncthing 互传内核，恢复 1.8.17 的局域网 TLS 直传与远程 WebRTC 文件流。',
+        '文件边读取边发送，不再创建 Syncthing 同步目录、整文件快照或等待索引。',
+        '保留四位混合接收码、同账号免确认和现有传输界面；互传两端需要一起更新。',
+        '搁架与剪贴板继续使用 1.8.27 的云端纯推送同步。',
+    )}),
     ('1.8.27',{'云端同步':(
         '搁架与剪贴板共用通知驱动调度器，移除空闲及断线时的定时兜底轮询。',
         '云通知使用 Durable Objects WebSocket Hibernation；断线指数退避重连，连接恢复后立即各核对一次最新版本。',
