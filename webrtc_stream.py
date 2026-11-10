@@ -21,7 +21,8 @@ class WebRTCStream:
         self._traffic={'sent':0,'received':0};self._stats_generation=0;self.last_activity=time.monotonic()
         self._sent_position=0;self._payload_spans=deque();self._payload_delivered=0
         self._delivered_position=0;self._payload_offset=0;self._payload_origin=0
-        threading.Thread(target=self._reader,daemon=True,name='FlickDock-WebRTC-pipe').start()
+        self._reader_thread=threading.Thread(target=self._reader,daemon=True,name='FlickDock-WebRTC-pipe')
+        self._reader_thread.start()
         threading.Thread(target=self._writer,daemon=True,name='FlickDock-WebRTC-writer').start()
 
     @property
@@ -156,6 +157,9 @@ class WebRTCStream:
         if abort and self._process.poll() is None:self._process.terminate()
         try:self._process.wait(timeout=4)
         except subprocess.TimeoutExpired:self._process.kill();self._process.wait(timeout=3)
+        # Process exit only seals the pipe; its final statistics and ACK can
+        # still be buffered. Let the reader consume EOF before closing stdout.
+        if threading.current_thread() is not self._reader_thread:self._reader_thread.join(timeout=1)
         with self._condition:self._closed=True;self._condition.notify_all()
         for stream in (self._process.stdin,self._process.stdout):
             try:stream.close()
