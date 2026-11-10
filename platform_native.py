@@ -75,6 +75,38 @@ def native_input_available(*, platform=None, qt_platform=None):
             or (platform == 'darwin' and str(qt_platform).lower() == 'cocoa'))
 
 
+def copy_activity():
+    """Coarse input identity and clipboard-owner relation, without key contents.
+
+    A remote clipboard writer can advance the pasteboard sequence without any
+    local Copy action. These read-only counters qualify repeat feedback only;
+    they never prevent content synchronization or install an input hook.
+    """
+    if not native_input_available():return None
+    if sys.platform=='win32':
+        from ctypes import wintypes
+        class LastInput(ctypes.Structure):_fields_=[('size',wintypes.UINT),('tick',wintypes.DWORD)]
+        user=ctypes.windll.user32;kernel=ctypes.windll.kernel32
+        user.GetLastInputInfo.argtypes=[ctypes.POINTER(LastInput)];user.GetLastInputInfo.restype=wintypes.BOOL
+        user.GetClipboardOwner.restype=wintypes.HWND;user.GetForegroundWindow.restype=wintypes.HWND
+        user.GetWindowThreadProcessId.argtypes=[wintypes.HWND,ctypes.POINTER(wintypes.DWORD)]
+        user.GetWindowThreadProcessId.restype=wintypes.DWORD;kernel.GetTickCount.restype=wintypes.DWORD
+        value=LastInput();value.size=ctypes.sizeof(value)
+        if not user.GetLastInputInfo(ctypes.byref(value)):raise ctypes.WinError()
+        owner,front=user.GetClipboardOwner(),user.GetForegroundWindow();same=None
+        if owner and front:
+            source,target=wintypes.DWORD(),wintypes.DWORD()
+            if user.GetWindowThreadProcessId(owner,ctypes.byref(source)) and user.GetWindowThreadProcessId(front,ctypes.byref(target)):
+                same=source.value==target.value
+        return value.tick,(kernel.GetTickCount()-value.tick)&0xffffffff,same
+    import Quartz
+    state=Quartz.kCGEventSourceStateCombinedSessionState
+    types=(Quartz.kCGEventKeyDown,Quartz.kCGEventLeftMouseDown,Quartz.kCGEventRightMouseDown)
+    stamp=tuple(int(Quartz.CGEventSourceCounterForEventType(state,kind)) for kind in types)
+    age=min(Quartz.CGEventSourceSecondsSinceLastEventType(state,kind) for kind in types)*1000
+    return stamp,age,None
+
+
 def shelf_window_flags(*, platform=None):
     """Keep the shelf in the ordinary app layer, without a Windows taskbar entry.
 

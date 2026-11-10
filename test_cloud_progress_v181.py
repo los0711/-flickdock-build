@@ -9,7 +9,7 @@ import time
 import unittest
 from unittest.mock import patch
 from PySide6.QtCore import QObject,QThread,Signal
-from PySide6.QtNetwork import QNetworkReply,QNetworkRequest
+from PySide6.QtNetwork import QNetworkReply,QNetworkRequest,QNetworkProxy
 from PySide6.QtWidgets import QApplication
 from cloud_api import CloudApi
 
@@ -48,6 +48,36 @@ class ProgressTests(unittest.TestCase):
 
     def request(self,progress=None):
         return self.api.request('PUT','/v1/uploads/fixture/parts/0',lambda value,error:self.finished.append((value,error)),raw=b'x'*1000,progress=progress or (lambda sent,total:self.progress.append((sent,total))))
+
+    def test_failed_configured_proxy_retries_same_authenticated_origin_directly_once(self):
+        class Failed(Reply):
+            requestSent=Signal()
+            def error(self):return QNetworkReply.NetworkError.ProxyConnectionRefusedError
+            def errorString(self):return 'Fixture proxy refused connection'
+        self.network.reply=Failed();direct=Network();self.api._owns_network=True
+        self.api._direct_networks['normal']=direct;origins=[];self.api.origin_changed.connect(origins.append)
+        routes=[QNetworkProxy(QNetworkProxy.HttpProxy,'127.0.0.1',1),QNetworkProxy(QNetworkProxy.NoProxy)]
+        with patch('cloud_api.proxy_routes',return_value=routes):
+            self.api.request('GET','/v1/health',lambda value,error:self.finished.append((value,error)))
+            self.network.reply.done=True;self.network.reply.finished.emit()
+            self.assertIsNotNone(direct.request);direct.reply.complete();APP.processEvents()
+        self.assertEqual(len(self.finished),1);self.assertIsNone(self.finished[0][1])
+        self.assertEqual(direct.request.url(),self.network.request.url());self.assertEqual(origins,[])
+        self.assertEqual(bytes(direct.request.rawHeader('Authorization')),b'Bearer fixture-session')
+        self.assertTrue(self.api.prefers_direct);self.assertFalse(self.api._fallback_aliases)
+
+    def test_proxy_handoff_never_replays_an_ambiguous_post(self):
+        class Failed(Reply):
+            requestSent=Signal()
+            def error(self):return QNetworkReply.NetworkError.RemoteHostClosedError
+            def errorString(self):return 'Fixture disconnected after HTTP request'
+        self.network.reply=Failed();direct=Network();self.api._owns_network=True
+        self.api._direct_networks['normal']=direct
+        routes=[QNetworkProxy(QNetworkProxy.HttpProxy,'127.0.0.1',1),QNetworkProxy(QNetworkProxy.NoProxy)]
+        with patch('cloud_api.proxy_routes',return_value=routes):
+            self.api.request('POST','/v1/clipboard',lambda value,error:self.finished.append((value,error)),data={'fixture':True})
+            self.network.reply.requestSent.emit();self.network.reply.done=True;self.network.reply.finished.emit();APP.processEvents()
+        self.assertEqual(len(self.finished),1);self.assertIsNotNone(self.finished[0][1]);self.assertIsNone(direct.request)
 
     def test_progress_is_queued_monotonic_bounded_and_throttled_with_final_value(self):
         threads=[]

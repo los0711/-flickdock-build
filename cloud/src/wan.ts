@@ -497,7 +497,13 @@ export class WanHub extends DurableObject<WanEnv>{
       const value=await this.session(request.id,seat),other=value.sender.id===seat.id?value.receiver.id:value.sender.id;
       if(request.type==='accept'){
         if(seat.id!==value.receiver.id)throw new Error('无法接受此请求。');
-        if(value.accepted){await this.replay(socket,value);return;}
+        if(value.accepted){
+          await this.replay(socket,value);
+          // Rejoining receivers may have missed SDP while their socket was
+          // down. Let the initiator restart an unfinished ICE generation.
+          const sender=this.socket(value.sender.id);if(sender)await this.replay(sender,value);
+          return;
+        }
         const accepted=await this.ctx.storage.transaction(async tx=>{
           const latest=await tx.get<Session>('session:'+value.id);if(!latest)throw new Error('传输请求已失效。');
           if(latest.accepted)return latest;
@@ -563,7 +569,9 @@ export class WanHub extends DurableObject<WanEnv>{
       if(request.type==='retry'){
         if(seat.id!==value.sender.id)throw new Error('仅发送方可恢复连接。');
         if(value.done.length===2){await this.publish(value,{type:'settled'});return;}
+        if(request.relayTransport!==undefined&&!['udp','tls'].includes(request.relayTransport))throw new Error('中继传输方式无效。');
         await this.limited('retry:'+value.id,8,60000);
+        if(request.relayTransport){await this.restartRelay(value,request.relayTransport,true);return;}
         value.generation++;value.connected=[];await this.ctx.storage.put('session:'+value.id,value);
         await this.publish(value,{type:'begin',initiator:value.sender.id,iceServers:stun,relayAllowed:this.env.TURN_ENABLED==='true'});return;
       }
@@ -579,17 +587,7 @@ export class WanHub extends DurableObject<WanEnv>{
       if(request.type==='relay'){
         if(seat.id!==value.sender.id||request.generation!==value.generation)throw new Error('连接请求已失效。');
         if(value.done.length===2||value.connected?.length)return;
-        await this.limited('relay:'+value.id,3,60000);
-        const {iceServers,epoch}=await this.turn(value);
-        const current=await this.ctx.storage.transaction(async tx=>{
-          const gate=await tx.get<RelayGate>('relay-gate');
-          if(gate?.blocked||(gate?.epoch||0)!==epoch)return null;
-          const latest=await tx.get<Session>('session:'+value.id);
-          if(!latest||!latest.accepted||latest.generation!==value.generation||latest.expires<Date.now()||latest.done.length===2||latest.connected?.length)return null;
-          latest.generation++;await tx.put('session:'+latest.id,latest);return latest;
-        });
-        if(current)await this.publish(current,{type:'begin',initiator:current.sender.id,iceServers,relayAllowed:false,relayAttempt:true});
-        else await this.revokeSession(value.id,new Set(iceServers.map((row:any)=>row.username)));
+        await this.restartRelay(value,'udp',false);
         return;
       }
       if(request.type==='description'||request.type==='candidate'){
@@ -616,6 +614,19 @@ export class WanHub extends DurableObject<WanEnv>{
       }
       throw new Error('未知的传输请求。');
     }catch(error){this.send(socket,{type:'error',id:check(request?.id,TRANSFER)?request.id:undefined,generation:Number.isSafeInteger(request?.generation)?request.generation:undefined,requestType:typeof request?.type==='string'?request.type:undefined,message:error instanceof Error?error.message:'广域网服务暂不可用。'});}
+  }
+  private async restartRelay(value:Session,transport:'udp'|'tls',recovery:boolean){
+    await this.limited('relay:'+value.id,3,60000);
+    const {iceServers,epoch}=await this.turn(value);
+    const current=await this.ctx.storage.transaction(async tx=>{
+      const gate=await tx.get<RelayGate>('relay-gate');
+      if(gate?.blocked||(gate?.epoch||0)!==epoch)return null;
+      const latest=await tx.get<Session>('session:'+value.id);
+      if(!latest||!latest.accepted||latest.generation!==value.generation||latest.expires<Date.now()||latest.done.length===2||!recovery&&latest.connected?.length)return null;
+      latest.generation++;latest.connected=[];await tx.put('session:'+latest.id,latest);return latest;
+    });
+    if(current)await this.publish(current,{type:'begin',initiator:current.sender.id,iceServers,relayAllowed:false,relayAttempt:true,relayTransport:transport});
+    else await this.revokeSession(value.id,new Set(iceServers.map((row:any)=>row.username)));
   }
   private async turn(value:Pick<Session,'id'|'total'>){
     if(this.env.TURN_ENABLED!=='true'||!this.env.TURN_KEY_ID||!this.env.TURN_KEY_TOKEN)throw new Error('中继当前不可用，仍可使用 P2P 直连。');

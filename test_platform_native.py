@@ -16,6 +16,19 @@ import platform_native as native
 APP = QApplication.instance() or QApplication([])
 
 
+class CopyActivityTests(unittest.TestCase):
+    def test_offscreen_copy_observation_never_queries_os_input(self):
+        self.assertIsNone(native.copy_activity())
+
+    def test_mac_uses_coarse_counters_without_creating_an_input_tap(self):
+        quartz=SimpleNamespace(kCGEventSourceStateCombinedSessionState=0,kCGEventKeyDown=10,
+            kCGEventLeftMouseDown=1,kCGEventRightMouseDown=3,
+            CGEventSourceCounterForEventType=lambda state,kind:kind+100,
+            CGEventSourceSecondsSinceLastEventType=lambda state,kind:kind/10)
+        with patch.object(native,'native_input_available',return_value=True),patch.object(native.sys,'platform','darwin'),patch.dict(sys.modules,Quartz=quartz):
+            self.assertEqual(native.copy_activity(),((110,101,103),100.,None))
+
+
 class Quartz:
     kCGEventSourceStateCombinedSessionState = 0
     kCGWindowListOptionOnScreenOnly, kCGWindowListExcludeDesktopElements = 1, 16

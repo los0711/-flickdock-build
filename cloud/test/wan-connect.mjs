@@ -21,4 +21,21 @@ try{
   let limited=false;for(let i=0;i<31;i++)limited||=(await connect(id)).status===429;
   assert(limited,'Per-device reconnect bursts stay bounded');
   console.log('PASS 45 proven anonymous reconnects inside one hour, shared NAT new identity cap, per-device burst cap');
+  now+=120000;peers.length=0;
+  const sender='a'.repeat(64),receiver='b'.repeat(64),out=[];
+  for(const device of [sender,receiver])peers.push({readyState:1,seat:{id:device,ip,connected:now,window:now,messages:0},
+    deserializeAttachment(){return this.seat;},serializeAttachment(value){this.seat=value;},send(raw){out.push({device,value:JSON.parse(raw)});}});
+  const transfer='c'.repeat(32),session={id:transfer,sender:{id:sender,name:'sender',platform:'macos'},receiver:{id:receiver,name:'receiver',platform:'windows'},
+    token:'d'.repeat(64),digest:'e'.repeat(64),total:'4096',count:1,names:['fixture.bin'],accepted:true,generation:1,expires:now+60000,done:[],connected:[]};
+  await storage.put('session:'+transfer,session);let grants=0;
+  hub.turn=async()=>{grants++;return {iceServers:[{urls:['turn:turn.cloudflare.com:3478?transport=udp']}],epoch:0};};
+  await hub.webSocketMessage(peers[1],JSON.stringify({type:'retry',id:transfer,relayTransport:'tls'}));
+  assert.equal(grants,0,'The receiver cannot spend a relay grant or restart the sender');out.length=0;
+  await hub.webSocketMessage(peers[0],JSON.stringify({type:'relay',id:transfer,generation:1}));
+  assert.equal(grants,1);assert.equal(out.length,2);assert(out.every(row=>row.value.type==='begin'&&row.value.relayTransport==='udp'&&row.value.generation===2));
+  await storage.put('session:'+transfer,{...await storage.get('session:'+transfer),connected:[sender,receiver]});out.length=0;
+  await hub.webSocketMessage(peers[0],JSON.stringify({type:'retry',id:transfer,relayTransport:'tls'}));
+  assert.equal(grants,2);assert.equal(out.length,2);assert(out.every(row=>row.value.type==='begin'&&row.value.relayTransport==='tls'&&row.value.generation===3));
+  assert.deepEqual((await storage.get('session:'+transfer)).connected,[]);
+  console.log('PASS authenticated native UDP relay, coordinated TLS recovery and receiver restart rejection');
 }finally{Date.now=realNow;globalThis.Response=NativeResponse;delete globalThis.WebSocketPair;}

@@ -6,13 +6,12 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
-import platform as platform_module
 from pathlib import Path
 import re
 import sys
 from uuid import uuid4
 
-from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QObject, Qt, QTimer, QUrl, QSysInfo, Signal
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest, QSslSocket,QNetworkProxyFactory,QNetworkProxy
 
 
@@ -52,7 +51,7 @@ def trusted_url(value, allowed_hosts):
 
 
 def update_architecture(machine=None):
-    value = str(machine or platform_module.machine()).lower()
+    value = str(machine or QSysInfo.currentCpuArchitecture()).lower()
     aliases = {'aarch64': 'arm64', 'amd64': 'x86_64', 'x64': 'x86_64'}
     return aliases.get(value, value)
 

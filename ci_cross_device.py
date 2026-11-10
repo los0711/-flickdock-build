@@ -6,11 +6,13 @@ and GitHub tokens remain in a private runner directory and are never reported.
 from __future__ import annotations
 import argparse
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path
 import re
 import sys
+import subprocess
 import threading
 import time
 from types import SimpleNamespace
@@ -26,6 +28,81 @@ BOOTSTRAP_TIMEOUT_SECONDS=480
 STEP_TIMEOUT_SECONDS=150
 POLL_SECONDS=2
 MIB=1024*1024
+
+
+class IceTrace:
+    """Retain failed generations without exporting SDP, addresses or credentials."""
+    def __init__(self):
+        self.tasks={}
+
+    def _row(self,identifier,generation):
+        return self.tasks.setdefault(identifier,{}).setdefault(generation,
+            dict(start=time.monotonic(),events=[],local={},remote={}))
+
+    def _candidate(self,row,direction,candidate):
+        fields=candidate.split()
+        if len(fields)<8 or fields[6]!='typ':return
+        try:address=ipaddress.ip_address(fields[4])
+        except ValueError:return
+        kind=fields[7];protocol=fields[2].lower()
+        if kind not in ('host','srflx','prflx','relay') or protocol not in ('udp','tcp'):return
+        key=(kind,protocol,address.version,'global' if address.is_global else 'local')
+        row[direction].setdefault(key,set()).add((address,int(fields[5])))
+
+    def native(self,value):
+        event=value['event'];kind=event.get('type')
+        if kind not in ('candidate','description','gathering','state','ice_state','remote_description','early_candidate','open','error','closed','ice_diagnostic','stun_selected','transport'):return
+        row=self._row(value['id'],value['generation'])
+        if kind=='candidate':self._candidate(row,'local',event['candidate']);return
+        if len(row['events'])>=64:return
+        item=dict(kind=kind,seconds=round(time.monotonic()-row['start'],3))
+        if kind in ('gathering','state','ice_state'):
+            state=event.get('state')
+            if state in ('new','connecting','connected','completed','disconnected','failed','closed','gathering','complete','checking'):item['state']=state
+        elif kind=='open':
+            item['route']=event['route']
+            item['candidate_types']=[kind for kind in (event.get('localType'),event.get('remoteType')) if kind in ('host','srflx','prflx','relay')]
+        elif kind=='transport':item['relay_transport']=event.get('relayTransport')
+        elif kind=='early_candidate':item['count']=event['count']
+        elif kind=='stun_selected':item['server']='cloudflare' if event['server']=='stun:stun.cloudflare.com:3478' else 'google'
+        elif kind=='ice_diagnostic':item['counts']={key:int(count) for key,count in event['counts'].items() if key in (
+            'peer_requests','binding_responses','check_success','check_failed','role_conflict','credentials_failed','peer_reflexive','send_failed','server_failed')}
+        row['events'].append(item)
+
+    def remote(self,message):
+        value=json.loads(message)
+        if value.get('type')=='candidate':
+            self._candidate(self._row(value['id'],value['generation']),'remote',value['candidate'])
+
+    def snapshot(self,identifier):
+        result=[]
+        for generation,row in sorted(self.tasks.get(identifier,{}).items()):
+            summary=dict(generation=generation,events=list(row['events']))
+            for direction in ('local','remote'):
+                summary[direction]=[dict(kind=key[0],protocol=key[1],ip_version=key[2],scope=key[3],count=len(addresses))
+                    for key,addresses in sorted(row[direction].items())]
+            def addresses(direction,kind,scope):
+                return {address for key,values in row[direction].items() if key[0]==kind and key[3]==scope for address,port in values}
+            summary['shared_public_srflx']=bool(addresses('local','srflx','global') & addresses('remote','srflx','global'))
+            summary['overlapping_private_host']=bool(addresses('local','host','local') & addresses('remote','host','local'))
+            result.append(summary)
+        return result
+
+
+def mac_firewall_audit(kernel):
+    """Read the runner's firewall; never change rules or infer a privacy grant."""
+    command='/usr/libexec/ApplicationFirewall/socketfilterfw'
+    report=dict(local_network_grant='not_queried',launch_scope='command_line_not_installed_app')
+    for key,arguments in (('global_state',['--getglobalstate']),('block_all',['--getblockall']),('kernel_rule',['--getappblocked',str(kernel)])):
+        try:
+            result=subprocess.run([command,*arguments],capture_output=True,text=True,timeout=5)
+            text=(result.stdout+result.stderr).lower()
+            if key=='global_state':
+                match=re.search(r'state\s*=\s*([012])',text);report[key]=int(match[1]) if match else 'unknown'
+            elif key=='block_all':report[key]='disabled' if 'disabled' in text else 'enabled' if 'enabled' in text else 'unknown'
+            else:report[key]='unlisted' if 'not part' in text else 'allowed' if 'not blocked' in text else 'blocked' if 'is blocked' in text else 'unknown'
+        except (OSError,subprocess.TimeoutExpired) as error:report[key]=dict(error_type=type(error).__name__)
+    return report
 
 
 class _SafeRedirect(HTTPRedirectHandler):
@@ -83,6 +160,10 @@ def main():
     if not run.isdigit() or not attempt.isdigit():raise ValueError('Invalid workflow identity')
     other='b' if side=='a' else 'a'
     cloud_only=os.environ.get('FD_QA_CLOUD_ONLY')=='true'
+    manual_route=os.environ.get('FD_QA_MANUAL_ROUTE','direct')
+    if manual_route not in ('direct','relay-udp','relay-tls'):raise ValueError('Invalid manual route')
+    if manual_route!='direct' and os.environ.get('FD_QA_KERNEL_ONLY')!='true':raise ValueError('Relay verification requires kernel-only mode')
+    manual_bytes=(32 if manual_route=='direct' else 8)*MIB
     if cloud_only and os.environ.get('FD_QA_KERNEL_ONLY')=='true':raise ValueError('Select either cloud-only or kernel-only verification')
     parser=argparse.ArgumentParser();parser.add_argument('mode',choices=('bootstrap','run'));parser.add_argument('--root',type=Path,required=True)
     args=parser.parse_args();root=args.root.resolve();root.mkdir(parents=True,exist_ok=True)
@@ -177,15 +258,20 @@ def main():
             public=dict(side=side,pair=pair,platform=platform,run=run,attempt=attempt,account_device_id=account.device_id)
             if not cloud_only:
                 phase='manual_bootstrap';wan=WanTransferService(root/'manual',enabled=False)
-                source=root/'manual-source.bin';fixture(source,32*MIB,f'{run}-{attempt}-{pair}-{side}-manual')
+                source=root/'manual-source.bin';fixture(source,manual_bytes,f'{run}-{attempt}-{pair}-{side}-manual')
                 public.update(wan_id=wan.device_id)
             (root/'public.json').write_text(json.dumps(public),encoding='utf8')
             print(json.dumps(dict(ok=True,side=side,phase='bootstrap',synthetic_fixture=True)),flush=True)
             return 0
         phase='peer_bootstrap';peer=artifact(other,run,attempt,pair);own=json.loads((root/'public.json').read_bytes())
         session=json.loads((root/'session.json').read_bytes());account.api.token=session['token'];account.device_id=session['device_id'];account.account=session['account']
+        ice_trace=IceTrace()
         if not cloud_only:
             phase='manual_prepare';wan=WanTransferService(root/'manual',device_name=account.device_name)
+            wan._qa_force_relay=manual_route!='direct'
+            if platform=='macOS':report['mac_firewall']=mac_firewall_audit(Path(__file__).parent/'p2p/runtime/node')
+            wan._native.connect(ice_trace.native)
+            wan.socket.textMessageReceived.connect(ice_trace.remote)
             assert wan.device_id==own['wan_id'];wan.attach_account(account);wan.start()
         manual_completed=[];manual_progress=[];manual_accepted={};auto_accepted=set();manual_prompts=[]
         if wan:
@@ -193,6 +279,11 @@ def main():
             def accepted_progress(value):
                 if value.get('accepted'):manual_accepted.setdefault(value['id'],time.perf_counter())
             wan.progress.connect(accepted_progress)
+            if manual_route=='relay-tls':
+                def block_udp(value):
+                    state=wan._pending.get(value['id'])
+                    if state and state['role']=='send' and state.get('relay_profile')=='udp':wan._relay_udp_timeout(value['id'],state['generation'])
+                wan.progress.connect(block_udp)
             from flickdock import ShelfManager
             target=root/('delivered-'+other);target.mkdir(exist_ok=True)
             manager=SimpleNamespace(account=account,wan=wan,settings=SimpleNamespace(lan_receive_dir=str(target)),
@@ -217,6 +308,7 @@ def main():
         account.account_changed.emit(dict(account.account))
         def barrier(stage):
             nonlocal phase
+            phase='barrier_'+str(stage)
             call('PATCH','/v1/devices/'+account.device_id,data=dict(name=f'FD2-{run}-{attempt}-{pair}-{side}-{stage}'))
             end=time.monotonic()+STEP_TIMEOUT_SECONDS
             prefix=f'FD2-{run}-{attempt}-{pair}-{other}-'
@@ -294,32 +386,54 @@ def main():
             assert source.is_file(),'Removing a shelf item deleted a local original'
             record('shelf_delete',sender,start,original_preserved=True)
             stage+=1;barrier(stage)
-        for sender in (() if cloud_only else ('a','b')):
+        manual_senders=() if cloud_only else ('a','b')*(3 if kernel_only and manual_route=='direct' else 1)
+        verified_manual=set()
+        for manual_step,sender in enumerate(manual_senders):
             phase='manual_'+sender;started=time.perf_counter();error=None;received_bytes=0;identity=None;diagnostics=None
+            # A faster sender may already have delivered this request while
+            # the receiver was finishing the previous barrier's HTTP read.
+            # Exclude completed steps, not all currently pending native jobs.
+            previous_tasks=set(verified_manual)
             try:
                 if side==sender:identity=wan.send(peer['wan_id'],[root/'manual-source.bin'])
                 direction='send' if side==sender else 'receive'
                 def completed():
-                    bad=next((row for row in manual_progress if row['direction']==direction and row['state']=='error'),None)
+                    bad=next((row for row in manual_progress if row['id'] not in previous_tasks and row['direction']==direction and row['state']=='error'),None)
                     if bad:raise RuntimeError('Manual application transfer failed')
-                    return next((row for row in manual_completed if row['direction']==direction),None)
+                    return next((row for row in manual_completed if row['id'] not in previous_tasks and row['direction']==direction
+                                 and (side!=sender or row['id']==identity)),None)
                 until(lambda:bool(completed()),seconds=240);result=completed();identity=result['id']
                 if side!=sender:
                     received=Path(result['paths'][0]);expected=root/('expected-'+sender+'.bin')
-                    digest=fixture(expected,32*MIB,f'{run}-{attempt}-{pair}-{sender}-manual')
+                    digest=fixture(expected,manual_bytes,f'{run}-{attempt}-{pair}-{sender}-manual')
                     with received.open('rb') as stream:assert hashlib.file_digest(stream,'sha256').hexdigest()==digest
                     received_bytes=received.stat().st_size
                 until(lambda:not wan._transfers[identity].active,seconds=30)
+                assert identity not in verified_manual;verified_manual.add(identity)
             except BaseException as failure:
                 error=type(failure).__name__
             routes=[row.get('route') for row in manual_progress if row.get('id')==identity and row.get('route')]
-            report['checks'].append(dict(name='manual_application_original_webrtc',sender=sender,ok=error is None,
+            generations=ice_trace.snapshot(identity)
+            opened_routes=[event['route'] for generation in generations for event in generation['events'] if event['kind']=='open']
+            selected_route=opened_routes[-1] if opened_routes else None
+            state=wan._pending.get(identity,{})
+            diagnostics={key:state[key] for key in ('local_candidates','remote_candidates','gathering','pc_state','ice_state') if key in state}
+            file_verified=error is None
+            direct_connected=selected_route=='direct'
+            relay_transports=[event['relay_transport'] for generation in generations for event in generation['events'] if event['kind']=='transport']
+            expected_route='direct' if manual_route=='direct' else 'relay'
+            required_transport=manual_route.removeprefix('relay-') if manual_route!='direct' else None
+            transport_verified=required_transport is None or bool(relay_transports) and relay_transports[-1]==required_transport
+            report['checks'].append(dict(name='manual_application_original_webrtc',sender=sender,round=1+manual_step//2,ok=file_verified and selected_route==expected_route and transport_verified,
+                file_verified=file_verified,direct_connected=direct_connected,
+                required_route=manual_route,relay_transport=relay_transports[-1] if relay_transports else None,simulated_udp_block=manual_route=='relay-tls',
                 local_role='sender' if side==sender else 'receiver',error_type=error,verified_bytes=received_bytes,
-                receiver_save_ack=side==sender and error is None,route=routes[-1] if routes else None,
+                receiver_save_ack=side==sender and error is None,route=selected_route,
                 same_account_auto_accepted=identity in auto_accepted if side!=sender else None,
                 manual_confirmation_required=bool(manual_prompts),
                 accepted_seconds=round(manual_accepted[identity]-started,3) if identity in manual_accepted else None,
-                seconds=round(time.perf_counter()-started,3),public_relays=False,diagnostics=diagnostics))
+                seconds=round(time.perf_counter()-started,3),public_relays=False,diagnostics=diagnostics,
+                ice_generations=generations))
             stage+=1;barrier(stage);report_path.write_text(json.dumps(report,indent=2),encoding='utf8')
         phase='cleanup'
         if side=='a' and not kernel_only:
@@ -327,7 +441,7 @@ def main():
             until(lambda:clipboard._seen!=before and clipboard._pending is None and clipboard.view.get('backed_up'))
         stage+=1;barrier(stage)
         call('POST','/v1/auth/logout',data={})
-        report['ok']=all(check['ok'] for check in report['checks']) and len(report['checks'])==(10 if cloud_only else 2 if kernel_only else 12)
+        report['ok']=all(check['ok'] for check in report['checks']) and len(report['checks'])==(0 if kernel_only else 10)+len(manual_senders)
         report['phase']='completed';report_path.write_text(json.dumps(report,indent=2),encoding='utf8')
         print(json.dumps(dict(ok=report['ok'],side=side,checks=len(report['checks']))),flush=True)
         return 0 if report['ok'] else 1

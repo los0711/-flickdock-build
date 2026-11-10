@@ -298,7 +298,7 @@ class _DevicesCombo(QComboBox):
         painter.drawComplexControl(QStyle.CC_ComboBox,option)
         dark=bool(getattr(self.itemDelegate(),'dark',False));colors=ui_colors('dark' if dark else 'light')
         text_rect=QRectF(self.style().subControlRect(QStyle.CC_ComboBox,option,QStyle.SC_ComboBoxEditField,self))
-        text_rect.setRight(min(text_rect.right(),self.width()-52));painter.setFont(self.font())
+        text_rect.setRight(min(text_rect.right(),self.width()-(52 if self.currentData(Qt.UserRole+2) is not None else 30)));painter.setFont(self.font())
         if self.currentData(Qt.UserRole+3):text_rect.adjust(_paint_account_badge(painter,text_rect.left(),text_rect.center().y(),dark),0,0,0)
         painter.setPen(QColor(colors['text'] if self.isEnabled() else colors['muted']))
         painter.drawText(text_rect,Qt.AlignLeft|Qt.AlignVCenter,painter.fontMetrics().elidedText(self.currentText(),Qt.ElideRight,max(1,round(text_rect.width()))))
@@ -354,10 +354,11 @@ class _DeviceDelegate(QStyledItemDelegate):
             ui_icon('close',secondary).paint(painter,QRect(option.rect.right()-27-DEVICE_ACTION_SHIFT_PX,option.rect.center().y()-9,18,18))
         painter.setFont(option.font)
         left=option.rect.left()+49
+        name_y=option.rect.top()+8 if host else option.rect.center().y()-10
         if index.data(Qt.UserRole+3):
-            offset=_paint_account_badge(painter,left,option.rect.top()+18,self.dark);left+=offset;width=max(1,width-offset)
+            offset=_paint_account_badge(painter,left,name_y+10,self.dark);left+=offset;width=max(1,width-offset)
         painter.setPen(QColor(primary))
-        painter.drawText(QRectF(left,option.rect.top()+8,width,20),
+        painter.drawText(QRectF(left,name_y,width,20),
                          Qt.AlignmentFlag.AlignVCenter,
                          painter.fontMetrics().elidedText(name,Qt.TextElideMode.ElideRight,width))
         detail_color=('#61D795' if self.dark else '#187A43') if host=='在线' and online else ('#A1A1AA' if self.dark else '#68686D') if host=='离线' else secondary
@@ -665,6 +666,7 @@ class LanPanel(QFrame):
     """
     received_paths = Signal(list)
     transfer_started = Signal()
+    send_started = Signal(object,dict)
     lan_recommended = Signal(list,str)
 
     def __init__(self, service, parent=None, *, theme='light', settings=None,metadata_cache=None):
@@ -977,6 +979,7 @@ class LanPanel(QFrame):
             if paths:self._rows[identifier]['icon'].set_source(paths[0])
         else:
             self._history_context[identifier] = context
+        self.send_started.emit(self.service,dict(id=identifier,direction='send',names=[Path(path).name for path in paths],paths=list(map(str,paths)),count=len(paths),total=0))
 
     def _save_history(self):
         if not self._history_path: return
@@ -1275,7 +1278,7 @@ class LanPanel(QFrame):
                 index=self.devices.findData(peer['id'])
                 if index<0:self.devices.addItem('',peer['id']);index=self.devices.count()-1
                 self.devices.setItemText(index,name)
-                self.devices.setItemData(index,'点击发送时建立连接',Qt.ItemDataRole.ToolTipRole)
+                self.devices.setItemData(index,'',Qt.ItemDataRole.ToolTipRole)
                 self.devices.setItemData(index,peer.get('platform','unknown'),Qt.ItemDataRole.UserRole+1)
                 self.devices.setItemData(index,None,Qt.ItemDataRole.UserRole+2)
                 self.devices.setItemData(index,bool(peer.get('account_device')),Qt.ItemDataRole.UserRole+3)
@@ -1654,6 +1657,7 @@ class _TransferDropRouter(QObject):
 class LanDialog(QDialog):
     """A dedicated layered transfer window opened from the overview."""
     overview_requested = Signal()
+    send_started = Signal(object,dict)
     mode_selected = Signal(str)
     lan_recommended = Signal(list,str)
     mini_requested = Signal()
@@ -1732,6 +1736,7 @@ class LanDialog(QDialog):
         self.file_metadata=FileMetadataCache(self)
         self.panel = LanPanel(service, self.panel_stack, theme=settings.theme, settings=settings,metadata_cache=self.file_metadata)
         self.panel.lan_recommended.connect(self.lan_recommended)
+        self.panel.send_started.connect(self.send_started)
         self._panels[service]=self.panel;self.panel_stack.addWidget(self.panel)
         if self._wan:self.close_button.setAccessibleName('关闭远程传输窗口')
         content.addWidget(self.panel_stack, 1)
@@ -1792,6 +1797,7 @@ class LanDialog(QDialog):
             if service not in self._panels:
                 panel=LanPanel(service,self.panel_stack,theme=self._theme,settings=self._settings,metadata_cache=self.file_metadata)
                 panel.lan_recommended.connect(self.lan_recommended)
+                panel.send_started.connect(self.send_started)
                 self._panels[service]=panel;self.panel_stack.addWidget(panel)
                 if getattr(service,'mode','lan')=='wan':service.identity_changed.connect(self._update_ready)
                 for widget in (panel,*panel.findChildren(QWidget)):widget.setAcceptDrops(True)

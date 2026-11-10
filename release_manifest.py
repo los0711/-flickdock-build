@@ -55,7 +55,7 @@ RUNTIME_SOURCES=(
     
 )
 MAINTAINED_TESTS=(
-    'test_architecture.py',
+    'test_architecture.py','test_video_tls.py','test_startup_resources.py',
     
     'test_cloud_delete_v1825.py','test_cloud_events_v1825.py','test_cloud_stream_v1825.py',
     'test_cloud_only_v1825.py','test_virtual_clipboard.py',
@@ -143,7 +143,7 @@ SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'cloud/src/vendor/hash-wasm-sha256-4.12.0.json','cloud/src/vendor/hash-wasm-4.12.0-LICENSE.txt',
     'cloud/test/integration.mjs','cloud/test/shared-file.mjs','cloud/test/hash-state.mjs','cloud/test/upload-cancel.mjs','cloud/test/wan-codes.mjs','cloud/test/wan-connect.mjs','cloud/test/wan-account.mjs','cloud/test/manual-transfer.mjs','cloud/test/peer-sync.mjs','cloud/test/account-names.mjs','cloud/test/qa-server.mjs','cloud/test/clipboard.mjs','cloud/test/clipboard-expiry.mjs','cloud/test/clipboard-delivery.mjs',
     '.github/workflows/macos-build.yml','.github/workflows/native-clipboard.yml','ci_installer_close.py','ci_assets.py','p2p_assets.py',
-    'p2p/node-shasums.json','p2p/package.json','p2p/package-lock.json','p2p/bridge.mjs','p2p/turn_tls.mjs','p2p/proxy_tunnel.mjs','p2p/stun_route.mjs','p2p/test-proxy-tunnel.mjs','p2p/test-turn-tls.mjs','licenses/WebRTC-LICENSES.txt',
+    'p2p/node-shasums.json','p2p/package.json','p2p/package-lock.json','p2p/bridge.mjs','p2p/ice_route.mjs','p2p/test-ice-route.mjs','p2p/turn_tls.mjs','p2p/proxy_tunnel.mjs','p2p/stun_route.mjs','p2p/test-proxy-tunnel.mjs','p2p/test-turn-tls.mjs','licenses/WebRTC-LICENSES.txt',
     'website/wrangler.jsonc','website/worker.mjs','website/package.json','website/package-lock.json',
     'website/README.md','website/CHINA_DEPLOYMENT.md','website/test/check-site.mjs','website/test/check-gateway.mjs',
     'website/scripts/build-retiehe.mjs',

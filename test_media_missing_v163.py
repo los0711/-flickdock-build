@@ -15,6 +15,7 @@ from PySide6.QtGui import QImage
 from PySide6.QtMultimedia import QMediaPlayer as NativePlayer, QVideoFrame
 from PySide6.QtWidgets import QApplication
 import media_preview as subject
+import PySide6.QtMultimedia as multimedia
 if '--baseline' in sys.argv:
     import importlib.util
     spec = importlib.util.spec_from_file_location('media_missing_baseline', Path(__file__).parent / 'analysis-audit' / 'media_preview.py')
@@ -81,7 +82,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-missing-media-') as temporary
     directory = Path(temporary)
     # Real UI methods and callbacks; the deterministic backend fails on every
     # attempted native open/play/seek/position call after the path disappears.
-    with patch.object(subject, 'QMediaPlayer', GuardedPlayer), patch.object(subject, 'QAudioOutput', Audio), patch.object(subject, 'QVideoSink', Sink):
+    with patch.object(multimedia, 'QMediaPlayer', GuardedPlayer), patch.object(multimedia, 'QAudioOutput', Audio), patch.object(multimedia, 'QVideoSink', Sink):
         for operation in ('toggle', 'same-source', 'poster', 'start', 'seek', 'loaded'):
             path = directory / (operation + '.mp4');path.write_bytes(b'controlled media')
             viewer = subject.MediaPreview(motion=False);viewer.show();viewer.set_source(path)
@@ -123,7 +124,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-missing-media-') as temporary
             except PermissionError:return False
         wait_until(remove, 3)
         assert not source.exists()
-        with patch.object(subject, 'QMediaPlayer', side_effect=AssertionError('Missing source reopened backend')):
+        with patch.object(multimedia, 'QMediaPlayer', side_effect=AssertionError('Missing source reopened backend')):
             started = time.perf_counter()
             viewer.toggle_playback();viewer.hide();viewer.show();viewer.set_source(source)
             assert time.perf_counter() - started < .2

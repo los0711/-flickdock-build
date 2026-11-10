@@ -11,6 +11,32 @@ class DeleteBesidePayloadTests(unittest.TestCase):
     project=fixture.TransferTests.project
     close_shelf=staticmethod(fixture.TransferTests.close_shelf)
 
+    def test_delete_all_reply_cannot_republish_cached_heads_before_the_change_feed(self):
+        import copy
+        service,adapter,sender=self.replica('source',initial=True)
+        fixture.until(lambda:not sender.running and bool(self.server.account('account-A')['items']))
+        identity=next(e['id'] for e in sender.state['entries'].values() if e['ref']==str(self.source))
+        old=copy.deepcopy(self.server.account('account-A')['items'][identity]['record'])
+        sender._observe_remote_changes([{'record':old}])
+        manager,shelf,_=self.project(adapter,sender,native_shelf=True)
+        shelf.files['permanent']=list(adapter.view['permanent'])
+        def save():
+            adapter.view['permanent']=list(shelf.files['permanent']);sender.local_changed()
+        manager.save=save;snapshots=[]
+        sender.transfers_changed.connect(lambda rows:snapshots.append([row['id'] for row in rows]))
+        shelf.remove_all('permanent')
+        fixture.until(lambda:identity not in sender.state['entries'],timeout=2)
+        self.assertTrue(snapshots);self.assertTrue(all(identity not in rows for rows in snapshots))
+        self.assertEqual(shelf.display_refs(),[])
+        deleted=self.server.account('account-A')['items'][identity]['record']
+        self.assertGreaterEqual(sender.state['ignored_versions'][identity],deleted['version'])
+        sender._remote_heads.clear();sender._observe_remote_changes([{'record':old}])
+        sender.remote_transfers=[dict(item_id=identity,upload_id='old-upload',device_id='another-device',name=old['name'],kind=old['kind'],size=old['size'])]
+        sender._notify_transfers();self.assertNotIn(identity,snapshots[-1])
+        completed=[];sender._receive(old,lambda:completed.append(True))
+        self.assertTrue(completed);self.assertEqual(adapter.view['permanent'],[])
+        self.assertEqual(self.source.read_bytes(),self.payload)
+
     def test_real_remove_action_sends_tombstone_without_cancelling_other_upload(self):
         service,adapter,sender=self.replica('source',initial=True)
         other,received,receiver=self.replica('receiver')

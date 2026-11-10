@@ -182,12 +182,11 @@ class ShelfManager:
         self._intake_sync_timer=QTimer(self.app)
         self._intake_sync_timer.setSingleShot(True)
         self._intake_sync_timer.timeout.connect(self._flush_intake_sync)
-        self.clipboard_sync.copy_result.connect(self._clipboard_copy_result)
-        self.clipboard_sync.view_changed.connect(self._clipboard_notice_state)
-        self.clipboard_sync.copy_started.connect(self._clipboard_copy_started)
+        self.clipboard_sync.copy_repeated.connect(self._clipboard_copy_repeated)
         self.clipboard_sync.native_access_changed.connect(self._refresh_paste_permission)
         from clipboard_preview import ClipboardPresenter
         self.clipboard_presenter=ClipboardPresenter(self.clipboard_sync,self.app)
+        self.clipboard_presenter.changed.connect(lambda:self._clipboard_notice_state(self.clipboard_presenter.state))
         self.clipboard_preview_dialog=None
         for zone in self.shelf.zones.values():zone.clipboard_button.refresh()
         self._clipboard_intro=None
@@ -205,9 +204,9 @@ class ShelfManager:
         self.video_controller=VideoController(self);self.video_watcher=VideoLinkWatcher(self)
         self.clipboard_sync.activity_changed.connect(self.video_controller.set_priority)
         self.wan.offer_received.connect(self._wan_offer)
-        from receive_notice import SameAccountReceiveNotice
-        self.receive_notice=SameAccountReceiveNotice(self,self.wan)
-        self.lan_receive_notice=SameAccountReceiveNotice(self,self.lan)
+        from receive_notice import FileTransferNotices
+        self.receive_notice=FileTransferNotices(self,self.wan)
+        self.lan_receive_notice=FileTransferNotices(self,self.lan)
         self.account.account_changed.connect(self._lan_identity)
         self.account.devices_changed.connect(self._lan_devices)
         self.manual.start()
@@ -279,17 +278,6 @@ class ShelfManager:
         return (self.settings.clipboard_sync_enabled and self.settings.clipboard_notice_seen
                 and not self.cocoa_smoke and self.app.platformName() not in ('offscreen','minimal'))
 
-    def _clipboard_copy_started(self):
-        if hasattr(self,'clipboard_notice'):self.clipboard_notice.supersede()
-
-    def _clipboard_copy_result(self,ok,context):
-        if self._quitting or not self._clipboard_runtime_enabled():return
-        if not self.settings.clipboard_success_notice:return
-        if not hasattr(self,'clipboard_notice'):
-            from intake_notice import ClipboardNotice
-            self.clipboard_notice=ClipboardNotice(self)
-        self.clipboard_notice.schedule_result(ok,context)
-
     def _clipboard_notice_state(self,state):
         if self._quitting:return
         if not self.settings.clipboard_success_notice or not self._clipboard_runtime_enabled():
@@ -299,7 +287,14 @@ class ShelfManager:
             if not state.get('local_copy') or state.get('phase')!='uploading':return
             from intake_notice import ClipboardNotice
             self.clipboard_notice=ClipboardNotice(self)
-        self.clipboard_notice.update_delivery(state)
+        self.clipboard_notice.update_delivery(state,authoritative=True)
+
+    def _clipboard_copy_repeated(self,state):
+        if self._quitting or not self._clipboard_runtime_enabled() or not self.settings.clipboard_success_notice:return
+        if not hasattr(self,'clipboard_notice'):
+            from intake_notice import ClipboardNotice
+            self.clipboard_notice=ClipboardNotice(self)
+        self.clipboard_notice.replay(state)
 
     def show_clipboard_preview(self):
         if self._quitting:return
@@ -414,7 +409,6 @@ class ShelfManager:
         snapshot={row['account_device_id']:dict(route='cloud' if row.get('online') else 'disconnected')
                   for row in peers if row.get('account_device') is True and row.get('account_device_id')}
         self.clipboard_sync.deliveries.set_connections(snapshot)
-        if getattr(self,'account_panel',None) is not None:self.account_panel.set_device_connections(snapshot)
 
     def _sync_status_changed(self,text):
         self._sync_status = text
@@ -470,6 +464,10 @@ class ShelfManager:
                 self.wan.reject(offer['id']);self.wan.status_changed.emit('同账号文件未能接收：'+str(error))
             return
         self.show_wan_dialog();self.wan_dialog.panel.show_offer(offer)
+
+    def _manual_send_notice(self,service,details):
+        notice=self.receive_notice if service is self.wan else self.lan_receive_notice
+        notice.begin(details)
 
     def _lan_selected(self):
         refs=self.shelf.popup.chosen_refs() if self.shelf.popup else []
@@ -639,6 +637,7 @@ class ShelfManager:
             # One independent native window; both modes retain their own panel
             # state without exposing the desktop between close/show operations.
             dialog=LanDialog(service,self.settings)
+            dialog.send_started.connect(self._manual_send_notice)
             dialog.overview_requested.connect(lambda:self.show_overview_from_transfer(dialog))
             dialog.mode_selected.connect(lambda mode:self.show_wan_dialog() if mode=='wan' else self.show_lan_dialog())
             dialog.lan_recommended.connect(self._use_recommended_lan)
@@ -1139,6 +1138,9 @@ class ShelfManager:
 
 
 def main():
+    if '--verify-notices' in sys.argv:
+        from offscreen_verify import run_notices
+        return run_notices(sys.argv,load_font)
     if '--video-worker' in sys.argv:
         from video_worker import run
         return run()

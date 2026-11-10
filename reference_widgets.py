@@ -35,6 +35,19 @@ PROFILE_TEXT_RISE_PX = 1
 
 class OverviewEmptyDropZone(_DropZone):
     """Use the same unscaled rounded dash path as the transfer drop target."""
+    def __init__(self,parent=None):
+        super().__init__(parent);self._transfer_choice_active=False
+
+    def set_transfer_choice_active(self,active):
+        self._transfer_choice_active=bool(active)
+        if active:self._hovered=False;self.set_drag_active(False)
+
+    def set_drag_active(self,active):
+        super().set_drag_active(bool(active) and not self._transfer_choice_active)
+
+    def enterEvent(self,event):
+        if not self._transfer_choice_active:super().enterEvent(event)
+
     def paintEvent(self, event):
         self.illustration.dark=ui_theme.current_theme()=='dark'
         super().paintEvent(event)

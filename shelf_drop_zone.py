@@ -18,7 +18,7 @@ class DropZone(QFrame):
         super().__init__(shelf.card)
         from reference_widgets import MiniStack,label,css
         self.shelf,self.mode=shelf,mode;self.origin=QPoint();self.did_drag=False;self.drop_highlight=False
-        self._click_armed=False;self._pointer_hovered=False
+        self._click_armed=False;self._pointer_hovered=False;self._transfer_choice_active=False
         self.setObjectName('dropZone');self.setAcceptDrops(True);self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor);self.setFixedSize(330,268);self.setFocusPolicy(Qt.StrongFocus)
         self.setAccessibleName('搁架，拖入内容或打开总览')
@@ -43,6 +43,17 @@ class DropZone(QFrame):
         from reference_widgets import css
         css(self.caption,"color:#F5F5F7;font:600 12px 'HarmonyOS Sans SC';background:rgba(255,255,255,28);border:0;border-radius:8px;padding-right:12px;",
             "color:#1D1D1F;font:600 12px 'HarmonyOS Sans SC';background:rgba(0,0,0,15);border:0;border-radius:8px;padding-right:12px;")
+
+    def _set_card_hover(self,active):
+        self.icon.set_hover(bool(active) and not self._transfer_choice_active)
+
+    def set_transfer_choice_active(self,active):
+        self._transfer_choice_active=bool(active)
+        if active:
+            self.drop_highlight=False;self._pointer_hovered=False
+            self.feedback.animate({'hover':0.},response=.14,damping=1.)
+            self._set_card_hover(False);self._apply_style()
+        else:self._reconcile_card_hover()
 
     def _apply_style(self):
         from reference_widgets import css
@@ -83,8 +94,8 @@ class DropZone(QFrame):
             self._pill_timer.stop()
             self._style_caption(False)
             self.shelf.active_mode = self.mode
-            self.drop_highlight = True
-            self.icon.set_hover(True)
+            self.drop_highlight = not self._transfer_choice_active
+            self._set_card_hover(True)
             self._apply_style()
             self.shelf.touch()
             event.setDropAction(Qt.DropAction.CopyAction)
@@ -102,12 +113,12 @@ class DropZone(QFrame):
 
     def dragLeaveEvent(self, event):
         self.drop_highlight = False
-        self.icon.set_hover(False)
+        self._set_card_hover(False)
         self._apply_style()
 
     def dropEvent(self, event):
         self.drop_highlight = False
-        self.icon.set_hover(False)
+        self._set_card_hover(False)
         if self.shelf.accepts_content_drop(event) and self.shelf.receive_mime(self.mode, event.mimeData()):
             event.setDropAction(Qt.DropAction.CopyAction)
             event.accept()
@@ -119,7 +130,7 @@ class DropZone(QFrame):
         self.shelf.touch()
         self._pointer_hovered=True;self._apply_style()
         self.feedback.animate({"hover": 1.0}, response=.14, damping=1.0)
-        self.icon.set_hover(self.drop_highlight or self.icon.geometry().contains(event.position().toPoint()))
+        self._set_card_hover(self.drop_highlight or self.icon.geometry().contains(event.position().toPoint()))
         super().enterEvent(event)
 
     def leaveEvent(self, event):
@@ -128,7 +139,7 @@ class DropZone(QFrame):
         self._pill_timer.stop()
         self._style_caption(False)
         self.feedback.animate({"hover": 0.0}, response=.14, damping=1.0)
-        self.icon.set_hover(False)
+        self._set_card_hover(False)
         super().leaveEvent(event)
 
     def showEvent(self,event):
@@ -140,11 +151,11 @@ class DropZone(QFrame):
     def _reconcile_card_hover(self):
         if not self.isVisible():return
         cursor=QCursor.pos();point=self.mapFromGlobal(cursor);hit=QApplication.widgetAt(cursor)
-        inside=self.rect().contains(point) and (hit is None or hit.window() is self.window())
+        inside=not self._transfer_choice_active and self.rect().contains(point) and (hit is None or hit.window() is self.window())
         if inside!=self._pointer_hovered:
             self._pointer_hovered=inside;self._apply_style()
             self.feedback.animate({'hover':float(inside)},response=.14,damping=1.0)
-        self.icon.set_hover(self.drop_highlight or inside and self.icon.geometry().contains(point))
+        self._set_card_hover(self.drop_highlight or inside and self.icon.geometry().contains(point))
 
     def hideEvent(self, event):
         self._click_armed=False;self._pointer_hovered=False;self._apply_style()
@@ -168,7 +179,7 @@ class DropZone(QFrame):
     def mouseMoveEvent(self, event):
         self.shelf.touch()
         self._track_pill_hover(event.position().toPoint(), event.buttons())
-        self.icon.set_hover(self.drop_highlight or self.icon.geometry().contains(event.position().toPoint()))
+        self._set_card_hover(self.drop_highlight or self.icon.geometry().contains(event.position().toPoint()))
         if not self.shelf.intake_blocks_overview() and self._click_armed and event.buttons() & Qt.MouseButton.LeftButton and self.paths and not self.did_drag and (event.position().toPoint() - self.origin).manhattanLength() > 8:
             self.did_drag = True
             self.icon.set_pressed(False)

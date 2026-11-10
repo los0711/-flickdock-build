@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from xml.sax.saxutils import escape
+from html import escape
 
 from PySide6.QtCore import QByteArray, QFileInfo, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QGuiApplication, QIcon, QIconEngine, QImage, QPainter, QPainterPath, QPixmap
@@ -236,7 +236,7 @@ def document_svg(value: str = '', stack: int = 1) -> str:
     symbol = _CATEGORY_SYMBOLS[category].format(c='#ffffff')
     body += f'<g transform="translate(0,-11)" opacity=".3" fill="none" stroke="#ffffff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">{symbol}</g>'
     from native_ui_common import reference_font
-    family=escape(reference_font().family(),{'"':'&quot;',"'":'&apos;'})
+    family=escape(reference_font().family(),quote=True)
     body += f'<text x="34.5" y="44" text-anchor="middle" font-family="{family},Arial,sans-serif" font-size="{12 if len(label)>3 else 14}" font-weight="600" fill="#ffffff">{escape(label)}</text>'
     return _svg(body,'0 0 64 64')
 

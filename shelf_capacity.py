@@ -9,9 +9,10 @@ from PySide6.QtGui import QColor, QPainter, QPen,QCursor,QGuiApplication
 from PySide6.QtWidgets import QAbstractButton, QHBoxLayout, QLabel, QPushButton,QFrame,QVBoxLayout
 from app_settings import ReferenceModalDialog
 import ui_theme
-from native_ui_common import colors
+from native_ui_common import colors, rounded_popup, keyboard_focus_visible
 
 CLOUD_SHELF_BYTES = 1024**3
+RESET_NOTICE = '云端副本每日 00:00 自动清空，本地搁架和原文件不受影响。'
 
 
 def intake_bytes(paths, texts, cancel):
@@ -66,6 +67,7 @@ class ShelfCapacityButton(QAbstractButton):
         self._sync=None;self._reset_requested=None;self._deadline=None;self._reading=False
         self.popover=QFrame(self,Qt.ToolTip|Qt.FramelessWindowHint)
         self.popover.setAttribute(Qt.WA_ShowWithoutActivating)
+        rounded_popup(self.popover,10)
         self.popover.setFixedWidth(270)
         box=QVBoxLayout(self.popover);box.setContentsMargins(16,12,16,12);box.setSpacing(8)
         title=QLabel('云端搁架容量',self.popover);box.addWidget(title)
@@ -74,7 +76,7 @@ class ShelfCapacityButton(QAbstractButton):
             row=QHBoxLayout();row.addWidget(QLabel(name,self.popover));value=QLabel(self.popover)
             value.setAlignment(Qt.AlignRight|Qt.AlignVCenter);row.addWidget(value,1);box.addLayout(row);self.values[key]=value
         self.countdown=QLabel(self.popover);self.countdown.setObjectName('capacityCountdown');box.addWidget(self.countdown)
-        self.rule=QLabel('北京时间每日 00:00 · 本地文件保留',self.popover);box.addWidget(self.rule)
+        self.rule=QLabel(RESET_NOTICE,self.popover);self.rule.setWordWrap(True);box.addWidget(self.rule)
         self.clock=QTimer(self);self.clock.setInterval(1000);self.clock.timeout.connect(self._tick)
         self.hide_delay=QTimer(self);self.hide_delay.setSingleShot(True);self.hide_delay.timeout.connect(self._hide_outside)
         self.setFixedSize(28,32)
@@ -88,9 +90,9 @@ class ShelfCapacityButton(QAbstractButton):
         if value is None:self._reading=False
         self.storage = storage_value(value) if value is not None else None
         self._deadline=(time.monotonic()+max(0,(datetime.fromisoformat(self.storage['reset_at'].replace('Z','+00:00'))-datetime.fromisoformat(self.storage['server_time'].replace('Z','+00:00'))).total_seconds())) if self.storage else None
-        text = ('云端搁架容量尚未读取\n总容量：1 GB\n北京时间每日 0 点重置，本地搁架不自动删除'
+        text = ('云端搁架容量尚未读取\n总容量：1 GB\n'+RESET_NOTICE
                 if self.storage is None else
-                f"云端搁架\n已使用：{byte_label(self.storage['used_bytes'])}\n剩余容量：{byte_label(self.storage['remaining_bytes'])}\n总容量：1 GB\n北京时间每日 0 点重置，本地搁架不自动删除")
+                f"云端搁架\n已使用：{byte_label(self.storage['used_bytes'])}\n剩余容量：{byte_label(self.storage['remaining_bytes'])}\n总容量：1 GB\n{RESET_NOTICE}")
         self.setAccessibleName(text);self._tick();self.update()
 
     def bind_sync(self,sync):
@@ -110,7 +112,7 @@ class ShelfCapacityButton(QAbstractButton):
         self.values['remaining'].setText(byte_label(self.storage['remaining_bytes']) if self.storage else '尚未读取')
         self.values['total'].setText('1 GB')
         seconds=max(0,int(self._deadline-time.monotonic())) if self._deadline is not None else None
-        self.countdown.setText('距离云端重置  '+(f'{seconds//3600:02}:{seconds//60%60:02}:{seconds%60:02}' if seconds is not None else '--:--:--'))
+        self.countdown.setText('距离云端副本清空  '+(f'{seconds//3600:02}:{seconds//60%60:02}:{seconds%60:02}' if seconds is not None else '--:--:--'))
         if seconds==0 and self.popover.isVisible() and self._reset_requested!=self.storage['reset_at']:
             self._reset_requested=self.storage['reset_at'];self.reset_due.emit()
 
@@ -136,13 +138,13 @@ class ShelfCapacityButton(QAbstractButton):
 
     def paintEvent(self,event):
         p=QPainter(self);p.setRenderHint(QPainter.Antialiasing)
-        if self.underMouse() or self.hasFocus():
-            p.setPen(Qt.NoPen);p.setBrush(QColor('#26384C' if ui_theme.current_theme()=='dark' else '#E2EDFC'))
-            p.drawRoundedRect(QRectF(self.rect()),8,8)
+        if keyboard_focus_visible(self):
+            p.setBrush(Qt.NoBrush);p.setPen(QPen(QColor('#0A84FF'),1))
+            p.drawRoundedRect(QRectF(self.rect()).adjusted(1,1,-1,-1),8,8)
         arc=QRectF(5,7,18,18)
         p.setBrush(Qt.NoBrush);p.setPen(QPen(QColor('#3A4657' if ui_theme.current_theme()=='dark' else '#D4DFEE'),2.5))
         p.drawEllipse(arc)
-        fraction=min(1,self.storage['used_bytes']/CLOUD_SHELF_BYTES) if self.storage else 0
+        fraction=self.storage['remaining_bytes']/CLOUD_SHELF_BYTES if self.storage else 0
         pen=QPen(QColor('#0A84FF'),2.5);pen.setCapStyle(Qt.RoundCap);p.setPen(pen)
         if fraction:p.drawArc(arc,90*16,-round(fraction*360*16))
 
