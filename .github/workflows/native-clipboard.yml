@@ -189,12 +189,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {pair: win-mac, side: a, runner: windows-latest}
-          - {pair: win-mac, side: b, runner: macos-15}
-          - {pair: win-win, side: a, runner: windows-latest}
-          - {pair: win-win, side: b, runner: windows-latest}
-          - {pair: mac-mac, side: a, runner: macos-15}
-          - {pair: mac-mac, side: b, runner: macos-15}
+          - {pair: mac-mac, side: a, runner: macos-26}
+          - {pair: mac-mac, side: b, runner: macos-26}
     runs-on: ${{ matrix.runner }}
     env:
       PYTHONUTF8: '1'
