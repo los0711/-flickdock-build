@@ -1428,7 +1428,11 @@ class LanPanel(QFrame):
     def show_offer(self, offer):
         """Replay an offer emitted before this optional panel was mounted."""
         state=getattr(self.service,'_pending',{}).get(offer['id'],{})
-        if offer.get('account_device') is True and state.get('destination'):return
+        transfer=getattr(self.service,'_transfers',{}).get(offer['id'])
+        # LAN's acceptance lives on its transfer Event; WAN records the chosen
+        # destination before the native stream exists. Both are authoritative
+        # even when this optional panel receives an older queued offer later.
+        if state.get('destination') or transfer is not None and transfer.accepted.is_set():return
         identifier = offer['id']; self._offers[identifier] = offer
         if identifier in self._rows:return
         row = self._row(identifier, offer['peer'], 'receive')
@@ -1523,6 +1527,11 @@ class LanPanel(QFrame):
     def _progress(self, data):
         identifier = data['id']; row = self._row(identifier, data.get('peer', ''), data['direction'])
         state = data['state']; now = time.monotonic(); received = data.get('received', 0); total = data.get('total', 0)
+        if data['direction']=='receive' and (state in ('connecting','transferring','reconnecting') or data.get('accepted')):
+            self._offers.pop(identifier,None)
+            if row.get('extra'):
+                row['extra'].hide();row['heading'].show();row['detail'].show()
+                self._restore_transfer_surface(row)
         if data.get('route'):row['route']=data['route']
         if 'relay_bytes' in data:row['relay_bytes']=max(row.get('relay_bytes',0),int(data['relay_bytes']))
         if row.get('finished') and state in ('preparing','waiting','transferring','reconnecting'):

@@ -151,7 +151,7 @@ class UtilityFeedbackTests(unittest.TestCase):
             for card in (copy,video,transfer):card.supersede();card.deleteLater()
             images.close();images.deleteLater();shelf.deleteLater();flush()
 
-    def test_repeated_same_native_copy_renews_three_second_prompt_without_duplicate_sync(self):
+    def test_repeated_same_native_copy_renews_five_second_prompt_without_duplicate_sync(self):
         from video_prompt import VideoLinkWatcher,PROMPT_DURATION_MS
         from clipboard_sync import ClipboardSync
         from test_clipboard_sync_v1819 import Account,Clipboard,Events,Hub
@@ -159,7 +159,7 @@ class UtilityFeedbackTests(unittest.TestCase):
             changed=Signal()
             video_link_prompt=True
             theme='dark'
-        self.assertEqual(PROMPT_DURATION_MS,3000)
+        self.assertEqual(PROMPT_DURATION_MS,5000)
         with TemporaryDirectory() as directory:
             clipboard=Clipboard();hub=Hub();client=ClipboardSync(Account(hub.api('fixture'),'fixture'),Events(),Path(directory),clipboard=clipboard,enabled=False)
             shelf=QWidget();manager=SimpleNamespace(app=APP,shelf=shelf,settings=Settings(),clipboard_sync=client,show_video_dialog=Mock())

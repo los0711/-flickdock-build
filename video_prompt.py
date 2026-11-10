@@ -8,7 +8,7 @@ from flickdock_icons import draw_glyph
 from sync_files import DiskWork
 from video_links import candidate_link,recognized_video
 
-PROMPT_DURATION_MS=3000
+PROMPT_DURATION_MS=5000
 PROMPT_HOST_WIDTH_PX=320
 PROMPT_MAX_WIDTH_PX=296
 PROMPT_ACTION_COLOR='#087CEF'
