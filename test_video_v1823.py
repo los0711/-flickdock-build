@@ -16,7 +16,7 @@ from PySide6.QtCore import QObject,Signal
 from PySide6.QtWidgets import QApplication,QWidget
 from app_settings import SettingsStore,SettingsDialog
 from video_jobs import VideoJob
-from video_links import LinkPromptHistory,video_url,recognized_video,candidate_link
+from video_links import video_url,recognized_video,candidate_link
 from video_controller import VideoController
 from video_panel import VideoDialog
 from PySide6.QtGui import QImage,QColor
@@ -88,7 +88,7 @@ class VideoTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.server.shutdown();cls.server.server_close();cls.server_thread.join(3);cls.fixture.cleanup()
 
-    def test_url_boundary_supported_sites_and_prompt_repeat_window(self):
+    def test_url_boundary_and_supported_sites(self):
         from urllib.parse import urlunsplit
         for url in ('file:///C:/Windows/test',urlunsplit(('https','user:secret@example.com','/video','','')),'http://127.0.0.1/video','http://[::1]/video','http://192.168.1.2/video','http://localhost/video','https://example.com/\nvideo'):
             with self.subTest(url=url),self.assertRaises((ValueError,UnicodeError)):video_url(url)
@@ -98,9 +98,6 @@ class VideoTests(unittest.TestCase):
         self.assertTrue(recognized_video('https://x.com/real/status/1234567890',cancel))
         self.assertTrue(recognized_video('https://www.facebook.com/watch/?v=1234567890',cancel))
         self.assertFalse(recognized_video('https://example.com/article',cancel))
-        clock=[10.];history=LinkPromptHistory(lambda:clock[0]);self.assertTrue(history.claim('https://x.com/u/status/1?utm_source=a'))
-        self.assertFalse(history.claim('https://twitter.com/u/status/1?utm_source=b'))
-        clock[0]+=121;self.assertTrue(history.claim('https://x.com/u/status/1'))
 
     def test_actual_qt_worker_extracts_generic_html_and_downloads_video_audio_without_overwrite(self):
         result=[];job=VideoJob(dict(action='extract',url=self.origin+'/page',fixture_http=True))

@@ -1,8 +1,11 @@
 """Latest-copy feedback: one capsule that contracts without hiding active work."""
+from weakref import WeakSet
+from pathlib import Path
+from shiboken6 import isValid
 from PySide6.QtCore import QPoint,QPointF,QRect,QRectF,Qt,QTimer,QEasingCurve
-from PySide6.QtGui import QColor,QFontMetricsF,QGuiApplication,QPainter,QPainterPath,QRegion
+from PySide6.QtGui import QBrush,QColor,QFontMetricsF,QGuiApplication,QPainter,QPainterPath,QRegion,QTransform
 from PySide6.QtWidgets import QWidget
-from flickdock_icons import app_icon
+from flickdock_icons import app_icon,document_pixmap
 from native_ui_common import colors,icon,reduced_motion
 from platform_native import keep_tool_visible_when_inactive
 from display_frames import DisplayAnimation,FramePulse
@@ -13,6 +16,9 @@ from transfer_visuals import draw_ring
 NOTICE_WIDTH_PX=244
 NOTICE_HEIGHT_PX=64
 NOTICE_MARGIN_PX=16
+NOTICE_PAIR_GAP_PX=12
+NOTICE_POSITION_MS=COPY_NOTICE_MORPH_MS
+NOTICE_PROGRESS_SMOOTH_MS=240
 PILL_WIDTH_PX=220
 PILL_HEIGHT_PX=44
 COMPACT_SIDE_PX=44
@@ -34,9 +40,46 @@ COMPACT_SUCCESS_DURATION_MS=1000
 RESULT_COALESCE_MS=160
 
 
+def paint_circular_artwork(painter,rect,image,theme,cache):
+    key=(image.cacheKey(),painter.device().devicePixelRatioF())
+    if cache.get('key')!=key:
+        side=round(LOGO_SIZE_PX*key[1])
+        prepared=image.scaled(side,side,Qt.KeepAspectRatioByExpanding,Qt.SmoothTransformation)
+        prepared.setDevicePixelRatio(1.);cache.update(key=key,image=prepared)
+    image=cache['image']
+    transform=QTransform();transform.translate(rect.center().x(),rect.center().y())
+    side=min(image.width(),image.height());transform.scale(rect.width()/side,rect.height()/side)
+    transform.translate(-image.width()/2,-image.height()/2)
+    brush=QBrush(image);brush.setTransform(transform)
+    painter.save();painter.setPen(Qt.NoPen);painter.setBrush(QColor(colors(theme)['control']));painter.drawEllipse(rect)
+    painter.setBrush(brush);painter.drawEllipse(rect);painter.restore()
+
+
+def _reflow_bottom_notices(manager,area,opening=None):
+    notices=sorted((window for window in manager._bottom_notices
+        if isValid(window) and window._notice_area==area and (window.isVisible() or window is opening)),
+        key=lambda window:window.NOTICE_ORDER)
+    total=sum(window.width() for window in notices)+NOTICE_PAIR_GAP_PX*max(0,len(notices)-1)
+    horizontal=total<=area.width()-2*NOTICE_MARGIN_PX
+    left=area.left()+(area.width()-total)//2
+    for index,window in enumerate(notices):
+        point=QPoint(left if horizontal else area.left()+(area.width()-window.width())//2,
+            area.bottom()-window.height()-NOTICE_MARGIN_PX+1-(0 if horizontal else index*(window.height()+NOTICE_PAIR_GAP_PX)))
+        window._position_motion.stop()
+        if window.isVisible() and motion_allowed() and window.pos()!=point:
+            window._position_motion.setStartValue(window.pos());window._position_motion.setEndValue(point);window._position_motion.start()
+        else:window.move(point)
+        left+=window.width()+NOTICE_PAIR_GAP_PX
+
+
 def place_bottom_notice(window,area):
-    """Use the work area so the taskbar/Dock remains clear on every screen."""
-    window.move(area.left()+(area.width()-window.width())//2,area.bottom()-window.height()-NOTICE_MARGIN_PX+1)
+    """Keep both capsule hosts in the work area, never over the taskbar/Dock."""
+    manager=window.manager
+    if not hasattr(manager,'_bottom_notices'):manager._bottom_notices=WeakSet()
+    previous=window._notice_area
+    manager._bottom_notices.add(window);window._notice_area=QRect(area)
+    if previous is not None and previous!=area:_reflow_bottom_notices(manager,previous)
+    _reflow_bottom_notices(manager,area,opening=window)
 
 
 def copy_presentation(ok,context):
@@ -53,22 +96,25 @@ def copy_presentation(ok,context):
         return 'success','复制已同步','已同步到云端',None
     if phase=='error' or cloud['phase']=='error' or ok is False and phase!='uploading':
         return 'error','同步未完成','同步未完成，内容保留在本机',None
-    progress=cloud if cloud['phase']=='uploading' else dict(phase='preparing',received=0,total=0)
+    progress=cloud if cloud['phase'] in ('uploading','verifying') else dict(phase='preparing',received=0,total=0)
     description='等待云端确认' if cloud['phase']=='verifying' else '正在同步到云端'
     return 'syncing','剪贴板同步中',description,progress
 
 
-class ClipboardNotice(QWidget):
-    """Fixed native host; only the painted capsule changes shape or opacity."""
+class CapsuleNotice(QWidget):
+    """Shared fixed-host capsule artwork, geometry and interruptible motion."""
+    HOST_WIDTH=NOTICE_WIDTH_PX
+    MAX_CAPSULE_WIDTH=PILL_WIDTH_PX
+    NOTICE_ORDER=0
     def __init__(self,manager):
         super().__init__();self.manager=manager
         self.setWindowFlags(Qt.Tool|Qt.FramelessWindowHint|Qt.WindowStaysOnTopHint|Qt.WindowDoesNotAcceptFocus)
         self.setAttribute(Qt.WA_ShowWithoutActivating);self.setAttribute(Qt.WA_TranslucentBackground)
         self.setFocusPolicy(Qt.NoFocus);self.setCursor(Qt.PointingHandCursor)
         keep_tool_visible_when_inactive(self);self.setWindowTitle('FlickDock · 复制同步提示')
-        self.setFixedSize(NOTICE_WIDTH_PX,NOTICE_HEIGHT_PX)
+        self.setFixedSize(self.HOST_WIDTH,NOTICE_HEIGHT_PX)
         self._logo=app_icon()
-        self._pending_result=None;self._current_result=None;self._dismissed_id=None
+        self._artwork_cache={}
         self._phase='idle';self._text='';self._description='';self._progress=None;self._compact=False;self._hiding=False
         self._shape=QPointF(COMPACT_SIDE_PX,ENTRY_HEIGHT_PX);self._alpha=0.;self._full_width=PILL_WIDTH_PX
         self._morph=DisplayAnimation(self);self._morph.setDuration(COPY_NOTICE_MORPH_MS)
@@ -79,11 +125,18 @@ class ClipboardNotice(QWidget):
         self._fade.setEasingCurve(QEasingCurve.OutCubic);self._fade.valueChanged.connect(self._alpha_changed)
         self._fade.finished.connect(self._fade_finished)
         self._ring_clock=FramePulse(self);self._ring_clock.timeout.connect(self.update)
-        self._result_timer=QTimer(self);self._result_timer.setSingleShot(True)
-        self._result_timer.setInterval(RESULT_COALESCE_MS);self._result_timer.timeout.connect(self._deliver_result)
+        self._progress_value=0.
+        self._progress_motion=DisplayAnimation(self);self._progress_motion.setDuration(NOTICE_PROGRESS_SMOOTH_MS)
+        self._progress_motion.setEasingCurve(QEasingCurve.Linear);self._progress_motion.valueChanged.connect(self._progress_changed)
         self.timer=QTimer(self);self.timer.setSingleShot(True);self.timer.timeout.connect(self._expire)
 
+        self._notice_area=None
+        self._position_motion=DisplayAnimation(self);self._position_motion.setDuration(NOTICE_POSITION_MS)
+        slide_curve=QEasingCurve(QEasingCurve.OutBack);slide_curve.setOvershoot(COPY_NOTICE_OVERSHOOT)
+        self._position_motion.setEasingCurve(slide_curve);self._position_motion.valueChanged.connect(self.move)
+
     def _shape_changed(self,value):self._shape=value;self.update()
+
     def _alpha_changed(self,value):self._alpha=float(value);self.update()
 
     def capsule_rect(self):
@@ -123,16 +176,128 @@ class ClipboardNotice(QWidget):
         if self.isVisible() and self._phase=='syncing' and waiting and not reduced_motion():self._ring_clock.start()
         else:self._ring_clock.stop()
 
+    def _progress_changed(self,value):self._progress_value=float(value);self.update()
+
+    def _set_progress(self,state,*,reset=False):
+        previous=self._progress;self._progress=state
+        if not reset and previous is not None and state is not None and (previous['received'],previous['total'])==(state['received'],state['total']):return
+        self._progress_motion.stop()
+        total=state['total'] if state is not None else 0
+        target=min(1.,max(0.,state['received']/total)) if total>0 else 0.
+        if reset or not self.isVisible() or not motion_allowed() or total<=0 or target<=self._progress_value:
+            self._progress_changed(target);return
+        self._progress_motion.setStartValue(self._progress_value);self._progress_motion.setEndValue(target);self._progress_motion.start()
+
+    def _painted_progress(self):
+        if self._progress is None or self._progress['total']<=0:return self._progress
+        return dict(self._progress,received=self._progress_value*self._progress['total'])
+
+    def _place(self,area):place_bottom_notice(self,area)
+
+    def _notice_font(self):
+        font=self.font();font.setPixelSize(TEXT_SIZE_PX);font.setWeight(font.Weight.Medium);return font
+
+    def _content_width(self):
+        text_width=QFontMetricsF(self._notice_font()).horizontalAdvance(self._text)
+        return min(self.MAX_CAPSULE_WIDTH,self.width()-4,2*PILL_PADDING_PX+LOGO_SIZE_PX+2*CONTENT_GAP_PX+text_width+RING_VISIBLE_SIZE_PX)
+
+    def _sync_accessibility(self):
+        self.setAccessibleName(self._text)
+        self.setAccessibleDescription(self._description+('；点击展开提示' if self._compact else '；点击收起提示'))
+
+    def _begin_presentation(self,area):
+        self._hiding=False;self._compact=False
+        self.setFixedSize(min(self.HOST_WIDTH,max(COMPACT_SIDE_PX,area.width()-2*NOTICE_MARGIN_PX)),NOTICE_HEIGHT_PX)
+        self._full_width=self._content_width();self._place(area)
+        if not self.isVisible():self._shape=QPointF(COMPACT_SIDE_PX,ENTRY_HEIGHT_PX);self._alpha=0.
+        self.show();self.raise_();self._animate_shape(self._full_width);self._animate_alpha(1.)
+        self._sync_accessibility()
+
+    def dismiss(self):
+        self.timer.stop();self._hiding=True;self._ring_clock.stop()
+        self._animate_shape(EXIT_SIDE_PX,EXIT_SIDE_PX);self._animate_alpha(0.)
+
+    def supersede(self):
+        self._morph.stop();self._fade.stop();self.timer.stop();self._ring_clock.stop();self._progress_motion.stop();self._position_motion.stop();self.hide()
+
+    def _expire(self):self.dismiss()
+    def _activate(self):self.dismiss()
+
+    def closeEvent(self,event):
+        event.ignore()
+        if self.isVisible() and not self._hiding:self.dismiss()
+
+    def hideEvent(self,event):
+        self.timer.stop();self._ring_clock.stop();self._morph.stop();self._fade.stop();self._progress_motion.stop();self._position_motion.stop()
+        super().hideEvent(event)
+        if self._notice_area is not None:_reflow_bottom_notices(self.manager,self._notice_area)
+
+    def mouseReleaseEvent(self,event):
+        if event.button()==Qt.LeftButton and self.capsule_rect().contains(event.position()):self._activate();event.accept()
+        else:super().mouseReleaseEvent(event)
+
+    def paintEvent(self,event):
+        c=colors(self.manager.settings.theme);p=QPainter(self)
+        # A shrinking translucent surface must erase pixels from its old shape.
+        p.setCompositionMode(QPainter.CompositionMode_Source);p.fillRect(self.rect(),Qt.transparent)
+        p.setCompositionMode(QPainter.CompositionMode_SourceOver)
+        p.setRenderHints(QPainter.Antialiasing|QPainter.SmoothPixmapTransform);p.setOpacity(max(0.,min(1.,self._alpha)))
+        rect=self.capsule_rect();path=QPainterPath();path.addRoundedRect(rect,rect.height()/2,rect.height()/2)
+        p.setPen(Qt.NoPen);p.setBrush(QColor(c['surface']));p.drawPath(path);p.setClipPath(path)
+        reveal=max(0.,min(1.,(rect.width()-COMPACT_SIDE_PX)/max(1,self._full_width-COMPACT_SIDE_PX)))
+        ring_x=rect.center().x()-RING_SIZE_PX/2+reveal*(rect.width()/2-PILL_PADDING_PX-RING_VISIBLE_SIZE_PX/2)
+        if reveal:
+            p.save();p.setOpacity(p.opacity()*reveal)
+            # Keep glyph layout stable as the capsule contracts; clipping and
+            # opacity avoid switching through several intermediate ellipses.
+            p.setClipRect(QRectF(rect.left()+PILL_PADDING_PX,rect.top(),max(0,ring_x+(RING_SIZE_PX-RING_VISIBLE_SIZE_PX)/2-CONTENT_GAP_PX-rect.left()-PILL_PADDING_PX),rect.height()),Qt.IntersectClip)
+            self._paint_leading(p,QRectF(rect.left()+PILL_PADDING_PX,rect.center().y()-LOGO_SIZE_PX/2,LOGO_SIZE_PX,LOGO_SIZE_PX))
+            p.setFont(self._notice_font())
+            p.setPen(QColor(c['link'] if self._phase in ('limited','superseded') else c['red'] if self._phase=='error' else c['text']))
+            text_rect=QRectF(rect.left()+PILL_PADDING_PX+LOGO_SIZE_PX+CONTENT_GAP_PX,rect.top(),
+                max(1,self._full_width-2*PILL_PADDING_PX-LOGO_SIZE_PX-RING_VISIBLE_SIZE_PX-2*CONTENT_GAP_PX),rect.height())
+            p.drawText(text_rect,Qt.AlignVCenter|Qt.AlignLeft,p.fontMetrics().elidedText(self._text,Qt.ElideRight,round(text_rect.width())))
+            p.restore()
+        ring=QRectF(ring_x,rect.center().y()-RING_SIZE_PX/2,RING_SIZE_PX,RING_SIZE_PX)
+        self._paint_indicator(p,ring,c)
+        p.end()
+
+    def _paint_leading(self,painter,rect):self._logo.paint(painter,rect.toAlignedRect())
+
+
+    def _paint_indicator(self,p,ring,c):
+        if self._phase=='syncing':draw_ring(p,ring,self._painted_progress())
+        else:icon('circle-check' if self._phase=='success' else 'circle-alert',c['green'] if self._phase=='success' else c['red'] if self._phase=='error' else c['link']).paint(p,ring.toAlignedRect())
+
+
+class ClipboardNotice(CapsuleNotice):
+    """Copy feedback follows cloud commit; device receipts stay in the preview."""
+    def __init__(self,manager):
+        super().__init__(manager)
+        self._pending_result=None;self._current_result=None;self._dismissed_id=None
+        self._result_timer=QTimer(self);self._result_timer.setSingleShot(True)
+        self._result_timer.setInterval(RESULT_COALESCE_MS);self._result_timer.timeout.connect(self._deliver_result)
+        self._presenter=getattr(manager,'clipboard_presenter',None)
+        if self._presenter is not None:self._presenter.changed.connect(self.update)
+
+    def _paint_leading(self,painter,rect):
+        context=self._current_result[1] if self._current_result is not None else {}
+        value=context.get('value');image=None;kind='txt'
+        if value:
+            if value[0]=='image':image=value[1].get('image');kind='png'
+            elif value[0]=='files':kind=Path(value[1][0]).suffix or 'file'
+        if image is None and self._presenter is not None and self._presenter.state.get('id')==context.get('id') and not self._presenter.thumbnail.isNull():image=self._presenter.thumbnail
+        if image is None or image.isNull():image=document_pixmap(kind,LOGO_SIZE_PX,dpr=self.devicePixelRatioF()).toImage()
+        paint_circular_artwork(painter,rect,image,self.manager.settings.theme,self._artwork_cache)
+
     def dismiss(self):
         context=self._current_result[1] if self._current_result is not None else self._pending_result[1] if self._pending_result is not None else {}
         self._dismissed_id=context.get('id');self._result_timer.stop();self._pending_result=None;self.timer.stop()
-        self._hiding=True;self._ring_clock.stop();self._animate_shape(EXIT_SIDE_PX,EXIT_SIDE_PX);self._animate_alpha(0.)
-
+        super().dismiss()
     def supersede(self):
         if self._current_result is not None:self._dismissed_id=self._current_result[1].get('id')
         self._result_timer.stop();self._pending_result=None;self._current_result=None
-        self._morph.stop();self._fade.stop();self.timer.stop();self._ring_clock.stop();self.hide()
-
+        super().supersede()
     def schedule_result(self,ok,context):
         if context.get('id') and context['id']==self._dismissed_id:return
         self._pending_result=(ok,dict(context));self._result_timer.start()
@@ -151,19 +316,6 @@ class ClipboardNotice(QWidget):
         ok,context=self._current_result
         if context.get('id')==identity:self.show_result(ok,dict(context,**state))
 
-    def _place(self,area):place_bottom_notice(self,area)
-
-    def _notice_font(self):
-        font=self.font();font.setPixelSize(TEXT_SIZE_PX);font.setWeight(font.Weight.Medium);return font
-
-    def _content_width(self):
-        text_width=QFontMetricsF(self._notice_font()).horizontalAdvance(self._text)
-        return min(PILL_WIDTH_PX,self.width()-4,2*PILL_PADDING_PX+LOGO_SIZE_PX+2*CONTENT_GAP_PX+text_width+RING_VISIBLE_SIZE_PX)
-
-    def _sync_accessibility(self):
-        self.setAccessibleName(self._text)
-        self.setAccessibleDescription(self._description+('；点击展开提示' if self._compact else '；点击收起提示'))
-
     def _deliver_result(self):
         result,self._pending_result=self._pending_result,None
         if (result is not None and not getattr(self.manager,'_quitting',False)
@@ -176,14 +328,12 @@ class ClipboardNotice(QWidget):
         same=bool(self.isVisible() and self._current_result is not None and context.get('id')
                   and context['id']==self._current_result[1].get('id'))
         previous=self._phase
-        self._phase,self._text,self._description,self._progress=copy_presentation(ok,context)
+        self._phase,self._text,self._description,progress=copy_presentation(ok,context)
+        self._set_progress(progress,reset=not same)
         self._current_result=(ok,dict(context));self._hiding=False
         if not same:
             screen=QGuiApplication.screenAt(QPoint(*(context.get('point') or (0,0)))) or QGuiApplication.primaryScreen()
-            area=screen.availableGeometry();self.setFixedSize(min(NOTICE_WIDTH_PX,max(COMPACT_SIDE_PX,area.width()-2*NOTICE_MARGIN_PX)),NOTICE_HEIGHT_PX)
-            self._place(area);self._compact=False;self._full_width=self._content_width()
-            if not self.isVisible():self._shape=QPointF(COMPACT_SIDE_PX,ENTRY_HEIGHT_PX);self._alpha=0.
-            self.show();self.raise_();self._animate_shape(self._full_width);self._animate_alpha(1.)
+            self._begin_presentation(screen.availableGeometry())
             self.timer.start(NOTICE_PROGRESS_DURATION_MS if self._phase=='syncing' else NOTICE_DURATION_MS)
         elif previous!=self._phase:
             self._full_width=self._content_width()
@@ -211,37 +361,7 @@ class ClipboardNotice(QWidget):
         else:self.timer.start(COMPACT_SUCCESS_DURATION_MS if self._compact else NOTICE_DURATION_MS)
         self._sync_accessibility()
 
+    def _activate(self):self.toggle_expanded()
+
     def hideEvent(self,event):
-        self.timer.stop();self._ring_clock.stop();self._morph.stop();self._fade.stop()
         self._current_result=None;super().hideEvent(event)
-
-    def mouseReleaseEvent(self,event):
-        if event.button()==Qt.LeftButton and self.capsule_rect().contains(event.position()):self.toggle_expanded();event.accept()
-        else:super().mouseReleaseEvent(event)
-
-    def paintEvent(self,event):
-        c=colors(self.manager.settings.theme);p=QPainter(self)
-        # A shrinking translucent surface must erase pixels from its old shape.
-        p.setCompositionMode(QPainter.CompositionMode_Source);p.fillRect(self.rect(),Qt.transparent)
-        p.setCompositionMode(QPainter.CompositionMode_SourceOver)
-        p.setRenderHints(QPainter.Antialiasing|QPainter.SmoothPixmapTransform);p.setOpacity(max(0.,min(1.,self._alpha)))
-        rect=self.capsule_rect();path=QPainterPath();path.addRoundedRect(rect,rect.height()/2,rect.height()/2)
-        p.setPen(Qt.NoPen);p.setBrush(QColor(c['surface']));p.drawPath(path);p.setClipPath(path)
-        reveal=max(0.,min(1.,(rect.width()-COMPACT_SIDE_PX)/max(1,self._full_width-COMPACT_SIDE_PX)))
-        ring_x=rect.center().x()-RING_SIZE_PX/2+reveal*(rect.width()/2-PILL_PADDING_PX-RING_VISIBLE_SIZE_PX/2)
-        if reveal:
-            p.save();p.setOpacity(p.opacity()*reveal)
-            # Keep glyph layout stable as the capsule contracts; clipping and
-            # opacity avoid switching through several intermediate ellipses.
-            p.setClipRect(QRectF(rect.left()+PILL_PADDING_PX,rect.top(),max(0,ring_x+(RING_SIZE_PX-RING_VISIBLE_SIZE_PX)/2-CONTENT_GAP_PX-rect.left()-PILL_PADDING_PX),rect.height()),Qt.IntersectClip)
-            self._logo.paint(p,QRect(round(rect.left()+PILL_PADDING_PX),round(rect.center().y()-LOGO_SIZE_PX/2),LOGO_SIZE_PX,LOGO_SIZE_PX))
-            p.setFont(self._notice_font())
-            p.setPen(QColor(c['link'] if self._phase in ('limited','superseded') else c['red'] if self._phase=='error' else c['text']))
-            text_rect=QRectF(rect.left()+PILL_PADDING_PX+LOGO_SIZE_PX+CONTENT_GAP_PX,rect.top(),
-                max(1,self._full_width-2*PILL_PADDING_PX-LOGO_SIZE_PX-RING_VISIBLE_SIZE_PX-2*CONTENT_GAP_PX),rect.height())
-            p.drawText(text_rect,Qt.AlignVCenter|Qt.AlignLeft,p.fontMetrics().elidedText(self._text,Qt.ElideRight,round(text_rect.width())))
-            p.restore()
-        ring=QRectF(ring_x,rect.center().y()-RING_SIZE_PX/2,RING_SIZE_PX,RING_SIZE_PX)
-        if self._phase=='syncing':draw_ring(p,ring,self._progress)
-        else:icon('circle-check' if self._phase=='success' else 'circle-alert',c['green'] if self._phase=='success' else c['red'] if self._phase=='error' else c['link']).paint(p,ring.toAlignedRect())
-        p.end()

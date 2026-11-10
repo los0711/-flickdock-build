@@ -666,6 +666,7 @@ class LanPanel(QFrame):
     """
     received_paths = Signal(list)
     transfer_started = Signal()
+    send_started = Signal(object,dict)
     lan_recommended = Signal(list,str)
 
     def __init__(self, service, parent=None, *, theme='light', settings=None,metadata_cache=None):
@@ -978,6 +979,7 @@ class LanPanel(QFrame):
             if paths:self._rows[identifier]['icon'].set_source(paths[0])
         else:
             self._history_context[identifier] = context
+        self.send_started.emit(self.service,dict(id=identifier,direction='send',names=[Path(path).name for path in paths],paths=list(map(str,paths)),count=len(paths),total=0))
 
     def _save_history(self):
         if not self._history_path: return
@@ -1655,6 +1657,7 @@ class _TransferDropRouter(QObject):
 class LanDialog(QDialog):
     """A dedicated layered transfer window opened from the overview."""
     overview_requested = Signal()
+    send_started = Signal(object,dict)
     mode_selected = Signal(str)
     lan_recommended = Signal(list,str)
     mini_requested = Signal()
@@ -1733,6 +1736,7 @@ class LanDialog(QDialog):
         self.file_metadata=FileMetadataCache(self)
         self.panel = LanPanel(service, self.panel_stack, theme=settings.theme, settings=settings,metadata_cache=self.file_metadata)
         self.panel.lan_recommended.connect(self.lan_recommended)
+        self.panel.send_started.connect(self.send_started)
         self._panels[service]=self.panel;self.panel_stack.addWidget(self.panel)
         if self._wan:self.close_button.setAccessibleName('关闭远程传输窗口')
         content.addWidget(self.panel_stack, 1)
@@ -1793,6 +1797,7 @@ class LanDialog(QDialog):
             if service not in self._panels:
                 panel=LanPanel(service,self.panel_stack,theme=self._theme,settings=self._settings,metadata_cache=self.file_metadata)
                 panel.lan_recommended.connect(self.lan_recommended)
+                panel.send_started.connect(self.send_started)
                 self._panels[service]=panel;self.panel_stack.addWidget(panel)
                 if getattr(service,'mode','lan')=='wan':service.identity_changed.connect(self._update_ready)
                 for widget in (panel,*panel.findChildren(QWidget)):widget.setAcceptDrops(True)

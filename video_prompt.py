@@ -1,89 +1,104 @@
-"""An expiring opt-in prompt driven by the shared clipboard observation."""
-from urllib.parse import urlsplit
-from PySide6.QtCore import QObject,QPoint,QThreadPool,QTimer,Qt
-from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import QHBoxLayout,QLabel
-from app_settings import ReferenceModalDialog
-from reference_widgets import button
-from native_ui_common import colors
+"""One reusable capsule, renewed by repeated copies of the same video link."""
+import logging
+from PySide6.QtCore import QObject,QRectF,QThreadPool,Qt
+from PySide6.QtGui import QColor,QGuiApplication
+from intake_notice import CapsuleNotice,RING_VISIBLE_SIZE_PX
+from native_ui_common import colors,icon
+from flickdock_icons import draw_glyph
 from sync_files import DiskWork
-from video_links import LinkPromptHistory,candidate_link,recognized_video
-from flickdock_icons import app_icon
-from intake_notice import place_bottom_notice
+from video_links import candidate_link,recognized_video
 
-PROMPT_DURATION_MS=5000
-PROMPT_LOGO_SIZE_PX=24
+PROMPT_DURATION_MS=3000
+PROMPT_HOST_WIDTH_PX=320
+PROMPT_MAX_WIDTH_PX=296
+PROMPT_ACTION_COLOR='#087CEF'
+LOG=logging.getLogger(__name__)
 
 
-class VideoLinkPrompt(ReferenceModalDialog):
+class VideoLinkPrompt(CapsuleNotice):
+    HOST_WIDTH=PROMPT_HOST_WIDTH_PX
+    MAX_CAPSULE_WIDTH=PROMPT_MAX_WIDTH_PX
+    NOTICE_ORDER=2
+
     def __init__(self,manager):
-        # A notification owns its screen position; modal parent centering must
-        # not move it back over the shelf during the native Show event.
-        super().__init__(None,surface_width=350,modal=False);self.manager=manager;self.url=''
-        self.setFont(manager.shelf.font())
-        self.setWindowFlags(Qt.Tool|Qt.FramelessWindowHint|Qt.WindowStaysOnTopHint)
-        self.setAttribute(Qt.WA_ShowWithoutActivating)
-        self.setWindowTitle('视频链接解析')
-        header=QHBoxLayout();self.logo=QLabel(self.body);self.logo.setFixedSize(PROMPT_LOGO_SIZE_PX,PROMPT_LOGO_SIZE_PX)
-        self.logo.setPixmap(app_icon().pixmap(PROMPT_LOGO_SIZE_PX,PROMPT_LOGO_SIZE_PX));self.logo.setAccessibleName('FlickDock')
-        header.addWidget(self.logo);header.addStretch();self.body_layout.addLayout(header)
-        self.heading=QLabel('检测到视频链接，是否解析？',self.body);self.heading.setTextFormat(Qt.PlainText);self.body_layout.addWidget(self.heading)
-        self.site=QLabel(self.body);self.site.setTextFormat(Qt.PlainText);self.site.setWordWrap(True);self.body_layout.addWidget(self.site)
-        actions=QHBoxLayout();actions.addStretch()
-        cancel=button('取消',parent=self.body);cancel.clicked.connect(self.close);actions.addWidget(cancel)
-        parse=button('去解析','video',parent=self.body);parse.clicked.connect(self._accept);actions.addWidget(parse);self.body_layout.addLayout(actions)
-        self.timer=QTimer(self);self.timer.setSingleShot(True);self.timer.timeout.connect(self.close)
+        super().__init__(manager);self.url='';self.setWindowTitle('FlickDock · 视频链接解析')
+        self._phase='link';self._text='检测到视频链接，是否解析'
+        self._description='点击前往视频解析'
+
+    def _sync_accessibility(self):
+        self.setAccessibleName(self._text);self.setAccessibleDescription(self._description)
 
     def present(self,url):
-        self.url=url;parts=urlsplit(url);self.site.setText((parts.hostname or '')+'\n'+parts.path[:90])
-        c=colors(self.manager.settings.theme);self.set_surface_theme(self.manager.settings.theme)
-        self.setStyleSheet(f'QLabel{{background:transparent;color:{c["text"]};font-size:12px;}}')
-        self.adjustSize();screen=QGuiApplication.screenAt(self.manager.shelf.frameGeometry().center()) or QGuiApplication.primaryScreen()
-        if screen:
-            place_bottom_notice(self,screen.availableGeometry())
-        self.show();self.timer.start(PROMPT_DURATION_MS)
+        self.url=url
+        if not self.isVisible() or self._hiding:
+            screen=QGuiApplication.screenAt(self.manager.shelf.frameGeometry().center()) or QGuiApplication.primaryScreen()
+            self._begin_presentation(screen.availableGeometry())
+        self.timer.start(PROMPT_DURATION_MS)
+
+    def _paint_indicator(self,painter,rect,colors):
+        circle=QRectF(0,0,RING_VISIBLE_SIZE_PX,RING_VISIBLE_SIZE_PX);circle.moveCenter(rect.center())
+        painter.save();painter.setPen(Qt.NoPen);painter.setBrush(QColor(PROMPT_ACTION_COLOR));painter.drawEllipse(circle)
+        draw_glyph(painter,'arrow',circle.adjusted(4,4,-4,-4),'#FFFFFF',1.8);painter.restore()
+
+    def _paint_leading(self,painter,rect):
+        color=QColor(PROMPT_ACTION_COLOR);color.setAlpha(35)
+        painter.save();painter.setPen(Qt.NoPen);painter.setBrush(color);painter.drawEllipse(rect)
+        icon('video',colors(self.manager.settings.theme)['link']).paint(painter,rect.adjusted(3,3,-3,-3).toAlignedRect());painter.restore()
+
+    def _activate(self):self._accept()
 
     def _accept(self):
         url=self.url;self.close();self.manager.show_video_dialog(url)
 
-    def hideEvent(self,event):self.timer.stop();super().hideEvent(event)
-
 
 class VideoLinkWatcher(QObject):
     def __init__(self,manager):
-        super().__init__(manager.app);self.manager=manager;self.history=LinkPromptHistory();self.prompt=None
+        super().__init__(manager.app);self.manager=manager;self.prompt=None
         self.pool=QThreadPool(self);self.pool.setMaxThreadCount(1);self.jobs=set();self.generation=0;self.closed=False
+        self.known_url=None;self.pending_url=None
         self.revision=manager.clipboard_sync.view.get('revision')
-        manager.clipboard_sync.view_changed.connect(self._observe);manager.settings.changed.connect(self._settings)
+        manager.clipboard_sync.view_changed.connect(self._observe)
+        manager.clipboard_sync.copy_observed.connect(self._consider)
+        manager.settings.changed.connect(self._settings)
 
     def _settings(self):
         if not self.manager.settings.video_link_prompt:
-            self.generation+=1
+            self.generation+=1;self.pending_url=None
             for job in self.jobs:job.cancel.set()
             if self.prompt:self.prompt.close()
 
     def _observe(self,state):
         revision=state.get('revision')
         if revision==self.revision:return
-        self.revision=revision;self.generation+=1;generation=self.generation
+        self.revision=revision;self._consider(state.get('value'))
+
+    def _present(self,url):
+        if self.prompt is None:self.prompt=VideoLinkPrompt(self.manager)
+        self.prompt.present(url)
+
+    def _consider(self,value):
+        if self.closed or not self.manager.settings.video_link_prompt:return
+        url=candidate_link(value[1]['text']) if value and value[0]=='text' else None
+        if url is not None and url==self.known_url:
+            if self.pending_url is not None:
+                self.generation+=1;self.pending_url=None
+                for job in self.jobs:job.cancel.set()
+            self._present(url);return
+        if url is not None and url==self.pending_url:return
+        self.generation+=1;generation=self.generation;self.pending_url=url
         for job in self.jobs:job.cancel.set()
-        value=state.get('value')
-        if self.closed or not self.manager.settings.video_link_prompt or not value or value[0]!='text':return
-        url=candidate_link(value[1]['text'])
         if url is None:return
         job=DiskWork(recognized_video,url);self.jobs.add(job)
         def ready(result,error):
             self.jobs.discard(job)
             if self.closed or generation!=self.generation or not self.manager.settings.video_link_prompt:return
+            self.pending_url=None
             if error is not None:
-                import logging
-                logging.getLogger(__name__).warning('Video URL recognition failed: %s',type(error).__name__);return
-            if result and self.history.claim(url):
-                if self.prompt is None:self.prompt=VideoLinkPrompt(self.manager)
-                self.prompt.present(url)
+                LOG.warning('Video URL recognition failed: %s',type(error).__name__);return
+            if result:self.known_url=url;self._present(url)
         job.signals.done.connect(ready);self.pool.start(job,-1)
 
     def close(self):
-        self.closed=True;self.generation+=1
+        self.closed=True;self.generation+=1;self.pending_url=None
         for job in self.jobs:job.cancel.set()
         if self.prompt:self.prompt.close()

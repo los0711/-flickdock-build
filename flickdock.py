@@ -205,9 +205,9 @@ class ShelfManager:
         self.video_controller=VideoController(self);self.video_watcher=VideoLinkWatcher(self)
         self.clipboard_sync.activity_changed.connect(self.video_controller.set_priority)
         self.wan.offer_received.connect(self._wan_offer)
-        from receive_notice import SameAccountReceiveNotice
-        self.receive_notice=SameAccountReceiveNotice(self,self.wan)
-        self.lan_receive_notice=SameAccountReceiveNotice(self,self.lan)
+        from receive_notice import FileTransferNotices
+        self.receive_notice=FileTransferNotices(self,self.wan)
+        self.lan_receive_notice=FileTransferNotices(self,self.lan)
         self.account.account_changed.connect(self._lan_identity)
         self.account.devices_changed.connect(self._lan_devices)
         self.manual.start()
@@ -470,6 +470,10 @@ class ShelfManager:
             return
         self.show_wan_dialog();self.wan_dialog.panel.show_offer(offer)
 
+    def _manual_send_notice(self,service,details):
+        notice=self.receive_notice if service is self.wan else self.lan_receive_notice
+        notice.begin(details)
+
     def _lan_selected(self):
         refs=self.shelf.popup.chosen_refs() if self.shelf.popup else []
         return [ref for ref in refs if not self.shelf.content.is_text(ref) and Path(ref).exists()]
@@ -638,6 +642,7 @@ class ShelfManager:
             # One independent native window; both modes retain their own panel
             # state without exposing the desktop between close/show operations.
             dialog=LanDialog(service,self.settings)
+            dialog.send_started.connect(self._manual_send_notice)
             dialog.overview_requested.connect(lambda:self.show_overview_from_transfer(dialog))
             dialog.mode_selected.connect(lambda mode:self.show_wan_dialog() if mode=='wan' else self.show_lan_dialog())
             dialog.lan_recommended.connect(self._use_recommended_lan)

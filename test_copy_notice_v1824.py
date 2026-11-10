@@ -59,6 +59,22 @@ class CopyNoticeTests(unittest.TestCase):
         card.update_delivery(dict(state,backed_up=True,cloud_transfer=dict(phase='complete',received=1,total=1)))
         self.assertEqual(card._phase,'success');self.assertFalse(card._ring_clock.isActive())
 
+    def test_real_progress_interpolates_without_spinner_or_unconfirmed_byte_growth(self):
+        self.reduced.stop();self.reduced=patch('native_ui_common.reduced_motion',return_value=False);self.reduced.start()
+        card=self.card;state=uploading();card.show_result(None,state)
+        card.update_delivery(dict(state,cloud_transfer=dict(phase='uploading',received=80,total=100)))
+        self.assertFalse(card._ring_clock.isActive());self.assertEqual(card._progress['received'],80)
+        card._progress_motion.setCurrentTime(card._progress_motion.duration()//2)
+        shown=card._painted_progress()['received'];self.assertGreater(shown,10);self.assertLess(shown,80)
+        card._progress_motion.setCurrentTime(card._progress_motion.duration())
+        self.assertAlmostEqual(card._painted_progress()['received'],80)
+        card.update_delivery(dict(state,cloud_transfer=dict(phase='verifying',received=100,total=100)))
+        card._progress_motion.setCurrentTime(card._progress_motion.duration())
+        self.assertAlmostEqual(card._painted_progress()['received'],100)
+        self.assertEqual(card._phase,'syncing');self.assertFalse(card._ring_clock.isActive())
+        card.update_delivery(dict(state,phase='synced',backed_up=True))
+        self.assertEqual(card._phase,'success');self.assertEqual(card._progress_motion.state(),card._progress_motion.Stopped)
+
     def test_settled_native_mask_preserves_all_antialiased_pixels_at_display_scales(self):
         card=self.card;card.show_result(None,uploading())
         for compact in (False,True):

@@ -248,6 +248,7 @@ class ClipboardSync(QObject):
     activity_changed=Signal(bool)
     copy_result=Signal(bool,dict)
     copy_started=Signal()
+    copy_observed=Signal(object)
     # Keep original image bytes as a shared Python object, rather than copying
     # a potentially 20 MB value through QVariantMap for each status update.
     view_changed=Signal(object)
@@ -454,11 +455,15 @@ class ClipboardSync(QObject):
     def _schedule_change(self):
         if not self._active() and not self.closed:
             value=self._snapshot()
+            if self._snapshot_available and not self._applying:self.copy_observed.emit(value)
             self._set_view(value if self._snapshot_available else self.view.get('value'),'local');return
         if self._active() and not self._applying:
             sequence=self._sequence()
             if sequence is not None and sequence==self._last_sequence:return
             value=self._snapshot();sig=signature(value)
+            # UI observers need real repeated copies too. This signal never
+            # changes the content fence or schedules a duplicate cloud upload.
+            if self._snapshot_available:self.copy_observed.emit(value)
             if self._snapshot_available and (value is not None or sequence is None) and sig==self._last_local_signature:
                 self._last_sequence=sequence;return
             from PySide6.QtGui import QCursor

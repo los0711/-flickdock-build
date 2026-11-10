@@ -59,7 +59,8 @@ def main():
             report['windows'].append(dict(title=window.windowTitle(),resize=True,minimize=True,close=True,reopen_default=True))
         from types import SimpleNamespace
         from intake_notice import ClipboardNotice,COMPACT_SIDE_PX
-        notice=ClipboardNotice(SimpleNamespace(settings=store))
+        opened=[];notice_manager=SimpleNamespace(settings=store,shelf=transfer,show_video_dialog=opened.append)
+        notice=ClipboardNotice(notice_manager)
         try:
             state=dict(id='native-capsule',phase='uploading',local_copy=True,
                 cloud_transfer=dict(phase='preparing',received=0,total=0))
@@ -73,6 +74,23 @@ def main():
             QTest.mouseClick(notice,Qt.LeftButton,pos=notice.capsule_rect().center().toPoint())
             wait(lambda:notice._morph.state()==notice._morph.Stopped)
             assert not notice._compact and notice.isVisible()
+            from video_prompt import VideoLinkPrompt
+            from receive_notice import TransferCapsule
+            from async_images import ImageCache
+            images=ImageCache();video_notice=VideoLinkPrompt(notice_manager)
+            file_notice=TransferCapsule(SimpleNamespace(manager=notice_manager,images=images,activate=lambda:None))
+            try:
+                video_notice.present('https://www.youtube.com/watch?v=native-capsule')
+                file_notice.present(dict(id='native-file',direction='send',name='native-fixture.zip',state='transferring',received=50,total=100,paths=[]))
+                wait(lambda:all(card._position_motion.state()==card._position_motion.Stopped for card in (notice,file_notice,video_notice)))
+                assert notice.geometry().right()<file_notice.geometry().left()<video_notice.geometry().left()
+                QTest.mouseClick(video_notice,Qt.LeftButton,pos=video_notice.capsule_rect().center().toPoint())
+                assert opened==['https://www.youtube.com/watch?v=native-capsule'] and video_notice._hiding
+                wait(lambda:not video_notice.isVisible());file_notice.dismiss();wait(lambda:not file_notice.isVisible())
+                wait(lambda:notice._position_motion.state()==notice._position_motion.Stopped)
+                report['coexisting_capsules']=dict(nonoverlap=True,video_activates=True,shared_animated_close=True)
+            finally:
+                video_notice.supersede();file_notice.supersede();video_notice.deleteLater();file_notice.deleteLater();images.close();images.deleteLater()
             notice._expire();wait(lambda:notice._morph.state()==notice._morph.Stopped)
             assert notice._compact and round(notice.capsule_rect().width())==COMPACT_SIDE_PX
             assert notice.geometry()==host and notice.winId()==native
