@@ -9,8 +9,10 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QWidget,QLabel,QVBoxLayout
 from test_html_native_workspace import APP,flush,until
 from ui_transitions import WindowFade,UTILITY_TRANSITION_MS
-from intake_notice import ClipboardNotice,NOTICE_MARGIN_PX
+from intake_notice import ClipboardNotice,NOTICE_MARGIN_PX,NOTICE_PAIR_GAP_PX
 from video_prompt import VideoLinkPrompt
+
+def visual(card):return card.capsule_rect().translated(card.pos())
 
 class UtilityFeedbackTests(unittest.TestCase):
     def test_zoom_frames_blend_without_native_opacity_changes_and_restore_live_content(self):
@@ -39,8 +41,8 @@ class UtilityFeedbackTests(unittest.TestCase):
             with patch('native_ui_common.reduced_motion',return_value=True):
                 with patch('video_prompt.QGuiApplication.screenAt',return_value=screen):prompt.present('https://www.youtube.com/watch?v=fixture')
                 with patch('intake_notice.QGuiApplication.screenAt',return_value=screen):copy.show_result(None,dict(id='copy',phase='uploading'))
-            self.assertLess(copy.geometry().right(),prompt.geometry().left())
-            self.assertLessEqual(abs((copy.geometry().left()+prompt.geometry().right())/2-area.center().x()),1)
+            self.assertAlmostEqual(visual(prompt).left()-visual(copy).right(),NOTICE_PAIR_GAP_PX,delta=1)
+            self.assertLessEqual(abs((visual(copy).left()+visual(prompt).right())/2-area.center().x()),1)
             for card in (prompt,copy):
                 self.assertEqual(area.bottom()-card.geometry().bottom(),NOTICE_MARGIN_PX)
                 self.assertTrue(area.contains(card.geometry()))
@@ -83,10 +85,16 @@ class UtilityFeedbackTests(unittest.TestCase):
                 for card in (copy,transfer,video):
                     card._position_motion.setCurrentTime(card._position_motion.duration())
                     card._morph.setCurrentTime(card._morph.duration());card._fade.setCurrentTime(card._fade.duration())
-                self.assertLess(copy.geometry().right(),transfer.geometry().left());self.assertLess(transfer.geometry().right(),video.geometry().left())
+                self.assertAlmostEqual(visual(transfer).left()-visual(copy).right(),NOTICE_PAIR_GAP_PX,delta=1)
+                self.assertAlmostEqual(visual(video).left()-visual(transfer).right(),NOTICE_PAIR_GAP_PX,delta=1)
+                copy._expire();transfer._expire()
+                for card in (copy,transfer,video):
+                    card._position_motion.setCurrentTime(card._position_motion.duration());card._morph.setCurrentTime(card._morph.duration())
+                self.assertAlmostEqual(visual(transfer).left()-visual(copy).right(),NOTICE_PAIR_GAP_PX,delta=1)
+                self.assertAlmostEqual(visual(video).left()-visual(transfer).right(),NOTICE_PAIR_GAP_PX,delta=1)
                 video.supersede();self.assertEqual(copy._position_motion.state(),copy._position_motion.Running)
                 for card in (copy,transfer):card._position_motion.setCurrentTime(card._position_motion.duration())
-                self.assertLess(copy.geometry().right(),transfer.geometry().left())
+                self.assertAlmostEqual(visual(transfer).left()-visual(copy).right(),NOTICE_PAIR_GAP_PX,delta=1)
         finally:
             for card in (copy,video,transfer):card.supersede();card.deleteLater()
             images.close();images.deleteLater();shelf.deleteLater();flush()

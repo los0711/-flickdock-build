@@ -14,7 +14,8 @@ from lan_transfer import LanTransferService,_Transfer,_validate_manifest
 from selection_archive import _is_link
 from webrtc_stream import WebRTCStream
 from cloud_config import DEFAULT_CLOUD_URL,CLOUD_ORIGINS
-from manual_network import signaling_proxies,relay_proxy
+from manual_network import relay_proxy
+from network_environment import proxy_routes
 SIGNAL_ORIGINS=CLOUD_ORIGINS
 SIGNALING_WAIT_SECONDS=30
 PROXY_CONFIG_CHECK_SECONDS=3
@@ -141,7 +142,7 @@ class WanTransferService(LanTransferService):
             self.status_changed.emit('远程服务地址无效。');return
         url.setScheme('ws' if local else 'wss');url.setPath('/v1/wan/connect');url.setQuery(None);url.setFragment(None)
         request=QNetworkRequest(url);request.setRawHeader(b'Authorization',('Bearer '+self._credential).encode())
-        routes=signaling_proxies(self._origins[self._origin_index])
+        routes=proxy_routes(self._origins[self._origin_index])
         if routes!=self._proxy_routes:self._proxy_routes=routes;self._proxy_index=0
         self.socket.setProxy(routes[self._proxy_index%len(routes)])
         self._connection_error='';self.identity_changed.emit(self.code_identity())
@@ -234,7 +235,7 @@ class WanTransferService(LanTransferService):
         now=time.monotonic()
         if self.enabled and self._proxy_routes and now-self._last_proxy_check>=PROXY_CONFIG_CHECK_SECONDS:
             self._last_proxy_check=now
-            if signaling_proxies(self.origin)!=self._proxy_routes:
+            if proxy_routes(self.origin)!=self._proxy_routes:
                 self.reconnect();return
         if not self._connected:return
         if self._refresh_sent_at and now-self._refresh_sent_at>=12:
@@ -399,12 +400,15 @@ class WanTransferService(LanTransferService):
 
     def _begin(self,identifier,state,value):
         previous=state.get('bridge')
+        generation=value['generation']
+        if generation<state.get('generation',0) or generation==state.get('generation',0) and previous is not None:return
         if state.get('done') and state['role']=='send':return
         if value.get('relayAttempt') and previous and previous.opened.is_set() and not previous.closed:return
+        state['generation']=generation
         if previous:
             if previous.route=='relay':state['relay_bytes_prior']=state.get('relay_bytes_prior',0)+sum(previous.traffic().values())
             previous.close(abort=True)
-        generation=value['generation'];state['generation']=generation;state['ready'].clear();state.pop('error',None)
+        state['ready'].clear();state.pop('error',None)
         state['requested']=True;state['retry_inflight']=False
         state['relay_allowed']=bool(value.get('relayAllowed'));state['connect_started']=time.monotonic()
         if not value.get('relayAttempt'):
@@ -450,6 +454,8 @@ class WanTransferService(LanTransferService):
                 remaining=min(deadline-now,DIRECT_CHECK_SECONDS-(now-checks))
                 QTimer.singleShot(max(1,round(remaining*1000)),lambda:self._relay_if_needed(identifier,generation));return
             if not failed and 'remote_description_at' not in state:
+                if state.get('direct_attempts',1)<MAX_DIRECT_ATTEMPTS and now+DIRECT_CHECK_SECONDS<deadline:
+                    self._record_ice(state,'SIGNALING_RETRY');self._request_retry(identifier,state);return
                 self._record_ice(state,'SIGNALING_MISSING')
                 state['error']='未能交换连接信息，请重试。';state['ready'].set();return
             self._record_ice(state,'DIRECT_FAILED' if failed else 'DIRECT_TIMEOUT')
@@ -521,7 +527,7 @@ class WanTransferService(LanTransferService):
         peer=self._peers.get(peer_id)
         if not peer and not RECEIVE_CODE.fullmatch(str(peer_id)):raise ValueError('请输入有效的接收码，或选择最近设备。')
         if peer and 'syncthing-v2' in peer.get('features',[]):raise ValueError('对方仍使用 Syncthing 互传，请将两端更新到相同版本。')
-        if not self._connected or self._proxy_routes and signaling_proxies(self.origin)!=self._proxy_routes:self.reconnect()
+        if not self._connected or self._proxy_routes and proxy_routes(self.origin)!=self._proxy_routes:self.reconnect()
         identifier=uuid4().hex;peer=dict(peer or dict(code=peer_id,name='接收码 '+peer_id))
         with self._lock:
             if sum(t.active and t.direction=='send' for t in self._transfers.values())>=2:raise ValueError('请等待当前传输完成。')

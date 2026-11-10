@@ -81,7 +81,7 @@ class ReceiveNoticeTests(unittest.TestCase):
         self.notice.begin(self.offer);toast=self.notice.toast;toast._expire()
         self.progress('complete',self.offer['total']);self.assertEqual(self.notice.records[self.offer['id']]['state'],'verifying')
         self.assertEqual(toast._phase,'syncing')
-        path,value=self.complete();self.assertEqual(toast._phase,'success');self.assertTrue(toast._compact)
+        path,value=self.complete();self.assertEqual(toast._phase,'success');self.assertFalse(toast._compact)
         self.assertTrue(toast.timer.isActive());self.assertFalse(toast._ring_clock.isActive())
         toast._expire();self.assertFalse(toast.isVisible());self.wan.completed.emit(value)
         self.assertFalse(toast.isVisible());self.assertTrue(path.exists())
@@ -107,6 +107,19 @@ class ReceiveNoticeTests(unittest.TestCase):
         self.assertFalse(self.notice.toast.isVisible());self.assertFalse(self.notice.records)
         self.progress();self.complete();self.assertFalse(self.notice.toast.isVisible())
         self.assertFalse(self.notice.toast.timer.isActive())
+
+    def test_terminal_result_expands_a_compact_notice_before_animated_close(self):
+        from intake_notice import COMPACT_SIDE_PX
+        for state in ('complete','interrupted','error','cancelled'):
+            with self.subTest(state=state):
+                self.notice.reset();self.notice.begin(self.offer);toast=self.notice.toast
+                toast._expire();self.assertTrue(toast._compact)
+                if state=='complete':self.complete()
+                else:self.progress(state)
+                self.assertFalse(toast._compact);self.assertTrue(toast.isVisible())
+                self.assertGreater(toast.capsule_rect().width(),COMPACT_SIDE_PX)
+                self.assertTrue(toast.timer.isActive())
+                toast._expire();self.assertFalse(toast.isVisible())
 
     def test_corner_status_marks_are_filled_at_small_sizes(self):
         from PySide6.QtCore import QRectF

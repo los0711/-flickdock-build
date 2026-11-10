@@ -5,7 +5,8 @@ from shiboken6 import isValid
 from PySide6.QtCore import QPoint,QPointF,QRect,QRectF,Qt,QTimer,QEasingCurve
 from PySide6.QtGui import QBrush,QColor,QFontMetricsF,QGuiApplication,QPainter,QPainterPath,QRegion,QTransform
 from PySide6.QtWidgets import QWidget
-from flickdock_icons import app_icon,document_pixmap
+from flickdock_icons import app_icon,document_pixmap,file_pixmap
+from async_images import RASTER_SUFFIXES
 from native_ui_common import colors,icon,reduced_motion
 from platform_native import keep_tool_visible_when_inactive
 from display_frames import DisplayAnimation,FramePulse
@@ -16,7 +17,7 @@ from transfer_visuals import draw_ring
 NOTICE_WIDTH_PX=244
 NOTICE_HEIGHT_PX=64
 NOTICE_MARGIN_PX=16
-NOTICE_PAIR_GAP_PX=12
+NOTICE_PAIR_GAP_PX=8
 NOTICE_POSITION_MS=COPY_NOTICE_MORPH_MS
 NOTICE_PROGRESS_SMOOTH_MS=240
 PILL_WIDTH_PX=220
@@ -59,17 +60,22 @@ def _reflow_bottom_notices(manager,area,opening=None):
     notices=sorted((window for window in manager._bottom_notices
         if isValid(window) and window._notice_area==area and (window.isVisible() or window is opening)),
         key=lambda window:window.NOTICE_ORDER)
-    total=sum(window.width() for window in notices)+NOTICE_PAIR_GAP_PX*max(0,len(notices)-1)
-    horizontal=total<=area.width()-2*NOTICE_MARGIN_PX
-    left=area.left()+(area.width()-total)//2
+    if not notices:return
+    offsets=[];total=0
+    for window in notices:
+        offsets.append(total+(window._layout_width-window.width())/2)
+        total+=window._layout_width+NOTICE_PAIR_GAP_PX
+    total-=NOTICE_PAIR_GAP_PX
+    first=min(offsets);last=max(offset+window.width() for offset,window in zip(offsets,notices))
+    horizontal=last-first<=area.width()-2*NOTICE_MARGIN_PX
+    left=max(area.left()+NOTICE_MARGIN_PX-first,min(area.left()+(area.width()-total)/2,area.right()+1-NOTICE_MARGIN_PX-last))
     for index,window in enumerate(notices):
-        point=QPoint(left if horizontal else area.left()+(area.width()-window.width())//2,
-            area.bottom()-window.height()-NOTICE_MARGIN_PX+1-(0 if horizontal else index*(window.height()+NOTICE_PAIR_GAP_PX)))
+        point=QPoint(round(left+offsets[index]) if horizontal else area.left()+(area.width()-window.width())//2,
+            area.bottom()-window.height()-NOTICE_MARGIN_PX+1-(0 if horizontal else index*(PILL_HEIGHT_PX+NOTICE_PAIR_GAP_PX)))
         window._position_motion.stop()
         if window.isVisible() and motion_allowed() and window.pos()!=point:
             window._position_motion.setStartValue(window.pos());window._position_motion.setEndValue(point);window._position_motion.start()
         else:window.move(point)
-        left+=window.width()+NOTICE_PAIR_GAP_PX
 
 
 def place_bottom_notice(window,area):
@@ -116,7 +122,7 @@ class CapsuleNotice(QWidget):
         self._logo=app_icon()
         self._artwork_cache={}
         self._phase='idle';self._text='';self._description='';self._progress=None;self._compact=False;self._hiding=False
-        self._shape=QPointF(COMPACT_SIDE_PX,ENTRY_HEIGHT_PX);self._alpha=0.;self._full_width=PILL_WIDTH_PX
+        self._shape=QPointF(COMPACT_SIDE_PX,ENTRY_HEIGHT_PX);self._alpha=0.;self._full_width=PILL_WIDTH_PX;self._layout_width=PILL_WIDTH_PX
         self._morph=DisplayAnimation(self);self._morph.setDuration(COPY_NOTICE_MORPH_MS)
         curve=QEasingCurve(QEasingCurve.OutBack);curve.setOvershoot(COPY_NOTICE_OVERSHOOT)
         self._morph.setEasingCurve(curve);self._morph.valueChanged.connect(self._shape_changed)
@@ -135,7 +141,8 @@ class CapsuleNotice(QWidget):
         slide_curve=QEasingCurve(QEasingCurve.OutBack);slide_curve.setOvershoot(COPY_NOTICE_OVERSHOOT)
         self._position_motion.setEasingCurve(slide_curve);self._position_motion.valueChanged.connect(self.move)
 
-    def _shape_changed(self,value):self._shape=value;self.update()
+    def _shape_changed(self,value):
+        self._shape=value;self._clip_finished();self.update()
 
     def _alpha_changed(self,value):self._alpha=float(value);self.update()
 
@@ -154,7 +161,11 @@ class CapsuleNotice(QWidget):
         self.setMask(QRegion(path.toFillPolygon().toPolygon()))
 
     def _animate_shape(self,width,height=PILL_HEIGHT_PX):
-        self.clearMask();self._morph.stop();target=QPointF(width,height)
+        self._morph.stop();target=QPointF(width,height)
+        occupied=max(MIN_SHAPE_WIDTH_PX,min(self.width()-4,width))
+        if occupied!=self._layout_width:
+            self._layout_width=occupied
+            if self.isVisible() and self._notice_area is not None:_reflow_bottom_notices(self.manager,self._notice_area)
         if not motion_allowed():self._shape_changed(target);self._clip_finished();return
         self._morph.setStartValue(self._shape);self._morph.setEndValue(target);self._morph.start()
 
@@ -208,7 +219,7 @@ class CapsuleNotice(QWidget):
     def _begin_presentation(self,area):
         self._hiding=False;self._compact=False
         self.setFixedSize(min(self.HOST_WIDTH,max(COMPACT_SIDE_PX,area.width()-2*NOTICE_MARGIN_PX)),NOTICE_HEIGHT_PX)
-        self._full_width=self._content_width();self._place(area)
+        self._full_width=self._content_width();self._layout_width=self._full_width;self._place(area)
         if not self.isVisible():self._shape=QPointF(COMPACT_SIDE_PX,ENTRY_HEIGHT_PX);self._alpha=0.
         self.show();self.raise_();self._animate_shape(self._full_width);self._animate_alpha(1.)
         self._sync_accessibility()
@@ -278,6 +289,7 @@ class ClipboardNotice(CapsuleNotice):
         self._result_timer=QTimer(self);self._result_timer.setSingleShot(True)
         self._result_timer.setInterval(RESULT_COALESCE_MS);self._result_timer.timeout.connect(self._deliver_result)
         self._presenter=getattr(manager,'clipboard_presenter',None)
+        self._file_artwork_key=None;self._file_artwork=None
         if self._presenter is not None:self._presenter.changed.connect(self.update)
 
     def _paint_leading(self,painter,rect):
@@ -287,8 +299,22 @@ class ClipboardNotice(CapsuleNotice):
             if value[0]=='image':image=value[1].get('image');kind='png'
             elif value[0]=='files':kind=Path(value[1][0]).suffix or 'file'
         if image is None and self._presenter is not None and self._presenter.state.get('id')==context.get('id') and not self._presenter.thumbnail.isNull():image=self._presenter.thumbnail
-        if image is None or image.isNull():image=document_pixmap(kind,LOGO_SIZE_PX,dpr=self.devicePixelRatioF()).toImage()
+        if image is None or image.isNull():
+            path=value[1][0] if value and value[0]=='files' and value[1] else None
+            key=(context.get('id'),path,self.devicePixelRatioF())
+            if key!=self._file_artwork_key:
+                self._file_artwork_key=key
+                # Raster decoding belongs to the shared presenter worker.
+                pixmap=(file_pixmap(path,LOGO_SIZE_PX,dpr=self.devicePixelRatioF())
+                    if path and Path(path).suffix.lower() not in RASTER_SUFFIXES|{'.svg','.svgz'}
+                    else document_pixmap(kind,LOGO_SIZE_PX,dpr=self.devicePixelRatioF()))
+                self._file_artwork=pixmap.toImage()
+            image=self._file_artwork
         paint_circular_artwork(painter,rect,image,self.manager.settings.theme,self._artwork_cache)
+
+    def replay(self,state):
+        self._result_timer.stop();self._pending_result=None;self._dismissed_id=None;self._current_result=None
+        self.show_result(None,state)
 
     def dismiss(self):
         context=self._current_result[1] if self._current_result is not None else self._pending_result[1] if self._pending_result is not None else {}
@@ -302,10 +328,16 @@ class ClipboardNotice(CapsuleNotice):
         if context.get('id') and context['id']==self._dismissed_id:return
         self._pending_result=(ok,dict(context));self._result_timer.start()
 
-    def update_delivery(self,state):
+    def update_delivery(self,state,*,authoritative=False):
         if not self.manager.settings.clipboard_success_notice:self.supersede();return
         identity=state.get('id')
-        if not identity or identity==self._dismissed_id:return
+        current=self._current_result or self._pending_result
+        if authoritative and current is not None and (not identity or identity!=current[1].get('id') or state.get('permission_required')):
+            if identity and state.get('local_copy') and state.get('phase')=='uploading' and not state.get('permission_required'):
+                self.replay(state)
+            else:self.dismiss()
+            return
+        if not identity or identity==self._dismissed_id or state.get('permission_required'):return
         if self._pending_result is not None:
             ok,context=self._pending_result
             if context.get('id')==identity:context.update(state)
@@ -324,6 +356,11 @@ class ClipboardNotice(CapsuleNotice):
 
     def show_result(self,ok,context):
         if not self.manager.settings.clipboard_success_notice:return
+        if self._presenter is not None:
+            state=self._presenter.state
+            if not context.get('id') or context['id']!=state.get('id'):return
+            context=dict(context,**state)
+            ok=True if state.get('backed_up') or state.get('phase')=='synced' else False if state.get('phase')=='error' else None
         if context.get('id') and context['id']==self._dismissed_id:return
         same=bool(self.isVisible() and self._current_result is not None and context.get('id')
                   and context['id']==self._current_result[1].get('id'))

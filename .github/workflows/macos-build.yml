@@ -78,6 +78,8 @@ jobs:
           build/macos-venv/bin/python -m unittest test_workbench_v1823 -q
       - name: Verify native utility windows and copy capsule lifecycle
         run: build/macos-venv/bin/python ci_utility_windows.py --output "../outputs/mac-utility-${{ matrix.arch }}.json"
+      - name: Verify capsule styles and copied artwork from the frozen application
+        run: QT_QPA_PLATFORM=cocoa dist/FlickDock.app/Contents/MacOS/FlickDock --verify-notices --verify-output "../outputs/mac-notices-${{ matrix.arch }}.json"
       - name: Measure verified local LAN loopback transfer
         run: |
           build/macos-venv/bin/python bench_lan_throughput_v183.py --size-mib 128 --output "../outputs/mac-lan-${{ matrix.arch }}.json"
@@ -105,7 +107,7 @@ jobs:
           import shutil
           source, target = Path('../outputs'), Path('ci-output')
           target.mkdir()
-          for pattern in ('FlickDock-*-macOS-${{ matrix.arch }}.zip', 'FlickDock-*-macOS-${{ matrix.arch }}.dmg', 'FlickDock-*-macOS-${{ matrix.arch }}.pkg', 'mac-build-*-${{ matrix.arch }}.json', 'mac-cloud-${{ matrix.arch }}.json', 'mac-lan-${{ matrix.arch }}.json', 'mac-video-${{ matrix.arch }}.json', 'mac-utility-${{ matrix.arch }}.json', 'mac-network-${{ matrix.arch }}.json'):
+          for pattern in ('FlickDock-*-macOS-${{ matrix.arch }}.zip', 'FlickDock-*-macOS-${{ matrix.arch }}.dmg', 'FlickDock-*-macOS-${{ matrix.arch }}.pkg', 'mac-build-*-${{ matrix.arch }}.json', 'mac-cloud-${{ matrix.arch }}.json', 'mac-lan-${{ matrix.arch }}.json', 'mac-video-${{ matrix.arch }}.json', 'mac-utility-${{ matrix.arch }}.json', 'mac-network-${{ matrix.arch }}.json', 'mac-notices-${{ matrix.arch }}.json'):
               files = list(source.glob(pattern))
               assert len(files) == 1, (pattern, files)
               for path in files:

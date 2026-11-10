@@ -6,7 +6,8 @@ from unittest.mock import Mock,patch
 from PySide6.QtNetwork import QNetworkProxy
 from PySide6.QtWidgets import QApplication
 from wan_transfer import WanTransferService
-from manual_network import signaling_proxies,relay_proxy
+from manual_network import relay_proxy
+from network_environment import proxy_routes
 APP=QApplication.instance() or QApplication([])
 
 class ManualNetworkTests(unittest.TestCase):
@@ -33,13 +34,13 @@ class ManualNetworkTests(unittest.TestCase):
     def test_proxy_change_reconnects_immediately_without_polling_device_status(self):
         direct=QNetworkProxy(QNetworkProxy.NoProxy);proxy=QNetworkProxy(QNetworkProxy.HttpProxy,'127.0.0.1',7890)
         self.service._proxy_routes=[proxy,direct];self.service._last_proxy_check=0
-        with patch('wan_transfer.signaling_proxies',return_value=[direct]),patch.object(self.service,'reconnect') as reconnect:
+        with patch('wan_transfer.proxy_routes',return_value=[direct]),patch.object(self.service,'reconnect') as reconnect:
             self.service.check_code();reconnect.assert_called_once()
         self.assertFalse(self.sent)
 
     def test_failed_system_proxy_attempt_selects_direct_route(self):
         direct=QNetworkProxy(QNetworkProxy.NoProxy);proxy=QNetworkProxy(QNetworkProxy.HttpProxy,'127.0.0.1',7890)
-        with patch('wan_transfer.signaling_proxies',return_value=[proxy,direct]),patch.object(self.service.socket,'open'):
+        with patch('wan_transfer.proxy_routes',return_value=[proxy,direct]),patch.object(self.service.socket,'open'):
             self.service._connect();self.assertEqual(self.service.socket.proxy().type(),QNetworkProxy.HttpProxy)
             self.service._connection_timed_out();self.service.retry.stop();self.service._connect()
             self.assertEqual(self.service.socket.proxy().type(),QNetworkProxy.NoProxy)
@@ -94,8 +95,8 @@ class ManualNetworkTests(unittest.TestCase):
 
     def test_proxy_selection_preserves_credentials_only_in_memory_and_direct_route_exists(self):
         proxy=QNetworkProxy(QNetworkProxy.HttpProxy,'127.0.0.1',7890,'test-user','test-secret')
-        with patch('manual_network.QNetworkProxyFactory.systemProxyForQuery',return_value=[proxy]):
-            routes=signaling_proxies('https://flickdock.cc.cd');self.assertEqual(len(routes),2)
+        with patch('network_environment.QNetworkProxyFactory.systemProxyForQuery',return_value=[proxy]):
+            routes=proxy_routes('https://flickdock.cc.cd');self.assertEqual(len(routes),2)
             self.assertEqual(relay_proxy(),dict(kind='http',host='127.0.0.1',port=7890,username='test-user',password='test-secret'))
 
 if __name__=='__main__':unittest.main()

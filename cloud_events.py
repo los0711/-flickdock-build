@@ -13,6 +13,9 @@ from PySide6.QtCore import QObject, QTimer, QUrl, Signal,Qt
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtNetwork import QNetworkRequest,QNetworkInformation
 from PySide6.QtWebSockets import QWebSocket
+from app_version import APP_VERSION
+from network_environment import proxy_routes
+from PySide6.QtNetwork import QNetworkProxy
 
 
 CONNECT_TIMEOUT_MS=12000
@@ -37,6 +40,7 @@ class CloudEvents(QObject):
         self._identity = ''
         self._attempt = 0
         self._inline_version=0
+        self._proxy_routes=[];self._proxy_index=0
         self.socket = QWebSocket(parent=self)
         self.socket.connected.connect(self._connected)
         self.socket.disconnected.connect(self._disconnected)
@@ -67,6 +71,7 @@ class CloudEvents(QObject):
         self.socket.abort()
         self._attempt = 0
         self._inline_version=0
+        self._proxy_routes=[];self._proxy_index=0
         self._identity = account.get('id','') if isinstance(account,dict) else ''
         if self.enabled and self._identity and self.account.api.token:
             self.retry.start(0)
@@ -80,6 +85,11 @@ class CloudEvents(QObject):
         url.setScheme('wss'); url.setPath('/v1/events')
         request = QNetworkRequest(url)
         request.setRawHeader(b'Authorization', ('Bearer '+self.account.api.token).encode('ascii'))
+        request.setRawHeader(b'User-Agent',('FlickDock/'+APP_VERSION+' (CloudSync)').encode('ascii'))
+        routes=proxy_routes(self.account.api.origin)
+        if getattr(self.account.api,'prefers_direct',False):routes.sort(key=lambda proxy:proxy.type()!=QNetworkProxy.NoProxy)
+        if routes!=self._proxy_routes:self._proxy_routes=routes;self._proxy_index=0
+        self.socket.setProxy(routes[self._proxy_index%len(routes)])
         self.connect_timeout.start(CONNECT_TIMEOUT_MS)
         self.socket.open(request)
 
@@ -97,6 +107,7 @@ class CloudEvents(QObject):
         if self.closed or not self.enabled or not self._identity or not self.account.signed_in or self.retry.isActive():
             return
         self._attempt = min(self._attempt+1, 6)
+        self._proxy_index+=1
         base=min(RECONNECT_MAX_MS,RECONNECT_BASE_MS*2**(self._attempt-1))
         spread=base*RECONNECT_JITTER_PERCENT//100
         self.retry.start(min(RECONNECT_MAX_MS,base-spread+secrets.randbelow(2*spread+1)))

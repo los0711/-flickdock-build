@@ -20,6 +20,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import secrets
+import select
 import shutil
 import socket
 import ssl
@@ -42,6 +43,8 @@ codecs.lookup('idna')
 DISCOVERY_PORT = 45875
 BLOCK_BYTES = 1024 * 1024
 SOCKET_BUFFER_BYTES = 4 * 1024 * 1024
+FILE_PIPELINE_MAX_PENDING = 8
+FILE_PIPELINE_BYTES = 32 * 1024 * 1024
 MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 MAX_ENTRIES = 100000
 MAX_TOTAL_BYTES = (1 << 63) - 1
@@ -53,8 +56,26 @@ class _FileAcknowledgements:
     def __init__(self,stream,cancel,count):
         self.stream=stream;self.cancel=cancel;self.pending=deque();self.bytes=0
         self.condition=threading.Condition();self.error=None;self.complete=False;self.submitted=0;self.stopped=False
-        self.thread=threading.Thread(target=self._read,args=(count,),daemon=True,name='FlickDock-file-ack')
-        self.thread.start()
+        self.inline=isinstance(stream,ssl.SSLSocket);self.remaining=count
+        # An SSL object must be driven by one thread. Drain LAN receipts between
+        # file writes; the already thread-safe WebRTC stream keeps its reader.
+        self.thread=None if self.inline else threading.Thread(target=self._read,args=(count,),daemon=True,name='FlickDock-file-ack')
+        if self.thread is not None:self.thread.start()
+
+    def _verified(self):
+        answer=_read_json(self.stream,self.cancel)
+        if answer.get('state')!='verified':raise ValueError(answer.get('message') or '接收方文件校验失败。')
+        with self.condition:
+            if not self.pending:raise ValueError('接收方文件确认顺序无效。')
+            self.bytes-=self.pending.popleft();self.condition.notify_all()
+
+    def _saved(self):
+        answer=_read_json(self.stream,self.cancel)
+        if answer.get('state')!='complete':raise ValueError(answer.get('message') or '接收方保存文件失败。')
+
+    def _drain_inline(self):
+        if not self.submitted:raise ValueError('文件尚未发送完成。')
+        self.submitted-=1;self._verified();self.remaining-=1
 
     def _read(self,count):
         try:
@@ -63,13 +84,8 @@ class _FileAcknowledgements:
                     while not self.submitted and not self.stopped and not self.cancel.is_set():self.condition.wait(.2)
                     if self.stopped or self.cancel.is_set():raise InterruptedError('已取消传输。')
                     self.submitted-=1
-                answer=_read_json(self.stream,self.cancel)
-                if answer.get('state')!='verified':raise ValueError(answer.get('message') or '接收方文件校验失败。')
-                with self.condition:
-                    if not self.pending:raise ValueError('接收方文件确认顺序无效。')
-                    self.bytes-=self.pending.popleft();self.condition.notify_all()
-            answer=_read_json(self.stream,self.cancel)
-            if answer.get('state')!='complete':raise ValueError(answer.get('message') or '接收方保存文件失败。')
+                self._verified()
+            self._saved()
         except Exception as error:
             with self.condition:self.error=error
         finally:
@@ -77,20 +93,27 @@ class _FileAcknowledgements:
 
     def reserve(self,size):
         with self.condition:
-            while not self.error and not self.cancel.is_set() and self.pending and (len(self.pending)>=8 or self.bytes+size>32*1024*1024):
-                self.condition.wait(.2)
+            while not self.error and not self.cancel.is_set() and self.pending and (len(self.pending)>=FILE_PIPELINE_MAX_PENDING or self.bytes+size>FILE_PIPELINE_BYTES):
+                if self.inline:self._drain_inline()
+                else:self.condition.wait(.2)
             if self.cancel.is_set():raise InterruptedError('已取消传输。')
             if self.error:raise self.error
             self.pending.append(size);self.bytes+=size
 
     def sent(self):
-        with self.condition:self.submitted+=1;self.condition.notify_all()
+        with self.condition:
+            self.submitted+=1;self.condition.notify_all()
+            if self.inline:
+                while self.submitted and (self.stream.pending() or select.select([self.stream],[],[],0)[0]):self._drain_inline()
 
     def stop(self):
         with self.condition:self.stopped=True;self.condition.notify_all()
-        self.thread.join(2)
+        if self.thread is not None:self.thread.join(2)
 
     def finish(self):
+        if self.inline:
+            while self.remaining:self._drain_inline()
+            self._saved();self.complete=True;return
         with self.condition:
             while not self.complete and not self.cancel.is_set():self.condition.wait(.2)
             if self.cancel.is_set():raise InterruptedError('已取消传输。')
@@ -606,7 +629,7 @@ class LanTransferService(QObject):
             transfer.total = total; token = transfer.token or secrets.token_hex(32)
             transfer.token = token
             code = ''
-            offer = dict(protocol=PROTOCOL, id=transfer.transfer_id, token=token,pipeline=1 if getattr(self,'mode','lan')=='wan' else 0,
+            offer = dict(protocol=PROTOCOL, id=transfer.transfer_id, token=token,pipeline=1,
                          sender=self.device_name, entries=entries)
             files = [row for row in entries if row['kind'] == 'file']
             if self.account_authorizer:self.account_authorizer.prepare(transfer,peer,entries)
@@ -753,7 +776,7 @@ class LanTransferService(QObject):
                 for row in entries:
                     if row['kind'] == 'directory': stage.joinpath(*PurePosixPath(row['path']).parts).mkdir()
             files = [row for row in entries if row['kind'] == 'file']
-            _send_json(stream, {'state': 'ready', 'next_file': transfer.next_file, 'offset': transfer.offset, 'pipeline':1 if getattr(self,'mode','lan')=='wan' and request.get('pipeline')==1 else 0})
+            _send_json(stream, {'state': 'ready', 'next_file': transfer.next_file, 'offset': transfer.offset, 'pipeline':1 if request.get('pipeline')==1 else 0})
             last_emit = 0
             buffer=bytearray(BLOCK_BYTES);view=memoryview(buffer)
             for number in range(transfer.next_file, len(files)):

@@ -105,6 +105,14 @@ class WanRecovery(unittest.TestCase):
         state=self.state();state['generation']=3
         self.message(type='error',generation=1,requestType='candidate',message='旧信令')
         self.assertFalse(state['ready'].is_set());self.assertNotIn('error',state)
+
+    def test_duplicate_or_stale_begin_never_restarts_the_active_native_generation(self):
+        state=self.state();bridge=unittest.mock.Mock();bridge.closed=False
+        state.update(bridge=bridge,generation=3)
+        with patch('wan_transfer.WebRTCStream') as spawn:
+            for generation in (3,2):self.message(type='begin',generation=generation,iceServers=[],relayAllowed=True)
+            spawn.assert_not_called();bridge.close.assert_not_called()
+        self.assertEqual(state['generation'],3);self.assertIs(state['bridge'],bridge)
     def test_rejected_offer_does_not_resurrect_on_reconnect(self):
         state=self.state('receive');self.service.cancel(self.identifier);APP.processEvents()
         self.assertIn((self.identifier,'cancel'),self.service._outbox)

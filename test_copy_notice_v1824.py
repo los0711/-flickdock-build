@@ -2,7 +2,7 @@
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
-from PySide6.QtCore import QPoint,QRect,Qt
+from PySide6.QtCore import QObject,QPoint,QRect,Qt,Signal
 from PySide6.QtGui import QImage,QPainter,QColor,QRegion
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QLineEdit,QLabel,QWidget
@@ -59,6 +59,31 @@ class CopyNoticeTests(unittest.TestCase):
         card.update_delivery(dict(state,backed_up=True,cloud_transfer=dict(phase='complete',received=1,total=1)))
         self.assertEqual(card._phase,'success');self.assertFalse(card._ring_clock.isActive())
 
+    def test_later_copy_reopens_the_same_completed_identity_after_auto_dismissal(self):
+        card=self.card;state=dict(uploading(),phase='synced',backed_up=True)
+        card.show_result(True,state);card._expire();self.assertFalse(card.isVisible())
+        card.replay(state)
+        self.assertTrue(card.isVisible());self.assertFalse(card._compact)
+        self.assertEqual(card._phase,'success');self.assertTrue(card.timer.isActive())
+
+    def test_preview_state_completes_notice_and_replacement_cancels_stale_feedback(self):
+        class Presenter(QObject):changed=Signal()
+        presenter=Presenter();presenter.state=uploading();presenter.thumbnail=QImage()
+        manager=SimpleNamespace(clipboard_presenter=presenter,settings=self.card.manager.settings,_quitting=False,_clipboard_runtime_enabled=lambda:True)
+        notice=ClipboardNotice(manager);manager.clipboard_notice=notice
+        presenter.changed.connect(lambda:ShelfManager._clipboard_notice_state(manager,presenter.state))
+        try:
+            notice.show_result(None,uploading());self.assertEqual(notice._phase,'syncing')
+            presenter.state=dict(uploading(),phase='synced',backed_up=True)
+            presenter.changed.emit();self.assertEqual(notice._phase,'success');self.assertFalse(notice._ring_clock.isActive())
+            notice.schedule_result(None,uploading());QTest.qWait(180);flush()
+            self.assertEqual(notice._phase,'success')
+            presenter.state=dict(uploading('received-from-another-device'),phase='synced',backed_up=True,local_copy=False)
+            presenter.changed.emit();self.assertFalse(notice.isVisible())
+            notice.schedule_result(True,uploading())
+            QTest.qWait(180);flush();self.assertFalse(notice.isVisible());self.assertFalse(notice._result_timer.isActive())
+        finally:notice.supersede();notice.deleteLater();presenter.deleteLater();flush()
+
     def test_real_progress_interpolates_without_spinner_or_unconfirmed_byte_growth(self):
         self.reduced.stop();self.reduced=patch('native_ui_common.reduced_motion',return_value=False);self.reduced.start()
         card=self.card;state=uploading();card.show_result(None,state)
@@ -102,7 +127,7 @@ class CopyNoticeTests(unittest.TestCase):
 
     def test_disabled_manager_never_constructs_a_notice_for_either_result(self):
         manager=SimpleNamespace(_quitting=False,_clipboard_runtime_enabled=lambda:True,settings=SimpleNamespace(clipboard_success_notice=False))
-        for ok in (True,False):ShelfManager._clipboard_copy_result(manager,ok,{'id':'copy'})
+        for phase in ('uploading','error','synced'):ShelfManager._clipboard_notice_state(manager,dict(id='copy',phase=phase,local_copy=True))
         self.assertFalse(hasattr(manager,'clipboard_notice'))
 
     def test_toggle_off_suppresses_pending_success_failure_and_all_display_clocks(self):

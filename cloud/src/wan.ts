@@ -497,7 +497,13 @@ export class WanHub extends DurableObject<WanEnv>{
       const value=await this.session(request.id,seat),other=value.sender.id===seat.id?value.receiver.id:value.sender.id;
       if(request.type==='accept'){
         if(seat.id!==value.receiver.id)throw new Error('无法接受此请求。');
-        if(value.accepted){await this.replay(socket,value);return;}
+        if(value.accepted){
+          await this.replay(socket,value);
+          // Rejoining receivers may have missed SDP while their socket was
+          // down. Let the initiator restart an unfinished ICE generation.
+          const sender=this.socket(value.sender.id);if(sender)await this.replay(sender,value);
+          return;
+        }
         const accepted=await this.ctx.storage.transaction(async tx=>{
           const latest=await tx.get<Session>('session:'+value.id);if(!latest)throw new Error('传输请求已失效。');
           if(latest.accepted)return latest;

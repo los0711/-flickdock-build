@@ -31,6 +31,7 @@ class TransferCapsule(CapsuleNotice):
 
     def present(self,record,*,reveal=False):
         same=self.record is not None and self.record['id']==record['id'];previous=self._phase
+        previous_state=self.record['state'] if same else None
         self.record=dict(record);state=record['state'];self._text=record['name'] or '文件'
         sending=record['direction']=='send';self._description=('发送' if sending else '接收')+('完成' if state=='complete' else '未完成' if state in TERMINAL else '文件中')
         self._phase='success' if state=='complete' else 'error' if state in TERMINAL else 'syncing'
@@ -40,8 +41,11 @@ class TransferCapsule(CapsuleNotice):
         if not same or not self.isVisible():
             screen=QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
             self._begin_presentation(screen.availableGeometry());self.timer.start(NOTICE_PROGRESS_DURATION_MS if self._phase=='syncing' else NOTICE_DURATION_MS)
+        elif state in TERMINAL and state!=previous_state:
+            self._compact=False;self._full_width=self._content_width();self._animate_shape(self._full_width)
+            self.timer.start(NOTICE_DURATION_MS)
         elif previous!=self._phase:
-            self.timer.start(NOTICE_PROGRESS_DURATION_MS if self._phase=='syncing' else COMPACT_SUCCESS_DURATION_MS if self._compact else NOTICE_DURATION_MS)
+            self.timer.start(NOTICE_PROGRESS_DURATION_MS if self._phase=='syncing' else NOTICE_DURATION_MS)
         self._sync_accessibility();self._sync_ring_clock();self.update()
 
     def _paint_leading(self,painter,rect):

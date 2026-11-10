@@ -83,7 +83,8 @@ def main():
                 video_notice.present('https://www.youtube.com/watch?v=native-capsule')
                 file_notice.present(dict(id='native-file',direction='send',name='native-fixture.zip',state='transferring',received=50,total=100,paths=[]))
                 wait(lambda:all(card._position_motion.state()==card._position_motion.Stopped for card in (notice,file_notice,video_notice)))
-                assert notice.geometry().right()<file_notice.geometry().left()<video_notice.geometry().left()
+                bounds=[card.capsule_rect().translated(card.pos()) for card in (notice,file_notice,video_notice)]
+                assert all(7<=b.left()-a.right()<=9 for a,b in zip(bounds,bounds[1:])),bounds
                 QTest.mouseClick(video_notice,Qt.LeftButton,pos=video_notice.capsule_rect().center().toPoint())
                 assert opened==['https://www.youtube.com/watch?v=native-capsule'] and video_notice._hiding
                 wait(lambda:not video_notice.isVisible());file_notice.dismiss();wait(lambda:not file_notice.isVisible())

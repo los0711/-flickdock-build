@@ -21,6 +21,7 @@ CLIPBOARD_PRIORITY_LEASE_MS=350
 TEXT_COPY_COALESCE_MS=8
 BINARY_COPY_COALESCE_MS=60
 MAC_CLIPBOARD_OBSERVE_MS=50
+COPY_FORMAT_SETTLE_SECONDS=1.
 
 
 class ClipboardSizeLimit(ValueError):
@@ -249,6 +250,7 @@ class ClipboardSync(QObject):
     copy_result=Signal(bool,dict)
     copy_started=Signal()
     copy_observed=Signal(object)
+    copy_repeated=Signal(object)
     # Keep original image bytes as a shared Python object, rather than copying
     # a potentially 20 MB value through QVariantMap for each status update.
     view_changed=Signal(object)
@@ -368,6 +370,14 @@ class ClipboardSync(QObject):
             if mime is None:return None
             self._native_format_issue=''
             if self._is_native:
+                # Remote-control apps may add virtual-file descriptors beside
+                # an ordinary local file copy. Use the ready local payload
+                # before asking that app to render a delayed remote stream.
+                if mime.hasUrls() and any(url.isLocalFile() for url in mime.urls()):
+                    value=_snapshot_mime(mime)
+                    if value is None:
+                        self._native_format_issue='VIRTUAL_FILE_SINGLE_ONLY';return None
+                    self._snapshot_available=True;return value
                 descriptor=describe_virtual(mime)
                 if descriptor is not None:
                     sequence=self._sequence();key=sequence,descriptor.sha256
@@ -453,6 +463,21 @@ class ClipboardSync(QObject):
         else:self.mac_poll.stop()
 
     def _schedule_change(self):
+        if self._is_native and not self.closed:
+            if self._applying:return
+            sequence=self._sequence()
+            if sequence is not None and sequence==self._last_sequence:return
+            if self._virtual_capture is not None and self._virtual_capture[0][0]!=sequence:
+                self._virtual_capture[1].cancelled.set()
+            if self._active():
+                # Clipboard owners (including remote-control software) can still
+                # be publishing delayed formats inside dataChanged. Fence old
+                # receives now, and read only after the notification unwinds.
+                self._native_receive_interrupted|=self._fetching or self._prepared_receive is not None
+                self._copy_notified_mono=time.monotonic();self._generation+=1
+                self.change_debounce.start(TEXT_COPY_COALESCE_MS)
+            else:self.change_debounce.start(TEXT_COPY_COALESCE_MS)
+            return
         if not self._active() and not self.closed:
             value=self._snapshot()
             if self._snapshot_available and not self._applying:self.copy_observed.emit(value)
@@ -465,7 +490,8 @@ class ClipboardSync(QObject):
             # changes the content fence or schedules a duplicate cloud upload.
             if self._snapshot_available:self.copy_observed.emit(value)
             if self._snapshot_available and (value is not None or sequence is None) and sig==self._last_local_signature:
-                self._last_sequence=sequence;return
+                self._last_sequence=sequence;self._repeat_copy_feedback(value);return
+            if self._snapshot_available:self._last_copy_observation=time.monotonic()
             from PySide6.QtGui import QCursor
             point=QCursor.pos();self._copy_point=(point.x(),point.y())
             # Stop an in-flight remote read before the native notification's
@@ -473,6 +499,15 @@ class ClipboardSync(QObject):
             self._native_receive_interrupted|=self._fetching or self._prepared_receive is not None
             self._copy_notified_mono=time.monotonic();self._generation+=1
             self.change_debounce.start(TEXT_COPY_COALESCE_MS if value is not None and value[0]=='text' else BINARY_COPY_COALESCE_MS)
+
+    def _repeat_copy_feedback(self,value):
+        now=time.monotonic();previous=getattr(self,'_last_copy_observation',now)
+        self._last_copy_observation=now
+        # Native format conversion bursts are one observation. A later real
+        # copy can show the confirmed state without re-uploading identical bytes.
+        if (value is not None and now-previous>=COPY_FORMAT_SETTLE_SECONDS and self.view.get('id')
+                and signature(value)==signature(self.view.get('value'))):
+            self.copy_repeated.emit(dict(self.view,value=value))
 
     def _copy_timestamp(self,intent):
         if intent['at'] is None:
@@ -734,7 +769,12 @@ class ClipboardSync(QObject):
         self._cleanup()
 
     def _changed(self):
-        if not self._active() or self._applying:return
+        if self.closed or self._applying:return
+        if not self._active():
+            value=self._snapshot()
+            if self._snapshot_available:
+                self.copy_observed.emit(value);self._set_view(value,'local');self._last_sequence=self._sequence()
+            return
         sequence=self._sequence()
         # Repeated native notifications for one copy must not ask another app
         # to render the same delayed clipboard again or repeat file/image work.
@@ -755,10 +795,12 @@ class ClipboardSync(QObject):
             self._native_read_retry=(sequence,attempts)
             if attempts<=5:self.change_debounce.start(100);return
         else:self._native_read_retry=(None,0)
+        if self._is_native:self.copy_observed.emit(value)
         if sig==self._last_local_signature:
             self._last_sequence=sequence
-            if self._pending is not None and self._pending['id']==self.view['id']:
-                self._pending['generation']=self._generation
+            self._repeat_copy_feedback(value)
+            task=self._pending or self._local_retry
+            if task is not None and task['id']==self.view['id']:task['generation']=self._generation
             self._set_view(self.view['value'],self.view['phase'],self.view.get('id',''))
             # The unreadable notification fenced an in-flight receive before
             # we could tell it was a duplicate. Resume that receive now instead
@@ -1122,6 +1164,7 @@ class ClipboardSync(QObject):
         finally:self._applying=False
 
     def _adopt_native(self,actual,directory,identity):
+        self._last_copy_observation=time.monotonic()
         self._local_fence=None;self._ignored=actual
         self._last_sequence=self._sequence()
         self._last_local_signature=actual;self._current_directory=directory

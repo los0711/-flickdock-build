@@ -3,8 +3,11 @@ from contextlib import ExitStack
 import tempfile
 from pathlib import Path
 import unittest
+import time
+import threading
+from types import SimpleNamespace
 from uuid import uuid4
-from PySide6.QtCore import QBuffer,QIODevice,QMimeData
+from PySide6.QtCore import QBuffer,QIODevice,QMimeData,QUrl
 from PySide6.QtGui import QImage,QColor
 from PySide6.QtTest import QTest
 from unittest.mock import patch
@@ -74,12 +77,84 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(sum(method=='PUT' for method,_ in self.hub.calls),baseline)
         self.assertEqual(self.native_writes,[0,1])
 
+    def test_later_same_file_copy_replays_the_existing_confirmed_preview(self):
+        client=self.clients[0];repeated=[];client.copy_repeated.connect(repeated.append)
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'copy-again.bin';path.write_bytes(b'original file contents')
+            def copy_file():
+                mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(path))]);self.clips[0].setMimeData(mime)
+            copy_file();until(lambda:client.view.get('backed_up'))
+            identity=client.view['id'];version=self.hub.version
+            client._last_copy_observation=time.monotonic()-60;copy_file();self.settle()
+            self.assertEqual(len(repeated),1);self.assertEqual(repeated[0]['id'],identity)
+            self.assertEqual(repeated[0]['value'][0],'files')
+            self.assertEqual([Path(value) for value in repeated[0]['value'][1]],[path]);self.assertEqual(self.hub.version,version)
+
     def test_native_line_ending_conversion_is_not_a_second_copy(self):
         self.clips[0].text('first\nsecond')
         until(lambda:self.clips[1].mimeData().text()=='first\nsecond')
         self.clips[1].text('first\r\nsecond');self.settle()
         self.assertEqual(self.hub.version,1)
         self.assertEqual(self.clips[0].mimeData().text(),'first\nsecond')
+
+    def test_later_same_copy_replays_feedback_without_duplicate_cloud_upload(self):
+        client=self.clients[0];repeated=[];client.copy_repeated.connect(repeated.append)
+        self.clips[0].text('copy this again later')
+        until(lambda:client.view.get('backed_up'))
+        identity=client.view['id'];version=self.hub.version
+        self.clips[0].text('copy this again later');self.settle()
+        self.assertFalse(repeated)
+        client._last_copy_observation=time.monotonic()-60
+        self.clips[0].text('copy this again later');self.settle()
+        self.assertEqual([row['id'] for row in repeated],[identity])
+        self.assertTrue(repeated[0]['backed_up']);self.assertEqual(self.hub.version,version)
+        self.clips[0].text('different content')
+        until(lambda:client.view['value'][1]['text']=='different content' and client.view['backed_up'])
+        self.assertNotEqual(client.view['id'],identity)
+
+    def test_native_copy_notification_defers_reads_and_fences_old_remote_writes(self):
+        client=self.clients[0];client._is_native=True
+        previous=client._generation
+        client._prepared_receive=dict(valid=lambda:client._generation==previous)
+        with patch.object(client,'_snapshot',wraps=client._snapshot) as read:
+            self.clips[0].text('new local copy while remote sharing is enabled')
+            self.assertEqual(read.call_count,0)
+            self.assertGreater(client._generation,previous)
+            client._apply_received();self.assertIsNone(client._prepared_receive)
+            self.assertEqual(self.clips[0].mimeData().text(),'new local copy while remote sharing is enabled')
+            until(lambda:client.view.get('backed_up'))
+            self.assertGreater(read.call_count,0)
+        self.assertEqual(self.clips[0].mimeData().text(),'new local copy while remote sharing is enabled')
+
+    def test_new_native_copy_cancels_a_remote_virtual_file_reader_before_any_read(self):
+        client=self.clients[0];client._is_native=True
+        capture=SimpleNamespace(cancelled=threading.Event())
+        client._virtual_capture=((self.sequences[0],'old-descriptor'),capture)
+        try:
+            with patch.object(client,'_snapshot',wraps=client._snapshot) as read:
+                self.clips[0].text('local copy replaces a pending remote virtual file')
+                self.assertTrue(capture.cancelled.is_set());self.assertEqual(read.call_count,0)
+        finally:client._virtual_capture=None
+        until(lambda:client.view.get('backed_up'))
+
+    def test_remote_sharing_virtual_descriptor_does_not_mask_a_ready_local_file(self):
+        from virtual_clipboard import DESCRIPTOR_MIME
+        client=self.clients[0];client._is_native=True
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'ordinary-local-file.bin';path.write_bytes(b'local user copy')
+            mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(path))]);mime.setData(DESCRIPTOR_MIME,b'not a ready remote descriptor')
+            self.clips[0].setMimeData(mime);until(lambda:client.view.get('backed_up'))
+            self.assertEqual([Path(value) for value in client.view['value'][1]],[path])
+            self.assertIsNone(client._virtual_capture);self.assertEqual(client._native_format_issue,'')
+            self.assertEqual(path.read_bytes(),b'local user copy')
+
+    def test_multiple_local_urls_are_unsupported_not_an_empty_clipboard(self):
+        client=self.clients[0];client._is_native=True
+        mime=QMimeData();mime.setUrls([QUrl.fromLocalFile('/one.bin'),QUrl.fromLocalFile('/two.bin')])
+        with patch.object(self.clips[0],'mimeData',return_value=mime):
+            self.assertIsNone(client._snapshot())
+        self.assertFalse(client._snapshot_available)
+        self.assertEqual(client._native_format_issue,'VIRTUAL_FILE_SINGLE_ONLY')
 
     def test_equivalent_remote_payload_does_not_replace_system_clipboard(self):
         self.clips[0].text('existing content')
