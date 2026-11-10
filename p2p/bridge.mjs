@@ -81,6 +81,7 @@ async function control(value) {
     pc.onLocalDescription((sdp,type)=>event({type:'description',sdp:sdp.replace(/^a=x-flickdock-flow:[^\r\n]*\r?\n?/gm,'').trimEnd()+`\r\na=x-flickdock-flow:2 ${flowNonce} ${WINDOW} ${MESSAGE}\r\n`,descriptionType:type}));
     pc.onLocalCandidate((candidate,mid)=>event({type:'candidate',candidate,mid}));
     pc.onGatheringStateChange(state=>event({type:'gathering',state}));
+    pc.onIceStateChange(state=>event({type:'ice_state',state}));
     pc.onStateChange(state=>{event({type:'state',state});if(state==='failed')stop();});
     pc.onDataChannel(bind);
     if(value.initiator)bind(pc.createDataChannel('flickdock-file-v1',{protocol:'flickdock-file-v1'}));

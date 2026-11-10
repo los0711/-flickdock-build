@@ -55,7 +55,7 @@ RUNTIME_SOURCES=(
     
 )
 MAINTAINED_TESTS=(
-    'test_architecture.py',
+    'test_architecture.py','test_video_tls.py','test_startup_resources.py',
     
     'test_cloud_delete_v1825.py','test_cloud_events_v1825.py','test_cloud_stream_v1825.py',
     'test_cloud_only_v1825.py','test_virtual_clipboard.py',

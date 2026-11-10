@@ -1,6 +1,6 @@
 # FlickDock
 
-适用于 Windows 10/11 x64 和 macOS 14.4 以上 Apple 芯片设备的文件、图片和文字搁架；Intel Mac 版本已停止更新。当前源码版本 **1.8.30（未发布）**。
+适用于 Windows 10/11 x64 和 macOS 14.4 以上 Apple 芯片设备的文件、图片和文字搁架；Intel Mac 版本已停止更新。当前源码版本 **1.8.31（未发布）**。
 
 模块边界、状态归属和生命周期说明见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 

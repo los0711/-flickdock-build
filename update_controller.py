@@ -16,7 +16,6 @@ from PySide6.QtWidgets import QApplication
 from update_client import (DEFAULT_ALLOWED_HOSTS, DEFAULT_MANIFEST_URL, UpdateClient,
                            compare_versions, validate_manifest, version_tuple)
 from platform_native import app_bundle
-from mac_updates import PrepareMacUpdateJob, launch_update_helper
 
 
 def _identity(value):
@@ -562,6 +561,7 @@ class UpdateController(QObject):
             bundle = app_bundle(self._installed_exe)
             if bundle is None:
                 raise ValueError('Mac 在线更新需要已安装的 FlickDock.app。')
+            from mac_updates import PrepareMacUpdateJob
             job = PrepareMacUpdateJob(path, manifest, self, current_version=self.app_version,
                                       installed_app=bundle)
             self._jobs[generation] = job
@@ -642,6 +642,7 @@ class UpdateController(QObject):
                 self._authorized = False
                 self.installation_started.emit(str(prepared.installed_app))
                 self._quit()
+            from mac_updates import launch_update_helper
             launch_update_helper(prepared, executable=self._installed_exe,
                                  popen=self._popen, quit_callback=quit_after_spawn)
             handed_off = True

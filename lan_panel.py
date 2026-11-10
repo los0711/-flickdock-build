@@ -298,7 +298,7 @@ class _DevicesCombo(QComboBox):
         painter.drawComplexControl(QStyle.CC_ComboBox,option)
         dark=bool(getattr(self.itemDelegate(),'dark',False));colors=ui_colors('dark' if dark else 'light')
         text_rect=QRectF(self.style().subControlRect(QStyle.CC_ComboBox,option,QStyle.SC_ComboBoxEditField,self))
-        text_rect.setRight(min(text_rect.right(),self.width()-52));painter.setFont(self.font())
+        text_rect.setRight(min(text_rect.right(),self.width()-(52 if self.currentData(Qt.UserRole+2) is not None else 30)));painter.setFont(self.font())
         if self.currentData(Qt.UserRole+3):text_rect.adjust(_paint_account_badge(painter,text_rect.left(),text_rect.center().y(),dark),0,0,0)
         painter.setPen(QColor(colors['text'] if self.isEnabled() else colors['muted']))
         painter.drawText(text_rect,Qt.AlignLeft|Qt.AlignVCenter,painter.fontMetrics().elidedText(self.currentText(),Qt.ElideRight,max(1,round(text_rect.width()))))
@@ -354,10 +354,11 @@ class _DeviceDelegate(QStyledItemDelegate):
             ui_icon('close',secondary).paint(painter,QRect(option.rect.right()-27-DEVICE_ACTION_SHIFT_PX,option.rect.center().y()-9,18,18))
         painter.setFont(option.font)
         left=option.rect.left()+49
+        name_y=option.rect.top()+8 if host else option.rect.center().y()-10
         if index.data(Qt.UserRole+3):
-            offset=_paint_account_badge(painter,left,option.rect.top()+18,self.dark);left+=offset;width=max(1,width-offset)
+            offset=_paint_account_badge(painter,left,name_y+10,self.dark);left+=offset;width=max(1,width-offset)
         painter.setPen(QColor(primary))
-        painter.drawText(QRectF(left,option.rect.top()+8,width,20),
+        painter.drawText(QRectF(left,name_y,width,20),
                          Qt.AlignmentFlag.AlignVCenter,
                          painter.fontMetrics().elidedText(name,Qt.TextElideMode.ElideRight,width))
         detail_color=('#61D795' if self.dark else '#187A43') if host=='在线' and online else ('#A1A1AA' if self.dark else '#68686D') if host=='离线' else secondary
@@ -1275,7 +1276,7 @@ class LanPanel(QFrame):
                 index=self.devices.findData(peer['id'])
                 if index<0:self.devices.addItem('',peer['id']);index=self.devices.count()-1
                 self.devices.setItemText(index,name)
-                self.devices.setItemData(index,'点击发送时建立连接',Qt.ItemDataRole.ToolTipRole)
+                self.devices.setItemData(index,'',Qt.ItemDataRole.ToolTipRole)
                 self.devices.setItemData(index,peer.get('platform','unknown'),Qt.ItemDataRole.UserRole+1)
                 self.devices.setItemData(index,None,Qt.ItemDataRole.UserRole+2)
                 self.devices.setItemData(index,bool(peer.get('account_device')),Qt.ItemDataRole.UserRole+3)

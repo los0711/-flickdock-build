@@ -366,7 +366,9 @@ class WanTransferService(LanTransferService):
             elif kind=='begin':self._begin(identifier,state,value)
             elif kind in ('description','candidate') and value.get('generation')==state.get('generation'):
                 bridge=state.get('bridge')
-                if bridge:bridge.control({key:item for key,item in value.items() if key not in ('id','generation','schema_version')})
+                if bridge:
+                    if kind=='candidate':state['remote_candidates']=state.get('remote_candidates',0)+1
+                    bridge.control({key:item for key,item in value.items() if key not in ('id','generation','schema_version')})
             elif kind=='cancelled':
                 state['error']='对方已取消或拒绝传输。';state['ready'].set()
                 self.cancel(identifier,remote=True)
@@ -405,6 +407,8 @@ class WanTransferService(LanTransferService):
         state['relay_allowed']=bool(value.get('relayAllowed'));state['connect_started']=time.monotonic()
         state['relay_requested']=False;state.pop('network_error',None)
         state['relay_transport']=''
+        state['local_candidates']=state['remote_candidates']=0
+        state['ice_state']='new';state['pc_state']='new'
         if state.get('network_epoch')!=self._network_epoch:state.pop('tls_failed',None)
         state['network_epoch']=self._network_epoch
         state.pop('remote_description_at',None);state.pop('gathered_at',None)
@@ -437,18 +441,29 @@ class WanTransferService(LanTransferService):
                 remaining=min(DIRECT_TOTAL_SECONDS-(now-started),DIRECT_CHECK_SECONDS-(now-checks))
                 QTimer.singleShot(max(1,round(remaining*1000)),lambda:self._relay_if_needed(identifier,generation));return
             if not failed and 'remote_description_at' not in state:
+                self._record_ice(state,'SIGNALING_MISSING')
                 state['error']='未能交换连接信息，请重试。';state['ready'].set();return
+            self._record_ice(state,'DIRECT_FAILED' if failed else 'DIRECT_TIMEOUT')
             state['relay_allowed']=False
             state['relay_requested']=True
             self.status_changed.emit('直连暂未成功，正在尝试中继…')
             self._send_signal(dict(type='relay',id=identifier,generation=generation))
+
+    def _record_ice(self,state,code):
+        from network_diagnostics import record_event
+        details={key:state[key] for key in ('local_candidates','remote_candidates','pc_state','ice_state') if key in state}
+        details['gathering_state']=state.get('gathering','new')
+        record_event(self.base,'remote','ICE',code,details=details)
 
     def _handle_native(self,value):
         if self._closing:return
         identifier=value['id'];state=self._pending.get(identifier)
         if not state or state.get('generation')!=value['generation']:return
         event=value['event'];kind=event.get('type')
+        if kind=='state':state['pc_state']=event.get('state','unknown')
+        if kind=='ice_state':state['ice_state']=event.get('state','unknown')
         if kind in ('description','candidate'):
+            if kind=='candidate':state['local_candidates']+=1
             self._send_signal(dict(id=identifier,generation=state['generation'],**event))
         elif kind=='transport':
             state['relay_transport']=event.get('relayTransport','')
@@ -461,6 +476,7 @@ class WanTransferService(LanTransferService):
             if event.get('server') in ('stun:stun.cloudflare.com:3478','stun:stun.l.google.com:19302'):
                 self._preferred_stun=event['server'];self._stun_expires=time.monotonic()+STUN_CACHE_SECONDS
         elif kind=='open':
+            self._record_ice(state,'DIRECT_CONNECTED' if event['route']=='direct' else 'RELAY_CONNECTED')
             state['route']=event['route'];state['ready'].set()
             self._send_signal(dict(type='connected',id=identifier,generation=state['generation']))
             self.status_changed.emit('P2P 直连已建立。' if event['route']=='direct' else '中继连接已建立。')

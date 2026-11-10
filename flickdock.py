@@ -414,7 +414,6 @@ class ShelfManager:
         snapshot={row['account_device_id']:dict(route='cloud' if row.get('online') else 'disconnected')
                   for row in peers if row.get('account_device') is True and row.get('account_device_id')}
         self.clipboard_sync.deliveries.set_connections(snapshot)
-        if getattr(self,'account_panel',None) is not None:self.account_panel.set_device_connections(snapshot)
 
     def _sync_status_changed(self,text):
         self._sync_status = text

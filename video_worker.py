@@ -133,7 +133,7 @@ def downloader(request,progress):
         format='bv*+ba/b',ffmpeg_location=str(tools) if tools else None,js_runtimes={'node':{'path':str(node)}},remote_components=[],
         hls_prefer_native=True,external_downloader={'default':'native'},progress_hooks=[progress],max_filesize=MAX_DOWNLOAD_BYTES,
         postprocessor_hooks=[lambda state:emit('progress',phase='processing',bytes=0,total=None,speed=None)],
-        compat_opts={'no-certifi'},enable_file_urls=False)
+        enable_file_urls=False)
     return PublicDownloader(params)
 
 
