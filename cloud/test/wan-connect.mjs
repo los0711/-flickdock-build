@@ -33,8 +33,14 @@ try{
   assert.equal(grants,0,'The receiver cannot spend a relay grant or restart the sender');out.length=0;
   await hub.webSocketMessage(peers[0],JSON.stringify({type:'retry',id:transfer}));
   assert.equal(grants,0);assert.equal(out.length,2);assert(out.every(row=>row.value.type==='begin'&&row.value.generation===2&&row.value.initiator===receiver));out.length=0;
+  const description=async(peer,type,generation)=>hub.webSocketMessage(peer,JSON.stringify({type:'description',id:transfer,generation,sdp:'v=0\r\n',descriptionType:type}));
+  await description(peers[1],'offer',2);await description(peers[0],'answer',2);
+  assert.deepEqual(out.map(row=>[row.device,row.value.type,row.value.descriptionType]),[[sender,'description','offer'],[receiver,'description','answer']]);out.length=0;
+  await description(peers[0],'offer',2);assert.equal(out[0].value.type,'error');out.length=0;
   await hub.webSocketMessage(peers[0],JSON.stringify({type:'relay',id:transfer,generation:2}));
   assert.equal(grants,1);assert.equal(out.length,2);assert(out.every(row=>row.value.type==='begin'&&row.value.relayTransport==='udp'&&row.value.generation===3&&row.value.recovery===false));
+  out.length=0;await description(peers[0],'offer',3);await description(peers[1],'answer',3);
+  assert.deepEqual(out.map(row=>[row.device,row.value.type,row.value.descriptionType]),[[receiver,'description','offer'],[sender,'description','answer']]);
   await storage.put('session:'+transfer,{...await storage.get('session:'+transfer),connected:[sender,receiver]});out.length=0;
   await hub.webSocketMessage(peers[0],JSON.stringify({type:'retry',id:transfer,relayTransport:'tls'}));
   assert.equal(grants,2);assert.equal(out.length,2);assert(out.every(row=>row.value.type==='begin'&&row.value.relayTransport==='tls'&&row.value.generation===4&&row.value.recovery===true));
