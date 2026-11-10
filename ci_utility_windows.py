@@ -93,7 +93,9 @@ def main():
                 video_notice.supersede();file_notice.supersede();video_notice.deleteLater();file_notice.deleteLater();images.close();images.deleteLater()
             notice._expire();wait(lambda:notice._morph.state()==notice._morph.Stopped)
             assert notice._compact and round(notice.capsule_rect().width())==COMPACT_SIDE_PX
-            assert notice.geometry()==host and notice.winId()==native
+            # Coexisting notices intentionally reposition the fixed native host.
+            assert notice.size()==host.size() and notice.winId()==native
+            assert notice._notice_area.contains(notice.geometry()),(notice._notice_area,notice.geometry())
             notice.update_delivery(dict(id=state['id'],phase='synced',backed_up=True,deliveries={'cloud':dict(success=0,total=1)}))
             assert notice._phase=='success' and notice._compact
             notice.timer.start(20);wait(lambda:not notice.isVisible())
