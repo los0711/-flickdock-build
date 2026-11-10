@@ -90,7 +90,15 @@ begin
   if ParentHandle = 0 then Exit;
   WaitResult := WaitForSingleObject(ParentHandle, 30000);
   CloseHandle(ParentHandle);
-  Result := WaitResult = 0;
+  if WaitResult = $00000102 then
+  begin
+    { Older clients can finish cleanup without leaving their Qt event loop.
+      Let the existing Restart Manager stage close the bundle's file owners. }
+    Log('FlickDock update parent did not exit; continuing to Restart Manager.');
+    Result := True;
+  end
+  else
+    Result := WaitResult = 0;
   if not Result then
     MsgBox('FlickDock 尚未退出，请关闭后重新更新。', mbError, MB_OK);
 end;

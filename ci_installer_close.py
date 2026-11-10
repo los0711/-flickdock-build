@@ -98,10 +98,34 @@ Source: "{folder/'1.0.1.0.exe'}"; DestDir: "{{app}}"; DestName: "FlickDock.exe";
             child.wait(timeout=10)
             assert digest(fixture)==digest(folder/'1.0.1.0.exe'),'The actual executable was not replaced'
             report['checks'].append(dict(name='confirmed close terminates leftover process and replaces executable',ok=True))
+            ready.unlink();shutil.copy2(folder/'1.0.0.0.exe',fixture)
+            parent=subprocess.Popen([str(fixture),str(ready)]);processes.append(parent)
+            deadline=time.monotonic()+10
+            while not ready.exists() and time.monotonic()<deadline:
+                if parent.poll() is not None:raise RuntimeError('Online-update fixture exited before readiness')
+                time.sleep(.05)
+            assert ready.exists()
+            online_folder=folder/'online';online_folder.mkdir()
+            definition=folder/'online.iss'
+            online=(folder/(mode+'.iss')).read_text(encoding='utf8').replace(str(folder/mode),str(online_folder))
+            online+='\n[Code]\n'+script.split('[Code]',1)[1]
+            definition.write_text(online,encoding='utf8')
+            compiled=subprocess.run([compiler,str(definition)],capture_output=True,timeout=40)
+            assert compiled.returncode==0,compiled.stdout.decode(errors='replace')[-1500:]
+            started=time.monotonic()
+            installer=subprocess.Popen([str(online_folder/'close-test.exe'),'/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',
+                '/FDOnlineUpdate=1','/FDParentPid='+str(parent.pid),'/LOG='+str(folder/'online.log')]);processes.append(installer)
+            code=installer.wait(timeout=75);elapsed=time.monotonic()-started
+            assert code==0,(code,(folder/'online.log').read_text(errors='replace')[-2500:])
+            parent.wait(timeout=10)
+            assert elapsed>=29 and 'continuing to Restart Manager' in (folder/'online.log').read_text(errors='replace')
+            assert digest(fixture)==digest(folder/'1.0.1.0.exe')
+            report['checks'].append(dict(name='production online-update guard lets Restart Manager replace a stuck older parent',
+                                         ok=True,grace_period_elapsed=True,installer_exit=code))
             report['ok']=True
         finally:
             for process in reversed(processes):stop(process)
-            report['logs']={name:(folder/name).read_text(errors='replace')[-5000:] for name in ('legacy.log','fixed.log') if (folder/name).exists()}
+            report['logs']={name:(folder/name).read_text(errors='replace')[-5000:] for name in ('legacy.log','fixed.log','online.log') if (folder/name).exists()}
             output.write_text(json.dumps(report,indent=2),encoding='utf8')
     print(json.dumps({key:value for key,value in report.items() if key!='logs'},indent=2))
 

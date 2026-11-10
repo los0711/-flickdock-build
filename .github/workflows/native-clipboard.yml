@@ -60,7 +60,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [windows-latest, macos-15]
+        runner: [windows-latest]
     runs-on: ${{ matrix.runner }}
     env:
       PYTHONUTF8: '1'
