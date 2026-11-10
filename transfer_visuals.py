@@ -211,7 +211,7 @@ def draw_ring(painter,rect,state):
     if not state: return
     rect=QRectF(rect).adjusted(3,3,-3,-3)
     painter.save();painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    pen=QPen(QColor(ui_theme.color('border')),2.4);painter.setPen(pen)
+    pen=QPen(QColor(ui_theme.color('media_track')),2.4);painter.setPen(pen)
     painter.setBrush(Qt.BrushStyle.NoBrush);painter.drawEllipse(rect)
     if state.get('remote') and state.get('phase') in ('remote','preparing'):
         painter.restore();return

@@ -1,27 +1,36 @@
-"""One expiring, nonactivating card for the latest local copy result."""
-from pathlib import Path
-from PySide6.QtCore import QPoint,Qt,QTimer
-from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import QWidget,QFrame,QHBoxLayout,QLabel,QVBoxLayout,QSizePolicy
-from app_settings import SettingsCloseButton
+"""Latest-copy feedback: one capsule that contracts without hiding active work."""
+from PySide6.QtCore import QPoint,QPointF,QRectF,Qt,QTimer,QEasingCurve
+from PySide6.QtGui import QColor,QFontMetricsF,QGuiApplication,QPainter,QPainterPath,QRegion
+from PySide6.QtWidgets import QWidget
 from flickdock_icons import app_icon
-from native_ui_common import colors,icon
+from native_ui_common import colors,icon,reduced_motion
 from platform_native import keep_tool_visible_when_inactive
-from ui_transitions import WindowFade,fade_hide
+from display_frames import DisplayAnimation,FramePulse
+from ui_transitions import motion_allowed,COPY_NOTICE_MORPH_MS,COPY_NOTICE_FADE_MS,COPY_NOTICE_OVERSHOOT
+from clipboard_delivery import sync_progress
+from transfer_visuals import draw_ring
 
-NOTICE_WIDTH_PX=320
+NOTICE_WIDTH_PX=244
+NOTICE_HEIGHT_PX=64
 NOTICE_MARGIN_PX=16
-NOTICE_RADIUS_PX=14
-NOTICE_PADDING_PX=12
+PILL_WIDTH_PX=220
+PILL_HEIGHT_PX=44
+COMPACT_SIDE_PX=44
+MIN_SHAPE_WIDTH_PX=20
+PILL_PADDING_PX=12
+LOGO_SIZE_PX=24
+RING_SIZE_PX=30
+RING_VISIBLE_SIZE_PX=24
+TEXT_SIZE_PX=13
+CONTENT_GAP_PX=10
+ENTRY_RISE_PX=6
+ENTRY_HEIGHT_PX=36
+EXIT_SIDE_PX=28
+EXIT_FADE_START=.55
 NOTICE_DURATION_MS=2200
 NOTICE_PROGRESS_DURATION_MS=6000
+COMPACT_SUCCESS_DURATION_MS=1000
 RESULT_COALESCE_MS=160
-HEADER_HEIGHT_PX=22
-LOGO_SIZE_PX=20
-STATUS_ICON_SIZE_PX=13
-BODY_GAP_PX=6
-STATUS_GAP_PX=5
-PREVIEW_MAX_CHARS=2048
 
 
 def place_bottom_notice(window,area):
@@ -29,69 +38,95 @@ def place_bottom_notice(window,area):
     window.move(area.left()+(area.width()-window.width())//2,area.bottom()-window.height()-NOTICE_MARGIN_PX+1)
 
 
-def copy_status(ok,context):
-    if context.get('phase')=='size_limit':return '超过 20 MB 同步上限 · 内容保留在本机'
-    if context.get('phase')=='superseded':return '本次同步已由更新的复制接替'
-    if ok is False:return '同步未完成 · 内容保留在本机'
-    if ok is None or context.get('phase')=='uploading':return '正在同步到云端'
-    return '已同步到云端'
-
-
-
-def copy_preview(value):
-    if not value:return '剪贴板内容'
-    kind,data=value
-    if kind=='text':return str(data['text'])[:PREVIEW_MAX_CHARS].replace('\r',' ').replace('\n',' ')
-    if kind=='image':return '图片'
-    if kind=='files' and data:
-        return Path(data[0]).name+(f' · 共 {len(data)} 项' if len(data)>1 else '')
-    return '剪贴板内容'
+def copy_presentation(ok,context):
+    """Byte completion is not confirmation, and backup is not a device receipt."""
+    phase=context.get('phase');cloud=sync_progress(context)['cloud']
+    if phase=='size_limit':
+        return 'limited','此文件不能同步','超过 20 MB 同步上限，内容保留在本机',None
+    if phase=='superseded':
+        return 'superseded','已有更新的复制','本次同步已由更新的复制接替',None
+    completed=context.get('backed_up') or phase=='synced' or cloud['phase']=='complete'
+    if phase=='error' or cloud['phase']=='error' or ok is False and not completed and phase!='uploading':
+        return 'error','同步未完成','同步未完成，内容保留在本机',None
+    pending=any(row['success']<row['total'] for row in context.get('deliveries',{}).values())
+    if (completed or ok is True) and not pending:
+        return 'success','复制已同步','云端已备份，当前在线设备已接收完成',None
+    progress=cloud if cloud['phase']=='uploading' else dict(phase='preparing',received=0,total=0)
+    description=('等待在线设备接收确认' if completed or ok is True else
+                 '等待云端确认' if cloud['phase']=='verifying' else '正在同步到云端')
+    return 'syncing','剪贴板同步中',description,progress
 
 
 class ClipboardNotice(QWidget):
-    """Sender-only feedback; closing the card never changes clipboard jobs."""
+    """Fixed native host; only the painted capsule changes shape or opacity."""
     def __init__(self,manager):
         super().__init__();self.manager=manager
         self.setWindowFlags(Qt.Tool|Qt.FramelessWindowHint|Qt.WindowStaysOnTopHint|Qt.WindowDoesNotAcceptFocus)
         self.setAttribute(Qt.WA_ShowWithoutActivating);self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setFocusPolicy(Qt.NoFocus);self.setCursor(Qt.PointingHandCursor)
         keep_tool_visible_when_inactive(self);self.setWindowTitle('FlickDock · 复制同步提示')
-        root=QVBoxLayout(self);root.setContentsMargins(0,0,0,0)
-        self.card=QFrame(self);self.card.setObjectName('clipboardNotice');root.addWidget(self.card)
-        layout=QVBoxLayout(self.card);layout.setContentsMargins(*([NOTICE_PADDING_PX]*4));layout.setSpacing(0)
-        head=QHBoxLayout();head.setSpacing(9)
-        self.logo=QLabel(self.card);self.logo.setFixedSize(LOGO_SIZE_PX,LOGO_SIZE_PX)
-        self.logo.setPixmap(app_icon().pixmap(LOGO_SIZE_PX,LOGO_SIZE_PX));head.addWidget(self.logo)
-        self.message=QLabel(self.card);self.message.setObjectName('copyHeading');self.message.setTextFormat(Qt.PlainText);head.addWidget(self.message,1)
-        self.close_button=SettingsCloseButton(self.card,glyph_size=13);self.close_button.setFixedSize(HEADER_HEIGHT_PX,HEADER_HEIGHT_PX)
-        self.close_button.setFocusPolicy(Qt.NoFocus);self.close_button.setAccessibleName('关闭复制同步提示');self.close_button.setToolTip('关闭提示')
-        self.close_button.clicked.connect(self.dismiss);head.addWidget(self.close_button);layout.addLayout(head)
-        layout.addSpacing(BODY_GAP_PX)
-        self.preview=QLabel(self.card);self.preview.setTextFormat(Qt.PlainText)
-        self.preview.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Preferred);layout.addWidget(self.preview)
-        layout.addSpacing(STATUS_GAP_PX)
-        footer=QHBoxLayout();footer.setSpacing(STATUS_GAP_PX)
-        self.status_icon=QLabel(self.card);self.status_icon.setFixedSize(STATUS_ICON_SIZE_PX,STATUS_ICON_SIZE_PX);footer.addWidget(self.status_icon)
-        self.status=QLabel(self.card);self.status.setObjectName('copyStatus');self.status.setTextFormat(Qt.PlainText)
-        self.status.setWordWrap(True)
-        self.status.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Preferred);footer.addWidget(self.status,1);layout.addLayout(footer)
-        from transfer_visuals import ClipboardProgressRow
-        self.progress=ClipboardProgressRow(self.card);layout.addWidget(self.progress)
-        self._pending_result=None
-        self._current_result=None
-        self._dismissed_id=None
-        self._result_timer=QTimer(self);self._result_timer.setSingleShot(True);self._result_timer.setInterval(RESULT_COALESCE_MS)
-        self._result_timer.timeout.connect(self._deliver_result)
-        self.timer=QTimer(self);self.timer.setSingleShot(True);self.timer.timeout.connect(self.dismiss)
-        self._window_fade=WindowFade(self)
+        self.setFixedSize(NOTICE_WIDTH_PX,NOTICE_HEIGHT_PX)
+        self._logo=app_icon().pixmap(LOGO_SIZE_PX,LOGO_SIZE_PX)
+        self._pending_result=None;self._current_result=None;self._dismissed_id=None
+        self._phase='idle';self._text='';self._progress=None;self._compact=False;self._hiding=False
+        self._shape=QPointF(COMPACT_SIDE_PX,ENTRY_HEIGHT_PX);self._alpha=0.;self._full_width=PILL_WIDTH_PX
+        self._morph=DisplayAnimation(self);self._morph.setDuration(COPY_NOTICE_MORPH_MS)
+        curve=QEasingCurve(QEasingCurve.OutBack);curve.setOvershoot(COPY_NOTICE_OVERSHOOT)
+        self._morph.setEasingCurve(curve);self._morph.valueChanged.connect(self._shape_changed)
+        self._morph.finished.connect(self._clip_finished)
+        self._fade=DisplayAnimation(self);self._fade.setDuration(COPY_NOTICE_FADE_MS)
+        self._fade.setEasingCurve(QEasingCurve.OutCubic);self._fade.valueChanged.connect(self._alpha_changed)
+        self._fade.finished.connect(self._fade_finished)
+        self._ring_clock=FramePulse(self);self._ring_clock.timeout.connect(self.update)
+        self._result_timer=QTimer(self);self._result_timer.setSingleShot(True)
+        self._result_timer.setInterval(RESULT_COALESCE_MS);self._result_timer.timeout.connect(self._deliver_result)
+        self.timer=QTimer(self);self.timer.setSingleShot(True);self.timer.timeout.connect(self._expire)
+
+    def _shape_changed(self,value):self._shape=value;self.update()
+    def _alpha_changed(self,value):self._alpha=float(value);self.update()
+
+    def capsule_rect(self):
+        width=max(MIN_SHAPE_WIDTH_PX,min(self.width()-4,self._shape.x()))
+        height=self._shape.y()
+        return QRectF((self.width()-width)/2,(self.height()-height)/2+ENTRY_RISE_PX*(1-self._alpha),width,height)
+
+    def _clip_finished(self):
+        if not self.isVisible():return
+        path=QPainterPath();rect=self.capsule_rect();path.addRoundedRect(rect,rect.height()/2,rect.height()/2)
+        self.setMask(QRegion(path.toFillPolygon().toPolygon()))
+
+    def _animate_shape(self,width,height=PILL_HEIGHT_PX):
+        self.clearMask();self._morph.stop();target=QPointF(width,height)
+        if not motion_allowed():self._shape_changed(target);self._clip_finished();return
+        self._morph.setStartValue(self._shape);self._morph.setEndValue(target);self._morph.start()
+
+    def _animate_alpha(self,target):
+        self._fade.stop()
+        if not motion_allowed():self._alpha_changed(target);self._fade_finished();return
+        closing=target==0.
+        self._fade.setDuration(COPY_NOTICE_MORPH_MS if closing else COPY_NOTICE_FADE_MS)
+        self._fade.setEasingCurve(QEasingCurve.Linear if closing else QEasingCurve.OutCubic)
+        self._fade.setKeyValueAt(EXIT_FADE_START,self._alpha if closing else self._alpha+(target-self._alpha)*EXIT_FADE_START)
+        self._fade.setStartValue(self._alpha);self._fade.setEndValue(target);self._fade.start()
+
+    def _fade_finished(self):
+        if self._hiding:self.hide()
+        elif self._morph.state()!=self._morph.Running:self._clip_finished()
+
+    def _sync_ring_clock(self):
+        waiting=self._progress is not None and not self._progress['total']
+        if self.isVisible() and self._phase=='syncing' and waiting and not reduced_motion():self._ring_clock.start()
+        else:self._ring_clock.stop()
 
     def dismiss(self):
         context=self._current_result[1] if self._current_result is not None else self._pending_result[1] if self._pending_result is not None else {}
-        self._dismissed_id=context.get('id');self._result_timer.stop();self._pending_result=None
-        self.timer.stop();fade_hide(self)
+        self._dismissed_id=context.get('id');self._result_timer.stop();self._pending_result=None;self.timer.stop()
+        self._hiding=True;self._ring_clock.stop();self._animate_shape(EXIT_SIDE_PX,EXIT_SIDE_PX);self._animate_alpha(0.)
 
     def supersede(self):
         if self._current_result is not None:self._dismissed_id=self._current_result[1].get('id')
-        self._result_timer.stop();self._pending_result=None;self._current_result=None;self.hide()
+        self._result_timer.stop();self._pending_result=None;self._current_result=None
+        self._morph.stop();self._fade.stop();self.timer.stop();self._ring_clock.stop();self.hide()
 
     def schedule_result(self,ok,context):
         if context.get('id') and context['id']==self._dismissed_id:return
@@ -109,57 +144,82 @@ class ClipboardNotice(QWidget):
                 self.schedule_result(None,state)
             return
         ok,context=self._current_result
-        if context.get('id')!=identity:return
-        self.show_result(ok,dict(context,**state))
+        if context.get('id')==identity:self.show_result(ok,dict(context,**state))
 
-    def _render_status(self,ok,context):
-        text=copy_status(ok,context);self.status.setAccessibleDescription(text);self.status.setText(text)
+    def _place(self,area):place_bottom_notice(self,area)
 
-    def _place(self,area):
-        place_bottom_notice(self,area)
+    def _notice_font(self):
+        font=self.font();font.setPixelSize(TEXT_SIZE_PX);font.setWeight(font.Weight.Medium);return font
+
+    def _content_width(self):
+        text_width=QFontMetricsF(self._notice_font()).horizontalAdvance(self._text)
+        return min(PILL_WIDTH_PX,self.width()-4,2*PILL_PADDING_PX+LOGO_SIZE_PX+2*CONTENT_GAP_PX+text_width+RING_VISIBLE_SIZE_PX)
 
     def _deliver_result(self):
         result,self._pending_result=self._pending_result,None
         if (result is not None and not getattr(self.manager,'_quitting',False)
                 and getattr(self.manager,'_clipboard_runtime_enabled',lambda:True)()
-                and getattr(self.manager.settings,'clipboard_success_notice',True)):self.show_result(*result)
+                and self.manager.settings.clipboard_success_notice):self.show_result(*result)
 
     def show_result(self,ok,context):
-        if not getattr(self.manager.settings,'clipboard_success_notice',True):return
+        if not self.manager.settings.clipboard_success_notice:return
         if context.get('id') and context['id']==self._dismissed_id:return
-        same=bool(self.isVisible() and self._current_result is not None and context.get('id')==self._current_result[1].get('id'))
-        was_active=self.progress.active
-        self.progress.set_state(context)
-        c=colors(self.manager.settings.theme);limited=context.get('phase')=='size_limit';superseded=context.get('phase')=='superseded'
-        tint=c['link'] if limited or superseded or ok is None or self.progress.active else c['green' if ok else 'red']
-        self.card.setStyleSheet(f'''
-            QFrame#clipboardNotice{{background:{c['surface']};border:0;border-radius:{NOTICE_RADIUS_PX}px;}}
-            QLabel{{color:{c['text']};border:0;background:transparent;font-size:11px;}}
-            QLabel#copyHeading{{font-size:12px;font-weight:600;color:{tint if limited else c['text']};}}
-            QLabel#copyStatus{{font-size:11px;color:{tint};}}
-            QPushButton#settingsClose{{background:transparent;border:0;border-radius:5px;}}
-            QPushButton#settingsClose:hover{{background:{c['hover']};}}
-            QPushButton#settingsClose:pressed{{background:{c['selected']};}}
-        ''')
-        self.close_button.dark=self.manager.settings.theme=='dark';self.close_button.update()
-        self.ensurePolished()
-        kind=context.get('value',('text',{}))[0]
-        self.message.setText(('此文件不能同步' if kind=='files' else '此图片不能同步' if kind=='image' else '此内容不能同步') if limited else '已有更新的复制' if superseded else '正在同步剪贴板' if ok is None or self.progress.active else '复制已同步' if ok else '复制同步失败')
-        self.status_icon.setVisible(ok is not None)
-        self.status_icon.setPixmap(icon('circle-check' if ok else 'circle-alert',tint).pixmap(STATUS_ICON_SIZE_PX,STATUS_ICON_SIZE_PX))
-        screen=QGuiApplication.screenAt(QPoint(*(context.get('point') or (0,0)))) or QGuiApplication.primaryScreen();area=screen.availableGeometry()
-        self.setFixedWidth(min(NOTICE_WIDTH_PX,max(1,area.width()-2*NOTICE_MARGIN_PX)))
-        available=self.width()-2*NOTICE_PADDING_PX
-        self.preview.setText(self.preview.fontMetrics().elidedText(copy_preview(context.get('value')),Qt.ElideRight,available))
-        self.status.setFixedWidth(max(1,available-STATUS_ICON_SIZE_PX-STATUS_GAP_PX))
-        self._render_status(ok,context)
-        self.adjustSize()
-        self._place(area)
-        self._current_result=(ok,dict(context))
+        same=bool(self.isVisible() and self._current_result is not None and context.get('id')
+                  and context['id']==self._current_result[1].get('id'))
+        previous=self._phase
+        self._phase,self._text,description,self._progress=copy_presentation(ok,context)
+        self.setAccessibleName(self._text);self.setAccessibleDescription(description+'；点击关闭提示')
+        self._current_result=(ok,dict(context));self._hiding=False
         if not same:
-            self._window_fade.reopen();self.show();self.raise_()
-            self.timer.start(NOTICE_PROGRESS_DURATION_MS if self.progress.active else NOTICE_DURATION_MS)
-        elif was_active and not self.progress.active:self.timer.start(NOTICE_DURATION_MS)
+            screen=QGuiApplication.screenAt(QPoint(*(context.get('point') or (0,0)))) or QGuiApplication.primaryScreen()
+            area=screen.availableGeometry();self.setFixedSize(min(NOTICE_WIDTH_PX,max(COMPACT_SIDE_PX,area.width()-2*NOTICE_MARGIN_PX)),NOTICE_HEIGHT_PX)
+            self._place(area);self._compact=False;self._full_width=self._content_width()
+            if not self.isVisible():self._shape=QPointF(COMPACT_SIDE_PX,ENTRY_HEIGHT_PX);self._alpha=0.
+            self.show();self.raise_();self._animate_shape(self._full_width);self._animate_alpha(1.)
+            self.timer.start(NOTICE_PROGRESS_DURATION_MS if self._phase=='syncing' else NOTICE_DURATION_MS)
+        elif previous!=self._phase:
+            self._full_width=self._content_width()
+            if self._phase=='syncing':self.timer.start(NOTICE_PROGRESS_DURATION_MS)
+            else:
+                if self._phase!='success' and self._compact:
+                    self._compact=False
+                self.timer.start(COMPACT_SUCCESS_DURATION_MS if self._compact else NOTICE_DURATION_MS)
+            if not self._compact:self._animate_shape(self._full_width)
+        self._sync_ring_clock();self.update()
+
+    def _expire(self):
+        if self._phase=='syncing':
+            self.timer.stop();self._compact=True;self._animate_shape(COMPACT_SIDE_PX)
+        else:self.dismiss()
 
     def hideEvent(self,event):
-        self.timer.stop();self._current_result=None;super().hideEvent(event)
+        self.timer.stop();self._ring_clock.stop();self._morph.stop();self._fade.stop()
+        self._current_result=None;super().hideEvent(event)
+
+    def mouseReleaseEvent(self,event):
+        if event.button()==Qt.LeftButton and self.capsule_rect().contains(event.position()):self.dismiss();event.accept()
+        else:super().mouseReleaseEvent(event)
+
+    def paintEvent(self,event):
+        c=colors(self.manager.settings.theme);p=QPainter(self)
+        p.setRenderHints(QPainter.Antialiasing|QPainter.SmoothPixmapTransform);p.setOpacity(max(0.,min(1.,self._alpha)))
+        rect=self.capsule_rect();path=QPainterPath();path.addRoundedRect(rect,rect.height()/2,rect.height()/2)
+        p.setPen(Qt.NoPen);p.setBrush(QColor(c['surface']));p.drawPath(path);p.setClipPath(path)
+        reveal=max(0.,min(1.,(rect.width()-COMPACT_SIDE_PX)/max(1,self._full_width-COMPACT_SIDE_PX)))
+        ring_x=rect.center().x()-RING_SIZE_PX/2+reveal*(rect.width()/2-PILL_PADDING_PX-RING_VISIBLE_SIZE_PX/2)
+        if reveal:
+            p.save();p.setOpacity(p.opacity()*reveal)
+            # Keep glyph layout stable as the capsule contracts; clipping and
+            # opacity avoid switching through several intermediate ellipses.
+            p.setClipRect(QRectF(rect.left()+PILL_PADDING_PX,rect.top(),max(0,ring_x+(RING_SIZE_PX-RING_VISIBLE_SIZE_PX)/2-CONTENT_GAP_PX-rect.left()-PILL_PADDING_PX),rect.height()),Qt.IntersectClip)
+            p.drawPixmap(round(rect.left()+PILL_PADDING_PX),round(rect.center().y()-LOGO_SIZE_PX/2),self._logo)
+            p.setFont(self._notice_font())
+            p.setPen(QColor(c['link'] if self._phase in ('limited','superseded') else c['red'] if self._phase=='error' else c['text']))
+            text_rect=QRectF(rect.left()+PILL_PADDING_PX+LOGO_SIZE_PX+CONTENT_GAP_PX,rect.top(),
+                max(1,self._full_width-2*PILL_PADDING_PX-LOGO_SIZE_PX-RING_VISIBLE_SIZE_PX-2*CONTENT_GAP_PX),rect.height())
+            p.drawText(text_rect,Qt.AlignVCenter|Qt.AlignLeft,p.fontMetrics().elidedText(self._text,Qt.ElideRight,round(text_rect.width())))
+            p.restore()
+        ring=QRectF(ring_x,rect.center().y()-RING_SIZE_PX/2,RING_SIZE_PX,RING_SIZE_PX)
+        if self._phase=='syncing':draw_ring(p,ring,self._progress)
+        else:icon('circle-check' if self._phase=='success' else 'circle-alert',c['green'] if self._phase=='success' else c['red'] if self._phase=='error' else c['link']).paint(p,ring.toAlignedRect())
+        p.end()
