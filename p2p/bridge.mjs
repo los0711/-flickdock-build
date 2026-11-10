@@ -21,7 +21,7 @@ const icePatterns=[
   ['server_failed',/STUN server binding failed|STUN server address resolution failed/],
 ];
 // CI exports counters only. Raw native logs may contain ICE credentials.
-rtc.initLogger(traceIce?'Debug':'Fatal',(_,message)=>{
+rtc.initLogger(traceIce?'Verbose':'Fatal',(_,message)=>{
   if(traceIce)for(const [code,pattern] of icePatterns)if(pattern.test(message))iceCounts[code]=(iceCounts[code]||0)+1;
 });
 rtc.setSctpSettings({recvBufferSize:32*1024*1024,sendBufferSize:16*1024*1024,maxChunksOnQueue:16384});
@@ -58,7 +58,7 @@ function bind(dc) {
   dc.onBufferedAmountLow(()=>wake());
   dc.onOpen(()=>{
     const pair=pc.getSelectedCandidatePair();
-    if(traceIce)event({type:'ice_diagnostic',counts:iceCounts});
+    if(traceIce){event({type:'ice_diagnostic',counts:iceCounts});rtc.initLogger('Fatal',()=>{});}
     event({type:'open',route:pair?.local?.type==='relay'||pair?.remote?.type==='relay'?'relay':'direct',maxMessageSize:dc.maxMessageSize()});wake();
     statsTimer=setInterval(stats,250);
   });

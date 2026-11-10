@@ -375,7 +375,9 @@ def main():
             except BaseException as failure:
                 error=type(failure).__name__
             routes=[row.get('route') for row in manual_progress if row.get('id')==identity and row.get('route')]
-            selected_route=routes[-1] if routes else None
+            generations=ice_trace.snapshot(identity)
+            opened_routes=[event['route'] for generation in generations for event in generation['events'] if event['kind']=='open']
+            selected_route=opened_routes[-1] if opened_routes else None
             state=wan._pending.get(identity,{})
             diagnostics={key:state[key] for key in ('local_candidates','remote_candidates','gathering','pc_state','ice_state') if key in state}
             file_verified=error is None
@@ -383,12 +385,12 @@ def main():
             report['checks'].append(dict(name='manual_application_original_webrtc',sender=sender,round=1+manual_step//2,ok=file_verified and direct_connected,
                 file_verified=file_verified,direct_connected=direct_connected,
                 local_role='sender' if side==sender else 'receiver',error_type=error,verified_bytes=received_bytes,
-                receiver_save_ack=side==sender and error is None,route=routes[-1] if routes else None,
+                receiver_save_ack=side==sender and error is None,route=selected_route,
                 same_account_auto_accepted=identity in auto_accepted if side!=sender else None,
                 manual_confirmation_required=bool(manual_prompts),
                 accepted_seconds=round(manual_accepted[identity]-started,3) if identity in manual_accepted else None,
                 seconds=round(time.perf_counter()-started,3),public_relays=False,diagnostics=diagnostics,
-                ice_generations=ice_trace.snapshot(identity)))
+                ice_generations=generations))
             stage+=1;barrier(stage);report_path.write_text(json.dumps(report,indent=2),encoding='utf8')
         phase='cleanup'
         if side=='a' and not kernel_only:
