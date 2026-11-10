@@ -3,6 +3,8 @@
 Run FLICKDOCK_TEST_DPR=1/1.25/1.5/2 in fresh processes. This checks Qt raster
 continuity, native geometry calls and lifecycle state; it cannot test DWM.
 """
+import shelf_ui_common
+import shelf_window
 from array import array
 import json
 import os
@@ -48,12 +50,12 @@ with tempfile.TemporaryDirectory(prefix='flickdock-v163-terminal-') as profile:
     qInstallMessageHandler(lambda kind,context,text:warnings.append(text))
     app=QApplication([])
     assert app.platformName()=='offscreen'
-    subject.load_font(app)
+    shelf_ui_common.load_font(app)
     manager=SimpleNamespace(motion=True,settings=SettingsStore(Path(profile)),save=lambda:None,
                             update_handles=lambda:None,activate_shelf=lambda _:None,
                             _quitting=False,outgoing_drag=False)
     manager.settings.update(view_mode='icons')
-    shelf=subject.ShelfWindow(manager,1)
+    shelf=shelf_window.ShelfWindow(manager,1)
     shelf.pinned=True
     shelf.files['permanent']=[shelf.content.add_text('静态文本 / terminal frame evidence')]
     shelf.refresh()

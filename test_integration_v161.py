@@ -3,6 +3,9 @@
 Real child confirmation/color event loops and real asynchronous ZIP jobs run.
 Only native input, registry, tray and the external drag transport are mocked.
 """
+import overview_ui
+import shelf_ui_common
+import shelf_window
 import json
 import os
 from pathlib import Path
@@ -78,14 +81,14 @@ with tempfile.TemporaryDirectory(prefix="flickdock-v161-integration-") as tempor
     from global_hotkeys import _NoopBackend
 
     app = QApplication([])
-    subject.load_font(app)
+    shelf_ui_common.load_font(app)
     wide_screen=SimpleNamespace(availableGeometry=lambda:QRect(0,0,1920,1080))
     with patch.object(subject.QGuiApplication,'screenAt',return_value=wide_screen), \
          patch.object(subject.QGuiApplication,'primaryScreen',return_value=wide_screen), \
          patch.object(subject, "motion_enabled", return_value=False), \
-         patch.object(subject, "ContentResolver", LocalResolver), \
+         patch.object(shelf_window, "ContentResolver", LocalResolver), \
          patch.object(QSystemTrayIcon, "show"), patch.object(QSystemTrayIcon, "hide"), \
-         patch.object(subject.ctypes.windll.user32, "GetAsyncKeyState", return_value=0), \
+         patch.object(shelf_ui_common.ctypes.windll.user32, "GetAsyncKeyState", return_value=0), \
          patch.object(subject, "native_window_move_active", return_value=False), \
          patch.object(app_settings, "_read_startup_value") as read_registry, \
          patch.object(app_settings, "_write_startup_value") as write_registry:
@@ -202,7 +205,7 @@ with tempfile.TemporaryDirectory(prefix="flickdock-v161-integration-") as tempor
         def rows_for(popup):
             until(app,lambda: popup._build_cursor==len(popup.visible_refs()))
             flush(app)
-            return {row.path: row for row in popup.rows_body.findChildren(subject.FileRow) if row.isVisible()}
+            return {row.path: row for row in popup.rows_body.findChildren(overview_ui.FileRow) if row.isVisible()}
 
         def multi_drag_zip():
             manager.settings.update(view_mode="list")

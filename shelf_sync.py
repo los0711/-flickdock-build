@@ -20,6 +20,7 @@ from PySide6.QtCore import QObject, QThreadPool, QTimer, Qt, Signal
 from account_store import atomic_json
 from selection_archive import _source_reader
 from upload_lanes import UploadLanes
+from sync_contracts import ShelfStatePort
 from sync_scheduler import SyncScheduler,SyncTiming,TRANSFER_INTERVAL_MS,FINISHING_INTERVAL_MS
 from sync_files import (DiskWork, DIRECTORY_MIME, assemble_parts, fingerprint, read_part, read_utf8, safe_name,
                         stage_item, unpack_directory,MAX_FILE_BYTES)
@@ -89,7 +90,7 @@ class ShelfSync(QObject):
     storage_changed = Signal(object)
     capacity_exceeded = Signal(list)
 
-    def __init__(self, base, service, adapter, parent=None, *, scheduler=None,progress_interval_ms=TRANSFER_INTERVAL_MS):
+    def __init__(self, base, service, adapter: ShelfStatePort, parent=None, *, scheduler=None,progress_interval_ms=TRANSFER_INTERVAL_MS):
         super().__init__(parent)
         self.root = Path(base)/'cloud-shelves'; self.root.mkdir(parents=True,exist_ok=True)
         self.service, self.api, self.adapter = service, service.api, adapter

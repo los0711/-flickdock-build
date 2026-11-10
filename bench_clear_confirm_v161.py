@@ -4,6 +4,9 @@ Run with bundled Python and PYTHONPATH=py;.; writes isolated local files/profile
 Native cursor reads, startup registry, hotkeys, tray, resolver are mocked.
 Only this independent benchmark/report is written; production modules untouched.
 """
+import overview_ui
+import shelf_ui_common
+import shelf_window
 import contextlib
 import json
 import os
@@ -115,7 +118,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-clear-bench-') as temporary:
     from content_grid import IconItem
 
     app = ObservedApplication([])
-    subject.load_font(app)
+    shelf_ui_common.load_font(app)
     measurement = Measurement(app)
     app.measurement = measurement
     with contextlib.ExitStack() as stack:
@@ -125,7 +128,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-clear-bench-') as temporary:
             (subject.QCursor, 'pos', lambda *args: QPoint(1400, 350)),
             (subject.QGuiApplication, 'screenAt', lambda *args: Screen()),
             (subject.QGuiApplication, 'primaryScreen', lambda *args: Screen()),
-            (subject.ctypes.windll.user32, 'GetAsyncKeyState', lambda key: 0),
+            (shelf_ui_common.ctypes.windll.user32, 'GetAsyncKeyState', lambda key: 0),
             (subject, 'native_window_move_active', lambda: False),
             (app_settings, '_read_startup_value', lambda: None),
             (app_settings, '_write_startup_value', lambda *args: None),
@@ -134,10 +137,10 @@ with tempfile.TemporaryDirectory(prefix='flickdock-clear-bench-') as temporary:
         ]: stack.enter_context(patch.object(owner, name, value))
         for owner, name, label in [
             (ClearConfirmOverlay, '_finish', 'overlay_finish'),
-            (subject.ShelfWindow, 'remove_all', 'remove_all'),
-            (subject.ShelfWindow, 'refresh', 'refresh'),
-            (subject.ContentsPopup, 'rebuild', 'popup_rebuild'),
-            (subject.ContentsPopup, '_clear_layout', 'clear_layout'),
+            (shelf_window.ShelfWindow, 'remove_all', 'remove_all'),
+            (shelf_window.ShelfWindow, 'refresh', 'refresh'),
+            (overview_ui.ContentsPopup, 'rebuild', 'popup_rebuild'),
+            (overview_ui.ContentsPopup, '_clear_layout', 'clear_layout'),
             (MediaPreview, 'release_source', 'release_media'),
             (MediaPreview, 'stop', 'stop_media'),
             (subject.ShelfManager, 'save', 'save'),
@@ -166,7 +169,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-clear-bench-') as temporary:
                     elif item.layout():
                         clear_in_batches(self, item.layout()); item.layout().deleteLater()
                 if retired and not cleanup.isActive(): cleanup.start(8)
-            stack.enter_context(patch.object(subject.ContentsPopup, '_clear_layout', measurement.wrap(clear_in_batches, 'clear_layout_batch')))
+            stack.enter_context(patch.object(overview_ui.ContentsPopup, '_clear_layout', measurement.wrap(clear_in_batches, 'clear_layout_batch')))
 
         manager = subject.ShelfManager(app)
         manager.timer.stop()
@@ -193,7 +196,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-clear-bench-') as temporary:
                 shelf.add_paths('permanent', paths[:count])
                 manager.show_overview()
                 popup = shelf.popup
-                item_class = subject.FileRow if view == 'list' else IconItem
+                item_class = overview_ui.FileRow if view == 'list' else IconItem
                 wait_until(app, lambda: len(popup.rows_body.findChildren(item_class)) == count and not shelf.geometry_morph.active)
                 if media_case:
                     popup.preview.current_path = None

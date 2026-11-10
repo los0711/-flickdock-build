@@ -3,6 +3,10 @@
 Checks native/live-tree stability and responsive timer delivery. This measures
 offscreen GUI work; it does not measure the Windows compositor's frame rate.
 """
+import file_preview
+import overview_ui
+import shelf_ui_common
+import shelf_window
 import os
 os.environ['QT_QPA_PLATFORM']='offscreen'
 os.environ['QT_SCALE_FACTOR']='1.25'
@@ -101,7 +105,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-clock-v164-') as temporary:
     import flickdock as subject, app_settings
     import flickdock_motion, surface_morph
     from global_hotkeys import _NoopBackend
-    app=App([]);subject.load_font(app)
+    app=App([]);shelf_ui_common.load_font(app)
     assert app.platformName()=='offscreen'
     with ExitStack() as patches:
         for obj,name,options in (
@@ -111,13 +115,13 @@ with tempfile.TemporaryDirectory(prefix='flickdock-clock-v164-') as temporary:
             (subject.QCursor,'pos',dict(return_value=QPoint(1450,350))),
             (subject.QGuiApplication,'screenAt',dict(return_value=Screen())),
             (subject.QGuiApplication,'primaryScreen',dict(return_value=Screen())),
-            (subject.ctypes.windll.user32,'GetAsyncKeyState',dict(return_value=0)),
-            (subject.ctypes.windll.user32,'GetForegroundWindow',dict(return_value=0)),
-            (subject.ctypes.windll.user32,'RegisterHotKey',dict(side_effect=AssertionError('Native hotkey registration'))),
-            (subject.ctypes.windll.user32,'UnregisterHotKey',dict(side_effect=AssertionError('Native hotkey unregistration'))),
+            (shelf_ui_common.ctypes.windll.user32,'GetAsyncKeyState',dict(return_value=0)),
+            (shelf_ui_common.ctypes.windll.user32,'GetForegroundWindow',dict(return_value=0)),
+            (shelf_ui_common.ctypes.windll.user32,'RegisterHotKey',dict(side_effect=AssertionError('Native hotkey registration'))),
+            (shelf_ui_common.ctypes.windll.user32,'UnregisterHotKey',dict(side_effect=AssertionError('Native hotkey unregistration'))),
             (subject,'native_window_move_active',dict(return_value=False))):
             patches.enter_context(patch.object(obj,name,**options))
-        original_prepare=subject.ShelfWindow._prepare_morph
+        original_prepare=shelf_window.ShelfWindow._prepare_morph
         def prepare(self,origin,target):
             global current,in_prepare
             before=time.perf_counter();in_prepare+=1
@@ -131,8 +135,8 @@ with tempfile.TemporaryDirectory(prefix='flickdock-clock-v164-') as temporary:
                              origin=rect(origin),target=rect(target),frames=[])
                 segments.append(current)
                 sample()
-        patches.enter_context(patch.object(subject.ShelfWindow,'_prepare_morph',prepare))
-        original_settle=subject.ShelfWindow._settle_morph
+        patches.enter_context(patch.object(shelf_window.ShelfWindow,'_prepare_morph',prepare))
+        original_settle=shelf_window.ShelfWindow._settle_morph
         def settle(self,endpoint):
             global current
             result=original_settle(self,endpoint)
@@ -140,9 +144,9 @@ with tempfile.TemporaryDirectory(prefix='flickdock-clock-v164-') as temporary:
                 current['ended_at']=moment();current['settled']=True
                 current['settled_host']=rect(self.geometry());current['settled_card']=rect(self.card.geometry())
             return result
-        patches.enter_context(patch.object(subject.ShelfWindow,'_settle_morph',settle))
-        for cls,name in ((subject.IconItem,'__init__'),(subject.ContentsPopup,'rebuild'),
-                         (subject.PreviewPane,'show_path'),(subject.ImagePreview,'set_source'),
+        patches.enter_context(patch.object(shelf_window.ShelfWindow,'_settle_morph',settle))
+        for cls,name in ((overview_ui.IconItem,'__init__'),(overview_ui.ContentsPopup,'rebuild'),
+                         (file_preview.PreviewPane,'show_path'),(file_preview.ImagePreview,'set_source'),
                          (surface_morph.SurfaceSnapshot,'capture_live'),
                          (surface_morph.SurfaceSnapshot,'capture_current'),
                          (flickdock_motion.MotionShadow,'draw')):

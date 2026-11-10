@@ -4,6 +4,7 @@ The actual Qt platform stays offscreen. Only poll's native branch is selected;
 Win32 inputs, registration, native drop-target positioning and registry are
 mocked. No cursor is moved and no desktop or native hook is created.
 """
+import shelf_ui_common
 from contextlib import ExitStack
 import json
 import math
@@ -30,7 +31,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-gesture-entry-v165-') as temp
     os.environ['APPDATA']=temporary
     import app_settings,drag_probe,flickdock as subject
     from global_hotkeys import _NoopBackend
-    app=QApplication([]);actual_platform=app.platformName;subject.load_font(app)
+    app=QApplication([]);actual_platform=app.platformName;shelf_ui_common.load_font(app)
     assert actual_platform()=='offscreen'
     pointer={'down':False,'pos':QPoint(600,350)}
     with ExitStack() as patches:
@@ -39,9 +40,9 @@ with tempfile.TemporaryDirectory(prefix='flickdock-gesture-entry-v165-') as temp
             (QSystemTrayIcon,'show',{}),(QSystemTrayIcon,'hide',{}),
             (app_settings,'_read_startup_value',{}),(app_settings,'_write_startup_value',{}),
             (subject.QCursor,'pos',dict(side_effect=lambda:QPoint(pointer['pos']))),
-            (subject.ctypes.windll.user32,'GetAsyncKeyState',dict(side_effect=lambda key:0x8000 if key==1 and pointer['down'] else 0)),
-            (subject.ctypes.windll.user32,'RegisterHotKey',dict(side_effect=AssertionError('Real hotkey registration'))),
-            (subject.ctypes.windll.user32,'UnregisterHotKey',dict(side_effect=AssertionError('Real hotkey unregistration'))),
+            (shelf_ui_common.ctypes.windll.user32,'GetAsyncKeyState',dict(side_effect=lambda key:0x8000 if key==1 and pointer['down'] else 0)),
+            (shelf_ui_common.ctypes.windll.user32,'RegisterHotKey',dict(side_effect=AssertionError('Real hotkey registration'))),
+            (shelf_ui_common.ctypes.windll.user32,'UnregisterHotKey',dict(side_effect=AssertionError('Real hotkey unregistration'))),
             (subject,'native_window_move_active',dict(return_value=False)),
             (drag_probe,'native_window_move_active',dict(return_value=False)),
             (drag_probe,'_native_windows_enabled',dict(return_value=False))):

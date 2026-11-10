@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage
 from test_html_native_workspace import APP,until,flush
 import async_images
-from flickdock import PreviewPane
+from file_preview import PreviewPane
 
 
 class ResourceTests(unittest.TestCase):

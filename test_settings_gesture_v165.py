@@ -3,6 +3,7 @@
 All profile files and IPC names are temporary. Native input, hotkey and
 registry access are mocked; Qt events only target the offscreen application.
 """
+import shelf_ui_common
 import contextlib
 from dataclasses import asdict
 import json
@@ -79,7 +80,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-settings-gesture-v165-') as t
     from global_hotkeys import _NoopBackend
     from shake_detector import config_for_sensitivity
     app = QApplication([])
-    subject.load_font(app)
+    shelf_ui_common.load_font(app)
     with contextlib.ExitStack() as mocks:
         for owner, name, value in [
             (subject, 'motion_enabled', lambda: False),
@@ -87,7 +88,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-settings-gesture-v165-') as t
             (subject.QCursor, 'pos', lambda *args: QPoint(500, 350)),
             (subject.QGuiApplication, 'screenAt', lambda *args: Screen()),
             (subject.QGuiApplication, 'primaryScreen', lambda *args: Screen()),
-            (subject.ctypes.windll.user32, 'GetAsyncKeyState', lambda key: 0),
+            (shelf_ui_common.ctypes.windll.user32, 'GetAsyncKeyState', lambda key: 0),
             (subject, 'native_window_move_active', lambda: False),
             (app_settings, '_read_startup_value', lambda: None),
             (app_settings, '_write_startup_value', lambda *args: None),
@@ -95,7 +96,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-settings-gesture-v165-') as t
             (QSystemTrayIcon, 'hide', lambda self: None),
         ]: mocks.enter_context(patch.object(owner, name, value))
         for name in ('RegisterHotKey', 'UnregisterHotKey'):
-            mocks.enter_context(patch.object(subject.ctypes.windll.user32, name,
+            mocks.enter_context(patch.object(shelf_ui_common.ctypes.windll.user32, name,
                 side_effect=AssertionError('Native hotkey registration is forbidden')))
         manager = subject.ShelfManager(app)
         manager.timer.stop()

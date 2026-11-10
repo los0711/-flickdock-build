@@ -3,6 +3,7 @@
 Use --baseline before the fix to save/read the old cache-containment evidence.
 All native input, tray, registry and resolver operations remain mocked.
 """
+import shelf_ui_common
 import contextlib
 import json
 import os
@@ -67,7 +68,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-clear-lifecycle-v163-') as te
     import flickdock as subject
     import app_settings
     app = QApplication([])
-    subject.load_font(app)
+    shelf_ui_common.load_font(app)
     with contextlib.ExitStack() as patches:
         for owner, name, value in [
             (subject, 'motion_enabled', lambda: True),
@@ -75,7 +76,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-clear-lifecycle-v163-') as te
             (subject.QCursor, 'pos', lambda *args: QPoint(1400, 350)),
             (subject.QGuiApplication, 'screenAt', lambda *args: Screen()),
             (subject.QGuiApplication, 'primaryScreen', lambda *args: Screen()),
-            (subject.ctypes.windll.user32, 'GetAsyncKeyState', lambda key: 0),
+            (shelf_ui_common.ctypes.windll.user32, 'GetAsyncKeyState', lambda key: 0),
             (subject, 'native_window_move_active', lambda: False),
             (app_settings, '_read_startup_value', lambda: None),
             (app_settings, '_write_startup_value', lambda *args: None),

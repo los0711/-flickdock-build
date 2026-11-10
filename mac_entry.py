@@ -198,7 +198,8 @@ def verify_platform(report_path):
     from lan_transfer import _ephemeral_certificate
     import ssl
     application = QApplication.instance() or QApplication(['FlickDock-platform-verification'])
-    flickdock.load_font(application)
+    from shelf_ui_common import load_font
+    load_font(application)
     bundle = app_bundle()
     if bundle is None:
         raise ValueError('平台验证需要实际打包的 .app。')

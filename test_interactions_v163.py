@@ -1,4 +1,7 @@
 """Public shelf entry checks, with isolated data and offscreen Qt only."""
+import overview_ui
+import shelf_ui_common
+import shelf_window
 import os
 from pathlib import Path
 import tempfile
@@ -20,7 +23,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-interactions-v163-') as tmp:
     os.environ['APPDATA']=str(Path(tmp)/'profile')
     import flickdock as subject,app_settings
     from content_grid import IconItem
-    app=QApplication([]);subject.load_font(app)
+    app=QApplication([]);shelf_ui_common.load_font(app)
     screen=SimpleNamespace(availableGeometry=lambda:QRect(0,0,1920,1080))
     with patch.object(subject.QGuiApplication,'screenAt',return_value=screen),patch.object(subject.QGuiApplication,'primaryScreen',return_value=screen),patch.object(subject,'motion_enabled',return_value=False),patch.object(QSystemTrayIcon,'show'),patch.object(QSystemTrayIcon,'hide'),patch.object(app_settings,'_read_startup_value') as reg_read,patch.object(app_settings,'_write_startup_value') as reg_write:
         manager=subject.ShelfManager(app);manager.timer.stop();shelf=manager.shelf
@@ -29,7 +32,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-interactions-v163-') as tmp:
             path=Path(tmp)/f'original-{i}.txt';path.write_text(str(i),encoding='utf8');refs.append(str(path))
         shelf.add_paths('permanent',refs)
         shelf.show_transient(QPoint(400,350));shelf.show_contents();popup=shelf.popup
-        for mode,kind in (('list',subject.FileRow),('icons',IconItem)):
+        for mode,kind in (('list',overview_ui.FileRow),('icons',IconItem)):
             manager.settings.update(view_mode=mode)
             until(lambda:popup._build_cursor==len(popup.visible_refs()) and popup.retirement.is_idle)
             app.processEvents()
@@ -65,7 +68,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-interactions-v163-') as tmp:
         popup.set_category('all')
         menus=[]
         def read_menu(menu,*args):menus.append([action.text() for action in menu.actions()])
-        with patch.object(subject.AnimatedMenu,'exec',read_menu):
+        with patch.object(shelf_ui_common.AnimatedMenu,'exec',read_menu):
             shelf.show_menu(pos=QPoint(200,100))
             popup.selected.clear();popup.show_item_menu(refs[0],QPoint(200,100))
         assert not any('重命名' in label or label=='打开文件' or '移动' in label for label in menus[0])
@@ -77,7 +80,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-interactions-v163-') as tmp:
         assert shelf.files['permanent']==[renamed,*refs[1:]]
         assert popup.primary_selection==renamed
         moved=Path(tmp)/'moved';moved.mkdir()
-        with patch.object(subject.QFileDialog,'getExistingDirectory',return_value=str(moved)):
+        with patch.object(shelf_window.QFileDialog,'getExistingDirectory',return_value=str(moved)):
             shelf.move_files('permanent',[renamed])
         assert (moved/'renamed.txt').read_text()=='0' and not Path(renamed).exists()
         assert all(Path(ref).is_file() for ref in refs[1:])
@@ -117,7 +120,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-interactions-v163-') as tmp:
         manager.settings.update(shake_sensitivity=1)
         assert manager.shake_detector.config.minimum_peak_speed>750
         assert not hasattr(shelf,'cloud_button')
-        with patch.object(subject.AnimatedMenu,'exec',lambda menu,*args:menu.actions()[0].trigger()):
+        with patch.object(shelf_ui_common.AnimatedMenu,'exec',lambda menu,*args:menu.actions()[0].trigger()):
             shelf.show_cloud_menu()
         assert not manager.settings.sync_upload_enabled and manager.settings.sync_receive_enabled
         assert not manager.sync.upload_enabled and manager.sync.receive_enabled

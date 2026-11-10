@@ -5,6 +5,7 @@ registration are disabled. CreateFileW probes temporary files, never windows.
 Use --probe-zip-remove to report the pre-fix ZIP lifecycle without asserting
 cancellation; normal mode requires removal to cancel the affected export.
 """
+import shelf_ui_common
 from contextlib import ExitStack
 import ctypes
 from ctypes import wintypes
@@ -74,7 +75,7 @@ def require_free(path, phase):
 
 
 app = QApplication([])
-subject.load_font(app)
+shelf_ui_common.load_font(app)
 manager = None
 release_zip = threading.Event()
 try:

@@ -76,10 +76,10 @@ class PickerLifetimeTests(unittest.TestCase):
                 self.assertTrue(shelf.picker_hold_active());self.assertTrue(shelf.isVisible())
                 self.assertEqual((shelf.expanded,shelf.presentation_kind),before)
                 return [],''
-            with patch('flickdock.QFileDialog.getOpenFileNames',side_effect=choose),patch('flickdock.time.monotonic',return_value=100):shelf.pick_files('permanent')
+            with patch('shelf_window.QFileDialog.getOpenFileNames',side_effect=choose),patch('flickdock.time.monotonic',return_value=100):shelf.pick_files('permanent')
             self.assertFalse(shelf._file_choosing);self.assertTrue(shelf.picker_hold_active(101.49));self.assertFalse(shelf.picker_hold_active(101.51))
             self.assertEqual((shelf.expanded,shelf.presentation_kind),before)
-        with patch('flickdock.QFileDialog.getOpenFileNames',side_effect=RuntimeError('picker unavailable')):
+        with patch('shelf_window.QFileDialog.getOpenFileNames',side_effect=RuntimeError('picker unavailable')):
             with self.assertRaises(RuntimeError):shelf.pick_files('permanent')
         self.assertFalse(shelf._file_choosing)
 

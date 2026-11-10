@@ -85,7 +85,7 @@ class PreviewContinuityTests(unittest.TestCase):
                 def execute(menu,_position):
                     action=next(action for action in menu.actions() if action.text()==title)
                     self.assertTrue(action.isEnabled());action.trigger()
-                with patch('flickdock.AnimatedMenu.exec',new=execute):
+                with patch('shelf_ui_common.AnimatedMenu.exec',new=execute):
                     popup.show_item_menu(refs[0],QPoint())
                 self.assertEqual(self.fixture.events[-1],(route,refs))
             popup.selected.clear();popup.primary_selection=None

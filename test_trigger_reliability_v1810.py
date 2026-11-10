@@ -1,4 +1,5 @@
 """Offscreen regressions for drag validation and the screen-edge handoff."""
+import shelf_window
 import os
 from pathlib import Path
 import tempfile
@@ -189,7 +190,7 @@ class TriggerReliabilityTests(unittest.TestCase):
                 manager.shelf.hide_immediately()
                 manager.update_handles()
                 manager.lan_dialog.close()
-            with patch.object(flickdock, 'raise_shelf_for_reveal', return_value=True) as native_raise:
+            with patch.object(shelf_window, 'raise_shelf_for_reveal', return_value=True) as native_raise:
                 manager.show_docked()
                 self.assertTrue(manager.shelf.isVisible())
                 self.assertFalse(manager.edge.isVisible())
@@ -203,7 +204,7 @@ class TriggerReliabilityTests(unittest.TestCase):
         manager=self.manager;manager.show_overview();manager.shelf._native_revealed=True
         order=[];show=VideoDialog.show
         def open_window(dialog):order.append('show');return show(dialog)
-        with patch.object(flickdock,'lower_shelf_after_reveal',side_effect=lambda shelf:order.append('lower') or True), \
+        with patch.object(shelf_window,'lower_shelf_after_reveal',side_effect=lambda shelf:order.append('lower') or True), \
              patch.object(VideoDialog,'show',open_window),patch.object(VideoDialog,'raise_') as raised:
             manager.show_video_dialog()
             self.assertEqual(order[:2],['lower','show'])

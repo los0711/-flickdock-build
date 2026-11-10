@@ -3,6 +3,8 @@
 QT offscreen only; a zero-difference last frame does not establish that the
 intermediate frames obey their geometry. No native input, hotkeys or registry.
 """
+import shelf_ui_common
+import shelf_window
 import json
 import math
 import os
@@ -74,12 +76,12 @@ with tempfile.TemporaryDirectory(prefix='flickdock-bounds-v164-') as profile:
     from app_settings import SettingsStore
     from flickdock_motion import MotionShadow
     from surface_morph import paint_surface_shadow,surface_clip
-    app=QApplication([]);subject.load_font(app)
+    app=QApplication([]);shelf_ui_common.load_font(app)
     assert app.platformName()=='offscreen'
     manager=SimpleNamespace(motion=True,settings=SettingsStore(Path(profile)),save=lambda:None,
                             update_handles=lambda:None,activate_shelf=lambda _:None,
                             _quitting=False,outgoing_drag=False)
-    shelf=subject.ShelfWindow(manager,1);shelf.pinned=True
+    shelf=shelf_window.ShelfWindow(manager,1);shelf.pinned=True
     shelf.files['permanent']=[shelf.content.add_text('Readable content')];shelf.refresh()
     shelf._show_at(QPoint(1400,160),'manual',QPoint())
     shelf.presentation.jump(dict(sx=1,sy=1,dx=0,dy=0,alpha=1));app.processEvents()

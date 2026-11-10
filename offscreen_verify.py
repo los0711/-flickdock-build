@@ -22,7 +22,7 @@ def run_overview(argv,load_font):
     from PySide6.QtWidgets import QApplication
     from app_settings import SettingsStore
     from app_version import APP_VERSION
-    from flickdock import ShelfWindow
+    from shelf_window import ShelfWindow
     import ui_theme
     app=QApplication([argv[0]]);app.setQuitOnLastWindowClosed(False);load_font(app)
     output=Path(argv[argv.index('--verify-output')+1]).resolve()

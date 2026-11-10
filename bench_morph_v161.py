@@ -1,4 +1,6 @@
 """Real shelf entry point benchmark; isolated profile, offscreen, no input/audio."""
+import shelf_ui_common
+import shelf_window
 import os,json,sys,tempfile,time,statistics
 from pathlib import Path
 from unittest.mock import patch
@@ -32,12 +34,12 @@ def percentile(values,p):
 with tempfile.TemporaryDirectory(prefix='flickdock-morph-') as tmp:
     os.environ['APPDATA']=tmp
     import flickdock as mod,app_settings
-    app=QApplication([]);mod.load_font(app);monitor=Monitor(app)
-    draw=mod.MotionShadow.draw
+    app=QApplication([]);shelf_ui_common.load_font(app);monitor=Monitor(app)
+    draw=shelf_window.MotionShadow.draw
     def measured_draw(self,p):
         s=time.perf_counter();draw(self,p)
         if monitor.active:monitor.shadow.append((time.perf_counter()-s)*1000)
-    with patch.object(mod,'motion_enabled',return_value=True),patch.object(QSystemTrayIcon,'show'),patch.object(QSystemTrayIcon,'hide'),patch.object(app_settings,'_read_startup_value'),patch.object(app_settings,'_write_startup_value'),patch.object(mod.MotionShadow,'draw',measured_draw),patch.object(mod.QGuiApplication,'screenAt',return_value=Screen()),patch.object(mod.QGuiApplication,'primaryScreen',return_value=Screen()):
+    with patch.object(mod,'motion_enabled',return_value=True),patch.object(QSystemTrayIcon,'show'),patch.object(QSystemTrayIcon,'hide'),patch.object(app_settings,'_read_startup_value'),patch.object(app_settings,'_write_startup_value'),patch.object(shelf_window.MotionShadow,'draw',measured_draw),patch.object(mod.QGuiApplication,'screenAt',return_value=Screen()),patch.object(mod.QGuiApplication,'primaryScreen',return_value=Screen()):
         manager=mod.ShelfManager(app);manager.timer.stop();shelf=manager.shelf;shelf.pinned=True
         manager.settings.update(view_mode='icons')
         refs=[shelf.content.add_text(f'125-item transition benchmark {i}: native text with a readable preview') for i in range(125)]

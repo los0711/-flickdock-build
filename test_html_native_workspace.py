@@ -2,6 +2,10 @@
 
 Qt runs offscreen with disposable files, no global hooks, network or registry.
 """
+import file_preview
+import overview_ui
+import shelf_ui_common
+import shelf_window
 import os
 os.environ['QT_QPA_PLATFORM']='offscreen'
 
@@ -27,7 +31,7 @@ from content_grid import IconItem
 
 APP=QApplication.instance() or QApplication([])
 APP.setQuitOnLastWindowClosed(False)
-subject.load_font(APP)
+shelf_ui_common.load_font(APP)
 
 
 def flush():
@@ -83,15 +87,15 @@ class WorkspaceTests(unittest.TestCase):
         self.patches.enter_context(patch.object(app_settings,'_startup_runtime_allowed',return_value=False))
         self.patches.enter_context(patch.object(subject.QGuiApplication,'screenAt',return_value=Screen()))
         self.patches.enter_context(patch.object(subject.QGuiApplication,'primaryScreen',return_value=Screen()))
-        self.patches.enter_context(patch.object(subject,'raise_shelf_for_reveal',return_value=False))
+        self.patches.enter_context(patch.object(shelf_window,'raise_shelf_for_reveal',return_value=False))
         self.settings=app_settings.SettingsStore(self.base/'profile')
         self.settings.update(theme='dark',capture_mode='reference',capture_dir=str(self.base/'saved'),view_mode='list')
-        ui_theme.set_theme('dark');ui_theme.apply_application(APP,subject.FONT_FAMILY)
+        ui_theme.set_theme('dark');ui_theme.apply_application(APP,shelf_ui_common.FONT_FAMILY)
         self.manager=SimpleNamespace(motion=False,settings=self.settings,save=lambda:None,update_handles=lambda:None,
             activate_shelf=lambda _:None,_quitting=False,outgoing_drag=False,
             show_lan_dialog=lambda:self.events.append('lan'),show_transfer_dialog=lambda:self.events.append('lan'),
             queue_transfer_paths=lambda mode,paths:self.events.append((mode,paths)),show_settings=lambda:self.events.append('settings'))
-        self.shelf=subject.ShelfWindow(self.manager,1);self.manager.shelf=self.shelf
+        self.shelf=shelf_window.ShelfWindow(self.manager,1);self.manager.shelf=self.shelf
         self.shelf.pinned=True;self.shelf._show_at(QPoint(60,60),'manual',QPoint());flush()
         self.paths=[]
         for index,name in enumerate(('report.txt','assets.dat','specification.pdf')):
@@ -152,7 +156,7 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual((self.shelf.card.width(),self.shelf.card.height()),(332,318))
 
     def test_card_stroke_occupies_all_four_edges_without_clipping(self):
-        popup=self.overview();row=next(row for row in popup.rows_body.findChildren(subject.FileRow) if row.path==self.paths[1])
+        popup=self.overview();row=next(row for row in popup.rows_body.findChildren(overview_ui.FileRow) if row.path==self.paths[1])
         popup.selected.clear();row.update();flush()
         image=row.grab().toImage();ratio=image.devicePixelRatio();w,h=image.width(),image.height()
         points=((w//2,0),(w//2,h-1),(0,h//2),(w-1,h//2))
@@ -167,12 +171,12 @@ class WorkspaceTests(unittest.TestCase):
         self.manager.sync=SyncView(upload_time_for_ref=lambda _:None,sync_status_for_ref=lambda _:state['value'],
             sync_statuses_for_refs=lambda refs:{ref:state['value'] for ref in refs},is_upload_paused=lambda _:False)
         popup=self.overview();ref=self.paths[1];popup.select_item(ref)
-        row=next(row for row in popup.rows_body.findChildren(subject.FileRow) if row.path==ref)
+        row=next(row for row in popup.rows_body.findChildren(overview_ui.FileRow) if row.path==ref)
         renderings=[]
         for status in ('synced','uploading','pending','local','paused','error'):
             state['value']=status;popup.refresh_cloud_status();flush()
             self.assertEqual(row.icon_label.cloud_status,status)
-            self.assertEqual(popup.preview.status_value.text(),subject.CLOUD_STATUS_LABELS[status])
+            self.assertEqual(popup.preview.status_value.text(),file_preview.CLOUD_STATUS_LABELS[status])
             image=row.icon_label.grab().toImage()
             renderings.append(bytes(image.constBits()))
             # Real glyph artwork must be present in the circle, not just a
@@ -191,11 +195,11 @@ class WorkspaceTests(unittest.TestCase):
         self.assertLess(self.bounds(self.shelf.popup.clear_button,self.shelf.popup).right()+6,
                         self.bounds(self.shelf.pin_button,self.shelf.popup).left())
         texts=[]
-        with patch.object(subject.AnimatedMenu,'exec',lambda menu,*_:texts.extend(action.text() for action in menu.actions() if not action.isSeparator())):
+        with patch.object(shelf_ui_common.AnimatedMenu,'exec',lambda menu,*_:texts.extend(action.text() for action in menu.actions() if not action.isSeparator())):
             self.shelf.menu_button.click()
         for expected in ('添加文件','设置','收起到屏幕边缘'):
             self.assertTrue(any(expected in value for value in texts),(expected,texts))
-        self.shelf.collapse_contents();self.shelf.presentation_kind='drag';self.shelf._layout_header(subject.CARD_W)
+        self.shelf.collapse_contents();self.shelf.presentation_kind='drag';self.shelf._layout_header(shelf_ui_common.CARD_W)
         for control in (self.shelf.account_button,self.shelf.account_caption,self.shelf.lan_caption):
             self.assertFalse(control.isVisible())
         for control in (self.shelf.lan_button,):
@@ -252,7 +256,7 @@ class WorkspaceTests(unittest.TestCase):
                 foreground=foreground.name(),background=background.name(),ratio=round(ratio,3)))
             self.assertGreaterEqual(ratio,4.5,(name,foreground.name(),background.name(),ratio))
         for theme in ('light','dark'):
-            self.settings.update(theme=theme);ui_theme.set_theme(theme);ui_theme.apply_application(APP,subject.FONT_FAMILY)
+            self.settings.update(theme=theme);ui_theme.set_theme(theme);ui_theme.apply_application(APP,shelf_ui_common.FONT_FAMILY)
             refresh_tree(self.shelf);popup._render_signature=None;popup.rebuild();popup.set_category('all');flush()
             selected=popup.category_buttons['all'];image=selected.grab().toImage()
             check('selected category',brightest_pixel(image,QRect(35,8,45,18)),image.pixelColor(6,selected.height()//2))
@@ -264,7 +268,7 @@ class WorkspaceTests(unittest.TestCase):
                   other_image.pixelColor(other.mapTo(popup,QPoint(position.center().x(),position.top()+3))))
             # Exercise real QMenu selection drawing; palette() alone does not
             # resolve the QSS :selected foreground/background state.
-            menu=subject.AnimatedMenu();subject.style_menu(menu);action=menu.addAction('选择菜单项目')
+            menu=shelf_ui_common.AnimatedMenu();shelf_ui_common.style_menu(menu);action=menu.addAction('选择菜单项目')
             menu.popup(QPoint(0,0));menu.setActiveAction(action);flush();rect=menu.actionGeometry(action);image=menu.grab().toImage()
             check('selected menu item',brightest_pixel(image,QRect(rect.x()+14,rect.y()+4,85,rect.height()-8)),
                   image.pixelColor(rect.right()-12,rect.center().y()))
@@ -350,12 +354,12 @@ class WorkspaceTests(unittest.TestCase):
             self.assertEqual(archive.read('report.txt'),b'original 0')
         self.assertTrue(all(Path(path).is_file() for path in self.paths))
         single=[]
-        with patch.object(subject.AnimatedMenu,'exec',lambda menu,*_:single.extend(action.text() for action in menu.actions() if not action.isSeparator())):
+        with patch.object(shelf_ui_common.AnimatedMenu,'exec',lambda menu,*_:single.extend(action.text() for action in menu.actions() if not action.isSeparator())):
             popup.selected.clear();popup.select_item(self.paths[0]);popup.show_item_menu(self.paths[0],QPoint(0,0))
         for text in ('打开文件','在文件夹中显示','复制文件路径','复制所选内容','重命名文件…','移动所选文件到…','从搁架移除此项'):
             self.assertIn(text,single)
         page=[]
-        with patch.object(subject.AnimatedMenu,'exec',lambda menu,*_:page.extend(action.text() for action in menu.actions() if not action.isSeparator())):
+        with patch.object(shelf_ui_common.AnimatedMenu,'exec',lambda menu,*_:page.extend(action.text() for action in menu.actions() if not action.isSeparator())):
             self.shelf.show_menu(pos=QPoint(0,0))
         self.assertTrue(any('添加文件' in text for text in page));self.assertTrue(any('打包全部' in text for text in page))
         self.assertFalse(any('重命名' in text for text in page))

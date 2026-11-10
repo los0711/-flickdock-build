@@ -1,4 +1,5 @@
 """Open-window remote changes; disposable Qt offscreen views, no OS hooks."""
+import overview_ui
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -23,7 +24,7 @@ class LiveShelfTests(unittest.TestCase):
     overview = workspace_fixture.WorkspaceTests.overview
 
     def rows(self, popup):
-        return {row.path: row for row in popup.rows_body.findChildren(subject.FileRow)
+        return {row.path: row for row in popup.rows_body.findChildren(overview_ui.FileRow)
                 if not row.isHidden()}
 
     def test_metadata_update_keeps_existing_widgets_selection_and_preview(self):

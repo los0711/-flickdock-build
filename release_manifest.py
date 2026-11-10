@@ -31,6 +31,8 @@ class ReleaseError(ValueError):
 VERSION_RE=re.compile(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z')
 HASH_RE=re.compile(r'[0-9a-f]{64}\Z')
 RUNTIME_SOURCES=(
+    'shelf_ui_common.py','shelf_file_tools.py','shelf_drop_zone.py','file_preview.py',
+    'overview_ui.py','shelf_window.py','dock_handle.py','sync_runtime.py','transfer_runtime.py','sync_contracts.py',
     
     'virtual_clipboard.py',
     'video_assets.py','video_runtime.py','video_cdn.py','video_links.py','video_worker.py','video_formats.py','video_covers.py','video_jobs.py','video_controller.py','video_panel.py','video_prompt.py',
@@ -53,6 +55,7 @@ RUNTIME_SOURCES=(
     
 )
 MAINTAINED_TESTS=(
+    'test_architecture.py',
     
     'test_cloud_delete_v1825.py','test_cloud_events_v1825.py','test_cloud_stream_v1825.py',
     'test_cloud_only_v1825.py','test_virtual_clipboard.py',
@@ -118,7 +121,7 @@ SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     '.github/workflows/native-clipboard.yml',
     'FlickDock.spec','FlickDock.iss','version_info.txt','ChineseSimplified.isl','windows-network.ps1',
     'flickdock.ico','THIRD_PARTY_NOTICES.md','font_manifest.json','bundle_policy.py',
-    'release_manifest.py','release_macos.py','release_signing.py','package_source.py','PUBLISHING.md','README.md','AGENTS.md','UI_REFERENCE_IMPLEMENTATION.md','HIG_DESIGN.md','TRANSPORT_V1824.md','.gitignore','.gitattributes',
+    'release_manifest.py','release_macos.py','release_signing.py','package_source.py','PUBLISHING.md','README.md','AGENTS.md','ARCHITECTURE.md','UI_REFERENCE_IMPLEMENTATION.md','HIG_DESIGN.md','TRANSPORT_V1824.md','.gitignore','.gitattributes',
     'check_release_v16.py','release_dpr_v165.py','PACKAGE_AUDIT.md',
     'MOTION_V161.md','MOTION_V162.md','MOTION_V163.md','MOTION_V164.md','MOTION_V165.md',
     'bench_morph_v161.py','bench_cold_expand_v162.py','bench_clear_confirm_v161.py',

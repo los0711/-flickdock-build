@@ -241,7 +241,8 @@ class TransferTests(unittest.TestCase):
 
     def project(self, adapter, engine, *, native_shelf=False):
         """Use the actual manager projection, without a native manager or hooks."""
-        from flickdock import ShelfManager, ShelfWindow
+        from flickdock import ShelfManager
+        from shelf_window import ShelfWindow
         manager = SimpleNamespace(_sync_transfer_refs=set())
         if native_shelf:
             from app_settings import SettingsStore

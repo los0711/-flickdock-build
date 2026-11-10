@@ -1,4 +1,7 @@
 """Real shelf transfer presentation and owned-file cleanup, Qt offscreen only."""
+import file_preview
+import shelf_ui_common
+import shelf_window
 import os
 os.environ['QT_QPA_PLATFORM']='offscreen'
 
@@ -25,7 +28,7 @@ from transfer_visuals import TransferIconLabel,TransferRateTracker,transfer_phas
 
 APP=QApplication.instance() or QApplication([])
 APP.setQuitOnLastWindowClosed(False)
-subject.load_font(APP)
+shelf_ui_common.load_font(APP)
 
 
 from test_html_native_workspace import SyncView
@@ -121,7 +124,7 @@ class TransferUITests(unittest.TestCase):
         self.settings.update(capture_mode='copy',capture_dir=str(self.saved),view_mode='icons')
         self.manager=SimpleNamespace(motion=False,settings=self.settings,save=lambda:None,update_handles=lambda:None,
             activate_shelf=lambda _:None,_quitting=False,outgoing_drag=False)
-        self.shelf=subject.ShelfWindow(self.manager,1);self.shelf.pinned=True
+        self.shelf=shelf_window.ShelfWindow(self.manager,1);self.shelf.pinned=True
         self.manager.shelf=self.shelf
         self.shelf._show_at(QPoint(30,30),'manual',QPoint());flush()
     def tearDown(self):
@@ -233,11 +236,11 @@ class TransferUITests(unittest.TestCase):
         self.assertEqual(len(copies),2);self.assertTrue(all(path.parent==copies[0].parent for path in copies))
         foreign=self.saved/'imports'/'foreign-owner';foreign.mkdir();(foreign/'keep').write_bytes(b'preserve')
         entered,release=threading.Event(),threading.Event();self.barriers.append(release)
-        original=subject.delete_owned_copy;gui=threading.get_ident()
+        original=shelf_window.delete_owned_copy;gui=threading.get_ident()
         def held(spec,cancel):
             self.assertNotEqual(threading.get_ident(),gui)
             entered.set();assert release.wait(5);return original(spec,cancel)
-        with patch.object(subject,'delete_owned_copy',side_effect=held):
+        with patch.object(shelf_window,'delete_owned_copy',side_effect=held):
             self.shelf.remove_path('permanent',str(copies[0]));wait(entered.is_set)
             self.assertNotIn(str(copies[0]),self.shelf.files['permanent'])
             self.assertTrue(copies[0].exists(),'disk cleanup runs on a worker')
@@ -263,7 +266,7 @@ class TransferUITests(unittest.TestCase):
         self.assertTrue(path.is_file());self.assertEqual(path.stat().st_size,256*1024)
     def test_pending_remote_video_never_opens_player_file_drag_clipboard_or_archive(self):
         ref=self.pending(remote=True)
-        with patch.object(subject.MediaPreview,'set_source',side_effect=AssertionError('Pending content cannot play')),\
+        with patch.object(file_preview.MediaPreview,'set_source',side_effect=AssertionError('Pending content cannot play')),\
              patch.object(QDesktopServices,'openUrl',side_effect=AssertionError('Pending content cannot open')),\
              patch.object(subject.QMessageBox,'warning',side_effect=AssertionError('Pending content cannot open modal errors')):
             popup=self.overview();self.assertIn(ref,popup.visible_refs())
@@ -280,7 +283,7 @@ class TransferUITests(unittest.TestCase):
             self.assertIn('25%',popup.preview.transfer_meta.text())
             self.shelf.open_path(ref)
         payload=self.shelf.content.mime_for([ref]);self.assertFalse(payload.hasUrls());self.assertFalse(payload.hasText())
-        with patch.object(subject,'QDrag',side_effect=AssertionError('Pending content cannot drag')),\
+        with patch.object(shelf_window,'QDrag',side_effect=AssertionError('Pending content cannot drag')),\
              patch.object(self.shelf,'choose_zip_path',side_effect=AssertionError('Pending content cannot archive')),\
              patch.object(QApplication,'clipboard',side_effect=AssertionError('Pending content cannot copy')):
             self.assertEqual(self.shelf.drag_files('permanent',[ref]),Qt.DropAction.IgnoreAction)
@@ -311,7 +314,7 @@ class TransferUITests(unittest.TestCase):
         original_theme=ui_theme.current_theme()
         try:
             for theme in ('light','dark'):
-                ui_theme.set_theme(theme);ui_theme.apply_application(APP,subject.FONT_FAMILY)
+                ui_theme.set_theme(theme);ui_theme.apply_application(APP,shelf_ui_common.FONT_FAMILY)
                 for count in (1,123):
                     self.shelf.content.pending={f'flickdock:transfer:fixture-{index}':
                         dict(name=f'文件{index}.bin',kind='file') for index in range(count)}
@@ -325,7 +328,7 @@ class TransferUITests(unittest.TestCase):
                     self.assertEqual(popup.strip_title.text(),f'传输中 · {count} 项')
                     self.assertTrue(popup.transfer_strip.isVisible())
         finally:
-            ui_theme.set_theme(original_theme);ui_theme.apply_application(APP,subject.FONT_FAMILY)
+            ui_theme.set_theme(original_theme);ui_theme.apply_application(APP,shelf_ui_common.FONT_FAMILY)
 
     def test_overview_footer_shows_one_compact_transfer_and_opens_the_full_list(self):
         refs=[self.pending(f'传输文件{index}.bin',received=index*10,total=100)
@@ -426,10 +429,10 @@ class TransferUITests(unittest.TestCase):
             sync_statuses_for_refs=lambda refs:{ref:state['value'] for ref in refs})
         popup=self.overview();popup.select_item(path)
         self.assertEqual(popup.preview.current_path,path)
-        self.assertEqual(popup.preview.status_value.text(),subject.CLOUD_STATUS_LABELS['pending'])
+        self.assertEqual(popup.preview.status_value.text(),file_preview.CLOUD_STATUS_LABELS['pending'])
         state['value']='synced'
         popup.refresh_cloud_status();flush()
-        self.assertEqual(popup.preview.status_value.text(),subject.CLOUD_STATUS_LABELS['synced'])
+        self.assertEqual(popup.preview.status_value.text(),file_preview.CLOUD_STATUS_LABELS['synced'])
         popup.preview.show_group((path,path))
         self.assertEqual(popup.preview.status_value.text(),'')
     def test_manager_projects_remote_pending_enables_expand_and_routes_cancel_to_sync(self):
@@ -525,7 +528,7 @@ class TransferUITests(unittest.TestCase):
         def choose_images(menu,*_):
             labels.extend(action.text() for action in menu.actions())
             next(action for action in menu.actions() if action.text()=='图片').trigger()
-        with patch.object(subject.AnimatedMenu,'exec',choose_images):popup.open_category_menu()
+        with patch.object(shelf_ui_common.AnimatedMenu,'exec',choose_images):popup.open_category_menu()
         self.assertIn('传输中',labels)
         self.assertEqual(popup.category,'images')
         self.assertEqual(popup.category_picker.text(),'图片')
@@ -533,7 +536,7 @@ class TransferUITests(unittest.TestCase):
         bulk=[]
         def inspect_bulk(menu,*_):
             bulk.extend((action.text(),action.isEnabled()) for action in menu.actions() if not action.isSeparator())
-        with patch.object(subject.AnimatedMenu,'exec',inspect_bulk):popup.open_bulk_menu()
+        with patch.object(shelf_ui_common.AnimatedMenu,'exec',inspect_bulk):popup.open_bulk_menu()
         self.assertTrue(popup.select_all_button.isVisible())
         self.assertEqual(bulk,[('按时间排序',True),('按大小排序',True),('打包所选…',True),('打包全部…',True),('删除项目…',True)])
         for widget in (popup.title,popup.bulk_more,popup.category_picker,popup.narrow_view_button,popup.scroll):
@@ -560,7 +563,7 @@ class TransferUITests(unittest.TestCase):
                 counts.append(dialog.count)
                 self.assertEqual(dialog.count,1)
                 return accepted
-            with patch.object(subject.ClearConfirmOverlay,'exec',decide),patch.object(self.shelf,'remove_all') as remove:
+            with patch.object(shelf_window.ClearConfirmOverlay,'exec',decide),patch.object(self.shelf,'remove_all') as remove:
                 self.assertEqual(self.shelf.confirm_clear_all(),accepted)
                 if accepted:remove.assert_called_once_with('permanent')
                 else:remove.assert_not_called()

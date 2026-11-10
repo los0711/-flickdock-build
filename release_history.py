@@ -1,5 +1,6 @@
 """Bundled release history remains readable after updating or while offline."""
 HISTORY=(
+    ('1.8.30',{'优化与修复':('优化应用内部结构与维护稳定性。',)}),
     ('1.8.29',{'优化与修复':(
         '优化文件互传的连接稳定性与传输速度。',
         '修复设备状态异常影响发送的问题。',

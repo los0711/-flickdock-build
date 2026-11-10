@@ -1,4 +1,6 @@
 """Actual shelf expand/collapse regression at 125% DPI, with no desktop UI."""
+import overview_ui
+import shelf_ui_common
 import json
 import os
 from pathlib import Path
@@ -33,7 +35,7 @@ def wait_until(app,predicate,limit=1800):
 with tempfile.TemporaryDirectory(prefix='flickdock-morph-test-') as tmp:
     os.environ['APPDATA']=tmp
     import flickdock as mod,app_settings
-    app=QApplication([]);mod.load_font(app)
+    app=QApplication([]);shelf_ui_common.load_font(app)
     with patch.object(mod,'motion_enabled',return_value=True),patch.object(QSystemTrayIcon,'show'),patch.object(QSystemTrayIcon,'hide'),patch.object(app_settings,'_read_startup_value'),patch.object(app_settings,'_write_startup_value'),patch.object(mod.QGuiApplication,'screenAt',return_value=Screen()),patch.object(mod.QGuiApplication,'primaryScreen',return_value=Screen()):
         manager=mod.ShelfManager(app);manager.timer.stop()
         shelf=manager.shelf;shelf.pinned=True
@@ -63,15 +65,15 @@ with tempfile.TemporaryDirectory(prefix='flickdock-morph-test-') as tmp:
                 assert abs(button.mapToGlobal(QPoint()).x()-(right-176+index*38))<=1
         shelf.grab().save(str(Path(__file__).parent/'morph-v161-mid-125.png'))
         shelf.geometry_morph.complete();flush(app)
-        wait_until(app,lambda:len(popup.rows_body.findChildren(mod.IconItem))==125)
+        wait_until(app,lambda:len(popup.rows_body.findChildren(overview_ui.IconItem))==125)
         assert not shelf.card.isHidden() and not snapshot.active
         assert all(button.parentWidget() is shelf for button in (shelf.pin_button,shelf.expand_button,shelf.menu_button,shelf.close_button))
         epoch=popup._build_epoch
-        widgets={id(item) for item in popup.rows_body.findChildren(mod.IconItem)}
+        widgets={id(item) for item in popup.rows_body.findChildren(overview_ui.IconItem)}
         shelf.collapse_contents();shelf.geometry_morph.complete()
         shelf.show_contents();shelf.geometry_morph.complete();flush(app)
         assert popup._build_epoch==epoch,'unchanged warm open reconstructed content'
-        assert widgets=={id(item) for item in popup.rows_body.findChildren(mod.IconItem)}
+        assert widgets=={id(item) for item in popup.rows_body.findChildren(overview_ui.IconItem)}
 
         # Category state is reset on the public expansion entry every time.
         popup.set_category('images');flush(app)
@@ -80,7 +82,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-morph-test-') as tmp:
         shelf.show_contents();shelf.geometry_morph.complete();flush(app)
         assert popup.category=='all' and popup.category_buttons['all'].isChecked()
         assert len(popup.visible_refs())==125
-        wait_until(app,lambda:len(popup.rows_body.findChildren(mod.IconItem))==125)
+        wait_until(app,lambda:len(popup.rows_body.findChildren(overview_ui.IconItem))==125)
 
         # Live header clicks can reverse an in-flight transition repeatedly.
         for _ in range(4):
@@ -109,7 +111,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-morph-test-') as tmp:
         new_ref=shelf.content.add_text('Resolved during the expand transition')
         shelf.add_paths('permanent',[new_ref]);shelf.geometry_morph.complete();flush(app)
         assert len(popup.visible_refs())==126 and popup.count_label.text()=='126 项'
-        wait_until(app,lambda:len(popup.rows_body.findChildren(mod.IconItem))==126)
+        wait_until(app,lambda:len(popup.rows_body.findChildren(overview_ui.IconItem))==126)
         shelf.grab().save(str(Path(__file__).parent/'morph-v161-expanded-125.png'))
 
         # Shake shelf hides every header button, including pin; restore stays clean.

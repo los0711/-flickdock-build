@@ -1,4 +1,5 @@
 """Real MIME intake -> owned copy/reference -> silent native media -> clear."""
+import shelf_ui_common
 import os
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 os.environ['QT_SCALE_FACTOR'] = '1.25'
@@ -36,7 +37,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-copy-integration-') as tempor
     import flickdock as subject
     import media_preview
     from global_hotkeys import _NoopBackend
-    app = QApplication([]);subject.load_font(app)
+    app = QApplication([]);shelf_ui_common.load_font(app)
     fixture = Path(os.getenv('FLICKDOCK_TEST_MEDIA', str(Path(__file__).parent / 'media-test.mp4')))
     if not fixture.is_file():
         print('SKIP native intake media integration: set FLICKDOCK_TEST_MEDIA to a test video')
@@ -44,9 +45,9 @@ with tempfile.TemporaryDirectory(prefix='flickdock-copy-integration-') as tempor
     store = root / 'captured';store.mkdir()
     with patch.object(subject, 'motion_enabled', return_value=False), \
          patch.object(QSystemTrayIcon, 'show'), patch.object(QSystemTrayIcon, 'hide'), \
-         patch.object(subject.ctypes.windll.user32, 'GetAsyncKeyState', return_value=0), \
-         patch.object(subject.ctypes.windll.user32, 'RegisterHotKey', side_effect=AssertionError('Native hotkey registration')), \
-         patch.object(subject.ctypes.windll.user32, 'UnregisterHotKey', side_effect=AssertionError('Native hotkey unregistration')), \
+         patch.object(shelf_ui_common.ctypes.windll.user32, 'GetAsyncKeyState', return_value=0), \
+         patch.object(shelf_ui_common.ctypes.windll.user32, 'RegisterHotKey', side_effect=AssertionError('Native hotkey registration')), \
+         patch.object(shelf_ui_common.ctypes.windll.user32, 'UnregisterHotKey', side_effect=AssertionError('Native hotkey unregistration')), \
          patch.object(subject, 'native_window_move_active', return_value=False), \
          patch.object(subject.QCursor, 'pos', return_value=QPoint(20, 20)), \
          patch.object(app_settings, '_read_startup_value'), patch.object(app_settings, '_write_startup_value'), ExitStack() as cleanup:

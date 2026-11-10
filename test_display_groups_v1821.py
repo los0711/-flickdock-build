@@ -110,7 +110,8 @@ class DisplayTests(unittest.TestCase):
         finally:view.hide();view.deleteLater();flush()
 
     def test_all_enabled_draft_handles_receive_geometry_and_are_shown(self):
-        from flickdock import ShelfManager,DockHandle
+        from flickdock import ShelfManager
+        from dock_handle import DockHandle
         from dock_geometry import trigger_rect
         row=self.editor.rows[display_id(self.second)];row.toggle.setChecked(True);row.edge.setCurrentIndex(row.edge.findData('left'));row.controls['position'].setValue(73)
         manager=SimpleNamespace(settings=self.store,_quitting=False,settings_open=lambda:True,_settings_prompt_active=lambda:False,dock_preview=SimpleNamespace(hide=Mock()),settings_edge_hint=SimpleNamespace(hide=Mock()))

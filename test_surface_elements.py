@@ -112,7 +112,7 @@ class SharedElementTests(unittest.TestCase):
         import ui_theme
         from reference_widgets import refresh_tree
         for theme in ('dark','light'):
-            ui_theme.set_theme(theme);ui_theme.apply_application(workspace.APP,workspace.subject.FONT_FAMILY)
+            ui_theme.set_theme(theme);ui_theme.apply_application(workspace.APP,workspace.shelf_ui_common.FONT_FAMILY)
             refresh_tree(self.shelf)
             for mode in ('list','icons'):
                 self.shelf.manager.settings.update(view_mode=mode);snapshot=self.expand()

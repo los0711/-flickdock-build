@@ -1,4 +1,6 @@
 """Real Qt entry paths, isolated profiles and no native hooks or desktop IO."""
+import shelf_window
+from overview_ui import FileRow
 import os
 os.environ['QT_QPA_PLATFORM']='offscreen'
 import tempfile
@@ -30,7 +32,7 @@ class FeedbackTests(unittest.TestCase):
             self.assertEqual(not badge.isHidden(),bool(badge.text()),key)
 
     def test_checkbox_full_target_paste_hidden_and_deselect_is_red(self):
-        view=self.fixture.overview();row=view.rows_body.findChildren(__import__('flickdock').FileRow)[0]
+        view=self.fixture.overview();row=view.rows_body.findChildren(FileRow)[0]
         QTest.mouseClick(row.selection_check,Qt.LeftButton,pos=QPoint(2,2));flush()
         self.assertIn(row.path,view.selected);self.assertEqual(row.selection_check.size().width(),40)
         self.assertTrue(view.paste_button.isHidden())
@@ -92,7 +94,7 @@ class FeedbackTests(unittest.TestCase):
 
     def test_passive_mac_reveal_skips_qt_application_activation_and_hide_keeps_origin(self):
         import flickdock
-        with patch.object(flickdock.sys,'platform','darwin'),patch.object(self.shelf,'raise_') as qt_raise,patch.object(flickdock,'raise_shelf_for_reveal',return_value=True) as native:
+        with patch.object(flickdock.sys,'platform','darwin'),patch.object(self.shelf,'raise_') as qt_raise,patch.object(shelf_window,'raise_shelf_for_reveal',return_value=True) as native:
             self.shelf._raise_for_reveal();native.assert_called_once();qt_raise.assert_not_called()
         previous=self.shelf.visual_geometry().topLeft();self.shelf.hide_immediately()
         self.assertEqual(self.shelf.visual_geometry().topLeft(),previous)

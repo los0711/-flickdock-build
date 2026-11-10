@@ -47,8 +47,8 @@ class OriginalTransferTests(unittest.TestCase):
 
     def test_application_uses_original_direct_lan_and_no_retired_sidecar(self):
         self.assertEqual(WanTransferService.__bases__,(LanTransferService,))
-        source=(ROOT/'flickdock.py').read_text(encoding='utf8')
-        self.assertIn('self.lan=LanTransferService(self.app,',source)
+        source=(ROOT/'transfer_runtime.py').read_text(encoding='utf8')
+        self.assertIn('LanTransferService(app,',source)
         for name in ('syncthing_lan.py','syncthing_engine.py','syncthing_jobs.py','manual_payload.py','manual_cloud.py'):
             self.assertFalse((ROOT/name).exists(),name)
         for name in ('clipboard_sync.py','shelf_sync.py','sync_scheduler.py'):

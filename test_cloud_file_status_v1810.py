@@ -12,7 +12,8 @@ os.environ['APPDATA'] = _profile.name
 from PySide6.QtWidgets import QApplication, QFrame, QVBoxLayout, QWidget, QLabel
 
 from content_grid import IconItem
-from flickdock import ContentsPopup, FileRow, PreviewPane
+from overview_ui import ContentsPopup, FileRow
+from file_preview import PreviewPane
 from flickdock_motion import FeedbackButton
 from shelf_content import ContentRepository
 from transfer_visuals import CLOUD_STATUS_LABELS, CloudStatusBadge

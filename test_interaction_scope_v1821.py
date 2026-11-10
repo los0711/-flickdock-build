@@ -92,7 +92,8 @@ class UtilityPreferenceTests(unittest.TestCase):
     def test_live_handle_repaints_color_and_opacity_when_geometry_does_not_change(self):
         from PySide6.QtCore import QObject,QEvent
         from unittest.mock import Mock
-        from flickdock import DockHandle,ShelfManager
+        from dock_handle import DockHandle
+        from flickdock import ShelfManager
         class PaintCounter(QObject):
             def __init__(self):super().__init__();self.paints=0
             def eventFilter(self,widget,event):

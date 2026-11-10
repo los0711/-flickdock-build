@@ -1,4 +1,6 @@
 """Reported Mac/Windows regressions, real Qt controls and isolated profiles."""
+import dock_handle
+import shelf_ui_common
 import os
 os.environ['QT_QPA_PLATFORM']='offscreen'
 import tempfile,unittest,sys,plistlib
@@ -194,7 +196,7 @@ class FeedbackTests(unittest.TestCase):
             self.assertEqual(combo.currentIndex(),2)
         finally:combo.close();combo.deleteLater();flush()
         menu=QMenu();menu.addAction('云同步');menu.addAction('设置')
-        flickdock.style_menu(menu);menu.popup(QPoint(30,30));flush()
+        shelf_ui_common.style_menu(menu);menu.popup(QPoint(30,30));flush()
         try:
             self.assertFalse(menu.mask().contains(QPoint(0,0)))
             self.assertTrue(menu.mask().contains(menu.rect().center()))
@@ -240,7 +242,7 @@ class FeedbackTests(unittest.TestCase):
             def geometry(self):return __import__('PySide6.QtCore',fromlist=['QRect']).QRect(0,0,1512,982)
         self.fixture.manager.dock_values=lambda:dict(dock_edge='right',dock_position=8,dock_length=76,dock_thickness=8)
         with patch.object(flickdock.QGuiApplication,'primaryScreen',return_value=Screen()),patch.object(flickdock.QGuiApplication,'screenAt',return_value=Screen()),patch.object(flickdock.sys,'platform','darwin'):
-            edge=flickdock.DockHandle(self.fixture.manager)
+            edge=dock_handle.DockHandle(self.fixture.manager)
             self.assertTrue(edge.activation_region().contains(QPoint(1512,edge.geometry().center().y())))
             from PySide6.QtCore import QRect
             canvas=self.shelf._reserved_surface_rect(QRect(1140,28,360,345))

@@ -1,4 +1,6 @@
 """Actual first-frame shadow/appearance handoff at 125% DPI, offscreen."""
+import shelf_ui_common
+import shelf_window
 import json
 import os
 from pathlib import Path
@@ -23,14 +25,14 @@ with tempfile.TemporaryDirectory(prefix='flickdock-continuity-') as tmp:
     os.environ['APPDATA']=tmp
     import flickdock as subject
     from app_settings import SettingsStore
-    app=QApplication([]);subject.load_font(app)
+    app=QApplication([]);shelf_ui_common.load_font(app)
     manager=SimpleNamespace(motion=True,settings=SettingsStore(Path(tmp)),save=lambda:None,
                             update_handles=lambda:None,activate_shelf=lambda _:None,
                             _quitting=False,outgoing_drag=False)
-    shelf=subject.ShelfWindow(manager,1)
+    shelf=shelf_window.ShelfWindow(manager,1)
     shelf.files['permanent']=[shelf.content.add_text('Visible preview')];shelf.refresh()
-    compact_width,compact_height=subject.CARD_W+28,subject.CARD_H+27
-    expanded_width=subject.EXPANDED_W+28
+    compact_width,compact_height=shelf_ui_common.CARD_W+28,shelf_ui_common.CARD_H+27
+    expanded_width=shelf_ui_common.EXPANDED_W+28
     screen=SimpleNamespace(availableGeometry=lambda:QRect(0,0,1920,1080))
     # Use the public reveal flow so the native host is preallocated before
     # the visible frame, as in production. Direct jump()+show() bypasses it.
