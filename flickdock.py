@@ -2061,6 +2061,9 @@ class ShelfWindow(QWidget):
             identity=(ref.removeprefix('flickdock:transfer:') if self.content.is_pending(ref)
                       else self.content.metadata.get(ref,{}).get('_cloud_item_id'))
             key=('cloud',identity) if identity else ('local',ref)
+            # A conflict fork may temporarily retain its source's metadata.
+            # Distinct local refs must never collapse into one painted item.
+            if key in by_identity:key=('local',ref)
             by_identity[key]=ref;aliases[('local',ref)]=key
         order=list(dict.fromkeys(aliases.get(key,key) for key in getattr(self,'_display_order',())
                                  if aliases.get(key,key) in by_identity))

@@ -96,6 +96,9 @@ class PresentationTests(unittest.TestCase):
         self.manager.clipboard_preview_dialog=dialog
         try:self.assertTrue(self.shelf.hover_region_contains(QPoint(1400,175)))
         finally:dialog.close();dialog.deleteLater()
+    def test_conflict_forks_with_shared_origin_metadata_remain_two_visible_files(self):
+        for ref in self.paths[:2]:self.shelf.content.metadata[ref]={'_cloud_item_id':'shared-origin'}
+        self.assertEqual(set(self.shelf.display_refs()),set(self.paths))
     def test_native_stationary_pointer_reconciles_empty_drop_feedback(self):
         self.shelf.files['permanent'].clear();self.shelf.refresh();zone=self.shelf.zones['permanent']
         point=zone.icon.mapToGlobal(zone.icon.rect().center())
