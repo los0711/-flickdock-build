@@ -139,6 +139,12 @@ class TurnTLS(unittest.TestCase):
         self.assertIn('pass 8',result.stdout)
 
 class CandidateOrderingTests(unittest.TestCase):
+    def test_native_route_classification_preserves_relayed_peer_reflexive_endpoints(self):
+        root=Path(__file__).parent/'p2p';node=root/'runtime'/('node.exe' if sys.platform=='win32' else 'node')
+        if not node.is_file():self.skipTest('Build host must prepare pinned WebRTC assets')
+        result=subprocess.run([str(node),'--test',str(root/'test-ice-route.mjs')],capture_output=True,text=True,encoding='utf8',timeout=15)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr);self.assertIn('pass 4',result.stdout)
+
     def test_trickle_candidates_can_overtake_both_offer_and_answer_and_still_transfer(self):
         peers=[];held={};released=set();early=[0,0];queued=[0,0];lock=threading.RLock();closing=False
         def signal(index,value):

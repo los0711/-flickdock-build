@@ -3,10 +3,12 @@ import rtc from 'node-datachannel';
 import {randomBytes} from 'node:crypto';
 import {adaptTurnServers} from './turn_tls.mjs';
 import {selectStun} from './stun_route.mjs';
+import {rememberRelay,selectedRoute} from './ice_route.mjs';
 const LEGACY_WINDOW=4*1024*1024, LEGACY_MESSAGE=32*1024;
 const WINDOW=16*1024*1024, MESSAGE=64*1024;
 const MAX_EARLY_CANDIDATES=128;
 const earlyCandidates=[];
+const localRelays=new Set(),remoteRelays=new Set();
 const traceIce=process.env.GITHUB_ACTIONS==='true'&&process.env.FD_QA_ICE_TRACE==='1';
 const iceCounts={};
 const icePatterns=[
@@ -59,7 +61,7 @@ function bind(dc) {
   dc.onOpen(()=>{
     const pair=pc.getSelectedCandidatePair();
     if(traceIce){event({type:'ice_diagnostic',counts:iceCounts});rtc.initLogger('Fatal',()=>{});}
-    event({type:'open',route:pair?.local?.type==='relay'||pair?.remote?.type==='relay'?'relay':'direct',maxMessageSize:dc.maxMessageSize()});wake();
+    event({type:'open',route:selectedRoute(pair,localRelays,remoteRelays),maxMessageSize:dc.maxMessageSize()});wake();
     statsTimer=setInterval(stats,250);
   });
   dc.onClosed(()=>{event({type:'closed'});stop();});
@@ -98,13 +100,14 @@ async function control(value) {
     // Unknown SDP attributes are ignored by older clients. Start conservatively
     // and enlarge the bounded credit/message window only for an agreeing peer.
     pc.onLocalDescription((sdp,type)=>event({type:'description',sdp:sdp.replace(/^a=x-flickdock-flow:[^\r\n]*\r?\n?/gm,'').trimEnd()+`\r\na=x-flickdock-flow:2 ${flowNonce} ${WINDOW} ${MESSAGE}\r\n`,descriptionType:type}));
-    pc.onLocalCandidate((candidate,mid)=>event({type:'candidate',candidate,mid}));
+    pc.onLocalCandidate((candidate,mid)=>{rememberRelay(localRelays,candidate);event({type:'candidate',candidate,mid});});
     pc.onGatheringStateChange(state=>event({type:'gathering',state}));
     pc.onIceStateChange(state=>event({type:'ice_state',state}));
     pc.onStateChange(state=>{event({type:'state',state});if(state==='failed')stop();});
     pc.onDataChannel(bind);
     if(value.initiator)bind(pc.createDataChannel('flickdock-file-v1',{protocol:'flickdock-file-v1'}));
   } else if(value.type==='description') {
+    for(const line of value.sdp.split(/\r?\n/))if(line.startsWith('a=candidate:'))rememberRelay(remoteRelays,line.slice(2));
     // libdatachannel v1 peers echo unknown offer attributes in their answer.
     // Each endpoint must advertise its own nonce; an echo cannot opt in.
     const flow=/^a=x-flickdock-flow:2 ([a-f0-9]{32}) ([0-9]+) ([0-9]+)\r?$/m.exec(value.sdp);
@@ -119,6 +122,7 @@ async function control(value) {
     earlyCandidates.length=0;event({type:'remote_description'});
   }
   else if(value.type==='candidate'){
+    rememberRelay(remoteRelays,value.candidate);
     // Trickle ICE can overtake SDP on the signaling path. The native API
     // rejects candidates until the remote description has been committed.
     if(pc.remoteDescription())pc.addRemoteCandidate(value.candidate,value.mid);
