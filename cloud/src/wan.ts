@@ -573,7 +573,10 @@ export class WanHub extends DurableObject<WanEnv>{
         await this.limited('retry:'+value.id,8,60000);
         if(request.relayTransport){await this.restartRelay(value,request.relayTransport,true);return;}
         value.generation++;value.connected=[];await this.ctx.storage.put('session:'+value.id,value);
-        await this.publish(value,{type:'begin',initiator:value.sender.id,iceServers:stun,relayAllowed:this.env.TURN_ENABLED==='true'});return;
+        // Each generation replaces both native PeerConnections. A fresh direct
+        // session can be offered from the other endpoint; file direction and
+        // the authenticated sender's control authority remain unchanged.
+        await this.publish(value,{type:'begin',initiator:value.generation%2===0?value.receiver.id:value.sender.id,iceServers:stun,relayAllowed:this.env.TURN_ENABLED==='true'});return;
       }
       if(request.type==='connected'){
         await this.ctx.storage.transaction(async tx=>{

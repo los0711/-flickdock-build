@@ -474,7 +474,15 @@ class ShelfSync(QObject):
             if (not isinstance(identity,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',identity)
                     or type(version) is not int or not 1<=version<=9007199254740991):continue
             previous=self._remote_heads.get(identity,{})
-            if version<=previous.get('version',0):continue
+            if version<previous.get('version',0):continue
+            if version==previous.get('version',0):
+                # A metadata scan can observe a tombstone before the content
+                # lane applies it. Its version is not an application receipt;
+                # let the busy-cycle deletion lane remove the still-live view.
+                entry=self.state['entries'].get(identity)
+                if apply_deletions and record.get('deleted') and entry and entry.get('version',0)<version:
+                    self._receive(record,lambda:None)
+                continue
             if not record.get('deleted') and (type(record.get('size')) is not int or
                     not 0<=record['size']<=MAX_FILE_BYTES or
                     not re.fullmatch(r'[0-9a-f]{64}',str(record.get('sha256','')))):continue

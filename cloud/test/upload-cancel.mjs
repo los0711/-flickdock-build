@@ -35,7 +35,7 @@ async function race(failPut,fastUpload=false,fastMultipart=false){
     bind(...values){return new Statement(this.sql,values);}
     async first(){return sqlite.prepare(this.sql).get(...this.values)??null;}
     async all(){return {results:sqlite.prepare(this.sql).all(...this.values)};}
-    execute(){const result=sqlite.prepare(this.sql).run(...this.values);return {meta:{changes:Number(result.changes)}};}
+    execute(){const statement=sqlite.prepare(this.sql);if(statement.columns().length){const results=statement.all(...this.values);return {results,meta:{changes:Number(sqlite.prepare('SELECT changes() n').get().n)}};}const result=statement.run(...this.values);return {results:[],meta:{changes:Number(result.changes)}};}
     async run(){return this.execute();}
   }
   const DB={prepare:sql=>new Statement(sql),async batch(statements){sqlite.exec('BEGIN');try{const result=statements.map(s=>s.execute());sqlite.exec('COMMIT');return result;}catch(error){sqlite.exec('ROLLBACK');throw error;}}};

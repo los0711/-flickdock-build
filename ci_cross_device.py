@@ -32,8 +32,8 @@ MIB=1024*1024
 
 class IceTrace:
     """Retain failed generations without exporting SDP, addresses or credentials."""
-    def __init__(self):
-        self.tasks={}
+    def __init__(self,device_id=None):
+        self.tasks={};self.device_id=device_id
 
     def _row(self,identifier,generation):
         return self.tasks.setdefault(identifier,{}).setdefault(generation,
@@ -51,6 +51,9 @@ class IceTrace:
 
     def native(self,value):
         event=value['event'];kind=event.get('type')
+        if kind=='stats' and isinstance(event.get('iceCounts'),dict):
+            self._row(value['id'],value['generation'])['ice_counts']={key:count for key,count in event['iceCounts'].items() if type(count) is int and count>=0}
+            return
         if kind not in ('candidate','description','gathering','state','ice_state','remote_description','early_candidate','open','error','closed','ice_diagnostic','stun_selected','transport'):return
         row=self._row(value['id'],value['generation'])
         if kind=='candidate':self._candidate(row,'local',event['candidate']);return
@@ -75,7 +78,7 @@ class IceTrace:
             self._candidate(self._row(value['id'],value['generation']),'remote',value['candidate'])
         elif value.get('type')=='begin':
             self._row(value['id'],value['generation'])['events'].append(dict(kind='signal_begin',
-                relay_profile=value.get('relayTransport'),recovery=value.get('recovery') is True))
+                relay_profile=value.get('relayTransport'),recovery=value.get('recovery') is True,offerer=value.get('initiator')==self.device_id))
         elif value.get('type')=='error' and value.get('id'):
             row=self._row(value['id'],value.get('generation',0))
             # These messages come from our server during disposable synthetic
@@ -90,7 +93,7 @@ class IceTrace:
     def snapshot(self,identifier):
         result=[]
         for generation,row in sorted(self.tasks.get(identifier,{}).items()):
-            summary=dict(generation=generation,events=list(row['events']))
+            summary=dict(generation=generation,events=list(row['events']),ice_counts=dict(row.get('ice_counts',{})))
             for direction in ('local','remote'):
                 summary[direction]=[dict(kind=key[0],protocol=key[1],ip_version=key[2],scope=key[3],count=len(addresses))
                     for key,addresses in sorted(row[direction].items())]
@@ -278,7 +281,7 @@ def main():
             return 0
         phase='peer_bootstrap';peer=artifact(other,run,attempt,pair);own=json.loads((root/'public.json').read_bytes())
         session=json.loads((root/'session.json').read_bytes());account.api.token=session['token'];account.device_id=session['device_id'];account.account=session['account']
-        ice_trace=IceTrace()
+        ice_trace=IceTrace(own.get('wan_id'))
         if not cloud_only:
             phase='manual_prepare';wan=WanTransferService(root/'manual',device_name=account.device_name)
             wan._qa_force_relay=manual_route!='direct'

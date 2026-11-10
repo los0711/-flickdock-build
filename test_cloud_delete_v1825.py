@@ -11,6 +11,48 @@ class DeleteBesidePayloadTests(unittest.TestCase):
     project=fixture.TransferTests.project
     close_shelf=staticmethod(fixture.TransferTests.close_shelf)
 
+    def test_observed_tombstone_updates_an_open_overview_beside_a_held_download(self):
+        import copy
+        from PySide6.QtCore import QPoint
+        from sync_adapter import ShelfAdapter
+        source,uploaded,sender=self.replica('source',initial=True)
+        other,received,receiver=self.replica('receiver')
+        fixture.until(lambda:not sender.running and bool(self.server.account('account-A')['items']))
+        receiver.request_refresh();fixture.until(lambda:not receiver.running and bool(received.view['permanent']))
+        manager,shelf,_=self.project(received,receiver,native_shelf=True)
+        manager.app=fixture.APP
+        shelf.files['permanent']=list(received.view['permanent'])
+        shelf.content.texts=copy.deepcopy(received.view['texts'])
+        shelf.content.metadata=copy.deepcopy(received.view['metadata'])
+        receiver.adapter=ShelfAdapter(manager)
+        shelf.refresh();shelf._show_at(QPoint(60,60),'manual',QPoint())
+        shelf.show_contents();shelf.geometry_morph.complete()
+        popup=shelf.popup;popup.resume_content()
+        fixture.until(lambda:bool(popup._item_widgets))
+        ref=shelf.files['permanent'][0];popup.select_item(ref)
+        self.assertTrue(shelf.isVisible());self.assertTrue(popup.isVisible())
+        identity=next(e['id'] for e in sender.state['entries'].values() if e['ref']==str(self.source))
+        extra=self.root/'other-payload.bin';extra.write_bytes(b'held payload'*(512*1024))
+        uploaded.add(str(extra));sender.local_changed()
+        fixture.until(lambda:not sender.running and len(self.server.account('account-A')['items'])==2)
+        other.api.hold_download_part=0;receiver.request_refresh()
+        fixture.until(lambda:bool(other.api.held))
+        self.assertTrue(receiver.running)
+        uploaded.view['permanent'].remove(str(self.source));sender.local_changed()
+        fixture.until(lambda:self.server.account('account-A')['items'][identity]['record']['deleted'])
+        # Seeing metadata is not applying it. A subsequent busy-cycle refresh
+        # must still apply this same tombstone to the already displayed file.
+        tombstone=self.server.account('account-A')['items'][identity]['record']
+        receiver._observe_remote_changes([dict(record=tombstone)])
+        receiver.request_refresh()
+        fixture.until(lambda:ref not in shelf.display_refs(),timeout=2)
+        self.assertTrue(shelf.isVisible());self.assertTrue(popup.isVisible())
+        self.assertNotIn(ref,popup._item_widgets)
+        self.assertIsNone(popup.preview.current_path)
+        self.assertNotIn(ref,shelf.zones['permanent'].icon.refs)
+        self.assertEqual(self.source.read_bytes(),self.payload)
+        other.api.release();fixture.until(lambda:not receiver.running)
+
     def test_delete_all_reply_cannot_republish_cached_heads_before_the_change_feed(self):
         import copy
         service,adapter,sender=self.replica('source',initial=True)

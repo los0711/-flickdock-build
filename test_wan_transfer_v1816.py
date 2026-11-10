@@ -159,19 +159,19 @@ class WanRecovery(unittest.TestCase):
         self.service._handle_native(dict(id=self.identifier,generation=1,event=dict(type='state',state='failed')))
         self.assertTrue(state['ready'].is_set());self.assertTrue(state['tls_failed'])
         with patch('wan_transfer.WebRTCStream',return_value=fake):
-            self.service._begin(self.identifier,state,dict(generation=2,iceServers=[],relayAllowed=False))
+            self.service._begin(self.identifier,state,dict(generation=2,initiator=self.service.device_id,iceServers=[],relayAllowed=False))
         self.assertFalse(fake.control.call_args.args[0]['preferTls'])
 
     def test_relay_uses_native_udp_before_tls_and_one_restart_recovers_blocked_udp(self):
         state=self.state();fake=unittest.mock.Mock();fake.opened.is_set.return_value=False
         with patch('wan_transfer.WebRTCStream',return_value=fake):
-            self.service._begin(self.identifier,state,dict(generation=2,iceServers=[],relayAllowed=False,relayAttempt=True,relayTransport='udp'))
+            self.service._begin(self.identifier,state,dict(generation=2,initiator=self.service.device_id,iceServers=[],relayAllowed=False,relayAttempt=True,relayTransport='udp'))
         self.assertFalse(fake.control.call_args.args[0]['preferTls'])
         self.service._relay_udp_timeout(self.identifier,2);self.service._relay_udp_timeout(self.identifier,2)
         self.assertEqual(self.sent,[dict(type='retry',id=self.identifier,relayTransport='tls')])
         second=unittest.mock.Mock();second.opened.is_set.return_value=False
         with patch('wan_transfer.WebRTCStream',return_value=second):
-            self.service._begin(self.identifier,state,dict(generation=3,iceServers=[],relayAllowed=False,relayAttempt=True,relayTransport='tls'))
+            self.service._begin(self.identifier,state,dict(generation=3,initiator=self.service.device_id,iceServers=[],relayAllowed=False,relayAttempt=True,relayTransport='tls'))
         self.assertTrue(second.control.call_args.args[0]['preferTls'])
         self.service._relay_udp_timeout(self.identifier,2)
         self.assertEqual(len(self.sent),1)
@@ -192,7 +192,7 @@ class WanRecovery(unittest.TestCase):
         old.traffic.return_value=dict(sent=12,received=24)
         state.update(bridge=old,relay_transport='udp',relay_profile='udp')
         new=unittest.mock.Mock();new.opened.is_set.return_value=False
-        begin=dict(generation=2,iceServers=[],relayAllowed=False,relayAttempt=True,relayTransport='tls')
+        begin=dict(generation=2,initiator=self.service.device_id,iceServers=[],relayAllowed=False,relayAttempt=True,relayTransport='tls')
         with patch('wan_transfer.WebRTCStream',return_value=new) as spawn:
             self.service._begin(self.identifier,state,begin)
             spawn.assert_not_called();old.close.assert_not_called()
@@ -201,6 +201,21 @@ class WanRecovery(unittest.TestCase):
         self.assertEqual(state['generation'],2);self.assertIs(state['bridge'],new)
         self.assertEqual(state['relay_bytes_prior'],36)
         self.assertTrue(new.control.call_args.args[0]['preferTls'])
+
+    def test_authenticated_offer_role_is_independent_of_file_direction(self):
+        for role,offerer in (('send',False),('receive',True)):
+            state=self.state(role);fake=unittest.mock.Mock()
+            initiator=self.service.device_id if offerer else state['peer']['id']
+            with patch('wan_transfer.WebRTCStream',return_value=fake):
+                self.service._begin(self.identifier,state,dict(generation=2,initiator=initiator,iceServers=[]))
+            self.assertIs(fake.control.call_args.args[0]['initiator'],offerer)
+            self.assertEqual(state['role'],role)
+
+    def test_invalid_offer_role_cannot_destroy_the_current_generation(self):
+        state=self.state();old=unittest.mock.Mock();state['bridge']=old
+        with patch('wan_transfer.WebRTCStream') as spawn,self.assertRaises(ValueError):
+            self.service._begin(self.identifier,state,dict(generation=2,initiator='not-a-peer',iceServers=[]))
+        spawn.assert_not_called();old.close.assert_not_called();self.assertEqual(state['generation'],1)
 
 class TurnTLS(unittest.TestCase):
     def test_real_adapter_framing_and_transport_failure_contracts(self):

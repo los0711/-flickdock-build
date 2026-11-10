@@ -82,14 +82,14 @@ class ManualNetworkTests(unittest.TestCase):
 
     def test_direct_restart_changes_stun_mapping_without_resetting_total_wait_budget(self):
         from wan_transfer import STUN_SERVERS
-        identity='f'*32;state=dict(role='receive',ready=threading.Event(),generation=0)
+        identity='f'*32;state=dict(role='receive',peer=dict(id='a'*64),ready=threading.Event(),generation=0)
         self.service._pending[identity]=state
         first=Mock(route='direct');second=Mock(route='direct')
         with patch('wan_transfer.WebRTCStream',side_effect=[first,second]),patch('wan_transfer.time.monotonic',return_value=100.):
-            self.service._begin(identity,state,dict(generation=1,iceServers=[],relayAllowed=True))
+            self.service._begin(identity,state,dict(generation=1,initiator=self.service.device_id,iceServers=[],relayAllowed=True))
         self.service._handle_native(dict(id=identity,generation=1,event=dict(type='stun_selected',server=STUN_SERVERS[0])))
         with patch('wan_transfer.WebRTCStream',return_value=second),patch('wan_transfer.time.monotonic',return_value=109.):
-            self.service._begin(identity,state,dict(generation=2,iceServers=[],relayAllowed=True))
+            self.service._begin(identity,state,dict(generation=2,initiator=self.service.device_id,iceServers=[],relayAllowed=True))
         self.assertEqual(second.control.call_args.args[0]['preferredStun'],STUN_SERVERS[1])
         self.assertEqual(state['direct_deadline'],120.);self.assertEqual(state['direct_attempts'],2)
 

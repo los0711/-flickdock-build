@@ -410,13 +410,15 @@ class WanTransferService(LanTransferService):
         generation=value['generation']
         if generation<state.get('generation',0) or generation==state.get('generation',0) and previous is not None:return
         if state.get('done') and state['role']=='send':return
+        initiator=value.get('initiator')
+        if initiator not in (self.device_id,state['peer']['id']):raise ValueError('连接协商设备无效。')
         if (value.get('relayAttempt') and value.get('recovery') is not True
                 and previous and previous.opened.is_set() and not previous.closed):return
         relay_profile=value.get('relayTransport','udp') if value.get('relayAttempt') else None
         if relay_profile not in (None,'udp','tls'):raise ValueError('中继传输方式无效。')
         state['generation']=generation
         state['trace']=hashlib.sha256(identifier.encode('ascii')).hexdigest()[:12]
-        state['quality']={};state.pop('flow_sample',None)
+        state['quality']={'offerer':initiator==self.device_id};state.pop('flow_sample',None)
         if previous:
             if previous.route=='relay':state['relay_bytes_prior']=state.get('relay_bytes_prior',0)+sum(previous.traffic().values())
             previous.close(abort=True)
@@ -449,7 +451,7 @@ class WanTransferService(LanTransferService):
         if not value.get('relayAttempt') and state['direct_attempts']>1:
             previous_stun=state.get('stun_selected',preferred)
             preferred=STUN_SERVERS[1] if previous_stun==STUN_SERVERS[0] else STUN_SERVERS[0]
-        bridge.control(dict(type='init',iceServers=urls,initiator=state['role']=='send',forceRelay=self._qa_force_relay,preferTls=state['relay_profile']=='tls' and not state.get('tls_failed',False),relayProxy=relay_proxy(self.socket.proxy()),preferredStun=preferred))
+        bridge.control(dict(type='init',iceServers=urls,initiator=initiator==self.device_id,forceRelay=self._qa_force_relay,preferTls=state['relay_profile']=='tls' and not state.get('tls_failed',False),relayProxy=relay_proxy(self.socket.proxy()),preferredStun=preferred))
         if state['role']=='send':
             transfer=self._transfers.get(identifier)
             if transfer:self._notify(transfer,'connecting',route='relay' if value.get('relayAttempt') else 'direct')
@@ -552,6 +554,8 @@ class WanTransferService(LanTransferService):
                 if self._slots.acquire(blocking=False):self._thread(self._incoming,state['bridge'],state['peer']['id'])
                 else:self.cancel(identifier)
         elif kind=='stats':
+            counts=event.get('iceCounts')
+            if isinstance(counts,dict):state.setdefault('quality',{}).update({key:value for key,value in counts.items() if type(value) is int and 0<=value<=2**53})
             if state.get('progress_state')=='transferring':self._flow_sample(state,event)
             transfer=self._transfers.get(identifier)
             if transfer and state.get('progress_state')=='transferring' and not transfer.cancel.is_set():

@@ -41,7 +41,7 @@ function stats() {
   if(!pc||closed)return;
   const active=channel?.isOpen(),rtt=active?pc.rtt():null;
   event({type:'stats',sent:pc.bytesSent(),received:pc.bytesReceived(),delivered:acknowledged,
-    rttMs:Number.isFinite(rtt)&&rtt>=0?Math.round(rtt):null,buffered:active?channel.bufferedAmount():0,unacked});
+    rttMs:Number.isFinite(rtt)&&rtt>=0?Math.round(rtt):null,buffered:active?channel.bufferedAmount():0,unacked,iceCounts});
 }
 function stop() {
   if(closed)return;event({type:'ice_diagnostic',counts:iceCounts});stats();closed=true;wake();clearTimeout(creditTimer);clearInterval(statsTimer);
@@ -66,7 +66,6 @@ function bind(dc) {
     event({type:'open',route:selectedRoute(pair,localRelays,remoteRelays),localType:pair.local.type,remoteType:pair.remote.type,
       transport:pair.local.transportType.toLowerCase(),localFamily:isIP(pair.local.address),remoteFamily:isIP(pair.remote.address),
       libraryVersion:rtc.getLibraryVersion(),maxMessageSize:dc.maxMessageSize()});wake();
-    statsTimer=setInterval(stats,250);
   });
   dc.onClosed(()=>{event({type:'closed'});stop();});
   dc.onError(()=>{event({type:'error',message:'WebRTC 数据通道中断'});stop();});
@@ -101,6 +100,7 @@ async function control(value) {
     if(closed){turnTransport.close();return;}
     event({type:'transport',relayTransport:turnTransport.relayTransport,tlsFallback:!!turnTransport.tlsFallback});
     pc=new rtc.PeerConnection('FlickDock',{iceServers:turnTransport.iceServers,maxMessageSize:131072,iceTransportPolicy:value.forceRelay?'relay':'all',enableIceTcp:true});
+    statsTimer=setInterval(stats,250);
     // Unknown SDP attributes are ignored by older clients. Start conservatively
     // and enlarge the bounded credit/message window only for an agreeing peer.
     pc.onLocalDescription((sdp,type)=>event({type:'description',sdp:sdp.replace(/^a=x-flickdock-flow:[^\r\n]*\r?\n?/gm,'').trimEnd()+`\r\na=x-flickdock-flow:2 ${flowNonce} ${WINDOW} ${MESSAGE}\r\n`,descriptionType:type}));
