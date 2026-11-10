@@ -1,5 +1,5 @@
 """Latest-copy feedback: one capsule that contracts without hiding active work."""
-from PySide6.QtCore import QPoint,QPointF,QRectF,Qt,QTimer,QEasingCurve
+from PySide6.QtCore import QPoint,QPointF,QRect,QRectF,Qt,QTimer,QEasingCurve
 from PySide6.QtGui import QColor,QFontMetricsF,QGuiApplication,QPainter,QPainterPath,QRegion
 from PySide6.QtWidgets import QWidget
 from flickdock_icons import app_icon
@@ -23,6 +23,7 @@ RING_SIZE_PX=30
 RING_VISIBLE_SIZE_PX=24
 TEXT_SIZE_PX=13
 CONTENT_GAP_PX=10
+MASK_ANTIALIAS_MARGIN_PX=2
 ENTRY_RISE_PX=6
 ENTRY_HEIGHT_PX=36
 EXIT_SIDE_PX=28
@@ -48,14 +49,12 @@ def copy_presentation(ok,context):
     if phase=='superseded':
         return 'superseded','已有更新的复制','本次同步已由更新的复制接替',None
     completed=context.get('backed_up') or phase=='synced' or cloud['phase']=='complete'
-    if phase=='error' or cloud['phase']=='error' or ok is False and not completed and phase!='uploading':
+    if completed or ok is True:
+        return 'success','复制已同步','已同步到云端',None
+    if phase=='error' or cloud['phase']=='error' or ok is False and phase!='uploading':
         return 'error','同步未完成','同步未完成，内容保留在本机',None
-    pending=any(row['success']<row['total'] for row in context.get('deliveries',{}).values())
-    if (completed or ok is True) and not pending:
-        return 'success','复制已同步','云端已备份，当前在线设备已接收完成',None
     progress=cloud if cloud['phase']=='uploading' else dict(phase='preparing',received=0,total=0)
-    description=('等待在线设备接收确认' if completed or ok is True else
-                 '等待云端确认' if cloud['phase']=='verifying' else '正在同步到云端')
+    description='等待云端确认' if cloud['phase']=='verifying' else '正在同步到云端'
     return 'syncing','剪贴板同步中',description,progress
 
 
@@ -68,9 +67,9 @@ class ClipboardNotice(QWidget):
         self.setFocusPolicy(Qt.NoFocus);self.setCursor(Qt.PointingHandCursor)
         keep_tool_visible_when_inactive(self);self.setWindowTitle('FlickDock · 复制同步提示')
         self.setFixedSize(NOTICE_WIDTH_PX,NOTICE_HEIGHT_PX)
-        self._logo=app_icon().pixmap(LOGO_SIZE_PX,LOGO_SIZE_PX)
+        self._logo=app_icon()
         self._pending_result=None;self._current_result=None;self._dismissed_id=None
-        self._phase='idle';self._text='';self._progress=None;self._compact=False;self._hiding=False
+        self._phase='idle';self._text='';self._description='';self._progress=None;self._compact=False;self._hiding=False
         self._shape=QPointF(COMPACT_SIDE_PX,ENTRY_HEIGHT_PX);self._alpha=0.;self._full_width=PILL_WIDTH_PX
         self._morph=DisplayAnimation(self);self._morph.setDuration(COPY_NOTICE_MORPH_MS)
         curve=QEasingCurve(QEasingCurve.OutBack);curve.setOvershoot(COPY_NOTICE_OVERSHOOT)
@@ -94,7 +93,11 @@ class ClipboardNotice(QWidget):
 
     def _clip_finished(self):
         if not self.isVisible():return
-        path=QPainterPath();rect=self.capsule_rect();path.addRoundedRect(rect,rect.height()/2,rect.height()/2)
+        # Native masks are binary. Keep their edge outside the translucent
+        # paint fringe so hit testing cannot clip the antialiased capsule.
+        margin=MASK_ANTIALIAS_MARGIN_PX
+        rect=self.capsule_rect().adjusted(-margin,-margin,margin,margin)
+        path=QPainterPath();path.addRoundedRect(rect,rect.height()/2,rect.height()/2)
         self.setMask(QRegion(path.toFillPolygon().toPolygon()))
 
     def _animate_shape(self,width,height=PILL_HEIGHT_PX):
@@ -157,6 +160,10 @@ class ClipboardNotice(QWidget):
         text_width=QFontMetricsF(self._notice_font()).horizontalAdvance(self._text)
         return min(PILL_WIDTH_PX,self.width()-4,2*PILL_PADDING_PX+LOGO_SIZE_PX+2*CONTENT_GAP_PX+text_width+RING_VISIBLE_SIZE_PX)
 
+    def _sync_accessibility(self):
+        self.setAccessibleName(self._text)
+        self.setAccessibleDescription(self._description+('；点击展开提示' if self._compact else '；点击收起提示'))
+
     def _deliver_result(self):
         result,self._pending_result=self._pending_result,None
         if (result is not None and not getattr(self.manager,'_quitting',False)
@@ -169,8 +176,7 @@ class ClipboardNotice(QWidget):
         same=bool(self.isVisible() and self._current_result is not None and context.get('id')
                   and context['id']==self._current_result[1].get('id'))
         previous=self._phase
-        self._phase,self._text,description,self._progress=copy_presentation(ok,context)
-        self.setAccessibleName(self._text);self.setAccessibleDescription(description+'；点击关闭提示')
+        self._phase,self._text,self._description,self._progress=copy_presentation(ok,context)
         self._current_result=(ok,dict(context));self._hiding=False
         if not same:
             screen=QGuiApplication.screenAt(QPoint(*(context.get('point') or (0,0)))) or QGuiApplication.primaryScreen()
@@ -187,19 +193,30 @@ class ClipboardNotice(QWidget):
                     self._compact=False
                 self.timer.start(COMPACT_SUCCESS_DURATION_MS if self._compact else NOTICE_DURATION_MS)
             if not self._compact:self._animate_shape(self._full_width)
-        self._sync_ring_clock();self.update()
+        self._sync_accessibility();self._sync_ring_clock();self.update()
 
     def _expire(self):
         if self._phase=='syncing':
             self.timer.stop();self._compact=True;self._animate_shape(COMPACT_SIDE_PX)
+            self._sync_accessibility()
         else:self.dismiss()
+
+    def toggle_expanded(self):
+        if self._hiding or not self.isVisible():return
+        self._compact=not self._compact
+        self._animate_shape(COMPACT_SIDE_PX if self._compact else self._full_width)
+        if self._phase=='syncing':
+            if self._compact:self.timer.stop()
+            else:self.timer.start(NOTICE_PROGRESS_DURATION_MS)
+        else:self.timer.start(COMPACT_SUCCESS_DURATION_MS if self._compact else NOTICE_DURATION_MS)
+        self._sync_accessibility()
 
     def hideEvent(self,event):
         self.timer.stop();self._ring_clock.stop();self._morph.stop();self._fade.stop()
         self._current_result=None;super().hideEvent(event)
 
     def mouseReleaseEvent(self,event):
-        if event.button()==Qt.LeftButton and self.capsule_rect().contains(event.position()):self.dismiss();event.accept()
+        if event.button()==Qt.LeftButton and self.capsule_rect().contains(event.position()):self.toggle_expanded();event.accept()
         else:super().mouseReleaseEvent(event)
 
     def paintEvent(self,event):
@@ -217,7 +234,7 @@ class ClipboardNotice(QWidget):
             # Keep glyph layout stable as the capsule contracts; clipping and
             # opacity avoid switching through several intermediate ellipses.
             p.setClipRect(QRectF(rect.left()+PILL_PADDING_PX,rect.top(),max(0,ring_x+(RING_SIZE_PX-RING_VISIBLE_SIZE_PX)/2-CONTENT_GAP_PX-rect.left()-PILL_PADDING_PX),rect.height()),Qt.IntersectClip)
-            p.drawPixmap(round(rect.left()+PILL_PADDING_PX),round(rect.center().y()-LOGO_SIZE_PX/2),self._logo)
+            self._logo.paint(p,QRect(round(rect.left()+PILL_PADDING_PX),round(rect.center().y()-LOGO_SIZE_PX/2),LOGO_SIZE_PX,LOGO_SIZE_PX))
             p.setFont(self._notice_font())
             p.setPen(QColor(c['link'] if self._phase in ('limited','superseded') else c['red'] if self._phase=='error' else c['text']))
             text_rect=QRectF(rect.left()+PILL_PADDING_PX+LOGO_SIZE_PX+CONTENT_GAP_PX,rect.top(),

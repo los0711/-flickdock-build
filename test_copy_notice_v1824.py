@@ -35,20 +35,47 @@ class CopyNoticeTests(unittest.TestCase):
             self.assertFalse(card.findChildren(QLabel))
             self.assertNotIn('private-name',card.accessibleName()+card.accessibleDescription())
 
-    def test_expiry_contracts_pending_copy_and_waits_for_real_online_receipts_before_checkmark(self):
+    def test_cloud_commit_finishes_the_compact_notice_without_waiting_for_device_receipts(self):
         card=self.card;state=uploading();card.show_result(None,state);bounds=card.geometry()
         card.timer.start(10);QTest.qWait(40);flush()
         self.assertTrue(card.isVisible());self.assertTrue(card._compact)
         self.assertEqual(card.capsule_rect().width(),COMPACT_SIDE_PX);self.assertEqual(card.geometry(),bounds)
         self.assertFalse(card.timer.isActive())
-        card.update_delivery(dict(state,phase='synced',backed_up=True,cloud_transfer=dict(phase='complete',received=1,total=1),deliveries={'cloud':dict(success=1,total=2)}))
-        self.assertEqual(card._phase,'syncing');self.assertTrue(card._compact)
-        self.assertIn('在线设备',card.accessibleDescription());self.assertFalse(card.timer.isActive())
-        card.update_delivery(dict(id=state['id'],deliveries={'cloud':dict(success=2,total=2)}))
+        card.update_delivery(dict(state,phase='synced',backed_up=True,cloud_transfer=dict(phase='complete',received=1,total=1),deliveries={'cloud':dict(success=0,total=2)}))
         self.assertEqual(card._phase,'success');self.assertTrue(card._compact);self.assertTrue(card.timer.isActive())
+        self.assertFalse(card._ring_clock.isActive());self.assertIn('已同步到云端',card.accessibleDescription())
+        self.assertNotIn('设备已接收',card.accessibleDescription())
+        expiry=card.timer.remainingTime()
+        card.update_delivery(dict(id=state['id'],deliveries={'cloud':dict(success=1,total=2)}))
+        self.assertEqual(card._phase,'success');self.assertLessEqual(card.timer.remainingTime(),expiry)
         self.assertEqual(card.capsule_rect().width(),COMPACT_SIDE_PX)
         card.timer.start(10);QTest.qWait(40);flush();self.assertFalse(card.isVisible())
         self.assertFalse(card._ring_clock.isActive());self.assertEqual(card.geometry(),bounds)
+
+    def test_uploaded_bytes_alone_do_not_claim_cloud_commit(self):
+        card=self.card;state=uploading();card.show_result(None,state)
+        card.update_delivery(dict(state,cloud_transfer=dict(phase='verifying',received=100,total=100)))
+        self.assertEqual(card._phase,'syncing');self.assertIn('等待云端确认',card.accessibleDescription())
+        card.update_delivery(dict(state,backed_up=True,cloud_transfer=dict(phase='complete',received=1,total=1)))
+        self.assertEqual(card._phase,'success');self.assertFalse(card._ring_clock.isActive())
+
+    def test_settled_native_mask_preserves_all_antialiased_pixels_at_display_scales(self):
+        card=self.card;card.show_result(None,uploading())
+        for compact in (False,True):
+            if compact:card._expire()
+            for scale in (1.,1.25,1.5,2.):
+                with self.subTest(compact=compact,scale=scale):
+                    images=[]
+                    for ignore_mask in (False,True):
+                        image=QImage(round(card.width()*scale),round(card.height()*scale),QImage.Format_ARGB32_Premultiplied)
+                        image.setDevicePixelRatio(scale);image.fill(Qt.transparent)
+                        painter=QPainter(image);flags=QWidget.DrawChildren
+                        if ignore_mask:flags|=QWidget.IgnoreMask
+                        origin=QPoint() if ignore_mask else card.mask().boundingRect().topLeft()
+                        card.render(painter,origin,QRegion(card.rect()),flags);painter.end();images.append(image)
+                    self.assertEqual(images[0],images[1])
+                    self.assertTrue(any(0<images[0].pixelColor(x,y).alpha()<255
+                        for y in range(images[0].height()) for x in range(images[0].width())))
 
     def test_backup_without_online_targets_finishes_and_late_state_cannot_resurrect_a_dismissed_copy(self):
         card=self.card;state=uploading();card.show_result(None,state)
@@ -73,14 +100,21 @@ class CopyNoticeTests(unittest.TestCase):
         self.assertFalse(card.isVisible());self.assertIsNone(card._pending_result)
         for clock in (card.timer,card._result_timer,card._ring_clock):self.assertFalse(clock.isActive())
 
-    def test_capsule_click_dismisses_without_activating_or_changing_the_editing_window(self):
+    def test_capsule_click_toggles_without_dismissing_or_activating_the_editing_window(self):
         editor=QLineEdit();editor.setText('保留正在编辑的内容');editor.show();editor.activateWindow();editor.setFocus();flush()
         try:
-            card=self.card;card.show_result(True,dict(id='done'));flush()
+            card=self.card;card.show_result(None,uploading());flush();bounds=card.geometry()
             self.assertTrue(card.windowFlags()&Qt.WindowDoesNotAcceptFocus)
             self.assertTrue(card.testAttribute(Qt.WA_ShowWithoutActivating));self.assertEqual(card.focusPolicy(),Qt.NoFocus)
             QTest.mouseClick(card,Qt.LeftButton,pos=card.capsule_rect().center().toPoint());flush()
-            self.assertFalse(card.isVisible());self.assertEqual(editor.text(),'保留正在编辑的内容')
+            self.assertTrue(card.isVisible());self.assertTrue(card._compact);self.assertFalse(card._hiding)
+            self.assertEqual(card.capsule_rect().width(),COMPACT_SIDE_PX);self.assertFalse(card.timer.isActive())
+            self.assertIn('点击展开',card.accessibleDescription())
+            QTest.mouseClick(card,Qt.LeftButton,pos=card.capsule_rect().center().toPoint());flush()
+            self.assertTrue(card.isVisible());self.assertFalse(card._compact);self.assertFalse(card._hiding)
+            self.assertGreater(card.capsule_rect().width(),COMPACT_SIDE_PX);self.assertTrue(card.timer.isActive())
+            self.assertIn('点击收起',card.accessibleDescription());self.assertEqual(card.geometry(),bounds)
+            self.assertEqual(editor.text(),'保留正在编辑的内容')
         finally:editor.hide();editor.deleteLater();flush()
 
     def test_both_themes_keep_one_plain_line_and_safe_screen_placement_without_file_names(self):

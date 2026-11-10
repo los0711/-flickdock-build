@@ -67,14 +67,20 @@ def main():
             host=notice.geometry();native=notice.winId()
             wait(lambda:notice._morph.state()==notice._morph.Stopped)
             assert notice.windowFlags()&Qt.WindowDoesNotAcceptFocus
+            QTest.mouseClick(notice,Qt.LeftButton,pos=notice.capsule_rect().center().toPoint())
+            wait(lambda:notice._morph.state()==notice._morph.Stopped)
+            assert notice._compact and notice.isVisible()
+            QTest.mouseClick(notice,Qt.LeftButton,pos=notice.capsule_rect().center().toPoint())
+            wait(lambda:notice._morph.state()==notice._morph.Stopped)
+            assert not notice._compact and notice.isVisible()
             notice._expire();wait(lambda:notice._morph.state()==notice._morph.Stopped)
             assert notice._compact and round(notice.capsule_rect().width())==COMPACT_SIDE_PX
             assert notice.geometry()==host and notice.winId()==native
-            notice.update_delivery(dict(id=state['id'],phase='synced',backed_up=True,deliveries={'cloud':dict(success=1,total=1)}))
+            notice.update_delivery(dict(id=state['id'],phase='synced',backed_up=True,deliveries={'cloud':dict(success=0,total=1)}))
             assert notice._phase=='success' and notice._compact
             notice.timer.start(20);wait(lambda:not notice.isVisible())
             assert not notice._ring_clock.isActive()
-            report['copy_capsule']=dict(native_host_preserved=True,contracts_while_pending=True,receipt_success=True,animated_exit=True,nonactivating=True)
+            report['copy_capsule']=dict(native_host_preserved=True,contracts_while_pending=True,cloud_commit_success=True,click_toggles=True,animated_exit=True,nonactivating=True)
         finally:notice.supersede();notice.deleteLater();app.processEvents()
         if sys.platform=='darwin':
             import AppKit
