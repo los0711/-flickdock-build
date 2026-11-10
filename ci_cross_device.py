@@ -73,6 +73,19 @@ class IceTrace:
         value=json.loads(message)
         if value.get('type')=='candidate':
             self._candidate(self._row(value['id'],value['generation']),'remote',value['candidate'])
+        elif value.get('type')=='begin':
+            self._row(value['id'],value['generation'])['events'].append(dict(kind='signal_begin',
+                relay_profile=value.get('relayTransport'),recovery=value.get('recovery') is True))
+        elif value.get('type')=='error' and value.get('id'):
+            row=self._row(value['id'],value.get('generation',0))
+            # These messages come from our server during disposable synthetic
+            # tests. Keep stable categories, never endpoints or credentials.
+            message=value.get('message','')
+            code=next((code for fragment,code in (
+                ('过于频繁','RATE_LIMIT'),('免费额度','RELAY_BUDGET'),('用量监控','RELAY_MONITOR'),
+                ('中继当前不可用','RELAY_DISABLED'),('已过期','EXPIRED'),('已失效','EXPIRED'),
+                ('连接信令','SIGNAL_INVALID')) if fragment in message),'SERVER_REJECTED')
+            row['events'].append(dict(kind='signal_error',request=value.get('requestType'),code=code))
 
     def snapshot(self,identifier):
         result=[]

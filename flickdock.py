@@ -494,6 +494,7 @@ class ShelfManager:
             self.show_first()
 
     def show_first(self):
+        if self._quitting:return
         if hasattr(self,'shelf') and confirmation_active(self.shelf): return
         if not self.shelves:
             self._create_shelf({})
@@ -1084,6 +1085,8 @@ class ShelfManager:
         self.was_down=down
 
     def quit(self):
+        if self._quitting:return
+        self._quitting=True
         if hasattr(self,'receive_notice'):self.receive_notice.close()
         if hasattr(self,'lan_receive_notice'):self.lan_receive_notice.close()
         if hasattr(self,'intake_notice'):self.intake_notice.hide()
@@ -1102,7 +1105,6 @@ class ShelfManager:
         if hasattr(self,'video_watcher'):self.video_watcher.close()
         if hasattr(self,'video_controller'):self.video_controller.close()
         if self.video_dialog:self.video_dialog.close()
-        self._quitting=True
         self.pointer_paste.close();self.settings_edge_hint.close()
         self._intake_sync_timer.stop()
         self.timer.stop()
@@ -1132,9 +1134,14 @@ class ShelfManager:
             shelf.image_cache.close()
             if shelf.popup: shelf.popup.preview.media.release_source()
             shelf.presentation.stop()
-            shelf.geometry_morph.stop()
+            shelf.geometry_morph.stop(settle=False)
             shelf.hide()
-        self.app.quit()
+        # Cleanup is complete and this is an explicit application exit. quit()
+        # negotiates window Close events again: a dialog's deferred close
+        # animation can veto it after the tray and services have already gone.
+        # Startup validation also uses this teardown before exec() exists.
+        # Do not mark Qt's thread as exiting when it has no running loop.
+        if self.app.thread().loopLevel():self.app.exit(0)
 
 
 def main():

@@ -181,6 +181,27 @@ class WanRecovery(unittest.TestCase):
         self.service._request_retry(self.identifier,state)
         self.assertEqual(self.sent[-1],dict(type='retry',id=self.identifier,relayTransport='tls'))
 
+    def test_signaling_reconnect_keeps_a_relay_profile_that_is_still_connecting(self):
+        state=self.state();state.update(relay_profile='tls',relay_transport='tls')
+        self.service._request_retry(self.identifier,state)
+        self.assertEqual(self.sent[-1],dict(type='retry',id=self.identifier,relayTransport='tls'))
+
+    def test_explicit_relay_recovery_restarts_a_receiver_whose_old_bridge_still_looks_open(self):
+        state=self.state('receive');old=unittest.mock.Mock()
+        old.opened.is_set.return_value=True;old.closed=False;old.route='relay'
+        old.traffic.return_value=dict(sent=12,received=24)
+        state.update(bridge=old,relay_transport='udp',relay_profile='udp')
+        new=unittest.mock.Mock();new.opened.is_set.return_value=False
+        begin=dict(generation=2,iceServers=[],relayAllowed=False,relayAttempt=True,relayTransport='tls')
+        with patch('wan_transfer.WebRTCStream',return_value=new) as spawn:
+            self.service._begin(self.identifier,state,begin)
+            spawn.assert_not_called();old.close.assert_not_called()
+            self.service._begin(self.identifier,state,dict(begin,recovery=True))
+        old.close.assert_called_once_with(abort=True)
+        self.assertEqual(state['generation'],2);self.assertIs(state['bridge'],new)
+        self.assertEqual(state['relay_bytes_prior'],36)
+        self.assertTrue(new.control.call_args.args[0]['preferTls'])
+
 class TurnTLS(unittest.TestCase):
     def test_real_adapter_framing_and_transport_failure_contracts(self):
         root=Path(__file__).parent/'p2p';node=root/'runtime'/('node.exe' if sys.platform=='win32' else 'node')

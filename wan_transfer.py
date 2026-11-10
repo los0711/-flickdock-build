@@ -276,7 +276,7 @@ class WanTransferService(LanTransferService):
 
     def _request_retry(self,identifier,state,*,relay_transport=None):
         if state.get('retry_inflight'):return
-        if relay_transport is None and state.get('route')=='relay':
+        if relay_transport is None and (state.get('route')=='relay' or state.get('relay_profile') in ('udp','tls')):
             relay_transport='udp' if state.get('tls_failed') else 'tls' if state.get('relay_transport')=='udp' else state.get('relay_profile','udp')
         message=dict(type='retry',id=identifier)
         if relay_transport is not None:message['relayTransport']=relay_transport
@@ -410,7 +410,8 @@ class WanTransferService(LanTransferService):
         generation=value['generation']
         if generation<state.get('generation',0) or generation==state.get('generation',0) and previous is not None:return
         if state.get('done') and state['role']=='send':return
-        if value.get('relayAttempt') and previous and previous.opened.is_set() and not previous.closed:return
+        if (value.get('relayAttempt') and value.get('recovery') is not True
+                and previous and previous.opened.is_set() and not previous.closed):return
         relay_profile=value.get('relayTransport','udp') if value.get('relayAttempt') else None
         if relay_profile not in (None,'udp','tls'):raise ValueError('中继传输方式无效。')
         state['generation']=generation

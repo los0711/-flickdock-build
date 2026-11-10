@@ -32,10 +32,10 @@ try{
   await hub.webSocketMessage(peers[1],JSON.stringify({type:'retry',id:transfer,relayTransport:'tls'}));
   assert.equal(grants,0,'The receiver cannot spend a relay grant or restart the sender');out.length=0;
   await hub.webSocketMessage(peers[0],JSON.stringify({type:'relay',id:transfer,generation:1}));
-  assert.equal(grants,1);assert.equal(out.length,2);assert(out.every(row=>row.value.type==='begin'&&row.value.relayTransport==='udp'&&row.value.generation===2));
+  assert.equal(grants,1);assert.equal(out.length,2);assert(out.every(row=>row.value.type==='begin'&&row.value.relayTransport==='udp'&&row.value.generation===2&&row.value.recovery===false));
   await storage.put('session:'+transfer,{...await storage.get('session:'+transfer),connected:[sender,receiver]});out.length=0;
   await hub.webSocketMessage(peers[0],JSON.stringify({type:'retry',id:transfer,relayTransport:'tls'}));
-  assert.equal(grants,2);assert.equal(out.length,2);assert(out.every(row=>row.value.type==='begin'&&row.value.relayTransport==='tls'&&row.value.generation===3));
+  assert.equal(grants,2);assert.equal(out.length,2);assert(out.every(row=>row.value.type==='begin'&&row.value.relayTransport==='tls'&&row.value.generation===3&&row.value.recovery===true));
   assert.deepEqual((await storage.get('session:'+transfer)).connected,[]);
   console.log('PASS authenticated native UDP relay, coordinated TLS recovery and receiver restart rejection');
 }finally{Date.now=realNow;globalThis.Response=NativeResponse;delete globalThis.WebSocketPair;}

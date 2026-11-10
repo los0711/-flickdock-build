@@ -3,6 +3,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
+import os
+import subprocess
+import sys
+import textwrap
 from unittest.mock import Mock,patch
 from PySide6.QtCore import QObject,QPointF,QRect,Qt,Signal
 from PySide6.QtTest import QTest
@@ -15,6 +19,54 @@ from video_prompt import VideoLinkPrompt
 def visual(card):return card.capsule_rect().translated(card.pos())
 
 class UtilityFeedbackTests(unittest.TestCase):
+    def test_online_installer_handoff_exits_with_an_animated_dialog_open(self):
+        # A separate live event loop is essential: a mocked quit() cannot expose
+        # Qt rejecting Quit after a dialog defers its Close for animation.
+        script=textwrap.dedent('''
+            import os,sys,tempfile
+            from pathlib import Path
+            from types import SimpleNamespace
+            from unittest.mock import patch
+            with tempfile.TemporaryDirectory(prefix='flickdock-update-exit-') as profile:
+                os.environ['APPDATA']=str(Path(profile)/'roaming')
+                os.environ['LOCALAPPDATA']=str(Path(profile)/'local')
+                from PySide6.QtCore import QTimer
+                from PySide6.QtWidgets import QApplication
+                import flickdock,ui_transitions
+                from update_controller import VerifiedInstaller,launch_installer
+                app=QApplication([]);flickdock.load_font(app)
+                with patch.object(ui_transitions.WindowFade,'enabled',return_value=True):
+                    manager=flickdock.ShelfManager(app,cocoa_smoke=True)
+                    manager.show_settings()
+                    if sys.argv[1]=='closing':manager.settings_dialog.close()
+                    root=Path(profile)/'updates';version='99.0.0'
+                    installer=root/version/'setup.exe';installer.parent.mkdir(parents=True)
+                    installer.write_bytes(b'MZ disposable QA fixture')
+                    executable=Path(profile)/'FlickDock.exe';executable.write_bytes(b'MZ disposable QA target')
+                    lease=VerifiedInstaller(installer,dict(version=version),root,installer.open('rb'))
+                    spawned=[];exited=[]
+                    app.aboutToQuit.connect(lambda:exited.append(True))
+                    def handoff():
+                        launch_installer(lease,installed_exe=executable,
+                            popen=lambda args,**kw:spawned.append(args) or SimpleNamespace(pid=123),
+                            quit_callback=manager.quit)
+                        manager.show_first()
+                        assert not manager.shelf.isVisible()
+                    QTimer.singleShot(40,handoff)
+                    QTimer.singleShot(2000,lambda:app.exit(7))
+                    result=app.exec()
+                    assert result==0 and exited==[True] and len(spawned)==1,(result,exited,len(spawned))
+                    assert manager.manual.closed and manager.cloud.closed
+                    manager.quit()
+                    assert not (root/version/'install.log').exists()
+        ''')
+        env=dict(os.environ,QT_QPA_PLATFORM='offscreen',PYTHONUTF8='1')
+        for state in ('open','closing'):
+            with self.subTest(state=state):
+                result=subprocess.run([sys.executable,'-c',script,state],cwd=Path(__file__).parent,
+                    env=env,capture_output=True,text=True,encoding='utf8',timeout=15)
+                self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+
     def test_zoom_frames_blend_without_native_opacity_changes_and_restore_live_content(self):
         window=QWidget();window.setAttribute(Qt.WA_TranslucentBackground);window.resize(640,420)
         layout=QVBoxLayout(window);label=QLabel('Original',window);label.setStyleSheet('background:#2a2a2a;color:white');layout.addWidget(label)

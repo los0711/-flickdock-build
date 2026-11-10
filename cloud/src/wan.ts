@@ -625,7 +625,7 @@ export class WanHub extends DurableObject<WanEnv>{
       if(!latest||!latest.accepted||latest.generation!==value.generation||latest.expires<Date.now()||latest.done.length===2||!recovery&&latest.connected?.length)return null;
       latest.generation++;latest.connected=[];await tx.put('session:'+latest.id,latest);return latest;
     });
-    if(current)await this.publish(current,{type:'begin',initiator:current.sender.id,iceServers,relayAllowed:false,relayAttempt:true,relayTransport:transport});
+    if(current)await this.publish(current,{type:'begin',initiator:current.sender.id,iceServers,relayAllowed:false,relayAttempt:true,relayTransport:transport,recovery});
     else await this.revokeSession(value.id,new Set(iceServers.map((row:any)=>row.username)));
   }
   private async turn(value:Pick<Session,'id'|'total'>){
