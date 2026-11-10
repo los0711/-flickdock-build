@@ -1,15 +1,15 @@
 {
   "schema_version": 1,
-  "version": "1.8.31",
+  "version": "1.8.32",
   "platform": "darwin",
   "architecture": "arm64",
-  "published_at": "2026-11-10T13:15:47Z",
-  "notes": "优化复制同步提示与预览显示。\n优化多提示排列与动画衔接。\n优化文件传输结果提示。\n优化不同网络环境下的云端同步与文件互传体验。",
+  "published_at": "2026-11-10T16:42:56Z",
+  "notes": "修复特定场景下复制提示重复弹出的问题。\n优化文件传输速度、连接稳定性与接收状态显示。\n修复 Windows 在线更新时退出不完整的问题。\n优化视频链接提示与云端同步体验。\n修复远端移除搁架项目后界面刷新延迟的问题。",
   "installer": {
-    "filename": "FlickDock-1.8.31-macOS-arm64.zip",
-    "url": "https://gitee.com/rooogerluo/flick-dock-macos-releases-9/releases/download/v1.8.31/FlickDock-1.8.31-macOS-arm64.zip",
-    "size": 82080999,
-    "sha256": "0d97fc23265ba831bb7e25ae8bfcedc1d2630cefc1036baf6436ae545cf7cf7b"
+    "filename": "FlickDock-1.8.32-macOS-arm64.zip",
+    "url": "https://gitee.com/rooogerluo/flick-dock-macos-releases-10/releases/download/v1.8.32/FlickDock-1.8.32-macOS-arm64.zip",
+    "size": 82086871,
+    "sha256": "24f2b43819ff32a0737b8b4d806c800ad43abbfcceb0cda9572ff1cbb55b3514"
   },
   "releases": [
     {
@@ -136,6 +136,6 @@
   "publisher_signature": {
     "algorithm": "Ed25519",
     "key_id": "flickdock-ed25519-v1",
-    "value": "pAGDI19jmLJPVfJVZfSbAcEm7YfQRxjMY3JW4Z7IHD6zIFz4xxEYOsQFBbYryeJn360FMJPO3zpy3xRebaaJBA=="
+    "value": "bvh5sLvQRkpCyuCPjT+xWSizPJqsBp6acVxqNLsQNcNyQWoiiXEtrYHnQ4Buw3sflBnj95u7JGEYApUm7Zx6BQ=="
   }
 }

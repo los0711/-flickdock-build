@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
-  "version": "1.8.31",
-  "published_at": "2026-11-10T13:15:47Z",
-  "notes": "优化复制同步提示与预览显示。\n优化多提示排列与动画衔接。\n优化文件传输结果提示。\n优化不同网络环境下的云端同步与文件互传体验。",
+  "version": "1.8.32",
+  "published_at": "2026-11-10T16:42:56Z",
+  "notes": "修复特定场景下复制提示重复弹出的问题。\n优化文件传输速度、连接稳定性与接收状态显示。\n修复 Windows 在线更新时退出不完整的问题。\n优化视频链接提示与云端同步体验。\n修复远端移除搁架项目后界面刷新延迟的问题。",
   "installer": {
-    "filename": "FlickDock-Setup-1.8.31.exe",
-    "url": "https://gitee.com/rooogerluo/flick-dock-windows-releases-2/releases/download/v1.8.31/FlickDock-Setup-1.8.31.exe",
-    "size": 72885306,
-    "sha256": "45332aab7690de901c300660341ae5b546ff7d9c9055921da337deab4e3b8d63"
+    "filename": "FlickDock-Setup-1.8.32.exe",
+    "url": "https://gitee.com/rooogerluo/flick-dock-windows-releases-2/releases/download/v1.8.32/FlickDock-Setup-1.8.32.exe",
+    "size": 72896014,
+    "sha256": "8534a16516691be4959ff49b2e23f1a598b0ec10fd8b81254bc050e00db9fbcb"
   },
   "releases": [
     {
@@ -134,6 +134,6 @@
   "publisher_signature": {
     "algorithm": "Ed25519",
     "key_id": "flickdock-ed25519-v1",
-    "value": "cB1dPxUjWXxKH/h70ymiP7cNtrd4yoJ5bI0OzxNKRHI4qFUbOWql5+Kt0/AlALoqQF7qLgvv7ygHgaV1krQxBw=="
+    "value": "vlVTMZDEEgooKIIT0hoC9Tf6rZjAcZYsyyW3ao+4Ji0QXp+GQI0X0OW3nI2JHOEXXlC39EdMENZqhMj9fhmbCw=="
   }
 }
