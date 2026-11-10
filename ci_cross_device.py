@@ -6,6 +6,7 @@ and GitHub tokens remain in a private runner directory and are never reported.
 from __future__ import annotations
 import argparse
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -26,6 +27,59 @@ BOOTSTRAP_TIMEOUT_SECONDS=480
 STEP_TIMEOUT_SECONDS=150
 POLL_SECONDS=2
 MIB=1024*1024
+
+
+class IceTrace:
+    """Retain failed generations without exporting SDP, addresses or credentials."""
+    def __init__(self):
+        self.tasks={}
+
+    def _row(self,identifier,generation):
+        return self.tasks.setdefault(identifier,{}).setdefault(generation,
+            dict(start=time.monotonic(),events=[],local={},remote={}))
+
+    def _candidate(self,row,direction,candidate):
+        fields=candidate.split()
+        if len(fields)<8 or fields[6]!='typ':return
+        try:address=ipaddress.ip_address(fields[4])
+        except ValueError:return
+        kind=fields[7];protocol=fields[2].lower()
+        if kind not in ('host','srflx','prflx','relay') or protocol not in ('udp','tcp'):return
+        key=(kind,protocol,address.version,'global' if address.is_global else 'local')
+        row[direction].setdefault(key,set()).add(address)
+
+    def native(self,value):
+        event=value['event'];kind=event.get('type')
+        if kind not in ('candidate','description','gathering','state','ice_state','remote_description','early_candidate','open','error','closed'):return
+        row=self._row(value['id'],value['generation'])
+        if kind=='candidate':self._candidate(row,'local',event['candidate']);return
+        if len(row['events'])>=64:return
+        item=dict(kind=kind,seconds=round(time.monotonic()-row['start'],3))
+        if kind in ('gathering','state','ice_state'):
+            state=event.get('state')
+            if state in ('new','connecting','connected','completed','disconnected','failed','closed','gathering','complete','checking'):item['state']=state
+        elif kind=='open':item['route']=event['route']
+        elif kind=='early_candidate':item['count']=event['count']
+        row['events'].append(item)
+
+    def remote(self,message):
+        value=json.loads(message)
+        if value.get('type')=='candidate':
+            self._candidate(self._row(value['id'],value['generation']),'remote',value['candidate'])
+
+    def snapshot(self,identifier):
+        result=[]
+        for generation,row in sorted(self.tasks.get(identifier,{}).items()):
+            summary=dict(generation=generation,events=list(row['events']))
+            for direction in ('local','remote'):
+                summary[direction]=[dict(kind=key[0],protocol=key[1],ip_version=key[2],scope=key[3],count=len(addresses))
+                    for key,addresses in sorted(row[direction].items())]
+            def addresses(direction,kind,scope):
+                return {address for key,values in row[direction].items() if key[0]==kind and key[3]==scope for address in values}
+            summary['shared_public_srflx']=bool(addresses('local','srflx','global') & addresses('remote','srflx','global'))
+            summary['overlapping_private_host']=bool(addresses('local','host','local') & addresses('remote','host','local'))
+            result.append(summary)
+        return result
 
 
 class _SafeRedirect(HTTPRedirectHandler):
@@ -184,8 +238,11 @@ def main():
             return 0
         phase='peer_bootstrap';peer=artifact(other,run,attempt,pair);own=json.loads((root/'public.json').read_bytes())
         session=json.loads((root/'session.json').read_bytes());account.api.token=session['token'];account.device_id=session['device_id'];account.account=session['account']
+        ice_trace=IceTrace()
         if not cloud_only:
             phase='manual_prepare';wan=WanTransferService(root/'manual',device_name=account.device_name)
+            wan._native.connect(ice_trace.native)
+            wan.socket.textMessageReceived.connect(ice_trace.remote)
             assert wan.device_id==own['wan_id'];wan.attach_account(account);wan.start()
         manual_completed=[];manual_progress=[];manual_accepted={};auto_accepted=set();manual_prompts=[]
         if wan:
@@ -325,7 +382,8 @@ def main():
                 same_account_auto_accepted=identity in auto_accepted if side!=sender else None,
                 manual_confirmation_required=bool(manual_prompts),
                 accepted_seconds=round(manual_accepted[identity]-started,3) if identity in manual_accepted else None,
-                seconds=round(time.perf_counter()-started,3),public_relays=False,diagnostics=diagnostics))
+                seconds=round(time.perf_counter()-started,3),public_relays=False,diagnostics=diagnostics,
+                ice_generations=ice_trace.snapshot(identity)))
             stage+=1;barrier(stage);report_path.write_text(json.dumps(report,indent=2),encoding='utf8')
         phase='cleanup'
         if side=='a' and not kernel_only:

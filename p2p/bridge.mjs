@@ -5,6 +5,8 @@ import {adaptTurnServers} from './turn_tls.mjs';
 import {selectStun} from './stun_route.mjs';
 const LEGACY_WINDOW=4*1024*1024, LEGACY_MESSAGE=32*1024;
 const WINDOW=16*1024*1024, MESSAGE=64*1024;
+const MAX_EARLY_CANDIDATES=128;
+const earlyCandidates=[];
 rtc.initLogger('Fatal',()=>{});
 rtc.setSctpSettings({recvBufferSize:32*1024*1024,sendBufferSize:16*1024*1024,maxChunksOnQueue:16384});
 let pc,channel,turnTransport,closed=false,unacked=0,acknowledged=0,pendingOutput=0,wake=()=>{},statsTimer;
@@ -23,7 +25,7 @@ function stats() {
 }
 function stop() {
   if(closed)return;stats();closed=true;wake();clearTimeout(creditTimer);clearInterval(statsTimer);
-  turnTransport?.close();
+  earlyCandidates.length=0;turnTransport?.close();
   try{channel?.close();pc?.close();rtc.cleanup();}catch{}
   process.stdout.end(()=>process.exit(0));
 }
@@ -96,9 +98,18 @@ async function control(value) {
       }
     }
     pc.setRemoteDescription(value.sdp,value.descriptionType);
-    event({type:'remote_description'});
+    for(const candidate of earlyCandidates)pc.addRemoteCandidate(candidate.candidate,candidate.mid);
+    earlyCandidates.length=0;event({type:'remote_description'});
   }
-  else if(value.type==='candidate')pc.addRemoteCandidate(value.candidate,value.mid);
+  else if(value.type==='candidate'){
+    // Trickle ICE can overtake SDP on the signaling path. The native API
+    // rejects candidates until the remote description has been committed.
+    if(pc.remoteDescription())pc.addRemoteCandidate(value.candidate,value.mid);
+    else{
+      if(earlyCandidates.length>=MAX_EARLY_CANDIDATES)throw Error('Too many early ICE candidates');
+      earlyCandidates.push(value);event({type:'early_candidate',count:earlyCandidates.length});
+    }
+  }
   else if(value.type==='stats')stats();
   else if(value.type==='close') {
     const deadline=Date.now()+3000;

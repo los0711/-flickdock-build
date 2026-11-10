@@ -138,6 +138,51 @@ class TurnTLS(unittest.TestCase):
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         self.assertIn('pass 8',result.stdout)
 
+class CandidateOrderingTests(unittest.TestCase):
+    def test_trickle_candidates_can_overtake_both_offer_and_answer_and_still_transfer(self):
+        peers=[];held={};released=set();early=[0,0];queued=[0,0];lock=threading.RLock();closing=False
+        def signal(index,value):
+            with lock:
+                if closing:return
+                kind=value.get('type')
+                if kind=='early_candidate':queued[index]=max(queued[index],value['count']);return
+                if kind not in ('candidate','description'):return
+                if index in released:
+                    peers[1-index].control(value);return
+                values=held.setdefault(index,dict(description=None,candidates=[]))
+                if kind=='description':values['description']=value
+                else:values['candidates'].append(value)
+                if values['description'] is not None and values['candidates']:
+                    peers[1-index].control(values['candidates'].pop(0));early[index]+=1
+                    peers[1-index].control(values['description'])
+                    for candidate in values['candidates']:peers[1-index].control(candidate)
+                    released.add(index)
+        peers.extend([WebRTCStream(lambda value:signal(0,value)),WebRTCStream(lambda value:signal(1,value))])
+        try:
+            peers[1].control(dict(type='init',iceServers=[],initiator=False));peers[0].control(dict(type='init',iceServers=[],initiator=True))
+            self.assertTrue(all(peer.opened.wait(12) for peer in peers),'Out-of-order ICE closed the native connection')
+            self.assertEqual(early,[1,1]);self.assertTrue(all(count>=1 for count in queued))
+            payload=os.urandom(256*1024);peers[0].sendall(payload);received=bytearray()
+            while len(received)<len(payload):
+                chunk=peers[1].recv(len(payload)-len(received));self.assertTrue(chunk);received.extend(chunk)
+            self.assertEqual(hashlib.sha256(received).digest(),hashlib.sha256(payload).digest())
+        finally:
+            closing=True
+            for peer in peers:peer.close(abort=True)
+
+    def test_unbounded_early_candidate_flood_is_rejected_before_native_description(self):
+        peer=WebRTCStream(lambda value:None)
+        try:
+            peer.control(dict(type='init',iceServers=[],initiator=False))
+            for index in range(129):
+                peer.control(dict(type='candidate',candidate='candidate:1 1 UDP 2122260223 127.0.0.1 50000 typ host',mid='0'))
+                if index%32==31:peer.traffic(refresh=True)
+            deadline=time.monotonic()+5
+            while not peer.closed and time.monotonic()<deadline:time.sleep(.01)
+            self.assertTrue(peer.closed);self.assertFalse(peer.opened.is_set())
+        finally:peer.close(abort=True)
+
+
 class NativeStream(unittest.TestCase):
     def setUp(self):
         root=Path(__file__).parent/'p2p/runtime'/('node.exe' if sys.platform=='win32' else 'node')

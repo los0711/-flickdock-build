@@ -407,7 +407,7 @@ class WanTransferService(LanTransferService):
         state['relay_allowed']=bool(value.get('relayAllowed'));state['connect_started']=time.monotonic()
         state['relay_requested']=False;state.pop('network_error',None)
         state['relay_transport']=''
-        state['local_candidates']=state['remote_candidates']=0
+        state['local_candidates']=state['remote_candidates']=state['early_candidates']=0
         state['ice_state']='new';state['pc_state']='new'
         if state.get('network_epoch')!=self._network_epoch:state.pop('tls_failed',None)
         state['network_epoch']=self._network_epoch
@@ -451,7 +451,7 @@ class WanTransferService(LanTransferService):
 
     def _record_ice(self,state,code):
         from network_diagnostics import record_event
-        details={key:state[key] for key in ('local_candidates','remote_candidates','pc_state','ice_state') if key in state}
+        details={key:state[key] for key in ('local_candidates','remote_candidates','early_candidates','pc_state','ice_state') if key in state}
         details['gathering_state']=state.get('gathering','new')
         record_event(self.base,'remote','ICE',code,details=details)
 
@@ -471,6 +471,7 @@ class WanTransferService(LanTransferService):
         elif kind=='gathering':
             state['gathering']=event.get('state')
             if event.get('state')=='complete':state['gathered_at']=time.monotonic()
+        elif kind=='early_candidate':state['early_candidates']=event['count']
         elif kind=='remote_description':state.setdefault('remote_description_at',time.monotonic())
         elif kind=='stun_selected':
             if event.get('server') in ('stun:stun.cloudflare.com:3478','stun:stun.l.google.com:19302'):
