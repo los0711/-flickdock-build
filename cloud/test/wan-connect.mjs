@@ -4,7 +4,7 @@ import {registerHooks} from 'node:module';
 registerHooks({resolve(s,c,next){return s==='cloudflare:workers'?{url:'wan-test:workers',shortCircuit:true}:next(['./relay-budget','./manual-signal','./cloud-pipe','./storage-budget'].includes(s)?s+'.ts':s,c);},
   load(u,c,next){return u==='wan-test:workers'?{format:'module',shortCircuit:true,source:'export class DurableObject {constructor(ctx,env){this.ctx=ctx;this.env=env;}}'}:next(u,c);}});
 const {WanHub}=await import('../src/wan.ts');
-const realNow=Date.now,NativeResponse=globalThis.Response;let now=100000;Date.now=()=>now;
+const realNow=Date.now,NativeResponse=globalThis.Response,realFetch=globalThis.fetch;let now=100000;Date.now=()=>now;
 const values=new Map(),peers=[],copy=v=>v===undefined?v:structuredClone(v);
 const storage={async get(k){return copy(values.get(k));},async put(k,v){values.set(k,copy(v));},async transaction(f){return f(storage);},async getAlarm(){return null;},async setAlarm(){}};
 const ctx={storage,getWebSockets:id=>peers.filter(peer=>!id||peer.seat?.id===id),acceptWebSocket(peer){peers.push(peer);}};
@@ -46,4 +46,18 @@ try{
   assert.equal(grants,2);assert.equal(out.length,2);assert(out.every(row=>row.value.type==='begin'&&row.value.relayTransport==='tls'&&row.value.generation===4&&row.value.recovery===true));
   assert.deepEqual((await storage.get('session:'+transfer)).connected,[]);
   console.log('PASS authenticated native UDP relay, coordinated TLS recovery and receiver restart rejection');
-}finally{Date.now=realNow;globalThis.Response=NativeResponse;delete globalThis.WebSocketPair;}
+  const {relayUsage}=await import('../src/relay-budget.ts');
+  const usageValues=new Map(),usageStorage={async get(key){return copy(usageValues.get(key));},async put(key,value){usageValues.set(key,copy(value));},async transaction(f){return f(usageStorage);}};
+  const env={CF_ANALYTICS_TOKEN:'synthetic-only',CF_ACCOUNT_ID:'a'.repeat(32)};let requests=0,release;
+  globalThis.fetch=async()=>{requests++;await new Promise(resolve=>release=resolve);return NativeResponse.json({data:{viewer:{accounts:[{callsTurnUsageAdaptiveGroups:[{sum:{egressBytes:128}}],callsUsageAdaptiveGroups:[]}]}}});};
+  const concurrent=Array.from({length:6},()=>relayUsage(env,usageStorage));
+  while(!release)await new Promise(resolve=>setImmediate(resolve));release();
+  assert.deepEqual((await Promise.all(concurrent)).map(value=>value.bytes),Array(6).fill(128));assert.equal(requests,1);
+  await relayUsage(env,usageStorage);assert.equal(requests,1,'Fresh validated usage is reused');
+  now+=31000;globalThis.fetch=async()=>{requests++;throw new Error('synthetic provider unavailable');};
+  const failed=await Promise.allSettled(Array.from({length:3},()=>relayUsage(env,usageStorage)));
+  assert(failed.every(value=>value.status==='rejected'));assert.equal(requests,2);
+  globalThis.fetch=async()=>{requests++;return NativeResponse.json({data:{viewer:{accounts:[{callsTurnUsageAdaptiveGroups:[],callsUsageAdaptiveGroups:[]}]}}});};
+  assert.equal((await relayUsage(env,usageStorage)).bytes,0);assert.equal(requests,3,'A failed shared read must permit a later retry');
+  console.log('PASS concurrent relay monitoring shares one validated read, keeps failures closed and recovers after the provider returns');
+}finally{Date.now=realNow;globalThis.Response=NativeResponse;globalThis.fetch=realFetch;delete globalThis.WebSocketPair;}
