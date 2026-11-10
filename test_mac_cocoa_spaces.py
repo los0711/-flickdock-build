@@ -7,7 +7,7 @@ with generated text; no manager, global hooks, login item or network is used.
 from __future__ import annotations
 
 import shelf_ui_common
-import shelf_window
+from shelf_window import ShelfWindow
 import argparse
 import ctypes
 import json
@@ -178,7 +178,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix='flickdock-cocoa-shelf-') as directory:
         manager=SimpleNamespace(motion=True,settings=SettingsStore(Path(directory)),save=lambda:None,
             update_handles=lambda:None,activate_shelf=lambda _:None,_quitting=False,outgoing_drag=False)
-        shelf=shelf_window.ShelfWindow(manager,1);manager.shelf=shelf;shelf.pinned=True
+        shelf=ShelfWindow(manager,1);manager.shelf=shelf;shelf.pinned=True
         ref=shelf.content.add_text('Cocoa native click target');shelf.files['permanent']=[ref];shelf.refresh()
         area=application.primaryScreen().availableGeometry()
         def shelf_window():return objc.objc_object(c_void_p=ctypes.c_void_p(int(shelf.winId()))).window()
