@@ -7,7 +7,23 @@ const LEGACY_WINDOW=4*1024*1024, LEGACY_MESSAGE=32*1024;
 const WINDOW=16*1024*1024, MESSAGE=64*1024;
 const MAX_EARLY_CANDIDATES=128;
 const earlyCandidates=[];
-rtc.initLogger('Fatal',()=>{});
+const traceIce=process.env.GITHUB_ACTIONS==='true'&&process.env.FD_QA_ICE_TRACE==='1';
+const iceCounts={};
+const icePatterns=[
+  ['peer_requests',/Received STUN Binding request/],
+  ['binding_responses',/Received STUN Binding success response/],
+  ['check_success',/Candidate pair check succeeded/],
+  ['check_failed',/Candidate pair check failed/],
+  ['role_conflict',/ICE role conflict/],
+  ['credentials_failed',/STUN (?:local|remote) ufrag check failed|STUN integrity check failed|Missing integrity/],
+  ['peer_reflexive',/new remote reflexive candidate/i],
+  ['send_failed',/STUN .*send failed|Network unreachable/],
+  ['server_failed',/STUN server binding failed|STUN server address resolution failed/],
+];
+// CI exports counters only. Raw native logs may contain ICE credentials.
+rtc.initLogger(traceIce?'Debug':'Fatal',(_,message)=>{
+  if(traceIce)for(const [code,pattern] of icePatterns)if(pattern.test(message))iceCounts[code]=(iceCounts[code]||0)+1;
+});
 rtc.setSctpSettings({recvBufferSize:32*1024*1024,sendBufferSize:16*1024*1024,maxChunksOnQueue:16384});
 let pc,channel,turnTransport,closed=false,unacked=0,acknowledged=0,pendingOutput=0,wake=()=>{},statsTimer;
 let sendWindow=LEGACY_WINDOW,sendMessage=LEGACY_MESSAGE,credit=0,creditTimer;
@@ -24,7 +40,7 @@ function stats() {
   event({type:'stats',sent:pc.bytesSent(),received:pc.bytesReceived(),delivered:acknowledged});
 }
 function stop() {
-  if(closed)return;stats();closed=true;wake();clearTimeout(creditTimer);clearInterval(statsTimer);
+  if(closed)return;if(traceIce)event({type:'ice_diagnostic',counts:iceCounts});stats();closed=true;wake();clearTimeout(creditTimer);clearInterval(statsTimer);
   earlyCandidates.length=0;turnTransport?.close();
   try{channel?.close();pc?.close();rtc.cleanup();}catch{}
   process.stdout.end(()=>process.exit(0));
@@ -42,6 +58,7 @@ function bind(dc) {
   dc.onBufferedAmountLow(()=>wake());
   dc.onOpen(()=>{
     const pair=pc.getSelectedCandidatePair();
+    if(traceIce)event({type:'ice_diagnostic',counts:iceCounts});
     event({type:'open',route:pair?.local?.type==='relay'||pair?.remote?.type==='relay'?'relay':'direct',maxMessageSize:dc.maxMessageSize()});wake();
     statsTimer=setInterval(stats,250);
   });

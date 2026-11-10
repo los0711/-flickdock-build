@@ -46,11 +46,11 @@ class IceTrace:
         kind=fields[7];protocol=fields[2].lower()
         if kind not in ('host','srflx','prflx','relay') or protocol not in ('udp','tcp'):return
         key=(kind,protocol,address.version,'global' if address.is_global else 'local')
-        row[direction].setdefault(key,set()).add(address)
+        row[direction].setdefault(key,set()).add((address,int(fields[5])))
 
     def native(self,value):
         event=value['event'];kind=event.get('type')
-        if kind not in ('candidate','description','gathering','state','ice_state','remote_description','early_candidate','open','error','closed'):return
+        if kind not in ('candidate','description','gathering','state','ice_state','remote_description','early_candidate','open','error','closed','ice_diagnostic','stun_selected'):return
         row=self._row(value['id'],value['generation'])
         if kind=='candidate':self._candidate(row,'local',event['candidate']);return
         if len(row['events'])>=64:return
@@ -60,6 +60,9 @@ class IceTrace:
             if state in ('new','connecting','connected','completed','disconnected','failed','closed','gathering','complete','checking'):item['state']=state
         elif kind=='open':item['route']=event['route']
         elif kind=='early_candidate':item['count']=event['count']
+        elif kind=='stun_selected':item['server']='cloudflare' if event['server']=='stun:stun.cloudflare.com:3478' else 'google'
+        elif kind=='ice_diagnostic':item['counts']={key:int(count) for key,count in event['counts'].items() if key in (
+            'peer_requests','binding_responses','check_success','check_failed','role_conflict','credentials_failed','peer_reflexive','send_failed','server_failed')}
         row['events'].append(item)
 
     def remote(self,message):
@@ -75,7 +78,7 @@ class IceTrace:
                 summary[direction]=[dict(kind=key[0],protocol=key[1],ip_version=key[2],scope=key[3],count=len(addresses))
                     for key,addresses in sorted(row[direction].items())]
             def addresses(direction,kind,scope):
-                return {address for key,values in row[direction].items() if key[0]==kind and key[3]==scope for address in values}
+                return {address for key,values in row[direction].items() if key[0]==kind and key[3]==scope for address,port in values}
             summary['shared_public_srflx']=bool(addresses('local','srflx','global') & addresses('remote','srflx','global'))
             summary['overlapping_private_host']=bool(addresses('local','host','local') & addresses('remote','host','local'))
             result.append(summary)
@@ -240,6 +243,11 @@ def main():
         session=json.loads((root/'session.json').read_bytes());account.api.token=session['token'];account.device_id=session['device_id'];account.account=session['account']
         ice_trace=IceTrace()
         if not cloud_only:
+            if os.environ.get('FD_QA_ICE_TRACE')=='1':
+                import wan_transfer
+                wan_transfer.DIRECT_CHECK_SECONDS=30
+                wan_transfer.DIRECT_TOTAL_SECONDS=40
+                report['diagnostic_direct_wait_seconds']=30
             phase='manual_prepare';wan=WanTransferService(root/'manual',device_name=account.device_name)
             wan._native.connect(ice_trace.native)
             wan.socket.textMessageReceived.connect(ice_trace.remote)

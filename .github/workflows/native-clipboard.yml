@@ -199,6 +199,7 @@ jobs:
       FD_QA_VPN_MODE: ${{ inputs.vpn_mode || 'none' }}
       FD_QA_KERNEL_ONLY: ${{ inputs.kernel_only && 'true' || 'false' }}
       FD_QA_CLOUD_ONLY: ${{ inputs.cloud_only && 'true' || 'false' }}
+      FD_QA_ICE_TRACE: '1'
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
