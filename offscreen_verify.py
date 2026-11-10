@@ -158,7 +158,8 @@ def run(argv, load_font):
     from PySide6.QtNetwork import QSslSocket
     from PySide6.QtWidgets import QApplication
     from flickdock_icons import glyph_pixmap
-    from media_preview import MediaPreview, QMediaPlayer
+    from media_preview import MediaPreview
+    from PySide6.QtMultimedia import QMediaPlayer
     from app_version import APP_VERSION
     from async_images import ImageCache
     from selection_archive import ZipArchiveJob

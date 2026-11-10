@@ -213,6 +213,7 @@ class ContentsPopup(QFrame):
         self.drop_router=OverviewDropRouter(self)
         from transfer_entry import TransferEntryRouter
         self.transfer_entry=TransferEntryRouter(self,self.lan_nav,lambda mode,paths:self.shelf.manager.queue_transfer_paths(mode,paths))
+        self.transfer_entry.active_changed.connect(self.empty_drop.set_transfer_choice_active)
 
     def eventFilter(self,watched,event):
         if (watched is self.scroll.viewport() and event.type()==QEvent.Resize

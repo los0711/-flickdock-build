@@ -313,7 +313,13 @@ def main():
             except BaseException as failure:
                 error=type(failure).__name__
             routes=[row.get('route') for row in manual_progress if row.get('id')==identity and row.get('route')]
-            report['checks'].append(dict(name='manual_application_original_webrtc',sender=sender,ok=error is None,
+            selected_route=routes[-1] if routes else None
+            state=wan._pending.get(identity,{})
+            diagnostics={key:state[key] for key in ('local_candidates','remote_candidates','gathering','pc_state','ice_state') if key in state}
+            file_verified=error is None
+            direct_connected=selected_route=='direct'
+            report['checks'].append(dict(name='manual_application_original_webrtc',sender=sender,ok=file_verified and direct_connected,
+                file_verified=file_verified,direct_connected=direct_connected,
                 local_role='sender' if side==sender else 'receiver',error_type=error,verified_bytes=received_bytes,
                 receiver_save_ack=side==sender and error is None,route=routes[-1] if routes else None,
                 same_account_auto_accepted=identity in auto_accepted if side!=sender else None,
