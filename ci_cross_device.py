@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import subprocess
 import threading
 import time
 from types import SimpleNamespace
@@ -83,6 +84,22 @@ class IceTrace:
             summary['overlapping_private_host']=bool(addresses('local','host','local') & addresses('remote','host','local'))
             result.append(summary)
         return result
+
+
+def mac_firewall_audit(kernel):
+    """Read the runner's firewall; never change rules or infer a privacy grant."""
+    command='/usr/libexec/ApplicationFirewall/socketfilterfw'
+    report=dict(local_network_grant='not_queried',launch_scope='command_line_not_installed_app')
+    for key,arguments in (('global_state',['--getglobalstate']),('block_all',['--getblockall']),('kernel_rule',['--getappblocked',str(kernel)])):
+        try:
+            result=subprocess.run([command,*arguments],capture_output=True,text=True,timeout=5)
+            text=(result.stdout+result.stderr).lower()
+            if key=='global_state':
+                match=re.search(r'state\s*=\s*([012])',text);report[key]=int(match[1]) if match else 'unknown'
+            elif key=='block_all':report[key]='disabled' if 'disabled' in text else 'enabled' if 'enabled' in text else 'unknown'
+            else:report[key]='unlisted' if 'not part' in text else 'allowed' if 'not blocked' in text else 'blocked' if 'is blocked' in text else 'unknown'
+        except (OSError,subprocess.TimeoutExpired) as error:report[key]=dict(error_type=type(error).__name__)
+    return report
 
 
 class _SafeRedirect(HTTPRedirectHandler):
@@ -244,6 +261,7 @@ def main():
         ice_trace=IceTrace()
         if not cloud_only:
             phase='manual_prepare';wan=WanTransferService(root/'manual',device_name=account.device_name)
+            if platform=='macOS':report['mac_firewall']=mac_firewall_audit(Path(__file__).parent/'p2p/runtime/node')
             wan._native.connect(ice_trace.native)
             wan.socket.textMessageReceived.connect(ice_trace.remote)
             assert wan.device_id==own['wan_id'];wan.attach_account(account);wan.start()
@@ -277,6 +295,7 @@ def main():
         account.account_changed.emit(dict(account.account))
         def barrier(stage):
             nonlocal phase
+            phase='barrier_'+str(stage)
             call('PATCH','/v1/devices/'+account.device_id,data=dict(name=f'FD2-{run}-{attempt}-{pair}-{side}-{stage}'))
             end=time.monotonic()+STEP_TIMEOUT_SECONDS
             prefix=f'FD2-{run}-{attempt}-{pair}-{other}-'
@@ -355,16 +374,21 @@ def main():
             record('shelf_delete',sender,start,original_preserved=True)
             stage+=1;barrier(stage)
         manual_senders=() if cloud_only else ('a','b')*(3 if kernel_only else 1)
+        verified_manual=set()
         for manual_step,sender in enumerate(manual_senders):
             phase='manual_'+sender;started=time.perf_counter();error=None;received_bytes=0;identity=None;diagnostics=None
-            previous_tasks=set(wan._transfers)|set(wan._pending)
+            # A faster sender may already have delivered this request while
+            # the receiver was finishing the previous barrier's HTTP read.
+            # Exclude completed steps, not all currently pending native jobs.
+            previous_tasks=set(verified_manual)
             try:
                 if side==sender:identity=wan.send(peer['wan_id'],[root/'manual-source.bin'])
                 direction='send' if side==sender else 'receive'
                 def completed():
                     bad=next((row for row in manual_progress if row['id'] not in previous_tasks and row['direction']==direction and row['state']=='error'),None)
                     if bad:raise RuntimeError('Manual application transfer failed')
-                    return next((row for row in manual_completed if row['id'] not in previous_tasks and row['direction']==direction),None)
+                    return next((row for row in manual_completed if row['id'] not in previous_tasks and row['direction']==direction
+                                 and (side!=sender or row['id']==identity)),None)
                 until(lambda:bool(completed()),seconds=240);result=completed();identity=result['id']
                 if side!=sender:
                     received=Path(result['paths'][0]);expected=root/('expected-'+sender+'.bin')
@@ -372,6 +396,7 @@ def main():
                     with received.open('rb') as stream:assert hashlib.file_digest(stream,'sha256').hexdigest()==digest
                     received_bytes=received.stat().st_size
                 until(lambda:not wan._transfers[identity].active,seconds=30)
+                assert identity not in verified_manual;verified_manual.add(identity)
             except BaseException as failure:
                 error=type(failure).__name__
             routes=[row.get('route') for row in manual_progress if row.get('id')==identity and row.get('route')]
