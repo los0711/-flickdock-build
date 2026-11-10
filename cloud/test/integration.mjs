@@ -349,9 +349,8 @@ try{
     await part(mac.token,reserved.upload_id,1,data.subarray(reserved.chunk_size),409);
     await part(alice.token,reserved.upload_id,0,data.subarray(0,reserved.chunk_size));
     const resumable=await request('GET',`/v1/uploads/${reserved.upload_id}`,undefined,alice.token);assert.equal(resumable.next_part,1);assert.equal(resumable.state,'pending');
-    sql(`UPDATE uploads SET expires_at=${Date.now()+10000} WHERE id='${reserved.upload_id}'`);
     await part(mac.token,reserved.upload_id,1,data.subarray(reserved.chunk_size));
-    const complete=await request('GET',`/v1/uploads/${reserved.upload_id}`,undefined,alice.token);assert.equal(complete.next_part,2);assert.ok(Date.parse(complete.expires_at)>Date.now()+71*3600000,'Each successful part must renew the 72-hour pending lease');
+    const complete=await request('GET',`/v1/uploads/${reserved.upload_id}`,undefined,alice.token);assert.equal(complete.next_part,2);assert.equal(complete.expires_at,initial.expires_at,'Shelf parts must not extend the Beijing midnight deadline');
     const committed=await request('POST',`/v1/uploads/${reserved.upload_id}/commit`,{},mac.token);assert.equal(committed.record.sha256,hash(data));
     assert.equal((await request('GET',`/v1/uploads/${reserved.upload_id}`,undefined,alice.token)).state,'committed');
     const metadata=await request('GET',`/v1/items/${newId}/content`,undefined,alice.token);const checksum=createHash('sha256');let size=0;
@@ -359,6 +358,15 @@ try{
     assert.equal(size,data.length);assert.equal(checksum.digest('hex'),hash(data));
     assert.equal(sqlRows(`SELECT COUNT(*) n FROM read_leases WHERE upload_id='${reserved.upload_id}'`)[0].n,0,'All completed multipart GET responses must release their read leases');
     await request('GET',`/v1/items/${newId}/parts/0?version=2`,undefined,alice.token,409);
+  });
+  await check('manual multipart transfer retains its original renewable 72-hour pending lease',async()=>{
+    const data=Buffer.alloc(1024*1024+123,0x6d),manual=await reserve(initOwner.token,randomUUID(),data,0,{kind:'transfer'});
+    await part(initOwner.token,manual.upload_id,0,data.subarray(0,manual.chunk_size));
+    sql(`UPDATE uploads SET expires_at=${Date.now()+10000} WHERE id='${manual.upload_id}'`);
+    await part(initOwner.token,manual.upload_id,1,data.subarray(manual.chunk_size));
+    const current=await request('GET',`/v1/uploads/${manual.upload_id}`,undefined,initOwner.token);
+    assert.ok(Date.parse(current.expires_at)>Date.now()+71*3600000);
+    await request('DELETE',`/v1/uploads/${manual.upload_id}`,undefined,initOwner.token);
   });
   await check('65 MiB original file crosses the former 64 MiB limit and preserves every byte',async()=>{
     const chunk=Buffer.alloc(1024*1024,0x79),fullHash=createHash('sha256');for(let i=0;i<65;i++)fullHash.update(chunk);
@@ -368,7 +376,7 @@ try{
     for(let i=0;i<65;i++)await part(alice.token,reserved.upload_id,i,chunk);
     const seconds=(performance.now()-started)/1000;
     console.log('LOCAL_ONLY serial upload',JSON.stringify({mib:65,seconds:+seconds.toFixed(2),mib_per_sec:+(65/seconds).toFixed(2)}));
-    const committed=await request('POST',`/v1/uploads/${reserved.upload_id}/commit`,{},alice.token);assert.equal(committed.record.size,65*1024*1024);assert.ok(Math.abs(Date.parse(committed.record.expires_at)-Date.now()-86400000)<3000);
+    const committed=await request('POST',`/v1/uploads/${reserved.upload_id}/commit`,{},alice.token);assert.equal(committed.record.size,65*1024*1024);assert.equal(Date.parse(committed.record.expires_at),(Math.floor((Date.parse(committed.record.updated_at)+8*3600000)/86400000)+1)*86400000-8*3600000);
     let size=0;const actual=createHash('sha256');
     for(let i=0;i<65;i++){const response=await localFetch(base+`/v1/items/${newId}/parts/${i}?version=1`,{headers:{Authorization:'Bearer '+alice.token}});assert.equal(response.status,200);const chunkHash=createHash('sha256');for await(const data of response.body){size+=data.length;actual.update(data);chunkHash.update(data);}assert.equal(chunkHash.digest('hex'),response.headers.get('X-Content-SHA256'));}
     assert.equal(size,65*1024*1024);assert.equal(actual.digest('hex'),expected);

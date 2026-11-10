@@ -32,7 +32,9 @@ class WorkbenchTests(unittest.TestCase):
                 second=panel.devices.view().visualRect(panel.devices.model().index(1,0))
                 pixels=[image.pixelColor(x,y) for x in range(round(49*ratio),round(180*ratio)) for y in range(round((second.top()+29)*ratio),round((second.top()+47)*ratio))]
                 green=sum(pixel.green()>pixel.red()+12 and pixel.green()>pixel.blue()+8 for pixel in pixels)
-                self.assertGreater(green,5)
+                self.assertEqual(green,0)
+                self.assertIsNone(panel.devices.itemData(0,Qt.UserRole+2))
+                self.assertIsNone(panel.devices.itemData(1,Qt.UserRole+2))
                 first=panel.devices.view().visualRect(panel.devices.model().index(0,0))
                 with patch.object(wan,'remove_peer') as remove:
                     QTest.mouseClick(panel.devices.view().viewport(),Qt.LeftButton,pos=QPoint(first.right()-26,first.center().y()))
