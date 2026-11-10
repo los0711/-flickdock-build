@@ -3,8 +3,9 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 from PySide6.QtCore import QPoint,QRect,Qt
+from PySide6.QtGui import QImage,QPainter,QColor,QRegion
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QLineEdit,QLabel
+from PySide6.QtWidgets import QLineEdit,QLabel,QWidget
 from test_html_native_workspace import APP,flush
 from flickdock import ShelfManager
 from intake_notice import ClipboardNotice,NOTICE_MARGIN_PX,COMPACT_SIDE_PX
@@ -117,6 +118,13 @@ class CopyNoticeTests(unittest.TestCase):
         card.update_delivery(dict(id='current-copy',phase='synced',backed_up=True))
         self.assertEqual(card._current_result[1]['id'],'new-copy');self.assertEqual(card._phase,'syncing')
         card.supersede();self.assertFalse(card._morph._frames.isActive());self.assertFalse(card._fade._frames.isActive())
+
+    def test_contracting_surface_erases_previous_pixels_from_the_translucent_backing_store(self):
+        card=self.card;card.show_result(None,uploading());card._expire();card.clearMask()
+        image=QImage(card.size(),QImage.Format_ARGB32_Premultiplied);image.fill(QColor('magenta'))
+        painter=QPainter(image);card.render(painter,QPoint(),QRegion(),QWidget.DrawChildren);painter.end()
+        self.assertEqual(image.pixelColor(0,0).alpha(),0)
+        self.assertEqual(image.pixelColor(image.width()//2,image.height()//2).alpha(),255)
 
 
 if __name__=='__main__':unittest.main(verbosity=2)

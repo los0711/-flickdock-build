@@ -42,7 +42,9 @@ def copy_presentation(ok,context):
     """Byte completion is not confirmation, and backup is not a device receipt."""
     phase=context.get('phase');cloud=sync_progress(context)['cloud']
     if phase=='size_limit':
-        return 'limited','此文件不能同步','超过 20 MB 同步上限，内容保留在本机',None
+        kind=context.get('value',('text',{}))[0]
+        label='此文件不能同步' if kind=='files' else '此图片不能同步' if kind=='image' else '此内容不能同步'
+        return 'limited',label,'超过 20 MB 同步上限，内容保留在本机',None
     if phase=='superseded':
         return 'superseded','已有更新的复制','本次同步已由更新的复制接替',None
     completed=context.get('backed_up') or phase=='synced' or cloud['phase']=='complete'
@@ -202,6 +204,9 @@ class ClipboardNotice(QWidget):
 
     def paintEvent(self,event):
         c=colors(self.manager.settings.theme);p=QPainter(self)
+        # A shrinking translucent surface must erase pixels from its old shape.
+        p.setCompositionMode(QPainter.CompositionMode_Source);p.fillRect(self.rect(),Qt.transparent)
+        p.setCompositionMode(QPainter.CompositionMode_SourceOver)
         p.setRenderHints(QPainter.Antialiasing|QPainter.SmoothPixmapTransform);p.setOpacity(max(0.,min(1.,self._alpha)))
         rect=self.capsule_rect();path=QPainterPath();path.addRoundedRect(rect,rect.height()/2,rect.height()/2)
         p.setPen(Qt.NoPen);p.setBrush(QColor(c['surface']));p.drawPath(path);p.setClipPath(path)
