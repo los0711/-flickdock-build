@@ -16,6 +16,7 @@ class ShelfAdapter:
     def cancel_pending(self):
         shelf=self.manager.shelf
         shelf._copy_epoch+=1
+        shelf._cancel_intake()
         for job in tuple(shelf.copy_jobs):job.cancel()
         shelf.content.pending.clear();shelf.content.transfers.clear()
 

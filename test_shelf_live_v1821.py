@@ -13,6 +13,8 @@ import test_html_native_workspace as workspace_fixture
 from content_stack import StackTile
 
 
+from test_html_native_workspace import SyncView
+
 class LiveShelfTests(unittest.TestCase):
     def setUp(self):
         workspace_fixture.WorkspaceTests.setUp(self)
@@ -75,7 +77,7 @@ class LiveShelfTests(unittest.TestCase):
         from PySide6.QtGui import QImage,QColor
         self.manager.motion=True;self.manager._sync_transfer_refs=set()
         tile=self.shelf.zones['permanent'].icon;tile.motion=True
-        self.manager.sync=SimpleNamespace(upload_time_for_ref=lambda _:None,catching_up=False,sync_status_for_ref=lambda _:'synced')
+        self.manager.sync=SyncView(upload_time_for_ref=lambda _:None,catching_up=False,sync_status_for_ref=lambda _:'synced')
         popup=self.overview();adapter=ShelfAdapter(self.manager)
         for mode in ('list','icons'):
             self.settings.update(view_mode=mode);popup._render_signature=None;popup.rebuild();flush()
@@ -110,7 +112,7 @@ class LiveShelfTests(unittest.TestCase):
         popup.resize(740,550);flush();flush()
         self.assertEqual(item.x(),popup.rows_layout.contentsMargins().left())
 
-    def test_batch_removal_parallel_fades_and_survivors_move(self):
+    def test_batch_removal_discards_old_artwork_and_survivors_move(self):
         popup=self.overview();self.manager.motion=True
         before=self.rows(popup);remaining=self.paths[0]
         start=before[remaining].pos()
@@ -121,8 +123,8 @@ class LiveShelfTests(unittest.TestCase):
         with patch('item_transitions.time',SimpleNamespace(perf_counter=lambda:clock[0])):
             view['permanent']=[remaining];adapter.restore(view);flush()
             motion=popup.item_transitions
-            self.assertEqual(len(motion.ghosts),2)
-            self.assertTrue(motion.overlay.isVisible())
+            self.assertEqual(len(motion.ghosts),0)
+            self.assertFalse(motion.overlay.isVisible())
             self.assertEqual(set(popup.visible_refs()),{remaining})
             self.assertIs(self.rows(popup)[remaining],before[remaining])
             self.assertEqual(before[remaining].pos(),start)
@@ -134,15 +136,15 @@ class LiveShelfTests(unittest.TestCase):
             self.assertFalse(motion.timer.isActive());self.assertFalse(motion.ghosts)
         self.assertTrue(popup.isVisible());self.assertTrue(self.shelf.expanded)
 
-    def test_delete_all_fades_over_empty_state_then_releases_snapshots(self):
+    def test_delete_all_shows_empty_state_without_deleted_snapshots(self):
         popup=self.overview();self.manager.motion=True
         adapter=ShelfAdapter(self.manager);view=adapter.snapshot();view['permanent']=[]
         adapter.restore(view);flush()
         motion=popup.item_transitions
         self.assertEqual(popup.visible_refs(),[])
         self.assertTrue(popup.empty_state.isVisible())
-        self.assertEqual(len(motion.ghosts),3)
-        self.assertTrue(motion.overlay.isVisible())
+        self.assertEqual(len(motion.ghosts),0)
+        self.assertFalse(motion.overlay.isVisible())
         QTest.qWait(240);flush()
         self.assertFalse(motion.ghosts);self.assertFalse(motion.overlay.isVisible())
 

@@ -7,13 +7,20 @@ import hashlib,json,os,re,secrets,shutil,socket,sys,threading,time
 from pathlib import Path
 from uuid import uuid4
 from PySide6.QtCore import QTimer,QUrl,Signal
-from PySide6.QtNetwork import QNetworkRequest
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtNetwork import QNetworkRequest,QNetworkInformation
 from PySide6.QtWebSockets import QWebSocket
 from lan_transfer import LanTransferService,_Transfer,_validate_manifest
 from selection_archive import _is_link
 from webrtc_stream import WebRTCStream
 from cloud_config import DEFAULT_CLOUD_URL,CLOUD_ORIGINS
+from manual_network import signaling_proxies,relay_proxy
 SIGNAL_ORIGINS=CLOUD_ORIGINS
+SIGNALING_WAIT_SECONDS=30
+PROXY_CONFIG_CHECK_SECONDS=3
+DIRECT_CHECK_SECONDS=8
+DIRECT_TOTAL_SECONDS=20
+STUN_CACHE_SECONDS=600
 RECEIVE_CODE=re.compile(r'(?=[23456789A-HJ-NP-Z]*[2-9])(?=[23456789A-HJ-NP-Z]*[A-HJ-NP-Z])[23456789A-HJ-NP-Z]{4}')
 
 class WanTransferService(LanTransferService):
@@ -26,7 +33,7 @@ class WanTransferService(LanTransferService):
         super().__init__(parent,device_name=device_name,discovery=False)
         self.base=Path(base);self.enabled=enabled;self.origin=origin;self.node=node;self.code=''
         self._code_refresh_at=0.;self._code_expires_at=0.;self._code_duration=240.;self._refresh_sent_at=0.
-        self._last_signal=0.;self._peer_poll_count=0
+        self._last_signal=0.
         self.account_service=None;self.lan_id='';self.nearby_peers_provider=lambda:[]
         self._bind_epoch=0;self._bind_key=None;self._bound_identity=None;self._pending_identity=None
         self._account_nonce='';self._account_ack=False
@@ -35,6 +42,10 @@ class WanTransferService(LanTransferService):
         self._credential='';self._pending={};self._outbox={};self._connected=False;self._closing=False
         self._origins=SIGNAL_ORIGINS if origin==DEFAULT_CLOUD_URL else (origin,)
         self._origin_index=0;self._connect_attempt=0;self._connection_error='';self._manual_retry_at=0.
+        self._proxy_routes=[];self._proxy_index=0
+        self._last_proxy_check=0.;self._network_info=None
+        self._preferred_stun=None;self._stun_expires=0.
+        self._network_epoch=0
         try:
             path=self.base/'wan-device.key';path.parent.mkdir(parents=True,exist_ok=True)
             if not path.exists():
@@ -57,6 +68,11 @@ class WanTransferService(LanTransferService):
         self.retirement_timer=QTimer(self);self.retirement_timer.setInterval(60000)
         self.retirement_timer.timeout.connect(self._retire_terminal);self.retirement_timer.start()
         self.bind_retry=QTimer(self);self.bind_retry.setSingleShot(True);self.bind_retry.setInterval(5000);self.bind_retry.timeout.connect(self._bind_account)
+        if enabled and QGuiApplication.instance() and QGuiApplication.platformName() not in ('offscreen','minimal'):
+            QNetworkInformation.loadDefaultBackend();self._network_info=QNetworkInformation.instance()
+            if self._network_info is not None:
+                self._network_info.reachabilityChanged.connect(self.reconnect)
+                self._network_info.transportMediumChanged.connect(self.reconnect)
 
     def attach_account(self,account,*,lan_id='',nearby_peers=None):
         self.account_service=account;self.lan_id=lan_id
@@ -108,7 +124,9 @@ class WanTransferService(LanTransferService):
         return next((row for row in self.nearby_peers_provider() if row.get('id')==peer.get('lan_id')),None)
 
     def start(self):
-        if self.enabled and not self._connected and not self.retry.isActive():self.retry.start(0)
+        if self.enabled and not self._closing:
+            self.code_timer.start()
+            if not self._connected and not self.retry.isActive():self.retry.start(0)
 
     def _connect(self):
         if self._closing or not self.enabled:return
@@ -121,6 +139,9 @@ class WanTransferService(LanTransferService):
             self.status_changed.emit('远程服务地址无效。');return
         url.setScheme('ws' if local else 'wss');url.setPath('/v1/wan/connect');url.setQuery(None);url.setFragment(None)
         request=QNetworkRequest(url);request.setRawHeader(b'Authorization',('Bearer '+self._credential).encode())
+        routes=signaling_proxies(self._origins[self._origin_index])
+        if routes!=self._proxy_routes:self._proxy_routes=routes;self._proxy_index=0
+        self.socket.setProxy(routes[self._proxy_index%len(routes)])
         self._connection_error='';self.identity_changed.emit(self.code_identity())
         self.status_changed.emit('正在连接远程传输服务…');self.connect_timeout.start();self.socket.open(request)
 
@@ -141,9 +162,12 @@ class WanTransferService(LanTransferService):
         self._connection_error='远程连接超时，正在重试。'
         self._abort_signaling();self._disconnected()
 
-    def reconnect(self):
+    def reconnect(self,*_):
         if self._closing or not self.enabled or time.monotonic()-self._manual_retry_at<1:return
         self._manual_retry_at=time.monotonic();self.retry.stop();self.connect_timeout.stop()
+        self._proxy_index=0
+        self._preferred_stun=None;self._stun_expires=0.
+        self._network_epoch+=1
         self._abort_signaling();self._connected=False;self._connect_attempt=0
         self._origin_index=(self._origin_index+1)%len(self._origins);self.retry.start(0)
 
@@ -155,11 +179,12 @@ class WanTransferService(LanTransferService):
 
     def _disconnected(self,*_):
         self.connect_timeout.stop()
-        self._connected=False;self.poll.stop();self.code_timer.stop();self.code=''
+        self._connected=False;self.poll.stop();self.code=''
         self._code_refresh_at=self._code_expires_at=self._refresh_sent_at=0.
         for state in self._pending.values():state['retry_inflight']=False
         self.peers_changed.emit(self.peers())
         if not self._closing and self.enabled and not self.retry.isActive():
+            self._proxy_index=(self._proxy_index+1)%max(1,len(self._proxy_routes))
             self._connect_attempt=min(11,self._connect_attempt+1)
             self._origin_index=(self._origin_index+1)%len(self._origins)
             self.retry.start(250 if self._connect_attempt==1 else min(300000,1000*2**(self._connect_attempt-2)))
@@ -172,8 +197,6 @@ class WanTransferService(LanTransferService):
         if time.monotonic()-self._last_signal>40:
             self.socket.abort();self._disconnected();return
         self._send_signal(dict(type='ping'))
-        self._peer_poll_count+=1
-        if self._peer_poll_count%4==0:self._send_signal(dict(type='recent'))
 
     def _retire_terminal(self):
         if self._closing or self._retirement_running:return
@@ -196,8 +219,7 @@ class WanTransferService(LanTransferService):
         self._thread(release)
 
     def peers(self):
-        rows=super().peers()
-        return rows if self._connected else [dict(row,online=False) for row in rows]
+        return super().peers()
 
     def code_identity(self):
         now=time.monotonic();valid=self._connected and self.code and now<self._code_expires_at
@@ -206,8 +228,13 @@ class WanTransferService(LanTransferService):
             expires_remaining=max(0.,self._code_expires_at-now),refreshing=bool(self._refresh_sent_at))
 
     def check_code(self):
-        if not self._connected:return
+        if self._closing:return
         now=time.monotonic()
+        if self.enabled and self._proxy_routes and now-self._last_proxy_check>=PROXY_CONFIG_CHECK_SECONDS:
+            self._last_proxy_check=now
+            if signaling_proxies(self.origin)!=self._proxy_routes:
+                self.reconnect();return
+        if not self._connected:return
         if self._refresh_sent_at and now-self._refresh_sent_at>=12:
             self.socket.abort();self._disconnected();return
         if self.code and now>=self._code_refresh_at and not self._refresh_sent_at:
@@ -378,6 +405,9 @@ class WanTransferService(LanTransferService):
         state['relay_allowed']=bool(value.get('relayAllowed'));state['connect_started']=time.monotonic()
         state['relay_requested']=False;state.pop('network_error',None)
         state['relay_transport']=''
+        if state.get('network_epoch')!=self._network_epoch:state.pop('tls_failed',None)
+        state['network_epoch']=self._network_epoch
+        state.pop('remote_description_at',None);state.pop('gathered_at',None)
         urls=[]
         for server in value['iceServers']:
             for url in server.get('urls',[]):
@@ -387,24 +417,34 @@ class WanTransferService(LanTransferService):
                 if host not in ('stun.cloudflare.com','turn.cloudflare.com'):continue
                 if scheme=='stun':urls.append(url)
                 else:urls.append(dict(hostname=host,port=int(port),username=server['username'],password=server['credential'],relayType='TurnTls' if scheme=='turns' else 'TurnTcp' if transport=='tcp' else 'TurnUdp'))
-        bridge=WebRTCStream(lambda event:self._native.emit(dict(id=identifier,generation=generation,event=event)),node=self.node)
+        bridge=WebRTCStream(lambda event:self._native.emit(dict(id=identifier,generation=generation,event=event)) if not self._closing else None,node=self.node)
         state['bridge']=bridge
-        bridge.control(dict(type='init',iceServers=urls,initiator=state['role']=='send',forceRelay=self._qa_force_relay,preferTls=not state.get('tls_failed',False)))
+        preferred=self._preferred_stun if time.monotonic()<self._stun_expires else None
+        bridge.control(dict(type='init',iceServers=urls,initiator=state['role']=='send',forceRelay=self._qa_force_relay,preferTls=not state.get('tls_failed',False),relayProxy=relay_proxy(self.socket.proxy()),preferredStun=preferred))
         if state['role']=='send':
             transfer=self._transfers.get(identifier)
             if transfer:self._notify(transfer,'connecting',route='relay' if value.get('relayAttempt') else 'direct')
             if value.get('relayAllowed'):QTimer.singleShot(8000,lambda:self._relay_if_needed(identifier,generation))
 
-    def _relay_if_needed(self,identifier,generation):
+    def _relay_if_needed(self,identifier,generation,*,failed=False):
+        if self._closing:return
         state=self._pending.get(identifier)
         if state and state['generation']==generation and not state['bridge'].opened.is_set():
             if not state.get('relay_allowed'):return
+            now=time.monotonic();started=state['connect_started']
+            checks=max(state.get('remote_description_at',now),state.get('gathered_at',started))
+            if not failed and now-started<DIRECT_TOTAL_SECONDS and now-checks<DIRECT_CHECK_SECONDS:
+                remaining=min(DIRECT_TOTAL_SECONDS-(now-started),DIRECT_CHECK_SECONDS-(now-checks))
+                QTimer.singleShot(max(1,round(remaining*1000)),lambda:self._relay_if_needed(identifier,generation));return
+            if not failed and 'remote_description_at' not in state:
+                state['error']='未能交换连接信息，请重试。';state['ready'].set();return
             state['relay_allowed']=False
             state['relay_requested']=True
             self.status_changed.emit('直连暂未成功，正在尝试中继…')
             self._send_signal(dict(type='relay',id=identifier,generation=generation))
 
     def _handle_native(self,value):
+        if self._closing:return
         identifier=value['id'];state=self._pending.get(identifier)
         if not state or state.get('generation')!=value['generation']:return
         event=value['event'];kind=event.get('type')
@@ -413,6 +453,13 @@ class WanTransferService(LanTransferService):
         elif kind=='transport':
             state['relay_transport']=event.get('relayTransport','')
             if event.get('tlsFallback'):state['tls_failed']=True
+        elif kind=='gathering':
+            state['gathering']=event.get('state')
+            if event.get('state')=='complete':state['gathered_at']=time.monotonic()
+        elif kind=='remote_description':state.setdefault('remote_description_at',time.monotonic())
+        elif kind=='stun_selected':
+            if event.get('server') in ('stun:stun.cloudflare.com:3478','stun:stun.l.google.com:19302'):
+                self._preferred_stun=event['server'];self._stun_expires=time.monotonic()+STUN_CACHE_SECONDS
         elif kind=='open':
             state['route']=event['route'];state['ready'].set()
             self._send_signal(dict(type='connected',id=identifier,generation=state['generation']))
@@ -431,23 +478,23 @@ class WanTransferService(LanTransferService):
             if not state['bridge'].opened.is_set():
                 if state.get('relay_requested'):return
                 if state['role']=='send' and state.get('relay_allowed'):
-                    self._relay_if_needed(identifier,state['generation'])
+                    self._relay_if_needed(identifier,state['generation'],failed=True)
                 else:
                     state['error']='P2P 连接未能建立，请检查网络后重试。';state['network_error']=True;state['ready'].set()
             if kind=='error':self.status_changed.emit(str(event.get('message') or 'WebRTC 连接中断。'))
 
     def send(self,peer_id,paths):
-        if not self._connected:raise ValueError('远程服务尚未连接，请稍后再试。')
+        if self._closing or not self.enabled and not self._connected:raise ValueError('远程互传未启用。')
         peer=self._peers.get(peer_id)
         if not peer and not RECEIVE_CODE.fullmatch(str(peer_id)):raise ValueError('请输入有效的接收码，或选择最近设备。')
-        if peer and not peer.get('online'):raise ValueError('对方设备不在线，无法发送。')
         if peer and 'syncthing-v2' in peer.get('features',[]):raise ValueError('对方仍使用 Syncthing 互传，请将两端更新到相同版本。')
+        if not self._connected or self._proxy_routes and signaling_proxies(self.origin)!=self._proxy_routes:self.reconnect()
         identifier=uuid4().hex;peer=dict(peer or dict(code=peer_id,name='接收码 '+peer_id))
         with self._lock:
             if sum(t.active and t.direction=='send' for t in self._transfers.values())>=2:raise ValueError('请等待当前传输完成。')
             transfer=_Transfer(identifier,'send',peer['name'],active=True);transfer.token=secrets.token_hex(32)
             transfer.remote_peer=peer;self._transfers[identifier]=transfer
-            self._pending[identifier]=dict(role='send',peer=peer,ready=threading.Event(),generation=0)
+            self._pending[identifier]=dict(role='send',peer=peer,ready=threading.Event(),generation=0,signaling_deadline=time.monotonic()+SIGNALING_WAIT_SECONDS)
         if peer.get('code'):
             state=self._pending[identifier];state['prepared']=threading.Event()
             state['prepare']=dict(type='prepare',id=identifier,token=transfer.token,code=peer['code'])
@@ -481,6 +528,7 @@ class WanTransferService(LanTransferService):
         self._command.emit(dict(_connect=True,**request));deadline=time.monotonic()+210
         while not state['ready'].wait(.1):
             if self._stopped.is_set() or transfer.cancel.is_set():raise InterruptedError('已取消传输。')
+            if not state.get('requested') and time.monotonic()>state.get('signaling_deadline',deadline):raise TimeoutError('暂时无法连接接收设备，请重试。')
             if time.monotonic()>deadline:raise TimeoutError('对方未确认或连接未成功，请重新发起。')
             if state.get('connect_started') and time.monotonic()-state['connect_started']>30:raise TimeoutError('无法建立远程连接，请重试。')
         if state.get('error'):
@@ -551,6 +599,10 @@ class WanTransferService(LanTransferService):
     def close(self):
         self.retirement_timer.stop()
         self._closing=True;self.retry.stop();self.poll.stop();self.code_timer.stop();self.connect_timeout.stop();self.bind_retry.stop()
+        if self._network_info is not None:
+            self._network_info.reachabilityChanged.disconnect(self.reconnect)
+            self._network_info.transportMediumChanged.disconnect(self.reconnect)
+            self._network_info=None
         if self._bind_key and self.account_service:self.account_service.api.cancel(self._bind_key)
         self.socket.abort();super().close()
         for state in self._pending.values():

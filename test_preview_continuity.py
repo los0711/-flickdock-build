@@ -12,6 +12,8 @@ import reference_widgets
 import test_html_native_workspace as workspace
 
 
+from test_html_native_workspace import SyncView
+
 class PreviewContinuityTests(unittest.TestCase):
     def test_clear_all_then_trigger_preview_retires_old_surface_and_card_pixels(self):
         self.shelf.manager.motion=True;self.shelf.geometry_morph.motion=True
@@ -305,7 +307,7 @@ class PreviewContinuityTests(unittest.TestCase):
     def test_upload_only_uses_top_progress_and_keeps_cancel_and_receive_feedback(self):
         popup=self.fixture.overview();ref=self.fixture.paths[1];popup.select_item(ref)
         preview=popup.preview
-        self.shelf.manager.sync=SimpleNamespace(download_transfers={},upload_time_for_ref=lambda _:None,
+        self.shelf.manager.sync=SyncView(download_transfers={},upload_time_for_ref=lambda _:None,
             sync_status_for_ref=lambda _:'local',sync_statuses_for_refs=lambda refs:{ref:'local' for ref in refs},
             is_upload_paused=lambda _:False)
         state=dict(id='preview-transfer',phase='uploading',received=50,total=100,remote=False)

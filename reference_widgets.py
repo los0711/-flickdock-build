@@ -813,7 +813,13 @@ def build_overview(view,preview_type):
     view.clipboard_footer=QWidget(view.middle);view.clipboard_footer.setFixedHeight(56)
     clipboard_row=QHBoxLayout(view.clipboard_footer);clipboard_row.setContentsMargins(12,12,12,12)
     view.clipboard_button=ClipboardButton(view.shelf.manager,view.clipboard_footer)
-    clipboard_row.addWidget(view.clipboard_button);clipboard_row.addStretch()
+    clipboard_row.setSpacing(8)
+    from shelf_capacity import ShelfCapacityButton
+    view.capacity_button=ShelfCapacityButton(view.clipboard_footer)
+    clipboard_row.addWidget(view.capacity_button);clipboard_row.addWidget(view.clipboard_button);clipboard_row.addStretch()
+    sync=getattr(view.shelf.manager,'sync',None)
+    if sync is not None:
+        view.capacity_button.bind_sync(sync)
     mid.addWidget(view.clipboard_footer)
     mid.addWidget(view.transfer_strip);view.transfer_strip.hide();body.addWidget(view.middle,1)
     view.preview=preview_type(view);view.preview.setFixedWidth(340);body.addWidget(view.preview)
@@ -845,6 +851,9 @@ def build_preview(view,elided_type,image_type,media_type,content_type):
         names.addWidget(item)
     view.name.setFixedHeight(20);view.info.setFixedHeight(14);view.upload_time.setFixedHeight(14)
     header.addLayout(names,1)
+    view.cloud_action=ToolbarButton('cloud-upload',head,motion=view.shelf.manager.motion)
+    view.cloud_action.setFixedSize(32,32);view.cloud_action.clicked.connect(view.toggle_cloud_copy)
+    header.addWidget(view.cloud_action)
     view.copy_button=ToolbarButton('copy',view,motion=view.shelf.manager.motion);view.copy_button.setFixedSize(32,32);view.copy_button.clicked.connect(view.copy_current);header.addWidget(view.copy_button);root.addWidget(head)
     view.content_scroll=QScrollArea(view);view.content_scroll.setWidgetResizable(True);view.content_scroll.setFrameShape(QFrame.NoFrame)
     view.content_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -876,7 +885,10 @@ def build_preview(view,elided_type,image_type,media_type,content_type):
     css(status,'QFrame#referenceStatus{background:rgba(255,255,255,7);border:1px solid rgba(255,255,255,15);border-radius:12px;}',
         'QFrame#referenceStatus{background:rgba(255,255,255,184);border:1px solid rgba(0,0,0,15);border-radius:12px;}')
     box=QVBoxLayout(status);box.setContentsMargins(12,10,12,10);box.setSpacing(7)
-    line=QHBoxLayout();line.addWidget(label('状态',11,400,'muted',status));line.addStretch(1);view.status_value=label('',11,500,'green',status);line.addWidget(view.status_value);box.addLayout(line)
+    from transfer_visuals import CloudStatusBadge
+    line=QHBoxLayout();line.addWidget(label('状态',11,400,'muted',status));line.addStretch(1)
+    view.cloud_badge=CloudStatusBadge(status,file_presence=True);line.addWidget(view.cloud_badge)
+    view.status_value=label('',11,500,'green',status);line.addWidget(view.status_value);box.addLayout(line)
     view.path_label=elided_type(status);view.path_label.setAccessibleName('内容来源路径')
     css(view.path_label,"color:#A1A1AA;background:transparent;border:0;font:10px 'Consolas';",
         "color:#636366;background:transparent;border:0;font:10px 'Consolas';")

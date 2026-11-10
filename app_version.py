@@ -1,5 +1,5 @@
 """Single runtime version shared by the UI and release tools."""
 
 APP_NAME = "FlickDock"
-APP_VERSION = "1.8.28"
-APP_BUILD = "1.8.28"
+APP_VERSION = "1.8.29"
+APP_BUILD = "1.8.29"

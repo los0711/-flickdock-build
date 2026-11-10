@@ -29,7 +29,7 @@ const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{reso
 
 async function race(failPut,fastUpload=false,fastMultipart=false){
   const sqlite=new DatabaseSync(':memory:');
-  for(const file of ['0001_schema.sql','0002_retention.sql','0003_transfers_password.sql','0004_instant_uploads.sql','0005_account_names.sql','0006_cloud_retention.sql','0007_clipboard_upload_refs.sql'])sqlite.exec(readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));
+  for(const file of ['0001_schema.sql','0002_retention.sql','0003_transfers_password.sql','0004_instant_uploads.sql','0005_account_names.sql','0006_cloud_retention.sql','0007_clipboard_upload_refs.sql','0008_shelf_capacity.sql'])sqlite.exec(readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));
   class Statement{
     constructor(sql,values=[]){this.sql=sql;this.values=values;}
     bind(...values){return new Statement(this.sql,values);}

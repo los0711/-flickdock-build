@@ -86,6 +86,8 @@ class ShelfSync(QObject):
     status_changed = Signal(str)
     transfers_changed = Signal(list)
     metadata_changed = Signal(str)
+    storage_changed = Signal(object)
+    capacity_exceeded = Signal(list)
 
     def __init__(self, base, service, adapter, parent=None, *, scheduler=None,progress_interval_ms=TRANSFER_INTERVAL_MS):
         super().__init__(parent)
@@ -127,6 +129,8 @@ class ShelfSync(QObject):
         self._cycle_direction='receive'
         self.upload_enabled=True
         self.receive_enabled=True
+        self.storage=None
+        self.cloud_copy_operations=set()
         self.schedule=self.scheduler.register('shelf',self._scheduled_check,timing=SyncTiming(
             transfer_ms=progress_interval_ms,finishing_ms=min(progress_interval_ms,FINISHING_INTERVAL_MS)))
         self.scheduler.connection_changed.connect(self._connection_changed)
@@ -216,6 +220,7 @@ class ShelfSync(QObject):
             self._update_schedule()
             return
         self.epoch += 1; self.schedule.configure(enabled=False); self.debounce.stop()
+        self.storage=None;self.storage_changed.emit(None);self.cloud_copy_operations.clear()
         self._schedule_transfers=[]
         self._metadata_pending.clear();self._metadata_retry.clear()
         self.catching_up=True
@@ -371,6 +376,47 @@ class ShelfSync(QObject):
     def request_refresh(self):
         self.schedule.request()
 
+    def refresh_storage(self,callback):
+        if self.closed or not self.account_id or not self.service.signed_in:
+            callback(None,None);return
+        def done(result,error):
+            callback(self.storage if error is None else None,error)
+        lane=self._lane_context;self._lane_context=None
+        try:self._request('GET','/v1/sync/storage',done)
+        finally:self._lane_context=lane
+
+    def _set_storage(self,value):
+        from shelf_capacity import storage_value
+        value=storage_value(value)
+        if self.storage!=value:
+            self.storage=value;self.storage_changed.emit(dict(value))
+
+    def delete_cloud_copy(self,ref):
+        if self.closed or not self.state or not self.service.signed_in:return False
+        entry=next((e for e in self.state['entries'].values() if e.get('ref')==ref and not e.get('deleted')),None)
+        if not entry or self._sync_status_for_entry(entry)!='synced' or entry['id'] in self.cloud_copy_operations:return False
+        identity=entry['id'];self.cloud_copy_operations.add(identity);self.metadata_changed.emit(ref)
+        def done(result,error):
+            self.cloud_copy_operations.discard(identity)
+            if error:
+                self.status_changed.emit('删除云端副本失败：'+str(error));self.request_refresh()
+            else:
+                self._receive(result['record'],lambda:None)
+                self.status_changed.emit('云端副本已删除，本地文件仍保留。')
+            self.metadata_changed.emit(ref)
+        self._request('DELETE','/v1/items/'+identity+'/cloud-copy',done,data={'base_version':entry['version']})
+        return True
+
+    def _capacity_rejected(self,identity):
+        entry=self.state['entries'].get(identity)
+        if entry:
+            entry.update(paused_upload=True,last_error='云端容量不足')
+            self._end_intake(entry);self._forget_resume(identity)
+            self.capacity_exceeded.emit([entry['ref']])
+        if self._lane_context is not None:self.upload_lanes.finish()
+        elif self.transfer and self.transfer.get('id')==identity:self.running=False;self.transfer=None
+        self._persist();self._notify_transfers();self.request_refresh()
+
     def _refresh_remote(self):
         if self.closed or not self.account_id or not self.service.signed_in or not self.receive_enabled:return
         if not self.scheduler.connected:self.schedule.request();return
@@ -497,6 +543,7 @@ class ShelfSync(QObject):
             if identity in known:continue
             # A cancelled local fingerprint is deliberately local-only.
             local=entries.get(identity,{})
+            if local.get('deleted'):continue
             if remote.get('device_id')==getattr(self.service,'device_id','') and local.get('paused_upload'):continue
             if remote.get('device_id')==getattr(self.service,'device_id',''):continue
             live=self._live_upload_progress.get(remote.get('upload_id'),{})
@@ -711,6 +758,13 @@ class ShelfSync(QObject):
         def done(result,error):
             if holder:self.requests.discard(holder[0]);self._request_owners.pop(holder[0],None)
             if self.closed or epoch != self.epoch or token is not None and token.is_set(): return
+            if error is None and isinstance(result,dict) and 'shelf_storage' in result:
+                try:self._set_storage(result['shelf_storage'])
+                except ValueError as invalid:error=invalid
+            if getattr(error,'code','')=='SHELF_QUOTA' and owner:
+                if lane is not None:self.upload_lanes.run(lane,self._capacity_rejected,owner)
+                else:self._capacity_rejected(owner)
+                return
             if lane is not None:
                 # Protocol callbacks can stop the main cycle on conflicts;
                 # the small lane defers reconciliation without stopping bulk.

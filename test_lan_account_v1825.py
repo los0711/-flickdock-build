@@ -73,14 +73,21 @@ class LanAccountTests(unittest.TestCase):
             self.assertEqual(hashlib.sha256(Path(completed[0]['paths'][0]).read_bytes()).digest(),hashlib.sha256(body).digest())
         finally:dialog.close();dialog.deleteLater();flush()
 
-    def test_unavailable_account_auth_fails_without_switching_mode_or_sending_bytes(self):
-        source=self.root/'cannot-auto-send.txt';source.write_text('original');states=[];offers=[]
-        self.lans[0].progress.connect(states.append);self.lans[1].offer_received.connect(offers.append)
+    def test_unavailable_account_auth_keeps_tls_transfer_and_requires_real_consent(self):
+        source=self.root/'local-only.txt';source.write_text('original')
+        destination=self.root/'accepted';destination.mkdir();offers=[];completed=[]
+        self.wans[0]._connected=False;self.wans[1]._connected=False
         self.wans[0]._send_signal=Mock(return_value=False)
-        identifier=self.lans[0].send(self.lans[1].device_id,[source])
-        until(lambda:any(row['state']=='error' for row in states),seconds=4)
-        self.assertFalse(offers);self.assertEqual(self.lans[0]._transfers[identifier].done,0)
-        self.assertIn('尚未就绪',next(row['message'] for row in states if row['state']=='error'))
+        def receive(offer):
+            offers.append(offer)
+            self.assertFalse(offer.get('account_device',False))
+            self.assertFalse(list(destination.iterdir()))
+            self.lans[1].accept(offer['id'],destination)
+        self.lans[1].offer_received.connect(receive);self.lans[1].completed.connect(completed.append)
+        self.lans[0].send(self.lans[1].device_id,[source])
+        until(lambda:bool(completed),seconds=5)
+        self.wans[0]._send_signal.assert_not_called();self.assertEqual(len(offers),1)
+        self.assertEqual(Path(completed[0]['paths'][0]).read_text(),'original')
 
     def test_ticket_binds_recipient_certificate_manifest_token_and_session(self):
         receiver=self.auth[1];sender=self.wans[0].device_id

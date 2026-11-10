@@ -37,19 +37,18 @@ def cloud_status_for_ref(shelf, ref):
 
 
 def draw_cloud_status_badge(painter, rect, status, transfer=None):
-    """Circular state glyph, placed at the lower-right of file artwork."""
+    """Cloud presence and local-only artwork share the same compact badge."""
     status = status if status in CLOUD_STATUS_LABELS else 'local'
     rect = QRectF(rect)
-    ink_hex = (_CLOUD_STATUS_DARK_COLORS if ui_theme.current_theme() == 'dark'
-               else _CLOUD_STATUS_COLORS)[status]
-    ink = QColor(ink_hex)
+    from native_ui_common import icon
+    synced=status=='synced'
+    ink=QColor('#169F65' if synced else '#087CEF')
     painter.save()
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     painter.translate(rect.left(),rect.top())
     painter.scale(rect.width()/20,rect.height()/20)
-    painter.setBrush(QColor(ui_theme.color('surface')))
-    outline = QPen(ink,1.2)
-    painter.setPen(outline)
+    painter.setBrush(ink)
+    painter.setPen(Qt.NoPen)
     painter.drawEllipse(QRectF(1.2,1.2,17.6,17.6))
     fraction=transfer_fraction(transfer) if transfer else None
     if fraction is not None and fraction>0:
@@ -58,19 +57,14 @@ def draw_cloud_status_badge(painter, rect, status, transfer=None):
         painter.setPen(arc)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawArc(QRectF(1.2,1.2,17.6,17.6),90*16,-round(max(.025,fraction)*360*16))
-    pen = QPen(ink, 1.8)
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-    painter.setPen(pen)
-    painter.setBrush(Qt.BrushStyle.NoBrush)
-    painter.setPen(Qt.PenStyle.NoPen);painter.setBrush(ink)
-    painter.drawEllipse(QRectF(5.8,5.8,8.4,8.4))
+    painter.drawPixmap(4,4,12,12,icon('cloud' if synced else 'computer','#FFFFFF').pixmap(24,24))
     painter.restore()
 
 
 class CloudStatusBadge(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None,*,file_presence=False):
         super().__init__(parent)
+        self.file_presence=file_presence
         self.status = 'local'
         self.transfer = None
         # Share the copy button's 32px header cell; the state ring remains a
@@ -90,7 +84,18 @@ class CloudStatusBadge(QWidget):
 
     def paintEvent(self, event):
         painter=QPainter(self);painter.setRenderHint(QPainter.Antialiasing)
-        draw_cloud_status_badge(painter,QRectF((self.width()-20)/2,(self.height()-20)/2,20,20),self.status,self.transfer)
+        rect=QRectF((self.width()-20)/2,(self.height()-20)/2,20,20)
+        if self.file_presence:
+            draw_cloud_status_badge(painter,rect,self.status,self.transfer)
+        else:
+            colors=_CLOUD_STATUS_DARK_COLORS if ui_theme.current_theme()=='dark' else _CLOUD_STATUS_COLORS
+            ink=QColor(colors[self.status]);painter.setPen(QPen(ink,1.2));painter.setBrush(QColor(ui_theme.color('surface')))
+            painter.drawEllipse(rect.adjusted(1.2,1.2,-1.2,-1.2))
+            fraction=transfer_fraction(self.transfer) if self.transfer else None
+            if fraction is not None and fraction>0:
+                painter.setPen(QPen(ink,2.2));painter.setBrush(Qt.NoBrush)
+                painter.drawArc(rect.adjusted(1.2,1.2,-1.2,-1.2),90*16,-round(max(.025,fraction)*360*16))
+            painter.setPen(Qt.NoPen);painter.setBrush(ink);painter.drawEllipse(rect.adjusted(5.8,5.8,-5.8,-5.8))
 
 
 def transfer_fraction(state):

@@ -65,6 +65,17 @@ class Screen:
     def devicePixelRatio(self):return 1
 
 
+from PySide6.QtCore import QObject, Signal
+
+class SyncView(QObject):
+    storage_changed=Signal(object)
+    def __init__(self,**values):
+        super().__init__()
+        self.storage=None;self.state={};self.cloud_copy_operations=set()
+        self.service=SimpleNamespace(signed_in=False)
+        self.__dict__.update(values)
+
+
 class WorkspaceTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(prefix='flickdock-native-workspace-')
@@ -153,7 +164,7 @@ class WorkspaceTests(unittest.TestCase):
 
     def test_cloud_status_points_follow_live_sync_provider_for_each_state(self):
         state={'value':'local'}
-        self.manager.sync=SimpleNamespace(upload_time_for_ref=lambda _:None,sync_status_for_ref=lambda _:state['value'],
+        self.manager.sync=SyncView(upload_time_for_ref=lambda _:None,sync_status_for_ref=lambda _:state['value'],
             sync_statuses_for_refs=lambda refs:{ref:state['value'] for ref in refs},is_upload_paused=lambda _:False)
         popup=self.overview();ref=self.paths[1];popup.select_item(ref)
         row=next(row for row in popup.rows_body.findChildren(subject.FileRow) if row.path==ref)
@@ -165,9 +176,9 @@ class WorkspaceTests(unittest.TestCase):
             image=row.icon_label.grab().toImage()
             renderings.append(bytes(image.constBits()))
             # Real glyph artwork must be present in the circle, not just a
-            # color-only dot; every state is distinguishable without color.
+            # color-only dot; cloud presence also changes the symbol.
             self.assertGreater(sum(image.pixelColor(x,y).alpha()>0 for x in range(8,24) for y in range(8,24)),8,status)
-        self.assertEqual(len(set(renderings)),6)
+        self.assertEqual(len(set(renderings)),2)
         popup.preview.show_group((self.paths[0],self.paths[1]));self.assertEqual(popup.preview.status_value.text(),'')
     def test_compact_and_expanded_trailing_controls_keep_identical_offsets_and_full_menu(self):
         controls=(self.shelf.pin_button,self.shelf.expand_button,self.shelf.menu_button,self.shelf.close_button)

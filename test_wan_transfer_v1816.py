@@ -21,7 +21,7 @@ class WanRecovery(unittest.TestCase):
         QCoreApplication.sendPostedEvents(None,QEvent.Type.DeferredDelete);APP.processEvents()
         self.temporary.cleanup()
     def state(self,role='send'):
-        value=dict(role=role,peer=dict(id='a'*64,name='测试设备'),ready=threading.Event(),generation=1,requested=True,total=0,
+        value=dict(role=role,peer=dict(id='a'*64,name='测试设备'),ready=threading.Event(),generation=1,requested=True,total=0,connect_started=time.monotonic(),network_epoch=self.service._network_epoch,
             request=dict(type='request',id=self.identifier,token='b'*64,digest='c'*64,total='0',count=0,names=[]))
         self.service._pending[self.identifier]=value;return value
     def message(self,**value):self.service._message(json.dumps(dict(schema_version=1,id=self.identifier,**value)))
@@ -83,13 +83,14 @@ class WanRecovery(unittest.TestCase):
         self.assertFalse(self.sent);self.assertNotIn('prepare',self.service._pending[identifier])
         self.service.remove_peer('d'*64);self.assertEqual(self.sent[-1],dict(type='remove',peer='d'*64))
         self.message(type='peers',peers=[]);self.assertEqual(self.service.peers(),[])
-    def test_offline_recent_device_cannot_start_a_transfer_and_disconnect_updates_status(self):
-        self.service._connected=True;changes=[];self.service.peers_changed.connect(changes.append)
+    def test_offline_hint_does_not_gate_actual_connection_attempt(self):
+        self.service._connected=True;workers=[]
+        self.service._thread=lambda target,*args:workers.append((target,args))
         self.service._peers={'d'*64:dict(id='d'*64,name='Mac',online=False)}
-        with self.assertRaisesRegex(ValueError,'不在线，无法发送'):self.service.send('d'*64,[str(self.root)])
-        self.assertEqual(self.service._transfers,{})
-        self.service._peers['d'*64]['online']=True;self.service._disconnected()
-        self.assertFalse(changes[-1][0]['online'])
+        identifier=self.service.send('d'*64,[str(self.root)])
+        self.assertIn(identifier,self.service._transfers);self.assertEqual(len(workers),1)
+        self.service._disconnected()
+        self.assertEqual(self.service.peers()[0]['id'],'d'*64)
     def test_request_not_acknowledged_by_local_queue(self):
         state=self.state();state.pop('requested');request=dict(state['request'])
         self.service._handle_command(dict(_connect=True,**request))

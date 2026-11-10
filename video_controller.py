@@ -107,9 +107,7 @@ class VideoController(QObject):
 
     def _shelve(self,row):
         if row['shelved']:return
-        from shelf_intake_limit import MAX_SHELF_BYTES
         try:
-            if Path(row['path']).stat().st_size>MAX_SHELF_BYTES:raise ValueError('文件已下载；超过搁架 1 GB 上限，可在文件互传中发送。')
             self.manager.shelf.add_paths('permanent',[row['path']]);row['shelved']=True
         except (OSError,ValueError) as error:self.message=str(error);self.message_error=True
 

@@ -8,6 +8,7 @@ import {wanRoute,type WanEnv} from './wan';
 import {clipboardRequest,clipboardAlarm} from './clipboard';
 import {intakeRequest} from './intake';
 import {storageBudget,StorageBudgetError} from './storage-budget';
+import {shelfStorage,shelfResetAt} from './shelf-storage';
 export {WanHub} from './wan';
 
 interface Env extends WanEnv {
@@ -298,9 +299,24 @@ async function expireItems(env:Env,accountId?:string,limit=1){
     await query(env,'UPDATE items SET deleted=1,version=version+1,active_upload=NULL,size=0,sha256=NULL,updated_at=? WHERE account_id=? AND id=? AND version=? AND deleted=0 AND expires_at<=?',now,value.account_id,value.id,value.version,now).run();
     if(value.active_upload)await purgeUpload(env,value.active_upload);
   }
+  for(const account of new Set(expired.map(value=>value.account_id))){
+    await env.EVENTS.get(env.EVENTS.idFromName(account)).fetch('https://internal/publish',
+      {method:'POST',body:JSON.stringify({type:'content',device:''})});
+  }
 }
 async function cleanup(env:Env){
   const now=Date.now();
+  // Retire the daily shelf generation atomically. Physical R2 garbage is
+  // reclaimed below in bounded batches; a large shelf must not keep emitting
+  // valid cloud records for hours while those batches drain.
+  const retired=await env.DB.batch([
+    query(env,"SELECT DISTINCT account_id FROM items WHERE deleted=0 AND kind<>'transfer' AND expires_at<=?",now),
+    query(env,"UPDATE items SET deleted=1,version=version+1,active_upload=NULL,size=0,sha256=NULL,updated_at=? WHERE deleted=0 AND kind<>'transfer' AND expires_at<=?",now,now),
+  ]);
+  for(const account of retired[0].results as {account_id:string}[]){
+    await env.EVENTS.get(env.EVENTS.idFromName(account.account_id)).fetch('https://internal/publish',
+      {method:'POST',body:JSON.stringify({type:'content',device:''})});
+  }
   await expireItems(env,undefined,32);
   const expiredPins=await rows(env,'SELECT clipboard_id,upload_id,account_id FROM clipboard_upload_refs WHERE expires_at<=? LIMIT 32',now);
   for(const pin of expiredPins){
@@ -401,6 +417,9 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
     const storage=(await first(env,'SELECT allocated_bytes,quota_bytes FROM accounts WHERE id=?',owner.id))!;
     return json({account:account(owner),device_id:owner.device_id,storage:{used_bytes:storage.allocated_bytes,quota_bytes:storage.quota_bytes,max_file_bytes:storage.quota_bytes}});
   }
+  if(method==='GET'&&path==='/v1/sync/storage'){
+    return json({shelf_storage:await shelfStorage(env,owner.id)});
+  }
   if(method==='GET'&&path==='/v1/devices'){
     const devices=await rows(env,'SELECT * FROM devices WHERE account_id=? ORDER BY created_at DESC LIMIT 100',owner.id);
     return json({devices:devices.map(d=>({id:d.id,name:d.name,platform:d.platform,created_at:iso(d.created_at),last_seen_at:iso(d.last_seen_at),revoked_at:d.revoked_at?iso(d.revoked_at):null,current:d.id===owner.device_id}))});
@@ -468,7 +487,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
     const all=await rows(env,'SELECT seq,record FROM changes WHERE account_id=? AND seq>? ORDER BY seq LIMIT ?',owner.id,Number(cursor),limit+1),page=all.slice(0,limit);
     // Manual R2 jobs use the same verified storage pipeline, but never become
     // shelf items. Advance over their log rows so pagination cannot stall.
-    return json({changes:page.map(c=>({cursor:String(c.seq),record:JSON.parse(c.record)})).filter(c=>c.record.kind!=='transfer'),cursor:page.length?String(page.at(-1)!.seq):cursor,has_more:all.length>limit,transfers:await transfers(env,owner.id)});
+    return json({changes:page.map(c=>({cursor:String(c.seq),record:JSON.parse(c.record)})).filter(c=>c.record.kind!=='transfer'),cursor:page.length?String(page.at(-1)!.seq):cursor,has_more:all.length>limit,transfers:await transfers(env,owner.id),shelf_storage:await shelfStorage(env,owner.id)});
   }
   if(method==='POST'&&path==='/v1/sync/intake'){
     const input=await body(request,['items']);
@@ -505,7 +524,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
         if(previous.account_id!==owner.id)fail(404,'NOT_FOUND','Upload not found');
         if(Object.entries(spec).some(([key,value])=>previous[key]!==value))fail(409,'UPLOAD_CONFLICT','Upload identifier already belongs to different content');
         if(previous.state==='garbage'||(previous.state!=='committed'&&previous.expires_at<Date.now()))fail(409,'UPLOAD_EXPIRED','Upload was cancelled or expired');
-        return json({upload_id:uploadId,chunk_size:previous.chunk_size,part_count:previous.part_count,expires_at:iso(previous.expires_at)},201);
+        return json({upload_id:uploadId,chunk_size:previous.chunk_size,part_count:previous.part_count,expires_at:iso(previous.expires_at),shelf_storage:await shelfStorage(env,owner.id)},201);
       }
       const receipt=await first(env,'SELECT * FROM instant_receipts WHERE upload_id=?',uploadId);
       if(!receipt)return null;
@@ -514,7 +533,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
       const current=await item(env,owner.id,id);
       if(current&&!current.deleted&&current.version===receipt.result_version&&current.active_upload===receipt.source_upload
           &&current.sha256===hash&&current.size===size&&current.kind===kind&&current.name===name&&current.mime_type===mime)
-        return json({instant:true,record:record(current)},201);
+        return json({instant:true,record:record(current),shelf_storage:await shelfStorage(env,owner.id)},201);
       await conflict(env,owner,id);
     };
     if(suppliedId){const response=await reuse();if(response)return response;}
@@ -523,13 +542,13 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
       if(base===0&&await item(env,owner.id,id))await conflict(env,owner,id);
       // Reuse only content already committed and still referenced by a live
       // item in this account. A checksum alone never crosses account bounds.
-      const source=await first(env,"SELECT u.id FROM uploads u WHERE u.account_id=? AND u.state='committed' AND u.computed_sha256=u.sha256 AND u.sha256=? AND u.size=? AND (EXISTS(SELECT 1 FROM items i WHERE i.account_id=? AND i.active_upload=u.id AND i.deleted=0) OR EXISTS(SELECT 1 FROM clipboard_upload_refs p WHERE p.account_id=u.account_id AND p.upload_id=u.id AND p.expires_at>?)) LIMIT 1",owner.id,hash,size,owner.id,Date.now());
+      const source=await first(env,"SELECT u.id FROM uploads u WHERE u.account_id=? AND u.state='committed' AND u.computed_sha256=u.sha256 AND u.sha256=? AND u.size=? AND (EXISTS(SELECT 1 FROM items i WHERE i.account_id=? AND i.active_upload=u.id AND i.deleted=0 AND (i.expires_at IS NULL OR i.expires_at>unixepoch()*1000)) OR EXISTS(SELECT 1 FROM clipboard_upload_refs p WHERE p.account_id=u.account_id AND p.upload_id=u.id AND p.expires_at>?)) LIMIT 1",owner.id,hash,size,owner.id,Date.now());
       if(source){
         const now=Date.now();
         const previous=await item(env,owner.id,id);
         const result=await env.DB.batch([
-          query(env,"INSERT OR IGNORE INTO instant_receipts(upload_id,account_id,item_id,base_version,kind,name,mime_type,size,sha256,source_upload,result_version,expires_at) SELECT ?,?,?,?,?,?,?,?,?,u.id,?,? FROM uploads u WHERE u.id=? AND u.account_id=? AND u.state='committed' AND u.computed_sha256=u.sha256 AND u.sha256=? AND u.size=? AND (EXISTS(SELECT 1 FROM items i WHERE i.account_id=? AND i.active_upload=u.id AND i.deleted=0) OR EXISTS(SELECT 1 FROM clipboard_upload_refs p WHERE p.account_id=u.account_id AND p.upload_id=u.id AND p.expires_at>unixepoch()*1000)) AND COALESCE((SELECT version FROM items WHERE account_id=? AND id=?),0)=? AND NOT EXISTS(SELECT 1 FROM uploads WHERE id=?)",uploadId,owner.id,id,base,kind,name,mime,size,hash,base+1,now+7*DAY,source.id,owner.id,hash,size,owner.id,owner.id,id,base,uploadId),
-          query(env,"INSERT INTO items(account_id,id,version,active_upload,kind,name,mime_type,size,sha256,updated_at,expires_at) SELECT r.account_id,r.item_id,r.result_version,r.source_upload,r.kind,r.name,r.mime_type,r.size,r.sha256,?,?+CASE WHEN r.size>=104857600 THEN 7200000 ELSE 86400000 END FROM instant_receipts r WHERE r.upload_id=? AND r.account_id=? ON CONFLICT(account_id,id) DO UPDATE SET version=excluded.version,deleted=0,active_upload=excluded.active_upload,kind=excluded.kind,name=excluded.name,mime_type=excluded.mime_type,size=excluded.size,sha256=excluded.sha256,updated_at=excluded.updated_at,expires_at=excluded.expires_at WHERE items.version=excluded.version-1",now,now,uploadId,owner.id),
+          query(env,"INSERT OR IGNORE INTO instant_receipts(upload_id,account_id,item_id,base_version,kind,name,mime_type,size,sha256,source_upload,result_version,expires_at) SELECT ?,?,?,?,?,?,?,?,?,u.id,?,? FROM uploads u WHERE u.id=? AND u.account_id=? AND u.state='committed' AND u.computed_sha256=u.sha256 AND u.sha256=? AND u.size=? AND (EXISTS(SELECT 1 FROM items i WHERE i.account_id=? AND i.active_upload=u.id AND i.deleted=0 AND (i.expires_at IS NULL OR i.expires_at>unixepoch()*1000)) OR EXISTS(SELECT 1 FROM clipboard_upload_refs p WHERE p.account_id=u.account_id AND p.upload_id=u.id AND p.expires_at>unixepoch()*1000)) AND COALESCE((SELECT version FROM items WHERE account_id=? AND id=?),0)=? AND NOT EXISTS(SELECT 1 FROM uploads WHERE id=?)",uploadId,owner.id,id,base,kind,name,mime,size,hash,base+1,now+7*DAY,source.id,owner.id,hash,size,owner.id,owner.id,id,base,uploadId),
+          query(env,"INSERT INTO items(account_id,id,version,active_upload,kind,name,mime_type,size,sha256,updated_at,expires_at) SELECT r.account_id,r.item_id,r.result_version,r.source_upload,r.kind,r.name,r.mime_type,r.size,r.sha256,?,CASE WHEN r.kind='transfer' THEN ?+CASE WHEN r.size>=104857600 THEN 7200000 ELSE 86400000 END ELSE ? END FROM instant_receipts r WHERE r.upload_id=? AND r.account_id=? ON CONFLICT(account_id,id) DO UPDATE SET version=excluded.version,deleted=0,active_upload=excluded.active_upload,kind=excluded.kind,name=excluded.name,mime_type=excluded.mime_type,size=excluded.size,sha256=excluded.sha256,updated_at=excluded.updated_at,expires_at=excluded.expires_at WHERE items.version=excluded.version-1",now,now,shelfResetAt(now),uploadId,owner.id),
         ]);
         if(result[0].meta.changes){
           if(!result[1].meta.changes)fail(409,'VERSION_CONFLICT','Item changed before instant reuse');
@@ -537,7 +556,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
           if(kind!=='transfer')announce(env,ctx,owner,'content');
           if(previous?.active_upload&&previous.active_upload!==source.id)
             ctx.waitUntil(purgeUpload(env,previous.active_upload).catch(()=>undefined));
-          return json({instant:true,record:record(current)},201);
+          return json({instant:true,record:record(current),shelf_storage:await shelfStorage(env,owner.id)},201);
         }
         if(suppliedId){const response=await reuse();if(response)return response;}
         const current=await item(env,owner.id,id);
@@ -545,14 +564,14 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
       }
       if(input.reuse_only===true)fail(409,'REUSE_UNAVAILABLE','Shared file is not yet available or has expired');
       const count=await first(env,"SELECT COUNT(*) n FROM uploads WHERE account_id=? AND state IN ('pending','verifying')",owner.id);if(count!.n>=10)fail(429,'UPLOAD_LIMIT','Too many pending uploads');
-      const expires=Date.now()+3*DAY,chunk=uploadChunkSize(env,size,input.fast_upload===true,input.fast_multipart===true),partCount=Math.ceil(size/chunk);
+      const expires=kind==='transfer'?Date.now()+3*DAY:shelfResetAt(),chunk=uploadChunkSize(env,size,input.fast_upload===true,input.fast_multipart===true),partCount=Math.ceil(size/chunk);
       await env.DB.batch([
         query(env,'UPDATE limits SET bytes_limit=? WHERE id=1',config(env.GLOBAL_QUOTA_BYTES,8*1024**3)),
         query(env,'INSERT INTO allocations(id,account_id,size) VALUES(?,?,?)',uploadId,owner.id,size),
         query(env,'INSERT INTO uploads(id,account_id,item_id,base_version,kind,name,mime_type,size,sha256,chunk_size,part_count,state,expires_at,computed_sha256,device_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',uploadId,owner.id,id,base,kind,name,mime,size,hash,chunk,partCount,'pending',expires,size===0?sha(new Uint8Array()):null,owner.device_id),
       ]);
       if(kind!=='transfer')announce(env,ctx,owner,'content');
-      return json({upload_id:uploadId,chunk_size:chunk,part_count:partCount,expires_at:iso(expires)},201);
+      return json({upload_id:uploadId,chunk_size:chunk,part_count:partCount,expires_at:iso(expires),shelf_storage:await shelfStorage(env,owner.id)},201);
     }catch(error){
       // A concurrent retry may have won after the initial existence check.
       // D1 batch rollback keeps its allocation atomic with the upload row.
@@ -637,7 +656,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
           throw error;
         }
         const result=await env.DB.batch([
-          query(env,"UPDATE uploads SET hash_state=?,computed_sha256=?,verified_size=verified_size+?,next_part=next_part+1,expires_at=?,lease=NULL,lease_until=0 WHERE id=? AND state='pending' AND next_part=? AND lease=?",state,computed,expected,Date.now()+3*DAY,id,partIndex,writeLease),
+          query(env,"UPDATE uploads SET hash_state=?,computed_sha256=?,verified_size=verified_size+?,next_part=next_part+1,expires_at=?,lease=NULL,lease_until=0 WHERE id=? AND state='pending' AND next_part=? AND lease=?",state,computed,expected,value.kind==='transfer'?Date.now()+3*DAY:value.expires_at,id,partIndex,writeLease),
           query(env,'UPDATE parts SET ready=1 WHERE upload_id=? AND idx=? AND EXISTS(SELECT 1 FROM uploads WHERE id=? AND next_part>?)',id,partIndex,id,partIndex),
         ]);
         released=!!result[0].meta.changes;
@@ -691,7 +710,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
     // or the other device's change hint. Readers hold leases during cleanup.
     if(previous?.active_upload&&previous.active_upload!==id)
       ctx.waitUntil(purgeUpload(env,previous.active_upload).catch(()=>undefined));
-    return json({record:record((await item(env,owner.id,value.item_id))!),server_full_sha256_verified:!clientVerifiedFullHash});
+    return json({record:record((await item(env,owner.id,value.item_id))!),server_full_sha256_verified:!clientVerifiedFullHash,shelf_storage:await shelfStorage(env,owner.id)});
   }
   match=path.match(/^\/v1\/uploads\/([^/]+)$/);
   if(method==='GET'&&match){
@@ -719,7 +738,19 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
     }
     // The upload is already hidden by its garbage state. Let peers remove
     // their pending placeholder while R2 deletion completes.
-    if(existing?.kind!=='transfer')announce(env,ctx,owner,'content');await purgeUpload(env,id);return json({cancelled:true});
+    if(existing?.kind!=='transfer')announce(env,ctx,owner,'content');await purgeUpload(env,id);return json({cancelled:true,shelf_storage:await shelfStorage(env,owner.id)});
+  }
+  match=path.match(/^\/v1\/items\/([^/]+)\/cloud-copy$/);
+  if(method==='DELETE'&&match){
+    const input=await body(request,['base_version']),id=uuid(match[1]),base=integer(input.base_version,'base_version',1),now=Date.now();
+    const current=await item(env,owner.id,id);
+    if(current?.deleted&&current.expires_at&&current.version===base+1)
+      return json({record:record(current),shelf_storage:await shelfStorage(env,owner.id)});
+    const result=await query(env,'UPDATE items SET deleted=1,version=version+1,active_upload=NULL,size=0,sha256=NULL,expires_at=?,updated_at=? WHERE account_id=? AND id=? AND version=? AND deleted=0 AND kind<>?',now,now,owner.id,id,base,'transfer').run();
+    if(!result.meta.changes)await conflict(env,owner,id);
+    announce(env,ctx,owner,'content');
+    if(current?.active_upload)await purgeUpload(env,current.active_upload);
+    return json({record:record((await item(env,owner.id,id))!),shelf_storage:await shelfStorage(env,owner.id)});
   }
   match=path.match(/^\/v1\/items\/([^/]+)$/);
   if(method==='DELETE'&&match){
@@ -729,7 +760,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
     if(!result.meta.changes)await conflict(env,owner,id);
     if(current?.kind!=='transfer')announce(env,ctx,owner,'content');
     if(current?.active_upload)await purgeUpload(env,current.active_upload);
-    return json({record:record((await item(env,owner.id,id))!)});
+    return json({record:record((await item(env,owner.id,id))!),shelf_storage:await shelfStorage(env,owner.id)});
   }
   match=path.match(/^\/v1\/items\/([^/]+)\/metadata$/);
   if(method==='GET'&&match){
@@ -840,6 +871,7 @@ const application={
     }catch(error){
       if(error instanceof APIError)return json({error:{code:error.code,message:error.message,...error.details}},error.status);
       const message=String(error);if(message.includes('CONTENT_RETIRED'))return json({error:{code:'VERSION_CONFLICT',message:'This content version is being retired; refresh metadata'}},409);
+      if(message.includes('SHELF_QUOTA'))return json({error:{code:'SHELF_QUOTA',message:'Cloud shelf capacity is insufficient'}},413);
       if(message.includes('ACCOUNT_QUOTA')||message.includes('GLOBAL_QUOTA'))return json({error:{code:message.includes('ACCOUNT_QUOTA')?'ACCOUNT_QUOTA':'GLOBAL_QUOTA',message:'Storage quota exceeded; pending uploads also reserve space'}},413);
       if(message.includes('DEVICE_LIMIT')||message.includes('UPLOAD_LIMIT'))return json({error:{code:message.includes('DEVICE_LIMIT')?'DEVICE_LIMIT':'UPLOAD_LIMIT',message:'Too many active devices or pending uploads'}},409);
       if(message.includes('UPLOAD_CANCELLED'))return json({error:{code:'UPLOAD_CANCELLED',message:'Upload was cancelled; choose the item again to start a new transfer'}},410);

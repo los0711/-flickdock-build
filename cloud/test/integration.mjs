@@ -62,6 +62,7 @@ async function reserve(token,itemId,data,baseVersion=0,overrides={}){return requ
 async function part(token,upload,index,data,expected=200,customHash=hash(data)){
   const response=await localFetch(base+`/v1/uploads/${upload}/parts/${index}`,{method:'PUT',headers:{Authorization:'Bearer '+token,'X-Content-SHA256':customHash},body:data});const value=await response.json();assert.equal(response.status,expected,JSON.stringify(value));return value;
 }
+function uploadContract(value){const {shelf_storage,...contract}=value;return contract;}
 async function check(name,fn){await fn();checks.push({name,ok:true});console.log('PASS',name);}
 try{
   cli(['d1','migrations','apply','DB','--local','--persist-to',state]);
@@ -85,6 +86,41 @@ try{
     assert.equal((await request('GET','/v1/devices',undefined,alice.token)).devices.length,2);
     assert.ok(!sql('SELECT token_hash FROM sessions').includes(alice.token));
     await request('POST','/v1/auth/login',{...credentials('alice'),password:'wrong testing password'},undefined,401);
+  });
+  await check('cloud shelf quota atomically reserves across two devices and excludes manual jobs',async()=>{
+    const account=initOwner;
+    const initial=await request('GET','/v1/sync/storage',undefined,account.token);
+    assert.equal(initial.shelf_storage.used_bytes,0);assert.equal(initial.shelf_storage.quota_bytes,1024**3);
+    assert.equal(new Date(initial.shelf_storage.reset_at).getUTCHours(),16);
+    const spec=()=>({item_id:randomUUID(),base_version:0,kind:'file',name:'reservation.bin',mime_type:'application/octet-stream',size:600*1024**2,sha256:hash('quota metadata fixture')});
+    const replies=await Promise.all([spec(),spec()].map(async data=>{
+      const response=await localFetch(base+'/v1/uploads',{method:'POST',headers:{Authorization:'Bearer '+account.token,'Content-Type':'application/json'},body:JSON.stringify(data)});
+      return {status:response.status,value:await response.json()};
+    }));
+    assert.deepEqual(replies.map(row=>row.status).sort(),[201,413]);
+    assert.equal(replies.find(row=>row.status===413).value.error.code,'SHELF_QUOTA');
+    assert.equal((await request('GET','/v1/sync/storage',undefined,account.token)).shelf_storage.used_bytes,600*1024**2);
+    const manual=await request('POST','/v1/uploads',{...spec(),kind:'transfer'},account.token,201);
+    assert.equal((await request('GET','/v1/sync/storage',undefined,account.token)).shelf_storage.used_bytes,600*1024**2);
+    for(const id of [manual.upload_id,replies.find(row=>row.status===201).value.upload_id])await request('DELETE','/v1/uploads/'+id,undefined,account.token);
+    assert.equal((await request('GET','/v1/sync/storage',undefined,account.token)).shelf_storage.used_bytes,0);
+    assert.equal(sqlRows(`SELECT COUNT(*) n FROM allocations WHERE account_id='${account.account.id}'`)[0].n,0,'Rejected reservations must roll back physical quota too');
+  });
+  await check('delete cloud copy keeps a retention tombstone and allows explicit re-upload with a newer version',async()=>{
+    const id=randomUUID(),data=Buffer.from('cloud copy removal keeps local files');
+    const upload=await reserve(alice.token,id,data);await part(alice.token,upload.upload_id,0,data);
+    await request('POST',`/v1/uploads/${upload.upload_id}/commit`,{},alice.token);
+    const deleted=await request('DELETE',`/v1/items/${id}/cloud-copy`,{base_version:1},alice.token);
+    assert.equal(deleted.record.deleted,true);assert.equal(deleted.record.version,2);assert.ok(deleted.record.expires_at);
+    const repeated=await request('DELETE',`/v1/items/${id}/cloud-copy`,{base_version:1},alice.token);
+    assert.equal(repeated.record.version,2);
+    const remote=await request('GET','/v1/sync/changes?cursor=0&limit=200',undefined,mac.token);
+    assert.ok(remote.changes.some(row=>row.record.id===id&&row.record.deleted&&row.record.expires_at));
+    const fresh=await reserve(alice.token,id,data,2);await part(alice.token,fresh.upload_id,0,data);
+    const committed=await request('POST',`/v1/uploads/${fresh.upload_id}/commit`,{},alice.token);
+    assert.equal(committed.record.version,3);assert.equal(committed.record.deleted,false);
+    await request('DELETE',`/v1/items/${id}/cloud-copy`,{base_version:1},alice.token,409);
+    await request('DELETE',`/v1/items/${id}`,{base_version:3},alice.token);
   });
   await check('peer receives real upload progress before a streamed R2 part completes',async()=>{
     const sender=await request('POST','/v1/auth/register',credentials('event-progress-fixture'),undefined,201),receiver=await request('POST','/v1/auth/login',credentials('event-progress-fixture'));
@@ -205,7 +241,7 @@ try{
     const first=await request('POST','/v1/uploads',spec,owner.token,201);
     // Discarding this reply represents a disconnect after D1 committed.
     assert.equal(first.upload_id,clientId);
-    const recovered=await request('POST','/v1/uploads',spec,owner.token,201);assert.deepEqual(recovered,first);
+    const recovered=await request('POST','/v1/uploads',spec,owner.token,201);assert.deepEqual(uploadContract(recovered),uploadContract(first));
     assert.equal(sqlRows(`SELECT COUNT(*) n FROM allocations WHERE id='${clientId}'`)[0].n,1);
     assert.equal(sqlRows(`SELECT allocated_bytes FROM accounts WHERE id='${owner.account.id}'`)[0].allocated_bytes,before+data.length);
     for(const change of [{item_id:randomUUID()},{base_version:1},{kind:'text'},{name:'other.png'},{mime_type:'application/octet-stream'},{size:data.length+1},{sha256:'0'.repeat(64)}]){
@@ -214,7 +250,7 @@ try{
     const foreign=await request('POST','/v1/uploads',spec,bob.token,404);assert.equal(foreign.error.code,'NOT_FOUND');assert.equal(foreign.error.current_record,undefined);
     await request('POST','/v1/uploads',{...spec,upload_id:'not-a-uuid'},owner.token,400);
     sql(`UPDATE uploads SET state='verifying',lease='fixture',lease_until=${Date.now()+60000} WHERE id='${clientId}'`);
-    assert.deepEqual(await request('POST','/v1/uploads',spec,owner.token,201),first);
+    assert.deepEqual(uploadContract(await request('POST','/v1/uploads',spec,owner.token,201)),uploadContract(first));
     sql(`UPDATE uploads SET state='pending',lease=NULL,lease_until=0 WHERE id='${clientId}'`);
     await part(owner.token,clientId,0,data);const committed=await request('POST',`/v1/uploads/${clientId}/commit`,{},owner.token);
     // The item's version advanced, but repeating the same initialization must
@@ -251,7 +287,7 @@ try{
     id=randomUUID();const data=Buffer.from('same account cross-platform content');
     const reserved=await reserve(alice.token,id,data);uploadId=reserved.upload_id;
     await request('POST',`/v1/uploads/${uploadId}/commit`,{},alice.token,409);
-    assert.deepEqual((await request('GET','/v1/sync/changes?cursor=0',undefined,mac.token)).changes,[]);
+    assert.ok(!(await request('GET','/v1/sync/changes?cursor=0',undefined,mac.token)).changes.some(row=>row.record.id===id));
     await part(alice.token,uploadId,0,data,400,'0'.repeat(64));
     await part(bob.token,uploadId,0,data,404);
     await part(alice.token,uploadId,0,data);
@@ -513,7 +549,7 @@ try{
     }
   });
   let expiringFixture;
-  await check('D1 committed-size fixtures: below 100 MiB retains 24 hours; 100 MiB and above retain 2 hours after commit (no large transfer)',async()=>{
+  await check('D1 committed-size fixtures: shelf copies expire at next Beijing midnight (no large transfer)',async()=>{
     for(const size of [104857599,104857600,524288001]){
       const newId=randomUUID(),data=Buffer.from('small actual object for metadata-only retention fixture '+size);
       const reserved=await reserve(alice.token,newId,data);await part(alice.token,reserved.upload_id,0,data);
@@ -524,7 +560,7 @@ try{
       const committed=await request('POST',`/v1/uploads/${reserved.upload_id}/commit`,{},alice.token);
       const stored=sqlRows(`SELECT updated_at,expires_at FROM items WHERE id='${newId}' AND account_id='${alice.account.id}'`)[0];
       assert.equal(committed.record.size,size);
-      assert.equal(stored.expires_at-stored.updated_at,size<104857600?86400000:7200000);
+      assert.equal(stored.expires_at,(Math.floor((stored.updated_at+8*3600000)/86400000)+1)*86400000-8*3600000);
       assert.equal(Date.parse(committed.record.expires_at),stored.expires_at);
       if(size<524288001){await request('DELETE',`/v1/items/${newId}`,{base_version:1},alice.token);}
       else{

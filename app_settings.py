@@ -1260,7 +1260,6 @@ class SettingsDialog(QDialog):
         self.sync_receive_checkbox = SettingsToggleSwitch("接收云端与其他设备内容", cloud)
         self.clipboard_sync_checkbox = SettingsToggleSwitch("剪贴板同步", cloud)
         self.clipboard_sync_checkbox.setAccessibleName('剪贴板同步')
-        self.clipboard_sync_checkbox.setToolTip('自动同步小于 20 MB 的文本、链接、图片或单个文件；同账号设备优先直连送达，云端独立备份。')
         self.clipboard_sync_checkbox.toggled.connect(self._clipboard_sync_changed)
         self.clipboard_success_checkbox=SettingsToggleSwitch('剪贴板复制提示',cloud)
         self.clipboard_success_checkbox.setToolTip('关闭后，同步成功和失败都不弹出复制提示。')
@@ -1559,9 +1558,6 @@ class SettingsDialog(QDialog):
                               (self.clipboard_sync_checkbox,'剪贴板同步（小于 20 MB）'),
                               (self.clipboard_success_checkbox,'剪贴板复制提示')):
             cl.addWidget(self._reference_toggle(control,label,cloud))
-        self.retention_description=QLabel('云端文件保存时间\n小于 100 MB：上传成功后保留 24 小时。\n100 MB 及以上：上传成功后保留 2 小时。\n从完整上传成功时计时；到期仅清理云端副本，本机原文件和已下载的文件不受影响。',cloud)
-        self.retention_description.setObjectName('settingsDetail');self.retention_description.setWordWrap(True)
-        self.retention_description.setTextFormat(Qt.PlainText);cl.addWidget(self.retention_description)
         sl=storage.layout();self._empty_layout(sl);sl.setContentsMargins(16,16,16,16);sl.setSpacing(12)
         storage_title=QLabel('文件与保存',storage);storage_title.setObjectName('settingsSection');sl.addWidget(storage_title)
         sl.addWidget(self._reference_segment(self.capture_mode_combo,('快捷方式','复制到保存位置')))
@@ -1800,10 +1796,6 @@ class SettingsDialog(QDialog):
         # Measure sections explicitly: Qt's nested HFW totalSizeHint uses an
         # ideal width and can compress an accordion or preserve a stale tail.
         # These are scroll-content heights, never native window dimensions.
-        description=getattr(self,'retention_description',None)
-        if description is not None and description.isVisible():
-            needed=description.heightForWidth(max(1,description.width()))
-            if needed>0 and description.minimumHeight()!=needed:description.setMinimumHeight(needed)
         layout=self.body_layout;margins=layout.contentsMargins();heights=[]
         for index in range(layout.count()):
             section=layout.itemAt(index).widget()

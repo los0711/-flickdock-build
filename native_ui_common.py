@@ -294,6 +294,9 @@ _SVG_BODY = {
     # Simple Icons CC0 apple.svg, identifying a discovered Mac.
     'apple': '<path fill="currentColor" stroke="none" d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/>',
     'cloud': '<path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>',
+    'computer': '<rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/>',
+    'cloud-upload': '<path d="M7 18H6a5 5 0 0 1-1-9.9A7 7 0 0 1 18 6a5 5 0 0 1 0 10h-1M12 21V11m-3 3 3-3 3 3"/>',
+    'cloud-remove': '<path d="M7 18H6a5 5 0 0 1-1-9.9A7 7 0 0 1 18 6a5 5 0 0 1 0 10h-1M9 15l6 6m0-6-6 6"/>',
     'pin': '<path d="M16 3l5 5-4 1-4 4 1 5-8-8 5 1 4-4 1-4z"/><path d="M9 15l-6 6"/>',
     'expand': '<path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>',
     'collapse': '<path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/>',
@@ -339,7 +342,7 @@ _SVG_BODY = {
 }
 _ALIASES = {'folder': 'file', 'upload': 'transferring',
             'wifi': 'nearby', 'lan': 'nearby', 'chevron-down': 'chevron',
-            'chevron-right': 'right', 'cloud-upload': 'cloud', 'cloud-off': 'cloud'}
+            'chevron-right': 'right', 'cloud-off': 'cloud'}
 
 
 _svg_renderers=threading.local()

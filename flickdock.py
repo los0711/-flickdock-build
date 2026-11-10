@@ -239,6 +239,8 @@ class DropZone(QFrame):
         self._style_caption(False);self._apply_style()
         from clipboard_preview import ClipboardButton
         self.clipboard_button=ClipboardButton(shelf.manager,self);self.clipboard_button.move(200,230)
+        from shelf_capacity import ShelfCapacityButton
+        self.capacity_button=ShelfCapacityButton(self);self.capacity_button.move(160,229)
 
     @property
     def paths(self):
@@ -440,6 +442,7 @@ class PreviewPane(QFrame):
 
     def refresh_cloud_status(self):
         visible = bool(self.current_path) and not getattr(self, '_group_refs', ())
+        self.cloud_badge.setVisible(visible);self.cloud_action.setVisible(visible)
         if visible:
             lookup=getattr(getattr(self,'popup',None),'cloud_status',None)
             status=lookup(self.current_path) if callable(lookup) else cloud_status_for_ref(self.shelf,self.current_path)
@@ -448,12 +451,28 @@ class PreviewPane(QFrame):
             token={'peer':'link','synced':'green','uploading':'link','pending':'link','local':'secondary','paused':'orange','error':'red'}.get(status,'secondary')
             css(self.status_value,*[f"color:{colors(theme)[token]};background:transparent;border:0;font:11px 'HarmonyOS Sans SC';" for theme in ('dark','light')])
             sync=getattr(self.shelf.manager,'sync',None)
+            self.cloud_badge.set_status(status)
+            synced=status=='synced'
+            self.cloud_action.set_glyph('cloud-remove' if synced else 'cloud-upload')
+            self.cloud_action.set_glyph_tint(colors(self.shelf.manager.settings.theme)['red'] if synced else '#0A84FF')
+            action='删除云端副本' if synced else '上传云端'
+            self.cloud_action.setAccessibleName(action);self.cloud_action.setToolTip(action)
+            busy=bool(sync and any(e.get('ref')==self.current_path and e['id'] in sync.cloud_copy_operations for e in (sync.state or {}).get('entries',{}).values()))
+            self.cloud_action.setEnabled(bool(sync and sync.service.signed_in and not busy and status not in ('uploading','pending') and not self.shelf.content.is_pending(self.current_path)))
             stamp=sync.upload_time_for_ref(self.current_path) if sync is not None else None
             if stamp:
                 from datetime import datetime
                 self.upload_time.setText('上传时间：'+datetime.fromisoformat(stamp).astimezone().strftime('%Y-%m-%d %H:%M'))
             else:self.upload_time.setText('上传时间：暂无记录' if status=='synced' else '未上传')
         else:self.status_value.clear();self.upload_time.clear()
+
+    def toggle_cloud_copy(self):
+        ref=self.current_path;sync=getattr(self.shelf.manager,'sync',None)
+        if not sync or ref not in self.shelf.files['permanent'] or self.shelf.content.is_pending(ref):return
+        if sync.sync_status_for_ref(ref)=='synced':sync.delete_cloud_copy(ref)
+        else:
+            self.shelf.manager.check_cloud_capacity_for_upload(ref,lambda:sync.retry_upload(ref))
+        self.refresh_cloud_status()
 
     def update_action_states(self):
         ref=self.current_path
@@ -1167,7 +1186,8 @@ class ContentsPopup(QFrame):
             removed={ref:w for ref,w in old_widgets.items() if ref not in refs}
             animate=bool(previous_signature and self.isVisible() and self.shelf.manager.motion
                          and previous_signature[1:4]==signature[1:4])
-            self.item_transitions.remove(removed.values(),enabled=animate)
+            present=set(self.shelf.display_refs())
+            self.item_transitions.remove(removed.values(),enabled=animate and all(ref in present for ref in removed))
             self._detach_rows_layout(self.rows_layout)
             self._item_widgets={ref:w for ref,w in old_widgets.items() if ref in refs and isinstance(w,row_type)}
             for ref,w in old_widgets.items():
@@ -1680,6 +1700,7 @@ class ShelfWindow(QWidget):
             x,y=242,230
             zone.caption.move(x,y);zone.count_arrow.move(x+49,y+10)
             zone.clipboard_button.move(x-42,y);zone.clipboard_button.setVisible(not expanded)
+            zone.capacity_button.move(x-78,y);zone.capacity_button.setVisible(not expanded)
             zone.hint.move(40,188)
 
     def show_cloud_menu(self):
@@ -2033,8 +2054,19 @@ class ShelfWindow(QWidget):
 
     def display_refs(self):
         identities={self.content.metadata.get(ref,{}).get('_cloud_item_id') for ref in self.files['permanent']}
-        return list(self.files['permanent'])+[ref for ref in self.content.pending
+        refs=list(self.files['permanent'])+[ref for ref in self.content.pending
             if ref.removeprefix('flickdock:transfer:') not in identities]
+        by_identity={};aliases={}
+        for ref in refs:
+            identity=(ref.removeprefix('flickdock:transfer:') if self.content.is_pending(ref)
+                      else self.content.metadata.get(ref,{}).get('_cloud_item_id'))
+            key=('cloud',identity) if identity else ('local',ref)
+            by_identity[key]=ref;aliases[('local',ref)]=key
+        order=list(dict.fromkeys(aliases.get(key,key) for key in getattr(self,'_display_order',())
+                                 if aliases.get(key,key) in by_identity))
+        known=set(order);order.extend(key for key in by_identity if key not in known)
+        self._display_order=order
+        return [by_identity[key] for key in order]
 
     def _repaint_transfers(self):
         if not self.content.transfers:self._transfer_timer.stop()
@@ -2180,16 +2212,11 @@ class ShelfWindow(QWidget):
                 if not self.popup._size_sort_timer.isActive():self.popup._size_sort_timer.start(32)
 
     def add_paths(self, mode, refs, *, defer_cloud=False):
-        from shelf_intake_limit import MAX_SHELF_BYTES
-        import stat
-        rejected=[]
         for ref in refs:
             info=None
             if not self.content.is_text(ref):
                 try:
                     info=Path(ref).stat()
-                    if stat.S_ISREG(info.st_mode) and info.st_size>MAX_SHELF_BYTES:
-                        rejected.append(ref);continue
                 except OSError:pass
             value = ref if self.content.is_text(ref) else str(Path(ref).resolve())
             if self.content.exists(value):
@@ -2204,32 +2231,27 @@ class ShelfWindow(QWidget):
         else:
             self.manager.save()
         self.manager.update_handles()
-        if rejected:getattr(self.manager,'show_oversize_notice',lambda paths:None)(rejected)
 
-    def import_paths(self,mode,refs,on_committed=None,on_failed=None,*,_checked=False,force_copy=False):
-        """Apply the intake policy only to external file imports, never ZIPs."""
+    def import_paths(self,mode,refs,on_committed=None,on_failed=None,*,_checked=False,force_copy=False,_capacity_warning=False):
+        """Cloud capacity never prevents keeping a file on the local shelf."""
         refs=list(refs)
-        if not _checked:
-            from shelf_intake_limit import classify
-            def checked(result,error):
-                if error:
-                    if on_failed:on_failed(str(error))
+        if not _checked and hasattr(self.manager,'check_cloud_capacity'):
+            epoch=self._copy_epoch
+            def checked(insufficient):
+                if self.manager._quitting:return
+                if insufficient is None or epoch!=self._copy_epoch:
+                    if on_failed:on_failed('搁架已切换，本次放入已取消。')
                     return
-                allowed,blocked=result
-                if blocked:getattr(self.manager,'show_oversize_notice',lambda paths:None)(blocked)
-                if allowed:self.import_paths(mode,allowed,on_committed,on_failed,_checked=True,force_copy=force_copy)
-                elif on_failed:on_failed('超过 1 GB，请使用远程传输。')
-            if any(not self.content.is_text(ref) and Path(ref).is_dir() for ref in refs):
-                epoch=self._copy_epoch;job=DiskWork(classify,refs);self._intake_limit_jobs=getattr(self,'_intake_limit_jobs',set());self._intake_limit_jobs.add(job)
-                def finished(result,error):
-                    self._intake_limit_jobs.discard(job)
-                    if epoch==self._copy_epoch and not self.manager._quitting:checked(result,error)
-                job.signals.done.connect(finished);QThreadPool.globalInstance().start(job);return
-            try:checked(classify(refs,__import__('threading').Event()),None)
-            except OSError as error:checked(None,error)
-            return
+                self.import_paths(mode,refs,on_committed,on_failed,_checked=True,force_copy=force_copy,_capacity_warning=insufficient)
+            self.manager.check_cloud_capacity(refs,checked);return
         def committed(paths):
             if on_committed:on_committed()
+            if _capacity_warning:
+                sync=getattr(self.manager,'sync',None)
+                if sync:
+                    for ref in paths:
+                        if sync.sync_status_for_ref(ref)!='synced':sync.cancel_upload(ref)
+                self.manager.show_cloud_capacity_notice(paths);return
             offer=getattr(self.manager,'offer_large_intake',None)
             if offer:offer(paths)
         if not force_copy and self.manager.settings.capture_mode!='copy':
@@ -2293,6 +2315,8 @@ class ShelfWindow(QWidget):
     def remove_path(self, mode: str, path: str, *, keep_local=False):
         transfer_state=self.content.transfers.get(path,{})
         downloading=self._receiving_transfer(transfer_state)
+        if path in self.files[mode]:self.files[mode].remove(path)
+        self.content.pending.pop(path,None)
         if downloading:self.manager.sync.cancel_download(transfer_state.get('id'),remove=True)
         if self.content.is_pending(path):
             if not downloading:self.cancel_transfer(path)
@@ -2314,8 +2338,6 @@ class ShelfWindow(QWidget):
             if related:
                 self._archive_epoch+=1;self.archive_job.cancel()
         self.resolver.cancel(path)
-        if path in self.files[mode]:
-            self.files[mode].remove(path)
         if not keep_local:self._delete_owned(path)
         self.refresh()
         self.touch()
@@ -2722,6 +2744,11 @@ class ShelfWindow(QWidget):
 
     def hover_region_contains(self,point):
         if not self.isVisible(): return False
+        dialog=getattr(self.manager,'clipboard_preview_dialog',None)
+        if dialog is not None and dialog.isVisible() and dialog.frameGeometry().contains(point):return True
+        capacities=[self.zones['permanent'].capacity_button]
+        if self.popup is not None:capacities.append(self.popup.capacity_button)
+        if any(button.popover.isVisible() and button.popover.frameGeometry().contains(point) for button in capacities):return True
         rect=self.visual_geometry()
         # Spring motion moves the visual bounds under a stationary pointer.
         # Keep the edge-to-shelf hover bridge tied to the settled target.
@@ -3294,6 +3321,8 @@ class ShelfManager:
         from sync_scheduler import SyncScheduler
         self.sync_scheduler=SyncScheduler(self.app,connected=False)
         self.sync = ShelfSync(BASE,self.account,ShelfAdapter(self),scheduler=self.sync_scheduler)
+        self.sync.capacity_exceeded.connect(self.show_cloud_capacity_notice)
+        for zone in self.shelf.zones.values():zone.capacity_button.bind_sync(self.sync)
         self.sync.metadata_changed.connect(lambda ref:self.shelf.popup.preview.refresh_cloud_status()
             if self.shelf.popup is not None and self.shelf.popup.preview.current_path==ref else None)
         self.sync.set_directions(self.settings.sync_upload_enabled,self.settings.sync_receive_enabled)
@@ -3795,12 +3824,46 @@ class ShelfManager:
         if index>=0:panel.devices.setCurrentIndex(index)
         if previous and previous is not panel:previous.queue_paths([],replace=True)
 
-    def show_oversize_notice(self,paths):
+    def show_cloud_capacity_notice(self,paths):
         if self._quitting or not paths:return
-        if not hasattr(self,'oversize_notice'):
-            from shelf_intake_limit import make_notice
-            self.oversize_notice=make_notice(self)
-        self.oversize_notice.show_paths(paths)
+        if not hasattr(self,'cloud_capacity_notice'):
+            from shelf_capacity import CloudCapacityNotice
+            self.cloud_capacity_notice=CloudCapacityNotice(self)
+        self.cloud_capacity_notice.show_paths(paths)
+
+    def check_cloud_capacity_for_upload(self,ref,callback):
+        def checked(insufficient):
+            if insufficient:self.show_cloud_capacity_notice([ref])
+            elif ref in self.shelf.files['permanent']:callback()
+        self.check_cloud_capacity([ref],checked,include_existing=True)
+
+    def check_cloud_capacity(self,paths,callback,*,include_existing=False):
+        if not self.account.signed_in or not self.settings.sync_upload_enabled:
+            callback(False);return
+        from shelf_capacity import intake_bytes
+        refs=[ref for ref in dict.fromkeys(paths) if include_existing or ref not in self.shelf.files['permanent']]
+        epoch=self.sync.epoch
+        if not refs:callback(False);return
+        job=DiskWork(intake_bytes,refs,dict(self.shelf.content.texts))
+        self._capacity_jobs=getattr(self,'_capacity_jobs',set());self._capacity_jobs.add(job)
+        def sized(size,error):
+            self._capacity_jobs.discard(job)
+            if self._quitting:return
+            if epoch!=self.sync.epoch:callback(None);return
+            if error:
+                self.sync.status_changed.emit('容量检查未完成：'+str(error));callback(False);return
+            def checked(storage,error):
+                if self._quitting or epoch!=self.sync.epoch:return
+                if error:self.sync.status_changed.emit('暂时无法读取云端容量，文件先保留在本机。')
+                callback(storage is not None and size>storage['remaining_bytes'])
+            if self.sync.storage is not None:checked(self.sync.storage,None)
+            else:
+                # An unavailable cloud must not hold a local drop hostage.
+                # Upload reservation still enforces the same quota atomically
+                # before any file body can be sent.
+                self.sync.refresh_storage(lambda value,error:None)
+                callback(False)
+        job.signals.done.connect(sized);QThreadPool.globalInstance().start(job,-1)
 
     def _remote_intake(self,paths):
         paths=[ref for ref in paths if ref in self.shelf.files['permanent']]
@@ -3821,7 +3884,7 @@ class ShelfManager:
             if not current:return
             if not hasattr(self,'remote_intake_notice'):
                 from shelf_intake_limit import make_notice
-                self.remote_intake_notice=make_notice(self,recommendation=True)
+                self.remote_intake_notice=make_notice(self)
             self.remote_intake_notice.show_paths(current)
         job.signals.done.connect(ready);QThreadPool.globalInstance().start(job,-1)
 
@@ -4094,6 +4157,12 @@ class ShelfManager:
                 or bool(self.lan_dialog and self.lan_dialog.isVisible()) or bool(self.wan_dialog and self.wan_dialog.isVisible())
                 or bool(self.video_dialog and self.video_dialog.isVisible()))
         now=time.monotonic(); pos=QCursor.pos()
+        # Cocoa may move a preallocated tool surface beneath a stationary
+        # pointer without delivering Enter/Move to its children. Reconcile on
+        # the existing native input tick, including while a drag is active.
+        for shelf in self.shelves:
+            if shelf.isVisible() and not shelf.expanded:
+                shelf.zones['permanent']._reconcile_card_hover()
         for edge in getattr(self,'edges',{}).values():
             if edge.values()['enabled'] and edge.display.geometry().contains(pos):self.edge=edge;break
         self.drop_bridge.sync(self.shelf,dragging=bool(mouse_buttons_mask()&1))
@@ -4118,7 +4187,9 @@ class ShelfManager:
             for shelf in self.shelves:
                 if (shelf.isVisible() and not shelf.pinned and not shelf.dragging
                         and not shelf.incoming_drop and not shelf._archive_choosing and not shelf.picker_hold_active(now)
-                        and not confirmation_active(shelf) and not self.outgoing_drag):
+                        and not confirmation_active(shelf) and not self.outgoing_drag
+                        and not (self.clipboard_preview_dialog is not None and self.clipboard_preview_dialog.isVisible()
+                                 and self.clipboard_preview_dialog.frameGeometry().contains(pos))):
                     shelf.hide_animated(explicit=True);retired=True
             if retired:self.update_handles()
         if self.edge.isVisible() and self.edge.activation_region().contains(pos) and not self.edge_suppressed and not self.shelf.isVisible(): self.show_docked()
@@ -4131,6 +4202,8 @@ class ShelfManager:
             in_settings=in_settings or bool(app_active and self.lan_dialog and self.lan_dialog.isVisible() and self.lan_dialog.frameGeometry().contains(pos))
             in_settings=in_settings or bool(app_active and self.wan_dialog and self.wan_dialog.isVisible() and self.wan_dialog.frameGeometry().contains(pos))
             in_settings=in_settings or bool(app_active and self.video_dialog and self.video_dialog.isVisible() and self.video_dialog.frameGeometry().contains(pos))
+            capacity_notice=getattr(self,'cloud_capacity_notice',None)
+            in_settings=in_settings or bool(capacity_notice and capacity_notice.isVisible() and capacity_notice.frameGeometry().contains(pos))
             inside=shelf.hover_region_contains(pos)
             if new_press and in_settings:shelf._release_reveal_level()
             if new_press and not inside and not in_settings and not press_blocked and not shelf.pinned and not self.outgoing_drag:
@@ -4182,7 +4255,8 @@ class ShelfManager:
         if hasattr(self,'clipboard_notice'):self.clipboard_notice.supersede()
         if hasattr(self,'remote_intake_notice'):self.remote_intake_notice.hide()
         for job in getattr(self,'_large_intake_jobs',()):job.cancel.set()
-        if hasattr(self,'oversize_notice'):self.oversize_notice.hide()
+        if hasattr(self,'cloud_capacity_notice'):self.cloud_capacity_notice.close()
+        for job in getattr(self,'_capacity_jobs',()):job.cancel.set()
         if getattr(self,'clipboard_preview_dialog',None) is not None:self.clipboard_preview_dialog.hide()
         if getattr(self,'mac_permissions_dialog',None) is not None:self.mac_permissions_dialog.hide()
         if hasattr(self,'clipboard_presenter'):self.clipboard_presenter.close()

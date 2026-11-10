@@ -20,8 +20,8 @@ const section = html.slice(html.indexOf('<section id="download"')).split('</sect
 const downloads = [...section.matchAll(/<a[^>]*href="([^"]+)"[^>]*data-installer="([^"]+)"[^>]*>([^<]+)<\/a>/g)];
 assert.equal(downloads.length, 3, 'bottom download area keeps exactly three platform links');
 const installers = Object.fromEntries(downloads.map(match => [match[2], { url: match[1], label: match[3] }]));
-assert.equal(installers.windows.url, 'https://gitee.com/rooogerluo/flick-dock-windows-releases/releases/download/v1.8.27/FlickDock-Setup-1.8.27.exe');
-assert.equal(installers['mac-arm'].url, 'https://gitee.com/rooogerluo/flick-dock-macos-releases-8/releases/download/v1.8.27/FlickDock-1.8.27-macOS-arm64.pkg');
+assert.equal(installers.windows.url, 'https://gitee.com/rooogerluo/flick-dock-windows-releases-2/releases/download/v1.8.28/FlickDock-Setup-1.8.28.exe');
+assert.equal(installers['mac-arm'].url, 'https://gitee.com/rooogerluo/flick-dock-macos-releases-8/releases/download/v1.8.28/FlickDock-1.8.28-macOS-arm64.pkg');
 assert.equal(installers['mac-intel'].url, 'https://gitee.com/rooogerluo/flick-dock-macos-releases-7/releases/download/v1.8.22/FlickDock-1.8.22-macOS-x86_64.pkg');
 assert(installers['mac-intel'].label.includes('已停止更新'));
 assert(!section.includes('data-ui-action="download-windows"') && !section.includes('data-ui-action="download-macos"'), 'remove only the duplicated bottom pair');

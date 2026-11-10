@@ -236,7 +236,7 @@ def main(arguments=None):
          'test_display_groups_v1821','test_transfer_layout_v1821','test_interaction_scope_v1821','test_shared_clipboard_files_v1821','test_download_ranges_v1821','test_remote_handoff_v1821','test_mac_permissions_v1821','test_shelf_live_v1821','test_release_notes_v1821','test_clipboard_fast_v1821','test_clipboard_preview_v1821','test_utility_windows_v1821','test_update_signatures_v1821','-v'], env=env)
     run([python,'test_update_resume_v1821.py','-v'],env=env)
     # Exercise the original direct TLS and native WebRTC file streams.
-    run([python,'-m','unittest','test_original_transfer','test_wan_transfer_v1816','test_utility_feedback_v1828','-v'],env=env)
+    run([python,'-m','unittest','test_original_transfer','test_wan_transfer_v1816','test_utility_feedback_v1828','test_manual_network_v1829','test_shelf_capacity_v1829','-v'],env=env)
     run([python,'-m','unittest','test_wan_signaling_v1818','-v'],env=env)
     run([python,'-m','unittest','test_cloud_failover_v1818','-v'],env=env)
     run([python,'-m','unittest','test_stream_upload_v1816','-v'],env=env)

@@ -14,16 +14,18 @@ def run(argv,load_font):
     local=origin.startswith('http://127.0.0.1:')
     if origin!=DEFAULT_CLOUD_URL and not local:raise ValueError('QA origin must be loopback')
     force_relay='--wan-force-relay' in argv
+    size_mib=int(argv[argv.index('--verify-mib')+1]) if '--verify-mib' in argv else 32
+    if not 1<=size_mib<=64:raise ValueError('Verification size must be 1–64 MiB')
     report=dict(ok=False,version=APP_VERSION,frozen=bool(getattr(sys,'frozen',False)),account_login=False,origin=origin,installer_executed=False,forced_relay_test=force_relay)
     with tempfile.TemporaryDirectory(prefix='flickdock-wan-original-') as temporary:
         root=Path(temporary);source=root/'原文件夹';(source/'空目录').mkdir(parents=True)
         block=os.urandom(1024*1024);original=source/'原始素材.bin'
         with original.open('wb') as stream:
-            for _ in range(32):stream.write(block)
+            for _ in range(size_mib):stream.write(block)
         with original.open('rb') as stream:expected=hashlib.file_digest(stream,'sha256').hexdigest()
         destination=root/'接收';destination.mkdir()
         services=[WanTransferService(root/str(index),device_name='FlickDock QA '+str(index),origin=origin,allow_test_origin=local,qa_force_relay=force_relay) for index in range(2)]
-        completed=[[],[]];offers=[];states=[];started=time.perf_counter();finished=False;identifier=''
+        completed=[[],[]];offers=[];states=[];started=time.perf_counter();finished=False;identifier='';payload_started=None
         def finish(error=''):
             nonlocal finished
             if finished:return
@@ -41,7 +43,11 @@ def run(argv,load_font):
         services[1].offer_received.connect(receive)
         for index,service in enumerate(services):
             service.completed.connect(lambda value,index=index:completed[index].append(value))
-            service.progress.connect(lambda value:states.append({key:value.get(key) for key in ('state','route','received','total')}))
+            def progress(value):
+                nonlocal payload_started
+                if value.get('state')=='transferring' and payload_started is None:payload_started=time.perf_counter()
+                states.append({key:value.get(key) for key in ('state','route','received','total')})
+            service.progress.connect(progress)
             service.status_changed.connect(lambda value:print(value,flush=True))
         def poll():
             nonlocal identifier
@@ -56,6 +62,9 @@ def run(argv,load_font):
                     assert routes and len(set(routes))==1,'Missing selected-candidate route'
                     if force_relay:assert routes[0]=='relay','Forced relay test did not use a TURN candidate'
                     report.update(verified_bytes=original.stat().st_size,sha256=expected,empty_folders_preserved=True,code_pairing=True,receiver_consent=True,recent_devices=True,route=routes[0],route_source='native-selected-candidate-pair')
+                    if payload_started is not None:
+                        seconds=time.perf_counter()-payload_started
+                        report.update(payload_seconds=seconds,payload_mib_per_second=original.stat().st_size/1024**2/max(.001,seconds))
                     finish()
                 for service in services:
                     for transfer in service._transfers.values():

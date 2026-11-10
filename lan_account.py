@@ -52,7 +52,7 @@ class LanAccountAuthorizer(QObject):
     def prepare(self,transfer,peer,entries):
         with self._lock:
             target=self._peers.get(peer['id']);identity=self._identity
-            if target is None:return
+            if target is None or not self._active():return
             waiting=dict(peer=target['id'],identity=identity,done=threading.Event(),error='',accepted=False,
                          payload=dict(type='lan-transfer',action='prepare',id=transfer.transfer_id,
                                       token=transfer.token,digest=manifest_digest(entries),fingerprint=peer['fingerprint']))
@@ -61,8 +61,10 @@ class LanAccountAuthorizer(QObject):
             self._prepare.emit(waiting);deadline=time.monotonic()+AUTHORIZATION_SECONDS
             while not waiting['done'].wait(.05):
                 if transfer.cancel.is_set() or self.lan._stopped.is_set():raise InterruptedError('已取消局域网传输。')
-                if time.monotonic()>=deadline:raise ConnectionError('同账号局域网接收授权超时，请检查对方连接。')
-            if not waiting['accepted']:raise ConnectionError(waiting['error'] or '同账号局域网接收授权失败。')
+                if time.monotonic()>=deadline:return
+            if waiting['identity']!=self._session():raise ConnectionError('账号已改变，局域网发送已取消。')
+            # No ticket grants no automatic consent. The original TLS offer
+            # still works and requires the receiving user's confirmation.
         finally:
             with self._lock:self._waiting.pop(transfer.transfer_id,None)
 
@@ -99,7 +101,7 @@ class LanAccountAuthorizer(QObject):
     def incoming(self,transfer):
         with self._lock:
             ticket=self._tickets.get(transfer.transfer_id)
-            if (ticket is None or not self._active() or ticket['identity']!=self._session()
+            if (ticket is None or ticket['identity']!=self._session()
                     or time.monotonic()-ticket['at']>=TICKET_LIFETIME_SECONDS
                     or not secrets.compare_digest(ticket['token'],transfer.token)
                     or not secrets.compare_digest(ticket['digest'],transfer.manifest_hash)):return None

@@ -12,6 +12,8 @@ const packet=()=>{const b=Buffer.alloc(23);b.writeUInt16BE(0x4001);b.writeUInt16
 class TLS extends EventEmitter{
   writableLength=0;writes=[];destroyed=false;
   setNoDelay(value){assert.equal(value,true);}
+  cork(){}
+  uncork(){}
   write(data){this.writes.push(Buffer.from(data));return true;}
   destroy(){if(!this.destroyed){this.destroyed=true;this.emit('close');}}
 }

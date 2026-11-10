@@ -22,15 +22,18 @@ app = QApplication.instance() or QApplication([])
 repo = ContentRepository()
 ref = repo.add_text('状态图标随真实上传阶段更新')
 class FakeSync:
-    state = 'pending'
+    phase = 'pending'
+    state={}
+    cloud_copy_operations=set()
+    service=SimpleNamespace(signed_in=True)
     def upload_time_for_ref(self,value):return None
     def sync_status_for_ref(self, value):
         assert value == ref
-        return self.state
+        return self.phase
 
 sync = FakeSync()
 shelf = SimpleNamespace(content=repo,
-    manager=SimpleNamespace(sync=sync, motion=False),
+    manager=SimpleNamespace(sync=sync, motion=False,settings=SimpleNamespace(theme='dark')),
     files={'permanent': [ref]},
     item_pixmap=repo.item_pixmap)
 popup = QFrame()
@@ -57,7 +60,7 @@ copy_button.setFixedSize(32, 32)
 assert badge.size() == copy_button.size(), 'status and copy actions share one header baseline'
 assert badge.grab().toImage().pixelColor(0, 16).alpha() == 0, 'status art stays centered inside its hit cell'
 for status in ('pending', 'uploading', 'synced', 'local', 'paused', 'error'):
-    sync.state = status
+    sync.phase = status
     icon.refresh_cloud_status()
     row.refresh_cloud_status()
     badge.set_status(status)
@@ -73,8 +76,8 @@ badge.set_status('uploading',dict(received=50,total=100,phase='uploading'))
 progress_artwork=hashlib.sha256(bytes(badge.grab().toImage().bits())).hexdigest()
 assert progress_artwork not in images, 'upload progress should arc around the same status mark'
 
-preview = SimpleNamespace(current_path=ref, _group_refs=(), status_value=QLabel(), upload_time=QLabel(), shelf=shelf)
-sync.state = 'synced'
+preview = SimpleNamespace(cloud_badge=CloudStatusBadge(file_presence=True),cloud_action=FeedbackButton('cloud-upload',motion=False),current_path=ref, _group_refs=(), status_value=QLabel(), upload_time=QLabel(), shelf=shelf)
+sync.phase = 'synced'
 PreviewPane.refresh_cloud_status(preview)
 assert preview.status_value.text() == CLOUD_STATUS_LABELS['synced']
 preview._group_refs = (ref, ref)

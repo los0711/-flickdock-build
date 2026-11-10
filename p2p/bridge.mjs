@@ -2,6 +2,7 @@
 import rtc from 'node-datachannel';
 import {randomBytes} from 'node:crypto';
 import {adaptTurnServers} from './turn_tls.mjs';
+import {selectStun} from './stun_route.mjs';
 const LEGACY_WINDOW=4*1024*1024, LEGACY_MESSAGE=32*1024;
 const WINDOW=16*1024*1024, MESSAGE=64*1024;
 rtc.initLogger('Fatal',()=>{});
@@ -68,7 +69,10 @@ function bind(dc) {
 async function control(value) {
   if(value.type==='init') {
     if(pc)throw new Error('Already initialized');
-    turnTransport=await adaptTurnServers(value.iceServers||[],()=>{event({type:'error',message:'中继连接中断，正在尝试恢复。'});stop();},value.preferTls!==false);
+    const selection=value.forceRelay?{servers:value.iceServers||[],selected:null}:await selectStun(value.iceServers||[],value.preferredStun);
+    if(closed)return;
+    if(selection.selected)event({type:'stun_selected',server:selection.selected});
+    turnTransport=await adaptTurnServers(selection.servers,()=>{event({type:'error',message:'中继连接中断，正在尝试恢复。'});stop();},value.preferTls!==false,value.relayProxy||null);
     if(closed){turnTransport.close();return;}
     event({type:'transport',relayTransport:turnTransport.relayTransport,tlsFallback:!!turnTransport.tlsFallback});
     pc=new rtc.PeerConnection('FlickDock',{iceServers:turnTransport.iceServers,maxMessageSize:131072,iceTransportPolicy:value.forceRelay?'relay':'all',enableIceTcp:true});
@@ -76,6 +80,7 @@ async function control(value) {
     // and enlarge the bounded credit/message window only for an agreeing peer.
     pc.onLocalDescription((sdp,type)=>event({type:'description',sdp:sdp.replace(/^a=x-flickdock-flow:[^\r\n]*\r?\n?/gm,'').trimEnd()+`\r\na=x-flickdock-flow:2 ${flowNonce} ${WINDOW} ${MESSAGE}\r\n`,descriptionType:type}));
     pc.onLocalCandidate((candidate,mid)=>event({type:'candidate',candidate,mid}));
+    pc.onGatheringStateChange(state=>event({type:'gathering',state}));
     pc.onStateChange(state=>{event({type:'state',state});if(state==='failed')stop();});
     pc.onDataChannel(bind);
     if(value.initiator)bind(pc.createDataChannel('flickdock-file-v1',{protocol:'flickdock-file-v1'}));
@@ -90,6 +95,7 @@ async function control(value) {
       }
     }
     pc.setRemoteDescription(value.sdp,value.descriptionType);
+    event({type:'remote_description'});
   }
   else if(value.type==='candidate')pc.addRemoteCandidate(value.candidate,value.mid);
   else if(value.type==='stats')stats();

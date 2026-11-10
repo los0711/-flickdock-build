@@ -76,21 +76,15 @@ class OrderingTests(unittest.TestCase):
         self.assertEqual(popup.visible_refs(),initial);self.assertIsNone(popup.sort_key)
         self.assertTrue(all(control.direction==0 for control in popup.sort_buttons.values()))
 
-    def test_shelf_limit_rejects_only_over_limit_and_directory_scan_precedes_import(self):
-        from shelf_intake_limit import MAX_SHELF_BYTES,classify
+    def test_cloud_limit_does_not_reject_local_files_or_directories(self):
+        from shelf_capacity import intake_bytes
         import threading
-        self.assertEqual(MAX_SHELF_BYTES,1024**3)
-        small=self.base/'at-limit.bin';small.write_bytes(b'12345678')
-        large=self.base/'over-limit.bin';large.write_bytes(b'123456789')
-        directory=self.base/'oversize-folder';directory.mkdir();(directory/'one').write_bytes(b'12345');(directory/'two').write_bytes(b'1234')
-        rejected=[];self.manager.show_oversize_notice=lambda paths:rejected.extend(paths)
-        with patch('shelf_intake_limit.MAX_SHELF_BYTES',8):
-            self.assertEqual(classify([str(small),str(large),str(directory)],threading.Event()),([str(small)],[str(large),str(directory)]))
-            self.shelf.import_paths('permanent',[str(small),str(large),str(directory)])
-            until(lambda:not getattr(self.shelf,'_intake_limit_jobs',set()))
-            self.assertIn(str(small),self.shelf.files['permanent'])
-            self.assertNotIn(str(large),self.shelf.files['permanent']);self.assertNotIn(str(directory),self.shelf.files['permanent'])
-        self.assertEqual(set(rejected),{str(large),str(directory)})
+        small=self.base/'small.bin';small.write_bytes(b'12345678')
+        large=self.base/'large.bin';large.write_bytes(b'123456789')
+        directory=self.base/'folder';directory.mkdir();(directory/'one').write_bytes(b'12345');(directory/'two').write_bytes(b'1234')
+        self.assertEqual(intake_bytes([str(small),str(large),str(directory)],{},threading.Event()),26)
+        self.shelf.import_paths('permanent',[str(small),str(large),str(directory)])
+        for path in (small,large,directory):self.assertIn(str(path),self.shelf.files['permanent'])
         self.assertEqual(large.read_bytes(),b'123456789');self.assertTrue((directory/'one').exists())
 
 
@@ -133,7 +127,7 @@ class UtilityPreferenceTests(unittest.TestCase):
                     self.assertFalse(view.isMaximized());self.assertEqual(view.size().toTuple(),default)
                     self.assertIsNone(surface.graphicsEffect())
                 self.assertFalse((Path(directory)/'window-sizes.json').exists())
-                self.assertIn('上传成功后保留 24 小时',settings.retention_description.text())
+                self.assertFalse(hasattr(settings,'retention_description'))
                 settings.clipboard_success_checkbox.setChecked(False)
                 self.assertFalse(SettingsStore(Path(directory)).clipboard_success_notice)
                 self.assertTrue(store.clipboard_sync_enabled)

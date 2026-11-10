@@ -1,6 +1,7 @@
 // RFC 8656 TURN framing over verified TLS. DTLS still encrypts peer file data.
 import dgram from 'node:dgram';
 import tls from 'node:tls';
+import {proxyTunnel} from './proxy_tunnel.mjs';
 
 const MAX_FRAME=65556,MAX_QUEUE=32*1024*1024,MAX_RECEIVE=2*1024*1024;
 export function udpToStream(packet){
@@ -34,15 +35,17 @@ export class TurnStreamDecoder{
   }
 }
 
-export async function tlsTurnTunnel(server,onError=()=>{}){
+export async function tlsTurnTunnel(server,onError=()=>{},proxy=null){
   if(server.hostname!=='turn.cloudflare.com'||server.relayType!=='TurnTls'||!Number.isInteger(server.port)||server.port<1||server.port>65535
       ||typeof server.username!=='string'||typeof server.password!=='string')throw Error('Invalid TURN TLS endpoint');
-  const socket=tls.connect({host:server.hostname,port:server.port,servername:server.hostname,rejectUnauthorized:true});
+  const tunnel=proxy?await proxyTunnel(proxy,server.port):null;
+  const socket=tls.connect({...tunnel?{socket:tunnel}:{host:server.hostname,port:server.port},servername:server.hostname,rejectUnauthorized:true});
   socket.setNoDelay(true);
-  let udp,peer,closed=false,ready=false,pendingUDP=0,rejectClosed;
+  let udp,peer,closed=false,ready=false,pendingUDP=0,rejectClosed,flush=null;
   const ended=new Promise((_,reject)=>{rejectClosed=reject;});
   const close=()=>{
     if(closed)return;closed=true;
+    if(flush!==null){clearImmediate(flush);flush=null;socket.uncork();}
     rejectClosed(Error('TURN TLS connection closed'));
     try{udp?.close();}catch{}
     socket.destroy();
@@ -76,6 +79,9 @@ export async function tlsTurnTunnel(server,onError=()=>{}){
       try{
         const frame=udpToStream(packet);peer=peer||{port:source.port};
         if(socket.writableLength+frame.length>MAX_QUEUE)throw Error('TURN send queue exceeded');
+        // Coalesce the current UDP burst into fewer TLS records/syscalls,
+        // while retaining the same bounded queue and TURN frame boundaries.
+        if(flush===null){socket.cork();flush=setImmediate(()=>{flush=null;if(!closed)socket.uncork();});}
         socket.write(frame);
       }catch{fail();}
     });
@@ -84,13 +90,13 @@ export async function tlsTurnTunnel(server,onError=()=>{}){
   }catch(error){close();throw error;}
 }
 
-export async function adaptTurnServers(servers,onError,preferTls=true){
+export async function adaptTurnServers(servers,onError,preferTls=true,proxy=null){
   const relays=servers.filter(row=>row&&typeof row==='object'&&row.relayType==='TurnTls').sort((a,b)=>(a.port===443?0:1)-(b.port===443?0:1));
   // Direct sessions contain STUN only: do not introduce any TLS connection.
   if(!relays.length)return {iceServers:servers,close:()=>{},relayTransport:servers.some(row=>row?.relayType==='TurnUdp')?'udp':'direct'};
   for(const relay of preferTls?relays:[]){
     try{
-      const tunnel=await tlsTurnTunnel(relay,onError);
+      const tunnel=await tlsTurnTunnel(relay,onError,proxy);
       return {iceServers:[...servers.filter(row=>typeof row==='string'&&row.startsWith('stun:')),tunnel.server],close:tunnel.close,relayTransport:'tls'};
     }catch{}
   }

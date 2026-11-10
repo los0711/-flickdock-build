@@ -28,6 +28,8 @@ APP.setQuitOnLastWindowClosed(False)
 subject.load_font(APP)
 
 
+from test_html_native_workspace import SyncView
+
 class TransferRateTests(unittest.TestCase):
     def test_remote_upload_is_waiting_not_a_first_local_download(self):
         from transfer_visuals import transfer_fraction
@@ -419,7 +421,7 @@ class TransferUITests(unittest.TestCase):
         path=str(self.file('状态预览.txt'))
         self.shelf.add_paths('permanent',[path])
         state={'value':'pending'}
-        self.manager.sync=SimpleNamespace(upload_time_for_ref=lambda _:None,
+        self.manager.sync=SyncView(upload_time_for_ref=lambda _:None,
             sync_status_for_ref=lambda ref:state['value'],
             sync_statuses_for_refs=lambda refs:{ref:state['value'] for ref in refs})
         popup=self.overview();popup.select_item(path)
@@ -433,7 +435,7 @@ class TransferUITests(unittest.TestCase):
     def test_manager_projects_remote_pending_enables_expand_and_routes_cancel_to_sync(self):
         self.manager._sync_transfer_refs=set()
         calls=[]
-        self.manager.sync=SimpleNamespace(upload_time_for_ref=lambda _:None,cancel_upload=lambda value,**options:calls.append((value,options)))
+        self.manager.sync=SyncView(upload_time_for_ref=lambda _:None,cancel_upload=lambda value,**options:calls.append((value,options)))
         self.assertTrue(self.shelf.expand_button.isEnabled(),'empty shelf should still open the overview')
         state=dict(id='remote-item',ref=None,name='另一台设备的文档.pdf',kind='file',remote=True,
                    phase='remote',received=300,total=1000,upload_id='remote-upload')

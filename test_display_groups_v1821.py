@@ -98,8 +98,8 @@ class DisplayTests(unittest.TestCase):
                             while ancestor is not view.body:
                                 self.assertTrue(ancestor.rect().contains(control.mapTo(ancestor,control.rect().bottomRight())))
                                 ancestor=ancestor.parentWidget()
-                    view.select_category('同步与剪贴板');flush();label=view.retention_description
-                    self.assertGreaterEqual(label.height(),label.heightForWidth(label.width()))
+                    view.select_category('同步与剪贴板');flush()
+                    self.assertFalse(hasattr(view,'retention_description'))
                     sections=[view.body_layout.itemAt(i).widget() for i in range(view.body_layout.count()) if view.body_layout.itemAt(i).widget().isVisible()]
                     last=sections[-1];self.assertLessEqual(view.body.height(),max(view.scroll.viewport().height(),last.geometry().bottom()+32))
                     for first,second in zip(sections,sections[1:]):self.assertLess(first.geometry().bottom(),second.geometry().top())
