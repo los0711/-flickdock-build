@@ -61,7 +61,7 @@ function bind(dc) {
   dc.onOpen(()=>{
     const pair=pc.getSelectedCandidatePair();
     if(traceIce){event({type:'ice_diagnostic',counts:iceCounts});rtc.initLogger('Fatal',()=>{});}
-    event({type:'open',route:selectedRoute(pair,localRelays,remoteRelays),maxMessageSize:dc.maxMessageSize()});wake();
+    event({type:'open',route:selectedRoute(pair,localRelays,remoteRelays),localType:pair.local.type,remoteType:pair.remote.type,maxMessageSize:dc.maxMessageSize()});wake();
     statsTimer=setInterval(stats,250);
   });
   dc.onClosed(()=>{event({type:'closed'});stop();});

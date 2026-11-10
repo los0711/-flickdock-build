@@ -59,7 +59,9 @@ class IceTrace:
         if kind in ('gathering','state','ice_state'):
             state=event.get('state')
             if state in ('new','connecting','connected','completed','disconnected','failed','closed','gathering','complete','checking'):item['state']=state
-        elif kind=='open':item['route']=event['route']
+        elif kind=='open':
+            item['route']=event['route']
+            item['candidate_types']=[kind for kind in (event.get('localType'),event.get('remoteType')) if kind in ('host','srflx','prflx','relay')]
         elif kind=='early_candidate':item['count']=event['count']
         elif kind=='stun_selected':item['server']='cloudflare' if event['server']=='stun:stun.cloudflare.com:3478' else 'google'
         elif kind=='ice_diagnostic':item['counts']={key:int(count) for key,count in event['counts'].items() if key in (
