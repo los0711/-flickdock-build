@@ -243,11 +243,6 @@ def main():
         session=json.loads((root/'session.json').read_bytes());account.api.token=session['token'];account.device_id=session['device_id'];account.account=session['account']
         ice_trace=IceTrace()
         if not cloud_only:
-            if os.environ.get('FD_QA_ICE_TRACE')=='1':
-                import wan_transfer
-                wan_transfer.DIRECT_CHECK_SECONDS=30
-                wan_transfer.DIRECT_TOTAL_SECONDS=40
-                report['diagnostic_direct_wait_seconds']=30
             phase='manual_prepare';wan=WanTransferService(root/'manual',device_name=account.device_name)
             wan._native.connect(ice_trace.native)
             wan.socket.textMessageReceived.connect(ice_trace.remote)
@@ -359,15 +354,17 @@ def main():
             assert source.is_file(),'Removing a shelf item deleted a local original'
             record('shelf_delete',sender,start,original_preserved=True)
             stage+=1;barrier(stage)
-        for sender in (() if cloud_only else ('a','b')):
+        manual_senders=() if cloud_only else ('a','b')*(3 if kernel_only else 1)
+        for manual_step,sender in enumerate(manual_senders):
             phase='manual_'+sender;started=time.perf_counter();error=None;received_bytes=0;identity=None;diagnostics=None
+            previous_tasks=set(wan._transfers)|set(wan._pending)
             try:
                 if side==sender:identity=wan.send(peer['wan_id'],[root/'manual-source.bin'])
                 direction='send' if side==sender else 'receive'
                 def completed():
-                    bad=next((row for row in manual_progress if row['direction']==direction and row['state']=='error'),None)
+                    bad=next((row for row in manual_progress if row['id'] not in previous_tasks and row['direction']==direction and row['state']=='error'),None)
                     if bad:raise RuntimeError('Manual application transfer failed')
-                    return next((row for row in manual_completed if row['direction']==direction),None)
+                    return next((row for row in manual_completed if row['id'] not in previous_tasks and row['direction']==direction),None)
                 until(lambda:bool(completed()),seconds=240);result=completed();identity=result['id']
                 if side!=sender:
                     received=Path(result['paths'][0]);expected=root/('expected-'+sender+'.bin')
@@ -383,7 +380,7 @@ def main():
             diagnostics={key:state[key] for key in ('local_candidates','remote_candidates','gathering','pc_state','ice_state') if key in state}
             file_verified=error is None
             direct_connected=selected_route=='direct'
-            report['checks'].append(dict(name='manual_application_original_webrtc',sender=sender,ok=file_verified and direct_connected,
+            report['checks'].append(dict(name='manual_application_original_webrtc',sender=sender,round=1+manual_step//2,ok=file_verified and direct_connected,
                 file_verified=file_verified,direct_connected=direct_connected,
                 local_role='sender' if side==sender else 'receiver',error_type=error,verified_bytes=received_bytes,
                 receiver_save_ack=side==sender and error is None,route=routes[-1] if routes else None,
@@ -399,7 +396,7 @@ def main():
             until(lambda:clipboard._seen!=before and clipboard._pending is None and clipboard.view.get('backed_up'))
         stage+=1;barrier(stage)
         call('POST','/v1/auth/logout',data={})
-        report['ok']=all(check['ok'] for check in report['checks']) and len(report['checks'])==(10 if cloud_only else 2 if kernel_only else 12)
+        report['ok']=all(check['ok'] for check in report['checks']) and len(report['checks'])==(10 if cloud_only else 6 if kernel_only else 12)
         report['phase']='completed';report_path.write_text(json.dumps(report,indent=2),encoding='utf8')
         print(json.dumps(dict(ok=report['ok'],side=side,checks=len(report['checks']))),flush=True)
         return 0 if report['ok'] else 1

@@ -20,6 +20,8 @@ SIGNALING_WAIT_SECONDS=30
 PROXY_CONFIG_CHECK_SECONDS=3
 DIRECT_CHECK_SECONDS=8
 DIRECT_TOTAL_SECONDS=20
+MAX_DIRECT_ATTEMPTS=2
+STUN_SERVERS=('stun:stun.cloudflare.com:3478','stun:stun.l.google.com:19302')
 STUN_CACHE_SECONDS=600
 RECEIVE_CODE=re.compile(r'(?=[23456789A-HJ-NP-Z]*[2-9])(?=[23456789A-HJ-NP-Z]*[A-HJ-NP-Z])[23456789A-HJ-NP-Z]{4}')
 
@@ -405,6 +407,9 @@ class WanTransferService(LanTransferService):
         generation=value['generation'];state['generation']=generation;state['ready'].clear();state.pop('error',None)
         state['requested']=True;state['retry_inflight']=False
         state['relay_allowed']=bool(value.get('relayAllowed'));state['connect_started']=time.monotonic()
+        if not value.get('relayAttempt'):
+            state.setdefault('direct_deadline',state['connect_started']+DIRECT_TOTAL_SECONDS)
+            state['direct_attempts']=state.get('direct_attempts',0)+1
         state['relay_requested']=False;state.pop('network_error',None)
         state['relay_transport']=''
         state['local_candidates']=state['remote_candidates']=state['early_candidates']=0
@@ -424,6 +429,9 @@ class WanTransferService(LanTransferService):
         bridge=WebRTCStream(lambda event:self._native.emit(dict(id=identifier,generation=generation,event=event)) if not self._closing else None,node=self.node)
         state['bridge']=bridge
         preferred=self._preferred_stun if time.monotonic()<self._stun_expires else None
+        if not value.get('relayAttempt') and state['direct_attempts']>1:
+            previous_stun=state.get('stun_selected',preferred)
+            preferred=STUN_SERVERS[1] if previous_stun==STUN_SERVERS[0] else STUN_SERVERS[0]
         bridge.control(dict(type='init',iceServers=urls,initiator=state['role']=='send',forceRelay=self._qa_force_relay,preferTls=not state.get('tls_failed',False),relayProxy=relay_proxy(self.socket.proxy()),preferredStun=preferred))
         if state['role']=='send':
             transfer=self._transfers.get(identifier)
@@ -434,16 +442,22 @@ class WanTransferService(LanTransferService):
         if self._closing:return
         state=self._pending.get(identifier)
         if state and state['generation']==generation and not state['bridge'].opened.is_set():
-            if not state.get('relay_allowed'):return
+            if not state.get('relay_allowed') or state.get('retry_inflight'):return
             now=time.monotonic();started=state['connect_started']
+            deadline=state.get('direct_deadline',started+DIRECT_TOTAL_SECONDS)
             checks=max(state.get('remote_description_at',now),state.get('gathered_at',started))
-            if not failed and now-started<DIRECT_TOTAL_SECONDS and now-checks<DIRECT_CHECK_SECONDS:
-                remaining=min(DIRECT_TOTAL_SECONDS-(now-started),DIRECT_CHECK_SECONDS-(now-checks))
+            if not failed and now<deadline and now-checks<DIRECT_CHECK_SECONDS:
+                remaining=min(deadline-now,DIRECT_CHECK_SECONDS-(now-checks))
                 QTimer.singleShot(max(1,round(remaining*1000)),lambda:self._relay_if_needed(identifier,generation));return
             if not failed and 'remote_description_at' not in state:
                 self._record_ice(state,'SIGNALING_MISSING')
                 state['error']='未能交换连接信息，请重试。';state['ready'].set();return
             self._record_ice(state,'DIRECT_FAILED' if failed else 'DIRECT_TIMEOUT')
+            # A STUN binding proves only the mapping to that server. Reuse the
+            # authenticated ICE-restart path once with a fresh socket and the
+            # other STUN service before spending relay bandwidth.
+            if state.get('direct_attempts',1)<MAX_DIRECT_ATTEMPTS and now+DIRECT_CHECK_SECONDS<deadline:
+                self._request_retry(identifier,state);return
             state['relay_allowed']=False
             state['relay_requested']=True
             self.status_changed.emit('直连暂未成功，正在尝试中继…')
@@ -474,9 +488,11 @@ class WanTransferService(LanTransferService):
         elif kind=='early_candidate':state['early_candidates']=event['count']
         elif kind=='remote_description':state.setdefault('remote_description_at',time.monotonic())
         elif kind=='stun_selected':
-            if event.get('server') in ('stun:stun.cloudflare.com:3478','stun:stun.l.google.com:19302'):
+            if event.get('server') in STUN_SERVERS:
+                state['stun_selected']=event['server']
                 self._preferred_stun=event['server'];self._stun_expires=time.monotonic()+STUN_CACHE_SECONDS
         elif kind=='open':
+            state['direct_attempts']=0;state.pop('direct_deadline',None)
             self._record_ice(state,'DIRECT_CONNECTED' if event['route']=='direct' else 'RELAY_CONNECTED')
             state['route']=event['route'];state['ready'].set()
             self._send_signal(dict(type='connected',id=identifier,generation=state['generation']))
