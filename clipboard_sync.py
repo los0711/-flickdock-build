@@ -701,10 +701,17 @@ class ClipboardSync(QObject):
     def _cloud_receive_valid(self,head,generation):
         if generation!=self._generation or not self._active() or head_version(head)<=self._applied_version:return False
         if self._known_cloud_head!=(head_version(head),head['id'],head['sha256']):return False
-        if self._local_fence is not None:
-            fence=self._copy_timestamp(self._local_fence)
-            if fence is None or head.get('copied_at',head.get('at',0))<=fence:return False
+        if self._local_fence is not None and not self._head_after_local_copy(head,self._local_fence):return False
         return True
+
+    def _head_after_local_copy(self,head,intent):
+        local=self._copy_timestamp(intent);remote=head.get('copied_at',head.get('at',0))
+        if local is None or type(remote) is not int:return False
+        if remote!=local:return remote>local
+        # Match the server's same-millisecond device ordering, while keeping
+        # this device's own in-flight publication behind its native-copy fence.
+        device=head.get('device')
+        return isinstance(device,str) and device>self.account.device_id
 
     def _accept_received(self,head,value,directory,*,valid,applied):
         from virtual_clipboard import remote_placeholder
@@ -876,14 +883,7 @@ class ClipboardSync(QObject):
                 if self._snapshot_available and signature(self._snapshot())==signature(self.view['value']):
                     self.deliveries.received(head,'cloud')
                 return
-            committed_at=head.get('copied_at',head.get('at',0)) if isinstance(head,dict) else 0
-            newer=False
-            if isinstance(head,dict) and head.get('ready') and type(committed_at) is int:
-                newer=committed_at>pending['intent']['at']
-                if committed_at==pending['intent']['at']:
-                    device=head.get('device');sequence=head.get('sequence')
-                    newer=(isinstance(device,str) and device>self.account.device_id if device!=self.account.device_id
-                           else type(sequence) is int and sequence>=pending['sequence'])
+            newer=bool(isinstance(head,dict) and head.get('ready') and self._head_after_local_copy(head,pending['intent']))
             if not held and self._pending is pending and not newer:
                 # Reservations replace upload order before they replace the
                 # committed body. The previous ready head proves no new copy.
@@ -1347,9 +1347,7 @@ class ClipboardSync(QObject):
                 self.deliveries.committed(head,result.get('delivery') if isinstance(result,dict) else None)
                 self._finish_refresh();return
             if type(head.get('version')) is int and head['version']<=self._applied_version:self._finish_refresh();return
-            if self._local_fence is not None:
-                fence=self._copy_timestamp(self._local_fence)
-                if fence is None or head.get('copied_at',head.get('at',0))<=fence:self._finish_refresh();return
+            if self._local_fence is not None and not self._head_after_local_copy(head,self._local_fence):self._finish_refresh();return
             if not head.get('ready'):
                 # Pending/failed/oversize copies never erase a usable native
                 # clipboard. Expiry is owned by the cache lease, not polling.

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from PySide6.QtCore import QObject,Signal,QMimeData,QTimer,QUrl
 from PySide6.QtGui import QImage,QColor
+from PySide6.QtTest import QTest
 from test_html_native_workspace import APP,until,flush
 from clipboard_sync import ClipboardSync,package,unpack,snapshot,MAX_BYTES,inline_text
 from cloud_api import CloudError
@@ -84,20 +85,20 @@ class Hub:
 
 
 class ClipboardTests(unittest.TestCase):
-    def _hold_conflicting_copy(self,*,old_head=False):
-        client=self.clients[0];request=client.api.request;rejected=[]
+    def _hold_conflicting_copy(self,*,old_head=False,index=0):
+        client=self.clients[index];request=client.api.request;rejected=[]
         def dispatch(method,path,callback,**options):
             if method=='POST' and path=='/v1/clipboard' and not rejected:
                 rejected.append(True)
                 if old_head:
                     item=inline_text(('text',dict(text='the previous committed copy',html='')))
                     self.hub.version+=1;self.hub.body=base64.b64decode(item['inline']['body'])
-                    self.hub.head=dict(id=str(uuid4()),device='1',version=self.hub.version,ready=True,kind='text',
+                    self.hub.head=dict(id=str(uuid4()),device=str(1-index),version=self.hub.version,ready=True,kind='text',
                         size=item['size'],sha256=item['sha256'],inline=item['inline']['body'],copied_at=options['data']['copied_at']-1)
                 QTimer.singleShot(0,lambda:callback(None,CloudError('reservation replaced',409,'CLIPBOARD_REPLACED')))
                 return object()
             return request(method,path,callback,**options)
-        client.api.request=dispatch;self.clips[0].text('keep this actual copy while the other commit is pending')
+        client.api.request=dispatch;self.clips[index].text('keep this actual copy while the other commit is pending')
         until(lambda:bool(rejected) and (client._pending is None or bool(client._pending.get('replacement_deadline'))))
         return client
 
@@ -118,6 +119,12 @@ class ClipboardTests(unittest.TestCase):
         self.assertIsNotNone(client._pending);self.assertEqual(client.view['phase'],'uploading')
         self.assertEqual(client.view['cloud_transfer']['phase'],'verifying')
         self.assertEqual(self.clips[0].mimeData().text(),'keep this actual copy while the other commit is pending')
+
+    def test_same_millisecond_lower_device_head_is_not_the_committed_winner(self):
+        client=self._hold_conflicting_copy(old_head=True,index=1);pending=client._pending
+        self.hub.head['copied_at']=pending['intent']['at'];client.request_refresh()
+        QTest.qWait(40);flush()
+        self.assertIs(client._pending,pending);self.assertEqual(client.view['cloud_transfer']['phase'],'verifying')
 
     def test_unconfirmed_replacement_stops_checks_and_an_actual_recopy_can_retry(self):
         client=self._hold_conflicting_copy();self.assertIsNotNone(client._pending)
@@ -155,7 +162,7 @@ class ClipboardTests(unittest.TestCase):
         self.assertEqual(received.read_bytes(),source.read_bytes())
         self.assertEqual(receiver.view['phase'],'synced')
 
-    def _replace_first_copy(self,remote_text):
+    def _replace_first_copy(self,remote_text,*,same_clock=False):
         client=self.clients[0];original=client.api.request;replaced=[]
         def request(method,path,callback,**options):
             if method=='POST' and path=='/v1/clipboard' and not replaced:
@@ -163,7 +170,7 @@ class ClipboardTests(unittest.TestCase):
                 self.hub.version+=1
                 self.hub.head=dict(id=str(uuid4()),device='1',version=self.hub.version,ready=True,
                     kind='text',size=item['size'],sha256=item['sha256'],inline=item['inline']['body'],
-                    copied_at=options['data']['copied_at']+1)
+                    copied_at=options['data']['copied_at']+(0 if same_clock else 1))
                 self.hub.body=base64.b64decode(item['inline']['body']);replaced.append(True)
                 QTimer.singleShot(0,lambda:callback(None,CloudError('replaced',409,'CLIPBOARD_REPLACED')))
                 return object()
@@ -188,6 +195,12 @@ class ClipboardTests(unittest.TestCase):
         until(lambda:self.clips[0].mimeData().text()=='newer remote contents' and client._pending is None)
         self.assertTrue(results);self.assertTrue(all(context['phase']=='superseded' for ok,context in results))
         self.assertFalse(client.retry.isActive());self.assertTrue(client.view['backed_up'])
+
+    def test_same_millisecond_winner_is_applied_using_the_server_device_order(self):
+        client=self._replace_first_copy('winning device contents',same_clock=True)
+        self.clips[0].text('local content from the lower device')
+        until(lambda:self.clips[0].mimeData().text()=='winning device contents' and client._pending is None)
+        self.assertEqual(client._seen,self.hub.head['id']);self.assertTrue(client.view['backed_up'])
 
     def test_same_text_with_remote_format_conversion_is_not_a_newer_copy(self):
         client=self._replace_first_copy('same text from a clipboard bridge');results=[];changes=[]
