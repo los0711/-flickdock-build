@@ -4,7 +4,7 @@ Copying local prose shows a translation invitation when Settings → 翻译 is e
 
 The flag toggles a scrollable eight-row chooser with 30 persisted targets (Simplified Chinese first, Traditional Chinese second); it opens at its start. Expanded content collapses on an outside click or two seconds after losing focus. Returning focus cancels the deadline; choosing a language counts as inside interaction. The existing native input tick covers clicks in other applications, without another global hook or timer loop. Copying never automatically calls the paid API. The right button starts translation, then copies the complete result. The middle button expands original and translated plain text upwards. New copies, target changes, disabling translation and shutdown fence stale results. Writing a translation does not recursively show another translation invitation.
 
-Completed translation capsules remain for five seconds. Opening the language chooser or expanded content pauses dismissal; returning to the capsule resumes a fresh five-second window. In-flight translation has no dismissal deadline. New invitations retain their existing eight-second window.
+Both new translation invitations and completed translation capsules remain for five seconds. Opening the language chooser or expanded content pauses dismissal; returning to the capsule resumes a fresh five-second window. In-flight translation has no dismissal deadline.
 
 ## Service and key
 

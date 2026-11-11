@@ -214,7 +214,7 @@ class TranslationInteractionTests(unittest.TestCase):
         self.notice.supersede();self.notice.deleteLater();APP.processEvents()
         self.motion.stop();self.temp.cleanup()
 
-    def test_completed_translation_uses_five_seconds_across_user_interactions(self):
+    def test_invitation_and_result_use_five_seconds_across_user_interactions(self):
         self.assertTrue(self.notice.timer.isActive())
         self.assertEqual(self.notice.timer.interval(),5000)
         self.controller.phase='loading';self.controller.busy=True;self.controller.result=''
@@ -229,7 +229,7 @@ class TranslationInteractionTests(unittest.TestCase):
         self.assertEqual(self.notice.timer.interval(),5000)
         self.notice.timer.timeout.emit();self.assertFalse(self.notice.isVisible())
         self.controller.result='';self.controller.phase='idle';self.notice.present()
-        self.assertEqual(self.notice.timer.interval(),8000)
+        self.assertEqual(self.notice.timer.interval(),5000)
 
     def test_short_chooser_scrolls_and_reopens_at_top_without_resetting_target(self):
         self.store.update(translation_target='fr')

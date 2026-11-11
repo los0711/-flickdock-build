@@ -12,8 +12,7 @@ import notice_cluster
 
 EXPANDED_HEIGHT_PX = 300
 EXPANDED_WIDTH_PX = 388
-INVITATION_DURATION_MS = 8000
-RESULT_DURATION_MS = 5000
+TRANSLATION_NOTICE_DURATION_MS = 5000
 HOST_HEIGHT_PX = EXPANDED_HEIGHT_PX + 20
 LANGUAGE_VISIBLE_ROWS = 8
 LANGUAGE_ROW_HEIGHT_PX = 32
@@ -90,7 +89,7 @@ class TranslationNotice(CapsuleNotice):
         self._start_idle_timeout()
 
     def _start_idle_timeout(self):
-        self.timer.start(RESULT_DURATION_MS if self.controller.result else INVITATION_DURATION_MS)
+        self.timer.start(TRANSLATION_NOTICE_DURATION_MS)
 
     def capsule_rect(self):
         height = min(self.height() - 4, self._shape.y())
