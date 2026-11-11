@@ -74,6 +74,9 @@ def _reflow_bottom_notices(manager,area,opening=None):
     for index,window in enumerate(notices):
         point=QPoint(round(left+offsets[index]) if horizontal else area.left()+(area.width()-window.width())//2,
             area.bottom()-window.height()-NOTICE_MARGIN_PX+1-(0 if horizontal else index*(PILL_HEIGHT_PX+NOTICE_PAIR_GAP_PX)))
+        if (window.isVisible() and motion_allowed() and window._position_motion.state()==window._position_motion.Running
+                and window._position_motion.endValue()==point):
+            continue
         window._position_motion.stop()
         window._position_motion.setDuration(NOTICE_SPLIT_MS if splitting else NOTICE_POSITION_MS)
         if window.isVisible() and motion_allowed() and window.pos()!=point:
@@ -148,7 +151,8 @@ class CapsuleNotice(QWidget):
         self.timer=QTimer(self);self.timer.setSingleShot(True);self.timer.timeout.connect(self._expire)
 
         self._notice_area=None
-        self._liquid_peer=None;self._liquid_children=WeakSet();self._liquid_target=None;self._liquid_mode=None
+        self._liquid_peer=None;self._liquid_children=WeakSet();self._liquid_target=None;self._liquid_mode=None;self._liquid_geometry=None
+        self._mask_path=None
         self._position_motion=DisplayAnimation(self);self._position_motion.setDuration(NOTICE_POSITION_MS)
         slide_curve=QEasingCurve(QEasingCurve.OutBack);slide_curve.setOvershoot(COPY_NOTICE_OVERSHOOT)
         self._position_motion.setEasingCurve(slide_curve);self._position_motion.valueChanged.connect(self.move)
@@ -172,7 +176,14 @@ class CapsuleNotice(QWidget):
         margin=MASK_ANTIALIAS_MARGIN_PX
         rect=self.capsule_rect().adjusted(-margin,-margin,margin,margin)
         path=QPainterPath();path.addRoundedRect(rect,rect.height()/2,rect.height()/2)
-        self.setMask(QRegion(notice_cluster.shape(self,path,mask=True).toFillPolygon().toPolygon()))
+        self._set_notice_mask(notice_cluster.shape(self,path,mask=True))
+
+    def _set_notice_mask(self,path):
+        # Recentring changes the native position, not its local hit region.
+        # Reinstalling an identical mask forces needless compositor work.
+        if self._mask_path is not None and self._mask_path==path:return
+        self._mask_path=QPainterPath(path)
+        self.setMask(QRegion(path.toFillPolygon().toPolygon(),Qt.WindingFill))
 
     def _animate_shape(self,width,height=PILL_HEIGHT_PX,*,closing=False):
         self._morph.stop();target=QPointF(width,height)

@@ -62,6 +62,23 @@ class PreviewTests(unittest.TestCase):
 
     overview=workspace.WorkspaceTests.overview
 
+    def test_link_glyph_is_shared_by_both_buttons_and_never_covered_by_stale_artwork(self):
+        popup=self.overview();small=self.shelf.zones['permanent'].clipboard_button
+        for text in ('https://example.invalid/path','www.example.com','example.com/path','mailto:hello@example.com'):
+            with self.subTest(text=text):
+                self.clip.text(text)
+                workspace.until(lambda:self.model.state.get('phase')=='synced' and self.model.state['value'][1]['text']==text)
+                stale=QImage(40,40,QImage.Format_RGB32);stale.fill(QColor('#ff0000'))
+                self.model.thumbnail=stale
+                for button in (small,popup.clipboard_button):
+                    button.refresh();self.assertEqual(button._glyph,'link')
+                    self.assertNotEqual(button.grab().toImage().pixelColor(16,16),QColor('#ff0000'))
+                self.assertEqual(self.clip.mimeData().text(),text)
+        sentence='A sentence with https://example.invalid inside it.'
+        self.clip.text(sentence)
+        workspace.until(lambda:self.model.state.get('phase')=='synced' and self.model.state['value'][1]['text']==sentence)
+        self.assertEqual(small._glyph,'text');self.assertEqual(popup.clipboard_button._glyph,'text')
+
     def test_both_buttons_preview_latest_text_and_never_copy_or_upload_again(self):
         self.clip.text('original 中文\nhttps://example.invalid')
         workspace.until(lambda:self.model.state.get('phase')=='synced')

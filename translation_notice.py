@@ -1,7 +1,7 @@
 """Translation capsule sharing the existing notice host and motion infrastructure."""
 from pathlib import Path
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QCursor, QIcon, QPainter, QPainterPath, QPixmap, QRegion, QTextDocument
+from PySide6.QtGui import QColor, QCursor, QIcon, QPainter, QPainterPath, QPixmap, QTextDocument
 from PySide6.QtWidgets import QApplication, QAbstractItemView, QFrame, QListWidget, QListWidgetItem, QMenu, QPlainTextEdit, QPushButton, QWidgetAction
 from PySide6.QtSvg import QSvgRenderer
 from intake_notice import CapsuleNotice, COMPACT_SIDE_PX, PILL_HEIGHT_PX
@@ -47,6 +47,8 @@ class TranslationNotice(CapsuleNotice):
         self.language_menu = None
         self._watching_content = False
         self._pointer_buttons = 0
+        self._pointer_inside = None
+        self._window_deactivated = False
         self.focus_timer = QTimer(self)
         self.focus_timer.setSingleShot(True)
         self.focus_timer.setInterval(FOCUS_COLLAPSE_DELAY_MS)
@@ -104,7 +106,10 @@ class TranslationNotice(CapsuleNotice):
             return
         path = QPainterPath()
         path.addRoundedRect(self.capsule_rect().adjusted(-2, -2, 2, 2), 24, 24)
-        self.setMask(QRegion(notice_cluster.shape(self,path,mask=True).toFillPolygon().toPolygon()))
+        self._set_notice_mask(notice_cluster.shape(self,path,mask=True))
+
+    def _shape_changed(self, value):
+        super()._shape_changed(value)
         self._layout_controls()
 
     def _layout_controls(self):
@@ -156,14 +161,19 @@ class TranslationNotice(CapsuleNotice):
         self._set_expanded(False)
 
     def _interaction_active(self):
+        if self._pointer_inside is False:
+            return False
         return (self.manager.app.applicationState() == Qt.ApplicationActive
-                and (self.isActiveWindow() or self.language_menu is not None and self.language_menu.isVisible()))
+                and (self.language_menu is not None and self.language_menu.isVisible()
+                     or not self._window_deactivated and (self._pointer_inside is True or self.isActiveWindow())))
 
     def _collapse_unfocused(self):
         if not self._interaction_active():self._collapse_content()
 
     def _stop_content_watch(self):
         self.focus_timer.stop()
+        self._pointer_inside = None
+        self._window_deactivated = False
         if self._watching_content:
             self.manager.app.removeEventFilter(self)
             self._watching_content = False
@@ -176,8 +186,12 @@ class TranslationNotice(CapsuleNotice):
     def reconcile_pointer(self, point, buttons):
         pressed = buttons & ~self._pointer_buttons
         self._pointer_buttons = buttons
-        if self.expanded and self.isVisible() and pressed and not self._contains_interaction(point):
-            self._collapse_content()
+        if self.expanded and self.isVisible():
+            self._pointer_inside = self._contains_interaction(point)
+            if pressed and not self._pointer_inside:
+                self._collapse_content()
+            else:
+                self._focus_changed()
 
     def _focus_changed(self, *_):
         if not self.expanded or not self.isVisible() or self._hiding:
@@ -200,9 +214,15 @@ class TranslationNotice(CapsuleNotice):
             if self.expanded and not self._contains_interaction(point):
                 self._collapse_content()
         elif watched is self and kind == QEvent.WindowDeactivate:
-            if self.expanded and not self.focus_timer.isActive() and not (self.language_menu is not None and self.language_menu.isVisible()):self.focus_timer.start()
+            # Native deactivation can arrive before Qt updates activeWindow.
+            # Retain that event until activation, rather than cancelling the
+            # deadline against stale Qt focus state at timeout.
+            if not (self.language_menu is not None and self.language_menu.isVisible()):
+                self._window_deactivated = True
+            self._focus_changed()
         elif watched is self and kind == QEvent.WindowActivate:
-            self.focus_timer.stop()
+            self._window_deactivated = False
+            self._focus_changed()
         return False
 
     def refresh(self):

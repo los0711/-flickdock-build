@@ -5,7 +5,7 @@ The circular-cap Bézier pattern follows Paper.js's MIT Meta Balls example
 """
 import math
 import weakref
-from PySide6.QtCore import QPoint, QPointF, QRectF
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
 from PySide6.QtGui import QPainterPath, QPainterPathStroker, QTransform
 from shiboken6 import isValid
 from ui_transitions import NOTICE_SPLIT_BRIDGE_END
@@ -33,6 +33,7 @@ def clear(window):
     if peer is not None and isValid(peer):peer._liquid_children.discard(window)
     window._liquid_peer=None
     window._liquid_mode=None
+    window._liquid_geometry=None
     for other in neighbors:other._clip_finished();other.update()
     window._clip_finished();window.update()
 
@@ -121,17 +122,18 @@ def shape(window,base,*,mask=False):
         strength=math.sin(math.pi*progress/end)
         own,peer=_bounds(window),_bounds(other)
         left,right=(own,peer) if own.center().x()<peer.center().x() else (peer,own)
-        bridge=_bridge(left,right,strength)
-        if mask and not bridge.isEmpty():
-            fringe=QPainterPathStroker();fringe.setWidth(2.)
-            bridge=bridge.united(fringe.createStroke(bridge))
-        # Each host paints its half, preserving alpha and native hit testing
-        # across overlapping fixed-size tool windows.
-        middle=(left.right()+right.left())/2
-        clip=QPainterPath();clip.addRect(QRectF(own.left()-MAX_JOIN_GAP_PX,own.top()-2,
-            own.width()+2*MAX_JOIN_GAP_PX,own.height()+4))
-        half=QPainterPath();half.addRect(QRectF(middle if own is right else own.left()-MAX_JOIN_GAP_PX,
-            own.top()-2,own.right()+MAX_JOIN_GAP_PX-middle if own is right else middle-own.left()+MAX_JOIN_GAP_PX,own.height()+4))
+        key=(left.getRect(),right.getRect(),progress,end)
+        cached=moving._liquid_geometry
+        if cached is None or cached[0]!=key:
+            bridge=_bridge(left,right,strength);hit=bridge
+            if not bridge.isEmpty():
+                fringe=QPainterPathStroker();fringe.setWidth(2.)
+                hit=bridge.united(fringe.createStroke(bridge))
+            cached=moving._liquid_geometry=(key,bridge,hit)
+        # Both hosts share the complete curve. Cutting it at a fractional
+        # midpoint creates independently antialiased edges and a visible seam.
+        # Their existing fixed native bounds clip painting automatically.
         transform=QTransform.fromTranslate(-window.x(),-window.y())
-        base=base.united(transform.map(bridge.intersected(clip).intersected(half)))
+        base.setFillRule(Qt.WindingFill)
+        base.addPath(transform.map(cached[2] if mask else cached[1]))
     return base

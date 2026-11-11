@@ -187,7 +187,15 @@ class UtilityFeedbackTests(unittest.TestCase):
                         card._position_motion.setCurrentTime(at)
                         if card is video:
                             card._morph.setCurrentTime(at);card._fade.setCurrentTime(min(at,card._fade.duration()))
-                    bridges.append(not notice_cluster.shape(video,QPainterPath()).isEmpty())
+                    bridge=notice_cluster.shape(video,QPainterPath())
+                    bridges.append(not bridge.isEmpty())
+                    if not bridge.isEmpty():
+                        left,right=sorted((visual(copy),visual(video)),key=lambda rect:rect.center().x())
+                        middle=QPointF((left.right()+right.left())/2,(left.center().y()+right.center().y())/2)
+                        for card in (copy,video):
+                            curve=notice_cluster.shape(card,QPainterPath())
+                            for offset in (-.75,.75):
+                                self.assertTrue(curve.contains(middle-QPointF(card.pos())+QPointF(offset,0)))
                     if at>=300:self.assertTrue(notice_cluster.shape(video,QPainterPath()).isEmpty())
                     self.assertEqual([card.size() for card in (copy,video)],sizes)
                 self.assertTrue(any(bridges),bridges)
@@ -195,7 +203,12 @@ class UtilityFeedbackTests(unittest.TestCase):
                 self.assertIsNone(video._liquid_peer)
                 copy.dismiss();self.assertIs(copy._liquid_peer(),video)
                 target=video._position_motion.endValue()
-                finish(video);finish(copy)
+                video._position_motion.setCurrentTime(180)
+                original_start=video._position_motion.startValue()
+                finish(copy)
+                self.assertEqual(video._position_motion.currentTime(),180)
+                self.assertEqual(video._position_motion.startValue(),original_start)
+                finish(video)
                 self.assertEqual(video.pos(),target)
                 self.assertEqual(video._position_motion.state(),video._position_motion.Stopped)
                 self.assertAlmostEqual(visual(video).center().x(),area.center().x(),delta=1)

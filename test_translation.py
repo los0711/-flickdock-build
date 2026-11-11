@@ -313,4 +313,25 @@ class TranslationInteractionTests(unittest.TestCase):
         self.notice.supersede()
         self.assertFalse(self.notice._watching_content);self.assertFalse(self.notice.focus_timer.isActive())
 
+    def test_native_deactivation_collapses_even_when_qt_active_window_is_stale(self):
+        self.notice.toggle_content();APP.processEvents()
+        with patch.object(APP,'applicationState',return_value=Qt.ApplicationActive),patch.object(self.notice,'isActiveWindow',return_value=True):
+            self.notice._focus_changed();self.assertFalse(self.notice.focus_timer.isActive())
+            APP.sendEvent(self.notice,QEvent(QEvent.WindowDeactivate))
+            self.assertTrue(self.notice.focus_timer.isActive())
+            QTest.qWait(2150);self.assertFalse(self.notice.expanded)
+
+    def test_pointer_leave_counts_down_without_a_click_and_reentry_cancels_it(self):
+        self.notice.toggle_content();APP.processEvents()
+        inside=self.notice.mapToGlobal(self.notice.capsule_rect().center().toPoint())
+        outside=self.notice.geometry().topLeft()-QPoint(20,20)
+        with patch.object(APP,'applicationState',return_value=Qt.ApplicationActive),patch.object(self.notice,'isActiveWindow',return_value=True):
+            self.notice.reconcile_pointer(inside,0);self.assertFalse(self.notice.focus_timer.isActive())
+            self.notice.reconcile_pointer(outside,0);self.assertTrue(self.notice.focus_timer.isActive())
+            QTest.qWait(1000);self.assertTrue(self.notice.expanded)
+            self.notice.reconcile_pointer(inside,0);self.assertFalse(self.notice.focus_timer.isActive())
+            QTest.qWait(1150);self.assertTrue(self.notice.expanded)
+            self.notice.reconcile_pointer(outside,0)
+            QTest.qWait(2150);self.assertFalse(self.notice.expanded)
+
 if __name__=='__main__':unittest.main()

@@ -1,12 +1,13 @@
 """Two small views of the same current clipboard; no second clipboard watcher."""
 from pathlib import Path
-from PySide6.QtCore import QObject,Signal,QThreadPool,QBuffer,QIODevice,QSize,Qt,QRectF,QEvent,QMimeData,QUrl
+from PySide6.QtCore import QObject,Signal,QThreadPool,QBuffer,QIODevice,QSize,Qt,QRectF,QEvent,QMimeData
 from PySide6.QtGui import QImage,QImageReader,QPainter,QPainterPath,QColor,QPen,QFont
 from PySide6.QtWidgets import QApplication,QPushButton,QLabel,QHBoxLayout,QPlainTextEdit,QStackedWidget,QWidget
 from app_settings import ReferenceModalDialog,SettingsCloseButton
 from native_ui_common import colors,icon
 from sync_files import DiskWork
 from transfer_visuals import CloudStatusBadge,CLOUD_STATUS_LABELS
+from translation_languages import is_link_line
 from shiboken6 import isValid
 import ui_theme
 
@@ -111,9 +112,7 @@ class ClipboardButton(QPushButton):
         self._glyph='text' if value and value[0]=='text' else 'file' if value else 'copy'
         if value and value[0]=='text':
             text=value[1]['text'].strip()
-            if len(text)<=MAX_CLIPBOARD_LINK_CHARS and not any(char.isspace() for char in text):
-                url=QUrl(text)
-                if url.isValid() and url.scheme().lower() in ('http','https') and url.host():self._glyph='link'
+            if len(text)<=MAX_CLIPBOARD_LINK_CHARS and is_link_line(text):self._glyph='link'
         self.setToolTip('剪贴板 · '+('需要设置 Mac 剪贴板权限，点击前往' if state.get('permission_required') else
             clipboard_status(state) if state.get('value') else '暂无可预览内容'))
         self.setAccessibleDescription(clipboard_status(state))
@@ -125,7 +124,7 @@ class ClipboardButton(QPushButton):
         p.setPen(QPen(ink(c['border']),1));p.setBrush(ink(c['hover'] if self.underMouse() or self.isDown() else c['control']))
         p.drawRoundedRect(QRectF(self.rect()).adjusted(.5,.5,-.5,-.5),8,8)
         model=self.presenter;value=model.state.get('value') if model else None
-        if model and not model.thumbnail.isNull():
+        if model and value and value[0] in ('image','files') and not model.thumbnail.isNull():
             clip=QPainterPath();clip.addRoundedRect(QRectF(5,5,22,22),4,4);p.setClipPath(clip)
             image=model.thumbnail;size=image.size().scaled(QSize(22,22),Qt.KeepAspectRatio)
             p.drawImage(QRectF(16-size.width()/2,16-size.height()/2,size.width(),size.height()),image);p.setClipping(False)
