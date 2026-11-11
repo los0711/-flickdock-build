@@ -60,7 +60,7 @@ class NativeClipboardReader(QObject):
     failed=Signal(str)
 
     def __init__(self,cache,sequence,parent=None):
-        super().__init__(parent);self.cache=Path(cache);self.sequence=sequence
+        super().__init__(parent);self.cache=Path(cache).resolve(strict=True);self.sequence=sequence
         self.closed=False;self.process=None;self.loading=False;self.jobs=set()
         self.cached_sequence=None;self.value=None;self.wanted=None;self.issue=''
         self.directory=None;self.error='';self.virtual_wait=False
@@ -144,7 +144,7 @@ class NativeClipboardReader(QObject):
 
 
 def run_worker(path):
-    directory=None;validated=False
+    directory=None;validated=False;stage='JOB'
     try:
         if sys.platform!='win32':raise RuntimeError('Windows clipboard reader only')
         job=Path(path).absolute();directory=job.parent
@@ -156,11 +156,13 @@ def run_worker(path):
         validated=True
         expected=json.loads(job.read_text())['sequence']
         if type(expected) is not int or not 0<=expected<=0xffffffff:raise ValueError('Invalid clipboard sequence')
+        stage='INITIALIZE'
         from PySide6.QtGui import QGuiApplication
         from clipboard_sync import native_sequence,_snapshot_mime,native_format_count
         from virtual_clipboard import DESCRIPTOR_MIME,describe,materialize,VirtualClipboardError
         app=QGuiApplication.instance() or QGuiApplication([]);clipboard=app.clipboard()
-        if native_sequence()!=expected:raise ValueError('Clipboard changed before capture')
+        if native_sequence()!=expected:raise VirtualClipboardError('NATIVE_READ_REPLACED')
+        stage='CAPTURE'
         for attempt in range(2):
             app.processEvents();before=native_sequence();mime=clipboard.mimeData()
             if mime is None:raise ValueError('Clipboard unavailable')
@@ -173,9 +175,9 @@ def run_worker(path):
             else:value=_snapshot_mime(mime)
             sequence=native_sequence()
             if before==sequence:break
-        else:raise ValueError('Clipboard changed during capture')
+        else:raise VirtualClipboardError('NATIVE_READ_REPLACED')
         if value is None and native_format_count():raise VirtualClipboardError('NATIVE_FORMAT_NOT_READY')
-        kind,data=value if value else (None,None)
+        stage='ENCODE';kind,data=value if value else (None,None)
         if kind=='image':
             if not data['image'].save(str(directory/'image.png'),'PNG'):raise ValueError('Cannot store clipboard image')
             if (directory/'image.png').stat().st_size>=MAX_PAYLOAD_BYTES:raise ValueError('Clipboard image too large')
@@ -187,7 +189,8 @@ def run_worker(path):
         (directory/'result.json').write_bytes(encoded);return 0
     except Exception as error:
         if validated:
-            (directory/'result.json').write_text(json.dumps(dict(ok=False,code=getattr(error,'code','NATIVE_READ_FAILED'))),encoding='utf8')
+            code=getattr(error,'code','NATIVE_READ_'+stage+'_'+type(error).__name__.upper())
+            (directory/'result.json').write_text(json.dumps(dict(ok=False,code=code)),encoding='utf8')
             return 0
         return 1
 

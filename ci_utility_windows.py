@@ -145,7 +145,7 @@ Path(sys.argv[1]).write_text('ready');app.exec()
             try:
                 wait(ready.exists);clock.start();reader.read(native_sequence())
                 wait(lambda:bool(failures))
-                assert entered.exists(),'The real producer never rendered its delayed native format'
+                assert entered.exists(),('The real producer never rendered its delayed native format',failures,reader.issue)
                 assert failures==['NATIVE_READ_TIMEOUT'] and len(beats)>20,(failures,len(beats))
                 assert reader.process is None
                 report['delayed_clipboard_reader']=dict(actual_native_producer=True,ui_responsive=True,

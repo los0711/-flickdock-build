@@ -1228,6 +1228,8 @@ class ClipboardSync(QObject):
         finally:self._applying=False
 
     def _adopt_native(self,actual,directory,identity):
+        # A verified receive replaces startup observation, including its delayed result.
+        self._native_baseline=None
         self._last_copy_observation=time.monotonic()
         activity=self._read_copy_activity()
         if activity is not None:self._copy_input_stamp=activity[0]

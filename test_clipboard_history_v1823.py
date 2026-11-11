@@ -75,6 +75,11 @@ class HistoryTests(unittest.TestCase):
         until(lambda:self.clips[0].mimeData().text()=='a genuinely different copy')
         self.assertEqual(self.hub.version,2)
 
+    def test_verified_receive_retires_delayed_startup_baseline(self):
+        client=self.clients[0];client._native_baseline=(10,20)
+        client._adopt_native(signature(('text',{'text':'received fixture','html':''})),None,'received')
+        self.assertIsNone(client._native_baseline)
+
     def test_png_and_native_bitmap_describe_the_same_content(self):
         image=QImage(160,90,QImage.Format_ARGB32);image.fill(QColor(20,40,70,160))
         buffer=QBuffer();buffer.open(QIODevice.WriteOnly);image.save(buffer,'PNG')
