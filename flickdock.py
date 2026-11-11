@@ -607,11 +607,11 @@ class ShelfManager:
         dialog.move(area.center()-QPoint(dialog.width()//2,dialog.height()//2))
 
     def _refresh_trigger_region_action(self):
-        visible=self._dock_preview_values['trigger_visible'] if self._dock_preview_values is not None else self.settings.trigger_visible
+        visible=self._dock_preview_values.get('trigger_visible',self.settings.trigger_visible) if self._dock_preview_values is not None else self.settings.trigger_visible
         self.trigger_region_action.setText('关闭触发区域' if visible else '开启触发区域')
 
     def toggle_trigger_region(self):
-        visible=self._dock_preview_values['trigger_visible'] if self._dock_preview_values is not None else self.settings.trigger_visible
+        visible=self._dock_preview_values.get('trigger_visible',self.settings.trigger_visible) if self._dock_preview_values is not None else self.settings.trigger_visible
         target=not visible
         try:self.settings.update(trigger_visible=target)
         except OSError:
@@ -641,6 +641,7 @@ class ShelfManager:
             self._cloud_device_connections_changed(self.wan.peers())
             self.settings_dialog.set_account_panel(self.account_panel)
             self.settings_dialog.preview_changed.connect(self.preview_dock)
+            self.settings_dialog.preview_changed.connect(self._refresh_trigger_region_action)
             self.settings_dialog.gesture_preview_changed.connect(self.preview_shake)
             self.settings_dialog.shortcut_validator = lambda values: self.hotkeys.validate(values["shelf_shortcut"], values["overview_shortcut"])
         if self.settings_dialog.isVisible():self.settings_dialog.load_values()
@@ -804,7 +805,6 @@ class ShelfManager:
 
     def preview_dock(self,values):
         self._dock_preview_values=dict(values) if isinstance(values,dict) else None
-        self._refresh_trigger_region_action()
         # Real per-screen handles preview the draft and remain independent hit
         # targets. A single transparent preview on the active screen hid all
         # secondary handles while settings were open.

@@ -43,9 +43,10 @@ def validate(value):
             name=asset['name']
             if name not in names:raise ValueError('Invalid installer name')
             names.remove(name);url=urlsplit(asset['archive'])
-            if (url.scheme!='https' or url.netloc!='gitee.com' or url.query or url.fragment
-                    or not re.fullmatch(r'/rooogerluo/flick-dock-(windows|macos)-releases-\d+/releases/download/v'+re.escape(key)+'/'+re.escape(name),url.path)):
-                raise ValueError('Installer archive must be an exact public Gitee release URL')
+            gitee=url.netloc=='gitee.com' and re.fullmatch(r'/rooogerluo/flick-dock-(windows|macos)-releases-\d+/releases/download/v'+re.escape(key)+'/'+re.escape(name),url.path)
+            github=url.netloc=='github.com' and url.path=='/los0711/-flickdock-build/releases/download/v'+key+'/'+name
+            if url.scheme!='https' or url.query or url.fragment or not (gitee or github):
+                raise ValueError('Installer archive must be an exact approved public release URL')
             if type(asset['bytes']) is not int or not 0<asset['bytes']<2*1024**3 or not re.fullmatch('[a-f0-9]{64}',asset['sha256']):raise ValueError('Invalid installer integrity metadata')
     return value
 
@@ -115,8 +116,10 @@ def verify_archive(asset):
     sys.path.insert(0,str(ROOT))
     from release_manifest import verify_public_file,_NoRedirect
     from urllib.request import ProxyHandler
-    verify_public_file(asset['archive'],asset['sha256'],asset['bytes'],{'gitee.com','foruda.gitee.com'},
-                       pe=asset['name'].endswith('.exe'),opener=build_opener(ProxyHandler({}),_NoRedirect()))
+    hosts={'gitee.com','foruda.gitee.com','raw.giteeusercontent.com','github.com','release-assets.githubusercontent.com','objects.githubusercontent.com'}
+    opener=build_opener(_NoRedirect()) if urlsplit(asset['archive']).hostname=='github.com' else build_opener(ProxyHandler({}),_NoRedirect())
+    verify_public_file(asset['archive'],asset['sha256'],asset['bytes'],hosts,
+                       pe=asset['name'].endswith('.exe'),opener=opener)
 
 
 def prune(value,*,check_redirect,check_archive,delete,save):

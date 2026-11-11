@@ -15,7 +15,6 @@ yt_datas,yt_binaries,yt_hidden=collect_all('yt_dlp')
 ejs_datas,ejs_binaries,ejs_hidden=collect_all('yt_dlp_ejs')
 # yt-dlp's verified TLS must not depend on the build machine's OpenSSL CA path.
 yt_datas += collect_data_files('certifi')
-yt_datas += collect_data_files('eldc')
 
 # macOS uses its system font; the Windows-only font is not a runtime dependency.
 assets = [(root / 'assets/ui/qtbase_zh_CN.qm', 'assets/ui')]

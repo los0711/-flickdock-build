@@ -16,7 +16,9 @@ export function releaseIndex(value){
     if(!Array.isArray(row.assets)||row.assets.length!==expected.size)throw new Error('Incomplete installer release');
     for(const asset of row.assets){
       const url=new URL(asset.archive);
-      if(!expected.delete(asset.name)||url.origin!=='https://gitee.com'||url.username||url.password||url.search||url.hash||!/^\/rooogerluo\/flick-dock-(?:windows|macos)-releases-\d+\/releases\/download\//.test(url.pathname)||!url.pathname.endsWith('/releases/download/v'+row.version+'/'+asset.name))throw new Error('Invalid installer archive');
+      const gitee=url.origin==='https://gitee.com'&&/^\/rooogerluo\/flick-dock-(?:windows|macos)-releases-\d+\/releases\/download\//.test(url.pathname)&&url.pathname.endsWith('/releases/download/v'+row.version+'/'+asset.name);
+      const github=url.origin==='https://github.com'&&url.pathname==='/los0711/-flickdock-build/releases/download/v'+row.version+'/'+asset.name;
+      if(!expected.delete(asset.name)||(!gitee&&!github)||url.username||url.password||url.search||url.hash)throw new Error('Invalid installer archive');
       if(!Number.isSafeInteger(asset.bytes)||asset.bytes<=0||asset.bytes>2*1024**3||!/^([a-f0-9]{64})$/.test(asset.sha256)||index.has(asset.name))throw new Error('Invalid installer metadata');
       index.set(asset.name,{...asset,version:row.version,hot:hot.has(row.version)});
     }

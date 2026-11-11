@@ -47,5 +47,12 @@ class RetentionTests(unittest.TestCase):
         self.assertEqual([row['version'] for row in retention.plan(value)[0]],['1.8.31','1.8.30'])
         self.assertEqual(retention.plan(value)[1],[])
 
+    def test_large_installers_use_only_the_approved_github_archive(self):
+        value=fixture();release=value['releases'][0];asset=release['assets'][0]
+        asset['archive']='https://github.com/los0711/-flickdock-build/releases/download/v'+release['version']+'/'+asset['name']
+        retention.validate(value)
+        asset['archive']=asset['archive'].replace('los0711','unapproved-owner')
+        with self.assertRaises(ValueError):retention.validate(value)
+
 
 if __name__=='__main__':unittest.main()

@@ -33,6 +33,10 @@ const fixture={schema:1,keepVersions:3,releases:[30,31,32,33,34].map(patch=>{
   return {version,r2Removed:false,assets:names.map(name=>({name,bytes:100,sha256:'a'.repeat(64),archive:'https://gitee.com/rooogerluo/flick-dock-windows-releases-2/releases/download/v'+version+'/'+name}))};
 })};
 const index=releaseIndex(fixture);let originCalls=0;
+const githubFixture=structuredClone(fixture),githubAsset=githubFixture.releases[0].assets[0];
+githubAsset.archive='https://github.com/los0711/-flickdock-build/releases/download/v'+githubFixture.releases[0].version+'/'+githubAsset.name;
+assert.equal(releaseIndex(githubFixture).get(githubAsset.name).archive,githubAsset.archive);
+githubAsset.archive=githubAsset.archive.replace('los0711','unapproved-owner');assert.throws(()=>releaseIndex(githubFixture));
 for(const patch of [30,31]){
   const name='FlickDock-Setup-1.8.'+patch+'.exe';
   const result=await installerDownload(new Request('https://download.flickdock.cc.cd/v1.8.'+patch+'/'+name),name,{index,fetcher:()=>{throw new Error('Archived files must not fetch R2');}});
@@ -42,6 +46,7 @@ for(const patch of [32,33,34]){
   const name='FlickDock-Setup-1.8.'+patch+'.exe';
   const result=await installerDownload(new Request('https://download.flickdock.cc.cd/v1.8.'+patch+'/'+name,{headers:{Range:'bytes=0-3',Authorization:'private',Cookie:'private'}}),name,{index,fetcher:async(url,options)=>{
     originCalls++;assert.equal(new URL(url).hostname,ORIGIN_HOST);assert.equal(options.headers.get('Range'),'bytes=0-3');
+    assert.equal(options.redirect,'manual');
     assert.equal(options.headers.get('Authorization'),null);assert.equal(options.headers.get('Cookie'),null);
     return new Response(new Uint8Array([77,90,1,2]),{status:206,headers:{'Content-Range':'bytes 0-3/100','Content-Length':'4'}});
   }});
