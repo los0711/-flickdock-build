@@ -24,6 +24,7 @@ MAC_CLIPBOARD_OBSERVE_MS=50
 COPY_FORMAT_SETTLE_SECONDS=1.
 REPEAT_COPY_INPUT_MAX_AGE_MS=3000
 COPY_REPLAY_HISTORY_ENTRIES=64
+COPY_CONFIRMATION_TIMEOUT_MS=12000
 
 
 class ClipboardSizeLimit(ValueError):
@@ -588,7 +589,8 @@ class ClipboardSync(QObject):
             # UI observers need real repeated copies too. This signal never
             # changes the content fence or schedules a duplicate cloud upload.
             if self._snapshot_available:self.copy_observed.emit(value)
-            if self._snapshot_available and (value is not None or sequence is None) and sig==self._last_local_signature:
+            if (self._snapshot_available and (value is not None or sequence is None) and sig==self._last_local_signature
+                    and self.view.get('phase') not in ('error','superseded')):
                 self._last_sequence=sequence;self._repeat_copy_feedback(value);return
             if self._snapshot_available:self._last_copy_observation=time.monotonic()
             from PySide6.QtGui import QCursor
@@ -768,6 +770,8 @@ class ClipboardSync(QObject):
         if self._retry_on_reconnect:
             self._retry_on_reconnect=False
             if self._pending is not None or self._local_retry is not None:self.retry.start(0)
+        if self._pending is not None and self._pending.get('replacement_deadline'):
+            self._resolve_replaced(self._pending,self._pending['replacement_error']);return
         if self._fetching:
             # The content stream owns its bytes. A progress check reads only
             # the latest version so a missed newer hint can replace it safely.
@@ -833,12 +837,26 @@ class ClipboardSync(QObject):
         if self._pending is None and self._local_retry is None:
             self.retry.stop();self._priority_flags(waiting=False)
 
-    def _resolve_replaced(self,pending,error):
-        if pending.get('resolving_replacement'):return
+    def _expire_confirmation(self,pending):
+        if self._pending is not pending:return
+        from network_diagnostics import record_event
+        record_event(self._clock_path.parent,'cloud','clipboard-conflict','CONFIRMATION_TIMEOUT')
+        self._set_cloud_progress(pending['id'],0,0,'error')
+        self._copy_result(pending,False,phase='error')
+        self.file_jobs.update(pending,'unavailable');self._clear_task(pending)
+        self.retry.stop();self._priority_flags(waiting=False,sending=False)
+
+    def _resolve_replaced(self,pending,error,*,snapshot=None):
+        if pending.get('resolving_replacement') and snapshot is None:return
+        deadline=pending.get('replacement_deadline')
+        if deadline and snapshot is None and time.monotonic()>=deadline:
+            self._expire_confirmation(pending);return
+        if deadline:self.retry.stop()
         pending['resolving_replacement']=True
         def resolved(result,failure):
             pending.pop('resolving_replacement',None)
             if not self._valid_task(pending):return
+            if self._pending is not pending and not self.file_jobs.held(pending):return
             if failure:self._task_error(pending,failure);return
             head=result.get('clipboard') if isinstance(result,dict) else None
             item=pending['package'];held=self.file_jobs.held(pending)
@@ -857,6 +875,16 @@ class ClipboardSync(QObject):
                 if self._snapshot_available and signature(self._snapshot())==signature(self.view['value']):
                     self.deliveries.received(head,'cloud')
                 return
+            committed_at=head.get('copied_at',head.get('at',0)) if isinstance(head,dict) else 0
+            newer=bool(isinstance(head,dict) and head.get('ready') and type(committed_at) is int and committed_at>pending['intent']['at'])
+            if not held and self._pending is pending and not newer:
+                # Reservations replace upload order before they replace the
+                # committed body. The previous ready head proves no new copy.
+                end=pending.setdefault('replacement_deadline',time.monotonic()+COPY_CONFIRMATION_TIMEOUT_MS/1000)
+                pending['replacement_error']=error
+                if time.monotonic()>=end:self._expire_confirmation(pending);return
+                self.retry.stop();self._priority_flags(waiting=True,sending=False)
+                self._set_cloud_progress(pending['id'],0,0,'verifying');return
             from network_diagnostics import record_event
             record_event(self._clock_path.parent,'cloud','clipboard-conflict','DIFFERENT_CLIPBOARD_CONTENT')
             self._set_cloud_progress(pending['id'],0,0,'superseded')
@@ -864,8 +892,10 @@ class ClipboardSync(QObject):
             self._clear_task(pending)
             if held:self.file_jobs.fail(pending,error)
             else:self.file_jobs.update(pending,'unavailable')
+            if isinstance(head,dict) and head.get('ready'):self._pushed_head={'clipboard':head}
             self.refresh()
-        self._request('GET','/v1/clipboard',resolved,_task=pending)
+        if snapshot is not None:resolved(snapshot,None)
+        else:self._request('GET','/v1/clipboard',resolved,_task=pending)
 
     def _task_ready(self,pending,head,*,equivalent=False):
         if not self._valid_task(pending):return
@@ -1015,7 +1045,8 @@ class ClipboardSync(QObject):
                 and any(keys.intersection(row) for row in self._copy_history)):
             self._consume_replay(value,sequence);return
         if self._is_native and (sig!=self._last_local_signature or repeat_intent):self.copy_observed.emit(value)
-        if sig==self._last_local_signature and (not repeat_intent or sig==signature(self.view.get('value'))):
+        retry_copy=repeat_intent and self.view.get('phase') in ('error','superseded') and not self.view.get('backed_up')
+        if sig==self._last_local_signature and not retry_copy and (not repeat_intent or sig==signature(self.view.get('value'))):
             self._last_sequence=sequence
             self._repeat_copy_feedback(value,user_intent=repeat_intent,explicit=activity is not None and repeat_intent)
             task=self._pending or self._local_retry
@@ -1259,6 +1290,8 @@ class ClipboardSync(QObject):
             self.schedule.request();return
         if self._local_retry:self._prepare_local();return
         if self._pending:
+            if self._pending.get('replacement_deadline'):
+                self._resolve_replaced(self._pending,self._pending['replacement_error']);return
             self._priority_flags(waiting=False)
             if self.view.get('id')==self._pending['id']:self._set_view(self.view['value'],'uploading',self._pending['id'])
             if self._pending['staged']:self._upload(self._pending)
@@ -1295,6 +1328,10 @@ class ClipboardSync(QObject):
             if type(version) is not int:version=0
             if pushed and pushed.get('clipboard',{}).get('version',0)>version:
                 self._pushed_head=None;head=pushed['clipboard']
+            pending=self._pending
+            if generation==self._generation and pending is not None and pending.get('replacement_deadline'):
+                self._resolve_replaced(pending,pending['replacement_error'],snapshot={'clipboard':head})
+                self._finish_refresh();return
             if not isinstance(head,dict) or generation!=self._generation:self._finish_refresh();return
             identity=head.get('id','')
             if not isinstance(identity,str) or len(identity)!=36 or any(c not in '0123456789abcdef-' for c in identity):self._finish_refresh();return

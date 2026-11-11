@@ -84,6 +84,53 @@ class Hub:
 
 
 class ClipboardTests(unittest.TestCase):
+    def _hold_conflicting_copy(self,*,old_head=False):
+        client=self.clients[0];request=client.api.request;rejected=[]
+        def dispatch(method,path,callback,**options):
+            if method=='POST' and path=='/v1/clipboard' and not rejected:
+                rejected.append(True)
+                if old_head:
+                    item=inline_text(('text',dict(text='the previous committed copy',html='')))
+                    self.hub.version+=1;self.hub.body=base64.b64decode(item['inline']['body'])
+                    self.hub.head=dict(id=str(uuid4()),device='1',version=self.hub.version,ready=True,kind='text',
+                        size=item['size'],sha256=item['sha256'],inline=item['inline']['body'],copied_at=options['data']['copied_at']-1)
+                QTimer.singleShot(0,lambda:callback(None,CloudError('reservation replaced',409,'CLIPBOARD_REPLACED')))
+                return object()
+            return request(method,path,callback,**options)
+        client.api.request=dispatch;self.clips[0].text('keep this actual copy while the other commit is pending')
+        until(lambda:bool(rejected) and (client._pending is None or bool(client._pending.get('replacement_deadline'))))
+        return client
+
+    def test_conflicting_reservation_waits_for_a_verified_committed_body(self):
+        client=self._hold_conflicting_copy();self.assertIsNotNone(client._pending)
+        pending=client._pending;self.assertEqual(client.view['cloud_transfer']['phase'],'verifying')
+        self.assertEqual(client.view['phase'],'uploading')
+        item=pending['package'];self.hub.version+=1
+        self.hub.head=dict(id=str(uuid4()),device='1',version=self.hub.version,ready=True,kind='text',
+            size=item['size'],sha256=item['sha256'],inline=item['inline']['body'],copied_at=pending['intent']['at']+1)
+        self.hub.body=base64.b64decode(item['inline']['body']);client.request_refresh()
+        until(lambda:client._pending is None and client.view.get('backed_up'))
+        self.assertEqual(client.view['phase'],'synced');self.assertEqual(client.view['copy_id'],pending['id'])
+        self.assertEqual(self.clips[0].mimeData().text(),'keep this actual copy while the other commit is pending')
+
+    def test_previous_committed_body_is_not_misreported_as_a_newer_copy(self):
+        client=self._hold_conflicting_copy(old_head=True)
+        self.assertIsNotNone(client._pending);self.assertEqual(client.view['phase'],'uploading')
+        self.assertEqual(client.view['cloud_transfer']['phase'],'verifying')
+        self.assertEqual(self.clips[0].mimeData().text(),'keep this actual copy while the other commit is pending')
+
+    def test_unconfirmed_replacement_stops_checks_and_an_actual_recopy_can_retry(self):
+        client=self._hold_conflicting_copy();self.assertIsNotNone(client._pending)
+        identity=client._pending['id'];client._pending['replacement_deadline']=time.monotonic()-1
+        before=sum(method=='GET' and path=='/v1/clipboard' for method,path in self.hub.calls)
+        client._scheduled_check();flush()
+        self.assertIsNone(client._pending);self.assertEqual(client.view['phase'],'error')
+        self.assertIsNone(client.schedule.periodic_due);self.assertFalse(client.retry.isActive())
+        self.assertEqual(sum(method=='GET' and path=='/v1/clipboard' for method,path in self.hub.calls),before)
+        self.clips[0].text('keep this actual copy while the other commit is pending')
+        until(lambda:client.view.get('backed_up') and client.view['id']!=identity)
+        self.assertEqual(client.view['phase'],'synced')
+
     def test_duplicate_delayed_native_notification_resumes_interrupted_cloud_receive(self):
         receiver=self.clients[1];native_snapshot=receiver._snapshot;api=receiver.api.request
         held=[];sequence=[0];receiver._sequence=lambda:sequence[0];receiver._last_sequence=0
