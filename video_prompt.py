@@ -2,7 +2,7 @@
 import logging
 from PySide6.QtCore import QObject,QRectF,QThreadPool,Qt
 from PySide6.QtGui import QColor,QGuiApplication
-from intake_notice import CapsuleNotice,RING_VISIBLE_SIZE_PX
+from intake_notice import CapsuleNotice,RING_VISIBLE_SIZE_PX,NOTICE_ACTION_COLOR
 from native_ui_common import colors,icon
 from flickdock_icons import draw_glyph
 from sync_files import DiskWork
@@ -11,7 +11,6 @@ from video_links import candidate_link,recognized_video
 PROMPT_DURATION_MS=5000
 PROMPT_HOST_WIDTH_PX=320
 PROMPT_MAX_WIDTH_PX=296
-PROMPT_ACTION_COLOR='#087CEF'
 LOG=logging.getLogger(__name__)
 
 
@@ -37,11 +36,11 @@ class VideoLinkPrompt(CapsuleNotice):
 
     def _paint_indicator(self,painter,rect,colors):
         circle=QRectF(0,0,RING_VISIBLE_SIZE_PX,RING_VISIBLE_SIZE_PX);circle.moveCenter(rect.center())
-        painter.save();painter.setPen(Qt.NoPen);painter.setBrush(QColor(PROMPT_ACTION_COLOR));painter.drawEllipse(circle)
+        painter.save();painter.setPen(Qt.NoPen);painter.setBrush(QColor(NOTICE_ACTION_COLOR));painter.drawEllipse(circle)
         draw_glyph(painter,'arrow',circle.adjusted(4,4,-4,-4),'#FFFFFF',1.8);painter.restore()
 
     def _paint_leading(self,painter,rect):
-        color=QColor(PROMPT_ACTION_COLOR);color.setAlpha(35)
+        color=QColor(NOTICE_ACTION_COLOR);color.setAlpha(35)
         painter.save();painter.setPen(Qt.NoPen);painter.setBrush(color);painter.drawEllipse(rect)
         icon('video',colors(self.manager.settings.theme)['link']).paint(painter,rect.adjusted(3,3,-3,-3).toAlignedRect());painter.restore()
 

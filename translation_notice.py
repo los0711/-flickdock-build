@@ -4,7 +4,7 @@ from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QCursor, QIcon, QPainter, QPainterPath, QPixmap, QTextDocument
 from PySide6.QtWidgets import QApplication, QAbstractItemView, QFrame, QListWidget, QListWidgetItem, QMenu, QPlainTextEdit, QPushButton, QWidgetAction
 from PySide6.QtSvg import QSvgRenderer
-from intake_notice import CapsuleNotice, COMPACT_SIDE_PX, PILL_HEIGHT_PX
+from intake_notice import CapsuleNotice, COMPACT_SIDE_PX, PILL_HEIGHT_PX, NOTICE_ACTION_COLOR
 from native_ui_common import colors, icon, rounded_popup
 from translation_languages import LANGUAGES, TARGETS
 from transfer_visuals import draw_ring
@@ -385,11 +385,11 @@ class TranslationNotice(CapsuleNotice):
             draw_ring(painter, ring, dict(received=0, total=0))
         else:
             painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor(c['green'] if state.phase == 'copied' else c['link']))
+            painter.setBrush(QColor(c['green'] if state.phase == 'copied' else NOTICE_ACTION_COLOR))
             painter.drawEllipse(ring)
             if state.result:
-                icon('check' if state.phase == 'copied' else 'copy', '#FFFFFF').paint(painter, ring.adjusted(8, 8, -8, -8).toAlignedRect())
+                icon('check' if state.phase == 'copied' else 'copy', c['on_action']).paint(painter, ring.adjusted(8, 8, -8, -8).toAlignedRect())
             else:
-                painter.setPen(QColor('#FFFFFF'))
+                painter.setPen(QColor(c['on_action']))
                 painter.drawText(ring, Qt.AlignCenter, '译')
         painter.end()
