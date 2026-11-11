@@ -238,7 +238,7 @@ class ReceivingCodeClientTests(unittest.TestCase):
 
 
 class AutomaticUpdateTests(unittest.TestCase):
-    def test_default_downloads_in_background_and_waits_for_explicit_install(self):
+    def test_default_downloads_in_background_and_installs_when_idle(self):
         import test_update_inline_v171 as update_fixture
         case=update_fixture.InlineUpdates();case.setUp()
         try:
@@ -247,10 +247,15 @@ class AutomaticUpdateTests(unittest.TestCase):
             self.assertEqual(case.controller.state,'downloading')
             self.assertEqual([row[0] for row in case.client.calls],['check','download'])
             self.assertFalse(case.dialog.isVisible());self.assertEqual(case.events,[])
+            active=[True];case.controller._is_busy=lambda:active[0]
             case.client.complete(case.path,case.manifest)
             self.assertEqual(case.controller.state,'ready');self.assertEqual(case.events,[])
             previous=list(case.client.calls);case.controller.check_automatically()
             self.assertEqual(case.client.calls,previous)
+            with patch.object(case.controller,'_start_verification',return_value=True) as install:
+                active[0]=False;case.controller._resume_automatic()
+                install.assert_called_once();self.assertTrue(case.controller._authorized)
+                self.assertTrue(case.controller._silent_install)
             case.store.update(automatic_updates=False)
             self.assertFalse(case.controller.check_automatically())
             self.assertFalse(SettingsStore(case.store.base).automatic_updates)

@@ -129,6 +129,7 @@ jobs:
         if: runner.os == 'Windows'
         run: python ci_installer_close.py --output native-installer-close.json
       - name: Retain native window verification
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: native-utility-${{ matrix.runner }}-${{ github.sha }}

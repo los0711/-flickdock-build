@@ -127,6 +127,26 @@ class UpdateNoticeTests(unittest.TestCase):
                 self.assertEqual(open_url.call_args.args[0].toString(),'https://flickdock.cc.cd')
             finally:dialog.hide();dialog.deleteLater();APP.processEvents()
 
+    def test_clipboard_entry_distinguishes_plain_links_without_changing_payload(self):
+        from clipboard_preview import ClipboardButton
+        presenter=SimpleNamespace(state={'value':('text',{'text':'https://example.org/video'})})
+        self.manager.clipboard_presenter=None
+        button=ClipboardButton(self.manager)
+        try:
+            button.presenter=presenter
+            # Keep the signal lifecycle real while the payload remains a pure
+            # view fixture; no operating-system clipboard is accessed.
+            from PySide6.QtCore import QObject,Signal
+            class Model(QObject):changed=Signal()
+            model=Model();model.state=presenter.state
+            self.manager.clipboard_presenter=model;button.presenter=None;button.refresh()
+            self.assertEqual(button._glyph,'link')
+            original=model.state['value']
+            self.assertIs(model.state['value'],original)
+            model.state={'value':('text',{'text':'普通文字 https://example.org'})};model.changed.emit()
+            self.assertEqual(button._glyph,'text')
+        finally:button.hide();button.deleteLater();APP.processEvents()
+
     def test_completed_or_quitting_update_does_not_show_stale_notice(self):
         self.manager._quitting = True
         self.manager._show_update_notice('1.8.13')

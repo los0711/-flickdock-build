@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 from account_store import atomic_json
 from update_client import compare_versions, version_tuple
+from release_history import update_notes
 
 MAX_NOTICE_BYTES = 128 * 1024
 
@@ -15,7 +16,8 @@ def record_update(base, current_version, manifest):
         raise ValueError('更新版本必须高于当前版本。')
     atomic_json(Path(base) / 'updates/completed-notice.json',
                 dict(version=version, previous=current_version,
-                     notes=manifest.get('notes', '')[:32768], acknowledged=False))
+                     notes=update_notes(current_version,version,manifest.get('notes',''),
+                                        manifest.get('releases'))[:32768], acknowledged=False))
 
 
 class UpdateCompletion:

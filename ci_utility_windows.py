@@ -116,6 +116,43 @@ def main():
             assert state['clipboard'] in ('default','ask','allowed','denied','legacy')
             assert state['accessibility'] in ('allowed','denied')
             report['native_permissions_metadata']=state
+        if sys.platform=='win32':
+            import subprocess
+            from PySide6.QtCore import QTimer
+            from native_clipboard_reader import NativeClipboardReader
+            from clipboard_sync import native_sequence
+            root=Path(directory);producer_script=root/'delayed-owner.py'
+            ready=root/'producer-ready';entered=root/'producer-rendering'
+            producer_script.write_text('''import sys,time
+from pathlib import Path
+from PySide6.QtCore import QMimeData
+from PySide6.QtGui import QGuiApplication
+class Delayed(QMimeData):
+ def formats(self):return ['text/plain']
+ def retrieveData(self,kind,preferred):
+  if kind.startswith('text/plain'):
+   Path(sys.argv[2]).write_text('rendering');time.sleep(30);return 'private native clipboard fixture'
+  return None
+app=QGuiApplication([]);payload=Delayed();app.clipboard().setMimeData(payload)
+Path(sys.argv[1]).write_text('ready');app.exec()
+''',encoding='utf8')
+            producer=subprocess.Popen([sys.executable,str(producer_script),str(ready),str(entered)],
+                stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW)
+            cache=root/'clipboard-cache';cache.mkdir();reader=NativeClipboardReader(cache,native_sequence)
+            failures=[];beats=[];clock=QTimer();clock.setInterval(10);clock.timeout.connect(lambda:beats.append(1))
+            reader.failed.connect(failures.append)
+            try:
+                wait(ready.exists);clock.start();reader.read(native_sequence())
+                wait(lambda:bool(failures))
+                assert entered.exists(),'The real producer never rendered its delayed native format'
+                assert failures==['NATIVE_READ_TIMEOUT'] and len(beats)>20,(failures,len(beats))
+                assert reader.process is None
+                report['delayed_clipboard_reader']=dict(actual_native_producer=True,ui_responsive=True,
+                    owned_reader_timed_out=True,ui_heartbeats=len(beats),clipboard_contents_logged=False)
+            finally:
+                clock.stop();reader.close();producer.kill();producer.wait(timeout=5)
+                wait(lambda:reader.process is None and not reader.jobs);reader.deleteLater()
         report['ok']=True
         for window in (settings,transfer):window.deleteLater()
         app.processEvents()

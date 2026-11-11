@@ -11,6 +11,10 @@ if __name__=='__main__' and '--virtual-clipboard-worker' in sys.argv:
     from virtual_clipboard import run
     raise SystemExit(run(sys.argv[sys.argv.index('--virtual-clipboard-worker')+1]))
 
+if __name__=='__main__' and '--native-clipboard-reader' in sys.argv:
+    from native_clipboard_reader import run_worker
+    raise SystemExit(run_worker(sys.argv[sys.argv.index('--native-clipboard-reader')+1]))
+
 from PySide6.QtCore import QPoint
 from PySide6.QtCore import QRect
 from PySide6.QtCore import QThreadPool
@@ -262,10 +266,17 @@ class ShelfManager:
     def _update_busy(self):
         return (getattr(self, '_quitting', False) or getattr(self, 'outgoing_drag', False)
                 or any(transfer.active for service in (getattr(self,'lan',None),getattr(self,'wan',None)) if service for transfer in getattr(service,'_transfers',{}).values())
+                or self.sync.running or bool(self.sync.jobs)
+                or bool(self.clipboard_sync._jobs) or self.clipboard_sync._pending is not None
+                or bool(self.clipboard_sync._native_reader and
+                        (self.clipboard_sync._native_reader.process is not None or self.clipboard_sync._native_reader.loading))
+                or bool(self.video_controller.jobs)
+                or self.settings_open()
+                or bool(getattr(self,'_capacity_jobs',()) or getattr(self,'_large_intake_jobs',()))
                 or bool(QApplication.mouseButtons())
                 or QApplication.activeModalWidget() is not None
                 or QApplication.activePopupWidget() is not None
-                or any(s.dragging or s.incoming_drop or confirmation_active(s)
+                or any(s.dragging or s.incoming_drop or s.copy_jobs or s._delete_jobs or confirmation_active(s)
                        for s in getattr(self, 'shelves', ())))
 
     def check_updates(self):

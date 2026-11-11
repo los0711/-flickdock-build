@@ -50,6 +50,18 @@ class HistoryTests(unittest.TestCase):
     def settle(self):
         QTest.qWait(90);flush()
 
+    def test_delayed_startup_clipboard_observation_never_exports_previous_session(self):
+        from clipboard_identity import signature
+        client=self.clients[0];value=('text',{'text':'existing session fixture','html':''})
+        client._native_baseline=(10,20)
+        with patch.object(client,'_read_copy_activity',return_value=(20,100,False)):
+            client._native_read_ready(11,value,None)
+        self.assertEqual(client._last_local_signature,signature(value))
+        self.assertEqual(client._last_sequence,11)
+        self.assertIsNone(client._local_retry)
+        self.assertFalse(client.change_debounce.isActive())
+        self.assertEqual(self.hub.version,0)
+
     def test_history_text_clone_without_marker_never_republishes_or_rewrites(self):
         self.clips[0].text('same actual copy')
         until(lambda:self.clips[1].mimeData().text()=='same actual copy')

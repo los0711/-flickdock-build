@@ -61,13 +61,14 @@ class UtilityFeedbackTests(unittest.TestCase):
                     def handoff():
                         launch_installer(lease,installed_exe=executable,
                             popen=lambda args,**kw:spawned.append(args) or SimpleNamespace(pid=123),
-                            quit_callback=manager.quit)
+                            quit_callback=manager.quit,quiet=True)
                         manager.show_first()
                         assert not manager.shelf.isVisible()
                     QTimer.singleShot(40,handoff)
                     QTimer.singleShot(2000,lambda:app.exit(7))
                     result=app.exec()
                     assert result==0 and exited==[True] and len(spawned)==1,(result,exited,len(spawned))
+                    assert '/VERYSILENT' in spawned[0] and '/SILENT' not in spawned[0]
                     assert manager.manual.closed and manager.cloud.closed
                     manager.quit()
                     assert not (root/version/'install.log').exists()

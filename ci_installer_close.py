@@ -130,12 +130,32 @@ Source: "{folder/'1.0.1.0.exe'}"; DestDir: "{{app}}"; DestName: "FlickDock.exe";
             body=(folder/'online.iss').read_text(encoding='utf8').replace(str(online_folder),str(automatic))
             body=body.replace('DisableDirPage=yes','DisableDirPage=yes\nDisableWelcomePage=yes\nDisableReadyPage=yes')
             body=body.replace('[Code]',f'[Run]\nFilename: "{{app}}\\FlickDock.exe"; Parameters: """{launched}"" --updated"; Flags: nowait; Check: IsOnlineUpdate\n\n[Code]')
+            page_state=folder/'automatic-page.txt'
+            body+=f'''\nprocedure CurPageChanged(CurPageID: Integer);
+begin
+  if CurPageID = wpFinished then
+    SaveStringToFile('{page_state}', 'FINISHED', False)
+  else if (CurPageID <> wpPreparing) and (CurPageID <> wpInstalling) then
+    SaveStringToFile('{page_state}', IntToStr(CurPageID) + #13#10 + IntToStr(WizardForm.NextButton.Handle), False);
+end;
+'''
             automatic_script=folder/'automatic.iss';automatic_script.write_text(body,encoding='utf8')
             compiled=subprocess.run([compiler,str(automatic_script)],capture_output=True,timeout=40)
             assert compiled.returncode==0,compiled.stdout.decode(errors='replace')[-1500:]
             finish=subprocess.Popen([str(automatic/'close-test.exe'),'/NORESTART','/SP-',
                 '/FDOnlineUpdate=1','/FDParentPid=2147483647','/LOG='+str(folder/'automatic.log')]);processes.append(finish)
-            assert finish.wait(timeout=25)==0,'Online update waited for a Finish click'
+            import ctypes
+            from ctypes import wintypes
+            ctypes.windll.user32.PostMessageW.argtypes=[wintypes.HWND,wintypes.UINT,wintypes.WPARAM,wintypes.LPARAM]
+            ctypes.windll.user32.PostMessageW.restype=wintypes.BOOL
+            advanced=set();deadline=time.monotonic()+25
+            while finish.poll() is None and time.monotonic()<deadline:
+                if page_state.exists():
+                    state=page_state.read_text();assert state!='FINISHED','Online update displayed a Finish page'
+                    if state not in advanced:
+                        advanced.add(state);ctypes.windll.user32.PostMessageW(int(state.splitlines()[1]),0x00F5,0,0)
+                time.sleep(.05)
+            assert finish.wait(timeout=1)==0,'Online update waited for a Finish click'
             deadline=time.monotonic()+8
             while not launched.exists() and time.monotonic()<deadline:time.sleep(.05)
             assert launched.exists() and '--updated' in launched.read_text()
@@ -146,7 +166,7 @@ Source: "{folder/'1.0.1.0.exe'}"; DestDir: "{{app}}"; DestName: "FlickDock.exe";
             report['ok']=True
         finally:
             for process in reversed(processes):stop(process)
-            report['logs']={name:(folder/name).read_text(errors='replace')[-5000:] for name in ('legacy.log','fixed.log','online.log') if (folder/name).exists()}
+            report['logs']={name:(folder/name).read_text(errors='replace')[-5000:] for name in ('legacy.log','fixed.log','online.log','automatic.log') if (folder/name).exists()}
             output.write_text(json.dumps(report,indent=2),encoding='utf8')
     print(json.dumps({key:value for key,value in report.items() if key!='logs'},indent=2))
 

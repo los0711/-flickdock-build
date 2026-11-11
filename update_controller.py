@@ -161,7 +161,7 @@ def verify_installer(path, manifest, *, current_version, updates_dir,
 
 
 def launch_installer(verified, *, installed_exe, quit_callback, popen=None,
-                     parent_pid=None):
+                     parent_pid=None, quiet=False):
     """Spawn only a still-valid lease; quit only after successful process creation."""
     if not isinstance(verified, VerifiedInstaller) or verified.reader is None:
         raise ValueError('安装包尚未通过校验。')
@@ -180,9 +180,8 @@ def launch_installer(verified, *, installed_exe, quit_callback, popen=None,
     if (_identity(path.stat()) != verified.identity
             or _identity(os.fstat(verified.reader.fileno())) != verified.identity):
         raise ValueError('安装包在校验后已变化，请重新下载。')
-    # Keep the native installer's real progress visible after the application
-    # exits. /SILENT skips setup choices while preserving its progress window.
-    arguments = [str(path), '/SILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-',
+    # Explicit updates keep native progress; automatic updates have no wizard.
+    arguments = [str(path), '/VERYSILENT' if quiet else '/SILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-',
                  '/CLOSEAPPLICATIONS', '/DIR=' + str(executable.parent),
                  '/FDOnlineUpdate=1', '/FDParentPid=' + str(os.getpid() if parent_pid is None else int(parent_pid)),
                  '/LOG=' + str(path.parent / 'install.log')]
@@ -276,6 +275,7 @@ class UpdateController(QObject):
         self._installing = self._authorized = False
         self._background_download=False
         self._background_install=False
+        self._silent_install=False
         self._jobs, self._notified = {}, set()
         self._pending_manifest = None
         self._pending_check = False
@@ -365,6 +365,7 @@ class UpdateController(QObject):
 
     def activate(self):
         """The settings button checks, updates, or retries its current action."""
+        self._silent_install=False
         if self._state=='ready' and self._verified_path and self.can_start_update:
             self._authorized=True
             return self._start_verification()
@@ -433,6 +434,7 @@ class UpdateController(QObject):
             self._background_install=False
             if getattr(self.settings,'automatic_updates',False) and self._state=='ready' and self._verified_path:
                 self._authorized=True
+                self._silent_install=True
                 self._start_verification()
             return
         if self._pending_manifest is not None:
@@ -471,6 +473,7 @@ class UpdateController(QObject):
         """Recheck the live index before downloading, even after a recent check."""
         if not self.can_start_update:
             return False
+        self._silent_install=False
         self._authorized = True
         self._refreshing_before_install = True
         self._pending_manifest, self._pending_check = None, False
@@ -690,7 +693,8 @@ class UpdateController(QObject):
             from update_completion import record_update
             record_update(self.data_dir,self.app_version,self._manifest)
             launch_installer(result, installed_exe=self._installed_exe,
-                              quit_callback=quit_after_spawn, popen=self._popen)
+                              quit_callback=quit_after_spawn, popen=self._popen,
+                              quiet=self._silent_install)
         except (OSError, ValueError, TypeError) as problem:
             self._authorized = False
             self._retry_operation = 'install'

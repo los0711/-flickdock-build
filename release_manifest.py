@@ -48,7 +48,7 @@ RUNTIME_SOURCES=(
     'update_client.py','update_download.py','update_signatures.py','update_dialog.py','update_controller.py','update_notice.py','release_history.py','network_environment.py','network_diagnostics.py','ci_mac_update_runtime.py','ci_utility_windows.py',
     'platform_startup.py','platform_native.py','mac_updates.py','mac_entry.py','runtime_macos.py','mac_permissions.py','mac_permissions_ui.py',
     'account_store.py','cloud_api.py','cloud_config.py','cloud_events.py','account_service.py','account_panel.py',
-    'shelf_sync.py','sync_scheduler.py','shared_clipboard_files.py','sync_files.py','sync_adapter.py','verify_cloud.py','shortcut_preview.py','update_completion.py',
+    'shelf_sync.py','sync_scheduler.py','shared_clipboard_files.py','sync_files.py','sync_adapter.py','verify_cloud.py','shortcut_preview.py','update_completion.py','native_clipboard_reader.py',
     'lan_transfer.py','lan_account.py','lan_panel.py','transfer_visuals.py','transfer_workbench.py','owned_files.py','verify_transfers.py',
     'wan_transfer.py','manual_network.py','webrtc_stream.py','verify_wan.py','windows_network.py',
     'clipboard_delivery.py',
