@@ -54,11 +54,11 @@ class PreviewContinuityTests(unittest.TestCase):
 
     def test_hidden_empty_preview_discards_hover_so_reopening_does_not_start_an_idle_border_loop(self):
         self.shelf.remove_all('permanent');workspace.flush();tile=self.shelf.zones['permanent'].icon
-        tile.set_hover(True);self.assertTrue(tile.border_motion.frames.isActive())
-        tile.hide();workspace.flush();self.assertFalse(tile.border_motion.frames.isActive())
+        tile.set_hover(True);self.assertEqual(tile.border_motion.animation.state(),tile.border_motion.animation.Running)
+        tile.hide();workspace.flush();self.assertEqual(tile.border_motion.animation.state(),tile.border_motion.animation.Stopped)
         tile.show();workspace.flush()
         self.assertFalse(tile._hovered);self.assertFalse(tile.border_motion.active)
-        self.assertFalse(tile.border_motion.frames.isActive())
+        self.assertEqual(tile.border_motion.animation.state(),tile.border_motion.animation.Stopped)
 
     def test_group_actions_send_all_selected_and_remove_only_shelf_entries(self):
         popup=self.fixture.overview();refs=self.fixture.paths[:2]

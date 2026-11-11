@@ -5,6 +5,7 @@ from pathlib import Path
 from PySide6.QtCore import QPoint,QPointF,QMimeData,QUrl,Qt
 from PySide6.QtGui import QDragEnterEvent,QDragMoveEvent,QDropEvent,QDragLeaveEvent
 from PySide6.QtWidgets import QWidget,QPushButton
+from PySide6.QtTest import QTest
 from test_html_native_workspace import APP,flush,until
 from transfer_entry import TransferEntryRouter
 from app_settings import SettingsStore
@@ -14,21 +15,30 @@ from wan_transfer import WanTransferService
 
 
 class EntryTests(unittest.TestCase):
-    def test_only_hovered_transfer_option_animates_its_border(self):
+    def test_transfer_dashes_stay_fixed_while_hover_colors_fade_and_then_stop(self):
         from transfer_entry import TransferDropSurface
         root=QWidget();root.resize(240,160);surface=TransferDropSurface(root);surface.resize(220,108)
         root.show();surface.show();flush()
         try:
             with patch('native_ui_common.reduced_motion',return_value=False):
                 surface.set_target(None)
-                self.assertFalse(surface.border_motion.frames.isActive())
-                surface.set_target('lan');self.assertTrue(surface.border_motion.frames.isActive())
-                with patch('native_ui_common.time.perf_counter',return_value=0):first=surface.grab().toImage()
-                with patch('native_ui_common.time.perf_counter',return_value=.1):second=surface.grab().toImage()
+                lan=surface.border_motions['lan'];wan=surface.border_motions['wan']
+                self.assertEqual(lan.animation.state(),lan.animation.Stopped)
+                surface.set_target('lan');self.assertEqual(lan.animation.state(),lan.animation.Running)
+                lan.animation.setCurrentTime(60);first=surface.grab().toImage()
+                lan.animation.setCurrentTime(lan.animation.duration());second=surface.grab().toImage()
                 from PySide6.QtCore import QRect
                 self.assertNotEqual(first.copy(QRect(0,0,220,52)),second.copy(QRect(0,0,220,52)))
                 self.assertEqual(first.copy(QRect(0,55,220,52)),second.copy(QRect(0,55,220,52)))
-                surface.set_target(None);self.assertFalse(surface.border_motion.frames.isActive())
+                self.assertEqual(lan.animation.state(),lan.animation.Stopped)
+                QTest.qWait(40);self.assertEqual(second,surface.grab().toImage())
+                surface.set_target('wan')
+                for motion in (lan,wan):motion.animation.setCurrentTime(90)
+                self.assertTrue(0<lan.progress<1);self.assertTrue(0<wan.progress<1)
+                surface.set_target(None)
+                for motion in (lan,wan):
+                    motion.animation.setCurrentTime(motion.animation.duration())
+                    self.assertEqual(motion.progress,0.);self.assertEqual(motion.animation.state(),motion.animation.Stopped)
         finally:root.hide();root.deleteLater();flush()
 
     def test_mode_transition_captures_the_painted_old_page_not_an_empty_surface(self):

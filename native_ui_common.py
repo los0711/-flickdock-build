@@ -10,7 +10,6 @@ import re
 import sys
 import os
 import threading
-import time
 from collections import OrderedDict
 from pathlib import Path
 
@@ -25,43 +24,50 @@ SHELF_HEADER_BUTTON_SIZE_PX = 32
 SHELF_HEADER_BUTTON_GAP_PX = 6
 SHELF_HEADER_RIGHT_MARGIN_PX = 16
 DROP_DASH_CYCLE_PX = 8
-DROP_DASH_SPEED_PX_PER_SECOND = 18
 DROP_HOVER_FILL_ALPHA = 13
 
 
 class DropBorderMotion(QObject):
-    """Only active drop targets subscribe to the window's existing frame clock."""
+    """Stationary dashes with finite, interruptible hover-color transitions."""
     def __init__(self,widget):
         super().__init__(widget)
-        from display_frames import FramePulse
-        self.widget=widget;self.active=False
-        self.frames=FramePulse(widget);self.frames.timeout.connect(self._frame)
+        from display_frames import DisplayAnimation
+        from ui_transitions import DROP_HOVER_TRANSITION_MS
+        self.widget=widget;self.active=False;self.progress=0.
+        self.animation=DisplayAnimation(self)
+        self.animation.setDuration(DROP_HOVER_TRANSITION_MS)
+        self.animation.setEasingCurve(QEasingCurve.OutCubic)
+        self.animation.valueChanged.connect(self._changed)
         widget.installEventFilter(self)
 
     def set_active(self,active):
-        self.active=bool(active)
-        if self.active and self.widget.isVisible() and not reduced_motion():self.frames.start()
-        else:self.frames.stop()
-        self.widget.update()
+        active=bool(active)
+        if active==self.active:return
+        self.active=active;self.animation.stop();target=float(active)
+        if not self.widget.isVisible() or reduced_motion():self._changed(target);return
+        self.animation.setStartValue(self.progress);self.animation.setEndValue(target);self.animation.start()
 
     def eventFilter(self,watched,event):
-        if event.type()==QEvent.Hide:self.frames.stop()
-        elif event.type()==QEvent.Show:self.set_active(self.active)
+        if event.type() in (QEvent.Hide,QEvent.Show):
+            self.animation.stop();self._changed(float(self.active))
         return False
 
-    def _frame(self):
-        if reduced_motion():self.frames.stop()
+    def _changed(self,value):
+        if reduced_motion() and self.animation.state()==self.animation.Running:
+            self.animation.stop();value=float(self.active)
+        self.progress=float(value)
         self.widget.update()
 
-    def paint(self,painter,path,*,dark,width=1.2,idle_fill=None,highlight=None):
-        active=self.active if highlight is None else highlight
-        fill=QColor(10,132,255,DROP_HOVER_FILL_ALPHA) if active else idle_fill
-        if fill is not None:painter.fillPath(path,fill)
-        pen=QPen(QColor('#0A84FF') if active else QColor(255,255,255,55) if dark else QColor(0,0,0,48),width)
+    def color(self,first,last):
+        return QColor.fromRgbF(*(a+(b-a)*self.progress for a,b in zip(QColor(first).getRgbF(),QColor(last).getRgbF())))
+
+    def paint(self,painter,path,*,dark,width=1.2,idle_fill=None):
+        idle=QColor(idle_fill) if idle_fill is not None else QColor(10,132,255,0)
+        painter.fillPath(path,self.color(idle,QColor(10,132,255,DROP_HOVER_FILL_ALPHA)))
+        pen=QPen(self.color(QColor(255,255,255,55) if dark else QColor(0,0,0,48),QColor('#0A84FF')),width)
         length=path.length();cycle=length/max(1,round(length/DROP_DASH_CYCLE_PX))
         pen.setDashPattern([cycle*.52/width,cycle*.48/width])
         pen.setCapStyle(Qt.FlatCap);pen.setJoinStyle(Qt.RoundJoin)
-        if self.active and active and not reduced_motion():pen.setDashOffset((time.perf_counter()*DROP_DASH_SPEED_PX_PER_SECOND/width)%(cycle/width))
         painter.setPen(pen);painter.setBrush(Qt.NoBrush);painter.drawPath(path)
 
 
