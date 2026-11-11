@@ -20,6 +20,17 @@ LANGUAGE_MENU_WIDTH_PX = 208
 FOCUS_COLLAPSE_DELAY_MS = 2000
 
 
+class LanguageList(QListWidget):
+    def keyPressEvent(self, event):
+        # macOS does not activate embedded menu item views with Return by
+        # default. Both physical Enter keys commit the highlighted language.
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter) and self.currentItem() is not None:
+            self.itemActivated.emit(self.currentItem())
+            event.accept()
+        else:
+            super().keyPressEvent(event)
+
+
 class TranslationNotice(CapsuleNotice):
     HOST_WIDTH = 412
     HOST_HEIGHT = HOST_HEIGHT_PX
@@ -250,7 +261,7 @@ class TranslationNotice(CapsuleNotice):
         rounded_popup(menu, 14)
         c = colors(self.manager.settings.theme)
         menu.setStyleSheet(f'QMenu{{background:{c["surface"]};color:{c["text"]};border:0;padding:6px;}}')
-        languages = QListWidget(menu)
+        languages = LanguageList(menu)
         languages.setAccessibleName('目标语言')
         languages.setFrameShape(QFrame.NoFrame)
         languages.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
