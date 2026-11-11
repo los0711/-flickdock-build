@@ -28,6 +28,17 @@ BOOTSTRAP_TIMEOUT_SECONDS=480
 STEP_TIMEOUT_SECONDS=150
 POLL_SECONDS=2
 MIB=1024*1024
+BRIDGE_PROCESS_NAMES=frozenset(('gameviewer','wetype_server','wetype','uuremote'))
+
+
+def assert_no_clipboard_bridges(platform):
+    command=(['powershell.exe','-NoProfile','-NonInteractive','-Command','Get-Process | Select-Object -ExpandProperty ProcessName']
+             if platform=='Windows' else ['ps','-axo','comm='])
+    result=subprocess.run(command,capture_output=True,text=True,encoding='utf8',errors='replace',check=True,timeout=15,
+                          creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0) if platform=='Windows' else 0)
+    names={Path(line.strip()).name.casefold().removesuffix('.exe') for line in result.stdout.splitlines()}
+    unexpected=names.intersection(BRIDGE_PROCESS_NAMES)
+    if unexpected:raise RuntimeError('Clipboard bridge unexpectedly running on isolated QA peer: '+','.join(sorted(unexpected)))
 
 
 class IceTrace:
@@ -204,7 +215,9 @@ def main():
     from ci_vpn import verify_qt_proxy
     proxy=verify_qt_proxy()
     phase='initializing';failures=[]
+    assert_no_clipboard_bridges(platform)
     report=dict(ok=False,side=side,pair=pair,platform=platform,run=run,attempt=attempt,source_commit=os.environ['GITHUB_SHA'],
+        uu_and_wetype_absent=True,
         native_clipboard=True,separate_operating_systems=True,region_asserted=False,os_credentials_written=False,
         cloud_only_automatic_sync=True,checks=[],api_failures=failures,http_payloads=[],proxy=proxy,
         native_firewall_prepared=os.environ.get('FD_QA_NATIVE_FIREWALL')=='true',

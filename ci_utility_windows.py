@@ -101,12 +101,16 @@ def main():
             # Coexisting notices intentionally reposition the fixed native host.
             assert notice.size()==host.size() and notice.winId()==native
             assert notice._notice_area.contains(notice.geometry()),(notice._notice_area,notice.geometry())
+            success_started=time.monotonic()
             notice.update_delivery(dict(id=state['id'],phase='synced',backed_up=True,deliveries={'cloud':dict(success=0,total=1)}))
             assert notice._phase=='success' and notice._compact
             assert notice.timer.interval()==3000 and notice.timer.timerType()==Qt.PreciseTimer
+            wait(lambda:notice._hiding)
+            success_hold_ms=(time.monotonic()-success_started)*1000
+            assert success_hold_ms>=3000,success_hold_ms
             wait(lambda:not notice.isVisible())
             assert not notice._ring_clock.isActive()
-            report['copy_capsule']=dict(native_host_preserved=True,contracts_while_pending=True,cloud_commit_success=True,click_toggles=True,animated_exit=True,nonactivating=True)
+            report['copy_capsule']=dict(native_host_preserved=True,contracts_while_pending=True,cloud_commit_success=True,click_toggles=True,animated_exit=True,nonactivating=True,success_hold_ms=round(success_hold_ms,1))
         finally:notice.supersede();notice.deleteLater();app.processEvents()
         if sys.platform=='darwin':
             import AppKit
