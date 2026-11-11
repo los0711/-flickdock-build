@@ -39,7 +39,7 @@ class TrayWindow:Form {
   base.WndProc(ref m);
  }
  [STAThread]static void Main(string[] args){Application.EnableVisualStyles();var f=new TrayWindow();
-  f.Text="FlickDock Content Shelf QA";f.Shown+=(s,e)=>File.WriteAllText(args[0],"ready");Application.Run(f);}
+  f.Text="FlickDock Content Shelf QA";f.Shown+=(s,e)=>File.WriteAllText(args[0],System.Diagnostics.Process.GetCurrentProcess().Id+Environment.NewLine+"ready "+String.Join(" ",args));Application.Run(f);}
 }'''
         for version in ('1.0.0.0','1.0.1.0'):
             cs=folder/(version+'.cs');cs.write_text(source.replace('VERSION',version),encoding='utf8')
@@ -98,10 +98,75 @@ Source: "{folder/'1.0.1.0.exe'}"; DestDir: "{{app}}"; DestName: "FlickDock.exe";
             child.wait(timeout=10)
             assert digest(fixture)==digest(folder/'1.0.1.0.exe'),'The actual executable was not replaced'
             report['checks'].append(dict(name='confirmed close terminates leftover process and replaces executable',ok=True))
+            ready.unlink();shutil.copy2(folder/'1.0.0.0.exe',fixture)
+            parent=subprocess.Popen([str(fixture),str(ready)]);processes.append(parent)
+            deadline=time.monotonic()+10
+            while not ready.exists() and time.monotonic()<deadline:
+                if parent.poll() is not None:raise RuntimeError('Online-update fixture exited before readiness')
+                time.sleep(.05)
+            assert ready.exists()
+            online_folder=folder/'online';online_folder.mkdir()
+            definition=folder/'online.iss'
+            online=(folder/(mode+'.iss')).read_text(encoding='utf8').replace(str(folder/mode),str(online_folder))
+            online+='\n[Code]\n'+script.split('[Code]',1)[1]
+            definition.write_text(online,encoding='utf8')
+            compiled=subprocess.run([compiler,str(definition)],capture_output=True,timeout=40)
+            assert compiled.returncode==0,compiled.stdout.decode(errors='replace')[-1500:]
+            started=time.monotonic()
+            installer=subprocess.Popen([str(online_folder/'close-test.exe'),'/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',
+                '/FDOnlineUpdate=1','/FDParentPid='+str(parent.pid),'/LOG='+str(folder/'online.log')]);processes.append(installer)
+            code=installer.wait(timeout=75);elapsed=time.monotonic()-started
+            assert code==0,(code,(folder/'online.log').read_text(errors='replace')[-2500:])
+            parent.wait(timeout=10)
+            assert elapsed>=29 and 'continuing to Restart Manager' in (folder/'online.log').read_text(errors='replace')
+            assert digest(fixture)==digest(folder/'1.0.1.0.exe')
+            report['checks'].append(dict(name='production online-update guard lets Restart Manager replace a stuck older parent',
+                                         ok=True,grace_period_elapsed=True,installer_exit=code))
+            # With all pre-install pages disabled, only the production final
+            # page decision remains. No /SILENT flag may hide a broken Finish.
+            assert 'Parameters: "--updated"; Flags: nowait; Check: IsOnlineUpdate' in script
+            automatic=folder/'automatic';automatic.mkdir()
+            launched=folder/'automatic-relaunched.txt'
+            body=(folder/'online.iss').read_text(encoding='utf8').replace(str(online_folder),str(automatic))
+            body=body.replace('DisableDirPage=yes','DisableDirPage=yes\nDisableWelcomePage=yes\nDisableReadyPage=yes')
+            body=body.replace('[Code]',f'[Run]\nFilename: "{{app}}\\FlickDock.exe"; Parameters: """{launched}"" --updated"; Flags: nowait; Check: IsOnlineUpdate\n\n[Code]')
+            page_state=folder/'automatic-page.txt'
+            body+=f'''\nprocedure CurPageChanged(CurPageID: Integer);
+begin
+  if CurPageID = wpFinished then
+    SaveStringToFile('{page_state}', 'FINISHED', False)
+  else if (CurPageID <> wpPreparing) and (CurPageID <> wpInstalling) then
+    SaveStringToFile('{page_state}', IntToStr(CurPageID) + #13#10 + IntToStr(WizardForm.NextButton.Handle), False);
+end;
+'''
+            automatic_script=folder/'automatic.iss';automatic_script.write_text(body,encoding='utf8')
+            compiled=subprocess.run([compiler,str(automatic_script)],capture_output=True,timeout=40)
+            assert compiled.returncode==0,compiled.stdout.decode(errors='replace')[-1500:]
+            finish=subprocess.Popen([str(automatic/'close-test.exe'),'/NORESTART','/SP-',
+                '/FDOnlineUpdate=1','/FDParentPid=2147483647','/LOG='+str(folder/'automatic.log')]);processes.append(finish)
+            import ctypes
+            from ctypes import wintypes
+            ctypes.windll.user32.PostMessageW.argtypes=[wintypes.HWND,wintypes.UINT,wintypes.WPARAM,wintypes.LPARAM]
+            ctypes.windll.user32.PostMessageW.restype=wintypes.BOOL
+            advanced=set();deadline=time.monotonic()+25
+            while finish.poll() is None and time.monotonic()<deadline:
+                if page_state.exists():
+                    state=page_state.read_text();assert state!='FINISHED','Online update displayed a Finish page'
+                    if state not in advanced:
+                        advanced.add(state);ctypes.windll.user32.PostMessageW(int(state.splitlines()[1]),0x00F5,0,0)
+                time.sleep(.05)
+            assert finish.wait(timeout=1)==0,'Online update waited for a Finish click'
+            deadline=time.monotonic()+8
+            while not launched.exists() and time.monotonic()<deadline:time.sleep(.05)
+            assert launched.exists() and '--updated' in launched.read_text()
+            report['checks'].append(dict(name='online update skips Finish and launches the replacement automatically',ok=True))
+            # The launched fixture is the only process owning this exact file.
+            fixture_pid=int(launched.read_text().splitlines()[0])
+            subprocess.run(['taskkill','/PID',str(fixture_pid),'/T','/F'],capture_output=True,timeout=15)
             report['ok']=True
         finally:
             for process in reversed(processes):stop(process)
-            report['logs']={name:(folder/name).read_text(errors='replace')[-5000:] for name in ('legacy.log','fixed.log') if (folder/name).exists()}
+            report['logs']={name:(folder/name).read_text(errors='replace')[-5000:] for name in ('legacy.log','fixed.log','online.log','automatic.log') if (folder/name).exists()}
             output.write_text(json.dumps(report,indent=2),encoding='utf8')
     print(json.dumps({key:value for key,value in report.items() if key!='logs'},indent=2))
 

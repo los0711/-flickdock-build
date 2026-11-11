@@ -113,6 +113,27 @@ class Peer(QObject):
 
 
 class SharedFilesTests(unittest.TestCase):
+    def test_equivalent_cloud_commit_keeps_the_local_copy_notice_identity(self):
+        from types import SimpleNamespace
+        from clipboard_preview import ClipboardPresenter
+        from intake_notice import ClipboardNotice
+        presenter=ClipboardPresenter(self.client)
+        manager=SimpleNamespace(clipboard_presenter=presenter,settings=SimpleNamespace(theme='dark',clipboard_success_notice=True))
+        notice=ClipboardNotice(manager)
+        presenter.changed.connect(lambda:notice.update_delivery(presenter.state,authoritative=True))
+        try:
+            with patch('native_ui_common.reduced_motion',return_value=True):
+                identity=self.copy(self.source());until(lambda:identity in self.peer.held)
+                pending=self.client._pending;item=pending['package'];canonical=str(uuid4())
+                self.client._task_ready(pending,dict(id=canonical,ready=True,sha256=item['sha256'],size=item['size'],version=7),equivalent=True)
+                until(lambda:notice.isVisible() and notice._phase=='success')
+                self.assertEqual(self.client.view['id'],canonical)
+                self.assertEqual(self.client.view['copy_id'],identity)
+                self.assertTrue(self.client.view['local_copy']);self.assertTrue(self.client.view['backed_up'])
+                self.assertEqual(notice._current_result[1]['copy_id'],identity)
+                self.assertEqual(notice.timer.interval(),3000);self.assertGreater(notice.timer.remainingTime(),2800)
+        finally:notice.supersede();notice.deleteLater();presenter.close();presenter.deleteLater();flush()
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(prefix='flickdock-shared-files-');self.base=Path(self.temp.name)
         self.qt_errors=[];self.hook=patch.object(sys,'excepthook',lambda kind,value,trace:self.qt_errors.append((kind,value)))
@@ -143,6 +164,18 @@ class SharedFilesTests(unittest.TestCase):
     def add(self,path):
         self.adapter.view['permanent'].append(str(path));self.engine.local_changed()
         return next(row for row in self.engine.state['entries'].values() if row['ref']==str(path))
+
+    def test_permanent_control_file_rejection_stops_retry_and_late_completion(self):
+        identity=self.copy(self.source());until(lambda:identity in self.peer.held)
+        pending=self.client._pending;events=[];self.client.copy_result.connect(lambda ok,context:events.append(context['phase']))
+        self.client._task_error(pending,CloudError('Remote control token',422,'CLIPBOARD_TRANSIENT_FILE'))
+        self.assertIsNone(self.client._pending);self.assertFalse(self.client.retry.isActive())
+        self.assertFalse(self.client._valid_task(pending));self.assertEqual(self.client.view['phase'],'unavailable')
+        self.assertIsNone(self.client._cloud_progress);self.assertEqual(events,['unavailable'])
+        item=pending['package']
+        self.client._task_ready(pending,dict(id=identity,ready=True,sha256=item['sha256'],size=item['size']));flush()
+        self.assertEqual(self.client.view['phase'],'unavailable');self.assertEqual(events,['unavailable'])
+        self.assertEqual(pending['_file_phase'],'unavailable')
 
     def test_attach_at_sixty_percent_has_one_payload_and_one_progress_source(self):
         path=self.source();identity=self.copy(path);until(lambda:identity in self.peer.held)

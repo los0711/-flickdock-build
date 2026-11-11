@@ -1,0 +1,9 @@
+{
+  "$schema":"node_modules/wrangler/config-schema.json",
+  "name":"flickdock-downloads",
+  "account_id":"59153da0809ff3d18297d943e1ef5b56",
+  "compatibility_date":"2026-10-27",
+  "workers_dev":false,
+  "main":"download-worker.mjs",
+  "routes":[{"pattern":"download.flickdock.cc.cd/*","zone_id":"60b55df3c2f9ff41520ceae497024a71"}]
+}

@@ -10,7 +10,6 @@ import re
 import sys
 import os
 import threading
-import time
 from collections import OrderedDict
 from pathlib import Path
 
@@ -25,43 +24,50 @@ SHELF_HEADER_BUTTON_SIZE_PX = 32
 SHELF_HEADER_BUTTON_GAP_PX = 6
 SHELF_HEADER_RIGHT_MARGIN_PX = 16
 DROP_DASH_CYCLE_PX = 8
-DROP_DASH_SPEED_PX_PER_SECOND = 18
 DROP_HOVER_FILL_ALPHA = 13
 
 
 class DropBorderMotion(QObject):
-    """Only active drop targets subscribe to the window's existing frame clock."""
+    """Stationary dashes with finite, interruptible hover-color transitions."""
     def __init__(self,widget):
         super().__init__(widget)
-        from display_frames import FramePulse
-        self.widget=widget;self.active=False
-        self.frames=FramePulse(widget);self.frames.timeout.connect(self._frame)
+        from display_frames import DisplayAnimation
+        from ui_transitions import DROP_HOVER_TRANSITION_MS
+        self.widget=widget;self.active=False;self.progress=0.
+        self.animation=DisplayAnimation(self)
+        self.animation.setDuration(DROP_HOVER_TRANSITION_MS)
+        self.animation.setEasingCurve(QEasingCurve.OutCubic)
+        self.animation.valueChanged.connect(self._changed)
         widget.installEventFilter(self)
 
     def set_active(self,active):
-        self.active=bool(active)
-        if self.active and self.widget.isVisible() and not reduced_motion():self.frames.start()
-        else:self.frames.stop()
-        self.widget.update()
+        active=bool(active)
+        if active==self.active:return
+        self.active=active;self.animation.stop();target=float(active)
+        if not self.widget.isVisible() or reduced_motion():self._changed(target);return
+        self.animation.setStartValue(self.progress);self.animation.setEndValue(target);self.animation.start()
 
     def eventFilter(self,watched,event):
-        if event.type()==QEvent.Hide:self.frames.stop()
-        elif event.type()==QEvent.Show:self.set_active(self.active)
+        if event.type() in (QEvent.Hide,QEvent.Show):
+            self.animation.stop();self._changed(float(self.active))
         return False
 
-    def _frame(self):
-        if reduced_motion():self.frames.stop()
+    def _changed(self,value):
+        if reduced_motion() and self.animation.state()==self.animation.Running:
+            self.animation.stop();value=float(self.active)
+        self.progress=float(value)
         self.widget.update()
 
-    def paint(self,painter,path,*,dark,width=1.2,idle_fill=None,highlight=None):
-        active=self.active if highlight is None else highlight
-        fill=QColor(10,132,255,DROP_HOVER_FILL_ALPHA) if active else idle_fill
-        if fill is not None:painter.fillPath(path,fill)
-        pen=QPen(QColor('#0A84FF') if active else QColor(255,255,255,55) if dark else QColor(0,0,0,48),width)
+    def color(self,first,last):
+        return QColor.fromRgbF(*(a+(b-a)*self.progress for a,b in zip(QColor(first).getRgbF(),QColor(last).getRgbF())))
+
+    def paint(self,painter,path,*,dark,width=1.2,idle_fill=None):
+        idle=QColor(idle_fill) if idle_fill is not None else QColor(10,132,255,0)
+        painter.fillPath(path,self.color(idle,QColor(10,132,255,DROP_HOVER_FILL_ALPHA)))
+        pen=QPen(self.color(QColor(255,255,255,55) if dark else QColor(0,0,0,48),QColor('#0A84FF')),width)
         length=path.length();cycle=length/max(1,round(length/DROP_DASH_CYCLE_PX))
         pen.setDashPattern([cycle*.52/width,cycle*.48/width])
         pen.setCapStyle(Qt.FlatCap);pen.setJoinStyle(Qt.RoundJoin)
-        if self.active and active and not reduced_motion():pen.setDashOffset((time.perf_counter()*DROP_DASH_SPEED_PX_PER_SECOND/width)%(cycle/width))
         painter.setPen(pen);painter.setBrush(Qt.NoBrush);painter.drawPath(path)
 
 
@@ -294,7 +300,9 @@ _SVG_BODY = {
     # Simple Icons CC0 apple.svg, identifying a discovered Mac.
     'apple': '<path fill="currentColor" stroke="none" d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/>',
     'cloud': '<path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>',
+    'cloud-filled': '<path fill="currentColor" stroke="none" d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>',
     'computer': '<rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/>',
+    'computer-filled': '<path fill="currentColor" stroke="none" d="M5 3a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h5v2H7v2h10v-2h-3v-2h5a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2Z"/>',
     'cloud-upload': '<path d="M7 18H6a5 5 0 0 1-1-9.9A7 7 0 0 1 18 6a5 5 0 0 1 0 10h-1M12 21V11m-3 3 3-3 3 3"/>',
     'cloud-remove': '<path d="M7 18H6a5 5 0 0 1-1-9.9A7 7 0 0 1 18 6a5 5 0 0 1 0 10h-1M9 15l6 6m0-6-6 6"/>',
     'pin': '<path d="M16 3l5 5-4 1-4 4 1 5-8-8 5 1 4-4 1-4z"/><path d="M9 15l-6 6"/>',

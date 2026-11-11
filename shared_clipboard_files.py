@@ -138,6 +138,9 @@ class ClipboardFileJobs(QObject):
 
     def _restore(self,task):
         if not self.valid(task):return
+        from virtual_clipboard import remote_placeholder
+        if remote_placeholder(task['file_source']):
+            self.client._unavailable_task(task);return
         for identity in tuple(task.get('releases',{})):self.release(task['id'],identity)
         if task.get('releases') and not self.held(task):return
         item=task.get('package')

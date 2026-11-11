@@ -5,6 +5,8 @@ os.environ['QT_QPA_PLATFORM']='offscreen'
 from pathlib import Path
 import tempfile
 import unittest
+import threading
+from types import SimpleNamespace
 
 from PySide6.QtCore import QByteArray,QEvent,QObject,QMimeData,QPointF,Qt,QUrl,Signal
 from PySide6.QtGui import QDragEnterEvent,QDropEvent,QMouseEvent
@@ -42,6 +44,34 @@ class LanDialogTests(unittest.TestCase):
     def tearDown(self):
         self.dialog.close();self.dialog.deleteLater();APP.processEvents()
         self.profile.cleanup()
+
+    def test_accepted_lan_and_wan_offers_do_not_recreate_confirmation_cards(self):
+        panel=self.dialog.panel
+        accepted=threading.Event();accepted.set()
+        self.service._transfers={'lan-accepted':SimpleNamespace(accepted=accepted)}
+        self.service._pending={'wan-accepted':dict(destination=self.root)}
+        for identifier in ('lan-accepted','wan-accepted'):
+            with self.subTest(identifier=identifier):
+                offer=dict(id=identifier,peer='同账号设备',names=['file.txt'],count=1,total=12,account_device=True)
+                self.service.offer_received.emit(offer)
+                self.assertNotIn(identifier,panel._rows);self.assertNotIn(identifier,panel._offers)
+                self.service.progress.emit(dict(id=identifier,peer=offer['peer'],direction='receive',
+                    state='transferring',received=4,total=12,name='file.txt'))
+                row=panel._rows[identifier]
+                self.assertFalse(row.get('extra'));self.assertFalse(row['detail'].isHidden())
+
+    def test_auto_accept_after_the_offer_replaces_confirmation_with_live_progress(self):
+        panel=self.dialog.panel
+        for state in ('connecting','transferring'):
+            with self.subTest(state=state):
+                identifier='offer-'+state
+                panel.show_offer(dict(id=identifier,peer='同账号设备',names=['file.txt'],count=1,total=12))
+                APP.processEvents()
+                row=panel._rows[identifier];self.assertFalse(row['extra'].isHidden())
+                self.service.progress.emit(dict(id=identifier,peer='同账号设备',direction='receive',
+                    state=state,received=4,total=12,name='file.txt'))
+                self.assertTrue(row['extra'].isHidden());self.assertFalse(row['heading'].isHidden())
+                self.assertFalse(row['detail'].isHidden());self.assertNotIn(identifier,panel._offers)
 
     def test_preparation_has_only_a_static_label_until_real_payload_progress(self):
         panel=self.dialog.panel

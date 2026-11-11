@@ -11,7 +11,8 @@ from pathlib import Path
 from uuid import uuid4
 
 from PySide6.QtCore import QObject, QTimer, QUrl, Qt, Signal, QFile, QIODevice
-from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
+from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply,QNetworkProxy
+from network_environment import proxy_routes
 from app_version import APP_VERSION
 from cloud_config import CLOUD_ORIGINS
 from download_writer import DownloadWriter
@@ -75,6 +76,7 @@ class CloudApi(QObject):
         self.origin = str(origin).rstrip('/')
         self.network = network or QNetworkAccessManager(self)
         self.priority_network = network or QNetworkAccessManager(self)
+        self._owns_network=network is None;self._direct_networks={};self._proxy_profile=None;self.prefers_direct=False
         self.token = ''
         self._requests = {}
         self._deferred = {}
@@ -99,7 +101,7 @@ class CloudApi(QObject):
 
     def request(self, method, path, callback, *, data=None, raw=None, source=None, source_offset=0, source_size=None, headers=None,
                 authenticated=True, destination=None, expected=None, timeout_ms=45000,
-                progress=None, receive_progress=None,priority='normal',_fallback_used=False,_deadline=None):
+                progress=None, receive_progress=None,priority='normal',_fallback_used=False,_deadline=None,_direct_route=None):
         """callback(result,error); optional progress callbacks report network bytes.
 
         Upload progress counts bytes handed to the network, not committed R2
@@ -157,6 +159,15 @@ class CloudApi(QObject):
             request.setRawHeader(b'Content-Type', b'application/octet-stream' if raw is not None or source is not None else b'application/json')
             for name, value in (headers or {}).items(): request.setRawHeader(name.encode('ascii'), str(value).encode('ascii'))
             network=self.priority_network if priority=='high' else self.network
+            routes=tuple(proxy_routes(self.origin)) if self._owns_network else ()
+            if routes!=self._proxy_profile:self._proxy_profile=routes;self.prefers_direct=False
+            proxied=any(route.type()!=QNetworkProxy.NoProxy for route in routes)
+            direct=bool(proxied and (self.prefers_direct if _direct_route is None else _direct_route))
+            if direct:
+                lane='high' if priority=='high' else 'normal'
+                if lane not in self._direct_networks:
+                    manager=QNetworkAccessManager(self);manager.setProxy(QNetworkProxy(QNetworkProxy.NoProxy));self._direct_networks[lane]=manager
+                network=self._direct_networks[lane]
             reply = network.sendCustomRequest(request, method.encode('ascii'), source_file or payload)
             timer = QTimer(self); timer.setSingleShot(True)
             state = {'reply':reply,'callback':callback,'timer':timer,'body':bytearray(),
@@ -169,13 +180,19 @@ class CloudApi(QObject):
                      'auth_token':self.token if authenticated else None,
                      'origin':self.origin,'sent':None,'connect_timer':None,
                      'started':time.monotonic(),'budget':max(total_timeout,300000) if destination else total_timeout,
-                     'retry':None}
+                     'retry':None,'route_retry':False,'proxy_profile':routes,'direct_route':direct}
             state.update(writer=None,writer_result=None,writer_finishing=False,writer_completed=False,disk_priority=priority,
                          deferred_error=None,drain_scheduled=False,last_payload=time.monotonic())
             if destination and callable(getattr(reply,'setReadBufferSize',None)):reply.setReadBufferSize(1024*1024)
             if _deadline is not None:state['budget']=min(state['budget'],max(1,round((_deadline-time.monotonic())*1000)))
             deadline=state['deadline']=time.monotonic()+state['budget']/1000
-            if len(CLOUD_ORIGINS)>1 and self.origin in CLOUD_ORIGINS and not _fallback_used:
+            if proxied and not _fallback_used:
+                state['route_retry']=True
+                state['retry']=lambda remaining,done:self.request(method,path,done,data=data,raw=raw,source=source,
+                    source_offset=source_offset,source_size=source_size,headers=dict(headers) if headers else None,
+                    authenticated=authenticated,destination=destination,expected=expected,timeout_ms=remaining,
+                    progress=progress,receive_progress=receive_progress,priority=priority,_fallback_used=True,_deadline=deadline,_direct_route=not direct)
+            elif len(CLOUD_ORIGINS)>1 and self.origin in CLOUD_ORIGINS and not _fallback_used:
                 state['retry']=lambda remaining,done:self.request(method,path,done,data=data,raw=raw,source=source,
                     source_offset=source_offset,source_size=source_size,headers=dict(headers) if headers else None,
                     authenticated=authenticated,destination=destination,expected=expected,timeout_ms=remaining,
@@ -427,19 +444,22 @@ class CloudApi(QObject):
         if error is not None:
             from network_diagnostics import record_event
             record_event(self.diagnostics_dir,'cloud','request',getattr(error,'code','') or 'REQUEST_FAILED',status,details=getattr(error,'details',None))
-        if (len(CLOUD_ORIGINS)>1 and not self._closed and error is not None and getattr(error,'code','')=='NETWORK_UNREACHABLE'
-                and state['origin'] in CLOUD_ORIGINS):
+        if ((state['route_retry'] or len(CLOUD_ORIGINS)>1 and state['origin'] in CLOUD_ORIGINS)
+                and not self._closed and error is not None and getattr(error,'code','')=='NETWORK_UNREACHABLE'):
             # Slots can cancel/close synchronously while the new entrance is
             # announced. Keep the original key cancellable throughout handoff.
             self._handoffs[key]=state
-            if self.origin==state['origin']:
+            if state['route_retry'] and self._proxy_profile==state['proxy_profile']:
+                self.prefers_direct=not state['direct_route']
+            elif not state['route_retry'] and self.origin==state['origin']:
                 self.origin=CLOUD_ORIGINS[(CLOUD_ORIGINS.index(self.origin)+1)%len(CLOUD_ORIGINS)]
                 self.origin_changed.emit(self.origin)
             self._handoffs.pop(key,None)
             if self._closed or state.get('cancelled'):return
             remaining=max(0,state['budget']-round((time.monotonic()-state['started'])*1000))
             before_connect=reply.error() in (QNetworkReply.NetworkError.HostNotFoundError,QNetworkReply.NetworkError.ConnectionRefusedError,
-                QNetworkReply.NetworkError.ProxyConnectionRefusedError,QNetworkReply.NetworkError.ProxyNotFoundError,QNetworkReply.NetworkError.SslHandshakeFailedError)
+                QNetworkReply.NetworkError.ProxyConnectionRefusedError,QNetworkReply.NetworkError.ProxyNotFoundError,
+                QNetworkReply.NetworkError.ProxyTimeoutError,QNetworkReply.NetworkError.ProxyAuthenticationRequiredError,QNetworkReply.NetworkError.SslHandshakeFailedError)
             # A timeout/closed connection is ambiguous for mutations. Only
             # idempotent reads or a definitive pre-HTTP failure can replay.
             if (state['retry'] is not None and remaining>0

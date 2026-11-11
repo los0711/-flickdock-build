@@ -49,6 +49,26 @@ jobs:
           else
             python build_macos.py --target-arch '${{ matrix.arch }}'
           fi
+      - name: Verify Keychain startup, automatic update, cached retry and completed notice
+        run: build/macos-venv/bin/python -m unittest test_account_security_v180 test_mac_updates test_update_macos_controller test_update_macos test_update_resume_v1821 test_update_notice_v1813 test_shelf_live_v1821 test_utility_feedback_v1828 -q
+      - name: Inspect packaged network permission identity without changing macOS security
+        run: |
+          build/macos-venv/bin/python - <<'PY'
+          import json,plistlib,re,subprocess
+          from pathlib import Path
+          app=Path('dist/FlickDock.app')
+          info=plistlib.loads((app/'Contents/Info.plist').read_bytes())
+          assert info['CFBundleIdentifier']=='com.flickdock.app' and info.get('NSLocalNetworkUsageDescription')
+          executable=app/'Contents/MacOS/FlickDock'
+          uuid=subprocess.run(['/usr/bin/dwarfdump','--uuid',str(executable)],capture_output=True,text=True,check=True,timeout=10)
+          assert re.search(r'UUID: [0-9A-F-]{36}',uuid.stdout)
+          subprocess.run(['/usr/bin/codesign','--verify','--deep','--strict',str(app)],check=True,timeout=30)
+          signature=subprocess.run(['/usr/bin/codesign','-dv','--verbose=4',str(executable)],capture_output=True,text=True,check=True,timeout=10)
+          result=dict(ok=True,usage_description_declared=True,main_uuid_present=True,signature_verified=True,
+                      ad_hoc_signed='Signature=adhoc' in signature.stderr,local_network_grant='not_queried',
+                      scope='Packaged app identity; does not prove installed-app privacy authorization')
+          Path('../outputs/mac-network-${{ matrix.arch }}.json').write_text(json.dumps(result,indent=2))
+          PY
       - name: Test real cloud sync from frozen macOS client
         run: |
           profile="$(mktemp -d)"
@@ -58,6 +78,10 @@ jobs:
         run: |
           build/macos-venv/bin/python -m unittest test_stability_v1822 test_resources_v1822.ResourceTests test_motion_resources_v1822.MotionTests test_motion_resources_v1822.DisplayMetadataTests test_motion_resources_v1822.MacVolumeTests test_receive_lifecycle_v1822.ReceiveLifecycleTests test_transfer_entry_v1822.EntryTests test_small_upload_lane.SmallLaneTests -q
           build/macos-venv/bin/python -m unittest test_workbench_v1823 -q
+      - name: Verify native utility windows and copy capsule lifecycle
+        run: build/macos-venv/bin/python ci_utility_windows.py --output "../outputs/mac-utility-${{ matrix.arch }}.json"
+      - name: Verify capsule styles and copied artwork from the frozen application
+        run: QT_QPA_PLATFORM=cocoa dist/FlickDock.app/Contents/MacOS/FlickDock --verify-notices --verify-output "../outputs/mac-notices-${{ matrix.arch }}.json"
       - name: Measure verified local LAN loopback transfer
         run: |
           build/macos-venv/bin/python bench_lan_throughput_v183.py --size-mib 128 --output "../outputs/mac-lan-${{ matrix.arch }}.json"
@@ -85,7 +109,7 @@ jobs:
           import shutil
           source, target = Path('../outputs'), Path('ci-output')
           target.mkdir()
-          for pattern in ('FlickDock-*-macOS-${{ matrix.arch }}.zip', 'FlickDock-*-macOS-${{ matrix.arch }}.dmg', 'FlickDock-*-macOS-${{ matrix.arch }}.pkg', 'mac-build-*-${{ matrix.arch }}.json', 'mac-cloud-${{ matrix.arch }}.json', 'mac-lan-${{ matrix.arch }}.json', 'mac-video-${{ matrix.arch }}.json'):
+          for pattern in ('FlickDock-*-macOS-${{ matrix.arch }}.zip', 'FlickDock-*-macOS-${{ matrix.arch }}.dmg', 'FlickDock-*-macOS-${{ matrix.arch }}.pkg', 'mac-build-*-${{ matrix.arch }}.json', 'mac-cloud-${{ matrix.arch }}.json', 'mac-lan-${{ matrix.arch }}.json', 'mac-video-${{ matrix.arch }}.json', 'mac-utility-${{ matrix.arch }}.json', 'mac-network-${{ matrix.arch }}.json', 'mac-notices-${{ matrix.arch }}.json', 'mac-update-runtime-${{ matrix.arch }}.json'):
               files = list(source.glob(pattern))
               assert len(files) == 1, (pattern, files)
               for path in files:

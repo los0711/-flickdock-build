@@ -1,5 +1,5 @@
 """A child-surface drop chooser; never a second native popup or shelf import."""
-from PySide6.QtCore import QObject,QEvent,QPoint,QRect,QRectF,Qt,QTimer,QEasingCurve
+from PySide6.QtCore import QObject,QEvent,QPoint,QRect,QRectF,Qt,QTimer,QEasingCurve,Signal
 from PySide6.QtGui import QColor,QPainter,QPainterPath
 from PySide6.QtWidgets import QApplication,QWidget
 from shiboken6 import isValid
@@ -22,10 +22,11 @@ class TransferDropSurface(QWidget):
         super().__init__(parent);self.active=None;self.press=0.;self.setAcceptDrops(True)
         self.setAttribute(Qt.WA_ShowWithoutActivating);self.hide()
         from native_ui_common import DropBorderMotion
-        self.border_motion=DropBorderMotion(self)
+        self.border_motions={mode:DropBorderMotion(self) for mode in ('lan','wan')}
 
     def set_target(self,target):
-        self.active=target;self.border_motion.set_active(target is not None)
+        self.active=target
+        for mode,motion in self.border_motions.items():motion.set_active(mode==target)
 
     def target(self,point):
         if not self.rect().contains(point):return None
@@ -41,14 +42,16 @@ class TransferDropSurface(QWidget):
             p.setBrush(QColor(c['surface']));p.setPen(Qt.NoPen);p.drawRoundedRect(rect,8,8)
             path=QPainterPath();path.addRoundedRect(rect.adjusted(1,1,-1,-1),7,7)
             from ui_theme import current_theme
-            self.border_motion.paint(p,path,dark=current_theme()=='dark',highlight=selected)
-            icon(glyph,c['link'] if selected else c['secondary']).paint(p,QRect(16,19+i*52,16,16))
-            p.setPen(QColor(c['text'] if selected else c['secondary']))
+            self.border_motions[mode].paint(p,path,dark=current_theme()=='dark')
+            motion=self.border_motions[mode]
+            icon(glyph,motion.color(c['secondary'],c['link']).name()).paint(p,QRect(16,19+i*52,16,16))
+            p.setPen(motion.color(c['secondary'],c['text']))
             p.drawText(rect.adjusted(40,0,-6,0),Qt.AlignVCenter|Qt.AlignLeft,label)
         p.end()
 
 
 class TransferEntryRouter(QObject):
+    active_changed=Signal(bool)
     def __init__(self,root,button,deliver):
         super().__init__(root);self.root=root;self.button=button;self.deliver=deliver
         self.surface=TransferDropSurface(root);self._dropping=False
@@ -66,8 +69,10 @@ class TransferEntryRouter(QObject):
     def _press(self,value):self.surface.press=float(value);self.surface.update()
 
     def reset(self):
-        self.leave.stop();self.surface.hide();self.surface.set_target(None)
+        was_visible=self.surface.isVisible()
+        self.leave.stop();self.feedback.stop();self.surface.hide();self.surface.set_target(None)
         self.surface.press=0.;self._dropping=False
+        if was_visible:self.active_changed.emit(False)
 
     def _show(self):
         origin=self.button.mapTo(self.root,QPoint())
@@ -75,6 +80,7 @@ class TransferEntryRouter(QObject):
         x=max(4,min(origin.x(),self.root.width()-width-4))
         y=max(4,min(origin.y()-108,self.root.height()-108))
         self.surface.setGeometry(x,y,width,108);self.surface.show();self.surface.raise_()
+        self.active_changed.emit(True)
 
     def eventFilter(self,watched,event):
         if not isValid(self.root):return False

@@ -13,8 +13,8 @@ from pathlib import Path
 import sys
 from uuid import uuid4
 
-from PySide6.QtCore import QByteArray, QCoreApplication, QElapsedTimer, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QKeySequence, QColor, QFont, QFontDatabase, QPainter, QPen, QGuiApplication, QIcon, QPixmap, QWheelEvent
+from PySide6.QtCore import QByteArray, QCoreApplication, QElapsedTimer, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QKeySequence, QColor, QFont, QFontDatabase, QPainter, QPen, QGuiApplication, QIcon, QPixmap, QWheelEvent, QDesktopServices
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
                                QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QLineEdit, QPushButton,
                                QVBoxLayout, QGridLayout, QKeySequenceEdit, QScrollArea, QWidget, QSizePolicy,
@@ -469,6 +469,12 @@ class SettingsTitleBar(QWidget):
 class SettingsStore(QObject):
     changed = Signal()
 
+    @property
+    def translation_enabled(self):return self._data['translation_enabled']
+
+    @property
+    def translation_target(self):return self._data['translation_target']
+
     def __init__(self, base: Path, parent: QObject | None = None):
         super().__init__(parent)
         self.base = Path(base).resolve()
@@ -478,6 +484,7 @@ class SettingsStore(QObject):
                       "sync_upload_enabled": True, "sync_receive_enabled": True,
                       "clipboard_sync_enabled": True, "clipboard_notice_seen": False, "clipboard_success_notice": True,
                       "video_link_prompt": True, "video_download_dir": str(self.base / "videos"),
+                      "translation_enabled": True, "translation_target": "zh",
                       "trigger_view": "compact", "shake_sensitivity": DEFAULT_SHAKE_SENSITIVITY,
                       "view_mode": "list", "shelf_shortcut": SHELF_SHORTCUT,
                       "overview_shortcut": OVERVIEW_SHORTCUT, "dock_edge": "right",
@@ -509,7 +516,10 @@ class SettingsStore(QObject):
                 if isinstance(video_directory,str) and video_directory.strip():
                     candidate=Path(os.path.expandvars(video_directory)).expanduser()
                     if candidate.is_absolute():self._data['video_download_dir']=str(candidate)
-                for name in ("sync_upload_enabled", "sync_receive_enabled", "clipboard_sync_enabled", "clipboard_notice_seen", "clipboard_success_notice", "automatic_updates", "video_link_prompt"):
+                from translation_languages import TARGETS
+                target=data.get('translation_target')
+                if isinstance(target,str) and target in TARGETS:self._data['translation_target']=target
+                for name in ("sync_upload_enabled", "sync_receive_enabled", "clipboard_sync_enabled", "clipboard_notice_seen", "clipboard_success_notice", "automatic_updates", "video_link_prompt", "translation_enabled"):
                     if isinstance(data.get(name), bool):
                         self._data[name] = data[name]
                 if data.get("capture_mode") in CAPTURE_MODES:
@@ -701,9 +711,13 @@ class SettingsStore(QObject):
                dock_position=None, dock_length=None, dock_thickness=None,
                trigger_visible=None, dock_color=None, dock_opacity=None,
                capture_mode=None, keep_empty_handle=None, trigger_view=None,
-               shake_sensitivity=None, sync_upload_enabled=None,
+               shake_sensitivity=None, sync_upload_enabled=None, translation_enabled=None, translation_target=None,
                sync_receive_enabled=None, clipboard_sync_enabled=None, clipboard_notice_seen=None, clipboard_success_notice=None, display_triggers=None, automatic_updates=None, video_link_prompt=None, video_download_dir=None) -> bool:
         candidate = dict(self._data)
+        if translation_target is not None:
+            from translation_languages import TARGETS
+            if translation_target not in TARGETS:raise ValueError('请选择有效的翻译目标语言。')
+            candidate['translation_target']=translation_target
         if display_triggers is not None:
             from display_triggers import validate_profiles
             candidate['display_triggers']=validate_profiles(display_triggers)
@@ -729,6 +743,7 @@ class SettingsStore(QObject):
                             ("clipboard_notice_seen", clipboard_notice_seen),
                             ("clipboard_success_notice", clipboard_success_notice),
                             ("video_link_prompt", video_link_prompt),
+                            ("translation_enabled", translation_enabled),
                             ("automatic_updates", automatic_updates)):
             if value is not None:
                 if not isinstance(value, bool):
@@ -1542,12 +1557,18 @@ class SettingsDialog(QDialog):
         kl.addWidget(self._reference_toggle(self.startup_checkbox,'登录系统时自动启动',shortcuts))
         self.automatic_updates_checkbox=SettingsToggleSwitch('自动更新',shortcuts)
         self.automatic_updates_checkbox.setAccessibleName('自动检查并后台下载更新')
-        self.automatic_updates_checkbox.setToolTip('自动检查并后台下载更新；安装前提示重启，不中断正在进行的传输。')
+        self.automatic_updates_checkbox.setToolTip('后台下载更新，空闲时自动安装并重启；正在进行的传输完成后再更新。')
         self.automatic_updates_checkbox.toggled.connect(self._automatic_updates_changed)
         updates=self._card();ul=QVBoxLayout(updates);ul.setContentsMargins(16,16,16,16);ul.setSpacing(12)
         updates_title=QLabel('更新与关于',updates);updates_title.setObjectName('settingsSection');ul.addWidget(updates_title)
         ul.addWidget(self._reference_toggle(self.automatic_updates_checkbox,'自动更新',updates))
         ul.addWidget(self.update_button)
+        self.website_button=QPushButton('访问官网 ↗',updates)
+        self.website_button.setObjectName('settingsBrowse')
+        self.website_button.setAutoDefault(False)
+        self.website_button.setAccessibleName('在浏览器打开 FlickDock 官网')
+        self.website_button.clicked.connect(lambda:QDesktopServices.openUrl(QUrl('https://flickdock.cc.cd')))
+        ul.addWidget(self.website_button)
         release=QLabel('FlickDock '+APP_VERSION,updates);release.setObjectName('settingsDetail');ul.addWidget(release)
         self.startup_status_label.setParent(shortcuts);self.startup_status_label.hide()
         self._pointer_paste_permission=None
@@ -1567,11 +1588,28 @@ class SettingsDialog(QDialog):
         video_heading=QLabel('视频解析',video);video_heading.setObjectName('settingsSection');vl.addWidget(video_heading)
         vl.addWidget(self._reference_toggle(self.video_prompt_checkbox,'复制视频链接时提示解析',video))
         video_note=QLabel('视频保存位置可在总览的「视频解析」中更改。',video);video_note.setObjectName('settingsDetail');video_note.setWordWrap(True);vl.addWidget(video_note)
-        self.setting_categories=(('常规',(shortcuts,)),('账号与设备',(self.account_slot,)),('外观与交互',(appearance,dock)),('同步与剪贴板',(cloud,)),('文件与保存',(storage,)),('视频解析',(video,)),('更新与关于',(updates,)))
+        translation=self._card();tl=QVBoxLayout(translation);tl.setContentsMargins(16,16,16,16);tl.setSpacing(12)
+        title=QLabel('翻译',translation);title.setObjectName('settingsSection');tl.addWidget(title)
+        self.translation_switch=SettingsToggleSwitch('复制文字时提示翻译',translation)
+        self.translation_switch.setChecked(self.store.translation_enabled)
+        tl.addWidget(self._reference_toggle(self.translation_switch,'复制文字时提示翻译',translation))
+        target_row=QHBoxLayout();target_row.addWidget(QLabel('目标语言',translation),1)
+        self.translation_language=SettingsComboBox(translation)
+        self.translation_language.setAccessibleName('翻译目标语言')
+        from translation_languages import LANGUAGES
+        for code,label,_ in LANGUAGES:self.translation_language.addItem(label,code)
+        self.translation_language.setCurrentIndex(self.translation_language.findData(self.store.translation_target))
+        target_row.addWidget(self.translation_language);tl.addLayout(target_row)
+        note=QLabel('无需登录即可使用。仅复制文字时提示，点击翻译后才发送至翻译服务；链接、图片和文件不会触发。',translation)
+        note.setObjectName('settingsDetail');note.setWordWrap(True);tl.addWidget(note)
+        self.translation_switch.toggled.connect(lambda enabled:self._translation_preference(translation_enabled=enabled))
+        self.translation_language.currentIndexChanged.connect(lambda _:self._translation_preference(translation_target=self.translation_language.currentData()))
+        self.store.changed.connect(self._refresh_translation_preferences)
+        self.setting_categories=(('常规',(shortcuts,)),('账号与设备',(self.account_slot,)),('外观与交互',(appearance,dock)),('同步与剪贴板',(cloud,)),('文件与保存',(storage,)),('视频解析',(video,)),('翻译',(translation,)),('更新与关于',(updates,)))
         for label,sections in self.setting_categories:
             self.category_list.addItem(label)
             for section in sections:
-                if self.body_layout.indexOf(section)<0:self.body_layout.addWidget(section)
+                self.body_layout.removeWidget(section);self.body_layout.addWidget(section)
         self.body_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.body_layout.setSizeConstraints(QLayout.SizeConstraint.SetMinimumSize,QLayout.SizeConstraint.SetNoConstraint)
         self._body_fit_timer=QTimer(self);self._body_fit_timer.setSingleShot(True)
@@ -1595,23 +1633,29 @@ class SettingsDialog(QDialog):
         self.display_trigger_editor.load_values()
         self.update_activity.setVisible(self.update_activity.active)
         self.update_notes_area.hide()
-        self._category_scroll={};self._category_index=-1;self._category_generation=0
-        self.category_list.currentRowChanged.connect(self._select_category);self.category_list.setCurrentRow(0)
+        from settings_navigation import SettingsNavigation
+        self._anchor_navigation=SettingsNavigation(self)
+        self.category_list.currentRowChanged.connect(self._select_category)
+        self.category_list.itemClicked.connect(lambda item:self._select_category(self.category_list.row(item)))
+        self.category_list.setCurrentRow(0)
 
     def _select_category(self,index):
-        if not 0<=index<len(self.setting_categories):return
-        self._category_scroll[self._category_index]=self.scroll.verticalScrollBar().value()
-        self._category_index=index;self._category_generation+=1;generation=self._category_generation
-        for number,(_,sections) in enumerate(self.setting_categories):
-            for section in sections:section.setVisible(number==index)
-        self.body_layout.invalidate();self.body_layout.activate();self._fit_settings_body()
-        def restore():
-            if generation==self._category_generation:self.scroll.verticalScrollBar().setValue(self._category_scroll.get(index,0))
-        QTimer.singleShot(0,self,restore)
+        self._anchor_navigation.go(index)
+
+    def _translation_preference(self,**values):
+        try:self.store.update(**values)
+        except (OSError,ValueError) as error:
+            self.error_label.setText(str(error));self.error_label.show();self._refresh_translation_preferences()
+
+    def _refresh_translation_preferences(self):
+        from PySide6.QtCore import QSignalBlocker
+        with QSignalBlocker(self.translation_switch),QSignalBlocker(self.translation_language):
+            self.translation_switch.setChecked(self.store.translation_enabled)
+            self.translation_language.setCurrentIndex(self.translation_language.findData(self.store.translation_target))
 
     def select_category(self,label):
         index=next(index for index,(title,_) in enumerate(self.setting_categories) if title==label)
-        self.category_list.setCurrentRow(index)
+        self._select_category(index)
 
     @property
     def update_state(self):
@@ -1726,7 +1770,7 @@ class SettingsDialog(QDialog):
             previous.setParent(None)
         self._lan_panel = widget
         if widget is not None:
-            self.body_layout.insertWidget(1 if self._account_panel is not None else 0, widget)
+            self.body_layout.insertWidget(self.body_layout.indexOf(self.account_slot)+1, widget)
             widget.show()
             for child in [widget, *widget.findChildren(QWidget)]:
                 child.installEventFilter(self)

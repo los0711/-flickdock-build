@@ -169,13 +169,13 @@ class UtilityPreferenceTests(unittest.TestCase):
         from intake_notice import ClipboardNotice
         from PySide6.QtGui import QImage,QColor
         with tempfile.TemporaryDirectory() as directory,patch('native_ui_common.reduced_motion',return_value=True):
-            manager=SimpleNamespace(settings=SimpleNamespace(theme='dark'));notice=ClipboardNotice(manager)
+            manager=SimpleNamespace(settings=SimpleNamespace(theme='dark',clipboard_success_notice=True));notice=ClipboardNotice(manager)
             path=Path(directory)/'original.txt';path.write_text('original')
             image=QImage(8,8,QImage.Format_RGB32);image.fill(QColor('red'))
             try:
                 for value in (('text',{'text':'hello'}),('text',{'text':'https://example.com'}),('image',{'image':image}),('files',[str(path)])):
                     notice.show_result(True,dict(value=value,point=(10,10)));flush()
-                    self.assertEqual(notice.message.text(),'复制已同步');self.assertTrue(notice.preview.text())
+                    self.assertEqual(notice.accessibleName(),'复制已同步');self.assertNotIn('original.txt',notice.accessibleName())
                     area=APP.primaryScreen().availableGeometry()
                     self.assertEqual(notice.pos(),QPoint(area.left()+(area.width()-notice.width())//2,area.bottom()-notice.height()-15))
                     self.assertTrue(notice.windowFlags()&Qt.WindowStaysOnTopHint);self.assertTrue(notice.testAttribute(Qt.WA_ShowWithoutActivating))
@@ -186,7 +186,7 @@ class UtilityPreferenceTests(unittest.TestCase):
     def test_rapid_copy_notice_discards_superseded_results(self):
         from intake_notice import ClipboardNotice
         with patch('native_ui_common.reduced_motion',return_value=True):
-            notice=ClipboardNotice(SimpleNamespace(settings=SimpleNamespace(theme='dark')))
+            notice=ClipboardNotice(SimpleNamespace(settings=SimpleNamespace(theme='dark',clipboard_success_notice=True)))
             try:
                 with patch.object(notice,'show_result',wraps=notice.show_result) as display:
                     notice.schedule_result(False,dict(id='old',value=('text',{'text':'old'})))
@@ -194,8 +194,8 @@ class UtilityPreferenceTests(unittest.TestCase):
                     notice.schedule_result(True,dict(id='latest',value=('text',{'text':'latest'})))
                     self.assertFalse(notice.isVisible());QTest.qWait(190);flush()
                     display.assert_called_once();self.assertEqual(display.call_args.args[1]['id'],'latest')
-                    self.assertEqual(notice.message.text(),'复制已同步')
-                    self.assertEqual(notice.preview.text(),'latest')
+                    self.assertEqual(notice.accessibleName(),'复制已同步')
+                    self.assertEqual(notice._current_result[1]['id'],'latest')
                     notice.supersede();self.assertFalse(notice.isVisible())
             finally:notice.hide();notice.deleteLater();flush()
 
@@ -238,7 +238,7 @@ class ReceivingCodeClientTests(unittest.TestCase):
 
 
 class AutomaticUpdateTests(unittest.TestCase):
-    def test_default_downloads_in_background_and_waits_for_explicit_install(self):
+    def test_default_downloads_in_background_and_installs_when_idle(self):
         import test_update_inline_v171 as update_fixture
         case=update_fixture.InlineUpdates();case.setUp()
         try:
@@ -247,10 +247,15 @@ class AutomaticUpdateTests(unittest.TestCase):
             self.assertEqual(case.controller.state,'downloading')
             self.assertEqual([row[0] for row in case.client.calls],['check','download'])
             self.assertFalse(case.dialog.isVisible());self.assertEqual(case.events,[])
+            active=[True];case.controller._is_busy=lambda:active[0]
             case.client.complete(case.path,case.manifest)
             self.assertEqual(case.controller.state,'ready');self.assertEqual(case.events,[])
             previous=list(case.client.calls);case.controller.check_automatically()
             self.assertEqual(case.client.calls,previous)
+            with patch.object(case.controller,'_start_verification',return_value=True) as install:
+                active[0]=False;case.controller._resume_automatic()
+                install.assert_called_once();self.assertTrue(case.controller._authorized)
+                self.assertTrue(case.controller._silent_install)
             case.store.update(automatic_updates=False)
             self.assertFalse(case.controller.check_automatically())
             self.assertFalse(SettingsStore(case.store.base).automatic_updates)

@@ -90,6 +90,11 @@ try{
   for(const path of pipes)await transport('DELETE',path,a);
   console.log('PASS cloud transport original R2 bytes, owner/account/direction isolation, idempotent writes, read acknowledgements and cleanup');
   sb.send({type:'accept',id:request.id});const connected=await sa.wait(row=>row.type==='begin'&&row.id===request.id);
+  const reconnectAfter=sa.messages.length;
+  sb.send({type:'accept',id:request.id});
+  const resumed=await sa.wait(row=>row.type==='resumed'&&row.id===request.id,reconnectAfter);
+  assert.equal(resumed.accepted,true);assert.equal(resumed.generation,connected.generation);
+  console.log('PASS receiver signaling recovery wakes the initiator without losing the accepted transfer');
   const route={kind:'start',id:randomBytes(16).toString('hex'),directOnly:true};
   sa.send({type:'path_signal',id:request.id,generation:connected.generation,value:route});
   assert.deepEqual((await sb.wait(row=>row.type==='path_signal'&&row.id===request.id)).value,route);

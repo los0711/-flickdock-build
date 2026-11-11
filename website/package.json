@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "deploy": "node scripts/publish.mjs",
     "check": "node test/check-site.mjs && node test/check-gateway.mjs",
     "build:retiehe": "node scripts/build-retiehe.mjs"
   },

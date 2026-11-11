@@ -15,7 +15,7 @@ globalThis.FixedLengthStream=class extends TransformStream {
 };
 
 registerHooks({resolve(specifier,context,next){
-  if(['./hash-state','./wan','./manual-signal','./relay-budget','./clipboard','./intake','./shared-file','./storage-budget','./cloud-pipe'].includes(specifier))specifier+='.ts';
+  if(['./hash-state','./wan','./manual-signal','./relay-budget','./clipboard','./intake','./shared-file','./storage-budget','./shelf-storage','./cloud-pipe','./translation'].includes(specifier))specifier+='.ts';
   return next(specifier,context);
 },load(url,context,next){
   if(url==='cloudflare:workers')return {format:'module',shortCircuit:true,source:'export class DurableObject { constructor(ctx,env){this.ctx=ctx;this.env=env} }; export class WorkerEntrypoint { constructor(ctx,env){this.ctx=ctx;this.env=env} }'};
@@ -35,7 +35,7 @@ async function race(failPut,fastUpload=false,fastMultipart=false){
     bind(...values){return new Statement(this.sql,values);}
     async first(){return sqlite.prepare(this.sql).get(...this.values)??null;}
     async all(){return {results:sqlite.prepare(this.sql).all(...this.values)};}
-    execute(){const result=sqlite.prepare(this.sql).run(...this.values);return {meta:{changes:Number(result.changes)}};}
+    execute(){const statement=sqlite.prepare(this.sql);if(statement.columns().length){const results=statement.all(...this.values);return {results,meta:{changes:Number(sqlite.prepare('SELECT changes() n').get().n)}};}const result=statement.run(...this.values);return {results:[],meta:{changes:Number(result.changes)}};}
     async run(){return this.execute();}
   }
   const DB={prepare:sql=>new Statement(sql),async batch(statements){sqlite.exec('BEGIN');try{const result=statements.map(s=>s.execute());sqlite.exec('COMMIT');return result;}catch(error){sqlite.exec('ROLLBACK');throw error;}}};
@@ -45,9 +45,25 @@ async function race(failPut,fastUpload=false,fastMultipart=false){
   sqlite.prepare('INSERT INTO sessions VALUES(?,?,?,?)').run(sha(token),account,device,now+86400000);
   const objects=new Map(),entered=deferred(),finish=deferred();
   const env={DB,FILES:{async put(key,data){entered.resolve();await finish.promise;if(failPut)throw new Error('simulated storage failure');const bytes=Buffer.from(data instanceof ReadableStream?await new Response(data).arrayBuffer():data);objects.set(key,bytes);return {size:bytes.length,checksums:{sha256:Buffer.from(sha(bytes),'hex')}};},async delete(keys){for(const key of typeof keys==='string'?[keys]:keys)objects.delete(key);}},CHUNK_BYTES:'131072',SINGLE_PUT_LIMIT_BYTES:fastMultipart?'4194304':undefined,AUTH_PEPPER:'fixture-secret-that-never-leaves-this-test'};
+  const checkHandoff=!failPut&&!fastUpload&&!fastMultipart,background=[];
+  let firstIntakeEnd=true,commitDuringIntake=null;
+  if(checkHandoff)env.EVENTS={idFromName:value=>value,get(){return {async fetch(input,options={}){
+    const path=new URL(typeof input==='string'?input:input.url).pathname;
+    if(path==='/intake'&&options.method==='POST'){
+      const value=JSON.parse(options.body);
+      if(value.end&&firstIntakeEnd){
+        assert.ok(sqlite.prepare("SELECT id FROM uploads WHERE id=? AND state='pending'").get(value.end),
+          'Preparation must not retire before the durable upload exists');firstIntakeEnd=false;
+      }
+    }
+    if(path==='/intake'&&!options.method&&commitDuringIntake){
+      sqlite.prepare("UPDATE uploads SET state='committed' WHERE id=?").run(commitDuringIntake);commitDuringIntake=null;
+    }
+    return Response.json({transfers:[]});
+  }}}};
   async function call(method,path,data,raw=false){
     const headers={Authorization:'Bearer '+token};if(data!==undefined)headers[raw?'X-Content-SHA256':'Content-Type']=raw?sha(data):'application/json';
-    return worker.fetch(new Request('http://localhost'+path,{method,headers,body:data===undefined?undefined:raw?data:JSON.stringify(data)}),env);
+    return worker.fetch(new Request('http://localhost'+path,{method,headers,body:data===undefined?undefined:raw?data:JSON.stringify(data)}),env,{waitUntil:p=>background.push(p)});
   }
   const data=Buffer.alloc(fastMultipart?72*1024*1024:fastUpload?5*1024*1024:131072,117),item=randomUUID();
   const reserved=await (await call('POST','/v1/uploads',{item_id:item,base_version:0,kind:'file',name:'original.png',mime_type:'image/png',size:data.length,sha256:sha(data),fast_upload:fastUpload,fast_multipart:fastMultipart})).json();
@@ -71,6 +87,16 @@ async function race(failPut,fastUpload=false,fastMultipart=false){
   const delayed=randomUUID();assert.equal((await call('DELETE',`/v1/uploads/${delayed}`)).status,200);
   const late=await call('POST','/v1/uploads',{upload_id:delayed,item_id:randomUUID(),base_version:0,kind:'file',name:'late.bin',mime_type:'application/octet-stream',size:data.length,sha256:sha(data)});
   assert.equal(late.status,410);assert.equal(sqlite.prepare('SELECT COUNT(*) n FROM allocations').get().n,0,'A delayed init cannot reserve space after cancellation');
+  if(checkHandoff){
+    const zero=randomUUID();
+    const reserved=await (await call('POST','/v1/uploads',{item_id:zero,base_version:0,kind:'file',name:'empty.bin',
+      mime_type:'application/octet-stream',size:0,sha256:sha(Buffer.alloc(0))})).json();
+    assert.ok(reserved.upload_id);commitDuringIntake=reserved.upload_id;
+    const view=await (await call('GET','/v1/sync/changes')).json();
+    assert.ok(view.transfers.some(row=>row.item_id===zero)||view.changes.some(row=>row.record.id===zero),
+      'A commit between reads must remain visible in either transfers or the change feed');
+  }
+  await Promise.all(background);
   sqlite.close();
 }
 await race(false);await race(true);await race(false,true);await race(true,true);await race(false,true,true);await race(true,true,true);

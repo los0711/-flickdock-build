@@ -7,6 +7,27 @@ type DeliveryRoute='lan'|'p2p'|'relay'|'cloud';
 type Delivery={id:string;sha256:string;origin:string;plan:Record<string,DeliveryRoute>;receipts:Record<string,DeliveryRoute>};
 const DELIVERY_ROUTES=['lan','p2p','relay','cloud'];
 const MAX=20*1024*1024,UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
+const MAX_CONTROL_ARCHIVE_BYTES=1024;
+const remotePlaceholder=(name:string)=>/^\.uuremote_[A-Za-z0-9_-]{8,128}$/i.test(name.replaceAll('\\','/').split('/').pop()!);
+
+async function tinyArchive(body:ReadableStream<Uint8Array>,size:number){
+  const reader=body.getReader(),bytes=new Uint8Array(size);let offset=0;
+  try{
+    while(true){const {value,done}=await reader.read();if(done)break;
+      if(offset+value.length>size){await reader.cancel();throw new Error('Clipboard size mismatch');}
+      bytes.set(value,offset);offset+=value.length;}
+  }finally{reader.releaseLock();}
+  if(offset!==size)throw new Error('Clipboard size mismatch');
+  return bytes;
+}
+
+function controlArchive(bytes:Uint8Array){
+  if(bytes.length<30)return false;
+  const view=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
+  if(view.getUint32(0,true)!==0x04034b50)return false;
+  const length=view.getUint16(26,true);
+  return length>0&&30+length<=bytes.length&&remotePlaceholder(new TextDecoder().decode(bytes.subarray(30,30+length)));
+}
 const json=(value:object,status=200)=>Response.json({schema_version:1,server_time:Date.now(),...value},{status,headers:{'Cache-Control':'no-store'}});
 const fail=(status:number,code:string)=>json({error:{code,message:'Clipboard content unavailable'}},status);
 const key=(head:Head)=>head.object_key||`clipboard/${head.account}/${head.id}`;
@@ -99,7 +120,7 @@ export async function clipboardAlarm(ctx:DurableObjectState,env:Env){
 }
 
 export async function clipboardRequest(request:Request,ctx:DurableObjectState,env:Env,
-    spend:(kind:'A'|'B')=>Promise<void>,notify:(device:string,head?:Head)=>Promise<unknown>,
+    spend:(kind:'A'|'B',operations?:D1PreparedStatement[])=>Promise<void>,notify:(device:string,head?:Head)=>Promise<unknown>,
     notifyDelivery:(device:string,delivery:Delivery)=>Promise<unknown>):Promise<Response>{
   const path=new URL(request.url).pathname,account=request.headers.get('X-Clipboard-Account')||'',device=request.headers.get('X-Clipboard-Device')||'';
   if(!UUID.test(account)||!UUID.test(device))return fail(401,'UNAUTHORIZED');
@@ -316,16 +337,25 @@ export async function clipboardRequest(request:Request,ctx:DurableObjectState,en
   if(!Number.isSafeInteger(size)||size<1||size>=(['files','text'].includes(kind)?MAX+1024*1024:MAX)||!['text','image','files'].includes(kind)||!/^[a-f0-9]{64}$/.test(sha256)||!request.body)return fail(413,'CLIPBOARD_LIMIT');
   let rawFile:FileEnvelope|undefined;
   try{rawFile=fileEnvelope(request,kind,size);}catch{return fail(400,'CLIPBOARD_RAW_FILE_INVALID');}
+  if(rawFile&&remotePlaceholder(rawFile.name))return fail(422,'CLIPBOARD_TRANSIENT_FILE');
+  let inputBody=request.body;
+  // Legacy empty-file envelopes have no raw-file header. Inspect only these
+  // bounded tiny bodies before allocating or publishing, without another R2 read.
+  if(kind==='files'&&!rawFile&&size<=MAX_CONTROL_ARCHIVE_BYTES){
+    let bytes:Uint8Array;
+    try{bytes=await tinyArchive(inputBody,size);}catch{return fail(400,'CLIPBOARD_LENGTH');}
+    if(controlArchive(bytes))return fail(422,'CLIPBOARD_TRANSIENT_FILE');
+    inputBody=new ReadableStream<Uint8Array>({start(controller){controller.enqueue(bytes);controller.close();}});
+  }
   const current=async()=>{const latest=await ctx.storage.get<Head>('clipboard-pending');return latest?.id===id||await retained(ctx,id);};
   const attemptId=crypto.randomUUID(),attempt:Head={...head,object_key:`clipboard/${account}/${id}/${attemptId}`,allocation_id:rawFile?attemptId:`clipboard:${id}:${attemptId}`,...(rawFile?{upload_id:attemptId,raw_file:rawFile}:{})};
   const attemptEntry='clipboard-attempt:'+attemptId;
   await ctx.storage.put(attemptEntry,attempt);await schedule(ctx,Date.now()+600000);
   let committed=false;
   try{
-    await env.DB.prepare('INSERT INTO allocations(id,account_id,size) VALUES(?,?,?)').bind(allocation(attempt),account,size).run();
     if(!await current())return fail(409,'CLIPBOARD_REPLACED');
-    await spend('A');
-    const abort=new AbortController(),fixed=new FixedLengthStream(size),pumping=request.body.pipeTo(fixed.writable,{signal:abort.signal});
+    await spend('A',[env.DB.prepare('INSERT INTO allocations(id,account_id,size) VALUES(?,?,?)').bind(allocation(attempt),account,size)]);
+    const abort=new AbortController(),fixed=new FixedLengthStream(size),pumping=inputBody.pipeTo(fixed.writable,{signal:abort.signal});
     try{await Promise.all([pumping,env.FILES.put(key(attempt),fixed.readable,{sha256:rawFile?.sha256||sha256,httpMetadata:{contentType:'application/octet-stream'}})]);}
     catch(error){abort.abort();await fixed.readable.cancel().catch(()=>{});await pumping.catch(()=>{});throw error;}
     const session=request.headers.get('X-Clipboard-Session')||'';

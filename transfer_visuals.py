@@ -16,17 +16,18 @@ CLOUD_STATUS_LABELS = {
     'paused': '云端上传已暂停',
     'error': '云端上传失败',
     'size_limit': '超过 20 MB 同步上限',
+    'unavailable': '此内容不能同步',
     'superseded': '本次同步已由更新的复制接替',
 }
 _CLOUD_STATUS_COLORS = {
     'peer': '#287fe2',
     'synced': '#25966c', 'uploading': '#287fe2', 'pending': '#5684bd',
-    'local': '#8391a3', 'paused': '#bd822e', 'error': '#d04c59', 'size_limit': '#287fe2', 'superseded':'#287fe2',
+    'local': '#8391a3', 'paused': '#bd822e', 'error': '#d04c59', 'size_limit': '#287fe2', 'unavailable':'#287fe2', 'superseded':'#287fe2',
 }
 _CLOUD_STATUS_DARK_COLORS = {
     'peer': '#75b7ff',
     'synced': '#67d7a4', 'uploading': '#75b7ff', 'pending': '#9dc5f7',
-    'local': '#b6c5d8', 'paused': '#efbb70', 'error': '#ff8d97', 'size_limit': '#75b7ff', 'superseded':'#75b7ff',
+    'local': '#b6c5d8', 'paused': '#efbb70', 'error': '#ff8d97', 'size_limit': '#75b7ff', 'unavailable':'#75b7ff', 'superseded':'#75b7ff',
 }
 
 
@@ -57,7 +58,7 @@ def draw_cloud_status_badge(painter, rect, status, transfer=None):
         painter.setPen(arc)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawArc(QRectF(1.2,1.2,17.6,17.6),90*16,-round(max(.025,fraction)*360*16))
-    painter.drawPixmap(4,4,12,12,icon('cloud' if synced else 'computer','#FFFFFF').pixmap(24,24))
+    painter.drawPixmap(4,4,12,12,icon('cloud-filled' if synced else 'computer-filled','#FFFFFF').pixmap(24,24))
     painter.restore()
 
 
@@ -207,15 +208,15 @@ class TransferRateTracker:
         return sample['rate'] if sample and now-sample['last_progress']<=self.STALE_SECONDS else None
 
 
-def draw_ring(painter,rect,state):
+def draw_ring(painter,rect,state,*,color='#3989ef'):
     if not state: return
     rect=QRectF(rect).adjusted(3,3,-3,-3)
     painter.save();painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    pen=QPen(QColor(ui_theme.color('border')),2.4);painter.setPen(pen)
+    pen=QPen(QColor(ui_theme.color('media_track')),2.4);painter.setPen(pen)
     painter.setBrush(Qt.BrushStyle.NoBrush);painter.drawEllipse(rect)
     if state.get('remote') and state.get('phase') in ('remote','preparing'):
         painter.restore();return
-    pen.setColor(QColor('#3989ef'));pen.setCapStyle(Qt.PenCapStyle.RoundCap);painter.setPen(pen)
+    pen.setColor(QColor(color));pen.setCapStyle(Qt.PenCapStyle.RoundCap);painter.setPen(pen)
     received,total=state.get('received',0),state.get('total',0)
     if total>0:
         if received>0:painter.drawArc(rect,90*16,-round(min(1,received/total)*5760))

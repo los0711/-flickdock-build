@@ -25,6 +25,10 @@ def main():
         def __init__(self):super().__init__();self._transfers={}
         def peers(self):return []
     report=dict(ok=False,platform=sys.platform,qt_platform=app.platformName(),windows=[])
+    from platform_native import copy_activity
+    activity=copy_activity()
+    assert isinstance(activity,tuple) and len(activity)==3 and activity[1]>=0 and activity[2] in (None,True,False)
+    report['copy_activity_metadata_available']=True
     with tempfile.TemporaryDirectory(prefix='flickdock-native-utility-') as directory,patch.object(app_settings,'_startup_runtime_allowed',return_value=False):
         store=app_settings.SettingsStore(Path(directory));service=Transport()
         settings=app_settings.SettingsDialog(store);transfer=LanDialog(service,store)
@@ -57,6 +61,53 @@ def main():
             assert window.size()==initial,(window.size(),initial)
             window.close();wait(lambda:not window.isVisible())
             report['windows'].append(dict(title=window.windowTitle(),resize=True,minimize=True,close=True,reopen_default=True))
+        from types import SimpleNamespace
+        from intake_notice import ClipboardNotice,COMPACT_SIDE_PX
+        opened=[];notice_manager=SimpleNamespace(settings=store,shelf=transfer,show_video_dialog=opened.append)
+        notice=ClipboardNotice(notice_manager)
+        try:
+            state=dict(id='native-capsule',phase='uploading',local_copy=True,
+                cloud_transfer=dict(phase='preparing',received=0,total=0))
+            notice.show_result(None,state);wait(notice.isVisible)
+            host=notice.geometry();native=notice.winId()
+            wait(lambda:notice._morph.state()==notice._morph.Stopped)
+            assert notice.windowFlags()&Qt.WindowDoesNotAcceptFocus
+            QTest.mouseClick(notice,Qt.LeftButton,pos=notice.capsule_rect().center().toPoint())
+            wait(lambda:notice._morph.state()==notice._morph.Stopped)
+            assert notice._compact and notice.isVisible()
+            QTest.mouseClick(notice,Qt.LeftButton,pos=notice.capsule_rect().center().toPoint())
+            wait(lambda:notice._morph.state()==notice._morph.Stopped)
+            assert not notice._compact and notice.isVisible()
+            from video_prompt import VideoLinkPrompt
+            from receive_notice import TransferCapsule
+            from async_images import ImageCache
+            images=ImageCache();video_notice=VideoLinkPrompt(notice_manager)
+            file_notice=TransferCapsule(SimpleNamespace(manager=notice_manager,images=images,activate=lambda:None))
+            try:
+                video_notice.present('https://www.youtube.com/watch?v=native-capsule')
+                file_notice.present(dict(id='native-file',direction='send',name='native-fixture.zip',state='transferring',received=50,total=100,paths=[]))
+                wait(lambda:all(card._position_motion.state()==card._position_motion.Stopped for card in (notice,file_notice,video_notice)))
+                bounds=[card.capsule_rect().translated(card.pos()) for card in (notice,file_notice,video_notice)]
+                assert all(7<=b.left()-a.right()<=9 for a,b in zip(bounds,bounds[1:])),bounds
+                QTest.mouseClick(video_notice,Qt.LeftButton,pos=video_notice.capsule_rect().center().toPoint())
+                assert opened==['https://www.youtube.com/watch?v=native-capsule'] and video_notice._hiding
+                wait(lambda:not video_notice.isVisible());file_notice.dismiss();wait(lambda:not file_notice.isVisible())
+                wait(lambda:notice._position_motion.state()==notice._position_motion.Stopped)
+                report['coexisting_capsules']=dict(nonoverlap=True,video_activates=True,shared_animated_close=True)
+            finally:
+                video_notice.supersede();file_notice.supersede();video_notice.deleteLater();file_notice.deleteLater();images.close();images.deleteLater()
+            notice._expire();wait(lambda:notice._morph.state()==notice._morph.Stopped)
+            assert notice._compact and round(notice.capsule_rect().width())==COMPACT_SIDE_PX
+            # Coexisting notices intentionally reposition the fixed native host.
+            assert notice.size()==host.size() and notice.winId()==native
+            assert notice._notice_area.contains(notice.geometry()),(notice._notice_area,notice.geometry())
+            notice.update_delivery(dict(id=state['id'],phase='synced',backed_up=True,deliveries={'cloud':dict(success=0,total=1)}))
+            assert notice._phase=='success' and notice._compact
+            assert notice.timer.interval()==3000 and notice.timer.timerType()==Qt.PreciseTimer
+            wait(lambda:not notice.isVisible())
+            assert not notice._ring_clock.isActive()
+            report['copy_capsule']=dict(native_host_preserved=True,contracts_while_pending=True,cloud_commit_success=True,click_toggles=True,animated_exit=True,nonactivating=True)
+        finally:notice.supersede();notice.deleteLater();app.processEvents()
         if sys.platform=='darwin':
             import AppKit
             assert AppKit.NSApplication.sharedApplication().activationPolicy()==AppKit.NSApplicationActivationPolicyAccessory
@@ -66,6 +117,43 @@ def main():
             assert state['clipboard'] in ('default','ask','allowed','denied','legacy')
             assert state['accessibility'] in ('allowed','denied')
             report['native_permissions_metadata']=state
+        if sys.platform=='win32':
+            import subprocess
+            from PySide6.QtCore import QTimer
+            from native_clipboard_reader import NativeClipboardReader
+            from clipboard_sync import native_sequence
+            root=Path(directory);producer_script=root/'delayed-owner.py'
+            ready=root/'producer-ready';entered=root/'producer-rendering'
+            producer_script.write_text('''import sys,time
+from pathlib import Path
+from PySide6.QtCore import QMimeData
+from PySide6.QtGui import QGuiApplication
+class Delayed(QMimeData):
+ def formats(self):return ['text/plain']
+ def retrieveData(self,kind,preferred):
+  if kind.startswith('text/plain'):
+   Path(sys.argv[2]).write_text('rendering');time.sleep(30);return 'private native clipboard fixture'
+  return None
+app=QGuiApplication([]);payload=Delayed();app.clipboard().setMimeData(payload)
+Path(sys.argv[1]).write_text('ready');app.exec()
+''',encoding='utf8')
+            producer=subprocess.Popen([sys.executable,str(producer_script),str(ready),str(entered)],
+                stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW)
+            cache=root/'clipboard-cache';cache.mkdir();reader=NativeClipboardReader(cache,native_sequence)
+            failures=[];beats=[];clock=QTimer();clock.setInterval(10);clock.timeout.connect(lambda:beats.append(1))
+            reader.failed.connect(failures.append)
+            try:
+                wait(ready.exists);clock.start();reader.read(native_sequence())
+                wait(lambda:bool(failures))
+                assert entered.exists(),('The real producer never rendered its delayed native format',failures,reader.issue)
+                assert failures==['NATIVE_READ_TIMEOUT'] and len(beats)>20,(failures,len(beats))
+                assert reader.process is None
+                report['delayed_clipboard_reader']=dict(actual_native_producer=True,ui_responsive=True,
+                    owned_reader_timed_out=True,ui_heartbeats=len(beats),clipboard_contents_logged=False)
+            finally:
+                clock.stop();reader.close();producer.kill();producer.wait(timeout=5)
+                wait(lambda:reader.process is None and not reader.jobs);reader.deleteLater()
         report['ok']=True
         for window in (settings,transfer):window.deleteLater()
         app.processEvents()

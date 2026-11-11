@@ -5,6 +5,7 @@ from pathlib import Path
 from PySide6.QtCore import QPoint,QPointF,QMimeData,QUrl,Qt
 from PySide6.QtGui import QDragEnterEvent,QDragMoveEvent,QDropEvent,QDragLeaveEvent
 from PySide6.QtWidgets import QWidget,QPushButton
+from PySide6.QtTest import QTest
 from test_html_native_workspace import APP,flush,until
 from transfer_entry import TransferEntryRouter
 from app_settings import SettingsStore
@@ -14,21 +15,30 @@ from wan_transfer import WanTransferService
 
 
 class EntryTests(unittest.TestCase):
-    def test_only_hovered_transfer_option_animates_its_border(self):
+    def test_transfer_dashes_stay_fixed_while_hover_colors_fade_and_then_stop(self):
         from transfer_entry import TransferDropSurface
         root=QWidget();root.resize(240,160);surface=TransferDropSurface(root);surface.resize(220,108)
         root.show();surface.show();flush()
         try:
             with patch('native_ui_common.reduced_motion',return_value=False):
                 surface.set_target(None)
-                self.assertFalse(surface.border_motion.frames.isActive())
-                surface.set_target('lan');self.assertTrue(surface.border_motion.frames.isActive())
-                with patch('native_ui_common.time.perf_counter',return_value=0):first=surface.grab().toImage()
-                with patch('native_ui_common.time.perf_counter',return_value=.1):second=surface.grab().toImage()
+                lan=surface.border_motions['lan'];wan=surface.border_motions['wan']
+                self.assertEqual(lan.animation.state(),lan.animation.Stopped)
+                surface.set_target('lan');self.assertEqual(lan.animation.state(),lan.animation.Running)
+                lan.animation.setCurrentTime(60);first=surface.grab().toImage()
+                lan.animation.setCurrentTime(lan.animation.duration());second=surface.grab().toImage()
                 from PySide6.QtCore import QRect
                 self.assertNotEqual(first.copy(QRect(0,0,220,52)),second.copy(QRect(0,0,220,52)))
                 self.assertEqual(first.copy(QRect(0,55,220,52)),second.copy(QRect(0,55,220,52)))
-                surface.set_target(None);self.assertFalse(surface.border_motion.frames.isActive())
+                self.assertEqual(lan.animation.state(),lan.animation.Stopped)
+                QTest.qWait(40);self.assertEqual(second,surface.grab().toImage())
+                surface.set_target('wan')
+                for motion in (lan,wan):motion.animation.setCurrentTime(90)
+                self.assertTrue(0<lan.progress<1);self.assertTrue(0<wan.progress<1)
+                surface.set_target(None)
+                for motion in (lan,wan):
+                    motion.animation.setCurrentTime(motion.animation.duration())
+                    self.assertEqual(motion.progress,0.);self.assertEqual(motion.animation.state(),motion.animation.Stopped)
         finally:root.hide();root.deleteLater();flush()
 
     def test_mode_transition_captures_the_painted_old_page_not_an_empty_surface(self):
@@ -111,6 +121,52 @@ class EntryTests(unittest.TestCase):
                 self.assertEqual(dialog.winId(),native);self.assertEqual(dialog.geometry(),geometry)
                 self.assertTrue(dialog.mode_buttons['wan'].isChecked());self.assertFalse(dialog.mode_buttons['lan'].isChecked())
             finally:dialog.hide();dialog.deleteLater();wan.close();wan.deleteLater();flush()
+
+
+import test_html_native_workspace as workspace_fixture
+
+
+class DropFeedbackOwnershipTests(unittest.TestCase):
+    setUp=workspace_fixture.WorkspaceTests.setUp
+    tearDown=workspace_fixture.WorkspaceTests.tearDown
+    overview=workspace_fixture.WorkspaceTests.overview
+
+    def test_compact_chooser_clears_and_blocks_the_underlying_empty_target(self):
+        self.shelf.files['permanent'].clear();self.shelf.refresh();flush()
+        zone=self.shelf.zones['permanent'];router=self.shelf.transfer_entry
+        mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(self.paths[0])])
+        self.shelf._highlight_content_drop(True)
+        self.assertTrue(zone.icon.border_motion.active)
+        APP.sendEvent(self.shelf.lan_button,QDragEnterEvent(QPointF(20,15),Qt.CopyAction,mime,Qt.LeftButton,Qt.NoModifier))
+        self.assertTrue(router.surface.isVisible())
+        self.assertFalse(zone.drop_highlight);self.assertFalse(zone.icon._hovered)
+        self.assertFalse(zone.icon.border_motion.active)
+        for y in (25,77):
+            APP.sendEvent(router.surface,QDragEnterEvent(QPointF(60,y),Qt.CopyAction,mime,Qt.LeftButton,Qt.NoModifier))
+            APP.sendEvent(router.surface,QDragMoveEvent(QPointF(60,y),Qt.CopyAction,mime,Qt.LeftButton,Qt.NoModifier))
+            self.shelf._highlight_content_drop(True)
+            zone._set_card_hover(True)
+            self.assertFalse(zone.icon.border_motion.active)
+            self.assertFalse(zone.icon._hovered)
+            self.assertEqual(router.surface.active,'lan' if y==25 else 'wan')
+        point=zone.mapTo(self.shelf,zone.icon.geometry().center())
+        APP.sendEvent(self.shelf,QDragEnterEvent(QPointF(point),Qt.CopyAction,mime,Qt.LeftButton,Qt.NoModifier))
+        APP.sendEvent(self.shelf,QDragMoveEvent(QPointF(point),Qt.CopyAction,mime,Qt.LeftButton,Qt.NoModifier))
+        self.assertFalse(router.surface.isVisible());self.assertTrue(zone.icon.border_motion.active)
+        self.assertFalse(self.events)
+
+    def test_overview_chooser_owns_feedback_until_drag_returns_to_the_shelf(self):
+        self.shelf.files['permanent'].clear();self.shelf.refresh();popup=self.overview()
+        target=popup.empty_drop;router=popup.transfer_entry
+        mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(self.paths[0])])
+        target.set_drag_active(True);self.assertTrue(target.border_motion.active)
+        APP.sendEvent(popup.lan_nav,QDragEnterEvent(QPointF(20,15),Qt.CopyAction,mime,Qt.LeftButton,Qt.NoModifier))
+        self.assertTrue(router.surface.isVisible());self.assertFalse(target.border_motion.active)
+        target.set_drag_active(True);self.assertFalse(target.border_motion.active)
+        point=target.mapTo(popup,target.rect().center())
+        APP.sendEvent(popup,QDragMoveEvent(QPointF(point),Qt.CopyAction,mime,Qt.LeftButton,Qt.NoModifier))
+        self.assertFalse(router.surface.isVisible());self.assertTrue(target.border_motion.active)
+        self.assertFalse(self.events)
 
 
 if __name__=='__main__':unittest.main()

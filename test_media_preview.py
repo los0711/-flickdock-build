@@ -13,6 +13,7 @@ from PySide6.QtMultimedia import QMediaPlayer as NativePlayer, QVideoFrame
 from PySide6.QtWidgets import QApplication
 
 import media_preview as subject
+import PySide6.QtMultimedia as multimedia
 
 
 class FakePlayer(QObject):
@@ -101,9 +102,9 @@ assert not subject.MediaPreview.can_preview(None)
 assert subject._clock(7203000) == "2:00:03"
 
 with tempfile.TemporaryDirectory(prefix="flickdock-media-") as temporary, \
-     patch.object(subject, "QMediaPlayer", FakePlayer), \
-     patch.object(subject, "QAudioOutput", FakeAudio), \
-     patch.object(subject, "QVideoSink", FakeSink), \
+     patch.object(multimedia, "QMediaPlayer", FakePlayer), \
+     patch.object(multimedia, "QAudioOutput", FakeAudio), \
+     patch.object(multimedia, "QVideoSink", FakeSink), \
      patch.object(subject.QDesktopServices, "openUrl") as open_url:
     video = Path(temporary) / "first.mp4"
     second = Path(temporary) / "second.mp4"
@@ -161,7 +162,7 @@ with tempfile.TemporaryDirectory(prefix="flickdock-media-") as temporary, \
     # Normal playing frames go straight to Qt's renderer, retaining the CPU
     # poster until explicit pause/seek/source release needs a snapshot.
     preview.toggle_playback()
-    with patch.object(subject.QVideoFrame,'toImage',side_effect=AssertionError('per-frame CPU readback')):
+    with patch.object(QVideoFrame,'toImage',side_effect=AssertionError('per-frame CPU readback')):
         preview._seek_frame_pending=False
         preview.video_sink.videoFrameChanged.emit(QVideoFrame(red))
     preview.toggle_playback()

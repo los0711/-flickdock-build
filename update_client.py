@@ -6,13 +6,12 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
-import platform as platform_module
 from pathlib import Path
 import re
 import sys
 from uuid import uuid4
 
-from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QObject, Qt, QTimer, QUrl, QSysInfo, Signal
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest, QSslSocket,QNetworkProxyFactory,QNetworkProxy
 
 
@@ -20,7 +19,7 @@ from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequ
 DEFAULT_MANIFEST_URL = 'https://flickdock-site.roger000416.workers.dev/updates/latest.json'
 MAC_MANIFEST_BASE = 'https://raw.githubusercontent.com/los0711/-flickdock-build/main/updates/'
 WORKER_MANIFEST_BASE='https://flickdock-site.roger000416.workers.dev/updates/'
-DEFAULT_ALLOWED_HOSTS = frozenset({'github.com','raw.githubusercontent.com','release-assets.githubusercontent.com','objects.githubusercontent.com','gitee.com','raw.giteeusercontent.com','foruda.gitee.com','flickdock-site.roger000416.workers.dev'})
+DEFAULT_ALLOWED_HOSTS = frozenset({'github.com','raw.githubusercontent.com','release-assets.githubusercontent.com','objects.githubusercontent.com','gitee.com','raw.giteeusercontent.com','foruda.gitee.com','flickdock-site.roger000416.workers.dev','download.flickdock.cc.cd'})
 MAX_MANIFEST_BYTES = 128 * 1024
 MAX_INSTALLER_BYTES = 1024 * 1024 * 1024
 MAX_REDIRECTS = 5
@@ -52,7 +51,7 @@ def trusted_url(value, allowed_hosts):
 
 
 def update_architecture(machine=None):
-    value = str(machine or platform_module.machine()).lower()
+    value = str(machine or QSysInfo.currentCpuArchitecture()).lower()
     aliases = {'aarch64': 'arm64', 'amd64': 'x86_64', 'x64': 'x86_64'}
     return aliases.get(value, value)
 

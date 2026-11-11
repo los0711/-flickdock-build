@@ -101,19 +101,19 @@ class SharedUpdateTests(unittest.TestCase):
     def test_copy_feedback_is_nonactivating_clamped_and_auto_dismisses(self):
         from intake_notice import ClipboardNotice
         from PySide6.QtCore import QPoint
-        manager=SimpleNamespace(settings=SimpleNamespace(theme='dark'))
+        manager=SimpleNamespace(settings=SimpleNamespace(theme='dark',clipboard_success_notice=True))
         view=ClipboardNotice(manager)
         try:
             area=APP.primaryScreen().availableGeometry()
             view.show_result(True,dict(point=area.bottomRight().toTuple(),fullscreen=False))
-            self.assertEqual(view.message.text(),'复制已同步')
+            self.assertEqual(view.accessibleName(),'复制已同步')
             QTest.qWait(240);APP.processEvents()
             self.assertTrue(area.contains(view.geometry()))
             self.assertTrue(view.testAttribute(Qt.WA_ShowWithoutActivating))
             self.assertTrue(view.windowFlags()&Qt.WindowDoesNotAcceptFocus)
             self.assertFalse(view.windowFlags()&Qt.WindowTransparentForInput)
             view.show_result(False,dict(point=area.center().toTuple(),fullscreen=True))
-            self.assertEqual(view.message.text(),'复制同步失败')
+            self.assertEqual(view.accessibleName(),'同步未完成')
             self.assertEqual(view.x(),area.left()+(area.width()-view.width())//2)
             self.assertEqual(view.y(),area.bottom()-view.height()-15);view.timer.start(20)
             deadline=time.monotonic()+1

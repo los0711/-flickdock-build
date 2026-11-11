@@ -210,6 +210,12 @@ def verify_platform(report_path):
     derived = hashlib.scrypt(b'build-fixture', salt=b'FlickDock-build-fixture', n=2, r=1, p=1, dklen=16)
     if len(derived) != 16 or Keyring is None:
         raise ValueError('账号加密运行时或系统凭据后端缺失。')
+    from yt_dlp.networking._helper import make_ssl_context
+    import certifi
+    video_ca=Path(certifi.where())
+    video_tls=make_ssl_context()
+    if not video_ca.is_file() or video_tls.cert_store_stats()['x509_ca']==0:
+        raise ValueError('视频解析根证书未正确打包。')
     certificate, private_key, fingerprint = _ephemeral_certificate()
     if not certificate.startswith(b'-----BEGIN CERTIFICATE-----') or b'PRIVATE KEY' not in private_key.partition(b'\n')[0] or len(fingerprint) != 64:
         raise ValueError('局域网 TLS 加密运行时缺失。')
@@ -218,6 +224,7 @@ def verify_platform(report_path):
                   native_hooks=False, startup_mutation=False, quartz_imported=True,
                   scrypt_available=True, keychain_backend_imported=True, keychain_accessed=False,
                   lan_tls_certificate_generated=True, lan_openssl_runtime=ssl.OPENSSL_VERSION,menu_bar_agent=True,
+                  video_ca_bundle=True,video_tls_verification=video_tls.check_hostname,video_ca_count=video_tls.cert_store_stats()['x509_ca'],
                   media_backend=os.getenv('QT_MEDIA_BACKEND', ''), bundle=str(bundle))
     if native_input_available() or startup_runtime_allowed():
         raise ValueError('离屏验证意外启用了本机输入或登录启动写入。')
