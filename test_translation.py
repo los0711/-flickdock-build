@@ -44,7 +44,7 @@ class Notice:
 
 class TranslationTests(unittest.TestCase):
     def setUp(self):
-        self.temp=tempfile.TemporaryDirectory(dir=os.environ['TEMP'])
+        self.temp=tempfile.TemporaryDirectory(dir=os.environ.get('TEMP'))
         self.store=SettingsStore(Path(self.temp.name))
         self.store.update(translation_enabled=True)
         self.manager=SimpleNamespace(app=APP,settings=self.store,clipboard_sync=Clipboard(),account=Account(),show_settings=lambda **kw:None)
