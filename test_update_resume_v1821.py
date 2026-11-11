@@ -29,6 +29,17 @@ class UpdateRecoveryTests(fixture.UpdateTests):
         self.assertIn('reconnecting',[phase for phase,_ in phases]);self.assertIn('verifying',[phase for phase,_ in phases])
         self.assertEqual(state['progress'][-1][0],len(self.payload))
 
+    def test_retry_after_failed_install_reuses_authenticated_complete_package_without_network(self):
+        client,state=self.task();self.finish(state);self.requests.clear()
+        second,state2=self.client();second.download(self.manifest);self.finish(state2)
+        self.assertEqual(self.requests,[])
+
+    def test_corrupted_complete_package_is_downloaded_again(self):
+        client,state=self.task();self.finish(state)
+        final=Path(state['verified_file'][0][0]);final.write_bytes(b'MZ'+b'X'*(len(self.payload)-2))
+        self.requests.clear();second,state2=self.client();second.download(self.manifest);self.finish(state2)
+        self.assertTrue(self.requests)
+
     def test_app_shutdown_preserves_partial_then_next_client_resumes(self):
         client,state=self.task(chunk_delay=.004)
         fixture.wait_until(lambda:client._download_task.received>=131072)

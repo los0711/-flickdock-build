@@ -66,8 +66,10 @@ def profile(secret,*,run,attempt,platform,commit,root_base,output,proxy=None):
                 body=hashlib.shake_256((run+platform+mode).encode()).digest(8*1024*1024)
                 path=root/'snapshot.bin';path.write_bytes(body);digest=hashlib.sha256(body).hexdigest()
                 active_item=str(uuid4());active_upload=str(uuid4());committed=False
+                reserved_at=time.perf_counter()
                 initialized=call('POST','/v1/uploads',data=dict(upload_id=active_upload,item_id=active_item,base_version=0,kind='file',
                     name='Synthetic-upload-profiler.bin',mime_type='application/octet-stream',size=len(body),sha256=digest,fast_upload=True,fast_multipart=True))
+                reserve_seconds=time.perf_counter()-reserved_at
                 assert initialized['part_count']==1 and initialized['chunk_size']==len(body)
                 progress=[];started=time.perf_counter()
                 def sent(count,total):progress.append(dict(bytes=count,seconds=time.perf_counter()-started))
@@ -77,9 +79,13 @@ def profile(secret,*,run,attempt,platform,commit,root_base,output,proxy=None):
                 elapsed=time.perf_counter()-started
                 first=next((x['seconds'] for x in progress if x['bytes']>0),None)
                 complete=next((x['seconds'] for x in progress if x['bytes']==len(body)),None)
+                committed_at=time.perf_counter()
                 result=call('POST','/v1/uploads/'+active_upload+'/commit',data={});committed=True
+                commit_seconds=time.perf_counter()-committed_at
                 assert result['record']['sha256']==digest
                 report['cases'].append(dict(mode=mode,bytes=len(body),request_seconds=round(elapsed,4),first_progress_seconds=first,
+                    reserve_seconds=round(reserve_seconds,4),commit_seconds=round(commit_seconds,4),pipeline_seconds=round(reserve_seconds+elapsed+commit_seconds,4),
+                    cloud_ready_after_progress_seconds=None if complete is None else round(elapsed-complete+commit_seconds,4),
                     full_upload_progress_seconds=complete,confirmation_after_progress_seconds=None if complete is None else round(elapsed-complete,4),
                     mib_per_second=round(len(body)/1024/1024/max(.001,elapsed),3)))
                 if mode=='upload_slice_high':

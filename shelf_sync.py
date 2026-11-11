@@ -474,7 +474,15 @@ class ShelfSync(QObject):
             if (not isinstance(identity,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',identity)
                     or type(version) is not int or not 1<=version<=9007199254740991):continue
             previous=self._remote_heads.get(identity,{})
-            if version<=previous.get('version',0):continue
+            if version<previous.get('version',0):continue
+            if version==previous.get('version',0):
+                # A metadata scan can observe a tombstone before the content
+                # lane applies it. Its version is not an application receipt;
+                # let the busy-cycle deletion lane remove the still-live view.
+                entry=self.state['entries'].get(identity)
+                if apply_deletions and record.get('deleted') and entry and entry.get('version',0)<version:
+                    self._receive(record,lambda:None)
+                continue
             if not record.get('deleted') and (type(record.get('size')) is not int or
                     not 0<=record['size']<=MAX_FILE_BYTES or
                     not re.fullmatch(r'[0-9a-f]{64}',str(record.get('sha256','')))):continue
@@ -522,6 +530,7 @@ class ShelfSync(QObject):
         entries=self.state.get('entries',{})
         for identity,record in (self.download_transfers.items() if self.receive_enabled else ()):
             if identity in known:continue
+            if entries.get(identity,{}).get('deleted') or self.state.get('ignored_versions',{}).get(identity,0)>=record['version']:continue
             cached=self.state.get('downloads',{}).get(identity,{})
             hashes=cached.get('hashes',{})
             size=record.get('size',0);chunk=cached.get('chunk_size',0)
@@ -545,6 +554,11 @@ class ShelfSync(QObject):
             # A cancelled local fingerprint is deliberately local-only.
             local=entries.get(identity,{})
             if local.get('deleted'):continue
+            base=remote.get('base_version')
+            if type(base) is int and not local.get('dirty') and local.get('version',0)>base:
+                continue
+            ignored=self.state.get('ignored_versions',{}).get(identity,0)
+            if ignored and self._remote_heads.get(identity,{}).get('version',0)<=ignored:continue
             if remote.get('device_id')==getattr(self.service,'device_id','') and local.get('paused_upload'):continue
             if remote.get('device_id')==getattr(self.service,'device_id',''):continue
             live=self._live_upload_progress.get(remote.get('upload_id'),{})
@@ -970,18 +984,30 @@ class ShelfSync(QObject):
                     if current and current.get('deleted') and current.get('version')==version:
                         if (isinstance(record,dict) and record.get('id')==identity and type(record.get('version')) is int
                                 and version<=record['version']<=9007199254740991):
-                            if record.get('deleted'):self.state['entries'].pop(identity,None)
+                            if record.get('deleted'):self._confirm_item_removal(identity,version,record)
                             else:
                                 current['version']=record['version'];current.pop('cleanup_conflict_version',None)
                                 if self.cleanup_attempts[identity]>=2:self.state['cleanup_not_before']=time.time()+REMOVAL_CONFLICT_RETRY_SECONDS
                         else:current['cleanup_conflict_version']=version
                 elif current and current.get('deleted'):
-                    self.state['entries'].pop(identity,None);self._forget_download(identity)
+                    self._confirm_item_removal(identity,version,result.get('record') if isinstance(result,dict) else None)
                     self.cleanup_attempts.pop(identity,None)
                 self._persist();self._notify_transfers()
                 wait=max(0,self.state.get('cleanup_not_before',0)-time.time())
                 self._cleanup_retry.start(min(QT_TIMER_MAX_MS,max(1,round(wait*1000))))
             self._request('DELETE','/v1/items/'+quote(identity,safe=''),removed,data={'base_version':version},priority='high')
+
+    def _confirm_item_removal(self,identity,version,record):
+        # The delete reply can beat the change feed. Fence its confirmed version
+        # before retiring the local tombstone, or cached heads become downloads.
+        if (isinstance(record,dict) and record.get('id')==identity and record.get('deleted') is True
+                and type(record.get('version')) is int and version<=record['version']<=9007199254740991):
+            version=record['version'];self._observe_remote_changes([{'record':record}])
+        ignored=self.state.setdefault('ignored_versions',{})
+        ignored[identity]=max(ignored.get(identity,0),version)
+        self.cleanup_attempts.pop(identity,None)
+        self.state['entries'].pop(identity,None);self.download_transfers.pop(identity,None)
+        self.state.get('deferred_downloads',{}).pop(identity,None);self._forget_download(identity)
 
     def _owned_stage(self, transfer):
         try:

@@ -28,6 +28,32 @@ class SecurityTests(unittest.TestCase):
         self.assertEqual(bytes(derive_auth_key(bytearray(b'frozen-qa-known-password'),b'\x01'*16)).hex(),
             '61a958177a02aa9f93c69ce6fbf35b66442e1bf16c556bd6405b89b86dd4a6fa')
 
+    def test_macos_startup_keychain_wait_does_not_block_event_loop_or_restore_after_logout(self):
+        import time
+        class WaitingStore(MemorySessions):
+            def load(self):
+                entered.set();release.wait(2)
+                return dict(token='fixture-token',device_id='fixture-device',account={'id':'fixture-account'})
+            def invalidate(self):self.value=None
+        entered,release=threading.Event(),threading.Event()
+        release_guard=threading.Timer(1.5,release.set);release_guard.start()
+        try:
+            with patch.object(account_service.sys,'platform','darwin'):
+                started=time.perf_counter()
+                service=AccountService(self.temp.name,api=Api(),store=WaitingStore())
+                self.addCleanup(service.close)
+                self.assertLess(time.perf_counter()-started,.2)
+                service.resume();service.resume()
+                self.assertTrue(wait(entered.is_set))
+                beats=[];timer=QTimer();timer.setInterval(5);timer.timeout.connect(lambda:beats.append(1));timer.start()
+                self.assertTrue(wait(lambda:len(beats)>4));timer.stop()
+                self.assertFalse(release.is_set())
+                service._clear('fixture logout');release.set()
+                self.assertTrue(wait(lambda:service._session_queue.empty()))
+                flush();self.assertFalse(service.signed_in)
+                self.assertFalse(service.api.requests)
+        finally:release.set();release_guard.cancel()
+
     def test_public_transport_host_keeps_backend_credentials_isolated_from_other_services(self):
         from cloud_config import DEFAULT_CLOUD_URL,SESSION_REALM
         service=AccountService(self.temp.name)

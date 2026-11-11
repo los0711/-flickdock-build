@@ -33,3 +33,9 @@ Publisher signature verification uses cryptography 50.0.2 (Apache-2.0 / BSD-3-Cl
 下载与音视频合并使用 imageio-ffmpeg 0.6.0 平台轮子提供的独立 FFmpeg 7.1 可执行文件（GPL）。首次下载时按固定归档和可执行文件 SHA256 校验后存入应用数据目录，不随安装包重复分发，也不替换 Qt 播放器的动态库。二进制、对应源码与构建说明：https://github.com/imageio/imageio-ffmpeg 。原版 GPL-3.0 许可保留于 licenses/Video-LICENSES.txt。
 
 Relay SOCKS proxy connections use socks 2.8.10 (MIT), ip-address and smart-buffer (MIT). Original notices are bundled with each module in `p2p/node_modules`. Source: https://github.com/JoshGlazebrook/socks . HTTP CONNECT uses the existing Node.js standard library.
+
+## Translation language detection and flags
+
+ELDC 0.4.0 (https://github.com/nitotm/eldc), Apache-2.0; see licenses/ELDC-LICENSE.txt.
+Flag-icons 7.6.0 (https://github.com/lipis/flag-icons), MIT; see licenses/Flag-Icons-LICENSE.txt.
+Source-language detection runs locally; flags are bundled static resources.

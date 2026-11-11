@@ -89,10 +89,11 @@ class LiveShelfTests(unittest.TestCase):
             image=QImage(64,64,QImage.Format_RGB32);image.fill(QColor('#2478ab'))
             path=self.base/(mode+'.png');image.save(str(path));ref=str(path)
             view=adapter.snapshot();view['permanent'].append(ref);view['metadata'][ref]={'_cloud_item_id':identity,'title':path.name}
-            with patch.object(self.shelf,'show') as show,patch.object(self.shelf,'hide') as hide:
+            with patch.object(self.shelf,'show') as show,patch.object(self.shelf,'hide') as hide,patch.object(popup,'_detach_rows_layout',wraps=popup._detach_rows_layout) as detach:
                 adapter.restore(view);until(lambda:ref in popup._item_widgets)
                 subject.ShelfManager._transfers_changed(self.manager,[]);flush()
                 self.assertIs(popup._item_widgets[ref],old);self.assertFalse(popup.item_transitions.ghosts)
+                self.assertEqual(detach.call_count,0,'An identity-to-path handoff must not rebuild the whole layout')
                 self.assertEqual(popup.selected,{ref});self.assertEqual(popup.preview.current_path,ref)
                 self.assertEqual(tile.landing.state(),tile.landing.State.Stopped)
                 self.assertEqual(tile.removal.state(),tile.removal.State.Stopped)

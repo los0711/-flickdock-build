@@ -9,9 +9,10 @@ import {clipboardRequest,clipboardAlarm} from './clipboard';
 import {intakeRequest} from './intake';
 import {storageBudget,StorageBudgetError} from './storage-budget';
 import {shelfStorage,shelfResetAt} from './shelf-storage';
+import {translate,type TranslationEnv} from './translation';
 export {WanHub} from './wan';
 
-interface Env extends WanEnv {
+interface Env extends WanEnv,TranslationEnv {
   DB:D1Database; FILES:R2Bucket; EVENTS:DurableObjectNamespace<AccountEvents>;
   ACCOUNT_QUOTA_BYTES?:string; GLOBAL_QUOTA_BYTES?:string; CHUNK_BYTES?:string; AUTH_PEPPER?:string;
   SINGLE_PUT_LIMIT_BYTES?:string;
@@ -58,7 +59,7 @@ export class AccountEvents extends DurableObject<Env> {
     if(url.pathname==='/intake')return intakeRequest(request,this.ctx,
       ()=>this.fetch(new Request('https://internal/publish',{method:'POST',body:JSON.stringify({type:'content',device:request.headers.get('X-Device-Id')||''})})));
     if(url.pathname.startsWith('/clipboard'))return clipboardRequest(request,this.ctx,this.env,
-      kind=>budget(this.env,kind,1),(device,clipboard)=>this.fetch(new Request('https://internal/publish',{method:'POST',body:JSON.stringify({type:'clipboard',device,clipboard})})),
+      (kind,operations)=>budget(this.env,kind,1,operations),(device,clipboard)=>this.fetch(new Request('https://internal/publish',{method:'POST',body:JSON.stringify({type:'clipboard',device,clipboard})})),
       (device,delivery)=>this.fetch(new Request('https://internal/publish',{method:'POST',body:JSON.stringify({type:'clipboard_delivery',device,delivery})})));
     if(url.pathname==='/connect'&&request.headers.get('Upgrade')?.toLowerCase()==='websocket'){
       const pair=new WebSocketPair();const [client,server]=Object.values(pair);
@@ -156,8 +157,8 @@ async function rate(env:Env,key:string,limit:number,window:number){
   const row=await first(env,'INSERT INTO rates(key,n,expires_at) VALUES(?,1,?) ON CONFLICT(key) DO UPDATE SET n=n+1 RETURNING n',key+':'+slot,(slot+1)*window);
   if(row!.n>limit)fail(429,'RATE_LIMITED','Too many attempts; retry later',{retry_after:Math.ceil(((slot+1)*window-now)/1000)});
 }
-async function budget(env:Env,kind:'A'|'B',count:number){
-  try{await storageBudget(env,kind,count);}
+async function budget(env:Env,kind:'A'|'B',count:number,operations:D1PreparedStatement[]=[]){
+  try{await storageBudget(env,kind,count,operations);}
   catch(error){if(error instanceof StorageBudgetError)fail(error.status,error.code,error.message,error.details);throw error;}
 }
 const usernameKey=(value:string)=>caseFold(value.normalize('NFKC').trim());
@@ -235,12 +236,17 @@ async function auth(request:Request,env:Env){
 async function item(env:Env,accountId:string,id:string){return first(env,'SELECT * FROM items WHERE account_id=? AND id=?',accountId,id);}
 function record(row:Row){return {id:row.id,version:row.version,deleted:!!row.deleted,kind:row.kind,name:row.name,mime_type:row.mime_type,size:row.size,sha256:row.sha256,updated_at:iso(row.updated_at),expires_at:row.expires_at?iso(row.expires_at):null};}
 async function transfers(env:Env,accountId:string){
+  // Read the preparation source first. Once it retires an intake, its D1
+  // upload already exists; reversing these reads exposes an empty handoff.
+  let preparing:Row[]=[];
+  if(env.EVENTS){
+    const response=await env.EVENTS.get(env.EVENTS.idFromName(accountId)).fetch('https://internal/intake');
+    preparing=(await response.json() as {transfers:Row[]}).transfers;
+  }
   const values=await rows(env,"SELECT u.*,d.name device_name FROM uploads u LEFT JOIN devices d ON d.id=u.device_id WHERE u.account_id=? AND u.kind<>'transfer' AND u.state IN ('pending','verifying') AND u.expires_at>? ORDER BY u.rowid DESC LIMIT 10",accountId,Date.now());
   const active=values.map(value=>({upload_id:value.id,item_id:value.item_id,base_version:value.base_version,kind:value.kind,name:value.name,mime_type:value.mime_type,size:value.size,sha256:value.sha256,received_bytes:value.verified_size,next_part:value.next_part,chunk_size:value.chunk_size,part_count:value.part_count,state:value.state,expires_at:iso(value.expires_at),device_id:value.device_id??null,device_name:value.device_name??null}));
-  if(!env.EVENTS)return active;
-  const response=await env.EVENTS.get(env.EVENTS.idFromName(accountId)).fetch('https://internal/intake');
-  const pending=await response.json() as {transfers:Row[]},ids=new Set(active.map(row=>row.item_id));
-  return [...active,...pending.transfers.filter(row=>!ids.has(row.item_id))].slice(0,100);
+  const ids=new Set(active.map(row=>row.item_id));
+  return [...active,...preparing.filter(row=>!ids.has(row.item_id))].slice(0,100);
 }
 async function endIntake(env:Env,owner:Row,id:string){
   if(env.EVENTS)await env.EVENTS.get(env.EVENTS.idFromName(owner.id)).fetch('https://internal/intake',{method:'POST',
@@ -270,10 +276,14 @@ async function sendCode(env:Env,to:string,code:string,id:string){
     }
   }catch{fail(503,'EMAIL_UNAVAILABLE','Email provider did not accept the verification message');}
 }
-async function readableUpload(env:Env,value:Row){
-  const upload=await first(env,'SELECT * FROM uploads WHERE id=? AND account_id=?',value.active_upload,value.account_id);
-  if(!upload)return null;
-  if(upload.state==='committed')return upload;
+async function readableItem(env:Env,account:string,id:string){
+  const fields=['id','state','chunk_size','part_count','size','sha256','computed_sha256','verified_size','next_part','lease'];
+  const value=await first(env,`SELECT i.*,${fields.map(name=>'u.'+name+' AS _upload_'+name).join(',')}
+    FROM items i LEFT JOIN uploads u ON u.id=i.active_upload AND u.account_id=i.account_id
+    WHERE i.account_id=? AND i.id=?`,account,id);
+  if(!value||value.deleted||value._upload_id===null)return {value,upload:null};
+  const upload=Object.fromEntries(fields.map(name=>[name,value['_upload_'+name]]));
+  if(upload.state==='committed')return {value,upload};
   // A pre-fix cleanup race could reclassify a fully committed upload. Recover
   // reads only when its original verification evidence is still complete.
   // Never execute commit triggers, change versions or extend retention here.
@@ -281,13 +291,13 @@ async function readableUpload(env:Env,value:Row){
       ||upload.size!==value.size||upload.sha256!==value.sha256||upload.computed_sha256!==value.sha256
       ||upload.verified_size!==value.size||upload.next_part!==upload.part_count
       ||upload.part_count!==Math.ceil(value.size/upload.chunk_size)
-      ||upload.lease?.startsWith('gc:'))return null;
+      ||upload.lease?.startsWith('gc:'))return {value,upload:null};
   const proof=await first(env,`SELECT COUNT(*) n,MIN(idx) lo,MAX(idx) hi,COALESCE(SUM(size),0) bytes,
     SUM(CASE WHEN ready<>1 OR size<>MIN(?,?-idx*?) OR length(sha256)<>64 OR sha256 GLOB '*[^0-9a-f]*' THEN 1 ELSE 0 END) bad
     FROM parts WHERE upload_id=?`,upload.chunk_size,value.size,upload.chunk_size,upload.id);
-  if(value.size===0&&upload.part_count===0&&proof?.n===0)return upload;
-  return proof&&proof.n===upload.part_count&&proof.lo===0&&proof.hi===upload.part_count-1
-      &&proof.bytes===value.size&&proof.bad===0?upload:null;
+  if(value.size===0&&upload.part_count===0&&proof?.n===0)return {value,upload};
+  return {value,upload:proof&&proof.n===upload.part_count&&proof.lo===0&&proof.hi===upload.part_count-1
+      &&proof.bytes===value.size&&proof.bad===0?upload:null};
 }
 
 async function expireItems(env:Env,accountId?:string,limit=1){
@@ -379,6 +389,9 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
     return json(signedIn,register?201:200);
   }
   const owner=await auth(request,env);
+  if(path==='/v1/translation'&&method==='POST'){
+    return translate(request,env,owner.id);
+  }
   if(path==='/v1/wan/account'&&method==='POST'){
     const value=await body(request,['credential','lan_id','nonce']);const credential=digest(value.credential);
     const nonce=text(value.nonce,'nonce',32,32);if(!/^[a-f0-9]{32}$/.test(nonce))fail(400,'INVALID_REQUEST','Invalid account intent');
@@ -484,10 +497,13 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
     if([...url.searchParams.keys()].some(k=>!['cursor','limit'].includes(k)))fail(400,'INVALID_REQUEST','Unknown query parameter');
     const cursor=url.searchParams.get('cursor')||'0',limit=Number(url.searchParams.get('limit')||'100');
     if(!/^(0|[1-9][0-9]*)$/.test(cursor)||!Number.isSafeInteger(Number(cursor)))fail(400,'INVALID_CURSOR','Invalid cursor');integer(limit,'limit',1,200);
+    // A committed upload leaves transfers and enters changes atomically in
+    // D1. Read in that direction so a commit cannot fall between both lists.
+    const liveTransfers=await transfers(env,owner.id);
     const all=await rows(env,'SELECT seq,record FROM changes WHERE account_id=? AND seq>? ORDER BY seq LIMIT ?',owner.id,Number(cursor),limit+1),page=all.slice(0,limit);
     // Manual R2 jobs use the same verified storage pipeline, but never become
     // shelf items. Advance over their log rows so pagination cannot stall.
-    return json({changes:page.map(c=>({cursor:String(c.seq),record:JSON.parse(c.record)})).filter(c=>c.record.kind!=='transfer'),cursor:page.length?String(page.at(-1)!.seq):cursor,has_more:all.length>limit,transfers:await transfers(env,owner.id),shelf_storage:await shelfStorage(env,owner.id)});
+    return json({changes:page.map(c=>({cursor:String(c.seq),record:JSON.parse(c.record)})).filter(c=>c.record.kind!=='transfer'),cursor:page.length?String(page.at(-1)!.seq):cursor,has_more:all.length>limit,transfers:liveTransfers,shelf_storage:await shelfStorage(env,owner.id)});
   }
   if(method==='POST'&&path==='/v1/sync/intake'){
     const input=await body(request,['items']);
@@ -516,7 +532,6 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
     if(input.fast_upload!==undefined&&typeof input.fast_upload!=='boolean')fail(400,'INVALID_REQUEST','fast_upload must be boolean');
     if(input.fast_multipart!==undefined&&typeof input.fast_multipart!=='boolean')fail(400,'INVALID_REQUEST','fast_multipart must be boolean');
     const suppliedId=input.upload_id!==undefined,uploadId=suppliedId?uuid(input.upload_id,'upload_id'):crypto.randomUUID();
-    await endIntake(env,owner,uploadId);
     const reuse=async()=>{
       const previous=await findUpload(env,owner,uploadId);
       const spec={item_id:id,base_version:base,kind,name,mime_type:mime,size,sha256:hash};
@@ -524,6 +539,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
         if(previous.account_id!==owner.id)fail(404,'NOT_FOUND','Upload not found');
         if(Object.entries(spec).some(([key,value])=>previous[key]!==value))fail(409,'UPLOAD_CONFLICT','Upload identifier already belongs to different content');
         if(previous.state==='garbage'||(previous.state!=='committed'&&previous.expires_at<Date.now()))fail(409,'UPLOAD_EXPIRED','Upload was cancelled or expired');
+        await endIntake(env,owner,uploadId);
         return json({upload_id:uploadId,chunk_size:previous.chunk_size,part_count:previous.part_count,expires_at:iso(previous.expires_at),shelf_storage:await shelfStorage(env,owner.id)},201);
       }
       const receipt=await first(env,'SELECT * FROM instant_receipts WHERE upload_id=?',uploadId);
@@ -532,8 +548,10 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
       if(Object.entries(spec).some(([key,value])=>receipt[key]!==value))fail(409,'UPLOAD_CONFLICT','Upload identifier already belongs to different content');
       const current=await item(env,owner.id,id);
       if(current&&!current.deleted&&current.version===receipt.result_version&&current.active_upload===receipt.source_upload
-          &&current.sha256===hash&&current.size===size&&current.kind===kind&&current.name===name&&current.mime_type===mime)
+          &&current.sha256===hash&&current.size===size&&current.kind===kind&&current.name===name&&current.mime_type===mime){
+        await endIntake(env,owner,uploadId);
         return json({instant:true,record:record(current),shelf_storage:await shelfStorage(env,owner.id)},201);
+      }
       await conflict(env,owner,id);
     };
     if(suppliedId){const response=await reuse();if(response)return response;}
@@ -553,6 +571,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
         if(result[0].meta.changes){
           if(!result[1].meta.changes)fail(409,'VERSION_CONFLICT','Item changed before instant reuse');
           const current=(await item(env,owner.id,id))!;
+          await endIntake(env,owner,uploadId);
           if(kind!=='transfer')announce(env,ctx,owner,'content');
           if(previous?.active_upload&&previous.active_upload!==source.id)
             ctx.waitUntil(purgeUpload(env,previous.active_upload).catch(()=>undefined));
@@ -570,6 +589,7 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
         query(env,'INSERT INTO allocations(id,account_id,size) VALUES(?,?,?)',uploadId,owner.id,size),
         query(env,'INSERT INTO uploads(id,account_id,item_id,base_version,kind,name,mime_type,size,sha256,chunk_size,part_count,state,expires_at,computed_sha256,device_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',uploadId,owner.id,id,base,kind,name,mime,size,hash,chunk,partCount,'pending',expires,size===0?sha(new Uint8Array()):null,owner.device_id),
       ]);
+      await endIntake(env,owner,uploadId);
       if(kind!=='transfer')announce(env,ctx,owner,'content');
       return json({upload_id:uploadId,chunk_size:chunk,part_count:partCount,expires_at:iso(expires),shelf_storage:await shelfStorage(env,owner.id)},201);
     }catch(error){
@@ -687,13 +707,14 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
     await body(request,[]);const id=uuid(match[1]),value=await upload(env,owner,id);
     if(value.state==='committed'){const current=await item(env,owner.id,value.item_id);if(current?.active_upload===id)return json({record:record(current)});await conflict(env,owner,value.item_id);}
     if(value.state==='garbage'||value.expires_at<Date.now())fail(409,'UPLOAD_EXPIRED','Upload was cancelled or expired');
-    const summary=(await first(env,'SELECT COUNT(*) n,COALESCE(SUM(ready),0) ready FROM parts WHERE upload_id=?',id))!;
+    const [summaryRows,previousRows]=await env.DB.batch<Row>([
+      query(env,'SELECT COUNT(*) n,COALESCE(SUM(ready),0) ready FROM parts WHERE upload_id=?',id),
+      query(env,'SELECT * FROM items WHERE account_id=? AND id=?',owner.id,value.item_id),
+    ]);
+    const summary=summaryRows.results[0],previous=previousRows.results[0];
     if(summary.n!==value.part_count||summary.ready!==value.part_count||value.next_part!==value.part_count)fail(409,'UPLOAD_INCOMPLETE','All parts must be uploaded before commit');
-    const previous=await item(env,owner.id,value.item_id);
     const lease=crypto.randomUUID(),now=Date.now();
     const clientVerifiedFullHash=value.part_count>1&&value.chunk_size>4*1024*1024;
-    const locked=await query(env,"UPDATE uploads SET state='verifying',lease=?,lease_until=? WHERE id=? AND (state='pending' OR (state='verifying' AND lease_until<?))",lease,now+300000,id,now).run();
-    if(!locked.meta.changes){await findUpload(env,owner,id);fail(423,'UPLOAD_BUSY','Upload verification is already running');}
     try{
       // R2 has validated each streamed part SHA. A Free Worker has only 10 ms
       // CPU/request, so it cannot hash a >90 MiB concatenation at commit. The
@@ -701,7 +722,14 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
       // original SHA before exposing it. Such uploads cannot seed instant reuse.
       if(value.verified_size!==value.size||(!clientVerifiedFullHash&&value.computed_sha256!==value.sha256))
         fail(400,'CONTENT_MISMATCH','Full content size or SHA256 differs');
-      const result=await query(env,"UPDATE uploads SET state='committed',lease=NULL,lease_until=0 WHERE id=? AND state='verifying' AND lease=?",id,lease).run();
+      // Every part is immutable and verified at this point. Elect and commit
+      // the owner in one D1 transaction; cancellation/version triggers still
+      // guard publication, without leaving a verifying lease between requests.
+      const [locked,result]=await env.DB.batch([
+        query(env,"UPDATE uploads SET state='verifying',lease=?,lease_until=? WHERE id=? AND expires_at>? AND (state='pending' OR (state='verifying' AND lease_until<?))",lease,now+300000,id,now,now),
+        query(env,"UPDATE uploads SET state='committed',lease=NULL,lease_until=0 WHERE id=? AND state='verifying' AND lease=?",id,lease),
+      ]);
+      if(!locked.meta.changes){await findUpload(env,owner,id);fail(423,'UPLOAD_BUSY','Upload verification is already running');}
       if(!result.meta.changes)fail(409,'UPLOAD_NOT_PENDING','Upload changed while verifying');
     }catch(error){await query(env,"UPDATE uploads SET state='pending',lease=NULL,lease_until=0 WHERE id=? AND state='verifying' AND lease=?",id,lease).run();await findUpload(env,owner,id);if(String(error).includes('VERSION_CONFLICT'))await conflict(env,owner,value.item_id);throw error;}
     if(value.kind!=='transfer')announce(env,ctx,owner,'content');
@@ -710,7 +738,8 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
     // or the other device's change hint. Readers hold leases during cleanup.
     if(previous?.active_upload&&previous.active_upload!==id)
       ctx.waitUntil(purgeUpload(env,previous.active_upload).catch(()=>undefined));
-    return json({record:record((await item(env,owner.id,value.item_id))!),server_full_sha256_verified:!clientVerifiedFullHash,shelf_storage:await shelfStorage(env,owner.id)});
+    const [saved,storage]=await Promise.all([item(env,owner.id,value.item_id),shelfStorage(env,owner.id)]);
+    return json({record:record(saved!),server_full_sha256_verified:!clientVerifiedFullHash,shelf_storage:storage});
   }
   match=path.match(/^\/v1\/uploads\/([^/]+)$/);
   if(method==='GET'&&match){
@@ -780,8 +809,8 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
   }
   match=path.match(/^\/v1\/items\/([^/]+)\/content$/);
   if(method==='GET'&&match){
-    const id=uuid(match[1]),value=await item(env,owner.id,id);if(!value||value.deleted)fail(404,'NOT_FOUND','Item not found');
-    const upload=await readableUpload(env,value!);if(!upload)fail(503,'STORAGE_MISSING','Content metadata is unavailable');
+    const id=uuid(match[1]),{value,upload}=await readableItem(env,owner.id,id);if(!value||value.deleted)fail(404,'NOT_FOUND','Item not found');
+    if(!upload)fail(503,'STORAGE_MISSING','Content metadata is unavailable');
     // Releases predating fast upload accept at most 4 MiB per part. Expose a
     // 1 MiB virtual range view to those clients without duplicating R2 bytes.
     const legacy=upload!.chunk_size>4*1024*1024&&request.headers.get('X-FlickDock-Fast-Content')!=='1';
@@ -790,9 +819,8 @@ async function route(request:Request,env:Env,ctx:ExecutionContext):Promise<Respo
   }
   match=path.match(/^\/v1\/items\/([^/]+)\/parts\/(\d+)$/);
   if(method==='GET'&&match){
-    const id=uuid(match[1]),index=integer(Number(match[2]),'part_index'),value=await item(env,owner.id,id);if(!value||value.deleted)fail(404,'NOT_FOUND','Item not found');
+    const id=uuid(match[1]),index=integer(Number(match[2]),'part_index'),{value,upload}=await readableItem(env,owner.id,id);if(!value||value.deleted)fail(404,'NOT_FOUND','Item not found');
     if(url.searchParams.has('version')){const version=Number(url.searchParams.get('version'));integer(version,'version',1);if(version!==value!.version)await conflict(env,owner,id);}
-    const upload=await readableUpload(env,value!);
     if(!upload)fail(503,'STORAGE_MISSING','Content metadata is unavailable');
     const legacy=upload!.chunk_size>4*1024*1024&&request.headers.get('X-FlickDock-Fast-Content')!=='1';
     const virtualSize=downloadRange(request,upload!.chunk_size,upload!.part_count),expected=legacy?Math.min(virtualSize,value!.size-index*virtualSize):0;

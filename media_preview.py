@@ -15,8 +15,6 @@ if sys.platform == "win32":
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QImage, QPainter, QPainterPath, QPen, QPolygonF
-from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QVideoFrame, QVideoSink
-from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSizePolicy, QSlider, QStyle, QStyleOptionSlider, QVBoxLayout, QWidget
 
 from flickdock_icons import document_pixmap, file_pixmap
@@ -189,6 +187,7 @@ class _VideoSurface(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
     def attach_video(self):
+        from PySide6.QtMultimediaWidgets import QVideoWidget
         assert self.native is None
         self.native = QVideoWidget(self)
         self.native.setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
@@ -394,6 +393,7 @@ class MediaPreview(QWidget):
         self.status_label.setText("正在读取媒体…")
         self.status_label.show()
         generation = self._generation
+        from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QVideoSink
         player = self.player = QMediaPlayer(self)
         self.audio_output = QAudioOutput(self)
         self.audio_output.setVolume(self.volume_slider.value() / 100)
@@ -425,6 +425,7 @@ class MediaPreview(QWidget):
             player.setVideoSink(None)
             player.setAudioOutput(None)
         if sink is not None:
+            from PySide6.QtMultimedia import QVideoFrame
             sink.setVideoFrame(QVideoFrame())
         native_sink = self.surface.native is not None
         self.surface.detach_video()
@@ -433,6 +434,7 @@ class MediaPreview(QWidget):
                 item.deleteLater()
 
     def _status_changed(self, status):
+        from PySide6.QtMultimedia import QMediaPlayer
         if status in (QMediaPlayer.MediaStatus.LoadedMedia, QMediaPlayer.MediaStatus.BufferedMedia):
             if not self._ensure_source_available() or self.player is None:
                 return
@@ -564,6 +566,7 @@ class MediaPreview(QWidget):
             self._seek(position)
 
     def toggle_playback(self):
+        from PySide6.QtMultimedia import QMediaPlayer
         if not self.path or not self._ensure_source_available() or self._failed:
             return
         if self.player is None:
@@ -599,6 +602,7 @@ class MediaPreview(QWidget):
             self._state_changed(player.playbackState())
 
     def _state_changed(self, state):
+        from PySide6.QtMultimedia import QMediaPlayer
         playing = state == QMediaPlayer.PlaybackState.PlayingState and self._user_playing and not self._poster_pending
         self.play_button.set_label("pause" if playing else "play", "暂停" if playing else "播放")
         self._report_playing(playing)

@@ -1,5 +1,5 @@
 #define Root AddBackslash(SourcePath)
-#define AppVersion "1.8.30"
+#define AppVersion "1.8.34"
 
 [Setup]
 AppId={{C51D7C62-61AE-45D7-A96D-6DC63B8495E7}
@@ -52,7 +52,7 @@ Name: "{userdesktop}\FlickDock"; Filename: "{app}\FlickDock.exe"; Tasks: desktop
 [Run]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ""{app}\_internal\windows-network.ps1"" -InstallDirectory ""{app}"" -Quiet"; Verb: "runas"; Flags: shellexec waituntilterminated runhidden skipifsilent; Tasks: firewall
 Filename: "{app}\FlickDock.exe"; Description: "启动 FlickDock"; Flags: nowait postinstall skipifsilent; Check: not IsOnlineUpdate
-Filename: "{app}\FlickDock.exe"; Flags: nowait; Check: IsOnlineUpdate
+Filename: "{app}\FlickDock.exe"; Parameters: "--updated"; Flags: nowait; Check: IsOnlineUpdate
 
 [UninstallRun]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ""{app}\_internal\windows-network.ps1"" -InstallDirectory ""{app}"" -Action Remove -Quiet"; Verb: "runas"; Flags: shellexec waituntilterminated runhidden skipifdoesntexist; RunOnceId: "FlickDockFirewallCleanup"
@@ -68,6 +68,11 @@ function CloseHandle(Handle: THandle): Boolean;
 function IsOnlineUpdate: Boolean;
 begin
   Result := ExpandConstant('{param:FDOnlineUpdate|0}') = '1';
+end;
+
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  Result := IsOnlineUpdate and (PageID = wpFinished);
 end;
 
 function InitializeSetup: Boolean;
@@ -90,7 +95,15 @@ begin
   if ParentHandle = 0 then Exit;
   WaitResult := WaitForSingleObject(ParentHandle, 30000);
   CloseHandle(ParentHandle);
-  Result := WaitResult = 0;
+  if WaitResult = $00000102 then
+  begin
+    { Older clients can finish cleanup without leaving their Qt event loop.
+      Let the existing Restart Manager stage close the bundle's file owners. }
+    Log('FlickDock update parent did not exit; continuing to Restart Manager.');
+    Result := True;
+  end
+  else
+    Result := WaitResult = 0;
   if not Result then
     MsgBox('FlickDock 尚未退出，请关闭后重新更新。', mbError, MB_OK);
 end;

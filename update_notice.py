@@ -118,6 +118,19 @@ class UpdateNotice(QWidget):
     def dismiss(self):
         self.dismissed.emit();self.hide()
 
+    def show_completed(self,version,notes):
+        self.show_version(version,notes)
+        self.title.setText('FlickDock 已更新')
+        self.version_label.setText('当前版本 v'+version)
+        self.symbol.setText('✓')
+        self.close_button.hide();self.later_button.hide()
+        self.status_label.hide();self.progress.hide()
+        self.update_button.setText('我知道了')
+        self.update_button.setAccessibleName('已阅读更新内容')
+        self.update_button.setEnabled(True)
+        self.update_button.setFocus(Qt.FocusReason.OtherFocusReason)
+        self._fit_surface()
+
     def set_state(self,state,version='',received=0,total=0,error='',**details):
         """Render the shared controller without owning its task lifetime."""
         self._state=state

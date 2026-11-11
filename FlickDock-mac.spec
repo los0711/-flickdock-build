@@ -10,17 +10,21 @@ sys.path.insert(0, str(root))
 from app_version import APP_VERSION
 from p2p_assets import bundle_assets
 p2p_binaries,p2p_datas=bundle_assets()
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_data_files
 yt_datas,yt_binaries,yt_hidden=collect_all('yt_dlp')
 ejs_datas,ejs_binaries,ejs_hidden=collect_all('yt_dlp_ejs')
+# yt-dlp's verified TLS must not depend on the build machine's OpenSSL CA path.
+yt_datas += collect_data_files('certifi')
+yt_datas += collect_data_files('eldc')
 
 # macOS uses its system font; the Windows-only font is not a runtime dependency.
 assets = [(root / 'assets/ui/qtbase_zh_CN.qm', 'assets/ui')]
 assets += [(root / 'licenses' / name, 'licenses') for name in (
     'HarmonyOS-Sans-LICENSE.txt', 'Python-LICENSE.txt', 'FFmpeg-LICENSE.txt','LGPL-3.0.txt',
     'GPL-3.0.txt', 'PyInstaller-COPYING.txt','OpenSSL-LICENSE.txt','Cloud-Client-LICENSES.txt',
-    'Lucide-LICENSE.txt','Release-Crypto-LICENSES.txt','Video-LICENSES.txt','WebRTC-LICENSES.txt')]
+    'Lucide-LICENSE.txt','Release-Crypto-LICENSES.txt','Video-LICENSES.txt','WebRTC-LICENSES.txt','Flag-Icons-LICENSE.txt','ELDC-LICENSE.txt')]
 assets += [(root / 'THIRD_PARTY_NOTICES.md', '.'), (root / 'font_manifest.json', '.')]
+assets += [(path,'assets/flags') for path in (root/'assets/flags').glob('*.svg')]
 for path, destination in assets:
     if not path.is_file():
         raise FileNotFoundError(path)

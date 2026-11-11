@@ -5,7 +5,7 @@ import time,unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 from PySide6.QtCore import QObject,QTimer,QUrl,Signal
-from PySide6.QtNetwork import QHostAddress,QAbstractSocket
+from PySide6.QtNetwork import QHostAddress,QAbstractSocket,QNetworkProxy
 from PySide6.QtWebSockets import QWebSocketServer
 from PySide6.QtWidgets import QApplication
 from cloud_events import CloudEvents,RECONNECT_MAX_MS
@@ -47,6 +47,18 @@ class EventPushTests(unittest.TestCase):
         end=time.monotonic()+.1
         while time.monotonic()<end:APP.processEvents();time.sleep(.002)
         self.assertEqual(messages,[]);self.assertFalse(hasattr(self.stream,'heartbeat'))
+
+    def test_notification_reconnect_can_bypass_a_failed_system_proxy_and_identifies_the_app(self):
+        stream=CloudEvents(self.account);stream._identity='disposable-account'
+        proxy=QNetworkProxy(QNetworkProxy.HttpProxy,'127.0.0.1',1);direct=QNetworkProxy(QNetworkProxy.NoProxy)
+        try:
+            with patch('cloud_events.proxy_routes',return_value=[proxy,direct]),patch.object(stream.socket,'open') as opened:
+                stream._connect();self.assertEqual(stream.socket.proxy().type(),QNetworkProxy.HttpProxy)
+                request=opened.call_args.args[0]
+                self.assertTrue(bytes(request.rawHeader('User-Agent')).startswith(b'FlickDock/'))
+                stream._disconnected();stream.retry.stop();stream._connect()
+                self.assertEqual(stream.socket.proxy().type(),QNetworkProxy.NoProxy)
+        finally:stream.close();stream.deleteLater();APP.processEvents()
 
     def test_closed_socket_reconnects_and_wakes_each_registered_sync_once(self):
         scheduler=SyncScheduler(connected=False);calls=[]

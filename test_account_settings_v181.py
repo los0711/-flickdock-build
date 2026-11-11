@@ -165,8 +165,9 @@ class SettingsAccountTests(unittest.TestCase):
             def apply_theme(self,theme):self.theme=theme
         lan=Lan();self.dialog.set_lan_panel(lan)
         self.assertIs(self.dialog.account_slot_layout.itemAt(1).widget(),self.panel)
-        self.assertIs(self.dialog.body_layout.itemAt(0).widget(),self.dialog._reference_top)
-        self.assertIs(self.dialog.body_layout.itemAt(1).widget(),lan)
+        account_index=self.dialog.body_layout.indexOf(self.dialog.account_slot)
+        self.assertIs(self.dialog.body_layout.itemAt(account_index).widget(),self.dialog._reference_top)
+        self.assertIs(self.dialog.body_layout.itemAt(account_index+1).widget(),lan)
         self.dialog.apply_theme('dark');self.assertEqual(lan.theme,'dark')
         self.assertIs(self.dialog.set_lan_panel(None),lan);self.assertIsNone(lan.parent())
         lan.deleteLater()

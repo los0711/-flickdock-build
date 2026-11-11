@@ -20,8 +20,8 @@ const section = html.slice(html.indexOf('<section id="download"')).split('</sect
 const downloads = [...section.matchAll(/<a[^>]*href="([^"]+)"[^>]*data-installer="([^"]+)"[^>]*>([^<]+)<\/a>/g)];
 assert.equal(downloads.length, 3, 'bottom download area keeps exactly three platform links');
 const installers = Object.fromEntries(downloads.map(match => [match[2], { url: match[1], label: match[3] }]));
-assert.equal(installers.windows.url, 'https://gitee.com/rooogerluo/flick-dock-windows-releases-2/releases/download/v1.8.29/FlickDock-Setup-1.8.29.exe');
-assert.equal(installers['mac-arm'].url, 'https://gitee.com/rooogerluo/flick-dock-macos-releases-8/releases/download/v1.8.29/FlickDock-1.8.29-macOS-arm64.pkg');
+assert.equal(installers.windows.url, 'https://download.flickdock.cc.cd/v1.8.32/FlickDock-Setup-1.8.32.exe');
+assert.equal(installers['mac-arm'].url, 'https://download.flickdock.cc.cd/v1.8.32/FlickDock-1.8.32-macOS-arm64.pkg');
 assert.equal(installers['mac-intel'].url, 'https://gitee.com/rooogerluo/flick-dock-macos-releases-7/releases/download/v1.8.22/FlickDock-1.8.22-macOS-x86_64.pkg');
 assert(installers['mac-intel'].label.includes('已停止更新'));
 assert(!section.includes('data-ui-action="download-windows"') && !section.includes('data-ui-action="download-macos"'), 'remove only the duplicated bottom pair');
@@ -52,7 +52,7 @@ try{
   let reply=await worker.fetch(new Request(url,{headers:{Authorization:'Bearer should-never-forward',Cookie:'private=1',Range:'bytes=0-2'}}),{});
   assert.equal(reply.status,206);assert.deepEqual([...new Uint8Array(await reply.arrayBuffer())],[1,2,3]);
   assert.equal(reply.headers.get('Content-Range'),'bytes 0-2/9');
-  assert.equal(forwarded[0].url,'https://github.com/los0711/-flickdock-build/releases/download/v1.8.27/FlickDock-1.8.27-macOS-arm64.dmg');
+  assert.equal(forwarded[0].url,'https://download.flickdock.cc.cd/v1.8.27/FlickDock-1.8.27-macOS-arm64.dmg');
   assert(!forwarded[0].options.headers.has('Authorization'));assert(!forwarded[0].options.headers.has('Cookie'));
   const before=forwarded.length;
   for(const path of ['/downloads/https://private.example/file','/downloads/FlickDock-01.8.27-macOS-arm64.dmg','/downloads/FlickDock-1.8.27-source.zip']){

@@ -114,18 +114,18 @@ class WorkbenchTests(unittest.TestCase):
                 panel.history_rows[0].remove_button.click();self.assertEqual(path.read_text(encoding='utf-8'),'original bytes')
             finally:window.hide();window.deleteLater();wan.close();wan.deleteLater();QTest.qWait(20)
 
-    def test_categories_keep_unsaved_values_and_account_injection_in_its_category(self):
+    def test_anchor_sections_keep_unsaved_values_and_account_injection(self):
         with tempfile.TemporaryDirectory() as directory:
             store=SettingsStore(Path(directory)/'profile');window=SettingsDialog(store);window.show();QTest.qWait(20)
             try:
                 draft=str(Path(directory)/'changed');window.folder_edit.setText(draft)
                 for index,(_,sections) in enumerate(window.setting_categories):
                     window.category_list.setCurrentRow(index);QTest.qWait(10)
-                    for number,(_,other) in enumerate(window.setting_categories):
-                        for card in other:self.assertEqual(card.isVisible(),number==index)
+                    for _,other in window.setting_categories:
+                        for card in other:self.assertTrue(card.isVisible())
                     self.assertEqual(window.folder_edit.text(),draft)
                 account=QLabel('Isolated account view');window.set_account_panel(account);QTest.qWait(10)
-                self.assertFalse(account.isVisible());window.select_category('账号与设备');QTest.qWait(10);self.assertTrue(account.isVisible())
+                self.assertTrue(account.isVisible());window.select_category('账号与设备');QTest.qWait(10);self.assertTrue(account.isVisible())
                 window.select_category('文件与保存');self.assertEqual(window.folder_edit.text(),draft)
                 window.reject();self.assertNotEqual(store.capture_dir,Path(draft))
             finally:window.hide();window.deleteLater();QTest.qWait(20)

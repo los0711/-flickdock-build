@@ -154,7 +154,12 @@ class WebRTCStream:
         if not abort and not self._closed:
             try:self.control({'type':'close'})
             except OSError:pass
-        if abort and self._process.poll() is None:self._process.terminate()
+        # An ICE restart runs on Qt's owner thread. SIGTERM invokes the Node
+        # worker's graceful SCTP cleanup on macOS and can stall that thread
+        # until the four-second timeout. Abort explicitly discards this native
+        # generation; the OS closes its sockets and the file protocol resumes
+        # the verified prefix. Normal close still drains the final save ACK.
+        if abort and self._process.poll() is None:self._process.kill()
         try:self._process.wait(timeout=4)
         except subprocess.TimeoutExpired:self._process.kill();self._process.wait(timeout=3)
         # Process exit only seals the pipe; its final statistics and ACK can

@@ -6,7 +6,7 @@ from uuid import UUID,uuid4
 from PySide6.QtCore import QObject,QRunnable,QThreadPool,QTimer,Signal,QMimeData,QUrl,QBuffer,QIODevice,Qt
 from PySide6.QtGui import QImage,QPixmap,QImageReader
 from PySide6.QtWidgets import QApplication
-from platform_native import native_input_available
+from platform_native import native_input_available,copy_activity
 from clipboard_identity import signature
 from sync_scheduler import SyncScheduler
 from virtual_clipboard import describe as describe_virtual,capture as capture_virtual,VirtualClipboardError
@@ -21,6 +21,8 @@ CLIPBOARD_PRIORITY_LEASE_MS=350
 TEXT_COPY_COALESCE_MS=8
 BINARY_COPY_COALESCE_MS=60
 MAC_CLIPBOARD_OBSERVE_MS=50
+COPY_FORMAT_SETTLE_SECONDS=1.
+REPEAT_COPY_INPUT_MAX_AGE_MS=3000
 
 
 class ClipboardSizeLimit(ValueError):
@@ -248,6 +250,8 @@ class ClipboardSync(QObject):
     activity_changed=Signal(bool)
     copy_result=Signal(bool,dict)
     copy_started=Signal()
+    copy_observed=Signal(object)
+    copy_repeated=Signal(object)
     # Keep original image bytes as a shared Python object, rather than copying
     # a potentially 20 MB value through QVariantMap for each status update.
     view_changed=Signal(object)
@@ -288,8 +292,11 @@ class ClipboardSync(QObject):
         self._priority_granted=False;self._content_fetching=False;self._priority_timer=QTimer(self);self._priority_timer.setSingleShot(True)
         self._priority_timer.timeout.connect(self._priority_expired)
         self._is_native=clipboard is None or clipboard is QApplication.clipboard()
+        self._native_reader=None
+        self._native_baseline=None
+        self._copy_input_stamp=None
         self._sequence=native_sequence if self._is_native else lambda:None
-        self.enabled=enabled;self.closed=False;self._epoch=0;self._generation=0;self._applying=False
+        self.enabled=enabled;self._local_observation=False;self.closed=False;self._epoch=0;self._generation=0;self._applying=False
         self._native_access=self._native_accessible()
         self._clock_anchor=None;self._local_clock_anchor=(time.monotonic(),round(time.time()*1000))
         self._observed_clock=0;self._local_fence=None;self._local_retry=None
@@ -313,6 +320,11 @@ class ClipboardSync(QObject):
         self._retry_on_reconnect=False;self._resume_dependent_jobs=True
         self.schedule=self.scheduler.register('clipboard',self._scheduled_check)
         self.cache=Path(base)/'clipboard-cache';self.cache.mkdir(parents=True,exist_ok=True)
+        if self._is_native and sys.platform=='win32' and native_input_available():
+            from native_clipboard_reader import NativeClipboardReader
+            self._native_reader=NativeClipboardReader(self.cache,lambda:self._sequence(),self)
+            self._native_reader.ready.connect(self._native_read_ready)
+            self._native_reader.failed.connect(self._native_read_failed)
         self._directories=[];self._current_directory=None
         for directory in self.cache.glob('clip-*'):
             if not directory.is_dir() or directory.is_symlink() or directory.is_junction():continue
@@ -326,7 +338,11 @@ class ClipboardSync(QObject):
         self.change_debounce=QTimer(self);self.change_debounce.setSingleShot(True);self.change_debounce.setInterval(BINARY_COPY_COALESCE_MS)
         self.change_debounce.timeout.connect(self._changed)
         self.clipboard.dataChanged.connect(self._schedule_change)
-        self._last_local_signature=signature(self._snapshot());self._last_sequence=self._sequence()
+        self._last_local_signature=signature(self._snapshot())
+        self._last_sequence=self._sequence() if self._snapshot_available else object()
+        if self._native_reader is not None and not self._snapshot_available:
+            activity=self._read_copy_activity()
+            self._native_baseline=(self._sequence(),activity[0] if activity is not None else None)
         account.account_changed.connect(self._account_changed)
         events.clipboard_changed.connect(self.request_refresh)
         payload=getattr(events,'clipboard_payload',None)
@@ -339,12 +355,13 @@ class ClipboardSync(QObject):
         self.scheduler.bind_socket(events.socket)
         self._update_schedule()
         if enabled:
+            if self._native_reader is not None and not self._snapshot_available:self.change_debounce.start(NATIVE_READ_RETRY_INITIAL_MS)
             QTimer.singleShot(0,self._cleanup)
             if sys.platform=='darwin' and self._is_native:self._mac_changed(initial=True);self.mac_poll.start()
             self.schedule.request()
 
     def _mac_changed(self,initial=False):
-        if not self.enabled or self.closed:return
+        if not (self.enabled or self._local_observation) or self.closed:return
         if not self.recheck_native_access():return
         try:
             from AppKit import NSPasteboard
@@ -363,10 +380,24 @@ class ClipboardSync(QObject):
         self._native_format_issue=''
         if not self._native_accessible():return None
         try:
+            if self._is_native and sys.platform=='win32' and native_input_available() and not self.clipboard.ownsClipboard():
+                if self._native_reader is not None:
+                    self._snapshot_available,value=self._native_reader.read(self._sequence())
+                    self._native_format_issue=self._native_reader.issue
+                    return value
+                return None
             mime=self.clipboard.mimeData()
             if mime is None:return None
             self._native_format_issue=''
             if self._is_native:
+                # Remote-control apps may add virtual-file descriptors beside
+                # an ordinary local file copy. Use the ready local payload
+                # before asking that app to render a delayed remote stream.
+                if mime.hasUrls() and any(url.isLocalFile() for url in mime.urls()):
+                    value=_snapshot_mime(mime)
+                    if value is None:
+                        self._native_format_issue='VIRTUAL_FILE_SINGLE_ONLY';return None
+                    self._snapshot_available=True;return value
                 descriptor=describe_virtual(mime)
                 if descriptor is not None:
                     sequence=self._sequence();key=sequence,descriptor.sha256
@@ -385,6 +416,32 @@ class ClipboardSync(QObject):
             from network_diagnostics import record_event
             record_event(self._clock_path.parent,'cloud','clipboard-read',type(error).__name__.upper())
             return None
+
+    def _native_read_ready(self,sequence,value,directory):
+        if self.closed:return
+        if directory is not None:self._directories.append((directory,time.time()))
+        if self._prepared_receive is not None:self._apply_received()
+        baseline,self._native_baseline=self._native_baseline,None
+        if baseline is not None:
+            activity=self._read_copy_activity()
+            stamp=activity[0] if activity is not None else None
+            # Startup/account restoration is an observation, not permission to
+            # export the previous session's delayed clipboard as a fresh copy.
+            if sequence==baseline[0] or stamp is None or baseline[1] is None or stamp==baseline[1]:
+                self._last_sequence=sequence;self._last_local_signature=signature(value)
+                if self._ignored!=signature(value):self._set_view(value,'local')
+                if self._native_receive_interrupted and self._active():
+                    self._native_receive_interrupted=False;self.request_refresh()
+                return
+        self.change_debounce.start(0)
+
+    def _native_read_failed(self,code):
+        if self.closed:return
+        from network_diagnostics import record_event
+        record_event(self._clock_path.parent,'cloud','clipboard-read',code)
+        self._native_format_issue=code
+        self._set_view(self.view['value'],self.view['phase'],self.view.get('id',''))
+        self.change_debounce.start(0 if code=='NATIVE_READ_REPLACED' else NATIVE_READ_RETRY_MAX_MS)
 
     def _capture_virtual(self,descriptor,key):
         if self._virtual_capture is not None:
@@ -449,18 +506,47 @@ class ClipboardSync(QObject):
         self.enabled=enabled;self.change_debounce.stop();self._account_changed(force=True)
         if enabled:
             if sys.platform=='darwin' and self._is_native:self._mac_changed(initial=True);self.mac_poll.start()
-        else:self.mac_poll.stop()
+        elif not self._local_observation:self.mac_poll.stop()
+
+    def set_local_observation(self,enabled):
+        """Reuse the native observer for translation without enabling cloud sync."""
+        self._local_observation=bool(enabled)
+        if self.closed:return
+        if sys.platform=='darwin' and self._is_native:
+            if self.enabled or enabled:
+                self._mac_changed(initial=True);self.mac_poll.start()
+            else:self.mac_poll.stop()
 
     def _schedule_change(self):
+        if self._is_native and not self.closed:
+            if self._applying:return
+            sequence=self._sequence()
+            if sequence is not None and sequence==self._last_sequence:return
+            if self._virtual_capture is not None and self._virtual_capture[0][0]!=sequence:
+                self._virtual_capture[1].cancelled.set()
+            if self._active():
+                # Clipboard owners (including remote-control software) can still
+                # be publishing delayed formats inside dataChanged. Fence old
+                # receives now, and read only after the notification unwinds.
+                self._native_receive_interrupted|=self._fetching or self._prepared_receive is not None
+                self._copy_notified_mono=time.monotonic();self._generation+=1
+                self.change_debounce.start(TEXT_COPY_COALESCE_MS)
+            else:self.change_debounce.start(TEXT_COPY_COALESCE_MS)
+            return
         if not self._active() and not self.closed:
             value=self._snapshot()
+            if self._snapshot_available and not self._applying:self.copy_observed.emit(value)
             self._set_view(value if self._snapshot_available else self.view.get('value'),'local');return
         if self._active() and not self._applying:
             sequence=self._sequence()
             if sequence is not None and sequence==self._last_sequence:return
             value=self._snapshot();sig=signature(value)
+            # UI observers need real repeated copies too. This signal never
+            # changes the content fence or schedules a duplicate cloud upload.
+            if self._snapshot_available:self.copy_observed.emit(value)
             if self._snapshot_available and (value is not None or sequence is None) and sig==self._last_local_signature:
-                self._last_sequence=sequence;return
+                self._last_sequence=sequence;self._repeat_copy_feedback(value);return
+            if self._snapshot_available:self._last_copy_observation=time.monotonic()
             from PySide6.QtGui import QCursor
             point=QCursor.pos();self._copy_point=(point.x(),point.y())
             # Stop an in-flight remote read before the native notification's
@@ -468,6 +554,24 @@ class ClipboardSync(QObject):
             self._native_receive_interrupted|=self._fetching or self._prepared_receive is not None
             self._copy_notified_mono=time.monotonic();self._generation+=1
             self.change_debounce.start(TEXT_COPY_COALESCE_MS if value is not None and value[0]=='text' else BINARY_COPY_COALESCE_MS)
+
+    def _read_copy_activity(self):
+        if not self._is_native:return None
+        try:return copy_activity()
+        except (OSError,RuntimeError,ImportError):
+            from network_diagnostics import record_event
+            record_event(self._clock_path.parent,'cloud','copy-source','INPUT_METADATA_UNAVAILABLE')
+            return None
+
+    def _repeat_copy_feedback(self,value,*,user_intent=True,explicit=False):
+        if not user_intent:return
+        now=time.monotonic();previous=getattr(self,'_last_copy_observation',now)
+        self._last_copy_observation=now
+        # Native format conversion bursts are one observation. A later real
+        # copy can show the confirmed state without re-uploading identical bytes.
+        if (value is not None and (explicit or now-previous>=COPY_FORMAT_SETTLE_SECONDS) and self.view.get('id')
+                and signature(value)==signature(self.view.get('value'))):
+            self.copy_repeated.emit(dict(self.view,value=value))
 
     def _copy_timestamp(self,intent):
         if intent['at'] is None:
@@ -692,6 +796,10 @@ class ClipboardSync(QObject):
         # A session switch is not a Copy action. Establish a native baseline so
         # a delayed notification cannot export the previous account's content.
         self._last_local_signature=signature(self._snapshot());self._last_sequence=self._sequence()
+        self._native_baseline=None
+        if self._native_reader is not None and not self._snapshot_available:
+            activity=self._read_copy_activity()
+            self._native_baseline=(self._last_sequence,activity[0] if activity is not None else None)
         if sys.platform=='darwin' and not self.closed:self._mac_changed(initial=True)
         self._epoch+=1;self._generation+=1;self._pending=None;self._seen='';self._fetching=False;self.retry.stop()
         self._priority_flags(waiting=False,receiving=False)
@@ -729,7 +837,12 @@ class ClipboardSync(QObject):
         self._cleanup()
 
     def _changed(self):
-        if not self._active() or self._applying:return
+        if self.closed or self._applying:return
+        if not self._active():
+            value=self._snapshot()
+            if self._snapshot_available:
+                self.copy_observed.emit(value);self._set_view(value,'local');self._last_sequence=self._sequence()
+            return
         sequence=self._sequence()
         # Repeated native notifications for one copy must not ask another app
         # to render the same delayed clipboard again or repeat file/image work.
@@ -750,10 +863,17 @@ class ClipboardSync(QObject):
             self._native_read_retry=(sequence,attempts)
             if attempts<=5:self.change_debounce.start(100);return
         else:self._native_read_retry=(None,0)
+        activity=self._read_copy_activity();repeat_intent=True
+        if activity is not None:
+            stamp,age,foreground=activity
+            repeat_intent=stamp!=self._copy_input_stamp and 0<=age<=REPEAT_COPY_INPUT_MAX_AGE_MS and foreground is not False
+            self._copy_input_stamp=stamp
+        if self._is_native and (sig!=self._last_local_signature or repeat_intent):self.copy_observed.emit(value)
         if sig==self._last_local_signature:
             self._last_sequence=sequence
-            if self._pending is not None and self._pending['id']==self.view['id']:
-                self._pending['generation']=self._generation
+            self._repeat_copy_feedback(value,user_intent=repeat_intent,explicit=activity is not None and repeat_intent)
+            task=self._pending or self._local_retry
+            if task is not None and task['id']==self.view['id']:task['generation']=self._generation
             self._set_view(self.view['value'],self.view['phase'],self.view.get('id',''))
             # The unreadable notification fenced an in-flight receive before
             # we could tell it was a duplicate. Resume that receive now instead
@@ -1117,6 +1237,11 @@ class ClipboardSync(QObject):
         finally:self._applying=False
 
     def _adopt_native(self,actual,directory,identity):
+        # A verified receive replaces startup observation, including its delayed result.
+        self._native_baseline=None
+        self._last_copy_observation=time.monotonic()
+        activity=self._read_copy_activity()
+        if activity is not None:self._copy_input_stamp=activity[0]
         self._local_fence=None;self._ignored=actual
         self._last_sequence=self._sequence()
         self._last_local_signature=actual;self._current_directory=directory
@@ -1159,7 +1284,9 @@ class ClipboardSync(QObject):
 
     def close(self):
         if self.closed:return
-        self.closed=True;self._priority_timer.stop();self.retry.stop();self.mac_poll.stop();self.change_debounce.stop();self._account_changed(force=True)
+        self.closed=True;self._priority_timer.stop();self.retry.stop();self.mac_poll.stop();self.change_debounce.stop()
+        if self._native_reader is not None:self._native_reader.close()
+        self._account_changed(force=True)
         self.schedule.close()
         self.scheduler.connection_changed.disconnect(self._connection_changed)
         if self._owns_scheduler:self.scheduler.close()
