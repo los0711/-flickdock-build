@@ -219,4 +219,22 @@ class NativeClipboardReaderTests(unittest.TestCase):
         self.assertEqual(self.failed[-1],'NATIVE_READ_REPLACED');self.assertFalse(self.ready)
         self.assertFalse(list(self.cache.iterdir()))
 
+    def test_native_encoded_images_and_bitmaps_both_roundtrip_without_clipboard_access(self):
+        import json,threading
+        from PySide6.QtCore import QBuffer,QIODevice
+        from PySide6.QtGui import QImage,QColor
+        image=QImage(80,40,QImage.Format_ARGB32);image.fill(QColor('#2468ad'))
+        for format in ('PNG','JPEG','bitmap'):
+            with self.subTest(format=format),tempfile.TemporaryDirectory(dir=self.cache) as directory:
+                root=Path(directory)
+                if format=='bitmap':data={'image':image}
+                else:
+                    buffer=QBuffer();buffer.open(QIODevice.WriteOnly);self.assertTrue(image.save(buffer,format))
+                    encoded=bytes(buffer.data());data={'raw':encoded,'mime':'image/'+format.lower()}
+                mime=self.subject._store_image(root,data)
+                (root/'result.json').write_text(json.dumps(dict(ok=True,sequence=10,kind='image',mime=mime)))
+                result=self.subject._read_result(root,threading.Event())['value']
+                self.assertEqual(result[0],'image');self.assertEqual(result[1]['image'].size(),image.size())
+                if format!='bitmap':self.assertEqual(result[1]['raw'],encoded)
+
 if __name__ == '__main__': unittest.main(verbosity=2)

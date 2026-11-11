@@ -43,16 +43,33 @@ def _read_result(directory,cancel):
         if not isinstance(data,list) or not data or len(data)>1 or not all(isinstance(item,str) and Path(item).is_absolute() for item in data):raise ValueError('Invalid clipboard files')
     elif kind=='image':
         from PySide6.QtGui import QImage
-        image=QImage(str(directory/'image.png'))
-        if image.isNull():raise ValueError('Invalid clipboard image')
-        data={'image':image}
         raw=directory/'image.raw'
         if raw.exists():
-            if raw.is_symlink() or raw.stat().st_size>=MAX_PAYLOAD_BYTES:raise ValueError('Invalid clipboard image bytes')
-            data.update(raw=raw.read_bytes(),mime=value['mime'])
+            if raw.is_symlink() or not stat.S_ISREG(raw.stat().st_mode) or raw.stat().st_size>=MAX_PAYLOAD_BYTES:raise ValueError('Invalid clipboard image bytes')
+            encoded=raw.read_bytes();image=QImage.fromData(encoded)
+            data={'image':image,'raw':encoded,'mime':value['mime']}
+        else:
+            path=directory/'image.png'
+            if path.is_symlink() or not stat.S_ISREG(path.stat().st_mode) or path.stat().st_size>=MAX_PAYLOAD_BYTES:raise ValueError('Invalid clipboard image bytes')
+            image=QImage(str(path));data={'image':image}
+        if image.isNull():raise ValueError('Invalid clipboard image')
     elif kind is not None:raise ValueError('Unknown clipboard payload')
     if cancel.is_set():raise InterruptedError()
     return dict(ok=True,sequence=sequence,value=(kind,data) if kind else None)
+
+
+def _store_image(directory,data):
+    # Native producers can expose encoded bytes without an imageData bitmap.
+    # Preserve those bytes rather than transcoding a JPEG or PNG for transport.
+    raw=data.get('raw')
+    if raw:
+        if len(raw)>=MAX_PAYLOAD_BYTES:raise ValueError('Clipboard image too large')
+        (directory/'image.raw').write_bytes(raw)
+    else:
+        path=directory/'image.png'
+        if not data['image'].save(str(path),'PNG'):raise ValueError('Cannot store clipboard image')
+        if path.stat().st_size>=MAX_PAYLOAD_BYTES:raise ValueError('Clipboard image too large')
+    return data.get('mime','')
 
 
 class NativeClipboardReader(QObject):
@@ -179,10 +196,7 @@ def run_worker(path):
         if value is None and native_format_count():raise VirtualClipboardError('NATIVE_FORMAT_NOT_READY')
         stage='ENCODE';kind,data=value if value else (None,None)
         if kind=='image':
-            if not data['image'].save(str(directory/'image.png'),'PNG'):raise ValueError('Cannot store clipboard image')
-            if (directory/'image.png').stat().st_size>=MAX_PAYLOAD_BYTES:raise ValueError('Clipboard image too large')
-            if data.get('raw'):(directory/'image.raw').write_bytes(data['raw'])
-            output=dict(ok=True,sequence=sequence,kind=kind,mime=data.get('mime',''));data=None
+            output=dict(ok=True,sequence=sequence,kind=kind,mime=_store_image(directory,data));data=None
         else:output=dict(ok=True,sequence=sequence,kind=kind,data=data)
         encoded=json.dumps(output,ensure_ascii=False).encode('utf8')
         if len(encoded)>MAX_METADATA_BYTES:raise ValueError('Clipboard payload too large')
