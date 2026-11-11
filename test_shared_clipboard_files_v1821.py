@@ -125,7 +125,7 @@ class SharedFilesTests(unittest.TestCase):
             with patch('native_ui_common.reduced_motion',return_value=True):
                 identity=self.copy(self.source());until(lambda:identity in self.peer.held)
                 pending=self.client._pending;item=pending['package'];canonical=str(uuid4())
-                self.client._task_ready(pending,dict(id=canonical,ready=True,sha256=item['sha256'],size=item['size'],version=7),equivalent=True)
+                self.client._task_ready(pending,dict(id=canonical,ready=True,kind=item['kind'],sha256=item['sha256'],size=item['size'],version=7),equivalent=True)
                 until(lambda:notice.isVisible() and notice._phase=='success')
                 self.assertEqual(self.client.view['id'],canonical)
                 self.assertEqual(self.client.view['copy_id'],identity)

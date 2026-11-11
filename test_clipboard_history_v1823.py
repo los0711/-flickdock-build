@@ -20,6 +20,20 @@ from test_clipboard_sync_v1819 import APP,until,flush
 
 
 class HistoryTests(unittest.TestCase):
+    def test_bridge_html_conversion_is_not_republished_but_an_explicit_rich_copy_is(self):
+        client=self.clients[0];self.clips[0].text('the same visible text')
+        until(lambda:client.view.get('backed_up'));version=self.hub.version
+        client._is_native=True;client._copy_input_stamp=10
+        def rich_copy():
+            mime=QMimeData();mime.setText('the same visible text');mime.setHtml('<b>the same visible text</b>')
+            self.clips[0].setMimeData(mime)
+        with patch('clipboard_sync.copy_activity',return_value=(10,100,False)):
+            rich_copy();self.settle()
+        self.assertEqual(self.hub.version,version)
+        with patch('clipboard_sync.copy_activity',return_value=(11,10,True)):
+            rich_copy();until(lambda:client.view.get('backed_up') and self.hub.version==version+1)
+        self.assertEqual(self.clips[0].mimeData().html(),'<b>the same visible text</b>')
+
     def test_renamed_bridge_files_are_one_copy_without_repeated_toasts_or_uploads(self):
         client=self.clients[0];replayed=[];observed=[]
         client.copy_repeated.connect(replayed.append);client.copy_observed.connect(observed.append)
@@ -38,6 +52,9 @@ class HistoryTests(unittest.TestCase):
             self.assertFalse(replayed);self.assertFalse(observed)
             self.assertEqual(self.hub.version,version);self.assertEqual([Path(p) for p in client.view['value'][1]],[source])
             self.assertIsNone(client._pending);self.assertIsNone(client._local_retry)
+            with patch('clipboard_sync.copy_activity',return_value=(11,10,True)):
+                copy(clone);until(lambda:client.view.get('backed_up') and self.hub.version==version+1)
+            self.assertEqual([Path(p) for p in client.view['value'][1]],[clone])
 
     def test_known_old_bridge_file_cannot_displace_a_new_local_file_or_its_intent(self):
         client=self.clients[0]

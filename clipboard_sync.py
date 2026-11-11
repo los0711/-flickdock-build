@@ -65,6 +65,19 @@ def unpack_inline(head):
     if len(raw)!=head['size'] or hashlib.sha256(raw).hexdigest()!=head.get('sha256'):raise ValueError('clipboard integrity')
     return text_value(raw)
 
+
+def same_cloud_content(item,head):
+    if head.get('kind')!=item['kind']:return False
+    if head.get('size')==item['size'] and head.get('sha256')==item['sha256']:return True
+    inline=item.get('inline')
+    if item['kind']!='text' or not isinstance(inline,dict) or not isinstance(head.get('inline'),str):return False
+    # Clipboard bridges can strip HTML or normalize CR/LF without creating a
+    # new text copy. Verify both encoded bodies before comparing their text;
+    # the native original keeps its richer formats and is never rewritten.
+    local=unpack_inline(dict(item,inline=inline['body']))
+    remote=unpack_inline(head)
+    return content_keys(local)==content_keys(remote)
+
 def native_sequence():
     if not native_input_available():return None
     try:
@@ -829,15 +842,23 @@ class ClipboardSync(QObject):
             if failure:self._task_error(pending,failure);return
             head=result.get('clipboard') if isinstance(result,dict) else None
             item=pending['package'];held=self.file_jobs.held(pending)
-            if (not held and self._pending is pending and isinstance(head,dict) and head.get('ready')
-                    and head.get('kind')==item['kind'] and head.get('size')==item['size'] and head.get('sha256')==item['sha256']):
+            try:
+                matches=bool(not held and self._pending is pending and isinstance(head,dict) and head.get('ready') and same_cloud_content(item,head))
+            except (ValueError,TypeError,UnicodeError) as invalid:
+                self._task_error(pending,invalid);return
+            if matches:
                 try:canonical=str(UUID(head.get('id','')))
                 except (ValueError,TypeError,AttributeError):self._task_error(pending,ValueError('云端剪贴板标识无效。'));return
                 if canonical!=head['id'] or not head_version(head):self._task_error(pending,ValueError('云端剪贴板版本无效。'));return
+                if head.get('sha256')!=item['sha256']:
+                    from network_diagnostics import record_event
+                    record_event(self._clock_path.parent,'cloud','clipboard-conflict','EQUIVALENT_TEXT_FORMAT')
                 self._task_ready(pending,head,equivalent=True)
                 if self._snapshot_available and signature(self._snapshot())==signature(self.view['value']):
                     self.deliveries.received(head,'cloud')
                 return
+            from network_diagnostics import record_event
+            record_event(self._clock_path.parent,'cloud','clipboard-conflict','DIFFERENT_CLIPBOARD_CONTENT')
             self._set_cloud_progress(pending['id'],0,0,'superseded')
             self._copy_result(pending,False,phase='superseded')
             self._clear_task(pending)
@@ -849,8 +870,13 @@ class ClipboardSync(QObject):
     def _task_ready(self,pending,head,*,equivalent=False):
         if not self._valid_task(pending):return
         item=pending['package']
+        try:
+            content_verified=isinstance(head,dict) and (same_cloud_content(item,head) if equivalent else
+                head.get('sha256')==item['sha256'] and head.get('size')==item['size'])
+        except (ValueError,TypeError,UnicodeError) as invalid:
+            self._task_error(pending,invalid);return
         if (not isinstance(head,dict) or (not equivalent and head.get('id')!=pending['id']) or not head.get('ready')
-                or head.get('sha256')!=item['sha256'] or head.get('size')!=item['size']):
+                or not content_verified):
             self._task_error(pending,ValueError('剪贴板提交校验失败。'));return
         if self._pending is pending:
             self._seen=head['id'];self._applied_version=max(self._applied_version,head_version(head))
@@ -989,7 +1015,7 @@ class ClipboardSync(QObject):
                 and any(keys.intersection(row) for row in self._copy_history)):
             self._consume_replay(value,sequence);return
         if self._is_native and (sig!=self._last_local_signature or repeat_intent):self.copy_observed.emit(value)
-        if sig==self._last_local_signature:
+        if sig==self._last_local_signature and (not repeat_intent or sig==signature(self.view.get('value'))):
             self._last_sequence=sequence
             self._repeat_copy_feedback(value,user_intent=repeat_intent,explicit=activity is not None and repeat_intent)
             task=self._pending or self._local_retry

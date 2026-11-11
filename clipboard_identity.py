@@ -55,7 +55,7 @@ def content_keys(value,*,read_files=False,cancel=None):
     """
     if value is None:return frozenset()
     kind,data=value
-    if kind=='text':return frozenset((('text',hashlib.sha256(repr(signature(value)).encode('utf8')).digest()),))
+    if kind=='text':return frozenset((('text',hashlib.sha256(_text(data['text']).encode('utf8')).digest()),))
     if kind=='image':
         keys={signature(value)}
         if data.get('raw'):keys.add(('bytes',len(data['raw']),hashlib.sha256(data['raw']).digest()))

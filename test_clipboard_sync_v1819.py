@@ -142,6 +142,20 @@ class ClipboardTests(unittest.TestCase):
         self.assertTrue(results);self.assertTrue(all(context['phase']=='superseded' for ok,context in results))
         self.assertFalse(client.retry.isActive());self.assertTrue(client.view['backed_up'])
 
+    def test_same_text_with_remote_format_conversion_is_not_a_newer_copy(self):
+        client=self._replace_first_copy('same text from a clipboard bridge');results=[];changes=[]
+        client.copy_result.connect(lambda ok,context:results.append((ok,context)))
+        self.clips[0].dataChanged.connect(lambda:changes.append(True))
+        mime=QMimeData();mime.setText('same text from a clipboard bridge')
+        original_html='<p><b>same text from a clipboard bridge</b></p>';mime.setHtml(original_html)
+        self.clips[0].setMimeData(mime)
+        until(lambda:client._pending is None and client.view.get('backed_up'))
+        self.assertEqual([ok for ok,_ in results],[True])
+        self.assertTrue(all(context['phase']=='synced' for _,context in results))
+        self.assertEqual(self.clips[0].mimeData().html(),original_html)
+        self.assertEqual(len(changes),1);self.assertEqual(client.view['id'],self.hub.head['id'])
+        self.assertEqual(sum(method=='PUT' for method,_ in self.hub.calls),0)
+
     def test_real_transport_failure_still_reports_failure_and_keeps_native_copy(self):
         client=self.clients[0];original=client.api.request;results=[]
         def request(method,path,callback,**options):
