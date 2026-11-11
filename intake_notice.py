@@ -10,7 +10,7 @@ from async_images import RASTER_SUFFIXES
 from native_ui_common import colors,icon,reduced_motion
 from platform_native import keep_tool_visible_when_inactive
 from display_frames import DisplayAnimation,FramePulse
-from ui_transitions import motion_allowed,COPY_NOTICE_MORPH_MS,COPY_NOTICE_FADE_MS,COPY_NOTICE_OVERSHOOT
+from ui_transitions import motion_allowed,COPY_NOTICE_MORPH_MS,COPY_NOTICE_FADE_MS,COPY_NOTICE_OVERSHOOT,NOTICE_SPLIT_MS
 from clipboard_delivery import sync_progress
 import notice_cluster
 from transfer_visuals import draw_ring
@@ -62,6 +62,7 @@ def _reflow_bottom_notices(manager,area,opening=None):
         if isValid(window) and window._notice_area==area and not window._hiding and (window.isVisible() or window is opening)),
         key=lambda window:window.NOTICE_ORDER)
     if not notices:return
+    splitting=opening is not None and not opening.isVisible() and len(notices)>1
     offsets=[];total=0
     for window in notices:
         offsets.append(total+(window._layout_width-window.width())/2)
@@ -74,6 +75,7 @@ def _reflow_bottom_notices(manager,area,opening=None):
         point=QPoint(round(left+offsets[index]) if horizontal else area.left()+(area.width()-window.width())//2,
             area.bottom()-window.height()-NOTICE_MARGIN_PX+1-(0 if horizontal else index*(PILL_HEIGHT_PX+NOTICE_PAIR_GAP_PX)))
         window._position_motion.stop()
+        window._position_motion.setDuration(NOTICE_SPLIT_MS if splitting else NOTICE_POSITION_MS)
         if window.isVisible() and motion_allowed() and window.pos()!=point:
             curve=QEasingCurve(QEasingCurve.OutBack);curve.setOvershoot(COPY_NOTICE_OVERSHOOT)
             window._position_motion.setEasingCurve(curve)
@@ -146,7 +148,7 @@ class CapsuleNotice(QWidget):
         self.timer=QTimer(self);self.timer.setSingleShot(True);self.timer.timeout.connect(self._expire)
 
         self._notice_area=None
-        self._liquid_peer=None;self._liquid_children=WeakSet();self._liquid_target=None
+        self._liquid_peer=None;self._liquid_children=WeakSet();self._liquid_target=None;self._liquid_mode=None
         self._position_motion=DisplayAnimation(self);self._position_motion.setDuration(NOTICE_POSITION_MS)
         slide_curve=QEasingCurve(QEasingCurve.OutBack);slide_curve.setOvershoot(COPY_NOTICE_OVERSHOOT)
         self._position_motion.setEasingCurve(slide_curve);self._position_motion.valueChanged.connect(self.move)
@@ -174,6 +176,7 @@ class CapsuleNotice(QWidget):
 
     def _animate_shape(self,width,height=PILL_HEIGHT_PX,*,closing=False):
         self._morph.stop();target=QPointF(width,height)
+        self._morph.setDuration(NOTICE_SPLIT_MS if self._liquid_mode=='split' and not closing else COPY_NOTICE_MORPH_MS)
         curve=QEasingCurve(QEasingCurve.OutCubic if closing else QEasingCurve.OutBack)
         if not closing:curve.setOvershoot(COPY_NOTICE_OVERSHOOT)
         self._morph.setEasingCurve(curve)

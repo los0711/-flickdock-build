@@ -8,6 +8,7 @@ import weakref
 from PySide6.QtCore import QPoint, QPointF, QRectF
 from PySide6.QtGui import QPainterPath, QPainterPathStroker, QTransform
 from shiboken6 import isValid
+from ui_transitions import NOTICE_SPLIT_BRIDGE_END
 
 CAP_HEIGHT_PX = 44
 MAX_JOIN_GAP_PX = 24
@@ -31,6 +32,7 @@ def clear(window):
     peer=window._liquid_peer() if window._liquid_peer is not None else None
     if peer is not None and isValid(peer):peer._liquid_children.discard(window)
     window._liquid_peer=None
+    window._liquid_mode=None
     for other in neighbors:other._clip_finished();other.update()
     window._clip_finished();window.update()
 
@@ -48,6 +50,7 @@ def prepare_split(window,peers):
     center=_bounds(peer).center()
     local=_bounds(window).center()-QPointF(window.pos())
     _attach(window,peer)
+    window._liquid_mode='split'
     window.move((center-local).toPoint())
     window._liquid_target=target
 
@@ -67,10 +70,12 @@ def start_merge(window,peers):
     if not peers:return
     peer=min(peers,key=lambda other:abs(_bounds(other).center().x()-_bounds(window).center().x()))
     _attach(window,peer)
+    window._liquid_mode='merge'
     target=peer._position_motion.endValue() if peer._position_motion.state()==peer._position_motion.Running else peer.pos()
     center=_bounds(peer).center()+QPointF(target-peer.pos())
     local=_bounds(window).center()-QPointF(window.pos())
     window._position_motion.stop()
+    window._position_motion.setDuration(window._morph.duration())
     window._position_motion.setEasingCurve(window._morph.easingCurve())
     window._position_motion.setStartValue(window.pos())
     window._position_motion.setEndValue((center-local).toPoint())
@@ -111,7 +116,9 @@ def shape(window,base,*,mask=False):
         clock=moving._position_motion
         if clock.state()!=clock.Running:continue
         progress=clock.currentTime()/max(1,clock.duration())
-        strength=math.sin(math.pi*progress)
+        end=NOTICE_SPLIT_BRIDGE_END if moving._liquid_mode=='split' else 1.
+        if progress>=end:continue
+        strength=math.sin(math.pi*progress/end)
         own,peer=_bounds(window),_bounds(other)
         left,right=(own,peer) if own.center().x()<peer.center().x() else (peer,own)
         bridge=_bridge(left,right,strength)
