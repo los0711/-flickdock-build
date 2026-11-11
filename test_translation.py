@@ -145,4 +145,22 @@ class TranslationTests(unittest.TestCase):
         client.translate(1,'Please translate this.','zh');client.cancel()
         callbacks[0](dict(translation='旧结果'),None);self.assertEqual(results,[])
 
+    def test_owned_write_ack_does_not_read_mime_or_reinvite_on_delayed_observer(self):
+        import hashlib
+        value='已翻译的文字'
+        self.controller.result=value
+        self.controller._copy_digest=hashlib.sha256(value.encode()).digest()
+        clipboard=SimpleNamespace(ownsClipboard=lambda:True,mimeData=lambda:(_ for _ in ()).throw(AssertionError('Must not read potentially foreign MIME')))
+        with patch('translation_controller.QApplication.clipboard',return_value=clipboard):
+            self.controller._confirm_owned_copy(self.controller.generation)
+        self.assertEqual(self.controller.phase,'copied');self.assertIsNotNone(self.controller._copy_digest)
+        self.controller.observe(('text',{'text':value}))
+        self.assertIsNone(self.controller.notice);self.assertEqual(self.controller.phase,'copied')
+        self.assertIsNone(self.controller._copy_digest)
+
+    def test_owned_write_timeout_only_clears_observer_fence(self):
+        self.controller.phase='copied';self.controller._copy_digest=b'pending-observer'
+        self.controller._copy_failed()
+        self.assertEqual(self.controller.error,'');self.assertIsNone(self.controller._copy_digest)
+
 if __name__=='__main__':unittest.main()

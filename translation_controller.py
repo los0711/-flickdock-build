@@ -161,13 +161,16 @@ class TranslationController(QObject):
     def _confirm_owned_copy(self,generation):
         if self.closed or generation!=self.generation or self._copy_digest is None:return
         clipboard=QApplication.clipboard()
-        # Only read our own Qt-owned MIME object. Foreign Windows MIME access
-        # can block in another application's OLE server (notably remote control).
-        if clipboard.ownsClipboard() and clipboard.mimeData().text()==self.result:
-            self._copy_digest=None;self.copy_timer.stop();self.phase='copied';self.changed.emit()
+        # Ownership confirms the synchronous Qt write without reading MIME data
+        # that a remote-control application could replace between two GUI calls.
+        # Retain the fingerprint until the observer consumes our write, so its
+        # delayed notification cannot become another translation invitation.
+        if clipboard.ownsClipboard():
+            self.phase='copied';self.changed.emit()
 
     def _copy_failed(self):
         self._copy_digest = None
+        if self.phase=='copied':return
         self.error = '尚未确认写入剪贴板，请再次点击复制。'
         self.changed.emit()
 

@@ -27,7 +27,7 @@ async function boundedBytes(stream:ReadableStream<Uint8Array>|null,maximum:numbe
 }
 export async function translate(request:Request,env:TranslationEnv,account:string,upstream:typeof fetch=globalThis.fetch.bind(globalThis)):Promise<Response>{
   try{
-    if(!env.DEEPSEEK_API_KEY||!/^\S{8,512}$/.test(env.DEEPSEEK_API_KEY))fail(503,'TRANSLATION_UNAVAILABLE','Translation service is not configured');
+    if(!env.DEEPSEEK_API_KEY||! /^[\x21-\x7e]{8,512}$/.test(env.DEEPSEEK_API_KEY))fail(503,'TRANSLATION_UNAVAILABLE','Translation service is not configured');
     if(!request.headers.get('Content-Type')?.startsWith('application/json'))fail(415,'JSON_REQUIRED','Expected JSON');
     let value:any;
     try{value=JSON.parse(new TextDecoder('utf-8',{fatal:true,ignoreBOM:false}).decode(await boundedBytes(request.body,128*1024)));}
@@ -77,6 +77,6 @@ export async function translate(request:Request,env:TranslationEnv,account:strin
   }catch(error){
     if(error instanceof TranslationError)return json({error:{code:error.code,message:error.message,...error.details}},error.status);
     // Provider, SQL and runtime errors must never echo keys, source text or response bodies.
-    return json({error:{code:'TRANSLATION_UNAVAILABLE',message:'Translation is temporarily unavailable'}},503);
+    throw error;
   }
 }

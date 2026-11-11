@@ -517,7 +517,8 @@ class SettingsStore(QObject):
                     candidate=Path(os.path.expandvars(video_directory)).expanduser()
                     if candidate.is_absolute():self._data['video_download_dir']=str(candidate)
                 from translation_languages import TARGETS
-                if data.get('translation_target') in TARGETS:self._data['translation_target']=data['translation_target']
+                target=data.get('translation_target')
+                if isinstance(target,str) and target in TARGETS:self._data['translation_target']=target
                 for name in ("sync_upload_enabled", "sync_receive_enabled", "clipboard_sync_enabled", "clipboard_notice_seen", "clipboard_success_notice", "automatic_updates", "video_link_prompt", "translation_enabled"):
                     if isinstance(data.get(name), bool):
                         self._data[name] = data[name]

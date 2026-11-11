@@ -607,12 +607,21 @@ class ShelfManager:
         dialog.move(area.center()-QPoint(dialog.width()//2,dialog.height()//2))
 
     def _refresh_trigger_region_action(self):
-        self.trigger_region_action.setText('关闭触发区域' if self.settings.trigger_visible else '开启触发区域')
+        visible=self._dock_preview_values['trigger_visible'] if self._dock_preview_values is not None else self.settings.trigger_visible
+        self.trigger_region_action.setText('关闭触发区域' if visible else '开启触发区域')
 
     def toggle_trigger_region(self):
-        try:self.settings.update(trigger_visible=not self.settings.trigger_visible)
+        visible=self._dock_preview_values['trigger_visible'] if self._dock_preview_values is not None else self.settings.trigger_visible
+        target=not visible
+        try:self.settings.update(trigger_visible=target)
         except OSError:
             self.tray.showMessage('设置未保存','暂时无法保存触发区域设置，请稍后重试。',QSystemTrayIcon.Warning)
+            return
+        if self.settings_dialog is not None:
+            control=self.settings_dialog.trigger_visible_checkbox;blocked=control.blockSignals(True)
+            control.setChecked(target);control.blockSignals(blocked)
+        if self._dock_preview_values is not None:self._dock_preview_values['trigger_visible']=target
+        self._refresh_trigger_region_action();self._position_edges();self.update_handles()
 
     def show_settings(self,*,category=None):
         if self.update_notice is not None:
@@ -795,6 +804,7 @@ class ShelfManager:
 
     def preview_dock(self,values):
         self._dock_preview_values=dict(values) if isinstance(values,dict) else None
+        self._refresh_trigger_region_action()
         # Real per-screen handles preview the draft and remain independent hit
         # targets. A single transparent preview on the active screen hid all
         # secondary handles while settings were open.
