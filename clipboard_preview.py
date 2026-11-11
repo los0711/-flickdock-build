@@ -15,6 +15,7 @@ MAX_CLIPBOARD_LINK_CHARS=65536
 
 
 def clipboard_status(state):
+    if state.get('native_format_issue')=='REMOTE_FILE_PLACEHOLDER':return '远控文件尚未就绪 · 未同步占位文件'
     if state.get('native_format_issue') in ('NATIVE_CLIPBOARD_BUSY','NATIVE_READ_TIMEOUT'):
         return '剪贴板正被其他应用占用，正在重试读取'
     if state.get('native_format_issue')=='VIRTUAL_FILE_SIZE_LIMIT':return '此文件不能同步 · 超过 20 MB 同步上限'

@@ -5,6 +5,9 @@ from pathlib import Path
 import unittest
 import time
 import threading
+import hashlib
+import io
+import zipfile
 from types import SimpleNamespace
 from uuid import uuid4
 from PySide6.QtCore import QBuffer,QIODevice,QMimeData,QUrl
@@ -17,6 +20,81 @@ from test_clipboard_sync_v1819 import APP,until,flush
 
 
 class HistoryTests(unittest.TestCase):
+    def test_uu_control_tokens_never_replace_or_republish_an_oversize_video(self):
+        from clipboard_sync import MAX_BYTES
+        client=self.clients[0]
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);video=root/'original-video.mp4'
+            with video.open('wb') as stream:stream.truncate(MAX_BYTES+1)
+            mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(video))]);self.clips[0].setMimeData(mime)
+            until(lambda:client.view.get('phase')=='size_limit')
+            original=client.view['value'];feedback=len(self.feedback)
+            for index in range(12):
+                token=root/('.uuremote_aeawy82762157'+str(index));token.touch()
+                mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(token))]);self.clips[0].setMimeData(mime)
+                self.settle()
+            self.assertEqual(self.hub.version,0);self.assertEqual(client.view['value'],original)
+            self.assertEqual(len(self.feedback),feedback);self.assertEqual(self.native_writes,[0,0])
+            self.assertFalse(client.change_debounce.isActive());self.assertFalse(client.retry.isActive())
+            real=root/'real-file.bin';real.write_bytes(b'actual user file')
+            mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(real))]);self.clips[0].setMimeData(mime)
+            until(lambda:self.clips[1].mimeData().hasUrls())
+            received=Path(self.clips[1].mimeData().urls()[0].toLocalFile())
+            self.assertEqual(received.name,real.name);self.assertEqual(received.read_bytes(),real.read_bytes())
+            self.assertEqual(self.hub.version,1)
+
+    def test_poisoned_cloud_archive_is_rejected_once_without_native_writes_or_receipt(self):
+        receiver=self.clients[1];self.clips[0].text('keep the current usable content')
+        until(lambda:self.clips[1].mimeData().text()=='keep the current usable content')
+        before=list(self.native_writes);raw=io.BytesIO()
+        with zipfile.ZipFile(raw,'w') as archive:archive.writestr('.uuremote_aeawy8276215748',b'')
+        blob=raw.getvalue();identity=str(uuid4());self.hub.version+=1;self.hub.body=blob
+        self.hub.head=dict(id=identity,device='0',ready=True,version=self.hub.version,kind='files',size=len(blob),
+            sha256=hashlib.sha256(blob).hexdigest(),copied_at=round(time.time()*1000)+1)
+        receiver.request_refresh();until(lambda:receiver._rejected_head is not None)
+        count=sum(method=='GET' and path.endswith('/content') for method,path in self.hub.calls)
+        for _ in range(4):receiver.request_refresh();self.settle()
+        self.assertEqual(sum(method=='GET' and path.endswith('/content') for method,path in self.hub.calls),count)
+        self.assertEqual(self.native_writes,before);self.assertEqual(self.clips[1].mimeData().text(),'keep the current usable content')
+        self.assertNotEqual(receiver._seen,identity);self.assertFalse(receiver.retry.isActive())
+
+    def test_real_local_file_wins_over_an_extra_remote_control_token(self):
+        from clipboard_sync import _snapshot_mime,package,unpack
+        from virtual_clipboard import VirtualClipboardError
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);real=root/'real.bin';real.write_bytes(b'user bytes')
+            token=root/'.uuremote_aeawy8276215748';token.touch()
+            mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(token)),QUrl.fromLocalFile(str(real))])
+            value=_snapshot_mime(mime);self.assertEqual(value[0],'files');self.assertEqual([Path(ref) for ref in value[1]],[real])
+            with self.assertRaisesRegex(VirtualClipboardError,'REMOTE_FILE_PLACEHOLDER'):package(('files',[str(token)]),root)
+            archive=root/'bad.zip'
+            with zipfile.ZipFile(archive,'w') as zipped:zipped.writestr(token.name,b'')
+            with self.assertRaisesRegex(VirtualClipboardError,'REMOTE_FILE_PLACEHOLDER'):unpack('files',archive,root)
+            self.assertFalse((root/'files').exists())
+
+    def test_uu_token_does_not_mask_the_real_oversize_virtual_descriptor(self):
+        from test_virtual_clipboard import fixture
+        from virtual_clipboard import MAX_FILE_BYTES,CONTENT_MIME
+        client=self.clients[0];client._is_native=True
+        mime=fixture('original-video.mp4',b'',size=MAX_FILE_BYTES+1)
+        mime.setUrls([QUrl.fromLocalFile(str(Path(self.temp.name)/'.uuremote_aeawy8276215748'))])
+        with patch.object(self.clips[0],'mimeData',return_value=mime),patch.object(mime,'data',wraps=mime.data) as read:
+            self.assertIsNone(client._snapshot())
+            self.assertEqual(client._native_format_issue,'VIRTUAL_FILE_SIZE_LIMIT')
+            self.assertNotIn(CONTENT_MIME,[call.args[0] for call in read.call_args_list])
+
+    def test_rejected_native_sequence_is_not_read_over_and_over(self):
+        from native_clipboard_reader import NativeClipboardReader
+        with tempfile.TemporaryDirectory() as directory:
+            reader=NativeClipboardReader(directory,lambda:10)
+            try:
+                reader._reject('REMOTE_FILE_PLACEHOLDER')
+                with patch('native_clipboard_reader.foreign_clipboard_lock',side_effect=AssertionError('Rejected metadata must not reread the clipboard')):
+                    for _ in range(5):self.assertEqual(reader.read(10),(False,None))
+                    reader.cached_sequence=11;reader.value=('text',dict(text='next real copy',html=''))
+                    self.assertEqual(reader.read(11),(True,reader.value))
+                self.assertIsNone(reader.process);self.assertFalse(reader.timer.isActive())
+            finally:reader.close();reader.deleteLater();flush()
     def test_file_url_filesystem_alias_is_the_same_clipboard_content(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);source=root/'original.bin';source.write_bytes(b'original')

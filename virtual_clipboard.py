@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import struct
 import subprocess
@@ -16,6 +17,17 @@ FILE_SIZE_FLAG=0x40
 MAX_FILE_BYTES=20*1024*1024
 WORKER_TIMEOUT_SECONDS=45
 MAX_REPLY_BYTES=8192
+REMOTE_PLACEHOLDER_NAME=re.compile(r'\.uuremote_[A-Za-z0-9_-]{8,128}\Z',re.IGNORECASE)
+
+
+def remote_placeholder(name):
+    """UU uses these reserved names as transfer tokens, never file contents."""
+    return REMOTE_PLACEHOLDER_NAME.fullmatch(str(name).replace('\\','/').rsplit('/',1)[-1]) is not None
+
+
+def only_remote_placeholders(mime):
+    urls=mime.urls() if mime.hasUrls() else []
+    return bool(urls) and all(url.isLocalFile() and remote_placeholder(url.toLocalFile()) for url in urls)
 
 
 class VirtualClipboardError(ValueError):
@@ -42,6 +54,7 @@ def describe(mime):
     if size>=MAX_FILE_BYTES:raise VirtualClipboardError('VIRTUAL_FILE_SIZE_LIMIT')
     try:name=raw[76:596].decode('utf-16-le').split('\0',1)[0]
     except UnicodeError as error:raise VirtualClipboardError('VIRTUAL_FILE_INVALID_NAME') from error
+    if remote_placeholder(name):raise VirtualClipboardError('REMOTE_FILE_PLACEHOLDER')
     from sync_files import safe_name
     try:
         if safe_name(name)!=name:raise VirtualClipboardError('VIRTUAL_FILE_INVALID_NAME')

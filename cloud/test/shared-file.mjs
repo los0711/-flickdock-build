@@ -142,6 +142,27 @@ try{
  const afterRevocation=await snapshot();assert(!afterRevocation.allocations.some(row=>!oldAllocations.has(row.id)));
  assert(!afterRevocation.uploads.some(row=>row.id===afterRevocation.do['clipboard-head']?.upload_id&&afterRevocation.do['clipboard-head']?.id===revokedId));
  checks.push({name:'revocation during raw upload remains fenced by the registration transaction',ok:true});
+ // Remote-control tokens are protocol artifacts, including legacy ZIP-only copies.
+ for(const raw of [false,true]){
+   const blocked=await stage(),before=await snapshot();let result;
+   if(raw)result=await put(blocked,'.uuremote_aeawy8276215748',Buffer.from('control token'));
+   else{
+     const zip=zipFile('.uuremote_aeawy8276215748',Buffer.alloc(0));
+     const response=await fetch(base+'/v1/clipboard/'+blocked+'/content',{method:'PUT',headers:{Authorization:'Bearer '+a.token,'Content-Type':'application/octet-stream','X-Clipboard-Kind':'files','X-Content-SHA256':hash(zip.archive)},body:zip.archive});
+     result={status:response.status,body:await response.json()};
+   }
+   assert.equal(result.status,422);assert.equal(result.body.error.code,'CLIPBOARD_TRANSIENT_FILE');
+   const after=await snapshot(),known=new Set(before.allocations.map(row=>row.id));
+   assert.equal(after.allocations.filter(row=>!known.has(row.id)).length,0);
+   assert.equal(after.do['clipboard-head']?.id,before.do['clipboard-head']?.id);
+   checks.push({name:raw?'raw remote-control token rejected before allocation':'empty remote-control ZIP rejected before publication',ok:true});
+ }
+ const emptyId=await stage(),emptyZip=zipFile('normal-empty.txt',Buffer.alloc(0));
+ const empty=await fetch(base+'/v1/clipboard/'+emptyId+'/content',{method:'PUT',headers:{Authorization:'Bearer '+a.token,'Content-Type':'application/octet-stream','X-Clipboard-Kind':'files','X-Content-SHA256':hash(emptyZip.archive)},body:emptyZip.archive});
+ assert.equal(empty.status,200,await empty.text());
+ const emptyRead=await fetch(base+'/v1/clipboard/'+emptyId+'/content',{headers:{Authorization:'Bearer '+b.token}});
+ assert.equal(emptyRead.status,200);assert.deepEqual(Buffer.from(await emptyRead.arrayBuffer()),emptyZip.archive);
+ checks.push({name:'ordinary empty files keep their exact archive bytes',ok:true});
  console.log(JSON.stringify({checks:checks.map(c=>({name:c.name,ok:c.ok})),findings:findings.map(f=>f.name)},null,2));
 }catch(error){failure=error.stack;console.error(failure);process.exitCode=1;}
 finally{

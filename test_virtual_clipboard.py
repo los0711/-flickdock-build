@@ -33,6 +33,18 @@ class VirtualClipboardTests(unittest.TestCase):
             with self.assertRaisesRegex(VirtualClipboardError,'SIZE_LIMIT'):describe(mime)
             self.assertEqual([call.args[0] for call in read.call_args_list],[DESCRIPTOR_MIME])
 
+    def test_remote_control_token_is_not_materialized_as_an_empty_file(self):
+        mime=fixture('.uuremote_aeawy8276215748',b'')
+        with patch.object(mime,'data',wraps=mime.data) as read:
+            with self.assertRaisesRegex(VirtualClipboardError,'REMOTE_FILE_PLACEHOLDER'):describe(mime)
+            self.assertEqual([call.args[0] for call in read.call_args_list],[DESCRIPTOR_MIME])
+
+    def test_normal_empty_file_still_materializes(self):
+        mime=fixture('empty.txt',b'');descriptor=describe(mime)
+        with TemporaryDirectory() as directory:
+            result=materialize(mime,directory,dict(sequence=10,descriptor=descriptor.sha256),lambda:10)
+            self.assertEqual(result['size'],0);self.assertEqual((Path(directory)/'empty.txt').read_bytes(),b'')
+
     def test_replacement_during_delayed_rendering_never_publishes_the_previous_file(self):
         mime=fixture('file.bin',b'old');descriptor=describe(mime);sequences=iter((10,11))
         with TemporaryDirectory() as directory:

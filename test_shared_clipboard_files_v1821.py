@@ -144,6 +144,18 @@ class SharedFilesTests(unittest.TestCase):
         self.adapter.view['permanent'].append(str(path));self.engine.local_changed()
         return next(row for row in self.engine.state['entries'].values() if row['ref']==str(path))
 
+    def test_permanent_control_file_rejection_stops_retry_and_late_completion(self):
+        identity=self.copy(self.source());until(lambda:identity in self.peer.held)
+        pending=self.client._pending;events=[];self.client.copy_result.connect(lambda ok,context:events.append(context['phase']))
+        self.client._task_error(pending,CloudError('Remote control token',422,'CLIPBOARD_TRANSIENT_FILE'))
+        self.assertIsNone(self.client._pending);self.assertFalse(self.client.retry.isActive())
+        self.assertFalse(self.client._valid_task(pending));self.assertEqual(self.client.view['phase'],'unavailable')
+        self.assertIsNone(self.client._cloud_progress);self.assertEqual(events,['unavailable'])
+        item=pending['package']
+        self.client._task_ready(pending,dict(id=identity,ready=True,sha256=item['sha256'],size=item['size']));flush()
+        self.assertEqual(self.client.view['phase'],'unavailable');self.assertEqual(events,['unavailable'])
+        self.assertEqual(pending['_file_phase'],'unavailable')
+
     def test_attach_at_sixty_percent_has_one_payload_and_one_progress_source(self):
         path=self.source();identity=self.copy(path);until(lambda:identity in self.peer.held)
         self.peer.progress(identity,.6);entry=self.add(path);until(lambda:entry.get('shared_clipboard')==identity)

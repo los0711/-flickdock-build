@@ -81,10 +81,12 @@ class NativeClipboardReader(QObject):
         self.closed=False;self.process=None;self.loading=False;self.jobs=set()
         self.cached_sequence=None;self.value=None;self.wanted=None;self.issue=''
         self.directory=None;self.error='';self.virtual_wait=False
-        self.failure_sequence=None;self.failures=0;self.retry_at=0.
+        self.failure_sequence=None;self.failures=0;self.retry_at=0.;self.rejected_sequence=None
         self.timer=QTimer(self);self.timer.setSingleShot(True);self.timer.timeout.connect(self._timeout)
 
     def read(self,sequence):
+        if sequence==self.rejected_sequence and sequence is not None:
+            self.issue='REMOTE_FILE_PLACEHOLDER';return False,None
         if self.cached_sequence==sequence:return True,self.value
         self.wanted=sequence
         if self.closed or self.process is not None or self.loading:return False,None
@@ -126,6 +128,7 @@ class NativeClipboardReader(QObject):
 
     def _reject(self,code):
         sequence=self.sequence()
+        if code=='REMOTE_FILE_PLACEHOLDER':self.rejected_sequence=sequence
         self.failures=self.failures+1 if sequence==self.failure_sequence else 1
         self.failure_sequence=sequence
         self.retry_at=time.monotonic()+min(30.,.25*2**min(self.failures,7))
@@ -148,7 +151,7 @@ class NativeClipboardReader(QObject):
                 self._discard(directory);self._reject((value or {}).get('code','NATIVE_READ_INVALID_REPLY'));return
             if value['sequence']!=self.sequence():
                 self._discard(directory);self.failed.emit('NATIVE_READ_REPLACED');return
-            self.cached_sequence=value['sequence'];self.value=value['value'];self.issue='';self.failures=0
+            self.cached_sequence=value['sequence'];self.value=value['value'];self.issue='';self.failures=0;self.rejected_sequence=None
             retained=self.value and self.value[0]=='files' and any(Path(ref).is_relative_to(directory) for ref in self.value[1])
             self.ready.emit(self.cached_sequence,self.value,directory if retained else None)
             if not retained:self._discard(directory)
@@ -176,14 +179,14 @@ def run_worker(path):
         stage='INITIALIZE'
         from PySide6.QtGui import QGuiApplication
         from clipboard_sync import native_sequence,_snapshot_mime,native_format_count
-        from virtual_clipboard import DESCRIPTOR_MIME,describe,materialize,VirtualClipboardError
+        from virtual_clipboard import DESCRIPTOR_MIME,describe,materialize,VirtualClipboardError,only_remote_placeholders
         app=QGuiApplication.instance() or QGuiApplication([]);clipboard=app.clipboard()
         if native_sequence()!=expected:raise VirtualClipboardError('NATIVE_READ_REPLACED')
         stage='CAPTURE'
         for attempt in range(2):
             app.processEvents();before=native_sequence();mime=clipboard.mimeData()
             if mime is None:raise ValueError('Clipboard unavailable')
-            if mime.hasUrls() and any(url.isLocalFile() for url in mime.urls()):value=_snapshot_mime(mime)
+            if mime.hasUrls() and any(url.isLocalFile() for url in mime.urls()) and not only_remote_placeholders(mime):value=_snapshot_mime(mime)
             elif mime.hasFormat(DESCRIPTOR_MIME):
                 (directory/'virtual').write_bytes(b'virtual');descriptor=describe(mime)
                 files=directory/'files';files.mkdir(exist_ok=True)

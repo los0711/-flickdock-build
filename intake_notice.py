@@ -105,6 +105,7 @@ def place_bottom_notice(window,area):
 def copy_presentation(ok,context):
     """Byte completion is not confirmation, and backup is not a device receipt."""
     phase=context.get('phase');cloud=sync_progress(context)['cloud']
+    if phase=='unavailable':return 'limited','此文件不能同步','远控临时占位文件不会上传',None
     if phase=='size_limit':
         kind=context.get('value',('text',{}))[0]
         label='此文件不能同步' if kind=='files' else '此图片不能同步' if kind=='image' else '此内容不能同步'
