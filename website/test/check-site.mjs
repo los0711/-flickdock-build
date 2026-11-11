@@ -20,8 +20,8 @@ const section = html.slice(html.indexOf('<section id="download"')).split('</sect
 const downloads = [...section.matchAll(/<a[^>]*href="([^"]+)"[^>]*data-installer="([^"]+)"[^>]*>([^<]+)<\/a>/g)];
 assert.equal(downloads.length, 3, 'bottom download area keeps exactly three platform links');
 const installers = Object.fromEntries(downloads.map(match => [match[2], { url: match[1], label: match[3] }]));
-assert.equal(installers.windows.url, 'https://gitee.com/rooogerluo/flick-dock-windows-releases-2/releases/download/v1.8.29/FlickDock-Setup-1.8.29.exe');
-assert.equal(installers['mac-arm'].url, 'https://gitee.com/rooogerluo/flick-dock-macos-releases-8/releases/download/v1.8.29/FlickDock-1.8.29-macOS-arm64.pkg');
+assert.equal(installers.windows.url, 'https://download.flickdock.cc.cd/v1.8.34/FlickDock-Setup-1.8.34.exe');
+assert.equal(installers['mac-arm'].url, 'https://download.flickdock.cc.cd/v1.8.34/FlickDock-1.8.34-macOS-arm64.pkg');
 assert.equal(installers['mac-intel'].url, 'https://gitee.com/rooogerluo/flick-dock-macos-releases-7/releases/download/v1.8.22/FlickDock-1.8.22-macOS-x86_64.pkg');
 assert(installers['mac-intel'].label.includes('已停止更新'));
 assert(!section.includes('data-ui-action="download-windows"') && !section.includes('data-ui-action="download-macos"'), 'remove only the duplicated bottom pair');
@@ -44,15 +44,21 @@ console.log('FlickDock site: config, downloads, assets, navigation, demo and acc
 // Network boundary checks use a controlled upstream; the deployed route is also
 // verified by downloading and hashing the actual published DMG before promotion.
 const worker=(await import('../worker.mjs')).default;
+const catalog=JSON.parse(readFileSync(resolve(project,'download-catalog.json'),'utf8'));
+const current=catalog.releases.find(row=>row.version==='1.8.34');
+const asset=current.assets.find(row=>row.name.endsWith('.dmg'));
+assert(asset);
+const contentRange='bytes 0-2/'+asset.bytes;
 const originalFetch=globalThis.fetch;let forwarded=[];
 try{
   globalThis.fetch=async(url,options)=>{forwarded.push({url,options});return new Response(new Uint8Array([1,2,3]),
-    {status:206,headers:{'Content-Length':'3','Content-Range':'bytes 0-2/9','Accept-Ranges':'bytes','Content-Type':'application/octet-stream'}});};
-  const url='https://flickdock.cc.cd/downloads/FlickDock-1.8.27-macOS-arm64.dmg';
+    {status:206,headers:{'Content-Length':'3','Content-Range':contentRange,'Accept-Ranges':'bytes','Content-Type':'application/octet-stream'}});};
+  const url='https://flickdock.cc.cd/downloads/'+asset.name;
   let reply=await worker.fetch(new Request(url,{headers:{Authorization:'Bearer should-never-forward',Cookie:'private=1',Range:'bytes=0-2'}}),{});
   assert.equal(reply.status,206);assert.deepEqual([...new Uint8Array(await reply.arrayBuffer())],[1,2,3]);
-  assert.equal(reply.headers.get('Content-Range'),'bytes 0-2/9');
-  assert.equal(forwarded[0].url,'https://github.com/los0711/-flickdock-build/releases/download/v1.8.27/FlickDock-1.8.27-macOS-arm64.dmg');
+  assert.equal(reply.headers.get('Content-Range'),contentRange);
+  assert.equal(forwarded[0].url,'https://download-origin.flickdock.cc.cd/v'+current.version+'/'+asset.name);
+  assert.equal(forwarded[0].options.redirect,'manual');
   assert(!forwarded[0].options.headers.has('Authorization'));assert(!forwarded[0].options.headers.has('Cookie'));
   const before=forwarded.length;
   for(const path of ['/downloads/https://private.example/file','/downloads/FlickDock-01.8.27-macOS-arm64.dmg','/downloads/FlickDock-1.8.27-source.zip']){

@@ -106,7 +106,7 @@ class DisplayTests(unittest.TestCase):
                 view.select_category('外观与交互')
                 for row in rows:row.set_expanded(False,animate=False)
                 for _ in range(6):flush()
-                last=view.dock_card;self.assertLessEqual(view.body.height(),max(view.scroll.viewport().height(),last.geometry().bottom()+32))
+                last=view.setting_categories[-1][1][-1];self.assertLessEqual(view.body.height(),max(view.scroll.viewport().height(),last.geometry().bottom()+32))
         finally:view.hide();view.deleteLater();flush()
 
     def test_all_enabled_draft_handles_receive_geometry_and_are_shown(self):

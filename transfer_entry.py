@@ -1,5 +1,5 @@
 """A child-surface drop chooser; never a second native popup or shelf import."""
-from PySide6.QtCore import QObject,QEvent,QPoint,QRect,QRectF,Qt,QTimer,QEasingCurve
+from PySide6.QtCore import QObject,QEvent,QPoint,QRect,QRectF,Qt,QTimer,QEasingCurve,Signal
 from PySide6.QtGui import QColor,QPainter,QPainterPath
 from PySide6.QtWidgets import QApplication,QWidget
 from shiboken6 import isValid
@@ -49,6 +49,7 @@ class TransferDropSurface(QWidget):
 
 
 class TransferEntryRouter(QObject):
+    active_changed=Signal(bool)
     def __init__(self,root,button,deliver):
         super().__init__(root);self.root=root;self.button=button;self.deliver=deliver
         self.surface=TransferDropSurface(root);self._dropping=False
@@ -66,8 +67,10 @@ class TransferEntryRouter(QObject):
     def _press(self,value):self.surface.press=float(value);self.surface.update()
 
     def reset(self):
-        self.leave.stop();self.surface.hide();self.surface.set_target(None)
+        was_visible=self.surface.isVisible()
+        self.leave.stop();self.feedback.stop();self.surface.hide();self.surface.set_target(None)
         self.surface.press=0.;self._dropping=False
+        if was_visible:self.active_changed.emit(False)
 
     def _show(self):
         origin=self.button.mapTo(self.root,QPoint())
@@ -75,6 +78,7 @@ class TransferEntryRouter(QObject):
         x=max(4,min(origin.x(),self.root.width()-width-4))
         y=max(4,min(origin.y()-108,self.root.height()-108))
         self.surface.setGeometry(x,y,width,108);self.surface.show();self.surface.raise_()
+        self.active_changed.emit(True)
 
     def eventFilter(self,watched,event):
         if not isValid(self.root):return False

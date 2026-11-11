@@ -28,6 +28,11 @@ def spin(predicate,seconds=5):
 class PriorityTests(unittest.TestCase):
     def tearDown(self):set_clipboard_priority(False)
 
+    def test_continuous_clipboard_traffic_does_not_throttle_manual_blocks_to_half_a_megabyte(self):
+        set_clipboard_priority(True);cancel=threading.Event();started=time.monotonic()
+        for _ in range(4):yield_bulk_payload(cancel)
+        self.assertLess(time.monotonic()-started,1.,'Four manual blocks must progress while clipboard traffic remains active')
+
     def test_cloud_bulk_waits_while_high_priority_completes_then_original_resumes(self):
         received={};started=set()
         class Handler(BaseHTTPRequestHandler):

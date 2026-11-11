@@ -213,6 +213,7 @@ class ContentsPopup(QFrame):
         self.drop_router=OverviewDropRouter(self)
         from transfer_entry import TransferEntryRouter
         self.transfer_entry=TransferEntryRouter(self,self.lan_nav,lambda mode,paths:self.shelf.manager.queue_transfer_paths(mode,paths))
+        self.transfer_entry.active_changed.connect(self.empty_drop.set_transfer_choice_active)
 
     def eventFilter(self,watched,event):
         if (watched is self.scroll.viewport() and event.type()==QEvent.Resize
@@ -635,6 +636,11 @@ class ContentsPopup(QFrame):
             widget.path=new
             if hasattr(widget,'ref'):widget.ref=new
             if hasattr(widget,'icon_label'):widget.icon_label.ref=new
+        if getattr(self,'_render_signature',None):
+            refs,category,mode,theme,metadata=self._render_signature
+            self._render_signature=(tuple(mapping.get(ref,ref) for ref in refs),category,mode,theme,
+                tuple((mapping.get(row[0],row[0]),*row[1:]) for row in metadata))
+        self._build_refs=[mapping.get(ref,ref) for ref in self._build_refs]
 
     def _item_widget(self,ref,kind,changed):
         widget=self._item_widgets.get(ref)

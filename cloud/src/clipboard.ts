@@ -99,7 +99,7 @@ export async function clipboardAlarm(ctx:DurableObjectState,env:Env){
 }
 
 export async function clipboardRequest(request:Request,ctx:DurableObjectState,env:Env,
-    spend:(kind:'A'|'B')=>Promise<void>,notify:(device:string,head?:Head)=>Promise<unknown>,
+    spend:(kind:'A'|'B',operations?:D1PreparedStatement[])=>Promise<void>,notify:(device:string,head?:Head)=>Promise<unknown>,
     notifyDelivery:(device:string,delivery:Delivery)=>Promise<unknown>):Promise<Response>{
   const path=new URL(request.url).pathname,account=request.headers.get('X-Clipboard-Account')||'',device=request.headers.get('X-Clipboard-Device')||'';
   if(!UUID.test(account)||!UUID.test(device))return fail(401,'UNAUTHORIZED');
@@ -322,9 +322,8 @@ export async function clipboardRequest(request:Request,ctx:DurableObjectState,en
   await ctx.storage.put(attemptEntry,attempt);await schedule(ctx,Date.now()+600000);
   let committed=false;
   try{
-    await env.DB.prepare('INSERT INTO allocations(id,account_id,size) VALUES(?,?,?)').bind(allocation(attempt),account,size).run();
     if(!await current())return fail(409,'CLIPBOARD_REPLACED');
-    await spend('A');
+    await spend('A',[env.DB.prepare('INSERT INTO allocations(id,account_id,size) VALUES(?,?,?)').bind(allocation(attempt),account,size)]);
     const abort=new AbortController(),fixed=new FixedLengthStream(size),pumping=request.body.pipeTo(fixed.writable,{signal:abort.signal});
     try{await Promise.all([pumping,env.FILES.put(key(attempt),fixed.readable,{sha256:rawFile?.sha256||sha256,httpMetadata:{contentType:'application/octet-stream'}})]);}
     catch(error){abort.abort();await fixed.readable.cancel().catch(()=>{});await pumping.catch(()=>{});throw error;}

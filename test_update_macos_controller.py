@@ -13,6 +13,7 @@ import time
 import unittest
 from unittest.mock import patch
 import zipfile
+from types import SimpleNamespace
 
 from PySide6.QtCore import QEventLoop, QObject, QTimer, Signal, QThreadPool
 from PySide6.QtWidgets import QApplication
@@ -108,6 +109,23 @@ class MacControllerTests(unittest.TestCase):
         self.assertFalse(self.events[0][2]['shell'])
         self.assertEqual(mac_updates.bundle_metadata(self.bundle)['CFBundleShortVersionString'], '1.7.0')
         self.assertFalse(hasattr(self.controller, 'dialog'))
+
+    def test_enabled_automatic_update_installs_only_after_active_transfer_finishes(self):
+        active=[True]
+        self.controller.settings=SimpleNamespace(automatic_updates=True)
+        self.controller._is_busy=lambda:active[0]
+        notices=[];self.controller.notification_shown.connect(notices.append)
+        self.client.offer(self.manifest,manual=False)
+        self.client.complete(self.zip,self.manifest)
+        self.assertEqual(self.controller.state,'ready');self.assertFalse(self.events)
+        active[0]=False
+        self.assertTrue(spin(lambda:len(self.events)==2))
+        self.assertFalse(notices)
+        from update_completion import UpdateCompletion
+        self.assertFalse(UpdateCompletion(self.profile,'1.7.0').pending)
+        completed=UpdateCompletion(self.profile,'1.7.1')
+        self.assertTrue(completed.pending);completed.acknowledge()
+        self.assertFalse(UpdateCompletion(self.profile,'1.7.1').pending)
 
     def test_cancel_download_ignores_late_callback_until_another_click(self):
         self.authorize()

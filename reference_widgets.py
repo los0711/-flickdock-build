@@ -31,10 +31,30 @@ SEGMENT_TEXT_PADDING_PX = 8
 SORT_TEXT_PADDING_PX = 4
 SEGMENT_BORDER_PX = 1
 PROFILE_TEXT_RISE_PX = 1
+EMPTY_DROP_RADIUS_PX = 16
 
 
 class OverviewEmptyDropZone(_DropZone):
-    """Use the same unscaled rounded dash path as the transfer drop target."""
+    """Match the preview's empty drop target, without scaling its dash path."""
+    def __init__(self,parent=None):
+        super().__init__(parent);self._transfer_choice_active=False
+
+    def border_path(self):
+        rect=QRectF(self.rect()).adjusted(1,1,-1,-1)
+        radius=min(EMPTY_DROP_RADIUS_PX,rect.width()/2,rect.height()/2)
+        path=QPainterPath();path.addRoundedRect(rect,radius,radius)
+        return path
+
+    def set_transfer_choice_active(self,active):
+        self._transfer_choice_active=bool(active)
+        if active:self._hovered=False;self.set_drag_active(False)
+
+    def set_drag_active(self,active):
+        super().set_drag_active(bool(active) and not self._transfer_choice_active)
+
+    def enterEvent(self,event):
+        if not self._transfer_choice_active:super().enterEvent(event)
+
     def paintEvent(self, event):
         self.illustration.dark=ui_theme.current_theme()=='dark'
         super().paintEvent(event)
@@ -653,7 +673,7 @@ class MiniStack(StackTile):
         p=QPainter(self);p.setRenderHints(QPainter.Antialiasing|QPainter.SmoothPixmapTransform)
         if not self.refs:
             r=QRectF((self.width()-176)/2,28,176,128)
-            path=QPainterPath();path.addRoundedRect(r,16,16)
+            path=QPainterPath();path.addRoundedRect(r,EMPTY_DROP_RADIUS_PX,EMPTY_DROP_RADIUS_PX)
             self.border_motion.paint(p,path,dark=ui_theme.current_theme()=='dark',idle_fill=ink(palette()['card']))
             icon('upload',palette()['secondary']).paint(p,QRect(round(r.center().x()-12),round(r.center().y()-31),24,24))
             f=p.font()

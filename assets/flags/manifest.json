@@ -1,0 +1,163 @@
+{
+  "project": "https://github.com/lipis/flag-icons",
+  "version": "v7.6.0",
+  "commit": "0d8909b00aa8418802a5abf2afa82356b129a7ef",
+  "license": "MIT",
+  "files": [
+    {
+      "file": "assets/flags/cn.svg",
+      "sha256": "981da9bdf82d48e31691f20578cefcb26cf7d0bd95e4ebd5c0df00bdfe988c1a",
+      "bytes": 813
+    },
+    {
+      "file": "assets/flags/cz.svg",
+      "sha256": "d601fcc2e5b1fd48b79d53c55108af4c0e90793f146db51f3ee449d8d69512bc",
+      "bytes": 225
+    },
+    {
+      "file": "assets/flags/de.svg",
+      "sha256": "efd480af5a154a7651f29da23ee0d09dbc892410fb4041898ddf8face336c575",
+      "bytes": 221
+    },
+    {
+      "file": "assets/flags/dk.svg",
+      "sha256": "d2847c0bd7a1fb97977ee51f2f618c5ebc5898dd66ef9804f187613c27bdca1a",
+      "bytes": 236
+    },
+    {
+      "file": "assets/flags/es.svg",
+      "sha256": "f9cfaff858e95f830733ade9591037b5322dfb5827a53b70956a3d190bb49b9a",
+      "bytes": 80958
+    },
+    {
+      "file": "assets/flags/fi.svg",
+      "sha256": "012edd984cf1879463c2855b7df02dea2f7de7f7a66b244fb1e22b4227f7aa65",
+      "bytes": 234
+    },
+    {
+      "file": "assets/flags/fr.svg",
+      "sha256": "a526851c372e3372b1596be71af355ea72b1650bbc4c06e6e2c226900d3de6cc",
+      "bytes": 241
+    },
+    {
+      "file": "assets/flags/gr.svg",
+      "sha256": "a184070f7678b06777be8ac38cb05ba41829591a6dac9b64b2b72db66aec82f5",
+      "bytes": 868
+    },
+    {
+      "file": "assets/flags/id.svg",
+      "sha256": "5cd3acc4939dd7eae6318c8d75df8c0d1733f650e2504a2635b0dbf3dfabb040",
+      "bytes": 178
+    },
+    {
+      "file": "assets/flags/il.svg",
+      "sha256": "04a099ac4370b5e856f5f8d44ce0822ec47a6d3bc395a7d048d3a46d69274d68",
+      "bytes": 834
+    },
+    {
+      "file": "assets/flags/in.svg",
+      "sha256": "91185efa1a9b52cdc0e470712518efeefc4e4d6a6555bae9de997ba71885bb98",
+      "bytes": 1090
+    },
+    {
+      "file": "assets/flags/it.svg",
+      "sha256": "9fa88118818d9b64838f578e2babcca3d0630aed21b5c33b34aff7ac5ce506bc",
+      "bytes": 289
+    },
+    {
+      "file": "assets/flags/jp.svg",
+      "sha256": "bfea80baf9989383dc4bf7ca594ed95be0df0ff125bfc88d0bfa878eb0198022",
+      "bytes": 470
+    },
+    {
+      "file": "assets/flags/kr.svg",
+      "sha256": "7a6cd5b51d0e2841ed8b79b1147ad8a66cf3c09f6344d4a63b5e4413ffa5d15b",
+      "bytes": 1061
+    },
+    {
+      "file": "assets/flags/my.svg",
+      "sha256": "bb30e84a099d2d9dc286ab091bdd40ae7a8e332eb49827f2df4f11803e613667",
+      "bytes": 1378
+    },
+    {
+      "file": "assets/flags/nl.svg",
+      "sha256": "8f691f17fe70894537af8e92f2ca47761d353639b0defc15cbe561eb503ab010",
+      "bytes": 225
+    },
+    {
+      "file": "assets/flags/no.svg",
+      "sha256": "ceea17af051dceefd5759a824213eb40ac8a8095aa88a6874a7bbc8de637357a",
+      "bytes": 318
+    },
+    {
+      "file": "assets/flags/ph.svg",
+      "sha256": "c3bd5e08ddc5f6dbdfa899af9efb45577e3841402e6a7f5d00fef754816b2884",
+      "bytes": 1382
+    },
+    {
+      "file": "assets/flags/pl.svg",
+      "sha256": "06687a4b90fc00195d0795aea1c26a9f73f1b6ea6a76e358724b2f1f32b7c8f4",
+      "bytes": 215
+    },
+    {
+      "file": "assets/flags/pt.svg",
+      "sha256": "a7a2cf0b44aaaaf4f3bdc0ee0fa308ec7085bdfedd3f72da1473d43fd2a569fb",
+      "bytes": 8001
+    },
+    {
+      "file": "assets/flags/ro.svg",
+      "sha256": "17a3a747fc5e63302aaa670a667e5812f3676f46768e5a3e87b254bd41762840",
+      "bytes": 302
+    },
+    {
+      "file": "assets/flags/ru.svg",
+      "sha256": "7100aaae51ff3b6a2bf0ca932b3bc518bdc760814725e7cca31d821a26c3dd7c",
+      "bytes": 225
+    },
+    {
+      "file": "assets/flags/sa.svg",
+      "sha256": "5738c8cfca5fea63587cbcf69237996c8ce6283f8016853150686f37311b620e",
+      "bytes": 9968
+    },
+    {
+      "file": "assets/flags/se.svg",
+      "sha256": "b3b5071e6c1d4a0e3db828bab5c7dfd68d0e90fcf3b25b15e9a2c4f96c1f79c9",
+      "bytes": 209
+    },
+    {
+      "file": "assets/flags/th.svg",
+      "sha256": "329cc0d520536d6eb4b9304105f23650c2d02bbdba8f8696e996dbf166de6f2e",
+      "bytes": 284
+    },
+    {
+      "file": "assets/flags/tr.svg",
+      "sha256": "256a1d6afbedb9f731566982331a1cd1ad14aba211b8a61d338855879505e74f",
+      "bytes": 549
+    },
+    {
+      "file": "assets/flags/tw.svg",
+      "sha256": "931757f06b9ee751fd1a0cc8dd7cf862e21fdcaf894d10ed7bcc68dabcca59ad",
+      "bytes": 2499
+    },
+    {
+      "file": "assets/flags/ua.svg",
+      "sha256": "b7892e2bee1b25eb5407d6f5249b020dcece29ee1c9cc1a8a6a10c4f38ce6801",
+      "bytes": 234
+    },
+    {
+      "file": "assets/flags/us.svg",
+      "sha256": "e7be4240cf57987926673708f09233be1ab6bdf35acc7b86bd32a263f197a2a7",
+      "bytes": 648
+    },
+    {
+      "file": "assets/flags/vn.svg",
+      "sha256": "2355037201315d74581ab0ad60b5587a29a087d26b0525bdeb8676e64fae5b86",
+      "bytes": 490
+    },
+    {
+      "file": "licenses/Flag-Icons-LICENSE.txt",
+      "sha256": "8f1195d55a2fd315a07d812328470ca9ba2abb78c8d317ff19619d5125e00cea",
+      "bytes": 1087
+    }
+  ]
+}

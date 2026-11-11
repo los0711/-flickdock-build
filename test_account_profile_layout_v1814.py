@@ -109,20 +109,18 @@ class AccountProfileLayoutTests(unittest.TestCase):
         self.assertIs(rows['other'],self.panel._rows_by_id['other'])
         self.assertEqual(self.panel._rows_by_id['other'].findChild(AccountNameLabel,'accountDeviceName').text(),'MacBook Air')
 
-    def test_devices_use_one_scroll_column_and_live_route_latency_without_rebuild(self):
+    def test_device_names_are_centered_in_one_scroll_column_without_presence_labels(self):
         self.service.devices.extend(dict(id=f'peer-{index}',name=f'设备 {index}',platform='windows') for index in range(8))
         self.service.list_devices();self.settle();rows=dict(self.panel._rows_by_id)
-        self.panel.set_device_connections({'other':{'route':'cloud'},'peer-0':{'route':'cloud'}})
         self.settle()
         self.assertEqual(rows,self.panel._rows_by_id)
-        self.assertIn('云端在线',rows['other']._connection_label.text())
-        self.assertIn('云端在线',rows['peer-0']._connection_label.text())
-        self.assertIn('状态未知',rows['peer-1']._connection_label.text())
+        for row in rows.values():
+            name=row.findChild(AccountNameLabel,'accountDeviceName')
+            self.assertLessEqual(abs(name.mapTo(row,name.rect().center()).y()-row.rect().center().y()),1)
+            self.assertFalse(row.findChildren(AccountNameLabel,'accountDeviceMeta'))
         self.assertEqual(len({row.x() for row in rows.values()}),1)
         self.assertEqual(len({row.y() for row in rows.values()}),len(rows))
         self.assertGreater(self.panel.devices_scroll.verticalScrollBar().maximum(),0)
-        self.panel.set_device_connections({'other':{'route':'disconnected'}})
-        self.assertIn('离线',rows['other']._connection_label.text())
         self.assertEqual(rows,self.panel._rows_by_id)
 
     def test_rename_is_floating_without_resizing_rows_and_actions_stay_at_right_edge(self):

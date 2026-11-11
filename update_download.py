@@ -82,14 +82,30 @@ class UpdateDownload(QObject):
         self._emit('connecting',detail='正在检查可恢复的下载…')
         def ready(value,error):
             if error:self._fail(str(error),discard=True);return
-            self.received,self.digest,self.prefix=value
+            cached,self.received,self.digest,self.prefix=value
             self.progress.emit(self.received,self.total)
             if self.stopped:return
+            if cached:
+                self._emit('verifying',detail='已校验本机安装包，无需重复下载。')
+                if self.stopped:return
+                self.stopped=True;self._release();self.completed.emit(str(self.final));return
             if self.received==self.total:self._verify();return
             try:self.file=self.part.open('ab')
             except OSError as problem:self._fail('无法写入更新暂存文件：'+str(problem));return
             self._restart()
-        self._disk(lambda cancel:_inspect(self.part,self.total,cancel),ready)
+        def inspect(cancel):
+            if self.final.is_symlink():raise ValueError('更新安装包位置不安全。')
+            if self.final.is_file() and self.final.stat().st_size==self.total:
+                # An aborted handoff leaves a complete, already downloaded
+                # package. Authenticate its bytes again before every retry.
+                size,digest,prefix=_inspect(self.final,self.total,cancel)
+                if size==self.total and digest.hexdigest()==self.info['sha256']:
+                    if self.final.suffix=='.dmg':
+                        with self.final.open('rb') as stream:stream.seek(-512,2);valid=stream.read(4)==b'koly'
+                    else:valid=prefix.startswith(b'PK\x03\x04' if self.platform=='darwin' else b'MZ')
+                    if valid:return True,size,digest,prefix
+            return (False,*_inspect(self.part,self.total,cancel))
+        self._disk(inspect,ready)
 
     def _emit(self,phase,**extra):
         self.phase=phase;now=time.monotonic()
@@ -219,7 +235,9 @@ class UpdateDownload(QObject):
     def _verify(self):
         if self.file:self.file.close();self.file=None
         self.progress.emit(self.received,self.total)
+        if self.stopped:return
         self._emit('verifying',detail='正在校验安装包完整性及发布签名…' if self.manifest.get('publisher_signature') else '正在校验安装包完整性…')
+        if self.stopped:return
         def verify(cancel):
             size,digest,prefix=_inspect(self.part,self.total,cancel)
             if size!=self.total or digest.hexdigest()!=self.info['sha256']:raise ValueError('安装包大小或 SHA256 校验失败，已删除损坏的下载。')

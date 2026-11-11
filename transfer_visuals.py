@@ -57,7 +57,7 @@ def draw_cloud_status_badge(painter, rect, status, transfer=None):
         painter.setPen(arc)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawArc(QRectF(1.2,1.2,17.6,17.6),90*16,-round(max(.025,fraction)*360*16))
-    painter.drawPixmap(4,4,12,12,icon('cloud' if synced else 'computer','#FFFFFF').pixmap(24,24))
+    painter.drawPixmap(4,4,12,12,icon('cloud-filled' if synced else 'computer-filled','#FFFFFF').pixmap(24,24))
     painter.restore()
 
 
@@ -207,15 +207,15 @@ class TransferRateTracker:
         return sample['rate'] if sample and now-sample['last_progress']<=self.STALE_SECONDS else None
 
 
-def draw_ring(painter,rect,state):
+def draw_ring(painter,rect,state,*,color='#3989ef'):
     if not state: return
     rect=QRectF(rect).adjusted(3,3,-3,-3)
     painter.save();painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    pen=QPen(QColor(ui_theme.color('border')),2.4);painter.setPen(pen)
+    pen=QPen(QColor(ui_theme.color('media_track')),2.4);painter.setPen(pen)
     painter.setBrush(Qt.BrushStyle.NoBrush);painter.drawEllipse(rect)
     if state.get('remote') and state.get('phase') in ('remote','preparing'):
         painter.restore();return
-    pen.setColor(QColor('#3989ef'));pen.setCapStyle(Qt.PenCapStyle.RoundCap);painter.setPen(pen)
+    pen.setColor(QColor(color));pen.setCapStyle(Qt.PenCapStyle.RoundCap);painter.setPen(pen)
     received,total=state.get('received',0),state.get('total',0)
     if total>0:
         if received>0:painter.drawArc(rect,90*16,-round(min(1,received/total)*5760))

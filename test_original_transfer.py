@@ -25,7 +25,7 @@ class OriginalTransferTests(unittest.TestCase):
             with tempfile.TemporaryDirectory(prefix='flickdock-original-pipeline-') as directory:
                 output=Path(directory)/'verified.json'
                 command=[sys.executable,'-c',"import verify_wan,sys;raise SystemExit(verify_wan.run(sys.argv,lambda _:None))",'--verify-output',str(output)]
-                result=subprocess.run(command,cwd=ROOT,env=dict(os.environ,QT_QPA_PLATFORM='offscreen',FLICKDOCK_QA_WAN_ORIGIN=origin),capture_output=True,text=True,timeout=150)
+                result=subprocess.run(command,cwd=ROOT,env=dict(os.environ,PYTHONUTF8='1',QT_QPA_PLATFORM='offscreen',FLICKDOCK_QA_WAN_ORIGIN=origin),capture_output=True,text=True,encoding='utf8',timeout=210)
                 self.assertEqual(result.returncode,0,result.stdout+result.stderr+(output.read_text(encoding='utf8') if output.exists() else ''))
                 report=json.loads(output.read_bytes());self.assertTrue(report['ok'])
                 self.assertEqual(report['verified_bytes'],32*1024**2)

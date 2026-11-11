@@ -1,96 +1,98 @@
-"""One nonactivating card for authenticated same-account file reception."""
+"""Manual file-transfer feedback shares the small, nonactivating capsule host."""
 from pathlib import Path
-from PySide6.QtCore import QObject,QPoint,Qt,QTimer
+from PySide6.QtCore import QObject,QPoint,QRectF
 from PySide6.QtGui import QCursor,QGuiApplication
-from PySide6.QtWidgets import QFrame,QHBoxLayout,QLabel,QProgressBar,QVBoxLayout,QWidget
 from async_images import ImageCache
-from flickdock_icons import app_icon
-from native_ui_common import colors
-from platform_native import keep_tool_visible_when_inactive
-from reference_widgets import button,refresh_tree
-from transfer_visuals import TransferRateTracker
-from transfer_workbench import FileArtwork,reveal_file
-from ui_transitions import WindowFade,fade_hide
+from intake_notice import CapsuleNotice,COMPACT_SIDE_PX,NOTICE_PROGRESS_DURATION_MS,NOTICE_DURATION_MS,COMPACT_SUCCESS_DURATION_MS,paint_circular_artwork
+from native_ui_common import icon
+from flickdock_icons import document_pixmap
+from transfer_visuals import draw_ring
 
-NOTICE_WIDTH_PX=390
-NOTICE_MARGIN_PX=16
-COMPLETE_NOTICE_MS=4500
-FAILURE_NOTICE_MS=6500
+TRANSFER_HOST_WIDTH_PX=320
+TRANSFER_CAPSULE_MAX_WIDTH_PX=296
+SEND_RING_COLOR='#26B97A'
+RECEIVE_RING_COLOR='#087CEF'
 MAX_NOTICE_RECORDS=64
 TERMINAL={'complete','error','cancelled','interrupted'}
 
-class ReceiveToast(QWidget):
+
+class TransferCapsule(CapsuleNotice):
+    HOST_WIDTH=TRANSFER_HOST_WIDTH_PX
+    MAX_CAPSULE_WIDTH=TRANSFER_CAPSULE_MAX_WIDTH_PX
+    NOTICE_ORDER=1
+
     def __init__(self,owner):
-        super().__init__();self.owner=owner;self.record=None;self._theme=None
-        self.setWindowFlags(Qt.Tool|Qt.FramelessWindowHint|Qt.WindowStaysOnTopHint|Qt.WindowDoesNotAcceptFocus)
-        self.setAttribute(Qt.WA_ShowWithoutActivating);self.setAttribute(Qt.WA_TranslucentBackground)
-        keep_tool_visible_when_inactive(self);self.setWindowTitle('FlickDock · 文件接收')
-        root=QVBoxLayout(self);root.setContentsMargins(0,0,0,0);self.card=QFrame(self);self.card.setObjectName('receiveNotice');root.addWidget(self.card)
-        layout=QVBoxLayout(self.card);layout.setContentsMargins(16,13,16,11);layout.setSpacing(10)
-        head=QHBoxLayout();head.setSpacing(9);logo=QLabel(self.card);logo.setPixmap(app_icon().pixmap(23,23));logo.setFixedSize(23,23);head.addWidget(logo)
-        self.heading=QLabel(self.card);self.heading.setObjectName('receiveHeading');self.heading.setTextFormat(Qt.PlainText);head.addWidget(self.heading,1)
-        close=button('','close',parent=self.card);close.setFixedSize(24,24);close.setAccessibleName('关闭提示，传输继续');close.setToolTip('关闭提示，传输继续');close.clicked.connect(owner.dismiss);head.addWidget(close);self.dismiss_button=close
-        layout.addLayout(head);device=QHBoxLayout();self.device=QLabel(self.card);self.device.setTextFormat(Qt.PlainText);device.addWidget(self.device,1)
-        self.account_badge=QLabel('同账号',self.card);self.account_badge.setObjectName('receiveAccount');device.addWidget(self.account_badge);layout.addLayout(device)
-        row=QHBoxLayout();row.setSpacing(10);self.artwork_cache=ImageCache(self);self.artwork=FileArtwork(self.artwork_cache,self.card);row.addWidget(self.artwork)
-        info=QVBoxLayout();info.setSpacing(2);self.filename=QLabel(self.card);self.filename.setObjectName('receiveFilename');self.filename.setTextFormat(Qt.PlainText);info.addWidget(self.filename)
-        self.amount=QLabel(self.card);info.addWidget(self.amount);row.addLayout(info,1);self.percentage=QLabel(self.card);row.addWidget(self.percentage);layout.addLayout(row)
-        self.progress=QProgressBar(self.card);self.progress.setRange(0,1000);self.progress.setFixedHeight(4);self.progress.setTextVisible(False);layout.addWidget(self.progress)
-        foot=QHBoxLayout();self.detail=QLabel(self.card);self.detail.setTextFormat(Qt.PlainText);foot.addWidget(self.detail,1)
-        self.action_button=button('查看传输',parent=self.card);self.action_button.setFixedHeight(26);self.action_button.clicked.connect(owner.activate);foot.addWidget(self.action_button);layout.addLayout(foot)
-        self.timer=QTimer(self);self.timer.setSingleShot(True);self.timer.timeout.connect(owner.dismiss)
-        self._window_fade=WindowFade(self)
+        super().__init__(owner.manager);self.owner=owner;self.record=None
+        self.setWindowTitle('FlickDock · 文件传输提示')
+
+    def _sync_accessibility(self):
+        self.setAccessibleName(self._text)
+        self.setAccessibleDescription(self._description+('；点击展开提示' if self._compact else '；点击查看文件传输'))
 
     def present(self,record,*,reveal=False):
-        self.record=record;theme=self.owner.manager.settings.theme;c=colors(theme)
-        if self._theme!=theme:
-            self._theme=theme
-            self.card.setStyleSheet(f'QFrame#receiveNotice{{background:{c["surface"]};border:0;border-radius:12px;}} QLabel{{background:transparent;border:0;color:{c["secondary"]};font-size:11px;}} QLabel#receiveHeading{{color:{c["text"]};font-size:13px;font-weight:600;}} QLabel#receiveFilename{{color:{c["text"]};font-size:12px;font-weight:500;}} QLabel#receiveAccount{{color:{c["green"]};padding:1px 5px;background:{c["control"]};border-radius:4px;font-size:10px;}} QProgressBar{{background:{c["control"]};border:0;border-radius:2px;}} QProgressBar::chunk{{background:{c["link"]};border-radius:2px;}}')
-            refresh_tree(self);self.artwork.dark=theme=='dark'
-        state=record['state'];complete=state=='complete';failed=state in ('error','cancelled','interrupted')
-        title={'complete':'接收完成','error':'接收失败','cancelled':'接收已取消','interrupted':'接收已中断','verifying':'正在完成'}.get(state,'正在下载'+(f' {record["count"]} 个文件' if record['count']>1 else ''))
-        self.heading.setText(title);self.heading.setStyleSheet('color:'+c['green' if complete else 'red' if failed else 'text']+';font-size:13px;font-weight:600;')
-        self.device.setText(self.device.fontMetrics().elidedText('来自 '+record['peer'],Qt.ElideRight,260));self.device.setToolTip(record['peer'])
-        name=record['name'] or '正在接收文件';self.filename.setText(self.filename.fontMetrics().elidedText(name,Qt.ElideMiddle,245));self.filename.setToolTip(name)
-        paths=record.get('paths',[]);source=paths[0] if complete and paths else ''
-        if (self.artwork.ref,self.artwork.name)!=(source,name):self.artwork.set_source(source,name)
-        from lan_panel import _size
-        received,total=record['received'],record['total'];fraction=min(1.,received/total) if total else 0.
-        self.amount.setText((_size(total)+' · 已保存并校验') if complete else f'{_size(received)} / {_size(total)}')
-        self.percentage.setText('100%' if complete else f'{fraction:.0%}' if total else '—');self.progress.setValue(1000 if complete else round(fraction*1000));self.progress.setVisible(not failed)
-        route={'lan':'局域网','direct':'P2P 直连','p2p':'P2P 直连','relay':'TURN 中继','cloud':'云端'}.get(record.get('route'),'建立连接中')
-        rate=self.owner.rates.bytes_per_second(record['id']);eta=self.owner.rates.remaining_text(record['id'],dict(received=received,total=total))
-        detail=record.get('message') or ('文件已保存到接收位置' if complete else ' · '.join(part for part in (route,_size(rate)+'/s' if rate else '',eta if rate else '') if part))
-        self.detail.setText(self.detail.fontMetrics().elidedText(detail,Qt.ElideRight,260));self.detail.setToolTip(detail)
-        self.action_button.setText('打开文件夹' if complete else '查看传输');self.action_button.setEnabled(not complete or bool(paths))
-        self.dismiss_button.setToolTip('关闭提示' if state in TERMINAL else '关闭提示，传输继续')
-        if reveal:
-            screen=QGuiApplication.screenAt(QCursor.pos()) or self.owner.manager.shelf.screen() or QGuiApplication.primaryScreen()
-            area=screen.availableGeometry();self.setFixedWidth(min(NOTICE_WIDTH_PX,max(240,area.width()-2*NOTICE_MARGIN_PX)));self.adjustSize()
-            self.move(area.right()-self.width()-NOTICE_MARGIN_PX+1,area.top()+NOTICE_MARGIN_PX)
-            self.timer.stop();self._window_fade.reopen();self.show();self.raise_()
-            if state in TERMINAL:self.timer.start(COMPLETE_NOTICE_MS if complete else FAILURE_NOTICE_MS)
+        same=self.record is not None and self.record['id']==record['id'];previous=self._phase
+        previous_state=self.record['state'] if same else None
+        self.record=dict(record);state=record['state'];self._text=record['name'] or '文件'
+        sending=record['direction']=='send';self._description=('发送' if sending else '接收')+('完成' if state=='complete' else '未完成' if state in TERMINAL else '文件中')
+        self._phase='success' if state=='complete' else 'error' if state in TERMINAL else 'syncing'
+        progress=dict(phase=state,received=record['received'],total=record['total'])
+        if state in ('connecting','waiting','preparing','reconnecting'):progress=dict(phase='preparing',received=0,total=0)
+        self._set_progress(progress,reset=not same)
+        if not same or not self.isVisible():
+            screen=QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
+            self._begin_presentation(screen.availableGeometry());self.timer.start(NOTICE_PROGRESS_DURATION_MS if self._phase=='syncing' else NOTICE_DURATION_MS)
+        elif state in TERMINAL and state!=previous_state:
+            self._compact=False;self._full_width=self._content_width();self._animate_shape(self._full_width)
+            self.timer.start(NOTICE_DURATION_MS)
+        elif previous!=self._phase:
+            self.timer.start(NOTICE_PROGRESS_DURATION_MS if self._phase=='syncing' else NOTICE_DURATION_MS)
+        self._sync_accessibility();self._sync_ring_clock();self.update()
 
-    def enterEvent(self,event):self.timer.stop();super().enterEvent(event)
-    def leaveEvent(self,event):
-        if self.record and self.record['state'] in TERMINAL:self.timer.start(COMPLETE_NOTICE_MS)
-        super().leaveEvent(event)
-    def hideEvent(self,event):self.timer.stop();super().hideEvent(event)
+    def _paint_leading(self,painter,rect):
+        paths=self.record.get('paths',[]) if self.record else [];name=self.record['name'] if self.record else ''
+        path=paths[0] if paths else ''
+        image=self.owner.images.image(path,64) if path else None
+        if path and image is None:self.owner.images.request(path,64)
+        artwork=image if image is not None and not image.isNull() else document_pixmap(Path(name).suffix or 'file',24,dpr=self.devicePixelRatioF()).toImage()
+        paint_circular_artwork(painter,rect,artwork,self.manager.settings.theme,self._artwork_cache)
 
-class SameAccountReceiveNotice(QObject):
+    def _paint_indicator(self,painter,rect,colors):
+        color=SEND_RING_COLOR if self.record['direction']=='send' else RECEIVE_RING_COLOR
+        if self._phase=='syncing':draw_ring(painter,rect,self._painted_progress(),color=color)
+        else:icon('circle-check' if self._phase=='success' else 'circle-alert',color if self._phase=='success' else colors['red']).paint(painter,rect.toAlignedRect())
+
+    def _expire(self):
+        if self._phase=='syncing':
+            self.timer.stop();self._compact=True;self._animate_shape(COMPACT_SIDE_PX);self._sync_accessibility()
+        else:self.dismiss()
+
+    def _activate(self):
+        if self._compact:
+            self._compact=False;self._animate_shape(self._full_width)
+            self.timer.start(NOTICE_PROGRESS_DURATION_MS if self._phase=='syncing' else NOTICE_DURATION_MS);self._sync_accessibility()
+        else:self.owner.activate()
+
+
+class FileTransferNotices(QObject):
     def __init__(self,manager,service):
-        super().__init__(manager.app);self.manager=manager;self.service=service;self.records={};self.current=None;self.toast=None;self.closed=False
-        self.rates=TransferRateTracker()
-        service.progress.connect(self._progress);service.completed.connect(self._completed)
+        super().__init__(manager.app);self.manager=manager;self.service=service;self.records={};self.offers={};self.current=None;self.toast=None;self.closed=False
+        self.images=ImageCache(self);self.images.ready.connect(self._image_ready)
+        service.offer_received.connect(self._offered);service.progress.connect(self._progress);service.completed.connect(self._completed)
         manager.account.account_changed.connect(self.reset);manager.settings.changed.connect(self._refresh)
+
+    def _offered(self,offer):
+        if self.closed or offer['id'] in self.records:return
+        self.offers[offer['id']]=dict(offer)
+        while len(self.offers)>MAX_NOTICE_RECORDS:self.offers.pop(next(iter(self.offers)))
 
     def begin(self,offer):
         if self.closed or offer['id'] in self.records:return
-        names=offer.get('names') or []
-        record=dict(id=offer['id'],peer=str(offer['peer'])[:160],count=offer['count'],name=Path(str(names[0])).name if names else '',
-            total=offer['total'],received=0,state='connecting',route='' if self.service is self.manager.wan else 'lan',paths=[],dismissed=False,announced=False,snapshot=None)
-        record['snapshot']=dict(id=record['id'],direction='receive',peer=record['peer'],total=record['total'],received=0,state='connecting',name=record['name'])
-        self.records[record['id']]=record
+        names=offer.get('names') or [];direction=offer.get('direction','receive')
+        record=dict(id=offer['id'],direction=direction,peer=str(offer.get('peer',''))[:160],count=offer.get('count',len(names)),
+            name=Path(str(names[0])).name if names else '',total=offer.get('total',0),received=0,state='connecting',
+            route='' if self.service is self.manager.wan else 'lan',paths=list(offer.get('paths') or []),announced=False,snapshot=None)
+        record['snapshot']=dict(id=record['id'],direction=direction,peer=record['peer'],total=record['total'],received=0,state='connecting',name=record['name'])
+        self.records[record['id']]=record;self.offers.pop(record['id'],None)
         while len(self.records)>MAX_NOTICE_RECORDS:
             old=next((key for key,value in self.records.items() if value['state'] in TERMINAL and key!=self.current),None)
             if old is None:break
@@ -98,55 +100,53 @@ class SameAccountReceiveNotice(QObject):
         self.current=record['id'];self._present(record,True)
 
     def _present(self,record,reveal=False):
-        if self.toast is None:self.toast=ReceiveToast(self)
+        if self.toast is None:self.toast=TransferCapsule(self)
         self.toast.present(record,reveal=reveal)
 
     def _progress(self,value):
-        if self.closed or value.get('direction')!='receive':return
+        if self.closed or value.get('direction') not in ('send','receive'):return
         record=self.records.get(value['id'])
+        if record is None and value['direction']=='receive' and value['id'] in self.offers and value.get('state') in ('connecting','transferring','reconnecting'):
+            self.begin(self.offers[value['id']]);record=self.records.get(value['id'])
         if record is None or record['announced']:return
         record.update(snapshot=dict(value),received=value.get('received',record['received']),total=value.get('total',record['total']))
-        if value.get('name'):record['name']=Path(str(value['name'])).name
+        if value.get('name') and not record['name']:record['name']=Path(str(value['name'])).name
         if value.get('route'):record['route']=value['route']
         previous=record['state'];state=value.get('state','');record['state']='verifying' if state=='complete' else state
         if state in ('error','cancelled','interrupted'):record['message']=str(value.get('message') or '')[:600]
         else:record['message']=''
-        self.rates.observe({key:dict(received=row['received'],total=row['total'],phase=row['state']) for key,row in self.records.items() if not row['announced']})
         if record['state'] in TERMINAL and previous!=record['state']:
             record['announced']=state!='interrupted';self.current=record['id'];self._present(record,True)
-        elif self.current==record['id'] and not record['dismissed']:self._present(record)
+        elif self.current==record['id']:self._present(record)
 
     def _completed(self,value):
-        if self.closed or value.get('direction')!='receive':return
+        if self.closed or value.get('direction') not in ('send','receive'):return
         record=self.records.get(value['id'])
+        if record is None and value['direction']=='receive' and value['id'] in self.offers:
+            self.begin(self.offers[value['id']]);record=self.records.get(value['id'])
         if record is None or record['announced']:return
-        record.update(state='complete',paths=list(value.get('paths') or []),announced=True,received=value.get('total',record['total']),message='')
+        record.update(state='complete',paths=list(value.get('paths') or record['paths']),announced=True,received=value.get('total',record['total']),message='')
         self.current=record['id'];self._present(record,True)
-
-    def dismiss(self):
-        if self.current in self.records:self.records[self.current]['dismissed']=True
-        if self.toast:fade_hide(self.toast)
 
     def activate(self):
         record=self.records.get(self.current)
         if record is None:return
-        if record['state']=='complete':
-            try:reveal_file(record['paths'][0])
-            except (OSError,IndexError) as error:record['message']=str(error);self._present(record)
+        if self.service is self.manager.wan:
+            self.manager.show_wan_dialog();panel=self.manager.wan_dialog.panel
         else:
-            if self.service is self.manager.wan:
-                self.manager.show_wan_dialog();panel=self.manager.wan_dialog.panel
-            else:
-                self.manager.show_lan_dialog();panel=self.manager.lan_dialog.panel
-            panel.focus_transfer(record['id'],record['snapshot'])
+            self.manager.show_lan_dialog();panel=self.manager.lan_dialog.panel
+        panel.focus_transfer(record['id'],record['snapshot'])
+
+    def _image_ready(self,_):
+        if self.toast:self.toast.update()
 
     def _refresh(self):
         if self.toast and self.toast.isVisible() and self.current in self.records:self._present(self.records[self.current])
 
     def reset(self,*_):
-        self.records.clear();self.current=None;self.rates=TransferRateTracker()
-        if self.toast:self.toast.hide()
+        self.records.clear();self.offers.clear();self.current=None;self.images.clear()
+        if self.toast:self.toast.supersede()
 
     def close(self):
-        self.closed=True;self.reset()
-        if self.toast:self.toast.artwork_cache.close();self.toast.deleteLater();self.toast=None
+        self.closed=True;self.reset();self.images.close()
+        if self.toast:self.toast.deleteLater();self.toast=None

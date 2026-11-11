@@ -185,7 +185,7 @@ def main(arguments=None):
         if not python.is_file():
             venv.EnvBuilder(with_pip=True).create(environment)
         run([python, '-m', 'pip', 'install', 'PySide6==6.12.0', 'PyInstaller==6.22.3',
-             'pyobjc-framework-Quartz>=11,<13', 'keyring==25.7.0','yt-dlp[default]==2026.10.26'])
+             'pyobjc-framework-Quartz>=11,<13', 'keyring==25.7.0', 'eldc==0.4.0','yt-dlp[default]==2026.10.26'])
         if options.target_arch=='x86_64':
             # Intel currently builds this dependency from source. Dynamic
             # Homebrew OpenSSL can collide with Python's same-named dylibs
@@ -222,7 +222,7 @@ def main(arguments=None):
         env['FLICKDOCK_CODESIGN_IDENTITY'] = options.sign_identity
     if options.entitlements:
         env['FLICKDOCK_ENTITLEMENTS'] = str(options.entitlements.resolve())
-    run([python, '-m', 'unittest', 'test_architecture','test_sync_scheduler','test_cloud_events_v1825','test_cloud_only_v1825','test_window_zoom_v1824', 'test_surface_source_cache', 'test_surface_elements', 'test_mac_install', 'test_preview_continuity', 'test_display_frames', 'test_video_matrix', 'test_receive_notice', 'test_copy_notice_v1824', 'test_virtual_clipboard', 'test_platform_startup', 'test_platform_native', 'test_mac_window_order_v1810', 'test_mac_updates',
+    run([python, '-m', 'unittest', 'test_translation','test_architecture','test_video_tls','test_startup_resources','test_sync_scheduler','test_cloud_events_v1825','test_cloud_only_v1825','test_window_zoom_v1824', 'test_surface_source_cache', 'test_surface_elements', 'test_mac_install', 'test_preview_continuity', 'test_display_frames', 'test_video_matrix', 'test_receive_notice', 'test_copy_notice_v1824', 'test_virtual_clipboard', 'test_platform_startup', 'test_platform_native', 'test_mac_window_order_v1810', 'test_mac_updates',
          'test_macos_native_entry', 'test_update_macos_controller', 'test_mac_build',
          'test_shelf_sync_v180', 'test_sync_review_v180', 'test_account_security_v180',
          'test_lan_transfer_v181', 'test_lan_dialog_v183', 'test_lan_account_v1825', 'test_shelf_transfers_v181',
