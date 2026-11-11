@@ -18,6 +18,9 @@ LANGUAGE_VISIBLE_ROWS = 8
 LANGUAGE_ROW_HEIGHT_PX = 32
 LANGUAGE_MENU_WIDTH_PX = 208
 FOCUS_COLLAPSE_DELAY_MS = 2000
+CONTENT_SIDE_INSET_PX = 18
+CONTENT_TOP_INSET_PX = 16
+CONTENT_BOTTOM_GAP_PX = 12
 
 
 class LanguageList(QListWidget):
@@ -112,9 +115,16 @@ class TranslationNotice(CapsuleNotice):
         self.middle_button.setGeometry(round(rect.left() + 49), y + 2, max(1, round(rect.width() - 98)), 40)
         for button in (self.flag_button, self.middle_button, self.action_button):
             button.setVisible(not self._hiding and rect.width() > 120)
-        if self.expanded and self.editor.isVisible():self.editor.move(self.editor.x(),round(rect.top()+16))
+        if self.expanded:
+            # A result can grow the document while the expansion is still
+            # running. Lay out against this frame, not its final height, so
+            # the editor can never paint over the capsule controls.
+            self.editor.setGeometry(round(rect.left()+CONTENT_SIDE_INSET_PX),round(rect.top()+CONTENT_TOP_INSET_PX),
+                max(0,round(rect.width()-2*CONTENT_SIDE_INSET_PX)),
+                max(0,round(rect.height()-PILL_HEIGHT_PX-CONTENT_TOP_INSET_PX-CONTENT_BOTTOM_GAP_PX)))
 
     def _editor_visibility(self):
+        self._layout_controls()
         self.editor.setVisible(self.expanded and not self._hiding)
 
     def toggle_content(self):
@@ -220,14 +230,13 @@ class TranslationNotice(CapsuleNotice):
         c = colors(self.manager.settings.theme)
         self.editor.setStyleSheet(f'QPlainTextEdit{{background:{c["surface"]};color:{c["text"]};border:0;font-size:13px;selection-background-color:#147EFB;}}')
         width = min(EXPANDED_WIDTH_PX, self.width() - 4)
-        self._measure.setTextWidth(width-36)
+        self._measure.setTextWidth(width-2*CONTENT_SIDE_INSET_PX)
         self._measure.setPlainText(document)
         height=min(EXPANDED_HEIGHT_PX,self.height()-8,max(118,round(self._measure.size().height())+PILL_HEIGHT_PX+36))
         previous_height=self._expanded_height;self._expanded_height=height
-        self.editor.setGeometry(round((self.width()-width)/2+18), round(self.height()-10-height+16), round(width-36), round(height-PILL_HEIGHT_PX-28))
         if self.expanded and previous_height!=height:
-            self.editor.move(self.editor.x(),round(self.capsule_rect().top()+16))
             self._animate_shape(min(EXPANDED_WIDTH_PX,self.width()-4),height)
+        self._layout_controls()
         self._sync_accessibility()
         self.update()
 

@@ -231,6 +231,27 @@ class TranslationInteractionTests(unittest.TestCase):
         self.controller.result='';self.controller.phase='idle';self.notice.present()
         self.assertEqual(self.notice.timer.interval(),5000)
 
+    def test_result_arriving_during_or_after_expansion_never_covers_capsule(self):
+        from intake_notice import PILL_HEIGHT_PX
+        host_size=self.notice.size()
+        for response_at in (60,420):
+            with self.subTest(response_at=response_at),patch('intake_notice.motion_allowed',return_value=True):
+                self.notice._set_expanded(False)
+                self.notice._morph.setCurrentTime(self.notice._morph.duration())
+                self.controller.result='';self.controller.phase='loading';self.controller.busy=True
+                self.controller.changed.emit();self.notice.middle_button.click()
+                self.notice._morph.setCurrentTime(response_at)
+                self.controller.result='翻译完成后的较长内容。\n'*24
+                self.controller.phase='ready';self.controller.busy=False;self.controller.changed.emit()
+                for at in (0,30,100,220,420):
+                    self.notice._morph.setCurrentTime(at)
+                    capsule=self.notice.capsule_rect()
+                    self.assertLessEqual(self.notice.editor.geometry().bottom(),capsule.bottom()-PILL_HEIGHT_PX-10)
+                    self.assertGreaterEqual(self.notice.editor.y(),capsule.top()+14)
+                    self.assertEqual(self.notice.size(),host_size)
+                self.assertTrue(self.notice.editor.isVisible())
+                self.assertIn(self.controller.result,self.notice.editor.toPlainText())
+
     def test_short_chooser_scrolls_and_reopens_at_top_without_resetting_target(self):
         self.store.update(translation_target='fr')
         self.notice.show_languages();APP.processEvents()
