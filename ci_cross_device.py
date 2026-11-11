@@ -365,7 +365,8 @@ def main():
                 expected=None;mime=QMimeData()
                 if kind=='text':expected=seed+' 中文\r\nhttps://example.invalid/'+secret['probe'];mime.setText(expected)
                 elif kind=='image':
-                    expected=QImage(640,360,QImage.Format.Format_ARGB32);expected.fill(QColor(24,104,176,177));mime.setImageData(expected)
+                    shade=hashlib.sha256(seed.encode()).digest()
+                    expected=QImage(640,360,QImage.Format.Format_ARGB32);expected.fill(QColor(shade[0],shade[1],shade[2],177));mime.setImageData(expected)
                 else:
                     source=root/(seed+'.bin');digest=fixture(source,16*MIB,seed)
                     mime.setUrls([QUrl.fromLocalFile(str(source))])
