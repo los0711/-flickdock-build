@@ -21,6 +21,8 @@ FOCUS_COLLAPSE_DELAY_MS = 2000
 CONTENT_SIDE_INSET_PX = 18
 CONTENT_TOP_INSET_PX = 16
 CONTENT_BOTTOM_GAP_PX = 12
+MIDDLE_CONTROL_VERTICAL_INSET_PX = 6
+MIDDLE_CONTROL_SIDE_INSET_PX = 2
 
 
 class LanguageList(QListWidget):
@@ -117,7 +119,10 @@ class TranslationNotice(CapsuleNotice):
         y = round(rect.bottom() - PILL_HEIGHT_PX)
         self.flag_button.setGeometry(round(rect.left() + 6), y + 2, 40, 40)
         self.action_button.setGeometry(round(rect.right() - 42), y + 4, 36, 36)
-        self.middle_button.setGeometry(round(rect.left() + 49), y + 2, max(1, round(rect.width() - 98)), 40)
+        self.middle_button.setGeometry(round(rect.left()+49+MIDDLE_CONTROL_SIDE_INSET_PX),
+            y+MIDDLE_CONTROL_VERTICAL_INSET_PX,
+            max(1,round(rect.width()-98-2*MIDDLE_CONTROL_SIDE_INSET_PX)),
+            PILL_HEIGHT_PX-2*MIDDLE_CONTROL_VERTICAL_INSET_PX)
         for button in (self.flag_button, self.middle_button, self.action_button):
             button.setVisible(not self._hiding and rect.width() > 120)
         if self.expanded:

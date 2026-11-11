@@ -20,6 +20,132 @@ from test_clipboard_sync_v1819 import APP,until,flush
 
 
 class HistoryTests(unittest.TestCase):
+    def test_renamed_bridge_files_are_one_copy_without_repeated_toasts_or_uploads(self):
+        client=self.clients[0];replayed=[];observed=[]
+        client.copy_repeated.connect(replayed.append);client.copy_observed.connect(observed.append)
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);source=root/'original.png'
+            image=QImage(12,8,QImage.Format_ARGB32);image.fill(QColor('#548199'));image.save(str(source),'PNG')
+            def copy(path):
+                mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(path))]);self.clips[0].setMimeData(mime)
+            copy(source);until(lambda:client.view.get('backed_up'));version=self.hub.version
+            replayed.clear();observed.clear()
+            client._is_native=True;client._copy_input_stamp=10
+            with patch('clipboard_sync.copy_activity',return_value=(10,40,False)):
+                for index in range(6):
+                    clone=root/f'remote-image-{index}.png';clone.write_bytes(source.read_bytes());copy(clone)
+                    until(lambda:client._last_sequence==self.sequences[0]);self.settle()
+            self.assertFalse(replayed);self.assertFalse(observed)
+            self.assertEqual(self.hub.version,version);self.assertEqual([Path(p) for p in client.view['value'][1]],[source])
+            self.assertIsNone(client._pending);self.assertIsNone(client._local_retry)
+
+    def test_known_old_bridge_file_cannot_displace_a_new_local_file_or_its_intent(self):
+        client=self.clients[0]
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);old=root/'previous.png';old.write_bytes(b'previous fixture')
+            current=root/'new-user-file.bin';current.write_bytes(b'the latest explicit local copy')
+            def copy(path):
+                mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(path))]);self.clips[0].setMimeData(mime)
+            copy(old);until(lambda:client.view.get('backed_up'))
+            client._is_native=True;client._copy_input_stamp=10
+            with patch('clipboard_sync.copy_activity',return_value=(11,10,True)):
+                copy(current);until(lambda:client.view.get('backed_up') and [Path(p) for p in client.view['value'][1]]==[current])
+            fence=client._local_fence;identity=client.view['id'];version=self.hub.version
+            with patch('clipboard_sync.copy_activity',return_value=(11,200,False)):
+                for index in range(4):
+                    clone=root/f'old-bridge-{index}.png';clone.write_bytes(old.read_bytes());copy(clone)
+                    until(lambda:client._last_sequence==self.sequences[0]);self.settle()
+                    self.assertEqual(Path(self.clips[0].mimeData().urls()[0].toLocalFile()),current)
+                    self.assertIs(client._local_fence,fence)
+            self.assertEqual(client.view['id'],identity);self.assertEqual(self.hub.version,version)
+            with patch('clipboard_sync.copy_activity',return_value=(12,10,True)):
+                copy(old);until(lambda:client.view.get('backed_up') and client.view['id']!=identity)
+            self.assertEqual(self.hub.version,version+1)
+            self.assertEqual([Path(p) for p in client.view['value'][1]],[old])
+
+    def test_image_materialized_as_a_new_png_file_does_not_become_another_copy(self):
+        client=self.clients[0];image=QImage(12,8,QImage.Format_ARGB32);image.fill(QColor('#357ea1'))
+        mime=QMimeData();mime.setImageData(image);self.clips[0].setMimeData(mime)
+        until(lambda:client.view.get('backed_up'));identity=client.view['id'];version=self.hub.version
+        client._is_native=True;client._copy_input_stamp=10
+        with tempfile.TemporaryDirectory() as directory,patch('clipboard_sync.copy_activity',return_value=(10,40,False)):
+            for index in range(4):
+                path=Path(directory)/f'materialized-{index}.png';image.save(str(path),'PNG')
+                mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(path))]);self.clips[0].setMimeData(mime)
+                until(lambda:client._last_sequence==self.sequences[0]);self.settle()
+        self.assertEqual(client.view['id'],identity);self.assertEqual(client.view['value'][0],'image')
+        self.assertEqual(self.hub.version,version)
+
+    def test_input_after_notification_does_not_turn_a_delayed_remote_read_into_a_copy(self):
+        client=self.clients[0];self.clips[0].text('confirmed same copy')
+        until(lambda:client.view.get('backed_up'));client._is_native=True;client._copy_input_stamp=10
+        repeated=[];client.copy_repeated.connect(repeated.append)
+        with patch('clipboard_sync.copy_activity',return_value=(10,100,False)):
+            self.clips[0].text('confirmed same copy')
+        with patch('clipboard_sync.copy_activity',return_value=(11,10,True)):
+            self.settle()
+        self.assertFalse(repeated)
+
+    def test_unknown_remote_file_still_syncs_and_a_changed_file_is_not_deduplicated(self):
+        client=self.clients[0];client._is_native=True;client._copy_input_stamp=10
+        with tempfile.TemporaryDirectory() as directory,patch('clipboard_sync.copy_activity',return_value=(10,300,False)):
+            path=Path(directory)/'remote-user-copy.bin';path.write_bytes(b'first actual remote copy')
+            def copy():
+                mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(path))]);self.clips[0].setMimeData(mime)
+            copy();until(lambda:client.view.get('backed_up'));identity=client.view['id']
+            path.write_bytes(b'genuinely changed remote file')
+            copy();until(lambda:client.view.get('backed_up') and client.view['id']!=identity)
+            self.assertEqual(self.hub.version,2)
+
+    def test_queued_file_identity_result_cannot_replace_a_later_text_copy(self):
+        client=self.clients[0];client._is_native=True;client._copy_input_stamp=10
+        started=threading.Event();release=threading.Event()
+        from clipboard_identity import content_keys as real_keys
+        def slow(value,**kwargs):
+            if value and value[0]=='files' and kwargs.get('read_files'):
+                started.set();release.wait(2)
+            return real_keys(value,**kwargs)
+        with tempfile.TemporaryDirectory() as directory,patch('clipboard_sync.content_keys',side_effect=slow),patch('clipboard_sync.copy_activity',return_value=(11,10,True)):
+            path=Path(directory)/'delayed.bin';path.write_bytes(b'older file observation')
+            mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(path))]);self.clips[0].setMimeData(mime)
+            until(started.is_set)
+            self.clips[0].text('the latest real text copy');release.set()
+            until(lambda:client.view.get('backed_up') and client.view['value'][0]=='text')
+            self.assertEqual(self.clips[0].mimeData().text(),'the latest real text copy')
+            self.assertEqual(self.hub.version,1)
+
+    def test_file_replay_identity_never_changes_filename_sensitive_copy_identity(self):
+        from clipboard_identity import content_keys
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);one=root/'one.bin';two=root/'two.bin'
+            one.write_bytes(b'same payload');two.write_bytes(one.read_bytes())
+            left=('files',[str(one)]);right=('files',[str(two)])
+            self.assertNotEqual(signature(left),signature(right))
+            self.assertEqual(content_keys(left,read_files=True),content_keys(right,read_files=True))
+            two.write_bytes(b'changed payload')
+            self.assertNotEqual(content_keys(left),content_keys(right,read_files=True))
+
+    def test_two_bridges_replaying_old_images_cannot_bounce_between_two_clients(self):
+        image=QImage(8,6,QImage.Format_ARGB32);image.fill(QColor('#736597'))
+        mime=QMimeData();mime.setImageData(image);self.clips[0].setMimeData(mime)
+        until(lambda:all(c.view.get('backed_up') for c in self.clients))
+        for client in self.clients:client._is_native=True;client._copy_input_stamp=10
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);latest=root/'current-user-file.bin';latest.write_bytes(b'current copy must win')
+            with patch('clipboard_sync.copy_activity',return_value=(11,10,True)):
+                mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(latest))]);self.clips[0].setMimeData(mime)
+                until(lambda:all(c.view.get('backed_up') and c.view['value'][0]=='files' for c in self.clients))
+            version=self.hub.version
+            with patch('clipboard_sync.copy_activity',return_value=(11,500,False)):
+                for index in range(6):
+                    side=index%2;path=root/f'bridge-{side}-{index}.png';image.save(str(path),'PNG')
+                    mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(path))]);self.clips[side].setMimeData(mime)
+                    until(lambda:self.clients[side]._last_sequence==self.sequences[side]);self.settle()
+            self.assertEqual(self.hub.version,version)
+            for clip in self.clips:
+                path=Path(clip.mimeData().urls()[0].toLocalFile())
+                self.assertEqual(path.read_bytes(),latest.read_bytes())
+
     def test_uu_control_tokens_never_replace_or_republish_an_oversize_video(self):
         from clipboard_sync import MAX_BYTES
         client=self.clients[0]

@@ -7,7 +7,7 @@ from PySide6.QtCore import QObject,QRunnable,QThreadPool,QTimer,Signal,QMimeData
 from PySide6.QtGui import QImage,QPixmap,QImageReader
 from PySide6.QtWidgets import QApplication
 from platform_native import native_input_available,copy_activity
-from clipboard_identity import signature
+from clipboard_identity import signature,content_keys
 from sync_scheduler import SyncScheduler
 from virtual_clipboard import describe as describe_virtual,capture as capture_virtual,VirtualClipboardError
 
@@ -23,6 +23,7 @@ BINARY_COPY_COALESCE_MS=60
 MAC_CLIPBOARD_OBSERVE_MS=50
 COPY_FORMAT_SETTLE_SECONDS=1.
 REPEAT_COPY_INPUT_MAX_AGE_MS=3000
+COPY_REPLAY_HISTORY_ENTRIES=64
 
 
 class ClipboardSizeLimit(ValueError):
@@ -303,6 +304,8 @@ class ClipboardSync(QObject):
         self._native_reader=None
         self._native_baseline=None
         self._copy_input_stamp=None
+        self._notified_activity=None;self._content_read=None;self._content_read_failed=None
+        self._copy_history=[];self._current_content_keys=None
         self._sequence=native_sequence if self._is_native else lambda:None
         self.enabled=enabled;self._local_observation=False;self.closed=False;self._epoch=0;self._generation=0;self._applying=False
         self._native_access=self._native_accessible()
@@ -546,6 +549,10 @@ class ClipboardSync(QObject):
             if self._applying:return
             sequence=self._sequence()
             if sequence is not None and sequence==self._last_sequence:return
+            # Capture input/owner provenance before a delayed reader finishes;
+            # mouse movement during that read is not a new Copy action.
+            if self._notified_activity is None or self._notified_activity[0]!=sequence:
+                self._notified_activity=(sequence,self._read_copy_activity())
             if self._virtual_capture is not None and self._virtual_capture[0][0]!=sequence:
                 self._virtual_capture[1].cancelled.set()
             if self._active():
@@ -596,6 +603,58 @@ class ClipboardSync(QObject):
         if (value is not None and (explicit or now-previous>=COPY_FORMAT_SETTLE_SECONDS) and self.view.get('id')
                 and signature(value)==signature(self.view.get('value'))):
             self.copy_repeated.emit(dict(self.view,value=value))
+
+    def _remember_content(self,value):
+        keys=content_keys(value)
+        self._current_content_keys=keys
+        self._remember_keys(keys)
+
+    def _remember_keys(self,keys):
+        if not keys:return
+        self._copy_history=[row for row in self._copy_history if not row.intersection(keys)]
+        self._copy_history.append(keys)
+        del self._copy_history[:-COPY_REPLAY_HISTORY_ENTRIES]
+
+    def _content_ready(self,value,sequence):
+        previous=self.view.get('value')
+        if content_keys(value) is not None and self._current_content_keys is not None:return True
+        key=(sequence,signature(value),signature(previous))
+        if self._content_read_failed==key:return True
+        if self._content_read is not None:
+            if self._content_read[0]==key:return False
+            self._content_read[1].cancelled.set()
+        epoch=self._epoch
+        def read(cancel):
+            content_keys(value,read_files=True,cancel=cancel)
+            content_keys(previous,read_files=True,cancel=cancel)
+            return True
+        def ready(result):
+            if self._content_read is None or self._content_read[0]!=key:return
+            self._content_read=None
+            if epoch!=self._epoch or sequence!=self._sequence():return
+            if result is not True:self._content_read_failed=key
+            elif self._current_content_keys is None:self._remember_content(previous)
+            self.change_debounce.start(0)
+        job=self._work(read,ready);self._content_read=(key,job)
+        return False
+
+    def _consume_replay(self,value,sequence):
+        self._last_sequence=sequence;self._last_local_signature=signature(value)
+        task=self._pending or self._local_retry
+        if task is not None and task['id']==self.view.get('id'):task['generation']=self._generation
+        current=self.view.get('value')
+        keys=content_keys(value);current_keys=self._current_content_keys
+        if current is not None and keys and current_keys and not keys.intersection(current_keys):
+            # A known old bridge echo must not replace a newer local copy.
+            # Restore only a positively identified replay, never unknown data.
+            fence=self._local_fence
+            restored=self._apply(current,self._current_directory,identity=self.view.get('id'))
+            self._local_fence=fence
+            if not restored:
+                from network_diagnostics import record_event
+                record_event(self._clock_path.parent,'cloud','clipboard-replay','RESTORE_UNCONFIRMED')
+        if self._native_receive_interrupted and self._pending is None and self._local_retry is None:
+            self._native_receive_interrupted=False;self.request_refresh()
 
     def _copy_timestamp(self,intent):
         if intent['at'] is None:
@@ -658,6 +717,7 @@ class ClipboardSync(QObject):
         self._cancel_replaced_work();self._fetching=False
         self._priority_flags(waiting=False,receiving=False)
         self._seen=head['id'];self._applied_version=max(self._applied_version,head_version(head))
+        self._remember_content(value)
         self._observed_clock=max(self._observed_clock,head.get('copied_at',head.get('at',0)))
         known=self._known_cloud_head
         backed_up=bool(known and known[1:]==(head['id'],head['sha256']))
@@ -729,6 +789,7 @@ class ClipboardSync(QObject):
         self._keys.intersection_update(keys)
         for job in self._jobs:
             if not getattr(job,'_shared_probe',False) and not any(task.get('_job') is job for task in retained):job.cancelled.set()
+        if self._content_read is not None and self._content_read[1].cancelled.is_set():self._content_read=None
         if self._virtual_capture is not None and self._virtual_capture[1].cancelled.is_set():self._virtual_capture=None
 
     def _task_error(self,pending,error):
@@ -835,6 +896,8 @@ class ClipboardSync(QObject):
         files=getattr(self,'file_jobs',None)
         if files is not None:files.save()
         self._identity=identity;self._ignored=None;self._local_retry=None;self._local_fence=None
+        self._copy_history=[];self._current_content_keys=None;self._notified_activity=None;self._content_read_failed=None
+        if self._content_read is not None:self._content_read[1].cancelled.set();self._content_read=None
         self._pushed_head=None;self._known_cloud_head=None;self._cloud_progress=None
         self._prepared_receive=None
         self._native_receive_interrupted=False
@@ -912,11 +975,19 @@ class ClipboardSync(QObject):
             self._native_read_retry=(sequence,attempts)
             if attempts<=5:self.change_debounce.start(100);return
         else:self._native_read_retry=(None,0)
-        activity=self._read_copy_activity();repeat_intent=True
+        if self._is_native and not self._content_ready(value,sequence):return
+        notified=self._notified_activity
+        activity=notified[1] if notified is not None and notified[0]==sequence else self._read_copy_activity()
+        self._notified_activity=None
+        repeat_intent=True
         if activity is not None:
             stamp,age,foreground=activity
             repeat_intent=stamp!=self._copy_input_stamp and 0<=age<=REPEAT_COPY_INPUT_MAX_AGE_MS and foreground is not False
             self._copy_input_stamp=stamp
+        keys=content_keys(value)
+        if (self._is_native and activity is not None and not repeat_intent and keys
+                and any(keys.intersection(row) for row in self._copy_history)):
+            self._consume_replay(value,sequence);return
         if self._is_native and (sig!=self._last_local_signature or repeat_intent):self.copy_observed.emit(value)
         if sig==self._last_local_signature:
             self._last_sequence=sequence
@@ -934,6 +1005,7 @@ class ClipboardSync(QObject):
             if sequence==self._last_sequence:return
             self._last_sequence=sequence
         self._native_receive_interrupted=False
+        self._remember_content(value)
         self._current_directory=None;self.retry.stop()
         self._last_local_signature=sig
         self._local_fence=dict(mono=getattr(self,'_copy_notified_mono',time.monotonic()),at=None,floor=self._observed_clock)
@@ -1040,6 +1112,9 @@ class ClipboardSync(QObject):
                 self._copy_result(pending,False,phase='size_limit');self._clear_task(pending);return
             if result is None:
                 self.file_jobs.update(pending,'unavailable');self._copy_result(pending,False);self._clear_task(pending);return
+            keys=result.pop('_content_keys',None)
+            if keys is not None and self.view.get('id')==pending['id']:
+                self._current_content_keys=keys;self._remember_keys(keys)
             pending['package']=result;pending['prepared']=True;self.file_jobs.prepared(pending)
             self._set_cloud_progress(pending['id'],0,result['size'],'uploading');self._stage(pending)
         value=pending.pop('value');quick=inline_text(value)
@@ -1049,7 +1124,15 @@ class ClipboardSync(QObject):
             self._copy_result(pending,False)
             pending['value']=value;self._local_retry=pending;self._pending=None;self.retry.start();return
         def prepare(cancel):
-            try:return package(value,directory,cancel)
+            try:
+                result=package(value,directory,cancel)
+                if result is not None:
+                    keys=content_keys(value,read_files=True,cancel=cancel)
+                    raw=result.get('raw_file')
+                    if raw and ('bytes',raw['size'],bytes.fromhex(raw['sha256'])) not in keys:
+                        raise OSError('Clipboard file changed after packaging')
+                    result['_content_keys']=keys
+                return result
             except ClipboardSizeLimit as limit:return limit
             except VirtualClipboardError as error:return error
         pending['_job']=self._work(prepare,prepared)
@@ -1230,7 +1313,10 @@ class ClipboardSync(QObject):
                 self._priority_flags(receiving=False)
                 if error:self._finish_refresh();self.retry.start();return
                 def decode(_):
-                    try:return unpack(kind,path,directory)
+                    try:
+                        value=unpack(kind,path,directory)
+                        content_keys(value,read_files=True,cancel=_)
+                        return value
                     except VirtualClipboardError as error:return error
                 self._work(decode,prepared)
             if is_inline:
