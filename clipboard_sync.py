@@ -847,6 +847,7 @@ class ClipboardSync(QObject):
         self.retry.stop();self._priority_flags(waiting=False,sending=False)
 
     def _resolve_replaced(self,pending,error,*,snapshot=None):
+        if self._pending is not pending and not self.file_jobs.held(pending):return
         if pending.get('resolving_replacement') and snapshot is None:return
         deadline=pending.get('replacement_deadline')
         if deadline and snapshot is None and time.monotonic()>=deadline:
@@ -876,7 +877,13 @@ class ClipboardSync(QObject):
                     self.deliveries.received(head,'cloud')
                 return
             committed_at=head.get('copied_at',head.get('at',0)) if isinstance(head,dict) else 0
-            newer=bool(isinstance(head,dict) and head.get('ready') and type(committed_at) is int and committed_at>pending['intent']['at'])
+            newer=False
+            if isinstance(head,dict) and head.get('ready') and type(committed_at) is int:
+                newer=committed_at>pending['intent']['at']
+                if committed_at==pending['intent']['at']:
+                    device=head.get('device');sequence=head.get('sequence')
+                    newer=(isinstance(device,str) and device>self.account.device_id if device!=self.account.device_id
+                           else type(sequence) is int and sequence>=pending['sequence'])
             if not held and self._pending is pending and not newer:
                 # Reservations replace upload order before they replace the
                 # committed body. The previous ready head proves no new copy.
