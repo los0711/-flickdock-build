@@ -178,8 +178,8 @@ class UtilityFeedbackTests(unittest.TestCase):
                 copy.show_result(True,dict(id='copy',phase='synced',backed_up=True));finish(copy)
                 video.present('https://www.youtube.com/watch?v=fixture')
                 self.assertIs(video._liquid_peer(),copy)
-                self.assertEqual(video._position_motion.duration(),260)
-                self.assertEqual(video._morph.duration(),260)
+                self.assertEqual(video._position_motion.duration(),420)
+                self.assertEqual(video._morph.duration(),420)
                 self.assertAlmostEqual(visual(copy).center().x(),visual(video).center().x(),delta=1)
                 sizes=[card.size() for card in (copy,video)];bridges=[]
                 for at in (60,120,180,240,300,360):
@@ -188,7 +188,7 @@ class UtilityFeedbackTests(unittest.TestCase):
                         if card is video:
                             card._morph.setCurrentTime(at);card._fade.setCurrentTime(min(at,card._fade.duration()))
                     bridges.append(not notice_cluster.shape(video,QPainterPath()).isEmpty())
-                    if at>=240:self.assertTrue(notice_cluster.shape(video,QPainterPath()).isEmpty())
+                    if at>=300:self.assertTrue(notice_cluster.shape(video,QPainterPath()).isEmpty())
                     self.assertEqual([card.size() for card in (copy,video)],sizes)
                 self.assertTrue(any(bridges),bridges)
                 for card in (copy,video):finish(card)

@@ -13,6 +13,7 @@ import notice_cluster
 EXPANDED_HEIGHT_PX = 300
 EXPANDED_WIDTH_PX = 388
 INVITATION_DURATION_MS = 8000
+RESULT_DURATION_MS = 5000
 HOST_HEIGHT_PX = EXPANDED_HEIGHT_PX + 20
 LANGUAGE_VISIBLE_ROWS = 8
 LANGUAGE_ROW_HEIGHT_PX = 32
@@ -86,7 +87,10 @@ class TranslationNotice(CapsuleNotice):
         screen = self.manager.app.screenAt(QCursor.pos()) or self.manager.app.primaryScreen()
         self._begin_presentation(screen.availableGeometry())
         self.refresh()
-        self.timer.start(INVITATION_DURATION_MS)
+        self._start_idle_timeout()
+
+    def _start_idle_timeout(self):
+        self.timer.start(RESULT_DURATION_MS if self.controller.result else INVITATION_DURATION_MS)
 
     def capsule_rect(self):
         height = min(self.height() - 4, self._shape.y())
@@ -135,7 +139,7 @@ class TranslationNotice(CapsuleNotice):
                             self._expanded_height if self.expanded else PILL_HEIGHT_PX)
         self.middle_button.setAccessibleName('收起原文与译文' if self.expanded else '展开原文与译文')
         if self._morph.state()!=self._morph.Running:self._editor_visibility()
-        if not self.expanded and not self.controller.busy:self.timer.start(INVITATION_DURATION_MS)
+        if not self.expanded and not self.controller.busy:self._start_idle_timeout()
         if self.expanded:self._focus_changed()
 
     def _collapse_content(self):
@@ -205,7 +209,7 @@ class TranslationNotice(CapsuleNotice):
         if state.phase == 'loading':
             self.timer.stop()
         elif state.phase in ('ready', 'error', 'copied') and not self.expanded:
-            self.timer.start(INVITATION_DURATION_MS)
+            self._start_idle_timeout()
         document = '原文 · ' + state.source + '\n\n' + state.text
         if state.result:
             document += '\n\n译文 · ' + TARGETS[self.manager.settings.translation_target][0] + '\n\n' + state.result
@@ -296,7 +300,7 @@ class TranslationNotice(CapsuleNotice):
         menu.setAttribute(Qt.WA_NoMouseReplay)
         self.language_menu = None
         menu.deleteLater()
-        if not self.expanded and not self.controller.busy:self.timer.start(INVITATION_DURATION_MS)
+        if not self.expanded and not self.controller.busy:self._start_idle_timeout()
         self._focus_changed()
 
     def _close_languages(self):
