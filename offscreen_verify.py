@@ -35,6 +35,10 @@ def run_notices(argv,load_font):
             for motion in (card._morph,card._fade,card._position_motion,card._progress_motion):motion.setCurrentTime(motion.duration())
         app.processEvents()
     try:
+        from translation_languages import detect_source
+        languages={text:detect_source(text) for text in ('Hello world','你好','bonjour')}
+        assert languages=={'Hello world':'英语','你好':'中文','bonjour':'法语'},'Packaged source-language detection failed'
+        report['short_source_languages']=list(languages.values())
         with tempfile.TemporaryDirectory(prefix='flickdock-notice-check-') as directory:
             path=Path(directory)/'copied-preview.png'
             image=QImage(80,80,QImage.Format_ARGB32);wanted=QColor('#A85B24');image.fill(wanted);assert image.save(str(path))

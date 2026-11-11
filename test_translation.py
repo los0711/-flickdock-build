@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QApplication, QLabel, QListWidget, QWidget
 from app_settings import SettingsDialog, SettingsStore
 from translation_api import TranslationApi
 from translation_controller import TranslationController
-from translation_languages import LANGUAGES, copied_text, detect_source
+from translation_languages import LANGUAGES, copied_text, detect_source, UNKNOWN_SOURCE
 
 APP=QApplication.instance() or QApplication([])
 
@@ -141,6 +141,32 @@ class TranslationTests(unittest.TestCase):
         self.assertEqual(len(LANGUAGES),30)
         self.assertEqual(detect_source('Small details make everyday work feel effortless.'),'英语')
         self.assertEqual(detect_source('Bonjour, nous vous souhaitons une excellente journée.'),'法语')
+
+    def test_short_prose_displays_the_detected_language_before_translation(self):
+        self.controller.detector=detect_source
+        for text,language in (('Hello world','英语'),('你好','中文'),('bonjour','法语')):
+            with self.subTest(language=language):
+                self.controller.observe(('text',{'text':text}))
+                for _ in range(100):
+                    if self.controller.source==language:break
+                    QTest.qWait(10)
+                self.assertEqual(self.controller.source,language)
+                self.assertTrue(self.controller.notice.visible)
+                self.assertEqual(self.api.calls,[])
+
+    def test_undetermined_or_failed_detection_does_not_stay_in_detecting_state(self):
+        with patch('translation_languages._detector') as detector:
+            detector.return_value.detect_details.return_value=SimpleNamespace(language='und',reliable=False)
+            self.assertEqual(detect_source('a'),UNKNOWN_SOURCE)
+        def fail(text):raise RuntimeError('Synthetic detector failure')
+        self.controller.detector=fail
+        with self.assertLogs('translation_controller',level='WARNING'):
+            self.controller.observe(('text',{'text':'A source sentence.'}))
+            for _ in range(100):
+                if self.controller.source==UNKNOWN_SOURCE:break
+                QTest.qWait(10)
+        self.assertEqual(self.controller.source,UNKNOWN_SOURCE)
+        self.controller.translate();self.assertEqual(len(self.api.calls),1)
 
     def test_settings_is_one_document_and_anchor_tracks_scroll(self):
         dialog=SettingsDialog(self.store);dialog.show();QTest.qWait(60)

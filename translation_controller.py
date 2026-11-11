@@ -5,7 +5,7 @@ from PySide6.QtCore import QMimeData, QObject, QThreadPool, QTimer, Signal
 from PySide6.QtWidgets import QApplication
 from sync_files import DiskWork
 from translation_api import TranslationApi
-from translation_languages import copied_text, detect_source
+from translation_languages import copied_text, detect_source, DETECTING_SOURCE, UNKNOWN_SOURCE
 
 COPY_ACK_TIMEOUT_MS = 2000
 
@@ -31,7 +31,7 @@ class TranslationController(QObject):
         self.closed = False
         self.generation = 0
         self.text = self.result = self.error = ''
-        self.source = '自动识别'
+        self.source = DETECTING_SOURCE
         self.phase = 'idle'
         self.notice = None
         self._copy_digest = None
@@ -88,7 +88,7 @@ class TranslationController(QObject):
         self.text = text or ''
         self.result = self.error = ''
         self.phase = 'idle'
-        self.source = '自动识别'
+        self.source = DETECTING_SOURCE
         if text is None:
             if self.notice:
                 self.notice.dismiss()
@@ -111,9 +111,10 @@ class TranslationController(QObject):
                 # auto-detect. Keep the failure visible in diagnostics, not a guess.
                 import logging
                 logging.getLogger(__name__).warning('Source-language detection failed: %s', type(error).__name__)
+                self.source = UNKNOWN_SOURCE
             else:
                 self.source = result
-                self.changed.emit()
+            self.changed.emit()
 
         job.signals.done.connect(ready)
         for previous in self.jobs - {job}:

@@ -6,6 +6,8 @@ from urllib.parse import urlsplit
 MAX_TEXT_CHARS = 16000
 DETECTION_SAMPLE_CHARS = 1000
 DEFAULT_TARGET = 'zh'
+DETECTING_SOURCE = '识别中'
+UNKNOWN_SOURCE = '未识别语言'
 # Stable language codes are stored in preferences; region codes only select artwork.
 LANGUAGES = (
     ('zh', '简体中文', 'cn'), ('zh-Hant', '繁体中文', 'tw'),
@@ -75,6 +77,7 @@ def detect_source(text):
     """ELDC stays lazy and runs on a worker; no copied text leaves the device."""
     eldc = _detector()
     result = eldc.detect_details(text[:DETECTION_SAMPLE_CHARS])
-    if not result.reliable or result.language == 'und':
-        return '自动识别'
-    return SOURCE_NAMES.get(result.language, '自动识别')
+    # A short greeting can have a valid best language without enough text for
+    # ELDC's reliability threshold. Show that detected language in the label;
+    # the translation request still detects its source independently.
+    return SOURCE_NAMES.get(result.language, UNKNOWN_SOURCE)
