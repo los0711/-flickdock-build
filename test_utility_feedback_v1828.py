@@ -234,9 +234,13 @@ class UtilityFeedbackTests(unittest.TestCase):
             try:
                 with patch('native_ui_common.reduced_motion',return_value=True),patch('video_prompt.PROMPT_DURATION_MS',240),patch('video_prompt.recognized_video',return_value=True) as recognize:
                     clipboard.text(url);until(lambda:watcher.prompt is not None and watcher.prompt.isVisible())
-                    prompt=watcher.prompt;QTest.qWait(110);clipboard.text(url);QTest.qWait(150)
+                    prompt=watcher.prompt;self.assertEqual(prompt.timer.interval(),240)
+                    QTest.qWait(110);clipboard.text(url)
+                    until(lambda:prompt.timer.remainingTime()>180,seconds=.5)
+                    QTest.qWait(150)
                     self.assertIs(watcher.prompt,prompt);self.assertTrue(prompt.isVisible())
-                    QTest.qWait(120);self.assertFalse(prompt.isVisible())
+                    until(lambda:not prompt.isVisible(),seconds=.75)
+                    self.assertFalse(prompt.isVisible());self.assertFalse(prompt.timer.isActive())
                     clipboard.text(url);flush();self.assertTrue(prompt.isVisible());self.assertEqual(recognize.call_count,1)
                     self.assertEqual(hub.calls,[])
                     manager.settings.video_link_prompt=False;manager.settings.changed.emit();flush()

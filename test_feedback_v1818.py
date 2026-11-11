@@ -231,13 +231,18 @@ class FeedbackTests(unittest.TestCase):
                 return count
             for kind in ('dock','drag'):
                 shelf.presentation_kind=kind
-                APP.sendEvent(zone,QEvent(QEvent.Leave));flush();normal=blue_pixels()
+                APP.sendEvent(zone,QEvent(QEvent.Leave))
+                zone.icon.border_motion.animation.setCurrentTime(zone.icon.border_motion.animation.duration())
+                flush();normal=blue_pixels()
                 point=zone.icon.geometry().center()
-                APP.sendEvent(zone,QEnterEvent(QPointF(point),QPointF(point),QPointF(zone.mapToGlobal(point))));flush()
+                APP.sendEvent(zone,QEnterEvent(QPointF(point),QPointF(point),QPointF(zone.mapToGlobal(point))))
+                zone.icon.border_motion.animation.setCurrentTime(zone.icon.border_motion.animation.duration());flush()
                 self.assertNotIn('#0A84FF',zone.styleSheet())
                 self.assertGreater(blue_pixels(),normal+15)
                 self.assertIsNone(shelf.popup)
-                APP.sendEvent(zone,QEvent(QEvent.Leave));flush();self.assertEqual(blue_pixels(),normal)
+                APP.sendEvent(zone,QEvent(QEvent.Leave))
+                zone.icon.border_motion.animation.setCurrentTime(zone.icon.border_motion.animation.duration())
+                flush();self.assertEqual(blue_pixels(),normal)
         finally:fixture.tearDown()
 
     def test_return_from_transfer_keeps_same_card_bounds_without_morph_or_edge_reveal(self):
