@@ -1600,7 +1600,7 @@ class SettingsDialog(QDialog):
         for code,label,_ in LANGUAGES:self.translation_language.addItem(label,code)
         self.translation_language.setCurrentIndex(self.translation_language.findData(self.store.translation_target))
         target_row.addWidget(self.translation_language);tl.addLayout(target_row)
-        note=QLabel('仅复制文字时提示，点击翻译后才发送至翻译服务。链接、图片和文件不会触发。需登录 FlickDock。',translation)
+        note=QLabel('无需登录即可使用。仅复制文字时提示，点击翻译后才发送至翻译服务；链接、图片和文件不会触发。',translation)
         note.setObjectName('settingsDetail');note.setWordWrap(True);tl.addWidget(note)
         self.translation_switch.toggled.connect(lambda enabled:self._translation_preference(translation_enabled=enabled))
         self.translation_language.currentIndexChanged.connect(lambda _:self._translation_preference(translation_target=self.translation_language.currentData()))

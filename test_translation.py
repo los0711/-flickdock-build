@@ -9,7 +9,7 @@ from unittest.mock import patch
 from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, Qt, Signal
 from PySide6.QtGui import QMouseEvent, QWheelEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QListWidget, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QListWidget, QWidget
 from app_settings import SettingsDialog, SettingsStore
 from translation_api import TranslationApi
 from translation_controller import TranslationController
@@ -145,6 +145,9 @@ class TranslationTests(unittest.TestCase):
     def test_settings_is_one_document_and_anchor_tracks_scroll(self):
         dialog=SettingsDialog(self.store);dialog.show();QTest.qWait(60)
         try:
+            notes=[label.text() for label in dialog.translation_language.parentWidget().findChildren(QLabel)]
+            self.assertTrue(any('无需登录即可使用' in text for text in notes))
+            self.assertFalse(any('需登录 FlickDock' in text for text in notes))
             self.assertTrue(all(section.isVisible() for _,sections in dialog.setting_categories for section in sections))
             self.assertGreater(dialog.scroll.verticalScrollBar().maximum(),0)
             dialog.select_category('翻译');QTest.qWait(650)
