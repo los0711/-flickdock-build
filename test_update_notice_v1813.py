@@ -35,14 +35,17 @@ class FakeManager:
     _show_update_notice = ShelfManager._show_update_notice
     _start_notified_update = ShelfManager._start_notified_update
     _update_notice_state_changed = ShelfManager._update_notice_state_changed
+    _present_completed_update=ShelfManager._present_completed_update
     _present_update_notice=ShelfManager._present_update_notice
     _snooze_update_notice=ShelfManager._snooze_update_notice
 
     def __init__(self,fixture):
         self._quitting = False
         self.settings=fixture.settings;self.shelf=fixture.shelf
+        self.settings.update(automatic_updates=False)
         self.updates = FakeUpdates()
         self.update_notice = None
+        self.completed_update_notice = None
         self.settings_opens = 0
         self.update_opens = 0
 
@@ -60,6 +63,9 @@ class UpdateNoticeTests(unittest.TestCase):
         self.manager = FakeManager(self.fixture)
 
     def tearDown(self):
+        if self.manager.completed_update_notice is not None:
+            self.manager.completed_update_notice.hide()
+            self.manager.completed_update_notice.deleteLater()
         if self.manager.update_notice is not None:
             self.manager.update_notice.close()
             self.manager.update_notice.deleteLater()
@@ -96,6 +102,30 @@ class UpdateNoticeTests(unittest.TestCase):
         self.assertEqual(self.manager.update_opens,1)
         self.assertEqual(self.manager.settings_opens, 0)
         self.assertEqual(self.manager.updates.activations, 1)
+
+    def test_completed_update_waits_for_overview_and_is_acknowledged_once(self):
+        from update_completion import UpdateCompletion
+        from app_version import APP_VERSION
+        self.manager.update_completion=UpdateCompletion(self.fixture.settings.base,APP_VERSION,
+            updated=True,notes='优化在线更新体验。')
+        self.manager._present_update_notice();self.assertIsNone(self.manager.completed_update_notice)
+        self.fixture.overview();workspace.until(lambda:not self.fixture.shelf.presentation._timer.isActive())
+        self.manager._present_update_notice();notice=self.manager.completed_update_notice
+        self.assertTrue(notice.isVisible());self.assertEqual(notice.update_button.text(),'我知道了')
+        self.assertTrue(notice.later_button.isHidden());self.assertTrue(notice.close_button.isHidden())
+        self.assertIn('优化在线更新体验',notice.notes_label.text())
+        QTest.mouseClick(notice.update_button,Qt.LeftButton);APP.processEvents()
+        self.assertFalse(notice.isVisible())
+        self.assertFalse(UpdateCompletion(self.fixture.settings.base,APP_VERSION).pending)
+
+    def test_settings_official_website_uses_the_default_browser(self):
+        from app_settings import SettingsDialog
+        with patch('app_settings.QDesktopServices.openUrl',return_value=True) as open_url:
+            dialog=SettingsDialog(self.fixture.settings)
+            try:
+                dialog.website_button.click()
+                self.assertEqual(open_url.call_args.args[0].toString(),'https://flickdock.cc.cd')
+            finally:dialog.hide();dialog.deleteLater();APP.processEvents()
 
     def test_completed_or_quitting_update_does_not_show_stale_notice(self):
         self.manager._quitting = True

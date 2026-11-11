@@ -9,9 +9,11 @@ sys.path.insert(0,str(root))
 from bundle_policy import filter_bundle
 from p2p_assets import bundle_assets
 p2p_binaries,p2p_datas=bundle_assets()
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_data_files
 yt_datas,yt_binaries,yt_hidden=collect_all('yt_dlp')
 ejs_datas,ejs_binaries,ejs_hidden=collect_all('yt_dlp_ejs')
+# yt-dlp's verified TLS must not depend on the build machine's OpenSSL CA path.
+yt_datas += collect_data_files('certifi')
 
 font_names=['HarmonyOS_Sans_SC_Regular.ttf']
 license_names=['HarmonyOS-Sans-LICENSE.txt','Python-LICENSE.txt',

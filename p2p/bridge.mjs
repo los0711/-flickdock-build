@@ -1,11 +1,31 @@
 // Native libdatachannel worker. Stdio is framed binary; secrets never use argv.
 import rtc from 'node-datachannel';
 import {randomBytes} from 'node:crypto';
+import {isIP} from 'node:net';
 import {adaptTurnServers} from './turn_tls.mjs';
 import {selectStun} from './stun_route.mjs';
+import {rememberRelay,selectedRoute} from './ice_route.mjs';
 const LEGACY_WINDOW=4*1024*1024, LEGACY_MESSAGE=32*1024;
 const WINDOW=16*1024*1024, MESSAGE=64*1024;
-rtc.initLogger('Fatal',()=>{});
+const MAX_EARLY_CANDIDATES=128;
+const earlyCandidates=[];
+const localRelays=new Set(),remoteRelays=new Set();
+const iceCounts={};
+const icePatterns=[
+  ['peer_requests',/Received STUN Binding request/],
+  ['binding_responses',/Received STUN Binding success response/],
+  ['check_success',/Candidate pair check succeeded/],
+  ['check_failed',/Candidate pair check failed/],
+  ['role_conflict',/ICE role conflict/],
+  ['credentials_failed',/STUN (?:local|remote) ufrag check failed|STUN integrity check failed|Missing integrity/],
+  ['peer_reflexive',/new remote reflexive candidate/i],
+  ['send_failed',/STUN .*send failed|Network unreachable/],
+  ['server_failed',/STUN server binding failed|STUN server address resolution failed/],
+];
+// Aggregate setup counters only; raw native logs contain ICE credentials.
+// Stop verbose logging before file payloads start.
+const countIce=(_,message)=>{for(const [code,pattern] of icePatterns)if(pattern.test(message))iceCounts[code]=(iceCounts[code]||0)+1;};
+rtc.initLogger('Verbose',countIce);
 rtc.setSctpSettings({recvBufferSize:32*1024*1024,sendBufferSize:16*1024*1024,maxChunksOnQueue:16384});
 let pc,channel,turnTransport,closed=false,unacked=0,acknowledged=0,pendingOutput=0,wake=()=>{},statsTimer;
 let sendWindow=LEGACY_WINDOW,sendMessage=LEGACY_MESSAGE,credit=0,creditTimer;
@@ -19,11 +39,13 @@ function frame(kind,body,done) {
 const event=value=>frame('J',value);
 function stats() {
   if(!pc||closed)return;
-  event({type:'stats',sent:pc.bytesSent(),received:pc.bytesReceived(),delivered:acknowledged});
+  const active=channel?.isOpen(),rtt=active?pc.rtt():null;
+  event({type:'stats',sent:pc.bytesSent(),received:pc.bytesReceived(),delivered:acknowledged,
+    rttMs:Number.isFinite(rtt)&&rtt>=0?Math.round(rtt):null,buffered:active?channel.bufferedAmount():0,unacked,iceCounts});
 }
 function stop() {
-  if(closed)return;stats();closed=true;wake();clearTimeout(creditTimer);clearInterval(statsTimer);
-  turnTransport?.close();
+  if(closed)return;event({type:'ice_diagnostic',counts:iceCounts});stats();closed=true;wake();clearTimeout(creditTimer);clearInterval(statsTimer);
+  earlyCandidates.length=0;turnTransport?.close();
   try{channel?.close();pc?.close();rtc.cleanup();}catch{}
   process.stdout.end(()=>process.exit(0));
 }
@@ -40,8 +62,10 @@ function bind(dc) {
   dc.onBufferedAmountLow(()=>wake());
   dc.onOpen(()=>{
     const pair=pc.getSelectedCandidatePair();
-    event({type:'open',route:pair?.local?.type==='relay'||pair?.remote?.type==='relay'?'relay':'direct',maxMessageSize:dc.maxMessageSize()});wake();
-    statsTimer=setInterval(stats,250);
+    event({type:'ice_diagnostic',counts:iceCounts});rtc.initLogger('Warning',countIce);
+    event({type:'open',route:selectedRoute(pair,localRelays,remoteRelays),localType:pair.local.type,remoteType:pair.remote.type,
+      transport:pair.local.transportType.toLowerCase(),localFamily:isIP(pair.local.address),remoteFamily:isIP(pair.remote.address),
+      libraryVersion:rtc.getLibraryVersion(),maxMessageSize:dc.maxMessageSize()});wake();
   });
   dc.onClosed(()=>{event({type:'closed'});stop();});
   dc.onError(()=>{event({type:'error',message:'WebRTC 数据通道中断'});stop();});
@@ -76,15 +100,18 @@ async function control(value) {
     if(closed){turnTransport.close();return;}
     event({type:'transport',relayTransport:turnTransport.relayTransport,tlsFallback:!!turnTransport.tlsFallback});
     pc=new rtc.PeerConnection('FlickDock',{iceServers:turnTransport.iceServers,maxMessageSize:131072,iceTransportPolicy:value.forceRelay?'relay':'all',enableIceTcp:true});
+    statsTimer=setInterval(stats,250);
     // Unknown SDP attributes are ignored by older clients. Start conservatively
     // and enlarge the bounded credit/message window only for an agreeing peer.
     pc.onLocalDescription((sdp,type)=>event({type:'description',sdp:sdp.replace(/^a=x-flickdock-flow:[^\r\n]*\r?\n?/gm,'').trimEnd()+`\r\na=x-flickdock-flow:2 ${flowNonce} ${WINDOW} ${MESSAGE}\r\n`,descriptionType:type}));
-    pc.onLocalCandidate((candidate,mid)=>event({type:'candidate',candidate,mid}));
+    pc.onLocalCandidate((candidate,mid)=>{rememberRelay(localRelays,candidate);event({type:'candidate',candidate,mid});});
     pc.onGatheringStateChange(state=>event({type:'gathering',state}));
+    pc.onIceStateChange(state=>event({type:'ice_state',state}));
     pc.onStateChange(state=>{event({type:'state',state});if(state==='failed')stop();});
     pc.onDataChannel(bind);
     if(value.initiator)bind(pc.createDataChannel('flickdock-file-v1',{protocol:'flickdock-file-v1'}));
   } else if(value.type==='description') {
+    for(const line of value.sdp.split(/\r?\n/))if(line.startsWith('a=candidate:'))rememberRelay(remoteRelays,line.slice(2));
     // libdatachannel v1 peers echo unknown offer attributes in their answer.
     // Each endpoint must advertise its own nonce; an echo cannot opt in.
     const flow=/^a=x-flickdock-flow:2 ([a-f0-9]{32}) ([0-9]+) ([0-9]+)\r?$/m.exec(value.sdp);
@@ -95,9 +122,19 @@ async function control(value) {
       }
     }
     pc.setRemoteDescription(value.sdp,value.descriptionType);
-    event({type:'remote_description'});
+    for(const candidate of earlyCandidates)pc.addRemoteCandidate(candidate.candidate,candidate.mid);
+    earlyCandidates.length=0;event({type:'remote_description'});
   }
-  else if(value.type==='candidate')pc.addRemoteCandidate(value.candidate,value.mid);
+  else if(value.type==='candidate'){
+    rememberRelay(remoteRelays,value.candidate);
+    // Trickle ICE can overtake SDP on the signaling path. The native API
+    // rejects candidates until the remote description has been committed.
+    if(pc.remoteDescription())pc.addRemoteCandidate(value.candidate,value.mid);
+    else{
+      if(earlyCandidates.length>=MAX_EARLY_CANDIDATES)throw Error('Too many early ICE candidates');
+      earlyCandidates.push(value);event({type:'early_candidate',count:earlyCandidates.length});
+    }
+  }
   else if(value.type==='stats')stats();
   else if(value.type==='close') {
     const deadline=Date.now()+3000;

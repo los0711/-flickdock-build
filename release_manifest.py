@@ -48,14 +48,14 @@ RUNTIME_SOURCES=(
     'update_client.py','update_download.py','update_signatures.py','update_dialog.py','update_controller.py','update_notice.py','release_history.py','network_environment.py','network_diagnostics.py','ci_mac_update_runtime.py','ci_utility_windows.py',
     'platform_startup.py','platform_native.py','mac_updates.py','mac_entry.py','runtime_macos.py','mac_permissions.py','mac_permissions_ui.py',
     'account_store.py','cloud_api.py','cloud_config.py','cloud_events.py','account_service.py','account_panel.py',
-    'shelf_sync.py','sync_scheduler.py','shared_clipboard_files.py','sync_files.py','sync_adapter.py','verify_cloud.py','shortcut_preview.py',
+    'shelf_sync.py','sync_scheduler.py','shared_clipboard_files.py','sync_files.py','sync_adapter.py','verify_cloud.py','shortcut_preview.py','update_completion.py',
     'lan_transfer.py','lan_account.py','lan_panel.py','transfer_visuals.py','transfer_workbench.py','owned_files.py','verify_transfers.py',
     'wan_transfer.py','manual_network.py','webrtc_stream.py','verify_wan.py','windows_network.py',
     'clipboard_delivery.py',
     
 )
 MAINTAINED_TESTS=(
-    'test_architecture.py',
+    'test_architecture.py','test_video_tls.py','test_startup_resources.py',
     
     'test_cloud_delete_v1825.py','test_cloud_events_v1825.py','test_cloud_stream_v1825.py',
     'test_cloud_only_v1825.py','test_virtual_clipboard.py',
@@ -143,7 +143,7 @@ SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'cloud/src/vendor/hash-wasm-sha256-4.12.0.json','cloud/src/vendor/hash-wasm-4.12.0-LICENSE.txt',
     'cloud/test/integration.mjs','cloud/test/shared-file.mjs','cloud/test/hash-state.mjs','cloud/test/upload-cancel.mjs','cloud/test/wan-codes.mjs','cloud/test/wan-connect.mjs','cloud/test/wan-account.mjs','cloud/test/manual-transfer.mjs','cloud/test/peer-sync.mjs','cloud/test/account-names.mjs','cloud/test/qa-server.mjs','cloud/test/clipboard.mjs','cloud/test/clipboard-expiry.mjs','cloud/test/clipboard-delivery.mjs',
     '.github/workflows/macos-build.yml','.github/workflows/native-clipboard.yml','ci_installer_close.py','ci_assets.py','p2p_assets.py',
-    'p2p/node-shasums.json','p2p/package.json','p2p/package-lock.json','p2p/bridge.mjs','p2p/turn_tls.mjs','p2p/proxy_tunnel.mjs','p2p/stun_route.mjs','p2p/test-proxy-tunnel.mjs','p2p/test-turn-tls.mjs','licenses/WebRTC-LICENSES.txt',
+    'p2p/node-shasums.json','p2p/package.json','p2p/package-lock.json','p2p/bridge.mjs','p2p/ice_route.mjs','p2p/test-ice-route.mjs','p2p/turn_tls.mjs','p2p/proxy_tunnel.mjs','p2p/stun_route.mjs','p2p/test-proxy-tunnel.mjs','p2p/test-turn-tls.mjs','licenses/WebRTC-LICENSES.txt',
     'website/wrangler.jsonc','website/worker.mjs','website/package.json','website/package-lock.json',
     'website/README.md','website/CHINA_DEPLOYMENT.md','website/test/check-site.mjs','website/test/check-gateway.mjs',
     'website/scripts/build-retiehe.mjs',

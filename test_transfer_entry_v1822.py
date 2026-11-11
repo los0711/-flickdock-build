@@ -113,4 +113,50 @@ class EntryTests(unittest.TestCase):
             finally:dialog.hide();dialog.deleteLater();wan.close();wan.deleteLater();flush()
 
 
+import test_html_native_workspace as workspace_fixture
+
+
+class DropFeedbackOwnershipTests(unittest.TestCase):
+    setUp=workspace_fixture.WorkspaceTests.setUp
+    tearDown=workspace_fixture.WorkspaceTests.tearDown
+    overview=workspace_fixture.WorkspaceTests.overview
+
+    def test_compact_chooser_clears_and_blocks_the_underlying_empty_target(self):
+        self.shelf.files['permanent'].clear();self.shelf.refresh();flush()
+        zone=self.shelf.zones['permanent'];router=self.shelf.transfer_entry
+        mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(self.paths[0])])
+        self.shelf._highlight_content_drop(True)
+        self.assertTrue(zone.icon.border_motion.active)
+        APP.sendEvent(self.shelf.lan_button,QDragEnterEvent(QPointF(20,15),Qt.CopyAction,mime,Qt.LeftButton,Qt.NoModifier))
+        self.assertTrue(router.surface.isVisible())
+        self.assertFalse(zone.drop_highlight);self.assertFalse(zone.icon._hovered)
+        self.assertFalse(zone.icon.border_motion.active)
+        for y in (25,77):
+            APP.sendEvent(router.surface,QDragEnterEvent(QPointF(60,y),Qt.CopyAction,mime,Qt.LeftButton,Qt.NoModifier))
+            APP.sendEvent(router.surface,QDragMoveEvent(QPointF(60,y),Qt.CopyAction,mime,Qt.LeftButton,Qt.NoModifier))
+            self.shelf._highlight_content_drop(True)
+            zone._set_card_hover(True)
+            self.assertFalse(zone.icon.border_motion.active)
+            self.assertFalse(zone.icon._hovered)
+            self.assertEqual(router.surface.active,'lan' if y==25 else 'wan')
+        point=zone.mapTo(self.shelf,zone.icon.geometry().center())
+        APP.sendEvent(self.shelf,QDragEnterEvent(QPointF(point),Qt.CopyAction,mime,Qt.LeftButton,Qt.NoModifier))
+        APP.sendEvent(self.shelf,QDragMoveEvent(QPointF(point),Qt.CopyAction,mime,Qt.LeftButton,Qt.NoModifier))
+        self.assertFalse(router.surface.isVisible());self.assertTrue(zone.icon.border_motion.active)
+        self.assertFalse(self.events)
+
+    def test_overview_chooser_owns_feedback_until_drag_returns_to_the_shelf(self):
+        self.shelf.files['permanent'].clear();self.shelf.refresh();popup=self.overview()
+        target=popup.empty_drop;router=popup.transfer_entry
+        mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(self.paths[0])])
+        target.set_drag_active(True);self.assertTrue(target.border_motion.active)
+        APP.sendEvent(popup.lan_nav,QDragEnterEvent(QPointF(20,15),Qt.CopyAction,mime,Qt.LeftButton,Qt.NoModifier))
+        self.assertTrue(router.surface.isVisible());self.assertFalse(target.border_motion.active)
+        target.set_drag_active(True);self.assertFalse(target.border_motion.active)
+        point=target.mapTo(popup,target.rect().center())
+        APP.sendEvent(popup,QDragMoveEvent(QPointF(point),Qt.CopyAction,mime,Qt.LeftButton,Qt.NoModifier))
+        self.assertFalse(router.surface.isVisible());self.assertTrue(target.border_motion.active)
+        self.assertFalse(self.events)
+
+
 if __name__=='__main__':unittest.main()

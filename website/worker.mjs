@@ -1,15 +1,16 @@
-// Immutable public release files use the existing trusted download host.
+// Installer bytes live in the dedicated public R2 bucket, never user storage.
 const INSTALLER_HEADER_TIMEOUT_MS=20000;
 const MAX_INSTALLER_BYTES=2*1024**3;
 async function installerDownload(request,path){
-  const match=path.match(/^\/downloads\/(FlickDock-((?:0|[1-9]\d{0,2})\.(?:0|[1-9]\d{0,2})\.(?:0|[1-9]\d{0,2}))-macOS-arm64\.dmg)$/);
+  const match=path.match(/^\/downloads\/(FlickDock-(?:Setup-)?((?:0|[1-9]\d{0,2})\.(?:0|[1-9]\d{0,2})\.(?:0|[1-9]\d{0,2}))(?:-macOS-arm64)?\.(?:exe|pkg|zip|dmg))$/);
   if(!match)return new Response('Not found',{status:404});
+  if(!/^FlickDock-Setup-[\d.]+\.exe$|^FlickDock-[\d.]+-macOS-arm64\.(?:pkg|zip|dmg)$/.test(match[1]))return new Response('Not found',{status:404});
   if(!['GET','HEAD'].includes(request.method))return new Response('Method not allowed',{status:405,headers:{Allow:'GET, HEAD'}});
   const headers=new Headers({Accept:'application/octet-stream'}),range=request.headers.get('Range');
   if(range){if(!/^bytes=(?:\d+-\d*|-\d+)$/.test(range))return new Response('Invalid range',{status:416});headers.set('Range',range);}
   const controller=new AbortController(),deadline=setTimeout(()=>controller.abort(),INSTALLER_HEADER_TIMEOUT_MS);
   let upstream;
-  try{upstream=await fetch('https://github.com/los0711/-flickdock-build/releases/download/v'+match[2]+'/'+match[1],
+  try{upstream=await fetch('https://download.flickdock.cc.cd/v'+match[2]+'/'+match[1],
     {method:request.method,headers,redirect:'follow',signal:controller.signal});}
   catch(error){console.error('Installer upstream failed',error);return new Response('Download temporarily unavailable',{status:502});}
   finally{clearTimeout(deadline);}
@@ -20,7 +21,7 @@ async function installerDownload(request,path){
   if((length!==null&&(!/^\d+$/.test(length)||Number(length)>MAX_INSTALLER_BYTES))||type.toLowerCase().startsWith('text/')){
     await upstream.body?.cancel();return new Response('Invalid download response',{status:502});
   }
-  const output=new Headers({'Content-Type':'application/x-apple-diskimage','X-Content-Type-Options':'nosniff',
+  const output=new Headers({'Content-Type':match[1].endsWith('.dmg')?'application/x-apple-diskimage':match[1].endsWith('.zip')?'application/zip':'application/octet-stream','X-Content-Type-Options':'nosniff',
     'Cache-Control':upstream.status===416?'no-store':'public, max-age=31536000, immutable',
     'Content-Disposition':'attachment; filename="'+match[1]+'"'});
   for(const name of ['Content-Length','Content-Range','Accept-Ranges','ETag','Last-Modified']){

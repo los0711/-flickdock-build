@@ -213,6 +213,7 @@ class ShelfWindow(QWidget):
         self.lan_button.clicked.connect(self.show_transfer_menu)
         from transfer_entry import TransferEntryRouter
         self.transfer_entry=TransferEntryRouter(self,self.lan_button,lambda mode,paths:self.manager.queue_transfer_paths(mode,paths))
+        self.transfer_entry.active_changed.connect(lambda active:self.zones["permanent"].set_transfer_choice_active(active))
         from reference_widgets import AvatarButton
         self.account_button = AvatarButton('user', self.card, motion=self.manager.motion)
         self.account_button.setToolTip('账号与设置')
@@ -1084,8 +1085,8 @@ class ShelfWindow(QWidget):
 
     def _highlight_content_drop(self, active):
         zone = self.zones["permanent"]
-        zone.drop_highlight = active
-        zone.icon.set_hover(active)
+        zone.drop_highlight = bool(active) and not zone._transfer_choice_active
+        zone._set_card_hover(active)
         zone._apply_style()
 
     def dragEnterEvent(self, event):
@@ -1100,6 +1101,7 @@ class ShelfWindow(QWidget):
 
     def dragMoveEvent(self, event):
         if self.accepts_content_drop(event):
+            self._highlight_content_drop(True)
             self.touch()
             event.setDropAction(Qt.DropAction.CopyAction)
             event.accept()

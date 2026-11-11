@@ -16,7 +16,6 @@ from PySide6.QtWidgets import QApplication
 from update_client import (DEFAULT_ALLOWED_HOSTS, DEFAULT_MANIFEST_URL, UpdateClient,
                            compare_versions, validate_manifest, version_tuple)
 from platform_native import app_bundle
-from mac_updates import PrepareMacUpdateJob, launch_update_helper
 
 
 def _identity(value):
@@ -276,6 +275,7 @@ class UpdateController(QObject):
         self._closed, self._generation = False, 0
         self._installing = self._authorized = False
         self._background_download=False
+        self._background_install=False
         self._jobs, self._notified = {}, set()
         self._pending_manifest = None
         self._pending_check = False
@@ -345,6 +345,7 @@ class UpdateController(QObject):
     def _settings_changed(self):
         self.apply_theme(getattr(self.settings, 'theme', self._theme))
         if not getattr(self.settings,'automatic_updates',True):
+            self._background_install=False
             self._pending_check=False;self._pending_manifest=None;self._timer.stop()
             if self._background_download and self.client.busy:
                 self.pause() if hasattr(self.client,'pause') else self.cancel()
@@ -427,6 +428,12 @@ class UpdateController(QObject):
             return
         if self._busy() or self.busy:
             self._timer.start(self._defer_ms)
+            return
+        if self._background_install:
+            self._background_install=False
+            if getattr(self.settings,'automatic_updates',False) and self._state=='ready' and self._verified_path:
+                self._authorized=True
+                self._start_verification()
             return
         if self._pending_manifest is not None:
             manifest, self._pending_manifest = self._pending_manifest, None
@@ -513,12 +520,11 @@ class UpdateController(QObject):
         self._manifest, self._verified_path = copy.deepcopy(manifest), str(path)
         self._set_state('ready', received=manifest['installer']['size'],
                         total=manifest['installer']['size'])
-        # Download remains alive independently of its UI. Installing/restarting
-        # is a distinct action rendered by both the notice and Settings.
         self._authorized=False
         if self._background_download:
             self._background_download=False
-            self.notification_shown.emit(manifest.get('version',''))
+            self._background_install=True
+            self._resume_automatic()
 
     def _start_verification(self):
         if self._closed or self._installing or not self._authorized:
@@ -562,6 +568,7 @@ class UpdateController(QObject):
             bundle = app_bundle(self._installed_exe)
             if bundle is None:
                 raise ValueError('Mac 在线更新需要已安装的 FlickDock.app。')
+            from mac_updates import PrepareMacUpdateJob
             job = PrepareMacUpdateJob(path, manifest, self, current_version=self.app_version,
                                       installed_app=bundle)
             self._jobs[generation] = job
@@ -642,6 +649,9 @@ class UpdateController(QObject):
                 self._authorized = False
                 self.installation_started.emit(str(prepared.installed_app))
                 self._quit()
+            from mac_updates import launch_update_helper
+            from update_completion import record_update
+            record_update(self.data_dir,self.app_version,self._manifest)
             launch_update_helper(prepared, executable=self._installed_exe,
                                  popen=self._popen, quit_callback=quit_after_spawn)
             handed_off = True
@@ -677,6 +687,8 @@ class UpdateController(QObject):
                 self._authorized = False
                 self.installation_started.emit(path)
                 self._quit()
+            from update_completion import record_update
+            record_update(self.data_dir,self.app_version,self._manifest)
             launch_installer(result, installed_exe=self._installed_exe,
                               quit_callback=quit_after_spawn, popen=self._popen)
         except (OSError, ValueError, TypeError) as problem:

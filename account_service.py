@@ -107,6 +107,7 @@ class _PasswordWorker(_AuthWorker):
 
 class _SessionSignals(QObject):
     finished=Signal(int,str,bool)
+    restored=Signal(int,object,str)
 
 
 class AccountService(QObject):
@@ -132,9 +133,12 @@ class AccountService(QObject):
         self._session_queue=Queue();self._session_thread=None
         self._session_signals=_SessionSignals(self)
         self._session_signals.finished.connect(self._session_done,Qt.ConnectionType.QueuedConnection)
+        self._session_signals.restored.connect(self._session_restored,Qt.ConnectionType.QueuedConnection)
         self.platform = {'win32':'windows','darwin':'macos'}.get(sys.platform,'linux')
         self.device_name = platform.node()[:80] or ('Mac' if self.platform=='macos' else 'Windows PC')
-        self._restored = self.store.load() if native or store is not None else None
+        self._restore_async = self.platform == 'macos' and (native or store is not None)
+        self._resume_started = False
+        self._restored = self.store.load() if not self._restore_async and (native or store is not None) else None
         self.api.unauthorized.connect(self._expired)
 
     @property
@@ -144,7 +148,23 @@ class AccountService(QObject):
         self.busy = bool(value); self.busy_changed.emit(self.busy)
 
     def resume(self):
+        if self._closed or self._resume_started:
+            return
+        self._resume_started = True
+        if self._restore_async:
+            # A Keychain sheet can wait indefinitely for the user. It must not
+            # hold the first Cocoa event loop or the updater's launch receipt.
+            self._queue_session('load')
+            return
         session, self._restored = self._restored, None
+        self._session_restored(self.epoch, session, '')
+
+    def _session_restored(self, epoch, session, error):
+        # Login/logout/close revoke a restore which was waiting for Keychain.
+        if self._closed or epoch != self.epoch or self.signed_in:
+            return
+        if error:
+            self.status_changed.emit('无法读取本机登录凭据，请重新登录。')
         if not session:
             self.account_changed.emit(None); return
         self.api.token = session['token']; self.device_id = session.get('device_id','')
@@ -314,16 +334,23 @@ class AccountService(QObject):
             if item is None:return
             epoch,operation,session,generation=item
             failed=False
+            restore_error=''
             try:
-                if operation=='save':
+                if operation=='load':
+                    session=self.store.load()
+                elif operation=='save':
                     if generation is None:self.store.save(session)
                     else:self.store.save(session,generation=generation)
                 elif hasattr(self.store,'clear_credentials'):self.store.clear_credentials()
                 else:self.store.clear()
-            except Exception:failed=True
+            except Exception as error:
+                failed=True
+                restore_error=type(error).__name__
             finally:
+                if not self._closed:
+                    if operation=='load':self._session_signals.restored.emit(epoch,session if not failed else None,restore_error)
+                    else:self._session_signals.finished.emit(epoch,operation,failed)
                 session=None
-                if not self._closed:self._session_signals.finished.emit(epoch,operation,failed)
 
     def _session_done(self,epoch,operation,failed):
         if self._closed or epoch!=self.epoch:return

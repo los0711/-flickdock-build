@@ -151,8 +151,8 @@ with tempfile.TemporaryDirectory(prefix='flickdock-clear-bench-') as temporary:
         media_case = bool(os.getenv('FLICKDOCK_CLEAR_BENCH_MEDIA'))
         if media_case:
             def forbid_play(self): raise AssertionError('Media benchmark must not play audio')
-            import media_preview
-            stack.enter_context(patch.object(media_preview.QMediaPlayer, 'play', forbid_play))
+            from PySide6.QtMultimedia import QMediaPlayer
+            stack.enter_context(patch.object(QMediaPlayer, 'play', forbid_play))
         if variant == 'batch':
             retired = []
             cleanup = QTimer()

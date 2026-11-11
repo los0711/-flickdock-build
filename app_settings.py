@@ -13,8 +13,8 @@ from pathlib import Path
 import sys
 from uuid import uuid4
 
-from PySide6.QtCore import QByteArray, QCoreApplication, QElapsedTimer, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QKeySequence, QColor, QFont, QFontDatabase, QPainter, QPen, QGuiApplication, QIcon, QPixmap, QWheelEvent
+from PySide6.QtCore import QByteArray, QCoreApplication, QElapsedTimer, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QKeySequence, QColor, QFont, QFontDatabase, QPainter, QPen, QGuiApplication, QIcon, QPixmap, QWheelEvent, QDesktopServices
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
                                QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QLineEdit, QPushButton,
                                QVBoxLayout, QGridLayout, QKeySequenceEdit, QScrollArea, QWidget, QSizePolicy,
@@ -1542,12 +1542,18 @@ class SettingsDialog(QDialog):
         kl.addWidget(self._reference_toggle(self.startup_checkbox,'登录系统时自动启动',shortcuts))
         self.automatic_updates_checkbox=SettingsToggleSwitch('自动更新',shortcuts)
         self.automatic_updates_checkbox.setAccessibleName('自动检查并后台下载更新')
-        self.automatic_updates_checkbox.setToolTip('自动检查并后台下载更新；安装前提示重启，不中断正在进行的传输。')
+        self.automatic_updates_checkbox.setToolTip('后台下载更新，空闲时自动安装并重启；正在进行的传输完成后再更新。')
         self.automatic_updates_checkbox.toggled.connect(self._automatic_updates_changed)
         updates=self._card();ul=QVBoxLayout(updates);ul.setContentsMargins(16,16,16,16);ul.setSpacing(12)
         updates_title=QLabel('更新与关于',updates);updates_title.setObjectName('settingsSection');ul.addWidget(updates_title)
         ul.addWidget(self._reference_toggle(self.automatic_updates_checkbox,'自动更新',updates))
         ul.addWidget(self.update_button)
+        self.website_button=QPushButton('访问官网 ↗',updates)
+        self.website_button.setObjectName('settingsBrowse')
+        self.website_button.setAutoDefault(False)
+        self.website_button.setAccessibleName('在浏览器打开 FlickDock 官网')
+        self.website_button.clicked.connect(lambda:QDesktopServices.openUrl(QUrl('https://flickdock.cc.cd')))
+        ul.addWidget(self.website_button)
         release=QLabel('FlickDock '+APP_VERSION,updates);release.setObjectName('settingsDetail');ul.addWidget(release)
         self.startup_status_label.setParent(shortcuts);self.startup_status_label.hide()
         self._pointer_paste_permission=None

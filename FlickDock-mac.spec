@@ -10,9 +10,11 @@ sys.path.insert(0, str(root))
 from app_version import APP_VERSION
 from p2p_assets import bundle_assets
 p2p_binaries,p2p_datas=bundle_assets()
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_data_files
 yt_datas,yt_binaries,yt_hidden=collect_all('yt_dlp')
 ejs_datas,ejs_binaries,ejs_hidden=collect_all('yt_dlp_ejs')
+# yt-dlp's verified TLS must not depend on the build machine's OpenSSL CA path.
+yt_datas += collect_data_files('certifi')
 
 # macOS uses its system font; the Windows-only font is not a runtime dependency.
 assets = [(root / 'assets/ui/qtbase_zh_CN.qm', 'assets/ui')]

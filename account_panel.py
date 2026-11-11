@@ -9,7 +9,7 @@ import sys
 from account_service import valid_new_password
 from native_ui_common import reference_font, icon as ui_icon, colors as ui_colors
 
-from PySide6.QtCore import QByteArray, QDateTime, QEvent, QRect, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QByteArray, QEvent, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter, QLinearGradient
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMenu, QToolButton,
@@ -223,7 +223,6 @@ class AccountPanel(QFrame):
     def __init__(self,service,parent=None,*,theme='light',email_binding=False):
         super().__init__(parent)
         self.service=service
-        self._device_connections={}
         self._fit_timer=QTimer(self);self._fit_timer.setSingleShot(True)
         self._fit_timer.timeout.connect(self._fit_signed_content)
         # Keep the argument for older app builds; the email controls are gone.
@@ -760,8 +759,7 @@ class AccountPanel(QFrame):
                     row=reusable[key];name=str(device.get('name') or '未命名设备')
                     name_label=row.findChild(AccountNameLabel,'accountDeviceName');name_label.setText(name)
                     platform={'windows':'Windows','macos':'Mac','linux':'Linux'}.get(str(device.get('platform','')),'其他设备')
-                    timestamp=QDateTime.fromString(str(device.get('last_seen_at') or ''),Qt.DateFormat.ISODate)
-                    suffix='此设备' if row._current_device else '最近在线 '+timestamp.toLocalTime().toString('MM-dd HH:mm') if timestamp.isValid() else ''
+                    suffix='此设备' if row._current_device else ''
                     name_label.setToolTip(name+'\n'+platform+(' · '+suffix if suffix else ''))
                     row.setAccessibleName(name+('，本机' if row._current_device else ''))
                     self.device_rename_buttons[key].setAccessibleName('修改设备名称 '+name)
@@ -784,20 +782,14 @@ class AccountPanel(QFrame):
                 device_name.setProperty('compactDeviceName',True)
                 device_name.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Fixed)
                 device_name.setMaximumWidth(16777215)
-                device_text=QVBoxLayout();device_text.setSpacing(0)
+                device_text=QVBoxLayout();device_text.setSpacing(0);device_text.setAlignment(Qt.AlignVCenter)
                 device_text.addWidget(device_name);horizontal.addLayout(device_text,1)
                 platform={'windows':'Windows','macos':'Mac','linux':'Linux'}.get(str(device.get('platform','')),'其他设备')
                 current=bool(device.get('current') or key==str(self.service.device_id))
                 row._current_device=current
-                timestamp=QDateTime.fromString(str(device.get('last_seen_at') or ''),Qt.DateFormat.ISODate)
-                suffix='此设备' if current else '最近在线 '+timestamp.toLocalTime().toString('MM-dd HH:mm') if timestamp.isValid() else ''
+                suffix='此设备' if current else ''
                 device_name.setToolTip(str(device.get('name') or '未命名设备')+'\n'+platform+(' · '+suffix if suffix else ''))
                 row.setAccessibleName(str(device.get('name') or '未命名设备')+'，'+platform+('，本机' if current else ''))
-                subtitle=AccountNameLabel(row);subtitle.setObjectName('accountCurrentDevice' if current else 'accountDeviceMeta')
-                subtitle.setFixedHeight(20)
-                subtitle.setText('(本机)' if current else platform)
-                subtitle.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Fixed)
-                device_text.addWidget(subtitle);row._connection_label=subtitle
                 actions=QWidget(row);actions.setObjectName('accountDeviceActions')
                 action_layout=QHBoxLayout(actions);action_layout.setContentsMargins(0,0,0,0);action_layout.setSpacing(3)
                 actions.setSizePolicy(QSizePolicy.Policy.Fixed,QSizePolicy.Policy.Fixed)
@@ -848,7 +840,6 @@ class AccountPanel(QFrame):
             self.devices_layout.addWidget(empty,0,0,1,2);self._device_rows.append(empty)
         self.devices_heading_label.setText('已登录设备'+(' · '+str(len(self._devices)) if self._devices else ''))
         self._layout_device_rows()
-        self._update_device_connections()
         if motion is not None:
             self._fit_signed_content();self.devices_layout.activate()
             motion.reflow(self._rows_by_id,positions,enabled=self.isVisible() and motion_allowed())
@@ -872,23 +863,6 @@ class AccountPanel(QFrame):
         self.layout().invalidate();self.updateGeometry()
         self._update_enabled()
         self._queue_fit()
-
-    def set_device_connections(self,snapshot):
-        self._device_connections=dict(snapshot)
-        self._update_device_connections()
-
-    def _update_device_connections(self):
-        labels={'cloud':'云端在线','disconnected':'离线'}
-        platforms={'windows':'Windows','macos':'Mac','linux':'Linux'}
-        for identity,row in self._rows_by_id.items():
-            device=self._devices[identity];platform=platforms.get(str(device.get('platform','')),'其他设备')
-            if row._current_device:text=platform+' · (本机)'
-            else:
-                info=self._device_connections.get(identity,{})
-                route=labels.get(info.get('route'),'状态未知')
-                text=platform+' · '+route
-            row._connection_label.setText(text)
-            row._connection_label.setAccessibleName(text)
 
     def _queue_fit(self):
         if self.isVisible() and not self._fit_timer.isActive():self._fit_timer.start(0)

@@ -110,6 +110,12 @@ class ShelfManager:
         self.updates = UpdateController(APP_VERSION, BASE, settings=self.settings,
                                         quit_callback=self.quit, is_busy=self._update_busy)
         self.update_notice = None
+        self.completed_update_notice = None
+        from update_completion import UpdateCompletion
+        from release_history import version_notes
+        self.update_completion = UpdateCompletion(BASE,APP_VERSION,
+            updated='--updated' in sys.argv or '--post-update-ready' in sys.argv,
+            notes=version_notes(APP_VERSION))
         self.update_dialog = None
         self.updates.notification_shown.connect(self._show_update_notice)
         self.updates.state_changed.connect(self._update_notice_state_changed)
@@ -182,12 +188,11 @@ class ShelfManager:
         self._intake_sync_timer=QTimer(self.app)
         self._intake_sync_timer.setSingleShot(True)
         self._intake_sync_timer.timeout.connect(self._flush_intake_sync)
-        self.clipboard_sync.copy_result.connect(self._clipboard_copy_result)
-        self.clipboard_sync.view_changed.connect(self._clipboard_notice_state)
-        self.clipboard_sync.copy_started.connect(self._clipboard_copy_started)
+        self.clipboard_sync.copy_repeated.connect(self._clipboard_copy_repeated)
         self.clipboard_sync.native_access_changed.connect(self._refresh_paste_permission)
         from clipboard_preview import ClipboardPresenter
         self.clipboard_presenter=ClipboardPresenter(self.clipboard_sync,self.app)
+        self.clipboard_presenter.changed.connect(lambda:self._clipboard_notice_state(self.clipboard_presenter.state))
         self.clipboard_preview_dialog=None
         for zone in self.shelf.zones.values():zone.clipboard_button.refresh()
         self._clipboard_intro=None
@@ -205,9 +210,9 @@ class ShelfManager:
         self.video_controller=VideoController(self);self.video_watcher=VideoLinkWatcher(self)
         self.clipboard_sync.activity_changed.connect(self.video_controller.set_priority)
         self.wan.offer_received.connect(self._wan_offer)
-        from receive_notice import SameAccountReceiveNotice
-        self.receive_notice=SameAccountReceiveNotice(self,self.wan)
-        self.lan_receive_notice=SameAccountReceiveNotice(self,self.lan)
+        from receive_notice import FileTransferNotices
+        self.receive_notice=FileTransferNotices(self,self.wan)
+        self.lan_receive_notice=FileTransferNotices(self,self.lan)
         self.account.account_changed.connect(self._lan_identity)
         self.account.devices_changed.connect(self._lan_devices)
         self.manual.start()
@@ -279,17 +284,6 @@ class ShelfManager:
         return (self.settings.clipboard_sync_enabled and self.settings.clipboard_notice_seen
                 and not self.cocoa_smoke and self.app.platformName() not in ('offscreen','minimal'))
 
-    def _clipboard_copy_started(self):
-        if hasattr(self,'clipboard_notice'):self.clipboard_notice.supersede()
-
-    def _clipboard_copy_result(self,ok,context):
-        if self._quitting or not self._clipboard_runtime_enabled():return
-        if not self.settings.clipboard_success_notice:return
-        if not hasattr(self,'clipboard_notice'):
-            from intake_notice import ClipboardNotice
-            self.clipboard_notice=ClipboardNotice(self)
-        self.clipboard_notice.schedule_result(ok,context)
-
     def _clipboard_notice_state(self,state):
         if self._quitting:return
         if not self.settings.clipboard_success_notice or not self._clipboard_runtime_enabled():
@@ -299,7 +293,14 @@ class ShelfManager:
             if not state.get('local_copy') or state.get('phase')!='uploading':return
             from intake_notice import ClipboardNotice
             self.clipboard_notice=ClipboardNotice(self)
-        self.clipboard_notice.update_delivery(state)
+        self.clipboard_notice.update_delivery(state,authoritative=True)
+
+    def _clipboard_copy_repeated(self,state):
+        if self._quitting or not self._clipboard_runtime_enabled() or not self.settings.clipboard_success_notice:return
+        if not hasattr(self,'clipboard_notice'):
+            from intake_notice import ClipboardNotice
+            self.clipboard_notice=ClipboardNotice(self)
+        self.clipboard_notice.replay(state)
 
     def show_clipboard_preview(self):
         if self._quitting:return
@@ -351,9 +352,11 @@ class ShelfManager:
         return True
 
     def _present_update_notice(self):
+        if self._present_completed_update():return
         if self._present_clipboard_intro():return
         if getattr(self,'update_dialog',None) is not None and self.update_dialog.isVisible():return
         failed_handoff=self.updates.state=='error' and bool(getattr(self,'_previous_update_error',''))
+        if self.settings.automatic_updates and not failed_handoff:return
         if (self._quitting or not (self.updates.state in ('available','ready') or failed_handoff) or not self.shelf.isVisible()
                 or not self.shelf.expanded or self.shelf.content_transition_active()
                 or self.shelf.presentation._timer.isActive() or self.settings_open()):return
@@ -374,6 +377,23 @@ class ShelfManager:
         self.update_notice.show_version(self.updates.state_payload.get('version','') or APP_VERSION,
                                        notes=notes or ('上次更新未完成，原应用已保留。' if failed_handoff else ''))
         self.update_notice.set_state(self.updates.state,**self.updates.state_payload)
+
+    def _present_completed_update(self):
+        completion=getattr(self,'update_completion',None)
+        if completion is None or not completion.pending:return False
+        if (self._quitting or not self.shelf.isVisible() or not self.shelf.expanded
+                or self.shelf.content_transition_active() or self.shelf.presentation._timer.isActive()
+                or self.settings_open() or confirmation_active(self.shelf)):return True
+        if self.completed_update_notice is None:
+            self.completed_update_notice=UpdateNotice(self.shelf,theme=self.settings.theme)
+            def acknowledge():
+                completion.acknowledge()
+                self.completed_update_notice.hide()
+            self.completed_update_notice.update_requested.connect(acknowledge)
+            self.completed_update_notice.dismissed.connect(acknowledge)
+        if not self.completed_update_notice.isVisible():
+            self.completed_update_notice.show_completed(APP_VERSION,completion.value['notes'])
+        return True
 
     def _snooze_update_notice(self):
         path=Path(self.settings.base)/'updates'/'notice-state.json'
@@ -414,7 +434,6 @@ class ShelfManager:
         snapshot={row['account_device_id']:dict(route='cloud' if row.get('online') else 'disconnected')
                   for row in peers if row.get('account_device') is True and row.get('account_device_id')}
         self.clipboard_sync.deliveries.set_connections(snapshot)
-        if getattr(self,'account_panel',None) is not None:self.account_panel.set_device_connections(snapshot)
 
     def _sync_status_changed(self,text):
         self._sync_status = text
@@ -434,7 +453,7 @@ class ShelfManager:
             ref=state.get('ref')
             if not ref or ref not in real:
                 ref='flickdock:transfer:'+state['id']
-                content.pending[ref]=dict(name=state.get('name','正在上传'),kind=state.get('kind','file'))
+                content.pending[ref]=dict(name=state.get('name','正在上传'),kind=state.get('kind','file'),size=state.get('total',0))
             content.transfers[ref]=state;self._sync_transfer_refs.add(ref)
         self.shelf.transfers_updated()
 
@@ -471,6 +490,10 @@ class ShelfManager:
             return
         self.show_wan_dialog();self.wan_dialog.panel.show_offer(offer)
 
+    def _manual_send_notice(self,service,details):
+        notice=self.receive_notice if service is self.wan else self.lan_receive_notice
+        notice.begin(details)
+
     def _lan_selected(self):
         refs=self.shelf.popup.chosen_refs() if self.shelf.popup else []
         return [ref for ref in refs if not self.shelf.content.is_text(ref) and Path(ref).exists()]
@@ -496,6 +519,7 @@ class ShelfManager:
             self.show_first()
 
     def show_first(self):
+        if self._quitting:return
         if hasattr(self,'shelf') and confirmation_active(self.shelf): return
         if not self.shelves:
             self._create_shelf({})
@@ -639,6 +663,7 @@ class ShelfManager:
             # One independent native window; both modes retain their own panel
             # state without exposing the desktop between close/show operations.
             dialog=LanDialog(service,self.settings)
+            dialog.send_started.connect(self._manual_send_notice)
             dialog.overview_requested.connect(lambda:self.show_overview_from_transfer(dialog))
             dialog.mode_selected.connect(lambda mode:self.show_wan_dialog() if mode=='wan' else self.show_lan_dialog())
             dialog.lan_recommended.connect(self._use_recommended_lan)
@@ -791,6 +816,7 @@ class ShelfManager:
             if self.video_dialog:self.video_dialog.refresh()
             self.updates.apply_theme(self.settings.theme)
             if self.update_notice is not None:self.update_notice.apply_theme(self.settings.theme)
+            if self.completed_update_notice is not None:self.completed_update_notice.apply_theme(self.settings.theme)
             if self.update_dialog is not None:self.update_dialog.apply_theme(self.settings.theme)
         if changed & {'sync_upload_enabled','sync_receive_enabled'}:
             self.sync.set_directions(self.settings.sync_upload_enabled,self.settings.sync_receive_enabled)
@@ -1085,6 +1111,8 @@ class ShelfManager:
         self.was_down=down
 
     def quit(self):
+        if self._quitting:return
+        self._quitting=True
         if hasattr(self,'receive_notice'):self.receive_notice.close()
         if hasattr(self,'lan_receive_notice'):self.lan_receive_notice.close()
         if hasattr(self,'intake_notice'):self.intake_notice.hide()
@@ -1103,7 +1131,6 @@ class ShelfManager:
         if hasattr(self,'video_watcher'):self.video_watcher.close()
         if hasattr(self,'video_controller'):self.video_controller.close()
         if self.video_dialog:self.video_dialog.close()
-        self._quitting=True
         self.pointer_paste.close();self.settings_edge_hint.close()
         self._intake_sync_timer.stop()
         self.timer.stop()
@@ -1133,12 +1160,20 @@ class ShelfManager:
             shelf.image_cache.close()
             if shelf.popup: shelf.popup.preview.media.release_source()
             shelf.presentation.stop()
-            shelf.geometry_morph.stop()
+            shelf.geometry_morph.stop(settle=False)
             shelf.hide()
-        self.app.quit()
+        # Cleanup is complete and this is an explicit application exit. quit()
+        # negotiates window Close events again: a dialog's deferred close
+        # animation can veto it after the tray and services have already gone.
+        # Startup validation also uses this teardown before exec() exists.
+        # Do not mark Qt's thread as exiting when it has no running loop.
+        if self.app.thread().loopLevel():self.app.exit(0)
 
 
 def main():
+    if '--verify-notices' in sys.argv:
+        from offscreen_verify import run_notices
+        return run_notices(sys.argv,load_font)
     if '--video-worker' in sys.argv:
         from video_worker import run
         return run()

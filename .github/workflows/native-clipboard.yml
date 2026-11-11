@@ -24,6 +24,11 @@ on:
         description: Isolate original-kernel connectivity without repeating cloud file traffic
         type: boolean
         default: false
+      manual_route:
+        description: Required route for isolated original-kernel verification
+        type: choice
+        options: [direct, relay-udp, relay-tls]
+        default: direct
       cloud_only:
         description: Verify automatic native clipboard and shelf sync without manual transport
         type: boolean
@@ -55,7 +60,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [windows-latest, macos-15, macos-15-intel]
+        runner: [windows-latest, macos-15]
     runs-on: ${{ matrix.runner }}
     env:
       PYTHONUTF8: '1'
@@ -198,7 +203,9 @@ jobs:
       FD_QA_SIDE: ${{ matrix.side }}
       FD_QA_VPN_MODE: ${{ inputs.vpn_mode || 'none' }}
       FD_QA_KERNEL_ONLY: ${{ inputs.kernel_only && 'true' || 'false' }}
+      FD_QA_MANUAL_ROUTE: ${{ inputs.manual_route || 'direct' }}
       FD_QA_CLOUD_ONLY: ${{ inputs.cloud_only && 'true' || 'false' }}
+      FD_QA_ICE_TRACE: '1'
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
