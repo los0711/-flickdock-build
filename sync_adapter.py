@@ -28,6 +28,8 @@ class ShelfAdapter:
         refs = list(view.get('permanent',[]))
         old = list(shelf.files['permanent'])
         texts=dict(view.get('texts',{}));metadata=copy.deepcopy(view.get('metadata',{}))
+        from shelf_content import ensure_observed_times
+        ensure_observed_times(metadata,refs)
         if old==refs and shelf.content.texts==texts and shelf.content.metadata==metadata:return
         for ref in old:
             if ref not in refs: shelf.resolver.cancel(ref)

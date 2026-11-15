@@ -28,9 +28,9 @@ class TransferSuggestion(CapsuleNotice):
     def _paint_indicator(self,painter,rect,colors):
         circle=rect.adjusted(3,3,-3,-3)
         painter.save();painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor('#0069D3' if self._pressed else '#3399FF' if self._hovered else NOTICE_ACTION_COLOR))
+        painter.setBrush(QColor(colors['action_pressed'] if self._pressed else colors['action_hover'] if self._hovered else colors['action']))
         painter.drawEllipse(circle)
-        icon('right','#FFFFFF').paint(painter,circle.adjusted(4,4,-4,-4).toAlignedRect());painter.restore()
+        icon('right',colors['on_action']).paint(painter,circle.adjusted(4,4,-4,-4).toAlignedRect());painter.restore()
 
     def enterEvent(self,event):
         self._hovered=True;self.update();super().enterEvent(event)

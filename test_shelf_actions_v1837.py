@@ -13,7 +13,7 @@ import test_html_native_workspace as fixture
 from app_settings import SettingsComboBox
 from flickdock import ShelfManager
 from lan_panel import _DevicesCombo
-from shelf_content import ContentRepository,shelf_added_time
+from shelf_content import ContentRepository,shelf_added_time,shelf_time_info,ensure_observed_times
 from shelf_sync import ShelfSync
 
 
@@ -52,8 +52,8 @@ class ShelfActionsTests(unittest.TestCase):
             self.assertEqual(popup.preview.upload_time.full_text,'放入时间：'+expected,status)
         self.assertEqual(popup.upload_caption(ref,compact=True),datetime.fromtimestamp(stamp).strftime('%m-%d %H:%M:%S'))
         self.shelf.content.metadata[ref].pop('added_at');popup.preview.refresh_cloud_status();row.refresh_upload_time()
-        self.assertEqual(popup.preview.upload_time.full_text,'放入时间：暂无记录')
-        self.assertTrue(row.detail_label.text().endswith('放入时间暂无记录'))
+        self.assertTrue(popup.preview.upload_time.full_text.startswith('记录时间：'))
+        self.assertIn('记录于 ',row.detail_label.text())
 
     def test_invalid_or_missing_timestamps_are_never_guessed(self):
         content=ContentRepository(metadata={'x':{'added_at':1}})
@@ -79,8 +79,36 @@ class ShelfActionsTests(unittest.TestCase):
             ShelfSync._add_ref(subject,'two',None,'two',cloud_identity='id',replacing='one')
         self.assertEqual(view['metadata']['two']['added_at'],1760000000.0)
         view['metadata']['two'].pop('added_at')
-        ShelfSync._add_ref(subject,'three',None,'three',cloud_identity='id',replacing='two')
-        self.assertNotIn('added_at',view['metadata']['three'])
+        with patch('shelf_sync.time.time',return_value=1762000000.0):
+            ShelfSync._add_ref(subject,'three',None,'three',cloud_identity='id',replacing='two')
+        self.assertEqual(view['metadata']['three']['added_at'],1762000000.0)
+        self.assertEqual(view['metadata']['three']['added_at_source'],'sync')
+
+    def test_legacy_observation_is_labeled_and_stable_without_fabricating_intake(self):
+        content=ContentRepository(metadata={'old':{},'valid':{'added_at':1760000000.0}})
+        ensure_observed_times(content.metadata,['old','valid'],now=1761000000.0)
+        self.assertEqual(content.metadata['old']['observed_at'],1761000000.0)
+        self.assertNotIn('added_at',content.metadata['old'])
+        ensure_observed_times(content.metadata,['old','valid'],now=1762000000.0)
+        self.assertEqual(content.metadata['old']['observed_at'],1761000000.0)
+        self.assertEqual(shelf_time_info(content,'old')[0],'记录时间')
+        self.assertEqual(shelf_time_info(content,'valid')[0],'放入时间')
+        content.metadata['valid']['added_at_source']='sync'
+        self.assertEqual(shelf_time_info(content,'valid')[0],'同步时间')
+
+    def test_legacy_view_restore_records_observation_once(self):
+        from sync_adapter import ShelfAdapter
+        import copy
+        ref=self.workspace.paths[0];view=ShelfAdapter(self.manager).snapshot()
+        view['metadata'].setdefault(ref,{}).pop('added_at',None)
+        view['metadata'][ref].pop('observed_at',None)
+        with patch('shelf_content.time.time',return_value=1761000000.0):
+            ShelfAdapter(self.manager).restore(copy.deepcopy(view))
+        first=self.shelf.content.metadata[ref]['observed_at']
+        self.assertEqual(first,1761000000.0);self.assertIsNone(shelf_added_time(self.shelf.content,ref))
+        with patch('shelf_content.time.time',return_value=1762000000.0):
+            ShelfAdapter(self.manager).restore(ShelfAdapter(self.manager).snapshot())
+        self.assertEqual(self.shelf.content.metadata[ref]['observed_at'],first)
 
     def test_menu_only_lists_other_same_account_devices_and_preserves_fallback(self):
         account=SimpleNamespace(signed_in=True,account={'username':'Roger'},device_id='self',api=SimpleNamespace(token='token'))

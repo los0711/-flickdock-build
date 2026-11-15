@@ -1765,6 +1765,7 @@ class ShelfSync(QObject):
         def change(view):
             existing=ref in view['permanent'] or bool(replacing and replacing in view['permanent'])
             previous_added=view.get('metadata',{}).get(replacing,{}).get('added_at') if replacing else None
+            previous_source=view.get('metadata',{}).get(replacing,{}).get('added_at_source') if replacing else None
             if replacing:
                 view['permanent']=[ref if value==replacing else value for value in view['permanent']]
                 if replacing!=ref or text is not None:
@@ -1782,8 +1783,13 @@ class ShelfSync(QObject):
             if text is not None: view.setdefault('texts',{})[ref] = text
             metadata=view.setdefault('metadata',{}).setdefault(ref,{})
             metadata['title'] = name
-            if previous_added is not None:metadata.setdefault('added_at',previous_added)
-            elif not existing:metadata.setdefault('added_at',time.time())
+            from shelf_content import _format_shelf_timestamp
+            if _format_shelf_timestamp(previous_added):
+                if not _format_shelf_timestamp(metadata.get('added_at')):
+                    metadata['added_at']=previous_added
+                    if previous_source:metadata['added_at_source']=previous_source
+            elif not _format_shelf_timestamp(metadata.get('added_at')):
+                metadata['added_at']=time.time();metadata['added_at_source']='sync'
         self._change_view(change)
 
     def _push_next(self):

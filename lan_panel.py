@@ -1326,8 +1326,9 @@ class LanPanel(QFrame):
             QFrame#lanPanel QLabel {{font-size:12px;}}
             QFrame#lanPanel QLabel#lanSection {{font-size:12px;font-weight:600;}}
             QFrame#lanPanel QLabel#lanDropTitle {{font-size:11px;}}
-            QFrame#lanPanel QLabel#lanHistoryTitle {{font-size:10px;color:{c['secondary']};}}
-            QFrame#lanPanel QLabel#lanHistoryDetail,QFrame#lanPanel QLabel#lanQueueName {{font-size:11px;}}
+            QFrame#lanPanel QLabel#lanHistoryTitle {{font-size:9px;font-weight:400;color:{c['file_description']};}}
+            QFrame#lanPanel QLabel#lanHistoryDetail {{font-size:12px;font-weight:600;color:{'#F5F5F7' if self._dark else '#1D1D1F'};}}
+            QFrame#lanPanel QLabel#lanQueueName {{font-size:11px;}}
             QFrame#lanPanel QLabel#lanHistoryState {{font-size:10px;}}
             QFrame#lanPanel QPushButton, QFrame#lanPanel QComboBox {{font-size:12px;}}
             QFrame#lanPanel QLineEdit {{font-size:11px;}}

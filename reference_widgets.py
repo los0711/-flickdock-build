@@ -187,11 +187,12 @@ class IconTextButton(QPushButton):
         variant=self.property('referenceVariant');left=bool(self.property('leftAligned'))
         surface=self.parentWidget()
         navigation=isinstance(surface,SelectionSurface) and surface._selection_vertical and left
+        navigation_ink=c['text'] if self.property('sidebarUtility') else c['secondary']
         active=(surface._selection_rect.contains(QRectF(self.geometry()).center()) and surface._selection_opacity>.55) if navigation else (self.isChecked() and left)
         named_icon=getattr(self,'_reference_icon',None)
         if named_icon:
             icon_tint=(c['on_action'] if active or variant=='primary'
-                       else c['secondary'] if navigation else c['red'] if variant=='danger' else c.get(named_icon[1],named_icon[1]))
+                       else navigation_ink if navigation else c['red'] if variant=='danger' else c.get(named_icon[1],named_icon[1]))
             art=icon(named_icon[0],icon_tint if self.isEnabled() else c['muted'])
         painter=QStylePainter(self);painter.drawControl(QStyle.CE_PushButton,option)
         painter.setFont(self.font())
@@ -233,7 +234,7 @@ class IconTextButton(QPushButton):
             painter.translate(-icon_x-size.width()/2,-icon_y-size.height()/2)
         art.paint(painter,QRect(round(icon_x),icon_y,size.width(),size.height()),Qt.AlignCenter,mode)
         painter.restore()
-        tint=(c['on_action'] if active else c['secondary'] if navigation else c['text'] if self.isChecked() else
+        tint=(c['on_action'] if active else navigation_ink if navigation else c['text'] if self.isChecked() else
               c['on_action'] if variant=='primary' else c['red'] if variant=='danger' else c['text'] if variant=='secondary' else c['secondary'])
         painter.setPen(QColor(tint if self.isEnabled() else c['muted']))
         text_x=x if trailing else x+size.width()+gap
@@ -382,7 +383,7 @@ class ToolbarButton(FeedbackButton):
             p.setPen(Qt.NoPen);p.setBrush(fill);p.drawRoundedRect(QRectF(self.rect()).adjusted(1,1,-1,-1),8,8)
         if not self.isEnabled():p.setOpacity(float(self.property('disabledOpacity') or .4))
         name={'pin-filled':'pin','check':'check'}.get(self.glyph,self.glyph)
-        tint=self._glyph_tint or (c['blue'] if self.isChecked() else c['secondary'])
+        tint=self._glyph_tint or (c['action'] if self.isChecked() and name=='pin' else c['blue'] if self.isChecked() else c['secondary'])
         p.save();p.setOpacity(p.opacity()*getattr(self,'_entry_alpha',1.));p.translate(getattr(self,'_entry_dx',0.),0.)
         if self.property('subtle'):p.setOpacity(p.opacity()*(.45+.4*v['hover']))
         hover=v['hover']
@@ -964,6 +965,7 @@ def build_overview(view,preview_type):
     view.video_nav=button('视频解析','video',variant='text',parent=view.sidebar);view.video_nav.setFixedHeight(34);view.video_nav.clicked.connect(lambda:view.shelf.manager.show_video_dialog());side.addWidget(view.video_nav)
     view.lan_nav=button('文件互传','nearby',variant='text',parent=view.sidebar);view.lan_nav.setFixedHeight(34);view.lan_nav.clicked.connect(lambda:view.shelf.manager.show_transfer_dialog());side.addWidget(view.lan_nav)
     view.settings_nav=button('设置','settings',variant='text',parent=view.sidebar);view.settings_nav.setFixedHeight(34);view.settings_nav.clicked.connect(lambda:view.shelf.manager.show_settings());side.addWidget(view.settings_nav)
+    for control in (view.video_nav,view.lan_nav,view.settings_nav):control.setProperty('sidebarUtility',True)
     for control in (view.wan_nav,view.video_nav,view.lan_nav,view.settings_nav):
         control.setProperty('leftAligned',True)
         old=control._reference_style

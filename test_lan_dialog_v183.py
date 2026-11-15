@@ -9,9 +9,9 @@ import threading
 from types import SimpleNamespace
 
 from PySide6.QtCore import QByteArray,QEvent,QObject,QMimeData,QPointF,Qt,QUrl,Signal
-from PySide6.QtGui import QDragEnterEvent,QDropEvent,QMouseEvent
+from PySide6.QtGui import QDragEnterEvent,QDropEvent,QMouseEvent,QPalette
 from PySide6.QtSvg import QSvgRenderer
-from PySide6.QtWidgets import QApplication,QPushButton,QScrollArea
+from PySide6.QtWidgets import QApplication,QPushButton,QScrollArea,QLabel
 from unittest.mock import patch
 
 from app_settings import SettingsStore
@@ -199,6 +199,29 @@ class LanDialogTests(unittest.TestCase):
         self.assertIn('report.pdf',record.detail.accessibleName())
         self.assertEqual(record.state.text(),'已完成')
         self.assertIn('测试设备',record.title.accessibleName())
+
+    def test_history_typography_matches_shelf_list_in_both_themes(self):
+        from reference_widgets import css
+        from native_ui_common import colors
+        import ui_theme
+        panel=self.dialog.panel
+        panel._history=[{'when':'11-15 10:25','name':'report.pdf','peer':'Mac',
+                         'state':'完成','direction':'send'}]
+        panel._render_history();row=panel.history_rows[0]
+        name=QLabel();detail=QLabel();previous=ui_theme.current_theme()
+        try:
+            for theme in ('light','dark'):
+                ui_theme.set_theme(theme);panel.apply_theme(theme)
+                css(name,"color:#F5F5F7;background:transparent;border:0;font:600 12px 'FlickDock UI';",
+                    "color:#1D1D1F;background:transparent;border:0;font:600 12px 'FlickDock UI';")
+                css(detail,*[f"color:{colors(t)['file_description']};background:transparent;border:0;font:9px 'FlickDock UI';" for t in ('dark','light')])
+                APP.processEvents()
+                for actual,expected in ((row.detail,name),(row.title,detail)):
+                    self.assertEqual(actual.font().pixelSize(),expected.font().pixelSize(),theme)
+                    self.assertEqual(actual.font().weight(),expected.font().weight(),theme)
+                    self.assertEqual(actual.palette().color(QPalette.WindowText),expected.palette().color(QPalette.WindowText),theme)
+        finally:
+            ui_theme.set_theme(previous);name.deleteLater();detail.deleteLater()
 
     def test_recent_records_keep_status_time_and_long_names_in_separate_rows(self):
         panel=self.dialog.panel

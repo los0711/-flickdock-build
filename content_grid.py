@@ -73,9 +73,10 @@ class IconItem(QWidget):
         from reference_widgets import item_detail
         self._detail_text=item_detail(self.popup.shelf,self.ref)
         caption=getattr(self.popup,'upload_caption',None)
-        from shelf_content import shelf_added_time
+        from shelf_content import shelf_time_info
+        label,stamp=shelf_time_info(self.popup.shelf.content,self.ref,compact=True)
         self._upload_text=(caption(self.ref,compact=True) if callable(caption) else
-                           shelf_added_time(self.popup.shelf.content,self.ref,compact=True) or '放入时间暂无记录')
+                           ('记录于 '+stamp if label=='记录时间' else stamp))
         self.update()
 
     def refresh_content(self):

@@ -13,6 +13,7 @@ from PySide6.QtGui import QPen
 from PySide6.QtGui import QRegion
 from PySide6.QtWidgets import QApplication
 from PySide6.QtWidgets import QFrame
+from PySide6.QtWidgets import QGraphicsEffect
 from PySide6.QtWidgets import QGridLayout
 from PySide6.QtWidgets import QHBoxLayout
 from PySide6.QtWidgets import QSizePolicy
@@ -55,6 +56,18 @@ FILE_ROW_LEFT_INSET_PX = 9
 FILE_ROW_ITEM_GAP_PX = 8
 
 
+class _RowPressEffect(QGraphicsEffect):
+    """Scale only the painted row; layout and pointer bounds stay fixed."""
+    def __init__(self, row):
+        super().__init__(row);self.row=row
+
+    def draw(self, painter):
+        scale=1-.025*max(0.,min(1.,self.row.motion.values['down']))
+        center=QRectF(self.row.rect()).center()
+        painter.save();painter.translate(center);painter.scale(scale,scale);painter.translate(-center)
+        self.drawSource(painter);painter.restore()
+
+
 class OverviewOutline(QWidget):
     """Paint the window edge above its opaque overview child surfaces."""
     def __init__(self,parent):
@@ -91,7 +104,8 @@ class FileRow(QFrame):
         self.setFixedHeight(FILE_ROW_HEIGHT_PX);self.setMouseTracking(True);self.setCursor(Qt.OpenHandCursor);self.setFocusPolicy(Qt.StrongFocus)
         self._keyboard_focus=False
         self._highlighted=False
-        self.motion=Spring(self,{'highlight':0},self._hover_frame,motion=popup.shelf.manager.motion)
+        self.motion=Spring(self,{'highlight':0,'down':0},self._hover_frame,motion=popup.shelf.manager.motion)
+        self.motion.settled.connect(self._finish_press)
         row=QHBoxLayout(self);row.setContentsMargins(FILE_ROW_LEFT_INSET_PX,8,8,8);row.setSpacing(FILE_ROW_ITEM_GAP_PX)
         self.selection_check=SelectionCheck(self);self.selection_check.setFixedSize(40,40);self.selection_check.setChecked(path in popup.selected)
         self.selection_check.setAccessibleName('选择 '+popup.shelf.content.title(path))
@@ -119,6 +133,12 @@ class FileRow(QFrame):
         highlighted=values['highlight']>.3
         if highlighted!=self._highlighted:
             self._highlighted=highlighted;self.popup.shelf.surface_effect.invalidate_source();self.update()
+        effect=self.graphicsEffect()
+        if isinstance(effect,_RowPressEffect):effect.update()
+
+    def _finish_press(self):
+        if self.motion.values['down']==0 and isinstance(self.graphicsEffect(),_RowPressEffect):
+            self.setGraphicsEffect(None)
 
     def refresh_content(self):
         from reference_widgets import invalidate_thumbnail,item_detail
@@ -180,13 +200,15 @@ class FileRow(QFrame):
             self.popup.rows_body.update()
             for child in self.popup.rows_body.findChildren(FileRow):
                 child.update()
-            self.motion.animate({"highlight": 1.0}, response=.1, damping=1)
+            if self.graphicsEffect() is None:self.setGraphicsEffect(_RowPressEffect(self))
+            self.motion.animate({"highlight": 1.0,"down":1.0}, response=.12, damping=1)
             event.accept();return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
         if event.buttons() & Qt.MouseButton.LeftButton and not self.did_drag and (event.position().toPoint() - self.origin).manhattanLength() > 8:
             self.did_drag = True
+            self.motion.animate({'down':0},response=.18,damping=.9)
             chosen = [p for p in self.popup.shelf.files[self.popup.mode] if p in self.popup.selected]
             self.popup.shelf.drag_files(self.popup.mode, chosen or [self.path])
             QTimer.singleShot(0, self.popup.rebuild)
@@ -206,6 +228,7 @@ class FileRow(QFrame):
         if event.button()==Qt.MouseButton.LeftButton and not self.did_drag and getattr(self,'_pending_deselect',False):
             self.popup.select_item(self.path,toggle=True)
         self._pending_deselect=False
+        self.motion.animate({'down':0},response=.20,damping=.8)
         if event.button()==Qt.LeftButton:event.accept();return
         super().mouseReleaseEvent(event)
 
@@ -1112,8 +1135,9 @@ class ContentsPopup(QFrame):
         self._upload_metadata=metadata(refs) if callable(metadata) else {}
 
     def upload_caption(self,ref,*,compact=False):
-        from shelf_content import shelf_added_time
-        return shelf_added_time(self.shelf.content,ref,compact=compact) or '放入时间暂无记录'
+        from shelf_content import shelf_time_info
+        label,stamp=shelf_time_info(self.shelf.content,ref,compact=compact)
+        return ('记录于 '+stamp) if label=='记录时间' else stamp
 
     def _upload_metadata_changed(self,ref):
         sync=getattr(self.shelf.manager,'sync',None);batch=getattr(sync,'upload_metadata_for_refs',None)

@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import re
 import math
+import time
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
@@ -22,14 +23,38 @@ TEXT_PREFIX = "flickdock:text:"
 _CAPTURED_TEXT_NAME = re.compile(r"^拖入的文字(?: \(\d+\))?\.txt$", re.IGNORECASE)
 
 
+def _format_shelf_timestamp(stamp, compact=False):
+    if isinstance(stamp,bool) or not isinstance(stamp,(int,float)) or stamp<=0:
+        return None
+    try:
+        if not math.isfinite(stamp):return None
+        return datetime.fromtimestamp(stamp).strftime('%m-%d %H:%M:%S' if compact else '%Y-%m-%d %H:%M:%S')
+    except (OSError,OverflowError,ValueError):return None
+
+
 def shelf_added_time(content, ref, *, compact=False):
-    """Format the recorded local shelf-intake time; never infer it from upload or mtime."""
+    """Return the recorded intake/sync time, without inferring file dates."""
     stamp=getattr(content,'metadata',{}).get(ref,{}).get('added_at')
     if stamp is None:stamp=getattr(content,'pending',{}).get(ref,{}).get('added_at')
-    if isinstance(stamp,bool) or not isinstance(stamp,(int,float)) or not math.isfinite(stamp) or stamp<=0:
-        return None
-    try:return datetime.fromtimestamp(stamp).strftime('%m-%d %H:%M:%S' if compact else '%Y-%m-%d %H:%M:%S')
-    except (OSError,OverflowError,ValueError):return None
+    return _format_shelf_timestamp(stamp,compact)
+
+
+def ensure_observed_times(metadata, refs, *, now=None):
+    """Record when legacy entries were first observed, not a fabricated intake."""
+    now=time.time() if now is None else now
+    for ref in refs:
+        item=metadata.setdefault(ref,{})
+        if not _format_shelf_timestamp(item.get('added_at')) and not _format_shelf_timestamp(item.get('observed_at')):
+            item['observed_at']=now
+
+
+def shelf_time_info(content, ref, *, compact=False):
+    item=getattr(content,'metadata',{}).get(ref,{})
+    pending=getattr(content,'pending',{}).get(ref,{})
+    stamp=shelf_added_time(content,ref,compact=compact)
+    if stamp:return ('同步时间' if item.get('added_at_source')=='sync' else '放入时间',stamp)
+    observed=item.get('observed_at',pending.get('observed_at',getattr(content,'observed_at',None)))
+    return ('记录时间',_format_shelf_timestamp(observed,compact) or _format_shelf_timestamp(time.time(),compact))
 
 
 def _decode_text(data: bytes) -> str:
@@ -50,6 +75,7 @@ def _unique_image_path(directory: Path, suffix='.png') -> Path:
 
 class ContentRepository:
     def __init__(self, texts: dict[str, str] | None = None, metadata: dict | None = None):
+        self.observed_at=time.time()
         self.thumbnail_provider = None
         self.pending = {}
         self.transfers = {}

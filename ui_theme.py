@@ -15,6 +15,14 @@ _theme = 'light'
 _PALETTES = ('light', 'dark')
 
 
+def _style_tooltip(widget):
+    from native_ui_common import colors
+    c=colors(_theme)
+    if widget.property('flickdockTooltipTheme')!=_theme:widget.setProperty('flickdockTooltipTheme',_theme)
+    tip=f"QTipLabel{{background:{c['card']};color:{c['text']};border:1px solid {c['input_border']};}}"
+    if widget.styleSheet()!=tip:widget.setStyleSheet(tip)
+
+
 class _TooltipCorners(QObject):
     """Keep tooltip surfaces rounded and delay button hints until deliberate hover."""
     def __init__(self,parent):
@@ -55,6 +63,10 @@ class _TooltipCorners(QObject):
                 # Set geometry-affecting properties before the tooltip appears;
                 # resizing at Show made the popup visibly jump.
                 if event.type() in (QEvent.Polish,QEvent.Show):
+                    # Apply the changing colors only to the tooltip itself.
+                    # Replacing QApplication's stylesheet on every theme
+                    # change repolishes the entire widget tree synchronously.
+                    _style_tooltip(watched)
                     if watched.margin()!=0:watched.setMargin(0);watched.adjustSize()
                     if not watched.windowFlags() & Qt.NoDropShadowWindowHint:
                         watched.setWindowFlag(Qt.NoDropShadowWindowHint,True)
@@ -127,8 +139,13 @@ def apply_application(app, font_family):
     # individual dialogs and QToolTip.showText().  Keep any existing app QSS.
     c=colors(_theme)
     if not hasattr(app,'_flickdock_tooltip_base'):app._flickdock_tooltip_base=app.styleSheet()
-    tooltip=(f"QToolTip{{background:{c['card']};color:{c['text']};border:1px solid {c['input_border']};"
-             f"border-radius:{RADIUS_SUBCONTROL_PX}px;padding:4px 8px;font:400 12px {font_css_stack()};}}")
+    tooltip=(f"QToolTip{{border-radius:{RADIUS_SUBCONTROL_PX}px;"
+             f"padding:4px 8px;font:400 12px {font_css_stack()};}}")
+    # Keep both themed rules installed once, avoiding an application-wide
+    # repolish when the active theme changes.
+    for name in ('light','dark'):
+        tip_colors=colors(name)
+        tooltip+=f"QToolTip[flickdockTooltipTheme=\"{name}\"]{{background:{tip_colors['card']};color:{tip_colors['text']};border:1px solid {tip_colors['input_border']};}}"
     stylesheet=(app._flickdock_tooltip_base+'\n'+tooltip).strip()
     if app.styleSheet()!=stylesheet:app.setStyleSheet(stylesheet)
     if not getattr(app,'_flickdock_tooltip_corners',None):
@@ -136,6 +153,7 @@ def apply_application(app, font_family):
         QApplication.setEffectEnabled(Qt.UI_FadeTooltip,False)
         app._flickdock_tooltip_corners=_TooltipCorners(app);app.installEventFilter(app._flickdock_tooltip_corners)
     for widget in app.allWidgets():
+        if widget.metaObject().className()=='QTipLabel':_style_tooltip(widget)
         if isinstance(widget,UiButton):widget.refresh_style()
         reference=getattr(widget,'_reference_style',None)
         if reference:
@@ -146,5 +164,6 @@ def apply_application(app, font_family):
             name,tint=named_icon;widget.setIcon(icon(name,c.get(tint,tint)))
         source = getattr(widget, '_flickdock_style', None)
         if source is not None:
-            widget.setStyleSheet(qss(source, font_family))
+            resolved=qss(source, font_family)
+            if widget.styleSheet()!=resolved:widget.setStyleSheet(resolved)
         widget.update()

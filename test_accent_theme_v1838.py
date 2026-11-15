@@ -1,8 +1,9 @@
 """Persisted accent drafts, reversible dialogs and existing control recoloring."""
 import json,tempfile,unittest
 from pathlib import Path
+from PySide6.QtCore import QPoint
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QDialog
+from PySide6.QtWidgets import QDialog,QToolTip
 from app_settings import SettingsStore,SettingsDialog
 from native_ui_common import colors
 from reference_widgets import button,refresh_tree,split_send_button
@@ -73,5 +74,19 @@ class AccentTests(unittest.TestCase):
                     self.assertEqual(tokens['blue'],'#0A84FF')
         finally:
             primary.deleteLater();frame.deleteLater();flush()
+
+    def test_tooltip_changes_colors_without_replacing_global_stylesheet(self):
+        sheets=[]
+        try:
+            for theme in ('light','dark'):
+                ui_theme.set_theme(theme);ui_theme.apply_application(APP,FONT_FAMILY)
+                sheets.append(APP.styleSheet())
+                QToolTip.hideText();QToolTip.showText(QPoint(30,30),'测试提示');flush()
+                tip=next(w for w in APP.topLevelWidgets() if w.metaObject().className()=='QTipLabel' and w.isVisible())
+                c=colors(theme)
+                self.assertIn(c['card'].lower(),tip.styleSheet().lower())
+                self.assertIn(c['text'].lower(),tip.styleSheet().lower())
+            self.assertEqual(sheets[0],sheets[1])
+        finally:QToolTip.hideText();flush()
 
 if __name__=='__main__':unittest.main()

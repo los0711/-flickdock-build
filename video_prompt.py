@@ -36,11 +36,11 @@ class VideoLinkPrompt(CapsuleNotice):
 
     def _paint_indicator(self,painter,rect,colors):
         circle=QRectF(0,0,RING_VISIBLE_SIZE_PX,RING_VISIBLE_SIZE_PX);circle.moveCenter(rect.center())
-        painter.save();painter.setPen(Qt.NoPen);painter.setBrush(QColor(NOTICE_ACTION_COLOR));painter.drawEllipse(circle)
-        draw_glyph(painter,'arrow',circle.adjusted(4,4,-4,-4),'#FFFFFF',1.8);painter.restore()
+        painter.save();painter.setPen(Qt.NoPen);painter.setBrush(QColor(colors['action']));painter.drawEllipse(circle)
+        draw_glyph(painter,'arrow',circle.adjusted(4,4,-4,-4),colors['on_action'],1.8);painter.restore()
 
     def _paint_leading(self,painter,rect):
-        color=QColor(NOTICE_ACTION_COLOR);color.setAlpha(35)
+        color=QColor(colors('dark')['action']);color.setAlpha(35)
         painter.save();painter.setPen(Qt.NoPen);painter.setBrush(color);painter.drawEllipse(rect)
         icon('video',colors('dark')['link']).paint(painter,rect.adjusted(3,3,-3,-3).toAlignedRect());painter.restore()
 

@@ -40,6 +40,20 @@ class OverviewControlsTests(unittest.TestCase):
         self.assertLess(popup.sort_segment.width(),180)
         self.assertEqual(set(popup.sort_buttons),{'time','size'})
 
+    def test_list_row_press_scales_and_rebounds_without_moving_layout(self):
+        from overview_ui import _RowPressEffect
+        popup=self.overview();row=popup._item_widgets[self.paths[0]]
+        row.motion.motion=True;geometry=QRect(row.geometry())
+        point=QPoint(row.width()//2,row.height()//2)
+        QTest.mousePress(row,Qt.LeftButton,pos=point);QTest.qWait(75)
+        self.assertIsInstance(row.graphicsEffect(),_RowPressEffect)
+        self.assertGreater(row.motion.values['down'],.1)
+        self.assertEqual(row.geometry(),geometry)
+        QTest.mouseRelease(row,Qt.LeftButton,pos=point);QTest.qWait(400)
+        self.assertAlmostEqual(row.motion.values['down'],0,places=2)
+        self.assertEqual(row.geometry(),geometry)
+        self.assertIn(self.paths[0],popup.selected)
+
     def test_sort_arrows_contrast_with_idle_in_both_themes(self):
         from reference_widgets import SORT_ARROW_GAP_PX,SORT_ARROW_SIZE_PX
         popup=self.overview()
@@ -138,6 +152,19 @@ class OverviewControlsTests(unittest.TestCase):
         self.choose_delete(lambda dialog:QTest.mouseClick(dialog.selected_button,Qt.LeftButton))
         self.assertEqual(self.shelf.files['permanent'],[self.paths[0],self.paths[2]])
         self.assertTrue(all(Path(path).is_file() for path in self.paths))
+
+    def test_delete_confirmation_uses_saturated_readable_red_in_both_themes(self):
+        from confirm_clear import DeleteConfirmOverlay
+        for theme in ('light','dark'):
+            dialog=DeleteConfirmOverlay(self.shelf.card,3,1,theme=theme)
+            try:
+                style=dialog.delete_button.styleSheet()
+                self.assertIn('background:#DC2626;color:#FFFFFF',style)
+                self.assertIn('QPushButton:hover {background:#B91C1C;',style)
+                self.assertIn('QPushButton:pressed {background:#991B1B;',style)
+                for background in ('#DC2626','#B91C1C','#991B1B'):
+                    self.assertGreaterEqual(fixture.contrast_colors(QColor(background),QColor('#FFFFFF')),4.5)
+            finally:dialog.deleteLater()
 
     def test_delete_all_ignores_search_filter_and_preserves_originals(self):
         popup=self.overview();popup.search_edit.setText('report');fixture.flush()

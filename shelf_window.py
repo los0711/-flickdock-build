@@ -113,6 +113,8 @@ class ShelfWindow(QWidget):
         self.image_cache.ready.connect(self._image_ready)
         refs = data.get("permanent", [])
         self.files = {"permanent": [ref for ref in refs if isinstance(ref, str)] if isinstance(refs, list) else []}
+        from shelf_content import ensure_observed_times
+        ensure_observed_times(self.content.metadata,self.files['permanent'],now=self.content.observed_at)
 
         self.preview_cache = {}
         self.preview_playing = False
@@ -881,7 +883,10 @@ class ShelfWindow(QWidget):
             if self.content.exists(value):
                 if info is not None:self.file_metadata.prime(value,info)
                 if value in self.files[mode]: self.files[mode].remove(value)
-                self.content.metadata.setdefault(value,{}).setdefault('added_at',time.time())
+                metadata=self.content.metadata.setdefault(value,{})
+                from shelf_content import _format_shelf_timestamp
+                if not _format_shelf_timestamp(metadata.get('added_at')):
+                    metadata['added_at']=time.time();metadata['added_at_source']='local'
                 self.files[mode].append(value)
         self.refresh()
         self.touch()

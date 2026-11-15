@@ -102,8 +102,9 @@ class PreviewPane(QFrame):
             busy_lookup=getattr(sync,'cloud_copy_busy_for_ref',None)
             busy=bool(callable(busy_lookup) and busy_lookup(self.current_path))
             self.cloud_action.setEnabled(bool(sync and sync.service.signed_in and not busy and status not in ('uploading','pending') and not self.shelf.content.is_pending(self.current_path)))
-            from shelf_content import shelf_added_time
-            self.upload_time.setText('放入时间：'+(shelf_added_time(self.shelf.content,self.current_path) or '暂无记录'))
+            from shelf_content import shelf_time_info
+            label,stamp=shelf_time_info(self.shelf.content,self.current_path)
+            self.upload_time.setText(label+'：'+stamp)
         else:self.status_value.clear();self.upload_time.clear()
         update=getattr(self,'update_action_states',None)
         if getattr(self,'_group_refs',()) and callable(update):update()

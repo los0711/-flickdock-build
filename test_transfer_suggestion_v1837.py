@@ -15,13 +15,17 @@ from video_prompt import PROMPT_DURATION_MS
 
 class SuggestionTests(unittest.TestCase):
     def setUp(self):
+        import theme_accent
+        self._original_accent=theme_accent.current();theme_accent.set_color('#087CEF')
         self.fixture=w.WorkspaceTests();self.fixture.setUp()
         self.manager=self.fixture.manager;self.paths=self.fixture.paths[:2];self.actions=[]
         self.manager._remote_intake=lambda paths:self.actions.append(('remote',paths))
         self.manager.show_transfer_dialog=lambda:self.actions.append(('open',None))
         self.manager.lan_dialog=SimpleNamespace(panel=SimpleNamespace(queue_paths=lambda paths:self.actions.append(('queue',paths))))
 
-    def tearDown(self):self.fixture.tearDown()
+    def tearDown(self):
+        import theme_accent
+        theme_accent.set_color(self._original_accent);self.fixture.tearDown()
 
     def test_both_suggestions_share_black_capsule_and_keep_transfer_action(self):
         for theme in ('light','dark'):

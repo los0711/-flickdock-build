@@ -10,8 +10,9 @@ TRACKING_INSET_PX = 28
 WHEEL_SCROLL_DURATION_MS = 220
 WHEEL_IMMEDIATE_STEP = 1
 SETTINGS_ANCHOR_DURATION_MS = 220
-SCROLL_BOUNCE_DISTANCE_PX = 8
+SCROLL_BOUNCE_DISTANCE_PX = 36
 SCROLL_BOUNCE_DURATION_MS = 250
+SCROLL_BOUNCE_IDLE_MS = 100
 
 
 def _at_scroll_edge(bar,distance):
@@ -45,7 +46,8 @@ class ScrollBoundaryBounce(QObject):
         super().__init__(area);self.area=area;self.overlay=_BounceOverlay(area.viewport())
         self.animation=DisplayAnimation(self);self.animation.setDuration(SCROLL_BOUNCE_DURATION_MS)
         self.animation.valueChanged.connect(self._frame);self.animation.finished.connect(self.stop)
-        self.ease=QEasingCurve(QEasingCurve.OutCubic);self.start_offset=0.;self.peak=0.
+        self.ease=QEasingCurve(QEasingCurve.OutCubic);self.start_offset=0.
+        self.idle=QTimer(self);self.idle.setSingleShot(True);self.idle.timeout.connect(self.release)
         area.viewport().installEventFilter(self)
 
     def kick(self,distance):
@@ -66,20 +68,27 @@ class ScrollBoundaryBounce(QObject):
                 import ui_theme
                 color=QColor(ui_theme.color('background'))
             overlay.background=color;overlay.setGeometry(self.area.viewport().rect());overlay.show();overlay.raise_()
-        self.start_offset=overlay.offset
-        self.peak=-SCROLL_BOUNCE_DISTANCE_PX if distance>0 else SCROLL_BOUNCE_DISTANCE_PX
-        self.animation.setStartValue(0.);self.animation.setEndValue(1.);self.animation.start()
+        # Resist progressively near the limit while retaining direction, so
+        # reversing a gesture unwinds the stretch instead of jumping.
+        delta=max(-12.,min(12.,-float(distance)*.12))
+        if overlay.offset*delta>0:
+            delta*=max(.08,1-abs(overlay.offset)/SCROLL_BOUNCE_DISTANCE_PX)
+        overlay.offset=max(-SCROLL_BOUNCE_DISTANCE_PX,min(SCROLL_BOUNCE_DISTANCE_PX,overlay.offset+delta))
+        overlay.update();self.idle.start(SCROLL_BOUNCE_IDLE_MS)
+
+    def release(self):
+        self.idle.stop()
+        if not self.overlay.isVisible():return
+        self.start_offset=self.overlay.offset
+        self.animation.stop();self.animation.setStartValue(0.);self.animation.setEndValue(1.);self.animation.start()
 
     def _frame(self,value):
         progress=max(0.,min(1.,float(value)))
-        if progress<.28:
-            fraction=self.ease.valueForProgress(progress/.28)
-            self.overlay.offset=self.start_offset+(self.peak-self.start_offset)*fraction
-        else:self.overlay.offset=self.peak*(1-self.ease.valueForProgress((progress-.28)/.72))
+        self.overlay.offset=self.start_offset*(1-self.ease.valueForProgress(progress))
         self.overlay.update()
 
     def stop(self):
-        self.animation.stop();self.overlay.hide();self.overlay.snapshot=None;self.overlay.offset=0.
+        self.idle.stop();self.animation.stop();self.overlay.hide();self.overlay.snapshot=None;self.overlay.offset=0.
 
     def eventFilter(self,watched,event):
         if event.type() in (QEvent.Hide,QEvent.Resize,QEvent.MouseButtonPress,QEvent.KeyPress,QEvent.TouchBegin):self.stop()
@@ -88,6 +97,11 @@ class ScrollBoundaryBounce(QObject):
 
 def _bounce_at_edge(area,distance):
     bar=area.verticalScrollBar()
+    existing=getattr(area,'_flickdock_boundary_bounce',None)
+    if existing is not None and existing.overlay.isVisible() and existing.overlay.offset*distance>0:
+        existing.kick(distance)
+        if existing.overlay.offset*distance<=0:existing.stop()
+        return True
     if (not _at_scroll_edge(bar,distance) or _parent_can_scroll(area,distance)
             or (bar.maximum()<=bar.minimum() and not getattr(area,'_flickdock_edge_bounce',False))):return False
     bounce=getattr(area,'_flickdock_boundary_bounce',None)
@@ -118,6 +132,10 @@ class InertialWheelScroll(QObject):
 
     def wheel(self,event):
         if event.modifiers() & (Qt.ControlModifier|Qt.ShiftModifier):return False
+        if event.phase()==Qt.ScrollPhase.ScrollEnd:
+            bounce=getattr(self.area,'_flickdock_boundary_bounce',None)
+            if bounce is not None:bounce.release()
+            return False
         if event.pixelDelta().y() or event.angleDelta().y():
             before=getattr(self.area,'_flickdock_before_scroll',None)
             if callable(before):before()
@@ -129,6 +147,9 @@ class InertialWheelScroll(QObject):
         angle=event.angleDelta().y()
         if not angle:return False
         distance=-angle/120*max(1,QApplication.wheelScrollLines())*self.bar.singleStep()
+        bounce=getattr(self.area,'_flickdock_boundary_bounce',None)
+        if bounce is not None and bounce.overlay.isVisible() and bounce.overlay.offset*distance>0:
+            _bounce_at_edge(self.area,distance);event.accept();return True
         current=self.bar.value();pending=self.target-current
         base=self.target if self.motion.state()==self.motion.Running and pending*distance>0 else current
         target=max(self.bar.minimum(),min(self.bar.maximum(),round(base+distance)))
@@ -308,6 +329,10 @@ class SettingsNavigation(QObject):
 
     def _wheel(self,event):
         if event.modifiers() & (Qt.ControlModifier|Qt.ShiftModifier):return False
+        if event.phase()==Qt.ScrollPhase.ScrollEnd:
+            bounce=getattr(self.dialog.scroll,'_flickdock_boundary_bounce',None)
+            if bounce is not None:bounce.release()
+            return False
         pixels=event.pixelDelta().y();angle=event.angleDelta().y()
         if not pixels and not angle:return False
         self.motion.stop();self.anchor=None
@@ -322,6 +347,9 @@ class SettingsNavigation(QObject):
             self.wheel_motion.stop();self.bar.setValue(self.bar.value()-pixels)
         else:
             distance=-angle/120*max(1,QApplication.wheelScrollLines())*self.bar.singleStep()
+            bounce=getattr(self.dialog.scroll,'_flickdock_boundary_bounce',None)
+            if bounce is not None and bounce.overlay.isVisible() and bounce.overlay.offset*distance>0:
+                _bounce_at_edge(self.dialog.scroll,distance);event.accept();return True
             current=self.bar.value();pending=self.wheel_target-current
             base=self.wheel_target if self.wheel_motion.state()==self.wheel_motion.Running and pending*distance>0 else current
             target=max(self.bar.minimum(),min(self.bar.maximum(),round(base+distance)))

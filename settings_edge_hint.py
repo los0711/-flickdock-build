@@ -23,14 +23,20 @@ class SettingsEdgeHint(QWidget):
         self.message=QLabel('关闭设置后才可正常使用',self.card);self.message.setWordWrap(True);inside.addWidget(self.message)
         self.close_button=QPushButton('关闭设置',self.card);self.close_button.setMinimumHeight(34)
         self.close_button.clicked.connect(manager.close_settings_from_edge);inside.addWidget(self.close_button)
+        changed=getattr(manager.settings,'changed',None)
+        if changed is not None:changed.connect(self._apply_theme,Qt.QueuedConnection)
         self.setFixedWidth(224)
         from ui_transitions import WindowFade
         self._window_fade=WindowFade(self)
 
-    def show_hint(self):
+    def _apply_theme(self):
         from reference_widgets import palette
         c=palette()
-        self.card.setStyleSheet(f"QFrame{{background:{c['surface']};border:1px solid {c['border']};border-radius:12px;}} QLabel{{border:0;color:{c['secondary']};font-size:12px;}} QPushButton{{background:{c['blue']};color:white;border:0;border-radius:7px;padding:5px 12px;font-size:12px;}}")
+        style=f"QFrame{{background:{c['surface']};border:1px solid {c['border']};border-radius:12px;}} QLabel{{border:0;color:{c['secondary']};font-size:12px;}} QPushButton{{background:{c['action']};color:{c['on_action']};border:0;border-radius:7px;padding:5px 12px;font-size:12px;}} QPushButton:hover{{background:{c['action_hover']};}} QPushButton:pressed{{background:{c['action_pressed']};}}"
+        if self.card.styleSheet()!=style:self.card.setStyleSheet(style)
+
+    def show_hint(self):
+        self._apply_theme()
         self.adjustSize();edge=self.manager.edge.geometry();area=self.manager.edge.screen_area();side=self.manager.settings.dock_edge
         if side=='right':point=QPoint(edge.left()-self.width()-8,edge.center().y()-self.height()//2)
         elif side=='left':point=QPoint(edge.right()+8,edge.center().y()-self.height()//2)

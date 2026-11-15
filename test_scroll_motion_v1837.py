@@ -10,9 +10,9 @@ from settings_navigation import InertialWheelScroll, install_smooth_scrolling
 APP=QApplication.instance() or QApplication([])
 APP.setQuitOnLastWindowClosed(False)
 
-def wheel(angle=0,pixels=0):
+def wheel(angle=0,pixels=0,phase=Qt.NoScrollPhase):
     return QWheelEvent(QPointF(10,10),QPointF(10,10),QPoint(0,pixels),QPoint(0,angle),
-                       Qt.NoButton,Qt.NoModifier,Qt.NoScrollPhase,False)
+                       Qt.NoButton,Qt.NoModifier,phase,False)
 
 class ScrollTests(unittest.TestCase):
     def setUp(self):
@@ -46,9 +46,9 @@ class ScrollTests(unittest.TestCase):
             value=bar.value();self.assertTrue(self.controller.wheel(wheel(-120 if at_bottom else 120)))
             bounce=self.area._flickdock_boundary_bounce
             self.assertTrue(bounce.overlay.isVisible());self.assertEqual(bar.value(),value)
-            bounce.animation.pause();bounce.animation.setCurrentTime(70)
             self.assertLess(bounce.overlay.offset,0) if at_bottom else self.assertGreater(bounce.overlay.offset,0)
             self.assertEqual(bar.value(),value)
+            bounce.release();bounce.animation.pause();bounce.animation.setCurrentTime(70)
             bounce.animation.setCurrentTime(bounce.animation.duration())
             self.assertFalse(bounce.overlay.isVisible());self.assertEqual(bar.value(),value)
 
@@ -97,7 +97,6 @@ class ScrollTests(unittest.TestCase):
             self.assertGreater(bar.maximum(),0);bar.setValue(bar.minimum())
             self.assertTrue(navigation._wheel(wheel(120)))
             bounce=dialog.scroll._flickdock_boundary_bounce
-            bounce.animation.pause();bounce.animation.setCurrentTime(70)
             self.assertGreater(bounce.overlay.offset,0);self.assertEqual(bar.value(),bar.minimum())
             navigation.go(1);self.assertFalse(bounce.overlay.isVisible())
             navigation.motion.setCurrentTime(navigation.motion.duration())
@@ -129,8 +128,32 @@ class ScrollTests(unittest.TestCase):
                     self.assertEqual(bounce.overlay.snapshot.toImage().pixelColor(0,0),expected)
                     self.assertEqual(bounce.overlay.background,expected)
                     self.assertGreater(expected.lightness(),200) if theme=='light' else self.assertLess(expected.lightness(),80)
-                    bounce.animation.pause();bounce.animation.setCurrentTime(70);self.assertNotEqual(bounce.overlay.offset,0)
+                    self.assertNotEqual(bounce.overlay.offset,0)
                     bounce.stop()
         finally:fixture.shelf.image_cache.close();fixture.shelf.image_cache._pool.waitForDone(5000);fixture.tearDown()
+
+    def test_edge_stretch_tracks_input_caps_reverses_and_returns_on_end(self):
+        bar=self.area.verticalScrollBar();bar.setValue(bar.minimum())
+        self.assertTrue(self.controller.wheel(wheel(120)))
+        bounce=self.area._flickdock_boundary_bounce;first=bounce.overlay.offset
+        for _ in range(20):self.assertTrue(self.controller.wheel(wheel(120)))
+        maximum=bounce.overlay.offset
+        self.assertGreater(maximum,first);self.assertLessEqual(maximum,36)
+        self.assertTrue(self.controller.wheel(wheel(-120)))
+        self.assertLess(bounce.overlay.offset,maximum);self.assertEqual(bar.value(),bar.minimum())
+        self.controller.wheel(wheel(phase=Qt.ScrollEnd))
+        self.assertEqual(bounce.animation.state(),QAbstractAnimation.Running)
+        bounce.animation.pause();bounce.animation.setCurrentTime(100);during=bounce.overlay.offset
+        self.assertGreater(during,0);self.assertLess(during,maximum)
+        self.assertTrue(self.controller.wheel(wheel(120)))
+        self.assertGreater(bounce.overlay.offset,during)
+        self.assertEqual(bounce.animation.state(),QAbstractAnimation.Stopped)
+
+    def test_notched_wheel_returns_after_input_stops(self):
+        from PySide6.QtTest import QTest
+        self.controller.wheel(wheel(120));bounce=self.area._flickdock_boundary_bounce
+        self.assertTrue(bounce.idle.isActive());self.assertEqual(bounce.animation.state(),QAbstractAnimation.Stopped)
+        QTest.qWait(130)
+        self.assertEqual(bounce.animation.state(),QAbstractAnimation.Running)
 
 if __name__=='__main__':unittest.main(verbosity=2)
