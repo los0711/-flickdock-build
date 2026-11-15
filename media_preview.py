@@ -223,13 +223,7 @@ class _VideoSurface(QWidget):
         clipping.addRoundedRect(bounds, 12, 12)
         p.setClipPath(clipping)
         p.fillRect(bounds, QColor("#11161e"))
-        frame = self.frame_sink.videoFrame() if self.frame_sink is not None else None
-        if frame is not None and frame.isValid():
-            from PySide6.QtMultimedia import QVideoFrame
-            options = QVideoFrame.PaintOptions()
-            options.aspectRatioMode = Qt.AspectRatioMode.KeepAspectRatio
-            frame.paint(p, bounds, options)
-        elif not self.image.isNull():
+        if not self.image.isNull():
             size = self.image.size().scaled(self.size(), Qt.AspectRatioMode.KeepAspectRatio)
             target = QRectF((self.width() - size.width()) / 2, (self.height() - size.height()) / 2,
                             size.width(), size.height())
@@ -492,13 +486,10 @@ class MediaPreview(QWidget):
             return
         if self.surface.native is not None:
             self.surface.native.show()
-        elif self.surface.frame_sink is not None:
-            # Paint the latest frame in the existing shelf compositor; do not
-            # queue decoded frames or read them back into QImages during play.
-            self.surface.update()
         # Qt renders playing frames directly. CPU readback is only needed for
         # a reusable poster or an explicitly sought paused frame.
-        image = frame.toImage() if not self._poster_sent or self._poster_pending or self._seek_frame_pending else QImage()
+        image = frame.toImage() if (self.surface.frame_sink is not None or not self._poster_sent
+                                    or self._poster_pending or self._seek_frame_pending) else QImage()
         if not image.isNull():
             self.surface.image = image
             self.surface.update()
