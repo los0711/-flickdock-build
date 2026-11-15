@@ -93,7 +93,7 @@ class VideoTests(unittest.TestCase):
         from urllib.parse import urlunsplit
         for url in ('file:///C:/Windows/test',urlunsplit(('https','user:secret@example.com','/video','','')),'http://127.0.0.1/video','http://[::1]/video','http://192.168.1.2/video','http://localhost/video','https://example.com/\nvideo'):
             with self.subTest(url=url),self.assertRaises((ValueError,UnicodeError)):video_url(url)
-        self.assertEqual(candidate_link('һ����Ƶ https://x.com/user/status/1234567890��'),'https://x.com/user/status/1234567890')
+        self.assertEqual(candidate_link('一个视频 https://x.com/user/status/1234567890。'),'https://x.com/user/status/1234567890')
         cancel=threading.Event()
         self.assertTrue(recognized_video('https://www.youtube.com/watch?v=BaW_jenozKc',cancel))
         self.assertTrue(recognized_video('https://x.com/real/status/1234567890',cancel))
@@ -119,7 +119,7 @@ class VideoTests(unittest.TestCase):
                 self.assertNotEqual(paths[0],paths[1])
                 if sys.platform=='darwin':
                     from video_worker import _mac_video_streams
-                    for path in paths[:2]:self.assertEqual(_mac_video_streams(path,self.tools),(['h264'],['aac']))
+                    for path in paths[:2]:self.assertEqual(_mac_video_streams(path,self.tools),([('h264','yuv420p')],['aac']))
                 else:
                     self.assertEqual(paths[0].read_bytes(),self.payload);self.assertEqual(paths[1].read_bytes(),self.payload)
                 self.assertEqual(paths[2].suffix,'.m4a')

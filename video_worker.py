@@ -32,10 +32,10 @@ def _mac_video_streams(path,ffmpeg):
     probe=subprocess.run([str(ffmpeg),'-hide_banner','-i',str(path)],stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,timeout=30)
     description=probe.stderr.decode('utf-8','replace')
-    video=re.findall(r'\bVideo:\s*([a-zA-Z0-9_]+)',description)
+    video=re.findall(r'\bVideo:\s*([a-zA-Z0-9_]+)[^\r\n,]*,\s*([a-zA-Z0-9_]+)',description)
     audio=re.findall(r'\bAudio:\s*([a-zA-Z0-9_]+)',description)
-    if not video:raise ValueError('���ص���Ƶû�пɶ�ȡ�Ļ��棬���������ء�')
-    return [codec.lower() for codec in video],[codec.lower() for codec in audio]
+    if not video:raise ValueError('下载的视频没有可读取的画面，请重新下载。')
+    return [(codec.lower(),pixels.lower()) for codec,pixels in video],[codec.lower() for codec in audio]
 
 
 def _mac_compatible_video(path,tools):
@@ -43,9 +43,13 @@ def _mac_compatible_video(path,tools):
     ffmpeg=Path(tools)/('ffmpeg.exe' if sys.platform=='win32' else 'ffmpeg')
     videos,audios=_mac_video_streams(path,ffmpeg)
     # All video streams must use one policy: mixed codecs need transcoding.
-    copy_video=len(set(videos))==1 and videos[0] in ('h264','hevc')
+    codecs={codec for codec,_ in videos}
+    copy_video=len(codecs)==1 and all(
+        (codec=='h264' and pixels in ('yuv420p','yuvj420p')) or
+        (codec=='hevc' and pixels in ('yuv420p','yuvj420p','yuv420p10le'))
+        for codec,pixels in videos)
     copy_audio=all(codec in ('aac','mp3','alac') for codec in audios)
-    retag_hevc='hevc' in videos
+    retag_hevc='hevc' in codecs
     if path.suffix.lower() in ('.mp4','.m4v','.mov') and copy_video and copy_audio and not retag_hevc:
         return path
     target=path.with_name('.flickdock-compatible.mp4')
@@ -66,8 +70,8 @@ def _mac_compatible_video(path,tools):
                         emit('progress',phase='processing',bytes=0,total=None,speed=None);last=now
                 if process.wait():
                     errors.seek(0);details=errors.read(4096).decode('utf-8','replace').strip()
-                    raise ValueError('�޷����ɼ��� Mac ����Ƶ��'+details[-1000:])
-        if not target.is_file() or not target.stat().st_size:raise ValueError('��Ƶ���ݴ���δ���������ļ���')
+                    raise ValueError('无法生成兼容 Mac 的视频：'+details[-1000:])
+        if not target.is_file() or not target.stat().st_size:raise ValueError('视频兼容处理未生成完整文件。')
         output=path.with_suffix('.mp4')
         os.replace(target,output)
         if output!=path:path.unlink()
@@ -125,7 +129,7 @@ def public_request(url,allow_local=False,*,proxies=None):
     if proxy and urlsplit(proxy).scheme.lower() in ('http','https','socks4a','socks5h'):return
     addresses=socket.getaddrinfo(parts.hostname,parts.port or (443 if parts.scheme=='https' else 80),type=socket.SOCK_STREAM)
     if not addresses or any(not ipaddress.ip_address(row[4][0]).is_global for row in addresses):
-        raise ValueError('��Ƶ����ָ�򱾻������������ֹͣ����')
+        raise ValueError('视频链接指向本机或局域网，已停止请求。')
 
 
 def media_entries(info):
@@ -190,13 +194,13 @@ def downloader(request,progress):
 
 def execute(request):
     action=request.get('action')
-    if action not in ('extract','download','thumbnail'):raise ValueError('��Ƶ����������Ч��')
+    if action not in ('extract','download','thumbnail'):raise ValueError('视频任务类型无效。')
     url=request.get('url');allow_local=request.get('fixture_http') is True and os.environ.get('QT_QPA_PLATFORM')=='offscreen'
     public_request(url,allow_local)
     last=[0.]
     def progress(state):
         from transfer_priority import yield_bulk_payload
-        if state.get('downloaded_bytes',0)>MAX_DOWNLOAD_BYTES:raise ValueError('�������ݳ��� 16 GB ���ơ�')
+        if state.get('downloaded_bytes',0)>MAX_DOWNLOAD_BYTES:raise ValueError('下载内容超过 16 GB 限制。')
         if state['status']=='downloading':yield_bulk_payload(threading.Event())
         now=time.monotonic()
         if state['status']=='downloading' and now-last[0]>=.1:
@@ -222,33 +226,33 @@ def execute(request):
                 page=entry.get('webpage_url') or entry.get('original_url') or url
                 public_request(page,allow_local)
                 duration=entry.get('duration')
-                rows.append(dict(id=str(entry.get('id',''))[:160],url=page,title=str(entry.get('title') or 'δ������Ƶ')[:300],
+                rows.append(dict(id=str(entry.get('id',''))[:160],url=page,title=str(entry.get('title') or '未命名视频')[:300],
                     uploader=str(entry.get('uploader') or entry.get('extractor') or '')[:100],
                     duration=duration if type(duration) in (float,int) and math.isfinite(duration) and duration>=0 else None,options=options,
                     thumbnail_url=urljoin(page,str(entry['thumbnail']))[:8192] if entry.get('thumbnail') else ''))
-            if not rows:raise ValueError('û���ҵ������ص���Ƶ����Ƶ��ֱ�����ܱ������ݻ���Ҫ��¼�����ӿ����޷�������')
+            if not rows:raise ValueError('没有找到可下载的视频或音频。直播、受保护内容或需要登录的链接可能无法解析。')
             emit('result',entries=rows,limited=len(rows)==MAX_RESULTS)
             return
         folder=Path(request['folder'])
-        if not folder.is_absolute() or not folder.is_dir() or folder.is_symlink():raise ValueError('���ر���λ����Ч��')
+        if not folder.is_absolute() or not folder.is_dir() or folder.is_symlink():raise ValueError('下载保存位置无效。')
         token=request.get('token','')
-        if not re.fullmatch('[a-f0-9]{32}',token):raise ValueError('���������ʶ��Ч��')
+        if not re.fullmatch('[a-f0-9]{32}',token):raise ValueError('下载任务标识无效。')
         stage=folder/('.flickdock-download-'+token);stage.mkdir()
         try:
             info=ydl.extract_info(url,download=False)
             entry=next((entry for entry in media_entries(info) if str(entry.get('id',''))==request['id']),None)
-            if entry is None:raise ValueError('��Ƶ�����ѱ仯�������½��������ӡ�')
-            if not filter_formats(entry):raise ValueError('����Ƶ������Э���ݲ�֧�֣�����������ֱ����')
+            if entry is None:raise ValueError('视频内容已变化，请重新解析该链接。')
+            if not filter_formats(entry):raise ValueError('该视频的下载协议暂不支持，或内容正在直播。')
             option=next((row for row in media_options(entry,ydl) if row['id']==request.get('option')),None)
-            if option is None:raise ValueError('�û����Ѳ����ã������½��������ӡ�')
+            if option is None:raise ValueError('该画质已不可用，请重新解析该链接。')
             ydl.params.update(format=option['format'],paths={'home':str(stage)},outtmpl={'default':'%(title).90B [%(id).40B].%(ext)s'})
             if option['extract_audio']:
                 from yt_dlp.postprocessor import FFmpegExtractAudioPP
                 ydl.add_post_processor(FFmpegExtractAudioPP(ydl,preferredcodec='best'))
             complete=ydl.process_ie_result(entry,download=True)
             candidates=[path for path in stage.iterdir() if path.is_file() and not path.is_symlink() and path.suffix not in ('.part','.ytdl','.json','.temp')]
-            if len(candidates)!=1 or candidates[0].stat().st_size==0:raise ValueError('����δ���������ļ��������ԡ�')
-            if candidates[0].suffix.lower() not in OUTPUT_EXTENSIONS:raise ValueError('���ؽ������֧�ֵ�����Ƶ�ļ���')
+            if len(candidates)!=1 or candidates[0].stat().st_size==0:raise ValueError('下载未生成完整文件，请重试。')
+            if candidates[0].suffix.lower() not in OUTPUT_EXTENSIONS:raise ValueError('下载结果不是支持的音视频文件。')
             if sys.platform=='darwin' and option['kind']=='video':
                 candidates[0]=_mac_compatible_video(candidates[0],ydl.params['ffmpeg_location'])
             from selection_archive import _publish_part
@@ -262,9 +266,9 @@ def run():
     try:
         stream=getattr(sys.stdin.buffer,'raw',sys.stdin.buffer)
         raw=stream.readline(MAX_IPC_BYTES+1)
-        if len(raw)>MAX_IPC_BYTES:raise ValueError('��Ƶ���񳬹����ơ�')
+        if len(raw)>MAX_IPC_BYTES:raise ValueError('视频任务超过限制。')
         request=json.loads(raw)
-        if not isinstance(request,dict):raise ValueError('��Ƶ�����ʽ��Ч��')
+        if not isinstance(request,dict):raise ValueError('视频任务格式无效。')
         def controls():
             from transfer_priority import set_clipboard_priority
             while line:=stream.readline(257):

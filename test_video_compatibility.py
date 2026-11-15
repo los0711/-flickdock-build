@@ -25,7 +25,7 @@ class MacVideoCompatibilityTests(unittest.TestCase):
 
     def make(self,path,video,audio,extra=()):
         self.run_ffmpeg('-f','lavfi','-i','testsrc=size=128x72:rate=10','-f','lavfi','-i','sine=frequency=440',
-                        '-t','0.6','-c:v',video,*extra,'-c:a',audio,'-y',path)
+                        '-t','0.6','-c:v',video,'-pix_fmt','yuv420p',*extra,'-c:a',audio,'-y',path)
 
     def frames(self,path):
         raw=self.run_ffmpeg('-i',path,'-map','0:v:0','-f','framemd5','-')
@@ -48,7 +48,7 @@ class MacVideoCompatibilityTests(unittest.TestCase):
             self.assertEqual(self.frames(output),before)
             probe=subprocess.run([str(self.ffmpeg),'-hide_banner','-i',str(output)],capture_output=True).stderr
             self.assertIn(b'hvc1',probe)
-            self.assertEqual(_mac_video_streams(output,self.ffmpeg),(['hevc'],['aac']))
+            self.assertEqual(_mac_video_streams(output,self.ffmpeg),([('hevc','yuv420p')],['aac']))
 
     def test_vp9_opus_is_converted_to_h264_aac(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -56,14 +56,23 @@ class MacVideoCompatibilityTests(unittest.TestCase):
             with patch('video_worker.emit'):
                 output=_mac_compatible_video(source,self.ffmpeg.parent)
             self.assertFalse(source.exists());self.assertEqual(output.suffix,'.mp4')
-            self.assertEqual(_mac_video_streams(output,self.ffmpeg),(['h264'],['aac']))
+            self.assertEqual(_mac_video_streams(output,self.ffmpeg),([('h264','yuv420p')],['aac']))
+            self.assertGreater(len(self.frames(output)),0)
+
+    def test_h264_444_is_converted_to_a_compatible_pixel_format(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source=Path(directory)/'h264-444.mp4';self.make(source,'libx264','aac',('-pix_fmt','yuv444p'))
+            self.assertEqual(_mac_video_streams(source,self.ffmpeg)[0],[('h264','yuv444p')])
+            with patch('video_worker.emit'):
+                output=_mac_compatible_video(source,self.ffmpeg.parent)
+            self.assertEqual(_mac_video_streams(output,self.ffmpeg),([('h264','yuv420p')],['aac']))
             self.assertGreater(len(self.frames(output)),0)
 
     def test_failed_conversion_keeps_original_and_does_not_publish_partial_output(self):
         with tempfile.TemporaryDirectory() as directory:
             source=Path(directory)/'vp9.webm';self.make(source,'libvpx-vp9','libopus')
             original=source.read_bytes()
-            with patch('video_worker.emit'),patch('video_worker._mac_video_streams',return_value=(['vp9'],['opus'])), \
+            with patch('video_worker.emit'),patch('video_worker._mac_video_streams',return_value=([('vp9','yuv420p')],['opus'])), \
                     patch('video_worker.subprocess.Popen',side_effect=OSError('encoder unavailable')):
                 with self.assertRaises(OSError):_mac_compatible_video(source,self.ffmpeg.parent)
             self.assertEqual(source.read_bytes(),original)
