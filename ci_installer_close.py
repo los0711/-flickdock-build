@@ -80,6 +80,9 @@ OutputBaseFilename=close-test
 [Files]
 Source: "{folder/'1.0.1.0.exe'}"; DestDir: "{{app}}"; DestName: "FlickDock.exe"; Flags: ignoreversion
 ''',encoding='utf8')
+                if value==mode:
+                    with definition.open('a',encoding='utf8') as stream:
+                        stream.write('\n[Code]\n'+script.split('[Code]',1)[1])
                 compiled=subprocess.run([compiler,str(definition)],capture_output=True,timeout=40)
                 assert compiled.returncode==0,compiled.stdout.decode(errors='replace')[-1500:]
                 setups[value]=destination/'close-test.exe'
@@ -89,6 +92,7 @@ Source: "{folder/'1.0.1.0.exe'}"; DestDir: "{{app}}"; DestName: "FlickDock.exe";
             except subprocess.TimeoutExpired:legacy_code=None;stop(legacy)
             assert child.poll() is None,'Legacy behavior did not reproduce the tray process remaining alive'
             report['checks'].append(dict(name='legacy close keeps tray process alive',ok=True,installer_exit=legacy_code))
+            started=time.monotonic()
             fixed=subprocess.Popen([str(setups[mode]),'/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/LOG='+str(folder/'fixed.log')])
             processes.append(fixed)
             try:code=fixed.wait(timeout=45)
@@ -97,7 +101,9 @@ Source: "{folder/'1.0.1.0.exe'}"; DestDir: "{{app}}"; DestName: "FlickDock.exe";
             assert code==0,(code,(folder/'fixed.log').read_text(errors='replace')[-2500:])
             child.wait(timeout=10)
             assert digest(fixture)==digest(folder/'1.0.1.0.exe'),'The actual executable was not replaced'
-            report['checks'].append(dict(name='confirmed close terminates leftover process and replaces executable',ok=True))
+            elapsed=time.monotonic()-started
+            assert elapsed<15,('Verified-path shutdown remained slow',elapsed)
+            report['checks'].append(dict(name='confirmed close terminates leftover process and replaces executable',ok=True,seconds=elapsed))
             ready.unlink();shutil.copy2(folder/'1.0.0.0.exe',fixture)
             parent=subprocess.Popen([str(fixture),str(ready)]);processes.append(parent)
             deadline=time.monotonic()+10
@@ -108,7 +114,6 @@ Source: "{folder/'1.0.1.0.exe'}"; DestDir: "{{app}}"; DestName: "FlickDock.exe";
             online_folder=folder/'online';online_folder.mkdir()
             definition=folder/'online.iss'
             online=(folder/(mode+'.iss')).read_text(encoding='utf8').replace(str(folder/mode),str(online_folder))
-            online+='\n[Code]\n'+script.split('[Code]',1)[1]
             definition.write_text(online,encoding='utf8')
             compiled=subprocess.run([compiler,str(definition)],capture_output=True,timeout=40)
             assert compiled.returncode==0,compiled.stdout.decode(errors='replace')[-1500:]

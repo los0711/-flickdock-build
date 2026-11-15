@@ -339,6 +339,7 @@ class ClipboardSync(QObject):
         from clipboard_delivery import ClipboardDeliveries
         self.deliveries=ClipboardDeliveries(self,base)
         self._seen_version=0;self._fetched_version=0;self._applied_version=0;self._receiving_version=0
+        self._hint_generation=0;self._fetch_hint_generation=0
         self._last_inbox_account=self._identity[0] if self._identity and self._identity[0] else ''
         self._inbox_waiters=[];self._inbox_error='';self._receive_attempt=0;self._receive_attempt_head=None
         self.pool=QThreadPool(self);self.pool.setMaxThreadCount(2)
@@ -819,7 +820,7 @@ class ClipboardSync(QObject):
         state=self._restore_inbox()
         self._set_view(self.view['value'],self.view['phase'],self.view.get('id',''))
         self._inbox_saved(self.inbox.saved_revision)
-        if self._active() and self.scheduler.connected:self.schedule.request()
+        if self._active() and self.scheduler.connected and not self._fetching:self.schedule.request()
 
     def _inbox_saved(self,revision):
         if self.closed:return
@@ -840,9 +841,15 @@ class ClipboardSync(QObject):
 
     def _clipboard_hint(self):
         if self.closed:return
+        self._hint_generation+=1;generation=self._hint_generation
         account=self._inbox_account();revision=self.inbox.hint(account)
         def ready():
-            if not self.closed and account==self._inbox_account() and self._active():self.refresh()
+            if self.closed or account!=self._inbox_account() or not self._active():return
+            if not self.inbox.snapshot(account).get('needs_refresh'):return
+            # A head request started after this hint already covers it. The
+            # disk acknowledgement must not launch another identical request.
+            if self._fetching and generation<=self._fetch_hint_generation:return
+            self.refresh()
         self._after_inbox_saved(revision,ready)
 
     def _queue_receive_head(self,head,callback):
@@ -1430,7 +1437,11 @@ class ClipboardSync(QObject):
             self._epoch+=1;self._generation+=1
             self._cancel_replaced_work()
             self._fetching=False;self._priority_flags(receiving=False)
-        self._queue_receive_head(head,lambda:self.refresh() if self._active() else None)
+        def ready():
+            if not self._active() or head_version(head)<=self._applied_version:return
+            if self._fetching and head_version(head)<=self._receiving_version:return
+            self.refresh()
+        self._queue_receive_head(head,ready)
 
     def refresh(self):
         if not self._active():return
@@ -1439,8 +1450,11 @@ class ClipboardSync(QObject):
         if self._fetching:self._refresh_again=True;return
         self._refresh_again=False
         self._fetching=True;generation=self._generation
+        self._fetch_hint_generation=self._hint_generation;hint_generation=self._hint_generation
         def latest(result,error,journaled=False):
             if error:self._finish_refresh(retrying=True);self._retry_receive_later(error);return
+            if generation==self._generation and hint_generation==self._hint_generation:
+                self.inbox.clear_hint(self._inbox_account())
             head=result.get('clipboard') if isinstance(result,dict) else None
             pushed=self._pushed_head
             version=head.get('version',0) if isinstance(head,dict) else 0
@@ -1460,6 +1474,7 @@ class ClipboardSync(QObject):
                 self.deliveries.committed(head,result.get('delivery') if isinstance(result,dict) else None)
                 self._finish_refresh();return
             if not journaled:
+                self._receiving_version=head_version(head)
                 snapshot=dict(result or {},clipboard=head)
                 self._queue_receive_head(head,lambda:latest(snapshot,None,True));return
             self.inbox.clear_hint(self._inbox_account())

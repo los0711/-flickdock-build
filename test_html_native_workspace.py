@@ -205,9 +205,10 @@ class WorkspaceTests(unittest.TestCase):
         self.assertTrue(self.shelf.menu_button.isVisible())
         self.assertLess(self.bounds(self.shelf.popup.clear_button,self.shelf.popup).right()+6,
                         self.bounds(self.shelf.pin_button,self.shelf.popup).left())
-        texts=[]
-        with patch.object(shelf_ui_common.AnimatedMenu,'exec',lambda menu,*_:texts.extend(action.text() for action in menu.actions() if not action.isSeparator())):
-            self.shelf.menu_button.click()
+        self.shelf.menu_button.click();flush()
+        menu=self.shelf._more_menu
+        texts=[action.text() for action in menu.actions() if not action.isSeparator()]
+        menu.close();flush()
         for expected in ('添加文件','设置','收起到屏幕边缘'):
             self.assertTrue(any(expected in value for value in texts),(expected,texts))
         self.shelf.collapse_contents();self.shelf.presentation_kind='drag';self.shelf._layout_header(shelf_ui_common.CARD_W)
@@ -659,9 +660,10 @@ class WorkspaceTests(unittest.TestCase):
             popup.selected.clear();popup.select_item(self.paths[0]);popup.show_item_menu(self.paths[0],QPoint(0,0))
         for text in ('打开文件','在文件夹中显示','复制文件路径','复制所选内容','重命名文件…','移动所选文件到…','从搁架移除此项'):
             self.assertIn(text,single)
-        page=[]
-        with patch.object(shelf_ui_common.AnimatedMenu,'exec',lambda menu,*_:page.extend(action.text() for action in menu.actions() if not action.isSeparator())):
-            self.shelf.show_menu(pos=QPoint(0,0))
+        self.shelf.show_menu(pos=QPoint(0,0));flush()
+        menu=self.shelf._more_menu
+        page=[action.text() for action in menu.actions() if not action.isSeparator()]
+        menu.close();flush()
         self.assertTrue(any('添加文件' in text for text in page));self.assertTrue(any('打包全部' in text for text in page))
         self.assertFalse(any('重命名' in text for text in page))
 

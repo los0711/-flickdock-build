@@ -172,6 +172,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-sync-v180-') as temp:
     # Removing a synchronized item creates a durable tombstone on the server.
     removed=adapters[1].view['permanent'].pop();restarted.local_changed();restarted.tick()
     until(lambda:not restarted.running)
+    until(lambda:any(x['record']['deleted'] for x in server.account('account-A')['items'].values()))
     assert any(x['record']['deleted'] for x in server.account('account-A')['items'].values())
     print('PASS cloud deletion tombstone')
     # A delayed response cannot populate the next account or reopen a closed engine.
@@ -243,6 +244,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-resume-v180-') as temp:
     assert sum(m=='POST' and p=='/v1/uploads' for _,m,p in server.calls)==1
     assert sum(m=='PUT' and p==f'/v1/uploads/{upload_id}/parts/1' for _,m,p in server.calls)==1
     assert any(m=='GET' and p==f'/v1/uploads/{upload_id}' for _,m,p in server.calls)
+    until(lambda:not stage.exists() and not engine.state.get('pending_stage_cleanup'))
     assert not stage.exists() and not engine.state['resumable_uploads']
     engine.close();print('PASS durable resume uses server boundary after accepted part reply is lost')
 
@@ -263,6 +265,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-resume-v180-') as temp:
     assert not any(token=='quota-B' and f'/uploads/{uid}' in path for token,_,path in server.calls)
     service.signin('quota-A');engine.state['not_before']=0;engine.tick()
     until(lambda:not engine.running and bool(server.account('quota-A')['items']))
+    until(lambda:not stage.exists() and not engine.state.get('pending_stage_cleanup'))
     assert not stage.exists();engine.close()
     print('PASS persisted retry_after and account-isolated upload continuation')
 
@@ -296,6 +299,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-resume-v180-') as temp:
         else:
             assert len(account['items'])==1
             assert next(iter(account['items'].values()))['data']==source.read_bytes()
+        until(lambda:not stage.exists() and not engine.state.get('pending_stage_cleanup'))
         assert not stage.exists() and source.exists()
         engine.close();source.write_bytes(payload)
         print('PASS interrupted upload '+mutation+' safely retires old snapshot/allocation')
@@ -308,6 +312,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-resume-v180-') as temp:
     assert stage.exists()
     engine.state['not_before']=0;engine.tick()
     until(lambda:not engine.running and not engine.state['resumable_uploads'])
+    until(lambda:not stage.exists() and not engine.state.get('pending_stage_cleanup'))
     assert len(server.account('commit-A')['items'])==1 and not stage.exists()
     assert len(server.account('commit-A')['changes'])==1
     engine.close();print('PASS committed revision with lost reply retires journal without duplicate')
@@ -444,6 +449,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-priority-delete-v180-') as te
     until(lambda:not engine.running and bool(server.account('lost-init')['items']))
     assert len(server.uploads)==1 and uid in server.uploads
     assert next(iter(server.account('lost-init')['items'].values()))['data']==payload
+    until(lambda:not stage.exists() and not engine.state.get('pending_stage_cleanup'))
     assert not stage.exists();engine.close()
     print('PASS lost initialization reply reuses pre-journaled UUID without orphan reservation')
 print('SHELF_PRIORITY_DELETE_V180_OK')
@@ -562,6 +568,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-instant-sync-') as folder:
     assert len(server.uploads)==1,'Identical content was uploaded twice'
     assert not engine.state['resumable_uploads'] and not engine.state['pending_uploads']
     assert all(not value['dirty'] for value in engine.state['entries'].values())
+    until(lambda:not engine.state.get('pending_stage_cleanup'))
     assert len(list((root/'profile'/'instant-account'/'outbox').glob('*.blob')))==0
     engine.close();print('PASS instant cloud reuse avoids a second upload and clears staged bytes')
 
