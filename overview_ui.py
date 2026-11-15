@@ -4,6 +4,7 @@ from collections import Counter
 
 from PySide6.QtCore import QEvent
 from PySide6.QtCore import QPoint
+from PySide6.QtCore import QPointF
 from PySide6.QtCore import QRectF
 from PySide6.QtCore import QTimer
 from PySide6.QtCore import Qt
@@ -63,9 +64,12 @@ class _RowPressEffect(QGraphicsEffect):
 
     def draw(self, painter):
         scale=1-.025*max(0.,min(1.,self.row.motion.values['down']))
-        center=QRectF(self.row.rect()).center()
+        bounds=self.sourceBoundingRect(Qt.LogicalCoordinates)
+        center=bounds.center()
+        offset=QPoint()
+        source=self.sourcePixmap(Qt.LogicalCoordinates,offset,QGraphicsEffect.PixmapPadMode.NoPad)
         painter.save();painter.translate(center);painter.scale(scale,scale);painter.translate(-center)
-        self.drawSource(painter);painter.restore()
+        painter.drawPixmap(QPointF(offset),source);painter.restore()
 
 
 class OverviewOutline(QWidget):

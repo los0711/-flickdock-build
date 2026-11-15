@@ -55,9 +55,19 @@ def main():
             else:
                 import AppKit
                 assert AppKit.NSApplication.sharedApplication().activationPolicy()==AppKit.NSApplicationActivationPolicyRegular
-                window.showMinimized();wait(window.isMinimized)
+                from window_chrome import minimize_utility
+                minimize_utility(window);wait(window.isMinimized)
                 assert AppKit.NSApplication.sharedApplication().activationPolicy()==AppKit.NSApplicationActivationPolicyRegular
-                window.showNormal();wait(lambda:not window.isMinimized())
+                # Activate a separate app first, then reactivate FlickDock's
+                # Cocoa process. This exercises Qt's activation event rather
+                # than explicitly calling showNormal() on the minimized window.
+                finder=AppKit.NSRunningApplication.runningApplicationsWithBundleIdentifier_('com.apple.finder')
+                assert finder,'Native activation probe requires Finder'
+                finder[0].activateWithOptions_(AppKit.NSApplicationActivateIgnoringOtherApps)
+                wait(lambda:not AppKit.NSApplication.sharedApplication().isActive())
+                AppKit.NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+                wait(lambda:not window.isMinimized() and window.isVisible())
+                report['cocoa_reactivation_restored_minimized']=True
             window.close();wait(lambda:not window.isVisible())
             window.show();wait(window.isVisible)
             assert window.size()==initial,(window.size(),initial)

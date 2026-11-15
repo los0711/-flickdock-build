@@ -111,7 +111,7 @@ class VideoTests(unittest.TestCase):
                     done=[];request=dict(action='download',url=entry['url'],id=entry['id'],option=option,folder=directory,token=__import__('uuid').uuid4().hex,fixture_http=True)
                     worker=VideoJob(request)
                     try:
-                        worker.finished.connect(done.append);worker.start();until(lambda:bool(done),30)
+                        worker.finished.connect(done.append);worker.start();until(lambda:bool(done),120)
                         self.assertFalse(done[0]['error'],done)
                         path=Path(done[0]['result']['path']);self.assertTrue(path.is_file());paths.append(path)
                     finally:worker.cancel();worker.deleteLater()
@@ -132,7 +132,7 @@ class VideoTests(unittest.TestCase):
                     dialog.show();APP.processEvents();controller.parse(self.origin+'/page');until(lambda:controller.extracting is None)
                     self.assertEqual(len(controller.entries),1,controller.message)
                     entry=controller.entries[0];row=entry['sources'][0];controller.action(row,'shelf')
-                    until(lambda:row['status'] in ('complete','error'),30)
+                    until(lambda:row['status'] in ('complete','error'),120)
                     self.assertEqual(row['status'],'complete',row.get('error'))
                     self.assertEqual({event[0] for event in events},{'shelf'})
                     self.assertEqual({event[1][0] for event in events},{row['path']})

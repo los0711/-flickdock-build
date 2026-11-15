@@ -4,7 +4,7 @@ os.environ['QT_QPA_PLATFORM']='offscreen'
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
-from PySide6.QtCore import QPoint,QRect,Qt
+from PySide6.QtCore import QEvent,QPoint,QRect,Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QPushButton
 from app_settings import SettingsStore,SettingsDialog
@@ -76,6 +76,14 @@ class UtilityTests(unittest.TestCase):
         dock_window_state(self.dialog,False,appkit=kit);self.assertEqual(policies[-1],0)
         dock_window_state(other,False,appkit=kit);self.assertEqual(policies[-1],1)
         other.deleteLater();APP.processEvents()
+
+    def test_macos_activation_restores_last_minimized_utility(self):
+        from window_chrome import minimize_utility
+        self.service._transfers.clear()
+        with patch('window_chrome.sys.platform','darwin'),patch('window_chrome.native_input_available',return_value=False):
+            minimize_utility(self.dialog);APP.processEvents();self.assertTrue(self.dialog.isMinimized())
+            APP.sendEvent(APP,QEvent(QEvent.ApplicationActivate));QTest.qWait(30)
+            self.assertFalse(self.dialog.isMinimized());self.assertTrue(self.dialog.isVisible())
 
     def test_corner_resize_fallback_keeps_controls_available(self):
         self.service._transfers.clear();window=self.dialog;surface=window.chrome.surface

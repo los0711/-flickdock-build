@@ -394,8 +394,11 @@ class ShelfWindow(QWidget):
             screen=QGuiApplication.screenAt(origin.center()) or QGuiApplication.primaryScreen()
             bounds=bounds.intersected(screen.availableGeometry())
         step=Fraction(self.devicePixelRatioF()).limit_denominator(8).denominator
-        x=origin.x()+math.floor((bounds.x()-origin.x())/step)*step
-        y=origin.y()+math.floor((bounds.y()-origin.y())/step)*step
+        # Cocoa can move a native window whose top/left slips outside the
+        # work area. Align inward after clipping, not outward across its edge.
+        align=math.ceil if sys.platform=='darwin' else math.floor
+        x=origin.x()+align((bounds.x()-origin.x())/step)*step
+        y=origin.y()+align((bounds.y()-origin.y())/step)*step
         return QRect(x,y,bounds.right()-x+1,bounds.bottom()-y+1)
 
     def _prepare_morph_frame(self,origin,target):
@@ -411,6 +414,9 @@ class ShelfWindow(QWidget):
         # A single compositor owns both the moving and resting surface. Align
         # the host rebase to its physical pixel phase and keep it at completion.
         required=origin.united(target).adjusted(-16,-12,16,12)
+        if sys.platform=='darwin':
+            screen=QGuiApplication.screenAt(origin.center()) or QGuiApplication.primaryScreen()
+            required=required.intersected(screen.availableGeometry())
         if not self.geometry().contains(required):
             self.setGeometry(self._reserved_surface_rect(origin,target))
         # The native host AND live widget tree stay at fixed endpoint bounds.

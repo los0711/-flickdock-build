@@ -54,6 +54,25 @@ class OverviewControlsTests(unittest.TestCase):
         self.assertEqual(row.geometry(),geometry)
         self.assertIn(self.paths[0],popup.selected)
 
+    def test_row_press_pixels_scale_about_center_without_shifting(self):
+        from types import SimpleNamespace
+        from PySide6.QtWidgets import QWidget
+        from overview_ui import _RowPressEffect
+        parent=QWidget();parent.resize(400,140)
+        row=QWidget(parent);row.setGeometry(40,30,320,64)
+        row.setStyleSheet('background:#e12378');row.motion=SimpleNamespace(values={'down':1.})
+        row.setGraphicsEffect(_RowPressEffect(row));parent.show();fixture.flush()
+        try:
+            image=parent.grab().toImage();ratio=image.devicePixelRatio()
+            y=round((row.y()+row.height()/2)*ratio)
+            pixels=[x for x in range(image.width()) if image.pixelColor(x,y).name()=='#e12378']
+            self.assertTrue(pixels)
+            left,right=min(pixels)/ratio,max(pixels)/ratio
+            self.assertGreater(left,row.x()+2);self.assertLess(right,row.x()+row.width()-3)
+            self.assertAlmostEqual((left+right)/2,row.x()+row.width()/2,delta=1.5)
+            self.assertEqual(row.geometry(),QRect(40,30,320,64))
+        finally:parent.close();parent.deleteLater();fixture.flush()
+
     def test_sort_arrows_contrast_with_idle_in_both_themes(self):
         from reference_widgets import SORT_ARROW_GAP_PX,SORT_ARROW_SIZE_PX
         popup=self.overview()

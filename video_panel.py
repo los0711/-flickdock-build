@@ -177,8 +177,10 @@ class VideoSourceCard(QFrame):
             role='green' if complete else 'secondary' if busy else 'link'
             self.download._video_glyph=glyph;self.download._reference_icon=(glyph,role);self.download.setIcon(icon(glyph,colors(theme)[role]))
         self.shelf.setToolTip('已放入搁架' if row['shelved'] else '下载后放入搁架')
-        labels={'ready':'','queued':'等待下载…','preparing':'正在准备…','selecting':'正在选择线路…','downloading':'正在下载…','processing':'正在整理…','complete':'已下载','cancelled':'已取消','error':'下载失败'}
+        labels={'ready':'','queued':'等待下载…','preparing':'正在安装下载组件…','selecting':'正在选择线路…','downloading':'正在下载…','processing':'正在整理…','complete':'已下载','cancelled':'已取消','error':'下载失败'}
         status=labels.get(row['status'],'')
+        if row['status']=='error' and row['error'].startswith('视频下载组件安装失败'):
+            status='组件安装失败，请检查网络后重试'
         if row['status']=='downloading':
             if row['speed']:status+=f' · {row["speed"]/1024**2:.1f} MB/s'
         if row['shelved']:status='已放入搁架'

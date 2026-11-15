@@ -11,6 +11,7 @@ from shiboken6 import isValid
 
 _dock_windows=weakref.WeakSet()
 _chromes=weakref.WeakSet()
+_last_minimized=None
 WINDOW_CONTROL_RADIUS_PX=RADIUS_CONTROL_PX
 
 
@@ -51,8 +52,20 @@ def _shutdown_chrome():
 atexit.register(_shutdown_chrome)
 
 def minimize_utility(window):
+    global _last_minimized
+    _last_minimized=weakref.ref(window)
     dock_window_state(window,True)
     window.showMinimized()
+
+def _restore_minimized_utility():
+    """When Cocoa reactivates the app, restore its last minimized utility."""
+    if sys.platform!='darwin' or _last_minimized is None:return
+    window=_last_minimized()
+    if window is None or not isValid(window) or not window.isMinimized():return
+    if any(isValid(other) and other is not window and other.isVisible() and not other.isMinimized()
+           for other in tuple(_dock_windows)):return
+    window.setWindowState((window.windowState() & ~Qt.WindowMinimized)|Qt.WindowActive)
+    window.show();window.raise_();window.activateWindow()
 
 def dock_window_state(window,needed,*,appkit=None):
     if sys.platform!='darwin' and appkit is None:return
@@ -176,6 +189,9 @@ class WindowChrome(QObject):
 
     def eventFilter(self,watched,event):
         kind=event.type()
+        if kind==QEvent.ApplicationActivate and watched is QApplication.instance() and sys.platform=='darwin':
+            QTimer.singleShot(0,watched,_restore_minimized_utility)
+            return False
         if kind not in (QEvent.Show,QEvent.WinIdChange,QEvent.WindowStateChange,QEvent.Resize,QEvent.Hide,
                         QEvent.MouseButtonPress,QEvent.MouseButtonDblClick,QEvent.MouseMove,QEvent.MouseButtonRelease):return False
         if QCoreApplication.closingDown() or not isValid(self.window):return False

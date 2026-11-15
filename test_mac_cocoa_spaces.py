@@ -191,15 +191,30 @@ def main() -> int:
             with patch('native_ui_common.reduced_motion',return_value=False):
                 shelf._show_at(QPoint(area.right()-359,area.top()+4),'manual',QPoint());settle_shelf()
                 number=shelf_window().windowNumber();canvas=shelf.geometry()
+                compact_top=shelf.card.mapToGlobal(QPoint()).y()
                 hit_target(shelf.expand_button)
                 shelf.show_contents();settle_shelf();application.processEvents()
                 if shelf_window().windowNumber()!=number or shelf.geometry()!=canvas:
                     raise AssertionError('Cocoa expansion replaced or rebased the native shelf')
+                expanded_top=shelf.card.mapToGlobal(QPoint()).y()
+                if abs(expanded_top-compact_top)>1:
+                    raise AssertionError(f'Cocoa expansion shifted its top edge: {compact_top} -> {expanded_top}')
                 visible=[window for window in AppKit.NSApplication.sharedApplication().windows()
                          if window.isVisible() and str(window.title())==shelf.windowTitle()]
                 if len(visible)!=1:raise AssertionError('Multiple native shelf windows are visible: '+str(len(visible)))
                 if shelf.popup.preview.current_path is not None:raise AssertionError('Cocoa overview opened an unselected file')
                 hit_target(shelf.popup.select_all_button);hit_target(shelf.popup.search_edit)
+                row=shelf.popup._item_widgets[ref]
+                row_origin=row.mapToGlobal(QPoint());row_rect=row.geometry()
+                hit_target(row)
+                QTest.mousePress(row,Qt.LeftButton,pos=row.rect().center());QTest.qWait(100)
+                if row.geometry()!=row_rect or row.mapToGlobal(QPoint())!=row_origin:
+                    raise AssertionError('Cocoa list press moved the live row or its input bounds')
+                QTest.mouseRelease(row,Qt.LeftButton,pos=row.rect().center());QTest.qWait(300)
+                if row.geometry()!=row_rect or row.mapToGlobal(QPoint())!=row_origin:
+                    raise AssertionError('Cocoa list release moved the live row')
+                # Restore the unselected starting state for the toolbar check.
+                shelf.popup.select_item(ref,toggle=True)
                 QTest.mouseClick(shelf.popup.select_all_button,Qt.LeftButton);application.processEvents()
                 if ref not in shelf.popup.selected:raise AssertionError('Cocoa overview selection button ignored the click')
                 if shelf.popup.preview.current_path!=ref:raise AssertionError('Cocoa selected file did not load its preview')

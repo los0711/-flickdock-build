@@ -288,4 +288,28 @@ class VideoMatrixTests(unittest.TestCase):
         card.shelf.click();self.controller.action(row,'shelf');self.assertEqual(self.events,[('permanent',[str(path)])])
         self.assertFalse(card.shelf.isEnabled());self.assertEqual(path.read_bytes(),b'completed-download-fixture')
 
+    def test_reparse_reuses_completed_source_without_starting_another_download(self):
+        from PySide6.QtCore import QObject,Signal
+        row=self.entry['sources'][0];path=self.root/'downloads'/'completed.mp4'
+        path.parent.mkdir(exist_ok=True);path.write_bytes(b'completed fixture')
+        row.update(path=str(path),status='complete',received=path.stat().st_size)
+        metadata={key:self.entry[key] for key in ('id','url','title','uploader','duration','thumbnail_url')}
+        metadata['options']=[dict(row['option'])]
+        class ParseJob(QObject):
+            finished=Signal(object)
+            def __init__(self,request,parent):super().__init__(parent);self.request=request
+            def start(self):self.finished.emit({'error':'','result':{'entries':[metadata]}})
+            def cancel(self):pass
+        with patch('video_controller.VideoJob',ParseJob),patch.object(self.controller,'_start_download') as download:
+            self.controller.parse(self.entry['url']);current=self.controller.entries[0]['sources'][0]
+            self.assertEqual(current['status'],'complete');self.assertEqual(current['path'],str(path))
+            self.controller.action(current,'shelf');download.assert_not_called()
+        self.assertEqual(self.events,[('permanent',[str(path)])])
+
+    def test_missing_completed_file_is_reported_instead_of_silently_redownloaded(self):
+        row=self.entry['sources'][0];row.update(path=str(self.root/'missing.mp4'),status='complete')
+        with patch.object(self.controller,'_start_download') as download:
+            self.controller.action(row,'shelf');download.assert_not_called()
+        self.assertIn('不存在或已被移动',self.controller.message)
+
 if __name__=='__main__':unittest.main()

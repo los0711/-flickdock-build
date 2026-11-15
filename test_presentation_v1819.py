@@ -23,6 +23,31 @@ class PresentationTests(unittest.TestCase):
         self.manager.edge_suppressed=False;self.shelf.pinned=False
     def tearDown(self):self.fixture.tearDown()
 
+    def test_macos_reserved_canvas_pixel_alignment_stays_inside_work_area(self):
+        area=QRect(0,25,1920,1055)
+        screen=SimpleNamespace(availableGeometry=lambda:area)
+        origin=QRect(1500,30,330,300);target=QRect(800,30,1030,630)
+        with patch('shelf_window.sys.platform','darwin'),\
+             patch('shelf_window.QGuiApplication.screenAt',return_value=screen),\
+             patch.object(self.shelf,'devicePixelRatioF',return_value=1.25):
+            canvas=self.shelf._reserved_surface_rect(origin,target)
+        self.assertGreaterEqual(canvas.top(),area.top())
+        self.assertGreaterEqual(canvas.left(),area.left())
+        self.assertTrue(canvas.contains(origin));self.assertTrue(canvas.contains(target))
+
+    def test_fullscreen_edge_order_is_refreshed_without_changing_input_poll_rate(self):
+        screen=SimpleNamespace(geometry=lambda:QRect(0,0,1920,1080))
+        edge=SimpleNamespace(isVisible=lambda:True,display=screen)
+        manager=SimpleNamespace(edges={'primary':edge},_next_fullscreen_edge_check=0.)
+        with patch('flickdock.native_input_available',return_value=True),\
+             patch('platform_native.foreground_fullscreen',return_value=True),\
+             patch('platform_native.raise_edge_target') as raise_edge:
+            flickdock.ShelfManager._refresh_fullscreen_edges(manager,10.)
+            flickdock.ShelfManager._refresh_fullscreen_edges(manager,10.1)
+            raise_edge.assert_called_once_with(edge)
+            flickdock.ShelfManager._refresh_fullscreen_edges(manager,10.5)
+            self.assertEqual(raise_edge.call_count,2)
+
     def test_edge_opens_final_overview_in_one_show_then_quick_return_stays_in_place(self):
         self.manager.motion=True;self.shelf.presentation.motion=True;self.shelf.geometry_morph.motion=True
         for edge in ('right','left','top','bottom'):

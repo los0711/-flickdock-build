@@ -17,6 +17,11 @@ def uploading(identity='current-copy'):
 
 
 class CopyNoticeTests(unittest.TestCase):
+    def test_notice_is_ordered_above_fullscreen_without_activation(self):
+        with patch('platform_native.raise_edge_target') as raise_native:
+            self.card.show_result(None,uploading())
+            raise_native.assert_called_once_with(self.card)
+
     def test_fast_commit_reidentified_before_coalescing_still_presents_success(self):
         class Presenter(QObject):changed=Signal()
         presenter=Presenter();presenter.state=dict(uploading(),copy_id='local-copy');presenter.thumbnail=QImage()

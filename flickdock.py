@@ -140,6 +140,7 @@ class ShelfManager:
         self.was_down = False
         self._button_mask=0
         self._app_was_active = app.applicationState() == Qt.ApplicationState.ApplicationActive
+        self._next_fullscreen_edge_check=0.
         self.shake_detector=ShakeDetector(config_for_sensitivity(self.settings.shake_sensitivity))
         self._drag_probe_detector=ShakeDetector(replace(config_for_sensitivity(100),reversals=1))
         self._drag_content_ready=False
@@ -1103,12 +1104,20 @@ class ShelfManager:
         if self.auto_shown is None:return False
         return bool(self.auto_shown and self.auto_shown.receive_mime("permanent", mime))
 
+    def _refresh_fullscreen_edges(self,now):
+        if now<getattr(self,'_next_fullscreen_edge_check',0.) or not native_input_available():return
+        self._next_fullscreen_edge_check=now+.5
+        from platform_native import foreground_fullscreen,raise_edge_target
+        for edge in getattr(self,'edges',{}).values():
+            if edge.isVisible() and foreground_fullscreen(edge.display.geometry()):raise_edge_target(edge)
+
     def poll(self):
         if hasattr(self,'sync'):
             self.sync.set_interactive(self.shelf.isVisible() or bool(self.settings_dialog and self.settings_dialog.isVisible())
                 or bool(self.lan_dialog and self.lan_dialog.isVisible()) or bool(self.wan_dialog and self.wan_dialog.isVisible())
                 or bool(self.video_dialog and self.video_dialog.isVisible()))
         now=time.monotonic(); pos=QCursor.pos()
+        self._refresh_fullscreen_edges(now)
         self.translation.reconcile_pointer(pos, mouse_buttons_mask())
         # Cocoa may move a preallocated tool surface beneath a stationary
         # pointer without delivering Enter/Move to its children. Reconcile on

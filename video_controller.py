@@ -26,6 +26,7 @@ class VideoController(QObject):
         self.generation=0;self.message='支持主流视频站点、X、Facebook；其他网站也可粘贴链接尝试。'
         self.message_error=False
         self.closed=False;self.priority=False;self.cover_queue=[];self.cover_jobs=0
+        self._downloaded={}
 
     def sources(self):
         return [row for entry in self.entries for row in entry['sources']]
@@ -42,14 +43,21 @@ class VideoController(QObject):
             if self.closed or generation!=self.generation:return
             self.extracting=None
             if result['error']:self.message=result['error'];self.message_error=True;self.changed.emit();return
+            for old in self.sources():
+                if old['status']=='complete' and old['path']:
+                    self._downloaded[self._source_identity(old)]=(old['path'],old['received'])
             self.entries=[entry for entry in self.entries if any(row['job'] or row['status']=='queued' for row in entry['sources'])]
             added=[]
             for metadata in result['result']['entries']:
                 if any((entry['id'],entry['url'])==(metadata['id'],metadata['url']) for entry in self.entries):continue
                 entry=dict(metadata,key=uuid4().hex,sources=[],cover=None,cover_state='idle',cover_error='')
                 for option in metadata['options']:
-                    entry['sources'].append(dict(key=uuid4().hex,entry=entry,option=dict(option),status='ready',
-                        progress=None,received=0,total=None,speed=None,path=None,job=None,actions=set(),shelved=False,error=''))
+                    row=dict(key=uuid4().hex,entry=entry,option=dict(option),status='ready',
+                        progress=None,received=0,total=None,speed=None,path=None,job=None,actions=set(),shelved=False,error='')
+                    saved=self._downloaded.get(self._source_identity(row))
+                    if saved and Path(saved[0]).is_file():
+                        row.update(path=saved[0],status='complete',received=saved[1],total=saved[1],progress=1.)
+                    entry['sources'].append(row)
                 self.entries.append(entry);added.append(entry)
             self.message=f'已解析 {len(added)} 项，全部视频与音频来源已展开。'+('当前显示前 20 项。' if result['result'].get('limited') else '')
             self.changed.emit()
@@ -101,6 +109,8 @@ class VideoController(QObject):
             if action=='shelf':self._shelve(row)
             else:self.message='此来源已下载完成。'
             self.changed.emit();return
+        if action=='shelf' and row['status']=='complete':
+            self.message='已下载的文件不存在或已被移动，请重新下载。';self.message_error=True;self.changed.emit();return
         row['actions'].add(action)
         if row['job'] or row['status']=='queued':self.changed.emit();return
         row.update(status='queued',error='');self._kick()
@@ -110,6 +120,10 @@ class VideoController(QObject):
         try:
             self.manager.shelf.add_paths('permanent',[row['path']]);row['shelved']=True
         except (OSError,ValueError) as error:self.message=str(error);self.message_error=True
+
+    @staticmethod
+    def _source_identity(row):
+        return (row['entry']['url'],row['entry']['id'],row['option']['id'])
 
     def _kick(self):
         if self.closed:return
@@ -154,6 +168,7 @@ class VideoController(QObject):
                 if not path.is_file() or path.is_symlink() or path.resolve().parent!=folder.resolve():row.update(status='error',error='下载文件位置或内容无效。')
                 else:
                     row.update(status='complete',path=str(path),progress=1.,received=path.stat().st_size,total=path.stat().st_size)
+                    self._downloaded[self._source_identity(row)]=(str(path),row['received'])
                     actions=set(row['actions']);row['actions'].clear()
                     if 'shelf' in actions:self._shelve(row)
             self._kick()

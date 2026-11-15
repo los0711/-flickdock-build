@@ -88,18 +88,26 @@ jobs:
       - name: Verify native video and audio downloads from source and frozen app
         run: |
           build/macos-venv/bin/python - <<'PY'
-          import json,sys,unittest
+          import hashlib,json,os,sys,tempfile,unittest
           from pathlib import Path
           from unittest.mock import patch
           import test_video_v1823
           results=[]
           for frozen in (False,True):
               executable=str(Path('dist/FlickDock.app/Contents/MacOS/FlickDock').resolve()) if frozen else sys.executable
-              with patch.object(sys,'frozen',frozen,create=True),patch.object(sys,'executable',executable):
-                  suite=unittest.defaultTestLoader.loadTestsFromModule(test_video_v1823)
-                  result=unittest.TextTestRunner(verbosity=2).run(suite)
-              assert result.wasSuccessful() and result.testsRun==4 and not result.skipped
-              results.append(dict(frozen=frozen,tests=result.testsRun,ok=True))
+              with tempfile.TemporaryDirectory(prefix='flickdock-cold-video-') as profile:
+                  env={'HOME':profile} if frozen else {}
+                  with patch.dict(os.environ,env),patch.object(sys,'frozen',frozen,create=True),patch.object(sys,'executable',executable):
+                      suite=unittest.defaultTestLoader.loadTestsFromModule(test_video_v1823)
+                      result=unittest.TextTestRunner(verbosity=2).run(suite)
+                  assert result.wasSuccessful() and result.testsRun==4 and not result.skipped
+                  if frozen:
+                      from video_runtime import RUNTIME_CATALOG
+                      record=next(row for row in RUNTIME_CATALOG if row['platform']=='darwin' and row['architecture']=='arm64')
+                      runtime=Path(profile)/'Library/Application Support/FlickDock/video-runtime'/record['sha256']/'ffmpeg'
+                      assert runtime.is_file() and runtime.stat().st_size==record['bytes']
+                      with runtime.open('rb') as stream:assert hashlib.file_digest(stream,'sha256').hexdigest()==record['sha256']
+                  results.append(dict(frozen=frozen,tests=result.testsRun,ok=True,cold_runtime_verified=frozen))
           Path('../outputs/mac-video-${{ matrix.arch }}.json').write_text(json.dumps(dict(ok=True,architecture='${{ matrix.arch }}',checks=results),indent=2))
           PY
       - name: Gather verified release artifacts

@@ -2,6 +2,7 @@
 from datetime import datetime,timedelta,timezone
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 import ipaddress
+import hashlib,io,time,urllib.error
 from pathlib import Path
 import ssl,tempfile,threading,unittest
 from unittest.mock import patch
@@ -56,6 +57,30 @@ class VideoTlsTests(unittest.TestCase):
         with patch('video_worker.public_request'),patch('urllib.request.getproxies',return_value={}):
             with downloader({'action':'extract'},lambda _:None) as ydl:
                 with self.assertRaises(CertificateVerifyError):ydl.urlopen(Request(self.url))
+
+    def test_component_uses_verified_ca_on_a_cold_download(self):
+        from video_runtime import _download_archive
+        data=b'verified';record=dict(url=self.url,archive_bytes=len(data),archive_sha256=hashlib.sha256(data).hexdigest())
+        with patch.object(certifi,'where',return_value=str(self.ca)),patch('urllib.request.getproxies',return_value={}):
+            output=io.BytesIO();progress=[]
+            _download_archive(record,output,lambda **value:progress.append(value),time.monotonic()+10)
+            self.assertEqual(output.getvalue(),data);self.assertEqual(progress[0]['phase'],'preparing')
+        with patch('urllib.request.getproxies',return_value={}):
+            with self.assertRaises(OSError):_download_archive(record,io.BytesIO(),lambda **_:None,time.monotonic()+10)
+
+    def test_component_falls_back_and_discards_failed_partial_bytes(self):
+        from video_runtime import _download_archive,_archive_urls
+        payload=b'complete';record=dict(url='https://files.pythonhosted.org/packages/fixture',archive_bytes=len(payload),archive_sha256=hashlib.sha256(payload).hexdigest())
+        urls=_archive_urls(record);calls=[]
+        class Reply(io.BytesIO):
+            def __init__(self,url,body):super().__init__(body);self.url=url
+            def geturl(self):return self.url
+        def request(req,**kwargs):
+            calls.append(req.full_url)
+            return Reply(req.full_url,b'bad' if len(calls)==1 else payload)
+        with patch('urllib.request.urlopen',side_effect=request):
+            output=io.BytesIO();_download_archive(record,output,lambda **_:None,time.monotonic()+10)
+        self.assertEqual(calls,list(urls));self.assertEqual(output.getvalue(),payload)
 
 
 if __name__=='__main__':unittest.main()

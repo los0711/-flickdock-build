@@ -256,7 +256,10 @@ class CapsuleNotice(QWidget):
         self.setFixedSize(min(self.HOST_WIDTH,max(COMPACT_SIDE_PX,area.width()-2*NOTICE_MARGIN_PX)),min(self.HOST_HEIGHT,area.height()-2*NOTICE_MARGIN_PX))
         self._full_width=self._content_width();self._layout_width=self._full_width;self._place(area)
         if not self.isVisible():self._shape=QPointF(COMPACT_SIDE_PX,ENTRY_HEIGHT_PX);self._alpha=0.
-        self.show();self.raise_();self._animate_shape(self._full_width);self._animate_alpha(1.)
+        self.show();self.raise_()
+        from platform_native import raise_edge_target
+        raise_edge_target(self)
+        self._animate_shape(self._full_width);self._animate_alpha(1.)
         notice_cluster.start_split(self)
         self._sync_accessibility()
 

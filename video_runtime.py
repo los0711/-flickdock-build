@@ -1,4 +1,4 @@
-"""Fetch one pinned FFmpeg executable on demand, outside the application bundle."""
+"""Install a pinned, verified FFmpeg runtime without blocking the UI thread."""
 import hashlib
 import os
 from pathlib import Path
@@ -8,6 +8,8 @@ import tempfile
 import threading
 import time
 import urllib.request
+import urllib.error
+import ssl
 import zipfile
 from PySide6.QtCore import QLockFile
 from platform_native import data_directory
@@ -19,6 +21,41 @@ PREPARE_TIMEOUT_SECONDS=180
 
 def _digest(path):
     with path.open('rb') as stream:return hashlib.file_digest(stream,'sha256').hexdigest()
+
+def _archive_urls(record):
+    official=record['url']
+    prefix='https://files.pythonhosted.org/'
+    if not official.startswith(prefix):return (official,)
+    return ('https://pypi.tuna.tsinghua.edu.cn/'+official[len(prefix):],official)
+
+def _download_archive(record,output,progress,deadline):
+    import certifi
+    context=ssl.create_default_context(cafile=certifi.where())
+    last_error=None
+    for url in _archive_urls(record):
+        if time.monotonic()>=deadline:break
+        output.seek(0);output.truncate();received=0;digest=hashlib.sha256();started=time.monotonic();last_progress=started
+        progress(phase='preparing',bytes=0,total=record['archive_bytes'],speed=None)
+        request=urllib.request.Request(url,headers={'User-Agent':'FlickDock/1.8.23','Accept-Encoding':'identity'})
+        try:
+            with urllib.request.urlopen(request,timeout=min(30,max(1,deadline-time.monotonic())),context=context) as response:
+                if response.geturl()!=url:raise ValueError('视频组件下载来源发生变化。')
+                while True:
+                    yield_bulk_payload(threading.Event())
+                    if time.monotonic()>=deadline:raise TimeoutError('下载视频组件超时。')
+                    block=response.read(BLOCK_BYTES)
+                    if not block:break
+                    received+=len(block)
+                    if received>record['archive_bytes']:raise ValueError('视频组件下载大小不符。')
+                    output.write(block);digest.update(block)
+                    now=time.monotonic()
+                    if now-last_progress>=.1 or received==record['archive_bytes']:
+                        progress(phase='preparing',bytes=received,total=record['archive_bytes'],speed=received/max(.001,now-started));last_progress=now
+            if received!=record['archive_bytes'] or digest.hexdigest()!=record['archive_sha256']:
+                raise ValueError('视频组件下载校验失败。')
+            return
+        except (urllib.error.URLError,OSError,ValueError) as error:last_error=error
+    raise OSError('视频下载组件安装失败，请检查网络连接后重试。') from last_error
 
 def ensure_video_runtime(progress=lambda **_:None):
     architecture=platform.machine().lower()
@@ -47,29 +84,19 @@ def ensure_video_runtime(progress=lambda **_:None):
         for path in folder.glob('.runtime-*'):
             if path.is_file() and not path.is_symlink():path.unlink()
         with tempfile.NamedTemporaryFile(prefix='.runtime-',dir=folder,delete=False) as output:
-            archive=Path(output.name);temporary.append(archive);received=0;digest=hashlib.sha256();started=time.monotonic();last_progress=started
-            progress(phase='preparing',bytes=0,total=record['archive_bytes'],speed=None)
-            request=urllib.request.Request(record['url'],headers={'User-Agent':'FlickDock/1.8.23','Accept-Encoding':'identity'})
-            with urllib.request.urlopen(request,timeout=30) as response:
-                if response.geturl()!=record['url']:raise ValueError('视频组件下载来源发生变化。')
-                while True:
-                    yield_bulk_payload(threading.Event())
-                    if time.monotonic()>=deadline:raise TimeoutError('下载视频组件超时，请重试。')
-                    block=response.read(BLOCK_BYTES)
-                    if not block:break
-                    received+=len(block)
-                    if received>record['archive_bytes']:raise ValueError('视频组件下载大小不符。')
-                    output.write(block);digest.update(block)
-                    now=time.monotonic()
-                    if now-last_progress>=.1 or received==record['archive_bytes']:
-                        progress(phase='preparing',bytes=received,total=record['archive_bytes'],speed=received/max(.001,now-started));last_progress=now
-        if received!=record['archive_bytes'] or digest.hexdigest()!=record['archive_sha256']:raise ValueError('视频组件下载校验失败，请重试。')
+            archive=Path(output.name);temporary.append(archive)
+            _download_archive(record,output,progress,deadline)
         with zipfile.ZipFile(archive) as bundle:
             matches=[row for row in bundle.infolist() if row.filename==record['member']]
             if len(matches)!=1 or matches[0].file_size!=record['bytes']:raise ValueError('视频组件归档内容不符。')
             with bundle.open(matches[0]) as source,tempfile.NamedTemporaryFile(prefix='.runtime-',dir=folder,delete=False) as output:
                 executable=Path(output.name);temporary.append(executable);digest=hashlib.sha256()
-                for block in iter(lambda:source.read(BLOCK_BYTES),b''):output.write(block);digest.update(block)
+                extracted=0;last_progress=0.
+                for block in iter(lambda:source.read(BLOCK_BYTES),b''):
+                    output.write(block);digest.update(block);extracted+=len(block)
+                    now=time.monotonic()
+                    if now-last_progress>=.1 or extracted==record['bytes']:
+                        progress(phase='preparing',bytes=extracted,total=record['bytes'],speed=None);last_progress=now
         if digest.hexdigest()!=record['sha256']:raise ValueError('视频组件可执行文件校验失败。')
         executable.chmod(0o755);os.replace(executable,target)
         return folder
