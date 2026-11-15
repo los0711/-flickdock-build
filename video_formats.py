@@ -52,6 +52,7 @@ def media_options(info,ydl):
             tracks=[track for item in ydl._select_formats(formats,ydl.build_format_selector(selector)) for track in item.get('requested_formats',[item])]
             audio_codecs=[str(track.get('acodec') or '').lower().split('.')[0] for track in tracks if track.get('acodec') not in ('none',None)]
             pixel_format=str(source.get('pix_fmt') or '').lower()
+            mac_hevc_merge=_is_mac() and kind=='video' and video_codec in ('hvc1','hev1','hevc') and extension in ('mp4','m4v','mov') and len(tracks)>1 and bool(audio_codecs) and all(code in ('aac','mp4a','mp3','alac') for code in audio_codecs)
             fast_video=(video_codec in ('avc1','h264') and pixel_format in ('','yuv420p','yuvj420p')) or (_is_mac() and video_codec=='hvc1' and pixel_format in ('','yuv420p','yuvj420p','yuv420p10le'))
             recommended=kind=='video' and extension in ('mp4','m4v','mov') and fast_video and bool(audio_codecs) and all(code in ('aac','mp4a','mp3','alac') for code in audio_codecs)
             sizes=[];approximate=extract_audio
@@ -65,5 +66,5 @@ def media_options(info,ydl):
                 size=round(duration*rate*1000/8) if duration and rate else None
             options.append(dict(id=('v:' if kind=='video' else 'a:')+identifier,label=label,kind=kind,
                 details=' · '.join(details),format=selector,bytes=size,approximate=approximate,
-                extract_audio=extract_audio,height=round(height) if height else None,recommended=recommended))
+                extract_audio=extract_audio,height=round(height) if height else None,recommended=recommended,mac_hevc_merge=mac_hevc_merge))
     return sorted(options,key=lambda row:(row['kind']!='video',not row['recommended']))

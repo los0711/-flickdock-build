@@ -270,6 +270,10 @@ def execute(request):
             option=next((row for row in media_options(entry,ydl) if row['id']==request.get('option')),None)
             if option is None:raise ValueError('该画质已不可用，请重新解析该链接。')
             ydl.params.update(format=option['format'],paths={'home':str(stage)},outtmpl={'default':'%(title).90B [%(id).40B].%(ext)s'})
+            if sys.platform=='darwin' and option.get('mac_hevc_merge'):
+                # Write the Apple-compatible HEVC tag during the first mux, not
+                # in a second full-file pass after yt-dlp has finished merging.
+                ydl.params.update(merge_output_format='mp4',postprocessor_args={'merger+ffmpeg_o':['-tag:v','hvc1']})
             if option['extract_audio']:
                 from yt_dlp.postprocessor import FFmpegExtractAudioPP
                 ydl.add_post_processor(FFmpegExtractAudioPP(ydl,preferredcodec='best'))

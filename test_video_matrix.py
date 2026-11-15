@@ -68,6 +68,25 @@ class VideoFormatTests(unittest.TestCase):
         self.assertIn('AAC 音轨',options[0]['details']);self.assertEqual(options[0]['bytes'],1100)
         self.assertFalse(next(row for row in options if row['id']=='v:av1')['recommended'])
 
+    def test_mac_hevc_aac_merge_marks_compatible_first_mux(self):
+        from yt_dlp import YoutubeDL
+        formats=[dict(format_id='hevc',height=1080,vcodec='hev1.1.6',acodec='none',ext='mp4',filesize=1000,protocol='https',url='https://example.com/hevc'),
+                 dict(format_id='aac',vcodec='none',acodec='mp4a.40.2',ext='m4a',filesize=100,protocol='https',url='https://example.com/aac')]
+        with patch('video_formats._is_mac',return_value=True),YoutubeDL({'quiet':True}) as ydl:
+            options=media_options(dict(formats=formats),ydl)
+        video=next(row for row in options if row['kind']=='video')
+        self.assertTrue(video['mac_hevc_merge']);self.assertEqual(video['bytes'],1100)
+        self.assertFalse(next(row for row in options if row['kind']=='audio')['mac_hevc_merge'])
+
+    def test_hevc_tag_is_passed_only_to_ytdlp_merger_output(self):
+        from yt_dlp import YoutubeDL
+        from yt_dlp.postprocessor.ffmpeg import FFmpegMergerPP,FFmpegExtractAudioPP
+        with YoutubeDL({'quiet':True,'postprocessor_args':{'merger+ffmpeg_o':['-tag:v','hvc1']}}) as ydl:
+            merger=FFmpegMergerPP(ydl);other=FFmpegExtractAudioPP(ydl)
+            self.assertEqual(merger._configuration_args('ffmpeg',['_o1','_o','']),['-tag:v','hvc1'])
+            self.assertEqual(merger._configuration_args('ffmpeg',['_i1','_i']),[])
+            self.assertEqual(other._configuration_args('ffmpeg',['_o1','_o','']),[])
+
     def test_cover_is_normalized_and_non_raster_or_oversized_data_is_rejected(self):
         image=QImage(160,90,QImage.Format_RGB32);image.fill(QColor('#456979'));encoded=QByteArray();buffer=QBuffer(encoded);buffer.open(QIODevice.WriteOnly);image.save(buffer,'PNG');buffer.close()
         result=normalize_cover(bytes(encoded));decoded=QImage.fromData(base64.b64decode(result['image']))
