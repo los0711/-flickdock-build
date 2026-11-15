@@ -1,4 +1,4 @@
-"""Frozen release smoke check. Explicit offscreen mode is mandatory."""
+"""Frozen release checks with explicit offscreen or isolated Cocoa CI modes."""
 import ctypes
 import hashlib
 import json
@@ -231,9 +231,17 @@ def run_update(argv, load_font):
         return app.exec()
 
 
+def media_verification_allowed():
+    """AVFoundation needs Cocoa; native checks are limited to disposable CI."""
+    mode=os.environ.get('QT_QPA_PLATFORM')
+    return mode=='offscreen' or (sys.platform=='darwin' and mode=='cocoa'
+        and os.environ.get('GITHUB_ACTIONS')=='true'
+        and os.environ.get('FLICKDOCK_VERIFY_NATIVE_MEDIA')=='1')
+
+
 def run(argv, load_font):
-    if os.environ.get("QT_QPA_PLATFORM") != "offscreen":
-        raise RuntimeError("Release verification requires QT_QPA_PLATFORM=offscreen")
+    if not media_verification_allowed():
+        raise RuntimeError('Media verification requires offscreen mode or explicit isolated Cocoa CI mode')
     from PySide6.QtCore import QTimer, QPointF, Qt, QEvent, QCoreApplication
     from PySide6.QtGui import QMouseEvent
     from PySide6.QtNetwork import QSslSocket

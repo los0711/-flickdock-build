@@ -1,4 +1,4 @@
-name: Diagnose source and frozen Mac media environment
+name: Build and verify final Mac video test package
 on:
   push:
     branches: [mac-video-diagnostics]
@@ -6,86 +6,124 @@ permissions:
   contents: read
   actions: read
 jobs:
-  verify:
+  build:
     runs-on: macos-15
-    timeout-minutes: 10
+    timeout-minutes: 20
     env:
       PYTHONUTF8: '1'
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
       QT_QPA_PLATFORM: offscreen
+      QT_MEDIA_BACKEND: darwin
+      FLICKDOCK_TARGET_ARCH: arm64
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
-          ref: 418615af948102f2172631ea7ffddbc5e346827e
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: '3.12'
           architecture: arm64
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          artifact-ids: '14165688007'
-          run-id: '43722092773'
-          github-token: ${{ github.token }}
-          path: ci-built
-      - name: Install and check all verification dependencies
+      - name: Install pinned build and verification dependencies
         run: |
-          python -m pip install 'PySide6==6.12.0' 'pyobjc-framework-Quartz>=11,<13' 'keyring==25.7.0' 'fasttext-predict-v2==1.1.0' 'yt-dlp[default]==2026.10.26' 'imageio-ffmpeg==0.6.0' 'cryptography==50.0.2'
-          python -c "import imageio_ffmpeg; from pathlib import Path; p=Path(imageio_ffmpeg.get_ffmpeg_exe()); assert p.is_file(); print('Generated-video fixture dependency is ready')"
-      - name: Compare source and frozen media with audio and silent fixtures
+          python -m pip install 'PySide6==6.12.0' 'PyInstaller==6.22.3' 'pyobjc-framework-Quartz>=11,<13' 'keyring==25.7.0' 'fasttext-predict-v2==1.1.0' 'yt-dlp[default]==2026.10.26' 'imageio-ffmpeg==0.6.0' 'cryptography==50.0.2'
+          python -c "import imageio_ffmpeg; from pathlib import Path; assert Path(imageio_ffmpeg.get_ffmpeg_exe()).is_file()"
+          npm ci --prefix cloud --no-audit --no-fund
+          python ci_assets.py
+      - name: Verify exact scope and native media verification guard
+        run: |
+          python -m unittest test_native_media_verification test_architecture test_mac_build -q
+          python - <<'PY'
+          import ast,json,subprocess
+          from pathlib import Path
+          from release_manifest import RUNTIME_SOURCES
+          changes=subprocess.check_output(['git','diff','--name-only','418615af948102f2172631ea7ffddbc5e346827e','HEAD'],text=True).splitlines()
+          runtime=sorted(set(changes)&set(RUNTIME_SOURCES))
+          assert runtime==['offscreen_verify.py'],runtime
+          Path('ci-runtime-scope.json').write_text(json.dumps(dict(ok=True,previous_application_commit='418615af948102f2172631ea7ffddbc5e346827e',
+              runtime_changes=runtime,all_sync_transport_sources_unchanged=True,prior_regression_run=43722092773),indent=2))
+          PY
+      - name: Build frozen arm64 application
+        run: |
+          mkdir -p build/macos
+          python build_macos.py --icon-only build/macos/FlickDock.icns
+          python -m PyInstaller --noconfirm FlickDock-mac.spec
+      - name: Verify frozen application and native video interactions
         run: |
           python - <<'PY'
-          import hashlib,json,os,subprocess,sys,tempfile,zipfile
+          import json,os,subprocess,tempfile,sys
           from pathlib import Path
           import imageio_ffmpeg
-          from mac_updates import _extract
-          output=Path('reverification');output.mkdir(exist_ok=True)
-          built=Path('ci-built')
-          candidates=list(built.rglob('mac-build-1.8.37-arm64.json'))
-          assert len(candidates)==1,candidates
-          built=candidates[0].parent
-          build=json.loads(candidates[0].read_text())
-          assert build['ok'] and build['architecture']=='arm64' and build['version']=='1.8.37'
-          expected={'zip':'5578e4f644fc8a196359a5e180cc66c42ba9cba766cc9890ed180e3e96ab1650',
-                    'dmg':'6c3b254e0f0cd212b64288d4dacf5d0b576dcd2b67d6c2d6eba8a967e9c943cf',
-                    'pkg':'ee21f984563f76b545071b4a67cb691e399929b0fc09ed497b4412eea4411a1e'}
-          for row in build['artifacts']:
-              path=built/row['name']
-              with path.open('rb') as stream:digest=hashlib.file_digest(stream,'sha256').hexdigest()
-              assert path.stat().st_size==row['bytes'] and digest==row['sha256']==expected[path.suffix[1:]]
-          with zipfile.ZipFile(built/'FlickDock-1.8.37-macOS-arm64.zip') as archive:
-              app=_extract(archive,Path('ci-app'),None)
+          output=Path('ci-output');output.mkdir(exist_ok=True)
+          app=Path('dist/FlickDock.app');binary=(app/'Contents/MacOS/FlickDock').resolve()
           subprocess.run(['/usr/bin/codesign','--verify','--deep','--strict',str(app)],check=True,timeout=30)
-          with tempfile.TemporaryDirectory(prefix='flickdock-media-ab-') as profile:
-              cases=[]
-              for audio in (True,False):
-                  video=Path(profile)/('audio.mp4' if audio else 'silent.mp4')
-                  command=[imageio_ffmpeg.get_ffmpeg_exe(),'-v','error','-f','lavfi','-i','testsrc=size=640x360:rate=24']
-                  if audio:command+=['-f','lavfi','-i','sine=frequency=440:sample_rate=44100']
-                  command+=['-t','4','-c:v','libx264','-pix_fmt','yuv420p']
-                  if audio:command+=['-c:a','aac','-shortest']
-                  command+=['-y',str(video)]
-                  subprocess.run(command,check=True,capture_output=True,timeout=30)
-                  for frozen in (False,True):
-                      name=('frozen' if frozen else 'source')+('-audio' if audio else '-silent')
-                      report=(output/(name+'.json')).resolve()
-                      command=([str((app/'Contents/MacOS/FlickDock').resolve())] if frozen else [sys.executable,'flickdock.py'])
-                      command+=['--verify-media',str(video),'--verify-output',str(report)]
-                      env=dict(os.environ,HOME=profile,APPDATA=profile,XDG_CONFIG_HOME=profile,
-                               QT_QPA_PLATFORM='offscreen',QT_MEDIA_BACKEND='darwin',
-                               QT_LOGGING_RULES='qt.multimedia.*=true')
-                      result=subprocess.run(command,env=env,capture_output=True,text=True,timeout=45)
-                      (output/(name+'.log')).write_text(result.stdout+'\n'+result.stderr)
-                      value=json.loads(report.read_text()) if report.exists() else {}
-                      row=dict(case=name,exit_code=result.returncode,report=value)
-                      cases.append(row);print(json.dumps(row),flush=True)
-              (output/'media-environment-ab.json').write_text(json.dumps(dict(cases=cases,scope='Compare AVFoundation offscreen support, not installed-app acceptance'),indent=2))
+          with tempfile.TemporaryDirectory(prefix='flickdock-final-media-') as profile:
+              base=dict(os.environ,HOME=profile,APPDATA=profile,XDG_CONFIG_HOME=profile,QT_QPA_PLATFORM='offscreen')
+              for name in ('platform','overview','transfers','notices'):
+                  report=(output/('mac-'+name+'-arm64.json')).resolve()
+                  command=[str(binary),'--verify-'+name]
+                  command+=([str(report)] if name=='platform' else ['--verify-output',str(report)])
+                  subprocess.run(command,env=base,check=True,timeout=90)
+                  value=json.loads(report.read_text());assert value['ok'] and value['version']=='1.8.37'
+              video=Path(profile)/'generated.mp4'
+              subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(),'-v','error','-f','lavfi','-i','testsrc=size=640x360:rate=24',
+                              '-f','lavfi','-i','sine=frequency=440:sample_rate=44100','-t','4','-c:v','libx264',
+                              '-pix_fmt','yuv420p','-c:a','aac','-shortest','-y',str(video)],check=True,capture_output=True,timeout=30)
+              report=(output/'mac-media-compositor-arm64.json').resolve()
+              cocoa=dict(base,QT_QPA_PLATFORM='cocoa',FLICKDOCK_VERIFY_NATIVE_MEDIA='1')
+              subprocess.run([str(binary),'--verify-media',str(video),'--verify-output',str(report)],env=cocoa,check=True,timeout=90)
+              media=json.loads(report.read_text())
+              assert media['ok'] and media['frozen'] and media['platform']=='cocoa' and media['version']=='1.8.37'
+              assert media['renderer']=='qvideosink-raster' and media['native_renderer'] is False
+              assert media['presented_playback_frames']>1 and media['source_file_released']
+          subprocess.run([sys.executable,'ci_mac_video_compositor.py','--source',str(Path.cwd()),
+                          '--renderer','composited','--clicks','50','--timeout','120','--output','ci-native-final'],
+                         check=True,timeout=130)
+          native=json.loads(Path('ci-native-final/worker-result.json').read_text())
+          supervisor=json.loads(Path('ci-native-final/supervisor-result.json').read_text())
+          assert native['ok'] and supervisor['ok'] and native['snapshot_finished'] and native['selected_after_reopen']
+          (output/'mac-video-compositor-arm64.json').write_text(json.dumps(dict(ok=True,native=native,supervisor=supervisor),indent=2))
           PY
-      - name: Retain verification results
+      - name: Package and verify native installers
+        run: |
+          python - <<'PY'
+          import json,os,plistlib,shutil,subprocess,sys,tempfile
+          from pathlib import Path
+          from build_macos import _create_dmg,_create_pkg,_bundle_inventory,_checksum
+          app=Path('dist/FlickDock.app');out=Path('ci-output');name='FlickDock-1.8.37-macOS-arm64'
+          pkg=out/(name+'.pkg');dmg=out/(name+'.dmg')
+          _create_pkg(app,pkg,'1.8.37')
+          with tempfile.TemporaryDirectory(prefix='flickdock-final-pkg-') as directory:
+              expanded=Path(directory)/'expanded'
+              subprocess.run(['/usr/sbin/pkgutil','--expand-full',str(pkg),str(expanded)],check=True,timeout=120)
+              metadata=(expanded/'PackageInfo').read_text()
+              assert 'com.flickdock.installer' in metadata and '1.8.37' in metadata
+              assert _bundle_inventory(app)==_bundle_inventory(expanded/'Payload/FlickDock.app')
+          with tempfile.TemporaryDirectory(prefix='flickdock-final-dmg-') as directory:
+              staging=Path(directory);shutil.copytree(app,staging/'FlickDock.app',symlinks=True)
+              (staging/'Applications').symlink_to('/Applications',target_is_directory=True)
+              _create_dmg(staging,dmg)
+          subprocess.run(['/usr/bin/hdiutil','verify',str(dmg)],check=True,timeout=90)
+          with tempfile.TemporaryDirectory(prefix='flickdock-final-mount-') as directory:
+              mount=Path(directory)/'mounted';mount.mkdir()
+              subprocess.run(['/usr/bin/hdiutil','attach','-readonly','-nobrowse','-mountpoint',str(mount),str(dmg)],check=True,timeout=90)
+              try:
+                  assert _bundle_inventory(app)==_bundle_inventory(mount/'FlickDock.app')
+                  assert (mount/'Applications').resolve()==Path('/Applications')
+              finally:subprocess.run(['/usr/bin/hdiutil','detach',str(mount)],check=True,timeout=60)
+          scope=json.loads(Path('ci-runtime-scope.json').read_text())
+          record=dict(ok=True,version='1.8.37',architecture='arm64',source_commit=os.environ['GITHUB_SHA'],
+                      developer_id_signed=False,notarized=False,pkg_payload_verified=True,dmg_verified=True,
+                      source_scope=scope,artifacts=[dict(name=p.name,bytes=p.stat().st_size,sha256=_checksum(p)) for p in (pkg,dmg)])
+          (out/'mac-build-1.8.37-arm64.json').write_text(json.dumps(record,indent=2))
+          print(json.dumps(record,indent=2))
+          PY
+      - name: Retain final package or failure evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: Mac-media-environment-${{ github.sha }}
-          path: reverification/
+          name: FlickDock-final-video-arm64-${{ github.sha }}
+          path: |
+            ci-output/
+            ci-native-final/
           if-no-files-found: warn
           retention-days: 3

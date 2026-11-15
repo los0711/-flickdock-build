@@ -145,7 +145,8 @@ jobs:
                               '-f','lavfi','-i','sine=frequency=440:sample_rate=44100','-t','4','-c:v','libx264','-pix_fmt','yuv420p',
                               '-c:a','aac','-shortest','-y',str(video)],check=True,capture_output=True,timeout=30)
               report=(target/'mac-media-compositor-${{ matrix.arch }}.json').resolve()
-              env=dict(os.environ,HOME=profile,APPDATA=profile,XDG_CONFIG_HOME=profile,QT_QPA_PLATFORM='offscreen')
+              env=dict(os.environ,HOME=profile,APPDATA=profile,XDG_CONFIG_HOME=profile,
+                       QT_QPA_PLATFORM='cocoa',FLICKDOCK_VERIFY_NATIVE_MEDIA='1')
               subprocess.run([str(source/'dist/FlickDock.app/Contents/MacOS/FlickDock'),'--verify-media',str(video),'--verify-output',str(report)],
                              env=env,check=True,timeout=90)
               frozen=json.loads(report.read_text())
