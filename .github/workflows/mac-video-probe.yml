@@ -30,6 +30,8 @@ jobs:
           python -c "import imageio_ffmpeg; from pathlib import Path; assert Path(imageio_ffmpeg.get_ffmpeg_exe()).is_file()"
           npm ci --prefix cloud --no-audit --no-fund
           python ci_assets.py
+          python p2p_assets.py
+          python video_assets.py
       - name: Verify exact scope and native media verification guard
         run: |
           python -m unittest test_native_media_verification test_architecture test_mac_build -q
