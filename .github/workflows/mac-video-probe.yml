@@ -1,4 +1,4 @@
-name: macOS native video-selection diagnostics
+name: macOS supervised video-compositor comparison
 on:
   push:
     branches: [mac-video-diagnostics]
@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        simple_border: ['0','1']
+        renderer: [legacy, composited]
     env:
       PYTHONUTF8: '1'
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
@@ -25,17 +25,12 @@ jobs:
           architecture: arm64
       - name: Install isolated test dependencies
         run: python -m pip install 'PySide6==6.12.0' 'pyobjc-framework-Quartz>=11,<13' 'keyring==25.7.0' 'fasttext-predict-v2==1.1.0' 'yt-dlp[default]==2026.10.26' 'imageio-ffmpeg==0.6.0' 'cryptography==50.0.2'
-      - name: Exercise Cocoa video selection and capture stack
+      - name: Test playback, selection and morph using an external supervisor
         timeout-minutes: 8
-        env:
-          FLICKDOCK_PROBE_SINK_ONLY: '0'
-          FLICKDOCK_PROBE_BACKEND: 'darwin'
-          FLICKDOCK_PROBE_ORIGINAL_VIDEO: '1'
-          FLICKDOCK_PROBE_SIMPLE_BORDER: '${{ matrix.simple_border }}'
         run: |
           failed=0
-          for attempt in 1 2 3 4; do
-            FLICKDOCK_PROBE_ATTEMPT="$attempt" python ci_mac_video_selection_probe.py || failed=$((failed+1))
+          for attempt in 1 2 3; do
+            python ci_mac_video_compositor.py --source "$PWD" --renderer '${{ matrix.renderer }}' --clicks 50 --timeout 120 --output "ci-mac-video-probe/${{ matrix.renderer }}/$attempt" || failed=$((failed+1))
           done
           test "$failed" -eq 0
       - name: Retain macOS native crash reports
@@ -45,11 +40,11 @@ jobs:
           if [ -d "$HOME/Library/Logs/DiagnosticReports" ]; then
             find "$HOME/Library/Logs/DiagnosticReports" -maxdepth 1 -type f \( -iname '*python*.ips' -o -iname '*python*.crash' \) -mmin -30 -exec cp -n {} ci-mac-video-probe/native-reports/ \;
           fi
-      - name: Retain diagnostic data
+      - name: Retain comparison data
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: mac-video-selection-diagnostics-${{ github.sha }}-${{ matrix.simple_border }}
+          name: mac-video-compositor-${{ github.sha }}-${{ matrix.renderer }}
           path: ci-mac-video-probe/
           if-no-files-found: warn
           retention-days: 3

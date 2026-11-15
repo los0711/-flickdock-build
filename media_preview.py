@@ -1,4 +1,4 @@
-"""Qt media preview with native rendering and source-scoped player ownership.
+"""Qt media preview with composited frames and source-scoped player ownership.
 
 Video opens silently, pauses on its first frame and only plays audibly after
 an explicit button press. Each source owns a separate player generation so
@@ -26,11 +26,6 @@ VIDEO_SUFFIXES = {".mp4", ".m4v", ".mov", ".avi", ".mkv", ".webm", ".wmv", ".mpe
 AUDIO_SUFFIXES = {".mp3", ".wav", ".flac", ".aac", ".m4a", ".ogg", ".wma", ".opus", ".aiff", ".aif", ".amr", ".mid", ".midi"}
 POSTER_TIMEOUT_MS = 10000
 SEEK_COALESCE_MS = 80
-
-
-def _use_composited_video():
-    """Keep Cocoa video frames inside the shelf's existing widget compositor."""
-    return sys.platform == 'darwin'
 
 
 class _SeekSlider(QSlider):
@@ -184,7 +179,6 @@ class _VideoSurface(QWidget):
         self.image = QImage()
         self.fallback = None
         self.native = None
-        self.frame_sink = None
         self.status_label=QLabel(self)
         self.status_label.setWordWrap(True)
         self.status_label.setAlignment(Qt.AlignHCenter|Qt.AlignBottom)
@@ -192,27 +186,8 @@ class _VideoSurface(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
-    def attach_video(self):
-        from PySide6.QtMultimediaWidgets import QVideoWidget
-        assert self.native is None
-        self.native = QVideoWidget(self)
-        self.native.setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
-        self.native.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.native.setGeometry(self.rect())
-        self.native.hide()
-        return self.native
-
-    def detach_video(self):
-        if self.native is not None:
-            self.native.hide()
-            self.native.deleteLater()
-            self.native = None
-        self.update()
-
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        if self.native is not None:
-            self.native.setGeometry(self.rect())
         self.status_label.setGeometry(self.rect().adjusted(12,12,-12,-12))
 
     def paintEvent(self, event):
@@ -232,6 +207,7 @@ class _VideoSurface(QWidget):
             size = min(110, self.width() - 24, self.height() - 16)
             image = self.fallback.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             p.drawPixmap((self.width() - image.width()) // 2, (self.height() - image.height()) // 2, image)
+        p.end()
 
 
 class MediaPreview(QWidget):
@@ -407,12 +383,9 @@ class MediaPreview(QWidget):
         player.setAudioOutput(self.audio_output)
         # Each source owns its renderer/sink, so a queued frame from an old
         # decoder cannot be accepted by the next source's generation.
-        if self._video and not _use_composited_video():
-            self.video_sink = self.surface.attach_video().videoSink()
-        else:
-            self.video_sink = QVideoSink(self)
-            if self._video:
-                self.surface.frame_sink = self.video_sink
+        # The shelf snapshots and scales its widget subtree. Native video
+        # windows/layers cannot participate in that source-pixmap composition.
+        self.video_sink = QVideoSink(self)
         player.setVideoSink(self.video_sink)
         self.video_sink.videoFrameChanged.connect(lambda frame: self._frame_changed(frame, generation))
         player.durationChanged.connect(lambda duration: self._set_duration(duration) if generation == self._generation else None)
@@ -427,8 +400,6 @@ class MediaPreview(QWidget):
     def _dispose_player(self):
         player, sink, audio = self.player, self.video_sink, self.audio_output
         self.player = self.video_sink = self.audio_output = None
-        # The surface must never paint a sink after its source is retired.
-        self.surface.frame_sink = None
         if audio is not None:
             audio.setMuted(True)
         if player is not None:
@@ -440,9 +411,8 @@ class MediaPreview(QWidget):
         if sink is not None:
             from PySide6.QtMultimedia import QVideoFrame
             sink.setVideoFrame(QVideoFrame())
-        native_sink = self.surface.native is not None
-        self.surface.detach_video()
-        for item in (player, None if native_sink else sink, audio):
+        self.surface.update()
+        for item in (player, sink, audio):
             if item is not None:
                 item.deleteLater()
 
@@ -484,12 +454,9 @@ class MediaPreview(QWidget):
             return
         if not self._poster_pending and not self._user_playing and not self._seek_frame_pending and self._poster_sent:
             return
-        if self.surface.native is not None:
-            self.surface.native.show()
-        # Qt renders playing frames directly. CPU readback is only needed for
-        # a reusable poster or an explicitly sought paused frame.
-        image = frame.toImage() if (self.surface.frame_sink is not None or not self._poster_sent
-                                    or self._poster_pending or self._seek_frame_pending) else QImage()
+        # Keep every visible frame in the ordinary QWidget paint path so
+        # video, shadows and expand/collapse use the same compositor.
+        image = frame.toImage()
         if not image.isNull():
             self.surface.image = image
             self.surface.update()
