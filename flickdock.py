@@ -230,6 +230,8 @@ class ShelfManager:
         self.manual.start()
         self._sync_status = ''
         self.sync.status_changed.connect(self._sync_status_changed)
+        self.sync_scheduler.connection_changed.connect(self._refresh_account_cloud_heading)
+        self.account.account_changed.connect(self._refresh_account_cloud_heading)
         if self.cocoa_smoke:
             from global_hotkeys import _NoopBackend
             self.hotkeys = HotkeyManager(app, self.show_shortcut, self.show_overview,
@@ -460,6 +462,12 @@ class ShelfManager:
         if self.settings_dialog and hasattr(self,'account_panel'):
             self.account_panel.set_sync_status(text)
 
+    def _refresh_account_cloud_heading(self,*_):
+        from shiboken6 import isValid
+        panel=getattr(self,'account_panel',None)
+        if panel is not None and isValid(panel):
+            panel.set_cloud_sync_heading(self.sync.upload_enabled,self.sync.receive_enabled,self.sync_scheduler.connected)
+
     def _transfers_changed(self,transfers):
         content=self.shelf.content
         content.quiet_cloud_refresh=bool(getattr(getattr(self,'sync',None),'catching_up',False))
@@ -648,7 +656,7 @@ class ShelfManager:
                 diagnostics.exported.connect(guard(self.settings_dialog,lambda dialog,path,error:
                     dialog.export_diagnostics_button.setText('导出失败：'+error if error else '诊断包已导出')))
             self.updates.state_changed.connect(self._render_settings_update)
-            self.account_panel = AccountPanel(self.account,self.settings_dialog,theme=self.settings.theme,email_binding=False)
+            self.account_panel = AccountPanel(self.account,self.settings_dialog,theme=self.settings.theme,email_binding=False,show_sync_status=False)
             self._cloud_device_connections_changed(self.wan.peers())
             self.settings_dialog.set_account_panel(self.account_panel)
             self.settings_dialog.preview_changed.connect(self.preview_dock)
@@ -659,6 +667,7 @@ class ShelfManager:
         self.settings_dialog.set_update_state(self.updates.state,**self.updates.state_payload)
         self._render_settings_update(self.updates.state,self.updates.state_payload)
         self.account_panel.set_sync_status(self._sync_status)
+        self._refresh_account_cloud_heading()
         self._center_dialog(self.settings_dialog)
         if self.settings_dialog.isMinimized():self.settings_dialog.showNormal()
         self.settings_dialog.show()
@@ -900,6 +909,7 @@ class ShelfManager:
             if self.update_dialog is not None:self.update_dialog.apply_theme(self.settings.theme)
         if changed & {'sync_upload_enabled','sync_receive_enabled'}:
             self.sync.set_directions(self.settings.sync_upload_enabled,self.settings.sync_receive_enabled)
+            self._refresh_account_cloud_heading()
         if changed & {'dock_edge','dock_position','dock_length','dock_thickness','dock_color','dock_opacity','trigger_visible','display_triggers'}:
             self._position_edges()
         if 'shake_sensitivity' in changed:self._apply_shake_sensitivity()

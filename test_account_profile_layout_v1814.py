@@ -30,13 +30,30 @@ class AccountProfileLayoutTests(unittest.TestCase):
             self.assertEqual(image.pixelColor(30,13),expected)
 
     def test_signed_in_identity_is_centered_without_transfer_subtitle(self):
-        self.panel.set_sync_status('正在上传 fixture.zip · 1/1');self.settle()
+        self.panel._show_sync_status=False
+        for status in ('正在上传 fixture.zip · 1/1','搁架已同步。','同步失败'):
+            self.panel.set_sync_status(status);self.settle()
+            self.assertTrue(self.panel.sync_status_label.isHidden())
         panel=self.panel
-        self.assertTrue(panel.sync_status_label.isHidden())
+        self.assertTrue(panel.account_state_label.isVisible())
         centers=[widget.mapTo(panel.profile_frame,widget.rect().center()).y()
                  for widget in (panel.account_glyph,panel.username_label,panel.account_state_label,
                                 panel.password_toggle_button,panel.logout_button)]
         self.assertLessEqual(max(centers)-min(centers),2,centers)
+
+    def test_settings_heading_reflects_sync_directions_and_connection(self):
+        panel=self.panel;panel._show_sync_status=False
+        for upload,receive,connected,expected in (
+                (True,True,True,'云端同步已开启'),
+                (True,True,False,'云端同步未连接'),
+                (False,False,False,'云端同步已关闭'),
+                (True,False,True,'仅云端上传已开启'),
+                (False,True,True,'仅云端接收已开启')):
+            panel.set_cloud_sync_heading(upload,receive,connected)
+            self.assertEqual(panel.account_heading_state.text(),expected)
+        self.service.signed_in=False
+        panel.set_cloud_sync_heading(True,True,True)
+        self.assertEqual(panel.account_heading_state.text(),'未登录')
 
     def test_device_card_fits_content_and_large_device_list_scrolls(self):
         self.dialog.resize(892,820);self.settle()

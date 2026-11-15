@@ -269,9 +269,10 @@ class AccountPanel(QFrame):
     def minimumSizeHint(self):
         return QSize(0,self.heightForWidth(max(1,self.width())))
 
-    def __init__(self,service,parent=None,*,theme='light',email_binding=False):
+    def __init__(self,service,parent=None,*,theme='light',email_binding=False,show_sync_status=True):
         super().__init__(parent)
-        self.service=service
+        self.service=service;self._show_sync_status=bool(show_sync_status)
+        self._cloud_heading_state=(False,False,False)
         self._fit_timer=QTimer(self);self._fit_timer.setSingleShot(True)
         self._fit_timer.timeout.connect(self._fit_signed_content)
         # Keep the argument for older app builds; the email controls are gone.
@@ -466,6 +467,7 @@ class AccountPanel(QFrame):
         self.password_toggle_button.setMinimumHeight(28);self.password_toggle_button.setText('修改密码');self.password_toggle_button.show()
         self.logout_button.setMinimumHeight(28);self.logout_button.setObjectName('accountDanger');identity.addWidget(self.password_toggle_button,0,Qt.AlignVCenter);identity.addWidget(self.logout_button,0,Qt.AlignVCenter)
         for widget in (self.username_label,self.account_state_label,self.sync_status_label,self.logout_button):widget.show()
+        if not self._show_sync_status:self.sync_status_label.hide()
         signed.addWidget(self.profile_frame);self.profile_frame.show()
         self.sync_status_label.installEventFilter(self)
         signed.addWidget(self.login_alias_edit)
@@ -612,6 +614,7 @@ class AccountPanel(QFrame):
     def _account_changed(self,account):
         signed=bool(isinstance(account,dict) and self.service.signed_in)
         self.account_heading_state.setText('已登录' if signed else '未登录')
+        if not self._show_sync_status:self.set_cloud_sync_heading(*self._cloud_heading_state)
         identity=str(account.get('id','')) if signed else ''
         if identity!=self._account_id or not signed:
             self._account_id=identity
@@ -621,7 +624,9 @@ class AccountPanel(QFrame):
             self._reset_password()
             self._refreshing=False;self._revoke_pending=''
             self._devices_changed([])
-            if signed:self.sync_status_label.setText('正在准备同步…');self.sync_status_label.show()
+            if signed:
+                self.sync_status_label.setText('正在准备同步…')
+                self.sync_status_label.setVisible(self._show_sync_status)
         self.unsigned_profile_button.setVisible(not signed);self.signed_in_page.setVisible(signed)
         self.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Expanding if signed else QSizePolicy.Preferred)
         self.status_label.setVisible(signed and bool(self.status_label.text()))
@@ -641,10 +646,20 @@ class AccountPanel(QFrame):
         if self.service.signed_in:
             status=str(text)[:240]
             self.sync_status_label.setText(status)
-            # Upload progress already has its own transfer surface. Do not
-            # displace the account identity with that transient notification.
-            self.sync_status_label.setVisible(bool(status) and not status.startswith(('正在上传','等待上传')))
+            self.sync_status_label.setVisible(self._show_sync_status and bool(status))
             self._queue_fit()
+
+    def set_cloud_sync_heading(self,upload_enabled,receive_enabled,connected):
+        self._cloud_heading_state=bool(upload_enabled),bool(receive_enabled),bool(connected)
+        if self._show_sync_status:return
+        upload,receive,online=self._cloud_heading_state
+        if not self.service.signed_in:label='未登录'
+        elif not (upload or receive):label='云端同步已关闭'
+        elif not online:label='云端同步未连接'
+        elif upload and receive:label='云端同步已开启'
+        elif upload:label='仅云端上传已开启'
+        else:label='仅云端接收已开启'
+        self.account_heading_state.setText(label)
 
     def _status_changed(self,text):
         message=str(text)
