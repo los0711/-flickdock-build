@@ -45,6 +45,10 @@ jobs:
           Path('ci-runtime-scope.json').write_text(json.dumps(dict(ok=True,previous_application_commit='418615af948102f2172631ea7ffddbc5e346827e',
               runtime_changes=runtime,all_sync_transport_sources_unchanged=True,prior_regression_run=43722092773),indent=2))
           PY
+      - name: Verify asynchronous overview selection before freezing
+        run: |
+          profile="$(mktemp -d)"
+          APPDATA="$profile" HOME="$profile" XDG_CONFIG_HOME="$profile" python flickdock.py --verify-overview --verify-output ci-preflight-overview.json
       - name: Build frozen arm64 application
         run: |
           mkdir -p build/macos

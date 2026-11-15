@@ -127,6 +127,11 @@ def run_overview(argv,load_font):
             popup.select_item(str(archive));app.processEvents()
             preview=popup.preview
             assert len(preview.action_buttons)==6
+            # Selection may retire the preceding preview on queued Qt/native
+            # frame events. Check the resulting state after those events land.
+            deadline=time.monotonic()+2
+            while not all(button.isVisible() for button in preview.action_buttons) and time.monotonic()<deadline:
+                app.processEvents();time.sleep(.002)
             assert all(button.isVisible() for button in preview.action_buttons)
             top=lambda widget:widget.mapTo(preview,QPoint()).y()
             assert top(preview.open_button)==top(preview.send_button)
