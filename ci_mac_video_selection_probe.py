@@ -49,6 +49,16 @@ original_video=os.environ.get('FLICKDOCK_PROBE_ORIGINAL_VIDEO')=='1'
 if original_video:
     import media_preview
     media_preview._use_composited_video=lambda:False
+if os.environ.get('FLICKDOCK_PROBE_QUEUED_POSTER')=='1':
+    # Diagnostic A/B: postpone cache and thumbnail refresh until the current
+    # native video-frame callback has unwound; preserve the same poster data.
+    from file_preview import PreviewPane
+    from PySide6.QtCore import QTimer
+    poster_ready=PreviewPane._poster_ready
+    def queued_poster(self,path,image):
+        copy=QImage(image)
+        QTimer.singleShot(0,self,lambda:poster_ready(self,path,copy))
+    PreviewPane._poster_ready=queued_poster
 original_thumbnail=os.environ.get('FLICKDOCK_PROBE_ORIGINAL_THUMBNAIL','0')
 if original_thumbnail in ('1','2'):
     # Exact thumbnail implementation from the user's earlier 1.8.37 source.
