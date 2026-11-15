@@ -191,8 +191,10 @@ class TranslationTests(unittest.TestCase):
             self.assertGreater(dialog.scroll.verticalScrollBar().value(),0)
             dialog.scroll.verticalScrollBar().setValue(0)
             self.assertEqual(dialog.category_list.currentItem().text(),'常规')
-            dialog.translation_switch.click();self.assertFalse(self.store.translation_enabled)
-        finally:dialog.hide();dialog.deleteLater()
+            dialog.translation_switch.click()
+            from test_live_settings_v1838 import settle_preferences
+            settle_preferences(dialog);self.assertFalse(self.store.translation_enabled)
+        finally:dialog._preference_writer.close();dialog.hide();dialog.deleteLater()
 
     def test_api_synchronous_error_clears_busy(self):
         def request(method,path,callback,**options):

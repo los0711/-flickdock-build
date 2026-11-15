@@ -796,18 +796,19 @@ class ShelfWindow(QWidget):
             self.popup.account_nav.set_profile(str(account.account.get('username','')) if account and account.signed_in else '',bool(account and account.signed_in))
 
     def request_directory_size(self,ref):
+        from qt_lifetime import guard
         now=time.monotonic();cached=self._directory_sizes.get(ref)
         if ref not in self._directory_jobs and (not cached or now-cached[0]>30):
             job=DiskWork(directory_size,ref);self._directory_jobs[ref]=job
-            def done(result,error):
-                self._directory_jobs.pop(ref,None)
-                if error or ref not in self.files['permanent']:return
-                self._directory_sizes[ref]=(time.monotonic(),result['logical_size'])
-                self.content.metadata.setdefault(ref,{}).update(result)
-                if not self.content_transition_active():
-                    self.zones['permanent'].refresh()
-                    if self.popup and self.popup.isVisible():self.popup.rebuild()
-            job.signals.done.connect(done);QThreadPool.globalInstance().start(job)
+            def done(window,zone,result,error):
+                window._directory_jobs.pop(ref,None)
+                if error or ref not in window.files['permanent']:return
+                window._directory_sizes[ref]=(time.monotonic(),result['logical_size'])
+                window.content.metadata.setdefault(ref,{}).update(result)
+                if not window.content_transition_active():
+                    zone.refresh()
+                    if window.popup and window.popup.isVisible():window.popup.rebuild()
+            job.signals.done.connect(guard(self,done,self.zones['permanent']));QThreadPool.globalInstance().start(job)
         return cached[1] if cached else None
 
     def _display_ref_exists(self,ref):

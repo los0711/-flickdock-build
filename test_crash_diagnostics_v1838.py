@@ -61,6 +61,31 @@ class DiagnosticsTests(unittest.TestCase):
         target.deleteLater();QCoreApplication.sendPostedEvents(None,QEvent.DeferredDelete)
         callback();self.assertFalse(seen)
 
+    def test_directory_result_after_drop_zone_retirement_does_not_touch_widgets(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from PySide6.QtCore import QObject,Signal
+        from shelf_window import ShelfWindow
+        class Signals(QObject):
+            done=Signal(object,object)
+        signals=Signals();job=SimpleNamespace(signals=signals)
+        owner=QWidget();zone=QWidget();zone.refresh=Mock()
+        owner._directory_sizes={};owner._directory_jobs={}
+        owner.files={'permanent':['fixture']};owner.zones={'permanent':zone}
+        owner.content=SimpleNamespace(metadata={});owner.popup=None
+        owner.content_transition_active=lambda:False
+        errors=[]
+        try:
+            with patch('shelf_window.DiskWork',return_value=job),patch('shelf_window.QThreadPool') as pool:
+                ShelfWindow.request_directory_size(owner,'fixture')
+                pool.globalInstance.return_value.start.assert_called_once_with(job)
+            zone.deleteLater();QCoreApplication.sendPostedEvents(None,QEvent.DeferredDelete)
+            with patch.object(sys,'excepthook',side_effect=lambda *args:errors.append(args)):
+                signals.done.emit({'logical_size':10},None);APP.processEvents()
+            self.assertFalse(errors)
+            zone.refresh.assert_not_called()
+        finally:owner.deleteLater();APP.processEvents()
+
     def test_queued_callback_ignores_deleted_dependency_and_preserves_live_errors(self):
         owner=QWidget();child=QWidget();seen=[]
         later(0,owner,lambda host,control:seen.append(control),child)

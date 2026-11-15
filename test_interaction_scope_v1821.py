@@ -130,9 +130,12 @@ class UtilityPreferenceTests(unittest.TestCase):
                 self.assertFalse((Path(directory)/'window-sizes.json').exists())
                 self.assertFalse(hasattr(settings,'retention_description'))
                 settings.clipboard_success_checkbox.setChecked(False)
+                from test_live_settings_v1838 import settle_preferences
+                settle_preferences(settings)
                 self.assertFalse(SettingsStore(Path(directory)).clipboard_success_notice)
                 self.assertTrue(store.clipboard_sync_enabled)
             finally:
+                settings._preference_writer.close()
                 for view in (settings,transfer):view.hide();view.deleteLater()
                 flush()
 
