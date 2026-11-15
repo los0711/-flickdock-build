@@ -3,7 +3,7 @@ import json,os,sys,tempfile,unittest,zipfile
 from pathlib import Path
 from unittest.mock import patch
 os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
-from PySide6.QtCore import QTimer,qWarning,QCoreApplication,QEvent
+from PySide6.QtCore import QObject,Signal,QTimer,qWarning,QCoreApplication,QEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication,QWidget
 from crash_diagnostics import CrashDiagnostics
@@ -18,6 +18,29 @@ def until(predicate,timeout=3000):
     raise AssertionError('Diagnostic work did not finish')
 
 class DiagnosticsTests(unittest.TestCase):
+    def test_watchdog_observes_diagnostics_that_became_ready_during_construction(self):
+        import io
+        from gui_watchdog import GuiWatchdog
+        class ReadyDiagnostics(QObject):
+            ready=Signal()
+            def __init__(self,app,base,version):
+                super().__init__(app);self.stall_stream=io.BytesIO();self.beats=0
+                self.ready.emit()
+            def watchdog_heartbeat(self,timeout):self.beats+=1
+            def stop_watchdog(self):pass
+        previous=getattr(APP,'_crash_diagnostics',None)
+        with patch('crash_diagnostics.CrashDiagnostics',ReadyDiagnostics),patch('gui_watchdog._python_watchdog',return_value=True):
+            watchdog=GuiWatchdog(APP,'unused-fixture')
+            try:
+                APP.processEvents()
+                self.assertIs(watchdog.stream,watchdog.diagnostics.stall_stream)
+                self.assertTrue(watchdog.timer.isActive())
+                self.assertGreater(watchdog.diagnostics.beats,0)
+            finally:
+                watchdog.close();watchdog.deleteLater();APP.processEvents()
+                if previous is None:delattr(APP,'_crash_diagnostics')
+                else:APP._crash_diagnostics=previous
+
     def test_cocoa_watchdog_records_stall_without_the_native_faulthandler_timer(self):
         import time
         from gui_watchdog import GuiWatchdog

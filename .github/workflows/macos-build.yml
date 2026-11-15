@@ -170,16 +170,24 @@ jobs:
           path: ci-output/*
           if-no-files-found: error
           retention-days: 3
+      - name: Collect already-built packages and diagnostics after a failure
+        if: failure()
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+          source=Path('../outputs');target=Path('ci-failure-output');target.mkdir(exist_ok=True)
+          for pattern in ('FlickDock-*-macOS-${{ matrix.arch }}.zip','FlickDock-*-macOS-${{ matrix.arch }}.dmg','FlickDock-*-macOS-${{ matrix.arch }}.pkg','mac-*-${{ matrix.arch }}.json'):
+              for path in source.glob(pattern):
+                  if path.is_file() and not path.is_symlink():shutil.copy2(path,target/path.name)
+          native=Path('ci-native-compositor')
+          if native.is_dir():shutil.copytree(native,target/'native-compositor',dirs_exist_ok=True)
+          PY
       - name: Retain already-built packages and diagnostics after a later verification failure
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: FlickDock-macOS-incomplete-${{ matrix.arch }}-${{ github.sha }}
-          path: |
-            ../outputs/FlickDock-*-macOS-${{ matrix.arch }}.zip
-            ../outputs/FlickDock-*-macOS-${{ matrix.arch }}.dmg
-            ../outputs/FlickDock-*-macOS-${{ matrix.arch }}.pkg
-            ../outputs/mac-*-${{ matrix.arch }}.json
-            ci-native-compositor/
+          path: ci-failure-output/
           if-no-files-found: warn
           retention-days: 3

@@ -12,7 +12,7 @@ def _python_watchdog():
 
 class GuiWatchdog(QObject):
     def __init__(self,app,base,*,timeout=8):
-        super().__init__(app);self.stream=None;self.timeout=timeout
+        super().__init__(app);self.stream=None;self.timeout=timeout;self._closed=False
         self.python_watchdog=_python_watchdog()
         self.timer=QTimer(self);self.timer.setInterval(1000);self.timer.timeout.connect(self.beat)
         from crash_diagnostics import CrashDiagnostics
@@ -20,9 +20,13 @@ class GuiWatchdog(QObject):
         self.diagnostics=CrashDiagnostics(app,base,APP_VERSION)
         app._crash_diagnostics=self.diagnostics
         self.diagnostics.ready.connect(self._diagnostics_ready)
+        # The writer can finish before the caller connects ready. Observe its
+        # current state once as well as subscribing to subsequent readiness.
+        QTimer.singleShot(0,self,self._diagnostics_ready)
         app.aboutToQuit.connect(self.close)
 
     def _diagnostics_ready(self):
+        if self._closed or self.timer.isActive():return
         self.stream=self.diagnostics.stall_stream
         if self.stream is not None:self.beat();self.timer.start()
 
@@ -41,6 +45,7 @@ class GuiWatchdog(QObject):
         faulthandler.dump_traceback_later(self.timeout,repeat=False,file=self.stream)
 
     def close(self):
+        self._closed=True
         self.timer.stop()
         self.diagnostics.stop_watchdog()
         if self.stream is not None:
