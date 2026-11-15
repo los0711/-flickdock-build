@@ -27,9 +27,10 @@ def run(size_mib=128):
             for _ in range(size_mib):output.write(block)
         sender=LanTransferService(device_name='Loopback sender',bind_host='127.0.0.1',discovery=False,diagnostics_base=root/'sender')
         receiver=LanTransferService(device_name='Loopback receiver',bind_host='127.0.0.1',discovery=False,diagnostics_base=root/'receiver')
-        offers=[];received=[];sent=[];errors=[]
+        offers=[];received=[];sent=[];errors=[];sender_states=[]
         receiver.offer_received.connect(offers.append)
         receiver.completed.connect(received.append);sender.completed.connect(sent.append)
+        sender.progress.connect(sender_states.append)
         receiver.status_changed.connect(errors.append);sender.status_changed.connect(errors.append)
         connection={}
         def sample_connection(identity):
@@ -54,7 +55,10 @@ def run(size_mib=128):
             sender.start();receiver.start();wait(lambda:sender.port and receiver.port,15)
             sender.remember_peer(receiver.own_peer());receiver.remember_peer(sender.own_peer())
             identity=sender.send(receiver.device_id,[source]);wait(lambda:offers,15)
-            started=time.perf_counter();receiver.accept(identity,destination)
+            wait(lambda:any(row['id']==identity and row['state']=='waiting' for row in sender_states),15)
+            code=next(row['code'] for row in sender_states if row['id']==identity and row['state']=='waiting')
+            if code!=offers[-1]['code']:raise AssertionError('TLS authentication codes differ')
+            started=time.perf_counter();receiver.accept(identity,destination,confirmation=code)
             wait(lambda:received and sent,120,identity)
             elapsed=time.perf_counter()-started
             actual=Path(received[0]['paths'][0])
@@ -66,7 +70,7 @@ def run(size_mib=128):
             if actual.parent!=destination or actual.stat().st_size!=size_mib*1024*1024 or digest(source)!=digest(actual):
                 raise AssertionError('Received original bytes differ')
             return {'ok':True,'size_mib':size_mib,'seconds':round(elapsed,3),
-                    'mib_per_second':round(size_mib/elapsed,2),'sha256_verified':True,
+                    'mib_per_second':round(size_mib/elapsed,2),'sha256_verified':True,'confirmation_verified':True,
                     'path_direct':True,'transport':'TLS over 127.0.0.1',
                     'platform':platform.platform(),'python':platform.python_version(),
                     'socket':connection,'scope':'local cached-disk loopback; not Wi-Fi throughput'}

@@ -122,3 +122,15 @@ jobs:
           path: ci-output/*
           if-no-files-found: error
           retention-days: 3
+      - name: Retain already-built packages and diagnostics after a later verification failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: FlickDock-macOS-incomplete-${{ matrix.arch }}-${{ github.sha }}
+          path: |
+            ../outputs/FlickDock-*-macOS-${{ matrix.arch }}.zip
+            ../outputs/FlickDock-*-macOS-${{ matrix.arch }}.dmg
+            ../outputs/FlickDock-*-macOS-${{ matrix.arch }}.pkg
+            ../outputs/mac-*-${{ matrix.arch }}.json
+          if-no-files-found: warn
+          retention-days: 3
