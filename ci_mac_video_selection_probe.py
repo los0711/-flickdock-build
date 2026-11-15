@@ -45,6 +45,12 @@ qInstallMessageHandler(qt_message)
 import test_html_native_workspace as workspace
 os.environ['QT_QPA_PLATFORM']='cocoa'
 assert app.platformName()=='cocoa',app.platformName()
+no_media=os.environ.get('FLICKDOCK_PROBE_NO_MEDIA')=='1'
+if no_media:
+    # Diagnostic control only: select the same items with decoder creation
+    # suppressed to distinguish compositor failures from media lifetime.
+    from media_preview import MediaPreview
+    MediaPreview._load_player=lambda self,**kwargs:False
 if os.environ.get('FLICKDOCK_PROBE_SINK_ONLY')=='1':
     # Diagnostic A/B: keep the same native decoder and first-frame path,
     # but replace QVideoWidget with an ordinary QWidget plus QVideoSink.
@@ -80,29 +86,30 @@ try:
     report=dict(platform=app.platformName(),media_backend=os.environ['QT_MEDIA_BACKEND'],sink_only=os.environ.get('FLICKDOCK_PROBE_SINK_ONLY')=='1',modes={},video=str(original.name))
     # Exercise actual decoding and playback, not just the first poster. The
     # generated test video is silent and the fixture uses a disposable profile.
-    note('playback-start')
-    popup.select_item(str(original));workspace.flush()
-    media=popup.preview.media
-    workspace.until(lambda:media._poster_sent or media._failed,seconds=12)
-    if media._failed or not media._poster_sent:raise AssertionError('H.264 poster did not load')
-    if media.surface.native is not None or media.surface.frame_sink is None:
-        raise AssertionError('Cocoa preview created a native video child')
-    observed=[]
-    def record_frame(frame):
-        if frame.isValid():observed.append(frame.startTime())
-    media.video_sink.videoFrameChanged.connect(record_frame)
-    media.toggle_playback()
-    workspace.until(lambda:len(observed)>=5 or media._failed,seconds=8)
-    if media._failed or len(observed)<5:raise AssertionError('Video playback did not produce frames')
-    screenshot_a=media.surface.grab().toImage()
-    seen=len(observed)
-    workspace.until(lambda:len(observed)>=seen+3 or media._failed,seconds=6)
-    screenshot_b=media.surface.grab().toImage()
-    if screenshot_a==screenshot_b:raise AssertionError('Video preview did not visibly advance')
-    report['playback']=dict(frames=len(observed),visible_frames_differ=True,native_child=False)
-    popup.selected.clear();popup.primary_selection=None;popup.restore_selected_preview();workspace.flush()
-    workspace.until(lambda:media.player is None,seconds=5)
-    note('playback-complete')
+    if not no_media:
+        note('playback-start')
+        popup.select_item(str(original));workspace.flush()
+        media=popup.preview.media
+        workspace.until(lambda:media._poster_sent or media._failed,seconds=12)
+        if media._failed or not media._poster_sent:raise AssertionError('H.264 poster did not load')
+        if media.surface.native is not None or media.surface.frame_sink is None:
+            raise AssertionError('Cocoa preview created a native video child')
+        observed=[]
+        def record_frame(frame):
+            if frame.isValid():observed.append(frame.startTime())
+        media.video_sink.videoFrameChanged.connect(record_frame)
+        media.toggle_playback()
+        workspace.until(lambda:len(observed)>=5 or media._failed,seconds=8)
+        if media._failed or len(observed)<5:raise AssertionError('Video playback did not produce frames')
+        screenshot_a=media.surface.grab().toImage()
+        seen=len(observed)
+        workspace.until(lambda:len(observed)>=seen+3 or media._failed,seconds=6)
+        screenshot_b=media.surface.grab().toImage()
+        if screenshot_a==screenshot_b:raise AssertionError('Video preview did not visibly advance')
+        report['playback']=dict(frames=len(observed),visible_frames_differ=True,native_child=False)
+        popup.selected.clear();popup.primary_selection=None;popup.restore_selected_preview();workspace.flush()
+        workspace.until(lambda:media.player is None,seconds=5)
+        note('playback-complete')
     for mode in ('list','icons'):
         popup.change_view_mode(mode);popup.resume_content()
         workspace.until(lambda:popup._build_cursor==len(popup.visible_refs()),seconds=10)
@@ -136,7 +143,7 @@ try:
         report['modes'][mode]=dict(clicks=70,max_click_seconds=max(samples),single_shelf=True,player_released=True)
     # A selected video must also survive the real overview/compact transition.
     popup.select_item(str(original));workspace.flush()
-    workspace.until(lambda:popup.preview.media._poster_sent or popup.preview.media._failed,seconds=12)
+    if not no_media:workspace.until(lambda:popup.preview.media._poster_sent or popup.preview.media._failed,seconds=12)
     note('collapse-with-video')
     shelf.collapse_contents();workspace.until(lambda:not shelf.geometry_morph.active,seconds=8)
     if shelf.expanded or not shelf.isVisible():raise AssertionError('Compact shelf did not remain visible')
