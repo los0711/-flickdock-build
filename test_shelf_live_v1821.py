@@ -108,11 +108,15 @@ class LiveShelfTests(unittest.TestCase):
         self.settings.update(view_mode='icons');self.shelf.files['permanent']=self.paths[:1];self.shelf.refresh()
         popup=self.overview();flush();flush()
         item=popup._item_widgets[self.paths[0]]
-        self.assertEqual(item.x(),popup.rows_layout.contentsMargins().left())
+        def centered():
+            occupied=popup._grid_columns*item.width()+8*(popup._grid_columns-1)
+            self.assertLessEqual(abs(item.x()-(popup.rows_body.width()-item.x()-occupied)),1)
+            self.assertGreaterEqual(item.x(),popup.rows_layout.contentsMargins().left())
+        centered()
         self.assertEqual(item.y(),popup.rows_layout.contentsMargins().top())
         self.assertGreater(popup._grid_columns,1)
         popup.resize(740,550);flush();flush()
-        self.assertEqual(item.x(),popup.rows_layout.contentsMargins().left())
+        centered()
 
     def test_batch_removal_discards_old_artwork_and_survivors_move(self):
         popup=self.overview();self.manager.motion=True
@@ -129,12 +133,18 @@ class LiveShelfTests(unittest.TestCase):
             self.assertFalse(motion.overlay.isVisible())
             self.assertEqual(set(popup.visible_refs()),{remaining})
             self.assertIs(self.rows(popup)[remaining],before[remaining])
-            self.assertEqual(before[remaining].pos(),start)
+            target=before[remaining].pos()
+            self.assertLess(target.y(),start.y())
+            self.assertIsNotNone(motion.entry_effect)
+            self.assertEqual(motion.entry_effect.progress,0)
             clock[0]=.075;motion._tick();flush()
             middle=before[remaining].pos()
-            self.assertLess(middle.y(),start.y())
+            self.assertEqual(middle,target)
+            self.assertGreater(motion.entry_effect.progress,0)
+            self.assertLess(motion.entry_effect.progress,1)
             clock[0]=.245;motion._tick();flush()
-            self.assertLess(before[remaining].y(),middle.y())
+            self.assertEqual(before[remaining].pos(),target)
+            self.assertEqual(motion.entry_effect.progress,1)
             self.assertFalse(motion.timer.isActive());self.assertFalse(motion.ghosts)
         self.assertTrue(popup.isVisible());self.assertTrue(self.shelf.expanded)
 

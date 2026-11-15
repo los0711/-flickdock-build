@@ -68,7 +68,7 @@ class OrderingTests(unittest.TestCase):
             self.assertEqual(control.geometry().center().y(),popup.sort_buttons['time'].geometry().center().y())
             for direction in (1,2,0):
                 control.click();flush();self.assertEqual(control.direction,direction)
-                self.assertEqual(control.arrow_colors(),tuple(palette()['link'] if direction==value else palette()['muted'] for value in (1,2)))
+                self.assertEqual(control.arrow_colors(),tuple(palette()['sort_arrow_active'] if direction==value else palette()['sort_arrow_idle'] for value in (1,2)))
                 self.assertEqual(control.text(),'时间' if key=='time' else '大小')
         popup.cycle_sort('time');popup.cycle_sort('time');flush()
         self.assertEqual(popup.visible_refs(),initial)

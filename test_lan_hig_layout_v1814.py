@@ -207,19 +207,20 @@ class LanHigLayoutTests(unittest.TestCase):
         for index in range(3):combo.addItem('同账号 · 设备 '+str(index),'fixture-'+str(index))
         for theme,background in (('dark','#171717'),('light','#FFFFFF')):
             self.dialog.apply_theme(theme);combo.setCurrentIndex(0);combo.showPopup();self.settle()
-            view=combo.view();popup=view.window();image=view.viewport().grab().toImage()
+            view=combo.view();popup=view.window();image=popup.grab().toImage()
             self.assertEqual(popup.objectName(),'lanDevicePopup')
-            self.assertIn('border:1px solid',popup.styleSheet())
+            self.assertTrue(popup.testAttribute(Qt.WA_TranslucentBackground))
             edge=popup.grab().toImage()
             self.assertNotEqual(edge.pixelColor(edge.width()//2,0),QColor(background))
+            self.assertLess(edge.pixelColor(0,0).alpha(),255)
             from lan_panel import DEVICE_POPUP_GAP_PX
             below=combo.mapToGlobal(QPoint(0,combo.height())).y()+DEVICE_POPUP_GAP_PX
             area=combo.screen().availableGeometry()
             if below+popup.height()<=area.bottom()+1:self.assertGreaterEqual(popup.y(),below)
             position=view.visualRect(view.model().index(1,0)).center()
-            self.assertEqual(image.pixelColor(8,position.y()).alpha(),255)
-            self.assertEqual(image.pixelColor(8,position.y()),QColor(background))
-            self.assertFalse(popup.testAttribute(Qt.WA_TranslucentBackground))
+            position=view.viewport().mapTo(popup,QPoint(8,position.y()))
+            self.assertEqual(image.pixelColor(position).alpha(),255)
+            self.assertEqual(image.pixelColor(position),QColor(background))
             QTest.keyClick(view,Qt.Key_Down);QTest.keyClick(view,Qt.Key_Return)
             self.assertEqual(combo.currentIndex(),1);self.assertFalse(popup.isVisible())
         # When the screen has no room below, preserve the gap by opening above.

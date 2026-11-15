@@ -138,7 +138,7 @@ class ReceiveNoticeTests(unittest.TestCase):
         from PySide6.QtCore import QRectF
         from PySide6.QtGui import QColor,QImage,QPainter
         from transfer_visuals import draw_cloud_status_badge
-        for status,color in (('local','#087CEF'),('synced','#169F65')):
+        for status,color in (('local','#087CEF'),('synced','#19B372')):
             image=QImage(24,24,QImage.Format_ARGB32_Premultiplied);image.fill(Qt.transparent)
             painter=QPainter(image);draw_cloud_status_badge(painter,QRectF(2,2,20,20),status);painter.end()
             self.assertEqual(image.pixelColor(12,12),QColor(color))

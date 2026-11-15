@@ -51,7 +51,7 @@ class FeedbackTests(unittest.TestCase):
             lan=LanTransferService(discovery=False);wan=WanTransferService(Path(directory)/'wan',enabled=False)
             dialog=LanDialog(lan,store);dialog.show();flush()
             manager=SimpleNamespace(shelf=SimpleNamespace(_release_reveal_level=lambda:None),lan=lan,wan=wan,
-                lan_dialog=dialog,wan_dialog=dialog,settings=store,_lan_selected=lambda:[],_center_dialog=Mock())
+                lan_dialog=dialog,wan_dialog=dialog,settings=store,_lan_selected=lambda:[],_center_dialog=Mock(),_note_ui=lambda name:None)
             manager._show_transfer_dialog=lambda service:flickdock.ShelfManager._show_transfer_dialog(manager,service)
             manager.show_lan_dialog=lambda:flickdock.ShelfManager.show_lan_dialog(manager)
             manager.show_wan_dialog=lambda:flickdock.ShelfManager.show_wan_dialog(manager)
@@ -221,28 +221,28 @@ class FeedbackTests(unittest.TestCase):
         fixture=_workspace.WorkspaceTests();fixture.setUp()
         try:
             shelf=fixture.shelf;shelf.files['permanent']=[];shelf.refresh();zone=shelf.zones['permanent']
-            def blue_pixels():
-                image=zone.icon.grab().toImage();count=0
+            def dash_pixels():
+                image=zone.icon.grab().toImage();pixels=[]
                 scale=image.devicePixelRatio()
                 for x in range(round(30*scale),round(35*scale)):
                     for y in range(round(47*scale),round(140*scale)):
                         c=image.pixelColor(x,y)
-                        if c.blue()>c.red()+40 and c.blue()>c.green()+25:count+=1
-                return count
+                        pixels.append(c.rgba())
+                return tuple(pixels)
             for kind in ('dock','drag'):
                 shelf.presentation_kind=kind
                 APP.sendEvent(zone,QEvent(QEvent.Leave))
                 zone.icon.border_motion.animation.setCurrentTime(zone.icon.border_motion.animation.duration())
-                flush();normal=blue_pixels()
+                flush();normal=dash_pixels()
                 point=zone.icon.geometry().center()
                 APP.sendEvent(zone,QEnterEvent(QPointF(point),QPointF(point),QPointF(zone.mapToGlobal(point))))
                 zone.icon.border_motion.animation.setCurrentTime(zone.icon.border_motion.animation.duration());flush()
                 self.assertNotIn('#0A84FF',zone.styleSheet())
-                self.assertGreater(blue_pixels(),normal+15)
+                self.assertGreater(sum(a!=b for a,b in zip(dash_pixels(),normal)),15)
                 self.assertIsNone(shelf.popup)
                 APP.sendEvent(zone,QEvent(QEvent.Leave))
                 zone.icon.border_motion.animation.setCurrentTime(zone.icon.border_motion.animation.duration())
-                flush();self.assertEqual(blue_pixels(),normal)
+                flush();self.assertEqual(dash_pixels(),normal)
         finally:fixture.tearDown()
 
     def test_return_from_transfer_keeps_same_card_bounds_without_morph_or_edge_reveal(self):

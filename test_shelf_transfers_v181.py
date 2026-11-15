@@ -302,6 +302,7 @@ class TransferTests(unittest.TestCase):
             engine._notify_transfers()
             popup=fixture.overview();popup.select_item(str(self.source));flush()
             preview=popup.preview
+            until(lambda:preview.cancel_transfer.isVisible())
             self.assertTrue(preview.cancel_transfer.isVisible())
             self.assertEqual(preview.cancel_transfer.text(),'取消上传')
             QTest.mouseClick(preview.cancel_transfer,Qt.LeftButton)
@@ -353,8 +354,8 @@ class TransferTests(unittest.TestCase):
                 self.assertTrue(engine.cancel_upload(str(self.source)))
                 elapsed=time.monotonic()-started
                 self.assertLess(elapsed,.35,'cancel blocked the GUI on the state journal')
-                self.assertTrue(entered.wait(1))
-                QTest.qWait(150)
+                until(entered.is_set)
+                until(lambda:len(beats)>=4,timeout=1)
                 self.assertGreaterEqual(len(beats),4,'the Qt event loop stalled during persistence')
                 self.assertIn(transfer['upload_id'],self.server.uploads,'cloud cancellation preceded the durable pause')
                 self.assertTrue(Path(transfer['path']).exists(),'staging was removed before the pause was durable')

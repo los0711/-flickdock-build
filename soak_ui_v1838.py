@@ -120,7 +120,10 @@ def main():
                 steps('expand_collapse',500,expand)
                 shelf.show_contents();finish_motion();popup.resume_content()
                 def theme(i):
-                    value='dark' if i%2 else 'light';fixture.settings.update(theme=value)
+                    import theme_accent
+                    value='dark' if i%2 else 'light';accent=('#000000','#7C3AED','#22C55E')[i%3]
+                    fixture.settings.update(theme=value,accent_color=accent);theme_accent.set_color(accent)
+                    recorder.configure(theme=value,motion=True)
                     ui_theme.set_theme(value);ui_theme.apply_application(app,shelf_ui_common.FONT_FAMILY)
                     settings.apply_theme(value);transfer.apply_theme(value);shelf.refresh();w.flush()
                 steps('theme_switch',100,theme)

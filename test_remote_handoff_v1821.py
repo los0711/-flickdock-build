@@ -3,6 +3,8 @@ import threading,time,unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock,patch
+from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
 from test_html_native_workspace import flush,until
 import test_html_native_workspace as fixture
 from flickdock import ShelfManager
@@ -24,10 +26,11 @@ class HandoffTests(unittest.TestCase):
         panel=SimpleNamespace(_queued_paths=[])
         panel.queue_paths=lambda paths:panel._queued_paths.extend(str(Path(ref)) for ref in paths if Path(ref).exists())
         self.manager.wan_dialog=SimpleNamespace(panel=panel);self.manager.show_wan_dialog=Mock()
+        self.manager.lan_dialog=self.manager.wan_dialog;self.manager.show_transfer_dialog=Mock()
         self.manager._remote_intake=lambda paths:ShelfManager._remote_intake(self.manager,paths)
         self.manager.offer_large_intake=lambda paths:ShelfManager.offer_large_intake(self.manager,paths)
         return panel
-    def test_above_200m_recommendation_moves_ref_and_cancels_cloud_without_deleting_original(self):
+    def test_above_200m_notice_preserves_shelf_and_explicit_handoff_keeps_original(self):
         self.assertEqual(REMOTE_RECOMMEND_BYTES,200*1024*1024)
         panel=self.prepare();source=self.base/'large-original.bin';source.write_bytes(b'123456789')
         exact=self.base/'at-boundary.bin';exact.write_bytes(b'12345678')
@@ -36,8 +39,15 @@ class HandoffTests(unittest.TestCase):
             self.shelf.import_paths('permanent',[str(source)])
             until(lambda:hasattr(self.manager,'remote_intake_notice') and self.manager.remote_intake_notice.isVisible())
         notice=self.manager.remote_intake_notice
-        self.assertIn(str(source),self.shelf.files['permanent']);self.assertNotIn('小时',notice.label.text())
-        notice.action.click();flush()
+        self.assertIn(str(source),self.shelf.files['permanent']);self.assertNotIn('小时',notice.accessibleName())
+        self.assertIn('文件互传',notice.accessibleName())
+        QTest.mouseClick(notice,Qt.LeftButton);flush()
+        self.assertIn(str(source),self.shelf.files['permanent'])
+        self.assertEqual(panel._queued_paths,[str(source)])
+        self.manager.sync.cancel_upload.assert_not_called()
+        # The explicit legacy handoff still removes only the shelf reference;
+        # the recommendation itself now preserves it as required by v1837.
+        panel._queued_paths.clear();self.manager._remote_intake([str(source)])
         self.assertNotIn(str(source),self.shelf.files['permanent']);self.assertEqual(panel._queued_paths,[str(source)])
         self.manager.sync.cancel_upload.assert_called_with(str(source),remove=True)
         self.assertEqual(source.read_bytes(),b'123456789')

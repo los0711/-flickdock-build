@@ -141,18 +141,14 @@ class ItemTransitions(QObject):
             if not isValid(self) or generation!=self.generation:return
             self.layout_pending=False
             if not enabled:self.finish();return
-            now=time.perf_counter()
-            viewport=self.scroll.viewport()
-            for ref,widget in widgets.items():
-                if ref not in positions or not isValid(widget):continue
-                target=QPoint(widget.pos());origin=positions[ref]
-                if origin==target:continue
-                at=widget.mapTo(viewport,QPoint())
-                if not viewport.rect().intersects(widget.rect().translated(at)):continue
-                self.moves[ref]=(widget,origin,target,now)
-                widget.move(origin)
-            if self.moves or self.ghosts:self.timer.start()
-        QTimer.singleShot(0,begin)
+            changed=any(ref in positions and isValid(widget) and widget.pos()!=positions[ref]
+                        for ref,widget in widgets.items())
+            # Layout owns row/card geometry. Moving its children competes with
+            # a later LayoutRequest (the row snaps back during the tween).
+            # Reuse the same 4px group entrance as category/view changes.
+            if changed and self.prepare_entrance(enabled=True):self.enter()
+            elif not self.ghosts:self.finish()
+        QTimer.singleShot(0,self,begin)
 
     def _tick(self):
         now=time.perf_counter()
