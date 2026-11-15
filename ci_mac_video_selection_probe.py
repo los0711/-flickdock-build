@@ -19,7 +19,7 @@ os.environ['QT_QPA_PLATFORM']='cocoa'
 os.environ['QT_MEDIA_BACKEND']='darwin'
 os.environ['QT_MAC_SET_RAISE_PROCESS']='0'
 attempt=os.environ.get('FLICKDOCK_PROBE_ATTEMPT','1')
-if attempt not in ('1','2','3'):raise ValueError('Invalid isolated probe attempt')
+if attempt not in tuple(str(i) for i in range(1,9)):raise ValueError('Invalid isolated probe attempt')
 root=(Path('ci-mac-video-probe')/('sink-' if os.environ.get('FLICKDOCK_PROBE_SINK_ONLY')=='1' else 'native-')/attempt).resolve()
 root.mkdir(parents=True,exist_ok=True)
 stack_file=(root/'python-stack.txt').open('w',encoding='utf8',buffering=1)
@@ -66,7 +66,7 @@ original=fixture.base/'probe-h264.mp4';av1=fixture.base/'probe-av1.mp4'
 try:
     import imageio_ffmpeg,subprocess
     ffmpeg=imageio_ffmpeg.get_ffmpeg_exe()
-    command=[ffmpeg,'-v','error','-f','lavfi','-i','testsrc=size=160x90:rate=12',
+    command=[ffmpeg,'-v','error','-f','lavfi','-i','testsrc=size=1280x720:rate=30',
              '-t','1.5','-c:v','libx264','-pix_fmt','yuv420p','-y',str(original)]
     subprocess.run(command,check=True,capture_output=True,timeout=30)
     command=[ffmpeg,'-v','error','-f','lavfi','-i','testsrc=size=96x54:rate=8',
@@ -134,6 +134,18 @@ try:
         windows=[widget for widget in app.topLevelWidgets() if widget is shelf and widget.isVisible()]
         if len(windows)!=1:raise AssertionError(f'wrong shelf window count: {len(windows)}')
         report['modes'][mode]=dict(clicks=70,max_click_seconds=max(samples),single_shelf=True,player_released=True)
+    # A selected video must also survive the real overview/compact transition.
+    popup.select_item(str(original));workspace.flush()
+    workspace.until(lambda:popup.preview.media._poster_sent or popup.preview.media._failed,seconds=12)
+    note('collapse-with-video')
+    shelf.collapse_contents();workspace.until(lambda:not shelf.geometry_morph.active,seconds=8)
+    if shelf.expanded or not shelf.isVisible():raise AssertionError('Compact shelf did not remain visible')
+    shelf.show_contents();workspace.until(lambda:not shelf.geometry_morph.active,seconds=8)
+    popup.resume_content();workspace.until(lambda:popup._build_cursor==len(popup.visible_refs()),seconds=10)
+    from shelf_window import ShelfWindow
+    windows=[widget for widget in app.topLevelWidgets() if isinstance(widget,ShelfWindow) and widget.isVisible()]
+    if len(windows)!=1 or windows[0] is not shelf:raise AssertionError('Duplicate shelf windows after video transition')
+    report['video_collapse_reopen']='one-shelf'
     shelf.grab().save(str(root/'native-shelf.png'))
     report['ok']=True;(root/'result.json').write_text(json.dumps(report,indent=2),encoding='utf8')
     note('complete');print(json.dumps(report),flush=True)
