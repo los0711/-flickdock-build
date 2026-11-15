@@ -53,6 +53,17 @@ class SharedElementTests(unittest.TestCase):
         self.shelf.show_contents();self.shelf.geometry_morph.pause();self.shelf.presentation.stop()
         return self.shelf._surface_snapshot
 
+    def test_interrupted_native_frames_release_overlay_and_restore_overview_input(self):
+        from PySide6.QtTest import QTest
+        self.shelf.show_contents();morph=self.shelf.geometry_morph
+        self.assertTrue(morph.active);self.assertTrue(self.shelf._morph_host_active)
+        morph._frames.stop();QTest.qWait(morph.animation.duration()+150);workspace.flush()
+        self.assertFalse(morph.active);self.assertFalse(self.shelf._morph_host_active)
+        self.assertFalse(self.shelf._surface_snapshot.active)
+        control=self.shelf.popup.category_buttons['files'];self.assertTrue(control.isVisible())
+        QTest.mouseClick(control,Qt.LeftButton);workspace.flush()
+        self.assertEqual(self.shelf.popup.category,'files')
+
     def test_file_cards_use_original_endpoint_fades_without_repainting_widgets_each_frame(self):
         for mode in ('list','icons'):
             with self.subTest(mode=mode):

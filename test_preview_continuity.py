@@ -103,7 +103,7 @@ class PreviewContinuityTests(unittest.TestCase):
                 self.assertEqual(self.fixture.events[-1],(route,refs))
             popup.selected.clear();popup.primary_selection=None
 
-    def test_native_body_double_click_opens_once_and_keeps_the_file_selected_in_both_views(self):
+    def test_native_body_double_click_toggles_and_preview_opens_in_both_views(self):
         popup=self.fixture.overview();ref=self.fixture.paths[0]
         with patch('PySide6.QtGui.QDesktopServices.openUrl',return_value=True) as opened:
             for mode in ('list','icons'):
@@ -115,10 +115,16 @@ class PreviewContinuityTests(unittest.TestCase):
                 self.assertIn(ref,popup.selected);opened.assert_not_called()
                 QTest.mouseDClick(self.shelf.windowHandle(),Qt.LeftButton,pos=point)
                 QTest.mouseRelease(self.shelf.windowHandle(),Qt.LeftButton,pos=point);workspace.flush()
-                opened.assert_called_once()
-                self.assertEqual(Path(opened.call_args.args[0].toLocalFile()),Path(ref).resolve())
+                # The window-handle double-click helper sends two more
+                # clicks: three total alternate selected, clear, selected.
+                opened.assert_not_called();self.assertIn(ref,popup.selected)
+                self.assertEqual(popup.preview.current_path,ref)
+                QTest.mouseClick(self.shelf.windowHandle(),Qt.LeftButton,pos=point);workspace.flush()
+                self.assertNotIn(ref,popup.selected);self.assertIsNone(popup.preview.current_path)
+                QTest.mouseClick(self.shelf.windowHandle(),Qt.LeftButton,pos=point);workspace.flush()
                 self.assertIn(ref,popup.selected);self.assertEqual(popup.preview.current_path,ref)
-                opened.reset_mock()
+                popup.preview.open_button.click();opened.assert_called_once()
+                self.assertEqual(Path(opened.call_args.args[0].toLocalFile()),Path(ref).resolve());opened.reset_mock()
                 QTest.mouseDClick(item,Qt.RightButton,pos=item.rect().center())
                 QTest.mouseRelease(item,Qt.RightButton,pos=item.rect().center());workspace.flush()
                 opened.assert_not_called()

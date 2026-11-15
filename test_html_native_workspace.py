@@ -658,7 +658,8 @@ class WorkspaceTests(unittest.TestCase):
         single=[]
         with patch.object(shelf_ui_common.AnimatedMenu,'exec',lambda menu,*_:single.extend(action.text() for action in menu.actions() if not action.isSeparator())):
             popup.selected.clear();popup.select_item(self.paths[0]);popup.show_item_menu(self.paths[0],QPoint(0,0))
-        for text in ('打开文件','在文件夹中显示','复制文件路径','复制所选内容','重命名文件…','移动所选文件到…','从搁架移除此项'):
+        self.assertNotIn('打开文件',single)
+        for text in ('在文件夹中显示','复制文件路径','复制所选内容','重命名文件…','移动所选文件到…','从搁架移除此项'):
             self.assertIn(text,single)
         self.shelf.show_menu(pos=QPoint(0,0));flush()
         menu=self.shelf._more_menu
@@ -688,6 +689,24 @@ class WorkspaceTests(unittest.TestCase):
             self.assertEqual(copied,[])
             popup.select_item(self.paths[2]);popup.preview.copy_button.click();flush()
         self.assertEqual(copied,[(popup.preview.current_path,)])
+
+    def test_repeated_file_clicks_only_toggle_selection_and_preview_button_opens(self):
+        popup=self.overview();ref=self.paths[0]
+        for mode in ('list','icons'):
+            with self.subTest(mode=mode):
+                popup.change_view_mode(mode);popup.resume_content()
+                until(lambda:ref in popup._item_widgets);flush()
+                item=popup._item_widgets[ref]
+                popup.selected.clear();popup.primary_selection=None;popup.restore_selected_preview();flush()
+                with patch.object(self.shelf,'open_path') as opened:
+                    QTest.mouseClick(item,Qt.LeftButton,pos=item.rect().center());flush()
+                    self.assertIn(ref,popup.selected)
+                    QTest.mouseDClick(item,Qt.LeftButton,pos=item.rect().center())
+                    QTest.mouseRelease(item,Qt.LeftButton,pos=item.rect().center());flush()
+                    self.assertNotIn(ref,popup.selected);opened.assert_not_called()
+                    QTest.mouseClick(item,Qt.LeftButton,pos=item.rect().center());flush()
+                    self.assertIn(ref,popup.selected)
+                    popup.preview.open_button.click();opened.assert_called_once_with(ref)
 
 
 if __name__=='__main__':unittest.main(verbosity=2)

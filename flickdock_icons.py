@@ -240,7 +240,11 @@ def document_svg(value: str = '', stack: int = 1, *, display_text: str | None = 
     # Qt SVG treats a comma-separated font-family list as one family name,
     # silently falling back for Latin characters. Inherit the app's actual
     # platform font from the painter instead.
-    body += f'<text x="34.5" y="44" text-anchor="middle" font-size="{12 if len(label)>3 else 14}" font-weight="500" fill="#ffffff">{escape(label)}</text>'
+    # Keep short format labels legible at shelf-icon sizes while leaving
+    # enough horizontal space for longer codec names such as H.264 / H.265.
+    length=len(label)
+    font_size=16 if length<=3 else 14 if length==4 else 13 if length==5 else 11 if length==6 else 9
+    body += f'<text x="34.5" y="44" text-anchor="middle" font-size="{font_size}" font-weight="700" fill="#ffffff">{escape(label)}</text>'
     return _svg(body,'0 0 64 64')
 
 

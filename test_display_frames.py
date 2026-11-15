@@ -141,6 +141,29 @@ class DisplayFramesTests(unittest.TestCase):
         self.assertFalse(morph._frames.isActive());morph.resume();self.assertEqual(morph.current,before)
         morph.complete();self.assertFalse(morph._frames.isActive())
 
+    def test_occluded_window_still_settles_and_releases_its_surface(self):
+        from PySide6.QtTest import QTest
+        settled=[];target=QRect(0,0,400,300)
+        morph=SurfaceMorph(self.window,QRect(0,0,100,100),lambda rect:None,settle=lambda rect:settled.append(QRect(rect)))
+        with patch('native_ui_common.reduced_motion',return_value=False):morph.animate(target,duration=60)
+        # AppKit may stop native display callbacks when another app covers the
+        # shelf. This is not an intentional pause: the endpoint must still land.
+        morph._frames.stop();QTest.qWait(120)
+        self.assertFalse(morph.active);self.assertEqual(morph.current,target);self.assertEqual(settled,[target])
+
+    def test_morph_deadline_respects_pause_and_interruption(self):
+        from PySide6.QtTest import QTest
+        settled=[];morph=SurfaceMorph(self.window,QRect(0,0,100,100),lambda rect:None,settle=lambda rect:settled.append(QRect(rect)))
+        with patch('native_ui_common.reduced_motion',return_value=False):morph.animate(QRect(0,0,400,300),duration=60)
+        morph.pause();QTest.qWait(100);self.assertTrue(morph.active);self.assertEqual(settled,[])
+        morph.resume();morph._frames.stop();QTest.qWait(100)
+        self.assertFalse(morph.active);self.assertEqual(settled,[QRect(0,0,400,300)])
+        with patch('native_ui_common.reduced_motion',return_value=False):
+            morph.animate(QRect(0,0,500,400),duration=40)
+            morph.animate(QRect(0,0,600,500),duration=100)
+        morph._frames.stop();QTest.qWait(65);self.assertTrue(morph.active)
+        QTest.qWait(80);self.assertEqual(settled[-1],QRect(0,0,600,500))
+
     def test_reduced_motion_lands_without_a_native_frame_subscription(self):
         morph=SurfaceMorph(self.window,QRect(0,0,100,100),lambda rect:None)
         with patch('native_ui_common.reduced_motion',return_value=True):morph.animate(QRect(0,0,400,300))

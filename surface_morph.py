@@ -3,7 +3,7 @@ from collections import OrderedDict
 import math
 import sys
 import time
-from PySide6.QtCore import QObject, QPoint, QPointF, QRect, QRectF, Qt, QEasingCurve, QVariantAnimation
+from PySide6.QtCore import QObject, QPoint, QPointF, QRect, QRectF, Qt, QEasingCurve, QTimer, QVariantAnimation
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPixmap, QTransform, QRegion
 from PySide6.QtWidgets import QWidget
 from display_frames import FramePulse
@@ -324,6 +324,11 @@ class SurfaceMorph(QObject):
         self.animation = QVariantAnimation(self)
         self._frames = FramePulse(self)
         self._frames.timeout.connect(self._advance)
+        # Cocoa may suspend display callbacks while another app covers the
+        # shelf. Finish once at the deadline so the compositor and hit-test
+        # mask cannot remain stranded at an intermediate frame.
+        self._completion=QTimer(self);self._completion.setSingleShot(True)
+        self._completion.setTimerType(Qt.PreciseTimer);self._completion.timeout.connect(self._finish)
         self._started_at = 0.0
         # One shared clock drives geometry and content. Only an explicit
         # overview open opts into a small, preallocated elastic overshoot.
@@ -338,6 +343,7 @@ class SurfaceMorph(QObject):
 
     def stop(self, settle=True):
         self._frames.stop()
+        self._completion.stop()
         self.animation.stop()
         self._done = None
         self.active=False
@@ -379,14 +385,17 @@ class SurfaceMorph(QObject):
         self._frame(0.0)
         self._started_at = time.perf_counter()
         self._frames.start()
+        self._completion.start(duration)
 
     def pause(self):
         self._frames.stop()
+        self._completion.stop()
 
     def resume(self):
         if self.active:
             self._started_at = time.perf_counter() - self.animation.currentTime() / 1000
             self._frames.start()
+            self._completion.start(max(0,self.animation.duration()-self.animation.currentTime()))
 
     def _advance(self):
         elapsed = round((time.perf_counter() - self._started_at) * 1000)
@@ -409,6 +418,7 @@ class SurfaceMorph(QObject):
     def _finish(self):
         if not self.active:return
         self._frames.stop()
+        self._completion.stop()
         self.animation.stop()
         self.active=False; self.progress=1.0;self.clock=1.0
         self.current = QRect(self._to)

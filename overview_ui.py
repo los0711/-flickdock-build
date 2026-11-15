@@ -220,12 +220,8 @@ class FileRow(QFrame):
 
     def mouseDoubleClickEvent(self, event):
         if event.button()==Qt.LeftButton:
-            self._pending_deselect=False;self.did_drag=False
-            self.popup.select_item(self.path)
-            self.popup.shelf.open_path(self.path);self.popup.shelf.touch()
-            # QWidget's default double-click handler re-enters mousePressEvent,
-            # which would arm deselection again before the final release.
-            event.accept();return
+            # Treat the second click as another ordinary selection press.
+            self.mousePressEvent(event);return
         super().mouseDoubleClickEvent(event)
 
     def mouseReleaseEvent(self,event):
@@ -245,7 +241,7 @@ class FileRow(QFrame):
             self.popup.shelf.copy_items(refs or [self.path])
             event.accept()
         elif event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-            self.popup.shelf.open_path(self.path)
+            self.popup.select_item(self.path,toggle=True)
             event.accept()
         elif event.key() == Qt.Key.Key_Space:
             self.popup.select_item(self.path,toggle=True);event.accept()
@@ -1113,7 +1109,6 @@ class ContentsPopup(QFrame):
             finally:self.shelf._menu_open=False;menu.deleteLater();self.shelf.touch()
             return
         if not self.shelf.content.is_text(ref):
-            menu.addAction('打开文件',lambda:self.shelf.open_path(ref))
             menu.addAction('在文件夹中显示',lambda:self.shelf.reveal_ref(ref))
             menu.addAction('复制文件路径',lambda:QApplication.clipboard().setText(ref))
         menu.addAction('复制所选内容',lambda:self.shelf.copy_items(refs))

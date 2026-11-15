@@ -181,13 +181,7 @@ class IconItem(QWidget):
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            if QRectF(4,4,32,32).contains(event.position()):
-                self.mousePressEvent(event);return
-            self._pending_deselect=False;self.did_drag=False
-            self.popup.select_item(self.ref)
-            self.popup.shelf.open_path(self.ref)
-            self.popup.shelf.touch()
-            event.accept();return
+            self.mousePressEvent(event);return
         super().mouseDoubleClickEvent(event)
 
     def keyPressEvent(self, event):
@@ -195,7 +189,7 @@ class IconItem(QWidget):
             self.popup.shelf.copy_items(self._chosen())
             event.accept()
         elif event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-            self.popup.shelf.open_path(self.ref)
+            self.popup.select_item(self.ref,toggle=True)
             event.accept()
         elif event.key() == Qt.Key.Key_Space:
             if hasattr(self.popup,'select_item'):self.popup.select_item(self.ref,toggle=True)
