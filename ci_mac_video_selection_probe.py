@@ -49,11 +49,20 @@ original_video=os.environ.get('FLICKDOCK_PROBE_ORIGINAL_VIDEO')=='1'
 if original_video:
     import media_preview
     media_preview._use_composited_video=lambda:False
-if os.environ.get('FLICKDOCK_PROBE_ORIGINAL_THUMBNAIL')=='1':
+original_thumbnail=os.environ.get('FLICKDOCK_PROBE_ORIGINAL_THUMBNAIL','0')
+if original_thumbnail in ('1','2'):
     # Exact thumbnail implementation from the user's earlier 1.8.37 source.
     import reference_widgets
     source=Path(__file__).with_name('ci_original_thumbnail.py').read_text(encoding='utf8')
-    exec(compile(source,'ci_original_thumbnail.py','exec'),reference_widgets.__dict__)
+    scope=dict(reference_widgets.__dict__)
+    exec(compile(source,'ci_original_thumbnail.py','exec'),scope)
+    old_thumbnail=scope['thumbnail']
+    if original_thumbnail=='1':reference_widgets.thumbnail=old_thumbnail
+    else:
+        current_thumbnail=reference_widgets.thumbnail
+        def video_thumbnail(shelf,ref,size=40):
+            return (old_thumbnail if shelf.content.category(ref)=='video' else current_thumbnail)(shelf,ref,size)
+        reference_widgets.thumbnail=video_thumbnail
 no_media=os.environ.get('FLICKDOCK_PROBE_NO_MEDIA')=='1'
 if no_media:
     # Diagnostic control only: select the same items with decoder creation

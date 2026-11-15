@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        original_thumbnail: ['0','1']
+        original_thumbnail: ['0','2']
     env:
       PYTHONUTF8: '1'
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
@@ -34,7 +34,7 @@ jobs:
           FLICKDOCK_PROBE_ORIGINAL_THUMBNAIL: '${{ matrix.original_thumbnail }}'
         run: |
           failed=0
-          for attempt in 1 2 3 4; do
+          for attempt in 1 2 3 4 5 6 7 8; do
             FLICKDOCK_PROBE_ATTEMPT="$attempt" python ci_mac_video_selection_probe.py || failed=$((failed+1))
           done
           test "$failed" -eq 0
