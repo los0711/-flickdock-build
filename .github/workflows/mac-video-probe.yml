@@ -1,67 +1,95 @@
-name: macOS morph deadline diagnosis
+name: Verify existing Mac video compositor package
 on:
   push:
     branches: [mac-video-diagnostics]
 permissions:
   contents: read
+  actions: read
 jobs:
-  diagnose:
+  verify:
     runs-on: macos-15
-    timeout-minutes: 8
+    timeout-minutes: 10
+    env:
+      PYTHONUTF8: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+      QT_QPA_PLATFORM: offscreen
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
+          ref: 418615af948102f2172631ea7ffddbc5e346827e
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: '3.12'
           architecture: arm64
-      - run: python -m pip install 'PySide6==6.12.0'
-      - name: Observe native timer lifecycle without changing assertions
-        env:
-          QT_QPA_PLATFORM: offscreen
-          PYTHONUTF8: '1'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: '14165688007'
+          run-id: '43722092773'
+          github-token: ${{ github.token }}
+          path: ci-built
+      - name: Install and check all verification dependencies
+        run: |
+          python -m pip install 'PySide6==6.12.0' 'pyobjc-framework-Quartz>=11,<13' 'keyring==25.7.0' 'fasttext-predict-v2==1.1.0' 'yt-dlp[default]==2026.10.26' 'imageio-ffmpeg==0.6.0' 'cryptography==50.0.2'
+          python -c "import imageio_ffmpeg; from pathlib import Path; p=Path(imageio_ffmpeg.get_ffmpeg_exe()); assert p.is_file(); print('Generated-video fixture dependency is ready')"
+      - name: Verify unchanged package bytes and run both compositor checks
         run: |
           python - <<'PY'
-          import time,unittest
-          import test_display_frames as test
-          from PySide6.QtCore import QEvent,QObject,QRect
-          from PySide6.QtTest import QTest
-          from unittest.mock import patch
-          from surface_morph import SurfaceMorph
-          start=time.monotonic()
-          def state(m):
-              timer=m._completion
-              return dict(at=round((time.monotonic()-start)*1000,2),active=m.active,
-                          timer=timer.isActive(),remaining=timer.remainingTime(),id=timer.timerId(),
-                          duration=m.animation.duration(),current=m.animation.currentTime(),
-                          target=str(getattr(m,'_to',None)))
-          for name in ('animate','pause','resume','stop','_finish'):
-              original=getattr(SurfaceMorph,name)
-              def traced(self,*args,_name=name,_original=original,**kwargs):
-                  print('BEFORE',_name,state(self),flush=True)
-                  result=_original(self,*args,**kwargs)
-                  print('AFTER',_name,state(self),flush=True)
-                  return result
-              setattr(SurfaceMorph,name,traced)
-          suite=unittest.defaultTestLoader.loadTestsFromModule(test)
-          result=unittest.TextTestRunner(verbosity=2).run(suite)
-          print('SUITE_SUCCESS',result.wasSuccessful(),flush=True)
-          for attempt in range(3):
-              window=test.QWidget();window.show();test.flush()
-              settled=[]
-              morph=SurfaceMorph(window,QRect(0,0,100,100),lambda r:None,
-                                  settle=lambda r:settled.append(str(r)))
-              with patch('native_ui_common.reduced_motion',return_value=False):
-                  morph.animate(QRect(0,0,400,300),duration=60)
-              morph.pause();QTest.qWait(100);print('WAIT_PAUSED',state(morph),flush=True)
-              morph.resume();morph._frames.stop();QTest.qWait(100)
-              print('WAIT_RESUME',attempt,state(morph),settled,flush=True)
-              with patch('native_ui_common.reduced_motion',return_value=False):
-                  morph.animate(QRect(0,0,500,400),duration=40)
-                  morph.animate(QRect(0,0,600,500),duration=100)
-              morph._frames.stop();QTest.qWait(65);print('WAIT_65',state(morph),flush=True)
-              QTest.qWait(80);print('WAIT_145',state(morph),settled,flush=True)
-              QTest.qWait(200);print('WAIT_EXTRA200',state(morph),settled,flush=True)
-              morph.stop();window.close();window.deleteLater();test.flush()
+          import hashlib,json,os,subprocess,sys,tempfile,zipfile
+          from pathlib import Path
+          import imageio_ffmpeg
+          from mac_updates import _extract
+          output=Path('reverification');output.mkdir(exist_ok=True)
+          built=Path('ci-built')
+          candidates=list(built.rglob('mac-build-1.8.37-arm64.json'))
+          assert len(candidates)==1,candidates
+          built=candidates[0].parent
+          build=json.loads(candidates[0].read_text())
+          assert build['ok'] and build['architecture']=='arm64' and build['version']=='1.8.37'
+          expected={'zip':'5578e4f644fc8a196359a5e180cc66c42ba9cba766cc9890ed180e3e96ab1650',
+                    'dmg':'6c3b254e0f0cd212b64288d4dacf5d0b576dcd2b67d6c2d6eba8a967e9c943cf',
+                    'pkg':'ee21f984563f76b545071b4a67cb691e399929b0fc09ed497b4412eea4411a1e'}
+          for row in build['artifacts']:
+              path=built/row['name']
+              with path.open('rb') as stream:digest=hashlib.file_digest(stream,'sha256').hexdigest()
+              assert path.stat().st_size==row['bytes'] and digest==row['sha256']==expected[path.suffix[1:]]
+          with zipfile.ZipFile(built/'FlickDock-1.8.37-macOS-arm64.zip') as archive:
+              app=_extract(archive,Path('ci-app'),None)
+          subprocess.run(['/usr/bin/codesign','--verify','--deep','--strict',str(app)],check=True,timeout=30)
+          subprocess.run([sys.executable,'ci_mac_video_compositor.py','--source',str(Path.cwd()),
+                          '--renderer','composited','--clicks','50','--timeout','120',
+                          '--output',str(output/'native')],check=True,timeout=130)
+          native=json.loads((output/'native/worker-result.json').read_text())
+          supervisor=json.loads((output/'native/supervisor-result.json').read_text())
+          assert native['ok'] and supervisor['ok'] and native['snapshot_finished'] and native['selected_after_reopen']
+          assert native['renderer']=='composited' and native['gil_held_diagnostics']
+          (output/'mac-video-compositor-arm64.json').write_text(json.dumps(dict(ok=True,native=native,supervisor=supervisor),indent=2))
+          with tempfile.TemporaryDirectory(prefix='flickdock-raster-recheck-') as profile:
+              video=Path(profile)/'generated.mp4'
+              subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(),'-v','error','-f','lavfi','-i',
+                              'testsrc=size=640x360:rate=24','-f','lavfi','-i','sine=frequency=440:sample_rate=44100',
+                              '-t','4','-c:v','libx264','-pix_fmt','yuv420p','-c:a','aac','-shortest','-y',str(video)],
+                             check=True,capture_output=True,timeout=30)
+              report=(output/'mac-media-compositor-arm64.json').resolve()
+              env=dict(os.environ,HOME=profile,APPDATA=profile,XDG_CONFIG_HOME=profile,QT_QPA_PLATFORM='offscreen',QT_MEDIA_BACKEND='darwin')
+              subprocess.run([str((app/'Contents/MacOS/FlickDock').resolve()),'--verify-media',str(video),
+                              '--verify-output',str(report)],env=env,check=True,timeout=90)
+              frozen=json.loads(report.read_text())
+              assert frozen['ok'] and frozen['frozen'] and frozen['version']=='1.8.37'
+              assert frozen['renderer']=='qvideosink-raster' and frozen['native_renderer'] is False
+              assert frozen['presented_playback_frames']>1
+          record=dict(ok=True,application_commit='418615af948102f2172631ea7ffddbc5e346827e',
+                      verification_commit=os.environ['GITHUB_SHA'],source_artifact_id=14165688007,
+                      source_build_run=43722092773,package_artifacts=build['artifacts'],
+                      package_rebuilt=False,missing_fixture_dependency_corrected=True)
+          (output/'mac-verification-recovery.json').write_text(json.dumps(record,indent=2))
+          print(json.dumps(record,indent=2))
           PY
+      - name: Retain verification results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: Mac-video-verification-${{ github.sha }}
+          path: reverification/
+          if-no-files-found: warn
+          retention-days: 3

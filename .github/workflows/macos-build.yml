@@ -126,6 +126,8 @@ jobs:
           PY
       - name: Verify composited video and diagnostic cleanup
         run: |
+          build/macos-venv/bin/python -m pip install --no-deps 'imageio-ffmpeg==0.6.0'
+          build/macos-venv/bin/python -c "import imageio_ffmpeg; print('Verified generated-video fixture tool:', imageio_ffmpeg.get_ffmpeg_exe())"
           build/macos-venv/bin/python -m unittest test_crash_diagnostics_v1838 test_architecture -q
           build/macos-venv/bin/python ci_mac_video_compositor.py --source "$PWD" --renderer composited --clicks 50 --timeout 120 --output ci-native-compositor
           build/macos-venv/bin/python - <<'PY'
