@@ -85,11 +85,11 @@ class AnimatedMenu(QMenu):
         self.fade.stop();self.setWindowOpacity(1);super().hideEvent(event)
 
 
-def style_menu(menu: QMenu) -> None:
+def style_menu(menu: QMenu, *, antialiased=False) -> None:
     from native_ui_common import rounded_popup,RADIUS_CARD_PX,RADIUS_SUBCONTROL_PX
     # A binary QRegion mask makes small rounded corners visibly stair-stepped.
     # Let Qt composite the translucent frameless popup's antialiased edge.
-    rounded_popup(menu, RADIUS_CARD_PX, antialiased=True)
+    rounded_popup(menu, RADIUS_CARD_PX, antialiased=antialiased)
     palette = menu.palette()
     palette.setColor(QPalette.ColorRole.Window, QColor(ui_theme.color("surface")))
     palette.setColor(QPalette.ColorRole.Base, QColor(ui_theme.color("surface")))

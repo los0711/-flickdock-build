@@ -1546,7 +1546,7 @@ class ShelfWindow(QWidget):
         if button_menu and self._more_menu_just_closed:return
         self.touch()
         menu = AnimatedMenu(self)
-        style_menu(menu)
+        style_menu(menu,antialiased=True)
         # The shared rounded-popup style suppresses the platform shadow;
         # this menu intentionally uses the native neutral popup shadow.
         menu.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint,False)
