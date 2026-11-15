@@ -101,7 +101,9 @@ def run_overview(argv,load_font):
     shelf=None
     try:
         with tempfile.TemporaryDirectory(prefix='flickdock-overview-') as directory:
-            base=Path(directory);settings=SettingsStore(base/'profile')
+            # Cocoa resolves /var through /private/var when references enter
+            # the shelf. Keep the generated fixture's selection key canonical.
+            base=Path(directory).resolve();settings=SettingsStore(base/'profile')
             settings.update(theme='dark',view_mode='list',capture_mode='reference',capture_dir=str(base/'saved'))
             ui_theme.set_theme('dark');ui_theme.apply_application(app,app.font().family());queued=[]
             manager=SimpleNamespace(motion=False,settings=settings,save=lambda:None,update_handles=lambda:None,
@@ -129,11 +131,6 @@ def run_overview(argv,load_font):
             report['preview_layout']=dict(width=popup.width(),narrow=popup._narrow_layout,
                                           selected=preview.current_path is not None)
             assert len(preview.action_buttons)==6
-            # Selection may retire the preceding preview on queued Qt/native
-            # frame events. Check the resulting state after those events land.
-            deadline=time.monotonic()+2
-            while not all(button.isVisible() for button in preview.action_buttons) and time.monotonic()<deadline:
-                app.processEvents();time.sleep(.002)
             assert all(button.isVisible() for button in preview.action_buttons)
             top=lambda widget:widget.mapTo(preview,QPoint()).y()
             assert top(preview.open_button)==top(preview.send_button)

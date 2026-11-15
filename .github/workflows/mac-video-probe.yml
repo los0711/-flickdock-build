@@ -48,7 +48,7 @@ jobs:
       - name: Verify asynchronous overview selection before freezing
         run: |
           profile="$(mktemp -d)"
-          APPDATA="$profile" HOME="$profile" XDG_CONFIG_HOME="$profile" QT_QPA_PLATFORM=cocoa FLICKDOCK_VERIFY_NATIVE_UI=1 python flickdock.py --verify-overview --verify-output ci-preflight-overview.json
+          APPDATA="$profile" HOME="$profile" XDG_CONFIG_HOME="$profile" QT_QPA_PLATFORM=cocoa FLICKDOCK_VERIFY_NATIVE_UI=1 python flickdock.py --verify-overview --verify-output ci-preflight-overview.json --verify-capture ci-preflight-overview.png || { cat ci-preflight-overview.json; exit 1; }
       - name: Build frozen arm64 application
         run: |
           mkdir -p build/macos
@@ -133,5 +133,7 @@ jobs:
           path: |
             ci-output/
             ci-native-final/
+            ci-preflight-overview.json
+            ci-preflight-overview.png
           if-no-files-found: warn
           retention-days: 3
