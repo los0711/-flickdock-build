@@ -23,8 +23,9 @@ def run(count=300,size_kib=32):
         supports_diag='diagnostics_base' in inspect.signature(LanTransferService).parameters
         sender=LanTransferService(device_name='Loopback sender',bind_host='127.0.0.1',discovery=False,**({'diagnostics_base':root/'sender'} if supports_diag else {}))
         receiver=LanTransferService(device_name='Loopback receiver',bind_host='127.0.0.1',discovery=False,**({'diagnostics_base':root/'receiver'} if supports_diag else {}))
-        offers=[];sent=[];received=[]
+        offers=[];sent=[];received=[];sender_states=[]
         receiver.offer_received.connect(offers.append);sender.completed.connect(sent.append);receiver.completed.connect(received.append)
+        sender.progress.connect(sender_states.append)
         def wait(predicate,timeout=120):
             deadline=time.monotonic()+timeout
             while time.monotonic()<deadline:
@@ -36,13 +37,16 @@ def run(count=300,size_kib=32):
             sender.start();receiver.start();wait(lambda:sender.port and receiver.port,15)
             sender.remember_peer(receiver.own_peer());receiver.remember_peer(sender.own_peer())
             identifier=sender.send(receiver.device_id,[source]);wait(lambda:offers,15)
-            started=time.perf_counter();receiver.accept(identifier,destination)
+            wait(lambda:any(row['id']==identifier and row['state']=='waiting' for row in sender_states),15)
+            code=next(row['code'] for row in sender_states if row['id']==identifier and row['state']=='waiting')
+            if code!=offers[-1]['code']:raise AssertionError('TLS authentication codes differ')
+            started=time.perf_counter();receiver.accept(identifier,destination,confirmation=code)
             wait(lambda:sent and received);seconds=time.perf_counter()-started
             files=list((destination/source.name).glob('*.bin'))
             if len(files)!=count or any(hashlib.sha256(path.read_bytes()).digest()!=expected for path in files):
                 raise AssertionError('Received bytes differ')
             return dict(ok=True,files=count,file_bytes=len(content),seconds=round(seconds,3),files_per_second=round(count/seconds,2),
-                        sha256_verified=True,scope='local cached-disk TLS loopback; not Wi-Fi throughput')
+                        sha256_verified=True,confirmation_verified=True,scope='local cached-disk TLS loopback; not Wi-Fi throughput')
         finally:
             sender.close();receiver.close()
             for service in (sender,receiver):
