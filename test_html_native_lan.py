@@ -85,6 +85,25 @@ class NativeLanTests(unittest.TestCase):
             self.assertGreaterEqual(popup.height()-view.geometry().bottom()-1,4)
             combo.hidePopup();APP.processEvents()
 
+    def test_windows_device_popup_fades_on_transparent_host_and_restores_preference(self):
+        from PySide6.QtCore import QAbstractAnimation
+        combo=self.dialog.panel.devices
+        for theme in ('light','dark'):
+            self.dialog.apply_theme(theme);APP.processEvents()
+            preference=QApplication.isEffectEnabled(Qt.UI_AnimateCombo)
+            with patch('lan_panel.sys.platform','win32'),patch('lan_panel.reduced_motion',return_value=False):
+                combo.showPopup();APP.processEvents();popup=combo.view().window();fade=popup._device_fade
+                self.assertEqual(QApplication.isEffectEnabled(Qt.UI_AnimateCombo),preference)
+                self.assertEqual(fade.animation.state(),QAbstractAnimation.Running)
+                fade.animation.pause()
+                for point in (0,70,140):
+                    fade.animation.setCurrentTime(point);image=popup.grab().toImage()
+                    self.assertEqual(image.pixelColor(0,0).alpha(),0,(theme,point))
+                    self.assertGreater(image.pixelColor(image.width()//2,3).alpha(),200,(theme,point))
+                combo.hidePopup();APP.processEvents()
+                self.assertEqual(fade.animation.state(),QAbstractAnimation.Stopped)
+                self.assertAlmostEqual(popup.windowOpacity(),1.,places=2)
+
     def test_clear_buttons_share_default_and_red_hover_in_both_themes(self):
         panel=self.dialog.panel
         for theme in ('light','dark'):
@@ -97,6 +116,24 @@ class NativeLanTests(unittest.TestCase):
                 self.assertGreater(hovered.red(),hovered.green());self.assertNotEqual(normal,hovered)
                 pixels.append((normal,hovered,control.size()))
             self.assertEqual(pixels[0],pixels[1])
+
+    def test_history_delete_has_visible_hover_and_press_in_both_themes(self):
+        panel=self.dialog.panel
+        panel._history=[{'when':'11-15 14:43','name':'report.zip','peer':'Mac',
+                         'state':'已取消','direction':'send'}]
+        panel._render_history();APP.processEvents()
+        button=panel.history_rows[0].remove_button
+        for theme in ('light','dark'):
+            self.dialog.apply_theme(theme);APP.processEvents()
+            QTest.mouseMove(panel,QPoint(0,0));APP.processEvents()
+            normal=button.grab().toImage().pixelColor(5,button.height()//2)
+            QTest.mouseMove(button,button.rect().center());APP.processEvents()
+            hovered=button.grab().toImage().pixelColor(5,button.height()//2)
+            QTest.mousePress(button,Qt.LeftButton);APP.processEvents()
+            pressed=button.grab().toImage().pixelColor(5,button.height()//2)
+            QTest.mouseRelease(button,Qt.LeftButton,pos=QPoint(-5,-5));APP.processEvents()
+            self.assertNotEqual(normal,hovered,theme)
+            self.assertNotEqual(hovered,pressed,theme)
 
     def test_macos_control_variant_keeps_modeless_navigation(self):
         with patch('lan_panel.sys.platform','darwin'):

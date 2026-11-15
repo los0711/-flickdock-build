@@ -9,7 +9,7 @@ import sys
 import time
 from collections import deque
 
-from PySide6.QtCore import QByteArray, QEvent, QObject, QPoint, QRect, QRectF, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QByteArray, QEvent, QObject, QPoint, QRect, QRectF, QSize, Qt, QTimer, QUrl, Signal, QEasingCurve
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QPainter, QPainterPath, QPalette,QPen
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog, QFrame, QGraphicsDropShadowEffect,
@@ -278,6 +278,30 @@ class _DevicePopupBackground(QWidget):
         painter.end()
 
 
+class _DevicePopupFade(QObject):
+    """Animate the alpha-capable popup itself, not Qt's opaque roll surface."""
+    def __init__(self,popup):
+        super().__init__(popup);self.popup=popup
+        from display_frames import DisplayAnimation
+        self.animation=DisplayAnimation(self);self.animation.setDuration(140)
+        self.animation.setEasingCurve(QEasingCurve.OutCubic)
+        self.animation.valueChanged.connect(popup.setWindowOpacity)
+        popup.installEventFilter(self)
+
+    def prepare(self):
+        self.animation.stop()
+        self.popup.setWindowOpacity(1. if reduced_motion() else .25)
+
+    def start(self):
+        if reduced_motion():self.popup.setWindowOpacity(1.);return
+        self.animation.setStartValue(self.popup.windowOpacity());self.animation.setEndValue(1.);self.animation.start()
+
+    def eventFilter(self,watched,event):
+        if watched is self.popup and event.type()==QEvent.Hide:
+            self.animation.stop();self.popup.setWindowOpacity(1.)
+        return False
+
+
 class _DevicesCombo(QComboBox):
     remove_requested=Signal(str)
     def __init__(self,parent=None):
@@ -307,7 +331,20 @@ class _DevicesCombo(QComboBox):
         if not hasattr(popup,'_device_background'):popup._device_background=_DevicePopupBackground(popup)
         popup._device_background.background=background;popup._device_background.border=colors['input_border']
         popup._device_background.setGeometry(popup.rect());popup._device_background.show();popup._device_background.lower();popup._device_background.update()
-        super().showPopup()
+        # Windows' built-in combo roll uses an opaque intermediate surface,
+        # exposing black corners even though the final popup has alpha. Keep
+        # the popup animation on its translucent host and restore the global
+        # Qt preference immediately after the synchronous show operation.
+        fade=None
+        if sys.platform=='win32':
+            fade=getattr(popup,'_device_fade',None)
+            if fade is None:fade=popup._device_fade=_DevicePopupFade(popup)
+            fade.prepare()
+        animate=QApplication.isEffectEnabled(Qt.UI_AnimateCombo)
+        if fade is not None and animate:QApplication.setEffectEnabled(Qt.UI_AnimateCombo,False)
+        try:super().showPopup()
+        finally:
+            if fade is not None and animate:QApplication.setEffectEnabled(Qt.UI_AnimateCombo,True)
         # Qt sizes the private container before our rounded-frame margins are
         # applied. Restore the missing viewport height so the final row and
         # its lower rounded corners are not clipped by the popup.
@@ -331,6 +368,7 @@ class _DevicesCombo(QComboBox):
             popup.move(x,y)
         self.view().viewport().installEventFilter(self)
         self.view().installEventFilter(self)
+        if fade is not None:fade.start()
 
     def eventFilter(self,watched,event):
         if watched in (self.view(),self.view().viewport()) and getattr(self,'removable',False):
@@ -1255,7 +1293,7 @@ class LanPanel(QFrame):
             QFrame#lanPanel QLabel#lanHistoryState[statusKind="failed"] {{ color:{c['red']}; }}
             QFrame#lanPanel QLabel#lanHistoryState[statusKind="other"] {{ color:{muted}; }}
             QFrame#lanPanel QPushButton#lanHistoryRemove {{ background:transparent; border:0; border-radius:{RADIUS_CONTROL_PX}px; color:{c['muted']}; padding:0; font-size:12px; }}
-            QFrame#lanPanel QPushButton#lanHistoryRemove:hover {{ background:{c['hover']}; color:{color}; }}
+            QFrame#lanPanel QPushButton#lanHistoryRemove:hover {{ background:{c['control_hover']}; color:{color}; }}
             QFrame#lanDropZone {{ background:transparent; border:0; }}
             QFrame#lanDropZone QLabel#lanDropTitle {{ font-size:12px; font-weight:500; color:{color}; }}
             QFrame#lanDropZone QLabel#lanDropHint {{ font-size:11px; color:{muted}; }}

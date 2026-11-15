@@ -29,6 +29,15 @@ class AccountProfileLayoutTests(unittest.TestCase):
             self.assertEqual(image.pixelColor(10,13),expected)
             self.assertEqual(image.pixelColor(30,13),expected)
 
+    def test_signed_in_identity_is_centered_without_transfer_subtitle(self):
+        self.panel.set_sync_status('正在上传 fixture.zip · 1/1');self.settle()
+        panel=self.panel
+        self.assertTrue(panel.sync_status_label.isHidden())
+        centers=[widget.mapTo(panel.profile_frame,widget.rect().center()).y()
+                 for widget in (panel.account_glyph,panel.username_label,panel.account_state_label,
+                                panel.password_toggle_button,panel.logout_button)]
+        self.assertLessEqual(max(centers)-min(centers),2,centers)
+
     def test_device_card_fits_content_and_large_device_list_scrolls(self):
         self.dialog.resize(892,820);self.settle()
         viewport=self.dialog.scroll.viewport()

@@ -333,25 +333,33 @@ class ContentsPopup(QFrame):
             return
         self._apply_responsive_layout()
 
-    def _grid_column_count(self):
+    def _grid_available_width(self):
         # Reserve the scrollbar gutter even while it is hidden. Adding enough
         # cards to make it appear must not change column count or card width.
-        width=self.scroll.maximumViewportSize().width()-self.scroll.verticalScrollBar().sizeHint().width()-24
+        gutter=max(12,self.scroll.verticalScrollBar().sizeHint().width())
+        maximum=min(self.scroll.maximumViewportSize().width(),self.scroll.contentsRect().width())-gutter
+        viewport=self.scroll.viewport().width()
+        # Native macOS scrollbars and a pending resize can make Qt's maximum
+        # larger than the actual viewport during incremental cloud arrivals.
+        width=min(maximum,viewport) if viewport>0 else maximum
+        margins=self.rows_layout.contentsMargins()
+        width-=margins.left()+margins.right()
         transition=getattr(self,'preview_width_motion',None)
         if transition is not None and transition.active and transition.target_visible:
             # Use the final viewport width throughout the resize; otherwise
             # cards are rebuilt and rearranged on every animation frame.
             width-=max(0,transition.target_width-self.preview.width())
+        return max(1,width)
+
+    def _grid_column_count(self):
+        width=self._grid_available_width()
         available=max(GRID_CARD_MIN_WIDTH_PX,width)
         return max(1,min(4,(available+8)//(GRID_COLUMN_WIDTH_PX+8)))
 
     def _grid_card_width(self):
-        width=self.scroll.maximumViewportSize().width()-self.scroll.verticalScrollBar().sizeHint().width()-24
-        transition=getattr(self,'preview_width_motion',None)
-        if transition is not None and transition.active and transition.target_visible:
-            width-=max(0,transition.target_width-self.preview.width())
+        width=self._grid_available_width()
         columns=self._grid_column_count()
-        return max(GRID_CARD_MIN_WIDTH_PX,(width-8*(columns-1))//columns)
+        return max(1,(width-8*(columns-1))//columns)
 
     def _apply_responsive_layout(self):
         narrow=self.width()<780

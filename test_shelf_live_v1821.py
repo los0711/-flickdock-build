@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer,QSize
 from PySide6.QtTest import QTest
 
 import flickdock as subject
@@ -117,6 +117,27 @@ class LiveShelfTests(unittest.TestCase):
         self.assertGreater(popup._grid_columns,1)
         popup.resize(740,550);flush();flush()
         centered()
+
+    def test_incremental_sync_cards_fit_actual_viewport_with_overlay_scrollbar(self):
+        self.settings.update(view_mode='icons');popup=self.overview();adapter=ShelfAdapter(self.manager)
+        view=adapter.snapshot();base=list(view['permanent']);extra=[]
+        for number in range(8):
+            path=self.base/f'synced-{number}.txt';path.write_text('fixture',encoding='utf8');extra.append(str(path))
+        scroll=popup.scroll;bar=scroll.verticalScrollBar()
+        # Model the macOS case where Qt reports a maximum wider than the
+        # viewport and an overlay scrollbar with no reserved width.
+        with patch.object(scroll,'maximumViewportSize',side_effect=lambda:QSize(scroll.viewport().width()+24,scroll.viewport().height())),\
+             patch.object(bar,'sizeHint',return_value=QSize(0,0)):
+            widths=[]
+            for count in (0,1,2,3,6,8):
+                view['permanent']=base+extra[:count];adapter.restore(view)
+                until(lambda:popup._build_cursor==len(popup.visible_refs()) and popup.retirement.is_idle)
+                flush();item=popup._item_widgets[base[0]];widths.append(item.width())
+                occupied=popup._grid_columns*item.width()+8*(popup._grid_columns-1)
+                margins=popup.rows_layout.contentsMargins()
+                self.assertLessEqual(occupied+margins.left()+margins.right(),scroll.viewport().width())
+                self.assertEqual(scroll.horizontalScrollBar().maximum(),0)
+            self.assertEqual(len(set(widths)),1,widths)
 
     def test_batch_removal_discards_old_artwork_and_survivors_move(self):
         popup=self.overview();self.manager.motion=True

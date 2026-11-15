@@ -455,20 +455,18 @@ class AccountPanel(QFrame):
         signed.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         identity=self.profile_frame.layout();self._empty_layout(identity);identity.setContentsMargins(0,0,0,0);identity.setSpacing(12)
         self.profile_frame.setMinimumHeight(ACCOUNT_IDENTITY_MIN_HEIGHT);self.profile_frame.setMaximumHeight(16777215)
-        self.account_glyph.setFixedSize(40,40);identity.addWidget(self.account_glyph);self.account_glyph.show()
-        text=QVBoxLayout();text.setSpacing(2);name=QHBoxLayout();name.setSpacing(8)
+        self.account_glyph.setFixedSize(40,40);identity.addWidget(self.account_glyph,0,Qt.AlignVCenter);self.account_glyph.show()
+        text=QVBoxLayout();text.setSpacing(0);text.setAlignment(Qt.AlignVCenter);name=QHBoxLayout();name.setSpacing(8)
+        name.setAlignment(Qt.AlignVCenter)
         self.username_label.setFixedHeight(26);self.account_state_label.setFixedHeight(24)
         self.username_label.setSizePolicy(QSizePolicy.Policy.Preferred,QSizePolicy.Policy.Fixed)
         name.addWidget(self.username_label);name.addWidget(self.account_state_label);name.addStretch();text.addLayout(name)
         text.addWidget(self.sync_status_label)
         identity.addLayout(text,1)
         self.password_toggle_button.setMinimumHeight(28);self.password_toggle_button.setText('修改密码');self.password_toggle_button.show()
-        self.logout_button.setMinimumHeight(28);self.logout_button.setObjectName('accountDanger');identity.addWidget(self.password_toggle_button);identity.addWidget(self.logout_button)
+        self.logout_button.setMinimumHeight(28);self.logout_button.setObjectName('accountDanger');identity.addWidget(self.password_toggle_button,0,Qt.AlignVCenter);identity.addWidget(self.logout_button,0,Qt.AlignVCenter)
         for widget in (self.username_label,self.account_state_label,self.sync_status_label,self.logout_button):widget.show()
         signed.addWidget(self.profile_frame);self.profile_frame.show()
-        # The subtitle grows with real sync feedback; the profile has no fixed
-        # height, so login results remain fully visible.
-        self.sync_status_label.show()
         self.sync_status_label.installEventFilter(self)
         signed.addWidget(self.login_alias_edit)
         self.profile_frame.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -623,7 +621,7 @@ class AccountPanel(QFrame):
             self._reset_password()
             self._refreshing=False;self._revoke_pending=''
             self._devices_changed([])
-            if signed:self.sync_status_label.setText('正在准备同步…')
+            if signed:self.sync_status_label.setText('正在准备同步…');self.sync_status_label.show()
         self.unsigned_profile_button.setVisible(not signed);self.signed_in_page.setVisible(signed)
         self.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Expanding if signed else QSizePolicy.Preferred)
         self.status_label.setVisible(signed and bool(self.status_label.text()))
@@ -641,7 +639,11 @@ class AccountPanel(QFrame):
 
     def set_sync_status(self,text):
         if self.service.signed_in:
-            self.sync_status_label.setText(str(text)[:240])
+            status=str(text)[:240]
+            self.sync_status_label.setText(status)
+            # Upload progress already has its own transfer surface. Do not
+            # displace the account identity with that transient notification.
+            self.sync_status_label.setVisible(bool(status) and not status.startswith(('正在上传','等待上传')))
             self._queue_fit()
 
     def _status_changed(self,text):
@@ -937,7 +939,7 @@ class AccountPanel(QFrame):
     def _fit_signed_content(self):
         if not self.isVisible():return
         if not self.signed_in_page.isHidden():
-            if self.sync_status_label.width()>24:
+            if self.sync_status_label.isVisible() and self.sync_status_label.width()>24:
                 height=max(0,self.sync_status_label.heightForWidth(self.sync_status_label.width()))
                 if self.sync_status_label.minimumHeight()!=height:self.sync_status_label.setMinimumHeight(height)
             identity=self.profile_frame.layout()

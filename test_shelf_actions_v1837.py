@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock,patch
 
-from PySide6.QtCore import QEvent
+from PySide6.QtCore import QEvent,QPoint,Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QWidget
 import test_html_native_workspace as fixture
@@ -36,6 +36,23 @@ class ShelfActionsTests(unittest.TestCase):
             self.shelf.show_menu();fixture.flush()
             self.assertIsNone(self.shelf._more_menu)
             self.assertFalse(self.shelf._menu_open);self.assertFalse(self.shelf.menu_button.isDown())
+
+    def test_more_menu_corners_are_antialiased_in_both_themes(self):
+        import ui_theme
+        from shelf_ui_common import AnimatedMenu,style_menu
+        previous=ui_theme.current_theme()
+        try:
+            for theme in ('light','dark'):
+                ui_theme.set_theme(theme);menu=AnimatedMenu();style_menu(menu);menu.addAction('添加文件…')
+                menu.popup(QPoint(20,20));fixture.flush()
+                self.assertTrue(menu.testAttribute(Qt.WA_TranslucentBackground))
+                self.assertTrue(menu.mask().isEmpty())
+                image=menu.grab().toImage()
+                self.assertEqual(image.pixelColor(0,0).alpha(),0)
+                self.assertTrue(any(0<image.pixelColor(x,y).alpha()<255
+                                    for x in range(10) for y in range(10)),theme)
+                menu.close();menu.deleteLater();fixture.flush()
+        finally:ui_theme.set_theme(previous)
 
     def test_list_and_preview_use_intake_time_for_every_cloud_state(self):
         ref=self.workspace.paths[1];stamp=1760000000.0
