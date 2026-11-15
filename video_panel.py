@@ -2,6 +2,7 @@
 from pathlib import Path
 import sys
 import time
+import math
 from PySide6.QtCore import QEvent,QPointF,QRect,QRectF,QSize,Qt,QTimer
 from PySide6.QtGui import QFont,QFontMetricsF,QPainter,QColor,QLinearGradient,QPen
 from PySide6.QtWidgets import QButtonGroup,QCheckBox,QFrame,QGridLayout,QHBoxLayout,QLabel,QLineEdit,QPushButton,QSizePolicy,QStackedWidget,QStyle,QStyleOptionButton,QStylePainter,QVBoxLayout,QWidget
@@ -155,6 +156,27 @@ class VideoSourceCard(QFrame):
             self.controller.preview_requested.emit(self.row);event.accept();return
         super().mouseDoubleClickEvent(event)
 
+    @staticmethod
+    def _format_time(seconds):
+        seconds=max(0,int(seconds));hours,seconds=divmod(seconds,3600);minutes,seconds=divmod(seconds,60)
+        return f'{hours:02}:{minutes:02}:{seconds:02}' if hours else f'{minutes:02}:{seconds:02}'
+
+    def _update_status(self):
+        row=self.row
+        labels={'ready':'','queued':'等待下载…','preparing':'正在安装下载组件…','selecting':'正在选择线路…','downloading':'正在下载…','processing':'正在处理媒体…','converting':'正在转换视频格式…','complete':'已下载','cancelled':'已取消','error':'下载失败'}
+        status=labels.get(row['status'],'')
+        if row['status']=='error' and row['error'].startswith('视频下载组件安装失败'):
+            status='组件安装失败，请检查网络后重试'
+        if row['status']=='downloading' and row['speed']:status+=f' · {row["speed"]/1024**2:.1f} MB/s'
+        if row['status'] in ('processing','converting') and row.get('phase_started') is not None:
+            now=time.monotonic();status+=' · 已用 '+self._format_time(now-row['phase_started'])
+            finish=row.get('estimated_finish')
+            if finish is not None and finish>now:status+=' · 预计剩余 '+self._format_time(math.ceil(finish-now))
+        if row['shelved']:status='已放入搁架'
+        self.status.setText(status);self.status.setVisible(bool(status))
+        self.status.setToolTip(row['error'] if row['status']=='error' else status)
+        self.status.setAccessibleName((status+'：'+row['error']) if row['status']=='error' and row['error'] else status)
+
     def refresh(self,theme):
         row=self.row;option=row['option'];busy=row['job'] is not None or row['status']=='queued';complete=row['status']=='complete' and bool(row['path'])
         for control in (self.download,self.folder,self.shelf):
@@ -177,19 +199,10 @@ class VideoSourceCard(QFrame):
             role='green' if complete else 'secondary' if busy else 'link'
             self.download._video_glyph=glyph;self.download._reference_icon=(glyph,role);self.download.setIcon(icon(glyph,colors(theme)[role]))
         self.shelf.setToolTip('已放入搁架' if row['shelved'] else '下载后放入搁架')
-        labels={'ready':'','queued':'等待下载…','preparing':'正在安装下载组件…','selecting':'正在选择线路…','downloading':'正在下载…','processing':'正在处理媒体…','converting':'正在转换视频格式…','complete':'已下载','cancelled':'已取消','error':'下载失败'}
-        status=labels.get(row['status'],'')
-        if row['status']=='error' and row['error'].startswith('视频下载组件安装失败'):
-            status='组件安装失败，请检查网络后重试'
-        if row['status']=='downloading':
-            if row['speed']:status+=f' · {row["speed"]/1024**2:.1f} MB/s'
-        if row['shelved']:status='已放入搁架'
         c=colors(theme)
         status_color=c['red'] if row['status']=='error' else c['green'] if complete else c['secondary']
         self.status.setStyleSheet(f'color:{status_color};background:transparent;border:0;')
-        self.status.setText(status);self.status.setVisible(bool(status))
-        self.status.setToolTip(row['error'] if row['status']=='error' else status)
-        self.status.setAccessibleName((status+'：'+row['error']) if row['status']=='error' and row['error'] else status)
+        self._update_status()
         self.setToolTip(row['error'] if row['status']=='error' else row['path'] or '')
         self.progress_row.setVisible(busy and row['progress'] is not None)
         if row['progress'] is not None:
@@ -261,7 +274,7 @@ class VideoSourceStack(QStackedWidget):
 
 class VideoResult(QFrame):
     def __init__(self,entry,controller,parent):
-        super().__init__(parent);self.entry=entry;self.controller=controller;self.cards={};self.grids=[];self.columns=0
+        super().__init__(parent);self.entry=entry;self.controller=controller;self.cards={};self.grids=[];self.columns=0;self._category_labels={}
         self.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
         layout=QVBoxLayout(self);layout.setContentsMargins(0,0,0,0);layout.setSpacing(12)
         summary=QHBoxLayout();summary.setSpacing(14);self.cover=CoverButton(entry,self);summary.addWidget(self.cover)
@@ -278,6 +291,7 @@ class VideoResult(QFrame):
         self.source_tabs={};self.source_stack=VideoSourceStack(self);self.source_group=QButtonGroup(self);self.source_group.setExclusive(True)
         for index,(kind,title) in enumerate((('video','视频'),('audio','音频'))):
             rows=[row for row in entry['sources'] if row['option']['kind']==kind]
+            if kind=='video':rows.sort(key=lambda row:not row['option'].get('recommended',False))
             tab=button(f'{title}  {len(rows)}',variant='secondary',parent=self.tabs_frame,control_type=VideoSourceTab);tab.setCheckable(True);tab.setEnabled(bool(rows))
             tab.setProperty('tabHover',False);tab.installEventFilter(self)
             tab.setAccessibleName(f'{title}来源，共 {len(rows)} 个');tab.setFixedHeight(30)
@@ -287,6 +301,9 @@ class VideoResult(QFrame):
             cards=[]
             for row in rows:
                 card=VideoSourceCard(row,controller,page);self.cards[row['key']]=card;cards.append(card)
+            if kind=='video' and any(row['option'].get('recommended',False) for row in rows):
+                self._category_labels[grid]=(plain_label('推荐下载 · 预计无需转码',page,'videoSourceTitle'),
+                    plain_label('其他格式',page,'videoSourceTitle'))
             self.grids.append((grid,cards));self.source_stack.addWidget(page)
         tabs.addWidget(self.tabs_frame);tabs.addStretch();layout.addLayout(tabs);layout.addWidget(self.source_stack)
         initial='video' if self.source_tabs['video'].isEnabled() else 'audio'
@@ -320,7 +337,18 @@ class VideoResult(QFrame):
         self.columns=columns
         for grid,cards in self.grids:
             for card in cards:grid.removeWidget(card)
-            for index,card in enumerate(cards):grid.addWidget(card,index//columns,index%columns)
+            headings=self._category_labels.get(grid)
+            if headings:
+                for heading in headings:grid.removeWidget(heading);heading.hide()
+                line=0
+                for recommended,heading in zip((True,False),headings):
+                    group=[card for card in cards if bool(card.row['option'].get('recommended',False))==recommended]
+                    if not group:continue
+                    grid.addWidget(heading,line,0,1,columns);heading.show();line+=1
+                    for index,card in enumerate(group):grid.addWidget(card,line+index//columns,index%columns)
+                    line+=(len(group)+columns-1)//columns
+            else:
+                for index,card in enumerate(cards):grid.addWidget(card,index//columns,index%columns)
             for column in range(2):grid.setColumnStretch(column,1 if column<columns else 0)
         self._fit_sources()
 
@@ -383,6 +411,7 @@ class VideoDialog(ReferenceModalDialog):
         super().__init__(None,surface_width=940,modal=False)
         self.setFont(manager.shelf.font())
         self.manager=manager;self.controller=controller;self.results={};self.cards={};self._theme=None;self.cover_preview=None
+        self._phase_timer=QTimer(self);self._phase_timer.setInterval(1000);self._phase_timer.timeout.connect(self._tick_phase_times)
         self.setWindowTitle('FlickDock · 视频解析');self.setMinimumSize(VIDEO_WINDOW_MIN_SIZE)
         self.body_layout.setContentsMargins(18,10,18,16);self.body_layout.setSpacing(20)
         self.title_bar=QWidget(self.surface);self.title_bar.setFixedHeight(44)
@@ -456,7 +485,21 @@ class VideoDialog(ReferenceModalDialog):
         if row not in self.controller.sources() or not row['path']:return
         self.show_cover(row['entry']);self.cover_preview.show_media(row)
 
+    def _sync_phase_timer(self):
+        active=self.isVisible() and any(card.row['status'] in ('processing','converting') for card in self.cards.values())
+        if active and not self._phase_timer.isActive():self._phase_timer.start()
+        elif not active:self._phase_timer.stop()
+
+    def _tick_phase_times(self):
+        for card in self.cards.values():
+            if card.row['status'] in ('processing','converting'):card._update_status()
+
+    def showEvent(self,event):
+        super().showEvent(event)
+        if hasattr(self,'_phase_timer'):self._sync_phase_timer()
+
     def hideEvent(self,event):
+        self._phase_timer.stop()
         if self.cover_preview:self.cover_preview.hide()
         super().hideEvent(event)
 
@@ -499,6 +542,7 @@ class VideoDialog(ReferenceModalDialog):
             if entry['key'] not in self.results:
                 result=VideoResult(entry,self.controller,self.body);self.results[entry['key']]=result;self.result_layout.addWidget(result);self.cards.update(result.cards)
             self.results[entry['key']].refresh(theme)
+        self._sync_phase_timer()
         if self.cover_preview and self.cover_preview.entry is not None:
             if self.cover_preview.entry not in self.controller.entries:self.cover_preview.hide()
             else:self.cover_preview.refresh(theme)

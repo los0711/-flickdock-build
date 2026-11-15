@@ -218,7 +218,13 @@ class VideoController(QObject):
         def progress(value):
             if row['job'] is not job or value['type']!='progress':return
             total=value.get('total');received=value.get('bytes',0)
-            row.update(status=value.get('phase','downloading'),received=received,total=total,speed=value.get('speed'),progress=min(1.,received/total) if total else None)
+            phase=value.get('phase','downloading');now=time.monotonic()
+            if phase!=row['status']:row.update(phase_started=now,estimated_finish=None)
+            encoder=value.get('encoder')
+            if encoder and encoder!=row.get('progress_encoder'):row.update(progress_encoder=encoder,estimated_finish=None)
+            remaining=value.get('remaining_seconds')
+            if remaining is not None:row['estimated_finish']=now+remaining
+            row.update(status=phase,received=received,total=total,speed=value.get('speed'),progress=min(1.,received/total) if total else None)
             self.changed.emit()
         def complete(result):
             stage=folder/('.flickdock-download-'+token);deadline=time.monotonic()+FILE_RELEASE_TIMEOUT_SECONDS

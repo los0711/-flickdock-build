@@ -56,6 +56,18 @@ class VideoFormatTests(unittest.TestCase):
         self.assertEqual({row['label'] for row in options if row['kind']=='video'},{'1080p','1440p','2160p'})
         self.assertTrue(all(row['bytes'] and row['details'] for row in options))
 
+    def test_mac_recommends_compatible_video_and_prefers_aac_audio(self):
+        from yt_dlp import YoutubeDL
+        formats=[dict(format_id='h264',height=1080,vcodec='avc1.640028',acodec='none',ext='mp4',filesize=1000,protocol='https',url='https://example.com/h264'),
+                 dict(format_id='av1',height=2160,vcodec='av01.0.12M.08',acodec='none',ext='mp4',filesize=2000,protocol='https',url='https://example.com/av1'),
+                 dict(format_id='aac',vcodec='none',acodec='mp4a.40.2',ext='m4a',filesize=100,protocol='https',url='https://example.com/aac'),
+                 dict(format_id='opus',vcodec='none',acodec='opus',ext='webm',filesize=200,protocol='https',url='https://example.com/opus')]
+        with patch('video_formats._is_mac',return_value=True),YoutubeDL({'quiet':True}) as ydl:
+            options=media_options(dict(formats=formats),ydl)
+        self.assertEqual(options[0]['id'],'v:h264');self.assertTrue(options[0]['recommended'])
+        self.assertIn('AAC 音轨',options[0]['details']);self.assertEqual(options[0]['bytes'],1100)
+        self.assertFalse(next(row for row in options if row['id']=='v:av1')['recommended'])
+
     def test_cover_is_normalized_and_non_raster_or_oversized_data_is_rejected(self):
         image=QImage(160,90,QImage.Format_RGB32);image.fill(QColor('#456979'));encoded=QByteArray();buffer=QBuffer(encoded);buffer.open(QIODevice.WriteOnly);image.save(buffer,'PNG');buffer.close()
         result=normalize_cover(bytes(encoded));decoded=QImage.fromData(base64.b64decode(result['image']))
@@ -74,6 +86,33 @@ class VideoMatrixTests(unittest.TestCase):
         self.dialog=VideoDialog(self.manager,self.controller);self.dialog.show();APP.processEvents()
     def tearDown(self):
         self.controller.close();self.dialog.hide();self.dialog.deleteLater();self.owner.deleteLater();APP.processEvents();self.screen.stop();self.temp.cleanup()
+
+    def test_recommended_video_group_precedes_other_formats_at_both_widths(self):
+        from video_panel import VideoResult
+        entry=entry_fixture();entry['sources'][1]['option']['recommended']=True
+        result=VideoResult(entry,self.controller,self.dialog.body)
+        try:
+            grid,cards=result.grids[0];headings=result._category_labels[grid]
+            self.assertEqual(headings[0].text(),'推荐下载 · 预计无需转码')
+            self.assertEqual(headings[1].text(),'其他格式')
+            for columns in (1,2):
+                result._reflow(columns)
+                head_row=grid.getItemPosition(grid.indexOf(headings[0]))[0]
+                best=next(card for card in cards if card.row['option'].get('recommended'))
+                best_row=grid.getItemPosition(grid.indexOf(best))[0]
+                other_row=grid.getItemPosition(grid.indexOf(headings[1]))[0]
+                self.assertLess(head_row,best_row);self.assertLess(best_row,other_row)
+        finally:result.deleteLater()
+
+    def test_processing_elapsed_and_estimate_update_and_stop_when_hidden(self):
+        row=self.entry['sources'][0];card=self.dialog.cards[row['key']]
+        row.update(status='converting',progress=.35,job=object(),phase_started=935.,estimated_finish=1035.)
+        with patch('video_panel.time.monotonic',return_value=1000.):
+            self.dialog.refresh();APP.processEvents()
+            self.assertIn('已用 01:05',card.status.text());self.assertIn('预计剩余 00:35',card.status.text())
+            self.assertTrue(self.dialog._phase_timer.isActive())
+            self.dialog.hide();APP.processEvents();self.assertFalse(self.dialog._phase_timer.isActive())
+        row['job']=None
 
     def test_all_sources_have_three_persistent_icon_actions_and_no_dropdown(self):
         self.assertEqual(len(self.dialog.cards),6);self.assertFalse(self.dialog.findChildren(QComboBox))

@@ -125,7 +125,7 @@ class VideoJob(QObject):
                 if value['type']=='result':self.result=value
                 elif value['type']=='error':self.error=str(value.get('message') or '视频任务失败。')[:1000]
                 elif value['type']=='progress':
-                    for key in ('bytes','total','speed'):
+                    for key in ('bytes','total','speed','remaining_seconds'):
                         number=value.get(key)
                         if number is not None and (type(number) not in (float,int) or not math.isfinite(number) or number<0):raise ValueError()
                     self.changed.emit(value)

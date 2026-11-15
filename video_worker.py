@@ -81,15 +81,17 @@ def _mac_compatible_video(path,tools):
             emit('progress',phase=phase,bytes=0,total=duration,speed=None,encoder=encoder)
             with tempfile.TemporaryFile() as errors:
                 with subprocess.Popen(args,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=errors) as process:
-                    last=0.
+                    last=0.;started=time.monotonic()
                     for line in process.stdout:
                         if not line.startswith(b'out_time_us='):continue
                         try:elapsed=max(0,int(line.split(b'=',1)[1]))
                         except ValueError:continue
                         now=time.monotonic()
                         if now-last>=.2:
+                            spent=now-started
+                            remaining=(spent*(duration-elapsed)/elapsed if duration and 0<elapsed<duration and spent>=1 else None)
                             emit('progress',phase=phase,bytes=min(elapsed,duration) if duration else 0,
-                                 total=duration,speed=None,encoder=encoder);last=now
+                                 total=duration,speed=None,encoder=encoder,remaining_seconds=remaining);last=now
                     if not process.wait():break
                     errors.seek(0);details=errors.read(4096).decode('utf-8','replace').strip()
             if index==len(encoders)-1:raise ValueError('无法生成兼容 Mac 的视频：'+details[-1000:])
