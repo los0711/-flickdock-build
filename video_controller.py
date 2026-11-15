@@ -5,10 +5,9 @@ import json
 import logging
 from pathlib import Path
 import shutil
-import sys
 import time
 from uuid import uuid4
-from PySide6.QtCore import QObject,QProcess,QThreadPool,QTimer,QUrl,Signal
+from PySide6.QtCore import QObject,QThreadPool,QTimer,QUrl,Signal
 from PySide6.QtGui import QDesktopServices,QImage
 from video_jobs import VideoJob
 from video_links import video_url
@@ -21,8 +20,6 @@ FILE_RELEASE_TIMEOUT_SECONDS=5
 MAX_HISTORY_ENTRIES=500
 VIDEO_CODECS={'h264','hevc','av1','vp9','vp8','mpeg4','mpeg2video','theora'}
 LOG=logging.getLogger(__name__)
-
-def _uses_iina():return sys.platform=='darwin'
 
 def _read_download_history(path,cancel):
     try:
@@ -57,7 +54,6 @@ class VideoController(QObject):
         self.manager=manager;self.entries=[];self.jobs=set();self.extracting=None
         self.generation=0;self.message='支持主流视频站点、X、Facebook；其他网站也可粘贴链接尝试。'
         self.message_error=False
-        self.iina_download_offered=False
         self.closed=False;self.priority=False;self.cover_queue=[];self.cover_jobs=0
         self._downloaded={}
         self._history_path=Path(manager.settings.base)/'video-download-history.json'
@@ -138,8 +134,7 @@ class VideoController(QObject):
         if self.closed or row not in self.sources() or action not in ('download','shelf','folder','open'):return
         if action=='open':
             if row['status']!='complete' or not row['path']:return
-            if _uses_iina():self._open_iina(row['path'])
-            elif not QDesktopServices.openUrl(QUrl.fromLocalFile(row['path'])):
+            if not QDesktopServices.openUrl(QUrl.fromLocalFile(row['path'])):
                 self.message='无法使用系统默认播放器打开该文件。';self.message_error=True;self.changed.emit()
             return
         if action=='folder':
@@ -165,28 +160,6 @@ class VideoController(QObject):
         row['actions'].add(action)
         if row['job'] or row['status']=='queued':self.changed.emit();return
         row.update(status='queued',error='');self._kick()
-
-    def _open_iina(self,path):
-        # Ask Launch Services for IINA by stable bundle identifier. No shell,
-        # system-default fallback or synchronous process wait on the UI thread.
-        self.iina_download_offered=False
-        process=QProcess(self);done=[False]
-        def finished(code=1,*_args):
-            if done[0]:return
-            done[0]=True
-            if code!=0 and not self.closed:
-                self.message='部分原始视频在 QuickTime 中可能只有声音，推荐使用 IINA。请先安装或检查 IINA。'
-                self.iina_download_offered=True
-                self.message_error=True;self.changed.emit()
-            process.deleteLater()
-        process.finished.connect(finished)
-        process.errorOccurred.connect(lambda _error:finished(1))
-        process.start('/usr/bin/open',['-b','com.colliderli.iina',str(path)])
-
-    def open_iina_download(self):
-        if not QDesktopServices.openUrl(QUrl('https://iina.io/')):
-            self.message='无法打开 IINA 官网，请在浏览器访问 https://iina.io/。'
-            self.message_error=True;self.changed.emit()
 
     def _shelve(self,row):
         if row['shelved']:return

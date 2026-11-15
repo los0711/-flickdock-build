@@ -385,7 +385,7 @@ class VideoMatrixTests(unittest.TestCase):
         path=self.root/'downloads'/'movie.mp4';path.parent.mkdir(exist_ok=True);path.write_bytes(b'fixture')
         row.update(path=str(path),status='complete',received=path.stat().st_size,actual_video_codec='h264');self.dialog.refresh();APP.processEvents()
         self.assertEqual(card.kind.accessibleName(),'H.264 格式');self.assertNotEqual(webm,card.kind.pixmap().toImage())
-        with patch('video_controller._uses_iina',return_value=False),patch('video_controller.QDesktopServices.openUrl',return_value=True) as opened:
+        with patch('video_controller.QDesktopServices.openUrl',return_value=True) as opened:
             QTest.mouseDClick(card,Qt.LeftButton)
             opened.assert_called_once();self.assertEqual(Path(opened.call_args.args[0].toLocalFile()),path)
         self.assertIsNone(self.dialog.cover_preview)
@@ -394,28 +394,6 @@ class VideoMatrixTests(unittest.TestCase):
         card=self.dialog.cards[self.entry['sources'][0]['key']]
         with patch('video_controller.QDesktopServices.openUrl') as opened:
             QTest.mouseDClick(card,Qt.LeftButton);opened.assert_not_called()
-
-    def test_mac_download_opens_iina_and_reports_missing_player_without_default_fallback(self):
-        row=self.entry['sources'][0];path=self.root/'downloads'/'movie.mp4';path.parent.mkdir(exist_ok=True);path.write_bytes(b'fixture')
-        row.update(path=str(path),status='complete',received=path.stat().st_size)
-        class Event:
-            def connect(self,callback):self.callback=callback
-        class Process:
-            def __init__(self,parent):self.finished=Event();self.errorOccurred=Event();self.deleted=False
-            def start(self,program,args):self.command=(program,args)
-            def deleteLater(self):self.deleted=True
-        process=Process(self.controller)
-        with patch('video_controller._uses_iina',return_value=True),patch('video_controller.QProcess',return_value=process), \
-                patch('video_controller.QDesktopServices.openUrl') as default:
-            self.controller.action(row,'open')
-            self.assertEqual(process.command,('/usr/bin/open',['-b','com.colliderli.iina',str(path)]))
-            default.assert_not_called()
-            process.finished.callback(1,None)
-            self.assertTrue(process.deleted);self.assertTrue(self.controller.message_error)
-            self.assertIn('QuickTime',self.controller.message);self.assertIn('IINA',self.controller.message)
-            self.assertTrue(self.controller.iina_download_offered);default.assert_not_called()
-            default.return_value=True;self.controller.open_iina_download()
-            self.assertEqual(default.call_args.args[0].toString(),'https://iina.io/')
 
     def test_avi_and_video_codec_icons_use_the_real_format(self):
         from video_panel import _source_format_icon
@@ -430,7 +408,7 @@ class VideoMatrixTests(unittest.TestCase):
         row.update(path=str(path),status='complete',received=path.stat().st_size)
         self.dialog.refresh();self.dialog.results[self.entry['key']].source_tabs['audio'].click();APP.processEvents()
         card=self.dialog.cards[row['key']];self.assertEqual(card.kind.accessibleName(),'M4A 格式')
-        with patch('video_controller._uses_iina',return_value=False),patch('video_controller.QDesktopServices.openUrl',return_value=False) as opened:
+        with patch('video_controller.QDesktopServices.openUrl',return_value=False) as opened:
             QTest.mouseDClick(card,Qt.LeftButton);opened.assert_called_once()
         self.assertTrue(self.controller.message_error);self.assertIn('默认播放器',self.controller.message)
 
