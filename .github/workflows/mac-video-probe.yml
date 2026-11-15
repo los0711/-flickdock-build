@@ -8,6 +8,10 @@ jobs:
   probe:
     runs-on: macos-15
     timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        sink: ['0','1']
     env:
       PYTHONUTF8: '1'
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
@@ -24,13 +28,18 @@ jobs:
       - name: Exercise Cocoa video selection and capture stack
         timeout-minutes: 5
         env:
-          FLICKDOCK_PROBE_SINK_ONLY: '1'
-        run: python ci_mac_video_selection_probe.py
+          FLICKDOCK_PROBE_SINK_ONLY: '${{ matrix.sink }}'
+        run: |
+          failed=0
+          for attempt in 1 2 3; do
+            FLICKDOCK_PROBE_ATTEMPT="$attempt" python ci_mac_video_selection_probe.py || failed=$((failed+1))
+          done
+          test "$failed" -eq 0
       - name: Retain diagnostic data
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: mac-video-selection-diagnostics-${{ github.sha }}
+          name: mac-video-selection-diagnostics-${{ github.sha }}-${{ matrix.sink }}
           path: ci-mac-video-probe/
           if-no-files-found: warn
           retention-days: 3

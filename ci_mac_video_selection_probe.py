@@ -18,7 +18,10 @@ os.environ['QT_QPA_PLATFORM']='cocoa'
 # Match runtime_macos.py, before importing any Qt Multimedia module.
 os.environ['QT_MEDIA_BACKEND']='darwin'
 os.environ['QT_MAC_SET_RAISE_PROCESS']='0'
-root=Path('ci-mac-video-probe').resolve();root.mkdir(exist_ok=True)
+attempt=os.environ.get('FLICKDOCK_PROBE_ATTEMPT','1')
+if attempt not in ('1','2','3'):raise ValueError('Invalid isolated probe attempt')
+root=(Path('ci-mac-video-probe')/('sink-' if os.environ.get('FLICKDOCK_PROBE_SINK_ONLY')=='1' else 'native-')/attempt).resolve()
+root.mkdir(parents=True,exist_ok=True)
 stack_file=(root/'python-stack.txt').open('w',encoding='utf8',buffering=1)
 faulthandler.enable(file=stack_file,all_threads=True)
 faulthandler.dump_traceback_later(5,repeat=True,file=stack_file)
