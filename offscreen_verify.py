@@ -156,7 +156,11 @@ def run_overview(argv,load_font):
                 dialog.cancel_button.click()
             QTimer.singleShot(0,cancel_delete);popup.clear_button.click()
             assert shelf.files['permanent']==before
-            preview.remove_button.click();assert str(archive) not in shelf.files['permanent'] and archive.is_file()
+            preview.remove_button._begin_hold()
+            deadline=time.monotonic()+2
+            while str(archive) in shelf.files['permanent'] and time.monotonic()<deadline:
+                app.processEvents();time.sleep(.01)
+            assert str(archive) not in shelf.files['permanent'] and archive.is_file()
             report.update(ok=True,copy_path=True,send_queue=True,remove_preserves_original=True,delete_cancel=True)
             shelf.resolver.close();shelf.image_cache.close();shelf.image_cache._pool.waitForDone(5000)
             shelf.presentation.stop();shelf.geometry_morph.stop();shelf.hide();shelf.deleteLater();app.processEvents();shelf=None
