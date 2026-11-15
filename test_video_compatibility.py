@@ -50,12 +50,37 @@ class MacVideoCompatibilityTests(unittest.TestCase):
             self.assertIn(b'hvc1',probe)
             self.assertEqual(_mac_video_streams(output,self.ffmpeg),([('hevc','yuv420p')],['aac']))
 
+    def test_already_compatible_hevc_is_not_remuxed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source=Path(directory)/'hevc.mp4';self.make(source,'libx265','aac',('-tag:v','hvc1','-x265-params','log-level=error'))
+            before=source.read_bytes()
+            self.assertEqual(_mac_video_streams(source,self.ffmpeg,with_details=True)[2],['hvc1'])
+            with patch('video_worker.emit'),patch('video_worker.subprocess.Popen',side_effect=AssertionError('Unnecessary remux')):
+                with patch('video_worker._mac_video_streams',return_value=([('hevc','yuv420p')],['aac'],['hvc1'],600000)):
+                    self.assertEqual(_mac_compatible_video(source,self.ffmpeg.parent),source)
+            self.assertEqual(source.read_bytes(),before)
+
     def test_vp9_opus_is_converted_to_h264_aac(self):
         with tempfile.TemporaryDirectory() as directory:
             source=Path(directory)/'vp9.webm';self.make(source,'libvpx-vp9','libopus')
-            with patch('video_worker.emit'):
+            progress=[]
+            with patch('video_worker.emit',side_effect=lambda kind,**value:progress.append(value)):
                 output=_mac_compatible_video(source,self.ffmpeg.parent)
             self.assertFalse(source.exists());self.assertEqual(output.suffix,'.mp4')
+            self.assertEqual(_mac_video_streams(output,self.ffmpeg),([('h264','yuv420p')],['aac']))
+            self.assertGreater(len(self.frames(output)),0)
+            self.assertTrue(progress);self.assertTrue(all(event['phase']=='converting' for event in progress))
+            self.assertTrue(any(event['total'] for event in progress))
+            self.assertTrue(all(0<=event['bytes']<=event['total'] for event in progress if event['total']))
+
+    @unittest.skipUnless(os.name=='nt','Uses the Windows fixture to simulate an unavailable Mac encoder')
+    def test_hardware_failure_falls_back_to_software_without_losing_video(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source=Path(directory)/'vp9.webm';self.make(source,'libvpx-vp9','libopus');events=[]
+            with patch('video_worker._use_mac_hardware',return_value=True), \
+                    patch('video_worker.emit',side_effect=lambda kind,**value:events.append(value)):
+                output=_mac_compatible_video(source,self.ffmpeg.parent)
+            self.assertEqual([event['encoder'] for event in events if event['bytes']==0],['hardware','software'])
             self.assertEqual(_mac_video_streams(output,self.ffmpeg),([('h264','yuv420p')],['aac']))
             self.assertGreater(len(self.frames(output)),0)
 
@@ -72,7 +97,7 @@ class MacVideoCompatibilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             source=Path(directory)/'vp9.webm';self.make(source,'libvpx-vp9','libopus')
             original=source.read_bytes()
-            with patch('video_worker.emit'),patch('video_worker._mac_video_streams',return_value=([('vp9','yuv420p')],['opus'])), \
+            with patch('video_worker.emit'),patch('video_worker._mac_video_streams',return_value=([('vp9','yuv420p')],['opus'],[''],600000)), \
                     patch('video_worker.subprocess.Popen',side_effect=OSError('encoder unavailable')):
                 with self.assertRaises(OSError):_mac_compatible_video(source,self.ffmpeg.parent)
             self.assertEqual(source.read_bytes(),original)

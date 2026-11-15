@@ -27,21 +27,34 @@ DOWNLOAD_PROTOCOLS={'http','https','m3u8','m3u8_native','http_dash_segments'}
 OUTPUT_EXTENSIONS={'.mp4','.mkv','.mov','.m4v','.webm','.flv','.ts','.mp3','.m4a','.aac','.opus','.ogg','.oga','.ogv','.flac','.wav','.wma','.wmv','.avi','.mpeg','.mpg','.3gp'}
 
 
-def _mac_video_streams(path,ffmpeg):
+def _mac_video_streams(path,ffmpeg,*,with_details=False):
     """Read stream codecs from the actual downloaded file, not extractor guesses."""
     probe=subprocess.run([str(ffmpeg),'-hide_banner','-i',str(path)],stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,timeout=30)
     description=probe.stderr.decode('utf-8','replace')
-    video=re.findall(r'\bVideo:\s*([a-zA-Z0-9_]+)[^\r\n,]*,\s*([a-zA-Z0-9_]+)',description)
+    video=re.findall(r'\bVideo:\s*([a-zA-Z0-9_]+)([^\r\n,]*),\s*([a-zA-Z0-9_]+)',description)
     audio=re.findall(r'\bAudio:\s*([a-zA-Z0-9_]+)',description)
     if not video:raise ValueError('下载的视频没有可读取的画面，请重新下载。')
-    return [(codec.lower(),pixels.lower()) for codec,pixels in video],[codec.lower() for codec in audio]
+    streams=[(codec.lower(),pixels.lower()) for codec,_,pixels in video]
+    audios=[codec.lower() for codec in audio]
+    if not with_details:return streams,audios
+    tags=[]
+    for _,metadata,_ in video:
+        tag=re.search(r'\b(hvc1|hev1)\s*/',metadata,re.I)
+        tags.append(tag.group(1).lower() if tag else '')
+    duration=re.search(r'\bDuration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)',description)
+    seconds=(int(duration.group(1))*3600+int(duration.group(2))*60+float(duration.group(3))) if duration else 0
+    return streams,audios,tags,round(seconds*1_000_000) if seconds>0 else None
+
+
+def _use_mac_hardware():
+    return sys.platform=='darwin'
 
 
 def _mac_compatible_video(path,tools):
     """Make a QuickTime-friendly MP4 inside the private download staging directory."""
     ffmpeg=Path(tools)/('ffmpeg.exe' if sys.platform=='win32' else 'ffmpeg')
-    videos,audios=_mac_video_streams(path,ffmpeg)
+    videos,audios,tags,duration=_mac_video_streams(path,ffmpeg,with_details=True)
     # All video streams must use one policy: mixed codecs need transcoding.
     codecs={codec for codec,_ in videos}
     copy_video=len(codecs)==1 and all(
@@ -49,28 +62,37 @@ def _mac_compatible_video(path,tools):
         (codec=='hevc' and pixels in ('yuv420p','yuvj420p','yuv420p10le'))
         for codec,pixels in videos)
     copy_audio=all(codec in ('aac','mp3','alac') for codec in audios)
-    retag_hevc='hevc' in codecs
+    retag_hevc='hevc' in codecs and any(tag!='hvc1' for tag in tags)
     if path.suffix.lower() in ('.mp4','.m4v','.mov') and copy_video and copy_audio and not retag_hevc:
         return path
     target=path.with_name('.flickdock-compatible.mp4')
-    args=[str(ffmpeg),'-nostdin','-hide_banner','-loglevel','error','-i',str(path),'-map','0',
-          '-map_metadata','0','-c','copy']
-    if not copy_video:args+=['-c:v','libx264','-preset','veryfast','-crf','20','-pix_fmt','yuv420p']
-    elif retag_hevc:args+=['-tag:v','hvc1']
-    if not copy_audio:args+=['-c:a','aac','-b:a','192k']
-    args+=['-movflags','+faststart','-progress','pipe:1','-nostats','-y',str(target)]
-    emit('progress',phase='processing',bytes=0,total=None,speed=None)
+    phase='processing' if copy_video and copy_audio else 'converting'
+    encoders=['copy'] if copy_video else (['hardware','software'] if _use_mac_hardware() else ['software'])
     try:
-        with tempfile.TemporaryFile() as errors:
-            with subprocess.Popen(args,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=errors) as process:
-                last=0.
-                for _ in process.stdout:
-                    now=time.monotonic()
-                    if now-last>=.5:
-                        emit('progress',phase='processing',bytes=0,total=None,speed=None);last=now
-                if process.wait():
+        for index,encoder in enumerate(encoders):
+            target.unlink(missing_ok=True)
+            args=[str(ffmpeg),'-nostdin','-hide_banner','-loglevel','error','-i',str(path),'-map','0',
+                  '-map_metadata','0','-c','copy']
+            if encoder=='hardware':args+=['-c:v','h264_videotoolbox','-allow_sw','0','-q:v','75','-pix_fmt','yuv420p']
+            elif encoder=='software':args+=['-c:v','libx264','-preset','veryfast','-crf','20','-pix_fmt','yuv420p']
+            elif retag_hevc:args+=['-tag:v','hvc1']
+            if not copy_audio:args+=['-c:a','aac','-b:a','192k']
+            args+=['-movflags','+faststart','-progress','pipe:1','-nostats','-y',str(target)]
+            emit('progress',phase=phase,bytes=0,total=duration,speed=None,encoder=encoder)
+            with tempfile.TemporaryFile() as errors:
+                with subprocess.Popen(args,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=errors) as process:
+                    last=0.
+                    for line in process.stdout:
+                        if not line.startswith(b'out_time_us='):continue
+                        try:elapsed=max(0,int(line.split(b'=',1)[1]))
+                        except ValueError:continue
+                        now=time.monotonic()
+                        if now-last>=.2:
+                            emit('progress',phase=phase,bytes=min(elapsed,duration) if duration else 0,
+                                 total=duration,speed=None,encoder=encoder);last=now
+                    if not process.wait():break
                     errors.seek(0);details=errors.read(4096).decode('utf-8','replace').strip()
-                    raise ValueError('无法生成兼容 Mac 的视频：'+details[-1000:])
+            if index==len(encoders)-1:raise ValueError('无法生成兼容 Mac 的视频：'+details[-1000:])
         if not target.is_file() or not target.stat().st_size:raise ValueError('视频兼容处理未生成完整文件。')
         output=path.with_suffix('.mp4')
         os.replace(target,output)

@@ -223,6 +223,10 @@ class VideoMatrixTests(unittest.TestCase):
         self.assertTrue(card.progress_row.isVisible())
         self.assertLess(card.progress.geometry().right(),card.progress_percent.geometry().left())
         self.assertLessEqual(abs(card.progress.geometry().center().y()-card.progress_percent.geometry().center().y()),1)
+        row.update(status='converting',progress=.35);self.dialog.refresh();APP.processEvents()
+        self.assertEqual(card.status.text(),'正在转换视频格式…')
+        self.assertEqual(card.progress_percent.text(),'35%')
+        self.assertIn('转换进度',card.progress_percent.accessibleName())
         row['job']=None
 
     def test_audio_only_result_starts_on_audio_without_hiding_sources(self):

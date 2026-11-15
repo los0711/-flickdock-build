@@ -131,7 +131,7 @@ class VideoJob(QObject):
                     self.changed.emit(value)
                 else:self.changed.emit(value)
                 if self.request['action']=='download':
-                    timeout=PROCESSING_TIMEOUT_MS if value.get('phase')=='processing' else DOWNLOAD_IDLE_TIMEOUT_MS
+                    timeout=PROCESSING_TIMEOUT_MS if value.get('phase') in ('processing','converting') else DOWNLOAD_IDLE_TIMEOUT_MS
                     self.timer.start(timeout)
             except (ValueError,TypeError,UnicodeError):
                 self.error='视频组件返回了无效响应。';self.cancel();return

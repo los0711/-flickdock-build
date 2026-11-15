@@ -40,6 +40,20 @@ jobs:
         with:
           python-version: '3.12'
           architecture: arm64
+      - name: Verify QuickTime output and hardware acceleration
+        run: |
+          python - <<'PY'
+          import hashlib,io,urllib.request,zipfile
+          from pathlib import Path
+          url='https://files.pythonhosted.org/packages/40/5c/f3d8a657d362cc93b81aab8feda487317da5b5d31c0e1fdfd5e986e55d17/imageio_ffmpeg-0.6.0-py3-none-macosx_11_0_arm64.whl'
+          with urllib.request.urlopen(url,timeout=90) as response: archive=response.read(21113892)
+          assert len(archive)==21113891 and hashlib.sha256(archive).hexdigest()=='b1ae3173414b5fc5f538a726c4e48ea97edc0d2cdc11f103afee655c463fa742'
+          with zipfile.ZipFile(io.BytesIO(archive)) as bundle: binary=bundle.read('imageio_ffmpeg/binaries/ffmpeg-macos-aarch64-v7.1')
+          assert len(binary)==49368728 and hashlib.sha256(binary).hexdigest()=='6d175a4743ca50256e89a8cdd731100f9cee33bd79aeea46894d209410dc6617'
+          path=Path('assets/video-tools/ffmpeg');path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(binary);path.chmod(0o755)
+          PY
+          FLICKDOCK_TEST_FFMPEG="$PWD/assets/video-tools/ffmpeg" python -m unittest test_video_compatibility -v
+          python ci_mac_video_compat.py
       - name: Build and verify native application, ZIP, DMG and installer
         run: |
           npm ci --prefix cloud --no-audit --no-fund
@@ -51,10 +65,6 @@ jobs:
           fi
       - name: Verify Keychain startup, automatic update, cached retry and completed notice
         run: build/macos-venv/bin/python -m unittest test_account_security_v180 test_mac_updates test_update_macos_controller test_update_macos test_update_resume_v1821 test_update_notice_v1813 test_shelf_live_v1821 test_utility_feedback_v1828 -q
-      - name: Verify QuickTime-compatible output using native video decoding
-        run: |
-          FLICKDOCK_TEST_FFMPEG="$PWD/assets/video-tools/ffmpeg" build/macos-venv/bin/python -m unittest test_video_compatibility -v
-          build/macos-venv/bin/python ci_mac_video_compat.py
       - name: Inspect packaged network permission identity without changing macOS security
         run: |
           build/macos-venv/bin/python - <<'PY'

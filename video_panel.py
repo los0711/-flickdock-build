@@ -177,7 +177,7 @@ class VideoSourceCard(QFrame):
             role='green' if complete else 'secondary' if busy else 'link'
             self.download._video_glyph=glyph;self.download._reference_icon=(glyph,role);self.download.setIcon(icon(glyph,colors(theme)[role]))
         self.shelf.setToolTip('已放入搁架' if row['shelved'] else '下载后放入搁架')
-        labels={'ready':'','queued':'等待下载…','preparing':'正在安装下载组件…','selecting':'正在选择线路…','downloading':'正在下载…','processing':'正在整理…','complete':'已下载','cancelled':'已取消','error':'下载失败'}
+        labels={'ready':'','queued':'等待下载…','preparing':'正在安装下载组件…','selecting':'正在选择线路…','downloading':'正在下载…','processing':'正在处理媒体…','converting':'正在转换视频格式…','complete':'已下载','cancelled':'已取消','error':'下载失败'}
         status=labels.get(row['status'],'')
         if row['status']=='error' and row['error'].startswith('视频下载组件安装失败'):
             status='组件安装失败，请检查网络后重试'
@@ -195,7 +195,7 @@ class VideoSourceCard(QFrame):
         if row['progress'] is not None:
             self.progress.setRange(0,1000);self.progress.setValue(round(row['progress']*1000))
             self.progress_percent.setText(f'{row["progress"]:.0%}')
-            self.progress_percent.setAccessibleName('下载进度 '+self.progress_percent.text())
+            self.progress_percent.setAccessibleName(('转换进度 ' if row['status']=='converting' else '处理进度 ' if row['status']=='processing' else '下载进度 ')+self.progress_percent.text())
 
 class VideoSourceTab(IconTextButton):
     """Keep the source count smaller while retaining a single button target."""

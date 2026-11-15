@@ -38,9 +38,11 @@ with tempfile.TemporaryDirectory(prefix='flickdock-mac-video-compat-') as direct
         subprocess.run([str(ffmpeg),'-hide_banner','-loglevel','error','-f','lavfi','-i','testsrc=size=128x72:rate=10',
                         '-f','lavfi','-i','sine=frequency=440','-t','0.6','-c:v',encoder,*extra,'-c:a',audio,
                         '-y',str(source)],check=True,timeout=60)
-        with patch('video_worker.emit'):
+        events=[]
+        with patch('video_worker.emit',side_effect=lambda kind,**value:events.append(value)):
             output=_mac_compatible_video(source,ffmpeg.parent)
         result=subprocess.run(['swift',str(script),str(output)],capture_output=True,text=True,timeout=90)
         if result.returncode or 'native-video-frame-ok' not in result.stdout:
             raise RuntimeError(name+' native decoding failed: '+result.stderr[-4000:])
-        print(name+': native video frame decoded',flush=True)
+        encoder=events[-1].get('encoder','unchanged') if events else 'unchanged'
+        print(name+': native video frame decoded; encoder='+encoder,flush=True)
