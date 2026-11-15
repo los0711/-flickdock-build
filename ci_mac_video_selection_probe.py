@@ -49,6 +49,14 @@ original_video=os.environ.get('FLICKDOCK_PROBE_ORIGINAL_VIDEO')=='1'
 if original_video:
     import media_preview
     media_preview._use_composited_video=lambda:False
+if os.environ.get('FLICKDOCK_PROBE_SIMPLE_BORDER')=='1':
+    # Compare the old logical-pixel border calculation without changing
+    # animation, video preview, or source-pixmap composition.
+    import native_ui_common
+    from PySide6.QtCore import QRectF
+    def simple_border(painter,rect,width=1.0):
+        return QRectF(rect).adjusted(width/2,width/2,-width/2,-width/2),float(width)
+    native_ui_common.pixel_aligned_border=simple_border
 if os.environ.get('FLICKDOCK_PROBE_QUEUED_POSTER')=='1':
     # Diagnostic A/B: postpone cache and thumbnail refresh until the current
     # native video-frame callback has unwound; preserve the same poster data.
