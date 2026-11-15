@@ -42,6 +42,22 @@ qInstallMessageHandler(qt_message)
 import test_html_native_workspace as workspace
 os.environ['QT_QPA_PLATFORM']='cocoa'
 assert app.platformName()=='cocoa',app.platformName()
+if os.environ.get('FLICKDOCK_PROBE_SINK_ONLY')=='1':
+    # Diagnostic A/B: keep the same native decoder and first-frame path,
+    # but replace QVideoWidget with an ordinary QWidget plus QVideoSink.
+    from PySide6.QtMultimedia import QVideoSink
+    from PySide6.QtWidgets import QWidget
+    from media_preview import _VideoSurface
+    class ProbeVideoSurface(QWidget):
+        def __init__(self,parent):super().__init__(parent);self.sink=QVideoSink(self)
+        def videoSink(self):return self.sink
+    def attach_without_native_video_widget(self):
+        assert self.native is None
+        self.native=ProbeVideoSurface(self)
+        self.native.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.native.setGeometry(self.rect());self.native.hide()
+        return self.native
+    _VideoSurface.attach_video=attach_without_native_video_widget
 fixture=workspace.WorkspaceTests();fixture.setUp();shelf=fixture.shelf
 original=fixture.base/'probe-h264.mp4';av1=fixture.base/'probe-av1.mp4'
 try:
@@ -58,7 +74,7 @@ try:
     shelf.add_paths('permanent',[str(original),str(av1),str(image)]);workspace.flush()
     shelf.show_contents();workspace.until(lambda:not shelf.geometry_morph.active,seconds=5)
     popup=shelf.popup;popup.resume_content();workspace.until(lambda:popup._build_cursor==len(popup.visible_refs()),seconds=10)
-    report=dict(platform=app.platformName(),media_backend=os.environ['QT_MEDIA_BACKEND'],modes={},video=str(original.name))
+    report=dict(platform=app.platformName(),media_backend=os.environ['QT_MEDIA_BACKEND'],sink_only=os.environ.get('FLICKDOCK_PROBE_SINK_ONLY')=='1',modes={},video=str(original.name))
     for mode in ('list','icons'):
         popup.change_view_mode(mode);popup.resume_content()
         workspace.until(lambda:popup._build_cursor==len(popup.visible_refs()),seconds=10)
