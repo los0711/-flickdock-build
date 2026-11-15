@@ -1,20 +1,13 @@
-name: macOS supervised video-compositor comparison
+name: macOS morph deadline diagnosis
 on:
   push:
     branches: [mac-video-diagnostics]
 permissions:
   contents: read
 jobs:
-  probe:
+  diagnose:
     runs-on: macos-15
-    timeout-minutes: 12
-    strategy:
-      fail-fast: false
-      matrix:
-        renderer: [legacy, composited]
-    env:
-      PYTHONUTF8: '1'
-      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
@@ -23,28 +16,52 @@ jobs:
         with:
           python-version: '3.12'
           architecture: arm64
-      - name: Install isolated test dependencies
-        run: python -m pip install 'PySide6==6.12.0' 'pyobjc-framework-Quartz>=11,<13' 'keyring==25.7.0' 'fasttext-predict-v2==1.1.0' 'yt-dlp[default]==2026.10.26' 'imageio-ffmpeg==0.6.0' 'cryptography==50.0.2'
-      - name: Test playback, selection and morph using an external supervisor
-        timeout-minutes: 8
+      - run: python -m pip install 'PySide6==6.12.0'
+      - name: Observe native timer lifecycle without changing assertions
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONUTF8: '1'
         run: |
-          failed=0
-          for attempt in 1 2 3; do
-            python ci_mac_video_compositor.py --source "$PWD" --renderer '${{ matrix.renderer }}' --clicks 50 --timeout 120 --output "ci-mac-video-probe/${{ matrix.renderer }}/$attempt" || failed=$((failed+1))
-          done
-          test "$failed" -eq 0
-      - name: Retain macOS native crash reports
-        if: always()
-        run: |
-          mkdir -p ci-mac-video-probe/native-reports
-          if [ -d "$HOME/Library/Logs/DiagnosticReports" ]; then
-            find "$HOME/Library/Logs/DiagnosticReports" -maxdepth 1 -type f \( -iname '*python*.ips' -o -iname '*python*.crash' \) -mmin -30 -exec cp -n {} ci-mac-video-probe/native-reports/ \;
-          fi
-      - name: Retain comparison data
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: mac-video-compositor-${{ github.sha }}-${{ matrix.renderer }}
-          path: ci-mac-video-probe/
-          if-no-files-found: warn
-          retention-days: 3
+          python - <<'PY'
+          import time,unittest
+          import test_display_frames as test
+          from PySide6.QtCore import QEvent,QObject,QRect
+          from PySide6.QtTest import QTest
+          from unittest.mock import patch
+          from surface_morph import SurfaceMorph
+          start=time.monotonic()
+          def state(m):
+              timer=m._completion
+              return dict(at=round((time.monotonic()-start)*1000,2),active=m.active,
+                          timer=timer.isActive(),remaining=timer.remainingTime(),id=timer.timerId(),
+                          duration=m.animation.duration(),current=m.animation.currentTime(),
+                          target=str(getattr(m,'_to',None)))
+          for name in ('animate','pause','resume','stop','_finish'):
+              original=getattr(SurfaceMorph,name)
+              def traced(self,*args,_name=name,_original=original,**kwargs):
+                  print('BEFORE',_name,state(self),flush=True)
+                  result=_original(self,*args,**kwargs)
+                  print('AFTER',_name,state(self),flush=True)
+                  return result
+              setattr(SurfaceMorph,name,traced)
+          suite=unittest.defaultTestLoader.loadTestsFromModule(test)
+          result=unittest.TextTestRunner(verbosity=2).run(suite)
+          print('SUITE_SUCCESS',result.wasSuccessful(),flush=True)
+          for attempt in range(3):
+              window=test.QWidget();window.show();test.flush()
+              settled=[]
+              morph=SurfaceMorph(window,QRect(0,0,100,100),lambda r:None,
+                                  settle=lambda r:settled.append(str(r)))
+              with patch('native_ui_common.reduced_motion',return_value=False):
+                  morph.animate(QRect(0,0,400,300),duration=60)
+              morph.pause();QTest.qWait(100);print('WAIT_PAUSED',state(morph),flush=True)
+              morph.resume();morph._frames.stop();QTest.qWait(100)
+              print('WAIT_RESUME',attempt,state(morph),settled,flush=True)
+              with patch('native_ui_common.reduced_motion',return_value=False):
+                  morph.animate(QRect(0,0,500,400),duration=40)
+                  morph.animate(QRect(0,0,600,500),duration=100)
+              morph._frames.stop();QTest.qWait(65);print('WAIT_65',state(morph),flush=True)
+              QTest.qWait(80);print('WAIT_145',state(morph),settled,flush=True)
+              QTest.qWait(200);print('WAIT_EXTRA200',state(morph),settled,flush=True)
+              morph.stop();window.close();window.deleteLater();test.flush()
+          PY

@@ -445,12 +445,14 @@ class ShelfWindow(QWidget):
 
     def _settle_morph(self,rect):
         snapshot=getattr(self,'_surface_snapshot',None)
-        self.surface_effect.end_surface_morph()
-        if snapshot is not None: snapshot.finish()
-        self._morph_from_image=None
-        self._morph_from_elements=()
-        self._morph_host_active=False
-        self._transition_preparing=False
+        try:
+            self.surface_effect.end_surface_morph()
+        finally:
+            if snapshot is not None: snapshot.finish()
+            self._morph_from_image=None
+            self._morph_from_elements=()
+            self._morph_host_active=False
+            self._transition_preparing=False
         if not self.geometry().contains(rect):self.setGeometry(rect)
         self.card.setGeometry(rect.x()-self.x()+14,rect.y()-self.y()+7,rect.width()-28,rect.height()-27)
         self._layout_header(self.card.width())

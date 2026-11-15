@@ -65,6 +65,11 @@ def worker(args):
     fixture = workspace.WorkspaceTests()
     fixture.setUp()
     shelf = fixture.shelf
+    watchdog = None
+    from crash_diagnostics import CrashDiagnostics
+    if hasattr(CrashDiagnostics, 'watchdog_heartbeat'):
+        from gui_watchdog import GuiWatchdog
+        watchdog = GuiWatchdog(app, output / 'diagnostic-profile', timeout=8)
     try:
         note('fixture.generate')
         import imageio_ffmpeg
@@ -180,6 +185,7 @@ def worker(args):
         atomic_json(output / 'worker-result.json', dict(ok=True, qt_platform='cocoa',
                     media_backend='darwin', source=str(args.source), modes=modes, playback=playback,
                     renderer=args.renderer, snapshot_finished=True, selected_after_reopen=True,
+                    gil_held_diagnostics=watchdog is not None,
                     video_collapse_reopen='single-window'))
         note('test.complete')
     except BaseException:
@@ -188,6 +194,9 @@ def worker(args):
         raise
     finally:
         fixture.tearDown()
+        if watchdog is not None:
+            watchdog.close()
+            watchdog.diagnostics.wait_closed()
         qInstallMessageHandler(None)
         faulthandler.disable()
         sys.excepthook = sys.__excepthook__

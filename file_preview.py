@@ -25,6 +25,13 @@ from transfer_visuals import transfer_phase_label
 import os
 
 
+def _note_preview_event(name):
+    """Record the action without file names, contents, or other user data."""
+    app=QApplication.instance()
+    diagnostics=getattr(app,'_crash_diagnostics',None) if app is not None else None
+    if diagnostics is not None:diagnostics.note(name)
+
+
 class ElidedLabel(QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -305,6 +312,7 @@ class PreviewPane(QFrame):
             self.shelf.remove_path('permanent',self.current_path)
 
     def _poster_ready(self, path, image):
+        _note_preview_event('preview.media.poster_ready')
         self.shelf.surface_effect.invalidate_source()
         if not image.isNull():
             # This is a thumbnail cache, separate from the visible full-quality
@@ -341,6 +349,8 @@ class PreviewPane(QFrame):
         self._text_loader.cancel();self._text_truncated=False
         if self.current_path is None and self.stack.currentWidget() is self.empty_preview:
             self._set_empty_state(True);return
+        if self.current_path is not None and self.stack.currentWidget() is self.media:
+            _note_preview_event('preview.media.close')
         self.shelf.surface_effect.invalidate_source()
         self.current_path=None;self._group_refs=();self._pending_preview=False
         self.media.release_source();self.image.clear_source();self.text.clear()
@@ -418,6 +428,7 @@ class PreviewPane(QFrame):
         elif self.shelf.content.category(ref)=='images' and self._show_image(ref):
             self.info.setText("矢量图像" if source.suffix.lower() in ('.svg','.svgz') else kind(ref)+" 图像")
         elif self.shelf.content.category(ref) in ('video','audio') and MediaPreview.can_preview(ref):
+            _note_preview_event('preview.video.select' if self.shelf.content.category(ref)=='video' else 'preview.audio.select')
             self.media.set_source(ref,poster=self.shelf.preview_cache.get(ref))
             self.stack.setCurrentWidget(self.media)
             self.info.setText("视频" if self.shelf.content.category(ref)=='video' else "音频")

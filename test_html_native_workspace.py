@@ -119,6 +119,21 @@ class WorkspaceTests(unittest.TestCase):
     def bounds(self,widget,owner):
         return QRect(widget.mapTo(owner,QPoint()),widget.size())
 
+    def test_morph_finalization_retires_snapshot_when_effect_cleanup_raises(self):
+        from surface_morph import SurfaceSnapshot
+        shelf=self.shelf
+        snapshot=SurfaceSnapshot(shelf);shelf._surface_snapshot=snapshot
+        snapshot.active=True;snapshot.show()
+        shelf._morph_host_active=True;shelf._transition_preparing=True
+        geometry=shelf.geometry()
+        with patch.object(shelf.surface_effect,'end_surface_morph',side_effect=RuntimeError('fixture cleanup error')):
+            with self.assertRaisesRegex(RuntimeError,'fixture cleanup error'):
+                shelf._settle_morph(shelf.visual_geometry())
+        self.assertFalse(snapshot.active or snapshot.isVisible())
+        self.assertFalse(shelf._morph_host_active or shelf._transition_preparing)
+        snapshot.finish();snapshot.finish()
+        self.assertEqual(shelf.geometry(),geometry)
+
     def test_reference_sizes_left_navigation_and_complete_button_bounds(self):
         self.assertEqual((self.shelf.card.width(),self.shelf.card.height()),(332,318))
         popup=self.overview()

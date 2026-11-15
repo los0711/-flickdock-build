@@ -9,7 +9,7 @@ def _stamp():return datetime.now(timezone.utc).isoformat(timespec='milliseconds'
 
 def _redact(text):
     text=str(text)
-    for key in ('USERPROFILE','APPDATA','LOCALAPPDATA'):
+    for key in ('USERPROFILE','APPDATA','LOCALAPPDATA','HOME'):
         value=os.environ.get(key)
         if value:text=re.sub(re.escape(value),'<'+key.lower()+'>',text,flags=re.I)
     text=re.sub(r'https?://[^\s\"\']+','<url>',text)
@@ -63,6 +63,7 @@ class CrashDiagnostics(QObject):
         self._lock=threading.Lock();self._revision=0;self._saved_revision=-1
         self._commands=queue.Queue(maxsize=256);self._wake=threading.Event()
         self._stop=threading.Event();self._initialized=threading.Event();self._closing=False
+        self._watchdog_timeout=0.;self._watchdog_beat=time.monotonic();self._watchdog_dumped=False
         self.stack_stream=None;self.stall_stream=None;self.directory=None
         self._previous_exception=sys.excepthook;self._previous_thread=threading.excepthook
         self._previous_qt=None;self._installed=False
@@ -131,6 +132,24 @@ class CrashDiagnostics(QObject):
 
     def export(self,path):self._send('export',str(path))
 
+    def watchdog_heartbeat(self,timeout):
+        if self._closing:return
+        self._watchdog_timeout=float(timeout);self._watchdog_beat=time.monotonic();self._watchdog_dumped=False
+
+    def stop_watchdog(self):
+        self._watchdog_timeout=0.
+
+    def _check_watchdog(self):
+        # This call runs on a Python worker with the GIL, never on the GUI or
+        # faulthandler's unsynchronized native timer thread. A native operation
+        # holding the GIL can delay it; the persisted last actions still remain.
+        timeout=self._watchdog_timeout
+        if timeout and not self._watchdog_dumped and time.monotonic()-self._watchdog_beat>=timeout:
+            self._watchdog_dumped=True
+            if os.fstat(self.stall_stream.fileno()).st_size<1024*1024:
+                self.stall_stream.write(('Timeout: GUI heartbeat absent for '+str(timeout)+' seconds\n').encode('ascii'))
+                faulthandler.dump_traceback(file=self.stall_stream,all_threads=True)
+
     def _snapshot(self,force=False):
         with self._lock:
             if not force and self._saved_revision==self._revision:return
@@ -154,11 +173,52 @@ class CrashDiagnostics(QObject):
             previous=path.with_suffix(path.suffix+'.previous');previous.unlink(missing_ok=True);path.replace(previous)
         with path.open('a',encoding='utf8') as stream:stream.write(text)
 
+    def _bundle(self,target,*,include_current=True):
+        """Archive only known bounded logs; never include user content files."""
+        names=('python-stack.txt','qt-messages.txt','breadcrumbs.jsonl','env.json','last-paint.json')
+        sessions=sorted((path for path in self.base.glob('crash-*')
+                         if path.is_dir() and not path.is_symlink() and path!=self.directory
+                         and path.resolve().parent==self.base.resolve()),key=lambda path:path.name)[-7:]
+        def add(archive,path,name):
+            if not path.is_file() or path.is_symlink():return
+            # Stack and Qt logs are already bounded at write time. Also cap
+            # files from an interrupted older version before reading them.
+            with path.open('rb') as stream:
+                size=os.fstat(stream.fileno()).st_size
+                if size>2*1024*1024:stream.seek(-2*1024*1024,os.SEEK_END)
+                data=stream.read(2*1024*1024)
+            archive.writestr(name,_redact(data.decode('utf8','replace')).encode('utf8'))
+        with zipfile.ZipFile(target,'w',zipfile.ZIP_DEFLATED) as archive:
+            if include_current:
+                for name in names:add(archive,self.directory/name,name)
+            for session in sessions:
+                for name in names:add(archive,session/name,'previous/'+session.name+'/'+name)
+            for name in ('ui-stall.log','ui-stall-previous.log'):add(archive,self.base/name,name)
+
+    def _prepare_previous_incident(self,previous):
+        banner=b'FlickDock Python/native crash stacks; no locals or clipboard content\n'
+        stalls=(self.base/'ui-stall.log',self.base/'ui-stall-previous.log')
+        incident=any(path.is_file() and not path.is_symlink() and path.stat().st_size>0 for path in stalls)
+        for session in previous:
+            stack=session/'python-stack.txt'
+            if stack.is_file() and not stack.is_symlink() and stack.stat().st_size>len(banner):
+                incident=True;break
+        if not incident:return
+        self._archive_incident(include_current=False)
+
+    def _archive_incident(self,*,include_current):
+        target=self.base/'latest-incident.zip';temporary=self.base/'latest-incident.zip.part'
+        try:
+            self._bundle(temporary,include_current=include_current)
+            os.replace(temporary,target)
+        finally:
+            if temporary.exists():temporary.unlink()
+
     def _run(self):
         try:
             self.environment.update(_driver_environment())
-            self.base.mkdir(parents=True,exist_ok=True)
-            previous=sorted(self.base.glob('crash-*'),key=lambda p:p.name)
+            self.base.mkdir(parents=True,exist_ok=True,mode=0o700)
+            previous=sorted((path for path in self.base.glob('crash-*') if path.is_dir() and not path.is_symlink()),key=lambda p:p.name)
             for path in previous[:-7]:
                 if path.is_dir() and not path.is_symlink() and path.resolve().parent==self.base.resolve():shutil.rmtree(path)
             self.directory=self.base/('crash-'+datetime.now().strftime('%Y%m%d-%H%M%S-%f'))
@@ -170,7 +230,13 @@ class CrashDiagnostics(QObject):
             self.stall_stream=stall.open('ab',buffering=0)
             self.stack_stream.write(b'FlickDock Python/native crash stacks; no locals or clipboard content\n')
             (self.directory/'qt-messages.txt').touch()
+            try:self._prepare_previous_incident(previous[-7:])
+            except OSError as error:
+                self._append(self.directory/'qt-messages.txt',json.dumps(dict(timestamp=_stamp(),
+                    kind='diagnostics.previous_export_failed',message=type(error).__name__))+'\n')
             self._initialized.set();self.ready.emit()
+            stall_size=self.stall_stream.tell()
+            next_stall_check=time.monotonic()+1
             while not self._stop.is_set() or not self._commands.empty():
                 self._wake.wait(.25);self._wake.clear()
                 while True:
@@ -181,17 +247,28 @@ class CrashDiagnostics(QObject):
                     elif kind=='export':
                         try:
                             self._bound_stack();self._snapshot(force=True)
-                            with zipfile.ZipFile(value,'w',zipfile.ZIP_DEFLATED) as archive:
-                                for name in ('python-stack.txt','qt-messages.txt','breadcrumbs.jsonl','env.json','last-paint.json'):
-                                    archive.write(self.directory/name,name)
+                            self._bundle(value)
                             self.exported.emit(value,'')
                         except OSError as error:self.exported.emit('',type(error).__name__)
-                self._bound_stack();self._snapshot()
+                self._check_watchdog();self._bound_stack();self._snapshot()
+                # If Qt stops responding, the C watchdog writes independently
+                # of the event loop. Package it on this worker when possible;
+                # next-start recovery still works if native code holds the GIL.
+                if time.monotonic()>=next_stall_check:
+                    next_stall_check=time.monotonic()+1
+                    current_size=os.fstat(self.stall_stream.fileno()).st_size
+                    if current_size>stall_size:
+                        stall_size=current_size
+                        try:self._archive_incident(include_current=True)
+                        except OSError as error:
+                            self._append(self.directory/'qt-messages.txt',json.dumps(dict(timestamp=_stamp(),
+                                kind='diagnostics.stall_export_failed',message=type(error).__name__))+'\n')
         except OSError as error:
             self._initialized.set();self.exported.emit('',type(error).__name__)
 
     def close(self):
         if self._closing:return
+        self.stop_watchdog()
         self.note('application.quit');self._closing=True;self.app.removeEventFilter(self)
         if self._installed:
             qInstallMessageHandler(self._previous_qt);sys.excepthook=self._previous_exception

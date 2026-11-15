@@ -174,6 +174,8 @@ class _MediaButton(QPushButton):
 
 
 class _VideoSurface(QWidget):
+    resized = Signal()
+
     def __init__(self, parent):
         super().__init__(parent)
         self.image = QImage()
@@ -189,6 +191,7 @@ class _VideoSurface(QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.status_label.setGeometry(self.rect().adjusted(12,12,-12,-12))
+        self.resized.emit()
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -231,6 +234,12 @@ class MediaPreview(QWidget):
         self._poster_timer.setSingleShot(True)
         self._poster_timer.setInterval(POSTER_TIMEOUT_MS)
         self._poster_timer.timeout.connect(self._poster_timeout)
+        self._pending_frame = None
+        self._presented_frame_count = 0
+        self._frame_timer = QTimer(self)
+        self._frame_timer.setSingleShot(True)
+        self._frame_timer.setInterval(0)
+        self._frame_timer.timeout.connect(self._flush_frame)
         self._seek_timer = QTimer(self)
         self._seek_timer.setSingleShot(True)
         self._seek_timer.setInterval(SEEK_COALESCE_MS)
@@ -240,6 +249,7 @@ class MediaPreview(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(7)
         self.surface = _VideoSurface(self)
+        self.surface.resized.connect(self._surface_resized)
         root.addWidget(self.surface, 1)
         # Loading/errors are overlays. A temporary layout row changes the
         # video viewport's size when the first frame hides the message.
@@ -454,11 +464,40 @@ class MediaPreview(QWidget):
             return
         if not self._poster_pending and not self._user_playing and not self._seek_frame_pending and self._poster_sent:
             return
+        from PySide6.QtMultimedia import QVideoFrame
+        # Keep one latest frame, not a queue of expensive CPU conversions.
+        # The zero timer runs after native frame/click callbacks have unwound.
+        self._pending_frame = (QVideoFrame(frame), generation)
+        if not self._frame_timer.isActive():self._frame_timer.start()
+
+    def _frame_image(self, frame):
+        image=frame.toImage()
+        if image.isNull():return image
+        ratio=self.surface.devicePixelRatioF()
+        width=max(1,min(1280,round(self.surface.width()*ratio)))
+        height=max(1,min(1280,round(self.surface.height()*ratio)))
+        if image.width()>width or image.height()>height:
+            image=image.scaled(width,height,Qt.KeepAspectRatio,Qt.SmoothTransformation)
+        return image
+
+    def _surface_resized(self):
+        if self._video and self.player is not None and self.video_sink is not None:
+            frame=self.video_sink.videoFrame()
+            if frame.isValid():
+                self._seek_frame_pending=True
+                self._frame_changed(frame,self._generation)
+
+    def _flush_frame(self):
+        pending,self._pending_frame=self._pending_frame,None
+        if pending is None:return
+        frame,generation=pending
+        if generation!=self._generation or self.player is None or not frame.isValid():return
         # Keep every visible frame in the ordinary QWidget paint path so
         # video, shadows and expand/collapse use the same compositor.
-        image = frame.toImage()
+        image = self._frame_image(frame)
         if not image.isNull():
             self.surface.image = image
+            self._presented_frame_count += 1
             self.surface.update()
         self._seek_frame_pending = False
         first_frame = not self._poster_sent and not image.isNull()
@@ -621,10 +660,12 @@ class MediaPreview(QWidget):
         self._seek_frame_pending = False
         self._poster_timer.stop()
         self._seek_timer.stop()
+        self._frame_timer.stop()
+        self._pending_frame=None
         if self.player is not None and remember_position and self._source_exists(self.path):
             self._resume_position = self.player.position()
             if self._video and self.video_sink is not None:
-                image = self.video_sink.videoFrame().toImage()
+                image = self._frame_image(self.video_sink.videoFrame())
                 if not image.isNull():
                     self.surface.image = image
         self._dispose_player()
