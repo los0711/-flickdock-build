@@ -16,7 +16,7 @@ if sys.platform != 'darwin' or os.environ.get('GITHUB_ACTIONS') != 'true' or os.
     raise RuntimeError('This probe requires a disposable macOS CI runner')
 os.environ['QT_QPA_PLATFORM']='cocoa'
 # Match runtime_macos.py, before importing any Qt Multimedia module.
-os.environ['QT_MEDIA_BACKEND']='darwin'
+os.environ['QT_MEDIA_BACKEND']=os.environ.get('FLICKDOCK_PROBE_BACKEND','darwin')
 os.environ['QT_MAC_SET_RAISE_PROCESS']='0'
 attempt=os.environ.get('FLICKDOCK_PROBE_ATTEMPT','1')
 if attempt not in tuple(str(i) for i in range(1,9)):raise ValueError('Invalid isolated probe attempt')
