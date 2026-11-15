@@ -51,6 +51,10 @@ jobs:
           fi
       - name: Verify Keychain startup, automatic update, cached retry and completed notice
         run: build/macos-venv/bin/python -m unittest test_account_security_v180 test_mac_updates test_update_macos_controller test_update_macos test_update_resume_v1821 test_update_notice_v1813 test_shelf_live_v1821 test_utility_feedback_v1828 -q
+      - name: Verify QuickTime-compatible output using native video decoding
+        run: |
+          FLICKDOCK_TEST_FFMPEG="$PWD/assets/video-tools/ffmpeg" build/macos-venv/bin/python -m unittest test_video_compatibility -v
+          build/macos-venv/bin/python ci_mac_video_compat.py
       - name: Inspect packaged network permission identity without changing macOS security
         run: |
           build/macos-venv/bin/python - <<'PY'

@@ -64,7 +64,7 @@ MAINTAINED_TESTS=(
     'test_shadcn_qt_theme.py',
     'test_transfer_diagnostics.py','test_transfer_compatibility.py',
     'test_translation.py',
-    'test_architecture.py','test_video_tls.py','test_startup_resources.py','test_crash_diagnostics_v1838.py','test_text_preview_v1838.py','test_accent_theme_v1838.py','test_live_settings_v1838.py','soak_ui_v1838.py',
+    'test_architecture.py','test_video_tls.py','test_video_compatibility.py','test_startup_resources.py','test_crash_diagnostics_v1838.py','test_text_preview_v1838.py','test_accent_theme_v1838.py','test_live_settings_v1838.py','soak_ui_v1838.py',
     
     'test_cloud_delete_v1825.py','test_cloud_events_v1825.py','test_cloud_stream_v1825.py',
     'test_cloud_only_v1825.py','test_virtual_clipboard.py',
@@ -127,7 +127,7 @@ MAINTAINED_TESTS=(
 SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'cloud/test/translation-route.mjs','assets/models/lid.176.ftz',
     'assets/flags/cn.svg', 'assets/flags/cz.svg', 'assets/flags/de.svg', 'assets/flags/dk.svg', 'assets/flags/es.svg', 'assets/flags/fi.svg', 'assets/flags/fr.svg', 'assets/flags/gr.svg', 'assets/flags/id.svg', 'assets/flags/il.svg', 'assets/flags/in.svg', 'assets/flags/it.svg', 'assets/flags/jp.svg', 'assets/flags/kr.svg', 'assets/flags/manifest.json', 'assets/flags/my.svg', 'assets/flags/nl.svg', 'assets/flags/no.svg', 'assets/flags/ph.svg', 'assets/flags/pl.svg', 'assets/flags/pt.svg', 'assets/flags/ro.svg', 'assets/flags/ru.svg', 'assets/flags/sa.svg', 'assets/flags/se.svg', 'assets/flags/th.svg', 'assets/flags/tr.svg', 'assets/flags/tw.svg', 'assets/flags/ua.svg', 'assets/flags/us.svg', 'assets/flags/vn.svg', 'licenses/Flag-Icons-LICENSE.txt', 'licenses/FASTTEXT-LICENSE.txt', 'licenses/FASTTEXT-MODEL-ATTRIBUTION.txt', 'licenses/Paper-Notice-Motion-LICENSE.txt', 'cloud/src/translation.ts', 'cloud/test/translation.mjs', 'TRANSLATION.md',
-    'ci_cross_device.py','ci_upload_profile.py','ci_vpn.py',
+    'ci_cross_device.py','ci_upload_profile.py','ci_vpn.py','ci_mac_video_compat.py',
     
     '.github/workflows/native-clipboard.yml',
     'FlickDock.spec','FlickDock.iss','version_info.txt','ChineseSimplified.isl','windows-network.ps1',
