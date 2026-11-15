@@ -128,6 +128,9 @@ class PreviewPane(QFrame):
         self.refresh_cloud_status()
 
     def update_action_states(self):
+        for control in (self.remove_button,self.group_remove):
+            if control._hold_started is not None and control.identity()!=control._hold_identity:
+                control.cancel_hold()
         ref=self.current_path
         present=bool(ref and ref in self.shelf.display_refs())
         ready=present and not self.shelf.content.is_pending(ref)

@@ -9,7 +9,7 @@ import sys
 import re
 import time
 
-from PySide6.QtCore import QObject, QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QVariantAnimation
+from PySide6.QtCore import QObject, QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QVariantAnimation, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QIcon, QPalette, QImage, QPainter, QPainterPath, QPen, QPixmap, QTransform
 from PySide6.QtWidgets import (QLabel, QPushButton, QWidget, QFrame, QHBoxLayout,
     QVBoxLayout, QScrollArea, QLineEdit, QProgressBar, QButtonGroup, QSizePolicy, QGridLayout,
@@ -239,6 +239,85 @@ class IconTextButton(QPushButton):
         painter.setPen(QColor(tint if self.isEnabled() else c['muted']))
         text_x=x if trailing else x+size.width()+gap
         painter.drawText(QRectF(text_x,0,painter.fontMetrics().horizontalAdvance(text)+2,self.height()),Qt.AlignLeft|Qt.AlignVCenter,text)
+
+
+class HoldRemoveButton(IconTextButton):
+    """Complete removal only after a continuous, cancellable 750 ms hold."""
+    confirmed=Signal()
+    HOLD_MS=750
+
+    def __init__(self,text,parent=None):
+        super().__init__(text,parent)
+        self._idle_text=text;self._hold_started=None;self._hold_identity=None
+        self.identity=lambda:None
+        self.setAccessibleName(text);self.setAccessibleDescription('按住 0.75 秒移出，提前松开取消。')
+        self._hold_timer=QTimer(self);self._hold_timer.setSingleShot(True);self._hold_timer.setTimerType(Qt.PreciseTimer)
+        self._hold_timer.timeout.connect(self._complete_hold)
+        from display_frames import FramePulse
+        self._hold_frames=FramePulse(self);self._hold_frames.timeout.connect(self.update)
+
+    def _begin_hold(self):
+        if self._hold_started is not None or not self.isEnabled():return
+        self._hold_identity=self.identity();self._hold_started=time.monotonic()
+        self.setDown(True);self.setText('松手取消');self._hold_timer.start(self.HOLD_MS)
+        self._hold_frames.start();self.update()
+
+    def cancel_hold(self):
+        self._hold_timer.stop();self._hold_frames.stop();self._hold_started=None;self._hold_identity=None
+        self.setDown(False);self.setText(self._idle_text);self.update()
+
+    def _complete_hold(self):
+        valid=(self._hold_started is not None and self.isEnabled() and self.isVisible()
+               and self.identity()==self._hold_identity)
+        self.cancel_hold()
+        if valid:self.confirmed.emit()
+
+    def mousePressEvent(self,event):
+        if event.button()==Qt.LeftButton:self._begin_hold();event.accept();return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self,event):
+        if self._hold_started is not None and not self.rect().contains(event.position().toPoint()):self.cancel_hold()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self,event):
+        if event.button()==Qt.LeftButton:self.cancel_hold();event.accept();return
+        super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self,event):
+        if event.key() in (Qt.Key_Space,Qt.Key_Return,Qt.Key_Enter):
+            if not event.isAutoRepeat():self._begin_hold()
+            event.accept();return
+        super().keyPressEvent(event)
+
+    def keyReleaseEvent(self,event):
+        if event.key() in (Qt.Key_Space,Qt.Key_Return,Qt.Key_Enter):
+            if not event.isAutoRepeat():self.cancel_hold()
+            event.accept();return
+        super().keyReleaseEvent(event)
+
+    def focusOutEvent(self,event):self.cancel_hold();super().focusOutEvent(event)
+    def hideEvent(self,event):self.cancel_hold();super().hideEvent(event)
+    def changeEvent(self,event):
+        if event.type()==QEvent.EnabledChange and not self.isEnabled() and hasattr(self,'_hold_timer'):self.cancel_hold()
+        super().changeEvent(event)
+
+    def paintEvent(self,event):
+        if self._hold_started is None:return super().paintEvent(event)
+        from PySide6.QtWidgets import QStyle,QStylePainter
+        from native_ui_common import button_style_option
+        option=button_style_option(self);option.text='';option.icon=QIcon()
+        p=QStylePainter(self);p.drawControl(QStyle.CE_PushButton,option)
+        rect=QRectF(self.rect()).adjusted(1,1,-1,-1)
+        fraction=max(0.,min(1.,(time.monotonic()-self._hold_started)*1000/self.HOLD_MS))
+        bar=QRectF(rect.left(),rect.top(),rect.width()*fraction,rect.height())
+        shape=QPainterPath();shape.addRoundedRect(rect,RADIUS_CONTROL_PX,RADIUS_CONTROL_PX)
+        p.save();p.setRenderHint(QPainter.Antialiasing);p.setClipPath(shape)
+        p.fillRect(bar,QColor(palette()['red']));p.restore()
+        p.setFont(self.font());p.setPen(QColor(palette()['red']))
+        p.drawText(QRectF(self.rect()),Qt.AlignCenter,self.text())
+        p.save();p.setClipRect(bar);p.setPen(QColor('white'))
+        p.drawText(QRectF(self.rect()),Qt.AlignCenter,self.text());p.restore();p.end()
 
 
 class SortButton(IconTextButton):
@@ -1176,7 +1255,9 @@ def build_preview(view,elided_type,image_type,media_type,content_type):
     view.send_control,view.send_button,view.send_menu_button=split_send_button(footer,36)
     view.send_button.clicked.connect(view.send_current)
     view.send_menu_button.clicked.connect(lambda:view.open_send_menu([view.current_path],view.send_menu_button))
-    view.remove_button=button('移出搁架',variant='danger',parent=footer);view.remove_button.clicked.connect(view.remove_current)
+    view.remove_button=button('长按移出',variant='danger',parent=footer,control_type=HoldRemoveButton)
+    view.remove_button.identity=lambda:view.current_path
+    view.remove_button.confirmed.connect(view.remove_current)
     view.action_buttons=(view.open_button,view.rename_button,view.copy_path_button,view.zip_button,view.send_button,view.remove_button)
     for item in view.action_buttons:item.setAccessibleName(item.text())
     view.open_button.setFixedHeight(36);primary.addWidget(view.open_button,1);primary.addWidget(view.send_control,1)
@@ -1203,7 +1284,8 @@ def build_preview(view,elided_type,image_type,media_type,content_type):
     view.group_send_control,view.group_send,view.group_send_menu=split_send_button(view.group_view,34)
     view.group_send.clicked.connect(lambda:view._send_other(view.popup.chosen_refs()))
     view.group_send_menu.clicked.connect(lambda:view.open_send_menu(view.popup.chosen_refs(),view.group_send_menu));group_actions.addWidget(view.group_send_control)
-    view.group_remove=button('移出搁架',variant='danger',parent=view.group_view);view.group_remove.setFixedHeight(34)
-    view.group_remove.clicked.connect(view.popup.remove_selected);group_actions.addWidget(view.group_remove)
+    view.group_remove=button('长按移出',variant='danger',parent=view.group_view,control_type=HoldRemoveButton);view.group_remove.setFixedHeight(34)
+    view.group_remove.identity=lambda:tuple(view.popup.chosen_refs())
+    view.group_remove.confirmed.connect(view.popup.remove_selected);group_actions.addWidget(view.group_remove)
     group.addLayout(group_actions);group.addStretch(1)
     view.group_view.hide()

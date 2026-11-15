@@ -221,7 +221,7 @@ class OverviewControlsTests(unittest.TestCase):
     def test_preview_actions_follow_reference_and_remain_reachable_when_short(self):
         popup=self.overview();preview=popup.preview
         self.assertEqual([button.text() for button in preview.action_buttons],
-                         ['打开文件','重命名','复制路径','打包 ZIP','发送文件','移出搁架'])
+                         ['打开文件','重命名','复制路径','打包 ZIP','发送文件','长按移出'])
         buttons=preview.action_buttons
         self.assertEqual(preview.open_button.y(),preview.send_control.y())
         self.assertEqual(preview.rename_button.y(),preview.zip_button.y())
@@ -247,9 +247,49 @@ class OverviewControlsTests(unittest.TestCase):
         self.assertEqual(QApplication.clipboard().text(),str(Path(ref).absolute()))
         preview.send_button.click()
         self.assertEqual(self.events[-1],('lan',[str(Path(ref).absolute())]))
-        preview.remove_button.click();fixture.flush()
+        QTest.mousePress(preview.remove_button,Qt.LeftButton);QTest.qWait(800)
+        QTest.mouseRelease(preview.remove_button,Qt.LeftButton);fixture.flush()
         self.assertEqual(self.shelf.files['permanent'],[self.paths[0],self.paths[2]])
         self.assertTrue(Path(ref).is_file())
+
+    def test_removal_requires_continuous_750ms_hold(self):
+        popup=self.overview();preview=popup.preview;ref=self.paths[1]
+        popup.select_item(ref);button=preview.remove_button;self.assertTrue(button.isVisible())
+        QTest.mousePress(button,Qt.LeftButton);self.assertEqual(button.text(),'松手取消')
+        QTest.qWait(250);self.assertIn(ref,self.shelf.files['permanent'])
+        QTest.mouseRelease(button,Qt.LeftButton);QTest.qWait(550)
+        self.assertIn(ref,self.shelf.files['permanent']);self.assertEqual(button.text(),'长按移出')
+        QTest.mousePress(button,Qt.LeftButton);QTest.qWait(700)
+        self.assertIn(ref,self.shelf.files['permanent'])
+        QTest.qWait(80);fixture.flush()
+        self.assertNotIn(ref,self.shelf.files['permanent']);self.assertTrue(Path(ref).is_file())
+        QTest.mouseRelease(button,Qt.LeftButton);fixture.flush()
+
+    def test_hold_cancels_if_the_selected_item_changes(self):
+        popup=self.overview();preview=popup.preview;popup.select_item(self.paths[0])
+        button=preview.remove_button;QTest.mousePress(button,Qt.LeftButton)
+        popup.select_item(self.paths[1]);QTest.qWait(800);fixture.flush()
+        self.assertEqual(self.shelf.files['permanent'],self.paths)
+        QTest.mouseRelease(button,Qt.LeftButton)
+
+    def test_hold_progress_fills_full_button_height(self):
+        from reference_widgets import palette
+        popup=self.overview();popup.select_item(self.paths[0]);button=popup.preview.remove_button
+        QTest.mousePress(button,Qt.LeftButton);QTest.qWait(330)
+        try:
+            image=button.grab().toImage();ratio=image.devicePixelRatio();red=QColor(palette()['red'])
+            def sample(x,y):return image.pixelColor(round(button.width()*x*ratio),round(button.height()*y*ratio))
+            for y in (.25,.75):self.assertEqual(sample(.15,y),red)
+            self.assertNotEqual(sample(.85,.25),red)
+        finally:QTest.mouseRelease(button,Qt.LeftButton)
+
+    def test_keyboard_hold_supports_cancel_and_confirmation(self):
+        popup=self.overview();popup.select_item(self.paths[0]);button=popup.preview.remove_button
+        button.setFocus();QTest.keyPress(button,Qt.Key_Space);QTest.qWait(100);QTest.keyRelease(button,Qt.Key_Space)
+        QTest.qWait(750);self.assertIn(self.paths[0],self.shelf.files['permanent'])
+        QTest.keyPress(button,Qt.Key_Space);QTest.qWait(780);fixture.flush()
+        self.assertNotIn(self.paths[0],self.shelf.files['permanent'])
+        QTest.keyRelease(button,Qt.Key_Space)
 
     def test_preview_zip_contains_actual_current_file_and_preserves_bytes(self):
         popup=self.overview();preview=popup.preview;ref=self.paths[1]

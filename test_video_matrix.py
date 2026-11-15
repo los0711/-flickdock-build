@@ -312,4 +312,54 @@ class VideoMatrixTests(unittest.TestCase):
             self.controller.action(row,'shelf');download.assert_not_called()
         self.assertIn('不存在或已被移动',self.controller.message)
 
+    def test_completed_download_is_reused_after_controller_restart(self):
+        from shelf_journal import coordinator
+        from account_store import atomic_json
+        for _ in range(100):
+            if self.controller._history_ready:break
+            QTest.qWait(10)
+        self.assertTrue(self.controller._history_ready)
+        path=self.root/'downloads'/'remembered.mp4';path.parent.mkdir(exist_ok=True);path.write_bytes(b'fixture')
+        original=self.entry['sources'][0]
+        self.controller._remember_download(original,path,path.stat())
+        self.assertTrue(coordinator(self.settings.base,atomic_json).flush(3))
+        reopened=VideoController(self.manager);entry=entry_fixture();reopened.entries=[entry]
+        try:
+            for _ in range(100):
+                if reopened._history_ready:break
+                QTest.qWait(10)
+            self.assertTrue(reopened._history_ready)
+            row=entry['sources'][0]
+            self.assertEqual(row['status'],'complete');self.assertEqual(row['path'],str(path))
+            with patch.object(reopened,'_start_download') as download:
+                reopened.action(row,'shelf');download.assert_not_called()
+            self.assertEqual(self.events,[('permanent',[str(path)])])
+        finally:reopened.close();reopened.deleteLater()
+
+    def test_cancel_while_checking_history_does_not_start_a_download(self):
+        row=self.entry['sources'][0];self.controller._history_ready=False
+        with patch.object(self.controller,'_start_download') as download:
+            self.controller.action(row,'shelf');self.controller.cancel(row)
+            self.controller._history_loaded({},None);download.assert_not_called()
+
+    def test_missing_download_after_restart_asks_before_redownloading(self):
+        from shelf_journal import coordinator
+        from account_store import atomic_json
+        for _ in range(100):
+            if self.controller._history_ready:break
+            QTest.qWait(10)
+        path=self.root/'downloads'/'removed.mp4';path.parent.mkdir(exist_ok=True);path.write_bytes(b'fixture')
+        self.controller._remember_download(self.entry['sources'][0],path,path.stat())
+        self.assertTrue(coordinator(self.settings.base,atomic_json).flush(3));path.unlink()
+        reopened=VideoController(self.manager);entry=entry_fixture();reopened.entries=[entry]
+        try:
+            for _ in range(100):
+                if reopened._history_ready:break
+                QTest.qWait(10)
+            row=entry['sources'][0];self.assertTrue(row.get('history_stale'))
+            with patch.object(reopened,'_start_download') as download:
+                reopened.action(row,'shelf');download.assert_not_called()
+            self.assertIn('不存在或已被移动',reopened.message)
+        finally:reopened.close();reopened.deleteLater()
+
 if __name__=='__main__':unittest.main()
