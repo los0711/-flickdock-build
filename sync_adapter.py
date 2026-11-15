@@ -16,6 +16,7 @@ class ShelfAdapter:
     def cancel_pending(self):
         shelf=self.manager.shelf
         shelf._copy_epoch+=1
+        shelf._cancel_intake()
         for job in tuple(shelf.copy_jobs):job.cancel()
         shelf.content.pending.clear();shelf.content.transfers.clear()
 
@@ -45,17 +46,12 @@ class ShelfAdapter:
                    for ref in shelf.display_refs()}
             shelf.popup.remap_items(remap)
             current = shelf.popup.preview.current_path
-            preferred=remap.get(current,current)
+            mapped=remap.get(current,current)
             shelf.popup.selected={remap.get(ref,ref) for ref in shelf.popup.selected}
             shelf.popup.primary_selection=remap.get(shelf.popup.primary_selection,shelf.popup.primary_selection)
-            shelf.popup.hovered_ref=remap.get(shelf.popup.hovered_ref,shelf.popup.hovered_ref)
-            if preferred!=current:shelf.popup._preferred_preview=preferred
             valid=set(refs)|set(shelf.content.pending)
-            if current not in valid or preferred!=current or shelf.content.texts.get(current) != texts.get(current):
-                shelf.popup.preview.media.release_source()
-                shelf.popup.preview.image.clear_source()
-                shelf.popup.preview.current_path = None
-                shelf.popup.preview._pending_preview = False
+            if current not in valid or mapped!=current or shelf.content.texts.get(current) != texts.get(current):
+                shelf.popup.preview.clear_preview()
             shelf.popup.selected.intersection_update(valid)
             if shelf.popup.primary_selection not in valid: shelf.popup.primary_selection = None
         # Preserve unrelated decoded thumbnails across metadata/status changes.

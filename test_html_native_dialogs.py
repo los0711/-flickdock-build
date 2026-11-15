@@ -16,9 +16,8 @@ from update_notice import UpdateNotice
 
 APP=QApplication.instance() or QApplication([])
 APP.setQuitOnLastWindowClosed(False)
-font_path=Path(__file__).with_name('fonts')/'HarmonyOS_Sans_SC_Regular.ttf'
-QFontDatabase.addApplicationFont(str(font_path))
-APP.setFont(QFont('HarmonyOS Sans SC',10))
+from native_ui_common import configure_reference_font
+configure_reference_font(APP)
 
 
 class FakeClient(QObject):
@@ -38,7 +37,7 @@ class HtmlNativeDialogs(unittest.TestCase):
         host.show();APP.processEvents()
         for theme in ('dark','light'):
             card.setStyleSheet('background:#161616;' if theme=='dark' else 'background:#EAEEF5;')
-            overlay=ClearConfirmOverlay(card,8,font_family='HarmonyOS Sans SC',theme=theme)
+            overlay=ClearConfirmOverlay(card,8,font_family='Inter',theme=theme)
             results=[];overlay.finished.connect(results.append)
             self.assertTrue(overlay.open());APP.processEvents()
             self.assertEqual(overlay.panel.width(),340)

@@ -10,6 +10,75 @@ import sys
 import zipfile
 
 
+def run_notices(argv,load_font):
+    """Inspect the actual frozen notice classes without native clipboard access."""
+    if os.environ.get('QT_QPA_PLATFORM')!='offscreen' and not (os.environ.get('GITHUB_ACTIONS')=='true' and sys.platform=='darwin'):
+        raise RuntimeError('Notice verification requires offscreen mode or a disposable Mac CI runner')
+    import time,traceback
+    from types import SimpleNamespace
+    from PySide6.QtCore import QObject,Signal,QRectF,Qt
+    from PySide6.QtGui import QImage,QColor,QPainter
+    from PySide6.QtWidgets import QApplication,QWidget
+    from app_version import APP_VERSION
+    from clipboard_preview import ClipboardPresenter
+    from intake_notice import ClipboardNotice,CapsuleNotice,NOTICE_PAIR_GAP_PX
+    from video_prompt import VideoLinkPrompt
+    from receive_notice import TransferCapsule
+    from async_images import ImageCache
+    output=Path(argv[argv.index('--verify-output')+1]).resolve()
+    app=QApplication.instance() or QApplication([argv[0]]);app.setQuitOnLastWindowClosed(False);load_font(app)
+    class Client(QObject):view_changed=Signal(object)
+    report=dict(ok=False,version=APP_VERSION,frozen=bool(getattr(sys,'frozen',False)),qt_platform=app.platformName())
+    cards=[];presenter=None;images=None;shelf=QWidget()
+    def settle():
+        for card in cards:
+            for motion in (card._morph,card._fade,card._position_motion,card._progress_motion):motion.setCurrentTime(motion.duration())
+        app.processEvents()
+    try:
+        from translation_languages import detect_source
+        languages={text:detect_source(text) for text in ('Hello world','你好','bonjour')}
+        assert languages=={'Hello world':'英语','你好':'中文','bonjour':'法语'},'Packaged source-language detection failed'
+        report['short_source_languages']=list(languages.values())
+        with tempfile.TemporaryDirectory(prefix='flickdock-notice-check-') as directory:
+            path=Path(directory)/'copied-preview.png'
+            image=QImage(80,80,QImage.Format_ARGB32);wanted=QColor('#A85B24');image.fill(wanted);assert image.save(str(path))
+            state=dict(id='frozen-copy',revision=1,value=('files',[str(path)]),phase='uploading',local_copy=True,cloud_transfer=dict(phase='uploading',received=25,total=100))
+            client=Client();client.view=state;presenter=ClipboardPresenter(client)
+            manager=SimpleNamespace(settings=SimpleNamespace(theme='dark',clipboard_success_notice=True),shelf=shelf,clipboard_presenter=presenter,show_video_dialog=lambda url:None)
+            copy=ClipboardNotice(manager);video=VideoLinkPrompt(manager);images=ImageCache()
+            transfer=TransferCapsule(SimpleNamespace(manager=manager,images=images,activate=lambda:None));cards=[copy,transfer,video]
+            copy.show_result(None,state);video.present('https://www.youtube.com/watch?v=frozen-notice')
+            record=dict(id='frozen-transfer',direction='receive',name='fixture.zip',state='transferring',received=25,total=100,paths=[])
+            transfer.present(record)
+            deadline=time.monotonic()+5
+            while presenter.thumbnail.isNull() and time.monotonic()<deadline:app.processEvents();time.sleep(.01)
+            assert not presenter.thumbnail.isNull(),'Copied file preview did not decode'
+            artwork=QImage(32,32,QImage.Format_ARGB32_Premultiplied);artwork.fill(Qt.transparent)
+            painter=QPainter(artwork);painter.setRenderHint(QPainter.Antialiasing);copy._paint_leading(painter,QRectF(4,4,24,24));painter.end()
+            assert artwork.pixelColor(16,16)==wanted,'Notice uses different artwork from the copied file'
+            settle();bounds=[card.capsule_rect().translated(card.pos()) for card in cards]
+            if bounds[0].top()==bounds[1].top()==bounds[2].top():
+                assert all(abs(b.left()-a.right()-NOTICE_PAIR_GAP_PX)<=1 for a,b in zip(bounds,bounds[1:])),bounds
+            assert all(isinstance(card,CapsuleNotice) for card in cards)
+            assert video.accessibleName()=='检测到视频链接，是否解析'
+            assert transfer.accessibleName()=='fixture.zip'
+            copy._expire();transfer._expire();settle()
+            assert copy._compact and transfer._compact
+            transfer.present(dict(record,state='complete'));settle()
+            assert not transfer._compact and transfer._phase=='success' and transfer.timer.isActive()
+            copy.update_delivery(dict(state,phase='synced',backed_up=True));copy.supersede();copy.replay(dict(state,phase='synced',backed_up=True));settle()
+            assert copy.isVisible() and copy._phase=='success'
+            report.update(ok=True,shared_capsules=True,copied_file_artwork=True,video_capsule=True,transfer_capsule=True,compact_completion_expands=True,repeated_copy_reappears=True,visual_gap_px=NOTICE_PAIR_GAP_PX,native_clipboard_access=False)
+    except Exception as error:report.update(error=str(error),traceback=traceback.format_exc())
+    finally:
+        for card in cards:card.supersede();card.deleteLater()
+        if presenter is not None:presenter.close();presenter.pool.waitForDone(5000);presenter.deleteLater()
+        if images is not None:images.close();images._pool.waitForDone(5000);images.deleteLater()
+        shelf.deleteLater();app.processEvents()
+        output.parent.mkdir(parents=True,exist_ok=True);output.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf8')
+    return 0 if report['ok'] else 1
+
+
 def run_overview(argv,load_font):
     """Exercise the shipped UI with disposable files and no native services."""
     if os.environ.get('QT_QPA_PLATFORM')!='offscreen':
@@ -22,7 +91,7 @@ def run_overview(argv,load_font):
     from PySide6.QtWidgets import QApplication
     from app_settings import SettingsStore
     from app_version import APP_VERSION
-    from flickdock import ShelfWindow
+    from shelf_window import ShelfWindow
     import ui_theme
     app=QApplication([argv[0]]);app.setQuitOnLastWindowClosed(False);load_font(app)
     output=Path(argv[argv.index('--verify-output')+1]).resolve()
@@ -53,11 +122,16 @@ def run_overview(argv,load_font):
             while (popup._build_cursor<len(popup.visible_refs()) or not popup.retirement.is_idle) and time.monotonic()<deadline:
                 app.processEvents();time.sleep(.002)
             assert popup._build_cursor==len(popup.visible_refs())
+            assert popup.preview.current_path is None and popup.preview.stack.currentWidget() is popup.preview.empty_preview
+            report['selection_required_preview']=True
             popup.select_item(str(archive));app.processEvents()
             preview=popup.preview
             assert len(preview.action_buttons)==6
             assert all(button.isVisible() for button in preview.action_buttons)
-            assert preview.action_buttons[0].y()==preview.action_buttons[1].y()
+            top=lambda widget:widget.mapTo(preview,QPoint()).y()
+            assert top(preview.open_button)==top(preview.send_button)
+            assert top(preview.rename_button)==top(preview.zip_button)==top(preview.remove_button)
+            assert top(preview.copy_path_button)<top(preview.open_button)<top(preview.rename_button)
             report['preview_actions']=[button.text() for button in preview.action_buttons]
             def capture_card(path):
                 shot=shelf.grab();ratio=shot.devicePixelRatioF();rect=shelf.card.geometry()
@@ -68,6 +142,11 @@ def run_overview(argv,load_font):
                 assert capture_card(capture);report['capture']=str(capture)
             preview.copy_path_button.click();assert app.clipboard().text()==str(archive)
             preview.send_button.click();assert queued==[('lan',[str(archive)])]
+            preview.send_menu_button.click();send_menu=preview._send_menu
+            assert send_menu is not None and send_menu.actions()[0].text()=='登录后可选择同账号设备'
+            assert send_menu.actions()[-1].text()=='其他设备…'
+            send_menu.actions()[-1].trigger();send_menu.close();app.processEvents()
+            assert queued==[('lan',[str(archive)]),('lan',[str(archive)])]
             before=list(shelf.files['permanent'])
             def cancel_delete():
                 dialog=shelf._clear_confirmation
@@ -156,7 +235,8 @@ def run(argv, load_font):
     from PySide6.QtNetwork import QSslSocket
     from PySide6.QtWidgets import QApplication
     from flickdock_icons import glyph_pixmap
-    from media_preview import MediaPreview, QMediaPlayer
+    from media_preview import MediaPreview
+    from PySide6.QtMultimedia import QMediaPlayer
     from app_version import APP_VERSION
     from async_images import ImageCache
     from selection_archive import ZipArchiveJob

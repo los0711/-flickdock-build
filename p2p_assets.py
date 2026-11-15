@@ -41,8 +41,8 @@ def prepare():
 
 def selected():
     package,_=target();folder=ROOT/'p2p'
-    names=['p2p/bridge.mjs','p2p/rtc-peer.mjs','p2p/sync-mesh.mjs','p2p/turn_tls.mjs','p2p/package.json','p2p/runtime/'+('node' if sys.platform=='darwin' else 'node.exe'),'p2p/runtime/Node-LICENSE.txt']
-    for module in ('node-datachannel','detect-libc','@node-datachannel/'+package):
+    names=['p2p/bridge.mjs','p2p/ice_route.mjs','p2p/turn_tls.mjs','p2p/proxy_tunnel.mjs','p2p/stun_route.mjs','p2p/package.json','p2p/runtime/'+('node' if sys.platform=='darwin' else 'node.exe'),'p2p/runtime/Node-LICENSE.txt']
+    for module in ('node-datachannel','detect-libc','@node-datachannel/'+package,'socks','ip-address','smart-buffer'):
         base=folder/'node_modules'/module
         if not base.is_dir():raise FileNotFoundError('Missing native WebRTC package '+module)
         for path in base.rglob('*'):
@@ -58,6 +58,10 @@ def bundle_assets():
     manifest=ROOT/'p2p/asset-manifest.json'
     if not manifest.is_file():raise FileNotFoundError('Run p2p_assets.py before building')
     entries=selected();data=[];binaries=[]
+    expected=json.loads(manifest.read_bytes())
+    actual=[dict(path=path.relative_to(ROOT).as_posix(),bytes=path.stat().st_size,sha256=checksum(path)) for path,_ in entries]
+    if expected['node']!=NODE_VERSION or expected['rtc']!='0.24.6' or expected['files']!=actual:
+        raise ValueError('Prepared WebRTC assets changed after verification')
     for path,dest in entries:
         (binaries if path.suffix in ('.exe','.node') or path.name=='node' else data).append((str(path),dest))
     data.append((str(manifest),'p2p'))

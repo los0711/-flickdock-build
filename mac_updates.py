@@ -21,14 +21,11 @@ import sys
 import threading
 import time
 import unicodedata
-import urllib.parse
-import urllib.request
 from uuid import uuid4
 import zipfile
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal
-from update_client import (DEFAULT_ALLOWED_HOSTS, MAX_MANIFEST_BYTES, _json_object,
-                           compare_versions, manifest_endpoint, trusted_url,
+from update_client import (MAX_MANIFEST_BYTES, _json_object, compare_versions,
                            update_architecture, validate_manifest, version_tuple)
 
 BUNDLE_ID = 'com.flickdock.app'
@@ -36,6 +33,7 @@ MAX_ZIP_BYTES = 1024 * 1024 * 1024
 _deferred_trees=set()
 MAX_UNPACKED_BYTES = 4 * 1024 * 1024 * 1024
 MAX_MEMBERS = 100000
+MAX_RECEIPT_BYTES = MAX_MANIFEST_BYTES * 2
 _STAGE = re.compile(r'\.flickdock-update-[0-9a-f]{32}\Z')
 _MACHO = (b'\xcf\xfa\xed\xfe', b'\xfe\xed\xfa\xcf', b'\xca\xfe\xba\xbe', b'\xbe\xba\xfe\xca', b'\xca\xfe\xba\xbf')
 
@@ -210,6 +208,7 @@ class PreparedMacUpdate:
     source_archive: Path | None = None
     ready_token: str = ''
     helper_app: Path | None = None
+    manifest: dict | None = None
 
     def cleanup(self):
         if _STAGE.fullmatch(self.stage.name) and self.stage.is_absolute():
@@ -291,7 +290,7 @@ def prepare_update(zip_path, manifest, *, current_version, installed_app,
             bundle_metadata(helper_app,bundle_id=expected_bundle_id,version=current_version)
         return PreparedMacUpdate(stage, bundle, target, version, current_version,
                                  _tree_hash(bundle, cancel_event), os.getpid(), expected_bundle_id,
-                                 zip_path, uuid4().hex,helper_app)
+                                 zip_path, uuid4().hex,helper_app,json.loads(json.dumps(manifest)))
     except BaseException:
         shutil.rmtree(stage, ignore_errors=True)
         raise
@@ -604,54 +603,18 @@ def _administrator_script(prepared, executable):
     return 'do shell script ' + json.dumps(command, ensure_ascii=False) + ' with administrator privileges'
 
 
-class _TrustedManifestRedirect(urllib.request.HTTPRedirectHandler):
-    max_redirections = 5
+def _signed_receipt_manifest(prepared):
+    """Authenticate sealed package metadata without root's proxy or Keychain.
 
-    def redirect_request(self, request, fp, code, message, headers, newurl):
-        url = urllib.parse.urljoin(request.full_url, newurl)
-        trusted_url(url, DEFAULT_ALLOWED_HOSTS)
-        return super().redirect_request(request, fp, code, message, headers, url)
-
-
-def _trusted_manifest_for(version, *, machine=None, opener=None):
-    """Root independently checks the current official index, not the receipt."""
-    endpoint = manifest_endpoint('darwin', machine)
-    if opener is None:
-        # Use the same OS certificate trust, system proxy and authenticated
-        # public mirror policy as the GUI. Frozen OpenSSL's Python-framework
-        # cert.pem is not present on a clean Mac and must not be relied upon.
-        from PySide6.QtCore import QCoreApplication,QEventLoop,QTimer
-        from update_client import UpdateClient
-        global _helper_qt_app
-        _helper_qt_app=QCoreApplication.instance() or QCoreApplication(['FlickDock-update-verification'])
-        loop=QEventLoop();answer=[];errors=[]
-        client=UpdateClient('0.0.0',platform='darwin',machine=machine)
-        def available(manifest,_manual):answer.append(manifest);loop.quit()
-        def failed(message,_manual):errors.append(message);loop.quit()
-        client.update_available.connect(available);client.failed.connect(failed)
-        timer=QTimer();timer.setSingleShot(True)
-        timer.timeout.connect(lambda:failed('官方清单验证超时。',False));timer.start(35000)
-        try:
-            client.check(manual=False)
-            if not answer and not errors:loop.exec()
-            if not answer:raise ValueError(errors[-1] if errors else '无法验证官方更新清单。')
-            manifest=answer[0]
-            if manifest['version']!=version or not manifest['installer']['url'].lower().split('?',1)[0].endswith('.zip'):
-                raise ValueError('官方自动更新索引已变更，请重新检查更新。')
-            return manifest
-        finally:timer.stop();client.close();client.deleteLater()
-    request = urllib.request.Request(endpoint, headers={'Accept': 'application/json',
-                                 'Cache-Control': 'no-cache', 'User-Agent': 'FlickDock-Mac-Update'})
-    with opener(request, timeout=15) as response:
-        trusted_url(response.geturl(), DEFAULT_ALLOWED_HOSTS)
-        body = response.read(MAX_MANIFEST_BYTES + 1)
-    if len(body) > MAX_MANIFEST_BYTES:
-        raise ValueError('官方更新清单超过大小限制。')
-    parsed = json.loads(body.decode('utf-8-sig'), object_pairs_hook=_json_object,
-                        parse_constant=lambda _: (_ for _ in ()).throw(ValueError('更新清单包含无效数值。')))
-    manifest = validate_manifest(parsed, platform='darwin', machine=machine)
-    if manifest['version'] != version or not manifest['installer']['url'].lower().split('?', 1)[0].endswith('.zip'):
-        raise ValueError('官方自动更新索引已变更，请重新检查更新。')
+    The receipt is user-writable: only the embedded publisher key, then the
+    archive's signed SHA-256, authorizes privileged installation.
+    """
+    from update_signatures import verify_manifest_signature
+    manifest = validate_manifest(prepared.manifest, platform='darwin', machine=update_architecture())
+    verify_manifest_signature(manifest, required=True)
+    if (manifest['version'] != prepared.version
+            or not manifest['installer']['url'].lower().split('?', 1)[0].endswith('.zip')):
+        raise ValueError('签名更新清单与本次安装版本或格式不一致。')
     return manifest
 
 
@@ -804,8 +767,7 @@ def run_elevated_update_helper(receipt_path, *, timeout=30, test_only=False,
             raise TimeoutError('等待 FlickDock 退出超时；原应用未替换。')
         time.sleep(0.1)
     if not test_only:_ensure_stable_root_runtime(prepared)
-    manifest = trusted_manifest if trusted_manifest is not None else _trusted_manifest_for(
-                    prepared.version, machine=update_architecture())
+    manifest = trusted_manifest if trusted_manifest is not None else _signed_receipt_manifest(prepared)
     if (manifest.get('version') != prepared.version or
             manifest.get('installer', {}).get('sha256') is None):
         raise ValueError('官方更新清单与下载版本不一致。')
@@ -839,9 +801,9 @@ def run_elevated_update_helper(receipt_path, *, timeout=30, test_only=False,
 
 def _read_receipt(receipt_path):
     receipt = Path(receipt_path).absolute()
-    if receipt.is_symlink() or receipt.name != 'update-receipt.json' or receipt.stat().st_size > 16384:
+    if receipt.is_symlink() or receipt.name != 'update-receipt.json' or receipt.stat().st_size > MAX_RECEIPT_BYTES:
         raise ValueError('更新辅助进程收据无效。')
-    data = json.loads(receipt.read_text(encoding='utf-8'))
+    data = json.loads(receipt.read_text(encoding='utf-8'), object_pairs_hook=_json_object)
     for key in ('stage', 'app_path', 'installed_app', 'source_archive'):
         data[key] = Path(data[key])
     if data.get('helper_app') is not None:data['helper_app']=Path(data['helper_app'])

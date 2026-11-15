@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import {registerHooks} from 'node:module';
 registerHooks({
-  resolve(specifier,context,next){return specifier==='cloudflare:workers'?{url:'wan-test:workers',shortCircuit:true}:next(['./relay-budget','./cloud-pipe','./storage-budget'].includes(specifier)?specifier+'.ts':specifier,context);},
+  resolve(specifier,context,next){return specifier==='cloudflare:workers'?{url:'wan-test:workers',shortCircuit:true}:next(['./relay-budget','./manual-signal','./cloud-pipe','./storage-budget'].includes(specifier)?specifier+'.ts':specifier,context);},
   load(url,context,next){return url==='wan-test:workers'?{format:'module',shortCircuit:true,source:'export class DurableObject {constructor(ctx,env){this.ctx=ctx;this.env=env;}}'}:next(url,context);},
 });
 const {WanHub}=await import('../src/wan.ts');
@@ -32,7 +32,9 @@ const input=id=>({type:'request',id,token:'d'.repeat(64),digest:'e'.repeat(64),t
 try{
   for(const peer of peers)await send(peer,{type:'hello',name:peer.deserializeAttachment().name,platform:'windows'});
   const first=last(bob,'identity');assert.equal(first.expires-first.serverNow,300000);assert.equal(first.refreshAt-first.serverNow,240000);
+  for(const peer of peers)assert.match(last(peer,'identity').code,/^(?=.*[2-9])(?=.*[A-HJ-NP-Z])[23456789A-HJ-NP-Z]{4}$/);
   now+=240000;await send(bob,{type:'refresh'});const refreshed=last(bob,'identity');assert.notEqual(first.code,refreshed.code);
+  assert.match(refreshed.code,/^(?=.*[2-9])(?=.*[A-HJ-NP-Z])[23456789A-HJ-NP-Z]{4}$/);
   const id=next(),prepare={type:'prepare',id,token:'d'.repeat(64),code:first.code};
   await send(alice,prepare);assert.equal(last(alice,'prepared').id,id);assert.equal(bob.rows.filter(row=>row.type==='request').length,0);
   await send(alice,prepare);assert.equal(last(alice,'prepared').id,id,'Lost prepare responses must replay the same pairing');

@@ -13,6 +13,7 @@ from PySide6.QtMultimedia import QMediaPlayer as NativePlayer, QVideoFrame
 from PySide6.QtWidgets import QApplication
 
 import media_preview as subject
+import PySide6.QtMultimedia as multimedia
 
 
 class FakePlayer(QObject):
@@ -92,8 +93,8 @@ class FakeSink(QObject):
 
 
 app = QApplication([])
-font_id = QFontDatabase.addApplicationFont(str(Path(__file__).parent / "fonts" / "HarmonyOS_Sans_SC_Regular.ttf"))
-app.setFont(QFont(QFontDatabase.applicationFontFamilies(font_id)[0], 11))
+from native_ui_common import configure_reference_font
+configure_reference_font(app)
 assert subject.MediaPreview.can_preview("example.MP4")
 assert subject.MediaPreview.can_preview(Path("example.flac"))
 assert not subject.MediaPreview.can_preview("example.pdf")
@@ -101,9 +102,9 @@ assert not subject.MediaPreview.can_preview(None)
 assert subject._clock(7203000) == "2:00:03"
 
 with tempfile.TemporaryDirectory(prefix="flickdock-media-") as temporary, \
-     patch.object(subject, "QMediaPlayer", FakePlayer), \
-     patch.object(subject, "QAudioOutput", FakeAudio), \
-     patch.object(subject, "QVideoSink", FakeSink), \
+     patch.object(multimedia, "QMediaPlayer", FakePlayer), \
+     patch.object(multimedia, "QAudioOutput", FakeAudio), \
+     patch.object(multimedia, "QVideoSink", FakeSink), \
      patch.object(subject.QDesktopServices, "openUrl") as open_url:
     video = Path(temporary) / "first.mp4"
     second = Path(temporary) / "second.mp4"
@@ -126,6 +127,7 @@ with tempfile.TemporaryDirectory(prefix="flickdock-media-") as temporary, \
     preview.frame_ready.connect(lambda path, image: frames.append((path, image.copy())))
     preview.set_source(video)
     assert preview.player.play_calls == 1 and preview.audio_output.muted
+    assert preview.surface.image.isNull() and preview.surface.fallback is None
     assert not events
     image = QImage(64, 40, QImage.Format.Format_ARGB32)
     image.fill(0xff2584ed)
@@ -160,7 +162,7 @@ with tempfile.TemporaryDirectory(prefix="flickdock-media-") as temporary, \
     # Normal playing frames go straight to Qt's renderer, retaining the CPU
     # poster until explicit pause/seek/source release needs a snapshot.
     preview.toggle_playback()
-    with patch.object(subject.QVideoFrame,'toImage',side_effect=AssertionError('per-frame CPU readback')):
+    with patch.object(QVideoFrame,'toImage',side_effect=AssertionError('per-frame CPU readback')):
         preview._seek_frame_pending=False
         preview.video_sink.videoFrameChanged.emit(QVideoFrame(red))
     preview.toggle_playback()
@@ -168,7 +170,7 @@ with tempfile.TemporaryDirectory(prefix="flickdock-media-") as temporary, \
 
     stale_player, stale_sink = preview.player, preview.video_sink
     preview.set_source(second)
-    assert stale_player.stop_calls >= 1 and preview.surface.image.isNull()
+    assert stale_player.stop_calls >= 1 and preview.surface.image.isNull() and preview.surface.fallback is None
     stale_sink.videoFrameChanged.emit(QVideoFrame(red))
     assert preview.surface.image.isNull() and len(frames) == 1
     preview.video_sink.videoFrameChanged.emit(QVideoFrame(image))
@@ -186,9 +188,31 @@ with tempfile.TemporaryDirectory(prefix="flickdock-media-") as temporary, \
     assert events[-1] is True
     preview.release_source()
     assert preview.path == "" and preview.player is None and not preview.play_button.isEnabled()
+    preview.set_source(video,poster=image,defer=True)
+    assert preview.player is None and preview.surface.image==image and preview.surface.fallback is None
+    assert not preview.play_button.isEnabled()
+    preview.set_source(video,poster=image)
+    assert preview.surface.image==image and preview.player.play_calls==1
+    preview.video_sink.videoFrameChanged.emit(QVideoFrame(red))
+    assert preview.surface.image.pixelColor(0,0).name()=='#ed483b'
+    preview.release_source()
     preview.hide(); preview.show(); preview.toggle_playback()
     assert preview.player is None
     print("PASS changing/hiding releases native source; a remembered poster replays lazily and removed refs never reopen")
+
+    # Exercise the real layout across asynchronous loading and first-frame
+    # visibility changes, rather than checking only the decoder's state.
+    def delayed_source(player,url):player.source=url
+    with patch.object(FakePlayer,'setSource',delayed_source):
+        preview.set_source(video);app.processEvents();loading_bounds=preview.surface.geometry()
+        preview.player.mediaStatusChanged.emit(NativePlayer.MediaStatus.LoadedMedia);app.processEvents()
+        assert preview.surface.geometry()==loading_bounds
+        preview.video_sink.videoFrameChanged.emit(QVideoFrame(image));app.processEvents()
+        assert preview.surface.geometry()==loading_bounds
+        preview.player.errorOccurred.emit(NativePlayer.Error.FormatError,'fixture error');app.processEvents()
+        assert preview.surface.geometry()==loading_bounds
+    preview.release_source()
+    print('PASS loading, first frame and error messages never resize the video viewport')
 
     preview.show()
     preview.set_source(audio)

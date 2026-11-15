@@ -20,6 +20,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import secrets
+import select
 import shutil
 import socket
 import ssl
@@ -35,6 +36,7 @@ from PySide6.QtCore import QObject, Signal
 from selection_archive import _is_link, _source_reader
 from sync_files import safe_name
 from transfer_priority import yield_bulk_payload
+from transfer_diagnostics import create as create_transfer_diagnostics
 
 # Source launches use the same eager initialization as the frozen entry hooks.
 codecs.lookup('idna')
@@ -42,6 +44,8 @@ codecs.lookup('idna')
 DISCOVERY_PORT = 45875
 BLOCK_BYTES = 1024 * 1024
 SOCKET_BUFFER_BYTES = 4 * 1024 * 1024
+FILE_PIPELINE_MAX_PENDING = 8
+FILE_PIPELINE_BYTES = 32 * 1024 * 1024
 MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 MAX_ENTRIES = 100000
 MAX_TOTAL_BYTES = (1 << 63) - 1
@@ -50,11 +54,30 @@ PROTOCOL = 'flickdock-lan-1'
 
 class _FileAcknowledgements:
     """Drain file receipts while the sender fills a bounded file pipeline."""
-    def __init__(self,stream,cancel,count):
+    def __init__(self,stream,cancel,count,diagnostics=None):
         self.stream=stream;self.cancel=cancel;self.pending=deque();self.bytes=0
+        self.diagnostics=diagnostics
         self.condition=threading.Condition();self.error=None;self.complete=False;self.submitted=0;self.stopped=False
-        self.thread=threading.Thread(target=self._read,args=(count,),daemon=True,name='FlickDock-file-ack')
-        self.thread.start()
+        self.inline=isinstance(stream,ssl.SSLSocket);self.remaining=count
+        # An SSL object must be driven by one thread. Drain LAN receipts between
+        # file writes; the already thread-safe WebRTC stream keeps its reader.
+        self.thread=None if self.inline else threading.Thread(target=self._read,args=(count,),daemon=True,name='FlickDock-file-ack')
+        if self.thread is not None:self.thread.start()
+
+    def _verified(self):
+        answer=_read_json(self.stream,self.cancel,diagnostics=self.diagnostics)
+        if answer.get('state')!='verified':raise ValueError(answer.get('message') or '接收方文件校验失败。')
+        with self.condition:
+            if not self.pending:raise ValueError('接收方文件确认顺序无效。')
+            self.bytes-=self.pending.popleft();self.condition.notify_all()
+
+    def _saved(self):
+        answer=_read_json(self.stream,self.cancel,diagnostics=self.diagnostics)
+        if answer.get('state')!='complete':raise ValueError(answer.get('message') or '接收方保存文件失败。')
+
+    def _drain_inline(self):
+        if not self.submitted:raise ValueError('文件尚未发送完成。')
+        self.submitted-=1;self._verified();self.remaining-=1
 
     def _read(self,count):
         try:
@@ -63,13 +86,8 @@ class _FileAcknowledgements:
                     while not self.submitted and not self.stopped and not self.cancel.is_set():self.condition.wait(.2)
                     if self.stopped or self.cancel.is_set():raise InterruptedError('已取消传输。')
                     self.submitted-=1
-                answer=_read_json(self.stream,self.cancel)
-                if answer.get('state')!='verified':raise ValueError(answer.get('message') or '接收方文件校验失败。')
-                with self.condition:
-                    if not self.pending:raise ValueError('接收方文件确认顺序无效。')
-                    self.bytes-=self.pending.popleft();self.condition.notify_all()
-            answer=_read_json(self.stream,self.cancel)
-            if answer.get('state')!='complete':raise ValueError(answer.get('message') or '接收方保存文件失败。')
+                self._verified()
+            self._saved()
         except Exception as error:
             with self.condition:self.error=error
         finally:
@@ -77,20 +95,31 @@ class _FileAcknowledgements:
 
     def reserve(self,size):
         with self.condition:
-            while not self.error and not self.cancel.is_set() and self.pending and (len(self.pending)>=8 or self.bytes+size>32*1024*1024):
-                self.condition.wait(.2)
+            while not self.error and not self.cancel.is_set() and self.pending and (len(self.pending)>=FILE_PIPELINE_MAX_PENDING or self.bytes+size>FILE_PIPELINE_BYTES):
+                started=time.perf_counter() if self.diagnostics else None
+                try:
+                    if self.inline:self._drain_inline()
+                    else:self.condition.wait(.2)
+                finally:
+                    if self.diagnostics:self.diagnostics.add('ack_wait_ms_total',(time.perf_counter()-started)*1000)
             if self.cancel.is_set():raise InterruptedError('已取消传输。')
             if self.error:raise self.error
             self.pending.append(size);self.bytes+=size
 
     def sent(self):
-        with self.condition:self.submitted+=1;self.condition.notify_all()
+        with self.condition:
+            self.submitted+=1;self.condition.notify_all()
+            if self.inline:
+                while self.submitted and (self.stream.pending() or select.select([self.stream],[],[],0)[0]):self._drain_inline()
 
     def stop(self):
         with self.condition:self.stopped=True;self.condition.notify_all()
-        self.thread.join(2)
+        if self.thread is not None:self.thread.join(2)
 
     def finish(self):
+        if self.inline:
+            while self.remaining:self._drain_inline()
+            self._saved();self.complete=True;return
         with self.condition:
             while not self.complete and not self.cancel.is_set():self.condition.wait(.2)
             if self.cancel.is_set():raise InterruptedError('已取消传输。')
@@ -232,6 +261,13 @@ def _send_json(stream, data):
     stream.sendall(struct.pack('!I', len(payload)) + payload)
 
 
+def _send_transfer_json(stream,data,diagnostics):
+    try:_send_json(stream,data)
+    except socket.timeout:
+        if diagnostics:diagnostics.add('socket_timeout_count',1)
+        raise
+
+
 def _tune_stream_socket(stream):
     """Give high-latency Wi-Fi links enough TCP window without assuming OS caps."""
     stream.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -240,12 +276,13 @@ def _tune_stream_socket(stream):
         except OSError: pass  # macOS and managed Windows hosts can cap buffers.
 
 
-def _read_exact(stream, size, cancel, *, timeout=45):
+def _read_exact(stream, size, cancel, *, timeout=45, diagnostics=None):
     output = bytearray(); last_data = time.monotonic()
     while len(output) < size:
         if cancel.is_set(): raise InterruptedError('已取消传输。')
         try: data = stream.recv(min(size - len(output), BLOCK_BYTES))
         except socket.timeout:
+            if diagnostics:diagnostics.add('socket_timeout_count',1)
             if time.monotonic() - max(last_data,getattr(stream,'last_activity',0)) > timeout: raise TimeoutError('传输连接超时。')
             continue
         if not data: raise ConnectionError('局域网连接已中断。')
@@ -253,23 +290,24 @@ def _read_exact(stream, size, cancel, *, timeout=45):
     return bytes(output)
 
 
-def _read_into(stream, target, cancel, *, timeout=45):
+def _read_into(stream, target, cancel, *, timeout=45, diagnostics=None):
     """Fill a reusable file buffer without copying each TLS record twice."""
     position=0; last_data=time.monotonic()
     while position<len(target):
         if cancel.is_set(): raise InterruptedError('已取消传输。')
         try: count=stream.recv_into(target[position:])
         except socket.timeout:
+            if diagnostics:diagnostics.add('socket_timeout_count',1)
             if time.monotonic()-last_data>timeout: raise TimeoutError('局域网连接超时。')
             continue
         if not count: raise ConnectionError('局域网连接已中断。')
         position+=count;last_data=time.monotonic()
 
 
-def _read_json(stream, cancel, *, timeout=45):
-    size = struct.unpack('!I', _read_exact(stream, 4, cancel, timeout=timeout))[0]
+def _read_json(stream, cancel, *, timeout=45, diagnostics=None):
+    size = struct.unpack('!I', _read_exact(stream, 4, cancel, timeout=timeout,diagnostics=diagnostics))[0]
     if size > MAX_MANIFEST_BYTES: raise ValueError('传输清单过大。')
-    result = json.loads(_read_exact(stream, size, cancel, timeout=timeout).decode('utf8'))
+    result = json.loads(_read_exact(stream, size, cancel, timeout=timeout,diagnostics=diagnostics).decode('utf8'))
     if not isinstance(result, dict): raise ValueError('传输消息无效。')
     return result
 
@@ -367,9 +405,14 @@ class _Transfer:
     result_paths: list = field(default_factory=list)
     remote_peer: dict = field(default_factory=dict)
     updated: float = field(default_factory=time.monotonic)
+    diagnostics: object = None
+    confirmation_code: str = ''
+    confirmation_error: str = ''
+    account_verified: bool = False
 
 
 class LanTransferService(QObject):
+    requires_code_confirmation=True
     peers_changed = Signal(list)
     offer_received = Signal(dict)
     progress = Signal(dict)
@@ -377,17 +420,38 @@ class LanTransferService(QObject):
     status_changed = Signal(str)
 
     def __init__(self, parent=None, *, device_name='', device_id='', bind_host='0.0.0.0',
-                 discovery=True, discovery_port=DISCOVERY_PORT):
+                 discovery=True, discovery_port=DISCOVERY_PORT, diagnostics_base=None):
         super().__init__(parent)
         self.device_name = str(device_name or socket.gethostname())[:64]
         self.device_id = device_id or uuid4().hex
         self.bind_host = bind_host; self.discovery_enabled = bool(discovery)
-        self.discovery_port = discovery_port; self.port = 0; self.fingerprint = ''
+        self.discovery_port = discovery_port;self.port = 0; self.fingerprint = ''
         self._stopped = threading.Event(); self._lock = threading.RLock()
         self._peers = {}; self._transfers = {}; self._threads = []
-        self._listener = None; self._discovery_socket = None; self._certificate_dir = None
+        self._listener = None;self._listener_v6=None;self._discovery_socket = None;self._discovery_v6_socket=None;self._certificate_dir = None
         self._slots = threading.BoundedSemaphore(4); self._context = None; self._starting = False
         self.startup_diagnostic = {}
+        self.account_authorizer=None
+        self.diagnostics_base=diagnostics_base
+
+    def _start_diagnostics(self,transfer):
+        transfer.diagnostics=create_transfer_diagnostics(self.diagnostics_base,getattr(self,'mode','lan'),transfer.direction)
+
+    def _finish_diagnostics(self,transfer,state):
+        if transfer.diagnostics is None:return
+        try:transfer.diagnostics.finish(state)
+        except OSError as error:self.status_changed.emit('传输诊断写入失败：'+str(error))
+
+    @staticmethod
+    def _yield_payload(transfer):
+        diagnostics=transfer.diagnostics
+        if diagnostics:
+            from transfer_priority import clipboard_priority_active
+            started=time.perf_counter() if clipboard_priority_active() else None
+            try:yield_bulk_payload(transfer.cancel)
+            finally:
+                if started is not None:diagnostics.add('blocked_by_clipboard_priority_ms',(time.perf_counter()-started)*1000)
+        else:yield_bulk_payload(transfer.cancel)
 
     def _thread(self, function, *args):
         thread = threading.Thread(target=function, args=args, daemon=True, name='FlickDock-LAN')
@@ -400,7 +464,7 @@ class LanTransferService(QObject):
         self._starting = True; self._stopped.clear(); self._thread(self._start)
 
     def _start(self):
-        phase = 'generate_certificate'; certificate = None; private = None
+        phase = 'generate_certificate'; certificate = None; private = None;listener=None
         try:
             cert, key, self.fingerprint = _ephemeral_certificate()
             phase = 'stage_certificate'
@@ -416,29 +480,68 @@ class LanTransferService(QObject):
             # OpenSSL has copied the key into memory; do not retain it on disk.
             folder.cleanup(); self._certificate_dir = None
             phase = 'listen'
-            listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            listener.bind((self.bind_host, 0)); listener.listen(8); listener.settimeout(.5)
+            family=socket.AF_INET6 if ':' in self.bind_host else socket.AF_INET
+            listener = socket.socket(family, socket.SOCK_STREAM)
+            if family==socket.AF_INET6:listener.setsockopt(socket.IPPROTO_IPV6,socket.IPV6_V6ONLY,1)
+            listener.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+            listener.bind((self.bind_host,0))
+            listener.listen(8); listener.settimeout(.5)
             self._listener = listener; self.port = listener.getsockname()[1]
             if self._stopped.is_set(): listener.close(); return
+            # Keep IPv4 discovery and wire behavior unchanged while exposing
+            # the same TLS service to scoped IPv6 link-local interfaces.
+            if family==socket.AF_INET and self.bind_host=='0.0.0.0' and getattr(self,'mode','lan')=='lan' and socket.has_ipv6:
+                secondary=None
+                try:
+                    secondary=socket.socket(socket.AF_INET6,socket.SOCK_STREAM)
+                    secondary.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+                    secondary.setsockopt(socket.IPPROTO_IPV6,socket.IPV6_V6ONLY,1)
+                    secondary.bind(('::',self.port));secondary.listen(8);secondary.settimeout(.5)
+                    self._listener_v6=secondary;self._thread(self._accept_v6,secondary)
+                except OSError:
+                    if secondary:secondary.close()
             self.status_changed.emit('局域网互传已就绪。')
-            if self.discovery_enabled: self._thread(self._discovery)
+            if self.discovery_enabled:
+                self._thread(self._discovery)
+                if self._listener_v6:self._thread(self._discovery_v6)
             while not self._stopped.is_set():
                 try: stream, address = listener.accept()
                 except socket.timeout: self._expire(); continue
                 except OSError:
                     if self._stopped.is_set(): break
                     raise
-                if not _local_address(address[0]) or not self._slots.acquire(blocking=False):
+                host=address[0]
+                if len(address)>3 and address[3] and ':' in host and '%' not in host:
+                    host=host+'%'+str(address[3])
+                if not _local_address(host) or not self._slots.acquire(blocking=False):
                     stream.close(); continue
-                self._thread(self._incoming, stream, address[0])
+                self._thread(self._incoming, stream, host)
         except Exception as error:
             self.startup_diagnostic = dict(phase=phase, error=type(error).__name__, errno=getattr(error, 'errno', None),
                 certificate_exists=bool(certificate and certificate.exists()), private_key_exists=bool(private and private.exists()),
                 certificate_path=str(certificate) if certificate else '', traceback=traceback.format_exc())
             if not self._stopped.is_set(): self.status_changed.emit(str(error))
         finally:
+            if listener:
+                try:listener.close()
+                except OSError:pass
+                if self._listener is listener:self._listener=None
+            if self._listener_v6:
+                try:self._listener_v6.close()
+                except OSError:pass
+                self._listener_v6=None
             self._starting = False
+
+    def _accept_v6(self,listener):
+        while not self._stopped.is_set():
+            try:stream,address=listener.accept()
+            except socket.timeout:continue
+            except OSError:break
+            host=address[0]
+            if len(address)>3 and address[3] and '%' not in host:host+='%' + str(address[3])
+            if not _local_address(host) or not self._slots.acquire(blocking=False):
+                stream.close();continue
+            self._thread(self._incoming,stream,host)
 
     def own_peer(self, host='127.0.0.1'):
         """Useful for explicit address pairing and disposable loopback verification."""
@@ -485,6 +588,46 @@ class LanTransferService(QObject):
             if not self._stopped.is_set(): self.status_changed.emit('局域网发现不可用，请检查网络权限或防火墙。')
         finally: discovery.close()
 
+    def _discovery_v6(self):
+        """Link-local multicast discovery also works without a default route."""
+        discovery=socket.socket(socket.AF_INET6,socket.SOCK_DGRAM)
+        try:
+            from PySide6.QtNetwork import QNetworkInterface
+            discovery.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+            discovery.setsockopt(socket.IPPROTO_IPV6,socket.IPV6_V6ONLY,1)
+            discovery.bind(('::',self.discovery_port));discovery.settimeout(.5)
+            group=socket.inet_pton(socket.AF_INET6,'ff02::1');interfaces=[]
+            for interface in QNetworkInterface.allInterfaces():
+                flags=interface.flags();index=interface.index()
+                if not index or not flags&QNetworkInterface.InterfaceFlag.IsUp or not flags&QNetworkInterface.InterfaceFlag.CanMulticast:continue
+                try:
+                    discovery.setsockopt(socket.IPPROTO_IPV6,socket.IPV6_JOIN_GROUP,struct.pack('=16sI',group,index))
+                    interfaces.append(index)
+                except OSError:continue
+            if not interfaces:return
+            self._discovery_v6_socket=discovery;next_announcement=0
+            while not self._stopped.is_set():
+                now=time.monotonic()
+                if now>=next_announcement:
+                    payload=self.own_peer();payload.pop('host')
+                    encoded=json.dumps(payload,ensure_ascii=False).encode('utf8')
+                    for index in interfaces:
+                        try:discovery.sendto(encoded,('ff02::1',self.discovery_port,0,index))
+                        except OSError:pass
+                    next_announcement=now+3
+                try:
+                    payload,address=discovery.recvfrom(2049)
+                    host=address[0]
+                    if len(address)>3 and address[3] and '%' not in host:host+='%' + str(address[3])
+                    if len(payload)>2048 or not _local_address(host):continue
+                    row=json.loads(payload.decode('utf8'));row['host']=host;self.remember_peer(row)
+                except (socket.timeout,ValueError,TypeError,KeyError):pass
+        except OSError:
+            pass  # IPv4 discovery remains available on IPv6-restricted hosts.
+        finally:
+            discovery.close()
+            if self._discovery_v6_socket is discovery:self._discovery_v6_socket=None
+
     def _expire(self):
         now = time.monotonic(); changed = False
         with self._lock:
@@ -493,7 +636,9 @@ class LanTransferService(QObject):
             for identifier, transfer in list(self._transfers.items()):
                 if not transfer.active and now - transfer.updated > 1800:
                     transfer.cancel.set()
-                    if self._cleanup(transfer): del self._transfers[identifier]
+                    if self._cleanup(transfer):
+                        if transfer.diagnostics:self._thread(self._finish_diagnostics,transfer,'expired')
+                        del self._transfers[identifier]
                     else: transfer.updated = now - 1770  # Retry an occupied stage after 30 s.
         if changed: self.peers_changed.emit(self.peers())
 
@@ -505,19 +650,30 @@ class LanTransferService(QObject):
                 raise ValueError('已有两项局域网传输正在进行。')
             identifier = uuid4().hex
             transfer = _Transfer(identifier, 'send', peer['name'], active=True)
+            self._start_diagnostics(transfer)
             transfer.remote_peer = peer
             self._transfers[identifier] = transfer
         self._thread(self._outgoing, transfer, peer, list(paths))
         return identifier
 
-    def accept(self, transfer_id, destination):
+    def accept(self, transfer_id, destination, confirmation=None):
         with self._lock: transfer = self._transfers.get(transfer_id)
         if not transfer or transfer.direction != 'receive' or transfer.cancel.is_set(): return False
         destination = Path(destination).expanduser().resolve(strict=True)
         if not destination.is_dir() or _is_link(destination): raise ValueError('请选择可写入的接收文件夹。')
         if shutil.disk_usage(destination).free < transfer.total + 1024 * 1024:
             raise ValueError('接收位置的可用空间不足。')
-        transfer.destination = destination; transfer.accepted.set(); return True
+        account=self.account_authorizer.incoming(transfer) if self.account_authorizer and transfer.account_verified else None
+        with transfer.lock:
+            if not (account and account.get('account_device')):
+                if not isinstance(confirmation,str) or len(confirmation)!=6 or not confirmation.isascii() or not confirmation.isdigit():
+                    raise ValueError('请输入发送方显示的六位确认码。')
+                if not secrets.compare_digest(confirmation,transfer.confirmation_code):
+                    transfer.confirmation_error='确认码不一致，传输已中止，请重新核对设备。'
+                    transfer.accepted.set()
+                    raise ValueError(transfer.confirmation_error)
+            transfer.destination = destination; transfer.accepted.set()
+        return True
 
     def reject(self, transfer_id): self.cancel(transfer_id)
 
@@ -535,6 +691,7 @@ class LanTransferService(QObject):
             cleaned = self._cleanup(transfer)
             self._notify(transfer, 'cancelled' if cleaned else 'error',
                          message='' if cleaned else '未完成文件暂时被占用，将继续重试清理。')
+            if transfer.diagnostics:self._thread(self._finish_diagnostics,transfer,'cancelled' if cleaned else 'error')
 
     def _cancel_remote(self, transfer):
         """A second authenticated control stream distinguishes cancel from loss.
@@ -591,9 +748,13 @@ class LanTransferService(QObject):
     def _stream_code(self,stream,identifier):return _authentication_code(stream,identifier)
 
     def _incoming_offer(self,transfer,host,code):
+        account=self.account_authorizer.incoming(transfer) if self.account_authorizer else None
+        with transfer.lock:
+            transfer.confirmation_code=code
+            transfer.account_verified=bool(account and account.get('account_device'))
         self.offer_received.emit({'id':transfer.transfer_id,'peer':transfer.peer,'host':host,'code':code,
             'total':transfer.total,'count':sum(e['kind']=='file' for e in transfer.entries),
-            'names':[e['path'] for e in transfer.entries if '/' not in e['path']]})
+            'names':[e['path'] for e in transfer.entries if '/' not in e['path']],**(account or {})})
 
     def _outgoing(self, transfer, peer, paths):
         stream = None
@@ -604,33 +765,40 @@ class LanTransferService(QObject):
             transfer.total = total; token = transfer.token or secrets.token_hex(32)
             transfer.token = token
             code = ''
-            offer = dict(protocol=PROTOCOL, id=transfer.transfer_id, token=token,pipeline=1 if getattr(self,'mode','lan')=='wan' else 0,
+            offer = dict(protocol=PROTOCOL, id=transfer.transfer_id, token=token,pipeline=1,
                          sender=self.device_name, entries=entries)
             files = [row for row in entries if row['kind'] == 'file']
+            if transfer.diagnostics:transfer.diagnostics.manifest(len(files),total)
+            if self.account_authorizer:self.account_authorizer.prepare(transfer,peer,entries)
             for attempt in range(3):
                 receipts=None
                 if transfer.cancel.is_set(): raise InterruptedError('已取消传输。')
                 try:
                     phase = 'connect'
-                    stream=self._connect_peer(peer,transfer,entries)
+                    try:stream=self._connect_peer(peer,transfer,entries)
+                    except socket.timeout:
+                        if transfer.diagnostics:transfer.diagnostics.add('socket_timeout_count',1)
+                        raise
                     stream.settimeout(1); transfer.socket = stream
                     phase = 'transfer'
                     code = self._stream_code(stream,transfer.transfer_id)
-                    _send_json(stream, offer); self._notify(transfer, 'waiting', code=code)
-                    reply = _read_json(stream, transfer.cancel, timeout=180)
+                    _send_transfer_json(stream,offer,transfer.diagnostics); self._notify(transfer, 'waiting', code=code)
+                    reply = _read_json(stream, transfer.cancel, timeout=180,diagnostics=transfer.diagnostics)
                     if reply.get('state') != 'ready': raise ValueError(reply.get('message') or '接收方拒绝了传输。')
                     index, offset = reply.get('next_file'), reply.get('offset')
                     if type(index) is not int or not 0 <= index <= len(files) or type(offset) is not int or offset < 0:
                         raise ValueError('接收方的续传位置无效。')
+                    if transfer.diagnostics:transfer.diagnostics.begin_payload()
                     if index == len(files) and offset: raise ValueError('接收方的续传位置无效。')
                     transfer.done = sum(row['size'] for row in files[:index]) + offset
                     if hasattr(stream,'set_payload_offset'):stream.set_payload_offset(transfer.done)
                     write_payload=getattr(stream,'send_payload',stream.sendall)
-                    if reply.get('pipeline')==1:receipts=_FileAcknowledgements(stream,transfer.cancel,len(files)-index)
+                    if reply.get('pipeline')==1:receipts=_FileAcknowledgements(stream,transfer.cancel,len(files)-index,transfer.diagnostics)
                     last_emit = 0
                     file_buffer = bytearray(BLOCK_BYTES)
                     file_view = memoryview(file_buffer)
                     for number in range(index, len(files)):
+                        if transfer.diagnostics:transfer.diagnostics.begin_file(number,files[number]['size'])
                         row = files[number]; source, size, modified = sources[row['path']]
                         info = source.stat()
                         if info.st_size != size or info.st_mtime_ns != modified: raise ValueError('原文件已改变，请重新发起传输。')
@@ -648,25 +816,31 @@ class LanTransferService(QObject):
                             remaining = size - resume
                             while remaining:
                                 if transfer.cancel.is_set(): raise InterruptedError('已取消传输。')
-                                yield_bulk_payload(transfer.cancel)
+                                self._yield_payload(transfer)
                                 count = incoming.readinto(file_view[:min(BLOCK_BYTES, remaining)])
                                 if not count: raise ValueError('原文件已改变，请重新发起传输。')
                                 data = file_view[:count]
-                                write_payload(data); digest.update(data)
+                                try:write_payload(data)
+                                except socket.timeout:
+                                    if transfer.diagnostics:transfer.diagnostics.add('socket_timeout_count',1)
+                                    raise
+                                digest.update(data)
+                                if transfer.diagnostics:transfer.diagnostics.add('payload_bytes',count)
                                 transfer.done += count; remaining -= count
                                 if time.monotonic() - last_emit >= .08:
                                     self._notify(transfer, 'transferring', name=row['path'], code=code); last_emit = time.monotonic()
                             if incoming.read(1): raise ValueError('原文件已改变，请重新发起传输。')
                         current = source.stat()
                         if current.st_size != size or current.st_mtime_ns != modified: raise ValueError('原文件已改变，请重新发起传输。')
-                        _send_json(stream, {'sha256': digest.hexdigest()})
+                        _send_transfer_json(stream,{'sha256':digest.hexdigest()},transfer.diagnostics)
                         if receipts:receipts.sent()
                         if not receipts:
-                            answer = _read_json(stream, transfer.cancel)
+                            answer = _read_json(stream, transfer.cancel,diagnostics=transfer.diagnostics)
                             if answer.get('state') != 'verified': raise ValueError('接收方文件校验失败。')
+                        if transfer.diagnostics:transfer.diagnostics.file_finished(number)
                     if receipts:receipts.finish()
                     else:
-                        reply = _read_json(stream, transfer.cancel)
+                        reply = _read_json(stream, transfer.cancel,diagnostics=transfer.diagnostics)
                         if reply.get('state') != 'complete': raise ValueError('接收方保存文件失败。')
                     transfer.finished = True; self._notify(transfer, 'complete', code=code)
                     self.completed.emit({'id': transfer.transfer_id, 'direction': 'send', 'peer': transfer.peer,
@@ -674,6 +848,7 @@ class LanTransferService(QObject):
                     return
                 except (ConnectionError, TimeoutError, socket.timeout, OSError):
                     if transfer.cancel.is_set() or attempt == 2: raise
+                    if transfer.diagnostics:transfer.diagnostics.add('reconnect_count',1)
                     self._notify(transfer, 'reconnecting', code=code)
                     transfer.cancel.wait(.5 * (attempt + 1))
                 finally:
@@ -685,7 +860,9 @@ class LanTransferService(QObject):
                          phase=phase)
             if transfer.token and not transfer.cancel.is_set():
                 self._thread(self._cancel_remote, transfer)
-        finally: transfer.active = False; transfer.updated = time.monotonic()
+        finally:
+            transfer.active = False; transfer.updated = time.monotonic()
+            self._finish_diagnostics(transfer,'complete' if transfer.finished else 'cancelled' if transfer.cancel.is_set() else 'error')
 
     def _incoming(self, raw, host):
         stream = None; transfer = None; acquired = False; terminal = None
@@ -714,15 +891,24 @@ class LanTransferService(QObject):
                             raise ValueError('无法恢复这项传输。')
                         busy=transfer.active
                         already_finished=transfer.finished and not busy
+                        if not busy and not already_finished and transfer.diagnostics:transfer.diagnostics.add('reconnect_count',1)
+                        if not busy and not already_finished and not transfer.accepted.is_set():
+                            self._incoming_offer(transfer,host,self._stream_code(stream,identifier))
                     else:
                         if len([t for t in self._transfers.values() if not t.finished and not t.cancel.is_set()])>=16:
                             raise ValueError('待处理的传输请求过多。')
                         sender=str(request.get('sender') or '局域网设备')[:64]
                         transfer=_Transfer(identifier,'receive',sender,entries=entries,token=token,
                             manifest_hash=manifest_hash,total=total)
+                        self._start_diagnostics(transfer)
+                        if transfer.diagnostics:transfer.diagnostics.manifest(sum(e['kind']=='file' for e in entries),total)
                         self._transfers[identifier]=transfer
                         code=self._stream_code(stream,identifier)
-                        self._incoming_offer(transfer,host,code);busy=False
+                        try:self._incoming_offer(transfer,host,code)
+                        except Exception:
+                            self._finish_diagnostics(transfer,'error')
+                            raise
+                        busy=False
                     if not busy:
                         if not already_finished:
                             transfer.receiver_idle.clear();transfer.active=True;transfer.socket=stream;acquired=True
@@ -743,6 +929,7 @@ class LanTransferService(QObject):
             while not transfer.accepted.wait(.2):
                 if transfer.cancel.is_set() or self._stopped.is_set(): raise InterruptedError('已取消传输。')
                 if time.monotonic() > deadline: transfer.cancel.set(); raise TimeoutError('接收请求已超时。')
+            if transfer.confirmation_error:raise ValueError(transfer.confirmation_error)
             if transfer.cancel.is_set() or not transfer.destination: raise InterruptedError('已拒绝传输。')
             if transfer.stage is None:
                 stage = transfer.destination / ('.flickdock-receiving-' + identifier)
@@ -750,10 +937,12 @@ class LanTransferService(QObject):
                 for row in entries:
                     if row['kind'] == 'directory': stage.joinpath(*PurePosixPath(row['path']).parts).mkdir()
             files = [row for row in entries if row['kind'] == 'file']
-            _send_json(stream, {'state': 'ready', 'next_file': transfer.next_file, 'offset': transfer.offset, 'pipeline':1 if getattr(self,'mode','lan')=='wan' and request.get('pipeline')==1 else 0})
+            _send_transfer_json(stream,{'state':'ready','next_file':transfer.next_file,'offset':transfer.offset,'pipeline':1 if request.get('pipeline')==1 else 0},transfer.diagnostics)
+            if transfer.diagnostics:transfer.diagnostics.begin_payload()
             last_emit = 0
             buffer=bytearray(BLOCK_BYTES);view=memoryview(buffer)
             for number in range(transfer.next_file, len(files)):
+                if transfer.diagnostics:transfer.diagnostics.begin_file(number,files[number]['size'])
                 row = files[number]; target = transfer.stage.joinpath(*PurePosixPath(row['path']).parts)
                 offset = transfer.offset if number == transfer.next_file else 0
                 digest = hashlib.sha256()
@@ -768,19 +957,26 @@ class LanTransferService(QObject):
                 with target.open('r+b' if offset else 'xb') as output:
                     output.seek(offset)
                     while offset < row['size']:
-                        yield_bulk_payload(transfer.cancel)
+                        self._yield_payload(transfer)
                         data = view[:min(BLOCK_BYTES, row['size'] - offset)]
-                        _read_into(stream,data,transfer.cancel)
+                        _read_into(stream,data,transfer.cancel,diagnostics=transfer.diagnostics)
                         output.write(data); digest.update(data); offset += len(data)
+                        if transfer.diagnostics:transfer.diagnostics.add('payload_bytes',len(data))
                         transfer.offset = offset; transfer.done += len(data)
                         if time.monotonic() - last_emit >= .08:
                             self._notify(transfer, 'transferring', name=row['path']); last_emit = time.monotonic()
-                    output.flush(); os.fsync(output.fileno())
-                trailer = _read_json(stream, transfer.cancel)
+                    output.flush()
+                    fsync_started=time.perf_counter() if transfer.diagnostics else None
+                    os.fsync(output.fileno())
+                    if transfer.diagnostics:
+                        transfer.diagnostics.add('fsync_total_ms',(time.perf_counter()-fsync_started)*1000)
+                        transfer.diagnostics.add('fsync_count',1)
+                trailer = _read_json(stream, transfer.cancel,diagnostics=transfer.diagnostics)
                 if not secrets.compare_digest(str(trailer.get('sha256')), digest.hexdigest()):
                     raise ValueError('文件完整性校验失败，已移除未完成文件。')
                 transfer.next_file = number + 1; transfer.offset = 0
-                _send_json(stream, {'state': 'verified'})
+                if transfer.diagnostics:transfer.diagnostics.file_finished(number)
+                _send_transfer_json(stream,{'state':'verified'},transfer.diagnostics)
             if transfer.cancel.is_set(): raise InterruptedError('已取消传输。')
             # Promote verified top-level files and directories directly into the
             # chosen destination. The stage is only an internal partial-file area.
@@ -814,7 +1010,7 @@ class LanTransferService(QObject):
             self._notify(transfer, 'complete')
             self.completed.emit({'id': identifier, 'direction': 'receive', 'peer': transfer.peer,
                                  'paths': result_paths, 'total': total})
-            _send_json(stream, {'state': 'complete'})
+            _send_transfer_json(stream,{'state':'complete'},transfer.diagnostics)
         except Exception as error:
             if transfer and acquired and not transfer.finished:
                 state = 'cancelled' if transfer.cancel.is_set() else 'interrupted'
@@ -823,7 +1019,8 @@ class LanTransferService(QObject):
                 if not transfer.cancel.is_set() and not network_error:
                     transfer.cancel.set(); state = 'error'
                 if state in ('cancelled', 'error'): terminal = (state, str(error))
-                else: self._notify(transfer, state, message=str(error))
+                else:
+                    self._notify(transfer, state, message=str(error))
             if stream and not (transfer and transfer.finished):
                 try: _send_json(stream, {'state': 'error', 'message': str(error)})
                 except OSError: pass
@@ -846,6 +1043,7 @@ class LanTransferService(QObject):
                             state,message=terminal
                             if not cleaned:state,message='error','未完成文件暂时被占用，将继续重试清理。'
                             self._notify(transfer,state,message=message)
+                        if transfer.finished or terminal:self._finish_diagnostics(transfer,'complete' if transfer.finished else terminal[0])
                 finally:self._slots.release()
 
     @staticmethod
@@ -874,7 +1072,7 @@ class LanTransferService(QObject):
         with self._lock:
             transfers = list(self._transfers.values())
             for transfer in transfers: self.cancel(transfer.transfer_id)
-        for stream in (self._listener, self._discovery_socket):
+        for stream in (self._listener,self._listener_v6,self._discovery_socket,self._discovery_v6_socket):
             if stream:
                 try: stream.close()
                 except OSError: pass
@@ -890,7 +1088,9 @@ def _hex(value, length):
 def _local_address(host):
     try:
         address = ipaddress.ip_address(host)
-        return address.version == 4 and not address.is_multicast and not address.is_unspecified and (address.is_private or address.is_link_local or address.is_loopback)
+        if address.is_multicast or address.is_unspecified:return False
+        if address.version==4:return address.is_private or address.is_link_local or address.is_loopback
+        return address.is_loopback or address.is_link_local or address in ipaddress.ip_network('fc00::/7')
     except ValueError: return False
 
 

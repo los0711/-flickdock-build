@@ -18,12 +18,10 @@ import ui_theme
 
 
 app = QApplication([])
-font_file = Path(__file__).parent / "fonts" / "HarmonyOS_Sans_SC_Regular.ttf"
-font_id = QFontDatabase.addApplicationFont(str(font_file))
-assert font_id >= 0 and "HarmonyOS Sans SC" in QFontDatabase.applicationFontFamilies(font_id)
-app.setFont(QFont("HarmonyOS Sans SC", 11))
+from native_ui_common import configure_reference_font
+configure_reference_font(app)
 metrics = QFontMetricsF(module._label_font())
-assert module._label_font().family() == "HarmonyOS Sans SC"
+assert module._label_font().family() == app.font().family()
 
 
 def color_at(pixmap, x, y):

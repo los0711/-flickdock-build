@@ -15,12 +15,8 @@ import app_settings as subject
 
 
 app = QApplication([])
-font_path = Path(__file__).parent / "fonts" / "HarmonyOS_Sans_SC_Regular.ttf"
-if font_path.exists():
-    font_id = QFontDatabase.addApplicationFont(str(font_path))
-    names = QFontDatabase.applicationFontFamilies(font_id)
-    if names:
-        app.setFont(QFont(names[0], 11))
+from native_ui_common import configure_reference_font
+configure_reference_font(app)
 with tempfile.TemporaryDirectory(prefix="flickdock-settings-") as temporary:
     base = Path(temporary) / "profile"
     writes = []
@@ -151,8 +147,8 @@ with tempfile.TemporaryDirectory(prefix="flickdock-settings-") as temporary:
     app.processEvents()
     assert previews and previews[-1] == dialog._dock_values()
     body = dialog.findChild(subject.QWidget, "settingsBody")
-    assert body.layout().itemAt(0).widget() is dialog._reference_top
-    assert dialog._reference_top.layout().indexOf(dialog.account_slot) >= 0
+    assert body.layout().itemAt(0).widget() is dialog.setting_categories[0][1][0]
+    assert body.isAncestorOf(dialog.account_slot)
     assert dialog.dock_card.isAncestorOf(dialog.trigger_visible_checkbox)
     assert dialog.surface.size().width() == min(892,dialog.chrome._available().width()-16)-32 and dialog.surface.size().height() == min(632,dialog.chrome._available().height()-16)-32
     assert set(previews[-1]) == {"dock_edge", "dock_position", "dock_length", "dock_thickness", "trigger_visible", "dock_color", "dock_opacity", "display_triggers"}
@@ -233,7 +229,7 @@ with tempfile.TemporaryDirectory(prefix="flickdock-settings-") as temporary:
         assert len(license_dialog.license_text.toPlainText()) > 150
         assert "缺少" not in license_dialog.license_text.toPlainText()
     license_dialog.document_combo.setCurrentIndex(1)
-    assert "HarmonyOS Sans Fonts License Agreement" in license_dialog.license_text.toPlainText()
+    assert "SIL OPEN FONT LICENSE" in license_dialog.license_text.toPlainText()
     dialog.apply_theme("dark")
     assert license_dialog.document_combo.dark
     author_dialog.grab().save(str(Path(__file__).parent / "v16-author-about.png"))

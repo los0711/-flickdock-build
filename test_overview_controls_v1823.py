@@ -5,6 +5,7 @@ from unittest.mock import patch
 import zipfile
 
 from PySide6.QtCore import QPoint, QRect, Qt, QTimer
+from PySide6.QtGui import QColor
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication,QStyle,QStyleOptionButton
 
@@ -39,6 +40,29 @@ class OverviewControlsTests(unittest.TestCase):
         self.assertLess(popup.sort_segment.width(),180)
         self.assertEqual(set(popup.sort_buttons),{'time','size'})
 
+    def test_sort_arrows_contrast_with_idle_in_both_themes(self):
+        from reference_widgets import SORT_ARROW_GAP_PX,SORT_ARROW_SIZE_PX
+        popup=self.overview()
+        for theme,idle,active in (('light','#A3A3A3','#000000'),('dark','#737373','#FAFAFA')):
+            ui_theme.set_theme(theme);self.settings.update(theme=theme)
+            self.shelf._tree_theme=None;self.shelf.refresh();fixture.flush()
+            popup.reset_sort()
+            for key in ('time','size'):
+                control=popup.sort_buttons[key]
+                popup.reset_sort();QTest.qWait(160)
+                self.assertEqual(control.arrow_colors(),(idle,idle))
+                for direction in (1,2):
+                    popup.cycle_sort(key);QTest.qWait(180);fixture.flush()
+                    self.assertEqual(control.arrow_colors(),(active,idle) if direction==1 else (idle,active))
+                    image=control.grab().toImage();ratio=image.devicePixelRatio()
+                    width=control.fontMetrics().horizontalAdvance(control.text())
+                    left=(control.width()-width-SORT_ARROW_GAP_PX-SORT_ARROW_SIZE_PX)/2+width+SORT_ARROW_GAP_PX
+                    top=(control.height()-SORT_ARROW_SIZE_PX)/2
+                    pixel=image.pixelColor(round((left+SORT_ARROW_SIZE_PX/2)*ratio),round((top+(2 if direction==1 else 8))*ratio))
+                    expected=QColor(active)
+                    self.assertLess(sum(abs(a-b) for a,b in zip(pixel.getRgb()[:3],expected.getRgb()[:3])),75,
+                                    (theme,key,direction,pixel.name()))
+
     def test_rename_sheet_is_topmost_and_uses_the_existing_file_operation(self):
         popup=self.overview();ref=self.paths[0]
         self.shelf.rename_ref(ref);fixture.flush();dialog=self.shelf._rename_dialog
@@ -47,11 +71,11 @@ class OverviewControlsTests(unittest.TestCase):
         self.assertTrue(self.shelf.rename_edit.hasFocus())
         dialog.reject();fixture.flush();self.assertEqual(self.shelf.files['permanent'],self.paths)
 
-    def test_cloud_and_network_offsets_match_compact_header(self):
+    def test_remaining_toolbar_offsets_match_compact_header(self):
         compact={key:self.shelf.card.geometry().right()-self.bounds(control,self.shelf).right()
-                 for key,control in (('cloud',self.shelf.cloud_button),('network',self.shelf.network_status))}
+                 for key,control in (('pin',self.shelf.pin_button),('expand',self.shelf.expand_button),('menu',self.shelf.menu_button),('close',self.shelf.close_button))}
         popup=self.overview()
-        for key,control in (('cloud',self.shelf.cloud_button),('network',self.shelf.network_status)):
+        for key,control in (('pin',self.shelf.pin_button),('expand',self.shelf.expand_button),('menu',self.shelf.menu_button),('close',self.shelf.close_button)):
             self.assertEqual(self.shelf.card.geometry().right()-control.geometry().right(),compact[key])
 
     def test_compact_entry_prewarms_overview_without_showing_or_mutating_content(self):
@@ -148,26 +172,35 @@ class OverviewControlsTests(unittest.TestCase):
         self.choose_delete(choose)
         self.assertEqual(self.shelf.files['permanent'],[*self.paths[1:],str(new)])
 
-    def test_preview_actions_form_two_columns_and_remain_reachable_when_short(self):
+    def test_preview_actions_follow_reference_and_remain_reachable_when_short(self):
         popup=self.overview();preview=popup.preview
         self.assertEqual([button.text() for button in preview.action_buttons],
-                         ['打开','重命名文件','复制路径','打包成 ZIP','发送文件','移出搁架'])
+                         ['打开文件','重命名','复制路径','打包 ZIP','发送文件','移出搁架'])
         buttons=preview.action_buttons
-        for first,second in zip(buttons[::2],buttons[1::2]):
-            self.assertEqual(first.y(),second.y());self.assertLess(first.geometry().right(),second.x())
+        self.assertEqual(preview.open_button.y(),preview.send_control.y())
+        self.assertEqual(preview.rename_button.y(),preview.zip_button.y())
+        self.assertEqual(preview.zip_button.y(),preview.remove_button.y())
+        self.assertEqual(preview.status_card.layout().contentsMargins().bottom(),5)
+        self.assertEqual(preview.size_card.layout().contentsMargins().bottom(),5)
+        self.assertLess(preview.open_button.geometry().right(),preview.send_control.x())
         for width,height in ((1040,600),(800,560),(600,520),(420,500)):
             popup.resize(width,height);fixture.flush();popup._apply_responsive_layout();fixture.flush()
             if popup._narrow_layout:popup.toggle_narrow_preview();fixture.flush()
-            for button in buttons:
-                preview.content_scroll.ensureWidgetVisible(button,0,0);fixture.flush()
-                self.assertTrue(preview.content_scroll.viewport().rect().contains(self.bounds(button,preview.content_scroll.viewport())),(width,button.text()))
+            preview.content_scroll.ensureWidgetVisible(preview.copy_path_button,0,0);fixture.flush()
+            self.assertTrue(preview.content_scroll.viewport().rect().contains(self.bounds(preview.copy_path_button,preview.content_scroll.viewport())))
+            for button in (preview.open_button,preview.send_button,preview.rename_button,preview.zip_button,preview.remove_button):
+                self.assertTrue(preview.rect().contains(self.bounds(button,preview)),(width,button.text()))
             if popup._narrow_layout:popup.toggle_narrow_preview();fixture.flush()
 
     def test_preview_copy_path_send_and_remove_use_current_item_only(self):
         popup=self.overview();preview=popup.preview;ref=self.paths[1]
         popup.select_item(ref);preview.copy_path_button.click()
+        self.assertFalse(preview.copy_path_button.icon().isNull())
+        self.assertEqual(preview.copy_path_button.iconSize().width(),12)
+        self.assertLess(preview.copy_path_button.font().pixelSize(),preview.open_button.font().pixelSize())
         self.assertEqual(QApplication.clipboard().text(),str(Path(ref).absolute()))
-        preview.send_button.click();self.assertEqual(self.events[-1],('lan',[str(Path(ref).absolute())]))
+        preview.send_button.click()
+        self.assertEqual(self.events[-1],('lan',[str(Path(ref).absolute())]))
         preview.remove_button.click();fixture.flush()
         self.assertEqual(self.shelf.files['permanent'],[self.paths[0],self.paths[2]])
         self.assertTrue(Path(ref).is_file())
@@ -187,7 +220,8 @@ class OverviewControlsTests(unittest.TestCase):
         ref=self.shelf.content.add_text('完整原文\n中文内容');self.shelf.add_paths('permanent',[ref]);popup.select_item(ref)
         preview.copy_path_button.click();path=QApplication.clipboard().text()
         self.assertEqual(Path(path).read_text(encoding='utf8'),'完整原文\n中文内容')
-        preview.send_button.click();self.assertEqual(self.events[-1],('lan',[path]))
+        preview.send_button.click()
+        self.assertEqual(self.events[-1],('lan',[path]))
         self.assertFalse(preview.rename_button.isEnabled())
         pending='flickdock:transfer:pending-action'
         self.shelf.content.pending[pending]=dict(name='remote.txt',kind='file')

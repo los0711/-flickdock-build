@@ -13,8 +13,8 @@ from pathlib import Path
 import sys
 from uuid import uuid4
 
-from PySide6.QtCore import QByteArray, QCoreApplication, QElapsedTimer, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QKeySequence, QColor, QFont, QFontDatabase, QPainter, QPen, QGuiApplication, QIcon, QPixmap, QWheelEvent
+from PySide6.QtCore import QByteArray, QCoreApplication, QElapsedTimer, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QKeySequence, QColor, QFont, QFontDatabase, QPainter, QPen, QGuiApplication, QIcon, QPixmap, QWheelEvent, QDesktopServices
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
                                QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QLineEdit, QPushButton,
                                QVBoxLayout, QGridLayout, QKeySequenceEdit, QScrollArea, QWidget, QSizePolicy,
@@ -30,7 +30,7 @@ from platform_startup import (StartupManager, CallbackBackend,
                               write_startup_value as _platform_write_startup)
 from platform_native import remove_host_window_shadow
 from surface_morph import paint_surface_shadow
-from native_ui_common import reference_font, rounded_popup
+from native_ui_common import reference_font, rounded_popup, colors as ui_colors
 
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -42,6 +42,7 @@ DOCK_RANGES = {"dock_position": (0, 100), "dock_length": (32, 600), "dock_thickn
 CAPTURE_MODES = ("reference", "copy")
 TRIGGER_VIEWS = ("compact", "expanded")
 DEFAULT_SHAKE_SENSITIVITY = 50
+SWITCH_TRANSITION_MS = 160
 _NO_STARTUP_CHANGE = object()
 
 
@@ -141,6 +142,8 @@ class SettingsComboBox(QComboBox):
         self.setItemDelegate(SettingsOptionDelegate(self))
         self._popup_style=_InlineComboStyle('Fusion');self._popup_style.setParent(self)
         self.setStyle(self._popup_style)
+        from native_ui_common import PopupChevronMotion
+        self._popup_chevron=PopupChevronMotion(self)
 
     def wheelEvent(self, event):
         # Scrolling the settings page must never silently change a preference,
@@ -151,28 +154,29 @@ class SettingsComboBox(QComboBox):
         # Qt's private popup container has its own palette. Styling only the
         # item view leaves bright native strips above and below dark options.
         popup = self.view().window()
+        self._popup_chevron.attach(popup)
         popup.setObjectName("flickdockSettingsOptions")
-        surface = "#272c35" if self.dark else "#ffffff"
-        edge = "#3c4554" if self.dark else "#dce3ed"
+        c = ui_colors('dark' if self.dark else 'light')
+        surface, edge = c['card'], c['border']
         rounded_popup(popup,10)
         popup.setStyleSheet(f"QFrame#flickdockSettingsOptions {{background:{surface};"
                             f"border:1px solid {edge};border-radius:10px;}}")
         self.view().setStyleSheet(
-            f"QListView{{background:{surface};color:{'#f5f5f7' if self.dark else '#1d1d1f'};"
+            f"QListView{{background:{surface};color:{c['text']};"
             "border:0;padding:5px;outline:0;}"
             "QListView::item{border:0;border-radius:6px;padding:5px 10px;margin:1px 0;}"
-            f"QListView::item:selected{{background:{'#254b73' if self.dark else '#e5f0ff'};"
-            f"color:{'#ffffff' if self.dark else '#12579c'};}}")
+            f"QListView::item:selected{{background:{c['hover']};color:{c['text']};}}")
         super().showPopup()
 
     def paintEvent(self, event):
         super().paintEvent(event)
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pen = QPen(QColor("#b9c6d9" if self.dark else "#66778e"), 1.7)
+        pen = QPen(QColor("#b2b2b2" if self.dark else "#686868"), 1.7)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         p.setPen(pen)
         x, y = self.width() - 16, self.height() // 2
+        p.translate(x,y);p.rotate(self._popup_chevron.angle);p.translate(-x,-y)
         p.drawLine(x - 4, y - 2, x, y + 2)
         p.drawLine(x, y + 2, x + 4, y - 2)
 
@@ -222,6 +226,39 @@ class SettingsSlider(QSlider):
         # native size hint must not become the widget's clipping rectangle.
         self.setMinimumHeight(28)
         self.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Fixed)
+        self._pointer_offset=0.
+
+    def _set_from_pointer(self,point):
+        from PySide6.QtWidgets import QStyleOptionSlider
+        option=QStyleOptionSlider();self.initStyleOption(option)
+        groove=self.style().subControlRect(QStyle.CC_Slider,option,QStyle.SC_SliderGroove,self)
+        handle=self.style().subControlRect(QStyle.CC_Slider,option,QStyle.SC_SliderHandle,self)
+        horizontal=self.orientation()==Qt.Horizontal
+        span=max(1,(groove.width()-handle.width()) if horizontal else (groove.height()-handle.height()))
+        position=((point.x()-groove.left()-handle.width()/2) if horizontal else
+                  (point.y()-groove.top()-handle.height()/2))-self._pointer_offset
+        value=QStyle.sliderValueFromPosition(self.minimum(),self.maximum(),max(0,min(span,round(position))),span,option.upsideDown)
+        self.setSliderPosition(value)
+
+    def mousePressEvent(self,event):
+        if event.button()!=Qt.LeftButton or not self.isEnabled():
+            super().mousePressEvent(event);return
+        from PySide6.QtWidgets import QStyleOptionSlider
+        option=QStyleOptionSlider();self.initStyleOption(option)
+        handle=self.style().subControlRect(QStyle.CC_Slider,option,QStyle.SC_SliderHandle,self)
+        point=event.position();horizontal=self.orientation()==Qt.Horizontal
+        self._pointer_offset=((point.x()-handle.center().x()) if horizontal else (point.y()-handle.center().y())) if handle.contains(point.toPoint()) else 0.
+        self.setFocus(Qt.MouseFocusReason);self.setSliderDown(True);self._set_from_pointer(point);event.accept()
+
+    def mouseMoveEvent(self,event):
+        if self.isSliderDown():self._set_from_pointer(event.position());event.accept();return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self,event):
+        if event.button()==Qt.LeftButton and self.isSliderDown():
+            self._set_from_pointer(event.position());self.setSliderDown(False);event.accept();return
+        super().mouseReleaseEvent(event)
+
     def wheelEvent(self, event):
         _scroll_settings_instead(self, event)
 
@@ -237,8 +274,8 @@ class UpdateActivityBar(QWidget):
         self.fraction = None
         self.dark = False
         self._clock = QElapsedTimer()
-        self._timer = QTimer(self)
-        self._timer.setInterval(16)
+        from display_frames import FramePulse
+        self._timer = FramePulse(self)
         self._timer.timeout.connect(self.update)
         self.hide()
 
@@ -289,9 +326,9 @@ class UpdateActivityBar(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#3c4554" if self.dark else "#e4ebf5"))
+        painter.setBrush(QColor("#404040" if self.dark else "#e5e5e5"))
         painter.drawRoundedRect(QRectF(self.rect()), 2, 2)
-        painter.setBrush(QColor("#64a9fa" if self.dark else "#2584ed"))
+        painter.setBrush(QColor(ui_colors('dark' if self.dark else 'light')['action']))
         if self.fraction is not None:
             painter.drawRoundedRect(QRectF(0, 0, self.width() * self.fraction, self.height()), 2, 2)
         else:
@@ -314,8 +351,9 @@ class SettingsCheckBox(QCheckBox):
         if self.isChecked():
             painter = QPainter(self)
             if not self.isEnabled(): painter.setOpacity(.65)
-            svg = b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m5 12 5 5L19 7" fill="none" stroke="#ffffff" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/></svg>'
-            QSvgRenderer(QByteArray(svg)).render(painter, QRectF(self.indicator_rect()))
+            tint=ui_colors('dark' if getattr(self,'dark',False) else 'light')['on_action']
+            svg = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m5 12 5 5L19 7" fill="none" stroke="{tint}" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+            QSvgRenderer(QByteArray(svg.encode('utf8'))).render(painter, QRectF(self.indicator_rect()))
 
 
 class SettingsToggleSwitch(SettingsCheckBox):
@@ -327,6 +365,35 @@ class SettingsToggleSwitch(SettingsCheckBox):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setMinimumHeight(38)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        from display_frames import DisplayAnimation
+        from ui_transitions import exit_curve
+        self._thumb_position=1. if self.isChecked() else 0.
+        self._thumb_motion=DisplayAnimation(self);self._thumb_motion.setDuration(SWITCH_TRANSITION_MS)
+        self._thumb_motion.setEasingCurve(exit_curve());self._thumb_motion.valueChanged.connect(self._move_thumb)
+        # QCheckBox user clicks advance via nextCheckState(), which does not
+        # call the Python checkStateSet override on every Qt backend.
+        self.toggled.connect(self._transition_thumb)
+
+    def checkStateSet(self):
+        super().checkStateSet()
+        if hasattr(self,'_thumb_motion') and self.signalsBlocked():
+            self._thumb_motion.stop();self._move_thumb(1. if self.isChecked() else 0.)
+
+    def _transition_thumb(self, checked):
+        from native_ui_common import reduced_motion
+        target=1. if checked else 0.
+        self._thumb_motion.stop()
+        if not self.isVisible() or self.signalsBlocked() or reduced_motion():
+            self._move_thumb(target);return
+        self._thumb_motion.setStartValue(self._thumb_position);self._thumb_motion.setEndValue(target)
+        self._thumb_motion.start()
+
+    def _move_thumb(self,value):
+        self._thumb_position=max(0.,min(1.,float(value)));self.update()
+
+    def hideEvent(self,event):
+        self._thumb_motion.stop();self._move_thumb(1. if self.isChecked() else 0.)
+        super().hideEvent(event)
 
     def sizeHint(self):
         base = super().sizeHint()
@@ -349,14 +416,20 @@ class SettingsToggleSwitch(SettingsCheckBox):
         # bounds so neither edge disappears at fractional display scale.
         track = QRectF(self.width()-44, (self.height()-22)/2, 38, 22)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#30D158") if self.isChecked() else QColor(142,142,147,82))
+        c=ui_colors('dark' if self.dark else 'light')
+        off=QColor('#404040' if self.dark else '#D4D4D4');on=QColor(c['action']);position=self._thumb_position
+        track_color=QColor(*(round(a+(b-a)*position) for a,b in zip(off.getRgb(),on.getRgb())))
+        if self.underMouse() and self.isEnabled():track_color=track_color.lighter(110 if self.dark else 94)
+        painter.setBrush(track_color)
         painter.drawRoundedRect(track, 11, 11)
-        knob_x = track.right()-20 if self.isChecked() else track.left()+2
-        painter.setBrush(QColor("#ffffff"))
-        painter.drawEllipse(QRectF(knob_x, track.top()+2, 18, 18))
+        knob_x = track.left()+2+16*position
+        off_thumb,on_thumb=QColor('#FAFAFA'),QColor(c['on_action'])
+        painter.setBrush(QColor(*(round(a+(b-a)*position) for a,b in zip(off_thumb.getRgb(),on_thumb.getRgb()))))
+        inset=.5 if self.isDown() else 0.
+        painter.drawEllipse(QRectF(knob_x,track.top()+2,18,18).adjusted(inset,inset,-inset,-inset))
         from native_ui_common import keyboard_focus_visible
         if keyboard_focus_visible(self):
-            painter.setPen(QPen(QColor("#80b8fb" if self.dark else "#2584ed"), 1.5))
+            painter.setPen(QPen(QColor(c['ring']), 1.5))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRoundedRect(track.adjusted(-2, -2, 2, 2), 13, 13)
 
@@ -372,8 +445,10 @@ class SettingsResetButton(QPushButton):
         self.setToolTip("恢复默认值 50")
 
     def paintEvent(self, event):
-        super().paintEvent(event)
-        ink = "#b9c6d9" if self.dark else "#66778e"
+        from PySide6.QtWidgets import QStyle, QStylePainter
+        from native_ui_common import button_style_option
+        style_painter=QStylePainter(self);style_painter.drawControl(QStyle.CE_PushButton,button_style_option(self));style_painter.end()
+        ink = "#b2b2b2" if self.dark else "#686868"
         svg = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 10a8 8 0 1 1 1 7M4 4v6h6" fill="none" stroke="{ink}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>'
         painter = QPainter(self)
         QSvgRenderer(QByteArray(svg.encode("utf8"))).render(painter, QRectF((self.width()-17)/2, (self.height()-17)/2, 17, 17))
@@ -401,13 +476,15 @@ class SettingsCloseButton(QPushButton):
         return QRectF((self.width()-size)/2, (self.height()-size)/2, size, size)
 
     def paintEvent(self, event):
-        super().paintEvent(event)
-        ink = "#cbd6e6" if self.dark else "#526174"
+        from PySide6.QtWidgets import QStyle, QStylePainter
+        from native_ui_common import button_style_option
+        style_painter=QStylePainter(self);style_painter.drawControl(QStyle.CE_PushButton,button_style_option(self));style_painter.end()
+        ink = "#c6c6c6" if self.dark else "#595959"
         svg = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 18 18"><path d="m1.5 1.5 15 15m0-15-15 15" fill="none" stroke="{ink}" stroke-width="1.6" stroke-linecap="round"/></svg>'
         painter = QPainter(self)
         if self._keyboard_focus and self.hasFocus():
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            painter.setPen(QPen(QColor("#80b8fb" if self.dark else "#2584ed"), 1.5))
+            painter.setPen(QPen(QColor(ui_colors('dark' if self.dark else 'light')['ring']), 1.5))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRoundedRect(QRectF(self.rect()).adjusted(2, 2, -2, -2), 10, 10)
         if not self.isEnabled(): painter.setOpacity(.45)
@@ -469,6 +546,12 @@ class SettingsTitleBar(QWidget):
 class SettingsStore(QObject):
     changed = Signal()
 
+    @property
+    def translation_enabled(self):return self._data['translation_enabled']
+
+    @property
+    def translation_target(self):return self._data['translation_target']
+
     def __init__(self, base: Path, parent: QObject | None = None):
         super().__init__(parent)
         self.base = Path(base).resolve()
@@ -478,6 +561,7 @@ class SettingsStore(QObject):
                       "sync_upload_enabled": True, "sync_receive_enabled": True,
                       "clipboard_sync_enabled": True, "clipboard_notice_seen": False, "clipboard_success_notice": True,
                       "video_link_prompt": True, "video_download_dir": str(self.base / "videos"),
+                      "translation_enabled": True, "translation_target": "zh",
                       "trigger_view": "compact", "shake_sensitivity": DEFAULT_SHAKE_SENSITIVITY,
                       "view_mode": "list", "shelf_shortcut": SHELF_SHORTCUT,
                       "overview_shortcut": OVERVIEW_SHORTCUT, "dock_edge": "right",
@@ -509,7 +593,10 @@ class SettingsStore(QObject):
                 if isinstance(video_directory,str) and video_directory.strip():
                     candidate=Path(os.path.expandvars(video_directory)).expanduser()
                     if candidate.is_absolute():self._data['video_download_dir']=str(candidate)
-                for name in ("sync_upload_enabled", "sync_receive_enabled", "clipboard_sync_enabled", "clipboard_notice_seen", "clipboard_success_notice", "automatic_updates", "video_link_prompt"):
+                from translation_languages import TARGETS
+                target=data.get('translation_target')
+                if isinstance(target,str) and target in TARGETS:self._data['translation_target']=target
+                for name in ("sync_upload_enabled", "sync_receive_enabled", "clipboard_sync_enabled", "clipboard_notice_seen", "clipboard_success_notice", "automatic_updates", "video_link_prompt", "translation_enabled"):
                     if isinstance(data.get(name), bool):
                         self._data[name] = data[name]
                 if data.get("capture_mode") in CAPTURE_MODES:
@@ -701,9 +788,13 @@ class SettingsStore(QObject):
                dock_position=None, dock_length=None, dock_thickness=None,
                trigger_visible=None, dock_color=None, dock_opacity=None,
                capture_mode=None, keep_empty_handle=None, trigger_view=None,
-               shake_sensitivity=None, sync_upload_enabled=None,
+               shake_sensitivity=None, sync_upload_enabled=None, translation_enabled=None, translation_target=None,
                sync_receive_enabled=None, clipboard_sync_enabled=None, clipboard_notice_seen=None, clipboard_success_notice=None, display_triggers=None, automatic_updates=None, video_link_prompt=None, video_download_dir=None) -> bool:
         candidate = dict(self._data)
+        if translation_target is not None:
+            from translation_languages import TARGETS
+            if translation_target not in TARGETS:raise ValueError('请选择有效的翻译目标语言。')
+            candidate['translation_target']=translation_target
         if display_triggers is not None:
             from display_triggers import validate_profiles
             candidate['display_triggers']=validate_profiles(display_triggers)
@@ -729,6 +820,7 @@ class SettingsStore(QObject):
                             ("clipboard_notice_seen", clipboard_notice_seen),
                             ("clipboard_success_notice", clipboard_success_notice),
                             ("video_link_prompt", video_link_prompt),
+                            ("translation_enabled", translation_enabled),
                             ("automatic_updates", automatic_updates)):
             if value is not None:
                 if not isinstance(value, bool):
@@ -748,7 +840,7 @@ class SettingsStore(QObject):
             candidate["autostart"] = autostart
         if view_mode is not None:
             if view_mode not in ("list", "icons"):
-                raise ValueError("请选择列表或图标展示方式。")
+                raise ValueError("请选择列表或卡片视图。")
             candidate["view_mode"] = view_mode
         if dock_edge is not None:
             if dock_edge not in DOCK_EDGES:
@@ -844,7 +936,6 @@ class ThirdPartyDialog(QDialog):
         resource_root = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
         for label, relative in (
             ("组件说明", "THIRD_PARTY_NOTICES.md"),
-            ("HarmonyOS Sans 字体许可", "licenses/HarmonyOS-Sans-LICENSE.txt"),
             ("Qt / PySide6 · LGPL 3.0", "licenses/LGPL-3.0.txt"),
             ("GPL 3.0", "licenses/GPL-3.0.txt"),
             ("Python", "licenses/Python-LICENSE.txt"),
@@ -880,21 +971,21 @@ class ThirdPartyDialog(QDialog):
         dark = theme == "dark"
         self.document_combo.dark = dark
         self.document_combo.update()
-        background = "#1d2027" if dark else "#f7f9fc"
-        surface = "#272c35" if dark else "#ffffff"
-        ink = "#edf2fa" if dark else "#253246"
-        edge = "#3c4554" if dark else "#dce3ed"
-        hover = "#39465a" if dark else "#edf4fe"
+        from native_ui_common import colors
+        c=colors(theme)
+        background,surface,ink,hover=c['surface'],c['card'],c['text'],c['hover']
         self.setStyleSheet(f"""
             QDialog#flickdockLicenses {{background:{background};color:{ink};}}
             QDialog#flickdockLicenses QLabel {{color:{ink};background:transparent;font-size:14px;}}
             QDialog#flickdockLicenses QLabel#licenseTitle {{font-size:22px;font-weight:600;}}
-            QDialog#flickdockLicenses QPlainTextEdit {{background:{surface};color:{ink};border:1px solid {edge};border-radius:10px;padding:12px;font-size:13px;selection-background-color:#2584ed;selection-color:white;}}
-            QDialog#flickdockLicenses QComboBox, QDialog#flickdockLicenses QPushButton {{background:{surface};color:{ink};border:1px solid {edge};border-radius:8px;padding:7px 10px;font-size:13px;}}
+            QDialog#flickdockLicenses QPlainTextEdit {{background:{surface};color:{ink};border:1px solid {c['border']};border-radius:{c['radius_card']}px;padding:12px;font-size:13px;selection-background-color:{c['action']};selection-color:{c['on_action']};}}
+            QDialog#flickdockLicenses QComboBox, QDialog#flickdockLicenses QPushButton {{background:{surface};color:{ink};border:1px solid transparent;border-radius:{c['radius_control']}px;padding:7px 10px;font-size:13px;}}
             QDialog#flickdockLicenses QComboBox QAbstractItemView {{background:{surface};color:{ink};selection-background-color:{hover};selection-color:{ink};}}
             QDialog#flickdockLicenses QComboBox::drop-down {{border:0;width:28px;}}
             QDialog#flickdockLicenses QComboBox::down-arrow {{image:none;}}
             QDialog#flickdockLicenses QPushButton:hover {{background:{hover};}}
+            QDialog#flickdockLicenses QPushButton:pressed {{background:{c['selected']};}}
+            QDialog#flickdockLicenses QPushButton[keyboardFocus="true"] {{border:1px solid {c['link']};}}
         """)
 
 
@@ -919,7 +1010,7 @@ class ReferenceModalDialog(QDialog):
     Paint the backing explicitly: a stylesheet radius alone does not make a
     top-level QWidget's native rectangular backing transparent on both OSes.
     """
-    def __init__(self, parent=None, *, surface_width=390, modal=False):
+    def __init__(self, parent=None, *, surface_width=390, modal=False, animate=True):
         super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAutoFillBackground(False)
@@ -947,7 +1038,7 @@ class ReferenceModalDialog(QDialog):
         # subsequent fits can shrink it to the current screen.
         self.resize(surface_width+40,120);outer.activate()
         from ui_transitions import WindowFade
-        self._window_fade=WindowFade(self)
+        self._window_fade=WindowFade(self,motion=animate)
 
     def done(self,result):
         if self._window_fade.defer_done(result,self.done):return
@@ -983,7 +1074,10 @@ class ReferenceModalDialog(QDialog):
         if watched is self.body and event.type()==QEvent.Type.LayoutRequest and not self._fit_timer.isActive():
             self._fit_timer.start(0)
         if event.type()==QEvent.Type.FocusIn and isinstance(watched,(QLineEdit,QPushButton)):
-            QTimer.singleShot(0,self.scroll,lambda:self.scroll.ensureWidgetVisible(watched,12,12) if watched.hasFocus() and self.isVisible() else None)
+            from qt_lifetime import later
+            later(0,self.scroll,lambda scroll,control,dialog:
+                  scroll.ensureWidgetVisible(control,12,12) if control.hasFocus() and dialog.isVisible() else None,
+                  watched,self)
         return super().eventFilter(watched,event)
 
     def set_surface_theme(self, theme):
@@ -994,7 +1088,7 @@ class ReferenceModalDialog(QDialog):
         rect=QRectF(self.surface.geometry())
         color=QColor(0,0,0,107) if self._surface_dark else QColor(18,31,53,41)
         paint_surface_shadow(painter,rect,self._shadow_cache,20,QPoint(0,4),color)
-        fill=QColor('#1C1C1E' if self._surface_dark else '#FFFFFF')
+        fill=QColor(ui_colors('dark' if self._surface_dark else 'light')['surface'])
         painter.setBrush(fill)
         painter.setPen(QPen(QColor(255,255,255,20) if self._surface_dark else QColor(0,0,0,23),1))
         radius=16 if sys.platform=='darwin' else 10
@@ -1040,7 +1134,7 @@ class AuthorDialog(ReferenceModalDialog):
         self.author_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         identity_text.addWidget(QLabel(f'版本 {APP_VERSION}',self));identity_text.addWidget(self.author_label);identity.addLayout(identity_text,1);root.addLayout(identity)
         root.addWidget(QLabel('第三方开源许可 (Third-Party Licenses)：',self))
-        summary=QLabel('• Qt 6 / PySide6 — LGPL v3 / GPL v3 License\n\n• HarmonyOS Sans SC — Huawei HarmonyOS Font License\n\n• OpenSSL 3.x — Apache License 2.0\n\n• Inno Setup — Inno Setup License',self)
+        summary=QLabel('• Qt 6 / PySide6 — LGPL v3 / GPL v3 License\n\n• OpenSSL 3.x — Apache License 2.0\n\n• Inno Setup — Inno Setup License',self)
         summary.setObjectName('authorLicenseSummary');summary.setWordWrap(True);root.addWidget(summary)
         footer = QHBoxLayout()
         self.licenses_button = QPushButton("完整许可", self)
@@ -1068,23 +1162,25 @@ class AuthorDialog(ReferenceModalDialog):
         self._theme = theme
         self.set_surface_theme(theme)
         dark = theme == "dark"
-        background = "#1C1C1E" if dark else "#FFFFFF"
-        surface = "#242426" if dark else "#F0F2F7"
-        ink = "#F5F5F7" if dark else "#1D1D1F"
-        secondary = "#A1A1AA" if dark else "#636366"
-        edge = "rgba(255,255,255,18)" if dark else "rgba(0,0,0,18)"
-        hover = "rgba(255,255,255,28)" if dark else "rgba(0,0,0,23)"
+        background = ui_colors(theme)['surface']
+        surface = ui_colors(theme)['card']
+        from native_ui_common import colors
+        c=colors(theme)
+        ink,secondary,edge,hover=(c[k] for k in ('text','secondary','border','hover'))
         self.setStyleSheet(f"""
             QDialog#flickdockAuthor,QDialog#flickdockAuthor QFrame#referenceModalSurface {{background:transparent;color:{ink};border:0;}}
             QDialog#flickdockAuthor QLabel {{background:transparent;color:{ink};font-size:12px;}}
             QDialog#flickdockAuthor QLabel#authorTitle,QDialog#flickdockAuthor QLabel#authorProduct {{font-size:14px;font-weight:600;}}
             QDialog#flickdockAuthor QLabel#authorName {{font-size:12px;color:{secondary};}}
-            QDialog#flickdockAuthor QLabel#authorLicenseSummary {{font-size:11px;background:{surface};border:1px solid {edge};border-radius:12px;padding:12px;}}
-            QDialog#flickdockAuthor QPushButton {{background:{surface};color:{ink};border:0;border-radius:12px;padding:6px 12px;font-size:12px;}}
+            QDialog#flickdockAuthor QLabel#authorLicenseSummary {{font-size:11px;background:{surface};border:0;border-radius:{c['radius_card']}px;padding:12px;}}
+            QDialog#flickdockAuthor QPushButton {{background:{surface};color:{ink};border:0;border-radius:{c['radius_control']}px;padding:6px 12px;font-size:12px;}}
             QDialog#flickdockAuthor QPushButton#authorClose {{background:transparent;border-radius:8px;padding:0;}}
-            QDialog#flickdockAuthor QPushButton#authorDone {{background:#0062CC;color:#FFFFFF;}}
-            QDialog#flickdockAuthor QPushButton#authorDone:hover {{background:#0054B0;}}
+            QDialog#flickdockAuthor QPushButton#authorDone {{background:{c['action']};color:{c['on_action']};}}
+            QDialog#flickdockAuthor QPushButton#authorDone:hover {{background:{c['action_hover']};}}
+            QDialog#flickdockAuthor QPushButton#authorDone:pressed {{background:{c['action_pressed']};}}
             QDialog#flickdockAuthor QPushButton:hover {{background:{hover};}}
+            QDialog#flickdockAuthor QPushButton:pressed {{background:{c['selected']};}}
+            QDialog#flickdockAuthor QPushButton[keyboardFocus="true"] {{border:1px solid {c['ring']};}}
         """)
         self.header_close.dark=dark;self.header_close.update()
         if self.license_dialog is not None:
@@ -1102,7 +1198,7 @@ class SettingsSurface(QFrame):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(QPen(QColor(255,255,255,20) if self.dark else QColor(0,0,0,23), 1))
-        background = QColor("#1c1c1e" if self.dark else "#ffffff")
+        background = QColor(ui_colors('dark' if self.dark else 'light')['surface'])
         painter.setBrush(background)
         radius=16 if sys.platform=='darwin' else 10
         painter.drawRoundedRect(QRectF(self.rect()).adjusted(.5, .5, -.5, -.5), radius, radius)
@@ -1122,6 +1218,7 @@ class SettingsDialog(QDialog):
     preview_changed = Signal(object)
     gesture_preview_changed = Signal(object)
     update_requested = Signal()
+    diagnostics_requested = Signal()
     dock_requested = Signal()
     mini_requested = Signal()
 
@@ -1244,7 +1341,7 @@ class SettingsDialog(QDialog):
         view_row.addWidget(QLabel("展示方式", appearance), 1)
         self.view_combo = SettingsComboBox(appearance)
         self.view_combo.addItem("列表", "list")
-        self.view_combo.addItem("图标", "icons")
+        self.view_combo.addItem("卡片视图", "icons")
         self.view_combo.setMinimumWidth(160)
         self.view_combo.setAccessibleName("展示方式")
         view_row.addWidget(self.view_combo)
@@ -1260,7 +1357,6 @@ class SettingsDialog(QDialog):
         self.sync_receive_checkbox = SettingsToggleSwitch("接收云端与其他设备内容", cloud)
         self.clipboard_sync_checkbox = SettingsToggleSwitch("剪贴板同步", cloud)
         self.clipboard_sync_checkbox.setAccessibleName('剪贴板同步')
-        self.clipboard_sync_checkbox.setToolTip('自动同步小于 20 MB 的文本、链接、图片或单个文件；同账号设备优先直连送达，云端独立备份。')
         self.clipboard_sync_checkbox.toggled.connect(self._clipboard_sync_changed)
         self.clipboard_success_checkbox=SettingsToggleSwitch('剪贴板复制提示',cloud)
         self.clipboard_success_checkbox.setToolTip('关闭后，同步成功和失败都不弹出复制提示。')
@@ -1406,22 +1502,28 @@ class SettingsDialog(QDialog):
     def _reference_segment(self, combo, labels):
         """The HTML segmented controls keep the existing combo as their model."""
         combo.hide()
-        group=QFrame(self.surface);group.setObjectName('settingsSegment')
+        from ui_transitions import SelectionSurface
+        group=SelectionSurface(self.surface,radius=8);group.setObjectName('settingsSegment')
+        group.set_selection_theme(self.theme_combo.currentData())
         row=QHBoxLayout(group);row.setContentsMargins(4,4,4,4);row.setSpacing(6)
         from PySide6.QtWidgets import QButtonGroup
+        from reference_widgets import IconTextButton
         selection=QButtonGroup(group);selection.setExclusive(True)
         buttons=[]
         for index,label in enumerate(labels):
-            button=QPushButton(label,group);button.setObjectName('settingsSegmentButton')
+            button=IconTextButton(label,group);button.setObjectName('settingsSegmentButton')
+            button.setProperty('referenceTheme',self.theme_combo.currentData())
+            button.setProperty('segmentHover',False);button.installEventFilter(self)
             button.setCheckable(True);button.setAutoDefault(False);button.setMinimumHeight(32)
             selection.addButton(button,index)
             if combo is self.theme_combo or combo is self.view_combo:
                 from native_ui_common import icon
                 glyph=('sun' if index==0 else 'moon') if combo is self.theme_combo else ('list' if index==0 else 'grid')
-                button.setProperty('segmentGlyph',glyph);button.setIcon(icon(glyph,'#68686D'))
+                button.setProperty('segmentGlyph',glyph);button.setProperty('alignIconToTextInk',True)
+                button.setIcon(icon(glyph,'#68686D'))
                 button.setIconSize(QSize(15,15))
             button.clicked.connect(lambda _checked=False,i=index:combo.setCurrentIndex(i))
-            row.addWidget(button,1);buttons.append(button)
+            row.addWidget(button,1);buttons.append(button);group.add_selection_button(button)
         def synchronize(*_):
             from native_ui_common import icon
             for i,button in enumerate(buttons):
@@ -1471,7 +1573,8 @@ class SettingsDialog(QDialog):
         root.addWidget(self.title_bar);root.addWidget(self.update_activity)
         root.addWidget(self.update_notes_area)
         navigation_body=QWidget(self.surface);navigation=QHBoxLayout(navigation_body);navigation.setContentsMargins(14,8,0,0);navigation.setSpacing(0)
-        self.category_list=QListWidget(navigation_body);self.category_list.setObjectName('settingsCategories');self.category_list.setFixedWidth(146)
+        from settings_navigation import AnimatedCategoryList
+        self.category_list=AnimatedCategoryList(navigation_body);self.category_list.setObjectName('settingsCategories');self.category_list.setFixedWidth(146)
         self.category_list.setAccessibleName('设置分类');self.category_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         navigation.addWidget(self.category_list);navigation.addWidget(self.scroll,1);root.addWidget(navigation_body,1)
         # Keep fractional-DPI child borders inside the scrolling viewport,
@@ -1491,11 +1594,16 @@ class SettingsDialog(QDialog):
         al=appearance.layout();self._empty_layout(al);al.setContentsMargins(16,16,16,16);al.setSpacing(12)
         al.setAlignment(Qt.AlignmentFlag.AlignTop)
         heading=QLabel('外观与视图',appearance);heading.setObjectName('settingsSection');al.addWidget(heading)
+        appearance_grid=QGridLayout();appearance_grid.setContentsMargins(0,0,0,0);appearance_grid.setSpacing(12)
+        appearance_blocks=[]
         for label,combo,choices in (('主题外观',self.theme_combo,('浅色','暗色')),
-                                   ('默认总览布局',self.view_combo,('列表','图标'))):
+                                   ('默认总览布局',self.view_combo,('列表','卡片视图'))):
             block=QWidget(appearance);block_layout=QVBoxLayout(block);block_layout.setContentsMargins(0,0,0,0);block_layout.setSpacing(6)
             text=QLabel(label,block);text.setObjectName('settingsDetail');block_layout.addWidget(text)
-            block_layout.addWidget(self._reference_segment(combo,choices));al.addWidget(block)
+            block_layout.addWidget(self._reference_segment(combo,choices));appearance_blocks.append(block)
+            appearance_grid.addWidget(block,0,len(appearance_blocks)-1)
+        for column in range(2):appearance_grid.setColumnStretch(column,1)
+        al.addLayout(appearance_grid);self._appearance_grid=(appearance_grid,appearance_blocks)
         # Preserve the exact input objects and all original range/preview signals.
         dock=self.dock_card;dl=dock.layout();self._empty_layout(dl)
         self._empty_layout(self.interaction_card.layout());self.interaction_card.hide()
@@ -1522,7 +1630,7 @@ class SettingsDialog(QDialog):
         from display_triggers import DisplayTriggerEditor
         self.display_trigger_editor=DisplayTriggerEditor(self.store,dock)
         self.display_trigger_editor.profiles_changed.connect(self._emit_preview)
-        self.display_trigger_editor.geometry_changed.connect(self._fit_settings_body)
+        self.display_trigger_editor.geometry_changed.connect(self._schedule_settings_fit)
         dl.addWidget(self.display_trigger_editor)
         sensitivity_panel=self._reference_subcard(dock);sl=QHBoxLayout(sensitivity_panel);sl.setContentsMargins(12,12,12,12);sl.setSpacing(16)
         sl.addWidget(QLabel('摇动灵敏度 (1–100)',sensitivity_panel));sl.addWidget(self.shake_sensitivity_slider,1)
@@ -1532,7 +1640,7 @@ class SettingsDialog(QDialog):
         kl=shortcuts.layout();self._empty_layout(kl);kl.setContentsMargins(16,16,16,16);kl.setSpacing(12)
         kl.setAlignment(Qt.AlignmentFlag.AlignTop)
         self._pointer_paste_panel=shortcuts
-        kh=QHBoxLayout();title=QLabel('全局快捷键 (点击直接按键修改)',shortcuts);title.setObjectName('settingsSection');kh.addWidget(title,1)
+        kh=QHBoxLayout();title=QLabel('全局快捷键',shortcuts);title.setToolTip('点击快捷键直接修改');title.setObjectName('settingsSection');kh.addWidget(title,1)
         reset=QPushButton('恢复默认',shortcuts);reset.setObjectName('settingsLink');reset.setAutoDefault(False)
         reset.clicked.connect(lambda:(self.shelf_shortcut_edit.setKeySequence(QKeySequence(SHELF_SHORTCUT)),self.overview_shortcut_edit.setKeySequence(QKeySequence(OVERVIEW_SHORTCUT))))
         kh.addWidget(reset);kl.addLayout(kh)
@@ -1543,12 +1651,26 @@ class SettingsDialog(QDialog):
         kl.addWidget(self._reference_toggle(self.startup_checkbox,'登录系统时自动启动',shortcuts))
         self.automatic_updates_checkbox=SettingsToggleSwitch('自动更新',shortcuts)
         self.automatic_updates_checkbox.setAccessibleName('自动检查并后台下载更新')
-        self.automatic_updates_checkbox.setToolTip('自动检查并后台下载更新；安装前提示重启，不中断正在进行的传输。')
+        self.automatic_updates_checkbox.setToolTip('后台下载更新，空闲时自动安装并重启；正在进行的传输完成后再更新。')
         self.automatic_updates_checkbox.toggled.connect(self._automatic_updates_changed)
         updates=self._card();ul=QVBoxLayout(updates);ul.setContentsMargins(16,16,16,16);ul.setSpacing(12)
         updates_title=QLabel('更新与关于',updates);updates_title.setObjectName('settingsSection');ul.addWidget(updates_title)
         ul.addWidget(self._reference_toggle(self.automatic_updates_checkbox,'自动更新',updates))
-        ul.addWidget(self.update_button)
+        self.update_body_button=QPushButton('检查更新',updates)
+        self.update_body_button.setObjectName('settingsBrowse');self.update_body_button.setAutoDefault(False)
+        self.update_body_button.setAccessibleName('检查更新');self.update_body_button.clicked.connect(self.update_requested.emit)
+        self.website_button=QPushButton('访问官网 ↗',updates)
+        self.website_button.setObjectName('settingsBrowse')
+        self.website_button.setAutoDefault(False)
+        self.website_button.setAccessibleName('在浏览器打开 FlickDock 官网')
+        self.website_button.clicked.connect(lambda:QDesktopServices.openUrl(QUrl('https://flickdock.cc.cd')))
+        update_actions=QHBoxLayout();update_actions.setSpacing(8)
+        update_actions.addWidget(self.update_body_button);update_actions.addWidget(self.website_button);update_actions.addStretch()
+        self.export_diagnostics_button=QPushButton('导出诊断包',updates)
+        self.export_diagnostics_button.setAutoDefault(False)
+        self.export_diagnostics_button.clicked.connect(self.diagnostics_requested.emit)
+        update_actions.insertWidget(2,self.export_diagnostics_button)
+        ul.addLayout(update_actions)
         release=QLabel('FlickDock '+APP_VERSION,updates);release.setObjectName('settingsDetail');ul.addWidget(release)
         self.startup_status_label.setParent(shortcuts);self.startup_status_label.hide()
         self._pointer_paste_permission=None
@@ -1559,9 +1681,6 @@ class SettingsDialog(QDialog):
                               (self.clipboard_sync_checkbox,'剪贴板同步（小于 20 MB）'),
                               (self.clipboard_success_checkbox,'剪贴板复制提示')):
             cl.addWidget(self._reference_toggle(control,label,cloud))
-        self.retention_description=QLabel('云端文件保存时间\n小于 100 MB：上传成功后保留 24 小时。\n100 MB 及以上：上传成功后保留 2 小时。\n从完整上传成功时计时；到期仅清理云端副本，本机原文件和已下载的文件不受影响。',cloud)
-        self.retention_description.setObjectName('settingsDetail');self.retention_description.setWordWrap(True)
-        self.retention_description.setTextFormat(Qt.PlainText);cl.addWidget(self.retention_description)
         sl=storage.layout();self._empty_layout(sl);sl.setContentsMargins(16,16,16,16);sl.setSpacing(12)
         storage_title=QLabel('文件与保存',storage);storage_title.setObjectName('settingsSection');sl.addWidget(storage_title)
         sl.addWidget(self._reference_segment(self.capture_mode_combo,('快捷方式','复制到保存位置')))
@@ -1571,15 +1690,30 @@ class SettingsDialog(QDialog):
         video_heading=QLabel('视频解析',video);video_heading.setObjectName('settingsSection');vl.addWidget(video_heading)
         vl.addWidget(self._reference_toggle(self.video_prompt_checkbox,'复制视频链接时提示解析',video))
         video_note=QLabel('视频保存位置可在总览的「视频解析」中更改。',video);video_note.setObjectName('settingsDetail');video_note.setWordWrap(True);vl.addWidget(video_note)
-        self.setting_categories=(('常规',(shortcuts,)),('账号与设备',(self.account_slot,)),('外观与交互',(appearance,dock)),('同步与剪贴板',(cloud,)),('文件与保存',(storage,)),('视频解析',(video,)),('更新与关于',(updates,)))
+        translation=self._card();tl=QVBoxLayout(translation);tl.setContentsMargins(16,16,16,16);tl.setSpacing(12)
+        title=QLabel('翻译',translation);title.setObjectName('settingsSection');tl.addWidget(title)
+        self.translation_switch=SettingsToggleSwitch('复制文字时提示翻译',translation)
+        self.translation_switch.setChecked(self.store.translation_enabled)
+        tl.addWidget(self._reference_toggle(self.translation_switch,'复制文字时提示翻译',translation))
+        target_row=QHBoxLayout();target_row.addWidget(QLabel('目标语言',translation),1)
+        self.translation_language=SettingsComboBox(translation)
+        self.translation_language.setAccessibleName('翻译目标语言')
+        from translation_languages import LANGUAGES
+        for code,label,_ in LANGUAGES:self.translation_language.addItem(label,code)
+        self.translation_language.setCurrentIndex(self.translation_language.findData(self.store.translation_target))
+        target_row.addWidget(self.translation_language);tl.addLayout(target_row)
+        self.translation_switch.toggled.connect(lambda enabled:self._translation_preference(translation_enabled=enabled))
+        self.translation_language.currentIndexChanged.connect(lambda _:self._translation_preference(translation_target=self.translation_language.currentData()))
+        self.store.changed.connect(self._refresh_translation_preferences)
+        self.setting_categories=(('常规',(shortcuts,)),('账号与设备',(self.account_slot,)),('外观与交互',(appearance,dock)),('同步与剪贴板',(cloud,)),('文件与保存',(storage,)),('视频解析',(video,)),('翻译',(translation,)),('更新与关于',(updates,)))
         for label,sections in self.setting_categories:
             self.category_list.addItem(label)
             for section in sections:
-                if self.body_layout.indexOf(section)<0:self.body_layout.addWidget(section)
+                self.body_layout.removeWidget(section);self.body_layout.addWidget(section)
         self.body_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.body_layout.setSizeConstraints(QLayout.SizeConstraint.SetMinimumSize,QLayout.SizeConstraint.SetNoConstraint)
         self._body_fit_timer=QTimer(self);self._body_fit_timer.setSingleShot(True)
-        self._body_fit_timer.timeout.connect(self._fit_settings_body)
+        self._body_fit_timer.timeout.connect(self._fit_settings_top)
         self._settings_adaptive=(dr,trigger,empty,selectors,selector_panels)
         self.body.installEventFilter(self)
         self.scroll.viewport().installEventFilter(self)
@@ -1599,23 +1733,29 @@ class SettingsDialog(QDialog):
         self.display_trigger_editor.load_values()
         self.update_activity.setVisible(self.update_activity.active)
         self.update_notes_area.hide()
-        self._category_scroll={};self._category_index=-1;self._category_generation=0
-        self.category_list.currentRowChanged.connect(self._select_category);self.category_list.setCurrentRow(0)
+        from settings_navigation import SettingsNavigation
+        self._anchor_navigation=SettingsNavigation(self)
+        self.category_list.currentRowChanged.connect(self._select_category)
+        self.category_list.itemClicked.connect(lambda item:self._select_category(self.category_list.row(item)))
+        self.category_list.setCurrentRow(0)
 
     def _select_category(self,index):
-        if not 0<=index<len(self.setting_categories):return
-        self._category_scroll[self._category_index]=self.scroll.verticalScrollBar().value()
-        self._category_index=index;self._category_generation+=1;generation=self._category_generation
-        for number,(_,sections) in enumerate(self.setting_categories):
-            for section in sections:section.setVisible(number==index)
-        self.body_layout.invalidate();self.body_layout.activate();self._fit_settings_body()
-        def restore():
-            if generation==self._category_generation:self.scroll.verticalScrollBar().setValue(self._category_scroll.get(index,0))
-        QTimer.singleShot(0,self,restore)
+        self._anchor_navigation.go(index)
+
+    def _translation_preference(self,**values):
+        try:self.store.update(**values)
+        except (OSError,ValueError) as error:
+            self.error_label.setText(str(error));self.error_label.show();self._refresh_translation_preferences()
+
+    def _refresh_translation_preferences(self):
+        from PySide6.QtCore import QSignalBlocker
+        with QSignalBlocker(self.translation_switch),QSignalBlocker(self.translation_language):
+            self.translation_switch.setChecked(self.store.translation_enabled)
+            self.translation_language.setCurrentIndex(self.translation_language.findData(self.store.translation_target))
 
     def select_category(self,label):
         index=next(index for index,(title,_) in enumerate(self.setting_categories) if title==label)
-        self.category_list.setCurrentRow(index)
+        self._select_category(index)
 
     @property
     def update_state(self):
@@ -1681,8 +1821,10 @@ class SettingsDialog(QDialog):
         offered=bool(version) and state in ('available','ready','cancelled','error')
         self.update_version_label.setText('v'+str(version) if offered else '')
         self.update_version_label.setVisible(offered)
-        self.update_button.setProperty('updateAvailable',offered)
-        self.update_button.style().unpolish(self.update_button);self.update_button.style().polish(self.update_button)
+        buttons=(self.update_button,self.update_body_button)
+        for button in buttons:
+            button.setProperty('updateAvailable',offered)
+            button.style().unpolish(button);button.style().polish(button)
         self.update_status_label.setText(status)
         self.update_status_label.setAccessibleName(status + (f"，版本 {version}" if version else ""))
         self.update_status_label.setAccessibleDescription(str(error))
@@ -1690,15 +1832,14 @@ class SettingsDialog(QDialog):
         if hasattr(self,'update_error_label'):
             self.update_error_label.setText(str(error)[:800] if state=='error' else '')
             self.update_error_label.setVisible(state=='error' and bool(error))
-        self.update_button.setText(action)
-        self.update_button.setAccessibleName(action)
+        for button in buttons:button.setText(action);button.setAccessibleName(action)
         busy=state in ('checking','connecting','reconnecting','downloading','verifying','installing','cancelling')
-        if busy and self.update_button.hasFocus():
+        if busy and any(button.hasFocus() for button in buttons):
             # Disabling the focused button makes QDialog advance to Close with
             # TabFocusReason, which paints a misleading keyboard focus ring.
             self.title_bar.setFocus(Qt.FocusReason.OtherFocusReason)
         restore_focus=not busy and self.title_bar.hasFocus()
-        self.update_button.setEnabled(not busy)
+        for button in buttons:button.setEnabled(not busy)
         if restore_focus:self.update_button.setFocus(Qt.FocusReason.OtherFocusReason)
         self.update_activity.set_activity(state, received, total)
         if not self.update_activity.active and self.isVisible():
@@ -1716,7 +1857,7 @@ class SettingsDialog(QDialog):
         painter.fillRect(event.rect(),Qt.GlobalColor.transparent)
         painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
         paint_surface_shadow(painter,QRectF(self.surface.geometry()),self._shadow_cache,
-            blur=14,offset=QPointF(0,3),color=QColor(15,28,48,60))
+            blur=14,offset=QPointF(0,3),color=QColor(0,0,0,64))
         painter.end()
 
     def set_lan_panel(self, widget):
@@ -1730,7 +1871,7 @@ class SettingsDialog(QDialog):
             previous.setParent(None)
         self._lan_panel = widget
         if widget is not None:
-            self.body_layout.insertWidget(1 if self._account_panel is not None else 0, widget)
+            self.body_layout.insertWidget(self.body_layout.indexOf(self.account_slot)+1, widget)
             widget.show()
             for child in [widget, *widget.findChildren(QWidget)]:
                 child.installEventFilter(self)
@@ -1739,6 +1880,12 @@ class SettingsDialog(QDialog):
         return previous
 
     def eventFilter(self, watched, event):
+        if event.type() not in (QEvent.Type.Enter,QEvent.Type.Leave,QEvent.Type.MouseButtonPress,
+                                QEvent.Type.MouseButtonRelease,QEvent.Type.KeyPress,QEvent.Type.Resize,QEvent.Type.LayoutRequest):
+            return False
+        if isinstance(watched,QPushButton) and watched.objectName()=='settingsSegmentButton' and event.type() in (QEvent.Type.Enter,QEvent.Type.Leave):
+            watched.setProperty('segmentHover',event.type()==QEvent.Type.Enter)
+            watched.style().unpolish(watched);watched.style().polish(watched);watched.update()
         if watched is getattr(self,'version_label',None):
             if event.type()==QEvent.Type.MouseButtonPress and event.button()==Qt.MouseButton.LeftButton:return True
             if ((event.type()==QEvent.Type.MouseButtonRelease and event.button()==Qt.MouseButton.LeftButton)
@@ -1751,9 +1898,7 @@ class SettingsDialog(QDialog):
             self._adapt_settings_layout()
         if (watched is getattr(self,'body',None) and event.type()==QEvent.Type.LayoutRequest
                 or watched is getattr(getattr(self,'scroll',None),'viewport',lambda:None)() and event.type()==QEvent.Type.Resize):
-            if hasattr(self,'_body_fit_timer'):
-                self.body_layout.activate();self._fit_settings_body()
-                if event.type()==QEvent.Type.Resize:self._body_fit_timer.start(0)
+            self._schedule_settings_fit()
         if (watched is getattr(self,'body',None) or watched is getattr(getattr(self,'scroll',None),'viewport',lambda:None)()) and event.type()==QEvent.Type.Resize:
             self._adapt_settings_layout()
         # QKeySequenceEdit consumes Esc while recording a shortcut. Closing
@@ -1789,37 +1934,44 @@ class SettingsDialog(QDialog):
         width=self.scroll.viewport().width()-36
         if getattr(self,'_settings_layout_width',None)==width:return
         self._settings_layout_width=width
-        narrow=width<700
+        narrow=width<540
         dr,trigger,empty,selectors,panels=self._settings_adaptive
         dr.removeWidget(empty);dr.addWidget(empty,1 if narrow else 0,0 if narrow else 1)
         for i,panel in enumerate(panels):
             selectors.removeWidget(panel);selectors.addWidget(panel,i if narrow else 0,0 if narrow else i)
+        grid,blocks=self._appearance_grid
+        for index,block in enumerate(blocks):
+            grid.removeWidget(block);grid.addWidget(block,index if narrow else 0,0 if narrow else index)
+        grid.setColumnStretch(1,0 if narrow else 1)
         self._fit_settings_top()
 
     def _fit_settings_body(self):
         # Measure sections explicitly: Qt's nested HFW totalSizeHint uses an
         # ideal width and can compress an accordion or preserve a stale tail.
         # These are scroll-content heights, never native window dimensions.
-        description=getattr(self,'retention_description',None)
-        if description is not None and description.isVisible():
-            needed=description.heightForWidth(max(1,description.width()))
-            if needed>0 and description.minimumHeight()!=needed:description.setMinimumHeight(needed)
         layout=self.body_layout;margins=layout.contentsMargins();heights=[]
         for index in range(layout.count()):
             section=layout.itemAt(index).widget()
             if section is None or section.isHidden():continue
             inner=section.layout()
             wrapped=inner.totalHeightForWidth(section.width()) if inner is not None and inner.hasHeightForWidth() else -1
-            height=max(section.sizeHint().height(),section.minimumSizeHint().height(),wrapped)
+            if section is self.account_slot and self._account_panel is not None:
+                height=self._account_panel.heightForWidth(max(1,section.width()))
+            else:height=max(section.sizeHint().height(),section.minimumSizeHint().height(),wrapped)
             if section.minimumHeight()!=height or section.maximumHeight()!=height:section.setFixedHeight(height)
             heights.append(height)
         height=margins.top()+margins.bottom()+sum(heights)+max(0,len(heights)-1)*layout.spacing()
         height=max(height,self.scroll.viewport().height())
         if self.body.minimumHeight()!=height or self.body.maximumHeight()!=height:self.body.setFixedHeight(height)
 
+    def _schedule_settings_fit(self):
+        # A single queued fit replaces repeated synchronous whole-document
+        # measurements when a group of children changes in one frame.
+        if hasattr(self,'_body_fit_timer'):self._body_fit_timer.start(0)
+
     def _fit_settings_top(self):
         if not hasattr(self,'_reference_top'):return
-        self.body_layout.invalidate();self.body_layout.activate();self._fit_settings_body()
+        self.body_layout.activate();self._fit_settings_body()
 
     def _card(self):
         card = QFrame(self)
@@ -2125,6 +2277,11 @@ class SettingsDialog(QDialog):
         if not self._preview_active:
             self._emit_preview()
 
+    def changeEvent(self,event):
+        super().changeEvent(event)
+        if event.type()==QEvent.WindowStateChange and self.isMinimized():
+            self._finish_preview()
+
     def done(self, result):
         if self._window_fade.defer_done(result,self.done):return
         self._finish_preview(force=True)
@@ -2179,15 +2336,20 @@ class SettingsDialog(QDialog):
             return
         self._applied_settings_theme=theme
         dark = theme == "dark"
+        self.category_list.set_selection_theme(theme)
         self.surface.dark = dark
         self.surface.update()
         if hasattr(self,'display_trigger_editor'):self.display_trigger_editor.apply_theme(theme)
         shadow=self.surface.graphicsEffect()
         if isinstance(shadow,QGraphicsDropShadowEffect):
-            shadow.setColor(QColor(0,0,0,107) if dark else QColor(15,23,42,41))
+            from surface_morph import neutral_shadow_color
+            shadow.setColor(neutral_shadow_color(QColor(0,0,0,107) if dark else QColor(15,23,42,41)))
         for combo in (self.theme_combo, self.view_combo, self.dock_edge_combo, self.capture_mode_combo, self.trigger_view_combo):
             combo.dark = dark
             combo.update()
+        if hasattr(self,'translation_language'):
+            self.translation_language.dark = dark
+            self.translation_language.update()
         for field in (self.dock_position_spin, self.dock_length_spin, self.dock_thickness_spin, self.dock_opacity_spin, self.shake_sensitivity_spin):
             field.dark = dark
             field.update()
@@ -2196,7 +2358,10 @@ class SettingsDialog(QDialog):
         self.close_button.dark = dark
         self.close_button.update()
         from native_ui_common import icon as segment_icon
+        from ui_transitions import SelectionSurface
+        for group in self.findChildren(SelectionSurface,'settingsSegment'):group.set_selection_theme(theme)
         for button in self.findChildren(QPushButton,'settingsSegmentButton'):
+            button.setProperty('referenceTheme',theme)
             if button.property('segmentGlyph'):
                 tint=('#F5F5F7' if dark else '#1D1D1F') if button.isChecked() else ('#A1A1AA' if dark else '#68686D')
                 button.setIcon(segment_icon(button.property('segmentGlyph'),tint))
@@ -2204,20 +2369,15 @@ class SettingsDialog(QDialog):
         self.trigger_visible_checkbox.update()
         self.update_activity.dark = dark
         self.update_activity.update()
-        bg = "#161616" if dark else "#f0f2f6"
-        card = ("rgba(36,36,38,246)" if dark else "rgba(255,255,255,248)") if sys.platform == "darwin" else ("#242426" if dark else "#ffffff")
-        ink = "#f5f5f7" if dark else "#1d1d1f"
-        secondary = "#a1a1aa" if dark else "#515154"
-        edge = "#3a3a3c" if dark else "#dfe2e8"
-        indicator_edge = "#7891af" if dark else "#7690af"
-        field = "#1c1c1e" if dark else "#f8f9fb"
-        hover = "#303034" if dark else "#e8f2ff"
+        tokens = ui_colors(theme)
+        bg, card, ink, secondary = (tokens[k] for k in ('background','card','text','secondary'))
+        edge, indicator_edge, field, hover = (tokens[k] for k in ('border','input_border','input','hover'))
         style=f"""
             QDialog#flickdockSettings {{background:transparent;color:{ink};}}
             QFrame#settingsSurface {{background:transparent;border:0;}}
             QScrollArea#settingsScroll, QWidget#settingsBody {{background:transparent;border:0;}}
             QScrollArea#settingsScroll QScrollBar:vertical {{width:6px;background:transparent;border:0;}}
-            QScrollArea#settingsScroll QScrollBar::handle:vertical {{background:{'#5a677b' if dark else '#c1ccda'};border-radius:3px;min-height:28px;}}
+            QScrollArea#settingsScroll QScrollBar::handle:vertical {{background:{'#555555' if dark else '#c8c8c8'};border-radius:3px;min-height:28px;}}
             QScrollArea#settingsScroll QScrollBar::add-line:vertical, QScrollArea#settingsScroll QScrollBar::sub-line:vertical {{height:0;}}
             QScrollArea#settingsScroll QScrollBar::add-page:vertical, QScrollArea#settingsScroll QScrollBar::sub-page:vertical {{background:transparent;}}
             QDialog#flickdockSettings QLabel, QDialog#flickdockSettings QCheckBox {{color:{ink};font-size:13px;background:transparent;}}
@@ -2244,7 +2404,7 @@ class SettingsDialog(QDialog):
             QDialog#flickdockSettings QComboBox::down-arrow {{image:none;}}
             QDialog#flickdockSettings QPushButton {{background:{card};color:{ink};border:1px solid {edge};border-radius:8px;padding:5px 12px;font-size:13px;}}
             QDialog#flickdockSettings QPushButton:hover {{background:{hover};border-color:{edge};}}
-            QDialog#flickdockSettings QPushButton:pressed {{background:{hover};color:{ink};}}
+            QDialog#flickdockSettings QPushButton:pressed {{background:{tokens['selected']};color:{ink};}}
             QDialog#flickdockSettings QPushButton:focus {{border-color:#5d9eeb;}}
             QDialog#flickdockSettings QPushButton:disabled {{color:{secondary};background:{field};border-color:{edge};}}
             QDialog#flickdockSettings QPushButton#settingsSave {{background:#2584ed;color:white;border-color:#2584ed;}}
@@ -2264,36 +2424,50 @@ class SettingsDialog(QDialog):
         for button in self.findChildren(QPushButton):
             button.setAttribute(Qt.WidgetAttribute.WA_MacShowFocusRect, False)
         radius=12 if sys.platform=='darwin' else 8
-        ref_card='rgba(255,255,255,10)' if dark else 'rgba(255,255,255,184)'
-        ref_edge='rgba(255,255,255,18)' if dark else 'rgba(0,0,0,18)'
-        ref_control='rgba(255,255,255,15)' if dark else 'rgba(0,0,0,14)'
-        ref_input='#242426' if dark else '#FFFFFF'
+        ref_card=ui_colors(theme)['card']
+        ref_edge=tokens['border']
+        ref_control=tokens['control']
+        ref_input=ui_colors(theme)['input']
         from native_ui_common import colors
         semantic=colors(theme)
         style+=f'''
             QListWidget#settingsCategories {{background:transparent;color:{semantic['secondary']};border:0;font-size:13px;padding:4px;outline:0;}}
             QListWidget#settingsCategories::item {{padding:11px 10px;border:1px solid transparent;border-radius:8px;margin-bottom:4px;}}
             QListWidget#settingsCategories::item:hover {{background:{semantic['hover']};}}
-            QListWidget#settingsCategories::item:selected {{background:{semantic['selected']};color:{semantic['text']};}}
-            QListWidget#settingsCategories::item:focus {{border-color:{semantic['link']};}}
+            QListWidget#settingsCategories::item:selected {{background:{semantic['action']};color:{semantic['on_action']};}}
+            QListWidget#settingsCategories::item:focus {{border:0;}}
             QDialog#flickdockSettings QLabel,QDialog#flickdockSettings QCheckBox {{font-size:12px;}}
             QDialog#flickdockSettings QLabel#settingsTitle {{font-size:15px;font-weight:600;}}
             QDialog#flickdockSettings QLabel#settingsSection {{font-size:12px;font-weight:600;}}
             QDialog#flickdockSettings QLabel#settingsVersion {{background:{ref_control};padding:2px 8px;border-radius:4px;}}
-            QFrame#settingsCard {{background:{ref_card};border:1px solid {ref_edge};border-radius:16px;}}
-            QFrame#settingsInset {{background:{'rgba(255,255,255,8)' if dark else 'rgba(0,0,0,6)'};border:1px solid {ref_edge};border-radius:12px;}}
-            QFrame#settingsSegment {{background:{'rgba(0,0,0,64)' if dark else 'rgba(240,242,247,191)'};border:1px solid {ref_edge};border-radius:12px;}}
-            QDialog#flickdockSettings QPushButton#settingsSegmentButton {{background:transparent;border:0;border-radius:8px;padding:4px 3px;font-size:12px;color:{secondary};}}
-            QDialog#flickdockSettings QPushButton#settingsSegmentButton:checked {{background:{'rgba(255,255,255,38)' if dark else '#FFFFFF'};color:{ink};font-weight:500;}}
+            QFrame#settingsCard {{background:{ref_card};border:1px solid {semantic['border']};border-radius:{semantic['radius_card']}px;}}
+            QFrame#settingsInset {{background:{'rgba(255,255,255,8)' if dark else 'rgba(0,0,0,6)'};border:0;border-radius:{semantic['radius_card']}px;}}
+            QFrame#settingsSegment {{background:{'rgba(255,255,255,10)' if dark else '#EEEEEE'};border:0;border-radius:{semantic['radius_card']}px;}}
+            QDialog#flickdockSettings QPushButton#settingsSegmentButton {{background:transparent;border:0;border-radius:{semantic['radius_control']}px;padding:4px 3px;font-size:12px;color:{secondary};}}
+            QDialog#flickdockSettings QPushButton#settingsSegmentButton:checked {{background:{semantic['card']};border:1px solid {semantic['border']};color:{semantic['text']};font-weight:400;}}
+            QDialog#flickdockSettings QPushButton#settingsSegmentButton:hover:enabled {{background:{'#3A3A3A' if dark else '#DCDCDC'};color:{semantic['text']};}}
+            QDialog#flickdockSettings QPushButton#settingsSegmentButton:checked:hover:enabled {{background:{'#404040' if dark else '#E5E5E5'};border:1px solid {semantic['hover_border']};}}
+            QDialog#flickdockSettings QPushButton#settingsSegmentButton[segmentHover="true"]:enabled {{background:{'#3A3A3A' if dark else '#DCDCDC'};color:{semantic['text']};}}
+            QDialog#flickdockSettings QPushButton#settingsSegmentButton[segmentHover="true"]:checked:enabled {{background:{'#404040' if dark else '#E5E5E5'};border:1px solid {semantic['hover_border']};}}
+            QDialog#flickdockSettings QPushButton#settingsSegmentButton:pressed:enabled {{background:{'#525252' if dark else '#D4D4D4'};}}
+            QDialog#flickdockSettings QPushButton#settingsSegmentButton:disabled,QDialog#flickdockSettings QPushButton#settingsSegmentButton:checked:disabled {{background:{'#242424' if dark else '#F6F6F6'};border:1px solid {'#303030' if dark else '#EEEEEE'};color:{'#737373' if dark else '#B8B8B8'};}}
             QDialog#flickdockSettings QPushButton#settingsLink {{background:transparent;border:0;padding:0;font-size:11px;color:#0A84FF;}}
+            QDialog#flickdockSettings QPushButton#settingsLink:hover:enabled {{background:{semantic['control_hover']};}}
+            QDialog#flickdockSettings QPushButton#settingsLink:pressed:enabled {{background:{semantic['control_pressed']};}}
+            QDialog#flickdockSettings QPushButton#settingsReset:hover:enabled {{background:{semantic['control_hover']};}}
+            QDialog#flickdockSettings QPushButton#settingsReset:pressed:enabled {{background:{semantic['control_pressed']};}}
             QDialog#flickdockSettings QPushButton#settingsUpdate,QDialog#flickdockSettings QPushButton#settingsSave {{background:#0A84FF;color:#FFFFFF;border:0;font-size:12px;padding:5px 12px;}}
             QDialog#flickdockSettings QPushButton#settingsClose {{border-radius:8px;padding:0;}}
-            QDialog#flickdockSettings QLineEdit,QDialog#flickdockSettings QComboBox,QDialog#flickdockSettings QSpinBox {{background:{ref_input};font-size:12px;padding:3px 8px;}}
+            QDialog#flickdockSettings QLineEdit,QDialog#flickdockSettings QComboBox,QDialog#flickdockSettings QSpinBox {{background:{ref_input};border:1px solid {semantic['input_border']};font-size:12px;padding:3px 8px;}}
+            QDialog#flickdockSettings QPushButton#settingsColorButton {{background:{ref_input};border:1px solid {semantic['input_border']};border-radius:{semantic['radius_control']}px;padding:3px 8px;font-size:11px;}}
+            QDialog#flickdockSettings QPushButton#settingsColorButton:hover {{background:{semantic['hover']};}}
+            QDialog#flickdockSettings QPushButton#settingsColorButton:pressed {{background:{semantic['selected']};}}
+            QDialog#flickdockSettings QPushButton#settingsColorButton:focus {{border:1px solid {semantic['ring']};}}
             QDialog#flickdockSettings QSpinBox QLineEdit {{padding:0;border:0;}}
-            QDialog#flickdockSettings QKeySequenceEdit {{background:{ref_input};font-size:12px;}}
+            QDialog#flickdockSettings QKeySequenceEdit {{background:{ref_input};border:1px solid {semantic['input_border']};font-size:12px;}}
             QDialog#flickdockSettings QKeySequenceEdit QLineEdit {{padding:2px 5px;}}
             QDialog#flickdockSettings QPushButton {{font-size:12px;padding:4px 10px;background:{ref_control};border:0;}}
-            QFrame#settingsFooter {{border-top:1px solid {ref_edge};background:{'#141416' if dark else '#F4F5F9'};border-bottom-left-radius:10px;border-bottom-right-radius:10px;}}
+            QFrame#settingsFooter {{border-top:1px solid {ref_edge};background:{ui_colors(theme)['background']};border-bottom-left-radius:10px;border-bottom-right-radius:10px;}}
         '''
         for switch in self.findChildren(SettingsToggleSwitch):switch.dark=dark;switch.update()
         style+=f'''
@@ -2303,18 +2477,35 @@ class SettingsDialog(QDialog):
             QDialog#flickdockSettings QLabel#settingsDetail {{font-size:12px;color:{semantic['secondary']};}}
             QDialog#flickdockSettings QLabel#settingsVersion {{font-size:12px;}}
             QDialog#flickdockSettings QPushButton {{border:1px solid transparent;}}
+            QDialog#flickdockSettings QPushButton:pressed {{background:{semantic['selected']};}}
             QDialog#flickdockSettings QPushButton:focus {{border-color:transparent;}}
-            QDialog#flickdockSettings QPushButton[keyboardFocus="true"] {{border:1px solid {semantic['link']};}}
-            QDialog#flickdockSettings QPushButton#settingsUpdate,QDialog#flickdockSettings QPushButton#settingsSave {{background:{semantic['action']};color:{semantic['on_action']};}}
-            QDialog#flickdockSettings QPushButton#settingsUpdate:hover,QDialog#flickdockSettings QPushButton#settingsSave:hover,QDialog#flickdockSettings QPushButton#settingsSave:pressed {{background:{semantic['action_hover']};color:{semantic['on_action']};}}
+            QDialog#flickdockSettings QPushButton[keyboardFocus="true"] {{border:1px solid {semantic['ring']};}}
+            QDialog#flickdockSettings QLineEdit:focus,QDialog#flickdockSettings QComboBox:focus,QDialog#flickdockSettings QSpinBox:focus,QDialog#flickdockSettings QKeySequenceEdit:focus {{border:1px solid {semantic['ring']};}}
+            QDialog#flickdockSettings QSlider::sub-page:horizontal {{background:{semantic['action']};}}
+            QDialog#flickdockSettings QSlider::handle:horizontal {{background:{semantic['card']};border:1px solid {semantic['action']};}}
+            QDialog#flickdockSettings QSlider::handle:horizontal:focus {{border:2px solid {semantic['ring']};}}
+            QDialog#flickdockSettings QCheckBox::indicator:checked {{background:{semantic['action']};border-color:{semantic['action']};}}
+            QDialog#flickdockSettings QPushButton#settingsUpdate {{background:{ref_control};color:{ink};}}
+            QDialog#flickdockSettings QPushButton#settingsUpdate:hover {{background:{semantic['hover']};}}
+            QDialog#flickdockSettings QPushButton#settingsUpdate:pressed {{background:{semantic['selected']};}}
+            QDialog#flickdockSettings QPushButton#settingsSave {{background:{semantic['action']};color:{semantic['on_action']};}}
+            QDialog#flickdockSettings QPushButton#settingsSave:hover:enabled {{background:{semantic['action_hover']};color:{semantic['on_action']};}}
+            QDialog#flickdockSettings QPushButton#settingsSave:pressed {{background:{semantic['action_pressed']};color:{semantic['on_action']};}}
+            QDialog#flickdockSettings QPushButton#settingsSave:disabled {{background:{semantic['control']};color:{semantic['muted']};}}
             QDialog#flickdockSettings QPushButton#settingsUpdate[updateAvailable="true"] {{background:{'#30D158' if dark else '#168545'};color:{'#102318' if dark else '#FFFFFF'};}}
             QDialog#flickdockSettings QPushButton#settingsUpdate[updateAvailable="true"]:hover {{background:{'#43DC6A' if dark else '#12733C'};}}
             QDialog#flickdockSettings QPushButton#settingsLink {{color:{semantic['link']};}}
-            QWidget#settingsToggleOption {{background:{semantic['card']};border:1px solid {semantic['border']};border-radius:8px;}}
+            QWidget#settingsToggleOption {{background:{semantic['control']};border:0;border-radius:{semantic['radius_control']}px;}}
+            QDialog#flickdockSettings QPushButton#settingsSegmentButton:checked,
+            QDialog#flickdockSettings QPushButton#settingsSegmentButton:checked:hover,
+            QDialog#flickdockSettings QPushButton#settingsSegmentButton:checked:pressed,
+            QDialog#flickdockSettings QPushButton#settingsSegmentButton[segmentHover="true"]:checked:enabled,
+            QDialog#flickdockSettings QPushButton#settingsSegmentButton:checked:disabled {{background:transparent;border-color:transparent;}}
+            QDialog#flickdockSettings QPushButton#settingsSegmentButton:checked[keyboardFocus="true"] {{border:1px solid {semantic['ring']};}}
         '''
-        from native_ui_common import readable_qss
+        from native_ui_common import readable_qss,apply_widget_theme_style
         style=readable_qss(style)
-        self.setStyleSheet(style)
+        apply_widget_theme_style(self,style)
         if self.license_dialog is not None:
             self.license_dialog.apply_theme(theme)
         if self.author_dialog is not None:

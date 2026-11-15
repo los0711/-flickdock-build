@@ -1,5 +1,6 @@
 """Account identity and device geometry, using Qt offscreen and fake service IO."""
 import os
+import sys
 os.environ['QT_QPA_PLATFORM']='offscreen'
 
 from pathlib import Path
@@ -7,8 +8,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from PySide6.QtCore import QPoint
-from PySide6.QtWidgets import QLabel
+from PySide6.QtCore import QEvent,QPoint,QPointF,Qt
+from PySide6.QtGui import QColor,QEnterEvent,QFontInfo,QTextLayout
+from PySide6.QtTest import QSignalSpy,QTest
+from PySide6.QtWidgets import QLabel,QWidget
 
 import app_settings
 from account_panel import AccountGlyph, AccountNameLabel, AccountPanel
@@ -17,6 +20,41 @@ from test_account_settings_v181 import APP, Service
 
 
 class AccountProfileLayoutTests(unittest.TestCase):
+    def test_account_avatar_uses_the_same_solid_blue_in_both_themes(self):
+        from native_ui_common import colors
+        for theme in ('dark','light'):
+            self.panel.apply_theme(theme);self.settle()
+            image=self.panel.account_glyph.grab().toImage()
+            expected=QColor(colors(theme)['action'])
+            self.assertEqual(image.pixelColor(10,13),expected)
+            self.assertEqual(image.pixelColor(30,13),expected)
+
+    def test_device_card_fits_content_and_large_device_list_scrolls(self):
+        self.dialog.resize(892,820);self.settle()
+        viewport=self.dialog.scroll.viewport()
+        self.assertLess(self.panel.height(),viewport.height())
+        self.assertGreater(self.panel.devices_scroll.height(),40)
+        self.service.devices.extend(dict(id=f'fill-{index}',name=f'设备 {index}',platform='windows') for index in range(20))
+        self.service.list_devices();self.settle()
+        self.assertGreater(self.panel.devices_scroll.verticalScrollBar().maximum(),0)
+        self.assertLessEqual(self.panel.height(),viewport.height()+8)
+        self.dialog.resize(892,632);self.settle()
+        self.assertLessEqual(self.panel.height(),viewport.height()+8)
+
+    def test_idle_and_hidden_account_layouts_quiesce_and_refresh_on_next_show(self):
+        self.settle();spy=QSignalSpy(self.panel.height_changed)
+        QTest.qWait(150);self.settle()
+        self.assertLessEqual(spy.count(),1)
+        self.assertFalse(self.panel._fit_timer.isActive())
+        self.dialog.hide();self.settle();before=spy.count()
+        self.service.devices[1]['name']='离屏更新后的 MacBook Air'
+        self.service.list_devices();QTest.qWait(150);self.settle()
+        self.assertEqual(spy.count(),before)
+        self.assertFalse(self.panel._fit_timer.isActive())
+        self.dialog.show();self.settle()
+        self.assertEqual(self.panel._rows_by_id['other'].findChild(AccountNameLabel,'accountDeviceName').text(),'离屏更新后的 MacBook Air')
+        self.assertTrue(self.panel.devices_scroll.isVisible())
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(prefix='flickdock-account-layout-')
         self.runtime=patch.object(app_settings,'_startup_runtime_allowed',return_value=False)
@@ -72,6 +110,20 @@ class AccountProfileLayoutTests(unittest.TestCase):
             opaque=[(x,y) for x in range(pixmap.width()) for y in range(pixmap.height()) if pixmap.pixelColor(x,y).alpha()]
             self.assertTrue(opaque)
 
+    def test_account_and_device_names_use_platform_font_without_added_spacing(self):
+        self.service.devices[1]['name']='MacBook Air';self.service.list_devices();self.settle()
+        device=self.panel._rows_by_id['other'].findChild(AccountNameLabel,'accountDeviceName')
+        for label in (self.panel.username_label,device):
+            font=label.font()
+            self.assertEqual(font.letterSpacing(),0)
+            self.assertEqual(font.wordSpacing(),0)
+            self.assertIn(font.stretch(),(0,100))
+            layout=QTextLayout(label.text(),font);layout.beginLayout();layout.createLine();layout.endLayout()
+            self.assertTrue(layout.glyphRuns())
+            if sys.platform=='win32':
+                self.assertEqual(QFontInfo(font).family(),'Microsoft YaHei')
+                self.assertEqual({run.rawFont().familyName() for run in layout.glyphRuns()},{'Microsoft YaHei'})
+
     def test_identical_device_push_keeps_rows_and_avoids_rebuilding(self):
         self.settle();rows=dict(self.panel._rows_by_id)
         self.service.list_devices();self.settle()
@@ -82,27 +134,32 @@ class AccountProfileLayoutTests(unittest.TestCase):
         self.assertIs(rows['other'],self.panel._rows_by_id['other'])
         self.assertEqual(self.panel._rows_by_id['other'].findChild(AccountNameLabel,'accountDeviceName').text(),'MacBook Air')
 
-    def test_devices_use_one_scroll_column_and_live_route_latency_without_rebuild(self):
+    def test_device_names_are_centered_in_two_scroll_columns_without_presence_labels(self):
         self.service.devices.extend(dict(id=f'peer-{index}',name=f'设备 {index}',platform='windows') for index in range(8))
         self.service.list_devices();self.settle();rows=dict(self.panel._rows_by_id)
-        self.panel.set_device_connections({'other':{'route':'p2p','latency_ms':48},'peer-0':{'route':'lan','latency_ms':3}})
         self.settle()
         self.assertEqual(rows,self.panel._rows_by_id)
-        self.assertIn('P2P 直连 · 48 ms',rows['other']._connection_label.text())
-        self.assertIn('局域网 · 3 ms',rows['peer-0']._connection_label.text())
-        self.assertIn('未连接 · —',rows['peer-1']._connection_label.text())
-        self.assertEqual(len({row.x() for row in rows.values()}),1)
-        self.assertEqual(len({row.y() for row in rows.values()}),len(rows))
+        for row in rows.values():
+            name=row.findChild(AccountNameLabel,'accountDeviceName')
+            self.assertLessEqual(abs(name.mapTo(row,name.rect().center()).y()-row.rect().center().y()),1)
+            self.assertFalse(row.findChildren(AccountNameLabel,'accountDeviceMeta'))
+        for width in (740,892,1024):
+            self.dialog.resize(width,632);self.settle()
+            self.assertEqual(len({row.x() for row in rows.values()}),2)
+            self.assertEqual(len({row.y() for row in rows.values()}),(len(rows)+1)//2)
+            for index,row in enumerate(rows.values()):
+                grid=self.panel.devices_layout.getItemPosition(self.panel.devices_layout.indexOf(row))
+                self.assertEqual(grid[:2],(index//2,index%2))
         self.assertGreater(self.panel.devices_scroll.verticalScrollBar().maximum(),0)
-        self.panel.set_device_connections({'other':{'route':'relay','latency_ms':None}})
-        self.assertIn('TURN 中继 · —',rows['other']._connection_label.text())
         self.assertEqual(rows,self.panel._rows_by_id)
 
     def test_rename_is_floating_without_resizing_rows_and_actions_stay_at_right_edge(self):
         for width in (740,892,1024):
             self.dialog.resize(width,632);self.settle()
             for key in ('current','other'):
-                previous=self.panel._rows_by_id[key].size()
+                row=self.panel._rows_by_id[key]
+                point=QPointF(row.rect().center());APP.sendEvent(row,QEnterEvent(point,point,point));self.settle()
+                previous=row.size()
                 self.panel.device_rename_buttons[key].click();self.settle()
                 form=self.panel._rename_forms[key];row=self.panel._rows_by_id[key]
                 self.assertTrue(form.isVisible())
@@ -114,7 +171,28 @@ class AccountProfileLayoutTests(unittest.TestCase):
                 if key=='other':
                     gap=last.mapTo(row,QPoint(0,0)).x()-rename.mapTo(row,rename.rect().topRight()).x()
                     self.assertLessEqual(gap,6)
-                self.panel._cancel_rename();self.settle()
+                self.panel._cancel_rename();APP.sendEvent(row,QEvent(QEvent.Leave));self.settle()
+
+    def test_device_actions_reveal_on_hover_or_keyboard_focus_without_layout_shift(self):
+        self.dialog.save_button.setFocus(Qt.TabFocusReason);self.settle()
+        row=self.panel._rows_by_id['other']
+        actions=row.findChild(QWidget,'accountDeviceActions')
+        name=row.findChild(AccountNameLabel,'accountDeviceName')
+        self.assertTrue(actions.isHidden())
+        before=(row.size(),name.geometry())
+        point=QPointF(row.rect().center())
+        APP.sendEvent(row,QEnterEvent(point,point,point));self.settle()
+        self.assertTrue(actions.isVisible())
+        self.assertEqual(before,(row.size(),name.geometry()))
+        APP.sendEvent(row,QEvent(QEvent.Leave));self.settle()
+        self.assertTrue(actions.isHidden())
+        row.setFocus(Qt.TabFocusReason);self.settle()
+        self.assertTrue(actions.isVisible())
+        QTest.keyClick(row,Qt.Key_Tab);self.settle()
+        self.assertIs(APP.focusWidget(),self.panel.device_rename_buttons['other'])
+        self.dialog.save_button.setFocus(Qt.TabFocusReason);self.settle()
+        self.assertTrue(actions.isHidden())
+        self.assertLess(self.panel.sync_status_label.font().pixelSize(),self.panel.username_label.font().pixelSize())
 
 
 if __name__=='__main__':unittest.main(verbosity=2)

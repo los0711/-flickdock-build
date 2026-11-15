@@ -36,7 +36,7 @@ class MacPermissionsDialog(ReferenceModalDialog):
 
     def apply_theme(self):
         self._theme=self.manager.settings.theme;c=colors(self._theme);self.set_surface_theme(self._theme);self.close_button.dark=self._theme=='dark'
-        self.setStyleSheet(f"QDialog{{background:transparent;}} QLabel{{color:{c['text']};background:transparent;border:0;font-size:12px;}} QFrame#permissionRow{{background:{c['card']};border:1px solid {c['border']};border-radius:8px;}} QPushButton{{color:{c['text']};background:{c['control']};border:1px solid {c['border']};border-radius:8px;padding:6px 12px;}} QPushButton:hover{{background:{c['hover']};}}")
+        self.setStyleSheet(f"QDialog{{background:transparent;}} QLabel{{color:{c['text']};background:transparent;border:0;font-size:12px;}} QFrame#permissionRow{{background:{c['card']};border:0;border-radius:{c['radius_card']}px;}} QPushButton{{color:{c['text']};background:{c['control']};border:1px solid transparent;border-radius:{c['radius_control']}px;padding:6px 12px;}} QPushButton:hover{{background:{c['hover']};}} QPushButton:pressed{{background:{c['selected']};}} QPushButton:disabled{{color:{c['muted']};}} QPushButton[keyboardFocus=\"true\"]{{border:1px solid {c['link']};}}")
 
     def refresh(self):
         if self._theme!=self.manager.settings.theme:self.apply_theme()

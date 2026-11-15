@@ -1,10 +1,11 @@
 """Lightweight progress artwork; repainting never rebuilds shelf layouts."""
 import math
 import time
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
+from PySide6.QtCore import QLineF, QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import QLabel, QWidget
+from PySide6.QtWidgets import QLabel, QWidget,QHBoxLayout
 import ui_theme
+from native_ui_common import set_ui_weight
 
 
 CLOUD_STATUS_LABELS = {
@@ -15,17 +16,21 @@ CLOUD_STATUS_LABELS = {
     'local': '仅保存在本机',
     'paused': '云端上传已暂停',
     'error': '云端上传失败',
+    'size_limit': '超过 20 MB 同步上限',
+    'unavailable': '此内容不能同步',
+    'superseded': '本次同步已由更新的复制接替',
 }
 _CLOUD_STATUS_COLORS = {
     'peer': '#287fe2',
-    'synced': '#25966c', 'uploading': '#287fe2', 'pending': '#5684bd',
-    'local': '#8391a3', 'paused': '#bd822e', 'error': '#d04c59',
+    'synced': '#169F65', 'uploading': '#287fe2', 'pending': '#5684bd',
+    'local': '#087CEF', 'paused': '#bd822e', 'error': '#d04c59', 'size_limit': '#287fe2', 'unavailable':'#287fe2', 'superseded':'#287fe2',
 }
 _CLOUD_STATUS_DARK_COLORS = {
     'peer': '#75b7ff',
     'synced': '#67d7a4', 'uploading': '#75b7ff', 'pending': '#9dc5f7',
-    'local': '#b6c5d8', 'paused': '#efbb70', 'error': '#ff8d97',
+    'local': '#b6c5d8', 'paused': '#efbb70', 'error': '#ff8d97', 'size_limit': '#75b7ff', 'unavailable':'#75b7ff', 'superseded':'#75b7ff',
 }
+_CLOUD_PRESENCE_DOT = '#19B372'
 
 
 def cloud_status_for_ref(shelf, ref):
@@ -34,41 +39,44 @@ def cloud_status_for_ref(shelf, ref):
     return lookup(ref) if callable(lookup) and ref else 'local'
 
 
+def file_presence_status(status):
+    """File location has two visual states; transport phases remain internal."""
+    return 'synced' if status=='synced' else 'local'
+
+
+def file_presence_label(status):
+    return CLOUD_STATUS_LABELS[file_presence_status(status)]
+
+
+_LOCAL_UPLOAD_PHASES=frozenset(('queued','validating','preparing','uploading','verifying'))
+
+
+def is_local_upload_transfer(state):
+    """Keep cloud-upload decoration separate from local copies and remote downloads."""
+    return bool(state and not state.get('remote') and state.get('phase') in _LOCAL_UPLOAD_PHASES)
+
+
+def thumbnail_transfer_progress_visible(state):
+    return bool(state) and not is_local_upload_transfer(state)
+
+
 def draw_cloud_status_badge(painter, rect, status, transfer=None):
-    """Circular state glyph, placed at the lower-right of file artwork."""
-    status = status if status in CLOUD_STATUS_LABELS else 'local'
+    """Paint blue for local files and green for committed cloud copies."""
+    status=file_presence_status(status)
     rect = QRectF(rect)
-    ink_hex = (_CLOUD_STATUS_DARK_COLORS if ui_theme.current_theme() == 'dark'
-               else _CLOUD_STATUS_COLORS)[status]
-    ink = QColor(ink_hex)
+    ink=QColor(_CLOUD_PRESENCE_DOT if status=='synced' else _CLOUD_STATUS_COLORS[status])
     painter.save()
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.translate(rect.left(),rect.top())
-    painter.scale(rect.width()/20,rect.height()/20)
-    painter.setBrush(QColor(ui_theme.color('surface')))
-    outline = QPen(ink,1.2)
-    painter.setPen(outline)
-    painter.drawEllipse(QRectF(1.2,1.2,17.6,17.6))
-    fraction=transfer_fraction(transfer) if transfer else None
-    if fraction is not None and fraction>0:
-        arc=QPen(ink,2.2)
-        arc.setCapStyle(Qt.PenCapStyle.RoundCap)
-        painter.setPen(arc)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawArc(QRectF(1.2,1.2,17.6,17.6),90*16,-round(max(.025,fraction)*360*16))
-    pen = QPen(ink, 1.8)
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-    painter.setPen(pen)
-    painter.setBrush(Qt.BrushStyle.NoBrush)
-    painter.setPen(Qt.PenStyle.NoPen);painter.setBrush(ink)
-    painter.drawEllipse(QRectF(5.8,5.8,8.4,8.4))
-    painter.restore()
+    diameter=min(rect.width(),rect.height()) * .57
+    dot=QRectF(0,0,diameter,diameter);dot.moveCenter(rect.center())
+    painter.setBrush(ink);painter.setPen(QPen(QColor('#FFFFFF'),1.2))
+    painter.drawEllipse(dot);painter.restore()
 
 
 class CloudStatusBadge(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None,*,file_presence=False):
         super().__init__(parent)
+        self.file_presence=file_presence
         self.status = 'local'
         self.transfer = None
         # Share the copy button's 32px header cell; the state ring remains a
@@ -82,17 +90,30 @@ class CloudStatusBadge(QWidget):
         if status == self.status and transfer == self.transfer and self.toolTip(): return
         self.status = status
         self.transfer = dict(transfer) if transfer else None
-        self.setAccessibleName(CLOUD_STATUS_LABELS[status])
-        self.setToolTip(CLOUD_STATUS_LABELS[status])
+        label=file_presence_label(status) if self.file_presence else CLOUD_STATUS_LABELS[status]
+        self.setAccessibleName(label)
+        self.setToolTip(label)
         self.update()
 
     def paintEvent(self, event):
         painter=QPainter(self);painter.setRenderHint(QPainter.Antialiasing)
-        draw_cloud_status_badge(painter,QRectF((self.width()-20)/2,(self.height()-20)/2,20,20),self.status,self.transfer)
+        rect=QRectF((self.width()-20)/2,(self.height()-20)/2,20,20)
+        if self.file_presence:
+            draw_cloud_status_badge(painter,rect,self.status,self.transfer)
+        else:
+            colors=_CLOUD_STATUS_DARK_COLORS if ui_theme.current_theme()=='dark' else _CLOUD_STATUS_COLORS
+            ink=QColor(colors[self.status]);painter.setPen(QPen(ink,1.2));painter.setBrush(QColor(ui_theme.color('surface')))
+            painter.drawEllipse(rect.adjusted(1.2,1.2,-1.2,-1.2))
+            fraction=transfer_fraction(self.transfer) if self.transfer else None
+            if fraction is not None and fraction>0:
+                painter.setPen(QPen(ink,2.2));painter.setBrush(Qt.NoBrush)
+                painter.drawArc(rect.adjusted(1.2,1.2,-1.2,-1.2),90*16,-round(max(.025,fraction)*360*16))
+            painter.setPen(Qt.NoPen);painter.setBrush(ink);painter.drawEllipse(rect.adjusted(5.8,5.8,-5.8,-5.8))
 
 
 def transfer_fraction(state):
     """Return a known progress fraction; unknown sizes never imply a percentage."""
+    if state.get('remote') and state.get('phase') in ('remote','preparing'):return None
     try:
         total=max(0,int(state.get('total') or 0))
         received=max(0,int(state.get('received') or 0))
@@ -104,6 +125,7 @@ def transfer_fraction(state):
 def transfer_phase_label(state):
     phase=state.get('phase')
     return ('正在复制' if phase=='copying' else '正在下载' if phase=='downloading'
+            else '等待对方上传' if phase=='remote' or phase=='preparing' and state.get('remote')
             else '等待云端确认' if phase=='verifying'
             else '等待重试' if phase=='retrying'
             else '校验原文件' if phase=='validating'
@@ -155,7 +177,7 @@ class TransferRateTracker:
             if key!='__aggregate__' and key not in refs:self._samples.pop(key,None)
         for ref,state in transfers.items():
             phase=state.get('phase')
-            if phase in ('queued','preparing'):
+            if phase in ('queued','preparing','remote'):
                 self._samples.pop(ref,None)
                 continue
             received,total=self._numbers(state)
@@ -175,6 +197,7 @@ class TransferRateTracker:
         if now is None:now=self._clock()
         phase=state.get('phase')
         if phase=='queued':return '等待开始'
+        if phase=='remote' or phase=='preparing' and state.get('remote'):return '等待对方上传'
         if phase=='preparing':return '准备中'
         if phase=='verifying':return '等待云端确认'
         if phase=='retrying':return '等待重试'
@@ -191,22 +214,89 @@ class TransferRateTracker:
         if seconds<3600:return f'剩余约 {math.ceil(seconds/60)} 分钟'
         return f'剩余约 {math.ceil(seconds/3600)} 小时'
 
+    def bytes_per_second(self,ref,now=None):
+        if now is None:now=self._clock()
+        sample=self._samples.get(ref)
+        return sample['rate'] if sample and now-sample['last_progress']<=self.STALE_SECONDS else None
 
-def draw_ring(painter,rect,state):
+
+def draw_ring(painter,rect,state,*,color='#3989ef'):
     if not state: return
     rect=QRectF(rect).adjusted(3,3,-3,-3)
     painter.save();painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    pen=QPen(QColor(ui_theme.color('border')),2.4);painter.setPen(pen)
+    pen=QPen(QColor(ui_theme.color('media_track')),2.4);painter.setPen(pen)
     painter.setBrush(Qt.BrushStyle.NoBrush);painter.drawEllipse(rect)
-    pen.setColor(QColor('#3989ef'));pen.setCapStyle(Qt.PenCapStyle.RoundCap);painter.setPen(pen)
+    if state.get('remote') and state.get('phase') in ('remote','preparing'):
+        painter.restore();return
+    pen.setColor(QColor(color));pen.setCapStyle(Qt.PenCapStyle.RoundCap);painter.setPen(pen)
     received,total=state.get('received',0),state.get('total',0)
     if total>0:
-        angle=-max(.015,min(1,received/total))*5760
-        painter.drawArc(rect,90*16,round(angle))
+        if received>0:painter.drawArc(rect,90*16,-round(min(1,received/total)*5760))
     else:
         start=round((time.monotonic()*240%360)*16)
         painter.drawArc(rect,start,-100*16)
     painter.restore()
+
+
+class TransferProgressRing(QWidget):
+    """A shared display-clock ring; byte completion is distinct from commit."""
+    def __init__(self,parent=None):
+        super().__init__(parent)
+        from display_frames import FramePulse
+        self.state=dict(phase='idle',received=0,total=0)
+        self.setFixedSize(18,18);self.clock=FramePulse(self);self.clock.timeout.connect(self.update)
+
+    def set_transfer(self,state):
+        if state==self.state:return
+        self.state=dict(state);self._sync_clock();self.update()
+
+    def _sync_clock(self):
+        from native_ui_common import reduced_motion
+        phase=self.state['phase']
+        waiting=phase in ('preparing','verifying') or phase in ('uploading','delivering') and not self.state['total']
+        if waiting and self.isVisible() and not reduced_motion():self.clock.start()
+        else:self.clock.stop()
+
+    def showEvent(self,event):super().showEvent(event);self._sync_clock()
+    def hideEvent(self,event):self.clock.stop();super().hideEvent(event)
+
+    def paintEvent(self,event):
+        painter=QPainter(self);painter.setRenderHint(QPainter.Antialiasing)
+        phase=self.state['phase'];rect=QRectF(self.rect()).adjusted(2,2,-2,-2)
+        if phase in ('idle','complete','error'):
+            painter.setPen(QPen(QColor(ui_theme.color('secondary') if phase=='idle' else '#25966c' if phase=='complete' else '#d04c59'),1.6))
+            painter.setBrush(Qt.NoBrush);painter.drawEllipse(rect)
+            if phase=='complete':
+                painter.drawLine(QPointF(5,9),QPointF(8,12));painter.drawLine(QPointF(8,12),QPointF(13,6))
+        else:
+            state=self.state
+            if phase in ('preparing','verifying'):state=dict(received=0,total=0)
+            draw_ring(painter,QRectF(self.rect()),state)
+        painter.end()
+
+
+class ClipboardProgressRow(QWidget):
+    def __init__(self,parent=None):
+        super().__init__(parent)
+        layout=QHBoxLayout(self);layout.setContentsMargins(0,0,0,0);layout.setSpacing(4)
+        self.rings={};self.labels={};self.active=False
+        for key in ('cloud',):
+            ring=TransferProgressRing(self);label=QLabel(self)
+            label.setStyleSheet('font-size:10px;background:transparent;border:0;')
+            self.rings[key]=ring;self.labels[key]=label;layout.addWidget(ring);layout.addWidget(label)
+            layout.addStretch(1)
+        self.hide()
+
+    def set_state(self,state):
+        from clipboard_delivery import sync_progress
+        progress=sync_progress(state)
+        self.active=any(row['phase'] not in ('idle','complete','error') for row in progress.values())
+        for key,value in progress.items():self.rings[key].set_transfer(value)
+        cloud=progress['cloud'];phase=cloud['phase']
+        label={'idle':'云端','preparing':'云端准备','verifying':'云端确认','complete':'云端已备份','error':'云端待重试'}.get(phase,'云端同步')
+        if phase=='uploading' and cloud['total']>0:label=f'云端 {min(100,cloud["received"]*100//cloud["total"])}%'
+        self.labels['cloud'].setText(label)
+        self.setVisible(bool(state.get('id') and state.get('value') is not None and state.get('phase')!='size_limit'))
 
 
 def draw_progress_badge(painter,rect,state):
@@ -295,5 +385,5 @@ class UploadCountBadge(QWidget):
             painter.drawLine(11,17,19,9)
         else:
             painter.setPen(QColor('#146bc8'))
-            font=painter.font();font.setPointSize(9);font.setBold(True);painter.setFont(font)
+            font=painter.font();font.setPointSize(9);set_ui_weight(font,600);painter.setFont(font)
             painter.drawText(self.rect(),Qt.AlignmentFlag.AlignCenter,'99+' if self.count>99 else str(self.count))

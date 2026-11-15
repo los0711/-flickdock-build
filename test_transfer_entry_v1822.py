@@ -5,6 +5,7 @@ from pathlib import Path
 from PySide6.QtCore import QPoint,QPointF,QMimeData,QUrl,Qt
 from PySide6.QtGui import QDragEnterEvent,QDragMoveEvent,QDropEvent,QDragLeaveEvent
 from PySide6.QtWidgets import QWidget,QPushButton
+from PySide6.QtTest import QTest
 from test_html_native_workspace import APP,flush,until
 from transfer_entry import TransferEntryRouter
 from app_settings import SettingsStore
@@ -14,6 +15,32 @@ from wan_transfer import WanTransferService
 
 
 class EntryTests(unittest.TestCase):
+    def test_transfer_dashes_stay_fixed_while_hover_colors_fade_and_then_stop(self):
+        from transfer_entry import TransferDropSurface
+        root=QWidget();root.resize(240,160);surface=TransferDropSurface(root);surface.resize(220,108)
+        root.show();surface.show();flush()
+        try:
+            with patch('native_ui_common.reduced_motion',return_value=False):
+                surface.set_target(None)
+                lan=surface.border_motions['lan'];wan=surface.border_motions['wan']
+                self.assertEqual(lan.animation.state(),lan.animation.Stopped)
+                surface.set_target('lan');self.assertEqual(lan.animation.state(),lan.animation.Running)
+                lan.animation.setCurrentTime(60);first=surface.grab().toImage()
+                lan.animation.setCurrentTime(lan.animation.duration());second=surface.grab().toImage()
+                from PySide6.QtCore import QRect
+                self.assertNotEqual(first.copy(QRect(0,0,220,52)),second.copy(QRect(0,0,220,52)))
+                self.assertEqual(first.copy(QRect(0,55,220,52)),second.copy(QRect(0,55,220,52)))
+                self.assertEqual(lan.animation.state(),lan.animation.Stopped)
+                QTest.qWait(40);self.assertEqual(second,surface.grab().toImage())
+                surface.set_target('wan')
+                for motion in (lan,wan):motion.animation.setCurrentTime(90)
+                self.assertTrue(0<lan.progress<1);self.assertTrue(0<wan.progress<1)
+                surface.set_target(None)
+                for motion in (lan,wan):
+                    motion.animation.setCurrentTime(motion.animation.duration())
+                    self.assertEqual(motion.progress,0.);self.assertEqual(motion.animation.state(),motion.animation.Stopped)
+        finally:root.hide();root.deleteLater();flush()
+
     def test_mode_transition_captures_the_painted_old_page_not_an_empty_surface(self):
         with tempfile.TemporaryDirectory() as directory:
             base=Path(directory);lan=FakeLan();wan=WanTransferService(base/'wan',enabled=False)
@@ -94,6 +121,103 @@ class EntryTests(unittest.TestCase):
                 self.assertEqual(dialog.winId(),native);self.assertEqual(dialog.geometry(),geometry)
                 self.assertTrue(dialog.mode_buttons['wan'].isChecked());self.assertFalse(dialog.mode_buttons['lan'].isChecked())
             finally:dialog.hide();dialog.deleteLater();wan.close();wan.deleteLater();flush()
+
+    def test_remote_receive_codes_have_distinct_field_backgrounds_in_both_themes(self):
+        from native_ui_common import colors
+        from PySide6.QtGui import QColor
+        with tempfile.TemporaryDirectory() as directory:
+            base=Path(directory);wan=WanTransferService(base/'wan',enabled=False)
+            dialog=LanDialog(wan,SettingsStore(base/'profile'));dialog.show();flush()
+            try:
+                panel=dialog.panel;panel.send_code_value.setEnabled(True);panel.send_code_value.setText('AB23')
+                for theme in ('light','dark'):
+                    dialog.apply_theme(theme);flush()
+                    self.assertEqual(panel.send_code_value.height(),panel.peer_code_input.height())
+                    self.assertNotEqual(QColor(colors(theme)['control']),QColor(colors(theme)['input']))
+                    for field in (panel.send_code_value,panel.peer_code_input):
+                        image=field.grab().toImage();ratio=image.devicePixelRatio()
+                        pixel=image.pixelColor(round(8*ratio),round((field.height()-8)*ratio))
+                        self.assertEqual(pixel.name(),QColor(colors(theme)['input']).name(),(theme,field.objectName(),pixel.name()))
+                    panel.peer_code_input.setText('EF67');self.assertEqual(panel.peer_code_input.text(),'EF67')
+            finally:dialog.hide();dialog.deleteLater();wan.close();wan.deleteLater();flush()
+
+    def test_remote_device_remove_icon_only_appears_on_hover_and_delete_still_works(self):
+        from PySide6.QtCore import QEvent,QRect
+        from PySide6.QtGui import QColor,QImage,QMouseEvent,QPainter
+        from PySide6.QtWidgets import QStyle,QStyleOptionViewItem
+        from lan_panel import DEVICE_ACTION_SHIFT_PX
+        with tempfile.TemporaryDirectory() as directory:
+            base=Path(directory);wan=WanTransferService(base/'wan',enabled=False)
+            dialog=LanDialog(wan,SettingsStore(base/'profile'));dialog.show();flush()
+            try:
+                combo=dialog.panel.devices;combo.clear();combo.addItem('设备','fixture-id');combo.addItem('设备 2','fixture-2');combo.setEnabled(True)
+                combo.showPopup();flush();view=combo.view();index=view.model().index(0,0);option=QStyleOptionViewItem()
+                option.rect=QRect(0,0,320,56);option.font=view.font();option.palette=view.palette()
+                snapshots=[]
+                for hover in (False,True):
+                    option.state=QStyle.State_Enabled|QStyle.State_Selected|(QStyle.State_MouseOver if hover else QStyle.State_None)
+                    image=QImage(320,56,QImage.Format_ARGB32);image.fill(QColor('#171717'))
+                    painter=QPainter(image);view.itemDelegate().paint(painter,option,index);painter.end();snapshots.append(image)
+                action=QRect(option.rect.right()-30-DEVICE_ACTION_SHIFT_PX,18,22,22)
+                self.assertNotEqual(snapshots[0].copy(action),snapshots[1].copy(action))
+                viewport=view.viewport();before=viewport.grab().toImage();point=view.visualRect(index).center()
+                move=QMouseEvent(QEvent.MouseMove,QPointF(point),QPointF(viewport.mapToGlobal(point)),Qt.NoButton,Qt.NoButton,Qt.NoModifier)
+                APP.sendEvent(viewport,move);flush();after=viewport.grab().toImage()
+                rect=view.visualRect(index);action=QRect(rect.right()-30-DEVICE_ACTION_SHIFT_PX,rect.center().y()-11,22,22)
+                self.assertNotEqual(before.copy(action),after.copy(action),'mouse hover must reveal the remove icon')
+                APP.sendEvent(viewport,QEvent(QEvent.Leave));flush()
+                self.assertEqual(viewport.grab().toImage().copy(action),before.copy(action),'leaving the list must hide the remove icon')
+                selected=[];combo.remove_requested.connect(selected.append);view.setCurrentIndex(index)
+                with patch.object(wan,'remove_peer'):
+                    QTest.keyClick(view,Qt.Key_Delete)
+                self.assertEqual(selected,['fixture-id'])
+            finally:dialog.hide();dialog.deleteLater();wan.close();wan.deleteLater();flush()
+
+
+import test_html_native_workspace as workspace_fixture
+
+
+class DropFeedbackOwnershipTests(unittest.TestCase):
+    setUp=workspace_fixture.WorkspaceTests.setUp
+    tearDown=workspace_fixture.WorkspaceTests.tearDown
+    overview=workspace_fixture.WorkspaceTests.overview
+
+    def test_compact_chooser_clears_and_blocks_the_underlying_empty_target(self):
+        self.shelf.files['permanent'].clear();self.shelf.refresh();flush()
+        zone=self.shelf.zones['permanent'];router=self.shelf.transfer_entry
+        mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(self.paths[0])])
+        self.shelf._highlight_content_drop(True)
+        self.assertTrue(zone.icon.border_motion.active)
+        APP.sendEvent(self.shelf.lan_button,QDragEnterEvent(QPointF(20,15),Qt.CopyAction,mime,Qt.LeftButton,Qt.NoModifier))
+        self.assertTrue(router.surface.isVisible())
+        self.assertFalse(zone.drop_highlight);self.assertFalse(zone.icon._hovered)
+        self.assertFalse(zone.icon.border_motion.active)
+        for y in (25,77):
+            APP.sendEvent(router.surface,QDragEnterEvent(QPointF(60,y),Qt.CopyAction,mime,Qt.LeftButton,Qt.NoModifier))
+            APP.sendEvent(router.surface,QDragMoveEvent(QPointF(60,y),Qt.CopyAction,mime,Qt.LeftButton,Qt.NoModifier))
+            self.shelf._highlight_content_drop(True)
+            zone._set_card_hover(True)
+            self.assertFalse(zone.icon.border_motion.active)
+            self.assertFalse(zone.icon._hovered)
+            self.assertEqual(router.surface.active,'lan' if y==25 else 'wan')
+        point=zone.mapTo(self.shelf,zone.icon.geometry().center())
+        APP.sendEvent(self.shelf,QDragEnterEvent(QPointF(point),Qt.CopyAction,mime,Qt.LeftButton,Qt.NoModifier))
+        APP.sendEvent(self.shelf,QDragMoveEvent(QPointF(point),Qt.CopyAction,mime,Qt.LeftButton,Qt.NoModifier))
+        self.assertFalse(router.surface.isVisible());self.assertTrue(zone.icon.border_motion.active)
+        self.assertFalse(self.events)
+
+    def test_overview_chooser_owns_feedback_until_drag_returns_to_the_shelf(self):
+        self.shelf.files['permanent'].clear();self.shelf.refresh();popup=self.overview()
+        target=popup.empty_drop;router=popup.transfer_entry
+        mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(self.paths[0])])
+        target.set_drag_active(True);self.assertTrue(target.border_motion.active)
+        APP.sendEvent(popup.lan_nav,QDragEnterEvent(QPointF(20,15),Qt.CopyAction,mime,Qt.LeftButton,Qt.NoModifier))
+        self.assertTrue(router.surface.isVisible());self.assertFalse(target.border_motion.active)
+        target.set_drag_active(True);self.assertFalse(target.border_motion.active)
+        point=target.mapTo(popup,target.rect().center())
+        APP.sendEvent(popup,QDragMoveEvent(QPointF(point),Qt.CopyAction,mime,Qt.LeftButton,Qt.NoModifier))
+        self.assertFalse(router.surface.isVisible());self.assertTrue(target.border_motion.active)
+        self.assertFalse(self.events)
 
 
 if __name__=='__main__':unittest.main()

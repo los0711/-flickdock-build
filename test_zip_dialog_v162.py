@@ -1,4 +1,5 @@
 """Real offscreen ZIP button -> save/cancel dialog -> asynchronous archive."""
+import shelf_ui_common
 import os
 from pathlib import Path
 import tempfile
@@ -21,7 +22,7 @@ def until(predicate,timeout=5):
 with tempfile.TemporaryDirectory(prefix='flickdock-zip-dialog-') as tmp:
     os.environ['APPDATA']=str(Path(tmp)/'profile')
     import flickdock as subject,app_settings
-    app=QApplication([]);subject.load_font(app)
+    app=QApplication([]);shelf_ui_common.load_font(app)
     screen=SimpleNamespace(availableGeometry=lambda:QRect(0,0,1920,1080))
     with patch.object(subject.QGuiApplication,'screenAt',return_value=screen),patch.object(subject.QGuiApplication,'primaryScreen',return_value=screen),patch.object(subject,'motion_enabled',return_value=False),patch.object(QSystemTrayIcon,'show'),patch.object(QSystemTrayIcon,'hide'),patch.object(app_settings,'_read_startup_value'),patch.object(app_settings,'_write_startup_value'):
         manager=subject.ShelfManager(app);manager.timer.stop();shelf=manager.shelf

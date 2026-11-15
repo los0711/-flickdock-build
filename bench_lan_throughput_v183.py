@@ -25,8 +25,8 @@ def run(size_mib=128):
         block=os.urandom(1024*1024)
         with source.open('wb') as output:
             for _ in range(size_mib):output.write(block)
-        sender=LanTransferService(device_name='Loopback sender',bind_host='127.0.0.1',discovery=False)
-        receiver=LanTransferService(device_name='Loopback receiver',bind_host='127.0.0.1',discovery=False)
+        sender=LanTransferService(device_name='Loopback sender',bind_host='127.0.0.1',discovery=False,diagnostics_base=root/'sender')
+        receiver=LanTransferService(device_name='Loopback receiver',bind_host='127.0.0.1',discovery=False,diagnostics_base=root/'receiver')
         offers=[];received=[];sent=[];errors=[]
         receiver.offer_received.connect(offers.append)
         receiver.completed.connect(received.append);sender.completed.connect(sent.append)

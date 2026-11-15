@@ -1,22 +1,52 @@
 """Two small views of the same current clipboard; no second clipboard watcher."""
 from pathlib import Path
 from PySide6.QtCore import QObject,Signal,QThreadPool,QBuffer,QIODevice,QSize,Qt,QRectF,QEvent,QMimeData
-from PySide6.QtGui import QImage,QImageReader,QPainter,QPainterPath,QColor,QPen
+from PySide6.QtGui import QImage,QImageReader,QPainter,QPainterPath,QColor,QPen,QFont
 from PySide6.QtWidgets import QApplication,QPushButton,QLabel,QHBoxLayout,QPlainTextEdit,QStackedWidget,QWidget
 from app_settings import ReferenceModalDialog,SettingsCloseButton
-from native_ui_common import colors,icon
+from native_ui_common import colors,icon,keyboard_focus_visible,RADIUS_CONTROL_PX,RADIUS_CARD_PX
 from sync_files import DiskWork
-from transfer_visuals import draw_cloud_status_badge,CloudStatusBadge,CLOUD_STATUS_LABELS
+from transfer_visuals import CloudStatusBadge,CLOUD_STATUS_LABELS
+from translation_languages import is_link_line
 from shiboken6 import isValid
 import ui_theme
 
+MAX_CLIPBOARD_LINK_CHARS=65536
+
+
+def clipboard_is_link(value):
+    if not value or value[0]!='text' or not isinstance(value[1],dict):return False
+    text=value[1].get('text','')
+    return isinstance(text,str) and len(text)<=MAX_CLIPBOARD_LINK_CHARS and is_link_line(text.strip())
+
 
 def clipboard_status(state):
-    if state.get('route')=='cloud':return '已通过云端通道送达'+(' · 已备份' if state.get('backed_up') else '')
-    routes={'lan':'局域网','p2p':'P2P 直连','relay':'TURN 中继'}
-    route=routes.get(state.get('route'))
-    if route:
-        return '已通过'+route+'同步'+(' · 已备份到云端' if state.get('backed_up') else '')
+    pending=state.get('receive_state') or {}
+    if state.get('receive_error'):return state['receive_error']
+    if pending.get('error')=='CLOUD_CONTENT_EXPIRED':return '云端内容已过期 · 请在来源设备重新复制'
+    if pending.get('error')=='REMOTE_FILE_PLACEHOLDER':return '远控文件尚未就绪 · 请在来源设备重新复制'
+    if pending and not state.get('receive_active',True):return '已收到同步提示 · 等待同步恢复'
+    if pending.get('stage')=='needs_confirmation':return '剪贴板写入未完成 · 点击重试'
+    if pending.get('stage')=='retrying':return '剪贴板接收遇到问题 · 正在重试'
+    if pending.get('stage')=='received':return '已收到同步提示 · 正在获取内容'
+    if state.get('native_format_issue')=='REMOTE_FILE_PLACEHOLDER':return '远控文件尚未就绪 · 未同步占位文件'
+    if state.get('native_format_issue') in ('NATIVE_CLIPBOARD_BUSY','NATIVE_READ_TIMEOUT'):
+        return '剪贴板正被其他应用占用，正在重试读取'
+    if state.get('native_format_issue')=='VIRTUAL_FILE_SIZE_LIMIT':return '此文件不能同步 · 超过 20 MB 同步上限'
+    if state.get('native_format_issue')=='VIRTUAL_FILE_SINGLE_ONLY':return '仅支持同步单个文件 · 保留上次已确认内容'
+    if state.get('native_format_issue') in ('VIRTUAL_FILE_INVALID_NAME','VIRTUAL_FILE_INVALID_DESCRIPTOR','VIRTUAL_FILE_SIZE_UNKNOWN'):
+        return '当前文件格式无法读取 · 保留上次已确认内容'
+    if str(state.get('native_format_issue','')).startswith('VIRTUAL_FILE_'):return '正在读取跨应用文件 · 保留上次已确认内容'
+    if state.get('receive_pending'):return '内容已接收 · 正在等待写入系统剪贴板'
+    if state.get('native_read_pending'):return '正在读取系统剪贴板 · 保留上次已确认内容'
+    if state.get('phase')=='superseded':return '本次同步已由更新的复制接替'
+    if state.get('phase')=='size_limit':
+        value=state.get('value')
+        return ('此文件不能同步' if value and value[0]=='files' else '此内容不能同步')+' · 超过 20 MB 同步上限'
+    counts=state.get('delivery_counts') or {}
+    if state.get('local_copy') and counts.get('total',0):
+        detail=f"已送达 {counts['delivered']} 台 · 已应用 {counts['applied']} 台"
+        return detail+(' · 部分设备未送达' if counts.get('late') else '')
     return CLOUD_STATUS_LABELS.get(state.get('phase'),'仅保存在本机')
 
 
@@ -97,36 +127,52 @@ class ClipboardButton(QPushButton):
             self.presenter=presenter
             if presenter is not None:presenter.changed.connect(self.refresh)
         state=presenter.state if presenter is not None else {}
+        value=state.get('value')
+        self._glyph='text' if value and value[0]=='text' else 'file' if value else 'copy'
+        if clipboard_is_link(value):self._glyph='link'
         self.setToolTip('剪贴板 · '+('需要设置 Mac 剪贴板权限，点击前往' if state.get('permission_required') else
             clipboard_status(state) if state.get('value') else '暂无可预览内容'))
+        self.setAccessibleDescription(clipboard_status(state))
         self.update()
 
     def paintEvent(self,event):
         from reference_widgets import ink
         c=colors(ui_theme.current_theme());p=QPainter(self);p.setRenderHint(QPainter.Antialiasing)
-        p.setPen(QPen(ink(c['border']),1));p.setBrush(ink(c['hover'] if self.underMouse() or self.isDown() else c['control']))
-        p.drawRoundedRect(QRectF(self.rect()).adjusted(.5,.5,-.5,-.5),8,8)
+        fill=c['control_pressed'] if self.isDown() else c['control_hover'] if self.underMouse() else c['control']
+        from native_ui_common import pixel_aligned_border
+        border,stroke=pixel_aligned_border(p,QRectF(self.rect()))
+        p.setPen(QPen(ink(c['border']),stroke));p.setBrush(ink(fill))
+        p.drawRoundedRect(border,RADIUS_CONTROL_PX,RADIUS_CONTROL_PX)
         model=self.presenter;value=model.state.get('value') if model else None
-        if model and not model.thumbnail.isNull():
+        if model and value and value[0] in ('image','files') and not model.thumbnail.isNull():
             clip=QPainterPath();clip.addRoundedRect(QRectF(5,5,22,22),4,4);p.setClipPath(clip)
             image=model.thumbnail;size=image.size().scaled(QSize(22,22),Qt.KeepAspectRatio)
             p.drawImage(QRectF(16-size.width()/2,16-size.height()/2,size.width(),size.height()),image);p.setClipping(False)
         else:
-            glyph='text' if value and value[0]=='text' else 'file' if value else 'copy'
-            icon(glyph,c['secondary']).paint(p,7,7,18,18)
-        if model and (value or model.state.get('permission_required')):
-            draw_cloud_status_badge(p,QRectF(21,21,10,10),'error' if model.state.get('permission_required') else model.state.get('phase','local'))
+            icon(self._glyph,c['secondary']).paint(p,7,7,18,18)
+        if keyboard_focus_visible(self):
+            p.setPen(QPen(QColor(c['link']),1.5));p.setBrush(Qt.NoBrush)
+            p.drawRoundedRect(QRectF(self.rect()).adjusted(2,2,-2,-2),7,7)
         p.end()
 
 
 class ClipboardPreview(ReferenceModalDialog):
     def __init__(self,manager):
-        super().__init__(manager.shelf,surface_width=600,modal=False)
+        # Qt can dispatch virtual events while the base dialog is still
+        # constructing its body and native flags. Those callbacks already
+        # resolve this subclass, so their dependencies must exist first.
+        self.manager=manager;self.presenter=manager.clipboard_presenter
+        self._initializing=True
+        # Repeated open/close must never leave a zoom effect intercepting input
+        # over the shelf. This transient view closes synchronously instead.
+        super().__init__(manager.shelf,surface_width=600,modal=False,animate=False)
         self.setWindowFlag(Qt.WindowStaysOnTopHint,True)
         self.manager=manager;self.presenter=manager.clipboard_presenter
         self._moving=False;self._moved_revision=None
         self.setWindowTitle('FlickDock · 剪贴板预览')
-        head=QHBoxLayout();self.title=QLabel('剪贴板预览',self.body);head.addWidget(self.title,1)
+        head=QHBoxLayout();self.link_icon=QLabel(self.body);self.link_icon.setFixedSize(18,18)
+        self.link_icon.setAccessibleName('链接');self.link_icon.hide();head.addWidget(self.link_icon)
+        self.title=QLabel('剪贴板预览',self.body);head.addWidget(self.title,1)
         self.badge=CloudStatusBadge(self.body);head.addWidget(self.badge)
         self.close_button=SettingsCloseButton(self.body,glyph_size=14);self.close_button.setFixedSize(28,28)
         self.close_button.setAccessibleName('关闭剪贴板预览');self.close_button.setToolTip('关闭剪贴板预览')
@@ -137,14 +183,20 @@ class ClipboardPreview(ReferenceModalDialog):
         from image_preview import ImagePreview
         self.image=ImagePreview(self.content);self.content.addWidget(self.image)
         self.info=QLabel(self.content);self.info.setWordWrap(True);self.info.setAlignment(Qt.AlignCenter);self.content.addWidget(self.info)
+        from transfer_visuals import ClipboardProgressRow
+        self.progress=ClipboardProgressRow(self.body);self.body_layout.addWidget(self.progress)
         footer=QHBoxLayout();self.status=QLabel(self.body);footer.addWidget(self.status,1)
+        self.status.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        self.status.linkActivated.connect(lambda _:self.presenter.client.retry_received())
         from reference_widgets import button
         self.shelf_button=button('转入搁架文件','plus',variant='secondary',parent=self.body)
         self.shelf_button.clicked.connect(self._move_to_shelf);footer.addWidget(self.shelf_button);self.body_layout.addLayout(footer)
         self.presenter.changed.connect(self.refresh);self.refresh()
         manager.shelf.installEventFilter(self)
+        self._initializing=False
 
     def eventFilter(self,watched,event):
+        if getattr(self,'_initializing',True):return False
         if watched is self.manager.shelf and event.type() in (QEvent.Hide,QEvent.Close):
             self.hide()
             return super().eventFilter(watched,event)
@@ -179,9 +231,17 @@ class ClipboardPreview(ReferenceModalDialog):
     def refresh(self):
         model=self.presenter;value=model.state.get('value');phase=model.state.get('phase','local')
         c=colors(self.manager.settings.theme);self.set_surface_theme(self.manager.settings.theme)
+        self.link_icon.setPixmap(icon('link',c['secondary']).pixmap(QSize(18,18)))
+        self.link_icon.setVisible(clipboard_is_link(value))
         self.close_button.dark=self.manager.settings.theme=='dark'
-        self.setStyleSheet(f"QDialog{{background:transparent;}} QLabel{{background:transparent;color:{c['text']};font-size:12px;}} QPlainTextEdit{{background:{c['card']};color:{c['text']};border:1px solid {c['border']};border-radius:8px;padding:10px;}} QPushButton#settingsClose{{background:transparent;border:0;border-radius:8px;padding:0;}} QPushButton#settingsClose:hover{{background:{c['hover']};}} QPushButton#settingsClose:pressed{{background:{c['control']};}}")
-        self.badge.set_status(phase);status=clipboard_status(model.state);self.status.setText(status)
+        self.setStyleSheet(f"QDialog{{background:transparent;}} QLabel{{background:transparent;color:{c['text']};font-size:12px;}} QPlainTextEdit{{background:{c['card']};color:{c['text']};border:0;border-radius:{RADIUS_CARD_PX}px;padding:10px;}} QPushButton#settingsClose{{background:transparent;border:0;border-radius:{RADIUS_CONTROL_PX}px;padding:0;}} QPushButton#settingsClose:hover{{background:{c['hover']};}} QPushButton#settingsClose:pressed{{background:{c['control']};}}")
+        self.badge.set_status(phase);status=clipboard_status(model.state)
+        pending=model.state.get('receive_state') or {}
+        if pending.get('stage')=='needs_confirmation' and pending.get('error')=='NATIVE_WRITE_UNCONFIRMED':
+            from html import escape
+            self.status.setText(escape(status).replace('点击重试','<a href="retry">点击重试</a>'))
+        else:self.status.setText(status)
+        self.progress.set_state(model.state)
         moved=self._moved_revision==model.state.get('revision')
         self.shelf_button.setEnabled(value is not None and not self._moving and not moved)
         self.shelf_button.setText('正在转入…' if self._moving else '已转入搁架' if moved else '转入搁架文件')

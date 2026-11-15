@@ -5,6 +5,8 @@ os.environ['QT_QPA_PLATFORM']='offscreen'
 from pathlib import Path
 import tempfile
 import unittest
+import threading
+from types import SimpleNamespace
 
 from PySide6.QtCore import QByteArray,QEvent,QObject,QMimeData,QPointF,Qt,QUrl,Signal
 from PySide6.QtGui import QDragEnterEvent,QDropEvent,QMouseEvent
@@ -42,6 +44,56 @@ class LanDialogTests(unittest.TestCase):
     def tearDown(self):
         self.dialog.close();self.dialog.deleteLater();APP.processEvents()
         self.profile.cleanup()
+
+    def test_transfer_modes_only_offer_lan_and_remote(self):
+        self.assertEqual(set(self.dialog.mode_buttons),{'lan','wan'})
+        self.assertTrue(self.dialog.mode_buttons['lan'].isChecked())
+        selected=[];self.dialog.mode_selected.connect(selected.append)
+        self.dialog.mode_buttons['wan'].click()
+        self.assertEqual(selected,['wan'])
+
+    def test_accepted_lan_and_wan_offers_do_not_recreate_confirmation_cards(self):
+        panel=self.dialog.panel
+        accepted=threading.Event();accepted.set()
+        self.service._transfers={'lan-accepted':SimpleNamespace(accepted=accepted)}
+        self.service._pending={'wan-accepted':dict(destination=self.root)}
+        for identifier in ('lan-accepted','wan-accepted'):
+            with self.subTest(identifier=identifier):
+                offer=dict(id=identifier,peer='同账号设备',names=['file.txt'],count=1,total=12,account_device=True)
+                self.service.offer_received.emit(offer)
+                self.assertNotIn(identifier,panel._rows);self.assertNotIn(identifier,panel._offers)
+                self.service.progress.emit(dict(id=identifier,peer=offer['peer'],direction='receive',
+                    state='transferring',received=4,total=12,name='file.txt'))
+                row=panel._rows[identifier]
+                self.assertFalse(row.get('extra'));self.assertFalse(row['detail'].isHidden())
+
+    def test_auto_accept_after_the_offer_replaces_confirmation_with_live_progress(self):
+        panel=self.dialog.panel
+        for state in ('connecting','transferring'):
+            with self.subTest(state=state):
+                identifier='offer-'+state
+                panel.show_offer(dict(id=identifier,peer='同账号设备',names=['file.txt'],count=1,total=12))
+                APP.processEvents()
+                row=panel._rows[identifier];self.assertFalse(row['extra'].isHidden())
+                self.service.progress.emit(dict(id=identifier,peer='同账号设备',direction='receive',
+                    state=state,received=4,total=12,name='file.txt'))
+                self.assertTrue(row['extra'].isHidden());self.assertFalse(row['heading'].isHidden())
+                self.assertFalse(row['detail'].isHidden());self.assertNotIn(identifier,panel._offers)
+
+    def test_preparation_has_only_a_static_label_until_real_payload_progress(self):
+        panel=self.dialog.panel
+        value=dict(id='phase-fixture',direction='send',peer='fixture',state='preparing',received=0,total=0,
+                   prepared=123456,preparation_total=1000000)
+        panel._progress(value);row=panel._rows[value['id']]
+        self.assertTrue(row['bar'].isHidden());self.assertEqual(row['detail'].text(),'正在准备文件…')
+        value['accepted']=True;panel._progress(value)
+        value['phase']='indexing';panel._progress(value)
+        self.assertTrue(row['bar'].isHidden());self.assertEqual(row['detail'].text(),'P2P 已连接 · 正在建立文件索引…')
+        value.pop('phase');panel._progress(value)
+        self.assertTrue(row['bar'].isHidden());self.assertEqual(row['detail'].text(),'对方已接受 · 正在准备文件…')
+        value.update(state='transferring',received=1024,total=4096)
+        panel._progress(value)
+        self.assertFalse(row['bar'].isHidden());self.assertEqual(row['bar'].value(),250)
 
     def test_local_file_drop_queues_original_and_sends_to_selected_device(self):
         source=self.root/'原文件.png';source.write_bytes(b'\x89PNG original')
@@ -94,8 +146,8 @@ class LanDialogTests(unittest.TestCase):
             dialog.panel._peers_changed(peers)
             self.assertEqual(dialog.panel.devices.count(),2)
             self.assertEqual(dialog.panel.devices.currentData(),'a'*64)
-            self.assertTrue(dialog.panel.devices.itemData(0,Qt.ItemDataRole.UserRole+2))
-            self.assertFalse(dialog.panel.devices.itemData(1,Qt.ItemDataRole.UserRole+2))
+            self.assertIsNone(dialog.panel.devices.itemData(0,Qt.ItemDataRole.UserRole+2))
+            self.assertIsNone(dialog.panel.devices.itemData(1,Qt.ItemDataRole.UserRole+2))
             dialog.panel.devices.setCurrentIndex(1);dialog.panel._peers_changed(peers)
             self.assertEqual(dialog.panel.devices.currentData(),'b'*64)
             dialog.panel._peers_changed([]);self.assertEqual(dialog.panel.devices.currentIndex(),-1)
@@ -106,21 +158,21 @@ class LanDialogTests(unittest.TestCase):
         panel.send_code_value.setText('1 2 3 4 5 6');panel.send_code_value.click()
         self.assertEqual(APP.clipboard().text(),'123456')
         self.assertEqual(panel.send_code_value.text(),'1 2 3 4 5 6')
-        panel._wan=True;panel.peer_code_input.setText('ABCD2345')
+        panel._wan=True;panel.peer_code_input.setText('AB23')
         file=self.root/'queued.dat';file.write_bytes(b'content');panel.queue_paths([str(file)])
         panel.send_button.click()
         self.assertEqual(panel.peer_code_input.text(),'')
-        self.assertEqual(self.service.sent[-1],('ABCD2345',[str(file)]))
+        self.assertEqual(self.service.sent[-1],('AB23',[str(file)]))
 
     def test_remote_offer_displays_sender_device_code_and_copies_it(self):
         from PySide6.QtWidgets import QLabel
         panel=self.dialog.panel;panel._wan=True
-        panel.show_offer(dict(id='device-code',peer='远程电脑',names=['file.txt'],count=1,total=12,code='',device_code='ABCD2345'))
+        panel.show_offer(dict(id='device-code',peer='远程电脑',names=['file.txt'],count=1,total=12,code='',device_code='AB23'))
         APP.processEvents();card=panel._rows['device-code']['extra']
         caption=card.findChild(QLabel,'lanOfferCodeCaption')
         self.assertEqual(caption.text(),'设备码');self.assertTrue(caption.isVisible())
-        value=card.findChild(QPushButton,'lanOfferCodeValue');self.assertEqual(value.text(),'ABCD2345')
-        value.click();self.assertEqual(APP.clipboard().text(),'ABCD2345')
+        value=card.findChild(QPushButton,'lanOfferCodeValue');self.assertEqual(value.text(),'AB23')
+        value.click();self.assertEqual(APP.clipboard().text(),'AB23')
 
     def test_remote_eta_and_route_survive_terminal_history_without_usage_counter(self):
         panel=self.dialog.panel;panel._wan=True
@@ -231,7 +283,7 @@ class LanDialogTests(unittest.TestCase):
         self.assertEqual(panel.send_scroll.verticalScrollBar().maximum(),0)
         self.assertIs(panel.activity_scroll.widget(),panel.activity_column)
         self.assertTrue(panel.drop_zone.isVisible())
-        self.assertTrue(panel.add_files.isVisible())
+        self.assertFalse(panel.add_files.isVisible())
         self.assertEqual(panel.drop_zone.focusPolicy(),Qt.FocusPolicy.StrongFocus)
         self.assertTrue(panel.receive_path.isVisible())
         self.assertTrue(panel.history_label.isVisible())
@@ -250,6 +302,7 @@ class LanDialogTests(unittest.TestCase):
         panel._peers_changed(self.service.peers());APP.processEvents()
         self.assertTrue(panel.devices.isEnabled())
         self.assertTrue(panel.send_button.isEnabled())
+        self.assertTrue(panel.scan_indicator.isHidden());self.assertTrue(panel.peer_count.isHidden())
 
     def test_scanner_animates_only_while_visible_and_respects_reduced_motion(self):
         panel=self.dialog.panel

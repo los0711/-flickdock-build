@@ -1,4 +1,7 @@
 """Real shelf transfer presentation and owned-file cleanup, Qt offscreen only."""
+import file_preview
+import shelf_ui_common
+import shelf_window
 import os
 os.environ['QT_QPA_PLATFORM']='offscreen'
 
@@ -25,10 +28,25 @@ from transfer_visuals import TransferIconLabel,TransferRateTracker,transfer_phas
 
 APP=QApplication.instance() or QApplication([])
 APP.setQuitOnLastWindowClosed(False)
-subject.load_font(APP)
+shelf_ui_common.load_font(APP)
 
+
+from test_html_native_workspace import SyncView,until
 
 class TransferRateTests(unittest.TestCase):
+    def test_remote_upload_is_waiting_not_a_first_local_download(self):
+        from transfer_visuals import transfer_fraction
+        tracker=TransferRateTracker()
+        for phase in ('remote','preparing'):
+            state=dict(remote=True,phase=phase,received=500,total=1000)
+            tracker.observe({'item':state})
+            self.assertIsNone(transfer_fraction(state))
+            self.assertEqual(transfer_phase_label(state),'等待对方上传')
+            self.assertEqual(tracker.remaining_text('item',state),'等待对方上传')
+        state.update(phase='downloading',received=200)
+        self.assertEqual(transfer_fraction(state),.2)
+        self.assertEqual(transfer_phase_label(state),'正在下载')
+
     def test_eta_uses_observed_progress_and_disappears_when_stalled_or_reset(self):
         clock=[0.0];tracker=TransferRateTracker(clock=lambda:clock[0])
         state={'phase':'uploading','received':0,'total':16*1024*1024}
@@ -106,7 +124,7 @@ class TransferUITests(unittest.TestCase):
         self.settings.update(capture_mode='copy',capture_dir=str(self.saved),view_mode='icons')
         self.manager=SimpleNamespace(motion=False,settings=self.settings,save=lambda:None,update_handles=lambda:None,
             activate_shelf=lambda _:None,_quitting=False,outgoing_drag=False)
-        self.shelf=subject.ShelfWindow(self.manager,1);self.shelf.pinned=True
+        self.shelf=shelf_window.ShelfWindow(self.manager,1);self.shelf.pinned=True
         self.manager.shelf=self.shelf
         self.shelf._show_at(QPoint(30,30),'manual',QPoint());flush()
     def tearDown(self):
@@ -134,7 +152,7 @@ class TransferUITests(unittest.TestCase):
         self.assertIs(popup.category_buttons['all'].parent(),popup.sidebar)
         self.assertGreater(popup.empty_state.width(),300)
         self.assertTrue(all(button.property('flatToolbar') for button in
-            (self.shelf.cloud_button,self.shelf.lan_button,self.shelf.pin_button,
+            (self.shelf.lan_button,self.shelf.pin_button,
              self.shelf.expand_button,self.shelf.menu_button,self.shelf.close_button)))
 
     def test_mini_count_pill_hover_never_opens_without_a_click(self):
@@ -218,11 +236,11 @@ class TransferUITests(unittest.TestCase):
         self.assertEqual(len(copies),2);self.assertTrue(all(path.parent==copies[0].parent for path in copies))
         foreign=self.saved/'imports'/'foreign-owner';foreign.mkdir();(foreign/'keep').write_bytes(b'preserve')
         entered,release=threading.Event(),threading.Event();self.barriers.append(release)
-        original=subject.delete_owned_copy;gui=threading.get_ident()
+        original=shelf_window.delete_owned_copy;gui=threading.get_ident()
         def held(spec,cancel):
             self.assertNotEqual(threading.get_ident(),gui)
             entered.set();assert release.wait(5);return original(spec,cancel)
-        with patch.object(subject,'delete_owned_copy',side_effect=held):
+        with patch.object(shelf_window,'delete_owned_copy',side_effect=held):
             self.shelf.remove_path('permanent',str(copies[0]));wait(entered.is_set)
             self.assertNotIn(str(copies[0]),self.shelf.files['permanent'])
             self.assertTrue(copies[0].exists(),'disk cleanup runs on a worker')
@@ -248,7 +266,7 @@ class TransferUITests(unittest.TestCase):
         self.assertTrue(path.is_file());self.assertEqual(path.stat().st_size,256*1024)
     def test_pending_remote_video_never_opens_player_file_drag_clipboard_or_archive(self):
         ref=self.pending(remote=True)
-        with patch.object(subject.MediaPreview,'set_source',side_effect=AssertionError('Pending content cannot play')),\
+        with patch.object(file_preview.MediaPreview,'set_source',side_effect=AssertionError('Pending content cannot play')),\
              patch.object(QDesktopServices,'openUrl',side_effect=AssertionError('Pending content cannot open')),\
              patch.object(subject.QMessageBox,'warning',side_effect=AssertionError('Pending content cannot open modal errors')):
             popup=self.overview();self.assertIn(ref,popup.visible_refs())
@@ -260,10 +278,12 @@ class TransferUITests(unittest.TestCase):
             preview_active=opaque_artwork(popup.preview.stack)
             state=self.shelf.content.transfers.pop(ref);preview_normal=opaque_artwork(popup.preview.stack)
             self.shelf.content.transfers[ref]=state
-            self.assertNotEqual(preview_active,preview_normal,'right preview needs small transfer feedback')
+            self.assertEqual(preview_active,preview_normal,'upload feedback must not cover the preview controls')
+            self.assertTrue(popup.preview.transfer_row.isVisible())
+            self.assertIn('25%',popup.preview.transfer_meta.text())
             self.shelf.open_path(ref)
         payload=self.shelf.content.mime_for([ref]);self.assertFalse(payload.hasUrls());self.assertFalse(payload.hasText())
-        with patch.object(subject,'QDrag',side_effect=AssertionError('Pending content cannot drag')),\
+        with patch.object(shelf_window,'QDrag',side_effect=AssertionError('Pending content cannot drag')),\
              patch.object(self.shelf,'choose_zip_path',side_effect=AssertionError('Pending content cannot archive')),\
              patch.object(QApplication,'clipboard',side_effect=AssertionError('Pending content cannot copy')):
             self.assertEqual(self.shelf.drag_files('permanent',[ref]),Qt.DropAction.IgnoreAction)
@@ -281,6 +301,7 @@ class TransferUITests(unittest.TestCase):
         epoch=popup._build_epoch
         self.shelf.content.transfers[str(path)]['received']=80
         self.shelf.transfers_updated();flush()
+        until(lambda:popup.transfer_bar.value()==500)
         self.assertEqual(popup.transfer_bar.value(),500)
         self.assertEqual(popup._build_epoch,epoch,'chunk progress must repaint without layout rebuild')
         self.shelf.content.transfers.pop(str(path));self.shelf.content.pending.pop(pending);self.shelf.content.transfers.pop(pending)
@@ -294,7 +315,7 @@ class TransferUITests(unittest.TestCase):
         original_theme=ui_theme.current_theme()
         try:
             for theme in ('light','dark'):
-                ui_theme.set_theme(theme);ui_theme.apply_application(APP,subject.FONT_FAMILY)
+                ui_theme.set_theme(theme);ui_theme.apply_application(APP,shelf_ui_common.FONT_FAMILY)
                 for count in (1,123):
                     self.shelf.content.pending={f'flickdock:transfer:fixture-{index}':
                         dict(name=f'文件{index}.bin',kind='file') for index in range(count)}
@@ -308,7 +329,7 @@ class TransferUITests(unittest.TestCase):
                     self.assertEqual(popup.strip_title.text(),f'传输中 · {count} 项')
                     self.assertTrue(popup.transfer_strip.isVisible())
         finally:
-            ui_theme.set_theme(original_theme);ui_theme.apply_application(APP,subject.FONT_FAMILY)
+            ui_theme.set_theme(original_theme);ui_theme.apply_application(APP,shelf_ui_common.FONT_FAMILY)
 
     def test_overview_footer_shows_one_compact_transfer_and_opens_the_full_list(self):
         refs=[self.pending(f'传输文件{index}.bin',received=index*10,total=100)
@@ -319,8 +340,8 @@ class TransferUITests(unittest.TestCase):
         self.assertTrue(popup.transfer_strip.isVisible())
         self.assertEqual(popup._strip_refs,refs[-1:])
         self.assertEqual(sum(row.isVisible() for row,*_ in popup.strip_rows),1)
-        self.assertIn('+3',popup.strip_more.text())
-        self.assertEqual(popup.strip_rows[0][3].value(),300)
+        self.assertFalse(popup.strip_more.isVisible())
+        self.assertEqual(popup.strip_rows[0][3].value(),150)
         popup.setFixedWidth(330);popup.layout().activate();flush()
         self.assertTrue(popup.transfer_strip.isVisible())
         self.assertLessEqual(popup.transfer_strip.geometry().right(),popup.width())
@@ -328,12 +349,12 @@ class TransferUITests(unittest.TestCase):
         epoch=popup._build_epoch
         self.shelf.content.transfers[refs[-1]]['received']=65
         self.shelf.transfers_updated();flush()
-        self.assertEqual(popup.strip_rows[0][3].value(),650)
+        until(lambda:popup.strip_rows[0][3].value()==238)
         self.assertEqual(popup._build_epoch,epoch,'progress must not rebuild the overview')
         QTest.mouseClick(popup.strip_rows[0][1],Qt.MouseButton.LeftButton);flush()
         self.assertEqual(popup.category,'uploading')
         self.assertEqual(popup.primary_selection,refs[-1])
-        self.assertFalse(popup.transfer_strip.isVisible(),'the full list does not repeat the footer')
+        self.assertTrue(popup.transfer_strip.isVisible(),'the footer remains available in the transfer category')
         self.assertEqual(len(popup.visible_refs()),4)
         popup.set_category('all')
         self.shelf.content.transfers.clear();self.shelf.content.pending.clear()
@@ -359,7 +380,7 @@ class TransferUITests(unittest.TestCase):
         self.assertTrue(popup.transfer_strip.isVisible(),
                         'the All footer must reconcile at transition completion')
         self.assertEqual(popup._strip_refs,refs[-1:])
-        self.assertIn('+2',popup.strip_more.text())
+        self.assertFalse(popup.strip_more.isVisible())
         self.assertEqual(sum(row.isVisible() for row,*_ in popup.strip_rows),1)
 
     def test_percent_and_estimated_time_update_in_footer_category_and_preview(self):
@@ -375,6 +396,7 @@ class TransferUITests(unittest.TestCase):
         epoch=popup._build_epoch
         clock[0]=1.0;self.shelf.content.transfers[ref]['received']=4*1024*1024
         self.shelf.transfers_updated();flush()
+        until(lambda:'25%' in popup.transfer_eta.text())
         self.assertEqual(popup._build_epoch,epoch)
         self.assertIn('25% · 剩余约 3 秒',popup.transfer_eta.text())
         self.assertIn('25% · 剩余约 3 秒',popup.preview.transfer_meta.text())
@@ -400,24 +422,25 @@ class TransferUITests(unittest.TestCase):
         popup.set_category('uploading');self.assertIn(pending,popup.visible_refs())
 
     def test_selected_preview_uses_cloud_status_text_without_header_mark(self):
+        self.settings.update(capture_mode='reference')
         path=str(self.file('状态预览.txt'))
         self.shelf.add_paths('permanent',[path])
         state={'value':'pending'}
-        self.manager.sync=SimpleNamespace(upload_time_for_ref=lambda _:None,
+        self.manager.sync=SyncView(upload_time_for_ref=lambda _:None,
             sync_status_for_ref=lambda ref:state['value'],
             sync_statuses_for_refs=lambda refs:{ref:state['value'] for ref in refs})
-        popup=self.overview()
+        popup=self.overview();popup.select_item(path)
         self.assertEqual(popup.preview.current_path,path)
-        self.assertEqual(popup.preview.status_value.text(),subject.CLOUD_STATUS_LABELS['pending'])
+        self.assertEqual(popup.preview.status_value.text(),file_preview.file_presence_label('pending'))
         state['value']='synced'
         popup.refresh_cloud_status();flush()
-        self.assertEqual(popup.preview.status_value.text(),subject.CLOUD_STATUS_LABELS['synced'])
+        self.assertEqual(popup.preview.status_value.text(),file_preview.CLOUD_STATUS_LABELS['synced'])
         popup.preview.show_group((path,path))
         self.assertEqual(popup.preview.status_value.text(),'')
     def test_manager_projects_remote_pending_enables_expand_and_routes_cancel_to_sync(self):
         self.manager._sync_transfer_refs=set()
         calls=[]
-        self.manager.sync=SimpleNamespace(upload_time_for_ref=lambda _:None,cancel_upload=lambda value,**options:calls.append((value,options)))
+        self.manager.sync=SyncView(upload_time_for_ref=lambda _:None,cancel_upload=lambda value,**options:calls.append((value,options)))
         self.assertTrue(self.shelf.expand_button.isEnabled(),'empty shelf should still open the overview')
         state=dict(id='remote-item',ref=None,name='另一台设备的文档.pdf',kind='file',remote=True,
                    phase='remote',received=300,total=1000,upload_id='remote-upload')
@@ -436,17 +459,18 @@ class TransferUITests(unittest.TestCase):
         subject.ShelfManager._transfers_changed(self.manager,[]);flush()
         self.assertEqual(self.shelf.display_refs(),[]);self.assertTrue(self.shelf.expand_button.isEnabled())
         self.assertFalse(self.shelf.content.transfers)
-    def test_hovering_pending_then_restoring_completed_selection_clears_stale_progress(self):
+    def test_selecting_pending_then_completed_group_clears_stale_progress(self):
+        self.settings.update(capture_mode='reference')
         paths=[str(self.file('所选一.bin')),str(self.file('所选二.bin'))]
         self.shelf.add_paths('permanent',paths)
         pending=self.pending('其他设备正在上传.mp4',remote=True)
-        popup=self.overview();popup.select_item(paths[0]);popup.select_item(paths[1],toggle=True)
-        self.assertEqual(set(popup.chosen_refs()),set(paths))
-        popup.hover_item(pending);self.assertFalse(popup.preview.copy_button.isEnabled())
+        popup=self.overview();popup.select_item(pending)
+        self.assertFalse(popup.preview.copy_button.isEnabled())
         self.assertTrue(popup.preview.transfer_row.isVisible())
-        popup.end_hover(pending);flush()
+        popup.select_item(paths[0]);popup.select_item(paths[1],toggle=True);flush()
+        self.assertEqual(set(popup.chosen_refs()),set(paths))
         self.assertTrue(popup.preview.copy_button.isEnabled(),'restored completed selection must remain copyable')
-        self.assertFalse(popup.preview.transfer_row.isVisible(),'remote hover progress cannot remain on completed selected group')
+        self.assertFalse(popup.preview.transfer_row.isVisible(),'remote progress cannot remain on completed selected group')
         self.shelf.content.transfers[paths[1]]={'id':'selected-upload','phase':'uploading','received':10,'total':100}
         self.shelf.transfers_updated();self.shelf._repaint_transfers();flush()
         self.assertFalse(popup.preview.transfer_row.isVisible(),'a repaint must not restore individual progress over a selected group')
@@ -506,7 +530,7 @@ class TransferUITests(unittest.TestCase):
         def choose_images(menu,*_):
             labels.extend(action.text() for action in menu.actions())
             next(action for action in menu.actions() if action.text()=='图片').trigger()
-        with patch.object(subject.AnimatedMenu,'exec',choose_images):popup.open_category_menu()
+        with patch.object(shelf_ui_common.AnimatedMenu,'exec',choose_images):popup.open_category_menu()
         self.assertIn('传输中',labels)
         self.assertEqual(popup.category,'images')
         self.assertEqual(popup.category_picker.text(),'图片')
@@ -514,7 +538,7 @@ class TransferUITests(unittest.TestCase):
         bulk=[]
         def inspect_bulk(menu,*_):
             bulk.extend((action.text(),action.isEnabled()) for action in menu.actions() if not action.isSeparator())
-        with patch.object(subject.AnimatedMenu,'exec',inspect_bulk):popup.open_bulk_menu()
+        with patch.object(shelf_ui_common.AnimatedMenu,'exec',inspect_bulk):popup.open_bulk_menu()
         self.assertTrue(popup.select_all_button.isVisible())
         self.assertEqual(bulk,[('按时间排序',True),('按大小排序',True),('打包所选…',True),('打包全部…',True),('删除项目…',True)])
         for widget in (popup.title,popup.bulk_more,popup.category_picker,popup.narrow_view_button,popup.scroll):
@@ -541,7 +565,7 @@ class TransferUITests(unittest.TestCase):
                 counts.append(dialog.count)
                 self.assertEqual(dialog.count,1)
                 return accepted
-            with patch.object(subject.ClearConfirmOverlay,'exec',decide),patch.object(self.shelf,'remove_all') as remove:
+            with patch.object(shelf_window.ClearConfirmOverlay,'exec',decide),patch.object(self.shelf,'remove_all') as remove:
                 self.assertEqual(self.shelf.confirm_clear_all(),accepted)
                 if accepted:remove.assert_called_once_with('permanent')
                 else:remove.assert_not_called()

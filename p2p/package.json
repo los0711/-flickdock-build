@@ -3,5 +3,5 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "dependencies": {"node-datachannel": "0.33.6"}
+  "dependencies": {"node-datachannel": "0.33.6", "socks": "2.8.10"}
 }

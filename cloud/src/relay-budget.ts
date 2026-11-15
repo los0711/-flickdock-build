@@ -2,7 +2,16 @@
  * analytics can lag and an issued credential can be reused before revocation.
  */
 export interface RelayBudgetEnv {CF_ANALYTICS_TOKEN?:string;CF_ACCOUNT_ID?:string;TURN_MONTHLY_BUDGET_BYTES?:string;}
-export async function relayUsage(env:RelayBudgetEnv,storage:DurableObjectStorage){
+type Usage={at:number;bytes:number;revision?:number};
+const usageRequests=new WeakMap<DurableObjectStorage,Promise<Usage>>();
+export function relayUsage(env:RelayBudgetEnv,storage:DurableObjectStorage):Promise<Usage>{
+  const pending=usageRequests.get(storage);if(pending)return pending;
+  // Overlapping WebSocket events in one object must share the provider read.
+  // Competing refresh revisions otherwise trip the circuit breaker themselves.
+  const request=readRelayUsage(env,storage).finally(()=>usageRequests.delete(storage));
+  usageRequests.set(storage,request);return request;
+}
+async function readRelayUsage(env:RelayBudgetEnv,storage:DurableObjectStorage){
   const now=Date.now(),cached=await storage.get<{at:number;bytes:number;revision?:number}>('relay-usage');
   if(cached&&now-cached.at<30000)return cached;
   if(!env.CF_ANALYTICS_TOKEN||!/^[a-f0-9]{32}$/.test(env.CF_ACCOUNT_ID||''))throw new Error('中继用量监控暂不可用，仍可使用 P2P 直连。');

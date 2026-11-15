@@ -12,10 +12,11 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from PySide6.QtCore import QCoreApplication, QEvent, QPoint, Qt
+from PySide6.QtCore import QCoreApplication, QEvent, QPoint, QRect, Qt
 from PySide6.QtGui import QContextMenuEvent
+from PySide6.QtTest import QSignalSpy,QTest
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QLabel, QMenu, QPushButton
+from PySide6.QtWidgets import QApplication, QLabel, QMenu, QPushButton
 
 from app_settings import SettingsStore
 from lan_panel import LanDialog
@@ -24,6 +25,27 @@ from test_html_native_lan import APP, FakeLan
 
 
 class LanHigLayoutTests(unittest.TestCase):
+    def test_activity_layout_settles_instead_of_invalidating_itself_forever(self):
+        self.settle();spy=QSignalSpy(self.panel._activity_fit_timer.timeout)
+        QTest.qWait(150);self.settle()
+        self.assertLessEqual(spy.count(),1)
+        self.assertFalse(self.panel._activity_fit_timer.isActive())
+        self.dialog.hide();self.settle();before=spy.count()
+        QTest.qWait(150);self.settle()
+        self.assertEqual(spy.count(),before)
+
+    def test_light_workbench_has_separate_surfaces_and_mode_selection_has_no_blue_outline(self):
+        for theme in ('dark','light'):
+            self.dialog.apply_theme(theme);control=self.dialog.mode_buttons['lan']
+            QTest.mouseClick(control,Qt.LeftButton);self.settle()
+            image=control.grab().toImage();ratio=image.devicePixelRatio()
+            pixel=image.pixelColor(round(control.width()/2*ratio),round(1*ratio))
+            self.assertLess(abs(pixel.blue()-pixel.red()),50)
+            if theme=='light':
+                image=self.panel.queue_area.grab().toImage();ratio=image.devicePixelRatio()
+                pixel=image.pixelColor(round(self.panel.queue_area.width()/2*ratio),round((self.panel.queue_area.height()-4)*ratio))
+                self.assertEqual(pixel.name(),'#ffffff')
+
     def setUp(self):
         self.screen=patch('window_chrome.WindowChrome._available',return_value=__import__('PySide6.QtCore',fromlist=['QRect']).QRect(0,0,1920,1080));self.screen.start()
         self.temp=tempfile.TemporaryDirectory(prefix='flickdock-lan-hig-')
@@ -72,9 +94,34 @@ class LanHigLayoutTests(unittest.TestCase):
             total=86*1024**2,code='849249'))
         self.settle()
 
+    def test_incoming_offer_and_secondary_details_align_in_both_themes(self):
+        self.load_busy_state();panel=self.panel
+        for theme in ('light','dark'):
+            self.dialog.apply_theme(theme);self.settle()
+            card=panel._rows['incoming']['extra']
+            caption=card.findChild(QLabel,'lanOfferCodeCaption')
+            code=card.findChild(QPushButton,'lanOfferCodeValue')
+            peer=card.findChild(QLabel,'lanOfferPeer');filename=card.findChild(QLabel,'lanOfferFile')
+            metadata=next(w for w in card.findChildren(QLabel,'lanOfferMeta') if not w.isHidden())
+            self.assertEqual(filename.parentWidget().objectName(),'lanOfferFileRow')
+            self.assertIs(metadata.parentWidget(),filename.parentWidget())
+            reject=card.findChild(QPushButton,'lanOfferReject');accept=card.findChild(QPushButton,'lanOfferAccept')
+            self.assertTrue(panel._rows['incoming']['offer_destination'].isHidden())
+            for widget in (caption,code,peer,filename,metadata,reject,accept):
+                self.assertTrue(card.rect().contains(QRect(widget.mapTo(card,QPoint()),widget.size())),widget.objectName())
+            self.assertLess(peer.mapTo(card,QPoint(peer.width(),0)).x(),caption.mapTo(card,QPoint()).x())
+            self.assertLess(filename.geometry().right(),metadata.geometry().left())
+            self.assertLess(reject.geometry().right(),accept.geometry().left())
+            self.assertLess(caption.mapTo(card,QPoint(caption.width(),0)).x(),code.mapTo(card,QPoint()).x())
+            self.assertLessEqual(abs(caption.mapTo(card,caption.rect().center()).y()-code.mapTo(card,code.rect().center()).y()),2)
+            self.assertLess(panel._rows['active']['detail'].font().pixelSize(),panel._rows['active']['title'].font().pixelSize())
+            self.assertLess(next(iter(panel._queue_labels.values())).font().pixelSize(),peer.font().pixelSize())
+            self.assertEqual(panel.send_button.font().family(),QApplication.font().family())
+
     def test_click_and_keyboard_use_native_file_picker_folder_stays_in_context_menu(self):
         source=self.files(1)[0]
-        self.assertTrue(self.panel.add_files.isVisible())
+        self.assertFalse(self.panel.add_files.isVisible())
+        self.assertTrue(self.panel.drop_zone.isVisible())
         with patch('lan_panel.QFileDialog.getOpenFileNames',return_value=([source],'')) as picker:
             QTest.mouseClick(self.panel.drop_zone.title,Qt.MouseButton.LeftButton)
             self.settle()
@@ -133,6 +180,69 @@ class LanHigLayoutTests(unittest.TestCase):
         _x,y,width,height=calls[0]
         self.assertEqual((width,height),(14,14))
         self.assertLessEqual(abs(y+height/2-self.panel.devices.height()/2),.5)
+
+    def test_clear_history_persists_without_touching_queue_live_task_or_received_files(self):
+        self.load_busy_state();panel=self.panel
+        paths=list(panel._queued_paths)
+        panel.clear_history.click();self.settle()
+        self.assertEqual(panel._history,[])
+        self.assertEqual(json.loads(panel._history_path.read_text(encoding='utf-8')),[])
+        self.assertFalse(panel.clear_history.isEnabled())
+        self.assertIn('active',panel._rows)
+        self.assertEqual(panel._queued_paths,paths)
+        self.assertTrue(all(Path(path).is_file() for path in paths))
+
+    def test_failed_history_clear_keeps_records_and_explains_disk_error(self):
+        self.load_busy_state();panel=self.panel;previous=list(panel._history)
+        with patch.object(panel,'_save_history',side_effect=PermissionError('fixture read-only directory')):
+            panel.clear_history.click()
+        self.assertEqual(panel._history,previous)
+        self.assertEqual(len(panel.history_rows),len(previous))
+        self.assertTrue(panel.clear_history.isEnabled())
+        self.assertIn('无法清空',panel.status_label.text())
+
+    def test_open_device_popup_has_its_own_opaque_background_and_keeps_keyboard_selection(self):
+        from PySide6.QtGui import QColor
+        combo=self.panel.devices
+        for index in range(3):combo.addItem('同账号 · 设备 '+str(index),'fixture-'+str(index))
+        for theme,background in (('dark','#171717'),('light','#FFFFFF')):
+            self.dialog.apply_theme(theme);combo.setCurrentIndex(0);combo.showPopup();self.settle()
+            view=combo.view();popup=view.window();image=view.viewport().grab().toImage()
+            self.assertEqual(popup.objectName(),'lanDevicePopup')
+            self.assertIn('border:1px solid',popup.styleSheet())
+            edge=popup.grab().toImage()
+            self.assertNotEqual(edge.pixelColor(edge.width()//2,0),QColor(background))
+            from lan_panel import DEVICE_POPUP_GAP_PX
+            below=combo.mapToGlobal(QPoint(0,combo.height())).y()+DEVICE_POPUP_GAP_PX
+            area=combo.screen().availableGeometry()
+            if below+popup.height()<=area.bottom()+1:self.assertGreaterEqual(popup.y(),below)
+            position=view.visualRect(view.model().index(1,0)).center()
+            self.assertEqual(image.pixelColor(8,position.y()).alpha(),255)
+            self.assertEqual(image.pixelColor(8,position.y()),QColor(background))
+            self.assertFalse(popup.testAttribute(Qt.WA_TranslucentBackground))
+            QTest.keyClick(view,Qt.Key_Down);QTest.keyClick(view,Qt.Key_Return)
+            self.assertEqual(combo.currentIndex(),1);self.assertFalse(popup.isVisible())
+        # When the screen has no room below, preserve the gap by opening above.
+        anchor=combo.mapToGlobal(QPoint()).y();height=popup.height()
+        from types import SimpleNamespace
+        screen=SimpleNamespace(availableGeometry=lambda:QRect(0,anchor-height-DEVICE_POPUP_GAP_PX,1920,height+combo.height()+DEVICE_POPUP_GAP_PX))
+        with patch.object(combo,'screen',return_value=screen):
+            combo.showPopup();self.settle()
+            self.assertLessEqual(popup.y()+popup.height(),anchor-DEVICE_POPUP_GAP_PX)
+            combo.hidePopup();self.settle()
+
+    def test_empty_queue_heading_stays_at_top_and_drop_target_fills_then_compacts(self):
+        from lan_panel import CARD_MARGIN_PX,QUEUE_EMPTY_HEIGHT_PX,DROP_ZONE_COMPACT_HEIGHT_PX
+        panel=self.panel;paths=self.files(1)
+        for count in (0,1,0,1,0):
+            panel.queue_paths(paths[:count],replace=True);self.settle()
+            heading=panel.add_files.mapTo(panel.queue_area,QPoint()).y()
+            self.assertEqual(heading,CARD_MARGIN_PX)
+            self.assertEqual(panel.drop_zone.geometry().bottom(),panel.queue_area.height()-CARD_MARGIN_PX-1)
+            if count:self.assertEqual(panel.drop_zone.height(),DROP_ZONE_COMPACT_HEIGHT_PX)
+            else:
+                self.assertEqual(panel.queue_area.height(),QUEUE_EMPTY_HEIGHT_PX)
+                self.assertGreater(panel.drop_zone.height(),90)
 
     def test_busy_default_and_minimum_windows_keep_actions_complete_and_surface_opaque(self):
         self.load_busy_state()

@@ -1,4 +1,5 @@
 """Open-window remote changes; disposable Qt offscreen views, no OS hooks."""
+import overview_ui
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -13,6 +14,8 @@ import test_html_native_workspace as workspace_fixture
 from content_stack import StackTile
 
 
+from test_html_native_workspace import SyncView
+
 class LiveShelfTests(unittest.TestCase):
     def setUp(self):
         workspace_fixture.WorkspaceTests.setUp(self)
@@ -21,7 +24,7 @@ class LiveShelfTests(unittest.TestCase):
     overview = workspace_fixture.WorkspaceTests.overview
 
     def rows(self, popup):
-        return {row.path: row for row in popup.rows_body.findChildren(subject.FileRow)
+        return {row.path: row for row in popup.rows_body.findChildren(overview_ui.FileRow)
                 if not row.isHidden()}
 
     def test_metadata_update_keeps_existing_widgets_selection_and_preview(self):
@@ -75,21 +78,22 @@ class LiveShelfTests(unittest.TestCase):
         from PySide6.QtGui import QImage,QColor
         self.manager.motion=True;self.manager._sync_transfer_refs=set()
         tile=self.shelf.zones['permanent'].icon;tile.motion=True
-        self.manager.sync=SimpleNamespace(upload_time_for_ref=lambda _:None,catching_up=False,sync_status_for_ref=lambda _:'synced')
+        self.manager.sync=SyncView(upload_time_for_ref=lambda _:None,catching_up=False,sync_status_for_ref=lambda _:'synced')
         popup=self.overview();adapter=ShelfAdapter(self.manager)
         for mode in ('list','icons'):
             self.settings.update(view_mode=mode);popup._render_signature=None;popup.rebuild();flush()
             identity='handoff-'+mode;pending='flickdock:transfer:'+identity
             transfer=dict(id=identity,remote=True,phase='downloading',name=mode+'.png',kind='file',total=1024,received=100)
             subject.ShelfManager._transfers_changed(self.manager,[transfer]);until(lambda:pending in popup._item_widgets)
-            tile.landing.setCurrentTime(260);popup.select_item(pending);old=popup._item_widgets[pending]
+            tile.landing.setCurrentTime(tile.landing.duration());popup.select_item(pending);old=popup._item_widgets[pending]
             image=QImage(64,64,QImage.Format_RGB32);image.fill(QColor('#2478ab'))
             path=self.base/(mode+'.png');image.save(str(path));ref=str(path)
             view=adapter.snapshot();view['permanent'].append(ref);view['metadata'][ref]={'_cloud_item_id':identity,'title':path.name}
-            with patch.object(self.shelf,'show') as show,patch.object(self.shelf,'hide') as hide:
+            with patch.object(self.shelf,'show') as show,patch.object(self.shelf,'hide') as hide,patch.object(popup,'_detach_rows_layout',wraps=popup._detach_rows_layout) as detach:
                 adapter.restore(view);until(lambda:ref in popup._item_widgets)
                 subject.ShelfManager._transfers_changed(self.manager,[]);flush()
                 self.assertIs(popup._item_widgets[ref],old);self.assertFalse(popup.item_transitions.ghosts)
+                self.assertEqual(detach.call_count,0,'An identity-to-path handoff must not rebuild the whole layout')
                 self.assertEqual(popup.selected,{ref});self.assertEqual(popup.preview.current_path,ref)
                 self.assertEqual(tile.landing.state(),tile.landing.State.Stopped)
                 self.assertEqual(tile.removal.state(),tile.removal.State.Stopped)
@@ -110,7 +114,7 @@ class LiveShelfTests(unittest.TestCase):
         popup.resize(740,550);flush();flush()
         self.assertEqual(item.x(),popup.rows_layout.contentsMargins().left())
 
-    def test_batch_removal_parallel_fades_and_survivors_move(self):
+    def test_batch_removal_discards_old_artwork_and_survivors_move(self):
         popup=self.overview();self.manager.motion=True
         before=self.rows(popup);remaining=self.paths[0]
         start=before[remaining].pos()
@@ -121,8 +125,8 @@ class LiveShelfTests(unittest.TestCase):
         with patch('item_transitions.time',SimpleNamespace(perf_counter=lambda:clock[0])):
             view['permanent']=[remaining];adapter.restore(view);flush()
             motion=popup.item_transitions
-            self.assertEqual(len(motion.ghosts),2)
-            self.assertTrue(motion.overlay.isVisible())
+            self.assertEqual(len(motion.ghosts),0)
+            self.assertFalse(motion.overlay.isVisible())
             self.assertEqual(set(popup.visible_refs()),{remaining})
             self.assertIs(self.rows(popup)[remaining],before[remaining])
             self.assertEqual(before[remaining].pos(),start)
@@ -134,17 +138,37 @@ class LiveShelfTests(unittest.TestCase):
             self.assertFalse(motion.timer.isActive());self.assertFalse(motion.ghosts)
         self.assertTrue(popup.isVisible());self.assertTrue(self.shelf.expanded)
 
-    def test_delete_all_fades_over_empty_state_then_releases_snapshots(self):
+    def test_delete_all_shows_empty_state_without_deleted_snapshots(self):
         popup=self.overview();self.manager.motion=True
         adapter=ShelfAdapter(self.manager);view=adapter.snapshot();view['permanent']=[]
         adapter.restore(view);flush()
         motion=popup.item_transitions
         self.assertEqual(popup.visible_refs(),[])
         self.assertTrue(popup.empty_state.isVisible())
-        self.assertEqual(len(motion.ghosts),3)
-        self.assertTrue(motion.overlay.isVisible())
+        self.assertEqual(len(motion.ghosts),0)
+        self.assertFalse(motion.overlay.isVisible())
         QTest.qWait(240);flush()
         self.assertFalse(motion.ghosts);self.assertFalse(motion.overlay.isVisible())
+
+    def test_last_delete_empty_target_fades_and_rises_six_pixels_then_restores_native_layout(self):
+        self.manager.motion=True;popup=self.overview();adapter=ShelfAdapter(self.manager)
+        view=adapter.snapshot();view['permanent']=[];adapter.restore(view);flush()
+        entrance=popup.empty_entrance
+        self.assertTrue(entrance.active);self.assertTrue(entrance.effect.isEnabled())
+        self.assertLessEqual(abs(popup.empty_drop.geometry().center().x()-popup.empty_state.rect().center().x()),1)
+        self.assertGreaterEqual(entrance.effect.progress,0);self.assertLess(entrance.effect.progress,1)
+        QTest.qWait(240);flush()
+        self.assertFalse(entrance.active);self.assertFalse(entrance.effect.isEnabled())
+        self.assertLessEqual(abs(popup.empty_drop.geometry().center().x()-popup.empty_state.rect().center().x()),1)
+        self.assertTrue(popup.empty_drop.isVisible())
+
+    def test_incoming_content_interrupts_empty_entrance_without_leaving_a_dimmed_drop_target(self):
+        self.manager.motion=True;popup=self.overview();adapter=ShelfAdapter(self.manager)
+        view=adapter.snapshot();view['permanent']=[];adapter.restore(view);flush()
+        self.assertTrue(popup.empty_entrance.active)
+        view['permanent']=self.paths[:1];adapter.restore(view);flush()
+        self.assertFalse(popup.empty_entrance.active);self.assertFalse(popup.empty_entrance.effect.isEnabled())
+        self.assertFalse(popup.empty_state.isVisible());self.assertIn(self.paths[0],popup._item_widgets)
 
     def test_metadata_during_batch_build_does_not_stall_or_leak_height(self):
         popup=self.overview();adapter=ShelfAdapter(self.manager)
@@ -179,7 +203,7 @@ class LiveShelfTests(unittest.TestCase):
     def test_compact_delete_parallel_fade_and_no_false_arrival(self):
         tile=StackTile(self.shelf,motion=True);tile.resize(170,140);tile.show()
         tile.set_stack(self.shelf.content,self.paths)
-        tile.landing.setCurrentTime(260)
+        tile.landing.setCurrentTime(tile.landing.duration())
         tile.set_stack(self.shelf.content,self.paths[:1])
         self.assertEqual(tile.refs,tuple(self.paths[:1]))
         self.assertEqual(tile.removal.duration(),200)
@@ -195,12 +219,23 @@ class LiveShelfTests(unittest.TestCase):
         self.assertFalse(tile._exit_from);self.assertFalse(tile._exit_to)
         self.assertFalse(a.isNull())
 
+    def test_hidden_compact_stack_does_not_replay_deleted_file_exit_layers(self):
+        tile=StackTile(self.shelf,motion=True);tile.resize(170,140);tile.show()
+        tile.set_stack(self.shelf.content,self.paths)
+        tile.landing.setCurrentTime(tile.landing.duration())
+        tile.set_stack(self.shelf.content,self.paths[:1]);tile.hide()
+        self.assertFalse(tile._exit_from);self.assertFalse(tile._exit_to)
+        tile.set_stack(self.shelf.content,[]);tile.set_content('empty');tile.show()
+        self.assertEqual(tile.removal.state(),tile.removal.State.Stopped)
+        self.assertFalse(tile._exit_from);self.assertFalse(tile._exit_to)
+        self.assertEqual(tile.refs,());self.assertEqual(tile._kind,'empty')
+
     def test_reconnect_backfill_keeps_front_then_live_arrival_is_animated(self):
         tile=StackTile(self.shelf,motion=True);tile.resize(170,140);tile.show()
         repository=self.shelf.content
         refs=list(self.paths)
         for index,ref in enumerate(refs):repository.metadata.setdefault(ref,{})['_cloud_item_id']=f'known-{index}'
-        tile.set_stack(repository,refs);tile.landing.setCurrentTime(260)
+        tile.set_stack(repository,refs);tile.landing.setCurrentTime(tile.landing.duration())
         front=tile.refs[-1];repository.quiet_cloud_refresh=True
         for index in range(12):
             ref=f'flickdock:transfer:backfill-{index}'

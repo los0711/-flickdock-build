@@ -5,7 +5,8 @@ import tempfile,unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock,patch
-from PySide6.QtCore import QEvent,QPoint,QRect,Qt,QObject
+from PySide6.QtCore import QEvent,QPoint,QPointF,QRect,Qt,QObject
+from PySide6.QtGui import QEnterEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QToolTip
 from test_html_native_workspace import APP,flush,until
@@ -27,7 +28,7 @@ class FeedbackTests(unittest.TestCase):
             configure_reference_font(APP)
             dialog=app_settings.SettingsDialog(app_settings.SettingsStore(Path(directory)))
             service=Service();service.account=dict(id='fixture',username='Roger',login_alias='id:legacy-account-identity')
-            panel=AccountPanel(service);dialog.set_account_panel(panel)
+            panel=AccountPanel(service);dialog.set_account_panel(panel);dialog.select_category('账号与设备')
             panel.set_sync_status('可同步内容已同步；1 项暂留本机，请检查文件大小或原文件所在位置。')
             dialog.show();flush()
             try:
@@ -50,7 +51,7 @@ class FeedbackTests(unittest.TestCase):
             lan=LanTransferService(discovery=False);wan=WanTransferService(Path(directory)/'wan',enabled=False)
             dialog=LanDialog(lan,store);dialog.show();flush()
             manager=SimpleNamespace(shelf=SimpleNamespace(_release_reveal_level=lambda:None),lan=lan,wan=wan,
-                lan_dialog=dialog,wan_dialog=dialog,settings=store,_lan_selected=lambda:[],_center_dialog=Mock(),_send_account_from_lan=lambda peer,paths:None)
+                lan_dialog=dialog,wan_dialog=dialog,settings=store,_lan_selected=lambda:[],_center_dialog=Mock())
             manager._show_transfer_dialog=lambda service:flickdock.ShelfManager._show_transfer_dialog(manager,service)
             manager.show_lan_dialog=lambda:flickdock.ShelfManager.show_lan_dialog(manager)
             manager.show_wan_dialog=lambda:flickdock.ShelfManager.show_wan_dialog(manager)
@@ -180,7 +181,7 @@ class FeedbackTests(unittest.TestCase):
         self.assertTrue(configure_menu_bar_application(platform='darwin',appkit=appkit))
         application.setActivationPolicy_.assert_called_once_with(1)
     def test_copy_code_click_immediately_shows_feedback_without_replacing_digits(self):
-        for code in ('123456','ABCD2345'):
+        for code in ('123456','AB23'):
             button=_CopyCodeButton(code);button.show();flush()
             try:
                 QTest.mouseClick(button,Qt.LeftButton);flush()
@@ -230,12 +231,18 @@ class FeedbackTests(unittest.TestCase):
                 return count
             for kind in ('dock','drag'):
                 shelf.presentation_kind=kind
-                APP.sendEvent(zone,QEvent(QEvent.Leave));flush();normal=blue_pixels()
-                APP.sendEvent(zone,QEvent(QEvent.Enter));flush()
+                APP.sendEvent(zone,QEvent(QEvent.Leave))
+                zone.icon.border_motion.animation.setCurrentTime(zone.icon.border_motion.animation.duration())
+                flush();normal=blue_pixels()
+                point=zone.icon.geometry().center()
+                APP.sendEvent(zone,QEnterEvent(QPointF(point),QPointF(point),QPointF(zone.mapToGlobal(point))))
+                zone.icon.border_motion.animation.setCurrentTime(zone.icon.border_motion.animation.duration());flush()
                 self.assertNotIn('#0A84FF',zone.styleSheet())
                 self.assertGreater(blue_pixels(),normal+15)
                 self.assertIsNone(shelf.popup)
-                APP.sendEvent(zone,QEvent(QEvent.Leave));flush();self.assertEqual(blue_pixels(),normal)
+                APP.sendEvent(zone,QEvent(QEvent.Leave))
+                zone.icon.border_motion.animation.setCurrentTime(zone.icon.border_motion.animation.duration())
+                flush();self.assertEqual(blue_pixels(),normal)
         finally:fixture.tearDown()
 
     def test_return_from_transfer_keeps_same_card_bounds_without_morph_or_edge_reveal(self):
@@ -288,7 +295,7 @@ class FeedbackTests(unittest.TestCase):
             'stale':dict(dirty=True,ref='gone',fingerprint='old',blocked_fingerprint='old')}
         engine=SimpleNamespace(upload_enabled=True,receive_enabled=True,state=dict(entries=entries),running=True,transfer=None,
             _clipboard_priority=False,_lane_context=None,upload_lanes=SimpleNamespace(active={},retry_at={},blocked=lambda _:False),clipboard_bridge=None,
-            _cycle_direction='',_refresh_again=False,_notify_transfers=lambda:None,_pending_removal=lambda:None,_paused=lambda _:False,
+            _cycle_direction='',_refresh_again=False,_notify_transfers=lambda:None,_retire_item_removals=lambda:None,_paused=lambda _:False,
             adapter=SimpleNamespace(snapshot=lambda:dict(permanent=['blocked'])),status_changed=SimpleNamespace(emit=statuses.append))
         for identity,entry in entries.items():entry['id']=identity
         ShelfSync._push_next(engine);self.assertEqual(statuses[-1],'搁架已同步。')

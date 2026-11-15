@@ -75,7 +75,7 @@ def main():
               'size':len(payload), 'sha256':hashlib.sha256(payload).hexdigest()}
     with tempfile.TemporaryDirectory(prefix='flickdock-cloud-fast-download-') as temp:
         service = Service(Transport(record, payload, chunk))
-        engine = shelf_sync.ShelfSync(temp, service, Adapter(), poll_ms=600000)
+        engine = shelf_sync.ShelfSync(temp, service, Adapter())
         engine.account_id = 'test'; engine.owner = 'test'
         engine.state = {'entries':{}, 'downloads':{}, 'cursor':'0'}
         target = engine._download_target(record)

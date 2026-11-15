@@ -3,7 +3,31 @@ import {fileEnvelope,envelopeSize,registerClipboardFile,releaseClipboardFile,arc
 type Env={DB:D1Database;FILES:R2Bucket};
 type Head={id:string;version:number;account:string;device:string;ready:boolean;expired?:boolean;kind?:string;size?:number;sha256?:string;at:number;copied_at?:number;sequence?:number;object_key?:string;allocation_id?:string;inline?:string;upload_id?:string;raw_file?:FileEnvelope};
 type Hold={device:string;items:string[];expires:number};
+type DeliveryRoute='lan'|'p2p'|'relay'|'cloud';
+type Delivery={id:string;sha256:string;origin:string;plan:Record<string,DeliveryRoute>;receipts:Record<string,DeliveryRoute>;received?:Record<string,DeliveryRoute>};
+const DELIVERY_ROUTES=['lan','p2p','relay','cloud'];
 const MAX=20*1024*1024,UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
+const MAX_CONTROL_ARCHIVE_BYTES=1024;
+const remotePlaceholder=(name:string)=>/^\.uuremote_[A-Za-z0-9_-]{8,128}$/i.test(name.replaceAll('\\','/').split('/').pop()!);
+
+async function tinyArchive(body:ReadableStream<Uint8Array>,size:number){
+  const reader=body.getReader(),bytes=new Uint8Array(size);let offset=0;
+  try{
+    while(true){const {value,done}=await reader.read();if(done)break;
+      if(offset+value.length>size){await reader.cancel();throw new Error('Clipboard size mismatch');}
+      bytes.set(value,offset);offset+=value.length;}
+  }finally{reader.releaseLock();}
+  if(offset!==size)throw new Error('Clipboard size mismatch');
+  return bytes;
+}
+
+function controlArchive(bytes:Uint8Array){
+  if(bytes.length<30)return false;
+  const view=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
+  if(view.getUint32(0,true)!==0x04034b50)return false;
+  const length=view.getUint16(26,true);
+  return length>0&&30+length<=bytes.length&&remotePlaceholder(new TextDecoder().decode(bytes.subarray(30,30+length)));
+}
 const json=(value:object,status=200)=>Response.json({schema_version:1,server_time:Date.now(),...value},{status,headers:{'Cache-Control':'no-store'}});
 const fail=(status:number,code:string)=>json({error:{code,message:'Clipboard content unavailable'}},status);
 const key=(head:Head)=>head.object_key||`clipboard/${head.account}/${head.id}`;
@@ -75,7 +99,7 @@ export async function clipboardAlarm(ctx:DurableObjectState,env:Env){
       if(current?.id!==head.id||current.expired)return null;
       const pending=await tx.get<Head>('clipboard-pending');
       const empty:Head={id:crypto.randomUUID(),version:Math.max(current.version,pending?.version||0)+1,account:head.account,device:'',ready:false,expired:true,at:Date.now()};
-      await tx.put('clipboard-head',empty);await tx.put(retiredKey(head),head);return head;
+      await tx.put('clipboard-head',empty);await tx.delete('clipboard-delivery:'+head.id);await tx.put(retiredKey(head),head);return head;
     });
     if(retiredHead)await retire(ctx,env,retiredHead);
   }
@@ -96,9 +120,57 @@ export async function clipboardAlarm(ctx:DurableObjectState,env:Env){
 }
 
 export async function clipboardRequest(request:Request,ctx:DurableObjectState,env:Env,
-    spend:(kind:'A'|'B')=>Promise<void>,notify:(device:string,head?:Head)=>Promise<unknown>):Promise<Response>{
+    spend:(kind:'A'|'B',operations?:D1PreparedStatement[])=>Promise<void>,notify:(device:string,head?:Head)=>Promise<unknown>,
+    notifyDelivery:(device:string,delivery:Delivery)=>Promise<unknown>):Promise<Response>{
   const path=new URL(request.url).pathname,account=request.headers.get('X-Clipboard-Account')||'',device=request.headers.get('X-Clipboard-Device')||'';
   if(!UUID.test(account)||!UUID.test(device))return fail(401,'UNAUTHORIZED');
+  const deliveryMatch=path.match(/^\/clipboard\/([a-f0-9-]{36})\/delivery$/);
+  if(deliveryMatch){
+    if(request.method!=='POST')return fail(405,'INVALID_REQUEST');
+    let input:{sha256?:string;route?:DeliveryRoute;plan?:Record<string,DeliveryRoute>;stage?:'received'|'applied'};
+    const reader=request.body?.getReader();let text='';
+    try{
+      let size=0;const decoder=new TextDecoder('utf-8',{fatal:true,ignoreBOM:false});
+      if(reader)while(true){const chunk=await reader.read();if(chunk.done)break;size+=chunk.value.byteLength;
+        if(size>16384){await reader.cancel();return fail(413,'BODY_TOO_LARGE');}text+=decoder.decode(chunk.value,{stream:true});}
+      text+=decoder.decode();input=JSON.parse(text);
+    }catch{return fail(400,'INVALID_REQUEST');}finally{reader?.releaseLock();}
+    if(!input||typeof input!=='object'||Object.keys(input).some(key=>!['sha256','route','plan','stage'].includes(key))||
+       !/^[a-f0-9]{64}$/.test(input.sha256||'')||input.route!==undefined&&!DELIVERY_ROUTES.includes(input.route)||
+       input.stage!==undefined&&(!['received','applied'].includes(input.stage)||input.route===undefined))return fail(400,'INVALID_REQUEST');
+    if(input.plan!==undefined){
+      if(!input.plan||typeof input.plan!=='object'||Array.isArray(input.plan)||Object.keys(input.plan).length>100||
+         Object.entries(input.plan).some(([id,route])=>!UUID.test(id)||!DELIVERY_ROUTES.includes(route)||id===device))return fail(400,'INVALID_REQUEST');
+      const targets=Object.keys(input.plan);
+      if(targets.length){
+        const members=await env.DB.prepare(`SELECT id FROM devices WHERE account_id=? AND revoked_at IS NULL AND id IN (${targets.map(()=>'?').join(',')})`)
+          .bind(account,...targets).all<{id:string}>();
+        if(members.results.length!==targets.length)return fail(403,'DELIVERY_TARGET_ACCOUNT');
+      }
+    }
+    const result=await ctx.storage.transaction(async tx=>{
+      const head=await tx.get<Head>('clipboard-head');
+      if(!head?.ready||!head.sha256||head.expired||head.id!==deliveryMatch[1]||head.sha256!==input.sha256||head.account!==account)return null;
+      if((input.plan!==undefined&&device!==head.device)||(input.route!==undefined&&device===head.device))return 'owner' as const;
+      if(input.plan===undefined&&input.route===undefined)return 'invalid' as const;
+      const key='clipboard-delivery:'+head.id;
+      const old=await tx.get<Delivery>(key);
+      const next:Delivery=old&&old.sha256===head.sha256?structuredClone(old):{id:head.id,sha256:head.sha256,origin:head.device,plan:{},receipts:{}};
+      next.received=next.received||{};
+      if(input.route!==undefined&&!(device in next.received)&&Object.keys(next.received).length>=100)return 'invalid' as const;
+      if(input.route!==undefined&&input.stage!=='received'&&!(device in next.receipts)&&Object.keys(next.receipts).length>=100)return 'invalid' as const;
+      if(input.plan!==undefined)next.plan=input.plan;
+      if(input.route!==undefined){next.received[device]=input.route;if(input.stage!=='received')next.receipts[device]=input.route;}
+      const changed=JSON.stringify(next)!==JSON.stringify(old);
+      if(changed)await tx.put(key,next);
+      return {delivery:next,changed};
+    });
+    if(result===null)return fail(409,'CLIPBOARD_REPLACED');
+    if(result==='owner')return fail(403,'CLIPBOARD_OWNER');
+    if(result==='invalid')return fail(400,'INVALID_REQUEST');
+    if(result.changed)ctx.waitUntil(notifyDelivery(device,result.delivery));
+    return json({delivery:result.delivery});
+  }
   const holdMatch=path.match(/^\/clipboard\/([a-f0-9-]{36})\/(retain|release|shared)$/);
   if(holdMatch&&UUID.test(holdMatch[1])){
     const id=holdMatch[1],operation=holdMatch[2];
@@ -218,6 +290,7 @@ export async function clipboardRequest(request:Request,ctx:DurableObjectState,en
         const pending=await tx.get<Head>('clipboard-pending');if(!pending||pending.id!==value.id||pending.device!==device)return null;
         const next:Head={...pending,version:Math.max(pending.version,(active?.version||0)+1),ready:true,kind:'text',size:inline.size,sha256:inline.sha256,inline:inline.body};
         previous=active;await tx.put('clipboard-head',next);await tx.delete('clipboard-pending');
+        if(active)await tx.delete('clipboard-delivery:'+active.id);
         if(active)await tx.put(retiredKey(active),active);
         return next;
       });
@@ -236,7 +309,7 @@ export async function clipboardRequest(request:Request,ctx:DurableObjectState,en
   // This is capability negotiation only; account/device auth stays above.
   const needsUpgrade=head?.sequence!==undefined&&legacyReader(request);
   if(request.method==='GET'&&path==='/clipboard')return needsUpgrade?
-    json({clipboard:null,upgrade_required:true}):json({clipboard:head||null});
+    json({clipboard:null,upgrade_required:true}):json({clipboard:head||null,delivery:head?await ctx.storage.get<Delivery>('clipboard-delivery:'+head.id)||null:null});
   const id=path.match(/^\/clipboard\/([a-f0-9-]{36})\/content$/)?.[1];
   if(!id)return fail(409,'CLIPBOARD_REPLACED');
   if(request.method==='GET'){
@@ -267,22 +340,35 @@ export async function clipboardRequest(request:Request,ctx:DurableObjectState,en
   if(!Number.isSafeInteger(size)||size<1||size>=(['files','text'].includes(kind)?MAX+1024*1024:MAX)||!['text','image','files'].includes(kind)||!/^[a-f0-9]{64}$/.test(sha256)||!request.body)return fail(413,'CLIPBOARD_LIMIT');
   let rawFile:FileEnvelope|undefined;
   try{rawFile=fileEnvelope(request,kind,size);}catch{return fail(400,'CLIPBOARD_RAW_FILE_INVALID');}
+  if(rawFile&&remotePlaceholder(rawFile.name))return fail(422,'CLIPBOARD_TRANSIENT_FILE');
+  let inputBody=request.body;
+  // Legacy empty-file envelopes have no raw-file header. Inspect only these
+  // bounded tiny bodies before allocating or publishing, without another R2 read.
+  if(kind==='files'&&!rawFile&&size<=MAX_CONTROL_ARCHIVE_BYTES){
+    let bytes:Uint8Array;
+    try{bytes=await tinyArchive(inputBody,size);}catch{return fail(400,'CLIPBOARD_LENGTH');}
+    if(controlArchive(bytes))return fail(422,'CLIPBOARD_TRANSIENT_FILE');
+    inputBody=new ReadableStream<Uint8Array>({start(controller){controller.enqueue(bytes);controller.close();}});
+  }
   const current=async()=>{const latest=await ctx.storage.get<Head>('clipboard-pending');return latest?.id===id||await retained(ctx,id);};
   const attemptId=crypto.randomUUID(),attempt:Head={...head,object_key:`clipboard/${account}/${id}/${attemptId}`,allocation_id:rawFile?attemptId:`clipboard:${id}:${attemptId}`,...(rawFile?{upload_id:attemptId,raw_file:rawFile}:{})};
   const attemptEntry='clipboard-attempt:'+attemptId;
   await ctx.storage.put(attemptEntry,attempt);await schedule(ctx,Date.now()+600000);
   let committed=false;
   try{
-    await env.DB.prepare('INSERT INTO allocations(id,account_id,size) VALUES(?,?,?)').bind(allocation(attempt),account,size).run();
     if(!await current())return fail(409,'CLIPBOARD_REPLACED');
-    await spend('A');
-    const abort=new AbortController(),fixed=new FixedLengthStream(size),pumping=request.body.pipeTo(fixed.writable,{signal:abort.signal});
+    await spend('A',[env.DB.prepare('INSERT INTO allocations(id,account_id,size) VALUES(?,?,?)').bind(allocation(attempt),account,size)]);
+    const abort=new AbortController(),fixed=new FixedLengthStream(size),pumping=inputBody.pipeTo(fixed.writable,{signal:abort.signal});
     try{await Promise.all([pumping,env.FILES.put(key(attempt),fixed.readable,{sha256:rawFile?.sha256||sha256,httpMetadata:{contentType:'application/octet-stream'}})]);}
     catch(error){abort.abort();await fixed.readable.cancel().catch(()=>{});await pumping.catch(()=>{});throw error;}
-    const valid=await env.DB.prepare('SELECT 1 valid FROM sessions s JOIN devices d ON d.id=s.device_id WHERE s.token_hash=? AND s.account_id=? AND s.device_id=? AND s.expires_at>? AND d.revoked_at IS NULL')
-      .bind(request.headers.get('X-Clipboard-Session')||'',account,device,Date.now()).first();
-    if(!valid)return fail(401,'UNAUTHORIZED');
-    if(rawFile)await registerClipboardFile(env,{id,account,device,object_key:key(attempt),upload_id:attemptId},rawFile);
+    const session=request.headers.get('X-Clipboard-Session')||'';
+    if(rawFile){
+      if(!await registerClipboardFile(env,{id,account,device,session,object_key:key(attempt),upload_id:attemptId},rawFile))return fail(401,'UNAUTHORIZED');
+    }else{
+      const valid=await env.DB.prepare('SELECT 1 valid FROM sessions s JOIN devices d ON d.id=s.device_id WHERE s.token_hash=? AND s.account_id=? AND s.device_id=? AND s.expires_at>? AND d.revoked_at IS NULL')
+        .bind(session,account,device,Date.now()).first();
+      if(!valid)return fail(401,'UNAUTHORIZED');
+    }
     let previous:Head|undefined;
     const result=await ctx.storage.transaction(async tx=>{
       const active=await tx.get<Head>('clipboard-head');
@@ -296,12 +382,14 @@ export async function clipboardRequest(request:Request,ctx:DurableObjectState,en
       const hold=await tx.get<Hold>('clipboard-hold:'+id);
       if(latest?.id!==id){
         if(!rawFile||!hold||hold.device!==device||hold.expires<=Date.now()||!hold.items.length)return null;
-        await tx.put('clipboard-shared-ready:'+id,ready);await tx.put('clipboard-held-head:'+id,ready);return ready;
+        await tx.put('clipboard-shared-ready:'+id,ready);await tx.put('clipboard-held-head:'+id,ready);await tx.delete(attemptEntry);return ready;
       }
       previous=active;await tx.put('clipboard-head',ready);
+      if(active)await tx.delete('clipboard-delivery:'+active.id);
       if(rawFile)await tx.put('clipboard-shared-ready:'+id,ready);
       await tx.delete('clipboard-pending');
       if(active)await tx.put(retiredKey(active),active);
+      await tx.delete(attemptEntry);
       return ready;
     });
     if(!result)return fail(409,'CLIPBOARD_REPLACED');
@@ -312,7 +400,6 @@ export async function clipboardRequest(request:Request,ctx:DurableObjectState,en
     if((await ctx.storage.get<Head>('clipboard-head'))?.id===id)ctx.waitUntil(notify(device,result));
     return json({clipboard:result,shared_files:true});
   }finally{
-    if(!committed)await retire(ctx,env,attempt);
-    await ctx.storage.delete(attemptEntry);
+    if(!committed){await retire(ctx,env,attempt);await ctx.storage.delete(attemptEntry);}
   }
 }

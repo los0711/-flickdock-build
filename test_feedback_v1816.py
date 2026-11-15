@@ -1,10 +1,13 @@
 """Reported Mac/Windows regressions, real Qt controls and isolated profiles."""
+import dock_handle
+import shelf_ui_common
 import os
 os.environ['QT_QPA_PLATFORM']='offscreen'
 import tempfile,unittest,sys,plistlib
 from pathlib import Path
 from unittest.mock import patch
-from PySide6.QtCore import QPoint,Qt
+from PySide6.QtCore import QPoint,QPointF,Qt
+from PySide6.QtGui import QEnterEvent
 from PySide6.QtTest import QTest
 from test_html_native_workspace import APP,flush,until
 import test_html_native_workspace as workspace_fixture
@@ -20,7 +23,19 @@ class FeedbackTests(unittest.TestCase):
     @unittest.skipUnless(sys.platform=='win32','Windows font selection')
     def test_windows_font_and_size_step_preserve_already_small_labels(self):
         with patch.object(native_ui_common.sys,'platform','win32'):
-            self.assertEqual(native_ui_common.configure_reference_font(APP).family(),'HarmonyOS Sans SC')
+            font=native_ui_common.configure_reference_font(APP)
+            self.assertEqual(font.family(),'Microsoft YaHei')
+            from PySide6.QtGui import QTextLayout
+            for weight in (400,600):
+                native_ui_common.set_ui_weight(font,weight)
+                self.assertEqual(font.variableAxisValue(native_ui_common.FONT_WEIGHT_AXIS),500 if weight==600 else 400)
+                sample='FlickDock 0123456789 中文测试'
+                layout=QTextLayout(sample,font);layout.beginLayout();layout.createLine();layout.endLayout()
+                for index,char in enumerate(sample):
+                    if char==' ':continue
+                    family='Microsoft YaHei'
+                    runs=layout.glyphRuns(index,1)
+                    self.assertEqual({run.rawFont().familyName() for run in runs},{family},(char,weight))
             qss=native_ui_common.readable_qss('a{font-size:12px;} b{font-size:10px;}')
             self.assertIn('font-size:13px',qss);self.assertIn('font-size:12px',qss)
 
@@ -29,6 +44,22 @@ class FeedbackTests(unittest.TestCase):
             gate=drag_probe.ContentDragGate(lambda p:None)
             try:self.assertTrue(gate.probe.testAttribute(Qt.WA_MacAlwaysShowToolWindow))
             finally:gate.close()
+
+    def test_transfer_and_confirmation_keep_mixed_script_font_stack(self):
+        from PySide6.QtGui import QTextLayout
+        from PySide6.QtWidgets import QLabel
+        from test_html_native_lan import FakeLan
+        from lan_panel import LanDialog
+        from confirm_clear import ClearConfirmOverlay
+        native_ui_common.configure_reference_font(APP)
+        dialog=LanDialog(FakeLan(),self.fixture.settings);dialog.apply_theme('dark');dialog.show();flush()
+        confirm=ClearConfirmOverlay(self.shelf.card,3,font_family=APP.font().family(),theme='dark')
+        try:
+            for widget in (dialog.title_bar.findChild(QLabel,'lanDialogTitle'),dialog.back_button,confirm.title):
+                font=widget.font();self.assertEqual(font.family(),APP.font().family())
+                layout=QTextLayout('A7中',font);layout.beginLayout();layout.createLine();layout.endLayout()
+                self.assertTrue(all(layout.glyphRuns(i,1) for i in range(3)))
+        finally:confirm.deleteLater();dialog.close();dialog.deleteLater();flush()
 
     def test_resumed_account_refreshes_existing_overview_profile(self):
         from types import SimpleNamespace
@@ -79,7 +110,9 @@ class FeedbackTests(unittest.TestCase):
             from account_panel import AccountNameLabel
             for name in panel.devices_body.findChildren(AccountNameLabel):
                 self.assertGreater(name.width(),30)
-            button=panel.device_rename_buttons['other'];self.assertTrue(button.isVisible())
+            button=panel.device_rename_buttons['other'];self.assertFalse(button.isVisible())
+            row=panel._rows_by_id['other'];point=QPointF(row.rect().center())
+            APP.sendEvent(row,QEnterEvent(point,point,point));flush();self.assertTrue(button.isVisible())
             QTest.mouseClick(button,Qt.LeftButton);flush()
             self.assertTrue(panel.device_name_edits['other'].isVisible())
             panel.device_name_edits['other'].setText('新的 Mac 名称')
@@ -155,6 +188,8 @@ class FeedbackTests(unittest.TestCase):
         self.assertIn(ref,view.visible_refs());self.assertFalse(view.empty_state.isVisible())
         self.assertEqual(view.nav_counts['all'].text(),'1');self.assertEqual(view.count_label.text(),'1 项')
         view.set_category('images');flush();self.assertIn(ref,view.visible_refs())
+        self.assertIsNone(view.preview.current_path)
+        view.select_item(ref)
         self.assertEqual(view.preview.current_path,ref);self.assertFalse(view.preview.open_button.isEnabled())
         self.assertEqual(self.shelf.zones['permanent'].caption.text(),'1 项')
         state['received']=400000
@@ -164,10 +199,12 @@ class FeedbackTests(unittest.TestCase):
         self.assertFalse(self.shelf.content.mime_for([ref]).hasUrls())
 
     def test_dock_drop_zone_blue_border_follows_hover_without_opening_overview(self):
-        from PySide6.QtCore import QEvent
+        from PySide6.QtCore import QEvent,QPointF
+        from PySide6.QtGui import QEnterEvent
         zone=self.shelf.zones['permanent'] if hasattr(self.shelf,'zones') else self.shelf.drop_zone
         self.shelf.presentation_kind='dock'
-        APP.sendEvent(zone,QEvent(QEvent.Enter));flush()
+        point=zone.icon.geometry().center()
+        APP.sendEvent(zone,QEnterEvent(QPointF(point),QPointF(point),QPointF(zone.mapToGlobal(point))));flush()
         self.assertNotIn('#0A84FF',zone.styleSheet());self.assertTrue(zone.icon._hovered);self.assertIsNone(self.shelf.popup)
         APP.sendEvent(zone,QEvent(QEvent.Leave));flush()
         self.assertNotIn('#0A84FF',zone.styleSheet())
@@ -190,7 +227,7 @@ class FeedbackTests(unittest.TestCase):
             self.assertEqual(combo.currentIndex(),2)
         finally:combo.close();combo.deleteLater();flush()
         menu=QMenu();menu.addAction('云同步');menu.addAction('设置')
-        flickdock.style_menu(menu);menu.popup(QPoint(30,30));flush()
+        shelf_ui_common.style_menu(menu);menu.popup(QPoint(30,30));flush()
         try:
             self.assertFalse(menu.mask().contains(QPoint(0,0)))
             self.assertTrue(menu.mask().contains(menu.rect().center()))
@@ -205,7 +242,8 @@ class FeedbackTests(unittest.TestCase):
         until(lambda:len(view.rows_body.findChildren(IconItem))==1)
         tile=view.rows_body.findChildren(IconItem)[0]
         self.assertLessEqual(tile.width(),180)
-        self.assertEqual(tile.height(),120)
+        self.assertGreaterEqual(tile.height(),120)
+        self.assertLessEqual(tile.height(),160)
 
     def test_finished_update_removes_the_activity_row_immediately(self):
         with tempfile.TemporaryDirectory() as root:
@@ -236,7 +274,7 @@ class FeedbackTests(unittest.TestCase):
             def geometry(self):return __import__('PySide6.QtCore',fromlist=['QRect']).QRect(0,0,1512,982)
         self.fixture.manager.dock_values=lambda:dict(dock_edge='right',dock_position=8,dock_length=76,dock_thickness=8)
         with patch.object(flickdock.QGuiApplication,'primaryScreen',return_value=Screen()),patch.object(flickdock.QGuiApplication,'screenAt',return_value=Screen()),patch.object(flickdock.sys,'platform','darwin'):
-            edge=flickdock.DockHandle(self.fixture.manager)
+            edge=dock_handle.DockHandle(self.fixture.manager)
             self.assertTrue(edge.activation_region().contains(QPoint(1512,edge.geometry().center().y())))
             from PySide6.QtCore import QRect
             canvas=self.shelf._reserved_surface_rect(QRect(1140,28,360,345))

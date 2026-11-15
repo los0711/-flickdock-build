@@ -11,7 +11,7 @@ from PySide6.QtGui import QColor, QFont, QPainter
 from PySide6.QtWidgets import (QApplication, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel,
                                QPushButton, QSizePolicy, QVBoxLayout, QWidget)
 from shiboken6 import isValid
-from native_ui_common import colors as ui_colors
+from native_ui_common import colors as ui_colors, set_ui_weight
 from flickdock_icons import draw_glyph
 
 
@@ -71,7 +71,7 @@ class _TrashMark(QLabel):
     def paintEvent(self,event):
         super().paintEvent(event)
         painter=QPainter(self);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        draw_glyph(painter,'trash',self.rect().adjusted(12,12,-12,-12),'#B8BAC2',1.8)
+        draw_glyph(painter,'trash',self.rect().adjusted(12,12,-12,-12),getattr(self,'glyph_color','#171717'),1.8)
 
 
 class ClearConfirmOverlay(QWidget):
@@ -110,14 +110,20 @@ class ClearConfirmOverlay(QWidget):
         self._previous_focus = None
         self._scope_owned = False
         self._theme = "dark" if theme == "dark" else "light"
-        family = font_family or card.font().family()
+        family = QFont(card.font())
+        if font_family:
+            families=[font_family]
+            for name in (*family.families(),*QApplication.font().families()):
+                if name not in families:families.append(name)
+            family.setFamilies(families)
 
         self.panel = QFrame(self)
         self.panel.setObjectName("clearConfirmPanel")
         shadow = QGraphicsDropShadowEffect(self.panel)
         shadow.setBlurRadius(20)
         shadow.setOffset(0, 6)
-        shadow.setColor(QColor(10, 23, 42, 82))
+        from surface_morph import neutral_shadow_color
+        shadow.setColor(neutral_shadow_color(QColor(10, 23, 42, 82)))
         self.panel.setGraphicsEffect(shadow)
         layout = QVBoxLayout(self.panel)
         layout.setContentsMargins(20, 20, 20, 20)
@@ -133,7 +139,7 @@ class ClearConfirmOverlay(QWidget):
         self.title.setTextFormat(Qt.TextFormat.PlainText)
         font = QFont(family)
         font.setPixelSize(14)
-        font.setWeight(QFont.Weight.Bold)
+        set_ui_weight(font,600)
         self.title.setFont(font)
         text_layout.addWidget(self.title)
 
@@ -164,7 +170,7 @@ class ClearConfirmOverlay(QWidget):
         self.delete_button.clicked.connect(lambda: self._finish(True))
         button_font = QFont(family)
         button_font.setPixelSize(12)
-        button_font.setWeight(QFont.Weight.Medium)
+        set_ui_weight(button_font,400)
         for button in (self.cancel_button, self.delete_button):
             button.setFont(button_font)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -188,15 +194,16 @@ class ClearConfirmOverlay(QWidget):
         c=ui_colors(self._theme)
         text,secondary=c['text'],c['secondary']
         self.panel.setStyleSheet(f"QFrame#clearConfirmPanel {{background:{c['surface']};border:1px solid {c['glass_border']};border-radius:{c['radius']}px;}}")
-        self.symbol.setStyleSheet(f"background:rgba(255,69,58,38);color:{c['red']};border:0;border-radius:16px;font-size:20px;")
+        self.symbol.glyph_color=c['text'];self.symbol.setStyleSheet(f"background:{c['control']};color:{c['text']};border:0;border-radius:16px;font-size:20px;");self.symbol.update()
         self.title.setStyleSheet(f"color:{text};background:transparent;border:0;")
         self.description.setStyleSheet(f"color:{secondary};background:transparent;border:0;")
         self.cancel_button.setStyleSheet(
-            f"QPushButton {{background:{c['control']};color:{text};border:1px solid transparent;border-radius:12px;padding:0 12px;}}"
+            f"QPushButton {{background:{c['control']};color:{text};border:1px solid transparent;border-radius:{c['radius_control']}px;padding:0 12px;}}"
             f"QPushButton:hover {{background:{c['hover']};}} QPushButton:pressed {{background:{c['selected']};}}")
         self.delete_button.setStyleSheet(
-            f"QPushButton {{background:{c['danger_action']};color:#ffffff;border:1px solid transparent;border-radius:12px;padding:0 12px;font-weight:700;}}"
-            "QPushButton:hover {background:#992117;} QPushButton:pressed {background:#861B13;}")
+            f"QPushButton {{background:{c['danger_action']};color:{c['danger_on_action']};border:1px solid transparent;border-radius:{c['radius_control']}px;padding:0 12px;font-weight:400;}}"
+            f"QPushButton:hover {{background:{'#FCA5A5' if self._theme=='dark' else '#B91C1C'};}} QPushButton:pressed {{background:{'#EF4444' if self._theme=='dark' else '#991B1B'};}}"
+            f"QPushButton[keyboardFocus=\"true\"] {{border-color:{c['ring']};}}")
         self.panel.graphicsEffect().setBlurRadius(32)
         self.panel.graphicsEffect().setColor(QColor(0,0,0,140 if self._theme=='dark' else 41))
         self.update()

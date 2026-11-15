@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import os
 import re
+import math
+from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -18,6 +20,16 @@ from flickdock_icons import document_pixmap, file_pixmap
 
 TEXT_PREFIX = "flickdock:text:"
 _CAPTURED_TEXT_NAME = re.compile(r"^拖入的文字(?: \(\d+\))?\.txt$", re.IGNORECASE)
+
+
+def shelf_added_time(content, ref, *, compact=False):
+    """Format the recorded local shelf-intake time; never infer it from upload or mtime."""
+    stamp=getattr(content,'metadata',{}).get(ref,{}).get('added_at')
+    if stamp is None:stamp=getattr(content,'pending',{}).get(ref,{}).get('added_at')
+    if isinstance(stamp,bool) or not isinstance(stamp,(int,float)) or not math.isfinite(stamp) or stamp<=0:
+        return None
+    try:return datetime.fromtimestamp(stamp).strftime('%m-%d %H:%M:%S' if compact else '%Y-%m-%d %H:%M:%S')
+    except (OSError,OverflowError,ValueError):return None
 
 
 def _decode_text(data: bytes) -> str:
@@ -135,6 +147,11 @@ class ContentRepository:
         if suffix in {'.png','.jpg','.jpeg','.webp','.gif','.bmp','.ico','.tif','.tiff','.svg','.svgz','.avif','.heic','.heif'}:
             return 'images'
         if suffix == '.ts':
+            cache=getattr(self,'file_metadata',None)
+            if cache is not None:
+                # Classification is eventually corrected by the metadata
+                # worker; never read file bytes on an interactive frame.
+                return cache.ts_category(ref) or 'files'
             try:
                 with Path(ref).open('rb') as stream: probe=stream.read(376)
                 return 'video' if len(probe)>188 and probe[0]==0x47 and probe[188]==0x47 else 'files'

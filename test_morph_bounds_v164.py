@@ -3,6 +3,8 @@
 QT offscreen only; a zero-difference last frame does not establish that the
 intermediate frames obey their geometry. No native input, hotkeys or registry.
 """
+import shelf_ui_common
+import shelf_window
 import json
 import math
 import os
@@ -74,19 +76,19 @@ with tempfile.TemporaryDirectory(prefix='flickdock-bounds-v164-') as profile:
     from app_settings import SettingsStore
     from flickdock_motion import MotionShadow
     from surface_morph import paint_surface_shadow,surface_clip
-    app=QApplication([]);subject.load_font(app)
+    app=QApplication([]);shelf_ui_common.load_font(app)
     assert app.platformName()=='offscreen'
     manager=SimpleNamespace(motion=True,settings=SettingsStore(Path(profile)),save=lambda:None,
                             update_handles=lambda:None,activate_shelf=lambda _:None,
                             _quitting=False,outgoing_drag=False)
-    shelf=subject.ShelfWindow(manager,1);shelf.pinned=True
+    shelf=shelf_window.ShelfWindow(manager,1);shelf.pinned=True
     shelf.files['permanent']=[shelf.content.add_text('Readable content')];shelf.refresh()
     shelf._show_at(QPoint(1400,160),'manual',QPoint())
     shelf.presentation.jump(dict(sx=1,sy=1,dx=0,dy=0,alpha=1));app.processEvents()
     screen=SimpleNamespace(availableGeometry=lambda:QRect(0,0,1920,1080))
     with patch.object(subject.QGuiApplication,'screenAt',return_value=screen):shelf.show_contents()
     shelf.presentation.jump(dict(sx=1,sy=1,dx=0,dy=0,alpha=1))
-    shelf.geometry_morph.animation.pause()
+    shelf.geometry_morph.pause()
     # The same assertion must reject the controlled old presentation path.
     class LegacyMotionShadow(MotionShadow):
         def draw(self,painter):legacy_draw(self,painter)
@@ -112,7 +114,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-bounds-v164-') as profile:
         assert frame['alpha_beyond_shadow_below']<=2,frame
     shelf.geometry_morph.complete();shelf.collapse_contents()
     shelf.presentation.jump(dict(sx=1,sy=1,dx=0,dy=0,alpha=1))
-    shelf.geometry_morph.animation.pause()
+    shelf.geometry_morph.pause()
     collapse=[sample(shelf,p) for p in (0,.1,.3,.5,.9,1)]
     for frame in collapse:
         assert frame['max_bound_error_physical_px']<=2,frame
@@ -128,12 +130,12 @@ with tempfile.TemporaryDirectory(prefix='flickdock-bounds-v164-') as profile:
     for progress in (.1,.5,.9):
         with patch.object(subject.QGuiApplication,'screenAt',return_value=screen):shelf.show_contents()
         shelf.presentation.jump(dict(sx=1,sy=1,dx=0,dy=0,alpha=1))
-        shelf.geometry_morph.animation.pause()
+        shelf.geometry_morph.pause()
         previous=sample(shelf,progress);visual=QRect(shelf.visual_geometry())
         ratio=shelf.devicePixelRatioF()
         global_before=[value+round((shelf.x() if i%2==0 else shelf.y())*ratio)
                        for i,value in enumerate(previous['actual_physical_bounds'])]
-        shelf.collapse_contents();shelf.presentation.stop();shelf.geometry_morph.animation.pause()
+        shelf.collapse_contents();shelf.presentation.stop();shelf.geometry_morph.pause()
         after=sample(shelf,0)
         global_after=[value+round((shelf.x() if i%2==0 else shelf.y())*ratio)
                       for i,value in enumerate(after['actual_physical_bounds'])]

@@ -35,18 +35,31 @@ class InlineHub(Hub):
 
 
 class ClipboardFastTests(unittest.TestCase):
+    def test_authenticated_inline_push_applies_while_followup_cloud_request_is_stalled(self):
+        receiver=self.clients[1];until(lambda:not receiver._fetching)
+        original=receiver._request;held=[]
+        def request(method,path,callback,**options):
+            if method=='GET' and path=='/v1/clipboard':held.append(callback);return object()
+            return original(method,path,callback,**options)
+        with patch.object(receiver,'_request',side_effect=request):
+            started=time.monotonic();self.clips[0].text('paste without another cloud round trip')
+            until(lambda:self.clips[1].mimeData().text()=='paste without another cloud round trip',seconds=1)
+            self.assertLess(time.monotonic()-started,.75)
+            self.assertEqual(receiver._seen,self.hub.head['id'])
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.hub=InlineHub();self.clients=[];self.clips=[]
         for index in range(2):
             clip=Clipboard();account=Account(self.hub.api(str(index)),str(index))
             events=CloudEvents(account,enabled=False);self.hub.events.append(events)
             self.clients.append(ClipboardSync(account,events,Path(self.temp.name)/str(index),clipboard=clip));self.clips.append(clip)
+        for client in self.clients:client.scheduler.set_connected(True)
         flush()
 
     def tearDown(self):
         for event in self.hub.events:event.close()
         for client in self.clients:client.close()
-        until(lambda:all(not client._jobs for client in self.clients));flush();self.temp.cleanup()
+        until(lambda:all(not client._jobs and not client.inbox._thread.is_alive() for client in self.clients));flush();self.temp.cleanup()
 
     def test_small_text_uses_single_publish_no_body_or_disk_and_never_echoes(self):
         sender,receiver=self.clients
@@ -95,7 +108,7 @@ class ClipboardFastTests(unittest.TestCase):
             self.clips[0].text('copy after updating')
             until(lambda:self.clips[1].mimeData().text()=='copy after updating')
 
-    def test_confirmation_error_retries_without_waiting_for_poll(self):
+    def test_metadata_refresh_error_preserves_already_pasteable_content_and_recovers(self):
         receiver=self.clients[1];until(lambda:not receiver._fetching)
         original=receiver._request;failed=[]
         def request(method,path,callback,**options):
@@ -104,8 +117,11 @@ class ClipboardFastTests(unittest.TestCase):
             return original(method,path,callback,**options)
         with patch.object(receiver,'_request',side_effect=request):
             self.clips[0].text('retry final confirmation')
-            until(lambda:failed and receiver.retry.isActive())
-            receiver.retry.stop();receiver._retry()
+            until(lambda:self.clips[1].mimeData().text()=='retry final confirmation')
+            receiver.refresh()
+            until(lambda:failed and receiver.receive_retry.isActive())
+            self.assertEqual(self.clips[1].mimeData().text(),'retry final confirmation')
+            receiver.receive_retry.stop();receiver.refresh()
             until(lambda:self.clips[1].mimeData().text()=='retry final confirmation')
 
     def test_native_write_refusal_does_not_mark_applied_and_recovers(self):
@@ -123,6 +139,7 @@ class ClipboardFastTests(unittest.TestCase):
         sender=self.clients[0];sender.close()
         clip=Clipboard();events=self.hub.events[0]
         restarted=ClipboardSync(sender.account,events,Path(self.temp.name)/'restart',clipboard=clip)
+        restarted.scheduler.set_connected(True)
         self.clients.append(restarted)
         until(lambda:clip.mimeData().text()=='own copy before updating')
         self.assertEqual(restarted._seen,self.hub.head['id'])
@@ -180,6 +197,7 @@ class ClipboardFastTests(unittest.TestCase):
         self.assertEqual(sent,[])
         until(lambda:self.clips[1].mimeData().text()=='sender acknowledgement')
         self.assertEqual(len(sent),1);self.assertTrue(sent[0][0]);self.assertEqual(sent[0][1]['id'],self.hub.head['id'])
+        self.assertTrue(sent[0][1]['backed_up']);self.assertFalse(sent[0][1]['delivered']);self.assertEqual(sent[0][1]['route'],'')
         self.assertEqual(received,[])
 
     def test_failed_publish_reports_failure_then_success_after_real_retry(self):

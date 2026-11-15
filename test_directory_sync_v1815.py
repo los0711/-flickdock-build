@@ -31,7 +31,7 @@ class DirectorySyncTests(unittest.TestCase):
             blob=Path(staged['path']).read_bytes();identity=uuid4().hex
             record=file_record(identity,source.name,blob);record['mime_type']=DIRECTORY_MIME
             service=Service([dict(cursor='1',record=record)],{identity:blob});adapter=Adapter()
-            engine=ShelfSync(root/'receiver',service,adapter,poll_ms=600000)
+            engine=ShelfSync(root/'receiver',service,adapter)
             try:
                 service.account_changed.emit({'id':'folder-receiver'})
                 deadline=time.monotonic()+45
@@ -62,7 +62,7 @@ class DirectorySyncTests(unittest.TestCase):
         service=Service([dict(cursor='1',record=first),dict(cursor='2',record=file_record(good,'later.txt',data))],{bad:broken,good:data})
         adapter=Adapter()
         with tempfile.TemporaryDirectory(prefix='flickdock-folder-failed-') as root:
-            engine=ShelfSync(root,service,adapter,poll_ms=600000)
+            engine=ShelfSync(root,service,adapter)
             try:
                 service.account_changed.emit({'id':'folder-failed-account'})
                 self.assertTrue(spin(lambda:engine.state.get('cursor')=='2' and not engine.running))
@@ -76,7 +76,7 @@ class DirectorySyncTests(unittest.TestCase):
         service=Service([dict(cursor='1',record=file_record(identity,'complete.bin',blob))],{identity:blob})
         service.api.fail_after_complete_once=identity
         with tempfile.TemporaryDirectory(prefix='flickdock-completed-body-') as root:
-            adapter=Adapter();engine=ShelfSync(root,service,adapter,poll_ms=600000)
+            adapter=Adapter();engine=ShelfSync(root,service,adapter)
             try:
                 service.account_changed.emit({'id':'valid-completed-body'})
                 self.assertTrue(spin(lambda:engine.state.get('cursor')=='1' and not engine.running))
@@ -88,11 +88,11 @@ class DirectorySyncTests(unittest.TestCase):
         identity=uuid4().hex;blob=b'cached verified bytes'
         record=file_record(identity,'cached.bin',blob);service=Service([],{});adapter=Adapter()
         with tempfile.TemporaryDirectory(prefix='flickdock-retry-cache-') as root:
-            engine=ShelfSync(root,service,adapter,poll_ms=600000)
+            engine=ShelfSync(root,service,adapter)
             try:
                 service.account_changed.emit({'id':'verified-retry-cache'})
                 self.assertTrue(spin(lambda:not engine.running and engine.state is not None))
-                engine.debounce.stop();engine.timer.stop()
+                engine.debounce.stop();engine.schedule.configure(enabled=False)
                 target=engine._download_target(record);target.parent.mkdir(parents=True);target.write_bytes(blob);result=[]
                 with patch.object(engine,'_request',side_effect=AssertionError('A verified completed file needs no repeated download')):
                     engine._download_record(record,target,lambda path,error:result.append((path,error)))

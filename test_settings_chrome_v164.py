@@ -17,8 +17,8 @@ from PySide6.QtWidgets import QApplication
 import app_settings as subject
 
 app = QApplication([])
-assert QFontDatabase.addApplicationFont(str(Path(__file__).with_name('fonts')/'HarmonyOS_Sans_SC_Regular.ttf')) >= 0
-app.setFont(QFont('HarmonyOS Sans SC', 11))
+from native_ui_common import configure_reference_font
+configure_reference_font(app)
 
 
 def flush():

@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage
 from test_html_native_workspace import APP,until,flush
 import async_images
-from flickdock import PreviewPane
+from file_preview import PreviewPane
 
 
 class ResourceTests(unittest.TestCase):
@@ -22,7 +22,7 @@ class ResourceTests(unittest.TestCase):
 
     def test_video_posters_have_native_byte_budget_without_mutating_visible_frame(self):
         cache={};refresh=[]
-        owner=SimpleNamespace(shelf=SimpleNamespace(preview_cache=cache,
+        owner=SimpleNamespace(shelf=SimpleNamespace(preview_cache=cache,surface_effect=SimpleNamespace(invalidate_source=lambda:None),
             zones={'permanent':SimpleNamespace(refresh=lambda:refresh.append(True))}),
             popup=SimpleNamespace(isVisible=lambda:False))
         frame=QImage(3840,2160,QImage.Format_RGBA8888);frame.fill(Qt.blue)
@@ -34,7 +34,7 @@ class ResourceTests(unittest.TestCase):
 
     def test_small_video_poster_keeps_pixels_without_missing_native_image_type(self):
         cache={}
-        owner=SimpleNamespace(shelf=SimpleNamespace(preview_cache=cache,
+        owner=SimpleNamespace(shelf=SimpleNamespace(preview_cache=cache,surface_effect=SimpleNamespace(invalidate_source=lambda:None),
             zones={'permanent':SimpleNamespace(refresh=lambda:None)}),
             popup=SimpleNamespace(isVisible=lambda:False))
         frame=QImage(96,64,QImage.Format_RGBA8888);frame.fill(Qt.blue)

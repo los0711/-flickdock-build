@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from xml.sax.saxutils import escape
+from html import escape
 
 from PySide6.QtCore import QByteArray, QFileInfo, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QGuiApplication, QIcon, QIconEngine, QImage, QPainter, QPainterPath, QPixmap
 from PySide6.QtSvg import QSvgRenderer
-from PySide6.QtWidgets import QFileIconProvider
+from PySide6.QtWidgets import QApplication,QFileIconProvider
 
 _provider: QFileIconProvider | None = None
 _IMAGE_EXTENSIONS = {'.png','.jpg','.jpeg','.webp','.gif','.bmp','.ico','.tif','.tiff','.heic','.heif','.avif','.svg','.svgz'}
@@ -134,6 +134,7 @@ def _render_svg(svg: str, logical_size: int | QSize, dpr: float | None = None) -
     pm.setDevicePixelRatio(ratio)
     pm.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pm)
+    if QApplication.instance() is not None:painter.setFont(QApplication.font())
     renderer = QSvgRenderer(QByteArray(svg.encode('utf-8')))
     renderer.render(painter, QRectF(0, 0, size.width(), size.height()))
     painter.end()
@@ -235,9 +236,10 @@ def document_svg(value: str = '', stack: int = 1) -> str:
     body = back + f'<defs><linearGradient id="paper" x1="0" y1="0" x2="1" y2="1"><stop stop-color="{top}"/><stop offset="1" stop-color="{color}"/></linearGradient></defs><rect x="13" y="5" width="43" height="51" rx="7" fill="url(#paper)"/><path d="M41 5h8a7 7 0 0 1 7 7v8z" fill="#ffffff" fill-opacity=".23"/><rect x="13.5" y="5.5" width="42" height="50" rx="6.5" fill="none" stroke="#ffffff" stroke-opacity=".18"/>'
     symbol = _CATEGORY_SYMBOLS[category].format(c='#ffffff')
     body += f'<g transform="translate(0,-11)" opacity=".3" fill="none" stroke="#ffffff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">{symbol}</g>'
-    from native_ui_common import reference_font
-    family=escape(reference_font().family(),{'"':'&quot;',"'":'&apos;'})
-    body += f'<text x="34.5" y="44" text-anchor="middle" font-family="{family},Arial,sans-serif" font-size="{12 if len(label)>3 else 14}" font-weight="600" fill="#ffffff">{escape(label)}</text>'
+    # Qt SVG treats a comma-separated font-family list as one family name,
+    # silently falling back for Latin characters. Inherit the app's actual
+    # platform font from the painter instead.
+    body += f'<text x="34.5" y="44" text-anchor="middle" font-size="{12 if len(label)>3 else 14}" font-weight="500" fill="#ffffff">{escape(label)}</text>'
     return _svg(body,'0 0 64 64')
 
 

@@ -1,4 +1,6 @@
 """Real manager/drop intake lifecycle; no desktop, registry or native input."""
+import shelf_ui_common
+import shelf_window
 import contextlib
 import json
 import os
@@ -73,7 +75,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-intake-entry-v164-') as tempo
     import flickdock as subject
     from global_hotkeys import _NoopBackend
     app = QApplication([])
-    subject.load_font(app)
+    shelf_ui_common.load_font(app)
     with contextlib.ExitStack() as mocks:
         for owner, name, value in [
             (subject, 'motion_enabled', lambda: True),
@@ -81,7 +83,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-intake-entry-v164-') as tempo
             (subject.QCursor, 'pos', lambda *args: QPoint(500, 400)),
             (subject.QGuiApplication, 'screenAt', lambda *args: Screen()),
             (subject.QGuiApplication, 'primaryScreen', lambda *args: Screen()),
-            (subject.ctypes.windll.user32, 'GetAsyncKeyState', lambda key: 0),
+            (shelf_ui_common.ctypes.windll.user32, 'GetAsyncKeyState', lambda key: 0),
             (subject, 'native_window_move_active', lambda: False),
             (app_settings, '_read_startup_value', lambda: None),
             (app_settings, '_write_startup_value', lambda *args: None),
@@ -89,7 +91,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-intake-entry-v164-') as tempo
             (QSystemTrayIcon, 'hide', lambda self: None),
         ]: mocks.enter_context(patch.object(owner, name, value))
         for name in ('RegisterHotKey', 'UnregisterHotKey'):
-            mocks.enter_context(patch.object(subject.ctypes.windll.user32, name,
+            mocks.enter_context(patch.object(shelf_ui_common.ctypes.windll.user32, name,
                 side_effect=AssertionError('Native hotkey registration is forbidden')))
         manager = subject.ShelfManager(app)
         manager.timer.stop()
@@ -158,7 +160,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-intake-entry-v164-') as tempo
             original = source(f'{entry}-{mode}')
             pulses, hides = [], []
             zone = shelf.zones['permanent']
-            original_pulse = subject.StackTile.pulse
+            original_pulse = shelf_window.StackTile.pulse
             original_hide = shelf.hide_animated
             def pulse(tile, kind='drop', finished=None):
                 if kind=='drop' and tile in (zone.icon, getattr(shelf, '_intake_tile', None)):
@@ -167,7 +169,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-intake-entry-v164-') as tempo
             def hide(explicit=True):
                 hides.append((len(shelf.copy_jobs), shelf.incoming_drop))
                 return original_hide(explicit)
-            with patch.object(subject.StackTile, 'pulse', pulse), patch.object(shelf, 'hide_animated', side_effect=hide):
+            with patch.object(shelf_window.StackTile, 'pulse', pulse), patch.object(shelf, 'hide_animated', side_effect=hide):
                 if mode=='copy':
                     release, entered = threading.Event(), threading.Event()
                     copy_file = capture_files._copy_file

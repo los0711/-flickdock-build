@@ -25,7 +25,7 @@
 | 清空确认 | 340px 宽 | 数量、说明、取消与清空 |
 | 云方向菜单 | 256px 宽 | 上传和接收两个真实开关 |
 
-Windows 按已安装的 HarmonyOS Sans SC → Noto Sans SC → Source Han Sans SC → Segoe UI Variable → Segoe UI → 系统默认回退；不显式选用微软雅黑或苹方。macOS 使用系统 GeneralFont 及系统中文回退，不再分发 Apple 字体。所有面板继承字体和真实字重。小屏幕使用分类/内容/预览的渐进布局。
+界面使用内置 Inter 和 OPPO Sans 4.0 字体，分别采用真实的 400、600 字重，不分发 Apple 字体。所有面板继承字体和字重。小屏幕使用分类/内容/预览的渐进布局。
 
 ## 原功能对应入口
 

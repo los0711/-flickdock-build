@@ -12,6 +12,32 @@ from flickdock import ShelfManager
 
 
 class PreviewTests(unittest.TestCase):
+    def test_empty_preview_tracks_live_connections_without_copying_or_cloud_requests(self):
+        from uuid import uuid4
+        first,second=str(uuid4()),str(uuid4());before=list(self.hub.calls)
+        self.manager.show_clipboard_preview();dialog=self.manager.clipboard_preview_dialog
+        self.client.deliveries.set_connections({first:dict(route='cloud'),second:dict(route='cloud')})
+        workspace.flush()
+        self.assertIsNone(self.model.state['value'])
+        self.assertFalse(hasattr(dialog,'route_badges'))
+        self.client.deliveries.set_connections({first:dict(route='cloud'),second:dict(route='disconnected')})
+        workspace.flush()
+        self.assertFalse(hasattr(dialog,'route_badges'))
+        self.assertEqual(self.hub.calls,before)
+
+    def test_route_badges_show_success_over_targets_without_recopying_or_redecoding(self):
+        self.clip.text('receipt metadata never changes the original clipboard')
+        workspace.until(lambda:self.model.state.get('phase')=='synced')
+        self.shelf.zones['permanent'].clipboard_button.click();workspace.flush()
+        dialog=self.manager.clipboard_preview_dialog;before=list(self.hub.calls);revision=self.model.state['revision']
+        counts={'cloud':{'success':2,'total':3}}
+        with patch.object(self.model,'_decode') as decode:
+            self.model._update(dict(self.model.state,deliveries=counts));workspace.flush();decode.assert_not_called()
+        self.assertFalse(hasattr(dialog,'route_badges'))
+        self.assertEqual(self.shelf.zones['permanent'].clipboard_button.accessibleDescription(),'已同步到云端')
+        self.assertEqual(self.model.state['revision'],revision);self.assertEqual(self.hub.calls,before)
+        self.assertEqual(self.clip.mimeData().text(),'receipt metadata never changes the original clipboard')
+
     def setUp(self):
         workspace.WorkspaceTests.setUp(self)
         self.patches.enter_context(patch.object(workspace.Screen,'geometry',workspace.Screen.availableGeometry,create=True))
@@ -23,17 +49,41 @@ class PreviewTests(unittest.TestCase):
         self.manager.clipboard_presenter=self.model;self.manager.clipboard_preview_dialog=None
         self.manager.show_clipboard_preview=lambda:ShelfManager.show_clipboard_preview(self.manager)
         for zone in self.shelf.zones.values():zone.clipboard_button.refresh()
+        # Inbox restoration can schedule an initial reconciliation after the
+        # first request; settle that work before testing preview-only actions.
+        workspace.until(lambda:self.client.inbox.ready)
+        workspace.flush()
+        workspace.until(lambda:self.client.schedule.requested_due is None and not self.client._fetching
+                        and not self.client._inbox_waiters
+                        and self.client.inbox.saved_revision>=self.client.inbox._revision)
         workspace.flush()
 
     def tearDown(self):
         dialog=self.manager.clipboard_preview_dialog
         if dialog is not None:dialog.close();dialog.deleteLater()
         self.model.close();self.client.close()
-        workspace.until(lambda:not self.model.jobs and not self.client._jobs)
+        workspace.until(lambda:not self.model.jobs and not self.client._jobs and not self.client.inbox._thread.is_alive())
         self.model.deleteLater();workspace.flush()
         workspace.WorkspaceTests.tearDown(self)
 
     overview=workspace.WorkspaceTests.overview
+
+    def test_link_glyph_is_shared_by_both_buttons_and_never_covered_by_stale_artwork(self):
+        popup=self.overview();small=self.shelf.zones['permanent'].clipboard_button
+        for text in ('https://example.invalid/path','www.example.com','example.com/path','mailto:hello@example.com'):
+            with self.subTest(text=text):
+                self.clip.text(text)
+                workspace.until(lambda:self.model.state.get('phase')=='synced' and self.model.state['value'][1]['text']==text)
+                stale=QImage(40,40,QImage.Format_RGB32);stale.fill(QColor('#ff0000'))
+                self.model.thumbnail=stale
+                for button in (small,popup.clipboard_button):
+                    button.refresh();self.assertEqual(button._glyph,'link')
+                    self.assertNotEqual(button.grab().toImage().pixelColor(16,16),QColor('#ff0000'))
+                self.assertEqual(self.clip.mimeData().text(),text)
+        sentence='A sentence with https://example.invalid inside it.'
+        self.clip.text(sentence)
+        workspace.until(lambda:self.model.state.get('phase')=='synced' and self.model.state['value'][1]['text']==sentence)
+        self.assertEqual(small._glyph,'text');self.assertEqual(popup.clipboard_button._glyph,'text')
 
     def test_both_buttons_preview_latest_text_and_never_copy_or_upload_again(self):
         self.clip.text('original 中文\nhttps://example.invalid')
@@ -131,7 +181,7 @@ class PreviewTests(unittest.TestCase):
         self.assertTrue(copied.is_relative_to(self.settings.capture_dir));self.assertEqual(source.read_bytes(),b'original clipboard file bytes')
         self.assertIs(self.clip.mimeData(),mime);self.assertTrue(dialog.isVisible())
 
-    def test_active_transfer_moves_clipboard_above_strip_and_entire_button_clicks(self):
+    def test_active_transfer_stays_beside_clipboard_and_entire_button_clicks(self):
         popup=self.overview();button=popup.clipboard_button
         before=button.mapTo(popup.middle,QPoint()).y()
         ref='flickdock:transfer:upload-one'
@@ -140,8 +190,11 @@ class PreviewTests(unittest.TestCase):
         self.shelf.transfers_updated();workspace.flush()
         self.assertTrue(popup.transfer_strip.isVisible())
         top=button.mapTo(popup.middle,QPoint()).y()
-        self.assertLess(top,before)
-        self.assertLess(top+button.height(),popup.transfer_strip.mapTo(popup.middle,QPoint()).y())
+        self.assertEqual(top,before)
+        strip=popup.transfer_strip
+        strip_pos=strip.mapTo(popup.middle,QPoint());button_pos=button.mapTo(popup.middle,QPoint())
+        self.assertLessEqual(button_pos.x()+button.width(),strip_pos.x())
+        self.assertLessEqual(abs((top+button.height()/2)-(strip_pos.y()+strip.height()/2)),1)
         QTest.mouseClick(button,Qt.LeftButton,pos=QPoint(2,2))
         self.assertTrue(self.manager.clipboard_preview_dialog.isVisible())
 

@@ -83,6 +83,13 @@ class FileMetadataCache(QObject):
                 try:
                     if cancel.is_set():return
                     info=Path(ref).stat();value.update(size=info.st_size,is_dir=stat.S_ISDIR(info.st_mode),exists=True,mtime_ns=info.st_mtime_ns)
+                    if not value['is_dir'] and Path(ref).suffix.lower()=='.ts':
+                        # .ts can be either TypeScript or transport video.
+                        # Read only the signature, on this disk worker.
+                        try:
+                            with Path(ref).open('rb') as stream:probe=stream.read(376)
+                            value['ts_category']='video' if len(probe)>188 and probe[0]==0x47 and probe[188]==0x47 else 'files'
+                        except OSError:value['ts_category']='files'
                 except OSError as error:
                     value.update(error=type(error).__name__,errno=error.errno)
                     if error.errno in (2,20):value['local_volume']=_local_volume(ref)
@@ -108,6 +115,13 @@ class FileMetadataCache(QObject):
 
     def invalidate(self,ref):
         ref=str(ref);self._tokens.pop(ref,None);self._cache.pop(ref,None);self._waiting.pop(ref,None)
+
+    def ts_category(self,ref):
+        info=self.request(ref)
+        if info is not None and 'ts_category' in info:return info['ts_category']
+        # Intake may have primed an ordinary stat without the signature.
+        if info is not None and info.get('exists') and ref not in self._active and ref not in self._waiting:self.refresh(ref)
+        return None
 
     def refresh(self,ref):
         if self.closed:return

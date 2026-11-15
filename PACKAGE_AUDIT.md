@@ -1,6 +1,8 @@
 # FlickDock 1.8.26 Windows bundle audit
 
-The bundle uses PySide6 / Qt 6.12, Qt FFmpeg 9.0.1, Qt Network/Schannel, OpenSSL and the existing native WebRTC runtime. Only the original HarmonyOS Sans SC Regular font is included; platform fonts remain the UI default.
+The 1.8.37 repair uses the platform fonts: Microsoft YaHei on Windows and the Apple system font with PingFang SC for Chinese on macOS. Inter and OPPO Sans are no longer bundled. The remaining dependency notes below describe the original 1.8.26 audit and should be rechecked against each new build.
+
+The bundle uses PySide6 / Qt 6.12, Qt FFmpeg 9.0.1, Qt Network/Schannel, OpenSSL and the existing native WebRTC runtime.
 
 `FlickDock.spec` runs `bundle_policy.filter_bundle` after PyInstaller analysis, applying the same policy to both binary and data TOCs:
 

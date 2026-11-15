@@ -40,6 +40,14 @@ try{
   for(const token of [a.token,b.token,b.token,a.token]){
     const response=await req('GET',`/v1/clipboard/${first}/content`,token);assert.equal(response.status,200);assert.deepEqual(Buffer.from(await response.arrayBuffer()),body);
   }
+  const plan=await json('POST',`/v1/clipboard/${first}/delivery`,a.token,{sha256:hash(body),plan:{[b.device_id]:'lan'}});
+  assert.deepEqual(plan.delivery.receipts,{},'Upload completion is not a receiving-device acknowledgement');
+  const received=await json('POST',`/v1/clipboard/${first}/delivery`,b.token,{sha256:hash(body),route:'cloud'});
+  assert.equal(received.delivery.receipts[b.device_id],'cloud');assert.equal(received.delivery.plan[b.device_id],'lan');
+  assert.deepEqual((await json('GET','/v1/clipboard',a.token)).delivery,received.delivery);
+  await json('POST',`/v1/clipboard/${first}/delivery`,b.token,{sha256:hash(body),plan:{}},403);
+  await json('POST',`/v1/clipboard/${first}/delivery`,a.token,{sha256:hash(body),plan:{[outsider.device_id]:'p2p'}},403);
+  console.log('PASS real workerd HTTP delivery receipts, actual route, durable metadata and account/owner fences');
   assert.equal((await json('GET','/v1/clipboard',outsider.token)).clipboard,null);
   assert.equal((await req('GET',`/v1/clipboard/${first}/content`,outsider.token)).status,409);
   const oldHeaders={'User-Agent':'FlickDock/1.8.19 (CloudSync)'};

@@ -1,7 +1,9 @@
 /** Exercise the exact production alarm with a controllable clock, no cloud. */
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
-import {clipboardAlarm} from '../src/clipboard.ts';
+import {registerHooks} from 'node:module';
+registerHooks({resolve(specifier,context,next){return next(specifier==='./shared-file'?specifier+'.ts':specifier,context);}});
+const {clipboardAlarm,clipboardRequest}=await import('../src/clipboard.ts');
 const id=randomUUID(),account=randomUUID(),now=Date.now(),data=new Map([['clipboard-head',{id,account,device:randomUUID(),version:7,at:now,ready:true,size:8,kind:'image'}]]),deleted=[],freed=[];
 const storage={async get(key){return data.get(key)},async put(key,value){data.set(key,value)},async delete(key){data.delete(key)},
   async list({prefix,limit}){return new Map([...data].filter(([key])=>key.startsWith(prefix)).slice(0,limit))},
@@ -16,7 +18,6 @@ try{
   console.log('PASS exact 24-hour alarm clears clipboard object and allocation without a paste');
 }finally{Date.now=original}
 /** Alarm/commit ordering must not reuse a version already applied by clients. */
-import {clipboardRequest} from '../src/clipboard.ts';
 for(const inline of [true,false]){
  const oldId=randomUUID(),nextId=randomUUID(),device=randomUUID(),clock=now+86400001;
  data.clear();data.set('clipboard-head',{id:oldId,account,device,version:1,at:now,ready:true,size:8,kind:'text'});
@@ -44,10 +45,11 @@ for(const inline of [true,false]){
     new Request('https://internal/clipboard',{method:'POST',headers,body:JSON.stringify({id:nextId,protocol:2,sequence:1,copied_at:pending.copied_at,
       inline:{kind:'text',size:content.length,sha256:digest,body:content.toString('base64')}})}):
     new Request('https://internal/clipboard/'+nextId+'/content',{method:'PUT',headers:{...headers,'Content-Length':String(content.length),'X-Clipboard-Kind':'text','X-Content-SHA256':digest},body:content});
-  const response=await clipboardRequest(request,ctx,provider,async()=>{},async()=>{});
+  const spend=async(_kind,operations=[])=>{for(const statement of operations)await statement.run();};
+  const response=await clipboardRequest(request,ctx,provider,spend,async()=>{},async()=>{});
   assert.equal(response.status,inline?201:200);const ready=(await response.json()).clipboard;
   assert.equal(ready.id,nextId);assert.equal(ready.version,4);assert.equal(ready.ready,true);
-  const latest=await clipboardRequest(new Request('https://internal/clipboard',{headers}),ctx,provider,async()=>{},async()=>{});
+  const latest=await clipboardRequest(new Request('https://internal/clipboard',{headers}),ctx,provider,async()=>{},async()=>{},async()=>{});
   assert.equal((await latest.json()).clipboard.version,4);
   await Promise.all(tasks);
   console.log('PASS expiry during '+(inline?'inline reservation':'R2 upload')+' publishes a strictly newer ready version');

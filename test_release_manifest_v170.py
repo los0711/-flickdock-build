@@ -51,10 +51,6 @@ class ReleaseTests(unittest.TestCase):
         (self.root/'version_info.txt').write_text(
             "FixedFileInfo(filevers=(1, 7, 0, 0), prodvers=(1, 7, 0, 0))\n"
             "StringStruct('FileVersion', '1.7.0')\nStringStruct('ProductVersion', '1.7.0')\n",encoding='utf8')
-        font=self.root/'fonts/HarmonyOS_Sans_SC_Regular.ttf'
-        (self.root/'font_manifest.json').write_text(json.dumps({'fonts':[{
-            'file':'fonts/HarmonyOS_Sans_SC_Regular.ttf','bytes':font.stat().st_size,
-            'sha256':release.sha256_file(font)}]}),encoding='utf8')
         self.installer=self.base/'FlickDock-Setup-1.7.0.exe'
         self.data=b'MZ'+b'an already verified installer fixture\x00'*30
         self.installer.write_bytes(self.data)
@@ -190,9 +186,7 @@ class ReleaseTests(unittest.TestCase):
         (self.root/'update_client.py').write_text('import new_runtime',encoding='utf8')
         self.blocked()
 
-    def test_changed_font_and_selected_credentials_are_blocked(self):
-        font=self.root/'fonts/HarmonyOS_Sans_SC_Regular.ttf';old=font.read_bytes()
-        font.write_bytes(b'changed font');self.blocked();font.write_bytes(old)
+    def test_selected_credentials_are_blocked(self):
         (self.root/'update_client.py').write_text('SECRET="'+'ghp_'+'A'*30+'"',encoding='utf8')
         self.blocked();self.assertFalse(self.server.requests)
 

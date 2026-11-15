@@ -3,6 +3,9 @@
 The player contract is mocked here; test_media_native.py separately exercises
 the actual Windows decoder without sound or a desktop window.
 """
+import file_preview
+import shelf_ui_common
+import shelf_window
 import json
 import os
 from pathlib import Path
@@ -62,7 +65,7 @@ class FakeResolver(QObject):
         self.cancel_all()
 
 
-def fake_media_source(self, path):
+def fake_media_source(self, path, **_options):
     self.path = str(path)
     self._integration_source = str(path)
 
@@ -100,15 +103,15 @@ with tempfile.TemporaryDirectory(prefix="flickdock-v16-") as temporary:
         "permanent": [str(original)], "texts": {old_id: "Retained native text"}}]}
     subject.STATE_FILE.write_text(json.dumps(legacy), encoding="utf8")
     app = QApplication([])
-    subject.load_font(app)
+    shelf_ui_common.load_font(app)
     wide_screen=SimpleNamespace(availableGeometry=lambda:QRect(0,0,1920,1080))
     with patch.object(subject.QGuiApplication,'screenAt',return_value=wide_screen), \
          patch.object(subject.QGuiApplication,'primaryScreen',return_value=wide_screen), \
          patch.object(subject, "motion_enabled", return_value=False), \
-         patch.object(subject, "ContentResolver", FakeResolver), \
+         patch.object(shelf_window, "ContentResolver", FakeResolver), \
          patch.object(QSystemTrayIcon, "show"), patch.object(QSystemTrayIcon, "hide"), \
-         patch.object(subject.MediaPreview, "set_source", autospec=True, side_effect=fake_media_source) as media_source, \
-         patch.object(subject.MediaPreview, "stop", autospec=True, side_effect=fake_media_stop) as media_stop, \
+         patch.object(file_preview.MediaPreview, "set_source", autospec=True, side_effect=fake_media_source) as media_source, \
+         patch.object(file_preview.MediaPreview, "stop", autospec=True, side_effect=fake_media_stop) as media_stop, \
          patch.object(subject, "native_window_move_active", return_value=False), \
          patch.object(app_settings, "_read_startup_value") as registry_read, \
          patch.object(app_settings, "_write_startup_value") as registry_write:
@@ -160,14 +163,13 @@ with tempfile.TemporaryDirectory(prefix="flickdock-v16-") as temporary:
             assert native in popup.visible_refs() and str(original) in popup.visible_refs()
             popup.set_category("all")
             popup.select_item(native)
-            popup.hover_item(str(document))
-            assert popup.preview.current_path == str(document)
-            popup.end_hover(str(document)); flush(app)
             assert popup.preview.current_path == native and popup.primary_selection == native
             assert popup.preview.text.toPlainText() == shelf.content.text(native)
-            popup.hover_item(str(image)); popup.hover_item(str(vector)); popup.end_hover(str(image)); flush(app)
+            popup.select_item(str(document));flush(app)
+            assert popup.preview.current_path == str(document)
+            popup.select_item(str(image));popup.select_item(str(vector));flush(app)
             assert popup.preview.current_path == str(vector)
-            popup.end_hover(str(vector)); flush(app)
+            popup.select_item(native);flush(app)
             assert popup.preview.current_path == native
             manager.settings.update(view_mode="icons")
             wait_until(app,lambda: popup._build_cursor==len(popup.visible_refs()) and popup.retirement.is_idle)
@@ -189,9 +191,9 @@ with tempfile.TemporaryDirectory(prefix="flickdock-v16-") as temporary:
             transport = Path(temporary) / "transport-video.ts"
             transport.write_bytes((b"\x47" + bytes(187)) * 2)
             assert shelf.content.category(str(typescript)) == "files"
-            assert shelf.content.category(str(transport)) == "video"
-            assert not subject.MediaPreview.can_preview(typescript), "TypeScript source must not enter the video player"
-            assert subject.MediaPreview.can_preview(transport)
+            wait_until(app,lambda:shelf.content.category(str(transport)) == "video")
+            assert not file_preview.MediaPreview.can_preview(typescript), "TypeScript source must not enter the video player"
+            assert file_preview.MediaPreview.can_preview(transport)
             popup = open_overview()
             popup.preview.show_path(str(typescript))
             assert popup.preview.stack.currentWidget() is popup.preview.text
@@ -215,7 +217,7 @@ with tempfile.TemporaryDirectory(prefix="flickdock-v16-") as temporary:
                 bit = {0x01: 1, 0x02: 2, 0x04: 4}.get(key, 0)
                 return 0x8000 if buttons & bit else 0
             with patch.object(app, "platformName", return_value="windows"), \
-                 patch.object(subject.ctypes.windll.user32, "GetAsyncKeyState", side_effect=state), \
+                 patch.object(shelf_ui_common.ctypes.windll.user32, "GetAsyncKeyState", side_effect=state), \
                  patch.object(subject.QCursor, "pos", return_value=point):
                 manager.poll()
 
@@ -460,10 +462,10 @@ with tempfile.TemporaryDirectory(prefix="flickdock-v16-") as temporary:
                 assert dialog.cancel_button.text()=='取消' and dialog.delete_button.text()=='清空'
                 assert not dialog.isWindow() and not dialog.description.wordWrap()
                 return result
-            with patch.object(subject.ClearConfirmOverlay, "exec", lambda dialog: answer(dialog, False)):
+            with patch.object(shelf_window.ClearConfirmOverlay, "exec", lambda dialog: answer(dialog, False)):
                 assert not shelf.confirm_clear_all()
             assert shelf.files["permanent"] == refs
-            with patch.object(subject.ClearConfirmOverlay, "exec", lambda dialog: answer(dialog, True)):
+            with patch.object(shelf_window.ClearConfirmOverlay, "exec", lambda dialog: answer(dialog, True)):
                 assert shelf.confirm_clear_all()
             assert shelf.files["permanent"] == [] and original.is_file() and image.is_file() and document.is_file()
         check("clear all defaults to cancel and requires Yes while retaining original disk files", clear_confirmation)

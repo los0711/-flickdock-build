@@ -27,10 +27,10 @@ _TEXT_WIDTH = DRAG_WIDTH - _LABEL_PADDING * 2 - 2
 
 def _label_font() -> QFont:
     # Keep drag labels on the same platform font as the reference interface.
-    from native_ui_common import reference_font
+    from native_ui_common import reference_font,set_ui_weight
     font = reference_font()
     font.setPixelSize(12)
-    font.setWeight(QFont.Weight.Medium)
+    set_ui_weight(font,400)
     font.setHintingPreference(QFont.HintingPreference.PreferVerticalHinting)
     return font
 

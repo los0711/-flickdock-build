@@ -125,7 +125,7 @@ class TransferTests(unittest.TestCase):
         wait_for(lambda: any(s['state'] == 'waiting' for s in self.a_states))
         sent_code = next(s['code'] for s in self.a_states if s['state'] == 'waiting')
         self.assertEqual(self.offers[0]['code'], sent_code)
-        self.b.accept(identifier, self.destination)
+        self.b.accept(identifier, self.destination, confirmation=self.offers[-1]['code'])
         wait_for(lambda: self.received and self.sent, timeout=20)
         received_root = Path(self.received[0]['paths'][0])
         self.assertEqual((received_root / 'photo.png').read_bytes(), payload)
@@ -140,7 +140,7 @@ class TransferTests(unittest.TestCase):
         original=source/'report.txt';original.write_bytes(b'new original bytes')
         existing=self.destination/'report.txt';existing.write_bytes(b'existing user bytes')
         identifier=self.a.send(self.b.device_id,[original])
-        wait_for(lambda:self.offers);self.b.accept(identifier,self.destination)
+        wait_for(lambda:self.offers);self.b.accept(identifier,self.destination,confirmation=self.offers[-1]['code'])
         wait_for(lambda:self.received and self.sent,timeout=15)
         result=Path(self.received[0]['paths'][0])
         self.assertEqual(result.parent.resolve(),self.destination.resolve())
@@ -156,11 +156,53 @@ class TransferTests(unittest.TestCase):
         wait_for(lambda: any(s['state'] in ('error', 'cancelled') for s in self.a_states))
         self.assertEqual(list(self.destination.iterdir()), [])
 
+    def test_missing_code_keeps_guest_offer_pending_and_matching_code_accepts(self):
+        source=self.root/'verify.bin';source.write_bytes(b'authenticated payload')
+        identifier=self.a.send(self.b.device_id,[source]);wait_for(lambda:self.offers)
+        with self.assertRaisesRegex(ValueError,'六位确认码'):
+            self.b.accept(identifier,self.destination)
+        self.assertEqual(list(self.destination.iterdir()),[])
+        self.b.accept(identifier,self.destination,confirmation=self.offers[-1]['code'])
+        wait_for(lambda:self.received and self.sent)
+        self.assertEqual(Path(self.received[0]['paths'][0]).read_bytes(),source.read_bytes())
+
+    def test_wrong_code_rejects_guest_before_any_file_is_written(self):
+        source=self.root/'reject.bin';source.write_bytes(b'private payload')
+        identifier=self.a.send(self.b.device_id,[source]);wait_for(lambda:self.offers)
+        correct=self.offers[-1]['code'];wrong='000000' if correct!='000000' else '111111'
+        with self.assertRaisesRegex(ValueError,'确认码不一致'):
+            self.b.accept(identifier,self.destination,confirmation=wrong)
+        wait_for(lambda:any(row['id']==identifier and row['state']=='error' for row in self.a_states))
+        self.assertEqual(list(self.destination.iterdir()),[])
+        self.assertFalse(self.received)
+
+    def test_ipv6_connection_reuses_lan_wire_protocol_and_confirmation(self):
+        if not socket.has_ipv6:self.skipTest('IPv6 is unavailable')
+        receiver=lan.LanTransferService(device_name='IPv6 receiver',bind_host='0.0.0.0',discovery=False)
+        offers=[];completed=[];receiver.offer_received.connect(offers.append);receiver.completed.connect(completed.append)
+        try:
+            receiver.start();wait_for(lambda:receiver.port)
+            if not receiver._listener_v6:self.skipTest('IPv6 listener is unavailable')
+            self.a.remember_peer(receiver.own_peer('::1'))
+            source=self.root/'ipv6.bin';source.write_bytes(b'IPv6 TLS original')
+            identifier=self.a.send(receiver.device_id,[source]);wait_for(lambda:offers)
+            wait_for(lambda:any(row['id']==identifier and row['state']=='waiting' for row in self.a_states))
+            code=next(row['code'] for row in self.a_states if row['id']==identifier and row['state']=='waiting')
+            self.assertEqual(offers[-1]['code'],code)
+            receiver.accept(identifier,self.destination,confirmation=code)
+            wait_for(lambda:completed)
+            self.assertEqual(Path(completed[0]['paths'][0]).read_bytes(),source.read_bytes())
+            self.assertTrue(lan._local_address('169.254.1.2'))
+            self.assertTrue(lan._local_address('fe80::1%3'))
+        finally:
+            receiver.close()
+            for thread in list(receiver._threads):thread.join(timeout=1.2)
+
     def test_cancel_accepted_transfer_cleans_partial_bytes(self):
         data = b'x' * (lan.BLOCK_BYTES * 4)
         stream, offer = self._manual_offer(data)
         try:
-            wait_for(lambda: self.offers); self.b.accept(offer['id'], self.destination)
+            wait_for(lambda: self.offers); self.b.accept(offer['id'], self.destination, confirmation=self.offers[-1]['code'])
             ready = lan._read_json(stream, lan.threading.Event()); self.assertEqual(ready['state'], 'ready')
             stream.sendall(data[:lan.BLOCK_BYTES])
             wait_for(lambda: self.b._transfers[offer['id']].offset == lan.BLOCK_BYTES)
@@ -174,7 +216,7 @@ class TransferTests(unittest.TestCase):
         stream, offer = self._manual_offer(data)
         release_cleanup = lan.threading.Event(); cleanup_entered = lan.threading.Event()
         try:
-            wait_for(lambda: self.offers); self.b.accept(offer['id'], self.destination)
+            wait_for(lambda: self.offers); self.b.accept(offer['id'], self.destination, confirmation=self.offers[-1]['code'])
             lan._read_json(stream, lan.threading.Event()); stream.sendall(data[:lan.BLOCK_BYTES])
             transfer = self.b._transfers[offer['id']]
             wait_for(lambda: transfer.offset == lan.BLOCK_BYTES)
@@ -207,7 +249,7 @@ class TransferTests(unittest.TestCase):
         data = b'original\0image'
         stream, offer = self._manual_offer(data)
         try:
-            wait_for(lambda: self.offers); self.b.accept(offer['id'], self.destination)
+            wait_for(lambda: self.offers); self.b.accept(offer['id'], self.destination, confirmation=self.offers[-1]['code'])
             lan._read_json(stream, lan.threading.Event()); stream.sendall(data)
             lan._send_json(stream, {'sha256': '0' * 64})
             wait_for(lambda: any(s['state'] == 'error' for s in self.b_states))
@@ -218,7 +260,7 @@ class TransferTests(unittest.TestCase):
     def test_sender_cancel_removes_paused_remote_bytes_and_needs_token(self):
         data = b'z' * (lan.BLOCK_BYTES * 3)
         stream, offer = self._manual_offer(data)
-        wait_for(lambda: self.offers); self.b.accept(offer['id'], self.destination)
+        wait_for(lambda: self.offers); self.b.accept(offer['id'], self.destination, confirmation=self.offers[-1]['code'])
         lan._read_json(stream, lan.threading.Event()); stream.sendall(data[:lan.BLOCK_BYTES]); stream.close()
         transfer = self.b._transfers[offer['id']]
         wait_for(lambda: not transfer.active)
@@ -237,7 +279,7 @@ class TransferTests(unittest.TestCase):
     def test_lost_final_ack_keeps_received_completion_and_can_be_replayed(self):
         data = b'no lost content'
         stream, offer = self._manual_offer(data)
-        wait_for(lambda: self.offers); self.b.accept(offer['id'], self.destination)
+        wait_for(lambda: self.offers); self.b.accept(offer['id'], self.destination, confirmation=self.offers[-1]['code'])
         lan._read_json(stream, lan.threading.Event())
         original_send = lan._send_json
         def drop_completion(connection, message):
@@ -261,7 +303,7 @@ class TransferTests(unittest.TestCase):
     def test_disconnect_resumes_prefix_and_lost_completion_is_idempotent(self):
         data = bytes(range(251)) * 10000
         stream, offer = self._manual_offer(data)
-        wait_for(lambda: self.offers); self.b.accept(offer['id'], self.destination)
+        wait_for(lambda: self.offers); self.b.accept(offer['id'], self.destination, confirmation=self.offers[-1]['code'])
         lan._read_json(stream, lan.threading.Event())
         stream.sendall(data[:lan.BLOCK_BYTES + 99]); stream.close()
         transfer = self.b._transfers[offer['id']]
@@ -311,13 +353,15 @@ class TransferTests(unittest.TestCase):
         card = row['extra']
         self.assertEqual(card.objectName(), 'lanOfferCard')
         self.assertTrue(card.isVisible())
-        self.assertIsNotNone(card.graphicsEffect())
+        # The current bordered card intentionally avoids a nested blur effect
+        # because that effect made the transfer list expensive to scroll.
+        self.assertIsNone(card.graphicsEffect())
         self.assertFalse(row['heading'].isVisible())
         self.assertEqual(card.findChild(QLabel, 'lanOfferFile').text(), 'Ps2025.7z')
         code=card.findChild(QPushButton, 'lanOfferCodeValue')
         self.assertEqual(code.text(), '964191');code.click()
         self.assertEqual(APP.clipboard().text(),'964191');self.assertEqual(code.text(),'964191')
-        self.assertIn(str(Path.home()), row['offer_destination']._full_text)
+        self.assertTrue(row['offer_destination'].isHidden())
         self.assertEqual(card.findChild(QPushButton, 'lanOfferReject').text(), '拒绝')
         self.assertEqual(card.findChild(QPushButton, 'lanOfferAccept').text(), '接收文件')
         with patch.object(self.b, 'accept', return_value=True) as accept:

@@ -76,21 +76,15 @@ class OrderingTests(unittest.TestCase):
         self.assertEqual(popup.visible_refs(),initial);self.assertIsNone(popup.sort_key)
         self.assertTrue(all(control.direction==0 for control in popup.sort_buttons.values()))
 
-    def test_shelf_limit_rejects_only_over_limit_and_directory_scan_precedes_import(self):
-        from shelf_intake_limit import MAX_SHELF_BYTES,classify
+    def test_cloud_limit_does_not_reject_local_files_or_directories(self):
+        from shelf_capacity import intake_bytes
         import threading
-        self.assertEqual(MAX_SHELF_BYTES,1024**3)
-        small=self.base/'at-limit.bin';small.write_bytes(b'12345678')
-        large=self.base/'over-limit.bin';large.write_bytes(b'123456789')
-        directory=self.base/'oversize-folder';directory.mkdir();(directory/'one').write_bytes(b'12345');(directory/'two').write_bytes(b'1234')
-        rejected=[];self.manager.show_oversize_notice=lambda paths:rejected.extend(paths)
-        with patch('shelf_intake_limit.MAX_SHELF_BYTES',8):
-            self.assertEqual(classify([str(small),str(large),str(directory)],threading.Event()),([str(small)],[str(large),str(directory)]))
-            self.shelf.import_paths('permanent',[str(small),str(large),str(directory)])
-            until(lambda:not getattr(self.shelf,'_intake_limit_jobs',set()))
-            self.assertIn(str(small),self.shelf.files['permanent'])
-            self.assertNotIn(str(large),self.shelf.files['permanent']);self.assertNotIn(str(directory),self.shelf.files['permanent'])
-        self.assertEqual(set(rejected),{str(large),str(directory)})
+        small=self.base/'small.bin';small.write_bytes(b'12345678')
+        large=self.base/'large.bin';large.write_bytes(b'123456789')
+        directory=self.base/'folder';directory.mkdir();(directory/'one').write_bytes(b'12345');(directory/'two').write_bytes(b'1234')
+        self.assertEqual(intake_bytes([str(small),str(large),str(directory)],{},threading.Event()),26)
+        self.shelf.import_paths('permanent',[str(small),str(large),str(directory)])
+        for path in (small,large,directory):self.assertIn(str(path),self.shelf.files['permanent'])
         self.assertEqual(large.read_bytes(),b'123456789');self.assertTrue((directory/'one').exists())
 
 
@@ -98,7 +92,8 @@ class UtilityPreferenceTests(unittest.TestCase):
     def test_live_handle_repaints_color_and_opacity_when_geometry_does_not_change(self):
         from PySide6.QtCore import QObject,QEvent
         from unittest.mock import Mock
-        from flickdock import DockHandle,ShelfManager
+        from dock_handle import DockHandle
+        from flickdock import ShelfManager
         class PaintCounter(QObject):
             def __init__(self):super().__init__();self.paints=0
             def eventFilter(self,widget,event):
@@ -133,7 +128,7 @@ class UtilityPreferenceTests(unittest.TestCase):
                     self.assertFalse(view.isMaximized());self.assertEqual(view.size().toTuple(),default)
                     self.assertIsNone(surface.graphicsEffect())
                 self.assertFalse((Path(directory)/'window-sizes.json').exists())
-                self.assertIn('上传成功后保留 24 小时',settings.retention_description.text())
+                self.assertFalse(hasattr(settings,'retention_description'))
                 settings.clipboard_success_checkbox.setChecked(False)
                 self.assertFalse(SettingsStore(Path(directory)).clipboard_success_notice)
                 self.assertTrue(store.clipboard_sync_enabled)
@@ -170,28 +165,28 @@ class UtilityPreferenceTests(unittest.TestCase):
                     self.assertTrue(display_values(store,third)['enabled'])
             finally:editor.deleteLater();flush()
 
-    def test_copy_card_coalesces_and_uses_real_preview_types_at_top_right(self):
+    def test_copy_card_coalesces_and_uses_real_preview_types_at_bottom_center(self):
         from intake_notice import ClipboardNotice
         from PySide6.QtGui import QImage,QColor
         with tempfile.TemporaryDirectory() as directory,patch('native_ui_common.reduced_motion',return_value=True):
-            manager=SimpleNamespace(settings=SimpleNamespace(theme='dark'));notice=ClipboardNotice(manager)
+            manager=SimpleNamespace(settings=SimpleNamespace(theme='dark',clipboard_success_notice=True));notice=ClipboardNotice(manager)
             path=Path(directory)/'original.txt';path.write_text('original')
             image=QImage(8,8,QImage.Format_RGB32);image.fill(QColor('red'))
             try:
                 for value in (('text',{'text':'hello'}),('text',{'text':'https://example.com'}),('image',{'image':image}),('files',[str(path)])):
                     notice.show_result(True,dict(value=value,point=(10,10)));flush()
-                    self.assertEqual(notice.message.text(),'复制已同步');self.assertTrue(notice.preview.text())
+                    self.assertEqual(notice.accessibleName(),'复制已同步');self.assertNotIn('original.txt',notice.accessibleName())
                     area=APP.primaryScreen().availableGeometry()
-                    self.assertEqual(notice.pos(),QPoint(area.right()-notice.width()-15,area.top()+16))
+                    self.assertEqual(notice.pos(),QPoint(area.left()+(area.width()-notice.width())//2,area.bottom()-notice.height()-15))
                     self.assertTrue(notice.windowFlags()&Qt.WindowStaysOnTopHint);self.assertTrue(notice.testAttribute(Qt.WA_ShowWithoutActivating))
                 notice.dismiss();self.assertFalse(notice.isVisible())
             finally:
-                until(lambda:not notice.jobs);notice.deleteLater();flush()
+                notice.deleteLater();flush()
 
     def test_rapid_copy_notice_discards_superseded_results(self):
         from intake_notice import ClipboardNotice
         with patch('native_ui_common.reduced_motion',return_value=True):
-            notice=ClipboardNotice(SimpleNamespace(settings=SimpleNamespace(theme='dark')))
+            notice=ClipboardNotice(SimpleNamespace(settings=SimpleNamespace(theme='dark',clipboard_success_notice=True)))
             try:
                 with patch.object(notice,'show_result',wraps=notice.show_result) as display:
                     notice.schedule_result(False,dict(id='old',value=('text',{'text':'old'})))
@@ -199,26 +194,30 @@ class UtilityPreferenceTests(unittest.TestCase):
                     notice.schedule_result(True,dict(id='latest',value=('text',{'text':'latest'})))
                     self.assertFalse(notice.isVisible());QTest.qWait(190);flush()
                     display.assert_called_once();self.assertEqual(display.call_args.args[1]['id'],'latest')
-                    self.assertEqual(notice.message.text(),'复制已同步')
-                    self.assertEqual(notice.preview.text(),'latest')
+                    self.assertEqual(notice.accessibleName(),'复制已同步')
+                    self.assertEqual(notice._current_result[1]['id'],'latest')
                     notice.supersede();self.assertFalse(notice.isVisible())
             finally:notice.hide();notice.deleteLater();flush()
 
 
-class CustomClientTests(unittest.TestCase):
-    def test_server_ack_only_custom_state_and_expiry(self):
+class ReceivingCodeClientTests(unittest.TestCase):
+    def test_codes_require_four_mixed_characters_and_custom_code_paths_are_removed(self):
+        from wan_transfer import RECEIVE_CODE
         with tempfile.TemporaryDirectory() as directory:
-            service=WanTransferService(directory,enabled=False);sent=[];service._connected=True
-            service._send_signal=lambda value:sent.append(value) or True
+            service=WanTransferService(directory,enabled=False);service._connected=True;messages=[]
+            service.status_changed.connect(messages.append)
             try:
-                service.set_custom_code('0123');operation=sent[-1]['id']
-                self.assertNotEqual(service.custom_identity().get('status'),'available')
-                with patch('wan_transfer.time.monotonic',return_value=10):
-                    service._message(json.dumps(dict(schema_version=1,type='custom_code',operation=operation,code='0123',nonce='a'*32,status='available',expires=610000,serverNow=10000)))
-                    self.assertEqual(service.custom_identity()['remaining'],600)
-                with patch('wan_transfer.time.monotonic',return_value=611):self.assertEqual(service.custom_identity()['status'],'expired')
-                service.cancel_custom_code();self.assertEqual(sent[-1]['nonce'],'a'*32)
-                with self.assertRaises(ValueError):service.set_custom_code('中文123456')
+                for code in ('AB23','2ABC','789Z'):self.assertIsNotNone(RECEIVE_CODE.fullmatch(code))
+                for code in ('1234','ABCD','ABCD2345','I023','中文23'):
+                    self.assertIsNone(RECEIVE_CODE.fullmatch(code))
+                    with self.assertRaises(ValueError):service.send(code,[])
+                self.assertFalse(hasattr(service,'set_custom_code'));self.assertFalse(hasattr(service,'custom_identity'))
+                service._message(json.dumps(dict(schema_version=1,type='identity',code='ABCD2345',recent=[])))
+                self.assertEqual(service.code,'');self.assertIn('版本不匹配',messages[-1])
+                with patch.object(service,'_send_signal') as signal:
+                    for _ in range(50):service.check_code()
+                    signal.assert_not_called()
+                self.assertFalse(service.code_timer.isActive())
             finally:service.close();service.deleteLater();flush()
 
     def test_each_dropdown_delete_does_not_change_selection(self):
@@ -239,7 +238,7 @@ class CustomClientTests(unittest.TestCase):
 
 
 class AutomaticUpdateTests(unittest.TestCase):
-    def test_default_downloads_in_background_and_waits_for_explicit_install(self):
+    def test_default_downloads_in_background_and_installs_when_idle(self):
         import test_update_inline_v171 as update_fixture
         case=update_fixture.InlineUpdates();case.setUp()
         try:
@@ -248,10 +247,15 @@ class AutomaticUpdateTests(unittest.TestCase):
             self.assertEqual(case.controller.state,'downloading')
             self.assertEqual([row[0] for row in case.client.calls],['check','download'])
             self.assertFalse(case.dialog.isVisible());self.assertEqual(case.events,[])
+            active=[True];case.controller._is_busy=lambda:active[0]
             case.client.complete(case.path,case.manifest)
             self.assertEqual(case.controller.state,'ready');self.assertEqual(case.events,[])
             previous=list(case.client.calls);case.controller.check_automatically()
             self.assertEqual(case.client.calls,previous)
+            with patch.object(case.controller,'_start_verification',return_value=True) as install:
+                active[0]=False;case.controller._resume_automatic()
+                install.assert_called_once();self.assertTrue(case.controller._authorized)
+                self.assertTrue(case.controller._silent_install)
             case.store.update(automatic_updates=False)
             self.assertFalse(case.controller.check_automatically())
             self.assertFalse(SettingsStore(case.store.base).automatic_updates)

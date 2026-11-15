@@ -1,4 +1,6 @@
 """Real Qt entry paths, isolated profiles and no native hooks or desktop IO."""
+import shelf_window
+from overview_ui import FileRow
 import os
 os.environ['QT_QPA_PLATFORM']='offscreen'
 import tempfile
@@ -22,6 +24,34 @@ class FeedbackTests(unittest.TestCase):
         self.fixture=workspace_fixture.WorkspaceTests();self.fixture.setUp();self.shelf=self.fixture.shelf
     def tearDown(self):self.fixture.tearDown()
 
+    def test_primary_action_has_distinct_press_and_disabled_feedback(self):
+        from reference_widgets import button
+        control=button('打开',variant='primary',parent=self.shelf.card);control.resize(110,32);control.show();flush()
+        try:
+            normal=control.grab().toImage().pixelColor(8,16).rgba()
+            control.setDown(True);flush();pressed=control.grab().toImage().pixelColor(8,16).rgba()
+            control.setDown(False);control.setEnabled(False);flush();disabled=control.grab().toImage().pixelColor(8,16).rgba()
+            self.assertNotEqual(normal,pressed);self.assertNotEqual(normal,disabled)
+        finally:control.deleteLater();flush()
+
+    def test_dark_and_light_surfaces_match_the_requested_colors(self):
+        from native_ui_common import colors
+        from reference_widgets import refresh_tree
+        import ui_theme
+        view=self.fixture.overview()
+        for theme,background,card,action in (('dark','#0a0a0a','#171717','#e5e5e5'),('light','#ffffff','#ffffff','#171717')):
+            c=colors(theme)
+            self.assertEqual(QColor(c['background']).name(),background)
+            self.assertEqual(QColor(c['card']).name(),card)
+            self.fixture.settings.update(theme=theme);ui_theme.set_theme(theme)
+            ui_theme.apply_application(APP,'Inter');refresh_tree(self.shelf)
+            view._render_signature=None;view.rebuild();flush()
+            row=view.rows_body.findChildren(FileRow)[0]
+            row.motion.jump({'highlight':0});row.clearFocus();flush()
+            image=row.grab().toImage()
+            self.assertEqual(image.pixelColor(row.width()//2,5).name(),card)
+            self.assertEqual(QColor(c['action']).name(),action)
+
     def test_total_count_stays_total_and_empty_category_badges_have_no_capsule(self):
         view=self.fixture.overview();total=len(self.shelf.display_refs())
         for category in ('images','files','all'):
@@ -29,8 +59,24 @@ class FeedbackTests(unittest.TestCase):
         for key,badge in view.nav_counts.items():
             self.assertEqual(not badge.isHidden(),bool(badge.text()),key)
 
+    def test_same_height_sidebar_entries_use_the_same_corner_radius(self):
+        import re
+        view=self.fixture.overview()
+        controls=[*view.category_buttons.values(),view.video_nav,view.lan_nav,view.settings_nav]
+        self.assertEqual({control.height() for control in controls},{34})
+        for theme in ('dark','light'):
+            radii={int(re.search(r'border-radius:(\d+)px',control._reference_style[theme=='light']).group(1)) for control in controls}
+            self.assertEqual(len(radii),1,(theme,radii))
+
+    def test_preview_actions_use_the_requested_color_roles(self):
+        preview=self.fixture.overview().preview
+        for control in (preview.open_button,preview.rename_button,preview.copy_path_button,preview.zip_button):
+            self.assertEqual(control.property('referenceVariant'),'secondary')
+        self.assertEqual(preview.send_button.property('referenceVariant'),'primary')
+        self.assertEqual(preview.remove_button.property('referenceVariant'),'danger')
+
     def test_checkbox_full_target_paste_hidden_and_deselect_is_red(self):
-        view=self.fixture.overview();row=view.rows_body.findChildren(__import__('flickdock').FileRow)[0]
+        view=self.fixture.overview();row=view.rows_body.findChildren(FileRow)[0]
         QTest.mouseClick(row.selection_check,Qt.LeftButton,pos=QPoint(2,2));flush()
         self.assertIn(row.path,view.selected);self.assertEqual(row.selection_check.size().width(),40)
         self.assertTrue(view.paste_button.isHidden())
@@ -57,9 +103,9 @@ class FeedbackTests(unittest.TestCase):
     def test_compact_footer_logo_cloud_and_hover_do_not_open_workspace(self):
         self.shelf.presentation_kind='drag';self.shelf._layout_header(self.shelf.card.width());flush()
         zone=self.shelf.zones['permanent']
-        self.assertTrue(self.shelf.brand_logo.isVisible());self.assertTrue(self.shelf.cloud_button.isVisible())
+        self.assertTrue(self.shelf.brand_logo.isVisible());self.assertFalse(hasattr(self.shelf,'cloud_button'))
         self.assertTrue(self.shelf.account_button.isHidden());self.assertTrue(self.shelf.lan_button.isVisible())
-        self.assertTrue(self.shelf.network_status.isVisible())
+        self.assertFalse(hasattr(self.shelf,'network_status'))
         self.assertTrue(zone.rect().contains(zone.caption.geometry()))
         self.assertEqual(zone.mapTo(self.shelf,zone.caption.geometry().center()).y(),self.shelf.lan_button.geometry().center().y())
         zone._track_pill_hover(zone.caption.geometry().center());QTest.qWait(330)
@@ -86,13 +132,13 @@ class FeedbackTests(unittest.TestCase):
         self.shelf.pin_button.setChecked(before)
         QTest.mouseClick(self.shelf.pin_button,Qt.LeftButton,pos=QPoint(1,1));flush()
         self.assertNotEqual(self.shelf.pinned,before)
-        for control in (self.shelf.pin_button,self.shelf.expand_button,self.shelf.menu_button,self.shelf.cloud_button,self.shelf.close_button):
+        for control in (self.shelf.pin_button,self.shelf.expand_button,self.shelf.menu_button,self.shelf.close_button):
             for point in (QPoint(1,1),control.rect().bottomRight()-QPoint(1,1)):
                 self.assertTrue(control.hitButton(point))
 
     def test_passive_mac_reveal_skips_qt_application_activation_and_hide_keeps_origin(self):
         import flickdock
-        with patch.object(flickdock.sys,'platform','darwin'),patch.object(self.shelf,'raise_') as qt_raise,patch.object(flickdock,'raise_shelf_for_reveal',return_value=True) as native:
+        with patch.object(flickdock.sys,'platform','darwin'),patch.object(self.shelf,'raise_') as qt_raise,patch.object(shelf_window,'raise_shelf_for_reveal',return_value=True) as native:
             self.shelf._raise_for_reveal();native.assert_called_once();qt_raise.assert_not_called()
         previous=self.shelf.visual_geometry().topLeft();self.shelf.hide_immediately()
         self.assertEqual(self.shelf.visual_geometry().topLeft(),previous)
@@ -102,7 +148,7 @@ class FeedbackTests(unittest.TestCase):
         for ref in self.shelf.display_refs():self.shelf.content.transfers[ref]=dict(phase='uploading',total=100,received=64)
         view.update_transfer_status();flush()
         self.assertEqual(len(view.strip_rows),1);self.assertEqual(view.strip_rows[0][2].text(),'64%')
-        self.assertIn('+2',view.strip_more.text())
+        self.assertFalse(view.strip_more.isVisible())
         QTest.mouseClick(view.transfer_strip,Qt.LeftButton,pos=QPoint(2,2));flush()
         self.assertEqual(view.category,'uploading')
 
@@ -187,7 +233,7 @@ class SettingsFeedbackTests(unittest.TestCase):
                     self.assertTrue(ancestor.rect().contains(row.mapTo(ancestor,row.rect().bottomRight())),(ancestor.objectName(),row.geometry(),ancestor.size()))
             self.assertGreaterEqual(dialog.account_slot.height(),panel.sizeHint().height())
             current=panel._rows_by_id['current']
-            marker=current.findChild(QWidget,'accountCurrentDevice');rename=panel.device_rename_buttons['current']
+            marker=current.findChild(QWidget,'accountDeviceName');rename=panel.device_rename_buttons['current']
             self.assertLess(marker.mapTo(current,marker.rect().topRight()).x(),rename.mapTo(current,rename.rect().topLeft()).x())
             original=list(service.devices)
             service.devices.extend(dict(id='extra'+str(i),name='额外设备 '+str(i),platform='windows') for i in range(8))
@@ -205,7 +251,11 @@ class SettingsFeedbackTests(unittest.TestCase):
             scroll=dialog.scroll.verticalScrollBar();scroll.setValue(scroll.maximum());flush()
             last=next(dialog.body_layout.itemAt(index).widget() for index in range(dialog.body_layout.count()-1,-1,-1) if dialog.body_layout.itemAt(index).widget().isVisible())
             self.assertLessEqual(dialog.body.height(),max(dialog.scroll.viewport().height(),last.geometry().bottom()+32))
-            for slider in dialog.findChildren(QSlider):
+            dialog.select_category('外观与交互');flush()
+            sliders=[slider for slider in dialog.findChildren(QSlider) if slider.isVisible()]
+            self.assertIn(dialog.shake_sensitivity_slider,sliders)
+            self.assertGreater(len(sliders),1)
+            for slider in sliders:
                 self.assertGreaterEqual(slider.height(),24)
                 for value in (slider.minimum(),slider.maximum()):
                     slider.setValue(value);option=QStyleOptionSlider();slider.initStyleOption(option)

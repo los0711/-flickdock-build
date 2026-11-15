@@ -4,6 +4,7 @@ os.environ['QT_QPA_PLATFORM']='offscreen'
 import hashlib,json,tempfile,time,tracemalloc,threading,unittest
 from pathlib import Path
 from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler
+from unittest.mock import patch
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QCoreApplication,QEvent
 from cloud_api import CloudApi,UploadSlice
@@ -11,6 +12,39 @@ from sync_files import hash_part,stage_item
 APP=QApplication.instance() or QApplication([])
 
 class StreamTests(unittest.TestCase):
+    def test_background_prefetch_seek_and_cancel_do_not_wait_for_disk(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/'slow.bin';payload=bytes(range(251))*5000;path.write_bytes(payload)
+            device=UploadSlice(path,100,500000,bulk=True)
+            try:
+                deadline=time.monotonic()+2
+                while not device.bytesAvailable() and time.monotonic()<deadline:APP.processEvents();time.sleep(.001)
+                self.assertEqual(bytes(device.read(41)),payload[100:141])
+                self.assertTrue(device.seek(200))
+                deadline=time.monotonic()+2
+                while not device.bytesAvailable() and time.monotonic()<deadline:APP.processEvents();time.sleep(.001)
+                self.assertEqual(bytes(device.read(41)),payload[300:341])
+            finally:device.close();device._reader.join(2);device.deleteLater()
+            entered=threading.Event();release=threading.Event();original=Path.open
+            class SlowStream:
+                def __init__(self,stream):self.stream=stream
+                def __enter__(self):return self
+                def __exit__(self,*args):return self.stream.__exit__(*args)
+                def seek(self,*args):return self.stream.seek(*args)
+                def read(self,*args):entered.set();release.wait(2);return self.stream.read(*args)
+            def opened(target,*args,**kwargs):
+                stream=original(target,*args,**kwargs)
+                return SlowStream(stream) if target==path and args and args[0]=='rb' else stream
+            try:
+                with patch.object(Path,'open',opened):
+                    device=UploadSlice(path,0,len(payload),bulk=True)
+                    self.assertTrue(entered.wait(2))
+                    started=time.monotonic();device.close()
+                    self.assertLess(time.monotonic()-started,.2,'cancelling waited for the slow disk')
+                    release.set();device._reader.join(2);self.assertFalse(device._reader.is_alive());device.deleteLater()
+            finally:release.set()
+            self.assertEqual(path.read_bytes(),payload)
+
     def test_staging_reuses_large_chunk_checksums_without_another_disk_pass(self):
         from shelf_sync import ShelfSync
         from types import SimpleNamespace

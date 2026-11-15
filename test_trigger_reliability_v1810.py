@@ -1,7 +1,9 @@
 """Offscreen regressions for drag validation and the screen-edge handoff."""
+import shelf_window
 import os
 from pathlib import Path
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -11,6 +13,7 @@ os.environ['APPDATA'] = _import_profile.name
 
 from PySide6.QtCore import QMimeData, QPoint, Qt, QUrl
 from PySide6.QtGui import QDragEnterEvent
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
 import app_settings
@@ -21,6 +24,34 @@ APP = QApplication.instance() or QApplication([])
 
 
 class TriggerReliabilityTests(unittest.TestCase):
+    def test_edge_hover_recovers_after_closing_animated_settings_with_account_panel(self):
+        from account_panel import AccountPanel
+        from test_account_settings_v181 import Service
+        from ui_transitions import WindowFade
+        manager=self.manager
+        dialog=app_settings.SettingsDialog(manager.settings);manager.settings_dialog=dialog
+        dialog.preview_changed.connect(manager.preview_dock);dialog.finished.connect(manager._settings_closed)
+        dialog.set_account_panel(AccountPanel(Service(),dialog));dialog.select_category('账号与设备')
+        def settle(predicate):
+            deadline=time.monotonic()+3
+            while not predicate() and time.monotonic()<deadline:APP.processEvents();QTest.qWait(5)
+            self.assertTrue(predicate())
+        with patch.object(WindowFade,'enabled',return_value=True),patch('native_ui_common.reduced_motion',return_value=False):
+            # Reproduce a window without a first paint, as when settings is
+            # occluded. This also avoids relying on offscreen native exposure.
+            dialog.setUpdatesEnabled(False);dialog.show();APP.processEvents()
+            self.assertTrue(dialog._window_fade._awaiting_capture)
+            self.assertIsNotNone(manager._dock_preview_values)
+            dialog.close();dialog._window_fade.animation._frames.stop()
+            settle(lambda:not dialog.isVisible());dialog.setUpdatesEnabled(True)
+        self.assertIsNone(manager._dock_preview_values);self.assertFalse(manager.settings_open())
+        manager.edge_suppressed=True
+        with patch.object(flickdock.QCursor,'pos',return_value=manager.edge.activation_region().center()+QPoint(-100,0)),patch.object(flickdock,'native_input_available',return_value=False):manager.poll()
+        self.assertFalse(manager.edge_suppressed)
+        with patch.object(flickdock.QCursor,'pos',return_value=manager.edge.activation_region().center()),patch.object(flickdock,'native_input_available',return_value=False):manager.poll()
+        self.assertTrue(manager.shelf.isVisible())
+        self.assertEqual(manager.shelf.presentation_kind,'dock')
+
     def setUp(self):
         self.profile = tempfile.TemporaryDirectory(prefix='flickdock-trigger-v1810-')
         self.patches = [
@@ -90,7 +121,7 @@ class TriggerReliabilityTests(unittest.TestCase):
         manager=self.manager;manager.motion=False;manager.settings.update(trigger_view='compact')
         shelf=manager.shelf;shelf.show_transient(QPoint(160,180),reason='drag');manager.auto_shown=shelf
         manager.update_handles();self.assertTrue(manager.edge.isVisible())
-        for control in (shelf.cloud_button,shelf.network_status,shelf.lan_button,shelf.zones['permanent'].clipboard_button):
+        for control in (shelf.lan_button,shelf.zones['permanent'].clipboard_button):
             self.assertTrue(control.isVisible())
         for control in (shelf.pin_button,shelf.expand_button,shelf.menu_button,shelf.close_button):
             self.assertFalse(control.isVisible())
@@ -124,10 +155,32 @@ class TriggerReliabilityTests(unittest.TestCase):
              patch.object(manager._drag_probe_detector, 'update', return_value=False), \
              patch.object(manager.drag_gate, 'sustain_for_shake') as probe:
             manager.poll()
+            self.assertEqual(manager.shelf.visible_state,'hiding')
+            from test_html_native_workspace import until
+            until(lambda:not manager.shelf.isVisible())
+            manager.poll()
         self.assertFalse(manager.shelf.isVisible(), 'an obscured shelf must release the edge immediately')
         self.assertTrue(manager.edge.isVisible())
         self.assertTrue(manager.lan_dialog.isVisible(), 'LAN transfer remains independently usable')
         probe.assert_called_once_with(browser_point)
+
+    def test_external_press_above_overview_keeps_animated_exit_when_app_deactivates(self):
+        manager=self.manager;shelf=manager.shelf
+        manager.show_overview();shelf.geometry_morph.stop()
+        shelf.presentation.motion=True;manager.motion=True
+        manager._app_was_active=True;manager._button_mask=0
+        outside=QPoint(shelf.visual_geometry().center().x(),shelf.visual_geometry().top()-40)
+        with patch.object(QApplication,'applicationState',return_value=Qt.ApplicationState.ApplicationInactive), \
+             patch.object(flickdock.QCursor,'pos',return_value=outside), \
+             patch.object(flickdock,'mouse_buttons_mask',return_value=1), \
+             patch.object(flickdock,'native_input_available',return_value=False):
+            manager.poll()
+        self.assertTrue(shelf.isVisible())
+        self.assertEqual(shelf.visible_state,'hiding')
+        self.assertEqual(shelf.presentation._targets['alpha'],0)
+        from test_html_native_workspace import until
+        until(lambda:not shelf.isVisible())
+        self.assertTrue(manager.edge.isVisible())
 
     def test_edge_reveal_works_while_lan_is_open_and_after_it_closes(self):
         manager = self.manager
@@ -137,7 +190,7 @@ class TriggerReliabilityTests(unittest.TestCase):
                 manager.shelf.hide_immediately()
                 manager.update_handles()
                 manager.lan_dialog.close()
-            with patch.object(flickdock, 'raise_shelf_for_reveal', return_value=True) as native_raise:
+            with patch.object(shelf_window, 'raise_shelf_for_reveal', return_value=True) as native_raise:
                 manager.show_docked()
                 self.assertTrue(manager.shelf.isVisible())
                 self.assertFalse(manager.edge.isVisible())
@@ -145,6 +198,21 @@ class TriggerReliabilityTests(unittest.TestCase):
             manager.shelf.hide_immediately()
             manager.update_handles()
             self.assertTrue(manager.edge.isVisible())
+
+    def test_video_open_releases_shelf_native_level_before_raising_the_independent_window(self):
+        from video_panel import VideoDialog
+        manager=self.manager;manager.show_overview();manager.shelf._native_revealed=True
+        order=[];show=VideoDialog.show
+        def open_window(dialog):order.append('show');return show(dialog)
+        with patch.object(shelf_window,'lower_shelf_after_reveal',side_effect=lambda shelf:order.append('lower') or True), \
+             patch.object(VideoDialog,'show',open_window),patch.object(VideoDialog,'raise_') as raised:
+            manager.show_video_dialog()
+            self.assertEqual(order[:2],['lower','show'])
+            self.assertFalse(manager.shelf._native_revealed)
+            self.assertFalse(manager.video_dialog.windowFlags()&Qt.WindowStaysOnTopHint)
+            self.assertIsNone(manager.video_dialog.parentWidget())
+            manager.show_overview()
+            self.assertEqual(raised.call_count,1,'A later overview entry raised the video window again')
 
 
 if __name__ == '__main__':

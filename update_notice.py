@@ -2,12 +2,12 @@
 from __future__ import annotations
 import sys
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, Signal,QEvent,QRectF
+from PySide6.QtCore import Qt, Signal,QEvent,QRectF
 from PySide6.QtGui import QColor, QCursor, QGuiApplication,QPainter
 from PySide6.QtWidgets import (QFrame, QGraphicsDropShadowEffect, QHBoxLayout,
                                QLabel, QPushButton, QVBoxLayout, QWidget,QScrollArea,QApplication,QProgressBar)
 from shiboken6 import isValid
-from native_ui_common import colors as ui_colors, reference_font
+from native_ui_common import colors as ui_colors, reference_font, font_css_stack
 
 
 class UpdateNotice(QWidget):
@@ -35,7 +35,8 @@ class UpdateNotice(QWidget):
         shadow = QGraphicsDropShadowEffect(self.surface)
         shadow.setBlurRadius(23)
         shadow.setOffset(0, 5)
-        shadow.setColor(QColor(20, 34, 58, 52))
+        from surface_morph import neutral_shadow_color
+        shadow.setColor(neutral_shadow_color(QColor(20, 34, 58, 52)))
         self.surface.setGraphicsEffect(shadow)
 
         content = QVBoxLayout(self.surface)
@@ -88,35 +89,47 @@ class UpdateNotice(QWidget):
         actions.addWidget(self.update_button)
         content.addLayout(actions)
 
-        self._appearance = QPropertyAnimation(self, b"windowOpacity", self)
-        self._appearance.setDuration(170)
-        self._appearance.setEasingCurve(QEasingCurve.Type.OutCubic)
         self.apply_theme(theme)
 
     def apply_theme(self, theme):
         c=ui_colors(theme)
-        family=reference_font().family()
+        family=font_css_stack()
         self.setStyleSheet(f"""
             QFrame#updateNoticeSurface {{ background:{c['surface']}; border:1px solid {c['glass_border']}; border-radius:{c['radius']}px; }}
             QLabel#updateNoticeTitle {{ color:{c['text']}; border:0; background:transparent;
-                font-family:'{family}'; font-size:14px; font-weight:700; }}
+                font-family:{family}; font-size:14px; font-weight:600; }}
             QLabel#updateNoticeVersion {{ color:{c['secondary']}; border:0; background:transparent;
-                font-family:'{family}'; font-size:11px; }}
+                font-family:{family}; font-size:11px; }}
             QScrollArea {{background:transparent;border:0;}}
-            QLabel#updateNoticeNotes {{color:{c['secondary']};background:transparent;border:0;font-family:'{family}';font-size:12px;}}
-            QLabel#updateNoticeSymbol {{ color:{c['blue']}; background:rgba(10,132,255,51); border:0; border-radius:12px; font-size:20px; font-weight:700; }}
-            QPushButton {{ border:1px solid transparent; border-radius:12px; background:{c['control']};
-                color:{c['text']}; font-family:'{family}'; font-size:12px; padding:0; }}
+            QLabel#updateNoticeNotes {{color:{c['secondary']};background:transparent;border:0;font-family:{family};font-size:12px;}}
+            QLabel#updateNoticeSymbol {{ color:{c['text']}; background:{c['control']}; border:0; border-radius:{c['radius_control']}px; font-size:20px; font-weight:600; }}
+            QPushButton {{ border:1px solid transparent; border-radius:{c['radius_control']}px; background:{c['control']};
+                color:{c['text']}; font-family:{family}; font-size:12px; padding:0; }}
             QPushButton:hover {{ background:{c['hover']}; }}
             QPushButton:pressed {{ background:{c['selected']}; }}
-            QPushButton#updateNoticePrimary {{ background:{c['action']}; color:white; font-weight:700; }}
-            QPushButton#updateNoticePrimary:hover {{ background:{c['action_hover']}; }}
+            QPushButton#updateNoticePrimary {{ background:{c['action']}; color:{c['on_action']}; font-weight:400; }}
+            QPushButton#updateNoticePrimary:hover:enabled {{ background:{c['action_hover']}; }}
+            QPushButton#updateNoticePrimary:pressed {{ background:{c['action_pressed']}; }}
+            QPushButton#updateNoticePrimary:disabled {{ background:{c['control']}; color:{c['muted']}; }}
             QPushButton#updateNoticeClose {{ border:0; border-radius:8px; background:transparent; color:{c['secondary']}; font-size:18px; }}
             QPushButton#updateNoticeClose:hover {{ background:{c['hover']}; }}
         """)
 
     def dismiss(self):
         self.dismissed.emit();self.hide()
+
+    def show_completed(self,version,notes):
+        self.show_version(version,notes)
+        self.title.setText('FlickDock 已更新')
+        self.version_label.setText('当前版本 v'+version)
+        self.symbol.setText('✓')
+        self.close_button.hide();self.later_button.hide()
+        self.status_label.hide();self.progress.hide()
+        self.update_button.setText('我知道了')
+        self.update_button.setAccessibleName('已阅读更新内容')
+        self.update_button.setEnabled(True)
+        self.update_button.setFocus(Qt.FocusReason.OtherFocusReason)
+        self._fit_surface()
 
     def set_state(self,state,version='',received=0,total=0,error='',**details):
         """Render the shared controller without owning its task lifetime."""

@@ -16,4 +16,4 @@
 - Preserve the single permanent shelf, native text drag payloads, reference/copy modes, hover preview restoration, native Save As and file-handle cleanup.
 - Preserve preallocated native animation host geometry, surface transactions and the source-pixmap compositor. Changing native window dimensions during the expand/collapse animation reintroduces flicker.
 - Shake sensitivity controls actual acceleration, speed and reversal counts. Keep high-resolution `perf_counter` timestamps and the separation between MIME probe and configured gesture detection.
-- UI follows the supplied HTML's platform font stack and installed font weights; do not force the bundled HarmonyOS Sans Regular face over the OS fonts. Use consistent SVG glyphs with appropriate source attribution, clear Chinese labels and restrained feedback. No default tooltip with the full text content.
+- UI uses Microsoft YaHei on Windows and the Apple system font / PingFang SC on macOS, without distributing system font files. Use normal button text, consistent SVG glyphs with attribution, clear Chinese labels and restrained feedback. No default tooltip with the full text content.

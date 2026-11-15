@@ -31,41 +31,67 @@ class ReleaseError(ValueError):
 VERSION_RE=re.compile(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z')
 HASH_RE=re.compile(r'[0-9a-f]{64}\Z')
 RUNTIME_SOURCES=(
-    'video_assets.py','video_runtime.py','video_cdn.py','video_links.py','video_worker.py','video_jobs.py','video_panel.py','video_prompt.py',
+    'notice_cluster.py','crash_diagnostics.py','text_preview.py','qt_lifetime.py',
+    'translation_languages.py', 'translation_api.py', 'translation_controller.py', 'translation_notice.py', 'settings_navigation.py',
+    'shelf_ui_common.py','shelf_file_tools.py','shelf_drop_zone.py','file_preview.py',
+    'overview_ui.py','shelf_window.py','dock_handle.py','sync_runtime.py','transfer_runtime.py','sync_contracts.py',
+    
+    'virtual_clipboard.py',
+    'video_assets.py','video_runtime.py','video_cdn.py','video_links.py','video_worker.py','video_formats.py','video_covers.py','video_jobs.py','video_controller.py','video_panel.py','video_prompt.py',
     'flickdock.py','app_settings.py','async_images.py','capture_files.py',
-    'download_writer.py','file_metadata.py','transfer_entry.py','gui_watchdog.py',
+    'download_writer.py','file_metadata.py','transfer_entry.py','receive_notice.py','gui_watchdog.py',
     'confirm_clear.py','content_grid.py','content_resolver.py','content_stack.py',
-    'dock_geometry.py','dock_preview.py','drag_artwork.py','drag_probe.py',
+    'dock_geometry.py','dock_preview.py','display_frames.py','drag_artwork.py','drag_probe.py',
     'drop_routing.py','drop_bridge.py','flickdock_icons.py','flickdock_motion.py','global_hotkeys.py',
-    'image_preview.py','instance_guard.py','media_preview.py','offscreen_verify.py',
+    'image_preview.py','instance_guard.py','media_preview.py','offscreen_verify.py','mac_install.py',
     'runtime_media.py','selection_archive.py','shake_detector.py','shelf_content.py',
-    'surface_morph.py','ui_theme.py','widget_retirement.py','item_transitions.py','ui_transitions.py','app_version.py',
-    'native_ui_common.py','reference_widgets.py','pointer_paste.py','settings_edge_hint.py','cloud_connectivity.py','clipboard_sync.py','clipboard_identity.py','clipboard_preview.py','verify_clipboard.py','transfer_priority.py','upload_lanes.py','runtime_cleanup.py','window_chrome.py','intake_notice.py','display_triggers.py','shelf_intake_limit.py',
+    'surface_morph.py','surface_elements.py','ui_theme.py','widget_retirement.py','item_transitions.py','ui_transitions.py','app_version.py',
+    'native_ui_common.py','reference_widgets.py','pointer_paste.py','settings_edge_hint.py','clipboard_sync.py','clipboard_inbox.py','clipboard_identity.py','clipboard_preview.py','verify_clipboard.py','transfer_priority.py','upload_lanes.py','runtime_cleanup.py','window_chrome.py','intake_notice.py','display_triggers.py','shelf_intake_limit.py','shelf_capacity.py',
     'update_client.py','update_download.py','update_signatures.py','update_dialog.py','update_controller.py','update_notice.py','release_history.py','network_environment.py','network_diagnostics.py','ci_mac_update_runtime.py','ci_utility_windows.py',
     'platform_startup.py','platform_native.py','mac_updates.py','mac_entry.py','runtime_macos.py','mac_permissions.py','mac_permissions_ui.py',
     'account_store.py','cloud_api.py','cloud_config.py','cloud_events.py','account_service.py','account_panel.py',
-    'shelf_sync.py','shared_clipboard_files.py','sync_files.py','sync_adapter.py','verify_cloud.py','shortcut_preview.py',
-    'lan_transfer.py','lan_panel.py','transfer_visuals.py','transfer_workbench.py','owned_files.py','verify_transfers.py',
-    'wan_transfer.py','webrtc_stream.py','nearby_transport.py','verify_wan.py','windows_network.py',
-    'peer_stream.py','peer_rpc.py','peer_sync.py','peer_clipboard.py','peer_shelf.py','tls_stream.py','verify_peers.py',
-    'adaptive_stream.py','route_policy.py','cloud_pipe.py',
+    'shelf_sync.py','shelf_journal.py','sync_scheduler.py','shared_clipboard_files.py','sync_files.py','sync_adapter.py','verify_cloud.py','shortcut_preview.py','update_completion.py','native_clipboard_reader.py',
+    'lan_transfer.py','lan_account.py','lan_panel.py','transfer_visuals.py','transfer_workbench.py','owned_files.py','verify_transfers.py','transfer_diagnostics.py',
+    'wan_transfer.py','manual_network.py','webrtc_stream.py','verify_wan.py','windows_network.py',
+    'clipboard_delivery.py',
+    
 )
 MAINTAINED_TESTS=(
+    'test_bulk_cloud_v1837.py','test_virtual_files_v1837.py','test_slider_click_v1837.py','test_neutral_shadows_v1837.py',
+    'test_shelf_actions_v1837.py',
+    'test_scroll_motion_v1837.py', 'test_tooltips_v1837.py', 'test_upload_badge_v1837.py', 'test_upload_responsiveness_v1837.py', 'test_transfer_suggestion_v1837.py',
+    'test_platform_ui_v1837.py',
+    'test_shadcn_qt_theme.py',
+    'test_transfer_diagnostics.py','test_transfer_compatibility.py',
+    'test_translation.py',
+    'test_architecture.py','test_video_tls.py','test_startup_resources.py','test_crash_diagnostics_v1838.py','test_text_preview_v1838.py','soak_ui_v1838.py',
+    
+    'test_cloud_delete_v1825.py','test_cloud_events_v1825.py','test_cloud_stream_v1825.py',
+    'test_cloud_only_v1825.py','test_virtual_clipboard.py',
+    
+    'test_receive_notice.py',
+    'test_display_frames.py',
+    'test_preview_continuity.py',
+    'test_surface_source_cache.py',
+    'test_surface_elements.py',
+    'test_mac_install.py',
+    'test_video_matrix.py',
     'test_workbench_v1823.py',
     'test_video_v1823.py',
     'test_sync_parallel_receive_v1823.py',
     'test_sync_priority_v1823.py',
     'test_clipboard_history_v1823.py',
+    'test_sync_scheduler.py',
     'test_upload_time_v1826.py',
-    'test_adaptive_routes_v1825.py','test_cloud_route_v1825.py',
-    'test_copy_notice_v1824.py','test_peer_transport_v1824.py','test_peer_sync_v1824.py','test_window_zoom_v1824.py',
+    'test_lan_account_v1825.py',
+    'test_copy_notice_v1824.py','test_window_zoom_v1824.py','test_utility_feedback_v1828.py',
     'test_overview_controls_v1823.py',
     'test_stability_v1822.py','test_resources_v1822.py','test_transfer_entry_v1822.py','test_receive_lifecycle_v1822.py','test_motion_resources_v1822.py',
     'test_display_groups_v1821.py','test_transfer_layout_v1821.py','test_interaction_scope_v1821.py','test_shared_clipboard_files_v1821.py','test_download_ranges_v1821.py','test_remote_handoff_v1821.py',
     'test_mac_permissions_v1821.py','test_shelf_live_v1821.py','test_release_notes_v1821.py','test_clipboard_fast_v1821.py','test_clipboard_preview_v1821.py','test_utility_windows_v1821.py','test_update_resume_v1821.py','test_update_signatures_v1821.py',
     'test_small_upload_lane.py','test_feedback_v1820.py',
-    'test_pointer_paste_v1819.py','test_presentation_v1819.py','test_clipboard_sync_v1819.py','test_wan_account_v1819.py','test_webrtc_close_v1819.py',
-    'test_feedback_v1818.py','test_nearby_transport_v1818.py','test_wan_signaling_v1818.py','test_cloud_failover_v1818.py','test_windows_network_v1818.py',
+    'test_pointer_paste_v1819.py','test_presentation_v1819.py','test_clipboard_sync_v1819.py','test_clipboard_reliability_v1837.py','test_clipboard_shutdown_v1837.py','test_wan_account_v1819.py',
+    'test_feedback_v1818.py','test_wan_signaling_v1818.py','test_original_transfer.py','test_manual_network_v1829.py','test_shelf_capacity_v1829.py','test_wan_transfer_v1816.py','test_cloud_failover_v1818.py','test_windows_network_v1818.py',
     'test_app_settings.py','test_global_hotkeys.py','test_shelf_content.py',
     'test_content_grid.py','test_content_tile_completion.py','test_svg_hidpi.py',
     'test_shake_detector.py','test_drag_probe.py','test_content_resolver.py',
@@ -86,7 +112,7 @@ MAINTAINED_TESTS=(
     'test_update_macos.py','test_update_macos_controller.py','test_update_dmg_v185.py','test_macos_native_entry.py','test_release_macos_v180.py',
     'test_account_panel_v180.py','test_account_security_v180.py','test_shelf_sync_v180.py','test_sync_review_v180.py','test_cloud_client_v180.py',
     'test_account_actions_v181.py','test_account_settings_v181.py','test_account_rules_v1811.py','test_transfer_ui_v181.py',
-    'test_lan_transfer_v181.py','test_lan_dialog_v183.py','test_shelf_transfers_v181.py','test_sync_staging_v181.py','test_cloud_progress_v181.py',
+    'test_lan_transfer_v181.py','test_lan_dialog_v183.py','test_lan_ipv6_discovery_v1837.py','test_shelf_transfers_v181.py','test_shelf_journal_v1837.py','test_sync_staging_v181.py','test_cloud_progress_v181.py',
     'test_cloud_api_stream_v183.py','test_sync_directions.py','test_sync_timeout_recovery.py',
     'test_sync_receive_priority.py','test_cloud_download_fast_path_v189.py','test_window_layer.py',
     'test_mac_window_order_v1810.py','test_mac_cocoa_spaces.py','test_win_window_order_v1810.py',
@@ -96,37 +122,42 @@ MAINTAINED_TESTS=(
     'test_shelf_raise_v1810.py','test_intake_first_frame_v1810.py',
     'test_sync_remote_commit_wakeup.py','test_cloud_file_status_v1810.py',
     'test_trigger_reliability_v1810.py','test_event_stream_wiring_v1810.py',
-    'test_remote_transfer_actions_v1812.py','test_wan_transfer_v1816.py',
+    'test_remote_transfer_actions_v1812.py',
 )
 SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
+    'cloud/test/translation-route.mjs','assets/models/lid.176.ftz',
+    'assets/flags/cn.svg', 'assets/flags/cz.svg', 'assets/flags/de.svg', 'assets/flags/dk.svg', 'assets/flags/es.svg', 'assets/flags/fi.svg', 'assets/flags/fr.svg', 'assets/flags/gr.svg', 'assets/flags/id.svg', 'assets/flags/il.svg', 'assets/flags/in.svg', 'assets/flags/it.svg', 'assets/flags/jp.svg', 'assets/flags/kr.svg', 'assets/flags/manifest.json', 'assets/flags/my.svg', 'assets/flags/nl.svg', 'assets/flags/no.svg', 'assets/flags/ph.svg', 'assets/flags/pl.svg', 'assets/flags/pt.svg', 'assets/flags/ro.svg', 'assets/flags/ru.svg', 'assets/flags/sa.svg', 'assets/flags/se.svg', 'assets/flags/th.svg', 'assets/flags/tr.svg', 'assets/flags/tw.svg', 'assets/flags/ua.svg', 'assets/flags/us.svg', 'assets/flags/vn.svg', 'licenses/Flag-Icons-LICENSE.txt', 'licenses/FASTTEXT-LICENSE.txt', 'licenses/FASTTEXT-MODEL-ATTRIBUTION.txt', 'licenses/Paper-Notice-Motion-LICENSE.txt', 'cloud/src/translation.ts', 'cloud/test/translation.mjs', 'TRANSLATION.md',
+    'ci_cross_device.py','ci_upload_profile.py','ci_vpn.py',
+    
     '.github/workflows/native-clipboard.yml',
     'FlickDock.spec','FlickDock.iss','version_info.txt','ChineseSimplified.isl','windows-network.ps1',
-    'flickdock.ico','THIRD_PARTY_NOTICES.md','font_manifest.json','bundle_policy.py',
-    'release_manifest.py','release_macos.py','release_signing.py','package_source.py','PUBLISHING.md','README.md','AGENTS.md','UI_REFERENCE_IMPLEMENTATION.md','HIG_DESIGN.md','TRANSPORT_V1824.md','.gitignore','.gitattributes',
+    'flickdock.ico','THIRD_PARTY_NOTICES.md','bundle_policy.py',
+    'release_manifest.py','release_macos.py','release_signing.py','package_source.py','PUBLISHING.md','README.md','AGENTS.md','ARCHITECTURE.md','GLOSSARY.md','TRANSFER_DIAGNOSTICS.md','UI_REFERENCE_IMPLEMENTATION.md','HIG_DESIGN.md','SHADCN_QT_DESIGN.md','TRANSPORT_V1824.md','.gitignore','.gitattributes',
     'check_release_v16.py','release_dpr_v165.py','PACKAGE_AUDIT.md',
     'MOTION_V161.md','MOTION_V162.md','MOTION_V163.md','MOTION_V164.md','MOTION_V165.md',
-    'bench_morph_v161.py','bench_cold_expand_v162.py','bench_clear_confirm_v161.py','bench_peer_throughput_v1824.py',
+    'bench_morph_v161.py','bench_cold_expand_v162.py','bench_clear_confirm_v161.py',
     'bench_cloud_latency_v183.py','bench_cloud_events_v183.py','bench_cloud_transfer_v188.py',
-    'bench_lan_throughput_v183.py','bench_resources_v1822.py','bench_ui_resources_v1822.py','bench_idle_resources_v1822.py','performance_metrics.py',
-    'fonts/HarmonyOS_Sans_SC_Regular.ttf',
+    'bench_lan_throughput_v183.py','bench_lan_smallfiles_v1837.py','bench_resources_v1822.py','bench_ui_resources_v1822.py','bench_idle_resources_v1822.py','performance_metrics.py',
     'assets/ui/qtbase_zh_CN.qm',
-    'licenses/HarmonyOS-Sans-LICENSE.txt','licenses/Python-LICENSE.txt',
+    'licenses/Python-LICENSE.txt',
     'licenses/FFmpeg-LICENSE.txt','licenses/LGPL-3.0.txt','licenses/GPL-3.0.txt','licenses/PyInstaller-COPYING.txt',
-    'licenses/OpenSSL-LICENSE.txt','licenses/Cloud-Client-LICENSES.txt','licenses/Lucide-LICENSE.txt','licenses/WebRTC-LICENSES.txt','licenses/Release-Crypto-LICENSES.txt','licenses/Video-LICENSES.txt',
+    'licenses/OpenSSL-LICENSE.txt','licenses/Cloud-Client-LICENSES.txt','licenses/Lucide-LICENSE.txt','licenses/Release-Crypto-LICENSES.txt','licenses/Video-LICENSES.txt',
     'FlickDock-mac.spec','build_macos.py','MAC_BUILD.md','CLOUD_SYNC.md','FEATURE_V180.md','FEATURE_V181.md','FEATURE_V183.md',
     'cloud_remote_probe.py','cloud_feature_probe.py','cloud/package.json','cloud/package-lock.json','cloud/tsconfig.json',
     'cloud/wrangler.jsonc','cloud/README.md','cloud/.gitignore',
     'cloud/migrations/0001_schema.sql','cloud/migrations/0002_retention.sql','cloud/migrations/0003_transfers_password.sql',
-    'cloud/migrations/0004_instant_uploads.sql','cloud/migrations/0005_account_names.sql','cloud/migrations/0006_cloud_retention.sql','cloud/migrations/0007_clipboard_upload_refs.sql','cloud/src/index.ts','cloud/src/hash-state.ts','cloud/src/wan.ts','cloud/src/relay-budget.ts','cloud/src/clipboard.ts','cloud/src/shared-file.ts','cloud/src/intake.ts',
-    'cloud/src/cloud-pipe.ts','cloud/src/storage-budget.ts','TRANSPORT_V1825.md',
+    'cloud/migrations/0004_instant_uploads.sql','cloud/migrations/0005_account_names.sql','cloud/migrations/0006_cloud_retention.sql','cloud/migrations/0007_clipboard_upload_refs.sql','cloud/migrations/0008_shelf_capacity.sql','cloud/src/index.ts','cloud/src/hash-state.ts','cloud/src/wan.ts','cloud/src/manual-signal.ts','cloud/src/relay-budget.ts','cloud/src/clipboard.ts','cloud/src/shared-file.ts','cloud/src/intake.ts',
+    'cloud/src/cloud-pipe.ts','cloud/src/storage-budget.ts','cloud/src/shelf-storage.ts','TRANSPORT_V1825.md',
+    'SYNC_PUSH.md','cloud/test/push-idle.mjs','cloud/test/hibernation-entry.ts',
     'cloud/src/wasm.d.ts','cloud/src/vendor/hash-wasm-sha256-4.12.0.wasm',
     'cloud/src/vendor/hash-wasm-sha256-4.12.0.json','cloud/src/vendor/hash-wasm-4.12.0-LICENSE.txt',
-    'cloud/test/integration.mjs','cloud/test/shared-file.mjs','cloud/test/hash-state.mjs','cloud/test/upload-cancel.mjs','cloud/test/wan-codes.mjs','cloud/test/wan-connect.mjs','cloud/test/wan-account.mjs','cloud/test/peer-sync.mjs','cloud/test/peer-runtime.mjs','cloud/test/account-names.mjs','cloud/test/qa-server.mjs','cloud/test/clipboard.mjs','cloud/test/clipboard-expiry.mjs',
+    'cloud/test/integration.mjs','cloud/test/shared-file.mjs','cloud/test/hash-state.mjs','cloud/test/upload-cancel.mjs','cloud/test/wan-codes.mjs','cloud/test/wan-connect.mjs','cloud/test/wan-account.mjs','cloud/test/manual-transfer.mjs','cloud/test/peer-sync.mjs','cloud/test/account-names.mjs','cloud/test/qa-server.mjs','cloud/test/clipboard.mjs','cloud/test/clipboard-expiry.mjs','cloud/test/clipboard-delivery.mjs',
     '.github/workflows/macos-build.yml','.github/workflows/native-clipboard.yml','ci_installer_close.py','ci_assets.py','p2p_assets.py',
-    'p2p/bridge.mjs','p2p/rtc-peer.mjs','p2p/sync-mesh.mjs','p2p/turn_tls.mjs','p2p/test-turn-tls.mjs','p2p/test-rtc-lifecycle.mjs','p2p/package.json','p2p/package-lock.json','p2p/node-shasums.json',
+    'p2p/node-shasums.json','p2p/package.json','p2p/package-lock.json','p2p/bridge.mjs','p2p/ice_route.mjs','p2p/test-ice-route.mjs','p2p/turn_tls.mjs','p2p/proxy_tunnel.mjs','p2p/stun_route.mjs','p2p/test-proxy-tunnel.mjs','p2p/test-turn-tls.mjs','licenses/WebRTC-LICENSES.txt',
     'website/wrangler.jsonc','website/worker.mjs','website/package.json','website/package-lock.json',
     'website/README.md','website/CHINA_DEPLOYMENT.md','website/test/check-site.mjs','website/test/check-gateway.mjs',
     'website/scripts/build-retiehe.mjs',
+    'website/downloads.mjs','website/download-worker.mjs','website/downloads.wrangler.jsonc','website/download-catalog.json','website/scripts/release_downloads.py','website/scripts/publish.mjs','website/test/test_release_downloads.py',
     'website/public/.assetsignore','website/public/index.html',
     'website/public/styles.css','website/public/site.js',
     'website/public/assets/flickdock.svg','website/public/assets/control-nearby.svg',
@@ -154,7 +185,7 @@ ICON_FILES=tuple('assets/icons/'+name+'.svg' for name in (
     'format-rar','format-svg','format-svgz','format-txt','format-wav','format-webm',
     'format-xls','format-xlsx','format-zip',
 ))
-REQUIREMENTS=b"PySide6==6.12.0\nPyInstaller==6.22.3\npefile==2024.8.26\nkeyring==25.7.0\ncryptography==50.0.2\nyt-dlp[default]==2026.10.26\nimageio-ffmpeg==0.6.0; sys_platform == 'darwin'\n"
+REQUIREMENTS=b"PySide6==6.12.0\nPyInstaller==6.22.3\npefile==2024.8.26\nfasttext-predict-v2==1.1.0\nkeyring==25.7.0\ncryptography==50.0.2\nyt-dlp[default]==2026.10.26\nimageio-ffmpeg==0.6.0; sys_platform == 'darwin'\n"
 SECRET_PATTERNS=(
     re.compile(rb'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----'),
     re.compile(rb'\b(?:ghp|github_pat|gitee_pat)_[A-Za-z0-9_]{20,}\b'),
@@ -287,13 +318,6 @@ def collect_source_files(root: Path) -> list[tuple[str,bytes]]:
                 local=module+'.py'
                 if (root/local).is_file() and local not in selected:
                     raise ReleaseError(f'Local import is missing from the explicit source allowlist: {local}')
-    font=_json(_safe_file(root,'font_manifest.json'))
-    entries=font.get('fonts') if isinstance(font,dict) else None
-    if not isinstance(entries,list) or not entries:raise ReleaseError('A verified bundled-font manifest is required')
-    for entry in entries:
-        path=_safe_file(root,entry['file'])
-        if entry['file'] not in selected or path.stat().st_size!=entry['bytes'] or sha256_file(path)!=entry['sha256']:
-            raise ReleaseError('Bundled font differs from its reviewed font manifest')
     sources.append(('requirements.txt',REQUIREMENTS))
     return sorted(sources)
 

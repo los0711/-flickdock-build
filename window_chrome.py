@@ -5,11 +5,13 @@ from pathlib import Path
 from PySide6.QtCore import QCoreApplication,QObject,QEvent,QPoint,QRect,QRectF,QSize,Qt,QTimer
 from PySide6.QtGui import QColor,QCursor,QGuiApplication,QPainter,QPen
 from PySide6.QtWidgets import QApplication,QPushButton,QWidget
+from native_ui_common import RADIUS_CONTROL_PX
 from platform_native import native_input_available
 from shiboken6 import isValid
 
 _dock_windows=weakref.WeakSet()
 _chromes=weakref.WeakSet()
+WINDOW_CONTROL_RADIUS_PX=RADIUS_CONTROL_PX
 
 
 def ensure_native_resize(window):
@@ -68,8 +70,8 @@ class _WindowButton(QPushButton):
         super().__init__('',window);self.owner=window;self.role=role
         self._keyboard_focus=False
         self.setFixedSize(44,32);self.setAutoDefault(False);self.setDefault(False)
-        self.setAccessibleName({'min':'最小化','max':'最大化或还原','close':'关闭窗口'}[role]);self.setToolTip(self.accessibleName())
-        self.setStyleSheet('QPushButton{border:0;border-radius:0;background:transparent;padding:0;}')
+        self.setAccessibleName({'min':'最小化','max':'最大化或还原','close':'关闭窗口'}[role])
+        self.setStyleSheet(f'QPushButton{{border:0;border-radius:{WINDOW_CONTROL_RADIUS_PX}px;background:transparent;padding:0;}}')
         self.clicked.connect(self._activate)
     @property
     def glyph_rect(self):
@@ -90,8 +92,12 @@ class _WindowButton(QPushButton):
         from native_ui_common import colors
         p=QPainter(self);p.setRenderHint(QPainter.Antialiasing)
         c=colors('dark' if self.dark else 'light') if hasattr(self,'dark') else colors(self.owner._theme) if hasattr(self.owner,'_theme') else palette()
-        if self.underMouse():p.fillRect(self.rect(),ink('#E81123' if self.role=='close' else c['hover']))
-        p.setPen(QPen(QColor('white' if self.role=='close' and self.underMouse() else c['secondary']),1.2))
+        active=self.underMouse() or self.isDown()
+        if active:
+            fill=('#B50D1B' if self.isDown() else '#E81123') if self.role=='close' else c['selected'] if self.isDown() else c['hover']
+            p.setPen(Qt.NoPen);p.setBrush(ink(fill))
+            p.drawRoundedRect(QRectF(self.rect()).adjusted(2,2,-2,-2),WINDOW_CONTROL_RADIUS_PX,WINDOW_CONTROL_RADIUS_PX)
+        p.setPen(QPen(QColor('white' if self.role=='close' and active else c['secondary']),1.2))
         x,y=self.width()//2,self.height()//2
         if self.role=='min':p.drawLine(x-5,y+2,x+5,y+2)
         elif self.role=='close':p.drawLine(x-5,y-5,x+5,y+5);p.drawLine(x+5,y-5,x-5,y+5)
@@ -99,7 +105,7 @@ class _WindowButton(QPushButton):
         else:p.drawRect(x-5,y-5,10,10)
         if self.hasFocus() and self._keyboard_focus:
             p.setPen(QPen(QColor(c['blue']),1.5));p.setBrush(Qt.NoBrush)
-            p.drawRect(QRectF(self.rect()).adjusted(2,2,-2,-2))
+            p.drawRoundedRect(QRectF(self.rect()).adjusted(2,2,-2,-2),WINDOW_CONTROL_RADIUS_PX,WINDOW_CONTROL_RADIUS_PX)
         p.end()
 
 
@@ -127,7 +133,8 @@ class WindowChrome(QObject):
         _chromes.add(self)
         window.finished.connect(lambda *_:dock_window_state(window,False))
         from ui_transitions import WindowFade
-        window._window_fade=WindowFade(window)
+        # ReferenceModalDialog already owns its show/close transition.
+        if not hasattr(window,'_window_fade'):window._window_fade=WindowFade(window)
 
     def _available(self):
         screen=QGuiApplication.screenAt(QCursor.pos()) or self.window.screen() or QGuiApplication.primaryScreen()
@@ -168,8 +175,11 @@ class WindowChrome(QObject):
         return edges
 
     def eventFilter(self,watched,event):
+        kind=event.type()
+        if kind not in (QEvent.Show,QEvent.WinIdChange,QEvent.WindowStateChange,QEvent.Resize,QEvent.Hide,
+                        QEvent.MouseButtonPress,QEvent.MouseButtonDblClick,QEvent.MouseMove,QEvent.MouseButtonRelease):return False
         if QCoreApplication.closingDown() or not isValid(self.window):return False
-        w=self.window;kind=event.type()
+        w=self.window
         if watched is w:
             if kind in (QEvent.Show,QEvent.WinIdChange,QEvent.WindowStateChange) and not self._native_configuring:
                 self._native_configuring=True
@@ -183,8 +193,8 @@ class WindowChrome(QObject):
             elif kind==QEvent.WindowStateChange:
                 dock_window_state(w,w.isVisible() or w.isMinimized())
             elif kind==QEvent.Show:dock_window_state(w,True)
-        if not isinstance(watched,QWidget) or watched.window() is not w:return False
         if kind not in (QEvent.MouseButtonPress,QEvent.MouseButtonDblClick,QEvent.MouseMove,QEvent.MouseButtonRelease):return False
+        if not isinstance(watched,QWidget) or watched.window() is not w:return False
         global_point=event.globalPosition().toPoint();point=w.mapFromGlobal(global_point)
         edges=self._edges(point)
         if kind==QEvent.MouseMove:

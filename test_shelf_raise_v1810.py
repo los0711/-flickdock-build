@@ -1,6 +1,7 @@
 """Offscreen regression for shelf z-order at each reveal entry point."""
 from __future__ import annotations
 
+import shelf_window
 import os
 from pathlib import Path
 import tempfile
@@ -27,7 +28,7 @@ class ShelfRaiseTests(unittest.TestCase):
              patch.object(QSystemTrayIcon, 'show'), patch.object(QSystemTrayIcon, 'hide'), \
              patch.object(app_settings, '_read_startup_value'), \
              patch.object(app_settings, '_write_startup_value'), \
-             patch.object(flickdock, 'raise_shelf_for_reveal') as native_raise, \
+             patch.object(shelf_window, 'raise_shelf_for_reveal') as native_raise, \
              patch.object(flickdock.QCursor, 'pos', return_value=QPoint(300, 260)):
             manager = flickdock.ShelfManager(APP)
             manager.timer.stop()

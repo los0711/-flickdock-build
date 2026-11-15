@@ -18,9 +18,8 @@ import app_settings as subject
 
 
 app = QApplication([])
-font_path = Path(__file__).with_name('fonts')/'HarmonyOS_Sans_SC_Regular.ttf'
-assert QFontDatabase.addApplicationFont(str(font_path)) >= 0
-app.setFont(QFont('HarmonyOS Sans SC', 11))
+from native_ui_common import configure_reference_font
+configure_reference_font(app)
 
 
 def flush():
@@ -46,9 +45,9 @@ def assert_tick_visible(checkbox):
     colors = [image.pixelColor(x, y)
               for y in range(round(rect.top()*ratio), round((rect.bottom()+1)*ratio))
               for x in range(round(rect.left()*ratio), round((rect.right()+1)*ratio))]
-    white = sum(min(c.red(), c.green(), c.blue()) >= 254 for c in colors)
-    blue = sum(c.blue()>175 and c.red()<100 and c.green()<180 for c in colors)
-    assert white >= 5 and blue >= 15, (checkbox.text(), white, blue, ratio)
+    light = sum(min(c.red(), c.green(), c.blue()) >= 180 for c in colors)
+    dark = sum(max(c.red(), c.green(), c.blue()) <= 90 for c in colors)
+    assert light >= 5 and dark >= 5, (checkbox.text(), light, dark, ratio)
     before = checkbox.isChecked()
     QTest.mouseClick(checkbox, Qt.MouseButton.LeftButton, pos=checkbox.indicator_rect().center())
     assert checkbox.isChecked() != before
@@ -142,10 +141,11 @@ with tempfile.TemporaryDirectory(prefix='flickdock-settings-v163-') as temporary
             assert isinstance(checkbox, subject.SettingsCheckBox)
             if isinstance(checkbox, subject.SettingsToggleSwitch):
                 checkbox.setChecked(True)
+                QTest.qWait(260)
                 image=checkbox.grab().toImage();ratio=image.devicePixelRatio()
                 left=image.pixelColor(round((checkbox.width()-40)*ratio),round(checkbox.height()*ratio/2))
                 knob=image.pixelColor(round((checkbox.width()-17)*ratio),round(checkbox.height()*ratio/2))
-                assert left.green()>180 and left.red()<100 and left.blue()<130 and min(knob.red(),knob.green(),knob.blue())>245
+                assert abs(left.lightness()-knob.lightness())>100,(theme,left.name(),knob.name())
                 before=checkbox.isChecked()
                 dialog.scroll.ensureWidgetVisible(checkbox,8,8);flush()
                 QTest.mouseClick(checkbox,Qt.MouseButton.LeftButton,
@@ -158,7 +158,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-settings-v163-') as temporary
         flush()
         spin = dialog.shake_sensitivity_spin
         assert spin.width() >= spin.fontMetrics().horizontalAdvance('100')+30
-        assert dialog.capture_mode_combo.font().family() == 'HarmonyOS Sans SC'
+        assert dialog.capture_mode_combo.font().family() == app.font().family()
         if render_dir: dialog.grab().save(str(Path(render_dir)/f'settings-{theme}-{os.environ["QT_SCALE_FACTOR"]}.png'))
     print('PASS light/dark vector checkbox ticks, Harmony font, reset SVG and scrollable form at DPI', os.environ['QT_SCALE_FACTOR'])
 

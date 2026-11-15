@@ -12,6 +12,26 @@ from ui_transitions import ToolbarEntrance,DwellHint
 
 
 class MotionTests(unittest.TestCase):
+    def test_settings_switch_retargets_and_stops_for_hidden_or_reduced_motion(self):
+        from app_settings import SettingsToggleSwitch
+        switch=SettingsToggleSwitch('示例');switch.resize(200,38);switch.show();flush()
+        try:
+            with patch('native_ui_common.reduced_motion',return_value=False):
+                switch.setChecked(True);self.assertEqual(switch._thumb_motion.state(),QAbstractAnimation.Running)
+                switch._thumb_motion.setCurrentTime(55);mid=switch._thumb_position
+                self.assertGreater(mid,0);self.assertLess(mid,1)
+                switch.setChecked(False);self.assertAlmostEqual(switch._thumb_motion.startValue(),mid)
+                switch._thumb_motion.setCurrentTime(switch._thumb_motion.duration())
+                self.assertEqual(switch._thumb_position,0.)
+                switch.setChecked(True);switch.hide();flush()
+                self.assertEqual(switch._thumb_motion.state(),QAbstractAnimation.Stopped)
+                self.assertEqual(switch._thumb_position,1.)
+            switch.show();flush()
+            with patch('native_ui_common.reduced_motion',return_value=True):
+                switch.setChecked(False);self.assertEqual(switch._thumb_position,0.)
+                self.assertEqual(switch._thumb_motion.state(),QAbstractAnimation.Stopped)
+        finally:switch.hide();switch.deleteLater();flush()
+
     def test_toolbar_reversal_keeps_hit_geometry_and_hide_stops_clock(self):
         root=QWidget();controls=[QWidget(root) for _ in range(4)]
         for i,control in enumerate(controls):control.setGeometry(i*32,0,32,32)

@@ -29,6 +29,7 @@ class UploadTimeTests(unittest.TestCase):
         self.engine.account_id='metadata-account'
         self.entry=dict(id='12345678-1234-4234-8234-123456789abc',ref='local-ref',version=1,sha256='c'*64)
         self.engine.state={'entries':{self.entry['id']:self.entry}}
+        self.engine._ref_index={'local-ref':self.entry}
         self.result=dict(id=self.entry['id'],version=1,sha256=self.entry['sha256'],uploaded_at='2026-11-04T01:02:03.000Z')
 
     def tearDown(self):
@@ -67,6 +68,20 @@ class UploadTimeTests(unittest.TestCase):
         self.assertIsNone(self.engine.upload_time_for_ref('local-ref'))
         self.entry['version']=1;self.service.signed_in=False
         self.assertIsNone(self.engine.upload_time_for_ref('local-ref'));self.assertFalse(self.service.calls)
+
+    def test_ui_lookups_never_scan_the_journal_or_request_metadata(self):
+        class NoScan(dict):
+            def values(self):raise AssertionError('UI must not scan journal values')
+            def items(self):raise AssertionError('UI must not scan journal items')
+        self.entry.update(dirty=False,uploaded_at=self.result['uploaded_at'],uploaded_sha256=self.entry['sha256'])
+        self.engine.state['entries']=NoScan(self.engine.state['entries'])
+        self.assertEqual(self.engine.sync_statuses_for_refs(['local-ref']),{'local-ref':'synced'})
+        self.assertEqual(self.engine.cached_upload_time_for_ref('local-ref'),self.result['uploaded_at'])
+        self.assertEqual(self.engine.upload_metadata_for_refs(['local-ref'])['local-ref'][0],self.result['uploaded_at'])
+        self.assertFalse(self.service.calls)
+        self.engine._remove_entry(self.entry['id'])
+        self.assertIsNone(self.engine.cached_upload_time_for_ref('local-ref'))
+        self.assertNotIn('local-ref',self.engine._ref_index)
 
 
 if __name__=='__main__':unittest.main()

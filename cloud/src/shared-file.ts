@@ -22,14 +22,18 @@ export function fileEnvelope(request:Request,kind:string,bodySize:number):FileEn
 
 export const envelopeSize=(value:FileEnvelope)=>atob(value.prefix).length+value.size+atob(value.suffix).length;
 
-export async function registerClipboardFile(env:Env,value:{id:string;account:string;device:string;object_key:string;upload_id:string},file:FileEnvelope){
+export async function registerClipboardFile(env:Env,value:{id:string;account:string;device:string;session:string;object_key:string;upload_id:string},file:FileEnvelope){
   const chunk=Math.max(65536,file.size),now=Date.now();
-  await env.DB.batch([
-    query(env,"INSERT INTO uploads(id,account_id,item_id,base_version,kind,name,mime_type,size,sha256,chunk_size,part_count,state,expires_at,computed_sha256,verified_size,next_part,device_id) VALUES(?,?,?,0,'file',?,'application/octet-stream',?,?,?,1,'committed',?,?,?,1,?)",
-      value.upload_id,value.account,value.id,file.name,file.size,file.sha256,chunk,now+86400000,file.sha256,file.size,value.device),
-    query(env,'INSERT INTO parts(upload_id,idx,key,size,sha256,ready) VALUES(?,0,?,?,?,1)',value.upload_id,value.object_key,file.size,file.sha256),
-    query(env,'INSERT INTO clipboard_upload_refs(clipboard_id,account_id,upload_id,expires_at) VALUES(?,?,?,?)',value.id,value.account,value.upload_id,now+86400000),
+  // Authorization is rechecked in the same database transaction that exposes
+  // these verified bytes. This preserves logout/revocation fencing without a
+  // separate cross-region read after the payload has finished uploading.
+  const result=await env.DB.batch([
+    query(env,"INSERT INTO uploads(id,account_id,item_id,base_version,kind,name,mime_type,size,sha256,chunk_size,part_count,state,expires_at,computed_sha256,verified_size,next_part,device_id) SELECT ?,?,?,0,'file',?,'application/octet-stream',?,?,?,1,'committed',?,?,?,1,? FROM sessions s JOIN devices d ON d.id=s.device_id WHERE s.token_hash=? AND s.account_id=? AND s.device_id=? AND s.expires_at>? AND d.revoked_at IS NULL",
+      value.upload_id,value.account,value.id,file.name,file.size,file.sha256,chunk,now+86400000,file.sha256,file.size,value.device,value.session,value.account,value.device,now),
+    query(env,"INSERT INTO parts(upload_id,idx,key,size,sha256,ready) SELECT id,0,?,?,?,1 FROM uploads WHERE id=? AND account_id=?",value.object_key,file.size,file.sha256,value.upload_id,value.account),
+    query(env,'INSERT INTO clipboard_upload_refs(clipboard_id,account_id,upload_id,expires_at) SELECT ?,account_id,id,? FROM uploads WHERE id=? AND account_id=?',value.id,now+86400000,value.upload_id,value.account),
   ]);
+  return !!result[0].meta.changes;
 }
 
 export async function purgeUpload(env:Env,id:string){

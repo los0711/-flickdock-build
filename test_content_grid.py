@@ -4,12 +4,13 @@ os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from PySide6.QtCore import QEvent, QEventLoop, QPointF, Qt, QTimer
 from PySide6.QtGui import QFont, QFontDatabase, QImage, QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import QApplication, QFrame, QGridLayout, QVBoxLayout, QWidget
 
-from content_grid import IconItem
+from content_grid import GRID_CARD_HEIGHT_PX,IconItem
 from flickdock_motion import Spring
 from shelf_content import ContentRepository
 
@@ -27,14 +28,8 @@ def mouse(widget, kind, position=(38, 50), button=Qt.MouseButton.LeftButton,
 
 
 app = QApplication([])
-font_file = Path(__file__).parent / 'fonts/HarmonyOS_Sans_SC_Regular.ttf'
-if font_file.exists():
-    font_id = QFontDatabase.addApplicationFont(str(font_file))
-    names = QFontDatabase.applicationFontFamilies(font_id)
-    if names:
-        font = QFont(names[0])
-        font.setPixelSize(14)
-        app.setFont(font)
+from native_ui_common import configure_reference_font
+configure_reference_font(app)
 calls = {'touch': 0, 'preview': [], 'drag': [], 'open': [], 'copy': [], 'remove': [], 'rebuild': 0}
 with tempfile.TemporaryDirectory(prefix='flickdock-grid-') as profile:
     repo = ContentRepository()
@@ -69,10 +64,13 @@ with tempfile.TemporaryDirectory(prefix='flickdock-grid-') as profile:
         grid.addWidget(item, 0, index)
     popup.show()
     wait(30)
-    assert items[0].width() >= 112 and items[0].height() == 120
+    assert items[0].width() >= 112 and items[0].height() == GRID_CARD_HEIGHT_PX
     assert popup.rows_body.rect().contains(items[0].geometry())
     assert items[0].remove_button.width() == 32
     assert not items[0].icon.isNull() and not items[1].icon.isNull()
+    with patch.object(items[0].motion,'animate') as animation:
+        items[0].set_selected(True);items[0].set_selected(False)
+        animation.assert_not_called()
     mouse(items[0], QEvent.Type.MouseButtonPress)
     mouse(items[0], QEvent.Type.MouseButtonRelease, buttons=Qt.MouseButton.NoButton)
     assert popup.selected == {text}
@@ -100,7 +98,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-grid-') as profile:
         item.set_selected(item.ref in popup.selected)
     wait(180)
     assert items[0]._selected and not items[1]._selected
-    assert len(items[0].findChildren(Spring)) == 3, 'item and persistent delete/send buttons'
+    assert len(items[0].findChildren(Spring)) == 2, 'item and hover-only remove button'
     popup.grab().save(str(Path(__file__).parent / 'v15-icon-grid.png'))
     popup.hide()
 print('CONTENT_GRID_OK')

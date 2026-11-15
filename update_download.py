@@ -82,14 +82,30 @@ class UpdateDownload(QObject):
         self._emit('connecting',detail='正在检查可恢复的下载…')
         def ready(value,error):
             if error:self._fail(str(error),discard=True);return
-            self.received,self.digest,self.prefix=value
+            cached,self.received,self.digest,self.prefix=value
             self.progress.emit(self.received,self.total)
             if self.stopped:return
+            if cached:
+                self._emit('verifying',detail='已校验本机安装包，无需重复下载。')
+                if self.stopped:return
+                self.stopped=True;self._release();self.completed.emit(str(self.final));return
             if self.received==self.total:self._verify();return
             try:self.file=self.part.open('ab')
             except OSError as problem:self._fail('无法写入更新暂存文件：'+str(problem));return
             self._restart()
-        self._disk(lambda cancel:_inspect(self.part,self.total,cancel),ready)
+        def inspect(cancel):
+            if self.final.is_symlink():raise ValueError('更新安装包位置不安全。')
+            if self.final.is_file() and self.final.stat().st_size==self.total:
+                # An aborted handoff leaves a complete, already downloaded
+                # package. Authenticate its bytes again before every retry.
+                size,digest,prefix=_inspect(self.final,self.total,cancel)
+                if size==self.total and digest.hexdigest()==self.info['sha256']:
+                    if self.final.suffix=='.dmg':
+                        with self.final.open('rb') as stream:stream.seek(-512,2);valid=stream.read(4)==b'koly'
+                    else:valid=prefix.startswith(b'PK\x03\x04' if self.platform=='darwin' else b'MZ')
+                    if valid:return True,size,digest,prefix
+            return (False,*_inspect(self.part,self.total,cancel))
+        self._disk(inspect,ready)
 
     def _emit(self,phase,**extra):
         self.phase=phase;now=time.monotonic()
@@ -124,7 +140,7 @@ class UpdateDownload(QObject):
             reply.metaDataChanged.connect(lambda:self._metadata(reply))
             reply.readyRead.connect(lambda:self._drain(reply))
             reply.finished.connect(lambda:self._finished(reply));self.watch.start()
-        except (ValueError,OSError,RuntimeError) as error:self._fail(str(error),discard=True)
+        except (ValueError,OSError,RuntimeError) as error:self._fail(str(error))
 
     def _live(self,reply):return not self.stopped and self.reply is reply
     def _code(self,reply):return int(reply.attribute(QNetworkRequest.HttpStatusCodeAttribute) or 0)
@@ -135,26 +151,26 @@ class UpdateDownload(QObject):
         if code in (0,301,302,303,307,308):return
         if code in (403,408,429,500,502,503,504):self._recover(f'下载服务器返回 HTTP {code}。');return
         if code==416 and self.offset:
-            self._reset();self._recover('服务器无法继续此下载，正在重新建立连接。');return
+            self._fail('下载服务器暂时无法续传，已保留下载进度，请稍后重试。');return
         if code not in (200,206):self._fail(f'下载服务器返回 HTTP {code}。');return
         if bytes(reply.rawHeader('Content-Type')).lower().split(b';')[0] in (b'text/html',b'application/xhtml+xml'):
-            self._fail('下载地址返回了网页或登录页面。',discard=True);return
+            self._fail('下载地址返回了网页或登录页面，已保留下载进度。');return
         if bytes(reply.rawHeader('Content-Encoding')).strip().lower() not in (b'',b'identity'):
-            self._fail('下载服务器使用了不支持的内容编码。',discard=True);return
+            self._fail('下载服务器使用了不支持的内容编码，已保留下载进度。');return
         if code==206:
             match=re.fullmatch(rb'bytes (\d+)-(\d+)/(\d+)',bytes(reply.rawHeader('Content-Range')))
             if not match or tuple(map(int,match.groups()))!=(self.offset,self.total-1,self.total):
-                self._fail('服务器续传范围与安装包清单不符。',discard=True);return
-        elif self.offset:self._reset() # A server without Range starts a fresh full body.
+                self._fail('服务器续传范围与安装包清单不符，已保留下载进度。');return
+        elif self.offset:
+            self._fail('下载服务器不支持续传，已保留下载进度，请稍后重试。');return
         length=reply.header(QNetworkRequest.ContentLengthHeader)
-        if length is not None and int(length)!=self.total-self.received:
-            self._fail('更新内容大小与清单不符。',discard=True);return
+        try:
+            valid_length=length is None or int(length)==self.total-self.received
+        except (ValueError,TypeError,OverflowError):
+            valid_length=False
+        if not valid_length:
+            self._fail('更新内容大小与清单不符，已保留下载进度。');return
         self.headers=True;self._last=time.monotonic();self._emit('downloading')
-
-    def _reset(self):
-        if self.file:self.file.seek(0);self.file.truncate(0)
-        self.received=self.offset=0;self.digest=hashlib.sha256();self.prefix=b''
-        self.samples.clear();self.samples.append((time.monotonic(),0));self.progress.emit(0,self.total)
 
     def _drain(self,reply):
         if not self._live(reply):return
@@ -182,7 +198,7 @@ class UpdateDownload(QObject):
         code=self._code(reply)
         if code in (301,302,303,307,308):
             target=reply.attribute(QNetworkRequest.RedirectionTargetAttribute)
-            if target is None or self.redirects>=5:self._fail('更新重定向无效或次数过多。',discard=True);return
+            if target is None or self.redirects>=5:self._fail('更新重定向无效或次数过多。');return
             url=reply.url().resolved(QUrl(target)).toString();self._detach();self.redirects+=1;self._request(url);return
         self._drain(reply)
         if not self._live(reply):return
@@ -219,7 +235,9 @@ class UpdateDownload(QObject):
     def _verify(self):
         if self.file:self.file.close();self.file=None
         self.progress.emit(self.received,self.total)
+        if self.stopped:return
         self._emit('verifying',detail='正在校验安装包完整性及发布签名…' if self.manifest.get('publisher_signature') else '正在校验安装包完整性…')
+        if self.stopped:return
         def verify(cancel):
             size,digest,prefix=_inspect(self.part,self.total,cancel)
             if size!=self.total or digest.hexdigest()!=self.info['sha256']:raise ValueError('安装包大小或 SHA256 校验失败，已删除损坏的下载。')
@@ -241,7 +259,7 @@ class UpdateDownload(QObject):
 
     def _fail(self,message,*,discard=False):
         if self.stopped:return
-        try:self.stop(discard=discard)
+        try:self.stop(discard=discard or (self.received==0 and not self.jobs))
         except OSError:message+=' 更新暂存文件暂时无法清理。'
         self.failed.emit(message)
 

@@ -11,7 +11,8 @@ from PySide6.QtGui import QColor, QFontMetricsF, QPainter, QPainterPath, QPen, Q
 from PySide6.QtWidgets import QGraphicsDropShadowEffect, QGraphicsEffect, QPushButton, QWidget
 
 from flickdock_icons import document_pixmap, draw_glyph
-from surface_morph import paint_surface_shadow, surface_clip
+from surface_morph import paint_surface_shadow, surface_clip, neutral_shadow_color
+from display_frames import FramePulse
 import ui_theme
 
 
@@ -36,9 +37,7 @@ class Spring(QObject):
         self._finished: Callable[[], None] | None = None
         self._last_tick = time.perf_counter()
         self._started_at = self._last_tick
-        self._timer = QTimer(self)
-        self._timer.setTimerType(Qt.TimerType.PreciseTimer)
-        self._timer.setInterval(16)
+        self._timer = FramePulse(self)
         self._timer.timeout.connect(self._tick)
 
     def animate(self, target: dict[str, float], finished: Callable[[], None] | None = None,
@@ -121,15 +120,20 @@ class MotionShadow(QGraphicsDropShadowEffect):
     The widget's hit bounds stay stable. Only its painted presentation moves,
     so pointer interaction and layout don't jitter as the surface springs.
     """
-    def __init__(self, widget: QWidget, alpha: int = 45):
+    def __init__(self, widget: QWidget, alpha: int = 45, *, cache_while=None):
         super().__init__(widget)
         self.sx = self.sy = 1.0
         self.dx = self.dy = 0.0
         self._shadow_cache=OrderedDict()
         self._surface_snapshot=None
+        self._source_cache=QPixmap()
+        self._source_offset=QPoint()
+        self._source_bounds=QRectF()
+        self._source_dpr=0.
+        self._cache_while=cache_while
         self.setBlurRadius(28)
         self.setOffset(0, 7)
-        self.setColor(QColor(18, 31, 53, alpha))
+        self.setColor(neutral_shadow_color(QColor(18, 31, 53, alpha)))
 
     def set_motion(self, sx: float = 1, sy: float = 1, dx: float = 0, dy: float = 0) -> None:
         self.sx = max(.05, min(1.3, float(sx)))
@@ -138,14 +142,26 @@ class MotionShadow(QGraphicsDropShadowEffect):
         self.updateBoundingRect()
         self.update()
 
+    def sourceChanged(self,flags):
+        self.invalidate_source()
+        super().sourceChanged(flags)
+
+    def invalidate_source(self):
+        # QWidget sourcePixmap is not cached by Qt. Reuse only for a finite
+        # transition: its controller invalidates on data changes, and every
+        # resting frame returns to Qt's live subtree (including native video).
+        self._source_cache=QPixmap()
+
     def begin_surface_morph(self,snapshot) -> None:
         """Keep this effect as the sole compositor throughout the resize."""
         self._surface_snapshot=snapshot
+        self._source_cache=QPixmap()
         self.updateBoundingRect()
         self.update()
 
     def end_surface_morph(self) -> None:
         self._surface_snapshot=None
+        self._source_cache=QPixmap()
         self.updateBoundingRect()
         self.update()
 
@@ -190,8 +206,13 @@ class MotionShadow(QGraphicsDropShadowEffect):
             # overview; use that endpoint until the final live-source handoff.
             source=snapshot.target
         else:
-            source=self.sourcePixmap(Qt.CoordinateSystem.LogicalCoordinates,offset,
-                                     QGraphicsEffect.PixmapPadMode.NoPad)
+            ratio=self.parent().devicePixelRatioF()
+            if self._cache_while is None or not self._cache_while():self.invalidate_source()
+            if self._source_cache.isNull() or self._source_bounds!=bounds or self._source_dpr!=ratio:
+                self._source_cache=self.sourcePixmap(Qt.CoordinateSystem.LogicalCoordinates,self._source_offset,
+                                                     QGraphicsEffect.PixmapPadMode.NoPad)
+                self._source_bounds=QRectF(bounds);self._source_dpr=ratio
+            source=self._source_cache;offset=self._source_offset
         def draw_live(target):
             if active and snapshot.mix<1:snapshot.draw_target(target,QRectF(QPointF(),bounds.size()))
             else:target.drawPixmap(QPointF(offset),source)
@@ -360,6 +381,8 @@ class ContentTile(QWidget):
     Content replacement clears both text and pixmap state, preventing old drag
     images from remaining as an orphaned label. No effect objects are replaced.
     """
+    pulse_timeout_ms=650
+
     def __init__(self, parent: QWidget | None = None, motion: bool = True):
         super().__init__(parent)
         self.motion = motion
@@ -455,7 +478,7 @@ class ContentTile(QWidget):
         self._pulse_completion=self._try_complete_pulse
         # Hover retargets can keep a Spring busy. Intake completion has its own
         # bounded lifetime and does not belong to Spring.animate's callback.
-        self._pulse_deadline.start(650 if self.motion else 180)
+        self._pulse_deadline.start(self.pulse_timeout_ms if self.motion else 180)
         if self.motion:
             self.spring.kick({"sx": 2.8 if success else -2.2,
                               "sy": -3.5 if success else 2.7,

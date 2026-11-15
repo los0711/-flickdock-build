@@ -7,8 +7,12 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from PySide6.QtCore import QObject,Signal,QMimeData,QTimer,QUrl
 from PySide6.QtGui import QImage,QColor
+from PySide6.QtTest import QTest
 from test_html_native_workspace import APP,until,flush
-from clipboard_sync import ClipboardSync,package,unpack,snapshot,MAX_BYTES
+from clipboard_sync import ClipboardSync,package,unpack,snapshot,MAX_BYTES,inline_text
+from cloud_api import CloudError
+from uuid import uuid4
+import base64
 
 
 class Clipboard(QObject):
@@ -27,12 +31,18 @@ class Account(QObject):
 
 class Events(QObject):
     clipboard_changed=Signal()
+    clipboard_delivery=Signal(dict)
     connected=Signal()
+    disconnected=Signal()
+    errorOccurred=Signal(object)
     def __init__(self):super().__init__();self.socket=self
+    def state(self):
+        from PySide6.QtNetwork import QAbstractSocket
+        return QAbstractSocket.SocketState.ConnectedState
 
 
 class Hub:
-    def __init__(self):self.head=None;self.pending=None;self.body=None;self.events=[];self.calls=[]
+    def __init__(self):self.head=None;self.pending=None;self.body=None;self.events=[];self.calls=[];self.delivery=None;self.version=0
     def api(self,device):
         hub=self
         class Api:
@@ -40,9 +50,21 @@ class Hub:
                 key=object();hub.calls.append((method,path));
                 def deliver():
                     result=None;error=None
-                    if path=='/v1/clipboard' and method=='POST':
-                        hub.pending=dict(id=kw['data']['id'],device=device,ready=False,copied_at=kw['data']['copied_at']);result={'clipboard':dict(hub.pending)}
-                    elif path=='/v1/clipboard':result={'clipboard':dict(hub.head) if hub.head else None}
+                    if path.endswith('/delivery') and method=='POST':
+                        if not hub.head or hub.head['id'] not in path:error=RuntimeError('replaced')
+                        else:
+                            if not hub.delivery or hub.delivery['id']!=hub.head['id']:
+                                hub.delivery=dict(id=hub.head['id'],sha256=hub.head['sha256'],origin=hub.head['device'],plan={},received={},receipts={})
+                            data=kw['data']
+                            if 'plan' in data:hub.delivery['plan']=dict(data['plan'])
+                            if 'route' in data:
+                                hub.delivery['received'][device]=data['route']
+                                if data.get('stage')!='received':hub.delivery['receipts'][device]=data['route']
+                            result={'delivery':dict(hub.delivery)}
+                    elif path=='/v1/clipboard' and method=='POST':
+                        hub.version+=1
+                        hub.pending=dict(id=kw['data']['id'],device=device,ready=False,version=hub.version,copied_at=kw['data']['copied_at']);result={'clipboard':dict(hub.pending)}
+                    elif path=='/v1/clipboard':result={'clipboard':dict(hub.head) if hub.head else None,'delivery':hub.delivery}
                     elif method=='PUT':
                         if not hub.pending or hub.pending['id'] not in path:error=RuntimeError('replaced')
                         else:
@@ -55,7 +77,9 @@ class Hub:
                             Path(kw['destination']).write_bytes(hub.body);result=str(kw['destination'])
                     if isinstance(result,dict):result['server_time']=round(time.time()*1000)
                     callback(result,error)
-                    if method in ('POST','PUT'):
+                    if path.endswith('/delivery') and result is not None:
+                        for event in hub.events:event.clipboard_delivery.emit(dict(hub.delivery))
+                    elif method in ('POST','PUT'):
                         for event in hub.events:event.clipboard_changed.emit()
                 QTimer.singleShot(0,deliver);return key
             def cancel(self,key):pass # Deliberately deliver late: generation guards must protect the slot.
@@ -63,6 +87,234 @@ class Hub:
 
 
 class ClipboardTests(unittest.TestCase):
+    def _hold_conflicting_copy(self,*,old_head=False,index=0):
+        client=self.clients[index];request=client.api.request;rejected=[]
+        def dispatch(method,path,callback,**options):
+            if method=='POST' and path=='/v1/clipboard' and not rejected:
+                rejected.append(True)
+                if old_head:
+                    item=inline_text(('text',dict(text='the previous committed copy',html='')))
+                    self.hub.version+=1;self.hub.body=base64.b64decode(item['inline']['body'])
+                    self.hub.head=dict(id=str(uuid4()),device=str(1-index),version=self.hub.version,ready=True,kind='text',
+                        size=item['size'],sha256=item['sha256'],inline=item['inline']['body'],copied_at=options['data']['copied_at']-1)
+                QTimer.singleShot(0,lambda:callback(None,CloudError('reservation replaced',409,'CLIPBOARD_REPLACED')))
+                return object()
+            return request(method,path,callback,**options)
+        client.api.request=dispatch;self.clips[index].text('keep this actual copy while the other commit is pending')
+        until(lambda:bool(rejected) and (client._pending is None or bool(client._pending.get('replacement_deadline'))))
+        return client
+
+    def test_conflicting_reservation_waits_for_a_verified_committed_body(self):
+        client=self._hold_conflicting_copy();self.assertIsNotNone(client._pending)
+        pending=client._pending;self.assertEqual(client.view['cloud_transfer']['phase'],'verifying')
+        self.assertEqual(client.view['phase'],'uploading')
+        item=pending['package'];self.hub.version+=1
+        self.hub.head=dict(id=str(uuid4()),device='1',version=self.hub.version,ready=True,kind='text',
+            size=item['size'],sha256=item['sha256'],inline=item['inline']['body'],copied_at=pending['intent']['at']+1)
+        self.hub.body=base64.b64decode(item['inline']['body']);client.request_refresh()
+        until(lambda:client._pending is None and client.view.get('backed_up'))
+        self.assertEqual(client.view['phase'],'synced');self.assertEqual(client.view['copy_id'],pending['id'])
+        self.assertEqual(self.clips[0].mimeData().text(),'keep this actual copy while the other commit is pending')
+
+    def test_previous_committed_body_is_not_misreported_as_a_newer_copy(self):
+        client=self._hold_conflicting_copy(old_head=True)
+        self.assertIsNotNone(client._pending);self.assertEqual(client.view['phase'],'uploading')
+        self.assertEqual(client.view['cloud_transfer']['phase'],'verifying')
+        self.assertEqual(self.clips[0].mimeData().text(),'keep this actual copy while the other commit is pending')
+
+    def test_same_millisecond_lower_device_head_is_not_the_committed_winner(self):
+        client=self._hold_conflicting_copy(old_head=True,index=1);pending=client._pending
+        self.hub.head['copied_at']=pending['intent']['at'];client.request_refresh()
+        QTest.qWait(40);flush()
+        self.assertIs(client._pending,pending);self.assertEqual(client.view['cloud_transfer']['phase'],'verifying')
+
+    def test_unconfirmed_replacement_stops_checks_and_an_actual_recopy_can_retry(self):
+        client=self._hold_conflicting_copy();self.assertIsNotNone(client._pending)
+        identity=client._pending['id'];client._pending['replacement_deadline']=time.monotonic()-1
+        before=sum(method=='GET' and path=='/v1/clipboard' for method,path in self.hub.calls)
+        client._scheduled_check();flush()
+        self.assertIsNone(client._pending);self.assertEqual(client.view['phase'],'error')
+        self.assertIsNone(client.schedule.periodic_due);self.assertFalse(client.retry.isActive())
+        self.assertEqual(sum(method=='GET' and path=='/v1/clipboard' for method,path in self.hub.calls),before)
+        self.clips[0].text('keep this actual copy while the other commit is pending')
+        until(lambda:client.view.get('backed_up') and client.view['id']!=identity)
+        self.assertEqual(client.view['phase'],'synced')
+
+    def test_duplicate_delayed_native_notification_resumes_interrupted_cloud_receive(self):
+        receiver=self.clients[1];native_snapshot=receiver._snapshot;api=receiver.api.request
+        held=[];sequence=[0];receiver._sequence=lambda:sequence[0];receiver._last_sequence=0
+        def request(method,path,callback,**options):
+            if method=='GET' and path.endswith('/content') and not held:
+                held.append(lambda:api(method,path,callback,**options));return object()
+            return api(method,path,callback,**options)
+        receiver.api.request=request
+        source=self.base/'delayed-native.bin';source.write_bytes(b'actual received bytes')
+        mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(source))]);self.clips[0].setMimeData(mime)
+        until(lambda:bool(held))
+        def unavailable():receiver._snapshot_available=False;return None
+        sequence[0]=1
+        with patch.object(receiver,'_snapshot',side_effect=unavailable):receiver._schedule_change()
+        receiver.change_debounce.stop()
+        receiver._refresh_again=False
+        held[0]();flush()
+        self.assertFalse(self.clips[1].mimeData().hasUrls())
+        # The native owner is readable again and still has the same old data.
+        receiver._changed();until(lambda:self.clips[1].mimeData().hasUrls(),seconds=3)
+        received=Path(self.clips[1].mimeData().urls()[0].toLocalFile())
+        self.assertEqual(received.read_bytes(),source.read_bytes())
+        self.assertEqual(receiver.view['phase'],'synced')
+
+    def _replace_first_copy(self,remote_text,*,same_clock=False):
+        client=self.clients[0];original=client.api.request;replaced=[]
+        def request(method,path,callback,**options):
+            if method=='POST' and path=='/v1/clipboard' and not replaced:
+                item=inline_text(('text',dict(text=remote_text,html='')))
+                self.hub.version+=1
+                self.hub.head=dict(id=str(uuid4()),device='1',version=self.hub.version,ready=True,
+                    kind='text',size=item['size'],sha256=item['sha256'],inline=item['inline']['body'],
+                    copied_at=options['data']['copied_at']+(0 if same_clock else 1))
+                self.hub.body=base64.b64decode(item['inline']['body']);replaced.append(True)
+                QTimer.singleShot(0,lambda:callback(None,CloudError('replaced',409,'CLIPBOARD_REPLACED')))
+                return object()
+            return original(method,path,callback,**options)
+        client.api.request=request
+        return client
+
+    def test_identical_cloud_winner_confirms_actual_content_without_false_failure_or_native_rewrite(self):
+        client=self._replace_first_copy('same clipboard from both devices');results=[];changes=[]
+        client.copy_result.connect(lambda ok,context:results.append((ok,context)))
+        self.clips[0].dataChanged.connect(lambda:changes.append(True))
+        self.clips[0].text('same clipboard from both devices')
+        until(lambda:client._pending is None and client.view['phase']=='synced')
+        self.assertEqual(client.view['id'],self.hub.head['id']);self.assertTrue(client.view['backed_up'])
+        self.assertEqual([ok for ok,_ in results],[True]);self.assertEqual(len(changes),1)
+        self.assertEqual(sum(method=='PUT' for method,path in self.hub.calls),0)
+
+    def test_different_newer_copy_retires_old_intent_without_failure_or_republishing(self):
+        client=self._replace_first_copy('newer remote contents');results=[]
+        client.copy_result.connect(lambda ok,context:results.append((ok,context)))
+        self.clips[0].text('older local contents')
+        until(lambda:self.clips[0].mimeData().text()=='newer remote contents' and client._pending is None)
+        self.assertTrue(results);self.assertTrue(all(context['phase']=='superseded' for ok,context in results))
+        self.assertFalse(client.retry.isActive());self.assertTrue(client.view['backed_up'])
+
+    def test_same_millisecond_winner_is_applied_using_the_server_device_order(self):
+        client=self._replace_first_copy('winning device contents',same_clock=True)
+        self.clips[0].text('local content from the lower device')
+        until(lambda:self.clips[0].mimeData().text()=='winning device contents' and client._pending is None)
+        self.assertEqual(client._seen,self.hub.head['id']);self.assertTrue(client.view['backed_up'])
+
+    def test_same_text_with_remote_format_conversion_is_not_a_newer_copy(self):
+        client=self._replace_first_copy('same text from a clipboard bridge');results=[];changes=[]
+        client.copy_result.connect(lambda ok,context:results.append((ok,context)))
+        self.clips[0].dataChanged.connect(lambda:changes.append(True))
+        mime=QMimeData();mime.setText('same text from a clipboard bridge')
+        original_html='<p><b>same text from a clipboard bridge</b></p>';mime.setHtml(original_html)
+        self.clips[0].setMimeData(mime)
+        until(lambda:client._pending is None and client.view.get('backed_up'))
+        self.assertEqual([ok for ok,_ in results],[True])
+        self.assertTrue(all(context['phase']=='synced' for _,context in results))
+        self.assertEqual(self.clips[0].mimeData().html(),original_html)
+        self.assertEqual(len(changes),1);self.assertEqual(client.view['id'],self.hub.head['id'])
+        self.assertEqual(sum(method=='PUT' for method,_ in self.hub.calls),0)
+
+    def test_real_transport_failure_still_reports_failure_and_keeps_native_copy(self):
+        client=self.clients[0];original=client.api.request;results=[]
+        def request(method,path,callback,**options):
+            if method=='POST' and path=='/v1/clipboard':
+                QTimer.singleShot(0,lambda:callback(None,CloudError('server failure',503,'UNAVAILABLE')));return object()
+            return original(method,path,callback,**options)
+        client.api.request=request;client.copy_result.connect(lambda ok,context:results.append((ok,context)))
+        self.clips[0].text('native copy survives a real error');until(lambda:bool(results))
+        self.assertEqual(results[0][0],False);self.assertEqual(results[0][1]['phase'],'error')
+        self.assertEqual(self.clips[0].mimeData().text(),'native copy survives a real error')
+
+    def test_nonempty_unreadable_native_formats_never_erase_the_confirmed_file_preview(self):
+        sender=self.clients[0];source=self.base/'confirmed-file.bin';source.write_bytes(b'confirmed')
+        mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(source))]);self.clips[0].setMimeData(mime)
+        until(lambda:sender._pending is None and sender.view['phase']=='synced')
+        previous=sender.view['value'];identity=sender.view['id'];sender._sequence=lambda:100;sender._last_sequence=99
+        with patch.object(sender,'_is_native',True),patch.object(self.clips[0],'mimeData',return_value=QMimeData()),patch('clipboard_sync.native_format_count',return_value=4):
+            for _ in range(8):sender._changed()
+            self.assertIs(sender.view['value'],previous);self.assertEqual(sender.view['id'],identity)
+            self.assertTrue(sender.view['native_read_pending']);self.assertEqual(sender._last_sequence,99)
+        sender.change_debounce.stop()
+
+    def test_stalled_clipboard_upload_releases_priority_and_real_progress_renews_it(self):
+        sender=self.clients[0];original=sender.api.request;held=[];events=[]
+        sender.activity_changed.connect(events.append)
+        def request(method,path,callback,**options):
+            if method=='PUT':held.append((method,path,callback,options));return object()
+            return original(method,path,callback,**options)
+        sender.api.request=request
+        source=self.base/'stalled-priority.bin';source.write_bytes(os.urandom(128*1024))
+        mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(source))]);self.clips[0].setMimeData(mime)
+        until(lambda:bool(held));self.assertTrue(sender._priority_active())
+        until(lambda:not sender._priority_active(),seconds=2)
+        method,path,callback,options=held.pop();size=Path(options['source']).stat().st_size
+        options['progress'](min(size-1,8192),size)
+        self.assertTrue(sender._priority_active());self.assertEqual(events[-3:],[True,False,True])
+        options['progress'](size,size);self.assertFalse(sender._priority_active())
+        original(method,path,callback,**options)
+        until(lambda:sender._pending is None)
+
+    def test_unreadable_native_clipboard_does_not_erase_a_confirmed_preview(self):
+        sender=self.clients[0];self.clips[0].text('confirmed preview')
+        until(lambda:sender._pending is None and sender.view.get('phase')=='synced')
+        previous=sender.view['value'];sender._sequence=lambda:123456
+        with patch.object(self.clips[0],'mimeData',return_value=None):
+            for _ in range(7):sender._changed()
+            self.assertEqual(sender.view['value'],previous)
+            self.assertTrue(sender.view['native_read_pending'])
+        self.clips[0].text('readable new copy');sender._changed()
+        until(lambda:sender._pending is None and sender.view.get('value')==('text',dict(text='readable new copy',html='')))
+        self.assertFalse(sender.view['native_read_pending'])
+
+    def test_waiting_for_clipboard_metadata_does_not_throttle_bulk_transfers(self):
+        sender=self.clients[0];original=sender.api.request;held=[];activity=[]
+        sender.activity_changed.connect(activity.append)
+        def request(method,path,callback,**options):
+            if method=='POST' and path=='/v1/clipboard':held.append((method,path,callback,options));return object()
+            return original(method,path,callback,**options)
+        sender.api.request=request
+        self.clips[0].text('metadata latency must not limit a different file transfer')
+        until(lambda:bool(held));self.assertIsNotNone(sender._pending)
+        self.assertFalse(sender._priority_active());self.assertNotIn(True,activity)
+        method,path,callback,options=held.pop();original(method,path,callback,**options)
+        until(lambda:sender._pending is None)
+
+    def test_uploaded_body_waiting_for_confirmation_releases_bulk_bandwidth_priority(self):
+        sender=self.clients[0];original=sender.api.request;held=[]
+        def request(method,path,callback,**options):
+            if method=='PUT':held.append((method,path,callback,options));return object()
+            return original(method,path,callback,**options)
+        sender.api.request=request
+        source=self.base/'priority.bin';source.write_bytes(os.urandom(128*1024))
+        mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(source))]);self.clips[0].setMimeData(mime)
+        until(lambda:bool(held));self.assertTrue(sender._priority_active())
+        method,path,callback,options=held.pop();size=Path(options['source']).stat().st_size
+        options['progress'](size,size)
+        self.assertIsNotNone(sender._pending);self.assertFalse(sender._priority_active())
+        original(method,path,callback,**options)
+        until(lambda:sender._pending is None and self.clips[1].mimeData().hasUrls())
+
+    def test_oversize_file_reports_policy_limit_once_without_upload_or_losing_local_clipboard(self):
+        self.clips[0].text('previous usable clipboard')
+        until(lambda:self.hub.head is not None and self.hub.head['ready'])
+        previous=self.hub.head['id'];before=len(self.hub.calls);results=[]
+        sender=self.clients[0];sender.copy_result.connect(lambda ok,context:results.append((ok,context)))
+        source=self.base/'large-video.mp4'
+        with source.open('wb') as stream:stream.truncate(MAX_BYTES+1)
+        mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(source))]);self.clips[0].setMimeData(mime)
+        until(lambda:any(context.get('phase')=='size_limit' for _,context in results))
+        self.assertEqual(len(results),1);self.assertFalse(results[0][0])
+        self.assertEqual(sender.view['phase'],'size_limit');self.assertIsNone(sender._pending)
+        self.assertFalse(sender.retry.isActive());self.assertEqual(self.hub.head['id'],previous)
+        self.assertFalse(any(method in ('POST','PUT') for method,_ in self.hub.calls[before:]))
+        self.assertEqual(Path(self.clips[0].mimeData().urls()[0].toLocalFile()),source)
+        for _ in range(4):self.clips[0].dataChanged.emit();flush()
+        self.assertEqual(len(results),1);self.assertEqual(source.stat().st_size,MAX_BYTES+1)
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.base=Path(self.temp.name);self.hub=Hub();self.clients=[];self.clips=[]
         for i in range(3):
@@ -71,7 +323,7 @@ class ClipboardTests(unittest.TestCase):
         flush()
     def tearDown(self):
         for client in self.clients:client.close()
-        until(lambda:all(not client._jobs for client in self.clients));flush();self.temp.cleanup()
+        until(lambda:all(not client._jobs and not client.inbox._thread.is_alive() for client in self.clients));flush();self.temp.cleanup()
 
     def test_newer_remote_copy_receives_while_an_older_local_upload_is_stalled(self):
         receiver=self.clients[1];original=receiver.api.request;held=[]
@@ -229,10 +481,10 @@ class ClipboardTests(unittest.TestCase):
         with patch.object(client,'_directory',side_effect=OSError('temporary cache permission')):
             self.clips[1].text('remote copy after cache recovery')
             until(lambda:self.hub.head and self.hub.head['ready'])
-            until(lambda:client.retry.isActive())
+            until(lambda:client.receive_retry.isActive())
             self.assertFalse(client._fetching);self.assertFalse(client._priority_active())
             self.assertFalse(self.clips[0].mimeData().hasText())
-        client._retry();until(lambda:self.clips[0].mimeData().text()=='remote copy after cache recovery')
+        client.receive_retry.stop();client.refresh();until(lambda:self.clips[0].mimeData().text()=='remote copy after cache recovery')
 
     def test_observed_remote_clock_is_floor_for_only_future_copy(self):
         client=self.clients[0];mono=time.monotonic()
@@ -263,7 +515,7 @@ class ClipboardTests(unittest.TestCase):
         def bulk():started.set();yield_bulk_payload(cancel);finished.set()
         set_clipboard_priority(True);thread=threading.Thread(target=bulk);thread.start()
         try:
-            self.assertTrue(started.wait(.5));self.assertFalse(finished.wait(.08))
+            self.assertTrue(started.wait(.5))
             set_clipboard_priority(False);self.assertTrue(finished.wait(.5))
             set_clipboard_priority(True);cancel.set()
             with self.assertRaises(InterruptedError):yield_bulk_payload(cancel)

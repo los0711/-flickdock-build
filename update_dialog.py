@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QDialog, QFrame, QGraphicsDropShadowEffect, QHBox
 
 from app_settings import SettingsCloseButton, SettingsTitleBar
 from platform_native import remove_host_window_shadow
-from native_ui_common import colors as ui_colors, reference_font
+from native_ui_common import colors as ui_colors, reference_font, font_css_stack
 
 
 def _plain(value, fallback=""):
@@ -68,7 +68,7 @@ class UpdateDialog(QDialog):
         super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
         self.setObjectName("flickdockUpdate")
         self.setWindowTitle("FlickDock · 软件更新")
-        self.setFont(QFont(reference_font().family(), 11))
+        font=reference_font();font.setPointSize(11);self.setFont(font)
         self.setModal(False)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setMinimumSize(452, 222)
@@ -99,7 +99,8 @@ class UpdateDialog(QDialog):
         shadow = QGraphicsDropShadowEffect(self.surface)
         shadow.setBlurRadius(24)
         shadow.setOffset(0, 6)
-        shadow.setColor(QColor(15, 28, 48, 78))
+        from surface_morph import neutral_shadow_color
+        shadow.setColor(neutral_shadow_color(QColor(15, 28, 48, 78)))
         self.surface.setGraphicsEffect(shadow)
         outer.addWidget(self.surface)
         root = QVBoxLayout(self.surface)
@@ -108,7 +109,7 @@ class UpdateDialog(QDialog):
         self.title_bar = SettingsTitleBar(self)
         self.title_bar.setFixedHeight(48)
         header = QHBoxLayout(self.title_bar)
-        header.setContentsMargins(0,0,0,12);header.setSpacing(10)
+        header.setContentsMargins(0,0,0,4);header.setSpacing(10)
         self.update_symbol=QLabel('↑',self.title_bar)
         self.update_symbol.setObjectName('updateSymbol');self.update_symbol.setFixedSize(32,32)
         self.update_symbol.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -298,7 +299,7 @@ class UpdateDialog(QDialog):
             "installing": ("正在安装更新", "如系统提示，请完成授权。", "安装中…", "关闭窗口"),
             "handoff": ("安装程序已启动", "请按系统提示完成安装。", "安装已启动", "关闭窗口"),
             "cancelling": ("正在取消…", "正在结束当前更新任务。", "正在取消…", "正在取消…"),
-            "cancelled": ("已取消", "你可以随时重新检查更新。", "重新检查", "关闭"),
+            "cancelled": ("已取消", "已保留下载进度，可随时继续。", "继续下载" if self._shared_controller is not None and self._shared_controller.can_start_update else "重新检查", "关闭"),
         }[state]
         self.current_version_label.setText(self._current_version)
         self.latest_version_label.setText(self._latest_version or (self._current_version if state=="latest" else "—"))
@@ -346,7 +347,10 @@ class UpdateDialog(QDialog):
         if self.height()!=target_height:self.resize(self.width(),target_height)
 
     def _primary_clicked(self):
-        if self._state in ("idle", "latest", "cancelled") or (self._state=="error" and self._retry_action=="check"):
+        if self._state=='cancelled' and self._shared_controller is not None and self._shared_controller.can_start_update:
+            self._cancel_pending=False
+            self.request_download.emit()
+        elif self._state in ("idle", "latest", "cancelled") or (self._state=="error" and self._retry_action=="check"):
             self._cancel_pending = False
             self.set_state("checking")
             self.request_check.emit()
@@ -447,33 +451,36 @@ class UpdateDialog(QDialog):
 
     def apply_theme(self, theme):
         dark=theme=='dark';c=ui_colors(theme)
-        family=reference_font().family()
-        font=QFont(family);font.setPixelSize(12);self.setFont(font)
+        font=reference_font();font.setPixelSize(12);self.setFont(font)
         self.close_button.dark=dark;self.close_button.update()
         self.setStyleSheet(f"""
             QDialog#flickdockUpdate {{background:transparent;color:{c['text']};}}
             QFrame#updateSurface {{background:{c['surface']};border:1px solid {c['glass_border']};border-radius:{c['radius']}px;}}
             QWidget#settingsTitleBar {{background:transparent;border:0;border-bottom:1px solid {c['divider']};}}
             QDialog#flickdockUpdate QLabel {{background:transparent;color:{c['text']};font-size:12px;border:0;}}
-            QDialog#flickdockUpdate QLabel#updateSymbol {{background:rgba(10,132,255,51);color:{c['blue']};border-radius:12px;font-size:20px;font-weight:700;}}
-            QDialog#flickdockUpdate QLabel#updateTitle {{font-size:14px;font-weight:700;}}
+            QDialog#flickdockUpdate QLabel#updateSymbol {{background:{c['control']};color:{c['text']};border-radius:12px;font-size:20px;font-weight:700;}}
+            QDialog#flickdockUpdate QLabel#updateTitle {{font-size:14px;font-weight:600;}}
             QDialog#flickdockUpdate QLabel#updateCaption {{color:{c['secondary']};font-size:11px;}}
             QDialog#flickdockUpdate QLabel#updateNotesHeading {{font-size:12px;font-weight:700;}}
             QDialog#flickdockUpdate QLabel#updateStatus {{font-size:12px;font-weight:700;}}
-            QDialog#flickdockUpdate QLabel#updateProgressLabel {{font-size:11px;color:{c['link']};font-family:monospace;}}
+            QDialog#flickdockUpdate QLabel#updateProgressLabel {{font-size:11px;color:{c['link']};font-family:{font_css_stack()};}}
             QDialog#flickdockUpdate QLabel#updateMessage {{color:{c['secondary']};font-size:12px;}}
-            QDialog#flickdockUpdate QLabel#updateSha {{color:{c['muted']};font-size:11px;font-family:monospace;}}
-            QFrame#updateNotesCard {{background:{c['card']};border:1px solid {c['border']};border-radius:12px;}}
-            QPlainTextEdit#updateNotes {{background:transparent;color:{c['secondary']};border:0;padding:0;font-size:12px;selection-background-color:{c['action']};selection-color:white;}}
+            QDialog#flickdockUpdate QLabel#updateSha {{color:{c['muted']};font-size:11px;font-family:{font_css_stack()};}}
+            QFrame#updateNotesCard {{background:{c['card']};border:0;border-radius:{c['radius_card']}px;}}
+            QPlainTextEdit#updateNotes {{background:transparent;color:{c['secondary']};border:0;padding:0;font-size:12px;selection-background-color:{c['action']};selection-color:{c['on_action']};}}
             QProgressBar#updateProgress {{background:{c['control']};border:0;border-radius:3px;}}
-            QProgressBar#updateProgress::chunk {{background:{c['green']};border-radius:3px;}}
-            QDialog#flickdockUpdate QPushButton {{background:{c['control']};color:{c['text']};border:1px solid transparent;border-radius:12px;padding:0 12px;font-size:12px;}}
+            QProgressBar#updateProgress::chunk {{background:{c['action']};border-radius:3px;}}
+            QDialog#flickdockUpdate QPushButton {{background:{c['control']};color:{c['text']};border:1px solid transparent;border-radius:{c['radius_control']}px;padding:0 12px;font-size:12px;}}
             QDialog#flickdockUpdate QPushButton:hover {{background:{c['hover']};}}
             QDialog#flickdockUpdate QPushButton:pressed {{background:{c['selected']};}}
-            QDialog#flickdockUpdate QPushButton#updatePrimary {{background:{c['action']};color:white;font-weight:700;}}
-            QDialog#flickdockUpdate QPushButton#updatePrimary:hover {{background:{c['action_hover']};}}
+            QDialog#flickdockUpdate QPushButton#updatePrimary {{background:{c['action']};color:{c['on_action']};font-weight:400;}}
+            QDialog#flickdockUpdate QPushButton#updatePrimary:hover:enabled {{background:{c['action_hover']};}}
+            QDialog#flickdockUpdate QPushButton#updatePrimary:pressed {{background:{c['action_pressed']};}}
             QDialog#flickdockUpdate QPushButton:disabled {{background:{c['control']};color:{c['muted']};}}
+            QDialog#flickdockUpdate QPushButton#updatePrimary:disabled {{background:{c['control']};color:{c['muted']};}}
             QDialog#flickdockUpdate QPushButton#updateSkip {{background:transparent;border:0;color:{c['secondary']};padding:0;}}
+            QDialog#flickdockUpdate QPushButton#updateSkip:hover {{color:{c['text']};}}
+            QDialog#flickdockUpdate QPushButton#updateSkip:pressed {{color:{c['link']};}}
             QDialog#flickdockUpdate QPushButton#updateClose {{background:transparent;border:0;border-radius:8px;padding:0;}}
             QDialog#flickdockUpdate QPushButton#updateClose:hover {{background:{c['hover']};}}
             QDialog#flickdockUpdate QScrollBar:vertical {{width:6px;background:transparent;border:0;}}
@@ -481,4 +488,5 @@ class UpdateDialog(QDialog):
             QDialog#flickdockUpdate QScrollBar::add-line:vertical,QDialog#flickdockUpdate QScrollBar::sub-line:vertical {{height:0;}}
             QDialog#flickdockUpdate QScrollBar::add-page:vertical,QDialog#flickdockUpdate QScrollBar::sub-page:vertical {{background:transparent;}}
         """)
-        self.surface.graphicsEffect().setColor(QColor(0,0,0,140) if dark else QColor(15,23,42,41))
+        from surface_morph import neutral_shadow_color
+        self.surface.graphicsEffect().setColor(neutral_shadow_color(QColor(0,0,0,140) if dark else QColor(15,23,42,41)))

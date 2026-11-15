@@ -11,8 +11,8 @@ from flickdock_icons import content_color,file_pixmap,document_pixmap,export_svg
 from shelf_content import ContentRepository
 
 app=QApplication([])
-QFontDatabase.addApplicationFont(str(Path(__file__).parent/'fonts/HarmonyOS_Sans_SC_Regular.ttf'))
-app.setFont(QFont('HarmonyOS Sans SC',11))
+from native_ui_common import configure_reference_font
+configure_reference_font(app)
 def pixels(pm):return bytes(pm.toImage().constBits())
 with tempfile.TemporaryDirectory() as directory:
     root=Path(directory);repo=ContentRepository()
@@ -35,7 +35,7 @@ with tempfile.TemporaryDirectory() as directory:
     midpoint=tile.arrival
     tile.set_stack(repo,refs)
     assert tile.refs[-1]==refs[-1] and 0<tile.arrival<=.8
-    tile.landing.setCurrentTime(260);assert tile.arrival==1
+    tile.landing.setCurrentTime(tile.landing.duration());assert tile.arrival==1
     tile.set_stack(repo,refs);assert tile.arrival==1,'Repeated refresh must not restart landing'
     tile.set_stack(repo,[]);tile.set_content('empty');assert tile.refs==()
     image_path=root/'cached.png';image=QImage(300,200,QImage.Format.Format_RGB32);image.fill(0xff1689a8);image.save(str(image_path))

@@ -1,4 +1,5 @@
 """Observable native UI, network classification and conservative cleanup."""
+import shelf_window
 import json,os,tempfile,time,unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -66,7 +67,7 @@ class FeedbackTests(unittest.TestCase):
 
     def test_shake_only_expires_after_three_seconds_outside_and_entry_pauses_expiry(self):
         shelf=SimpleNamespace(_shake_outside_since=10.)
-        expired=lambda point,now,inside:flickdock.ShelfWindow.shake_idle_expired(shelf,point,now,inside)
+        expired=lambda point,now,inside:shelf_window.ShelfWindow.shake_idle_expired(shelf,point,now,inside)
         self.assertFalse(expired(QPoint(1000,1000),12.9,False))
         self.assertTrue(expired(QPoint(1400,1000),13.,False))
         self.assertFalse(expired(QPoint(200,200),13.1,True))

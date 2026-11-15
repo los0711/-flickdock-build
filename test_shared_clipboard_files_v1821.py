@@ -23,7 +23,7 @@ class Peer(QObject):
     def __init__(self):
         super().__init__();self.api=self;self.token='fixture-token';self.account={'id':str(uuid4())};self.device_id=str(uuid4())
         self.head=None;self.staged={};self.heads={};self.holds={};self.objects={};self.items={};self.active={};self.held={}
-        self.calls=[];self.puts=[];self.payload_bytes=0;self.cancelled=[];self.hold_reply=False;self.replies={}
+        self.calls=[];self.puts=[];self.payload_bytes=0;self.cancelled=[];self.hold_reply=False;self.replies={};self.deliveries={}
     @property
     def signed_in(self):return bool(self.token)
     def request(self,method,path,callback,**options):
@@ -35,7 +35,8 @@ class Peer(QObject):
         def deliver():
             if key not in self.active:return
             data=options.get('data') or {}
-            if path=='/v1/clipboard' and method=='GET':respond({'clipboard':self.head});return
+            if path=='/v1/clipboard' and method=='GET':
+                respond({'clipboard':self.head,'delivery':self.deliveries.get(self.head['id']) if self.head else None});return
             if path=='/v1/clipboard' and method=='POST':
                 identity=data['id']
                 if identity in self.heads and self.heads[identity].get('ready'):
@@ -49,6 +50,13 @@ class Peer(QObject):
                 respond(dict(clipboard=pending,shared_files=True));return
             if path.startswith('/v1/clipboard/'):
                 identity=path.split('/')[3]
+                if path.endswith('/delivery') and method=='POST':
+                    if not self.head or self.head['id']!=identity or self.head['sha256']!=data['sha256']:
+                        respond(error=CloudError('replaced',409,'CLIPBOARD_REPLACED'));return
+                    receipt=self.deliveries.setdefault(identity,dict(id=identity,sha256=self.head['sha256'],origin=self.head['device'],plan={},receipts={}))
+                    if 'plan' in data:receipt['plan']=dict(data['plan'])
+                    if 'route' in data:receipt['receipts'][self.device_id]=data['route']
+                    respond({'delivery':copy.deepcopy(receipt)});return
                 if path.endswith('/retain'):
                     self.holds.setdefault(identity,set()).add(data['item_id'])
                     respond(dict(retained=True,clipboard=self.heads.get(identity),shared_files=True));return
@@ -105,6 +113,27 @@ class Peer(QObject):
 
 
 class SharedFilesTests(unittest.TestCase):
+    def test_equivalent_cloud_commit_keeps_the_local_copy_notice_identity(self):
+        from types import SimpleNamespace
+        from clipboard_preview import ClipboardPresenter
+        from intake_notice import ClipboardNotice
+        presenter=ClipboardPresenter(self.client)
+        manager=SimpleNamespace(clipboard_presenter=presenter,settings=SimpleNamespace(theme='dark',clipboard_success_notice=True))
+        notice=ClipboardNotice(manager)
+        presenter.changed.connect(lambda:notice.update_delivery(presenter.state,authoritative=True))
+        try:
+            with patch('native_ui_common.reduced_motion',return_value=True):
+                identity=self.copy(self.source());until(lambda:identity in self.peer.held)
+                pending=self.client._pending;item=pending['package'];canonical=str(uuid4())
+                self.client._task_ready(pending,dict(id=canonical,ready=True,kind=item['kind'],sha256=item['sha256'],size=item['size'],version=7),equivalent=True)
+                until(lambda:notice.isVisible() and notice._phase=='success')
+                self.assertEqual(self.client.view['id'],canonical)
+                self.assertEqual(self.client.view['copy_id'],identity)
+                self.assertTrue(self.client.view['local_copy']);self.assertTrue(self.client.view['backed_up'])
+                self.assertEqual(notice._current_result[1]['copy_id'],identity)
+                self.assertEqual(notice.timer.interval(),3000);self.assertGreater(notice.timer.remainingTime(),2800)
+        finally:notice.supersede();notice.deleteLater();presenter.close();presenter.deleteLater();flush()
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(prefix='flickdock-shared-files-');self.base=Path(self.temp.name)
         self.qt_errors=[];self.hook=patch.object(sys,'excepthook',lambda kind,value,trace:self.qt_errors.append((kind,value)))
@@ -116,7 +145,7 @@ class SharedFilesTests(unittest.TestCase):
         client=ClipboardSync(self.peer,self.events,self.base/'profile',enabled=True,clipboard=self.clip)
         client._clock_anchor=(time.monotonic(),round(time.time()*1000));self.clients.append(client);return client
     def new_engine(self):
-        engine=ShelfSync(self.base/'profile',self.peer,self.adapter,poll_ms=600000)
+        engine=ShelfSync(self.base/'profile',self.peer,self.adapter)
         engine.set_directions(True,False);engine.select_account(self.peer.account);engine.attach_clipboard(self.clients[-1])
         self.clients[-1].activity_changed.connect(engine.set_clipboard_priority)
         self.engines.append(engine);return engine
@@ -135,6 +164,18 @@ class SharedFilesTests(unittest.TestCase):
     def add(self,path):
         self.adapter.view['permanent'].append(str(path));self.engine.local_changed()
         return next(row for row in self.engine.state['entries'].values() if row['ref']==str(path))
+
+    def test_permanent_control_file_rejection_stops_retry_and_late_completion(self):
+        identity=self.copy(self.source());until(lambda:identity in self.peer.held)
+        pending=self.client._pending;events=[];self.client.copy_result.connect(lambda ok,context:events.append(context['phase']))
+        self.client._task_error(pending,CloudError('Remote control token',422,'CLIPBOARD_TRANSIENT_FILE'))
+        self.assertIsNone(self.client._pending);self.assertFalse(self.client.retry.isActive())
+        self.assertFalse(self.client._valid_task(pending));self.assertEqual(self.client.view['phase'],'unavailable')
+        self.assertIsNone(self.client._cloud_progress);self.assertEqual(events,['unavailable'])
+        item=pending['package']
+        self.client._task_ready(pending,dict(id=identity,ready=True,sha256=item['sha256'],size=item['size']));flush()
+        self.assertEqual(self.client.view['phase'],'unavailable');self.assertEqual(events,['unavailable'])
+        self.assertEqual(pending['_file_phase'],'unavailable')
 
     def test_attach_at_sixty_percent_has_one_payload_and_one_progress_source(self):
         path=self.source();identity=self.copy(path);until(lambda:identity in self.peer.held)

@@ -98,19 +98,20 @@ class DisplayTests(unittest.TestCase):
                             while ancestor is not view.body:
                                 self.assertTrue(ancestor.rect().contains(control.mapTo(ancestor,control.rect().bottomRight())))
                                 ancestor=ancestor.parentWidget()
-                    view.select_category('同步与剪贴板');flush();label=view.retention_description
-                    self.assertGreaterEqual(label.height(),label.heightForWidth(label.width()))
+                    view.select_category('同步与剪贴板');flush()
+                    self.assertFalse(hasattr(view,'retention_description'))
                     sections=[view.body_layout.itemAt(i).widget() for i in range(view.body_layout.count()) if view.body_layout.itemAt(i).widget().isVisible()]
                     last=sections[-1];self.assertLessEqual(view.body.height(),max(view.scroll.viewport().height(),last.geometry().bottom()+32))
                     for first,second in zip(sections,sections[1:]):self.assertLess(first.geometry().bottom(),second.geometry().top())
                 view.select_category('外观与交互')
                 for row in rows:row.set_expanded(False,animate=False)
                 for _ in range(6):flush()
-                last=view.dock_card;self.assertLessEqual(view.body.height(),max(view.scroll.viewport().height(),last.geometry().bottom()+32))
+                last=view.setting_categories[-1][1][-1];self.assertLessEqual(view.body.height(),max(view.scroll.viewport().height(),last.geometry().bottom()+32))
         finally:view.hide();view.deleteLater();flush()
 
     def test_all_enabled_draft_handles_receive_geometry_and_are_shown(self):
-        from flickdock import ShelfManager,DockHandle
+        from flickdock import ShelfManager
+        from dock_handle import DockHandle
         from dock_geometry import trigger_rect
         row=self.editor.rows[display_id(self.second)];row.toggle.setChecked(True);row.edge.setCurrentIndex(row.edge.findData('left'));row.controls['position'].setValue(73)
         manager=SimpleNamespace(settings=self.store,_quitting=False,settings_open=lambda:True,_settings_prompt_active=lambda:False,dock_preview=SimpleNamespace(hide=Mock()),settings_edge_hint=SimpleNamespace(hide=Mock()))

@@ -2,15 +2,24 @@
 from collections import OrderedDict
 import math
 import sys
-from PySide6.QtCore import QObject, QPoint, QRect, QRectF, Qt, QEasingCurve, QVariantAnimation
+import time
+from PySide6.QtCore import QObject, QPoint, QPointF, QRect, QRectF, Qt, QEasingCurve, QVariantAnimation
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPixmap, QTransform, QRegion
 from PySide6.QtWidgets import QWidget
+from display_frames import FramePulse
+
+
+def neutral_shadow_color(color):
+    """Remove shadow hue while preserving its perceived lightness and alpha."""
+    source=QColor(color)
+    gray=round(.2126*source.red()+.7152*source.green()+.0722*source.blue())
+    return QColor(gray,gray,gray,source.alpha())
 
 
 def paint_surface_shadow(painter,rect,cache,blur=28.0,offset=None,color=None,*,radius=None):
     """Paint the same fixed-width shadow for live and animated surfaces."""
     offset=QPoint(0,7) if offset is None else offset
-    color=QColor(18,31,53,40) if color is None else QColor(color)
+    color=neutral_shadow_color(QColor(18,31,53,40) if color is None else color)
     if color.alpha() == 0:
         return
     dpr=painter.device().devicePixelRatioF()
@@ -61,6 +70,25 @@ def surface_clip(rect):
     return path
 
 
+def visible_render_widgets(root):
+    """Walk only the clipped widget branches that QWidget.render can paint.
+
+    Hidden overview rows retain thousands of children after the first visit.
+    Lifting their inherited update flags emits events even though none of those
+    widgets contributes pixels to this endpoint.
+    """
+    pending=[(root,root.rect())]
+    while pending:
+        widget,clip=pending.pop()
+        if widget.testAttribute(Qt.WA_ForceUpdatesDisabled):continue
+        yield widget
+        for child in widget.findChildren(QWidget,options=Qt.FindDirectChildrenOnly):
+            if child.isHidden() or child.isWindow():continue
+            visible=clip.intersected(child.geometry())
+            if not visible.isEmpty():
+                pending.append((child,visible.translated(-child.x(),-child.y())))
+
+
 class SurfaceSnapshot(QWidget):
     """Two endpoint renders, one cached shadow, no descendant layout per frame.
 
@@ -75,11 +103,11 @@ class SurfaceSnapshot(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.active=False
         self.source=QPixmap(); self.target=QPixmap()
-        self.rect_global=QRect(); self.transition_bounds=QRect(); self.mix=0
+        self.rect_global=QRect(); self.transition_bounds=QRect(); self.mix=0;self.choreography=0
         self._shadows=OrderedDict()
         self.capture_count=0
-        self._blend=QPixmap()
         self.target_sections=[]
+        self.elements=None
         self.hide()
 
     def capture_live(self,card,controls):
@@ -88,6 +116,15 @@ class SurfaceSnapshot(QWidget):
         enabled=effect.isEnabled() if effect else False
         for button,_ in visibility: button.hide()
         if effect: effect.setEnabled(False)
+        # The native owner stays update-blocked during a surface transaction.
+        # QWidget.render skips descendants with inherited WA_UpdatesDisabled,
+        # even when rendering to a pixmap: that captured an empty endpoint and
+        # left opaque child holes black. Lift only inherited subtree flags for
+        # this offscreen render; preserve explicitly blocked widgets and never
+        # enable the native owner or publish an intermediate layout.
+        blocked=[widget for widget in visible_render_widgets(card)
+                 if widget.testAttribute(Qt.WA_UpdatesDisabled) and not widget.testAttribute(Qt.WA_ForceUpdatesDisabled)]
+        for widget in blocked:widget.setAttribute(Qt.WA_UpdatesDisabled,False)
         try:
             card.ensurePolished()
             # QWidget.render prepares dirty descendant layouts in Qt. Walking
@@ -103,6 +140,7 @@ class SurfaceSnapshot(QWidget):
             self.capture_count+=1
             return image
         finally:
+            for widget in blocked:widget.setAttribute(Qt.WA_UpdatesDisabled,True)
             if effect: effect.setEnabled(enabled)
             for button,visible in visibility: button.setVisible(visible)
 
@@ -122,17 +160,20 @@ class SurfaceSnapshot(QWidget):
             painter.end()
         return image
 
-    def begin(self,source,target,origin,present=True,target_rect=None):
+    def begin(self,source,target,origin,present=True,target_rect=None,*,source_elements=(),target_elements=()):
+        from surface_elements import SharedElements
+        self.elements=SharedElements(source_elements,target_elements,source_size=source.deviceIndependentSize(),target_size=target.deviceIndependentSize())
         self.target_sections=[]
         self.source,self.target=source,target
-        self.active=True; self.mix=0; self.rect_global=QRect(origin)
+        self.active=True; self.mix=0;self.choreography=0; self.rect_global=QRect(origin)
         self.transition_bounds=origin.united(target_rect) if target_rect is not None else QRect(origin)
         self.setGeometry(self.owner.rect())
         if present:self.show(); self.raise_()
         else:self.hide()
 
-    def set_frame(self,rect,progress):
-        self.rect_global=QRect(rect); self.mix=max(0,min(1,progress)); self.update()
+    def set_frame(self,rect,progress,clock=None):
+        self.rect_global=QRect(rect); self.mix=max(0,min(1,progress))
+        self.choreography=max(0,min(1,progress if clock is None else clock));self.update()
         effect=self._effect()
         if effect is not None and getattr(effect,'_surface_snapshot',None) is self:
             effect.refresh_surface_morph()
@@ -141,6 +182,24 @@ class SurfaceSnapshot(QWidget):
         self.active=False; self.hide()
         self.target_sections=[]
         self.source=QPixmap(); self.target=QPixmap()
+        self.elements=None
+
+    def current_elements(self):
+        if not self.active or self.elements is None:return []
+        rect=QRectF(0,0,self.rect_global.width()-28,self.rect_global.height()-27)
+        first,last=self._element_offsets(rect)
+        return self.elements.current(self.mix,first,last,self.owner.devicePixelRatioF(),self.choreography)
+
+    def _element_offsets(self,rect):
+        first=self.source.deviceIndependentSize();last=self.target.deviceIndependentSize()
+        from PySide6.QtCore import QPointF
+        return (QPointF(rect.right()-first.width(),rect.top()),
+                QPointF(rect.right()-last.width(),rect.top()))
+
+    def _clip_endpoint(self,painter,rect,source,offset):
+        if self.elements is None:return
+        path=QPainterPath();path.addRect(rect)
+        painter.setClipPath(path.subtracted(self.elements.mask(source,offset)),Qt.ClipOperation.IntersectClip)
 
     def _effect(self):
         return getattr(self.owner,'surface_effect',None)
@@ -187,62 +246,58 @@ class SurfaceSnapshot(QWidget):
         painter.save();painter.translate(rect.topLeft())
         painter.scale(rect.width()/size.width(),rect.height()/size.height())
         for section,offset in self.target_sections:
-            painter.save();painter.setClipRect(section)
-            destination=section.translated(offset.x()*(1-self.mix),offset.y()*(1-self.mix))
+            painter.save();painter.setClipRect(section,Qt.ClipOperation.IntersectClip)
+            dx=offset.x()*(1-self.mix);dy=offset.y()*(1-self.mix)
+            # The overview's sections slide independently. Mask the chrome at
+            # its displaced position, otherwise a faint duplicate can leak
+            # out from behind the delayed entrance layer.
+            if self.elements is not None:
+                visible=QPainterPath();visible.addRect(section)
+                painter.setClipPath(visible.subtracted(self.elements.mask(False,QPointF(dx,dy))),Qt.ClipOperation.IntersectClip)
+            destination=section.translated(dx,dy)
             source=QRectF(section.x()*ratio,section.y()*ratio,section.width()*ratio,section.height()*ratio)
             painter.drawPixmap(destination,self.target,source);painter.restore()
         painter.restore()
 
     def paint_frame(self,painter,rect,live_draw=None,target_size=None):
-        """Paint inside MotionShadow's existing source coordinate system.
+        """Move identity-matched layers above the two natural-size layouts.
 
-        Target widgets stay at their final layout size and remain visible to
-        Qt. Blend the captured endpoints, then hand off to the cached live
-        source at progress one, before end_surface_morph().
-        No widget visibility, native geometry or raster changes at completion.
+        Endpoint regions occupied by shared elements are excluded, so each
+        file is drawn once. Unmatched layout chrome fades at natural size;
+        the native host and the entire live widget tree remain fixed.
         """
+        from ui_transitions import SURFACE_SOURCE_FADE_END,SURFACE_TARGET_FADE_END
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         painter.setClipPath(surface_clip(rect))
-        # Both endpoints have opaque materials. Scaled rounded snapshot corners
-        # must not punch transparent holes into the moving surface, and Qt's
-        # live drawSource can clear uncovered child regions during crossfade.
         # One stationary-radius backing owns opacity for the entire transition.
         import ui_theme
         painter.fillRect(rect,QColor(ui_theme.color('surface')))
-        if self.mix<=0 and not self.source.isNull():
-            painter.drawPixmap(rect,self.source,QRectF(self.source.rect()))
-        elif self.mix<1 and not self.source.isNull():
-            # Weighted premultiplied-alpha crossfade. Drawing a translucent
-            # source over the complete target makes frame zero more opaque
-            # than the live source. A reusable transparent layer keeps the
-            # original surface alpha and avoids resizing the native host.
+        source_offset,target_offset=self._element_offsets(rect)
+        if self.mix>0:
             logical=target_size if target_size is not None else self.target.deviceIndependentSize()
-            width=max(1,round(logical.width()));height=max(1,round(logical.height()))
-            dpr=self.owner.devicePixelRatioF()
-            physical=(round(width*dpr),round(height*dpr))
-            if self._blend.size().toTuple()!=physical or self._blend.devicePixelRatioF()!=dpr:
-                self._blend=QPixmap(*physical);self._blend.setDevicePixelRatio(dpr)
-            self._blend.fill(Qt.GlobalColor.transparent)
-            layer=QPainter(self._blend);layer.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-            layer.setOpacity(self.mix)
-            if live_draw is not None:live_draw(layer)
-            elif not self.target.isNull():self.draw_target(layer,QRectF(0,0,width,height))
-            layer.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
-            layer.setOpacity(1-self.mix)
-            layer.drawPixmap(QRectF(0,0,width,height),self.source,QRectF(self.source.rect()));layer.end()
-            painter.drawPixmap(rect,self._blend,QRectF(self._blend.rect()))
-        elif live_draw is not None:
+            target_rect=QRectF(rect.right()-logical.width(),rect.top(),logical.width(),logical.height())
             painter.save()
-            painter.translate(rect.x(),rect.y())
-            if target_size is not None:
-                painter.scale(rect.width()/max(1,target_size.width()),
-                              rect.height()/max(1,target_size.height()))
-            live_draw(painter)
+            if not self.target_sections or (self.elements and self.elements.keys):
+                self._clip_endpoint(painter,rect,False,target_offset)
+            painter.setOpacity(min(1,self.mix/SURFACE_TARGET_FADE_END))
+            if self.mix>=1 and live_draw is not None:
+                painter.translate(target_rect.topLeft());live_draw(painter)
+            elif not self.target.isNull():
+                if self.elements and self.elements.keys:
+                    painter.drawPixmap(target_rect,self.target,QRectF(self.target.rect()))
+                else:self.draw_target(painter,target_rect)
             painter.restore()
-        elif not self.target.isNull():
-            self.draw_target(painter,rect)
+        if self.mix<SURFACE_SOURCE_FADE_END and not self.source.isNull():
+            logical=self.source.deviceIndependentSize()
+            source_rect=QRectF(rect.right()-logical.width(),rect.top(),logical.width(),logical.height())
+            painter.save();painter.setOpacity(1-self.mix/SURFACE_SOURCE_FADE_END)
+            self._clip_endpoint(painter,rect,True,source_offset)
+            painter.drawPixmap(source_rect,self.source,QRectF(self.source.rect()))
+            painter.restore()
+        if self.elements is not None:
+            self.elements.paint(painter,self.mix,source_offset,target_offset,self.choreography)
         painter.restore()
 
     def _paint_content(self,painter,rect):
@@ -267,18 +322,22 @@ class SurfaceMorph(QObject):
         self.prepare = prepare
         self.settle = settle
         self.animation = QVariantAnimation(self)
+        self._frames = FramePulse(self)
+        self._frames.timeout.connect(self._advance)
+        self._started_at = 0.0
         # One shared clock drives geometry and content. Only an explicit
         # overview open opts into a small, preallocated elastic overshoot.
         self._geometry_curve=QEasingCurve(QEasingCurve.Type.OutCubic)
         self._content_curve=QEasingCurve(QEasingCurve.Type.OutCubic)
         self.animation.setEasingCurve(QEasingCurve.Linear)
         self.animation.valueChanged.connect(self._frame)
-        self.animation.finished.connect(self._finish)
         self._done = None
         self.progress=1.0
+        self.clock=1.0
         self.active=False
 
     def stop(self, settle=True):
+        self._frames.stop()
         self.animation.stop()
         self._done = None
         self.active=False
@@ -297,7 +356,7 @@ class SurfaceMorph(QObject):
         self._from = QRect(self.current)
         self._to = QRect(rect)
         self._done = finished
-        self.active=True; self.progress=0.0
+        self.active=True; self.progress=0.0;self.clock=0.0
         from native_ui_common import reduced_motion
         if not self.motion or reduced_motion() or self._from == self._to:
             self.current = QRect(self._to)
@@ -314,10 +373,30 @@ class SurfaceMorph(QObject):
         self.animation.setDuration(duration)
         self.animation.setStartValue(0.0)
         self.animation.setEndValue(1.0)
-        self.animation.start()
+        # QVariantAnimation supplies Qt's interpolation, but its default
+        # unified 16 ms timer must not pace a high-refresh native surface.
+        self.animation.setCurrentTime(0)
+        self._frame(0.0)
+        self._started_at = time.perf_counter()
+        self._frames.start()
+
+    def pause(self):
+        self._frames.stop()
+
+    def resume(self):
+        if self.active:
+            self._started_at = time.perf_counter() - self.animation.currentTime() / 1000
+            self._frames.start()
+
+    def _advance(self):
+        elapsed = round((time.perf_counter() - self._started_at) * 1000)
+        self.animation.setCurrentTime(min(elapsed, self.animation.duration()))
+        if elapsed >= self.animation.duration():
+            self._finish()
 
     def _frame(self, progress):
         clock=max(0.,min(1.,float(progress)))
+        self.clock=clock
         t=self._geometry_curve.valueForProgress(clock)
         self.progress=self._content_curve.valueForProgress(clock)
         a, b = self._from, self._to
@@ -329,8 +408,9 @@ class SurfaceMorph(QObject):
 
     def _finish(self):
         if not self.active:return
+        self._frames.stop()
         self.animation.stop()
-        self.active=False; self.progress=1.0
+        self.active=False; self.progress=1.0;self.clock=1.0
         self.current = QRect(self._to)
         self.update(QRect(self.current))
         if self.settle:

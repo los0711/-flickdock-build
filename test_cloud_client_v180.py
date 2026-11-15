@@ -113,7 +113,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-real-cloud-client-') as tempo
             'texts':{'flickdock:text:local':'跨 Windows / Mac 文字，不转 txt'},'metadata':{}}
         sync_status=[[],[]]
         for i in range(2):
-            engine=ShelfSync(temp/str(i),services[i],adapters[i],poll_ms=600000);engines.append(engine)
+            engine=ShelfSync(temp/str(i),services[i],adapters[i]);engines.append(engine)
             engine.status_changed.connect(sync_status[i].append)
             engine.select_account(services[i].account)
         # Both event loops run real transfers; manually poll when the second

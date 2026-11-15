@@ -7,15 +7,17 @@ import os
 from pathlib import Path
 import sys
 from account_service import valid_new_password
-from native_ui_common import reference_font, icon as ui_icon, colors as ui_colors
+from native_ui_common import (reference_font, set_ui_weight, icon as ui_icon, colors as ui_colors,
+    RADIUS_CONTROL_PX, RADIUS_CARD_PX, RADIUS_PANEL_PX)
 
-from PySide6.QtCore import QByteArray, QDateTime, QEvent, QRect, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter, QLinearGradient
+from PySide6.QtCore import QByteArray, QEvent, QRect, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter
 from PySide6.QtSvg import QSvgRenderer
-from PySide6.QtWidgets import (QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMenu, QToolButton,
+from PySide6.QtWidgets import (QApplication, QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMenu, QToolButton,
                                QPushButton, QSizePolicy, QVBoxLayout, QWidget, QLayout, QScrollArea)
 
-DEVICE_LIST_MAX_HEIGHT=260
+DEVICE_LIST_PREFERRED_HEIGHT=208
+ACCOUNT_IDENTITY_MIN_HEIGHT=40
 
 
 def _label(text='', parent=None, *, muted=False):
@@ -74,9 +76,10 @@ class AuthStatusLabel(QLabel):
         self.setObjectName('accountMuted');self.setTextFormat(Qt.PlainText);self.setWordWrap(True)
         self.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Fixed)
         from PySide6.QtWidgets import QGraphicsOpacityEffect
-        from PySide6.QtCore import QPropertyAnimation,QEasingCurve
+        from PySide6.QtCore import QEasingCurve
+        from display_frames import DisplayAnimation
         self._opacity=QGraphicsOpacityEffect(self);self.setGraphicsEffect(self._opacity)
-        self._fade=QPropertyAnimation(self._opacity,b'opacity',self);self._fade.setDuration(180)
+        self._fade=DisplayAnimation(self);self._fade.setDuration(180);self._fade.valueChanged.connect(self._opacity.setOpacity)
         self._fade.setEasingCurve(QEasingCurve.OutCubic)
 
     def _fit_height(self):
@@ -99,11 +102,14 @@ class AuthStatusLabel(QLabel):
         from native_ui_common import reduced_motion
         self._fade.stop()
         if reduced_motion():self._opacity.setOpacity(1)
-        else:self._fade.setStartValue(.2);self._fade.setEndValue(1);self._fade.start()
+        else:self._fade.setStartValue(.2);self._fade.setEndValue(1.);self._fade.start()
+
+    def hideEvent(self,event):
+        self._fade.stop();self._opacity.setOpacity(1.);super().hideEvent(event)
 
 
 class AccountNameLabel(QLabel):
-    """Keep the full account name for assistive tech and elide its one-line view."""
+    """Elide long names while retaining the platform font's natural spacing."""
     def __init__(self, parent=None):
         super().__init__('', parent)
         self._full_text=''
@@ -159,15 +165,55 @@ class RemoveDeviceButton(QPushButton):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
     def paintEvent(self,event):
-        super().paintEvent(event)
+        from PySide6.QtWidgets import QStyle, QStylePainter
+        from native_ui_common import button_style_option
+        painter=QStylePainter(self);painter.drawControl(QStyle.CE_PushButton,button_style_option(self));painter.end()
         if self.text():return
-        color=('#64B5FF' if self.dark else '#007AFF') if self.rename else ('#FF453A' if self.dark else '#D63230')
+        c=ui_colors('dark' if self.dark else 'light')
+        color=c['link'] if self.rename else c['red']
         path=('m11.5 3.5 3 3M3 15l3.4-.7L15 5.7a1.1 1.1 0 0 0 0-1.5l-1.2-1.3a1.1 1.1 0 0 0-1.6 0L3.7 11.5 3 15' if self.rename
               else 'M7 3H3v12h4M10 5l4 4-4 4M6 9h8')
         svg=f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 18 18"><path d="{path}" fill="none" stroke="{color}" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>'
         painter=QPainter(self)
         if not self.isEnabled():painter.setOpacity(.4)
         QSvgRenderer(QByteArray(svg.encode('utf8'))).render(painter,QRectF((self.width()-18)/2,(self.height()-18)/2,18,18))
+
+
+class AccountDeviceCard(QFrame):
+    """Reveal device actions on hover or keyboard focus without moving text."""
+    def __init__(self,parent=None):
+        super().__init__(parent)
+        self._actions=None;self._pointer_inside=False
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+
+    def set_actions(self,actions):
+        self._actions=actions
+        policy=actions.sizePolicy();policy.setRetainSizeWhenHidden(True);actions.setSizePolicy(policy)
+        for button in actions.findChildren(QPushButton):button.installEventFilter(self)
+        actions.hide()
+
+    def _refresh_actions(self):
+        if self._actions is None:return
+        focus=QApplication.focusWidget()
+        focused=focus is self or (focus is not None and self.isAncestorOf(focus))
+        self._actions.setVisible(self._pointer_inside or focused)
+
+    def enterEvent(self,event):
+        self._pointer_inside=True;self._refresh_actions();super().enterEvent(event)
+
+    def leaveEvent(self,event):
+        self._pointer_inside=False;self._refresh_actions();super().leaveEvent(event)
+
+    def focusInEvent(self,event):
+        super().focusInEvent(event);self._refresh_actions()
+
+    def focusOutEvent(self,event):
+        super().focusOutEvent(event);QTimer.singleShot(0,self._refresh_actions)
+
+    def eventFilter(self,watched,event):
+        if event.type()==QEvent.Type.FocusIn:self._refresh_actions()
+        elif event.type()==QEvent.Type.FocusOut:QTimer.singleShot(0,self._refresh_actions)
+        return super().eventFilter(watched,event)
 
 
 class AccountGlyph(QWidget):
@@ -182,13 +228,12 @@ class AccountGlyph(QWidget):
     def paintEvent(self,event):
         painter=QPainter(self);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         if not self.device:
-            gradient=QLinearGradient(0,self.height(),self.width(),0)
-            gradient.setColorAt(0,QColor('#0A84FF'));gradient.setColorAt(1,QColor('#BF5AF2'))
-            painter.setPen(Qt.PenStyle.NoPen);painter.setBrush(gradient);painter.drawEllipse(QRectF(self.rect()).adjusted(.5,.5,-.5,-.5))
-            font=self.font();font.setPixelSize(14);font.setWeight(QFont.Weight.Bold);painter.setFont(font)
-            painter.setPen(QColor('#FFFFFF'))
+            c=ui_colors('dark' if self.dark else 'light')
+            painter.setPen(Qt.PenStyle.NoPen);painter.setBrush(QColor(c['action']));painter.drawEllipse(QRectF(self.rect()).adjusted(.5,.5,-.5,-.5))
+            font=self.font();font.setPixelSize(14);set_ui_weight(font,600);painter.setFont(font)
+            painter.setPen(QColor(c['on_action']))
             if self.initial:painter.drawText(self.rect(),Qt.AlignmentFlag.AlignCenter,self.initial)
-            else:ui_icon('user','#FFFFFF').paint(painter,(self.width()-22)//2,(self.height()-22)//2,22,22)
+            else:ui_icon('user',c['on_action']).paint(painter,(self.width()-22)//2,(self.height()-22)//2,22,22)
             return
         tint=ui_colors('dark' if self.dark else 'light')['secondary']
         size=min(20,max(0,min(self.width(),self.height())-4))
@@ -204,9 +249,14 @@ class AccountPanel(QFrame):
 
     def heightForWidth(self,width):
         if not hasattr(self,'signed_in_page') or self.signed_in_page.isHidden():
-            return self.layout().totalHeightForWidth(width) if self.layout() else -1
+            if not hasattr(self,'unsigned_profile_button'):return self.layout().totalHeightForWidth(width) if self.layout() else -1
+            margins=self.layout().contentsMargins()
+            return margins.top()+margins.bottom()+self.account_heading.height()+self.layout().spacing()+max(self.unsigned_profile_button.minimumHeight(),self.unsigned_profile_button.sizeHint().height())
         margins=self.layout().contentsMargins()
-        height=self.signed_in_page.minimumHeight()+margins.top()+margins.bottom()+2
+        signed=self.signed_in_page.layout();content_width=max(1,width-margins.left()-margins.right())
+        height=max(signed.minimumSize().height(),signed.totalHeightForWidth(content_width))+margins.top()+margins.bottom()+2
+        if hasattr(self,'account_heading') and not self.account_heading.isHidden():
+            height+=self.account_heading.sizeHint().height()+self.layout().spacing()
         if self.status_label.parentWidget() is self and not self.status_label.isHidden():
             height+=max(self.status_label.sizeHint().height(),self.status_label.heightForWidth(max(1,width-34)))+self.layout().spacing()
         return height
@@ -216,10 +266,12 @@ class AccountPanel(QFrame):
         if hasattr(self,'signed_in_page') and not self.signed_in_page.isHidden():size.setHeight(self.heightForWidth(self.width()))
         return size
 
+    def minimumSizeHint(self):
+        return QSize(0,self.heightForWidth(max(1,self.width())))
+
     def __init__(self,service,parent=None,*,theme='light',email_binding=False):
         super().__init__(parent)
         self.service=service
-        self._device_connections={}
         self._fit_timer=QTimer(self);self._fit_timer.setSingleShot(True)
         self._fit_timer.timeout.connect(self._fit_signed_content)
         # Keep the argument for older app builds; the email controls are gone.
@@ -227,7 +279,7 @@ class AccountPanel(QFrame):
         self.setObjectName('accountPanel')
         self.setFont(reference_font())
         self.setMinimumWidth(0)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Preferred)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Expanding)
         self._mode='login';self._account_id='';self._busy=bool(service.busy)
         self._feedback_scope='';self._feedback_timers={};self._feedback_animations={}
         self._devices={};self.device_buttons={};self._device_rows=[];self._rows_by_id={}
@@ -377,6 +429,12 @@ class AccountPanel(QFrame):
     def _build_reference_layout(self):
         """Use the reference account card while keeping every service binding."""
         root=self.layout();self._empty_layout(root);root.setContentsMargins(16,16,16,16);root.setSpacing(12)
+        self.account_heading=QWidget(self);self.account_heading.setFixedHeight(24);heading=QHBoxLayout(self.account_heading)
+        heading.setContentsMargins(0,0,0,0);heading.setSpacing(8)
+        title=self.findChild(QLabel,'accountTitle');title.setWordWrap(False);title.setFixedHeight(24);heading.addWidget(title,1);title.show()
+        self.account_heading_state=_label('',self.account_heading,muted=True)
+        self.account_heading_state.setWordWrap(False);self.account_heading_state.setSizePolicy(QSizePolicy.Fixed,QSizePolicy.Preferred)
+        heading.addWidget(self.account_heading_state);root.addWidget(self.account_heading)
         self.unsigned_profile_button=_button('',self,name='accountUnsignedProfile')
         self.unsigned_profile_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.unsigned_profile_button.setMinimumHeight(58)
@@ -386,16 +444,17 @@ class AccountPanel(QFrame):
         unsigned.addWidget(self.unsigned_glyph)
         unsigned_text=QVBoxLayout();unsigned_text.setSpacing(2)
         unsigned_name=_label('登录账号',self.unsigned_profile_button);unsigned_name.setObjectName('accountUnsignedTitle')
-        unsigned_text.addWidget(unsigned_name);unsigned_text.addWidget(_label('在设备之间同步搁架',self.unsigned_profile_button,muted=True))
+        unsigned_detail=_label('在设备之间同步搁架',self.unsigned_profile_button,muted=True);unsigned_detail.setObjectName('accountUnsignedDetail')
+        unsigned_text.addWidget(unsigned_name);unsigned_text.addWidget(unsigned_detail)
         unsigned.addLayout(unsigned_text,1);unsigned.addWidget(_label('›',self.unsigned_profile_button,muted=True))
         self.unsigned_profile_button.clicked.connect(self.show_auth)
-        root.addWidget(self.unsigned_profile_button);root.addWidget(self.signed_in_page);root.addWidget(self.status_label)
+        root.addWidget(self.unsigned_profile_button);root.addWidget(self.signed_in_page,1);root.addWidget(self.status_label)
         signed=self.signed_in_page.layout();self._empty_layout(signed);signed.setSpacing(12);signed.setAlignment(Qt.AlignmentFlag.AlignTop)
         root.setAlignment(Qt.AlignmentFlag.AlignTop)
         root.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         signed.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         identity=self.profile_frame.layout();self._empty_layout(identity);identity.setContentsMargins(0,0,0,0);identity.setSpacing(12)
-        self.profile_frame.setMinimumHeight(40);self.profile_frame.setMaximumHeight(16777215)
+        self.profile_frame.setMinimumHeight(ACCOUNT_IDENTITY_MIN_HEIGHT);self.profile_frame.setMaximumHeight(16777215)
         self.account_glyph.setFixedSize(40,40);identity.addWidget(self.account_glyph);self.account_glyph.show()
         text=QVBoxLayout();text.setSpacing(2);name=QHBoxLayout();name.setSpacing(8)
         self.username_label.setFixedHeight(26);self.account_state_label.setFixedHeight(24)
@@ -410,6 +469,7 @@ class AccountPanel(QFrame):
         # The subtitle grows with real sync feedback; the profile has no fixed
         # height, so login results remain fully visible.
         self.sync_status_label.show()
+        self.sync_status_label.installEventFilter(self)
         signed.addWidget(self.login_alias_edit)
         self.profile_frame.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.profile_frame.customContextMenuRequested.connect(self._profile_menu)
@@ -428,10 +488,11 @@ class AccountPanel(QFrame):
         self.devices_scroll=QScrollArea(self.signed_in_page)
         self.devices_scroll.setObjectName('accountDevicesScroll');self.devices_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.devices_scroll.setWidgetResizable(True)
+        self.devices_scroll.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Ignored)
         self.devices_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.devices_scroll.setStyleSheet('QScrollArea{background:transparent;border:0;} QScrollArea>QWidget>QWidget{background:transparent;} QScrollBar:vertical{width:6px;background:transparent;} QScrollBar::handle:vertical{background:rgba(142,142,147,90);border-radius:3px;min-height:24px;} QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;} QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{background:transparent;}')
         self.devices_scroll.setWidget(self.devices_body)
-        signed.addWidget(self.devices_scroll);self.devices_body.show()
+        signed.addWidget(self.devices_scroll,1);self.devices_body.show()
         root.removeWidget(self.status_label)
         signed.addWidget(self.status_label)
         self.devices_heading_label.hide();self.refresh_button.hide()
@@ -456,11 +517,12 @@ class AccountPanel(QFrame):
         self.password_dialog.rejected.connect(self._reset_password)
         auth=self.auth_page.layout();self._empty_layout(auth);auth.setSpacing(12)
         auth.setSizeConstraints(QLayout.SetNoConstraint,QLayout.SetMinimumSize)
-        tabs_frame=QFrame(self.auth_page);tabs_frame.setObjectName('accountAuthTabs')
+        from ui_transitions import SelectionSurface
+        tabs_frame=SelectionSurface(self.auth_page,radius=8);tabs_frame.setObjectName('accountAuthTabs');self.auth_tabs=tabs_frame
         tabs=QHBoxLayout(tabs_frame);tabs.setContentsMargins(4,4,4,4);tabs.setSpacing(4)
         self.register_tab.setText('注册新账号')
         for button in (self.login_tab,self.register_tab):
-            button.setFixedHeight(24);tabs.addWidget(button,1);button.show()
+            button.setFixedHeight(24);tabs.addWidget(button,1);button.show();tabs_frame.add_selection_button(button)
         auth.addWidget(tabs_frame)
         auth.addWidget(self._modal_field(self.username_edit,'账号用户名','请输入账号',self.auth_page))
         auth.addWidget(self._modal_field(self.password_edit,'密码','请输入密码',self.auth_page))
@@ -478,6 +540,7 @@ class AccountPanel(QFrame):
         # The measured fixed heights bound wrapping; keep layout ownership of
         # positions so Cocoa and Qt cannot retain different child coordinates.
         signed.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
+        root.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint);self.setMinimumSize(0,0)
         self.signed_in_page.setMinimumSize(0,0)
 
     @staticmethod
@@ -524,9 +587,8 @@ class AccountPanel(QFrame):
         menu.exec(self.profile_frame.mapToGlobal(point))
 
     def _style_menu(self, menu):
-        bg='#1C1C1E' if self._dark else '#FFFFFF';ink='#F5F5F7' if self._dark else '#1D1D1F'
-        edge='rgba(255,255,255,20)' if self._dark else 'rgba(0,0,0,23)'
-        menu.setStyleSheet(f'QMenu{{background:{bg};color:{ink};border:1px solid {edge};border-radius:10px;padding:6px 0;font-size:12px;min-width:208px;}} QMenu::item{{padding:6px 14px;border:0;}} QMenu::item:selected{{background:#0062CC;color:white;}}')
+        c=ui_colors('dark' if self._dark else 'light')
+        menu.setStyleSheet(f"QMenu{{background:{c['card']};color:{c['text']};border:1px solid {c['border']};border-radius:10px;padding:6px 0;font-size:12px;min-width:208px;}} QMenu::item{{padding:6px 14px;border:0;}} QMenu::item:selected{{background:{c['hover']};color:{c['text']};}} QMenu::item:disabled{{color:{c['muted']};}}")
 
     def set_auth_mode(self,mode):
         if mode not in ('login','register'):raise ValueError('Unknown account form mode')
@@ -551,6 +613,7 @@ class AccountPanel(QFrame):
 
     def _account_changed(self,account):
         signed=bool(isinstance(account,dict) and self.service.signed_in)
+        self.account_heading_state.setText('已登录' if signed else '未登录')
         identity=str(account.get('id','')) if signed else ''
         if identity!=self._account_id or not signed:
             self._account_id=identity
@@ -562,6 +625,7 @@ class AccountPanel(QFrame):
             self._devices_changed([])
             if signed:self.sync_status_label.setText('正在准备同步…')
         self.unsigned_profile_button.setVisible(not signed);self.signed_in_page.setVisible(signed)
+        self.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Expanding if signed else QSizePolicy.Preferred)
         self.status_label.setVisible(signed and bool(self.status_label.text()))
         if signed:
             self.close_auth()
@@ -587,6 +651,13 @@ class AccountPanel(QFrame):
             if secret:message=message.replace(secret,'…')
         password=self._feedback_scope=='password' or self.password_dialog.isVisible()
         target=self.password_status_label if password else self.status_label if self.service.signed_in else self.auth_status_label
+        if target in (self.auth_status_label,self.password_status_label):
+            feedback='pending' if message.startswith('正在') else 'success' if message.startswith(('密码已修改','密码已更新')) else 'error' if message and '已取消' not in message else 'neutral'
+            target.setProperty('feedbackKind',feedback)
+            target.style().unpolish(target);target.style().polish(target)
+            c=ui_colors('dark' if self._dark else 'light')
+            tint=c['red'] if feedback=='error' else c['green'] if feedback=='success' else c['secondary']
+            target.setStyleSheet(f'color:{tint};background:transparent;border:0;')
         timer=self._feedback_timers.get(target)
         if timer:timer.stop()
         previous=self._feedback_animations.pop(target,None)
@@ -605,7 +676,7 @@ class AccountPanel(QFrame):
         self._queue_fit()
 
     def _transient_feedback(self,label,*,password=False):
-        from PySide6.QtCore import QVariantAnimation
+        from display_frames import DisplayAnimation
         from PySide6.QtWidgets import QGraphicsOpacityEffect
         effect=label.graphicsEffect()
         if effect is None:effect=QGraphicsOpacityEffect(label);label.setGraphicsEffect(effect)
@@ -615,7 +686,7 @@ class AccountPanel(QFrame):
         timer=QTimer(self);timer.setSingleShot(True);self._feedback_timers[label]=timer
         def fade():
             from ui_transitions import motion_allowed
-            animation=QVariantAnimation(label);animation.setDuration(180 if motion_allowed() else 0)
+            animation=DisplayAnimation(label);animation.setDuration(180 if motion_allowed() else 0)
             self._feedback_animations[label]=animation
             animation.setStartValue(1.);animation.setEndValue(0.)
             animation.valueChanged.connect(effect.setOpacity)
@@ -753,8 +824,7 @@ class AccountPanel(QFrame):
                     row=reusable[key];name=str(device.get('name') or '未命名设备')
                     name_label=row.findChild(AccountNameLabel,'accountDeviceName');name_label.setText(name)
                     platform={'windows':'Windows','macos':'Mac','linux':'Linux'}.get(str(device.get('platform','')),'其他设备')
-                    timestamp=QDateTime.fromString(str(device.get('last_seen_at') or ''),Qt.DateFormat.ISODate)
-                    suffix='此设备' if row._current_device else '最近在线 '+timestamp.toLocalTime().toString('MM-dd HH:mm') if timestamp.isValid() else ''
+                    suffix='此设备' if row._current_device else ''
                     name_label.setToolTip(name+'\n'+platform+(' · '+suffix if suffix else ''))
                     row.setAccessibleName(name+('，本机' if row._current_device else ''))
                     self.device_rename_buttons[key].setAccessibleName('修改设备名称 '+name)
@@ -763,7 +833,7 @@ class AccountPanel(QFrame):
                     elif previous_devices.get(key,{}).get('name')!=device.get('name'):self._cancel_rename()
                     self._device_rows.append(row);self._rows_by_id[key]=row
                     continue
-                row=QFrame(self.devices_body);row.setObjectName('accountDevice')
+                row=AccountDeviceCard(self.devices_body);row.setObjectName('accountDevice')
                 row.setMinimumHeight(60)
                 row_layout=QVBoxLayout(row);row_layout.setContentsMargins(10,5,10,5);row_layout.setSpacing(8)
                 horizontal=QHBoxLayout();horizontal.setSpacing(5);row_layout.addLayout(horizontal)
@@ -777,20 +847,14 @@ class AccountPanel(QFrame):
                 device_name.setProperty('compactDeviceName',True)
                 device_name.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Fixed)
                 device_name.setMaximumWidth(16777215)
-                device_text=QVBoxLayout();device_text.setSpacing(0)
+                device_text=QVBoxLayout();device_text.setSpacing(0);device_text.setAlignment(Qt.AlignVCenter)
                 device_text.addWidget(device_name);horizontal.addLayout(device_text,1)
                 platform={'windows':'Windows','macos':'Mac','linux':'Linux'}.get(str(device.get('platform','')),'其他设备')
                 current=bool(device.get('current') or key==str(self.service.device_id))
                 row._current_device=current
-                timestamp=QDateTime.fromString(str(device.get('last_seen_at') or ''),Qt.DateFormat.ISODate)
-                suffix='此设备' if current else '最近在线 '+timestamp.toLocalTime().toString('MM-dd HH:mm') if timestamp.isValid() else ''
+                suffix='此设备' if current else ''
                 device_name.setToolTip(str(device.get('name') or '未命名设备')+'\n'+platform+(' · '+suffix if suffix else ''))
                 row.setAccessibleName(str(device.get('name') or '未命名设备')+'，'+platform+('，本机' if current else ''))
-                subtitle=AccountNameLabel(row);subtitle.setObjectName('accountCurrentDevice' if current else 'accountDeviceMeta')
-                subtitle.setFixedHeight(20)
-                subtitle.setText('(本机)' if current else platform)
-                subtitle.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Fixed)
-                device_text.addWidget(subtitle);row._connection_label=subtitle
                 actions=QWidget(row);actions.setObjectName('accountDeviceActions')
                 action_layout=QHBoxLayout(actions);action_layout.setContentsMargins(0,0,0,0);action_layout.setSpacing(3)
                 actions.setSizePolicy(QSizePolicy.Policy.Fixed,QSizePolicy.Policy.Fixed)
@@ -812,6 +876,7 @@ class AccountPanel(QFrame):
                 if not current:action_layout.insertSpacing(0,18)
                 actions.setFixedWidth(85 if not current else 32)
                 horizontal.addWidget(actions,0,Qt.AlignmentFlag.AlignRight)
+                row.set_actions(actions)
                 from app_settings import ReferenceModalDialog
                 rename_form=ReferenceModalDialog(self,surface_width=340,modal=True)
                 rename_form.setObjectName('accountModal');rename_form.setWindowTitle('修改设备名称')
@@ -841,14 +906,14 @@ class AccountPanel(QFrame):
             self.devices_layout.addWidget(empty,0,0,1,2);self._device_rows.append(empty)
         self.devices_heading_label.setText('已登录设备'+(' · '+str(len(self._devices)) if self._devices else ''))
         self._layout_device_rows()
-        self._update_device_connections()
         if motion is not None:
             self._fit_signed_content();self.devices_layout.activate()
             motion.reflow(self._rows_by_id,positions,enabled=self.isVisible() and motion_allowed())
         self.devices_body.updateGeometry();self.signed_in_page.updateGeometry();self.updateGeometry()
 
     def _layout_device_rows(self):
-        columns=1
+        # Device cards remain in two columns throughout the supported window sizes.
+        columns=2
         signature=(columns,tuple(id(row) for row in self._device_rows),self.confirm_frame.isVisible())
         if getattr(self,'_device_layout_signature',None)==signature:return
         self._device_layout_signature=signature
@@ -866,44 +931,31 @@ class AccountPanel(QFrame):
         self._update_enabled()
         self._queue_fit()
 
-    def set_device_connections(self,snapshot):
-        self._device_connections=dict(snapshot)
-        self._update_device_connections()
-
-    def _update_device_connections(self):
-        labels={'lan':'局域网','p2p':'P2P 直连','relay':'TURN 中继','cloud':'云端','connecting':'连接中','disconnected':'未连接'}
-        platforms={'windows':'Windows','macos':'Mac','linux':'Linux'}
-        for identity,row in self._rows_by_id.items():
-            device=self._devices[identity];platform=platforms.get(str(device.get('platform','')),'其他设备')
-            if row._current_device:text=platform+' · (本机)'
-            else:
-                info=self._device_connections.get(identity,{})
-                route=labels.get(info.get('route'),'未连接');latency=info.get('latency_ms')
-                delay=str(round(latency))+' ms' if type(latency) in (float,int) and math.isfinite(latency) and 0<=latency<60000 else '—'
-                text=platform+' · '+route+' · '+delay
-            row._connection_label.setText(text)
-            row._connection_label.setAccessibleName(text)
-
     def _queue_fit(self):
-        if not self._fit_timer.isActive():self._fit_timer.start(0)
+        if self.isVisible() and not self._fit_timer.isActive():self._fit_timer.start(0)
 
     def _fit_signed_content(self):
-        if self.signed_in_page.isHidden():
-            self.height_changed.emit();return
-        width=max(1,self.signed_in_page.width())
-        # Let the profile layout measure its wrapped subtitle at this width.
-        # A changing fixed height became part of QWidgetItemV2's cached HFW,
-        # leaving a stale 44px allocation for a subsequently 60px profile.
-        devices=max(0,self.devices_layout.minimumSize().height()+2)
-        self.devices_body.setFixedHeight(devices)
-        self.devices_scroll.setFixedHeight(min(DEVICE_LIST_MAX_HEIGHT,devices))
-        # Layout owns child positions on every platform. Manual setGeometry
-        # raced Cocoa's next layout pass and placed status text over controls.
-        signed=self.signed_in_page.layout();signed.invalidate()
-        self.signed_in_page.setFixedHeight(max(signed.minimumSize().height(),signed.sizeHint().height(),signed.totalHeightForWidth(width)))
-        signed.activate()
-        self.layout().invalidate();self.layout().activate();self.updateGeometry()
-        self.height_changed.emit()
+        if not self.isVisible():return
+        if not self.signed_in_page.isHidden():
+            if self.sync_status_label.width()>24:
+                height=max(0,self.sync_status_label.heightForWidth(self.sync_status_label.width()))
+                if self.sync_status_label.minimumHeight()!=height:self.sync_status_label.setMinimumHeight(height)
+            identity=self.profile_frame.layout()
+            identity_height=max(ACCOUNT_IDENTITY_MIN_HEIGHT,identity.minimumSize().height(),
+                                identity.totalHeightForWidth(max(1,self.profile_frame.width())))
+            if self.profile_frame.minimumHeight()!=identity_height:
+                self.profile_frame.setMinimumHeight(identity_height)
+            devices=max(0,self.devices_layout.minimumSize().height()+2)
+            self.devices_body.setFixedHeight(devices)
+            self.devices_scroll.setFixedHeight(min(DEVICE_LIST_PREFERRED_HEIGHT,devices))
+            signed=self.signed_in_page.layout()
+            signed.activate()
+        self.layout().activate()
+        height=self.heightForWidth(max(1,self.width()))
+        # Invalidating the layout or notifying an unchanged height here sends
+        # another LayoutRequest back to this timer and to Settings indefinitely.
+        if height!=getattr(self,'_reported_height',None):
+            self._reported_height=height;self.updateGeometry();self.height_changed.emit()
 
     def _edit_device_name(self,key,*_):
         if self._busy or not self.service.signed_in or key not in self._devices:return
@@ -956,7 +1008,7 @@ class AccountPanel(QFrame):
             if dialog.isVisible():QTimer.singleShot(0,lambda dialog=dialog:self._fit_auth_form(dialog))
         if watched is self.devices_body and event.type()==QEvent.Type.Resize:
             self._layout_device_rows()
-        if watched in (self.devices_body,self.profile_frame,self.signed_in_page) and event.type() in (QEvent.Type.LayoutRequest,QEvent.Type.Resize):
+        if watched in (self.devices_body,self.profile_frame,self.signed_in_page,self.sync_status_label) and event.type() in (QEvent.Type.LayoutRequest,QEvent.Type.Resize):
             self._queue_fit()
         # Enter in these embedded forms must not activate Settings' default Save.
         if event.type()==QEvent.Type.KeyPress and event.key() in (Qt.Key.Key_Return,Qt.Key.Key_Enter):
@@ -977,18 +1029,19 @@ class AccountPanel(QFrame):
         self.password_edit.clear()
         self.close_auth()
         self._reset_password();self._cancel_rename()
+        self._fit_timer.stop()
         super().hideEvent(event)
+
+    def showEvent(self,event):
+        super().showEvent(event);self._queue_fit()
 
     def apply_theme(self,theme):
         if getattr(self,'_applied_theme',None)==theme:return
         self._applied_theme=theme
         self._dark=theme=='dark'
-        card,field,ink,secondary,edge,hover=(('#242426','#1c1c1e','#f5f5f7','#a1a1aa','#3a3a3c','#303034') if self._dark
-            else ('#ffffff','#f8f9fb','#1d1d1f','#515154','#dfe2e8','#e8f2ff'))
-        inset='#1c1c1e' if self._dark else '#f0f2f6'
-        if sys.platform=='darwin':
-            card='rgba(39,44,53,246)' if self._dark else 'rgba(255,255,255,248)'
-            inset='rgba(32,37,46,230)' if self._dark else 'rgba(247,249,252,230)'
+        tokens=ui_colors(theme)
+        card,field,ink,secondary,edge,hover=(tokens[k] for k in ('card','input','text','secondary','border','hover'))
+        inset=tokens['control']
         success='#7dd6a8' if self._dark else '#14784a'
         style=f'''
             QFrame#accountPanel {{background:{card};border:1px solid {edge};border-radius:13px;}}
@@ -1026,47 +1079,52 @@ class AccountPanel(QFrame):
             QFrame#accountSecurity {{background:{field};border:1px solid {edge};border-radius:9px;}}
             QFrame#accountPanel QPushButton#accountDanger {{color:{'#ffb1b5' if self._dark else '#b9404c'};}}
         '''
-        card='rgba(255,255,255,10)' if self._dark else 'rgba(255,255,255,184)'
-        edge='rgba(255,255,255,18)' if self._dark else 'rgba(0,0,0,18)'
-        control='rgba(255,255,255,26)' if self._dark else 'rgba(0,0,0,14)'
+        card=ui_colors(theme)['card']
+        edge=tokens['border']
+        control=tokens['control']
         radius=12 if sys.platform=='darwin' else 8
         style+=f'''
-            QFrame#accountPanel {{background:{card};border:1px solid {edge};border-radius:16px;}}
+            QFrame#accountPanel {{background:{card};border:1px solid {edge};border-radius:{RADIUS_CARD_PX}px;}}
             QFrame#accountPanel QLabel {{font-size:12px;}}
             QFrame#accountPanel QLabel#accountUsername {{font-size:14px;font-weight:600;}}
             QFrame#accountPanel QLabel#accountState {{font-size:11px;padding:2px 8px;border-radius:10px;}}
             QFrame#accountPanel QLabel#accountState[online="true"] {{color:#30D158;background:rgba(48,209,88,51);}}
             QFrame#accountPanel QLabel#accountDeviceName {{font-size:12px;font-weight:500;}}
             QFrame#accountPanel QLabel#accountCurrentDevice {{font-size:11px;color:#0A84FF;}}
-            QFrame#accountPanel QLabel#accountSyncStatus {{font-size:12px;color:{secondary};padding:0;}}
+            QFrame#accountPanel QLabel#accountSyncStatus {{font-size:{10 if sys.platform=='win32' else 11}px;color:{secondary};padding:0;}}
             QFrame#accountProfile,QFrame#accountDevices {{background:transparent;border:0;}}
             QFrame#accountDevices {{border:0;}}
-            QFrame#accountDevice {{background:{'rgba(255,255,255,8)' if self._dark else 'rgba(0,0,0,6)'};border:1px solid {edge};border-radius:12px;}}
+            QFrame#accountDevice {{background:{tokens['control']};border:1px solid {edge};border-radius:{RADIUS_CARD_PX}px;}}
+            QFrame#accountDevice:focus {{border-color:{tokens['ring']};}}
             QFrame#accountPanel QPushButton {{background:{control};color:{ink};border:0;padding:5px 12px;font-size:12px;}}
             QFrame#accountPanel QPushButton#accountDanger {{background:rgba(255,69,58,38);color:#FF453A;}}
             QFrame#accountPanel QPushButton#accountQuiet {{background:{control};color:{ink};border:0;padding:5px 12px;}}
             QFrame#accountPanel QPushButton#accountUnsignedProfile {{background:transparent;border:0;padding:0;text-align:left;}}
             QFrame#accountPanel QPushButton#accountUnsignedProfile:hover {{background:transparent;}}
             QFrame#accountPanel QLabel#accountUnsignedTitle {{font-size:14px;font-weight:600;}}
+            QFrame#accountPanel QLabel#accountUnsignedDetail {{font-size:10px;color:{secondary};}}
             QFrame#accountPanel QPushButton#accountDeviceRename {{background:transparent;border:0;padding:0;color:#0A84FF;font-size:12px;}}
             QFrame#accountPanel QPushButton#accountDeviceRevoke {{background:transparent;border:0;padding:0;color:#FF453A;font-size:12px;}}
             QFrame#accountPanel QPushButton#accountDeviceRename:hover {{background:rgba(10,132,255,20);border-radius:7px;}}
             QFrame#accountPanel QPushButton#accountDeviceRevoke:hover {{background:rgba(255,69,58,20);border-radius:7px;}}
+            QFrame#accountPanel QPushButton#accountDeviceRename:pressed {{background:rgba(10,132,255,45);border-radius:7px;}}
+            QFrame#accountPanel QPushButton#accountDeviceRevoke:pressed {{background:rgba(255,69,58,45);border-radius:7px;}}
             QFrame#accountPanel QPushButton#accountPrimary {{background:#0A84FF;color:#FFFFFF;border:0;}}
-            QFrame#accountAuthTabs {{background:{'rgba(0,0,0,64)' if self._dark else 'rgba(240,242,247,191)'};border:1px solid {edge};border-radius:12px;}}
+            QFrame#accountAuthTabs {{background:{'rgba(0,0,0,64)' if self._dark else '#EEEEEE'};border:1px solid {edge};border-radius:12px;}}
             QFrame#accountPanel QPushButton#accountTab {{background:transparent;border:0;padding:4px 6px;border-radius:8px;}}
             QFrame#accountPanel QPushButton#accountTab:checked {{background:{'rgba(255,255,255,38)' if self._dark else '#FFFFFF'};color:{ink};}}
-            QFrame#accountPanel QLineEdit {{background:{'#242426' if self._dark else '#FFFFFF'};font-size:12px;padding:8px 12px;border:1px solid {edge};border-radius:12px;}}
+            QFrame#accountPanel QLineEdit {{background:{tokens['input']};font-size:12px;padding:8px 12px;border:1px solid {tokens['input_border']};border-radius:{RADIUS_CONTROL_PX}px;}}
             QDialog#accountModal,QDialog#accountModal QFrame#referenceModalSurface {{background:transparent;border:0;}}
             QDialog#accountModal QFrame#accountModalHeader {{background:transparent;border:0;border-bottom:1px solid {edge};}}
             QDialog#accountModal QLabel {{color:{ink};font-size:12px;background:transparent;}}
             QDialog#accountModal QLabel#accountModalTitle {{font-size:14px;font-weight:600;}}
-            QDialog#accountModal QLineEdit {{background:{'#242426' if self._dark else '#FFFFFF'};color:{ink};border:1px solid {edge};border-radius:12px;padding:8px 12px;font-size:12px;}}
+            QDialog#accountModal QLineEdit {{background:{tokens['input']};color:{ink};border:1px solid {tokens['input_border']};border-radius:{RADIUS_CONTROL_PX}px;padding:8px 12px;font-size:12px;}}
+            QDialog#accountModal QLineEdit:focus,QFrame#accountPanel QLineEdit:focus {{border-color:{tokens['ring']};}}
             QDialog#accountModal QPushButton {{background:{control};color:{ink};border:0;border-radius:12px;padding:6px 16px;font-size:12px;}}
             QDialog#accountModal QPushButton#accountPrimary {{background:#0A84FF;color:#FFFFFF;}}
             QDialog#accountModal QPushButton#accountModalClose {{background:transparent;padding:0;border-radius:8px;}}
             QDialog#accountModal QPushButton#accountTab {{background:transparent;border:0;padding:4px 6px;border-radius:8px;}}
-            QDialog#accountModal QPushButton#accountTab:checked {{background:{'rgba(255,255,255,38)' if self._dark else '#FFFFFF'};color:{ink};}}
+            QDialog#accountModal QPushButton#accountTab:checked,QDialog#accountModal QPushButton#accountTab:checked:hover,QDialog#accountModal QPushButton#accountTab:checked:pressed {{background:transparent;color:{ink};}}
             QFrame#accountSecurity {{background:transparent;border:0;}}
         '''
         for dialog in (self.password_dialog,self.auth_dialog,*self._rename_forms.values()):
@@ -1075,22 +1133,36 @@ class AccountPanel(QFrame):
             edit.set_visibility_theme(theme)
         for button in (self.password_close,self.auth_close):button.dark=self._dark;button.update()
         semantic=ui_colors(theme)
+        self.auth_tabs.set_selection_theme(theme)
+        for feedback_label in (self.auth_status_label,self.password_status_label):
+            kind=feedback_label.property('feedbackKind')
+            if kind:
+                tint=semantic['red'] if kind=='error' else semantic['green'] if kind=='success' else semantic['secondary']
+                feedback_label.setStyleSheet(f'color:{tint};background:transparent;border:0;')
         style+=f'''
             QFrame#accountPanel QLabel {{font-size:13px;}}
             QFrame#accountPanel QLabel#accountUsername {{font-size:16px;font-weight:600;}}
             QFrame#accountPanel QLabel#accountState[online="true"] {{color:{semantic['green']};}}
             QFrame#accountPanel QLabel#accountDeviceName {{font-size:13px;font-weight:500;}}
             QFrame#accountPanel QLabel#accountDeviceMeta {{font-size:11px;color:{semantic['secondary']};}}
+            QDialog#accountModal QLabel[feedbackKind="error"] {{color:{semantic['red']};}}
+            QDialog#accountModal QLabel[feedbackKind="success"] {{color:{semantic['green']};}}
+            QDialog#accountModal QLabel[feedbackKind="pending"] {{color:{semantic['secondary']};}}
             QFrame#accountPanel QLabel#accountCurrentDevice,QFrame#accountPanel QPushButton#accountDeviceRename {{color:{semantic['link']};}}
             QFrame#accountPanel QPushButton#accountDeviceRevoke,QFrame#accountPanel QPushButton#accountDanger {{color:{semantic['red']};}}
             QFrame#accountPanel QPushButton#accountDeviceRevoke {{padding:0;text-align:right;}}
             QFrame#accountPanel QPushButton#accountPrimary,QDialog#accountModal QPushButton#accountPrimary {{background:{semantic['action']};color:{semantic['on_action']};}}
-            QFrame#accountPanel QPushButton#accountPrimary:hover,QDialog#accountModal QPushButton#accountPrimary:hover {{background:{semantic['action_hover']};color:{semantic['on_action']};}}
+            QFrame#accountPanel QPushButton#accountPrimary:hover:enabled,QDialog#accountModal QPushButton#accountPrimary:hover:enabled {{background:{semantic['action_hover']};color:{semantic['on_action']};}}
+            QFrame#accountPanel QPushButton#accountPrimary:pressed,QDialog#accountModal QPushButton#accountPrimary:pressed {{background:{semantic['action_pressed']};color:{semantic['on_action']};}}
+            QFrame#accountPanel QPushButton#accountPrimary:disabled,QDialog#accountModal QPushButton#accountPrimary:disabled {{background:{semantic['control']};color:{semantic['muted']};}}
+            QFrame#accountPanel QPushButton#accountDanger:hover:enabled {{background:rgba(255,69,58,58);}}
+            QFrame#accountPanel QPushButton#accountDanger:pressed {{background:rgba(255,69,58,78);}}
             QFrame#accountPanel QPushButton:focus {{border-color:transparent;}}
-            QFrame#accountPanel QPushButton[keyboardFocus="true"],QDialog#accountModal QPushButton[keyboardFocus="true"] {{border:1px solid {semantic['link']};}}
+            QFrame#accountPanel QPushButton[keyboardFocus="true"],QDialog#accountModal QPushButton[keyboardFocus="true"] {{border:1px solid {semantic['ring']};}}
             QFrame#accountPanel QPushButton:disabled,QDialog#accountModal QPushButton:disabled {{color:{semantic['muted']};background:{semantic['control']};}}
             QFrame#accountPanel QPushButton#accountUnsignedProfile {{background:{semantic['card']};border:1px solid {semantic['border']};border-radius:12px;padding:0;}}
             QFrame#accountPanel QPushButton#accountUnsignedProfile:hover {{background:{semantic['hover']};}}
+            QFrame#accountPanel QPushButton#accountUnsignedProfile:pressed {{background:{semantic['selected']};}}
         '''
         for button in [*self.device_buttons.values(),*self.device_rename_buttons.values()]:button.dark=self._dark;button.update()
         from native_ui_common import readable_qss

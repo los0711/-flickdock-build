@@ -14,35 +14,23 @@ def run(argv,load_font):
     local=origin.startswith('http://127.0.0.1:')
     if origin!=DEFAULT_CLOUD_URL and not local:raise ValueError('QA origin must be loopback')
     force_relay='--wan-force-relay' in argv
+    size_mib=int(argv[argv.index('--verify-mib')+1]) if '--verify-mib' in argv else 32
+    if not 1<=size_mib<=64:raise ValueError('Verification size must be 1–64 MiB')
     report=dict(ok=False,version=APP_VERSION,frozen=bool(getattr(sys,'frozen',False)),account_login=False,origin=origin,installer_executed=False,forced_relay_test=force_relay)
     with tempfile.TemporaryDirectory(prefix='flickdock-wan-original-') as temporary:
         root=Path(temporary);source=root/'原文件夹';(source/'空目录').mkdir(parents=True)
         block=os.urandom(1024*1024);original=source/'原始素材.bin'
         with original.open('wb') as stream:
-            for _ in range(32):stream.write(block)
+            for _ in range(size_mib):stream.write(block)
         with original.open('rb') as stream:expected=hashlib.file_digest(stream,'sha256').hexdigest()
         destination=root/'接收';destination.mkdir()
         services=[WanTransferService(root/str(index),device_name='FlickDock QA '+str(index),origin=origin,allow_test_origin=local,qa_force_relay=force_relay) for index in range(2)]
-        if '--wan-tls-first' in argv:
-            for service in services:
-                original_begin=service._begin
-                def begin(identifier,state,value,original=original_begin):state['udp_failed']=True;return original(identifier,state,value)
-                service._begin=begin
-        completed=[[],[]];offers=[];states=[];started=time.perf_counter();finished=False;identifier=''
+        completed=[[],[]];offers=[];states=[];started=time.perf_counter();finished=False;identifier='';payload_started=None
         def finish(error=''):
             nonlocal finished
             if finished:return
             finished=True;timer.stop();deadline.stop()
             report.update(ok=not error,error=error,elapsed_seconds=time.perf_counter()-started)
-            report['stream_diagnostics']=[]
-            for service in services:
-                for state in service._pending.values():
-                    adaptive=state.get('adaptive')
-                    if adaptive is not None:
-                        report['stream_diagnostics'].append(dict(sequence=adaptive._sequence,received_sequence=adaptive._received_sequence,
-                            pending_bytes=adaptive._pending_bytes,input_bytes=adaptive._input_bytes,reorder=len(adaptive._reorder),
-                            sent=adaptive._sent_bytes,acked=adaptive._acked_bytes,measurements=adaptive.measurements(),
-                            paths=[dict(route=p.route,dead=p.dead,sent=p.sent,received=p.received) for p in adaptive._paths.values()]))
             for service in services:service.close()
             output.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf8');app.exit(1 if error else 0)
         def receive(offer):
@@ -53,16 +41,13 @@ def run(argv,load_font):
                 assert services[1].accept(offer['id'],destination)
             except Exception as error:finish(type(error).__name__+': '+str(error))
         services[1].offer_received.connect(receive)
-        def native_diagnostic(peer,value):
-            event=value.get('event',{})
-            if event.get('type')=='transport':
-                report.setdefault('native_transports',[]).append(dict(peer=peer,generation=value.get('generation'),
-                    transport=event.get('relayTransport'),proxy_used=bool(event.get('proxyUsed')),elapsed_seconds=time.perf_counter()-started))
         for index,service in enumerate(services):
             service.completed.connect(lambda value,index=index:completed[index].append(value))
-            service.progress.connect(lambda value,index=index:states.append(dict(peer=index,elapsed_seconds=time.perf_counter()-started,
-                **{key:value.get(key) for key in ('state','route','received','total')})))
-            service._native.connect(lambda value,index=index:native_diagnostic(index,value))
+            def progress(value):
+                nonlocal payload_started
+                if value.get('state')=='transferring' and payload_started is None:payload_started=time.perf_counter()
+                states.append({key:value.get(key) for key in ('state','route','received','total')})
+            service.progress.connect(progress)
             service.status_changed.connect(lambda value:print(value,flush=True))
         def poll():
             nonlocal identifier
@@ -77,6 +62,9 @@ def run(argv,load_font):
                     assert routes and len(set(routes))==1,'Missing selected-candidate route'
                     if force_relay:assert routes[0]=='relay','Forced relay test did not use a TURN candidate'
                     report.update(verified_bytes=original.stat().st_size,sha256=expected,empty_folders_preserved=True,code_pairing=True,receiver_consent=True,recent_devices=True,route=routes[0],route_source='native-selected-candidate-pair')
+                    if payload_started is not None:
+                        seconds=time.perf_counter()-payload_started
+                        report.update(payload_seconds=seconds,payload_mib_per_second=original.stat().st_size/1024**2/max(.001,seconds))
                     finish()
                 for service in services:
                     for transfer in service._transfers.values():

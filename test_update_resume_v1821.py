@@ -29,6 +29,17 @@ class UpdateRecoveryTests(fixture.UpdateTests):
         self.assertIn('reconnecting',[phase for phase,_ in phases]);self.assertIn('verifying',[phase for phase,_ in phases])
         self.assertEqual(state['progress'][-1][0],len(self.payload))
 
+    def test_retry_after_failed_install_reuses_authenticated_complete_package_without_network(self):
+        client,state=self.task();self.finish(state);self.requests.clear()
+        second,state2=self.client();second.download(self.manifest);self.finish(state2)
+        self.assertEqual(self.requests,[])
+
+    def test_corrupted_complete_package_is_downloaded_again(self):
+        client,state=self.task();self.finish(state)
+        final=Path(state['verified_file'][0][0]);final.write_bytes(b'MZ'+b'X'*(len(self.payload)-2))
+        self.requests.clear();second,state2=self.client();second.download(self.manifest);self.finish(state2)
+        self.assertTrue(self.requests)
+
     def test_app_shutdown_preserves_partial_then_next_client_resumes(self):
         client,state=self.task(chunk_delay=.004)
         fixture.wait_until(lambda:client._download_task.received>=131072)
@@ -51,11 +62,17 @@ class UpdateRecoveryTests(fixture.UpdateTests):
         headers=next(headers for path,headers in self.requests if path=='/setup.exe')
         self.assertEqual(headers.get('Range'),f'bytes={stored}-')
 
-    def test_range_unsupported_correctly_restarts_without_duplicate_bytes(self):
+    def test_range_unsupported_keeps_partial_and_retries_without_redownloading(self):
         client,state=self.client();folder=client.updates_dir/self.manifest['version'];folder.mkdir(parents=True)
         part=folder/('package-'+self.manifest['installer']['sha256']+'.part');part.write_bytes(self.payload[:131072])
         self.routes['/setup.exe']=dict(body=self.payload)
+        client.download(self.manifest);fixture.wait_until(lambda:state['failed'])
+        self.assertEqual(part.read_bytes(),self.payload[:131072])
+        self.assertFalse(state['verified_file']);self.assertIn('续传',state['failed'][0][0])
+        self.routes['/setup.exe']=dict(body=self.payload,ranges=True);self.requests.clear();state['failed'].clear()
         client.download(self.manifest);self.finish(state)
+        headers=next(headers for path,headers in self.requests if path=='/setup.exe')
+        self.assertEqual(headers.get('Range'),'bytes=131072-')
 
     def test_pause_retains_bytes_and_resume_uses_range(self):
         client,state=self.task(chunk_delay=.004)
@@ -79,15 +96,19 @@ class UpdateRecoveryTests(fixture.UpdateTests):
         part=client._download_task.part;view.secondary_button.click()
         self.assertEqual(controller.state,'paused');self.assertEqual(view.state,'paused');self.assertTrue(part.exists())
         view.secondary_button.click()
-        self.assertEqual(controller.state,'cancelled');self.assertEqual(view.state,'cancelled');self.assertFalse(part.exists())
+        self.assertEqual(controller.state,'cancelled');self.assertEqual(view.state,'cancelled');self.assertTrue(part.exists())
+        stored=part.stat().st_size;self.assertGreater(stored,0)
         self.assertTrue(view.primary_button.isEnabled());self.assertTrue(view.secondary_button.isEnabled())
+        self.requests.clear();view.primary_button.click();self.finish(state)
+        headers=next(headers for path,headers in self.requests if path=='/setup.exe')
+        self.assertEqual(headers.get('Range'),f'bytes={stored}-')
 
-    def test_invalid_content_range_discards_partial_and_never_publishes(self):
+    def test_invalid_content_range_preserves_partial_and_never_publishes(self):
         client,state=self.client();folder=client.updates_dir/self.manifest['version'];folder.mkdir(parents=True)
         part=folder/('package-'+self.manifest['installer']['sha256']+'.part');part.write_bytes(self.payload[:131072])
         self.routes['/setup.exe']=dict(body=self.payload,ranges=True,bad_range=True)
         client.download(self.manifest);fixture.wait_until(lambda:state['failed'])
-        self.assertFalse(state['verified_file']);self.assertFalse(part.exists());self.assertIn('范围',state['failed'][0][0])
+        self.assertFalse(state['verified_file']);self.assertEqual(part.read_bytes(),self.payload[:131072]);self.assertIn('范围',state['failed'][0][0])
 
     def test_slow_continuous_download_is_not_a_total_elapsed_timeout(self):
         self.routes['/setup.exe']=dict(body=self.payload,chunk_delay=.008)

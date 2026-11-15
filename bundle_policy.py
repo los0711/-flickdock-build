@@ -24,7 +24,6 @@ PLUGIN_ALLOWLIST = {
     'multimedia': {'ffmpegmediaplugin.dll'},
 }
 UNUSED_DATA_PARTS = {'qml', 'translations', 'resources', 'typesystems', 'include', 'glue'}
-FONT_KEEP = {'harmonyos_sans_sc_regular.ttf'}
 # This unrelated Poppler library shadows Windows' own ICU API. Core.dll's
 # unversioned ICU imports are satisfied by the OS, not by Poppler ICU 78.
 SYSTEM_ONLY = {'icuuc.dll'}
@@ -60,8 +59,8 @@ def _policy_reason(destination, source):
             return f'unused Qt plugin entry point: {group}/{name}'
     if 'pyside6' in parts and any(part in UNUSED_DATA_PARTS for part in parts):
         return 'unused Qt QML/resources/translations/development data'
-    if dest.startswith('fonts/') and name not in FONT_KEEP:
-        return 'only the unmodified Regular font is needed; Qt synthesizes weights'
+    if dest.startswith('fonts/'):
+        return 'UI uses installed system fonts; no bundled font files are needed'
     return None
 
 
@@ -118,8 +117,10 @@ def filter_bundle(binaries,datas):
             roots.add(index);root_reasons[index]='Python runtime or analysed extension module'
         elif '/plugins/' in '/'+_normal(entry[0]):
             roots.add(index);root_reasons[index]='selected runtime-loaded Qt plugin'
-        elif _normal(entry[0]).startswith('p2p/') and name in ('node.exe','node_datachannel.node'):
-            roots.add(index);root_reasons[index]='native WebRTC data-channel runtime'
+        elif _normal(entry[0])=='p2p/runtime/node.exe' and name=='node.exe':
+            roots.add(index);root_reasons[index]='original JavaScript runtime for video parsing'
+        elif name.endswith('.node') and _normal(entry[0]).startswith('p2p/node_modules/'):
+            roots.add(index);root_reasons[index]='original native WebRTC module'
     keep,queue,dependencies,unbundled = set(roots),list(roots),{},set()
     while queue:
         index = queue.pop()

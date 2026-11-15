@@ -6,13 +6,12 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
-import platform as platform_module
 from pathlib import Path
 import re
 import sys
 from uuid import uuid4
 
-from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QObject, Qt, QTimer, QUrl, QSysInfo, Signal
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest, QSslSocket,QNetworkProxyFactory,QNetworkProxy
 
 
@@ -20,7 +19,7 @@ from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequ
 DEFAULT_MANIFEST_URL = 'https://flickdock-site.roger000416.workers.dev/updates/latest.json'
 MAC_MANIFEST_BASE = 'https://raw.githubusercontent.com/los0711/-flickdock-build/main/updates/'
 WORKER_MANIFEST_BASE='https://flickdock-site.roger000416.workers.dev/updates/'
-DEFAULT_ALLOWED_HOSTS = frozenset({'github.com','raw.githubusercontent.com','release-assets.githubusercontent.com','objects.githubusercontent.com','gitee.com','raw.giteeusercontent.com','foruda.gitee.com','flickdock-site.roger000416.workers.dev'})
+DEFAULT_ALLOWED_HOSTS = frozenset({'github.com','raw.githubusercontent.com','release-assets.githubusercontent.com','objects.githubusercontent.com','gitee.com','raw.giteeusercontent.com','foruda.gitee.com','flickdock-site.roger000416.workers.dev','download.flickdock.cc.cd'})
 MAX_MANIFEST_BYTES = 128 * 1024
 MAX_INSTALLER_BYTES = 1024 * 1024 * 1024
 MAX_REDIRECTS = 5
@@ -52,7 +51,7 @@ def trusted_url(value, allowed_hosts):
 
 
 def update_architecture(machine=None):
-    value = str(machine or platform_module.machine()).lower()
+    value = str(machine or QSysInfo.currentCpuArchitecture()).lower()
     aliases = {'aarch64': 'arm64', 'amd64': 'x86_64', 'x64': 'x86_64'}
     return aliases.get(value, value)
 
@@ -458,12 +457,12 @@ class UpdateClient(QObject):
         self._mode = None
         self._body.clear()
 
-    def _cleanup_partial(self):
+    def _cleanup_partial(self, *, discard=True):
         if self._file is not None:
             self._file.close()
             self._file = None
         if self._part is not None:
-            self._part.unlink(missing_ok=True)
+            if discard:self._part.unlink(missing_ok=True)
             self._part = None
 
     def _fail(self, message, *, retry_mirror=False):
@@ -503,7 +502,7 @@ class UpdateClient(QObject):
     def cancel(self):
         if self._download_task is not None:
             task,self._download_task=self._download_task,None
-            task.stop(discard=True);manual=self._manual;self._complete()
+            task.stop(discard=False);manual=self._manual;self._complete()
             if not self._closed:self.cancelled.emit(manual)
             return True
         if not self.busy:
@@ -511,10 +510,10 @@ class UpdateClient(QObject):
         manual = self._manual
         self._complete()
         try:
-            self._cleanup_partial()
+            self._cleanup_partial(discard=False)
         except OSError:
             if not self._closed:
-                self.failed.emit('下载已取消，但暂存文件暂时无法删除。', manual)
+                self.failed.emit('下载已取消，但无法保留下载进度。', manual)
             return True
         if not self._closed:
             self.cancelled.emit(manual)

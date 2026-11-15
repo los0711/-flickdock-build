@@ -25,8 +25,8 @@ from update_client import UpdateClient, DEFAULT_ALLOWED_HOSTS
 
 APP = QApplication.instance() or QApplication([])
 APP.setQuitOnLastWindowClosed(False)
-QFontDatabase.addApplicationFont(str(Path(__file__).with_name('fonts')/'HarmonyOS_Sans_SC_Regular.ttf'))
-APP.setFont(QFont('HarmonyOS Sans SC', 11))
+from native_ui_common import configure_reference_font
+configure_reference_font(APP)
 
 
 def wait(predicate, timeout=3):

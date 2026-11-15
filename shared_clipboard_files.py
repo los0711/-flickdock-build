@@ -67,9 +67,7 @@ class ClipboardFileJobs(QObject):
         if error is not None:task['_file_error']=str(error)
         elif phase!='retrying':task.pop('_file_error',None)
         if self.client.view.get('id')==task['id']:
-            raw=(task.get('package') or {}).get('raw_file') or {}
-            self.client.view.update(received=task.get('_file_received',0),total=raw.get('size',task['source_stat'][2]))
-            self.client.view_changed.emit(dict(self.client.view))
+            self.client._set_view(self.client.view['value'],self.client.view['phase'],task['id'])
         if phase in ('ready','retrying','unavailable'):self.save()
         if previous==phase:self.progress_changed.emit()
         else:self.changed.emit()
@@ -140,6 +138,9 @@ class ClipboardFileJobs(QObject):
 
     def _restore(self,task):
         if not self.valid(task):return
+        from virtual_clipboard import remote_placeholder
+        if remote_placeholder(task['file_source']):
+            self.client._unavailable_task(task);return
         for identity in tuple(task.get('releases',{})):self.release(task['id'],identity)
         if task.get('releases') and not self.held(task):return
         item=task.get('package')
@@ -182,6 +183,7 @@ class ClipboardFileJobs(QObject):
         task['_file_retry_at']=time.monotonic()+5;self.retry.start(5001)
 
     def _retry(self):
+        if not self.client.scheduler.connected:return
         later=False
         for task in tuple(self.tasks.values()):
             if self.valid(task) and task.get('releases'):

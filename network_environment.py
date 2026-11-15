@@ -9,6 +9,15 @@ from PySide6.QtNetwork import QNetworkProxy,QNetworkProxyFactory,QNetworkProxyQu
 from cloud_config import DEFAULT_CLOUD_URL
 
 
+def proxy_routes(url):
+    routes=[]
+    for proxy in QNetworkProxyFactory.systemProxyForQuery(QNetworkProxyQuery(QUrl(url))):
+        if proxy.type() in (QNetworkProxy.HttpProxy,QNetworkProxy.Socks5Proxy,QNetworkProxy.NoProxy) and proxy not in routes:routes.append(proxy)
+    direct=QNetworkProxy(QNetworkProxy.NoProxy)
+    if direct not in routes:routes.append(direct)
+    return routes
+
+
 def parse_mac_vpn(output):
     states=re.findall(r'^\s*\*?\s*\((Connected|Disconnected|Connecting|Disconnecting)\)\s',output,re.M)
     if 'Connected' in states:return 'connected'

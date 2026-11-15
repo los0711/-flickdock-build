@@ -18,12 +18,19 @@ from uuid import uuid4
 
 from PySide6.QtCore import QObject, QThreadPool, QTimer, Qt, Signal
 from account_store import atomic_json
+from shelf_journal import coordinator as shelf_journal_coordinator
 from selection_archive import _source_reader
 from upload_lanes import UploadLanes
+from sync_contracts import ShelfStatePort
+from sync_scheduler import SyncScheduler,SyncTiming,TRANSFER_INTERVAL_MS,FINISHING_INTERVAL_MS
 from sync_files import (DiskWork, DIRECTORY_MIME, assemble_parts, fingerprint, read_part, read_utf8, safe_name,
                         stage_item, unpack_directory,MAX_FILE_BYTES)
 
 MAX_CONCURRENT_RECEIVES=3
+MAX_CONCURRENT_REMOVALS=3
+REMOVAL_CONFLICT_RETRY_SECONDS=30
+QT_TIMER_MAX_MS=2147483647
+LARGE_DOWNLOAD_RANGE_THRESHOLD_BYTES=90*1024*1024
 
 
 def _upload_timestamp(value):
@@ -77,29 +84,52 @@ def _remove_download_parts(target, count, cancel):
                     if cancel.wait(.05):return
 
 
+def _remove_upload_stage(path,cancel):
+    """Allow an asynchronously reading upload handle time to close on Windows."""
+    path=Path(path)
+    for attempt in range(40):
+        if cancel.is_set():return False
+        # A journal is local input; never follow a replaced stage or parent.
+        for component in (path,path.parent,path.parent.parent):
+            if component.is_symlink() or getattr(component,'is_junction',lambda:False)():return False
+        try:path.unlink(missing_ok=True);return True
+        except PermissionError:
+            if attempt==39:raise
+            if cancel.wait(.05):return False
+
+
 class ShelfSync(QObject):
     status_changed = Signal(str)
     transfers_changed = Signal(list)
     metadata_changed = Signal(str)
+    storage_changed = Signal(object)
+    capacity_exceeded = Signal(list)
 
-    def __init__(self, base, service, adapter, parent=None, *, poll_ms=300000,
-                 remote_poll_ms=4000, disconnected_poll_ms=25000):
+    def __init__(self, base, service, adapter: ShelfStatePort, parent=None, *, scheduler=None,progress_interval_ms=TRANSFER_INTERVAL_MS):
         super().__init__(parent)
         self.root = Path(base)/'cloud-shelves'; self.root.mkdir(parents=True,exist_ok=True)
+        self._journal=shelf_journal_coordinator(self.root,lambda path,value:atomic_json(path,value))
+        self._journal_waiters=[]
+        self._journal.saved.connect(self._journal_saved,Qt.ConnectionType.QueuedConnection)
+        self._journal.failed.connect(self._journal_failed,Qt.ConnectionType.QueuedConnection)
+        self._journal_retry=QTimer(self);self._journal_retry.setSingleShot(True)
+        self._journal_retry.timeout.connect(self._journal.retry)
         self.service, self.api, self.adapter = service, service.api, adapter
         self.meta_path = self.root/'profiles.json'
-        self.meta = self._read(self.meta_path,{'owner':None,'imported_guest':False})
+        self.meta = self._journal.latest(self.meta_path) or self._read(self.meta_path,{'owner':None,'imported_guest':False})
         self.owner = self.meta.get('owner'); self.account_id = None
         self.state = None; self.epoch = 0; self.running = False; self.closed = False
+        self._ref_index = {}
         self.applying = False; self.requests = set(); self.jobs = set()
-        self._request_owners={};self._job_owners={};self._upload_tokens={}
+        self._request_owners={};self._request_handles={};self._job_owners={};self._upload_tokens={};self._stage_cleanups=set()
         self.pool = QThreadPool(self); self.pool.setMaxThreadCount(2)
         self.retry_ms = 15000; self.transfer = None
         self.cleanup_attempts = {}
         self._cleanup_inflight = set()
+        self._item_removals=set()
         self._cleanup_retry=QTimer(self);self._cleanup_retry.setSingleShot(True)
         self._cleanup_retry.timeout.connect(self._retire_abandoned_uploads)
-        self.remote_transfers=[]
+        self.remote_transfers=[];self._cancelled_remote_uploads={}
         self._remote_heads={}
         self._receive_fences={}
         self._receive_batch_generation=0;self._receive_wake=None
@@ -110,42 +140,33 @@ class ShelfSync(QObject):
         self.download_transfers={}
         self._interactive=False
         self._clipboard_priority=False
-        self._base_poll_ms=poll_ms
-        self._remote_poll_ms=remote_poll_ms
-        self._disconnected_poll_ms=disconnected_poll_ms
-        self._event_stream_online=True
+        self.scheduler=scheduler if scheduler is not None else SyncScheduler(self)
+        self._owns_scheduler=scheduler is None;self._schedule_transfers=[]
         self.catching_up=True
         self._progress_persisted=0.0
         self._part_cache={}
         self._lane_context=None
         self.upload_lanes=UploadLanes(self)
         self.clipboard_bridge=None
-        self.peer_bridge=None
         self._refresh_again=False
         self._cycle_direction='receive'
         self.upload_enabled=True
         self.receive_enabled=True
-        self.timer = QTimer(self); self.timer.setInterval(poll_ms); self.timer.timeout.connect(self.tick)
+        self.storage=None
+        self.cloud_copy_operations=set()
+        self.schedule=self.scheduler.register('shelf',self._scheduled_check,timing=SyncTiming(
+            transfer_ms=progress_interval_ms,finishing_ms=min(progress_interval_ms,FINISHING_INTERVAL_MS)))
+        self.scheduler.connection_changed.connect(self._connection_changed)
         self.debounce = QTimer(self); self.debounce.setSingleShot(True); self.debounce.timeout.connect(self.tick)
         # Backoff deadlines are wall-clock boundaries. Qt's default coarse
         # timer may fire early and repeatedly pull before the deadline.
         self.debounce.setTimerType(Qt.TimerType.PreciseTimer)
-        # The socket is the fast path. If its commit hint is lost after a
-        # pending upload was observed, bounded polling keeps the other device
-        # from waiting for the five-minute idle reconciliation. No active
-        # remote upload means no extra requests.
-        self.remote_poll = QTimer(self); self.remote_poll.setSingleShot(True)
-        self.remote_poll.timeout.connect(self.request_refresh)
         service.account_changed.connect(self.select_account)
 
     def attach_clipboard(self,client):
         from shared_clipboard_files import ShelfClipboardBridge
         self.clipboard_bridge=ShelfClipboardBridge(self,client)
         self.clipboard_bridge.reconcile()
-
-    def attach_peer(self,mesh):
-        from peer_shelf import ShelfPeerBridge
-        self.peer_bridge=ShelfPeerBridge(self,mesh)
 
     def set_directions(self, upload_enabled, receive_enabled):
         """Switch cloud directions without losing local edits or transfer journals.
@@ -167,7 +188,6 @@ class ShelfSync(QObject):
             self.remote_transfers=[]
             self._live_upload_progress.clear()
             self.download_transfers.clear()
-            self.remote_poll.stop()
         self._persist()
         self._notify_transfers()
         if self.account_id and self.service.signed_in and (upload_enabled or receive_enabled):
@@ -188,6 +208,21 @@ class ShelfSync(QObject):
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',str(owner)): raise ValueError('账号标识无效。')
         return self.root/owner/'state.json'
 
+    def _after_journal(self,path,revision,callback):
+        if self._journal.written(path)>=revision:callback();return
+        self._journal_waiters.append((str(path),revision,callback))
+
+    def _journal_saved(self,path,revision):
+        ready=[row for row in self._journal_waiters if row[0]==path and row[1]<=revision]
+        self._journal_waiters=[row for row in self._journal_waiters if row not in ready]
+        if not self.closed:
+            for _,_,callback in ready:callback()
+
+    def _journal_failed(self,path,error):
+        if self.closed:return
+        self.status_changed.emit('同步记录暂时无法保存，请检查磁盘空间与权限。')
+        if not self._journal_retry.isActive():self._journal_retry.start(1000)
+
     def _persist(self):
         if self.state is None: return
         live=set(self._request_owners.values())|set(self._job_owners.values())
@@ -198,7 +233,17 @@ class ShelfSync(QObject):
             if identity not in live and (not entry or not entry.get('dirty') or entry.get('deleted') or entry.get('paused_upload')):
                 token.set();self._upload_tokens.pop(identity,None)
         self.state['view'] = self.adapter.snapshot()
-        atomic_json(self._profile(self.account_id),self.state)
+        owner=self.account_id;path=self._profile(owner)
+        queued=self.state.get('pending_stage_cleanup',())
+        pending=tuple(queued) if isinstance(queued,list) else ()
+        revision=self._journal.submit(path,self.state)
+        if pending:
+            def cleanup():
+                if not self.closed and self.account_id==owner:
+                    for name in pending:
+                        if isinstance(name,str):self._start_stage_cleanup(name)
+            self._after_journal(path,revision,cleanup)
+        return revision
 
     def _persist_progress(self):
         # Resume checks the server boundary; a short journal lag is safe and
@@ -212,38 +257,42 @@ class ShelfSync(QObject):
             self._persist()
         else:
             path = self._profile(self.owner)
-            previous = self._read(path,{'entries':{},'cursor':'0'})
-            previous['view'] = self.adapter.snapshot(); atomic_json(path,previous)
+            previous = self._journal.latest(path) or self._read(path,{'entries':{},'cursor':'0'})
+            previous['view'] = self.adapter.snapshot(); self._journal.submit(path,previous)
 
     def select_account(self, account):
         if self.clipboard_bridge:self.clipboard_bridge.reset()
         if self.closed: return
         target = account.get('id') if isinstance(account,dict) else None
         if target == self.account_id and self.state is not None:
-            if self.service.signed_in and not self.timer.isActive(): self.timer.start()
+            self._update_schedule()
             return
-        self.epoch += 1; self.timer.stop(); self.debounce.stop(); self.remote_poll.stop()
+        self.epoch += 1; self.schedule.configure(enabled=False); self.debounce.stop()
+        self.storage=None;self.storage_changed.emit(None);self.cloud_copy_operations.clear()
+        self._schedule_transfers=[]
         self._metadata_pending.clear();self._metadata_retry.clear()
-        if self.peer_bridge is not None:self.peer_bridge.reset()
         self.catching_up=True
         self.upload_lanes.reset()
         self._intake_announced=set()
         self.running = False; self.transfer = None
         self._refresh_again=False
-        self.remote_transfers=[]; self._live_upload_progress.clear(); self.transfers_changed.emit([])
+        self.remote_transfers=[]; self._live_upload_progress.clear();self._cancelled_remote_uploads.clear();self.transfers_changed.emit([])
         self._remote_heads.clear()
         self._receive_fences.clear()
         self._receive_wake=None;self._receive_batch_generation+=1
         self.download_transfers.clear()
         self._part_cache.clear();self._progress_persisted=0.0
         self._cleanup_inflight.clear();self._cleanup_retry.stop()
+        self._item_removals.clear()
         for job in tuple(self.jobs): job.cancel.set()
-        for key in tuple(self.requests): self.api.cancel(key)
+        for key in tuple(self.requests): self._cancel_request(key)
         self.requests.clear()
         self._snapshot_owner()
         self.account_id = target
         path = self._profile(target)
-        self.state = self._read(path,{'entries':{},'cursor':'0','view':None})
+        self.state = self._journal.latest(path) or self._read(path,{'entries':{},'cursor':'0','view':None})
+        self._ref_index = {entry['ref']:entry for entry in self.state.get('entries',{}).values()
+                           if entry.get('ref') and not entry.get('deleted')}
         for identity,deferred in self.state.get('deferred_downloads',{}).items():
             record=deferred.get('record',{}) if isinstance(deferred,dict) else {}
             if record.get('id')==identity and re.fullmatch(r'[A-Za-z0-9_-]{1,128}',identity):
@@ -254,7 +303,7 @@ class ShelfSync(QObject):
                 self.state['view'] = self.adapter.snapshot(); self.meta['imported_guest'] = True
             else: self.state['view'] = {'permanent':[],'texts':{},'metadata':{}}
         self.owner = target; self.meta['owner'] = target
-        atomic_json(self.meta_path,self.meta)
+        self._journal.submit(self.meta_path,self.meta)
         self.applying = True
         try:
             if hasattr(self.adapter,'cancel_pending'):self.adapter.cancel_pending()
@@ -262,8 +311,8 @@ class ShelfSync(QObject):
         finally: self.applying = False
         self._persist()
         if target:
-            self.local_changed(); self.timer.start(); self.debounce.start(1)
-            self._schedule_remote_poll()
+            self.local_changed(); self.debounce.start(1)
+            self._update_schedule()
         else: self.status_changed.emit('未登录；内容仅保留在这台设备。')
 
     def local_changed(self):
@@ -282,24 +331,28 @@ class ShelfSync(QObject):
                 identity = str(uuid4())
                 entry = {'id':identity,'ref':ref,'version':0,'seq':0}
                 entries[identity] = entry
+                by_ref[ref] = entry
             if entry.get('fingerprint') != fp or entry.get('deleted'):
                 previous=entry.pop('shared_clipboard',None)
                 if previous and self.clipboard_bridge:self.clipboard_bridge.files.release(previous,entry['id'])
                 paused_intake=entry.get('paused_upload') and entry.get('fingerprint') is None
+                manual_only=bool(entry.get('manual_upload_only'))
                 self._end_intake(entry)
                 entry.pop('blocked_fingerprint',None); entry.pop('last_error',None)
-                if not paused_intake:entry.pop('paused_upload',None)
+                if manual_only:entry['paused_upload']=True
+                elif not paused_intake:entry.pop('paused_upload',None)
                 entry.update(fingerprint=fp,name=name,dirty=True,deleted=False,
                              kind='url' if text is not None and re.fullmatch(r'https?://\S+',text.strip()) else 'text' if text is not None else 'file',
                              seq=entry.get('seq',0)+1)
-                entry.update(intake_id=str(uuid4()),intake_seq=entry['seq'])
+                if not manual_only:entry.update(intake_id=str(uuid4()),intake_seq=entry['seq'])
         removed = False
         for entry in entries.values():
             if entry.get('ref') not in refs and not entry.get('deleted'):
                 self._end_intake(entry)
                 entry.update(deleted=True,dirty=True,seq=entry.get('seq',0)+1)
-                if self.peer_bridge is not None:self.peer_bridge.publish_removal(entry)
+                if by_ref.get(entry.get('ref')) is entry:by_ref.pop(entry['ref'],None)
                 removed = True
+        self._ref_index = by_ref
         if self.clipboard_bridge:self.clipboard_bridge.reconcile()
         self._persist()
         self._announce_intakes()
@@ -355,51 +408,85 @@ class ShelfSync(QObject):
         self._interactive=value
         # WebSocket hints wake the journal immediately. Opening an interactive
         # window needs one reconciliation, not another GET every ten seconds.
-        self.timer.setInterval(self._base_poll_ms)
         if value and self.service.signed_in:self.debounce.start(1)
 
     def set_event_stream_online(self,online):
-        """Poll sparingly while live change hints cannot be delivered."""
-        online=bool(online)
-        if online==self._event_stream_online:return
-        self._event_stream_online=online
-        # Backfilled history is data reconciliation, not a sequence of new
-        # arrivals. Keep this flag until the final page has been applied.
-        self.catching_up=True
-        self._schedule_remote_poll()
-        if online and self.account_id and self.receive_enabled:
-            # One reconciliation catches commits that happened while the
-            # socket was down, even if their pending reservation was unseen.
-            self.request_refresh()
+        self.scheduler.set_connected(online)
 
-    def _schedule_remote_poll(self):
-        """Recheck only pending uploads from another device if a hint goes missing."""
-        device_id=getattr(self.service,'device_id',None)
-        remote=[item for item in self.remote_transfers
-                if not device_id or item.get('device_id') != device_id]
-        if not self.receive_enabled or not self.account_id or not self.service.signed_in:
-            self.remote_poll.stop()
-            return
-        # When all R2 parts are accepted, the last server commit should be
-        # imminent. Otherwise a few seconds between checks is sufficient and
-        # does not fan out one request per progress packet.
-        if remote:
-            ready=any(item.get('state') == 'verifying' or
-                      item.get('size',0) == item.get('received_bytes',-1)
-                      for item in remote)
-            self.remote_poll.start(min(self._remote_poll_ms,1500) if ready
-                                   else self._remote_poll_ms)
-        elif not self._event_stream_online:
-            self.remote_poll.start(self._disconnected_poll_ms)
-        else:self.remote_poll.stop()
+    def _connection_changed(self,online):
+        self.catching_up=True
+
+    def _update_schedule(self):
+        remote=[row for row in self.remote_transfers if row.get('device_id')!=getattr(self.service,'device_id',None)] if self.receive_enabled else []
+        active=[row for row in self._schedule_transfers if row['phase'] not in ('retrying','paused','error')]
+        finishing=any(row.get('state')=='verifying' or row.get('size',0)==row.get('received_bytes',-1) for row in remote)
+        finishing=finishing or any(row['phase'] in ('verifying','validating') for row in active)
+        self.schedule.configure(enabled=not self.closed and bool(self.account_id) and self.service.signed_in
+            and (self.upload_enabled or self.receive_enabled),transferring=bool(remote or active),finishing=finishing)
+
+    def _scheduled_check(self):
+        if self.receive_enabled:self._refresh_remote()
+        else:self.tick()
 
     def request_refresh(self):
+        self.schedule.request()
+
+    def refresh_storage(self,callback):
+        if self.closed or not self.account_id or not self.service.signed_in:
+            callback(None,None);return
+        def done(result,error):
+            callback(self.storage if error is None else None,error)
+        lane=self._lane_context;self._lane_context=None
+        try:self._request('GET','/v1/sync/storage',done)
+        finally:self._lane_context=lane
+
+    def _set_storage(self,value):
+        from shelf_capacity import storage_value
+        value=storage_value(value)
+        if self.storage!=value:
+            self.storage=value;self.storage_changed.emit(dict(value))
+
+    def delete_cloud_copy(self,ref):
+        if self.closed or not self.state or not self.service.signed_in:return False
+        entry=next((e for e in self.state['entries'].values() if e.get('ref')==ref and not e.get('deleted')),None)
+        if not entry or self._sync_status_for_entry(entry)!='synced' or entry['id'] in self.cloud_copy_operations:return False
+        identity=entry['id'];self.cloud_copy_operations.add(identity)
+        # Persist the user's intent before issuing the DELETE.  Even an
+        # interrupted request or a local edit during it must not requeue an
+        # upload before a new, explicit upload action.
+        entry['manual_upload_only']=True;entry['paused_upload']=True
+        entry['cloud_intent_generation']=entry.get('cloud_intent_generation',0)+1
+        self._cancel_upload_owner(identity);self._end_intake(entry);self._forget_resume(identity)
+        self._persist();self._notify_transfers();self.metadata_changed.emit(ref)
+        def done(result,error):
+            self.cloud_copy_operations.discard(identity)
+            if error:
+                self.status_changed.emit('删除云端副本失败：'+str(error));self.request_refresh()
+            else:
+                self._receive(result['record'],lambda:None)
+                self.status_changed.emit('云端副本已删除，本地文件仍保留。')
+            self.metadata_changed.emit(ref)
+        self._request('DELETE','/v1/items/'+identity+'/cloud-copy',done,data={'base_version':entry['version']})
+        return True
+
+    def _capacity_rejected(self,identity):
+        entry=self.state['entries'].get(identity)
+        if entry:
+            entry.update(paused_upload=True,last_error='云端容量不足')
+            self._end_intake(entry);self._forget_resume(identity)
+            self.capacity_exceeded.emit([entry['ref']])
+        if self._lane_context is not None:self.upload_lanes.finish()
+        elif self.transfer and self.transfer.get('id')==identity:self.running=False;self.transfer=None
+        self._persist();self._notify_transfers();self.request_refresh()
+
+    def _refresh_remote(self):
         if self.closed or not self.account_id or not self.service.signed_in or not self.receive_enabled:return
+        if not self.scheduler.connected:self.schedule.request();return
         if self.running:
             self._refresh_again=True
             cooldown=getattr(self,'_remote_snapshot_not_before',(None,0))
             if cooldown[0]==self.epoch and cooldown[1]>time.monotonic():
-                self.remote_poll.start(max(1,round((cooldown[1]-time.monotonic())*1000)))
+                self.schedule.defer(max(1,round((cooldown[1]-time.monotonic())*1000)))
                 return
             # A long local upload/download must not postpone visibility of a
             # different device's pending files. Read only transfer metadata;
@@ -420,7 +507,7 @@ class ShelfSync(QObject):
                     delay=(self._retry_delay(error) if getattr(error,'status',0)==429 or self._quota_error(error)
                            else min(8,.5*2**min(failures-1,4)))
                     self._remote_snapshot_not_before=(self.epoch,time.monotonic()+delay)
-                    self.remote_poll.start(max(1,min(2147483647,round(delay*1000))))
+                    self.schedule.defer(max(1,min(2147483647,round(delay*1000))))
                     return
                 self._remote_snapshot_failures=0
                 changes=result.get('changes',[])
@@ -431,9 +518,10 @@ class ShelfSync(QObject):
                 remote=result.get('transfers')
                 if isinstance(remote,list) and len(remote)<=100:
                     self.remote_transfers=[r for r in remote if isinstance(r,dict) and type(r.get('size')) is int
-                        and r['size']>=0 and isinstance(r.get('item_id'),str) and isinstance(r.get('upload_id'),str)]
-                    self._schedule_remote_poll();self._notify_transfers()
-                if result.get('has_more') or self._remote_snapshot_dirty:self.remote_poll.start(1)
+                        and r['size']>=0 and isinstance(r.get('item_id'),str) and isinstance(r.get('upload_id'),str)
+                        and r['upload_id'] not in self._cancelled_remote_uploads]
+                    self._update_schedule();self._notify_transfers()
+                if result.get('has_more') or self._remote_snapshot_dirty:self.schedule.request(1)
             self._request('GET','/v1/sync/changes?cursor='+cursor+'&limit=100',visible)
         else:self.debounce.start(1)
 
@@ -448,7 +536,15 @@ class ShelfSync(QObject):
             if (not isinstance(identity,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',identity)
                     or type(version) is not int or not 1<=version<=9007199254740991):continue
             previous=self._remote_heads.get(identity,{})
-            if version<=previous.get('version',0):continue
+            if version<previous.get('version',0):continue
+            if version==previous.get('version',0):
+                # A metadata scan can observe a tombstone before the content
+                # lane applies it. Its version is not an application receipt;
+                # let the busy-cycle deletion lane remove the still-live view.
+                entry=self.state['entries'].get(identity)
+                if apply_deletions and record.get('deleted') and entry and entry.get('version',0)<version:
+                    self._receive(record,lambda:None)
+                continue
             if not record.get('deleted') and (type(record.get('size')) is not int or
                     not 0<=record['size']<=MAX_FILE_BYTES or
                     not re.fullmatch(r'[0-9a-f]{64}',str(record.get('sha256','')))):continue
@@ -468,6 +564,7 @@ class ShelfSync(QObject):
     def remote_progress(self,value):
         if self.closed or not self.account_id or not self.receive_enabled:return
         identifier=value.get('upload_id');previous=self._live_upload_progress.get(identifier,{})
+        if identifier in self._cancelled_remote_uploads:return
         if value.get('at',0)<previous.get('at',0):return
         self._live_upload_progress[identifier]=dict(value,seen=time.monotonic())
         if len(self._live_upload_progress)>100:self._live_upload_progress.pop(next(iter(self._live_upload_progress)))
@@ -496,6 +593,7 @@ class ShelfSync(QObject):
         entries=self.state.get('entries',{})
         for identity,record in (self.download_transfers.items() if self.receive_enabled else ()):
             if identity in known:continue
+            if entries.get(identity,{}).get('deleted') or self.state.get('ignored_versions',{}).get(identity,0)>=record['version']:continue
             cached=self.state.get('downloads',{}).get(identity,{})
             hashes=cached.get('hashes',{})
             size=record.get('size',0);chunk=cached.get('chunk_size',0)
@@ -504,7 +602,6 @@ class ShelfSync(QObject):
             received+=sum(min(max(0,size-int(index)*chunk),max(0,int(value)))
                           for index,value in in_flight.items()
                           if str(index).isdecimal() and str(index) not in hashes)
-            received=min(size,max(received,record.get('_peer_received',0)))
             phase=('retrying' if self.state.get('deferred_downloads',{}).get(identity,{}).get('retry_at',0)>time.time() else
                    'validating' if record.get('_assembling') else
                    'retrying' if not self.running and self._paused('not_before') else 'downloading')
@@ -519,6 +616,12 @@ class ShelfSync(QObject):
             if identity in known:continue
             # A cancelled local fingerprint is deliberately local-only.
             local=entries.get(identity,{})
+            if local.get('deleted'):continue
+            base=remote.get('base_version')
+            if type(base) is int and not local.get('dirty') and local.get('version',0)>base:
+                continue
+            ignored=self.state.get('ignored_versions',{}).get(identity,0)
+            if ignored and self._remote_heads.get(identity,{}).get('version',0)<=ignored:continue
             if remote.get('device_id')==getattr(self.service,'device_id','') and local.get('paused_upload'):continue
             if remote.get('device_id')==getattr(self.service,'device_id',''):continue
             live=self._live_upload_progress.get(remote.get('upload_id'),{})
@@ -535,13 +638,12 @@ class ShelfSync(QObject):
                     self.state.get('ignored_versions',{}).get(identity,0)>=record['version']):continue
             transfers.append(dict(id=identity,ref=entry.get('ref'),name=record.get('name',''),kind=record.get('kind','file'),
                 received=0,total=record['size'],phase='downloading',remote=True))
+        self._schedule_transfers=transfers;self._update_schedule()
         self.transfers_changed.emit(transfers)
 
     def _interrupt_cycle(self):
         self.epoch+=1
         self._metadata_pending.clear();self._metadata_retry.clear()
-        if self.peer_bridge is not None:
-            self.peer_bridge.reset();QTimer.singleShot(0,self.peer_bridge.seed)
         for token in self._upload_tokens.values():token.set()
         self._upload_tokens.clear()
         if self.clipboard_bridge:self.clipboard_bridge.reset()
@@ -551,8 +653,9 @@ class ShelfSync(QObject):
         self.running=False;self.transfer=None
         self._part_cache.clear()
         self._cleanup_inflight.clear();self._cleanup_retry.stop()
+        self._item_removals.clear()
         self._intake_announced=set()
-        for key in tuple(self.requests):self.api.cancel(key)
+        for key in tuple(self.requests):self._cancel_request(key)
         self.requests.clear()
         for job in tuple(self.jobs):job.cancel.set()
 
@@ -560,7 +663,7 @@ class ShelfSync(QObject):
         token=self._upload_tokens.pop(identity,None)
         if token is not None:token.set()
         for key,owner in tuple(self._request_owners.items()):
-            if owner==identity:self.api.cancel(key)
+            if owner==identity:self._cancel_request(key)
         for job,owner in tuple(self._job_owners.items()):
             if owner==identity:job.cancel.set()
         upload_ids={value.get('upload_id') for value in (
@@ -587,6 +690,7 @@ class ShelfSync(QObject):
             entry=dict(id=identity,ref=value,version=0,seq=0,dirty=True,deleted=False,paused_upload=True,
                        name=self.adapter.title(value),kind='file')
             self.state.setdefault('entries',{})[identity]=entry
+            self._ref_index[value]=entry
         if entry:
             self._end_intake(entry)
             if remove:entry.update(deleted=True,dirty=True,seq=entry.get('seq',0)+1)
@@ -603,6 +707,8 @@ class ShelfSync(QObject):
             if not remote:return False
             pending=self.state.setdefault('pending_uploads',[])
             if remote['upload_id'] not in pending:pending.append(remote['upload_id'])
+            self._cancelled_remote_uploads[remote['upload_id']]=None
+            if len(self._cancelled_remote_uploads)>4096:self._cancelled_remote_uploads.pop(next(iter(self._cancelled_remote_uploads)))
             self.remote_transfers.remove(remote)
         if self.clipboard_bridge:self.clipboard_bridge.reconcile()
         self._persist();self._notify_transfers();self.debounce.start(1)
@@ -610,18 +716,32 @@ class ShelfSync(QObject):
         return True
 
     def retry_upload(self,ref):
-        if not self.state:return
-        for entry in self.state.get('entries',{}).values():
-            if entry.get('ref')==ref:
-                active=self.transfer or {}
-                if not entry.get('paused_upload') and (entry['id']==active.get('id') or entry['id'] in self.upload_lanes.active):return
-                if entry.get('paused_upload') or entry.get('blocked_fingerprint'):self._cancel_upload_owner(entry['id'])
-                self._end_intake(entry)
-                entry.pop('paused_upload',None);entry.pop('blocked_fingerprint',None);entry['dirty']=True
-                ignored=self.state.get('ignored_versions',{}).get(entry['id'],0)
-                if isinstance(ignored,int):entry['version']=max(entry.get('version',0),ignored)
+        if not self.state or not self.account_id or not self.service.signed_in:return False
+        entry=self._entry_for_ref(ref)
+        if entry and entry['id'] in getattr(self,'cloud_copy_operations',()):return False
+        if entry is None:
+            # An intake may have been deliberately kept local without a
+            # journal entry. Create only this selected ref, not every local file.
+            view=self.adapter.snapshot()
+            if ref not in view.get('permanent',[]):return False
+            text=view.get('texts',{}).get(ref);name=self.adapter.title(ref);identity=str(uuid4())
+            entry=dict(id=identity,ref=ref,version=0,seq=1,fingerprint=fingerprint(ref,text,name),
+                name=name,dirty=True,deleted=False,
+                kind='url' if text is not None and re.fullmatch(r'https?://\S+',text.strip()) else 'text' if text is not None else 'file',
+                intake_id=str(uuid4()),intake_seq=1)
+            self.state.setdefault('entries',{})[identity]=entry;self._ref_index[ref]=entry
+        else:
+            if self._sync_status_for_entry(entry)=='synced':return False
+            active=self.transfer or {}
+            if not entry.get('paused_upload') and (entry['id']==active.get('id') or entry['id'] in self.upload_lanes.active):return False
+            if entry.get('paused_upload') or entry.get('blocked_fingerprint'):self._cancel_upload_owner(entry['id'])
+            self._end_intake(entry)
+            entry.pop('manual_upload_only',None);entry.pop('paused_upload',None);entry.pop('blocked_fingerprint',None);entry['dirty']=True
+            ignored=self.state.get('ignored_versions',{}).get(entry['id'],0)
+            if isinstance(ignored,int):entry['version']=max(entry.get('version',0),ignored)
         self._persist();self._notify_transfers();self.debounce.start(1)
         self.upload_lanes.kick()
+        return True
 
     def is_upload_paused(self,ref):
         return bool(self.state and self.service.signed_in and any(e.get('ref')==ref and
@@ -632,17 +752,56 @@ class ShelfSync(QObject):
         """Return the journal's truth for a local shelf ref, without network or disk IO."""
         if not self.state or not self.account_id or not self.service.signed_in:
             return 'local'
-        entry=next((item for item in self.state.get('entries',{}).values()
-                    if item.get('ref')==ref and not item.get('deleted')),None)
-        return self._sync_status_for_entry(entry)
+        return self._sync_status_for_entry(self._entry_for_ref(ref))
 
-    def upload_time_for_ref(self,ref):
+    def _entry_for_ref(self,ref):
+        entry=self._ref_index.get(ref)
+        if (entry and entry.get('ref')==ref and not entry.get('deleted')
+                and self.state and self.state.get('entries',{}).get(entry['id']) is entry):return entry
+        return None
+
+    def _remove_entry(self,identity):
+        entry=self.state['entries'].pop(identity,None)
+        if entry and self._ref_index.get(entry.get('ref')) is entry:
+            self._ref_index.pop(entry['ref'],None)
+        return entry
+
+    def cloud_copy_busy_for_ref(self,ref):
+        entry=self._entry_for_ref(ref)
+        return bool(entry and entry['id'] in self.cloud_copy_operations)
+
+    def cloud_copy_revision(self,ref):
+        """Fence an upload click against a later cloud-removal request."""
+        entry=self._entry_for_ref(ref)
+        return (entry['id'],entry.get('cloud_intent_generation',0)) if entry else (None,0)
+
+    def cached_upload_time_for_ref(self,ref):
         if self.closed or not self.state or not self.account_id or not self.service.signed_in:return None
-        entry=next((value for value in self.state.get('entries',{}).values()
-                    if value.get('ref')==ref and not value.get('deleted')),None)
+        entry=self._entry_for_ref(ref)
+        if not entry:return None
+        digest=entry.get('sha256')
+        return _upload_timestamp(entry.get('uploaded_at')) if digest and entry.get('uploaded_sha256')==digest else None
+
+    def upload_metadata_for_refs(self,refs):
+        """Read cached upload times using the journal's incrementally maintained ref index."""
+        if self.closed or not self.state or not self.account_id or not self.service.signed_in:return {}
+        result={}
+        for ref in refs:
+            entry=self._entry_for_ref(ref)
+            if entry is None:continue
+            digest=entry.get('sha256');version=entry.get('version')
+            stamp=_upload_timestamp(entry.get('uploaded_at')) if digest and entry.get('uploaded_sha256')==digest else None
+            key=(self.epoch,entry['id'],version,digest) if version and digest else None
+            result[ref]=(stamp,key)
+        return result
+
+    def upload_time_for_ref(self,ref,*,request=True):
+        if self.closed or not self.state or not self.account_id or not self.service.signed_in:return None
+        entry=self._entry_for_ref(ref)
         if not entry or not entry.get('version') or not entry.get('sha256'):return None
         stamp=_upload_timestamp(entry.get('uploaded_at'))
         if entry.get('uploaded_sha256')==entry['sha256'] and stamp:return stamp
+        if not request:return None
         key=(self.epoch,entry['id'],entry['version'],entry['sha256'])
         if key in self._metadata_pending or self._metadata_retry.get(key,0)>time.monotonic():return None
         self._metadata_pending.add(key)
@@ -650,7 +809,8 @@ class ShelfSync(QObject):
         def received(result,error):
             self._metadata_pending.discard(key)
             current=(self.state or {}).get('entries',{}).get(identity)
-            if not current or current.get('version')!=version or current.get('sha256')!=digest:return
+            if not current or current.get('version')!=version or current.get('sha256')!=digest:
+                self.metadata_changed.emit(ref);return
             if error is None:
                 try:
                     if not isinstance(result,dict) or (result.get('id'),result.get('version'),result.get('sha256'))!=(identity,version,digest):
@@ -675,19 +835,15 @@ class ShelfSync(QObject):
         return None
 
     def sync_statuses_for_refs(self,refs):
-        """Read many badge states in O(entries + refs) for a large overview."""
+        """Read badge states in O(refs), without scanning the sync journal."""
         refs=tuple(refs)
         if not self.state or not self.account_id or not self.service.signed_in:
             return {ref:'local' for ref in refs}
-        entries={item.get('ref'):item for item in self.state.get('entries',{}).values()
-                 if not item.get('deleted')}
-        return {ref:self._sync_status_for_entry(entries.get(ref)) for ref in refs}
+        return {ref:self._sync_status_for_entry(self._entry_for_ref(ref)) for ref in refs}
 
     def _sync_status_for_entry(self,entry):
-        if entry and entry.get('peer_provisional') and not entry.get('dirty'):return 'peer'
-        if (entry and entry.get('dirty') and entry.get('peer_delivered_hash')
-                and entry.get('pending_seq')==entry.get('seq') and entry['peer_delivered_hash']==entry.get('pending_hash')):return 'peer'
         if entry and not entry.get('dirty') and entry.get('version',0)>0:return 'synced'
+        if entry and entry.get('manual_upload_only'):return 'local'
         if not self.upload_enabled:return 'local'
         if entry is None:return 'pending'
         if entry.get('blocked_fingerprint') and entry.get('blocked_fingerprint')==entry.get('fingerprint'):
@@ -725,7 +881,7 @@ class ShelfSync(QObject):
         return True
 
     def _request(self, method, path, callback, **kwargs):
-        epoch = self.epoch; holder = []; lane=self._lane_context
+        epoch = self.epoch; lane=None if str(method).upper()=='DELETE' else self._lane_context
         owner=lane.get('id') if lane is not None else None
         if str(method).upper()!='DELETE' and path=='/v1/uploads':owner=(kwargs.get('data') or {}).get('item_id')
         elif str(method).upper()!='DELETE' and path.startswith('/v1/uploads/'):
@@ -733,9 +889,19 @@ class ShelfSync(QObject):
             owner=next((key for key,value in (self.state or {}).get('resumable_uploads',{}).items()
                         if value.get('upload_id')==upload_id),owner)
         token=self._upload_tokens.setdefault(owner,threading.Event()) if owner else None
+        key=uuid4().hex
+        self.requests.add(key);self._request_owners[key]=owner
         def done(result,error):
-            if holder:self.requests.discard(holder[0]);self._request_owners.pop(holder[0],None)
+            if key not in self.requests:return
+            self.requests.discard(key);self._request_owners.pop(key,None);self._request_handles.pop(key,None)
             if self.closed or epoch != self.epoch or token is not None and token.is_set(): return
+            if error is None and isinstance(result,dict) and 'shelf_storage' in result:
+                try:self._set_storage(result['shelf_storage'])
+                except ValueError as invalid:error=invalid
+            if getattr(error,'code','')=='SHELF_QUOTA' and owner:
+                if lane is not None:self.upload_lanes.run(lane,self._capacity_rejected,owner)
+                else:self._capacity_rejected(owner)
+                return
             if lane is not None:
                 # Protocol callbacks can stop the main cycle on conflicts;
                 # the small lane defers reconciliation without stopping bulk.
@@ -747,12 +913,25 @@ class ShelfSync(QObject):
                     return
                 self.upload_lanes.run(lane,callback,result,error)
             else:callback(result,error)
-        key = self.api.request(method,path,done,**kwargs)
-        holder.append(key); self.requests.add(key);self._request_owners[key]=owner
+        def issue():
+            if key not in self.requests:return
+            if self.closed or epoch!=self.epoch or token is not None and token.is_set():
+                self._cancel_request(key);return
+            handle=self.api.request(method,path,done,**kwargs)
+            if key in self.requests:self._request_handles[key]=handle
+        if str(method).upper() in ('POST','PUT','PATCH','DELETE'):
+            journal_path=self._profile(self.account_id)
+            self._after_journal(journal_path,self._journal.required(journal_path),issue)
+        else:issue()
         return key
 
+    def _cancel_request(self,key):
+        self.requests.discard(key);self._request_owners.pop(key,None)
+        handle=self._request_handles.pop(key,None)
+        if handle is not None:self.api.cancel(handle)
+
     def _work(self, function, args, callback):
-        epoch = self.epoch; job = DiskWork(function,*args); self.jobs.add(job);lane=self._lane_context
+        epoch = self.epoch; stage_owner=self.account_id;job = DiskWork(function,*args); self.jobs.add(job);lane=self._lane_context
         owner=lane.get('id') if lane is not None else None
         if function is stage_item or function.__name__ in ('_verify_staged','read_part','hash_part'):
             owner=(self.transfer or {}).get('id',owner)
@@ -762,11 +941,17 @@ class ShelfSync(QObject):
             self.jobs.discard(job);self._job_owners.pop(job,None)
             if self.closed or epoch != self.epoch or token is not None and token.is_set():
                 if function is stage_item and isinstance(result,dict) and result.get('path'):
-                    Path(result['path']).unlink(missing_ok=True)
+                    self._discard_orphan_stage(result['path'],stage_owner)
                 return
             if lane is not None:self.upload_lanes.run(lane,callback,result,error)
             else:callback(result,error)
-        job.signals.done.connect(done); self.pool.start(job)
+        job.signals.done.connect(done)
+        def issue():
+            if self.closed or epoch!=self.epoch or job.cancel.is_set() or token is not None and token.is_set():
+                self.jobs.discard(job);self._job_owners.pop(job,None);return
+            self.pool.start(job)
+        journal_path=self._profile(stage_owner)
+        self._after_journal(journal_path,self._journal.required(journal_path),issue)
 
     def _error(self,error):
         if self._lane_context is not None:
@@ -870,6 +1055,7 @@ class ShelfSync(QObject):
 
     def tick(self):
         if self.closed or self.running or not self.account_id or not self.service.signed_in: return
+        if not self.scheduler.connected:self.schedule.request();return
         if not self.upload_enabled and not self.receive_enabled:
             self.status_changed.emit('云同步已暂停；内容保留在本机。')
             return
@@ -913,12 +1099,56 @@ class ShelfSync(QObject):
         self.status_changed.emit('云端清理暂时中断，删除操作已保留并会自动重试。')
         self._after_cleanup()
 
-    def _pending_removal(self):
-        if self._paused('cleanup_not_before'): return None
-        entry=next((e for e in self.state['entries'].values() if e.get('dirty') and e.get('deleted')
-                     and e.get('version',0)>0 and e.get('cleanup_conflict_version') != e.get('version')),None)
-        if entry is not None and self.peer_bridge is not None:self.peer_bridge.publish_removal(entry)
-        return entry
+    def _retire_item_removals(self):
+        # UI removal is already journalled before save()/local_changed(). Its
+        # control request must not depend on the bulk cycle noticing it again.
+        if self.closed or not self.state or not self.account_id or not self.service.signed_in or not self.upload_enabled:return
+        if self._paused('cleanup_not_before'):
+            self._cleanup_retry.start(min(QT_TIMER_MAX_MS,max(1,round((self.state['cleanup_not_before']-time.time())*1000))))
+            return
+        for entry in tuple(self.state['entries'].values()):
+            identity=entry['id'];version=entry.get('version',0)
+            if (len(self._item_removals)>=MAX_CONCURRENT_REMOVALS or identity in self._item_removals or not entry.get('dirty')
+                    or not entry.get('deleted') or version<=0 or entry.get('cleanup_conflict_version')==version):continue
+            self._item_removals.add(identity)
+            self.cleanup_attempts[identity]=self.cleanup_attempts.get(identity,0)+1
+            def removed(result,error,identity=identity,version=version):
+                self._item_removals.discard(identity)
+                current=self.state['entries'].get(identity)
+                if error and getattr(error,'status',0) not in (404,409):
+                    self.state['cleanup_not_before']=time.time()+self._retry_delay(error)
+                    self.status_changed.emit('云端删除未完成，操作已保留并会自动重试。')
+                elif error and getattr(error,'status',0)==409:
+                    problem=getattr(error,'details',{})
+                    problem=problem.get('error',problem) if isinstance(problem,dict) else {}
+                    record=problem.get('current_record') if isinstance(problem,dict) else None
+                    if current and current.get('deleted') and current.get('version')==version:
+                        if (isinstance(record,dict) and record.get('id')==identity and type(record.get('version')) is int
+                                and version<=record['version']<=9007199254740991):
+                            if record.get('deleted'):self._confirm_item_removal(identity,version,record)
+                            else:
+                                current['version']=record['version'];current.pop('cleanup_conflict_version',None)
+                                if self.cleanup_attempts[identity]>=2:self.state['cleanup_not_before']=time.time()+REMOVAL_CONFLICT_RETRY_SECONDS
+                        else:current['cleanup_conflict_version']=version
+                elif current and current.get('deleted'):
+                    self._confirm_item_removal(identity,version,result.get('record') if isinstance(result,dict) else None)
+                    self.cleanup_attempts.pop(identity,None)
+                self._persist();self._notify_transfers()
+                wait=max(0,self.state.get('cleanup_not_before',0)-time.time())
+                self._cleanup_retry.start(min(QT_TIMER_MAX_MS,max(1,round(wait*1000))))
+            self._request('DELETE','/v1/items/'+quote(identity,safe=''),removed,data={'base_version':version},priority='high')
+
+    def _confirm_item_removal(self,identity,version,record):
+        # The delete reply can beat the change feed. Fence its confirmed version
+        # before retiring the local tombstone, or cached heads become downloads.
+        if (isinstance(record,dict) and record.get('id')==identity and record.get('deleted') is True
+                and type(record.get('version')) is int and version<=record['version']<=9007199254740991):
+            version=record['version'];self._observe_remote_changes([{'record':record}])
+        ignored=self.state.setdefault('ignored_versions',{})
+        ignored[identity]=max(ignored.get(identity,0),version)
+        self.cleanup_attempts.pop(identity,None)
+        self._remove_entry(identity);self.download_transfers.pop(identity,None)
+        self.state.get('deferred_downloads',{}).pop(identity,None);self._forget_download(identity)
 
     def _owned_stage(self, transfer):
         try:
@@ -928,6 +1158,27 @@ class ShelfSync(QObject):
                     and not path.is_symlink() and re.fullmatch(r'[0-9a-f]{32}\.blob',path.name) is not None
                     and path.resolve().parent == directory.resolve())
         except (KeyError,TypeError,ValueError,OSError): return False
+
+    def _discard_orphan_stage(self,value,owner=None):
+        """Retire a cancelled staging result without deleting on the UI thread."""
+        owner=self.account_id if owner is None else owner
+        if not isinstance(owner,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',owner):return
+        try:
+            path=Path(value);directory=self.root/owner/'outbox'
+            if (not re.fullmatch(r'[0-9a-f]{32}\.blob',path.name) or path.is_symlink()
+                    or directory.is_symlink() or path.resolve().parent!=directory.resolve()):return
+        except (OSError,TypeError,ValueError):return
+        if not self.closed and owner==self.account_id and self.state is not None:
+            pending=self.state.setdefault('pending_stage_cleanup',[])
+            if not isinstance(pending,list):pending=self.state['pending_stage_cleanup']=[]
+            if path.name not in pending:pending.append(path.name)
+            self._persist();return
+        # A late result from another account cannot modify the current account's
+        # journal. The worker still validates the owned path before unlinking.
+        def discard():
+            try:_remove_upload_stage(path,threading.Event())
+            except OSError:pass
+        threading.Thread(target=discard,name='FlickDock-stage-cleanup',daemon=True).start()
 
     def _resume_matches(self, transfer):
         entry = self.state['entries'].get(transfer.get('id'))
@@ -947,8 +1198,10 @@ class ShelfSync(QObject):
         transfer = self.state.setdefault('resumable_uploads',{}).pop(identity,None)
         if not isinstance(transfer,dict): return
         if self._owned_stage(transfer):
-            try: Path(transfer['path']).unlink(missing_ok=True)
-            except OSError: pass
+            name=Path(transfer['path']).name
+            pending=self.state.setdefault('pending_stage_cleanup',[])
+            if not isinstance(pending,list):pending=self.state['pending_stage_cleanup']=[]
+            if name not in pending:pending.append(name)
         upload_id = transfer.get('upload_id')
         pending = self.state.setdefault('pending_uploads',[])
         if completed and upload_id in pending: pending.remove(upload_id)
@@ -957,6 +1210,38 @@ class ShelfSync(QObject):
             entry.pop('intake_id',None);entry.pop('intake_seq',None)
         if entry and entry.get('pending_seq') == transfer.get('seq'):
             entry.pop('pending_hash',None); entry.pop('pending_seq',None)
+
+    def _resume_stage_cleanups(self):
+        pending=self.state.get('pending_stage_cleanup',[]) if self.state else []
+        if not isinstance(pending,list):return
+        active={Path(row.get('path','')).name for row in self.state.get('resumable_uploads',{}).values()
+                if isinstance(row,dict) and isinstance(row.get('path'),str)}
+        for name in tuple(pending):
+            if isinstance(name,str) and re.fullmatch(r'[0-9a-f]{32}\.blob',name) and name not in active:
+                self._start_stage_cleanup(name)
+
+    def _start_stage_cleanup(self,name):
+        owner=self.account_id;key=(owner,name)
+        if (self.closed or not owner or key in self._stage_cleanups
+                or not re.fullmatch(r'[0-9a-f]{32}\.blob',name)):return
+        pending=self.state.get('pending_stage_cleanup',[])
+        if not isinstance(pending,list) or name not in pending:return
+        if any(Path(row.get('path','')).name==name for row in self.state.get('resumable_uploads',{}).values()
+               if isinstance(row,dict) and isinstance(row.get('path'),str)):return
+        # Unlinking a large staged file can wait on the filesystem or an open
+        # antivirus/prefetch handle. Never perform that operation in a click
+        # handler; keep its basename journalled until the worker succeeds.
+        job=DiskWork(_remove_upload_stage,self.root/owner/'outbox'/name)
+        self._stage_cleanups.add(key);self.jobs.add(job)
+        def finished(removed,error):
+            self.jobs.discard(job);self._stage_cleanups.discard(key)
+            if self.closed or self.account_id!=owner or not self.state:return
+            pending=self.state.get('pending_stage_cleanup',[])
+            if removed and not error and isinstance(pending,list) and name in pending:
+                pending.remove(name);self._persist()
+            elif isinstance(pending,list) and name in pending:
+                QTimer.singleShot(5000,self,lambda:self._start_stage_cleanup(name) if self.account_id==owner else None)
+        job.signals.done.connect(finished);self.pool.start(job)
 
     def _retire_uploads(self):
         if self._lane_context is not None:
@@ -975,45 +1260,14 @@ class ShelfSync(QObject):
             self._schedule_after_pause('cleanup_not_before')
             return
         self.state.pop('cleanup_not_before',None)
-        removal = self._pending_removal()
-        if removal:
-            identity, version = removal['id'],removal['version']
-            self.cleanup_attempts[identity] = self.cleanup_attempts.get(identity,0)+1
-            def removed(result,error):
-                current = self.state['entries'].get(identity)
-                if error and getattr(error,'status',0) not in (404,409):
-                    self._cleanup_error(error); return
-                if error and getattr(error,'status',0)==409:
-                    if current and current.get('version') == version:
-                        details = getattr(error,'details',{})
-                        problem = details.get('error',details) if isinstance(details,dict) else {}
-                        record = problem.get('current_record') if isinstance(problem,dict) else None
-                        if (isinstance(record,dict) and record.get('id') == identity
-                                and isinstance(record.get('version'),int) and version <= record['version'] <= 9007199254740991):
-                            if record.get('deleted'):
-                                if self.peer_bridge is not None:self.peer_bridge.publish_removal(current,committed=record)
-                                self.state['entries'].pop(identity,None)
-                            else:
-                                current['version'] = record['version']; current.pop('cleanup_conflict_version',None)
-                                if self.cleanup_attempts[identity]>=2:
-                                    # Another device is actively changing this
-                                    # item. Keep its latest version and retry
-                                    # cleanup independently after a short pause.
-                                    self.state['cleanup_not_before'] = time.time()+30
-                                    self._persist(); self.debounce.start(30001); self._after_cleanup(); return
-                        else: current['cleanup_conflict_version'] = version
-                elif current and current.get('deleted'):
-                    if self.peer_bridge is not None:
-                        self.peer_bridge.publish_removal(current,committed={'version':version+1})
-                    self.state['entries'].pop(identity,None); self._forget_download(identity)
-                self._persist(); self._retire_uploads()
-            self._request('DELETE','/v1/items/'+quote(identity,safe=''),removed,data={'base_version':version}); return
+        self._retire_item_removals()
         self._retire_abandoned_uploads()
         self._persist();self._after_cleanup()
 
     def _retire_abandoned_uploads(self):
         # Explicit cancellation must reach the server without waiting for an
         # unrelated payload cycle. This lane never changes running/transfer.
+        self._retire_item_removals()
         if self.closed or not self.state or not self.account_id or not self.service.signed_in or self._cleanup_inflight:return
         if self._paused('cleanup_not_before'):
             delay=max(1,min(2147483647,int((self.state['cleanup_not_before']-time.time())*1000)+1))
@@ -1046,7 +1300,7 @@ class ShelfSync(QObject):
                         if (current and current.get('deleted') and current.get('dirty')
                                 and isinstance(record.get('version'),int) and record['version']>0):
                             current['version'] = record['version']
-                            if record.get('deleted'): self.state['entries'].pop(current['id'],None)
+                            if record.get('deleted'): self._remove_entry(current['id'])
                 if identity in abandoned: abandoned.remove(identity)
                 self._persist();self._cleanup_retry.start(1)
                 if not self.running:
@@ -1069,8 +1323,9 @@ class ShelfSync(QObject):
             remote=result.get('transfers',[])
             if isinstance(remote,list) and len(remote)<=100:
                 self.remote_transfers=[r for r in remote if isinstance(r,dict) and isinstance(r.get('size'),int)
-                    and r.get('size',-1)>=0 and isinstance(r.get('item_id'),str) and isinstance(r.get('upload_id'),str)]
-                self._schedule_remote_poll()
+                    and r.get('size',-1)>=0 and isinstance(r.get('item_id'),str) and isinstance(r.get('upload_id'),str)
+                    and r['upload_id'] not in self._cancelled_remote_uploads]
+                self._update_schedule()
             if not isinstance(changes,list) or len(changes)>100: self._error(ValueError('云同步记录无效。')); return
             self._observe_remote_changes(changes)
             pending = list(enumerate(changes))
@@ -1133,12 +1388,11 @@ class ShelfSync(QObject):
                 view.setdefault('metadata',{})[fork['ref']] = view['metadata'].pop(old_ref,{})
             self._change_view(change)
         self.state['entries'][fork['id']] = fork
+        self._ref_index[fork['ref']] = fork
         return fork
 
-    def _receive(self, record, callback, *, remote_order=None,provisional=False):
+    def _receive(self, record, callback, *, remote_order=None):
         record=dict(record)
-        if provisional:record['_peer_provisional']=True
-        else:record.pop('_peer_provisional',None)
         identity = str(record.get('id',''))
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',identity): self._error(ValueError('同步项目标识无效。')); return
         if not isinstance(record.get('version'),int) or not 1 <= record['version'] <= 9007199254740991:
@@ -1146,11 +1400,8 @@ class ShelfSync(QObject):
         active=self._receive_fences.get(identity)
         if active is not None:
             if active['version']==record['version'] and active.get('sha256')==record.get('sha256'):
-                if not provisional:active['committed_record']=record
                 callback();return
-            if provisional and active['version']>=record['version']:callback();return
             active['superseded']=True
-            if self.peer_bridge is not None:self.peer_bridge.cancel_download(identity)
         if (self._remote_heads.get(identity,{}).get('version',0)>record['version']
                 and not self.state['entries'].get(identity,{}).get('dirty')):
             callback();return
@@ -1164,13 +1415,11 @@ class ShelfSync(QObject):
         if not record.get('deleted') and isinstance(ignored,int) and record['version']<=ignored:
             callback();return
         if entry and record['version'] <= entry.get('version',0):
-            if not (entry.get('peer_provisional') and record['version']==entry['version'] and
-                    (not provisional or record.get('deleted'))):
-                callback();return
+            callback();return
         # A pending removal stays queued when another device updates that item.
         if entry and entry.get('deleted') and entry.get('dirty'):
             entry['version'] = record['version']
-            if record.get('deleted'): entries.pop(identity,None)
+            if record.get('deleted'): self._remove_entry(identity)
             self._persist(); callback(); return
         if record.get('deleted'):
             self.state.get('deferred_downloads',{}).pop(identity,None)
@@ -1181,15 +1430,13 @@ class ShelfSync(QObject):
                     # Cloud expiry retires only the remote lease. The existing
                     # journal pause keeps local shelf/original bytes intact and
                     # prevents an automatic re-upload loop after expiration.
-                    entry.update(version=record['version'],dirty=True,paused_upload=True)
+                    entry.update(version=record['version'],dirty=True,paused_upload=True,manual_upload_only=True)
+                    self._cancel_upload_owner(identity);self._end_intake(entry)
                     self._forget_resume(identity)
                     self._persist();self._notify_transfers();callback();return
                 if entry.get('dirty'): self._fork(entry)
                 else: self._remove_ref(entry['ref'])
-                entries.pop(identity,None)
-            if provisional:
-                entries[identity]=dict(id=identity,ref='',name=record['name'],kind=record['kind'],version=record['version'],
-                                       deleted=True,dirty=False,peer_provisional=True,seq=0)
+                self._remove_entry(identity)
             self._persist(); callback(); return
         if not isinstance(record.get('size'),int) or not 0 <= record['size'] <= MAX_FILE_BYTES or not re.fullmatch(r'[0-9a-f]{64}',str(record.get('sha256',''))):
             self._error(ValueError('同步文件信息无效。')); return
@@ -1203,8 +1450,6 @@ class ShelfSync(QObject):
                 (entry.get('pending_hash') == record['sha256'] and entry.get('pending_seq') == entry.get('seq')) or
                 (entry.get('cancelled_hash') == record['sha256'] and entry.get('cancelled_seq') == entry.get('seq') and
                  entry.get('cancelled_fingerprint')==entry.get('fingerprint') and entry.get('cancelled_upload_id')))):
-            if provisional:
-                entry['peer_delivered_hash']=record['sha256'];self._notify_transfers();callback();return
             entry.update(version=record['version'],sha256=record['sha256'],dirty=False)
             self._forget_resume(identity,completed=True)
             entry.pop('pending_hash',None); entry.pop('pending_seq',None)
@@ -1213,13 +1458,10 @@ class ShelfSync(QObject):
             self._persist(); callback(); return
         if entry and not entry.get('dirty') and entry.get('sha256') == record['sha256']:
             entry['version'] = record['version']; entry['name'] = record['name']
-            if provisional:entry['peer_provisional']=True
-            else:entry.pop('peer_provisional',None)
-            if not provisional and self.peer_bridge is not None:self.peer_bridge.confirm(record)
             self._set_title(entry['ref'],record['name']); self._persist(); callback(); return
-        if entry and (entry.get('dirty') or entry.get('peer_provisional')):
+        if entry and entry.get('dirty'):
             if not entry.get('deleted'):self._fork(entry)
-            entries.pop(identity,None)
+            self._remove_entry(identity)
             entry = None
             self.status_changed.emit('另一台设备也修改了此项，已保留两个版本。')
         target=self._download_target(record)
@@ -1234,9 +1476,6 @@ class ShelfSync(QObject):
             original_callback()
         self.download_transfers[identity]=dict(record);self._notify_transfers()
         def receive_failed(error):
-            if provisional:
-                if self._receive_fences.get(identity) is fence:self.download_transfers.pop(identity,None)
-                self._notify_transfers();callback();return
             # Authentication/quota errors affect the account. One damaged file,
             # local save failure or interrupted body affects only this item.
             if getattr(error,'status',0) in (401,403,429) or self._quota_error(error):
@@ -1253,32 +1492,32 @@ class ShelfSync(QObject):
             self.status_changed.emit('“'+str(record['name'])[:60]+'”同步未完成：'+message+'。其他文件继续同步。')
             callback()
         def downloaded(path,error):
-            nonlocal record,provisional
             if fence['superseded'] or self._remote_heads.get(identity,{}).get('version',0)>record['version']:
                 if self._receive_fences.get(identity) is fence:self.download_transfers.pop(identity,None)
                 self._notify_transfers();callback();return
             if error: receive_failed(error); return
-            if 'committed_record' in fence:
-                record=fence['committed_record'];provisional=False
             # Edits made while downloading must be preserved too.
             current = entries.get(identity)
             if current and current.get('dirty'):
-                self._fork(current); entries.pop(identity,None); current = None
+                self._fork(current); self._remove_entry(identity); current = None
             def apply_ref(ref,text=None):
                 if fence['superseded'] or self._remote_heads.get(identity,{}).get('version',0)>record['version']:
                     if self._receive_fences.get(identity) is fence:self.download_transfers.pop(identity,None)
                     self._notify_transfers();callback();return
-                if current: self._remove_ref(current['ref'])
                 if text is not None: ref = 'flickdock:text:'+identity
-                self._add_ref(ref,text,record['name'],remote_order=remote_order,cloud_identity=identity)
+                self._add_ref(ref,text,record['name'],remote_order=remote_order,cloud_identity=identity,
+                              replacing=current['ref'] if current else None)
                 entries[identity] = {'id':identity,'ref':ref,'version':record['version'],
                     'sha256':record['sha256'],'name':record['name'],'kind':record['kind'],
                     'size':record['size'],'mime_type':record.get('mime_type','application/octet-stream'),
                     'fingerprint':fingerprint(ref,text,record['name']),'dirty':False,'deleted':False,'seq':0,
-                    **({'peer_provisional':True} if provisional else {}),
-                    **({'peer_origin':record['origin_device']} if record.get('origin_device') else {}),
                     **({'remote_order':remote_order} if remote_order is not None else {})}
-                if self.peer_bridge is not None:self.peer_bridge.register_received(record,path)
+                # Revision one is the original upload; later revision timestamps
+                # may describe a rename and must not be presented as upload time.
+                if record['version']==1 and _upload_timestamp(record.get('updated_at')):
+                    entries[identity].update(uploaded_at=record['updated_at'],uploaded_sha256=record['sha256'])
+                self._ref_index[ref] = entries[identity]
+                self.metadata_changed.emit(ref)
                 self.download_transfers.pop(identity,None)
                 self.state.get('deferred_downloads',{}).pop(identity,None)
                 self._persist(); self._notify_transfers();callback()
@@ -1297,14 +1536,13 @@ class ShelfSync(QObject):
         def cloud_download():
             self._download_record(record,target,downloaded,
                 changed=lambda current:self._receive(current,callback,remote_order=remote_order) if current else callback())
-        if self.peer_bridge is not None:self.peer_bridge.download(record,target,downloaded,cloud_download)
-        else:cloud_download()
+        cloud_download()
 
     def _download_target(self, record):
         identity, version = record.get('id'),record.get('version')
         if (not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',str(identity))
                 or not isinstance(version,int) or not 1 <= version <= 9007199254740991): return None
-        revision=('peer-'+str(version)+'-'+record['sha256'][:16]) if record.get('_peer_provisional') else str(version)
+        revision=str(version)
         target = self.root/self.account_id/'files'/identity/revision/safe_name(record.get('name',''))
         # A journal stores only metadata, never an arbitrary deletion/read path.
         if target.is_symlink() or any(p.is_symlink() for p in tuple(target.parents)[:4]): return None
@@ -1325,7 +1563,7 @@ class ShelfSync(QObject):
         previous=self.state.get('downloads',{}).get(record['id'],{})
         # Large multipart objects use the service's bounded range view. Some
         # routes cleanly terminate 64 MiB streams early, without an HTTP error.
-        small_parts=[record['size']>4*1024*1024 or
+        small_parts=[record['size']>LARGE_DOWNLOAD_RANGE_THRESHOLD_BYTES or
             previous.get('version')==record['version'] and 0<previous.get('chunk_size',0)<=4*1024*1024 and record['size']>4*1024*1024]
         def content_headers():return {'X-FlickDock-Range-Bytes':'4194304'} if small_parts[0] else {'X-FlickDock-Fast-Content':'1'}
         expected_target = self._download_target(record)
@@ -1391,8 +1629,6 @@ class ShelfSync(QObject):
                     if not active:
                         halted=True;self._persist();callback(None,failure[0])
                     return
-                if self._pending_removal() is not None:
-                    halted=True;self._interrupt_cycle();self.tick();return
                 if len(completed)==count and not active:
                     if not assembling:
                         assembling=True;self._persist()
@@ -1449,11 +1685,11 @@ class ShelfSync(QObject):
                             # truncated by a proxy. Request the server's small
                             # verified range view once, preserving whole SHA.
                             halted=True;small_parts[0]=True
-                            for key in tuple(request_keys):self.api.cancel(key)
+                            for key in tuple(request_keys):self._cancel_request(key)
                             self._request('GET','/v1/items/'+identity+'/content',metadata,headers=content_headers())
                         elif getattr(error,'status',0) in (404,409) and changed:
                             halted=True
-                            for key in tuple(request_keys):self.api.cancel(key)
+                            for key in tuple(request_keys):self._cancel_request(key)
                             self._request('GET','/v1/items/'+identity+'/content',metadata,
                                           headers=content_headers())
                         elif count==1:
@@ -1519,8 +1755,21 @@ class ShelfSync(QObject):
     def _set_title(self,ref,name):
         self._change_view(lambda view:view.setdefault('metadata',{}).setdefault(ref,{}).update(title=name))
 
-    def _add_ref(self,ref,text,name,*,remote_order=None,cloud_identity=None):
+    def _add_ref(self,ref,text,name,*,remote_order=None,cloud_identity=None,replacing=None):
+        # Publish one complete view. Removing the old revision first exposes an
+        # empty frame and loses the cloud identity needed by the live widgets.
+        if replacing and any(e.get('ref')==replacing and e.get('dirty') and not e.get('deleted')
+                             for e in self.state['entries'].values()):replacing=None
+        if replacing and (replacing!=ref or text is not None) and hasattr(self.adapter,'remove_owned'):
+            self.adapter.remove_owned(replacing)
         def change(view):
+            existing=ref in view['permanent'] or bool(replacing and replacing in view['permanent'])
+            previous_added=view.get('metadata',{}).get(replacing,{}).get('added_at') if replacing else None
+            if replacing:
+                view['permanent']=[ref if value==replacing else value for value in view['permanent']]
+                if replacing!=ref or text is not None:
+                    view.setdefault('texts',{}).pop(replacing,None)
+                    view.setdefault('metadata',{}).pop(replacing,None)
             if cloud_identity:view.setdefault('metadata',{}).setdefault(ref,{})['_cloud_item_id']=cloud_identity
             if ref not in view['permanent']:
                 position=len(view['permanent'])
@@ -1531,7 +1780,10 @@ class ShelfSync(QObject):
                                    if isinstance(orders.get(existing),int) and orders[existing]>remote_order),position)
                 view['permanent'].insert(position,ref)
             if text is not None: view.setdefault('texts',{})[ref] = text
-            view.setdefault('metadata',{}).setdefault(ref,{})['title'] = name
+            metadata=view.setdefault('metadata',{}).setdefault(ref,{})
+            metadata['title'] = name
+            if previous_added is not None:metadata.setdefault('added_at',previous_added)
+            elif not existing:metadata.setdefault('added_at',time.time())
         self._change_view(change)
 
     def _push_next(self):
@@ -1565,8 +1817,7 @@ class ShelfSync(QObject):
             if not isinstance(transfer,dict) or not self._resume_matches(transfer):
                 self._forget_resume(identity)
         active = {x.get('upload_id') for x in resumes.values()}
-        if self._pending_removal() is not None:
-            self._retire_uploads(); return
+        self._retire_item_removals()
         lane_ids=set(self.upload_lanes.active)
         pending = next((e for e in self.state['entries'].values() if e['id'] not in lane_ids and not self.upload_lanes.blocked(e['id']) and (not self.clipboard_bridge or not self.clipboard_bridge.waiting(e)) and self.upload_lanes.retry_at.get(e['id'],0)<=time.monotonic() and e.get('dirty') and not e.get('paused_upload') and
                         ((e.get('deleted') and e.get('version',0)==0 and not self.state.get('pending_uploads')) or (not e.get('deleted') and
@@ -1580,7 +1831,7 @@ class ShelfSync(QObject):
             blocked=sum(bool(e.get('dirty') and not e.get('deleted') and not e.get('paused_upload')
                 and e.get('ref') in visible and e.get('blocked_fingerprint')==e.get('fingerprint'))
                 for e in self.state['entries'].values())
-            paused=sum(bool(e.get('dirty') and not e.get('deleted') and e.get('paused_upload')
+            paused=sum(bool(e.get('dirty') and not e.get('deleted') and e.get('paused_upload') and not e.get('manual_upload_only')
                 and e.get('ref') in visible) for e in self.state['entries'].values())
             small_retries=[deadline for identity,deadline in self.upload_lanes.retry_at.items()
                            if deadline>time.monotonic() and self.state['entries'].get(identity,{}).get('dirty')]
@@ -1595,7 +1846,7 @@ class ShelfSync(QObject):
             return
         identity = pending['id']
         if pending.get('deleted'):
-            self.state['entries'].pop(identity,None); self._persist(); self._push_next(); return
+            self._remove_entry(identity); self._persist(); self._push_next(); return
         text = self.adapter.snapshot().get('texts',{}).get(pending['ref'])
         resume = resumes.get(identity)
         if resume:
@@ -1619,7 +1870,7 @@ class ShelfSync(QObject):
                 self._persist(); self.status_changed.emit(str(error)); self._push_next(); return
             snapshot.update(result)
             if not self._resume_matches(snapshot):
-                Path(snapshot['path']).unlink(missing_ok=True); self._push_next(); return
+                self._discard_orphan_stage(snapshot['path']); self._push_next(); return
             self.state.setdefault('resumable_uploads',{})[identity] = snapshot
             self._persist(); self._notify_transfers(); self._initialize_upload(snapshot)
         self._work(stage_item,(pending['ref'],text,pending['name'],self.root/self.account_id/'outbox'),staged)
@@ -1650,7 +1901,6 @@ class ShelfSync(QObject):
         if snapshot['upload_id'] not in pending: pending.append(snapshot['upload_id'])
         current = self.state['entries'].get(identity)
         if current: current.update(pending_hash=snapshot['sha256'],pending_seq=snapshot['seq'])
-        if self.peer_bridge is not None:self.peer_bridge.publish(snapshot)
         # Write the id before making the request. A timeout after server-side
         # creation must reuse the same reservation, including across restarts.
         self._persist()
@@ -1689,7 +1939,6 @@ class ShelfSync(QObject):
             self._forget_resume(transfer['id']); self._persist(); self._retire_uploads(); return
         if not transfer.get('upload_id') or 'chunk_size' not in transfer:
             self._initialize_upload(transfer); return
-        if self.peer_bridge is not None:self.peer_bridge.publish(transfer)
         def status(result,error):
             if error:
                 if getattr(error,'code','')=='UPLOAD_EXPIRED':self._error(error)
@@ -1730,14 +1979,12 @@ class ShelfSync(QObject):
         token=self._upload_tokens.pop(transfer['id'],None)
         if token is not None:token.set()
         entry = self.state['entries'].get(transfer['id'])
-        if self.peer_bridge is not None:self.peer_bridge.publish(transfer,committed=record)
         pending_uploads = self.state.setdefault('pending_uploads',[])
         if transfer['upload_id'] in pending_uploads: pending_uploads.remove(transfer['upload_id'])
         if entry:
             entry.update(version=record['version'],sha256=record['sha256'])
             if _upload_timestamp(record.get('updated_at')):
                 entry.update(uploaded_at=record['updated_at'],uploaded_sha256=record['sha256'])
-            entry.pop('peer_provisional',None)
             if entry.get('seq')==transfer['seq']:
                 entry.update(dirty=False,fingerprint=transfer['fingerprint'])
             entry.pop('pending_hash',None); entry.pop('pending_seq',None)
@@ -1823,13 +2070,19 @@ class ShelfSync(QObject):
 
     def close(self):
         if self.closed: return
-        if self.peer_bridge is not None:self.peer_bridge.reset()
         self.local_changed(); self._persist()
         self.closed = True; self.epoch += 1
         self._receive_wake=None;self._receive_batch_generation+=1
         self.upload_lanes.reset()
         self.service.account_changed.disconnect(self.select_account)
-        self.timer.stop(); self.debounce.stop(); self.remote_poll.stop();self._cleanup_retry.stop()
-        for key in tuple(self.requests): self.api.cancel(key)
+        self.schedule.close();self.scheduler.connection_changed.disconnect(self._connection_changed)
+        if self._owns_scheduler:self.scheduler.close()
+        self.debounce.stop();self._cleanup_retry.stop()
+        for key in tuple(self.requests): self._cancel_request(key)
         for job in tuple(self.jobs): job.cancel.set()
         self.pool.waitForDone(3000)
+        self._journal_retry.stop()
+        self._journal.flush(3)
+        self._journal.saved.disconnect(self._journal_saved)
+        self._journal.failed.disconnect(self._journal_failed)
+        self._journal_waiters.clear()

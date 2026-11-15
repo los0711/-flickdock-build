@@ -256,7 +256,9 @@ class UpdateTests(unittest.TestCase):
         client.progress.connect(lambda done,total:client.cancel() if done>0 else None)
         client.download(self.manifest);wait_until(lambda:state['cancelled'] or state['failed'])
         self.assertEqual(state['cancelled'],[(True,)])
-        self.assertFalse(state['verified_file']);self.assertFalse(list(Path(self.folder.name).rglob('*.part')))
+        self.assertFalse(state['verified_file'])
+        partials=list(Path(self.folder.name).rglob('*.part'))
+        self.assertEqual(len(partials),1);self.assertGreater(partials[0].stat().st_size,0)
         for version in ('1.9.9','1.0.0'):
             bad=copy.deepcopy(self.manifest);bad['version']=version
             client,state=self.client();before=len(self.requests);client.download(bad)

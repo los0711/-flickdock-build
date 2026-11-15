@@ -1,4 +1,6 @@
 """Actual first-frame shadow/appearance handoff at 125% DPI, offscreen."""
+import shelf_ui_common
+import shelf_window
 import json
 import os
 from pathlib import Path
@@ -23,14 +25,14 @@ with tempfile.TemporaryDirectory(prefix='flickdock-continuity-') as tmp:
     os.environ['APPDATA']=tmp
     import flickdock as subject
     from app_settings import SettingsStore
-    app=QApplication([]);subject.load_font(app)
+    app=QApplication([]);shelf_ui_common.load_font(app)
     manager=SimpleNamespace(motion=True,settings=SettingsStore(Path(tmp)),save=lambda:None,
                             update_handles=lambda:None,activate_shelf=lambda _:None,
                             _quitting=False,outgoing_drag=False)
-    shelf=subject.ShelfWindow(manager,1)
+    shelf=shelf_window.ShelfWindow(manager,1)
     shelf.files['permanent']=[shelf.content.add_text('Visible preview')];shelf.refresh()
-    compact_width,compact_height=subject.CARD_W+28,subject.CARD_H+27
-    expanded_width=subject.EXPANDED_W+28
+    compact_width,compact_height=shelf_ui_common.CARD_W+28,shelf_ui_common.CARD_H+27
+    expanded_width=shelf_ui_common.EXPANDED_W+28
     screen=SimpleNamespace(availableGeometry=lambda:QRect(0,0,1920,1080))
     # Use the public reveal flow so the native host is preallocated before
     # the visible frame, as in production. Direct jump()+show() bypasses it.
@@ -42,7 +44,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-continuity-') as tmp:
     app.processEvents()
     before=alpha_row(shelf,300,1390,1460)
     with patch.object(subject.QGuiApplication,'screenAt',return_value=screen):shelf.show_contents()
-    shelf.presentation.stop();shelf.geometry_morph.animation.pause()
+    shelf.presentation.stop();shelf.geometry_morph.pause()
     morph=shelf.geometry_morph;snapshot=shelf._surface_snapshot
     morph._frame(0);app.processEvents()
     after=alpha_row(shelf,300,1390,1460)
@@ -70,16 +72,18 @@ with tempfile.TemporaryDirectory(prefix='flickdock-continuity-') as tmp:
     assert heights[-1]<=max(heights)<=heights[-1]+max(12,(heights[-1]-heights[0])*.02)
     expand_overshoot=max(widths)-expanded_width
     morph.complete();shelf.presentation.jump(dict(sx=1,sy=1,dx=0,dy=0,alpha=1))
-    shelf.collapse_contents();morph.animation.pause()
+    shelf.collapse_contents();morph.pause()
     widths=[]
     for ms in range(231):
         morph._frame(morph.animation.easingCurve().valueForProgress(ms/230));widths.append(morph.current.width())
-    assert widths==sorted(widths,reverse=True) and min(widths)==compact_width and max(widths)==expanded_width
+    assert widths[0]==expanded_width and widths[-1]==compact_width
+    assert compact_width-max(16,(expanded_width-compact_width)*.02)<=min(widths)<compact_width
+    assert max(widths)==expanded_width
     morph.complete()
     assert not snapshot.active and shelf.pin_button._presentation_scale==(1,1)
     result={'platform':app.platformName(),'dpr':shelf.devicePixelRatioF(),
             'first_frame_edge_delta_dip':edge_delta,'shadow_alpha_max_delta':shadow_delta,
-            'expand_overshoot_px':expand_overshoot,'collapse_undershoot_px':0}
+            'expand_overshoot_px':expand_overshoot,'collapse_undershoot_px':compact_width-min(widths)}
     Path(__file__).with_name('surface-continuity-v162.json').write_text(json.dumps(result,indent=2),encoding='utf8')
     print('SURFACE_CONTINUITY_V162_OK',json.dumps(result))
     shelf.image_cache.close();shelf.resolver.close();shelf.hide()

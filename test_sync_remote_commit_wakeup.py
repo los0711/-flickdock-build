@@ -106,12 +106,12 @@ def test_lost_commit_hint_still_starts_download():
     with tempfile.TemporaryDirectory(prefix='flickdock-commit-wakeup-') as root:
         service=Service('sender')
         adapter=Adapter()
-        engine=ShelfSync(root,service,adapter,poll_ms=600000,remote_poll_ms=80)
+        engine=ShelfSync(root,service,adapter,progress_interval_ms=80)
         seen=[]
         engine.transfers_changed.connect(lambda transfers:seen.extend(transfers))
         try:
             service.account_changed.emit({'id':'poll-account'})
-            assert spin(lambda:service.api.pulls>=1 and engine.remote_poll.isActive())
+            assert spin(lambda:service.api.pulls>=1 and (engine.schedule.decision.state=='transferring'))
             assert adapter.view['permanent']==[]
             # The source commits without a WebSocket delivery to this peer.
             service.api.committed=True
@@ -122,7 +122,7 @@ def test_lost_commit_hint_still_starts_download():
             assert any(item.get('phase')=='validating' for item in seen), (
                 'The final original-byte check must have its own visible phase')
             assert Path(adapter.view['permanent'][0]).read_bytes()==PAYLOAD
-            assert not engine.remote_poll.isActive()
+            assert not (engine.schedule.decision.state=='transferring')
             pulls=service.api.pulls
             assert not spin(lambda:service.api.pulls>pulls,seconds=.18), 'Idle peers must stop extra polling'
         finally: engine.close()
@@ -131,11 +131,11 @@ def test_lost_commit_hint_still_starts_download():
 def test_own_upload_does_not_start_remote_poll():
     with tempfile.TemporaryDirectory(prefix='flickdock-own-commit-') as root:
         service=Service('receiver')
-        engine=ShelfSync(root,service,Adapter(),poll_ms=600000,remote_poll_ms=80)
+        engine=ShelfSync(root,service,Adapter(),progress_interval_ms=80)
         try:
             service.account_changed.emit({'id':'poll-account'})
             assert spin(lambda:service.api.pulls>=1 and not engine.running)
-            assert not engine.remote_poll.isActive()
+            assert not (engine.schedule.decision.state=='transferring')
             pulls=service.api.pulls
             assert not spin(lambda:service.api.pulls>pulls,seconds=.18)
         finally: engine.close()
@@ -145,13 +145,13 @@ def test_cancel_hint_and_lost_cancel_hint_clear_remote_placeholder():
     for delivered_hint in (False,True):
         with tempfile.TemporaryDirectory(prefix='flickdock-cancel-wakeup-') as root:
             service=Service('sender')
-            engine=ShelfSync(root,service,Adapter(),poll_ms=600000,remote_poll_ms=80)
+            engine=ShelfSync(root,service,Adapter(),progress_interval_ms=80)
             try:
                 service.account_changed.emit({'id':'poll-account'})
-                assert spin(lambda:bool(engine.remote_transfers) and engine.remote_poll.isActive())
+                assert spin(lambda:bool(engine.remote_transfers) and (engine.schedule.decision.state=='transferring'))
                 service.api.was_cancelled=True
                 if delivered_hint:engine.request_refresh()
-                assert spin(lambda:not engine.remote_transfers and not engine.remote_poll.isActive())
+                assert spin(lambda:not engine.remote_transfers and not (engine.schedule.decision.state=='transferring'))
                 assert service.api.pulls>=2
             finally: engine.close()
 
@@ -161,27 +161,28 @@ def test_disconnected_socket_recovers_unseen_commit_without_idle_poll():
         service=Service('sender')
         service.api.was_cancelled=True  # No pending reservation was ever seen.
         adapter=Adapter()
-        engine=ShelfSync(root,service,adapter,poll_ms=600000,
-                         remote_poll_ms=80,disconnected_poll_ms=80)
+        engine=ShelfSync(root,service,adapter,
+                         progress_interval_ms=80)
         try:
             engine.set_event_stream_online(False)
             service.account_changed.emit({'id':'poll-account'})
-            assert spin(lambda:service.api.pulls>=1 and engine.remote_poll.isActive())
-            assert spin(lambda:not engine.running and not engine.catching_up)
+            assert not spin(lambda:service.api.pulls>0,seconds=.18), 'Disconnected peers must not poll'
+            assert not engine.scheduler.timer.isActive()
             service.api.committed=True
+            engine.set_event_stream_online(True)
             assert spin(lambda:len(adapter.view['permanent'])==1)
             assert Path(adapter.view['permanent'][0]).read_bytes()==PAYLOAD
             assert spin(lambda:not engine.running and not engine.catching_up)
-            assert engine.remote_poll.isActive(), 'Disconnected peers keep bounded reconciliation'
-            engine.set_event_stream_online(True)
-            assert not engine.remote_poll.isActive()
+            assert not engine.scheduler.timer.isActive()
+            pulls=service.api.pulls
+            assert not spin(lambda:service.api.pulls>pulls,seconds=.18), 'Recovered idle peers must not poll'
         finally: engine.close()
 
 
 def test_all_bytes_sent_is_waiting_for_cloud_receipt():
     with tempfile.TemporaryDirectory(prefix='flickdock-upload-receipt-') as root:
         service=Service('sender')
-        engine=ShelfSync(root,service,Adapter(),poll_ms=600000)
+        engine=ShelfSync(root,service,Adapter())
         seen=[]
         engine.transfers_changed.connect(lambda transfers:seen.append(transfers))
         engine.account_id='poll-account'
@@ -212,7 +213,7 @@ def test_all_bytes_sent_is_waiting_for_cloud_receipt():
 def test_pending_metadata_refreshes_while_another_transfer_is_busy():
     with tempfile.TemporaryDirectory(prefix='flickdock-busy-pending-') as root:
         service=Service('sender');adapter=Adapter()
-        engine=ShelfSync(root,service,adapter,poll_ms=600000,remote_poll_ms=600000)
+        engine=ShelfSync(root,service,adapter,progress_interval_ms=600000)
         seen=[];engine.transfers_changed.connect(seen.append)
         try:
             service.account_changed.emit({'id':'poll-account'})
@@ -232,7 +233,7 @@ def test_pending_metadata_refreshes_while_another_transfer_is_busy():
 def test_committed_metadata_is_visible_while_local_body_is_busy():
     with tempfile.TemporaryDirectory(prefix='flickdock-busy-committed-') as root:
         service=Service('sender');adapter=Adapter()
-        engine=ShelfSync(root,service,adapter,poll_ms=600000,remote_poll_ms=600000)
+        engine=ShelfSync(root,service,adapter,progress_interval_ms=600000)
         seen=[];engine.transfers_changed.connect(seen.append)
         try:
             service.account_changed.emit({'id':'poll-account'})
@@ -251,7 +252,7 @@ def test_committed_metadata_is_visible_while_local_body_is_busy():
 def test_tombstone_during_download_cannot_be_resurrected_by_old_body():
     with tempfile.TemporaryDirectory(prefix='flickdock-delete-inflight-') as root:
         service=Service('sender');adapter=Adapter()
-        engine=ShelfSync(root,service,adapter,poll_ms=600000)
+        engine=ShelfSync(root,service,adapter)
         try:
             service.account_changed.emit({'id':'poll-account'})
             assert spin(lambda:not engine.running)
@@ -278,4 +279,4 @@ if __name__=='__main__':
     test_pending_metadata_refreshes_while_another_transfer_is_busy()
     test_committed_metadata_is_visible_while_local_body_is_busy()
     test_tombstone_during_download_cannot_be_resurrected_by_old_body()
-    print('PASS remote commit/cancel handoff with or without hint, disconnected fallback, idle/own no-poll, receipt phase')
+    print('PASS remote commit/cancel handoff with or without hint, reconnect-only recovery, idle/own no-poll, receipt phase')

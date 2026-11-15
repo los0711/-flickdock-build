@@ -3,6 +3,8 @@
 Run FLICKDOCK_TEST_DPR=1/1.25/1.5/2 in fresh processes. This checks Qt raster
 continuity, native geometry calls and lifecycle state; it cannot test DWM.
 """
+import shelf_ui_common
+import shelf_window
 from array import array
 import json
 import os
@@ -48,12 +50,12 @@ with tempfile.TemporaryDirectory(prefix='flickdock-v163-terminal-') as profile:
     qInstallMessageHandler(lambda kind,context,text:warnings.append(text))
     app=QApplication([])
     assert app.platformName()=='offscreen'
-    subject.load_font(app)
+    shelf_ui_common.load_font(app)
     manager=SimpleNamespace(motion=True,settings=SettingsStore(Path(profile)),save=lambda:None,
                             update_handles=lambda:None,activate_shelf=lambda _:None,
                             _quitting=False,outgoing_drag=False)
     manager.settings.update(view_mode='icons')
-    shelf=subject.ShelfWindow(manager,1)
+    shelf=shelf_window.ShelfWindow(manager,1)
     shelf.pinned=True
     shelf.files['permanent']=[shelf.content.add_text('静态文本 / terminal frame evidence')]
     shelf.refresh()
@@ -69,7 +71,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-v163-terminal-') as profile:
 
     def land(action,name,pose=None):
         with patch.object(subject.QGuiApplication,'screenAt',return_value=screen):action()
-        morph=shelf.geometry_morph;morph.animation.pause()
+        morph=shelf.geometry_morph;morph.pause()
         if pose is None:pose=dict(sx=1,sy=1,dx=0,dy=0,alpha=1)
         shelf.presentation.jump(pose)
         snapshot=shelf._surface_snapshot
@@ -105,12 +107,12 @@ with tempfile.TemporaryDirectory(prefix='flickdock-v163-terminal-') as profile:
 
     for instant in (0,1,17,57,103,199,229):
         with patch.object(subject.QGuiApplication,'screenAt',return_value=screen):shelf.show_contents()
-        shelf.presentation.stop();shelf.geometry_morph.animation.pause()
+        shelf.presentation.stop();shelf.geometry_morph.pause()
         shelf.geometry_morph.animation.setCurrentTime(instant)
         before=QRect(shelf.visual_geometry())
         shelf.collapse_contents()
         assert shelf.visual_geometry()==before,('retarget teleported',instant)
-        shelf.geometry_morph.animation.pause()
+        shelf.geometry_morph.pause()
         shelf.geometry_morph.complete()
     callbacks=[]
     shelf.geometry_morph.animate(shelf.visual_geometry().translated(-8,0),lambda:callbacks.append(1))
@@ -129,7 +131,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-v163-terminal-') as profile:
     shelf.refresh()
     with patch.object(subject.QGuiApplication,'screenAt',return_value=screen):shelf.show_contents()
     shelf.presentation.jump(dict(sx=1,sy=1,dx=0,dy=0,alpha=1))
-    shelf.geometry_morph.animation.pause()
+    shelf.geometry_morph.pause()
     costs=[]
     for moment in range(0,231,16):
         shelf.geometry_morph.animation.setCurrentTime(moment)

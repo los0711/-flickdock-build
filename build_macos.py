@@ -125,17 +125,16 @@ def _create_dmg(staging,dmg):
         time.sleep(2*(attempt+1))
 
 
+from mac_install import INSTALL_CLOSE_JXA
+
 PKG_PREINSTALL='''#!/bin/sh
 set -eu
-# Never replace the executable of a running instance, including older copies.
-while /usr/bin/pgrep -x FlickDock >/dev/null 2>&1; do
-  console_user=$(/usr/bin/stat -f %Su /dev/console)
-  case "$console_user" in root|loginwindow|'') echo '请先退出 FlickDock，再重新安装。' >&2; exit 1;; esac
-  console_uid=$(/usr/bin/id -u "$console_user")
-  /bin/launchctl asuser "$console_uid" /usr/bin/sudo -u "$console_user" /usr/bin/osascript <<'APPLESCRIPT' || exit 1
-display dialog "FlickDock 正在运行。请先退出已打开的 FlickDock，然后点击继续。安装程序会覆盖 /Applications 中的旧版本。" buttons {"取消安装", "继续"} default button "继续" cancel button "取消安装" with title "安装 FlickDock" with icon caution
-APPLESCRIPT
-done
+console_user=$(/usr/bin/stat -f %Su /dev/console)
+case "$console_user" in root|loginwindow|'') echo '请登录桌面后安装 FlickDock。' >&2; exit 1;; esac
+console_uid=$(/usr/bin/id -u "$console_user")
+/bin/launchctl asuser "$console_uid" /usr/bin/sudo -u "$console_user" /usr/bin/osascript -l JavaScript - 0 <<'FLICKDOCK_INSTALL_CLOSE'
+'''+INSTALL_CLOSE_JXA+'''
+FLICKDOCK_INSTALL_CLOSE
 exit 0
 '''
 
@@ -164,6 +163,8 @@ def main(arguments=None):
     parser.add_argument('--notary-profile', default='')
     parser.add_argument('--entitlements', type=Path)
     parser.add_argument('--use-current-python', action='store_true')
+    parser.add_argument('--skip-public-update-check',action='store_true',
+                        help='Build an unpublished test package without downloading an older public installer')
     parser.add_argument('--icon-only', type=Path, help=argparse.SUPPRESS)
     options = parser.parse_args(arguments)
     if sys.platform != 'darwin':
@@ -184,7 +185,7 @@ def main(arguments=None):
         if not python.is_file():
             venv.EnvBuilder(with_pip=True).create(environment)
         run([python, '-m', 'pip', 'install', 'PySide6==6.12.0', 'PyInstaller==6.22.3',
-             'pyobjc-framework-Quartz>=11,<13', 'keyring==25.7.0','yt-dlp[default]==2026.10.26'])
+             'pyobjc-framework-Quartz>=11,<13', 'keyring==25.7.0', 'fasttext-predict-v2==1.1.0','yt-dlp[default]==2026.10.26'])
         if options.target_arch=='x86_64':
             # Intel currently builds this dependency from source. Dynamic
             # Homebrew OpenSSL can collide with Python's same-named dylibs
@@ -214,29 +215,28 @@ def main(arguments=None):
     with tempfile.TemporaryDirectory(prefix='flickdock-cocoa-preflight-') as directory:
         run([python,ROOT/'test_mac_cocoa_spaces.py','--output',Path(directory)/'cocoa.json'],
             env=dict(env,HOME=directory,QT_QPA_PLATFORM='cocoa',FLICKDOCK_CI_COCOA_SMOKE='1'))
+        cocoa_preflight=json.loads((Path(directory)/'cocoa.json').read_text(encoding='utf8'))
     run([python,ROOT/'p2p_assets.py'],env=env)
     run([python,ROOT/'video_assets.py'],env=env)
     if options.sign_identity:
         env['FLICKDOCK_CODESIGN_IDENTITY'] = options.sign_identity
     if options.entitlements:
         env['FLICKDOCK_ENTITLEMENTS'] = str(options.entitlements.resolve())
-    run([python, '-m', 'unittest', 'test_platform_startup', 'test_platform_native', 'test_mac_window_order_v1810', 'test_mac_updates',
+    run([python, '-m', 'unittest', 'test_translation','test_architecture','test_video_tls','test_startup_resources','test_sync_scheduler','test_cloud_events_v1825','test_cloud_only_v1825','test_window_zoom_v1824', 'test_surface_source_cache', 'test_surface_elements', 'test_mac_install', 'test_preview_continuity', 'test_display_frames', 'test_video_matrix', 'test_receive_notice', 'test_copy_notice_v1824', 'test_virtual_clipboard', 'test_platform_startup', 'test_platform_native', 'test_mac_window_order_v1810', 'test_mac_updates',
          'test_macos_native_entry', 'test_update_macos_controller', 'test_mac_build',
          'test_shelf_sync_v180', 'test_sync_review_v180', 'test_account_security_v180',
-         'test_lan_transfer_v181', 'test_lan_dialog_v183', 'test_shelf_transfers_v181',
-         'test_account_profile_layout_v1814', 'test_lan_hig_layout_v1814',
+         'test_lan_transfer_v181', 'test_lan_dialog_v183', 'test_lan_account_v1825', 'test_shelf_transfers_v181',
+         'test_account_profile_layout_v1814', 'test_account_settings_v181', 'test_lan_hig_layout_v1814',
          'test_html_native_lan', 'test_html_native_dialogs',
          'test_ui_feedback_v1815', 'test_directory_sync_v1815', 'test_feedback_v1816','test_feedback_v1818',
          'test_shelf_raise_v1810', 'test_intake_first_frame_v1810',
          'test_sync_remote_commit_wakeup', 'test_cloud_file_status_v1810',
          'test_trigger_reliability_v1810', 'test_event_stream_wiring_v1810',
-         'test_pointer_paste_v1819','test_presentation_v1819','test_clipboard_sync_v1819','test_wan_account_v1819','test_webrtc_close_v1819','test_update_notice_v1813','test_small_upload_lane','test_feedback_v1820',
+         'test_pointer_paste_v1819','test_presentation_v1819','test_clipboard_sync_v1819','test_wan_account_v1819','test_update_notice_v1813','test_small_upload_lane','test_feedback_v1820',
          'test_display_groups_v1821','test_transfer_layout_v1821','test_interaction_scope_v1821','test_shared_clipboard_files_v1821','test_download_ranges_v1821','test_remote_handoff_v1821','test_mac_permissions_v1821','test_shelf_live_v1821','test_release_notes_v1821','test_clipboard_fast_v1821','test_clipboard_preview_v1821','test_utility_windows_v1821','test_update_signatures_v1821','-v'], env=env)
     run([python,'test_update_resume_v1821.py','-v'],env=env)
-    # Native WebRTC and QWebSocket lifetimes are verified in their own Qt
-    # process, matching the standalone frozen-client gate below.
-    run([python,'-m','unittest','test_wan_transfer_v1816','-v'],env=env)
-    run([python,'-m','unittest','test_nearby_transport_v1818','-v'],env=env)
+    # Exercise the original direct TLS and native WebRTC file streams.
+    run([python,'-m','unittest','test_original_transfer','test_wan_transfer_v1816','test_utility_feedback_v1828','test_manual_network_v1829','test_shelf_capacity_v1829','-v'],env=env)
     run([python,'-m','unittest','test_wan_signaling_v1818','-v'],env=env)
     run([python,'-m','unittest','test_cloud_failover_v1818','-v'],env=env)
     run([python,'-m','unittest','test_stream_upload_v1816','-v'],env=env)
@@ -268,22 +268,33 @@ def main(arguments=None):
         if not transfers.get('ok') or not transfers.get('frozen') or transfers.get('version') != APP_VERSION:
             raise RuntimeError('Frozen macOS original-file/TLS/cancellation verification failed')
         frozen['lan_transfers'] = transfers
-        update_path=Path(profile)/'public-update.json'
-        run([binary,'--verify-update','--verify-current','1.8.14','--verify-output',update_path],env=dict(env,XDG_CONFIG_HOME=profile,APPDATA=profile))
-        update=json.loads(update_path.read_text(encoding='utf8'))
-        if not update.get('ok') or not update.get('frozen') or not update.get('verified_download') or update.get('installer_executed'):
-            raise RuntimeError('Frozen Mac public update check/download failed')
-        frozen['public_updates']=update
+        if options.skip_public_update_check:
+            frozen['public_updates']=dict(skipped=True,reason='Unpublished test package; current public installer download is outside this verification')
+        else:
+            update_path=Path(profile)/'public-update.json'
+            run([binary,'--verify-update','--verify-current','1.8.14','--verify-output',update_path],env=dict(env,XDG_CONFIG_HOME=profile,APPDATA=profile))
+            update=json.loads(update_path.read_text(encoding='utf8'))
+            if not update.get('ok') or not update.get('frozen') or not update.get('verified_download') or update.get('installer_executed'):
+                raise RuntimeError('Frozen Mac public update check/download failed')
+            frozen['public_updates']=update
         frozen['wan_transfers']={}
-        for mode in ('direct','relay'):
-            wan_path=Path(profile)/('wan-'+mode+'.json')
-            arguments=[binary,'--verify-wan','--verify-output',wan_path]
-            if mode=='relay':arguments.append('--wan-force-relay')
-            run(arguments,env=dict(env,XDG_CONFIG_HOME=profile,APPDATA=profile))
+        import queue,threading
+        worker=subprocess.Popen([str(ROOT/'p2p/runtime/node'),str(ROOT/'cloud/test/qa-server.mjs')],cwd=ROOT,env=env,
+                                stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+        ready=queue.Queue()
+        def read_origin():
+            for line in worker.stdout:
+                if line.startswith(b'http://127.0.0.1:'):ready.put(line.decode().strip());return
+        threading.Thread(target=read_origin,daemon=True).start()
+        try:
+            origin=ready.get(timeout=75);wan_path=Path(profile)/'wan-native.json'
+            run([binary,'--verify-wan','--verify-output',wan_path],env=dict(env,XDG_CONFIG_HOME=profile,APPDATA=profile,FLICKDOCK_QA_WAN_ORIGIN=origin))
             wan=json.loads(wan_path.read_text(encoding='utf8'))
-            if not wan.get('ok') or not wan.get('frozen') or wan.get('route_source')!='native-selected-candidate-pair' or mode=='relay' and wan.get('route')!='relay':
-                raise RuntimeError('Frozen Mac native WAN '+mode+' transfer failed')
-            frozen['wan_transfers'][mode]=wan
+            if not wan.get('ok') or not wan.get('frozen') or wan.get('route_source')!='native-selected-candidate-pair':
+                raise RuntimeError('Frozen Mac original WebRTC transfer failed')
+            frozen['wan_transfers']['original_webrtc_loopback']=wan
+        finally:
+            worker.communicate(b'stop',timeout=20)
     # Run the real Cocoa plugin and construct the shelf on the hosted Mac,
     # but with a disposable HOME and native/network side effects disabled.
     # This catches launch exits that an offscreen import check cannot see.
@@ -384,6 +395,7 @@ def main(arguments=None):
           architecture=options.target_arch, signed=bool(options.sign_identity), dmg_verified=True,
           notarized=bool(options.notary_profile),zip_roundtrip_verified=True,pkg_payload_verified=True,
           frozen=frozen, artifacts=artifacts,
+          native_source_cocoa=cocoa_preflight,
           native_update_runtime=(json.loads(update_runtime_path.read_text()) if update_runtime_path.is_file() else None)),
           ensure_ascii=False, indent=2), encoding='utf-8')
     print(report)

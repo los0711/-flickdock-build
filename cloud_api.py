@@ -7,18 +7,24 @@ import os
 import re
 import time
 import queue
+import threading
+from collections import deque
 from pathlib import Path
 from uuid import uuid4
 
 from PySide6.QtCore import QObject, QTimer, QUrl, Qt, Signal, QFile, QIODevice
-from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
+from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply,QNetworkProxy
+from network_environment import proxy_routes
 from app_version import APP_VERSION
 from cloud_config import CLOUD_ORIGINS
 from download_writer import DownloadWriter
 from transfer_priority import bulk_delay
 
 UPLOAD_READ_BYTES=64*1024
+UPLOAD_PREFETCH_BYTES=1024*1024
 PRIORITY_POLL_MS=25
+DOWNLOAD_DRAIN_BYTES=256*1024
+DISK_BACKPRESSURE_RETRY_MS=5
 
 
 class CloudError(Exception):
@@ -28,17 +34,37 @@ class CloudError(Exception):
 
 class UploadSlice(QIODevice):
     """Seekable, bounded device: Qt reads only this part, never a 64MiB copy."""
+    _prefetch_ready=Signal()
+    read_failed=Signal()
+
     def __init__(self,path,offset,size,parent=None,*,bulk=False):
         super().__init__(parent)
-        self._stream=io.BytesIO(path) if isinstance(path,bytes) else Path(path).open('rb')
         self._start=offset;self._length=size;self._bulk=bulk;self._last_read=time.monotonic()
+        self._prefetch=bool(bulk and not isinstance(path,bytes))
         self._resume=QTimer(self);self._resume.setSingleShot(True);self._resume.timeout.connect(self._available)
-        self._stream.seek(offset);self.open(QIODevice.OpenModeFlag.ReadOnly|QIODevice.OpenModeFlag.Unbuffered)
+        if self._prefetch:
+            self._stream=None;self._condition=threading.Condition();self._chunks=deque()
+            self._buffered=0;self._consumed=0;self._next_offset=0;self._generation=0
+            self._reader_closed=False;self._read_error=None
+            self._prefetch_ready.connect(self._available,Qt.ConnectionType.QueuedConnection)
+        else:
+            self._stream=io.BytesIO(path) if isinstance(path,bytes) else Path(path).open('rb')
+            self._stream.seek(offset)
+        self.open(QIODevice.OpenModeFlag.ReadOnly|QIODevice.OpenModeFlag.Unbuffered)
+        if self._prefetch:
+            self._reader=threading.Thread(target=self._read_ahead,args=(Path(path),),daemon=True,name='FlickDockUploadRead')
+            self._reader.start()
 
     def isSequential(self):return False
     def size(self):return self._length
-    def _remaining(self):return 0 if self._stream.closed else max(0,self._start+self._length-self._stream.tell())
-    def bytesAvailable(self):return 0 if self._blocked() else self._remaining()
+    def _remaining(self):
+        if self._prefetch:return max(0,self._length-self._consumed) if not self._reader_closed else 0
+        return 0 if self._stream.closed else max(0,self._start+self._length-self._stream.tell())
+    def bytesAvailable(self):
+        if self._blocked():return 0
+        if self._prefetch:
+            with self._condition:return self._buffered
+        return self._remaining()
     def atEnd(self):return self._remaining()==0
     def _blocked(self):
         if self._bulk and self._remaining() and bulk_delay(self._last_read)>0:
@@ -46,19 +72,73 @@ class UploadSlice(QIODevice):
             return True
         return False
     def _available(self):
-        if not self._stream.closed and not self._blocked() and self._remaining():self.readyRead.emit()
+        if self._prefetch:
+            with self._condition:available=self._buffered;error=self._read_error;closed=self._reader_closed
+            if closed:return
+            if error:
+                self.setErrorString('无法读取待上传文件。');self.read_failed.emit();return
+            if available and not self._blocked():self.readyRead.emit()
+        elif not self._stream.closed and not self._blocked() and self._remaining():self.readyRead.emit()
     def seek(self,position):
-        if self._stream.closed or not 0<=position<=self._length:return False
-        self._stream.seek(self._start+position)
+        if not 0<=position<=self._length:return False
+        if self._prefetch:
+            with self._condition:
+                if self._reader_closed:return False
+                if position!=self._consumed:
+                    self._generation+=1;self._chunks.clear();self._buffered=0
+                    self._consumed=position;self._next_offset=position;self._read_error=None
+                    self._condition.notify_all()
+        else:
+            if self._stream.closed:return False
+            self._stream.seek(self._start+position)
         return super().seek(position)
     def readData(self,maximum):
         if self._blocked():return b''
+        if self._prefetch:
+            with self._condition:
+                if not self._chunks:return b''
+                chunk=self._chunks.popleft();amount=min(maximum,len(chunk))
+                data=chunk[:amount]
+                if amount<len(chunk):self._chunks.appendleft(chunk[amount:])
+                self._buffered-=amount;self._consumed+=amount;self._condition.notify_all()
+            if data:self._last_read=time.monotonic()
+            return data
         data=self._stream.read(min(maximum,self._remaining(),UPLOAD_READ_BYTES if self._bulk else maximum))
         if data:self._last_read=time.monotonic()
         return data
+
+    def _read_ahead(self,path):
+        try:
+            with path.open('rb') as stream:
+                while True:
+                    with self._condition:
+                        while (not self._reader_closed and
+                               (self._buffered>=UPLOAD_PREFETCH_BYTES or self._next_offset>=self._length)):
+                            self._condition.wait()
+                        if self._reader_closed:return
+                        position=self._next_offset;generation=self._generation
+                        amount=min(UPLOAD_READ_BYTES,self._length-position)
+                    stream.seek(self._start+position);data=stream.read(amount)
+                    if not data:raise OSError('Upload source ended before the expected size')
+                    with self._condition:
+                        if self._reader_closed:return
+                        if generation!=self._generation:continue
+                        was_empty=self._buffered==0
+                        self._chunks.append(data);self._buffered+=len(data);self._next_offset+=len(data)
+                    if was_empty:self._prefetch_ready.emit()
+        except (OSError,ValueError,RuntimeError) as error:
+            with self._condition:
+                if self._reader_closed:return
+                self._read_error=error
+            try:self._prefetch_ready.emit()
+            except RuntimeError:pass
+
     def close(self):
         self._resume.stop()
-        if not self._stream.closed:self._stream.close()
+        if self._prefetch:
+            with self._condition:
+                self._reader_closed=True;self._chunks.clear();self._buffered=0;self._condition.notify_all()
+        elif not self._stream.closed:self._stream.close()
         super().close()
 
 
@@ -73,6 +153,7 @@ class CloudApi(QObject):
         self.origin = str(origin).rstrip('/')
         self.network = network or QNetworkAccessManager(self)
         self.priority_network = network or QNetworkAccessManager(self)
+        self._owns_network=network is None;self._direct_networks={};self._proxy_profile=None;self.prefers_direct=False
         self.token = ''
         self._requests = {}
         self._deferred = {}
@@ -97,7 +178,7 @@ class CloudApi(QObject):
 
     def request(self, method, path, callback, *, data=None, raw=None, source=None, source_offset=0, source_size=None, headers=None,
                 authenticated=True, destination=None, expected=None, timeout_ms=45000,
-                progress=None, receive_progress=None,priority='normal',_fallback_used=False,_deadline=None):
+                progress=None, receive_progress=None,priority='normal',_fallback_used=False,_deadline=None,_direct_route=None):
         """callback(result,error); optional progress callbacks report network bytes.
 
         Upload progress counts bytes handed to the network, not committed R2
@@ -155,6 +236,15 @@ class CloudApi(QObject):
             request.setRawHeader(b'Content-Type', b'application/octet-stream' if raw is not None or source is not None else b'application/json')
             for name, value in (headers or {}).items(): request.setRawHeader(name.encode('ascii'), str(value).encode('ascii'))
             network=self.priority_network if priority=='high' else self.network
+            routes=tuple(proxy_routes(self.origin)) if self._owns_network else ()
+            if routes!=self._proxy_profile:self._proxy_profile=routes;self.prefers_direct=False
+            proxied=any(route.type()!=QNetworkProxy.NoProxy for route in routes)
+            direct=bool(proxied and (self.prefers_direct if _direct_route is None else _direct_route))
+            if direct:
+                lane='high' if priority=='high' else 'normal'
+                if lane not in self._direct_networks:
+                    manager=QNetworkAccessManager(self);manager.setProxy(QNetworkProxy(QNetworkProxy.NoProxy));self._direct_networks[lane]=manager
+                network=self._direct_networks[lane]
             reply = network.sendCustomRequest(request, method.encode('ascii'), source_file or payload)
             timer = QTimer(self); timer.setSingleShot(True)
             state = {'reply':reply,'callback':callback,'timer':timer,'body':bytearray(),
@@ -167,19 +257,27 @@ class CloudApi(QObject):
                      'auth_token':self.token if authenticated else None,
                      'origin':self.origin,'sent':None,'connect_timer':None,
                      'started':time.monotonic(),'budget':max(total_timeout,300000) if destination else total_timeout,
-                     'retry':None}
+                     'retry':None,'route_retry':False,'proxy_profile':routes,'direct_route':direct}
             state.update(writer=None,writer_result=None,writer_finishing=False,writer_completed=False,disk_priority=priority,
                          deferred_error=None,drain_scheduled=False,last_payload=time.monotonic())
             if destination and callable(getattr(reply,'setReadBufferSize',None)):reply.setReadBufferSize(1024*1024)
             if _deadline is not None:state['budget']=min(state['budget'],max(1,round((_deadline-time.monotonic())*1000)))
             deadline=state['deadline']=time.monotonic()+state['budget']/1000
-            if self.origin in CLOUD_ORIGINS and not _fallback_used:
+            if proxied and not _fallback_used:
+                state['route_retry']=True
+                state['retry']=lambda remaining,done:self.request(method,path,done,data=data,raw=raw,source=source,
+                    source_offset=source_offset,source_size=source_size,headers=dict(headers) if headers else None,
+                    authenticated=authenticated,destination=destination,expected=expected,timeout_ms=remaining,
+                    progress=progress,receive_progress=receive_progress,priority=priority,_fallback_used=True,_deadline=deadline,_direct_route=not direct)
+            elif len(CLOUD_ORIGINS)>1 and self.origin in CLOUD_ORIGINS and not _fallback_used:
                 state['retry']=lambda remaining,done:self.request(method,path,done,data=data,raw=raw,source=source,
                     source_offset=source_offset,source_size=source_size,headers=dict(headers) if headers else None,
                     authenticated=authenticated,destination=destination,expected=expected,timeout_ms=remaining,
                     progress=progress,receive_progress=receive_progress,priority=priority,_fallback_used=True,_deadline=deadline)
             state['method']=str(method).upper()
             self._requests[key] = state
+            if isinstance(source_file,UploadSlice):
+                source_file.read_failed.connect(lambda:self._finish(key,error=CloudError('无法读取待上传文件。')))
             sent_signal=getattr(reply,'requestSent',None)
             if sent_signal is not None:
                 state['sent']=False
@@ -264,7 +362,9 @@ class CloudApi(QObject):
                             state['drain_scheduled']=False;self._drain(key)
                     QTimer.singleShot(PRIORITY_POLL_MS,self,resume_priority)
                 return
-            budget = UPLOAD_READ_BYTES if bulk else 512 * 1024
+            # Yield to Qt between bounded batches without imposing a network
+            # rate limit. Disk backpressure and clipboard priority still apply.
+            budget = DOWNLOAD_DRAIN_BYTES if bulk else 512 * 1024
             while reply.bytesAvailable() and budget > 0:
                 limit=min(65536,budget)
                 if state['destination'] is not None and status==200:
@@ -288,7 +388,8 @@ class CloudApi(QObject):
                 def resume():
                     if key not in self._requests:return
                     state['drain_scheduled']=False;self._drain(key)
-                QTimer.singleShot(10,resume)
+                disk_full=(state['writer'] is not None and state['writer'].capacity()==0)
+                QTimer.singleShot(DISK_BACKPRESSURE_RETRY_MS if disk_full else 0,resume)
         except Exception as error:
             self._finish(key, error=error if isinstance(error, CloudError) else CloudError('无法保存同步文件。'))
 
@@ -422,19 +523,22 @@ class CloudApi(QObject):
         if error is not None:
             from network_diagnostics import record_event
             record_event(self.diagnostics_dir,'cloud','request',getattr(error,'code','') or 'REQUEST_FAILED',status,details=getattr(error,'details',None))
-        if (not self._closed and error is not None and getattr(error,'code','')=='NETWORK_UNREACHABLE'
-                and state['origin'] in CLOUD_ORIGINS):
+        if ((state['route_retry'] or len(CLOUD_ORIGINS)>1 and state['origin'] in CLOUD_ORIGINS)
+                and not self._closed and error is not None and getattr(error,'code','')=='NETWORK_UNREACHABLE'):
             # Slots can cancel/close synchronously while the new entrance is
             # announced. Keep the original key cancellable throughout handoff.
             self._handoffs[key]=state
-            if self.origin==state['origin']:
+            if state['route_retry'] and self._proxy_profile==state['proxy_profile']:
+                self.prefers_direct=not state['direct_route']
+            elif not state['route_retry'] and self.origin==state['origin']:
                 self.origin=CLOUD_ORIGINS[(CLOUD_ORIGINS.index(self.origin)+1)%len(CLOUD_ORIGINS)]
                 self.origin_changed.emit(self.origin)
             self._handoffs.pop(key,None)
             if self._closed or state.get('cancelled'):return
             remaining=max(0,state['budget']-round((time.monotonic()-state['started'])*1000))
             before_connect=reply.error() in (QNetworkReply.NetworkError.HostNotFoundError,QNetworkReply.NetworkError.ConnectionRefusedError,
-                QNetworkReply.NetworkError.ProxyConnectionRefusedError,QNetworkReply.NetworkError.ProxyNotFoundError,QNetworkReply.NetworkError.SslHandshakeFailedError)
+                QNetworkReply.NetworkError.ProxyConnectionRefusedError,QNetworkReply.NetworkError.ProxyNotFoundError,
+                QNetworkReply.NetworkError.ProxyTimeoutError,QNetworkReply.NetworkError.ProxyAuthenticationRequiredError,QNetworkReply.NetworkError.SslHandshakeFailedError)
             # A timeout/closed connection is ambiguous for mutations. Only
             # idempotent reads or a definitive pre-HTTP failure can replay.
             if (state['retry'] is not None and remaining>0

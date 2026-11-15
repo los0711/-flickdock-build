@@ -18,8 +18,8 @@ from account_panel import AccountPanel
 
 APP=QApplication.instance() or QApplication([])
 APP.setQuitOnLastWindowClosed(False)
-QFontDatabase.addApplicationFont(str(Path(__file__).with_name('fonts')/'HarmonyOS_Sans_SC_Regular.ttf'))
-APP.setFont(QFont('HarmonyOS Sans SC',11))
+from native_ui_common import configure_reference_font
+configure_reference_font(APP)
 
 
 class Service(QObject):
@@ -44,7 +44,7 @@ class SettingsAccountTests(unittest.TestCase):
         self.store=app_settings.SettingsStore(Path(self.temp.name))
         self.dialog=app_settings.SettingsDialog(self.store)
         self.service=Service();self.panel=AccountPanel(self.service,email_binding=False)
-        self.dialog.set_account_panel(self.panel);self.dialog.resize(892,632);self.dialog.show();APP.processEvents()
+        self.dialog.set_account_panel(self.panel);self.dialog.select_category('账号与设备');self.dialog.resize(892,632);self.dialog.show();APP.processEvents()
     def tearDown(self):
         self.dialog.close();self.dialog.deleteLater();APP.processEvents()
         self.runtime.stop();self.screen.stop();self.temp.cleanup()
@@ -58,6 +58,25 @@ class SettingsAccountTests(unittest.TestCase):
         event=QWheelEvent(local,global_pos,QPoint(),QPoint(0,delta),Qt.MouseButton.NoButton,
                           Qt.KeyboardModifier.NoModifier,Qt.ScrollPhase.NoScrollPhase,False)
         QApplication.sendEvent(widget,event);APP.processEvents()
+
+    def test_wheel_scroll_is_interruptible_and_precision_input_stays_direct(self):
+        navigation=self.dialog._anchor_navigation;bar=self.dialog.scroll.verticalScrollBar()
+        bar.setValue(0)
+        with patch('settings_navigation.motion_allowed',return_value=True):
+            self.wheel(self.dialog.scroll.viewport(),-120)
+            self.assertEqual(navigation.wheel_motion.state(),navigation.wheel_motion.Running)
+            self.assertGreater(navigation.wheel_target,bar.value())
+            navigation.wheel_motion.setCurrentTime(100);middle=bar.value()
+            self.wheel(self.dialog.scroll.viewport(),120)
+            self.assertLess(navigation.wheel_target,middle)
+            navigation.wheel_motion.setCurrentTime(navigation.wheel_motion.duration())
+            self.assertLessEqual(bar.value(),middle)
+            bar.setValue(60);viewport=self.dialog.scroll.viewport();pos=QPointF(viewport.rect().center())
+            event=QWheelEvent(pos,QPointF(viewport.mapToGlobal(pos.toPoint())),QPoint(0,-18),QPoint(),Qt.NoButton,Qt.NoModifier,Qt.ScrollUpdate,False)
+            QApplication.sendEvent(viewport,event)
+            self.assertEqual(bar.value(),78);self.assertEqual(navigation.wheel_motion.state(),navigation.wheel_motion.Stopped)
+            self.wheel(viewport,-120);self.dialog.hide();APP.processEvents()
+            self.assertEqual(navigation.wheel_motion.state(),navigation.wheel_motion.Stopped)
     def test_password_confirmation_success_and_private_values(self):
         self.fill_password(confirm='different-new-secret')
         self.click(self.panel.password_change_button)
@@ -89,23 +108,27 @@ class SettingsAccountTests(unittest.TestCase):
             self.assertEqual(self.panel._editing_device,'')
         self.assertNotIn('current',self.panel.device_buttons)
     def test_wheel_cannot_change_any_settings_control_but_scrolls_parent(self):
-        controls=[*self.dialog.findChildren(QComboBox),*self.dialog.findChildren(QSpinBox),*self.dialog.findChildren(QSlider)]
-        self.assertGreaterEqual(len(controls),13)
-        for focused in (False,True):
-            for widget in controls:
-                self.dialog.scroll.ensureWidgetVisible(widget);APP.processEvents()
-                if focused:widget.setFocus()
-                else:self.dialog.save_button.setFocus()
-                before=widget.currentIndex() if isinstance(widget,QComboBox) else widget.value()
-                self.wheel(widget)
-                after=widget.currentIndex() if isinstance(widget,QComboBox) else widget.value()
-                self.assertEqual(before,after,(widget.accessibleName(),focused))
+        tested=0
+        for category,_ in self.dialog.setting_categories:
+            self.dialog.select_category(category);APP.processEvents()
+            controls=[widget for cls in (QComboBox,QSpinBox,QSlider) for widget in self.dialog.findChildren(cls) if widget.isVisible()]
+            for focused in (False,True):
+                for widget in controls:
+                    self.dialog.scroll.ensureWidgetVisible(widget);APP.processEvents()
+                    if focused:widget.setFocus()
+                    else:self.dialog.save_button.setFocus()
+                    before=widget.currentIndex() if isinstance(widget,QComboBox) else widget.value()
+                    self.wheel(widget)
+                    after=widget.currentIndex() if isinstance(widget,QComboBox) else widget.value()
+                    self.assertEqual(before,after,(widget.accessibleName(),focused));tested+=1
+        self.assertGreater(tested,0)
+        self.dialog.select_category('外观与交互');APP.processEvents()
         self.dialog.scroll.verticalScrollBar().setValue(0)
-        self.wheel(self.dialog.theme_combo)
+        self.wheel(self.dialog.shake_sensitivity_spin)
         self.assertGreater(self.dialog.scroll.verticalScrollBar().value(),0)
-        combo=self.dialog.theme_combo;before=combo.currentIndex();combo.setFocus()
-        QTest.keyClick(combo,Qt.Key.Key_Down if before==0 else Qt.Key.Key_Up)
-        self.assertNotEqual(combo.currentIndex(),before)
+        control=self.dialog.shake_sensitivity_spin;before=control.value();control.setFocus()
+        QTest.keyClick(control,Qt.Key.Key_Up if before<control.maximum() else Qt.Key.Key_Down)
+        self.assertNotEqual(control.value(),before)
     def test_fresh_empty_trigger_enabled_saved_opt_out_preserved(self):
         self.assertTrue(self.store.keep_empty_handle)
         self.store.update(keep_empty_handle=False)
@@ -132,7 +155,8 @@ class SettingsAccountTests(unittest.TestCase):
             self.dialog,QPoint(0,self.dialog.startup_checkbox.height())).y()
         footer_top=self.dialog.save_button.mapTo(self.dialog,QPoint()).y()
         self.assertLess(startup_bottom,footer_top)
-    def test_inline_update_animation_and_real_download_progress(self):
+    @patch('native_ui_common.reduced_motion',return_value=False)
+    def test_inline_update_animation_and_real_download_progress(self,_reduced_motion):
         self.dialog.set_update_state('installing',version='1.8.1');APP.processEvents()
         bar=self.dialog.update_activity
         self.assertTrue(bar.active);self.assertIsNone(bar.fraction);self.assertTrue(bar._timer.isActive())
@@ -144,13 +168,25 @@ class SettingsAccountTests(unittest.TestCase):
         self.assertFalse(bar.active);self.assertFalse(bar.isVisible());self.assertEqual(self.dialog.update_button.text(),'立即更新')
         self.dialog.set_update_state('verifying');self.dialog.hide();APP.processEvents()
         self.assertFalse(bar._timer.isActive())
+
+    def test_update_feedback_is_visible_and_static_when_reduced_motion_is_enabled(self):
+        with patch('native_ui_common.reduced_motion',return_value=True):
+            self.dialog.set_update_state('checking');APP.processEvents()
+            bar=self.dialog.update_activity
+            self.assertTrue(bar.active);self.assertTrue(bar.isVisible())
+            self.assertFalse(bar._timer.isActive())
+            image=bar.grab().toImage();QTest.qWait(30)
+            self.assertEqual(image,bar.grab().toImage())
+            self.dialog.set_update_state('downloading',received=25,total=100)
+            self.assertEqual(bar.fraction,.25);self.assertFalse(bar._timer.isActive())
     def test_account_and_lan_slot_layout_order_and_theme(self):
         class Lan(QWidget):
             def apply_theme(self,theme):self.theme=theme
         lan=Lan();self.dialog.set_lan_panel(lan)
         self.assertIs(self.dialog.account_slot_layout.itemAt(1).widget(),self.panel)
-        self.assertIs(self.dialog.body_layout.itemAt(0).widget(),self.dialog._reference_top)
-        self.assertIs(self.dialog.body_layout.itemAt(1).widget(),lan)
+        account_index=self.dialog.body_layout.indexOf(self.dialog.account_slot)
+        self.assertIs(self.dialog.body_layout.itemAt(account_index).widget(),self.dialog._reference_top)
+        self.assertIs(self.dialog.body_layout.itemAt(account_index+1).widget(),lan)
         self.dialog.apply_theme('dark');self.assertEqual(lan.theme,'dark')
         self.assertIs(self.dialog.set_lan_panel(None),lan);self.assertIsNone(lan.parent())
         lan.deleteLater()
@@ -162,8 +198,12 @@ class SettingsAccountTests(unittest.TestCase):
             self.assertEqual(self.panel.devices_body.objectName(),'accountDevices')
             self.assertEqual(len(self.panel.devices_body.findChildren(QWidget,'accountDeviceSeparator')),0)
             rows=list(self.panel._rows_by_id.values())
-            self.assertEqual(rows[0].geometry().top(),rows[1].geometry().top())
-            self.assertLess(rows[0].geometry().right(),rows[1].geometry().left())
+            if self.panel.devices_scroll.viewport().width()>=540:
+                self.assertEqual(rows[0].geometry().top(),rows[1].geometry().top())
+                self.assertLess(rows[0].geometry().right(),rows[1].geometry().left())
+            else:
+                self.assertEqual(rows[0].geometry().left(),rows[1].geometry().left())
+                self.assertLess(rows[0].geometry().bottom(),rows[1].geometry().top())
             for row in self.panel._rows_by_id.values():
                 self.assertTrue(self.panel.devices_body.rect().contains(row.geometry()))
             for widget in self.panel.findChildren(QWidget):

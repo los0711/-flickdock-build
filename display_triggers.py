@@ -59,19 +59,20 @@ class DisplayGroup(QFrame):
     def __init__(self,name,values,expanded,parent):
         from app_settings import SettingsToggleSwitch,SettingsComboBox,SettingsSpinBox,SettingsSlider
         super().__init__(parent);self.setObjectName('settingsInset');self.expanded=expanded;self.controls={};self.sliders={};self.color=values['dock_color']
-        box=QVBoxLayout(self);box.setContentsMargins(12,6,12,10);box.setSpacing(8)
+        box=QVBoxLayout(self);box.setContentsMargins(12,10,12,12);box.setSpacing(12)
         self.header=_Header(self);line=QHBoxLayout(self.header);line.setContentsMargins(0,0,0,0);line.setSpacing(10)
         self.name=QLabel(name,self.header);self.name.setWordWrap(True);self.name.setAttribute(Qt.WA_TransparentForMouseEvents);line.addWidget(self.name,1)
         self.toggle=SettingsToggleSwitch('',self.header);self.toggle.setMinimumSize(44,32);self.toggle.setMaximumSize(44,32);self.toggle.setAccessibleName(name+'启用触发条');line.addWidget(self.toggle)
-        self.arrow=QPushButton(self.header);self.arrow.setFixedSize(28,28);self.arrow.setAutoDefault(False);self.arrow.setObjectName('settingsLink');self.arrow.setAccessibleName(name+'展开或收起参数');line.addWidget(self.arrow)
+        from reference_widgets import IconTextButton
+        self.arrow=IconTextButton('',self.header);self.arrow.setFixedSize(28,28);self.arrow.setAutoDefault(False);self.arrow.setObjectName('settingsLink');self.arrow.setAccessibleName(name+'展开或收起参数');line.addWidget(self.arrow)
         self.header.activated.connect(lambda:self.set_expanded(not self.expanded));self.arrow.clicked.connect(lambda:self.set_expanded(not self.expanded))
         box.addWidget(self.header)
-        self.details=QWidget(self);details=QVBoxLayout(self.details);details.setContentsMargins(0,0,0,0);details.setSpacing(10)
+        self.details=QWidget(self);details=QVBoxLayout(self.details);details.setContentsMargins(0,0,0,0);details.setSpacing(14)
         top=QHBoxLayout();top.setSpacing(12);top.addWidget(QLabel('停靠在',self.details))
         self.edge=SettingsComboBox(self.details)
         for label,key in (('左侧','left'),('右侧','right'),('顶部','top'),('底部','bottom')):self.edge.addItem(label,key)
         self.edge.setMinimumWidth(78);top.addWidget(self.edge);top.addStretch();top.addWidget(QLabel('标记颜色',self.details))
-        self.color_button=QPushButton(self.details);self.color_button.setAutoDefault(False);self.color_button.setFixedSize(108,28);self.color_button.clicked.connect(self.pick_color);top.addWidget(self.color_button);details.addLayout(top)
+        self.color_button=QPushButton(self.details);self.color_button.setObjectName('settingsColorButton');self.color_button.setAutoDefault(False);self.color_button.setFixedSize(108,28);self.color_button.clicked.connect(self.pick_color);top.addWidget(self.color_button);details.addLayout(top)
         self.grid=QGridLayout();self.grid.setSpacing(12);self.panels=[]
         for key,label,unit in (('position','边缘位置',' %'),('length','触发条长度',' px'),('thickness','触发条厚度',' px'),('opacity','不透明度',' %')):
             panel=QWidget(self.details);col=QVBoxLayout(panel);col.setContentsMargins(0,0,0,0);col.setSpacing(8);row=QHBoxLayout();row.addWidget(QLabel(label,panel),1)
@@ -82,7 +83,8 @@ class DisplayGroup(QFrame):
         details.addLayout(self.grid);box.addWidget(self.details)
         self._height_timer=QTimer(self);self._height_timer.setSingleShot(True)
         self._height_timer.timeout.connect(self._refresh_height)
-        self.animation=QVariantAnimation(self);self.animation.setDuration(180);self.animation.setEasingCurve(QEasingCurve.OutCubic)
+        from display_frames import DisplayAnimation
+        self.animation=DisplayAnimation(self);self.animation.setDuration(180);self.animation.setEasingCurve(QEasingCurve.OutCubic)
         self.animation.valueChanged.connect(self._expand_frame)
         self.animation.finished.connect(self._expanded_end)
         self.toggle.toggled.connect(self.changed);self.edge.currentIndexChanged.connect(self.changed)

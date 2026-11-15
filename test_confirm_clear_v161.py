@@ -18,10 +18,8 @@ from confirm_clear import ClearConfirmOverlay, MODAL_PROPERTY, confirmation_acti
 
 
 app = QApplication([])
-font_path = Path(__file__).with_name("fonts") / "HarmonyOS_Sans_SC_Regular.ttf"
-if font_path.exists():
-    QFontDatabase.addApplicationFont(str(font_path))
-app.setFont(QFont("HarmonyOS Sans SC", 11))
+from native_ui_common import configure_reference_font
+configure_reference_font(app)
 host = QWidget()
 host.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint |
                     Qt.WindowType.WindowStaysOnTopHint)
@@ -98,14 +96,14 @@ try:
     for theme in ("light", "dark"):
         for width, height, compact in ((788, 450, False), (394, 294, True)):
             card.setGeometry(0, 0, width, height)
-            dialog = ClearConfirmOverlay(card, 125, font_family="HarmonyOS Sans SC", theme=theme)
+            dialog = ClearConfirmOverlay(card, 125, font_family="Inter", theme=theme)
             results = []
             dialog.finished.connect(results.append)
             def cancel_visible():
                 assert_layout(dialog, compact)
                 assert dialog.cancel_button.isDefault() and not dialog.delete_button.isDefault()
                 assert dialog.cancel_button.text() == "取消" and dialog.delete_button.text() == "清空"
-                assert ("#1C1C1E" if theme == "dark" else "#FFFFFF") in dialog.panel.styleSheet()
+                assert ("#0a0a0a" if theme == "dark" else "#ffffff") in dialog.panel.styleSheet().lower()
                 dialog.cancel_button.click()
             assert execute(dialog, cancel_visible) is False
             assert results == [False]

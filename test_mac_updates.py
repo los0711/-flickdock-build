@@ -182,7 +182,7 @@ class MacUpdateTests(unittest.TestCase):
               patch.object(update.os, 'geteuid', return_value=0, create=True),
               patch.object(update, '_privileged_receipt', return_value=self.target),
               patch.object(update, '_ensure_stable_root_runtime'),
-              patch.object(update, '_trusted_manifest_for', return_value=self.manifest),
+              patch.object(update, '_signed_receipt_manifest', return_value=self.manifest),
               patch.object(update, '_pid_alive', side_effect=lambda pid: pid == os.getpid()),
               patch.object(update, '_write_privileged_marker'),
               patch.object(update, '_wait_for_ready'),
@@ -208,29 +208,29 @@ class MacUpdateTests(unittest.TestCase):
         self.assert_old()
         self.assertFalse(list(self.target.parent.glob('.flickdock-update-*')))
 
-    def test_privileged_manifest_is_fetched_from_fixed_auto_channel(self):
-        endpoint = update.manifest_endpoint('darwin', 'arm64')
-        published = dict(schema_version=1, version='1.7.1', platform='darwin',
-                         architecture='arm64', published_at='2026-10-27T00:00:00Z',
-                         notes='fixture', installer=dict(url='https://gitee.com/release/update.zip',
-                         size=self.manifest['installer']['size'],
-                         sha256=self.manifest['installer']['sha256']))
-        class Reply(BytesIO):
-            def geturl(self): return endpoint
-        requests = []
-        def opener(request, timeout):
-            requests.append((request.full_url, timeout))
-            return Reply(json.dumps(published).encode('utf-8'))
-        trusted = update._trusted_manifest_for('1.7.1', machine='arm64', opener=opener)
-        self.assertEqual(trusted['installer']['sha256'], self.manifest['installer']['sha256'])
-        self.assertEqual(requests, [(endpoint, 15)])
-        published['version'] = '1.7.2'
-        with self.assertRaisesRegex(ValueError, '索引已变更'):
-            update._trusted_manifest_for('1.7.1', machine='arm64', opener=opener)
-        redirect = update._TrustedManifestRedirect()
-        with self.assertRaises(ValueError):
-            redirect.redirect_request(Request(endpoint), None, 302, 'redirect', {},
-                                      'http://not-trusted.example/update.json')
+    def test_privileged_manifest_is_verified_offline_and_rejects_tampering(self):
+        import copy
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from cryptography.hazmat.primitives import serialization
+        from update_signatures import TRUSTED_PUBLISHERS,sign_manifest
+        key=Ed25519PrivateKey.generate()
+        public=key.public_key().public_bytes(serialization.Encoding.Raw,serialization.PublicFormat.Raw).hex()
+        published=dict(schema_version=1,version='1.7.1',platform='darwin',architecture='arm64',
+            published_at='2026-11-11T00:00:00Z',notes='fixture',
+            installer=dict(url='https://gitee.com/release/update.zip',size=self.manifest['installer']['size'],
+                           sha256=self.manifest['installer']['sha256']))
+        with patch.dict(TRUSTED_PUBLISHERS,{'fixture':public}):
+            signed=sign_manifest(published,key,'fixture')
+            prepared=update.prepare_update(self.zip,signed,current_version='1.7.0',
+                installed_app=self.target,staging_parent=self.zip.parent)
+            self.prepared.append(prepared)
+            with patch.object(update,'update_architecture',return_value='arm64'):
+                self.assertEqual(update._signed_receipt_manifest(prepared),signed)
+                for field,value in [('version','1.7.2'),('notes','tampered')]:
+                    prepared.manifest=copy.deepcopy(signed);prepared.manifest[field]=value
+                    with self.assertRaises(ValueError):update._signed_receipt_manifest(prepared)
+                prepared.manifest=copy.deepcopy(signed);prepared.manifest.pop('publisher_signature')
+                with self.assertRaisesRegex(ValueError,'签名'):update._signed_receipt_manifest(prepared)
 
     @unittest.skipUnless(os.name == 'posix', 'Directory descriptor markers require POSIX')
     def test_privileged_replacement_marker_is_readable_by_owner(self):

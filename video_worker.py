@@ -11,9 +11,10 @@ import sys
 import threading
 import time
 import urllib.request
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit,urljoin
 
 from video_links import video_url
+from video_formats import media_options
 
 MAX_RESULTS=20
 MAX_DOWNLOAD_BYTES=16*1024**3
@@ -57,42 +58,23 @@ def worker_stdio():
     for stream in (sys.stdout,sys.stderr):stream.reconfigure(encoding='utf-8',errors='strict',write_through=True)
 
 
-def public_request(url,allow_local=False):
+def public_request(url,allow_local=False,*,proxies=None):
     parts=urlsplit(url)
     if parts.scheme=='data' and len(url)<=MAX_IPC_BYTES:return
     if allow_local and parts.scheme=='http' and parts.hostname=='127.0.0.1':return
     video_url(url)
+    from yt_dlp.utils.networking import select_proxy
+    if proxies is None:
+        proxies=urllib.request.getproxies()
+        if 'http' in proxies and 'https' not in proxies:proxies['https']=proxies['http']
+    proxy=select_proxy(url,proxies)
+    # HTTP CONNECT and remote-DNS SOCKS resolve the destination at the proxy.
+    # A local DNS query may instead return the proxy's synthetic IP, or fail
+    # entirely. Literal private URLs remain rejected by video_url above.
+    if proxy and urlsplit(proxy).scheme.lower() in ('http','https','socks4a','socks5h'):return
     addresses=socket.getaddrinfo(parts.hostname,parts.port or (443 if parts.scheme=='https' else 80),type=socket.SOCK_STREAM)
     if not addresses or any(not ipaddress.ip_address(row[4][0]).is_global for row in addresses):
         raise ValueError('视频链接指向本机或局域网，已停止请求。')
-
-
-def media_options(info,ydl):
-    formats=[row for row in info.get('formats',[]) if isinstance(row,dict) and not row.get('has_drm')]
-    video_exts={'mp4','mkv','mov','m4v','webm','flv','ts'};audio_exts={'mp3','m4a','aac','opus','ogg','flac','wav','wma'}
-    sources=formats or [info]
-    has_video=any(row.get('vcodec')!='none' and (row.get('vcodec') is not None or row.get('ext') in video_exts) for row in sources)
-    result=[]
-    if has_video:
-        result.append(dict(id='best',label='视频 · 最佳画质',format='bv*+ba/b'))
-        heights=[row.get('height') for row in formats if type(row.get('height')) is int]
-        maximum=max(heights,default=0)
-        for height in (1080,720,480):
-            if maximum>height:
-                result.append(dict(id=str(height),label=f'视频 · 最高 {height}p',format=f'bv*[height<={height}]+ba/b[height<={height}]'))
-    if any(row.get('acodec')!='none' and (row.get('acodec') is not None or row.get('ext') in video_exts|audio_exts) for row in sources):
-        result.append(dict(id='audio',label='音频 · 原始音质',format='ba/b'))
-    for option in result:
-        selected=ydl._select_formats(formats or [info],ydl.build_format_selector(option['format']))
-        tracks=[track for item in selected for track in item.get('requested_formats',[item])]
-        sizes=[];approximate=False
-        for track in tracks:
-            exact=track.get('filesize');estimate=track.get('filesize_approx')
-            size=exact if type(exact) in (int,float) and math.isfinite(exact) and exact>0 else estimate
-            if type(size) not in (int,float) or not math.isfinite(size) or size<=0:sizes=[];break
-            sizes.append(round(size));approximate|=size!=exact
-        option.update(bytes=sum(sizes) if sizes else None,approximate=approximate or option['id']=='audio')
-    return result
 
 
 def media_entries(info):
@@ -114,11 +96,13 @@ def downloader(request,progress):
     allow_local=request.get('fixture_http') is True and os.environ.get('QT_QPA_PLATFORM')=='offscreen'
     class Guard(urllib.request.BaseHandler):
         handler_order=50
-        def http_request(self,req):public_request(req.full_url,allow_local);return req
+        def __init__(self,proxies):self.proxies=proxies
+        def http_request(self,req):public_request(req.full_url,allow_local,proxies=self.proxies);return req
         https_request=http_request
     class PublicUrllibRH(UrllibRH):
-        def _create_instance(self,*args,**kwargs):
-            opener=super()._create_instance(*args,**kwargs);opener.add_handler(Guard());return opener
+        def _create_instance(self,proxies,cookiejar,legacy_ssl_support=None):
+            opener=super()._create_instance(proxies,cookiejar,legacy_ssl_support)
+            opener.add_handler(Guard(proxies));return opener
     class PublicDownloader(YoutubeDL):
         def __init__(self,params):
             super().__init__(params)
@@ -149,13 +133,13 @@ def downloader(request,progress):
         format='bv*+ba/b',ffmpeg_location=str(tools) if tools else None,js_runtimes={'node':{'path':str(node)}},remote_components=[],
         hls_prefer_native=True,external_downloader={'default':'native'},progress_hooks=[progress],max_filesize=MAX_DOWNLOAD_BYTES,
         postprocessor_hooks=[lambda state:emit('progress',phase='processing',bytes=0,total=None,speed=None)],
-        compat_opts={'no-certifi'},enable_file_urls=False)
+        enable_file_urls=False)
     return PublicDownloader(params)
 
 
 def execute(request):
     action=request.get('action')
-    if action not in ('extract','download'):raise ValueError('视频任务类型无效。')
+    if action not in ('extract','download','thumbnail'):raise ValueError('视频任务类型无效。')
     url=request.get('url');allow_local=request.get('fixture_http') is True and os.environ.get('QT_QPA_PLATFORM')=='offscreen'
     public_request(url,allow_local)
     last=[0.]
@@ -170,6 +154,14 @@ def execute(request):
             emit('progress',phase='downloading',bytes=state.get('downloaded_bytes',0),total=total,speed=state.get('speed'))
         elif state['status']=='finished':emit('progress',phase='processing',bytes=state.get('downloaded_bytes',0),total=None,speed=None)
     with downloader(request,progress) as ydl:
+        if action=='thumbnail':
+            from video_covers import MAX_COVER_BYTES,normalize_cover
+            from yt_dlp.networking import Request
+            page=request.get('page_url')
+            if page:public_request(page,allow_local)
+            with ydl.urlopen(Request(url,headers={'Referer':page} if page else {})) as response:
+                body=response.read(MAX_COVER_BYTES+1)
+            emit('result',**normalize_cover(body));return
         if action=='extract':
             info=ydl.extract_info(url,download=False);rows=[]
             for entry in media_entries(info):
@@ -181,7 +173,8 @@ def execute(request):
                 duration=entry.get('duration')
                 rows.append(dict(id=str(entry.get('id',''))[:160],url=page,title=str(entry.get('title') or '未命名视频')[:300],
                     uploader=str(entry.get('uploader') or entry.get('extractor') or '')[:100],
-                    duration=duration if type(duration) in (float,int) and math.isfinite(duration) and duration>=0 else None,options=options))
+                    duration=duration if type(duration) in (float,int) and math.isfinite(duration) and duration>=0 else None,options=options,
+                    thumbnail_url=urljoin(page,str(entry['thumbnail']))[:8192] if entry.get('thumbnail') else ''))
             if not rows:raise ValueError('没有找到可下载的视频或音频。直播、受保护内容或需要登录的链接可能无法解析。')
             emit('result',entries=rows,limited=len(rows)==MAX_RESULTS)
             return
@@ -198,7 +191,7 @@ def execute(request):
             option=next((row for row in media_options(entry,ydl) if row['id']==request.get('option')),None)
             if option is None:raise ValueError('该画质已不可用，请重新解析该链接。')
             ydl.params.update(format=option['format'],paths={'home':str(stage)},outtmpl={'default':'%(title).90B [%(id).40B].%(ext)s'})
-            if option['id']=='audio':
+            if option['extract_audio']:
                 from yt_dlp.postprocessor import FFmpegExtractAudioPP
                 ydl.add_post_processor(FFmpegExtractAudioPP(ydl,preferredcodec='best'))
             complete=ydl.process_ie_result(entry,download=True)

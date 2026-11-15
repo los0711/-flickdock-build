@@ -38,6 +38,16 @@ try{
   sa.send({type:'recent'});
   const peers=await sa.wait(row=>row.type==='peers'&&row.peers.some(peer=>peer.id===sb.id&&peer.online));
   const peer=peers.peers.find(row=>row.id===sb.id);assert.equal(peer.account_device,true);assert.equal(peer.lan_id,'b'.repeat(32));assert.equal(peer.name,'Mac');
+  const ticket={type:'lan-transfer',action:'prepare',id:randomBytes(16).toString('hex'),token:'a'.repeat(64),digest:'b'.repeat(64),fingerprint:'c'.repeat(64)};
+  sa.send({type:'lan_authorization',peer:sb.id,value:ticket});
+  const authorized=await sb.wait(row=>row.type==='lan_authorization'&&row.value.id===ticket.id);
+  assert.equal(authorized.peer,sa.id);assert.deepEqual(authorized.value,ticket);
+  sb.send({type:'lan_authorization',peer:sa.id,value:{type:'lan-transfer',action:'accepted',id:ticket.id}});
+  await sa.wait(row=>row.type==='lan_authorization'&&row.value.action==='accepted'&&row.value.id===ticket.id);
+  const before=sc.messages.length;
+  sc.send({type:'lan_authorization',peer:sb.id,value:ticket});
+  await sc.wait(row=>row.type==='error',before);
+  console.log('PASS LAN consent metadata uses authenticated signaling only; cross-account rejected');
   const spec=()=>({type:'request',id:randomBytes(16).toString('hex'),token:randomBytes(32).toString('hex'),digest:'d'.repeat(64),total:'12',count:1,names:['original.txt']});
   const request={...spec(),peer:sb.id};sa.send(request);
   const ownOffer=await sb.wait(row=>row.type==='request'&&row.id===request.id);
@@ -80,6 +90,11 @@ try{
   for(const path of pipes)await transport('DELETE',path,a);
   console.log('PASS cloud transport original R2 bytes, owner/account/direction isolation, idempotent writes, read acknowledgements and cleanup');
   sb.send({type:'accept',id:request.id});const connected=await sa.wait(row=>row.type==='begin'&&row.id===request.id);
+  const reconnectAfter=sa.messages.length;
+  sb.send({type:'accept',id:request.id});
+  const resumed=await sa.wait(row=>row.type==='resumed'&&row.id===request.id,reconnectAfter);
+  assert.equal(resumed.accepted,true);assert.equal(resumed.generation,connected.generation);
+  console.log('PASS receiver signaling recovery wakes the initiator without losing the accepted transfer');
   const route={kind:'start',id:randomBytes(16).toString('hex'),directOnly:true};
   sa.send({type:'path_signal',id:request.id,generation:connected.generation,value:route});
   assert.deepEqual((await sb.wait(row=>row.type==='path_signal'&&row.id===request.id)).value,route);

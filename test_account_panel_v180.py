@@ -28,8 +28,8 @@ from cloud_api import CloudError
 
 APP=QApplication.instance() or QApplication([])
 APP.setQuitOnLastWindowClosed(False)
-QFontDatabase.addApplicationFont(str(Path(__file__).with_name('fonts')/'HarmonyOS_Sans_SC_Regular.ttf'))
-APP.setFont(QFont('HarmonyOS Sans SC',11))
+from native_ui_common import configure_reference_font
+configure_reference_font(APP)
 PASSWORD='private-fixture-password'
 CURRENT='11111111-1111-4111-8111-111111111111'
 OTHER='22222222-2222-4222-8222-222222222222'
@@ -187,7 +187,8 @@ class AccountTests(unittest.TestCase):
         self.sign_in()
         self.assertEqual(set(self.panel.device_buttons),{OTHER})
         visible=' '.join(label.text() for label in self.panel.devices_body.findChildren(QLabel))
-        self.assertIn('(本机)',visible);self.assertNotIn('已移除的电脑',visible)
+        self.assertIn('当前电脑',visible);self.assertNotIn('已移除的电脑',visible)
+        self.assertIn('本机',self.panel._rows_by_id[CURRENT].accessibleName())
         top={id(w) for w in APP.topLevelWidgets()}
         before=len(self.api.requests);self.click(self.panel.device_buttons[OTHER])
         self.assertTrue(self.panel.confirm_frame.isVisible())

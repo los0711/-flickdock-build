@@ -158,6 +158,44 @@ class Adapter(BaseAdapter):
 
 
 class TransferTests(unittest.TestCase):
+    def test_text_revision_retires_materialized_old_text_before_single_restore(self):
+        service,adapter,receiver=self.replica('device-b')
+        until(lambda:not receiver.running)
+        identity=str(uuid4());ref='flickdock:text:'+identity
+        adapter.view=dict(permanent=[ref],texts={ref:'old text'},
+                          metadata={ref:dict(title='old.txt',text_file='old-owned.txt',_cloud_item_id=identity)})
+        receiver.state['entries'][identity]=dict(id=identity,ref=ref,dirty=False,deleted=False,version=1)
+        snapshots=[];restore=adapter.restore
+        def observed(value):snapshots.append(copy.deepcopy(value));restore(value)
+        adapter.restore=observed
+        receiver._add_ref(ref,'new text','new.txt',cloud_identity=identity,replacing=ref)
+        self.assertEqual(len(snapshots),1);self.assertEqual(adapter.removed,[ref])
+        self.assertEqual(adapter.view['permanent'],[ref]);self.assertEqual(adapter.view['texts'][ref],'new text')
+        self.assertNotIn('text_file',adapter.view['metadata'][ref])
+        self.assertEqual(adapter.view['metadata'][ref]['_cloud_item_id'],identity)
+
+    def test_new_revision_replaces_visible_file_in_one_restore(self):
+        service,adapter,sender=self.replica('device-a',initial=True)
+        until(lambda:not sender.running and bool(self.server.account('account-A')['items']))
+        remote,view,receiver=self.replica('device-b')
+        until(lambda:not receiver.running and bool(view.view['permanent']))
+        old=view.view['permanent'][0];snapshots=[];restore=view.restore
+        def observed(value):
+            snapshots.append(copy.deepcopy(value));restore(value)
+        view.restore=observed
+        newer=b'new original bytes\0'+self.payload
+        self.source.write_bytes(newer);sender.local_changed()
+        until(lambda:not sender.running and any(row['record']['version']>1
+              for row in self.server.account('account-A')['items'].values()))
+        receiver.tick()
+        until(lambda:not receiver.running and view.view['permanent']!=[old])
+        self.assertEqual(len(snapshots),1,'One logical revision must publish one complete view')
+        self.assertEqual(len(snapshots[0]['permanent']),1)
+        current=view.view['permanent'][0]
+        self.assertEqual(Path(current).read_bytes(),newer)
+        self.assertNotIn(old,view.view['metadata'])
+        self.assertEqual(view.removed,[old]);self.assertTrue(self.source.is_file())
+
     def test_other_device_sees_placeholder_before_disk_worker_finishes(self):
         service,adapter,sender=self.replica('device-a')
         other,remote,receiver=self.replica('device-b')
@@ -191,7 +229,7 @@ class TransferTests(unittest.TestCase):
         if initial: adapter.add(str(self.source))
         service.api.hold_part = hold_part; service.api.hold_init = hold_init
         service.api.hold_download_part = hold_download_part
-        engine = ShelfSync(base or self.root / device, service, adapter, poll_ms=600000)
+        engine = ShelfSync(base or self.root / device, service, adapter)
         self.engines.append(engine); service.signin('account-A')
         return service, adapter, engine
 
@@ -204,7 +242,8 @@ class TransferTests(unittest.TestCase):
 
     def project(self, adapter, engine, *, native_shelf=False):
         """Use the actual manager projection, without a native manager or hooks."""
-        from flickdock import ShelfManager, ShelfWindow
+        from flickdock import ShelfManager
+        from shelf_window import ShelfWindow
         manager = SimpleNamespace(_sync_transfer_refs=set())
         if native_shelf:
             from app_settings import SettingsStore
@@ -241,11 +280,144 @@ class TransferTests(unittest.TestCase):
         self.assertTrue(self.source.exists()); self.assertIn(('account-A', uid), self.server.receipts)
         self.assertFalse(self.server.account('account-A')['items'])
         engine.close(); calls = len(self.server.calls)
-        restarted = ShelfSync(self.root / 'device-a', service, adapter, poll_ms=600000)
+        restarted = ShelfSync(self.root / 'device-a', service, adapter)
         self.engines.append(restarted); service.signin('account-A')
         until(lambda: not restarted.running)
         self.assertTrue(restarted.state['entries'][identifier]['paused_upload'])
         self.assertFalse(any(m == 'POST' and p == '/v1/uploads' for _, m, p in self.server.calls[calls:]))
+
+    def test_preview_cancel_stops_a_live_upload_and_keeps_original(self):
+        """Exercise the real preview button through the sync cancellation path."""
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+        from flickdock import ShelfManager
+        from test_html_native_workspace import WorkspaceTests,flush
+        service,adapter,engine,transfer=self.pending()
+        fixture=WorkspaceTests(methodName='runTest');fixture.setUp()
+        notify=lambda rows:ShelfManager._transfers_changed(fixture.manager,rows)
+        try:
+            fixture.shelf.add_paths('permanent',[str(self.source)]);flush()
+            fixture.manager.sync=engine;fixture.manager._sync_transfer_refs=set()
+            engine.transfers_changed.connect(notify)
+            engine._notify_transfers()
+            popup=fixture.overview();popup.select_item(str(self.source));flush()
+            preview=popup.preview
+            self.assertTrue(preview.cancel_transfer.isVisible())
+            self.assertEqual(preview.cancel_transfer.text(),'取消上传')
+            QTest.mouseClick(preview.cancel_transfer,Qt.LeftButton)
+            until(lambda:transfer['upload_id'] not in self.server.uploads)
+            self.assertTrue(engine.state['entries'][transfer['id']]['paused_upload'])
+            self.assertTrue(self.source.is_file())
+            self.assertNotIn(str(self.source),fixture.shelf.content.transfers)
+            service.api.release();APP.processEvents()
+            self.assertFalse(self.server.account('account-A')['items'])
+        finally:
+            engine.transfers_changed.disconnect(notify)
+            fixture.tearDown()
+
+    def test_cancel_does_not_wait_for_slow_stage_cleanup(self):
+        import shelf_sync
+        service,adapter,engine,transfer=self.pending()
+        stage=Path(transfer['path']);started=threading.Event();release=threading.Event()
+        remove=shelf_sync._remove_upload_stage
+        def delayed(path,cancel):
+            started.set();release.wait(3)
+            return remove(path,cancel)
+        try:
+            with patch('shelf_sync._remove_upload_stage',side_effect=delayed):
+                before=time.monotonic()
+                self.assertTrue(engine.cancel_upload(str(self.source)))
+                self.assertLess(time.monotonic()-before,.75,'cancel waited for stage disk I/O')
+                until(started.is_set);self.assertTrue(stage.exists())
+                self.assertIn(stage.name,engine.state['pending_stage_cleanup'])
+                self.assertTrue(self.source.is_file())
+                release.set()
+                until(lambda:not stage.exists() and stage.name not in engine.state.get('pending_stage_cleanup',[]))
+        finally:release.set()
+
+    def test_cancel_keeps_ui_responsive_while_state_fsync_is_slow(self):
+        """Cancellation cannot wait for a stalled durable state write on Qt."""
+        import shelf_sync
+        from PySide6.QtTest import QTest
+        service,adapter,engine,transfer=self.pending()
+        original=shelf_sync.atomic_json;entered=threading.Event();release=threading.Event()
+        def stalled(path,value):
+            if Path(path).name=='state.json':
+                entered.set();release.wait(3)
+            return original(path,value)
+        beats=[];timer=QTimer();timer.setInterval(15);timer.timeout.connect(lambda:beats.append(time.monotonic()))
+        timer.start();safety=threading.Timer(1.5,release.set);safety.start()
+        try:
+            with patch('shelf_sync.atomic_json',side_effect=stalled):
+                started=time.monotonic()
+                self.assertTrue(engine.cancel_upload(str(self.source)))
+                elapsed=time.monotonic()-started
+                self.assertLess(elapsed,.35,'cancel blocked the GUI on the state journal')
+                self.assertTrue(entered.wait(1))
+                QTest.qWait(150)
+                self.assertGreaterEqual(len(beats),4,'the Qt event loop stalled during persistence')
+                self.assertIn(transfer['upload_id'],self.server.uploads,'cloud cancellation preceded the durable pause')
+                self.assertTrue(Path(transfer['path']).exists(),'staging was removed before the pause was durable')
+                release.set()
+                until(lambda:transfer['upload_id'] not in self.server.uploads)
+                self.assertTrue(engine.state['entries'][transfer['id']]['paused_upload'])
+        finally:
+            release.set();safety.cancel();timer.stop()
+
+    def test_failed_journal_does_not_cancel_cloud_until_retry_is_durable(self):
+        import shelf_sync
+        service,adapter,engine,transfer=self.pending()
+        original=shelf_sync.atomic_json;blocked=threading.Event();blocked.set()
+        errors=[];engine.status_changed.connect(errors.append)
+        def failing(path,value):
+            if Path(path).name=='state.json' and blocked.is_set():raise OSError('simulated disk failure')
+            return original(path,value)
+        try:
+            with patch('shelf_sync.atomic_json',side_effect=failing):
+                self.assertTrue(engine.cancel_upload(str(self.source)))
+                until(lambda:any('无法保存' in message for message in errors))
+                self.assertIn(transfer['upload_id'],self.server.uploads)
+                self.assertTrue(Path(transfer['path']).exists())
+                self.assertTrue(engine.state['entries'][transfer['id']]['paused_upload'])
+                blocked.clear();engine._journal.retry()
+                until(lambda:transfer['upload_id'] not in self.server.uploads)
+                until(lambda:not Path(transfer['path']).exists())
+        finally:blocked.clear();engine._journal.retry()
+
+    def test_account_switch_during_slow_journal_keeps_cancelled_upload_paused(self):
+        import shelf_sync
+        service,adapter,engine,transfer=self.pending()
+        original=shelf_sync.atomic_json;entered=threading.Event();release=threading.Event()
+        def stalled(path,value):
+            if Path(path).name=='state.json' and not entered.is_set():
+                entered.set();release.wait(3)
+            return original(path,value)
+        try:
+            with patch('shelf_sync.atomic_json',side_effect=stalled):
+                self.assertTrue(engine.cancel_upload(str(self.source)))
+                self.assertTrue(entered.wait(1))
+                service.signin('account-B');service.signin('account-A')
+                entry=engine.state['entries'][transfer['id']]
+                self.assertTrue(entry['paused_upload'])
+                self.assertIn(transfer['upload_id'],self.server.uploads)
+                release.set()
+                until(lambda:transfer['upload_id'] not in self.server.uploads)
+                self.assertTrue(engine.state['entries'][transfer['id']]['paused_upload'])
+        finally:release.set()
+
+    def test_cancel_stage_cleanup_survives_restart(self):
+        service,adapter,engine,transfer=self.pending()
+        stage=Path(transfer['path'])
+        with patch('shelf_sync._remove_upload_stage',return_value=False):
+            self.assertTrue(engine.cancel_upload(str(self.source)))
+            until(lambda:not engine._stage_cleanups)
+            self.assertIn(stage.name,engine.state['pending_stage_cleanup'])
+            engine.close()
+        restarted=ShelfSync(self.root/'device-a',service,adapter)
+        self.engines.append(restarted);service.signin('account-A')
+        until(lambda:not stage.exists() and not restarted.state.get('pending_stage_cleanup'))
+        self.assertTrue(self.source.is_file())
+        self.assertTrue(restarted.state['entries'][transfer['id']]['paused_upload'])
 
     def test_explicit_retry_uses_fresh_upload_and_clears_progress(self):
         service, adapter, engine, transfer = self.pending(); uid = transfer['upload_id']; states = []
@@ -375,7 +547,7 @@ class TransferTests(unittest.TestCase):
         self.server.receipts.discard(('account-A',uid))
         stale=time.time()-8*86400;os.utime(stage,(stale,stale))
         before=len(self.server.calls)
-        restarted=ShelfSync(self.root/'device-a',service,adapter,poll_ms=600000)
+        restarted=ShelfSync(self.root/'device-a',service,adapter)
         self.engines.append(restarted);service.signin('account-A')
         until(lambda:not restarted.running and restarted.state['entries'][identifier].get('paused_upload'))
         calls=self.server.calls[before:]
@@ -383,7 +555,7 @@ class TransferTests(unittest.TestCase):
         self.assertFalse(any(method=='POST' and path=='/v1/uploads' for _,method,path in calls),
                          'A missing old upload must never be silently recreated after a cancellation receipt expires')
         self.assertFalse(self.server.uploads);self.assertFalse(self.server.account('account-A')['items'])
-        self.assertFalse(stage.exists());self.assertEqual(adapter.view['permanent'],[str(self.source)])
+        until(lambda:not stage.exists());self.assertEqual(adapter.view['permanent'],[str(self.source)])
         self.assertEqual(self.source.read_bytes(),self.payload)
         service.api.release();restarted.retry_upload(str(self.source))
         until(lambda:not restarted.running and identifier in self.server.account('account-A')['items'])
@@ -401,12 +573,12 @@ class TransferTests(unittest.TestCase):
         # have expired while this origin stayed offline. Its old UUID is unsafe.
         stale=time.time()-8*86400;os.utime(stage,(stale,stale));service.api.release()
         before=len(self.server.calls)
-        restarted=ShelfSync(self.root/'device-a',service,adapter,poll_ms=600000)
+        restarted=ShelfSync(self.root/'device-a',service,adapter)
         self.engines.append(restarted);service.signin('account-A')
         until(lambda:not restarted.running and restarted.state['entries'][identifier].get('paused_upload'))
         self.assertFalse(any(method=='POST' and path=='/v1/uploads' for _,method,path in self.server.calls[before:]))
         self.assertFalse(self.server.uploads);self.assertFalse(self.server.account('account-A')['items'])
-        self.assertFalse(stage.exists());self.assertEqual(self.source.read_bytes(),self.payload)
+        until(lambda:not stage.exists());self.assertEqual(self.source.read_bytes(),self.payload)
         restarted.retry_upload(str(self.source))
         until(lambda:not restarted.running and identifier in self.server.account('account-A')['items'])
         self.assertEqual(self.server.account('account-A')['items'][identifier]['data'],self.payload)
@@ -441,7 +613,7 @@ class TransferTests(unittest.TestCase):
             # Cancellation receipts must survive closing before its cleanup
             # request is dispatched, just like the durable upload journal.
             engine.close()
-            engine = ShelfSync(self.root / 'device-a', service, adapter, poll_ms=600000)
+            engine = ShelfSync(self.root / 'device-a', service, adapter)
             self.engines.append(engine); service.signin('account-A')
         until(lambda: not engine.running and not engine.state.get('pending_uploads'))
         self.assertEqual(adapter.view['permanent'], [str(self.source)],
@@ -570,7 +742,7 @@ class TransferTests(unittest.TestCase):
         self.assertFalse(self.server.account('account-A')['items'][identity]['record']['deleted'])
         self.assertEqual(self.server.account('account-A')['items'][identity]['data'],self.payload)
         other.close();calls=len(self.server.calls)
-        restarted=ShelfSync(self.root/'device-b',other_service,other_adapter,poll_ms=600000)
+        restarted=ShelfSync(self.root/'device-b',other_service,other_adapter)
         self.engines.append(restarted);other_service.signin('account-A');until(lambda:not restarted.running)
         self.assertEqual(restarted.state.get('ignored_versions',{}).get(identity),1)
         self.assertEqual(other_adapter.view['permanent'],[])

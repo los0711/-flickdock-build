@@ -15,8 +15,6 @@ if sys.platform == "win32":
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QImage, QPainter, QPainterPath, QPen, QPolygonF
-from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QVideoFrame, QVideoSink
-from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSizePolicy, QSlider, QStyle, QStyleOptionSlider, QVBoxLayout, QWidget
 
 from flickdock_icons import document_pixmap, file_pixmap
@@ -181,11 +179,15 @@ class _VideoSurface(QWidget):
         self.image = QImage()
         self.fallback = None
         self.native = None
+        self.status_label=QLabel(self)
+        self.status_label.setWordWrap(True)
+        self.status_label.setAlignment(Qt.AlignHCenter|Qt.AlignBottom)
         self.setMinimumHeight(100)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
     def attach_video(self):
+        from PySide6.QtMultimediaWidgets import QVideoWidget
         assert self.native is None
         self.native = QVideoWidget(self)
         self.native.setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
@@ -205,6 +207,7 @@ class _VideoSurface(QWidget):
         super().resizeEvent(event)
         if self.native is not None:
             self.native.setGeometry(self.rect())
+        self.status_label.setGeometry(self.rect().adjusted(12,12,-12,-12))
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -256,9 +259,9 @@ class MediaPreview(QWidget):
         root.setSpacing(7)
         self.surface = _VideoSurface(self)
         root.addWidget(self.surface, 1)
-        self.status_label = QLabel(self)
-        self.status_label.setWordWrap(True)
-        root.addWidget(self.status_label)
+        # Loading/errors are overlays. A temporary layout row changes the
+        # video viewport's size when the first frame hides the message.
+        self.status_label = self.surface.status_label
         self.seek_slider = _SeekSlider(Qt.Orientation.Horizontal, self)
         self.seek_slider.setRange(0, 0)
         self.seek_slider.setAccessibleName("播放进度")
@@ -311,18 +314,19 @@ class MediaPreview(QWidget):
 
     def apply_theme(self, theme=None):
         ink, secondary = ui_theme.color("text"), ui_theme.color("secondary")
-        edge, accent = ui_theme.color("border"), ui_theme.color("accent")
+        track, accent = ui_theme.color("media_track"), ui_theme.color("accent")
         self.setStyleSheet(f"""
             QWidget#mediaPreview {{background:transparent;}}
             QWidget#mediaPreview QLabel {{background:transparent;color:{secondary};font-size:12px;}}
-            QWidget#mediaPreview QSlider::groove:horizontal {{height:4px;background:{edge};border-radius:2px;}}
+            QWidget#mediaPreview QSlider::groove:horizontal {{height:4px;background:{track};border-radius:2px;}}
+            QWidget#mediaPreview QSlider::add-page:horizontal {{background:{track};border-radius:2px;}}
             QWidget#mediaPreview QSlider::sub-page:horizontal {{background:{accent};border-radius:2px;}}
             QWidget#mediaPreview QSlider::handle:horizontal {{width:11px;margin:-4px 0;border-radius:5px;background:{ink};}}
             QWidget#mediaPreview QSlider::handle:horizontal:focus {{border:1px solid {accent};}}
         """)
         self.update()
 
-    def set_source(self, path):
+    def set_source(self, path, *, poster=None, defer=False):
         value = str(Path(path).resolve()) if path else ""
         if not value:
             self.release_source()
@@ -349,11 +353,22 @@ class MediaPreview(QWidget):
             self._poster_sent = False
             self._resume_position = 0
             self._set_duration(0)
-        self.surface.fallback = file_pixmap(value, 110)
-        self.surface.update()
         self._video = Path(value).suffix.lower() in VIDEO_SUFFIXES
+        if self._video and self.surface.image.isNull() and poster is not None and not poster.isNull():
+            self.surface.image = QImage(poster)
+        # A format icon between selection and the first frame looks like a
+        # second item. Videos keep one stable surface throughout decoder setup.
+        self.surface.fallback = None if self._video else file_pixmap(value, 110)
+        self.surface.update()
         self._failed = False
-        self._load_player(poster=self._video and self.surface.image.isNull())
+        if defer:
+            self.play_button.setEnabled(False)
+            self.seek_slider.setEnabled(False)
+            self.open_button.setEnabled(True)
+            self.status_label.setText('正在读取媒体…' if self.surface.image.isNull() else '')
+            self.status_label.setVisible(self.surface.image.isNull())
+        else:
+            self._load_player(poster=self._video)
 
     def _load_player(self, *, poster=False, play=False):
         """Create a fresh native source only for selection or explicit playback."""
@@ -378,6 +393,7 @@ class MediaPreview(QWidget):
         self.status_label.setText("正在读取媒体…")
         self.status_label.show()
         generation = self._generation
+        from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QVideoSink
         player = self.player = QMediaPlayer(self)
         self.audio_output = QAudioOutput(self)
         self.audio_output.setVolume(self.volume_slider.value() / 100)
@@ -409,6 +425,7 @@ class MediaPreview(QWidget):
             player.setVideoSink(None)
             player.setAudioOutput(None)
         if sink is not None:
+            from PySide6.QtMultimedia import QVideoFrame
             sink.setVideoFrame(QVideoFrame())
         native_sink = self.surface.native is not None
         self.surface.detach_video()
@@ -417,6 +434,7 @@ class MediaPreview(QWidget):
                 item.deleteLater()
 
     def _status_changed(self, status):
+        from PySide6.QtMultimedia import QMediaPlayer
         if status in (QMediaPlayer.MediaStatus.LoadedMedia, QMediaPlayer.MediaStatus.BufferedMedia):
             if not self._ensure_source_available() or self.player is None:
                 return
@@ -548,6 +566,7 @@ class MediaPreview(QWidget):
             self._seek(position)
 
     def toggle_playback(self):
+        from PySide6.QtMultimedia import QMediaPlayer
         if not self.path or not self._ensure_source_available() or self._failed:
             return
         if self.player is None:
@@ -583,6 +602,7 @@ class MediaPreview(QWidget):
             self._state_changed(player.playbackState())
 
     def _state_changed(self, state):
+        from PySide6.QtMultimedia import QMediaPlayer
         playing = state == QMediaPlayer.PlaybackState.PlayingState and self._user_playing and not self._poster_pending
         self.play_button.set_label("pause" if playing else "play", "暂停" if playing else "播放")
         self._report_playing(playing)

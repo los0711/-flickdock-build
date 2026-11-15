@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Signal, Qt, QPoint
 from PySide6.QtGui import QFontDatabase
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton
@@ -16,8 +16,8 @@ from app_settings import SettingsStore
 from lan_panel import LanDialog
 
 APP=QApplication.instance() or QApplication([])
-for source in (Path(__file__).parent/'fonts').glob('HarmonyOS_Sans_SC_*.ttf'):
-    QFontDatabase.addApplicationFont(str(source))
+from native_ui_common import configure_reference_font
+configure_reference_font(APP)
 
 
 class FakeLan(QObject):
@@ -65,6 +65,38 @@ class NativeLanTests(unittest.TestCase):
         self.assertEqual(self.service.calls[-1],('accept','incoming',panel.receive_path.text()))
         self.assertTrue(row['heading'].isVisible());self.assertFalse(card.isVisible())
         row['cancel'].click();self.assertEqual(self.service.calls[-1],('cancel','incoming'))
+
+    def test_device_popup_has_visible_antialiased_rounded_frame_in_both_themes(self):
+        combo=self.dialog.panel.devices
+        for theme in ('light','dark'):
+            self.dialog.apply_theme(theme);APP.processEvents();combo.showPopup();APP.processEvents()
+            popup=combo.view().window();image=popup.grab().toImage()
+            self.assertTrue(popup.testAttribute(Qt.WA_TranslucentBackground))
+            self.assertTrue(popup.windowFlags()&Qt.FramelessWindowHint)
+            self.assertTrue(popup.mask().isEmpty())
+            for x,y in ((0,0),(image.width()-1,0),(0,image.height()-1),(image.width()-1,image.height()-1)):
+                self.assertEqual(image.pixelColor(x,y).alpha(),0,(theme,x,y))
+            self.assertGreater(image.pixelColor(image.width()//2,3).alpha(),200)
+            self.assertTrue(any(0<image.pixelColor(x,y).alpha()<255
+                                for x in range(12) for y in range(12)))
+            self.assertGreaterEqual(combo.view().x(),4)
+            view=combo.view();rect=view.visualRect(view.model().index(0,0))
+            self.assertGreaterEqual(view.viewport().height(),rect.bottom()+1)
+            self.assertGreaterEqual(popup.height()-view.geometry().bottom()-1,4)
+            combo.hidePopup();APP.processEvents()
+
+    def test_clear_buttons_share_default_and_red_hover_in_both_themes(self):
+        panel=self.dialog.panel
+        for theme in ('light','dark'):
+            self.dialog.apply_theme(theme);APP.processEvents();pixels=[]
+            for control in (panel.clear_queue,panel.clear_history):
+                control.setEnabled(True);QTest.mouseMove(control,QPoint(-20,-20));APP.processEvents()
+                normal=control.grab().toImage().pixelColor(5,control.height()//2)
+                QTest.mouseMove(control,control.rect().center());APP.processEvents()
+                hovered=control.grab().toImage().pixelColor(5,control.height()//2)
+                self.assertGreater(hovered.red(),hovered.green());self.assertNotEqual(normal,hovered)
+                pixels.append((normal,hovered,control.size()))
+            self.assertEqual(pixels[0],pixels[1])
 
     def test_macos_control_variant_keeps_modeless_navigation(self):
         with patch('lan_panel.sys.platform','darwin'):
