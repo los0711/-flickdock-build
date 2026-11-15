@@ -15,6 +15,9 @@ import traceback
 if sys.platform != 'darwin' or os.environ.get('GITHUB_ACTIONS') != 'true' or os.environ.get('RUNNER_OS') != 'macOS':
     raise RuntimeError('This probe requires a disposable macOS CI runner')
 os.environ['QT_QPA_PLATFORM']='cocoa'
+# Match runtime_macos.py, before importing any Qt Multimedia module.
+os.environ['QT_MEDIA_BACKEND']='darwin'
+os.environ['QT_MAC_SET_RAISE_PROCESS']='0'
 root=Path('ci-mac-video-probe').resolve();root.mkdir(exist_ok=True)
 stack_file=(root/'python-stack.txt').open('w',encoding='utf8',buffering=1)
 faulthandler.enable(file=stack_file,all_threads=True)
@@ -55,7 +58,7 @@ try:
     shelf.add_paths('permanent',[str(original),str(av1),str(image)]);workspace.flush()
     shelf.show_contents();workspace.until(lambda:not shelf.geometry_morph.active,seconds=5)
     popup=shelf.popup;popup.resume_content();workspace.until(lambda:popup._build_cursor==len(popup.visible_refs()),seconds=10)
-    report=dict(platform=app.platformName(),modes={},video=str(original.name))
+    report=dict(platform=app.platformName(),media_backend=os.environ['QT_MEDIA_BACKEND'],modes={},video=str(original.name))
     for mode in ('list','icons'):
         popup.change_view_mode(mode);popup.resume_content()
         workspace.until(lambda:popup._build_cursor==len(popup.visible_refs()),seconds=10)
