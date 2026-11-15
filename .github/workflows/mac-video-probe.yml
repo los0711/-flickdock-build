@@ -1,4 +1,4 @@
-name: Verify existing Mac video compositor package
+name: Diagnose source and frozen Mac media environment
 on:
   push:
     branches: [mac-video-diagnostics]
@@ -32,7 +32,7 @@ jobs:
         run: |
           python -m pip install 'PySide6==6.12.0' 'pyobjc-framework-Quartz>=11,<13' 'keyring==25.7.0' 'fasttext-predict-v2==1.1.0' 'yt-dlp[default]==2026.10.26' 'imageio-ffmpeg==0.6.0' 'cryptography==50.0.2'
           python -c "import imageio_ffmpeg; from pathlib import Path; p=Path(imageio_ffmpeg.get_ffmpeg_exe()); assert p.is_file(); print('Generated-video fixture dependency is ready')"
-      - name: Verify unchanged package bytes and run both compositor checks
+      - name: Compare source and frozen media with audio and silent fixtures
         run: |
           python - <<'PY'
           import hashlib,json,os,subprocess,sys,tempfile,zipfile
@@ -56,40 +56,36 @@ jobs:
           with zipfile.ZipFile(built/'FlickDock-1.8.37-macOS-arm64.zip') as archive:
               app=_extract(archive,Path('ci-app'),None)
           subprocess.run(['/usr/bin/codesign','--verify','--deep','--strict',str(app)],check=True,timeout=30)
-          subprocess.run([sys.executable,'ci_mac_video_compositor.py','--source',str(Path.cwd()),
-                          '--renderer','composited','--clicks','50','--timeout','120',
-                          '--output',str(output/'native')],check=True,timeout=130)
-          native=json.loads((output/'native/worker-result.json').read_text())
-          supervisor=json.loads((output/'native/supervisor-result.json').read_text())
-          assert native['ok'] and supervisor['ok'] and native['snapshot_finished'] and native['selected_after_reopen']
-          assert native['renderer']=='composited' and native['gil_held_diagnostics']
-          (output/'mac-video-compositor-arm64.json').write_text(json.dumps(dict(ok=True,native=native,supervisor=supervisor),indent=2))
-          with tempfile.TemporaryDirectory(prefix='flickdock-raster-recheck-') as profile:
-              video=Path(profile)/'generated.mp4'
-              subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(),'-v','error','-f','lavfi','-i',
-                              'testsrc=size=640x360:rate=24','-f','lavfi','-i','sine=frequency=440:sample_rate=44100',
-                              '-t','4','-c:v','libx264','-pix_fmt','yuv420p','-c:a','aac','-shortest','-y',str(video)],
-                             check=True,capture_output=True,timeout=30)
-              report=(output/'mac-media-compositor-arm64.json').resolve()
-              env=dict(os.environ,HOME=profile,APPDATA=profile,XDG_CONFIG_HOME=profile,QT_QPA_PLATFORM='offscreen',QT_MEDIA_BACKEND='darwin')
-              subprocess.run([str((app/'Contents/MacOS/FlickDock').resolve()),'--verify-media',str(video),
-                              '--verify-output',str(report)],env=env,check=True,timeout=90)
-              frozen=json.loads(report.read_text())
-              assert frozen['ok'] and frozen['frozen'] and frozen['version']=='1.8.37'
-              assert frozen['renderer']=='qvideosink-raster' and frozen['native_renderer'] is False
-              assert frozen['presented_playback_frames']>1
-          record=dict(ok=True,application_commit='418615af948102f2172631ea7ffddbc5e346827e',
-                      verification_commit=os.environ['GITHUB_SHA'],source_artifact_id=14165688007,
-                      source_build_run=43722092773,package_artifacts=build['artifacts'],
-                      package_rebuilt=False,missing_fixture_dependency_corrected=True)
-          (output/'mac-verification-recovery.json').write_text(json.dumps(record,indent=2))
-          print(json.dumps(record,indent=2))
+          with tempfile.TemporaryDirectory(prefix='flickdock-media-ab-') as profile:
+              cases=[]
+              for audio in (True,False):
+                  video=Path(profile)/('audio.mp4' if audio else 'silent.mp4')
+                  command=[imageio_ffmpeg.get_ffmpeg_exe(),'-v','error','-f','lavfi','-i','testsrc=size=640x360:rate=24']
+                  if audio:command+=['-f','lavfi','-i','sine=frequency=440:sample_rate=44100']
+                  command+=['-t','4','-c:v','libx264','-pix_fmt','yuv420p']
+                  if audio:command+=['-c:a','aac','-shortest']
+                  command+=['-y',str(video)]
+                  subprocess.run(command,check=True,capture_output=True,timeout=30)
+                  for frozen in (False,True):
+                      name=('frozen' if frozen else 'source')+('-audio' if audio else '-silent')
+                      report=(output/(name+'.json')).resolve()
+                      command=([str((app/'Contents/MacOS/FlickDock').resolve())] if frozen else [sys.executable,'flickdock.py'])
+                      command+=['--verify-media',str(video),'--verify-output',str(report)]
+                      env=dict(os.environ,HOME=profile,APPDATA=profile,XDG_CONFIG_HOME=profile,
+                               QT_QPA_PLATFORM='offscreen',QT_MEDIA_BACKEND='darwin',
+                               QT_LOGGING_RULES='qt.multimedia.*=true')
+                      result=subprocess.run(command,env=env,capture_output=True,text=True,timeout=45)
+                      (output/(name+'.log')).write_text(result.stdout+'\n'+result.stderr)
+                      value=json.loads(report.read_text()) if report.exists() else {}
+                      row=dict(case=name,exit_code=result.returncode,report=value)
+                      cases.append(row);print(json.dumps(row),flush=True)
+              (output/'media-environment-ab.json').write_text(json.dumps(dict(cases=cases,scope='Compare AVFoundation offscreen support, not installed-app acceptance'),indent=2))
           PY
       - name: Retain verification results
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: Mac-video-verification-${{ github.sha }}
+          name: Mac-media-environment-${{ github.sha }}
           path: reverification/
           if-no-files-found: warn
           retention-days: 3
