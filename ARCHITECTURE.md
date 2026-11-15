@@ -61,6 +61,13 @@ asynchronous writer, unchanged idle snapshots are skipped, logs have size and
 retention limits. Diagnostic export contains no clipboard body. Paint arrivals
 are explicitly not measurements of displayed GPU frames.
 
+`theme_accent.py` owns the validated user accent and cached contrasting action
+tokens. Settings keep a local draft until Save; Cancel never changes the global
+palette. The default black theme retains inverse actions in dark appearance.
+Transfer progress, local blue and cloud green remain semantic status colors.
+Reference primary-button styles resolve semantic tokens when refreshed, so an
+existing split button does not retain its previous accent after a settings save.
+
 ## Verification
 
 Run the maintained offscreen regressions with `QT_QPA_PLATFORM=offscreen` and

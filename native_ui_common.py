@@ -436,6 +436,8 @@ def colors(theme='dark', platform=None):
     result.update(radius=16 if is_mac else 10, card_radius=RADIUS_CARD_PX,
                   radius_small=RADIUS_SMALL_PX, radius_subcontrol=RADIUS_SUBCONTROL_PX, radius_control=RADIUS_CONTROL_PX,
                   radius_card=RADIUS_CARD_PX, radius_panel=RADIUS_PANEL_PX)
+    from theme_accent import action_tokens
+    result.update(action_tokens('light' if light else 'dark'))
     result.update(primary=result['action'], accent=result['action'], danger=result['red'], success=result['green'])
     return result
 

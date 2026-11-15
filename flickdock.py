@@ -107,6 +107,8 @@ class ShelfManager:
             except OSError:
                 self.startup_error = "自启动位置未能更新。可在设置中关闭后重新开启自启动。"
         ui_theme.set_theme(self.settings.theme)
+        from theme_accent import set_color
+        set_color(self.settings.accent_color)
         ui_theme.apply_application(app, shelf_ui_common.FONT_FAMILY)
         self.settings_dialog = None
         self.settings_edge_hint=SettingsEdgeHint(self)
@@ -878,11 +880,13 @@ class ShelfManager:
                 popup.view_list.setChecked(self.settings.view_mode=='list')
                 popup.view_grid.setChecked(self.settings.view_mode=='icons')
                 popup.rebuild()
-        if 'theme' in changed:
+        if changed & {'theme','accent_color'}:
             self._note_ui('theme.change')
             recorder=getattr(self.app,'_crash_diagnostics',None)
             if recorder is not None:recorder.configure(theme=self.settings.theme,motion=self.motion)
             ui_theme.set_theme(self.settings.theme)
+            from theme_accent import set_color
+            set_color(self.settings.accent_color)
             ui_theme.apply_application(self.app, shelf_ui_common.FONT_FAMILY)
             self.shelf.refresh()
             if self.shelf.popup:self.shelf.popup.preview.media.apply_theme()

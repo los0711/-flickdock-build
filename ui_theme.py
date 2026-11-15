@@ -113,7 +113,7 @@ def style_widget(widget, source, font_family):
     widget.setStyleSheet(qss(source, font_family))
 
 def apply_application(app, font_family):
-    from native_ui_common import colors,font_css_stack,RADIUS_SUBCONTROL_PX
+    from native_ui_common import colors,font_css_stack,RADIUS_SUBCONTROL_PX,UiButton
     palette = QPalette()
     roles = {'Window':'surface','Base':'surface','AlternateBase':'canvas',
              'WindowText':'text','Text':'text','ButtonText':'text','Button':'button',
@@ -135,6 +135,7 @@ def apply_application(app, font_family):
         QApplication.setEffectEnabled(Qt.UI_FadeTooltip,False)
         app._flickdock_tooltip_corners=_TooltipCorners(app);app.installEventFilter(app._flickdock_tooltip_corners)
     for widget in app.allWidgets():
+        if isinstance(widget,UiButton):widget.refresh_style()
         source = getattr(widget, '_flickdock_style', None)
         if source is not None:
             widget.setStyleSheet(qss(source, font_family))

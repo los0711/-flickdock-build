@@ -1206,8 +1206,10 @@ class LanPanel(QFrame):
         except OSError as error:self.status_label.setText(str(error))
 
     def apply_theme(self, theme):
-        if getattr(self,'_applied_theme',None)==theme:return
-        self._applied_theme=theme
+        from theme_accent import current
+        key=(theme,current())
+        if getattr(self,'_applied_theme',None)==key:return
+        self._applied_theme=key
         self._dark = theme == 'dark'
         self.device_delegate.dark = self._dark
         c=ui_colors(theme)
@@ -1952,8 +1954,10 @@ class LanDialog(QDialog):
             self.panel.service.check_code();self.panel._code_identity_changed(self.panel.service.code_identity())
 
     def apply_theme(self, theme):
-        if getattr(self,'_applied_dialog_theme',None)==theme:return
-        self._applied_dialog_theme=theme;self._theme=theme
+        from theme_accent import current
+        key=(theme,current())
+        if getattr(self,'_applied_dialog_theme',None)==key:return
+        self._applied_dialog_theme=key;self._theme=theme
         dark = theme == 'dark'
         self.setProperty('uiTheme', theme)
         c=ui_colors(theme)

@@ -96,7 +96,8 @@ def css(widget, dark, light=None):
         dark=dark.replace("'FlickDock UI'",family)
         if light is not None:light=light.replace("'FlickDock UI'",family)
     widget._reference_style=(readable_qss(dark), readable_qss(light if light is not None else dark))
-    resolved=widget._reference_style[ui_theme.current_theme()=='light']
+    from theme_accent import resolve_qss
+    resolved=resolve_qss(widget._reference_style[ui_theme.current_theme()=='light'],ui_theme.current_theme())
     if widget.styleSheet()!=resolved:widget.setStyleSheet(resolved)
 
 
@@ -105,8 +106,10 @@ def refresh_tree(widget,theme=None):
     themed_colors=colors(theme)
     for child in [widget, *widget.findChildren(QWidget)]:
         source=getattr(child,'_reference_style',None)
-        if source and child.styleSheet()!=source[theme=='light']:
-            child.setStyleSheet(source[theme=='light'])
+        if source:
+            from theme_accent import resolve_qss
+            resolved=resolve_qss(source[theme=='light'],theme)
+            if child.styleSheet()!=resolved:child.setStyleSheet(resolved)
         if getattr(child,'_reference_icon',None):
             name,tint=child._reference_icon
             child.setIcon(icon(name,themed_colors.get(tint,tint)))
@@ -319,6 +322,7 @@ def button(value='',glyph='',variant='quiet',parent=None,*,control_type=IconText
     sources=[]
     for theme in ('dark','light'):
         c=colors(theme)
+        if variant=='primary':c.update({key:'@fd_'+key+'@' for key in ('action','on_action','action_hover','action_pressed')})
         background=c['control'] if variant in ('secondary','secondary_blue') else c['action'] if variant=='primary' else 'rgba(255,69,58,30)' if variant=='danger' else 'transparent'
         ink=c['on_action'] if variant=='primary' else c['red'] if variant=='danger' else c['link'] if variant in ('link','secondary_blue') else c['secondary'] if variant=='quiet' else c['text']
         border=c['border'] if variant=='secondary' else 'transparent'
@@ -341,7 +345,7 @@ def split_send_button(parent,height):
     """One primary action with a separate keyboard-accessible device menu."""
     frame=QFrame(parent);frame.setObjectName('splitSendControl');frame.setFixedHeight(height)
     frame.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
-    css(frame,*[f"QFrame#splitSendControl{{background:{colors(t)['action']};border:0;border-radius:8px;}} "
+    css(frame,*[f"QFrame#splitSendControl{{background:@fd_action@;border:0;border-radius:8px;}} "
                  f"QFrame#splitSendControl:disabled{{background:{colors(t)['control']};}}" for t in ('dark','light')])
     layout=QHBoxLayout(frame);layout.setContentsMargins(0,0,0,0);layout.setSpacing(0)
     primary=button('发送文件',variant='primary',parent=frame);primary.setFixedHeight(height)
@@ -352,6 +356,7 @@ def split_send_button(parent,height):
         styles=[]
         for theme in ('dark','light'):
             c=colors(theme)
+            c.update({key:'@fd_'+key+'@' for key in ('action','on_action','action_hover','action_pressed')})
             corners=('border-top-left-radius:0;border-bottom-left-radius:0;border-top-right-radius:8px;border-bottom-right-radius:8px;'
                      if right else 'border-top-left-radius:8px;border-bottom-left-radius:8px;border-top-right-radius:0;border-bottom-right-radius:0;')
             styles.append(f"QPushButton{{background:{c['action']};color:{c['on_action']};border:1px solid transparent;"

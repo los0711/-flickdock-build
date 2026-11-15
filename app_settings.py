@@ -556,7 +556,7 @@ class SettingsStore(QObject):
         super().__init__(parent)
         self.base = Path(base).resolve()
         self.path = self.base / "settings.json"
-        self._data = {"theme": "light", "capture_dir": str(self.base / "saved"), "autostart": True,
+        self._data = {"theme": "light", "accent_color":"#000000", "capture_dir": str(self.base / "saved"), "autostart": True,
                       "capture_mode": "reference", "keep_empty_handle": True,
                       "sync_upload_enabled": True, "sync_receive_enabled": True,
                       "clipboard_sync_enabled": True, "clipboard_notice_seen": False, "clipboard_success_notice": True,
@@ -577,6 +577,9 @@ class SettingsStore(QObject):
                 except ValueError:pass
                 if data.get("theme") in ("light", "dark"):
                     self._data["theme"] = data["theme"]
+                from theme_accent import normalize
+                if isinstance(data.get('accent_color'),str) and re.fullmatch(r'#[0-9a-fA-F]{6}',data['accent_color']):
+                    self._data['accent_color']=normalize(data['accent_color'])
                 directory = data.get("capture_dir")
                 if isinstance(directory, str) and directory.strip():
                     candidate = Path(os.path.expandvars(directory)).expanduser()
@@ -636,6 +639,9 @@ class SettingsStore(QObject):
     @property
     def theme(self) -> str:
         return self._data["theme"]
+
+    @property
+    def accent_color(self):return self._data['accent_color']
 
     @property
     def capture_dir(self) -> Path:
@@ -783,7 +789,7 @@ class SettingsStore(QObject):
             raise ValueError("无法写入这个文件夹，请选择可写入的位置。") from error
         return directory.resolve()
 
-    def update(self, *, theme=None, capture_dir=None, autostart=None, view_mode=None,
+    def update(self, *, theme=None, accent_color=None, capture_dir=None, autostart=None, view_mode=None,
                shelf_shortcut=None, overview_shortcut=None, dock_edge=None,
                dock_position=None, dock_length=None, dock_thickness=None,
                trigger_visible=None, dock_color=None, dock_opacity=None,
@@ -791,6 +797,9 @@ class SettingsStore(QObject):
                shake_sensitivity=None, sync_upload_enabled=None, translation_enabled=None, translation_target=None,
                sync_receive_enabled=None, clipboard_sync_enabled=None, clipboard_notice_seen=None, clipboard_success_notice=None, display_triggers=None, automatic_updates=None, video_link_prompt=None, video_download_dir=None) -> bool:
         candidate = dict(self._data)
+        if accent_color is not None:
+            from theme_accent import normalize
+            candidate['accent_color']=normalize(accent_color)
         if translation_target is not None:
             from translation_languages import TARGETS
             if translation_target not in TARGETS:raise ValueError('请选择有效的翻译目标语言。')
@@ -1604,6 +1613,17 @@ class SettingsDialog(QDialog):
             appearance_grid.addWidget(block,0,len(appearance_blocks)-1)
         for column in range(2):appearance_grid.setColumnStretch(column,1)
         al.addLayout(appearance_grid);self._appearance_grid=(appearance_grid,appearance_blocks)
+        accent=QHBoxLayout();accent.setSpacing(8);accent.addWidget(QLabel('主题色',appearance),1)
+        self.accent_color_button=QPushButton(appearance);self.accent_color_button.setObjectName('settingsColorButton')
+        self.accent_color_button.setAccessibleName('自定义主题色');self.accent_color_button.setAutoDefault(False)
+        self.accent_color_button.setToolTip('自定义主要操作与选中颜色；默认黑色在深色外观下自动反转以保持对比。')
+        self.accent_color_button.setFixedHeight(28);self.accent_color_button.clicked.connect(self.choose_accent_color)
+        accent.addWidget(self.accent_color_button)
+        self.accent_reset_button=QPushButton('恢复默认',appearance);self.accent_reset_button.setObjectName('settingsReset')
+        self.accent_reset_button.setAccessibleName('恢复默认黑色主题');self.accent_reset_button.setAutoDefault(False)
+        self.accent_reset_button.setFixedHeight(28);self.accent_reset_button.clicked.connect(lambda:self._set_accent_color('#000000'))
+        accent.addWidget(self.accent_reset_button);al.addLayout(accent)
+        self._accent_picker=None
         # Preserve the exact input objects and all original range/preview signals.
         dock=self.dock_card;dl=dock.layout();self._empty_layout(dl)
         self._empty_layout(self.interaction_card.layout());self.interaction_card.hide()
@@ -2166,6 +2186,27 @@ class SettingsDialog(QDialog):
             self._set_dock_color(original)
         picker.deleteLater()
 
+    def _set_accent_color(self,value):
+        from theme_accent import normalize
+        self._draft_accent=normalize(value.name() if isinstance(value,QColor) else value)
+        self.accent_color_button.setText(self._draft_accent)
+        swatch=QPixmap(18,18);swatch.fill(Qt.transparent)
+        painter=QPainter(swatch);painter.setRenderHint(QPainter.Antialiasing)
+        painter.setBrush(QColor(self._draft_accent));painter.setPen(QPen(QColor('#A3A3A3'),1))
+        painter.drawRoundedRect(QRectF(2.5,2.5,13,13),3,3);painter.end()
+        self.accent_color_button.setIcon(QIcon(swatch))
+
+    def choose_accent_color(self):
+        from qt_lifetime import guard
+        if self._accent_picker is not None:
+            self._accent_picker.raise_();self._accent_picker.activateWindow();return
+        picker=QColorDialog(QColor(self._draft_accent),self);self._accent_picker=picker
+        picker.setWindowTitle('自定义主题色');picker.setOption(QColorDialog.DontUseNativeDialog,True)
+        picker.setAttribute(Qt.WA_DeleteOnClose)
+        picker.accepted.connect(guard(self,lambda dialog,selection:dialog._set_accent_color(selection.currentColor()),picker))
+        picker.finished.connect(guard(self,lambda dialog,result:setattr(dialog,'_accent_picker',None)))
+        picker.open()
+
     def show_author(self):
         if self.author_dialog is None:
             self.author_dialog = AuthorDialog(self, self.theme_combo.currentData())
@@ -2188,6 +2229,7 @@ class SettingsDialog(QDialog):
         self.video_prompt_checkbox.setChecked(self.store.video_link_prompt)
         self.clipboard_success_checkbox.setChecked(self.store.clipboard_success_notice)
         self.theme_combo.setCurrentIndex(1 if self.store.theme == "dark" else 0)
+        self._set_accent_color(self.store.accent_color)
         self.folder_edit.setText(str(self.store.capture_dir))
         self.capture_mode_combo.setCurrentIndex(self.capture_mode_combo.findData(self.store.capture_mode))
         self.keep_empty_handle_checkbox.setChecked(self.store.keep_empty_handle)
@@ -2321,7 +2363,7 @@ class SettingsDialog(QDialog):
 
     def draft(self):
         """Return the form values without committing preferences or new behavior."""
-        return {"theme": self.theme_combo.currentData(), "capture_dir": self.folder_edit.text(),
+        return {"theme": self.theme_combo.currentData(), "accent_color":self._draft_accent, "capture_dir": self.folder_edit.text(),
                 "capture_mode": self.capture_mode_combo.currentData(),
                 "keep_empty_handle": self.keep_empty_handle_checkbox.isChecked(),
                 "trigger_view": self.trigger_view_combo.currentData(),
@@ -2332,9 +2374,11 @@ class SettingsDialog(QDialog):
                 **self._dock_values()}
 
     def apply_theme(self, theme):
-        if getattr(self,'_applied_settings_theme',None)==theme:
+        from theme_accent import current
+        if getattr(self,'_applied_settings_theme',None)==theme and getattr(self,'_applied_settings_accent',None)==current():
             return
         self._applied_settings_theme=theme
+        self._applied_settings_accent=current()
         dark = theme == "dark"
         self.category_list.set_selection_theme(theme)
         self.surface.dark = dark

@@ -771,8 +771,10 @@ class ShelfWindow(QWidget):
         from reference_widgets import refresh_tree
         self.surface_effect.invalidate_source()
         theme=self.manager.settings.theme
-        if getattr(self,'_tree_theme',None)!=theme:
-            refresh_tree(self);self._tree_theme=theme
+        from theme_accent import current
+        theme_key=(theme,current())
+        if getattr(self,'_tree_theme',None)!=theme_key:
+            refresh_tree(self);self._tree_theme=theme_key
         self.refresh_account_identity()
         for mode in MODES:
             self.files[mode] = [p for p in self.files[mode] if self._display_ref_exists(p)]
