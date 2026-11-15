@@ -3,6 +3,7 @@ import json,tempfile,threading,unittest
 from pathlib import Path
 from unittest.mock import patch
 from PySide6.QtCore import QThread,QTimer
+from PySide6.QtTest import QTest
 from PySide6.QtGui import QColor,QPalette
 from PySide6.QtWidgets import QLabel,QPushButton,QWidget,QProgressBar
 from app_settings import SettingsStore,SettingsDialog
@@ -68,6 +69,42 @@ class LiveSettingsTests(unittest.TestCase):
                 release.set();settle_preferences(self.dialog)
             self.assertEqual(SettingsStore(self.store.base).accent_color,'#000000')
         finally:release.set();timer.stop()
+
+    def test_theme_button_finishes_feedback_before_crossfade_and_rapid_reversal(self):
+        self.dialog.show();flush();dialog=self.dialog
+        buttons=dialog._theme_segment._selection_buttons
+        with patch('ui_transitions.motion_allowed',return_value=True),patch('native_ui_common.reduced_motion',return_value=False):
+            buttons[1].click()
+            self.assertTrue(buttons[1].isChecked());self.assertEqual(dialog.theme_combo.currentData(),'light')
+            buttons[0].click();QTest.qWait(700);flush()
+            self.assertEqual(dialog.theme_combo.currentData(),'light');self.assertIsNone(dialog._pending_theme_index)
+            with patch.object(dialog._theme_transition,'change',wraps=dialog._theme_transition.change) as fade:
+                buttons[1].click()
+                self.assertEqual(dialog.theme_combo.currentData(),'light')
+                until(lambda:dialog.theme_combo.currentData()=='dark')
+                self.assertTrue(fade.called)
+            settle_preferences(dialog)
+            self.assertEqual(SettingsStore(self.store.base).theme,'dark')
+
+    def test_closing_settings_commits_pending_theme_selection(self):
+        self.dialog.show();flush();dialog=self.dialog
+        with patch('ui_transitions.motion_allowed',return_value=True),patch('native_ui_common.reduced_motion',return_value=False):
+            dialog._theme_segment._selection_buttons[1].click();dialog.close()
+            settle_preferences(dialog)
+        self.assertEqual(SettingsStore(self.store.base).theme,'dark')
+
+    def test_theme_crossfade_has_intermediate_frame_without_resizing_window(self):
+        self.dialog.show();flush();dialog=self.dialog;geometry=dialog.geometry()
+        with patch('ui_transitions.motion_allowed',return_value=True),patch('native_ui_common.reduced_motion',return_value=False):
+            dialog._theme_segment._selection_buttons[1].click()
+            until(lambda:dialog.theme_combo.currentData()=='dark')
+            fade=dialog._theme_transition
+            self.assertIsNotNone(fade.snapshot);self.assertTrue(fade.isVisible())
+            fade.animation.setCurrentTime(fade.animation.duration()//2)
+            self.assertGreater(fade.alpha,0.);self.assertLess(fade.alpha,1.)
+            self.assertEqual(dialog.geometry(),geometry)
+            fade.finish()
+        settle_preferences(dialog)
 
     def test_chooser_surface_labels_and_first_change_button_and_progress_contrast(self):
         primary=button('测试',variant='primary');progress=QProgressBar()

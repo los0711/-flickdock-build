@@ -63,11 +63,12 @@ class MacVideoCompatibilityTests(unittest.TestCase):
     def test_vp9_opus_is_converted_to_h264_aac(self):
         with tempfile.TemporaryDirectory() as directory:
             source=Path(directory)/'vp9.webm';self.make(source,'libvpx-vp9','libopus')
-            progress=[]
+            progress=[];info={}
             with patch('video_worker.emit',side_effect=lambda kind,**value:progress.append(value)):
-                output=_mac_compatible_video(source,self.ffmpeg.parent)
+                output=_mac_compatible_video(source,self.ffmpeg.parent,info)
             self.assertFalse(source.exists());self.assertEqual(output.suffix,'.mp4')
             self.assertEqual(_mac_video_streams(output,self.ffmpeg),([('h264','yuv420p')],['aac']))
+            self.assertEqual(info['video_codec'],'h264')
             self.assertGreater(len(self.frames(output)),0)
             self.assertTrue(progress);self.assertTrue(all(event['phase']=='converting' for event in progress))
             self.assertTrue(any(event['total'] for event in progress))

@@ -63,8 +63,36 @@ class MacBuildTests(unittest.TestCase):
                     self.assertIn('runningApplicationsWithBundleIdentifier',script.read_text(encoding='utf8'))
                     self.assertIn('退出并继续',script.read_text(encoding='utf8'))
                     self.assertNotIn('killall',script.read_text(encoding='utf8'))
+                    postinstall=script.with_name('postinstall')
+                    source=postinstall.read_text(encoding='utf8')
+                    self.assertIn('CFBundleIdentifier',source)
+                    self.assertIn('com.flickdock.app',source)
+                    self.assertIn('/usr/bin/open -n "$app"',source)
+                    self.assertIn('/bin/launchctl asuser',source)
             with patch.object(build_macos,'run',side_effect=inspect):build_macos._create_pkg(app,folder/'new.pkg','1.8.17')
-        self.assertTrue(any(command[:2]==['/bin/sh','-n'] for command in recorded))
+        self.assertEqual(sum(command[:2]==['/bin/sh','-n'] for command in recorded),2)
+
+    @unittest.skipIf(os.name=='nt','The native postinstall uses POSIX shell and executable modes')
+    def test_postinstall_uses_console_user_and_rejects_wrong_bundle(self):
+        import shlex,subprocess
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);app=root/'volume/Applications/FlickDock.app/Contents'
+            (app/'MacOS').mkdir(parents=True);(app/'MacOS/FlickDock').write_text('#!/bin/sh\n',encoding='utf8')
+            (app/'MacOS/FlickDock').chmod(0o755);(app/'Info.plist').write_text('fixture',encoding='utf8')
+            scripts={'/usr/libexec/PlistBuddy':'echo "${FIXTURE_ID}"',
+                     '/usr/bin/stat':'echo fixtureuser','/usr/bin/id':'echo 501',
+                     '/bin/launchctl':'printf "%s\\n" "$@" > "$FIXTURE_CALL"; exit "${FIXTURE_EXIT:-0}"'}
+            source=build_macos.PKG_POSTINSTALL
+            for index,(command,body) in enumerate(scripts.items()):
+                fake=root/f'command{index}';fake.write_text('#!/bin/sh\n'+body+'\n',encoding='utf8');fake.chmod(0o755)
+                source=source.replace(command,shlex.quote(str(fake)))
+            script=root/'postinstall';script.write_text(source,encoding='utf8')
+            call=root/'call';env=dict(os.environ,FIXTURE_ID='com.flickdock.app',FIXTURE_CALL=str(call))
+            def invoke():return subprocess.run(['/bin/sh',str(script),'unused','unused',str(root/'volume')],env=env,capture_output=True,text=True)
+            self.assertEqual(invoke().returncode,0)
+            self.assertEqual(call.read_text().splitlines(),['asuser','501','/usr/bin/sudo','-u','fixtureuser','/usr/bin/open','-n',str(app.parent)])
+            call.unlink();env['FIXTURE_ID']='other.app';self.assertNotEqual(invoke().returncode,0);self.assertFalse(call.exists())
+            env['FIXTURE_ID']='com.flickdock.app';env['FIXTURE_EXIT']='1';self.assertNotEqual(invoke().returncode,0)
 
     def test_disk_image_launch_uses_installed_copy_and_only_ejects_an_image_mount(self):
         import plistlib

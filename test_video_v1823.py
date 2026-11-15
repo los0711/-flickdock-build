@@ -117,11 +117,7 @@ class VideoTests(unittest.TestCase):
                         path=Path(done[0]['result']['path']);self.assertTrue(path.is_file());paths.append(path)
                     finally:worker.cancel();worker.deleteLater()
                 self.assertNotEqual(paths[0],paths[1])
-                if sys.platform=='darwin':
-                    from video_worker import _mac_video_streams
-                    for path in paths[:2]:self.assertEqual(_mac_video_streams(path,self.tools),([('h264','yuv420p')],['aac']))
-                else:
-                    self.assertEqual(paths[0].read_bytes(),self.payload);self.assertEqual(paths[1].read_bytes(),self.payload)
+                self.assertEqual(paths[0].read_bytes(),self.payload);self.assertEqual(paths[1].read_bytes(),self.payload)
                 self.assertEqual(paths[2].suffix,'.m4a')
                 self.assertFalse(list(Path(directory).glob('.flickdock-download-*')))
         finally:job.cancel();job.deleteLater();APP.processEvents()

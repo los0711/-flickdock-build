@@ -3,6 +3,7 @@ from pathlib import Path
 import sys
 import time
 import math
+import re
 from PySide6.QtCore import QEvent,QPointF,QRect,QRectF,QSize,Qt,QTimer
 from PySide6.QtGui import QFont,QFontMetricsF,QPainter,QColor,QLinearGradient,QPen
 from PySide6.QtWidgets import QButtonGroup,QCheckBox,QFrame,QGridLayout,QHBoxLayout,QLabel,QLineEdit,QPushButton,QSizePolicy,QStackedWidget,QStyle,QStyleOptionButton,QStylePainter,QVBoxLayout,QWidget
@@ -80,6 +81,22 @@ def plain_label(text,parent,name='videoMeta'):
     label=QLabel(text,parent);label.setObjectName(name);label.setTextFormat(Qt.PlainText)
     return label
 
+
+def _source_format_icon(option,path=None,actual_codec=''):
+    extension=(Path(path).suffix.lstrip('.') if path else option.get('extension') or option.get('details','').split(' · ',1)[0]).lower()
+    if not re.fullmatch(r'[a-z0-9]{1,8}',extension):extension=option['kind']
+    if option['kind']!='video':return extension,extension.upper()
+    if extension=='avi':return extension,'AVI'
+    codec=actual_codec if path else option.get('video_codec','')
+    if not codec and not path:
+        pieces=option.get('details','').split(' · ');codec=pieces[1] if len(pieces)>1 else ''
+    codec=str(codec).lower()
+    names={'h264':'H.264','avc1':'H.264','h.264':'H.264','hevc':'H.265','hvc1':'H.265',
+           'hev1':'H.265','h.265':'H.265','av1':'AV1','av01':'AV1','vp9':'VP9','vp09':'VP9',
+           'vp8':'VP8','mpeg4':'MPEG4'}
+    label=names.get(codec,'VIDEO')
+    return extension,label
+
 class CoverButton(QPushButton):
     def __init__(self,entry,parent):
         super().__init__('',parent);self.entry=entry;self.dark=True
@@ -153,7 +170,7 @@ class VideoSourceCard(QFrame):
 
     def mouseDoubleClickEvent(self,event):
         if event.button()==Qt.LeftButton and self.row['path'] and self.row['status']=='complete':
-            self.controller.preview_requested.emit(self.row);event.accept();return
+            self.controller.action(self.row,'open');event.accept();return
         super().mouseDoubleClickEvent(event)
 
     @staticmethod
@@ -182,8 +199,14 @@ class VideoSourceCard(QFrame):
         for control in (self.download,self.folder,self.shelf):
             if control.property('referenceTheme')!=theme:control.setProperty('referenceTheme',theme);control.update()
         if self._dark!=(theme=='dark'):
-            self._dark=theme=='dark';c=colors(theme);self.kind.setPixmap(icon('audio' if option['kind']=='audio' else 'video',c['secondary']).pixmap(18,18));refresh_tree(self,theme)
-            self.kind_frame.setStyleSheet(f"QFrame#videoSourceIcon{{background:{c['control']};border:1px solid {c['border']};border-radius:{RADIUS_CONTROL_PX}px;}}")
+            self._dark=theme=='dark';refresh_tree(self,theme)
+            self.kind_frame.setStyleSheet('QFrame#videoSourceIcon{background:transparent;border:0;}')
+        extension,label=_source_format_icon(option,row['path'] if complete else None,row.get('actual_video_codec',''))
+        icon_key=(extension,label,self.devicePixelRatioF())
+        if getattr(self,'_format_icon_key',None)!=icon_key:
+            from flickdock_icons import document_pixmap
+            self.kind.setPixmap(document_pixmap(extension,36,dpr=icon_key[2],display_text=label));self.kind.setAccessibleName(label+' 格式')
+            self._format_icon_key=icon_key
         if self.property('downloadComplete')!=bool(complete):
             self.setProperty('downloadComplete',bool(complete));self.style().unpolish(self);self.style().polish(self)
         from lan_panel import _size
@@ -274,7 +297,7 @@ class VideoSourceStack(QStackedWidget):
 
 class VideoResult(QFrame):
     def __init__(self,entry,controller,parent):
-        super().__init__(parent);self.entry=entry;self.controller=controller;self.cards={};self.grids=[];self.columns=0;self._category_labels={}
+        super().__init__(parent);self.entry=entry;self.controller=controller;self.cards={};self.grids=[];self.columns=0
         self.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
         layout=QVBoxLayout(self);layout.setContentsMargins(0,0,0,0);layout.setSpacing(12)
         summary=QHBoxLayout();summary.setSpacing(14);self.cover=CoverButton(entry,self);summary.addWidget(self.cover)
@@ -291,7 +314,6 @@ class VideoResult(QFrame):
         self.source_tabs={};self.source_stack=VideoSourceStack(self);self.source_group=QButtonGroup(self);self.source_group.setExclusive(True)
         for index,(kind,title) in enumerate((('video','视频'),('audio','音频'))):
             rows=[row for row in entry['sources'] if row['option']['kind']==kind]
-            if kind=='video':rows.sort(key=lambda row:not row['option'].get('recommended',False))
             tab=button(f'{title}  {len(rows)}',variant='secondary',parent=self.tabs_frame,control_type=VideoSourceTab);tab.setCheckable(True);tab.setEnabled(bool(rows))
             tab.setProperty('tabHover',False);tab.installEventFilter(self)
             tab.setAccessibleName(f'{title}来源，共 {len(rows)} 个');tab.setFixedHeight(30)
@@ -301,9 +323,6 @@ class VideoResult(QFrame):
             cards=[]
             for row in rows:
                 card=VideoSourceCard(row,controller,page);self.cards[row['key']]=card;cards.append(card)
-            if kind=='video' and any(row['option'].get('recommended',False) for row in rows):
-                self._category_labels[grid]=(plain_label('推荐下载 · 预计无需转码',page,'videoSourceTitle'),
-                    plain_label('其他格式',page,'videoSourceTitle'))
             self.grids.append((grid,cards));self.source_stack.addWidget(page)
         tabs.addWidget(self.tabs_frame);tabs.addStretch();layout.addLayout(tabs);layout.addWidget(self.source_stack)
         initial='video' if self.source_tabs['video'].isEnabled() else 'audio'
@@ -337,18 +356,7 @@ class VideoResult(QFrame):
         self.columns=columns
         for grid,cards in self.grids:
             for card in cards:grid.removeWidget(card)
-            headings=self._category_labels.get(grid)
-            if headings:
-                for heading in headings:grid.removeWidget(heading);heading.hide()
-                line=0
-                for recommended,heading in zip((True,False),headings):
-                    group=[card for card in cards if bool(card.row['option'].get('recommended',False))==recommended]
-                    if not group:continue
-                    grid.addWidget(heading,line,0,1,columns);heading.show();line+=1
-                    for index,card in enumerate(group):grid.addWidget(card,line+index//columns,index%columns)
-                    line+=(len(group)+columns-1)//columns
-            else:
-                for index,card in enumerate(cards):grid.addWidget(card,index//columns,index%columns)
+            for index,card in enumerate(cards):grid.addWidget(card,index//columns,index%columns)
             for column in range(2):grid.setColumnStretch(column,1 if column<columns else 0)
         self._fit_sources()
 
@@ -425,6 +433,13 @@ class VideoDialog(ReferenceModalDialog):
         self.stop_button=button('取消',parent=input_container);self.stop_button.clicked.connect(controller.cancel_parse);input_row.addWidget(self.stop_button)
         self.url.returnPressed.connect(self._parse);self.surface.layout().insertWidget(1,input_container)
         self.message=plain_label('',self.body);self.message.setWordWrap(True);self.body_layout.addWidget(self.message)
+        self.player_help=QWidget(self.body);player_help_row=QHBoxLayout(self.player_help)
+        player_help_row.setContentsMargins(0,0,0,0);player_help_row.setSpacing(8)
+        player_explanation=plain_label('部分原始视频在 QuickTime 中可能只有声音，推荐使用 IINA 播放。',self.player_help)
+        player_explanation.setWordWrap(True);player_help_row.addWidget(player_explanation,1)
+        self.iina_download=button('前往下载 IINA',variant='secondary',parent=self.player_help)
+        self.iina_download.clicked.connect(controller.open_iina_download);player_help_row.addWidget(self.iina_download)
+        self.player_help.setVisible(sys.platform=='darwin');self.body_layout.addWidget(self.player_help)
         self.skeleton=VideoSkeleton(self.body,motion=getattr(manager,'motion',True));self.body_layout.addWidget(self.skeleton)
         self.result_layout=QVBoxLayout();self.result_layout.setSpacing(24);self.body_layout.addLayout(self.result_layout);self.body_layout.addStretch()
         self.scroll._flickdock_edge_bounce=True
@@ -530,6 +545,7 @@ class VideoDialog(ReferenceModalDialog):
         busy=self.controller.extracting is not None;self.parse_button.setEnabled(not busy);self.parse_button.setText('解析中…' if busy else '解析');self.stop_button.setVisible(busy)
         self.skeleton.dark=dark;self.skeleton.set_active(busy)
         self.message.setText(self.controller.message)
+        self.iina_download.setVisible(sys.platform=='darwin' and self.controller.iina_download_offered)
         c=colors(theme)
         self.message.setStyleSheet(f'color:{c["red"] if self.controller.message_error else c["secondary"]};background:transparent;border:0;')
         self.message.setVisible(not self.controller.entries or busy or self.controller.message_error)

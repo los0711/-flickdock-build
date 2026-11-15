@@ -30,6 +30,38 @@ def entry_fixture():
     return entry
 
 class VideoFormatTests(unittest.TestCase):
+    def test_download_uses_the_selected_format_in_the_real_downloader(self):
+        from yt_dlp import YoutubeDL
+        from video_worker import execute
+        formats=[dict(format_id='h264',height=1080,vcodec='avc1.640028',acodec='none',ext='mp4',protocol='https',url='https://example.com/h264'),
+                 dict(format_id='av1',height=2160,vcodec='av01.0.12M.08',acodec='none',ext='mp4',protocol='https',url='https://example.com/av1'),
+                 dict(format_id='aac',vcodec='none',acodec='mp4a.40.2',ext='m4a',protocol='https',url='https://example.com/aac'),
+                 dict(format_id='opus',vcodec='none',acodec='opus',ext='webm',protocol='https',url='https://example.com/opus')]
+        entry=dict(id='fixture',title='fixture',formats=formats)
+        with tempfile.TemporaryDirectory() as directory,YoutubeDL({'quiet':True,'format':'bv*+ba/b'}) as ydl:
+            selected=[]
+            def download(info,download):
+                tracks=ydl._select_formats(formats,ydl.format_selector)[0]['requested_formats']
+                selected.extend(row['format_id'] for row in tracks)
+                (Path(ydl.params['paths']['home'])/'fixture.mp4').write_bytes(b'fixture')
+                return info
+            with patch('video_formats._is_mac',return_value=True),patch('video_worker.public_request'), \
+                    patch('video_worker.downloader',return_value=ydl),patch.object(ydl,'extract_info',return_value=entry), \
+                    patch.object(ydl,'process_ie_result',side_effect=download),patch('video_worker.emit'), \
+                    patch('video_worker._mac_compatible_video',side_effect=AssertionError('Original media must not be transcoded')):
+                execute(dict(action='download',url='https://example.com/video',id='fixture',option='v:h264',folder=directory,token='a'*32))
+            self.assertEqual(selected,['h264','opus'])
+            self.assertEqual((Path(directory)/'fixture.mp4').read_bytes(),b'fixture')
+
+    def test_legacy_download_history_remains_readable_without_codec_metadata(self):
+        import json,threading
+        from video_controller import _read_download_history
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/'old.mp4';path.write_bytes(b'fixture');stat=path.stat();index=Path(folder)/'history.json'
+            index.write_text(json.dumps(dict(version=1,entries={'a'*64:[str(path),stat.st_size,stat.st_mtime_ns]})),encoding='utf8')
+            result=_read_download_history(index,threading.Event())
+            self.assertEqual(result['a'*64][3:],[True,''])
+
     def test_proxy_resolved_public_domain_is_not_rejected_by_local_synthetic_dns(self):
         from video_worker import public_request
         url='https://www.youtube.com/watch?v=LXMlDlqCTR0'
@@ -56,7 +88,7 @@ class VideoFormatTests(unittest.TestCase):
         self.assertEqual({row['label'] for row in options if row['kind']=='video'},{'1080p','1440p','2160p'})
         self.assertTrue(all(row['bytes'] and row['details'] for row in options))
 
-    def test_mac_recommends_compatible_video_and_prefers_aac_audio(self):
+    def test_mac_preserves_selected_sources_without_promising_conversion(self):
         from yt_dlp import YoutubeDL
         formats=[dict(format_id='h264',height=1080,vcodec='avc1.640028',acodec='none',ext='mp4',filesize=1000,protocol='https',url='https://example.com/h264'),
                  dict(format_id='av1',height=2160,vcodec='av01.0.12M.08',acodec='none',ext='mp4',filesize=2000,protocol='https',url='https://example.com/av1'),
@@ -64,18 +96,18 @@ class VideoFormatTests(unittest.TestCase):
                  dict(format_id='opus',vcodec='none',acodec='opus',ext='webm',filesize=200,protocol='https',url='https://example.com/opus')]
         with patch('video_formats._is_mac',return_value=True),YoutubeDL({'quiet':True}) as ydl:
             options=media_options(dict(formats=formats),ydl)
-        self.assertEqual(options[0]['id'],'v:h264');self.assertTrue(options[0]['recommended'])
-        self.assertIn('AAC 音轨',options[0]['details']);self.assertEqual(options[0]['bytes'],1100)
-        self.assertFalse(next(row for row in options if row['id']=='v:av1')['recommended'])
+        video=next(row for row in options if row['id']=='v:h264')
+        self.assertFalse(video['recommended']);self.assertEqual(video['format'],'h264+ba')
+        self.assertTrue(all('下载后转为' not in row['details'] for row in options))
 
-    def test_mac_hevc_aac_merge_marks_compatible_first_mux(self):
+    def test_mac_hevc_preserves_original_stream_selection(self):
         from yt_dlp import YoutubeDL
         formats=[dict(format_id='hevc',height=1080,vcodec='hev1.1.6',acodec='none',ext='mp4',filesize=1000,protocol='https',url='https://example.com/hevc'),
                  dict(format_id='aac',vcodec='none',acodec='mp4a.40.2',ext='m4a',filesize=100,protocol='https',url='https://example.com/aac')]
         with patch('video_formats._is_mac',return_value=True),YoutubeDL({'quiet':True}) as ydl:
             options=media_options(dict(formats=formats),ydl)
         video=next(row for row in options if row['kind']=='video')
-        self.assertTrue(video['mac_hevc_merge']);self.assertEqual(video['bytes'],1100)
+        self.assertFalse(video['mac_hevc_merge']);self.assertEqual(video['bytes'],1100)
         self.assertFalse(next(row for row in options if row['kind']=='audio')['mac_hevc_merge'])
 
     def test_hevc_tag_is_passed_only_to_ytdlp_merger_output(self):
@@ -106,21 +138,17 @@ class VideoMatrixTests(unittest.TestCase):
     def tearDown(self):
         self.controller.close();self.dialog.hide();self.dialog.deleteLater();self.owner.deleteLater();APP.processEvents();self.screen.stop();self.temp.cleanup()
 
-    def test_recommended_video_group_precedes_other_formats_at_both_widths(self):
+    def test_video_sources_remain_in_original_order_at_both_widths(self):
         from video_panel import VideoResult
         entry=entry_fixture();entry['sources'][1]['option']['recommended']=True
         result=VideoResult(entry,self.controller,self.dialog.body)
         try:
-            grid,cards=result.grids[0];headings=result._category_labels[grid]
-            self.assertEqual(headings[0].text(),'推荐下载 · 预计无需转码')
-            self.assertEqual(headings[1].text(),'其他格式')
+            grid,cards=result.grids[0]
+            self.assertEqual([card.row for card in cards],entry['sources'][:4])
             for columns in (1,2):
                 result._reflow(columns)
-                head_row=grid.getItemPosition(grid.indexOf(headings[0]))[0]
-                best=next(card for card in cards if card.row['option'].get('recommended'))
-                best_row=grid.getItemPosition(grid.indexOf(best))[0]
-                other_row=grid.getItemPosition(grid.indexOf(headings[1]))[0]
-                self.assertLess(head_row,best_row);self.assertLess(best_row,other_row)
+                for index,card in enumerate(cards):
+                    self.assertEqual(grid.getItemPosition(grid.indexOf(card))[:2],(index//columns,index%columns))
         finally:result.deleteLater()
 
     def test_processing_elapsed_and_estimate_update_and_stop_when_hidden(self):
@@ -350,6 +378,62 @@ class VideoMatrixTests(unittest.TestCase):
         card.shelf.click();self.controller.action(row,'shelf');self.assertEqual(self.events,[('permanent',[str(path)])])
         self.assertFalse(card.shelf.isEnabled());self.assertEqual(path.read_bytes(),b'completed-download-fixture')
 
+    def test_source_icon_tracks_its_format_and_double_click_uses_default_player(self):
+        row=self.entry['sources'][0];row['option']['extension']='webm'
+        card=self.dialog.cards[row['key']];self.dialog.refresh();APP.processEvents()
+        self.assertEqual(card.kind.accessibleName(),'H.265 格式');webm=card.kind.pixmap().toImage()
+        path=self.root/'downloads'/'movie.mp4';path.parent.mkdir(exist_ok=True);path.write_bytes(b'fixture')
+        row.update(path=str(path),status='complete',received=path.stat().st_size,actual_video_codec='h264');self.dialog.refresh();APP.processEvents()
+        self.assertEqual(card.kind.accessibleName(),'H.264 格式');self.assertNotEqual(webm,card.kind.pixmap().toImage())
+        with patch('video_controller._uses_iina',return_value=False),patch('video_controller.QDesktopServices.openUrl',return_value=True) as opened:
+            QTest.mouseDClick(card,Qt.LeftButton)
+            opened.assert_called_once();self.assertEqual(Path(opened.call_args.args[0].toLocalFile()),path)
+        self.assertIsNone(self.dialog.cover_preview)
+
+    def test_incomplete_source_double_click_does_not_launch_player(self):
+        card=self.dialog.cards[self.entry['sources'][0]['key']]
+        with patch('video_controller.QDesktopServices.openUrl') as opened:
+            QTest.mouseDClick(card,Qt.LeftButton);opened.assert_not_called()
+
+    def test_mac_download_opens_iina_and_reports_missing_player_without_default_fallback(self):
+        row=self.entry['sources'][0];path=self.root/'downloads'/'movie.mp4';path.parent.mkdir(exist_ok=True);path.write_bytes(b'fixture')
+        row.update(path=str(path),status='complete',received=path.stat().st_size)
+        class Event:
+            def connect(self,callback):self.callback=callback
+        class Process:
+            def __init__(self,parent):self.finished=Event();self.errorOccurred=Event();self.deleted=False
+            def start(self,program,args):self.command=(program,args)
+            def deleteLater(self):self.deleted=True
+        process=Process(self.controller)
+        with patch('video_controller._uses_iina',return_value=True),patch('video_controller.QProcess',return_value=process), \
+                patch('video_controller.QDesktopServices.openUrl') as default:
+            self.controller.action(row,'open')
+            self.assertEqual(process.command,('/usr/bin/open',['-b','com.colliderli.iina',str(path)]))
+            default.assert_not_called()
+            process.finished.callback(1,None)
+            self.assertTrue(process.deleted);self.assertTrue(self.controller.message_error)
+            self.assertIn('QuickTime',self.controller.message);self.assertIn('IINA',self.controller.message)
+            self.assertTrue(self.controller.iina_download_offered);default.assert_not_called()
+            default.return_value=True;self.controller.open_iina_download()
+            self.assertEqual(default.call_args.args[0].toString(),'https://iina.io/')
+
+    def test_avi_and_video_codec_icons_use_the_real_format(self):
+        from video_panel import _source_format_icon
+        for extension,codec,expected in (('mp4','avc1','H.264'),('mp4','hev1','H.265'),('mp4','av01','AV1'),('avi','mpeg4','AVI')):
+            with self.subTest(extension=extension,codec=codec):
+                self.assertEqual(_source_format_icon(dict(kind='video',extension=extension,video_codec=codec))[1],expected)
+        self.assertEqual(_source_format_icon(dict(kind='video',extension='mp4',video_codec='av01'),'/tmp/video.mp4','h264')[1],'H.264')
+
+    def test_completed_audio_double_click_uses_default_player_and_reports_failure(self):
+        row=next(row for row in self.entry['sources'] if row['option']['kind']=='audio')
+        path=self.root/'downloads'/'audio.m4a';path.parent.mkdir(exist_ok=True);path.write_bytes(b'fixture')
+        row.update(path=str(path),status='complete',received=path.stat().st_size)
+        self.dialog.refresh();self.dialog.results[self.entry['key']].source_tabs['audio'].click();APP.processEvents()
+        card=self.dialog.cards[row['key']];self.assertEqual(card.kind.accessibleName(),'M4A 格式')
+        with patch('video_controller._uses_iina',return_value=False),patch('video_controller.QDesktopServices.openUrl',return_value=False) as opened:
+            QTest.mouseDClick(card,Qt.LeftButton);opened.assert_called_once()
+        self.assertTrue(self.controller.message_error);self.assertIn('默认播放器',self.controller.message)
+
     def test_reparse_reuses_completed_source_without_starting_another_download(self):
         from PySide6.QtCore import QObject,Signal
         row=self.entry['sources'][0];path=self.root/'downloads'/'completed.mp4'
@@ -383,6 +467,7 @@ class VideoMatrixTests(unittest.TestCase):
         self.assertTrue(self.controller._history_ready)
         path=self.root/'downloads'/'remembered.mp4';path.parent.mkdir(exist_ok=True);path.write_bytes(b'fixture')
         original=self.entry['sources'][0]
+        original['actual_video_codec']='h264'
         self.controller._remember_download(original,path,path.stat())
         self.assertTrue(coordinator(self.settings.base,atomic_json).flush(3))
         reopened=VideoController(self.manager);entry=entry_fixture();reopened.entries=[entry]
@@ -392,7 +477,7 @@ class VideoMatrixTests(unittest.TestCase):
                 QTest.qWait(10)
             self.assertTrue(reopened._history_ready)
             row=entry['sources'][0]
-            self.assertEqual(row['status'],'complete');self.assertEqual(row['path'],str(path))
+            self.assertEqual(row['status'],'complete');self.assertEqual(row['path'],str(path));self.assertEqual(row['actual_video_codec'],'h264')
             with patch.object(reopened,'_start_download') as download:
                 reopened.action(row,'shelf');download.assert_not_called()
             self.assertEqual(self.events,[('permanent',[str(path)])])

@@ -51,7 +51,7 @@ def _use_mac_hardware():
     return sys.platform=='darwin'
 
 
-def _mac_compatible_video(path,tools):
+def _mac_compatible_video(path,tools,output_info=None):
     """Make a QuickTime-friendly MP4 inside the private download staging directory."""
     ffmpeg=Path(tools)/('ffmpeg.exe' if sys.platform=='win32' else 'ffmpeg')
     videos,audios,tags,duration=_mac_video_streams(path,ffmpeg,with_details=True)
@@ -64,6 +64,7 @@ def _mac_compatible_video(path,tools):
     copy_audio=all(codec in ('aac','mp3','alac') for codec in audios)
     retag_hevc='hevc' in codecs and any(tag!='hvc1' for tag in tags)
     if path.suffix.lower() in ('.mp4','.m4v','.mov') and copy_video and copy_audio and not retag_hevc:
+        if output_info is not None:output_info['video_codec']=videos[0][0]
         return path
     target=path.with_name('.flickdock-compatible.mp4')
     phase='processing' if copy_video and copy_audio else 'converting'
@@ -99,6 +100,7 @@ def _mac_compatible_video(path,tools):
         output=path.with_suffix('.mp4')
         os.replace(target,output)
         if output!=path:path.unlink()
+        if output_info is not None:output_info['video_codec']=videos[0][0] if copy_video else 'h264'
         return output
     finally:
         target.unlink(missing_ok=True)
@@ -270,10 +272,9 @@ def execute(request):
             option=next((row for row in media_options(entry,ydl) if row['id']==request.get('option')),None)
             if option is None:raise ValueError('该画质已不可用，请重新解析该链接。')
             ydl.params.update(format=option['format'],paths={'home':str(stage)},outtmpl={'default':'%(title).90B [%(id).40B].%(ext)s'})
-            if sys.platform=='darwin' and option.get('mac_hevc_merge'):
-                # Write the Apple-compatible HEVC tag during the first mux, not
-                # in a second full-file pass after yt-dlp has finished merging.
-                ydl.params.update(merge_output_format='mp4',postprocessor_args={'merger+ffmpeg_o':['-tag:v','hvc1']})
+            # YoutubeDL compiles and caches its selector at construction time;
+            # changing params alone leaves process_ie_result using the default.
+            ydl.format_selector=ydl.build_format_selector(option['format'])
             if option['extract_audio']:
                 from yt_dlp.postprocessor import FFmpegExtractAudioPP
                 ydl.add_post_processor(FFmpegExtractAudioPP(ydl,preferredcodec='best'))
@@ -281,11 +282,12 @@ def execute(request):
             candidates=[path for path in stage.iterdir() if path.is_file() and not path.is_symlink() and path.suffix not in ('.part','.ytdl','.json','.temp')]
             if len(candidates)!=1 or candidates[0].stat().st_size==0:raise ValueError('下载未生成完整文件，请重试。')
             if candidates[0].suffix.lower() not in OUTPUT_EXTENSIONS:raise ValueError('下载结果不是支持的音视频文件。')
-            if sys.platform=='darwin' and option['kind']=='video':
-                candidates[0]=_mac_compatible_video(candidates[0],ydl.params['ffmpeg_location'])
+            source_codec=option.get('video_codec','')
+            source_codec={'avc1':'h264','hvc1':'hevc','hev1':'hevc','av01':'av1','vp09':'vp9'}.get(source_codec,source_codec)
+            output_info={'video_codec':source_codec} if option['kind']=='video' else {}
             from selection_archive import _publish_part
             path=_publish_part(candidates[0],folder/candidates[0].name,None)
-            emit('result',path=str(path),bytes=path.stat().st_size)
+            emit('result',path=str(path),bytes=path.stat().st_size,**output_info)
         finally:shutil.rmtree(stage)
 
 

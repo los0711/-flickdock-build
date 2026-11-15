@@ -138,6 +138,26 @@ FLICKDOCK_INSTALL_CLOSE
 exit 0
 '''
 
+PKG_POSTINSTALL='''#!/bin/sh
+set -eu
+volume=${3:-/}
+case "$volume" in /*) ;; *) echo '安装目标无效。' >&2; exit 1;; esac
+app="${volume%/}/Applications/FlickDock.app"
+if [ ! -x "$app/Contents/MacOS/FlickDock" ] || [ ! -f "$app/Contents/Info.plist" ]; then
+    echo '应用已安装，但找不到可启动的 FlickDock。' >&2; exit 1
+fi
+identity=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")
+if [ "$identity" != 'com.flickdock.app' ]; then
+    echo '应用身份不匹配，未自动启动。' >&2; exit 1
+fi
+console_user=$(/usr/bin/stat -f %Su /dev/console)
+case "$console_user" in root|loginwindow|'') echo '应用已安装，请登录后打开 FlickDock。' >&2; exit 1;; esac
+console_uid=$(/usr/bin/id -u "$console_user")
+if ! /bin/launchctl asuser "$console_uid" /usr/bin/sudo -u "$console_user" /usr/bin/open -n "$app"; then
+    echo '应用已安装，但自动启动失败；请手动打开 FlickDock。' >&2; exit 1
+fi
+'''
+
 
 def _create_pkg(app,installer,version):
     with tempfile.TemporaryDirectory(prefix='flickdock-pkg-') as directory:
@@ -147,9 +167,10 @@ def _create_pkg(app,installer,version):
         components.write_bytes(plistlib.dumps([dict(RootRelativeBundlePath=app.name,
             BundleIsRelocatable=False,BundleHasStrictIdentifier=True,
             BundleIsVersionChecked=True,BundleOverwriteAction='upgrade')]))
-        scripts=folder/'scripts';scripts.mkdir();preinstall=scripts/'preinstall'
+        scripts=folder/'scripts';scripts.mkdir();preinstall=scripts/'preinstall';postinstall=scripts/'postinstall'
         preinstall.write_text(PKG_PREINSTALL,encoding='utf8');preinstall.chmod(0o755)
-        run(['/bin/sh','-n',preinstall])
+        postinstall.write_text(PKG_POSTINSTALL,encoding='utf8');postinstall.chmod(0o755)
+        for script in (preinstall,postinstall):run(['/bin/sh','-n',script])
         run(['/usr/bin/pkgbuild','--root',payload,'--component-plist',components,
              '--install-location', '/Applications','--scripts',scripts,
              '--identifier','com.flickdock.installer','--version',version,

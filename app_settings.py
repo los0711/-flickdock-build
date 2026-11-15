@@ -1278,6 +1278,11 @@ class SettingsDialog(QDialog):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(16, 16, 16, 16)
         self.surface = SettingsSurface(self)
+        from ui_transitions import SnapshotFade
+        self._theme_transition=SnapshotFade(self.surface)
+        self._pending_theme_index=None
+        self._theme_selection_timer=QTimer(self);self._theme_selection_timer.setSingleShot(True)
+        self._theme_selection_timer.timeout.connect(self._commit_pending_theme)
         # Paint a cached shadow on the host instead of caching the entire
         # settings subtree in QGraphicsEffect. Native Windows backing stores
         # can otherwise retain a hidden update stripe until the next input.
@@ -1546,8 +1551,13 @@ class SettingsDialog(QDialog):
                 button.setProperty('segmentGlyph',glyph);button.setProperty('alignIconToTextInk',True)
                 button.setIcon(icon(glyph,'#68686D'))
                 button.setIconSize(QSize(15,15))
-            button.clicked.connect(lambda _checked=False,i=index:combo.setCurrentIndex(i))
+            if combo is self.theme_combo:
+                button.clicked.connect(lambda _checked=False,i=index:self._select_theme_after_motion(i))
+            else:button.clicked.connect(lambda _checked=False,i=index:combo.setCurrentIndex(i))
             row.addWidget(button,1);buttons.append(button);group.add_selection_button(button)
+        if combo is self.theme_combo:
+            self._theme_segment=group
+            group._selection_animation.settled.connect(self._commit_pending_theme)
         def synchronize(*_):
             from native_ui_common import icon
             for i,button in enumerate(buttons):
@@ -1558,6 +1568,26 @@ class SettingsDialog(QDialog):
                     button.setIcon(icon(button.property('segmentGlyph'),tint))
         combo.currentIndexChanged.connect(synchronize);synchronize()
         return group
+
+    def _select_theme_after_motion(self,index):
+        if self._loading_values:return
+        self._pending_theme_index=index if index!=self.theme_combo.currentIndex() else None
+        self._theme_selection_timer.stop()
+        if self._pending_theme_index is None:return
+        from ui_transitions import motion_allowed
+        spring=self._theme_segment._selection_animation
+        if not self.isVisible() or not motion_allowed() or not spring._timer.isActive():
+            self._commit_pending_theme();return
+        # The spring normally settles first; the bounded fallback handles a
+        # hidden/retired selection surface without delaying the preference.
+        self._theme_selection_timer.start(650)
+
+    def _commit_pending_theme(self):
+        index=self._pending_theme_index
+        if index is None:return
+        self._pending_theme_index=None;self._theme_selection_timer.stop()
+        if index==self.theme_combo.currentIndex():return
+        self._theme_transition.change(lambda:self.theme_combo.setCurrentIndex(index))
 
     def _reference_toggle(self, control, label, parent):
         holder=QWidget(parent);row=QHBoxLayout(holder);row.setContentsMargins(0,0,0,0);row.setSpacing(8)
@@ -2315,12 +2345,14 @@ class SettingsDialog(QDialog):
             self._finish_preview()
 
     def done(self, result):
+        self._commit_pending_theme()
         self._preference_writer.flush()
         if self._window_fade.defer_done(result,self.done):return
         self._finish_preview(force=True)
         super().done(result)
 
     def hideEvent(self, event):
+        self._commit_pending_theme();self._theme_transition.finish()
         self._finish_preview()
         super().hideEvent(event)
 

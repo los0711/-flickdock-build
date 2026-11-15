@@ -219,7 +219,7 @@ def _category(value: str) -> str:
     return 'generic'
 
 
-def document_svg(value: str = '', stack: int = 1) -> str:
+def document_svg(value: str = '', stack: int = 1, *, display_text: str | None = None) -> str:
     category = _category(value)
     if category == 'folder':
         return _svg('<path d="M8 21v-6a4 4 0 0 1 4-4h14l6 6h19a5 5 0 0 1 5 5v27a5 5 0 0 1-5 5H13a5 5 0 0 1-5-5V21z" fill="#d9a238"/><path d="M8 23h48" stroke="#ffe0a3" stroke-width="1.5"/>','0 0 64 64')
@@ -233,6 +233,7 @@ def document_svg(value: str = '', stack: int = 1) -> str:
     labels = {'generic':'FILE','text':'TEXT','document':'DOC','sheet':'XLS','presentation':'PPT',
               'audio':'AUDIO','video':'VIDEO','image':'IMG','archive':'ZIP','code':'CODE','font':'FONT','link':'WEB'}
     label = suffix.upper() if suffix not in _CATEGORY_SYMBOLS and 1 <= len(suffix) <= 4 else labels.get(category,category.upper())
+    if display_text is not None:label=str(display_text)[:8]
     body = back + f'<defs><linearGradient id="paper" x1="0" y1="0" x2="1" y2="1"><stop stop-color="{top}"/><stop offset="1" stop-color="{color}"/></linearGradient></defs><rect x="13" y="5" width="43" height="51" rx="7" fill="url(#paper)"/><path d="M41 5h8a7 7 0 0 1 7 7v8z" fill="#ffffff" fill-opacity=".23"/><rect x="13.5" y="5.5" width="42" height="50" rx="6.5" fill="none" stroke="#ffffff" stroke-opacity=".18"/>'
     symbol = _CATEGORY_SYMBOLS[category].format(c='#ffffff')
     body += f'<g transform="translate(0,-11)" opacity=".3" fill="none" stroke="#ffffff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">{symbol}</g>'
@@ -243,9 +244,9 @@ def document_svg(value: str = '', stack: int = 1) -> str:
     return _svg(body,'0 0 64 64')
 
 
-def document_pixmap(text: str = '', size: int = 90, stack: int = 1, dpr: float | None = None) -> QPixmap:
+def document_pixmap(text: str = '', size: int = 90, stack: int = 1, dpr: float | None = None, *, display_text: str | None = None) -> QPixmap:
     """Return exactly ``size`` logical pixels; artwork has a consistent inset."""
-    return _render_svg(document_svg(text,stack), size, dpr)
+    return _render_svg(document_svg(text,stack,display_text=display_text), size, dpr)
 
 
 def _alpha_bounds(pm: QPixmap) -> QRectF | None:

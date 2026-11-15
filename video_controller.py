@@ -5,10 +5,11 @@ import json
 import logging
 from pathlib import Path
 import shutil
+import sys
 import time
 from uuid import uuid4
-from PySide6.QtCore import QObject,QThreadPool,QTimer,Signal
-from PySide6.QtGui import QImage
+from PySide6.QtCore import QObject,QProcess,QThreadPool,QTimer,QUrl,Signal
+from PySide6.QtGui import QDesktopServices,QImage
 from video_jobs import VideoJob
 from video_links import video_url
 from transfer_workbench import reveal_file
@@ -18,7 +19,10 @@ MAX_COVER_DOWNLOADS=2
 FILE_RELEASE_RETRY_MS=25
 FILE_RELEASE_TIMEOUT_SECONDS=5
 MAX_HISTORY_ENTRIES=500
+VIDEO_CODECS={'h264','hevc','av1','vp9','vp8','mpeg4','mpeg2video','theora'}
 LOG=logging.getLogger(__name__)
+
+def _uses_iina():return sys.platform=='darwin'
 
 def _read_download_history(path,cancel):
     try:
@@ -28,7 +32,7 @@ def _read_download_history(path,cancel):
     data=json.loads(raw)
     if not isinstance(data,dict) or data.get('version')!=1 or not isinstance(data.get('entries'),dict):
         raise ValueError('Invalid download index')
-    result={}
+    result={};codecs=data.get('codecs') if isinstance(data.get('codecs'),dict) else {}
     for key,value in list(data['entries'].items())[-MAX_HISTORY_ENTRIES:]:
         if cancel.is_set():return {}
         if not isinstance(key,str) or len(key)!=64 or not isinstance(value,list) or len(value)!=3:continue
@@ -39,7 +43,8 @@ def _read_download_history(path,cancel):
             stat=path.stat()
             available=not path.is_symlink() and path.is_file() and stat.st_size==size and stat.st_mtime_ns==mtime
         except OSError:available=False
-        result[key]=value+[available]
+        codec=codecs.get(key,'');codec=codec if isinstance(codec,str) and codec in VIDEO_CODECS else ''
+        result[key]=value+[available,codec]
     return result
 
 class VideoController(QObject):
@@ -52,6 +57,7 @@ class VideoController(QObject):
         self.manager=manager;self.entries=[];self.jobs=set();self.extracting=None
         self.generation=0;self.message='支持主流视频站点、X、Facebook；其他网站也可粘贴链接尝试。'
         self.message_error=False
+        self.iina_download_offered=False
         self.closed=False;self.priority=False;self.cover_queue=[];self.cover_jobs=0
         self._downloaded={}
         self._history_path=Path(manager.settings.base)/'video-download-history.json'
@@ -78,7 +84,7 @@ class VideoController(QObject):
             if result['error']:self.message=result['error'];self.message_error=True;self.changed.emit();return
             for old in self.sources():
                 if old['status']=='complete' and old['path']:
-                    self._downloaded[self._source_identity(old)]=(old['path'],old['received'])
+                    self._downloaded[self._source_identity(old)]=(old['path'],old['received'],None,True,old.get('actual_video_codec',''))
             self.entries=[entry for entry in self.entries if any(row['job'] or row['status']=='queued' for row in entry['sources'])]
             added=[]
             for metadata in result['result']['entries']:
@@ -129,7 +135,13 @@ class VideoController(QObject):
         self._kick_covers()
 
     def action(self,row,action):
-        if self.closed or row not in self.sources() or action not in ('download','shelf','folder'):return
+        if self.closed or row not in self.sources() or action not in ('download','shelf','folder','open'):return
+        if action=='open':
+            if row['status']!='complete' or not row['path']:return
+            if _uses_iina():self._open_iina(row['path'])
+            elif not QDesktopServices.openUrl(QUrl.fromLocalFile(row['path'])):
+                self.message='无法使用系统默认播放器打开该文件。';self.message_error=True;self.changed.emit()
+            return
         if action=='folder':
             try:
                 if not row['path'] or row['status']!='complete':raise ValueError('下载完成后才可打开所在文件夹。')
@@ -154,6 +166,28 @@ class VideoController(QObject):
         if row['job'] or row['status']=='queued':self.changed.emit();return
         row.update(status='queued',error='');self._kick()
 
+    def _open_iina(self,path):
+        # Ask Launch Services for IINA by stable bundle identifier. No shell,
+        # system-default fallback or synchronous process wait on the UI thread.
+        self.iina_download_offered=False
+        process=QProcess(self);done=[False]
+        def finished(code=1,*_args):
+            if done[0]:return
+            done[0]=True
+            if code!=0 and not self.closed:
+                self.message='部分原始视频在 QuickTime 中可能只有声音，推荐使用 IINA。请先安装或检查 IINA。'
+                self.iina_download_offered=True
+                self.message_error=True;self.changed.emit()
+            process.deleteLater()
+        process.finished.connect(finished)
+        process.errorOccurred.connect(lambda _error:finished(1))
+        process.start('/usr/bin/open',['-b','com.colliderli.iina',str(path)])
+
+    def open_iina_download(self):
+        if not QDesktopServices.openUrl(QUrl('https://iina.io/')):
+            self.message='无法打开 IINA 官网，请在浏览器访问 https://iina.io/。'
+            self.message_error=True;self.changed.emit()
+
     def _shelve(self,row):
         if row['shelved']:return
         try:
@@ -174,7 +208,8 @@ class VideoController(QObject):
         saved=self._downloaded.get(self._source_identity(row)) or self._history.get(self._history_key(row))
         if saved:
             if len(saved)>3 and not saved[3]:row['history_stale']=True
-            else:row.update(path=saved[0],status='complete',received=saved[1],total=saved[1],progress=1.,history_stale=False)
+            else:row.update(path=saved[0],status='complete',received=saved[1],total=saved[1],progress=1.,history_stale=False,
+                            actual_video_codec=saved[4] if len(saved)>4 else '')
 
     def _history_loaded(self,result,error):
         if self.closed:return
@@ -190,14 +225,16 @@ class VideoController(QObject):
         for row,action in pending:self.action(row,action)
 
     def _remember_download(self,row,path,stat):
-        self._downloaded[self._source_identity(row)]=(str(path),stat.st_size)
-        self._history[self._history_key(row)]=[str(path),stat.st_size,stat.st_mtime_ns,True]
+        codec=row.get('actual_video_codec','');codec=codec if isinstance(codec,str) and codec in VIDEO_CODECS else ''
+        self._downloaded[self._source_identity(row)]=(str(path),stat.st_size,None,True,codec)
+        self._history[self._history_key(row)]=[str(path),stat.st_size,stat.st_mtime_ns,True,codec]
         while len(self._history)>MAX_HISTORY_ENTRIES:self._history.pop(next(iter(self._history)))
         if self._history_ready and not self._history_failed:
             from account_store import atomic_json
             from shelf_journal import coordinator
             coordinator(self.manager.settings.base,atomic_json).submit(self._history_path,
-                dict(version=1,entries={key:value[:3] for key,value in self._history.items()}))
+                dict(version=1,entries={key:value[:3] for key,value in self._history.items()},
+                     codecs={key:value[4] for key,value in self._history.items() if len(value)>4 and value[4]}))
 
     def _kick(self):
         if self.closed:return
@@ -248,7 +285,8 @@ class VideoController(QObject):
                 if not path.is_file() or path.is_symlink() or path.resolve().parent!=folder.resolve():row.update(status='error',error='下载文件位置或内容无效。')
                 else:
                     stat=path.stat()
-                    row.update(status='complete',path=str(path),progress=1.,received=stat.st_size,total=stat.st_size)
+                    codec=result['result'].get('video_codec','');codec=codec if isinstance(codec,str) and codec in VIDEO_CODECS else ''
+                    row.update(status='complete',path=str(path),progress=1.,received=stat.st_size,total=stat.st_size,actual_video_codec=codec)
                     self._remember_download(row,path,stat)
                     actions=set(row['actions']);row['actions'].clear()
                     if 'shelf' in actions:self._shelve(row)
