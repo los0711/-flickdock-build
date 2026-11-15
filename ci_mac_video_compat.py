@@ -31,8 +31,8 @@ print("native-video-frame-ok")
 with tempfile.TemporaryDirectory(prefix='flickdock-mac-video-compat-') as directory:
     root=Path(directory);script=root/'decode.swift';script.write_text(swift,encoding='utf8')
     for name,encoder,extension,audio,extra in (
-        ('hevc','libx265','.mp4','aac',['-tag:v','hev1','-x265-params','log-level=error']),
-        ('vp9','libvpx-vp9','.webm','libopus',[]),
+        ('hevc','libx265','.mp4','aac',['-pix_fmt','yuv420p','-tag:v','hev1','-x265-params','log-level=error']),
+        ('vp9','libvpx-vp9','.webm','libopus',['-pix_fmt','yuv420p']),
     ):
         source=root/(name+extension)
         subprocess.run([str(ffmpeg),'-hide_banner','-loglevel','error','-f','lavfi','-i','testsrc=size=128x72:rate=10',
