@@ -45,6 +45,15 @@ qInstallMessageHandler(qt_message)
 import test_html_native_workspace as workspace
 os.environ['QT_QPA_PLATFORM']='cocoa'
 assert app.platformName()=='cocoa',app.platformName()
+original_video=os.environ.get('FLICKDOCK_PROBE_ORIGINAL_VIDEO')=='1'
+if original_video:
+    import media_preview
+    media_preview._use_composited_video=lambda:False
+if os.environ.get('FLICKDOCK_PROBE_ORIGINAL_THUMBNAIL')=='1':
+    # Exact thumbnail implementation from the user's earlier 1.8.37 source.
+    import reference_widgets
+    source=Path(__file__).with_name('ci_original_thumbnail.py').read_text(encoding='utf8')
+    exec(compile(source,'ci_original_thumbnail.py','exec'),reference_widgets.__dict__)
 no_media=os.environ.get('FLICKDOCK_PROBE_NO_MEDIA')=='1'
 if no_media:
     # Diagnostic control only: select the same items with decoder creation
@@ -92,7 +101,9 @@ try:
         media=popup.preview.media
         workspace.until(lambda:media._poster_sent or media._failed,seconds=12)
         if media._failed or not media._poster_sent:raise AssertionError('H.264 poster did not load')
-        if media.surface.native is not None or media.surface.frame_sink is None:
+        if original_video:
+            if media.surface.native is None:raise AssertionError('Original video widget was not created')
+        elif media.surface.native is not None or media.surface.frame_sink is None:
             raise AssertionError('Cocoa preview created a native video child')
         observed=[]
         def record_frame(frame):
@@ -105,8 +116,8 @@ try:
         seen=len(observed)
         workspace.until(lambda:len(observed)>=seen+3 or media._failed,seconds=6)
         screenshot_b=media.surface.grab().toImage()
-        if screenshot_a==screenshot_b:raise AssertionError('Video preview did not visibly advance')
-        report['playback']=dict(frames=len(observed),visible_frames_differ=True,native_child=False)
+        if not original_video and screenshot_a==screenshot_b:raise AssertionError('Video preview did not visibly advance')
+        report['playback']=dict(frames=len(observed),visible_frames_differ=None if original_video else True,native_child=original_video)
         popup.selected.clear();popup.primary_selection=None;popup.restore_selected_preview();workspace.flush()
         workspace.until(lambda:media.player is None,seconds=5)
         note('playback-complete')

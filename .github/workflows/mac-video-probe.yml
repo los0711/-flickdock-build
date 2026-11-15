@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        backend: ['darwin','ffmpeg']
+        original_thumbnail: ['0','1']
     env:
       PYTHONUTF8: '1'
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
@@ -29,7 +29,9 @@ jobs:
         timeout-minutes: 8
         env:
           FLICKDOCK_PROBE_SINK_ONLY: '0'
-          FLICKDOCK_PROBE_BACKEND: '${{ matrix.backend }}'
+          FLICKDOCK_PROBE_BACKEND: 'darwin'
+          FLICKDOCK_PROBE_ORIGINAL_VIDEO: '1'
+          FLICKDOCK_PROBE_ORIGINAL_THUMBNAIL: '${{ matrix.original_thumbnail }}'
         run: |
           failed=0
           for attempt in 1 2 3 4; do
@@ -40,7 +42,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: mac-video-selection-diagnostics-${{ github.sha }}-${{ matrix.backend }}
+          name: mac-video-selection-diagnostics-${{ github.sha }}-${{ matrix.original_thumbnail }}
           path: ci-mac-video-probe/
           if-no-files-found: warn
           retention-days: 3
