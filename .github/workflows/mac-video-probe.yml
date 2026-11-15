@@ -48,7 +48,7 @@ jobs:
       - name: Verify asynchronous overview selection before freezing
         run: |
           profile="$(mktemp -d)"
-          APPDATA="$profile" HOME="$profile" XDG_CONFIG_HOME="$profile" python flickdock.py --verify-overview --verify-output ci-preflight-overview.json
+          APPDATA="$profile" HOME="$profile" XDG_CONFIG_HOME="$profile" QT_QPA_PLATFORM=cocoa FLICKDOCK_VERIFY_NATIVE_UI=1 python flickdock.py --verify-overview --verify-output ci-preflight-overview.json
       - name: Build frozen arm64 application
         run: |
           mkdir -p build/macos
@@ -69,14 +69,15 @@ jobs:
                   report=(output/('mac-'+name+'-arm64.json')).resolve()
                   command=[str(binary),'--verify-'+name]
                   command+=([str(report)] if name=='platform' else ['--verify-output',str(report)])
-                  subprocess.run(command,env=base,check=True,timeout=90)
+                  check_env=dict(base,QT_QPA_PLATFORM='cocoa',FLICKDOCK_VERIFY_NATIVE_UI='1') if name=='overview' else base
+                  subprocess.run(command,env=check_env,check=True,timeout=90)
                   value=json.loads(report.read_text());assert value['ok'] and value['version']=='1.8.37'
               video=Path(profile)/'generated.mp4'
               subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(),'-v','error','-f','lavfi','-i','testsrc=size=640x360:rate=24',
                               '-f','lavfi','-i','sine=frequency=440:sample_rate=44100','-t','4','-c:v','libx264',
                               '-pix_fmt','yuv420p','-c:a','aac','-shortest','-y',str(video)],check=True,capture_output=True,timeout=30)
               report=(output/'mac-media-compositor-arm64.json').resolve()
-              cocoa=dict(base,QT_QPA_PLATFORM='cocoa',FLICKDOCK_VERIFY_NATIVE_MEDIA='1')
+              cocoa=dict(base,QT_QPA_PLATFORM='cocoa',FLICKDOCK_VERIFY_NATIVE_UI='1')
               subprocess.run([str(binary),'--verify-media',str(video),'--verify-output',str(report)],env=cocoa,check=True,timeout=90)
               media=json.loads(report.read_text())
               assert media['ok'] and media['frozen'] and media['platform']=='cocoa' and media['version']=='1.8.37'

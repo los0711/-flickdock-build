@@ -81,8 +81,8 @@ def run_notices(argv,load_font):
 
 def run_overview(argv,load_font):
     """Exercise the shipped UI with disposable files and no native services."""
-    if os.environ.get('QT_QPA_PLATFORM')!='offscreen':
-        raise RuntimeError('Overview verification requires QT_QPA_PLATFORM=offscreen')
+    if not verification_platform_allowed():
+        raise RuntimeError('Overview verification requires offscreen or explicit isolated Cocoa CI mode')
     import time
     import traceback
     from types import SimpleNamespace
@@ -126,6 +126,8 @@ def run_overview(argv,load_font):
             report['selection_required_preview']=True
             popup.select_item(str(archive));app.processEvents()
             preview=popup.preview
+            report['preview_layout']=dict(width=popup.width(),narrow=popup._narrow_layout,
+                                          selected=preview.current_path is not None)
             assert len(preview.action_buttons)==6
             # Selection may retire the preceding preview on queued Qt/native
             # frame events. Check the resulting state after those events land.
@@ -236,16 +238,16 @@ def run_update(argv, load_font):
         return app.exec()
 
 
-def media_verification_allowed():
+def verification_platform_allowed():
     """AVFoundation needs Cocoa; native checks are limited to disposable CI."""
     mode=os.environ.get('QT_QPA_PLATFORM')
     return mode=='offscreen' or (sys.platform=='darwin' and mode=='cocoa'
         and os.environ.get('GITHUB_ACTIONS')=='true'
-        and os.environ.get('FLICKDOCK_VERIFY_NATIVE_MEDIA')=='1')
+        and os.environ.get('FLICKDOCK_VERIFY_NATIVE_UI')=='1')
 
 
 def run(argv, load_font):
-    if not media_verification_allowed():
+    if not verification_platform_allowed():
         raise RuntimeError('Media verification requires offscreen mode or explicit isolated Cocoa CI mode')
     from PySide6.QtCore import QTimer, QPointF, Qt, QEvent, QCoreApplication
     from PySide6.QtGui import QMouseEvent
