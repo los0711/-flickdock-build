@@ -37,8 +37,8 @@ def _action_tokens(value,theme):
     color=QColor(value);luminance=_luminance(color)
     on='#FFFFFF' if (1.05/(luminance+.05))>=((luminance+.05)/.05) else '#000000'
     return dict(action=value,on_action=on,
-        action_hover=(color.lighter(115) if on=='#FFFFFF' else color.darker(110)).name(),
-        action_pressed=(color.lighter(125) if on=='#FFFFFF' else color.darker(120)).name(),ring=value)
+        action_hover=(color.darker(110) if on=='#FFFFFF' else color.lighter(110)).name(),
+        action_pressed=(color.darker(120) if on=='#FFFFFF' else color.lighter(120)).name(),ring=value)
 
 def resolve_qss(source,theme):
     for name,value in action_tokens(theme).items():source=source.replace('@fd_'+name+'@',value)
