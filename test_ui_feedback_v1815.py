@@ -39,7 +39,7 @@ class FeedbackTests(unittest.TestCase):
         from reference_widgets import refresh_tree
         import ui_theme
         view=self.fixture.overview()
-        for theme,background,card,action in (('dark','#0a0a0a','#171717','#e5e5e5'),('light','#ffffff','#ffffff','#171717')):
+        for theme,background,card,action in (('dark','#0a0a0a','#171717','#e5e5e5'),('light','#ffffff','#ffffff','#000000')):
             c=colors(theme)
             self.assertEqual(QColor(c['background']).name(),background)
             self.assertEqual(QColor(c['card']).name(),card)

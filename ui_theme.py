@@ -113,7 +113,8 @@ def style_widget(widget, source, font_family):
     widget.setStyleSheet(qss(source, font_family))
 
 def apply_application(app, font_family):
-    from native_ui_common import colors,font_css_stack,RADIUS_SUBCONTROL_PX,UiButton
+    from native_ui_common import colors,font_css_stack,RADIUS_SUBCONTROL_PX,UiButton,icon
+    from theme_accent import resolve_qss
     palette = QPalette()
     roles = {'Window':'surface','Base':'surface','AlternateBase':'canvas',
              'WindowText':'text','Text':'text','ButtonText':'text','Button':'button',
@@ -136,6 +137,13 @@ def apply_application(app, font_family):
         app._flickdock_tooltip_corners=_TooltipCorners(app);app.installEventFilter(app._flickdock_tooltip_corners)
     for widget in app.allWidgets():
         if isinstance(widget,UiButton):widget.refresh_style()
+        reference=getattr(widget,'_reference_style',None)
+        if reference:
+            resolved=resolve_qss(reference[_theme=='light'],_theme)
+            if widget.styleSheet()!=resolved:widget.setStyleSheet(resolved)
+        named_icon=getattr(widget,'_reference_icon',None)
+        if named_icon:
+            name,tint=named_icon;widget.setIcon(icon(name,c.get(tint,tint)))
         source = getattr(widget, '_flickdock_style', None)
         if source is not None:
             widget.setStyleSheet(qss(source, font_family))

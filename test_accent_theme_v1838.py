@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QDialog
 from app_settings import SettingsStore,SettingsDialog
 from native_ui_common import colors
 from reference_widgets import button,refresh_tree,split_send_button
+from shelf_ui_common import FONT_FAMILY
 import theme_accent,ui_theme
 from test_html_native_workspace import APP,flush,contrast_colors
 
@@ -61,7 +62,7 @@ class AccentTests(unittest.TestCase):
             for theme in ('light','dark'):
                 ui_theme.set_theme(theme)
                 for value in ('#7C3AED','#FFFF00','#FFFFFF','#000000'):
-                    theme_accent.set_color(value);refresh_tree(primary);refresh_tree(frame)
+                    theme_accent.set_color(value);ui_theme.apply_application(APP,FONT_FAMILY)
                     tokens=colors(theme)
                     self.assertGreaterEqual(contrast_colors(QColor(tokens['action']),QColor(tokens['on_action'])),4.5)
                     for control in (primary,send,arrow):

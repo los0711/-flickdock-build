@@ -215,7 +215,7 @@ class TransferTests(unittest.TestCase):
             until(lambda:not self.server.intakes)
         self.assertTrue(self.source.exists())
     def setUp(self):
-        self.folder = tempfile.TemporaryDirectory(prefix='flickdock-transfer-qa-'); self.root = Path(self.folder.name)
+        self.folder = tempfile.TemporaryDirectory(prefix='flickdock-transfer-qa-'); self.root = Path(self.folder.name).resolve()
         self.server = Server(); self.engines = []
         self.source = self.root / '原图.png'; self.payload = b'\x89PNG\r\nmetadata\0' + bytes(range(251)) * 2000
         self.source.write_bytes(self.payload)
@@ -297,6 +297,7 @@ class TransferTests(unittest.TestCase):
         notify=lambda rows:ShelfManager._transfers_changed(fixture.manager,rows)
         try:
             fixture.shelf.add_paths('permanent',[str(self.source)]);flush()
+            self.assertIn(str(self.source),fixture.shelf.files['permanent'])
             fixture.manager.sync=engine;fixture.manager._sync_transfer_refs=set()
             engine.transfers_changed.connect(notify)
             engine._notify_transfers()
