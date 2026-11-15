@@ -39,4 +39,4 @@ def thumbnail(shelf,ref,size=40):
         p.setPen(Qt.NoPen);p.setBrush(QColor(color));p.drawRoundedRect(QRectF(size*.12,size*.34,size*.76,size*.33),3,3)
         font=reference_font();font.setPixelSize(max(8,round(size*.23)));set_ui_weight(font,600);p.setFont(font);p.setPen(QColor('white'))
         p.drawText(QRectF(size*.1,size*.3,size*.8,size*.4),Qt.AlignCenter,name[:4])
-    p.end();return pm\n
+    p.end();return pm
