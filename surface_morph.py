@@ -179,7 +179,7 @@ class SurfaceSnapshot(QWidget):
             effect.refresh_surface_morph()
 
     def finish(self):
-        self.active=False; self.hide()
+        self.active=False; self.hide();self.lower()
         self.target_sections=[]
         self.source=QPixmap(); self.target=QPixmap()
         self.elements=None

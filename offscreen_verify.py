@@ -237,7 +237,7 @@ def run(argv, load_font):
     from PySide6.QtCore import QTimer, QPointF, Qt, QEvent, QCoreApplication
     from PySide6.QtGui import QMouseEvent
     from PySide6.QtNetwork import QSslSocket
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QWidget
     from flickdock_icons import glyph_pixmap
     from media_preview import MediaPreview
     from PySide6.QtMultimedia import QMediaPlayer
@@ -268,6 +268,17 @@ def run(argv, load_font):
     copy_job=None
 
     def module_path(name):
+        if sys.platform=='darwin':
+            library=ctypes.CDLL('/usr/lib/libSystem.B.dylib')
+            library._dyld_image_count.restype=ctypes.c_uint32
+            library._dyld_get_image_name.argtypes=[ctypes.c_uint32]
+            library._dyld_get_image_name.restype=ctypes.c_char_p
+            for index in range(library._dyld_image_count()):
+                value=library._dyld_get_image_name(index)
+                if value:
+                    path=os.fsdecode(value)
+                    if Path(path).name==name:return path
+            return ''
         kernel = ctypes.windll.kernel32
         kernel.GetModuleHandleW.restype = ctypes.c_void_p
         handle = kernel.GetModuleHandleW(name)
@@ -308,14 +319,17 @@ def run(argv, load_font):
                     return
                 assert frame.width() > 32 and frame.height() > 32
                 report.update(frame=[frame.width(), frame.height()], duration_ms=viewer.player.duration())
-                report["media_plugin"] = module_path("ffmpegmediaplugin.dll")
-                assert report["media_plugin"], "Packaged FFmpeg media plugin did not load"
-                report['codec_libraries']={name:module_path(name) for name in ('avcodec-63.dll','avformat-63.dll','avutil-61.dll','swresample-7.dll','swscale-10.dll')}
-                assert all(report['codec_libraries'].values()), 'Missing FFmpeg runtime library'
+                plugin='libdarwinmediaplugin.dylib' if sys.platform=='darwin' else 'ffmpegmediaplugin.dll'
+                report["media_plugin"] = module_path(plugin)
+                assert report["media_plugin"], "Packaged Qt media plugin did not load"
+                report['codec_libraries']=({name:module_path(name) for name in ('avcodec-63.dll','avformat-63.dll','avutil-61.dll','swresample-7.dll','swscale-10.dll')}
+                                           if sys.platform=='win32' else {})
+                if sys.platform=='win32':assert all(report['codec_libraries'].values()), 'Missing FFmpeg runtime library'
                 report['audio_available']=viewer.player.hasAudio()
                 if report["frozen"]:
-                    assert Path(report["media_plugin"]).is_relative_to(Path(sys._MEIPASS)), "Plugin loaded outside bundle"
-                    assert all(Path(value).is_relative_to(Path(sys._MEIPASS)) for value in report['codec_libraries'].values())
+                    bundle=Path(sys.executable).parents[1] if sys.platform=='darwin' else Path(sys._MEIPASS)
+                    assert Path(report["media_plugin"]).resolve().is_relative_to(bundle.resolve()), "Plugin loaded outside bundle"
+                    assert all(Path(value).resolve().is_relative_to(bundle.resolve()) for value in report['codec_libraries'].values())
                 assert QSslSocket.supportsSsl(), "Packaged Qt TLS backend is unavailable"
                 report["tls_backend"] = QSslSocket.activeBackend()
                 assert hashlib.sha256(b"abc").hexdigest() == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
@@ -323,8 +337,10 @@ def run(argv, load_font):
                 assert not icon.isNull() and icon.width() == 30
                 report["svg_dpr"] = icon.devicePixelRatio()
                 frame.save(str(output.with_suffix(".png")))
-                assert viewer.surface.native is not None and viewer.surface.native.isVisible()
-                report['native_renderer']=True
+                assert viewer.surface.native is None
+                assert not any(child.metaObject().className()=='QVideoWidget' for child in viewer.findChildren(QWidget))
+                report['native_renderer']=False
+                report['renderer']='qvideosink-raster'
                 point=QPointF(round(viewer.seek_slider.width()*.6),viewer.seek_slider.height()//2)
                 for kind,buttons in ((QEvent.MouseButtonPress,Qt.LeftButton),(QEvent.MouseButtonRelease,Qt.NoButton)):
                     QCoreApplication.sendEvent(viewer.seek_slider,QMouseEvent(kind,point,
@@ -336,10 +352,13 @@ def run(argv, load_font):
                 assert viewer.player.duration()*.5<viewer.player.position()<viewer.player.duration()*.7
                 report['clicked_seek_ms']=viewer.player.position()
                 report['decoded_seek_frame_ms']=current.startTime()//1000
+                report['frames_before_play']=viewer._presented_frame_count
                 viewer.toggle_playback();stage=report['phase']='play'
             elif (stage == "play" and viewer.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
                   and viewer.player.position()>report['clicked_seek_ms']+500):
                 report['playback_advanced_ms']=viewer.player.position()-report['clicked_seek_ms']
+                report['presented_playback_frames']=viewer._presented_frame_count-report['frames_before_play']
+                assert report['presented_playback_frames']>1,'Playing frames did not reach the QWidget surface'
                 viewer.toggle_playback()
                 stage = report["phase"] = "pause"
             elif stage == "pause" and viewer.player.playbackState() == QMediaPlayer.PlaybackState.PausedState:

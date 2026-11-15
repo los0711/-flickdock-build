@@ -124,6 +124,32 @@ jobs:
                   results.append(dict(frozen=frozen,tests=result.testsRun,ok=True,cold_runtime_verified=frozen))
           Path('../outputs/mac-video-${{ matrix.arch }}.json').write_text(json.dumps(dict(ok=True,architecture='${{ matrix.arch }}',checks=results),indent=2))
           PY
+      - name: Verify composited video and diagnostic cleanup
+        run: |
+          build/macos-venv/bin/python -m unittest test_crash_diagnostics_v1838 test_architecture -q
+          build/macos-venv/bin/python ci_mac_video_compositor.py --source "$PWD" --renderer composited --clicks 50 --timeout 120 --output ci-native-compositor
+          build/macos-venv/bin/python - <<'PY'
+          import json,os,subprocess,tempfile
+          from pathlib import Path
+          source=Path.cwd();target=Path('../outputs')
+          native=json.loads(Path('ci-native-compositor/worker-result.json').read_text())
+          supervisor=json.loads(Path('ci-native-compositor/supervisor-result.json').read_text())
+          assert native['ok'] and supervisor['ok'] and native['snapshot_finished'] and native['selected_after_reopen']
+          assert native['renderer']=='composited' and native['gil_held_diagnostics']
+          (target/'mac-video-compositor-${{ matrix.arch }}.json').write_text(json.dumps(dict(ok=True,native=native,supervisor=supervisor),indent=2))
+          with tempfile.TemporaryDirectory(prefix='flickdock-raster-media-') as profile:
+              video=Path(profile)/'generated.mp4'
+              subprocess.run([str(source/'assets/video-tools/ffmpeg'),'-v','error','-f','lavfi','-i','testsrc=size=640x360:rate=24',
+                              '-f','lavfi','-i','sine=frequency=440:sample_rate=44100','-t','4','-c:v','libx264','-pix_fmt','yuv420p',
+                              '-c:a','aac','-shortest','-y',str(video)],check=True,capture_output=True,timeout=30)
+              report=(target/'mac-media-compositor-${{ matrix.arch }}.json').resolve()
+              env=dict(os.environ,HOME=profile,APPDATA=profile,XDG_CONFIG_HOME=profile,QT_QPA_PLATFORM='offscreen')
+              subprocess.run([str(source/'dist/FlickDock.app/Contents/MacOS/FlickDock'),'--verify-media',str(video),'--verify-output',str(report)],
+                             env=env,check=True,timeout=90)
+              frozen=json.loads(report.read_text())
+              assert frozen['ok'] and frozen['frozen'] and frozen['version']=='1.8.37'
+              assert frozen['renderer']=='qvideosink-raster' and frozen['native_renderer'] is False and frozen['presented_playback_frames']>1
+          PY
       - name: Gather verified release artifacts
         run: |
           python - <<'PY'
@@ -131,7 +157,7 @@ jobs:
           import shutil
           source, target = Path('../outputs'), Path('ci-output')
           target.mkdir()
-          for pattern in ('FlickDock-*-macOS-${{ matrix.arch }}.zip', 'FlickDock-*-macOS-${{ matrix.arch }}.dmg', 'FlickDock-*-macOS-${{ matrix.arch }}.pkg', 'mac-build-*-${{ matrix.arch }}.json', 'mac-cloud-${{ matrix.arch }}.json', 'mac-lan-${{ matrix.arch }}.json', 'mac-video-${{ matrix.arch }}.json', 'mac-utility-${{ matrix.arch }}.json', 'mac-network-${{ matrix.arch }}.json', 'mac-notices-${{ matrix.arch }}.json', 'mac-update-runtime-${{ matrix.arch }}.json'):
+          for pattern in ('FlickDock-*-macOS-${{ matrix.arch }}.zip', 'FlickDock-*-macOS-${{ matrix.arch }}.dmg', 'FlickDock-*-macOS-${{ matrix.arch }}.pkg', 'mac-build-*-${{ matrix.arch }}.json', 'mac-cloud-${{ matrix.arch }}.json', 'mac-lan-${{ matrix.arch }}.json', 'mac-video-${{ matrix.arch }}.json', 'mac-utility-${{ matrix.arch }}.json', 'mac-network-${{ matrix.arch }}.json', 'mac-notices-${{ matrix.arch }}.json', 'mac-update-runtime-${{ matrix.arch }}.json', 'mac-video-compositor-${{ matrix.arch }}.json', 'mac-media-compositor-${{ matrix.arch }}.json'):
               files = list(source.glob(pattern))
               assert len(files) == 1, (pattern, files)
               for path in files:
@@ -154,5 +180,6 @@ jobs:
             ../outputs/FlickDock-*-macOS-${{ matrix.arch }}.dmg
             ../outputs/FlickDock-*-macOS-${{ matrix.arch }}.pkg
             ../outputs/mac-*-${{ matrix.arch }}.json
+            ci-native-compositor/
           if-no-files-found: warn
           retention-days: 3

@@ -1335,7 +1335,7 @@ def main():
     guard = InstanceGuard(app, str(BASE))
     if not guard.acquire():
         return
-    if sys.platform=='win32' and native_input_available():
+    if sys.platform in ('win32','darwin') and native_input_available() and not cocoa_smoke:
         from gui_watchdog import GuiWatchdog
         app._ui_watchdog=GuiWatchdog(app,BASE)
     mac_icon=Path(sys.executable).parent.parent/'Resources'/'FlickDock.icns'

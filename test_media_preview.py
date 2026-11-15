@@ -88,13 +88,26 @@ class FakeAudio(QObject):
 class FakeSink(QObject):
     videoFrameChanged = Signal(object)
 
+    def __init__(self,parent):
+        super().__init__(parent)
+        self.frame=QVideoFrame()
+
     def setVideoFrame(self, frame):
+        self.frame=frame
         self.videoFrameChanged.emit(frame)
+
+    def videoFrame(self):
+        return self.frame
 
 
 app = QApplication([])
 from native_ui_common import configure_reference_font
 configure_reference_font(app)
+
+def deliver_frame(sink,frame):
+    sink.setVideoFrame(frame)
+    app.processEvents()
+
 assert subject.MediaPreview.can_preview("example.MP4")
 assert subject.MediaPreview.can_preview(Path("example.flac"))
 assert not subject.MediaPreview.can_preview("example.pdf")
@@ -131,7 +144,7 @@ with tempfile.TemporaryDirectory(prefix="flickdock-media-") as temporary, \
     assert not events
     image = QImage(64, 40, QImage.Format.Format_ARGB32)
     image.fill(0xff2584ed)
-    preview.video_sink.videoFrameChanged.emit(QVideoFrame(image))
+    deliver_frame(preview.video_sink,QVideoFrame(image))
     assert preview.player.playbackState() == NativePlayer.PlaybackState.PausedState
     assert len(frames) == 1 and frames[0][0] == str(video.resolve()) and frames[0][1].size() == image.size()
     assert not events and not preview.surface.image.isNull()
@@ -145,7 +158,7 @@ with tempfile.TemporaryDirectory(prefix="flickdock-media-") as temporary, \
     assert preview.player.position() == 5000 and preview.duration_label.text() == "0:05 / 0:12"
     red = QImage(image)
     red.fill(0xffed483b)
-    preview.video_sink.videoFrameChanged.emit(QVideoFrame(red))
+    deliver_frame(preview.video_sink,QVideoFrame(red))
     assert preview.surface.image.pixelColor(0, 0).name() == "#ed483b" and len(frames) == 1
     print("PASS play/pause is explicit, keyboard/timeline seek updates a paused video frame and duration")
 
@@ -159,21 +172,41 @@ with tempfile.TemporaryDirectory(prefix="flickdock-media-") as temporary, \
             QTest.mouseMove(preview.seek_slider,QPoint(x,preview.seek_slider.height()//2))
         QTest.mouseRelease(preview.seek_slider,Qt.LeftButton,pos=QPoint(preview.seek_slider.width()-10,preview.seek_slider.height()//2))
         assert seek.call_count == 2 and not preview._seek_timer.isActive()
-    # Normal playing frames go straight to Qt's renderer, retaining the CPU
-    # poster until explicit pause/seek/source release needs a snapshot.
+    # The new compositor contract intentionally reads playing frames back:
+    # every visible frame must be paintable without a native video child.
     preview.toggle_playback()
-    with patch.object(QVideoFrame,'toImage',side_effect=AssertionError('per-frame CPU readback')):
-        preview._seek_frame_pending=False
-        preview.video_sink.videoFrameChanged.emit(QVideoFrame(red))
+    green=QImage(image);green.fill(0xff25ad50)
+    preview._seek_frame_pending=False
+    deliver_frame(preview.video_sink,QVideoFrame(green))
+    assert preview.surface.image.pixelColor(0,0).name()=='#25ad50'
+    deliver_frame(preview.video_sink,QVideoFrame(red))
+    assert preview.surface.image.pixelColor(0,0).name()=='#ed483b'
+    assert preview.surface.native is None
+    assert not any(child.metaObject().className()=='QVideoWidget' for child in preview.findChildren(subject.QWidget))
+    app.processEvents()
+    painted=preview.surface.grab().toImage()
+    assert painted.pixelColor(painted.width()//2,painted.height()//2).name()=='#ed483b'
+    with patch.object(preview,'_frame_image',wraps=preview._frame_image) as conversion:
+        preview.video_sink.setVideoFrame(QVideoFrame(red))
+        preview.video_sink.setVideoFrame(QVideoFrame(green))
+        assert conversion.call_count==0
+        app.processEvents()
+        assert conversion.call_count==1 and preview._pending_frame is None
+        assert preview.surface.image.pixelColor(0,0).name()=='#25ad50'
+    large=QImage(4096,2160,QImage.Format.Format_RGB32);large.fill(0xff2584ed)
+    deliver_frame(preview.video_sink,QVideoFrame(large))
+    assert max(preview.surface.image.width(),preview.surface.image.height())<=1280
+    assert preview.surface.image.pixelColor(0,0).name()=='#2584ed'
+    deliver_frame(preview.video_sink,QVideoFrame(red))
     preview.toggle_playback()
-    print('PASS absolute timeline clicks, coalesced drag seeks and native playback without per-frame CPU copies')
+    print('PASS absolute timeline clicks, coalesced drag seeks and changing video frames without a native child')
 
     stale_player, stale_sink = preview.player, preview.video_sink
     preview.set_source(second)
     assert stale_player.stop_calls >= 1 and preview.surface.image.isNull() and preview.surface.fallback is None
-    stale_sink.videoFrameChanged.emit(QVideoFrame(red))
+    deliver_frame(stale_sink,QVideoFrame(red))
     assert preview.surface.image.isNull() and len(frames) == 1
-    preview.video_sink.videoFrameChanged.emit(QVideoFrame(image))
+    deliver_frame(preview.video_sink,QVideoFrame(image))
     assert len(frames) == 2 and frames[-1][0] == str(second.resolve())
     stopped_player, stopped_audio = preview.player, preview.audio_output
     saved_poster = preview.surface.image.copy()
@@ -193,7 +226,7 @@ with tempfile.TemporaryDirectory(prefix="flickdock-media-") as temporary, \
     assert not preview.play_button.isEnabled()
     preview.set_source(video,poster=image)
     assert preview.surface.image==image and preview.player.play_calls==1
-    preview.video_sink.videoFrameChanged.emit(QVideoFrame(red))
+    deliver_frame(preview.video_sink,QVideoFrame(red))
     assert preview.surface.image.pixelColor(0,0).name()=='#ed483b'
     preview.release_source()
     preview.hide(); preview.show(); preview.toggle_playback()
@@ -207,7 +240,7 @@ with tempfile.TemporaryDirectory(prefix="flickdock-media-") as temporary, \
         preview.set_source(video);app.processEvents();loading_bounds=preview.surface.geometry()
         preview.player.mediaStatusChanged.emit(NativePlayer.MediaStatus.LoadedMedia);app.processEvents()
         assert preview.surface.geometry()==loading_bounds
-        preview.video_sink.videoFrameChanged.emit(QVideoFrame(image));app.processEvents()
+        deliver_frame(preview.video_sink,QVideoFrame(image));app.processEvents()
         assert preview.surface.geometry()==loading_bounds
         preview.player.errorOccurred.emit(NativePlayer.Error.FormatError,'fixture error');app.processEvents()
         assert preview.surface.geometry()==loading_bounds
