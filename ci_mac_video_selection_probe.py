@@ -67,18 +67,24 @@ try:
         for index in range(50):
             ref=refs[index%len(refs)];item=popup._item_widgets[ref]
             note('click',mode=mode,index=index,kind=('h264' if ref==str(original) else 'av1' if ref==str(av1) else 'other'))
-            start=time.monotonic();QTest.mouseClick(item,Qt.LeftButton,pos=item.rect().center())
+            before=set(popup.selected);expected=before-{ref} if ref in before else {ref}
+            point=item.mapTo(shelf,item.rect().center())
+            start=time.monotonic();QTest.mouseClick(shelf.windowHandle(),Qt.LeftButton,pos=point)
             workspace.flush();QTest.qWait(30);workspace.flush()
             elapsed=time.monotonic()-start;samples.append(round(elapsed,3))
             if elapsed>2:raise AssertionError(f'click blocked {elapsed:.2f}s ({mode} #{index})')
             if errors:raise AssertionError('Unhandled Qt/Python error')
+            if popup.selected!=expected:
+                raise AssertionError(f'Native click was intercepted ({mode} #{index}): expected {len(expected)} selected, got {len(popup.selected)}')
             if not shelf.isVisible() or not shelf.expanded or not popup.isVisible():
                 raise AssertionError(f'shelf disappeared while selecting ({mode} #{index})')
         # Exercise rapid toggles of the same video and ensure no player survives deselection.
         ref=str(original);item=popup._item_widgets[ref]
         for index in range(20):
             note('video-toggle',mode=mode,index=index)
-            QTest.mouseClick(item,Qt.LeftButton,pos=item.rect().center());QTest.qWait(10);workspace.flush()
+            before=ref in popup.selected;point=item.mapTo(shelf,item.rect().center())
+            QTest.mouseClick(shelf.windowHandle(),Qt.LeftButton,pos=point);QTest.qWait(10);workspace.flush()
+            if (ref in popup.selected)==before:raise AssertionError(f'Video toggle intercepted ({mode} #{index})')
         popup.selected.clear();popup.primary_selection=None;popup.restore_selected_preview();workspace.flush()
         workspace.until(lambda:popup.preview.media.player is None,seconds=5)
         windows=[widget for widget in app.topLevelWidgets() if widget is shelf and widget.isVisible()]
