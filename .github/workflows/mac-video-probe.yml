@@ -1,0 +1,34 @@
+name: macOS native video-selection diagnostics
+on:
+  push:
+    branches: [mac-video-diagnostics]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: macos-15
+    timeout-minutes: 12
+    env:
+      PYTHONUTF8: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          architecture: arm64
+      - name: Install isolated test dependencies
+        run: python -m pip install 'PySide6==6.12.0' 'pyobjc-framework-Quartz>=11,<13' 'keyring==25.7.0' 'fasttext-predict-v2==1.1.0' 'yt-dlp[default]==2026.10.26' 'imageio-ffmpeg==0.6.0' 'cryptography==50.0.2'
+      - name: Exercise Cocoa video selection and capture stack
+        timeout-minutes: 5
+        run: python ci_mac_video_selection_probe.py
+      - name: Retain diagnostic data
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: mac-video-selection-diagnostics-${{ github.sha }}
+          path: ci-mac-video-probe/
+          if-no-files-found: warn
+          retention-days: 3
