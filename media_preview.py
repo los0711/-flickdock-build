@@ -28,6 +28,11 @@ POSTER_TIMEOUT_MS = 10000
 SEEK_COALESCE_MS = 80
 
 
+def _use_composited_video():
+    """Keep Cocoa video frames inside the shelf's existing widget compositor."""
+    return sys.platform == 'darwin'
+
+
 class _SeekSlider(QSlider):
     """Use the styled groove's absolute position for both clicks and drags."""
     def _move_to(self, point):
@@ -179,6 +184,7 @@ class _VideoSurface(QWidget):
         self.image = QImage()
         self.fallback = None
         self.native = None
+        self.frame_sink = None
         self.status_label=QLabel(self)
         self.status_label.setWordWrap(True)
         self.status_label.setAlignment(Qt.AlignHCenter|Qt.AlignBottom)
@@ -217,7 +223,13 @@ class _VideoSurface(QWidget):
         clipping.addRoundedRect(bounds, 12, 12)
         p.setClipPath(clipping)
         p.fillRect(bounds, QColor("#11161e"))
-        if not self.image.isNull():
+        frame = self.frame_sink.videoFrame() if self.frame_sink is not None else None
+        if frame is not None and frame.isValid():
+            from PySide6.QtMultimedia import QVideoFrame
+            options = QVideoFrame.PaintOptions()
+            options.aspectRatioMode = Qt.AspectRatioMode.KeepAspectRatio
+            frame.paint(p, bounds, options)
+        elif not self.image.isNull():
             size = self.image.size().scaled(self.size(), Qt.AspectRatioMode.KeepAspectRatio)
             target = QRectF((self.width() - size.width()) / 2, (self.height() - size.height()) / 2,
                             size.width(), size.height())
@@ -401,7 +413,12 @@ class MediaPreview(QWidget):
         player.setAudioOutput(self.audio_output)
         # Each source owns its renderer/sink, so a queued frame from an old
         # decoder cannot be accepted by the next source's generation.
-        self.video_sink = self.surface.attach_video().videoSink() if self._video else QVideoSink(self)
+        if self._video and not _use_composited_video():
+            self.video_sink = self.surface.attach_video().videoSink()
+        else:
+            self.video_sink = QVideoSink(self)
+            if self._video:
+                self.surface.frame_sink = self.video_sink
         player.setVideoSink(self.video_sink)
         self.video_sink.videoFrameChanged.connect(lambda frame: self._frame_changed(frame, generation))
         player.durationChanged.connect(lambda duration: self._set_duration(duration) if generation == self._generation else None)
@@ -416,6 +433,8 @@ class MediaPreview(QWidget):
     def _dispose_player(self):
         player, sink, audio = self.player, self.video_sink, self.audio_output
         self.player = self.video_sink = self.audio_output = None
+        # The surface must never paint a sink after its source is retired.
+        self.surface.frame_sink = None
         if audio is not None:
             audio.setMuted(True)
         if player is not None:
@@ -473,6 +492,10 @@ class MediaPreview(QWidget):
             return
         if self.surface.native is not None:
             self.surface.native.show()
+        elif self.surface.frame_sink is not None:
+            # Paint the latest frame in the existing shelf compositor; do not
+            # queue decoded frames or read them back into QImages during play.
+            self.surface.update()
         # Qt renders playing frames directly. CPU readback is only needed for
         # a reusable poster or an explicitly sought paused frame.
         image = frame.toImage() if not self._poster_sent or self._poster_pending or self._seek_frame_pending else QImage()

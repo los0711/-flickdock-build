@@ -78,6 +78,31 @@ try:
     shelf.show_contents();workspace.until(lambda:not shelf.geometry_morph.active,seconds=5)
     popup=shelf.popup;popup.resume_content();workspace.until(lambda:popup._build_cursor==len(popup.visible_refs()),seconds=10)
     report=dict(platform=app.platformName(),media_backend=os.environ['QT_MEDIA_BACKEND'],sink_only=os.environ.get('FLICKDOCK_PROBE_SINK_ONLY')=='1',modes={},video=str(original.name))
+    # Exercise actual decoding and playback, not just the first poster. The
+    # generated test video is silent and the fixture uses a disposable profile.
+    note('playback-start')
+    popup.select_item(str(original));workspace.flush()
+    media=popup.preview.media
+    workspace.until(lambda:media._poster_sent or media._failed,seconds=12)
+    if media._failed or not media._poster_sent:raise AssertionError('H.264 poster did not load')
+    if media.surface.native is not None or media.surface.frame_sink is None:
+        raise AssertionError('Cocoa preview created a native video child')
+    observed=[]
+    def record_frame(frame):
+        if frame.isValid():observed.append(frame.startTime())
+    media.video_sink.videoFrameChanged.connect(record_frame)
+    media.toggle_playback()
+    workspace.until(lambda:len(observed)>=5 or media._failed,seconds=8)
+    if media._failed or len(observed)<5:raise AssertionError('Video playback did not produce frames')
+    screenshot_a=media.surface.grab().toImage()
+    seen=len(observed)
+    workspace.until(lambda:len(observed)>=seen+3 or media._failed,seconds=6)
+    screenshot_b=media.surface.grab().toImage()
+    if screenshot_a==screenshot_b:raise AssertionError('Video preview did not visibly advance')
+    report['playback']=dict(frames=len(observed),visible_frames_differ=True,native_child=False)
+    popup.selected.clear();popup.primary_selection=None;popup.restore_selected_preview();workspace.flush()
+    workspace.until(lambda:media.player is None,seconds=5)
+    note('playback-complete')
     for mode in ('list','icons'):
         popup.change_view_mode(mode);popup.resume_content()
         workspace.until(lambda:popup._build_cursor==len(popup.visible_refs()),seconds=10)
