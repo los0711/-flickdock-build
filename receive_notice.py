@@ -58,7 +58,9 @@ class TransferCapsule(CapsuleNotice):
 
     def _paint_indicator(self,painter,rect,colors):
         color=SEND_RING_COLOR if self.record['direction']=='send' else RECEIVE_RING_COLOR
-        if self._phase=='syncing':draw_ring(painter,rect,self._painted_progress(),color=color)
+        if self._phase=='syncing':
+            from theme_accent import action_tokens
+            draw_ring(painter,rect,self._painted_progress(),color=action_tokens('dark')['action'])
         else:icon('circle-check' if self._phase=='success' else 'circle-alert',color if self._phase=='success' else colors['red']).paint(painter,rect.toAlignedRect())
 
     def _expire(self):

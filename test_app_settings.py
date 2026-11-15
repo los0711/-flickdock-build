@@ -155,6 +155,8 @@ with tempfile.TemporaryDirectory(prefix="flickdock-settings-") as temporary:
     dialog.theme_combo.setCurrentIndex(0)
     dialog.folder_edit.setText(str(invalid))
     dialog.save()
+    from test_live_settings_v1838 import settle_preferences
+    settle_preferences(dialog)
     assert dialog.error_label.isVisible() and dialog.isVisible()
     assert store.theme == "dark"
     dialog.load_values()
@@ -180,7 +182,9 @@ with tempfile.TemporaryDirectory(prefix="flickdock-settings-") as temporary:
     dialog._set_dock_color("#aa44cc")
     assert previews[-1] == {"dock_edge": "bottom", "dock_position": 58, "dock_length": 240,
                             "dock_thickness": 12, "trigger_visible": False, "dock_color": "#aa44cc", "dock_opacity": 37, "display_triggers": {}}
-    assert store.path.read_bytes() == draft_before and store.trigger_visible and store.dock_opacity == 100
+    dialog._queue_dock_preferences();settle_preferences(dialog)
+    assert store.path.read_bytes() != draft_before and not store.trigger_visible and store.dock_opacity == 37
+    draft_before=store.path.read_bytes()
     def cancel_color(picker):
         picker.setCurrentColor(QColor("#123456"))
         assert previews[-1]["dock_color"] == "#123456"
@@ -192,7 +196,7 @@ with tempfile.TemporaryDirectory(prefix="flickdock-settings-") as temporary:
     assert subject.normalize_shortcut(dialog.shelf_shortcut_edit.keySequence()) == store.shelf_shortcut
     dialog.grab().save(str(Path(__file__).parent / "v16-settings-dark.png"))
     dialog.theme_combo.setCurrentIndex(0)
-    app.processEvents()
+    settle_preferences(dialog)
     dialog.grab().save(str(Path(__file__).parent / "v16-settings-light.png"))
     before = store.path.read_bytes()
     received = []
@@ -206,9 +210,11 @@ with tempfile.TemporaryDirectory(prefix="flickdock-settings-") as temporary:
     with patch.object(subject, "_read_startup_value", return_value=None) as read, \
          patch.object(subject, "_write_startup_value") as write:
         dialog.save()
+        settle_preferences(dialog)
         read.assert_not_called()
         write.assert_not_called()
-    assert store.theme == "light" and not dialog.isVisible()
+    assert store.theme == "light" and dialog.isVisible()
+    dialog.close();app.processEvents()
     assert previews[-1] is None
     assert not store.trigger_visible and store.dock_color == "#aa44cc" and store.dock_opacity == 37
     assert (store.dock_edge, store.dock_position, store.dock_length, store.dock_thickness) == ("bottom", 58, 240, 12)
@@ -229,7 +235,7 @@ with tempfile.TemporaryDirectory(prefix="flickdock-settings-") as temporary:
         assert len(license_dialog.license_text.toPlainText()) > 150
         assert "缺少" not in license_dialog.license_text.toPlainText()
     license_dialog.document_combo.setCurrentIndex(1)
-    assert "SIL OPEN FONT LICENSE" in license_dialog.license_text.toPlainText()
+    assert "GNU LESSER GENERAL PUBLIC LICENSE" in license_dialog.license_text.toPlainText()
     dialog.apply_theme("dark")
     assert license_dialog.document_combo.dark
     author_dialog.grab().save(str(Path(__file__).parent / "v16-author-about.png"))
@@ -247,12 +253,15 @@ with tempfile.TemporaryDirectory(prefix="flickdock-settings-") as temporary:
         dialog.dock_opacity_spin.setValue(0)
         assert previews[-1]["dock_length"] == 490 and store.path.read_bytes() == saved_before
         action(); app.processEvents()
-        assert previews[-1] is None and store.path.read_bytes() == saved_before
-        assert store.dock_length == 240 and store.dock_opacity == 37
+        settle_preferences(dialog)
+        assert previews[-1] is None
+        assert store.dock_length == 490 and store.dock_opacity == 0
+        assert subject.SettingsStore(base).dock_position==84
     print("PASS nonmodal dialog validates inline, previews themes and saves without unnecessary registry access")
     print("PASS shortcut availability validator blocks save before persistence")
     print("PASS Author @Roger opens author information first; separate attribution and offline license reader remain accessible")
-    print("PASS full dock drafts preview immediately without persistence; color cancel and Save/Cancel/X/Escape end preview correctly")
+    dialog._preference_writer.close()
+    print("PASS dock changes apply automatically; color-picker cancel restores its preview; X/Escape retain applied settings")
 
 with tempfile.TemporaryDirectory(prefix="flickdock-settings-legacy-") as temporary:
     base = Path(temporary)

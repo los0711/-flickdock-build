@@ -220,7 +220,7 @@ class TransferRateTracker:
         return sample['rate'] if sample and now-sample['last_progress']<=self.STALE_SECONDS else None
 
 
-def draw_ring(painter,rect,state,*,color='#3989ef'):
+def draw_ring(painter,rect,state,*,color=None):
     if not state: return
     rect=QRectF(rect).adjusted(3,3,-3,-3)
     painter.save();painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -228,7 +228,7 @@ def draw_ring(painter,rect,state,*,color='#3989ef'):
     painter.setBrush(Qt.BrushStyle.NoBrush);painter.drawEllipse(rect)
     if state.get('remote') and state.get('phase') in ('remote','preparing'):
         painter.restore();return
-    pen.setColor(QColor(color));pen.setCapStyle(Qt.PenCapStyle.RoundCap);painter.setPen(pen)
+    pen.setColor(QColor(color or ui_theme.color('accent')));pen.setCapStyle(Qt.PenCapStyle.RoundCap);painter.setPen(pen)
     received,total=state.get('received',0),state.get('total',0)
     if total>0:
         if received>0:painter.drawArc(rect,90*16,-round(min(1,received/total)*5760))

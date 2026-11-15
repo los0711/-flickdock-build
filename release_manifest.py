@@ -31,7 +31,7 @@ class ReleaseError(ValueError):
 VERSION_RE=re.compile(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z')
 HASH_RE=re.compile(r'[0-9a-f]{64}\Z')
 RUNTIME_SOURCES=(
-    'notice_cluster.py','crash_diagnostics.py','text_preview.py','qt_lifetime.py','theme_accent.py',
+    'notice_cluster.py','crash_diagnostics.py','text_preview.py','qt_lifetime.py','theme_accent.py','settings_live.py',
     'translation_languages.py', 'translation_api.py', 'translation_controller.py', 'translation_notice.py', 'settings_navigation.py',
     'shelf_ui_common.py','shelf_file_tools.py','shelf_drop_zone.py','file_preview.py',
     'overview_ui.py','shelf_window.py','dock_handle.py','sync_runtime.py','transfer_runtime.py','sync_contracts.py',
@@ -64,7 +64,7 @@ MAINTAINED_TESTS=(
     'test_shadcn_qt_theme.py',
     'test_transfer_diagnostics.py','test_transfer_compatibility.py',
     'test_translation.py',
-    'test_architecture.py','test_video_tls.py','test_startup_resources.py','test_crash_diagnostics_v1838.py','test_text_preview_v1838.py','test_accent_theme_v1838.py','soak_ui_v1838.py',
+    'test_architecture.py','test_video_tls.py','test_startup_resources.py','test_crash_diagnostics_v1838.py','test_text_preview_v1838.py','test_accent_theme_v1838.py','test_live_settings_v1838.py','soak_ui_v1838.py',
     
     'test_cloud_delete_v1825.py','test_cloud_events_v1825.py','test_cloud_stream_v1825.py',
     'test_cloud_only_v1825.py','test_virtual_clipboard.py',

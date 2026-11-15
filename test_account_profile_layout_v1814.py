@@ -174,7 +174,7 @@ class AccountProfileLayoutTests(unittest.TestCase):
                 self.panel._cancel_rename();APP.sendEvent(row,QEvent(QEvent.Leave));self.settle()
 
     def test_device_actions_reveal_on_hover_or_keyboard_focus_without_layout_shift(self):
-        self.dialog.save_button.setFocus(Qt.TabFocusReason);self.settle()
+        self.dialog.close_button.setFocus(Qt.TabFocusReason);self.settle()
         row=self.panel._rows_by_id['other']
         actions=row.findChild(QWidget,'accountDeviceActions')
         name=row.findChild(AccountNameLabel,'accountDeviceName')
@@ -190,7 +190,7 @@ class AccountProfileLayoutTests(unittest.TestCase):
         self.assertTrue(actions.isVisible())
         QTest.keyClick(row,Qt.Key_Tab);self.settle()
         self.assertIs(APP.focusWidget(),self.panel.device_rename_buttons['other'])
-        self.dialog.save_button.setFocus(Qt.TabFocusReason);self.settle()
+        self.dialog.close_button.setFocus(Qt.TabFocusReason);self.settle()
         self.assertTrue(actions.isHidden())
         self.assertLess(self.panel.sync_status_label.font().pixelSize(),self.panel.username_label.font().pixelSize())
 

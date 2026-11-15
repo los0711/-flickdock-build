@@ -11,9 +11,11 @@ import re
 from collections import OrderedDict
 from pathlib import Path
 import sys
+import threading
+from functools import wraps
 from uuid import uuid4
 
-from PySide6.QtCore import QByteArray, QCoreApplication, QElapsedTimer, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QByteArray, QCoreApplication, QElapsedTimer, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QThread, QUrl, Signal
 from PySide6.QtGui import QKeySequence, QColor, QFont, QFontDatabase, QPainter, QPen, QGuiApplication, QIcon, QPixmap, QWheelEvent, QDesktopServices
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
                                QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QLineEdit, QPushButton,
@@ -543,8 +545,16 @@ class SettingsTitleBar(QWidget):
         super().hideEvent(event)
 
 
+def _serialized_preferences(method):
+    @wraps(method)
+    def invoke(self,*args,**kwargs):
+        with self._write_lock:return method(self,*args,**kwargs)
+    return invoke
+
+
 class SettingsStore(QObject):
     changed = Signal()
+    _worker_changed = Signal()
 
     @property
     def translation_enabled(self):return self._data['translation_enabled']
@@ -554,6 +564,9 @@ class SettingsStore(QObject):
 
     def __init__(self, base: Path, parent: QObject | None = None):
         super().__init__(parent)
+        self._write_lock=threading.RLock()
+        self._worker_changed.connect(self.changed.emit,Qt.QueuedConnection)
+        self._preference_writer=None
         self.base = Path(base).resolve()
         self.path = self.base / "settings.json"
         self._data = {"theme": "light", "accent_color":"#000000", "capture_dir": str(self.base / "saved"), "autostart": True,
@@ -651,6 +664,7 @@ class SettingsStore(QObject):
     def lan_receive_dir(self) -> Path:
         return Path(self._data["lan_receive_dir"])
 
+    @_serialized_preferences
     def set_lan_receive_dir(self, directory):
         candidate = dict(self._data)
         candidate["lan_receive_dir"] = str(self._validate_directory(directory))
@@ -754,6 +768,7 @@ class SettingsStore(QObject):
     def dock_opacity(self) -> int:
         return self._data["dock_opacity"]
 
+    @_serialized_preferences
     def reconcile_startup(self) -> bool:
         """Repair a missing or moved own login item without clearing OS blocks."""
         if not _startup_runtime_allowed() or not self.autostart:
@@ -789,6 +804,7 @@ class SettingsStore(QObject):
             raise ValueError("无法写入这个文件夹，请选择可写入的位置。") from error
         return directory.resolve()
 
+    @_serialized_preferences
     def update(self, *, theme=None, accent_color=None, capture_dir=None, autostart=None, view_mode=None,
                shelf_shortcut=None, overview_shortcut=None, dock_edge=None,
                dock_position=None, dock_length=None, dock_thickness=None,
@@ -921,8 +937,15 @@ class SettingsStore(QObject):
             if temporary.exists():
                 temporary.unlink()
         self._data = candidate
-        self.changed.emit()
+        if QThread.currentThread()==self.thread():self.changed.emit()
+        else:self._worker_changed.emit()
         return startup_changed
+
+    def preference_writer(self):
+        if self._preference_writer is None:
+            from settings_live import PreferenceWriter
+            self._preference_writer=PreferenceWriter(self)
+        return self._preference_writer
 
 
 class ThirdPartyDialog(QDialog):
@@ -1469,20 +1492,12 @@ class SettingsDialog(QDialog):
         self.licenses_button = self.author_button  # Compatibility for existing callers.
         footer.addWidget(self.author_button)
         footer.addStretch()
-        cancel = QPushButton("取消", self)
-        self.cancel_button = cancel
-        cancel.setMinimumSize(82, 36)
-        cancel.clicked.connect(self.reject)
-        self.save_button = QPushButton("保存设置", self)
-        self.save_button.setObjectName("settingsSave")
-        self.save_button.setMinimumSize(104, 36)
-        self.save_button.setDefault(True)
-        self.save_button.clicked.connect(self.save)
-        footer.addWidget(cancel)
-        footer.addWidget(self.save_button)
         root.addLayout(footer)
         self._build_reference_layout(appearance, cloud, storage, shortcuts, startup)
         self.load_values()
+        self._preference_writer=self.store.preference_writer()
+        self._preference_writer.completed.connect(self._preferences_completed,Qt.QueuedConnection)
+        self._connect_live_preferences()
         self.store.changed.connect(self._sync_direction_controls)
         self.set_update_state("idle")
         for widget in self.findChildren(QWidget):
@@ -1747,8 +1762,7 @@ class SettingsDialog(QDialog):
         dot=QLabel('·',footer_frame);dot.setObjectName('settingsDetail');footer.addWidget(dot)
         self.reference_about_button=QPushButton('关于与第三方许可',footer_frame);self.reference_about_button.setObjectName('settingsLink')
         self.reference_about_button.clicked.connect(self.show_author);footer.addWidget(self.reference_about_button);footer.addStretch()
-        self.cancel_button.setMinimumSize(0,28);self.cancel_button.setMaximumHeight(28);self.save_button.setMinimumSize(0,28);self.save_button.setMaximumHeight(28)
-        footer.addWidget(self.cancel_button);footer.addWidget(self.save_button);root.addWidget(footer_frame)
+        root.addWidget(footer_frame)
         self._show_layout(root);self._show_layout(self.body_layout)
         self.display_trigger_editor.load_values()
         self.update_activity.setVisible(self.update_activity.active)
@@ -1763,11 +1777,10 @@ class SettingsDialog(QDialog):
         self._anchor_navigation.go(index)
 
     def _translation_preference(self,**values):
-        try:self.store.update(**values)
-        except (OSError,ValueError) as error:
-            self.error_label.setText(str(error));self.error_label.show();self._refresh_translation_preferences()
+        self._queue_preferences(**values)
 
     def _refresh_translation_preferences(self):
+        if getattr(self,'_preference_writer',None) and self._preference_writer.busy:return
         from PySide6.QtCore import QSignalBlocker
         with QSignalBlocker(self.translation_switch),QSignalBlocker(self.translation_language):
             self.translation_switch.setChecked(self.store.translation_enabled)
@@ -2181,9 +2194,12 @@ class SettingsDialog(QDialog):
         picker = QColorDialog(QColor(original), self)
         picker.setWindowTitle("触发区域标记颜色")
         picker.setOption(QColorDialog.ColorDialogOption.DontUseNativeDialog, True)
+        from native_ui_common import style_color_dialog
+        style_color_dialog(picker,self.theme_combo.currentData())
         picker.currentColorChanged.connect(lambda color: self._set_dock_color(color) if color.isValid() else None)
         if picker.exec() != QDialog.DialogCode.Accepted:
             self._set_dock_color(original)
+        else:self._queue_dock_preferences()
         picker.deleteLater()
 
     def _set_accent_color(self,value):
@@ -2195,6 +2211,7 @@ class SettingsDialog(QDialog):
         painter.setBrush(QColor(self._draft_accent));painter.setPen(QPen(QColor('#A3A3A3'),1))
         painter.drawRoundedRect(QRectF(2.5,2.5,13,13),3,3);painter.end()
         self.accent_color_button.setIcon(QIcon(swatch))
+        self._queue_preferences(accent_color=self._draft_accent)
 
     def choose_accent_color(self):
         from qt_lifetime import guard
@@ -2202,6 +2219,8 @@ class SettingsDialog(QDialog):
             self._accent_picker.raise_();self._accent_picker.activateWindow();return
         picker=QColorDialog(QColor(self._draft_accent),self);self._accent_picker=picker
         picker.setWindowTitle('自定义主题色');picker.setOption(QColorDialog.DontUseNativeDialog,True)
+        from native_ui_common import style_color_dialog
+        style_color_dialog(picker,self.theme_combo.currentData())
         picker.setAttribute(Qt.WA_DeleteOnClose)
         picker.accepted.connect(guard(self,lambda dialog,selection:dialog._set_accent_color(selection.currentColor()),picker))
         picker.finished.connect(guard(self,lambda dialog,result:setattr(dialog,'_accent_picker',None)))
@@ -2259,52 +2278,23 @@ class SettingsDialog(QDialog):
         self._emit_gesture_preview()
 
     def _sync_direction_changed(self, _checked):
-        if self._loading_values:
-            return
-        try:
-            self.store.update(sync_upload_enabled=self.sync_upload_checkbox.isChecked(),
-                              sync_receive_enabled=self.sync_receive_checkbox.isChecked())
-        except (OSError, ValueError) as error:
-            self._sync_direction_controls()
-            self.error_label.setText(str(error) or "云同步设置未能保存。")
-            self.error_label.show()
+        self._queue_preferences(sync_upload_enabled=self.sync_upload_checkbox.isChecked(),
+                                sync_receive_enabled=self.sync_receive_checkbox.isChecked())
 
     def _automatic_updates_changed(self,checked):
-        if self._loading_values:return
-        try:self.store.update(automatic_updates=checked)
-        except (OSError,ValueError) as error:
-            blocked=self.automatic_updates_checkbox.blockSignals(True)
-            self.automatic_updates_checkbox.setChecked(self.store.automatic_updates)
-            self.automatic_updates_checkbox.blockSignals(blocked)
-            self.error_label.setText(str(error));self.error_label.show()
+        self._queue_preferences(automatic_updates=checked)
 
     def _clipboard_success_changed(self,checked):
-        if self._loading_values:return
-        try:self.store.update(clipboard_success_notice=checked)
-        except (OSError,ValueError) as error:
-            blocked=self.clipboard_success_checkbox.blockSignals(True)
-            self.clipboard_success_checkbox.setChecked(self.store.clipboard_success_notice)
-            self.clipboard_success_checkbox.blockSignals(blocked)
-            self.error_label.setText(str(error));self.error_label.show()
+        self._queue_preferences(clipboard_success_notice=checked)
 
     def _clipboard_sync_changed(self,checked):
-        if self._loading_values:return
-        try:self.store.update(clipboard_sync_enabled=checked,clipboard_notice_seen=True)
-        except (OSError,ValueError) as error:
-            blocked=self.clipboard_sync_checkbox.blockSignals(True)
-            self.clipboard_sync_checkbox.setChecked(self.store.clipboard_sync_enabled)
-            self.clipboard_sync_checkbox.blockSignals(blocked)
-            self.error_label.setText(str(error));self.error_label.show()
+        self._queue_preferences(clipboard_sync_enabled=checked,clipboard_notice_seen=True)
 
     def _video_prompt_changed(self,checked):
-        if self._loading_values:return
-        try:self.store.update(video_link_prompt=checked)
-        except (ValueError,OSError) as error:
-            blocked=self.video_prompt_checkbox.blockSignals(True)
-            self.video_prompt_checkbox.setChecked(self.store.video_link_prompt);self.video_prompt_checkbox.blockSignals(blocked)
-            self.error_label.setText(str(error));self.error_label.show()
+        self._queue_preferences(video_link_prompt=checked)
 
     def _sync_direction_controls(self):
+        if getattr(self,'_preference_writer',None) and self._preference_writer.busy:return
         for control, value in ((self.sync_upload_checkbox, self.store.sync_upload_enabled),
                                (self.video_prompt_checkbox,self.store.video_link_prompt),
                                (self.sync_receive_checkbox, self.store.sync_receive_enabled)):
@@ -2325,6 +2315,7 @@ class SettingsDialog(QDialog):
             self._finish_preview()
 
     def done(self, result):
+        self._preference_writer.flush()
         if self._window_fade.defer_done(result,self.done):return
         self._finish_preview(force=True)
         super().done(result)
@@ -2337,8 +2328,69 @@ class SettingsDialog(QDialog):
         chosen = QFileDialog.getExistingDirectory(self, "选择内容保存位置", self.folder_edit.text() or str(self.store.capture_dir))
         if chosen:
             self.folder_edit.setText(chosen)
+            self._queue_preferences(capture_dir=chosen)
+
+    def _connect_live_preferences(self):
+        for control,key in ((self.theme_combo,'theme'),(self.view_combo,'view_mode'),
+                            (self.capture_mode_combo,'capture_mode'),(self.trigger_view_combo,'trigger_view')):
+            control.currentIndexChanged.connect(lambda _,control=control,key=key:self._queue_preferences(**{key:control.currentData()}))
+        for control,key in ((self.startup_checkbox,'autostart'),(self.keep_empty_handle_checkbox,'keep_empty_handle')):
+            control.toggled.connect(lambda value,key=key:self._queue_preferences(**{key:value}))
+        for control in (self.dock_position_spin,self.dock_length_spin,self.dock_thickness_spin,self.dock_opacity_spin):
+            control.valueChanged.connect(self._queue_dock_preferences)
+        self.dock_edge_combo.currentIndexChanged.connect(self._queue_dock_preferences)
+        self.trigger_visible_checkbox.toggled.connect(self._queue_dock_preferences)
+        self.display_trigger_editor.profiles_changed.connect(self._queue_dock_preferences)
+        self.shake_sensitivity_spin.valueChanged.connect(lambda value:self._queue_preferences(shake_sensitivity=value))
+        self.folder_edit.editingFinished.connect(lambda:self._queue_preferences(capture_dir=self.folder_edit.text()))
+        for editor in (self.shelf_shortcut_edit,self.overview_shortcut_edit):
+            editor.editingFinished.connect(self._commit_shortcuts)
+
+    def _queue_dock_preferences(self,*_):
+        if not self._loading_values:self._queue_preferences(**self._dock_values())
+
+    def _queue_preferences(self,**values):
+        if self._loading_values or not hasattr(self,'_preference_writer'):return
+        changed={key:value for key,value in values.items()
+                 if value!=(str(self.store.capture_dir) if key=='capture_dir' else getattr(self.store,key))}
+        if self._preference_writer.busy:changed=values
+        if changed:self._preference_writer.request(**changed)
+
+    def _commit_shortcuts(self):
+        try:
+            values={key:normalize_shortcut(getattr(self,key+'_edit').keySequence())
+                    for key in ('shelf_shortcut','overview_shortcut')}
+            if values['shelf_shortcut']==values['overview_shortcut']:
+                raise ValueError('打开搁架和打开总览需要使用不同的快捷键。')
+            if self.shortcut_validator is not None:
+                error=self.shortcut_validator(values)
+                if error:raise ValueError(error)
+            self._queue_preferences(**values)
+        except (ValueError,RuntimeError) as error:
+            self.error_label.setText(str(error));self.error_label.show()
+
+    def _preferences_completed(self,keys,error):
+        if error:
+            if not self._preference_writer.busy:
+                controls={'autostart':self.startup_checkbox,'keep_empty_handle':self.keep_empty_handle_checkbox,
+                    'clipboard_sync_enabled':self.clipboard_sync_checkbox,'clipboard_success_notice':self.clipboard_success_checkbox,
+                    'automatic_updates':self.automatic_updates_checkbox}
+                for key in keys:
+                    if key in controls:
+                        control=controls[key];blocked=control.blockSignals(True)
+                        control.setChecked(getattr(self.store,key));control.blockSignals(blocked)
+            self.error_label.setText(error);self.error_label.show()
+        else:self.error_label.clear();self.error_label.hide()
+        if not self._preference_writer.busy:
+            if 'theme' in keys:
+                blocked=self.theme_combo.blockSignals(True)
+                self.theme_combo.setCurrentIndex(1 if self.store.theme=='dark' else 0)
+                self.theme_combo.blockSignals(blocked)
+            self._sync_direction_controls();self._refresh_translation_preferences()
+            self.apply_theme(self.store.theme)
 
     def save(self):
+        """Compatibility entry point: apply edited values without closing."""
         try:
             values = self.draft()
             if values["shelf_shortcut"] == values["overview_shortcut"]:
@@ -2347,19 +2399,14 @@ class SettingsDialog(QDialog):
                 error = self.shortcut_validator(values)
                 if error:
                     raise ValueError(error)
-            # Skip unchanged paths and native login writes. An explicit Save
-            # still repairs a missing requested login item and verifies it.
             changed={key:value for key,value in values.items()
                      if value!=(str(self.store.capture_dir) if key=='capture_dir' else getattr(self.store,key))}
-            if _startup_runtime_allowed() and values['autostart'] and 'autostart' not in changed:
-                startup=self.store.startup_status()
-                if startup.supported and not startup.enabled:changed['autostart']=True
-            if changed:self.store.update(**changed)
+            if changed:self._queue_preferences(**changed)
         except (OSError, ValueError, RuntimeError) as error:
             self.error_label.setText(str(error) or "设置未能保存，请重试。")
             self.error_label.show()
             return
-        self.accept()
+        self._preference_writer.flush()
 
     def draft(self):
         """Return the form values without committing preferences or new behavior."""

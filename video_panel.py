@@ -471,7 +471,10 @@ class VideoDialog(ReferenceModalDialog):
 
     def refresh(self):
         theme=self.manager.settings.theme;dark=theme=='dark'
-        if self._theme!=theme:
+        from theme_accent import current
+        accent=current()
+        if self._theme!=theme or getattr(self,'_accent',None)!=accent:
+            self._accent=accent
             self._theme=theme;self.set_surface_theme(theme);self.close_button.dark=dark;c=colors(theme)
             self.setStyleSheet(f'QLabel{{color:{c["text"]};background:transparent;font-size:12px;}} QLabel#videoTitle{{font-size:15px;font-weight:600;}} QLabel#videoSourceTitle{{font-size:12px;font-weight:600;}} QLabel#videoMeta{{font-size:11px;color:{c["secondary"]};}} QLabel#videoSuccess{{font-size:11px;color:{c["green"]};}} QWidget#videoFooter{{background:{c["background"]};border:0;}} QFrame#videoSourceCard{{background:{c["card"]};border:1px solid {c["border"]};border-radius:{RADIUS_CARD_PX}px;}} QFrame#videoSourceCard:hover{{background:{c["hover"]};}} QLineEdit{{background:{c["input"]};color:{c["text"]};border:1px solid {c["input_border"]};border-radius:{RADIUS_CONTROL_PX}px;padding:10px 12px;}} QLineEdit:focus{{border-color:{c["ring"]};}} QProgressBar{{background:{c["control"]};border:0;border-radius:3px;}} QProgressBar::chunk{{background:{c["action"]};border-radius:3px;}}')
             refresh_tree(self,theme)

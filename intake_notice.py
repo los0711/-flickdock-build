@@ -330,7 +330,7 @@ class CapsuleNotice(QWidget):
 
 
     def _paint_indicator(self,p,ring,c):
-        if self._phase=='syncing':draw_ring(p,ring,self._painted_progress())
+        if self._phase=='syncing':draw_ring(p,ring,self._painted_progress(),color=c['action'])
         else:icon('circle-check' if self._phase=='success' else 'circle-alert',c['green'] if self._phase=='success' else c['red'] if self._phase=='error' else c['link']).paint(p,ring.toAlignedRect())
 
 

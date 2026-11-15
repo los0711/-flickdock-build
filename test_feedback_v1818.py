@@ -80,7 +80,8 @@ class FeedbackTests(unittest.TestCase):
                     self.assertGreaterEqual(dialog.scroll.viewportMargins().bottom(),2)
                     footer=dialog.footer_frame
                     self.assertTrue(footer.testAttribute(Qt.WA_StyledBackground))
-                    for button in (dialog.cancel_button,dialog.save_button):
+                    self.assertFalse(hasattr(dialog,'cancel_button'));self.assertFalse(hasattr(dialog,'save_button'))
+                    for button in (dialog.author_button,dialog.reference_about_button):
                         self.assertTrue(footer.rect().contains(QRect(button.mapTo(footer,QPoint()),button.size())))
                     image=dialog.grab().toImage();point=footer.mapTo(dialog,QPoint(footer.width()//2,3))
                     pixel=image.pixelColor(round(point.x()*image.devicePixelRatio()),round(point.y()*image.devicePixelRatio()))
@@ -197,11 +198,12 @@ class FeedbackTests(unittest.TestCase):
             try:
                 dialog.keep_empty_handle_checkbox.toggle()
                 with patch.object(store,'_validate_directory',side_effect=AssertionError('Unchanged directory probed')),patch.object(store,'update',wraps=store.update) as update:
-                    dialog.save()
+                    from test_live_settings_v1838 import settle_preferences
+                    settle_preferences(dialog)
                 update.assert_called_once_with(keep_empty_handle=dialog.keep_empty_handle_checkbox.isChecked())
-                self.assertFalse(dialog.isVisible())
+                self.assertTrue(dialog.isVisible())
                 self.assertEqual(app_settings.SettingsStore(Path(directory)).keep_empty_handle,store.keep_empty_handle)
-            finally:dialog.close();dialog.deleteLater();flush()
+            finally:dialog._preference_writer.close();dialog.close();dialog.deleteLater();flush()
 
     def test_presentation_setting_does_not_reapply_global_services(self):
         fixture=_workspace.WorkspaceTests();fixture.setUp()

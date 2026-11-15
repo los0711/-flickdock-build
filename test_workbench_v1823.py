@@ -27,8 +27,10 @@ class WorkbenchTests(unittest.TestCase):
                 self.assertIn('同账号',panel.devices.currentData(Qt.AccessibleTextRole))
                 panel.devices.showPopup();QTest.qWait(20)
                 image=panel.devices.view().grab().toImage();ratio=image.devicePixelRatio()
-                blue=sum(image.pixelColor(x,y).name()=='#0062cc' for x in range(round(49*ratio),round(94*ratio)) for y in range(round(6*ratio),round(29*ratio)))
-                self.assertGreater(blue,10)
+                # The current device picker uses the requested neutral outlined
+                # account badge. Its text/outline must remain visibly distinct.
+                badge=[image.pixelColor(x,y) for x in range(round(49*ratio),round(94*ratio)) for y in range(round(6*ratio),round(29*ratio))]
+                self.assertGreater(sum(pixel.red()<150 and pixel.green()<150 and pixel.blue()<150 for pixel in badge),10)
                 second=panel.devices.view().visualRect(panel.devices.model().index(1,0))
                 pixels=[image.pixelColor(x,y) for x in range(round(49*ratio),round(180*ratio)) for y in range(round((second.top()+29)*ratio),round((second.top()+47)*ratio))]
                 green=sum(pixel.green()>pixel.red()+12 and pixel.green()>pixel.blue()+8 for pixel in pixels)

@@ -135,6 +135,7 @@ jobs:
           name: native-utility-${{ matrix.runner }}-${{ github.sha }}
           path: |
             native-utility.json
+            native-chooser-*.png
             native-installer-close.json
           retention-days: 3
   upload-profile:

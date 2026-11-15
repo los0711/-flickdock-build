@@ -14,7 +14,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QEasingCurve, QEvent, QObject, QPointF, QRectF, QSize, Qt, QVariantAnimation, QTranslator
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QIconEngine, QPainter, QPainterPath, QPen, QPixmap, QRegion
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QIconEngine, QPainter, QPainterPath, QPen, QPixmap, QRegion, QGuiApplication
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QApplication, QAbstractButton, QHBoxLayout, QLabel, QPushButton, QWidget
 
@@ -438,6 +438,7 @@ def colors(theme='dark', platform=None):
                   radius_card=RADIUS_CARD_PX, radius_panel=RADIUS_PANEL_PX)
     from theme_accent import action_tokens
     result.update(action_tokens('light' if light else 'dark'))
+    result['transfer_progress_fill']=result['action']
     result.update(primary=result['action'], accent=result['action'], danger=result['red'], success=result['green'])
     return result
 
@@ -785,6 +786,42 @@ class _Titlebar(QWidget):
 def titlebar(surface, title):
     """Return the source header's left section; page owns its right actions."""
     return _Titlebar(surface, title)
+
+
+def style_color_dialog(dialog,theme):
+    """Own the complete chooser surface; ancestor settings QSS cannot leak in."""
+    from PySide6.QtGui import QPalette
+    c=colors(theme);dialog.setObjectName('flickdockColorPicker')
+    palette=QPalette(dialog.palette())
+    for role,key in (('Window','card'),('Base','input'),('Button','control'),
+                     ('WindowText','text'),('Text','text'),('ButtonText','text'),
+                     ('Highlight','action'),('HighlightedText','on_action')):
+        palette.setColor(getattr(QPalette,role),QColor(c[key]))
+    dialog.setPalette(palette)
+    dialog.setFont(reference_font())
+    dialog.setStyleSheet(f'''
+        QColorDialog#flickdockColorPicker {{background:{c['card']};color:{c['text']};}}
+        QColorDialog#flickdockColorPicker QLabel {{background:transparent;color:{c['text']};border:0;}}
+        QColorDialog#flickdockColorPicker QLineEdit, QColorDialog#flickdockColorPicker QSpinBox {{
+            background:{c['input']};color:{c['text']};border:1px solid {c['input_border']};
+            border-radius:6px;padding:4px 6px;selection-background-color:{c['action']};selection-color:{c['on_action']};}}
+        QColorDialog#flickdockColorPicker QPushButton {{background:{c['control']};color:{c['text']};
+            border:1px solid {c['input_border']};border-radius:6px;padding:5px 10px;font-weight:400;}}
+        QColorDialog#flickdockColorPicker QPushButton:hover {{background:{c['control_hover']};}}
+        QColorDialog#flickdockColorPicker QPushButton:pressed {{background:{c['control_pressed']};}}
+        QColorDialog#flickdockColorPicker QPushButton:default {{background:{c['action']};color:{c['on_action']};border-color:{c['action']};}}
+        QColorDialog#flickdockColorPicker QPushButton:default:hover {{background:{c['action_hover']};}}
+        QColorDialog#flickdockColorPicker QPushButton:default:pressed {{background:{c['action_pressed']};}}
+    ''')
+    if sys.platform=='win32' and QGuiApplication.platformName().lower() not in ('offscreen','minimal'):
+        import ctypes
+        value=ctypes.c_int(theme=='dark')
+        dwm=ctypes.WinDLL('dwmapi').DwmSetWindowAttribute
+        dwm.argtypes=[ctypes.c_void_p,ctypes.c_uint,ctypes.c_void_p,ctypes.c_uint]
+        dwm.restype=ctypes.c_long
+        window=int(dialog.winId())
+        if dwm(window,20,ctypes.byref(value),ctypes.sizeof(value))<0:
+            dwm(window,19,ctypes.byref(value),ctypes.sizeof(value))
 
 
 def apply_theme(widget, theme='dark', platform=None):

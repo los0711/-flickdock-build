@@ -98,7 +98,8 @@ class ReceiveNoticeTests(unittest.TestCase):
                 self.wan.progress.emit(dict(id='send',direction='send',state='transferring',received=400000,total=self.offer['total']))
             image=QImage(40,40,QImage.Format_ARGB32_Premultiplied);image.fill(Qt.transparent)
             painter=QPainter(image);toast._paint_indicator(painter,QRectF(4,4,30,30),{'red':'#ff0000'});painter.end()
-            wanted=QColor(color)
+            from theme_accent import action_tokens
+            wanted=QColor(action_tokens('dark')['action'])
             self.assertTrue(any(image.pixelColor(x,y)==wanted for y in range(40) for x in range(40)))
         self.assertEqual(toast._text,self.offer['names'][0])
 

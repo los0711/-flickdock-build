@@ -582,9 +582,10 @@ class TransferStrip(QFrame):
         self.progress_animation.setStartValue(previous);self.progress_animation.setEndValue(value);self.progress_animation.start()
     def _progress_frame(self,value):
         self.paint_fraction=None if value is None else max(0.,min(1.,float(value)))
-        for _,_,percent,_ in getattr(self.view,'strip_rows',()):
+        for _,name,percent,_ in getattr(self.view,'strip_rows',()):
             percent.setVisible(self.paint_fraction is not None)
             percent.setText(f'{round(self.paint_fraction*100)}%' if self.paint_fraction is not None else '')
+            name.update();percent.update()
         self.update()
     def paintEvent(self,event):
         c=palette();p=QPainter(self);p.setRenderHint(QPainter.Antialiasing)
@@ -601,16 +602,41 @@ class TransferStrip(QFrame):
         else:super().mouseReleaseEvent(event)
 
 
+def _draw_transfer_ink(painter,widget,draw):
+    draw(None)
+    host=widget.parentWidget()
+    while host is not None and not isinstance(host,TransferStrip):host=host.parentWidget()
+    if host is None or not host.paint_fraction:return
+    origin=widget.mapTo(host,QPoint())
+    width=host.width()*host.paint_fraction-origin.x()
+    if width<=0:return
+    painter.save();painter.setClipRect(QRectF(0,0,width,widget.height()))
+    draw(palette()['on_action']);painter.restore()
+
+
+class TransferPercentLabel(QLabel):
+    def paintEvent(self,event):
+        p=QPainter(self);p.setFont(self.font())
+        def draw(tint):
+            p.setPen(QColor(tint or palette()['text']))
+            x=self.width()-p.fontMetrics().horizontalAdvance(self.text())
+            p.drawText(QPointF(x,optical_text_baseline(p.font(),self.text(),self.height())),self.text())
+        _draw_transfer_ink(p,self,draw);p.end()
+
+
 class TransferNameButton(QPushButton):
     def set_transfer(self,phase,title):
         self.phase,self.title=phase,title;self.setText(phase+' '+title)
     def paintEvent(self,event):
-        p=QPainter(self);p.setFont(self.font());p.setPen(QColor(palette()['transfer_status_text']))
-        phase=getattr(self,'phase','');width=p.fontMetrics().horizontalAdvance(phase+' ')
-        p.drawText(QPointF(0,optical_text_baseline(p.font(),phase,self.height())),phase)
-        font=p.font();set_ui_weight(font,600);p.setFont(font);p.setPen(QColor(palette()['text']))
-        title=p.fontMetrics().elidedText(getattr(self,'title',''),Qt.ElideRight,max(0,self.width()-width))
-        p.drawText(QPointF(width,optical_text_baseline(p.font(),title,self.height())),title)
+        p=QPainter(self)
+        def draw(tint):
+            p.setFont(self.font());p.setPen(QColor(tint or palette()['transfer_status_text']))
+            phase=getattr(self,'phase','');width=p.fontMetrics().horizontalAdvance(phase+' ')
+            p.drawText(QPointF(0,optical_text_baseline(p.font(),phase,self.height())),phase)
+            font=p.font();set_ui_weight(font,600);p.setFont(font);p.setPen(QColor(tint or palette()['text']))
+            title=p.fontMetrics().elidedText(getattr(self,'title',''),Qt.ElideRight,max(0,self.width()-width))
+            p.drawText(QPointF(width,optical_text_baseline(p.font(),title,self.height())),title)
+        _draw_transfer_ink(p,self,draw)
         p.end()
 
 
@@ -928,7 +954,7 @@ def build_overview(view,preview_type):
     for key,title in view.CATEGORIES:
         control=button(title,glyphs[key],parent=view.sidebar);control.setCheckable(True);control.setFixedHeight(34)
         control.setProperty('leftAligned',True)
-        css(control,*[f"QPushButton{{background:transparent;color:{colors(t)['secondary']};border:1px solid transparent;border-radius:{RADIUS_CONTROL_PX}px;text-align:left;padding:6px 12px;font:400 12px 'FlickDock UI';}} QPushButton:hover{{background:{colors(t)['hover']};}} QPushButton:checked,QPushButton:checked:hover{{background:transparent;color:{colors(t)['on_action']};font-weight:400;}} QPushButton[keyboardFocus=\"true\"]{{border-color:{colors(t)['ring']};}}" for t in ('dark','light')])
+        css(control,*[f"QPushButton{{background:transparent;color:{colors(t)['secondary']};border:1px solid transparent;border-radius:{RADIUS_CONTROL_PX}px;text-align:left;padding:6px 12px;font:400 12px 'FlickDock UI';}} QPushButton:hover{{background:{colors(t)['hover']};}} QPushButton:checked,QPushButton:checked:hover{{background:transparent;color:@fd_on_action@;font-weight:400;}} QPushButton[keyboardFocus=\"true\"]{{border-color:{colors(t)['ring']};}}" for t in ('dark','light')])
         control.clicked.connect(lambda checked=False,key=key:view.set_category(key));view.category_group.addButton(control);side.addWidget(control);view.sidebar.add_selection_button(control)
         count=label('',11,400,'muted',control);count.setAlignment(Qt.AlignCenter);count.setGeometry(145,7,28,20);count.setAttribute(Qt.WA_TransparentForMouseEvents)
         view.nav_counts[key]=count;view.category_buttons[key]=control;view.sidebar_buttons[key]=control
@@ -979,7 +1005,7 @@ def build_overview(view,preview_type):
     view.transfer_summary=QWidget(view.middle);summary=QHBoxLayout(view.transfer_summary);summary.setContentsMargins(16,10,16,10)
     view.transfer_count=label('',12,600,parent=view.transfer_summary);view.transfer_eta=label('',11,400,'link',view.transfer_summary)
     view.transfer_bar=QProgressBar(view.transfer_summary);view.transfer_bar.setTextVisible(False);view.transfer_bar.setFixedHeight(6)
-    css(view.transfer_bar,*[f"QProgressBar{{border:0;background:{colors(t)['control']};border-radius:3px;}} QProgressBar::chunk{{background:{colors(t)['action']};border-radius:3px;}}" for t in ('dark','light')])
+    css(view.transfer_bar,*[f"QProgressBar{{border:0;background:{colors(t)['control']};border-radius:3px;}} QProgressBar::chunk{{background:@fd_action@;border-radius:3px;}}" for t in ('dark','light')])
     summary.addWidget(view.transfer_count);summary.addWidget(view.transfer_bar,1);summary.addWidget(view.transfer_eta);mid.addWidget(view.transfer_summary);view.transfer_summary.hide()
     view.scroll=QScrollArea(view.middle);view.scroll.setWidgetResizable(True);view.scroll.setFrameShape(QFrame.NoFrame);view.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
     css(view.scroll,'QScrollArea{background:transparent;border:0;} QScrollBar:vertical{width:6px;background:transparent;} QScrollBar::handle:vertical{background:#49494E;border-radius:3px;min-height:24px;} QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}',
@@ -1018,11 +1044,11 @@ def build_overview(view,preview_type):
         name=TransferNameButton(row);name.setFixedHeight(30);name.setCursor(Qt.PointingHandCursor)
         css(name,"color:#F5F5F7;background:transparent;border:0;font:12px 'FlickDock UI';", "color:#1D1D1F;background:transparent;border:0;font:12px 'FlickDock UI';")
         name.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Fixed);name.clicked.connect(lambda checked=False,index=index:view._open_strip_transfer(index))
-        percent=label('',10,400,'text',row,control_type=OpticalLabel);percent.setAlignment(Qt.AlignRight|Qt.AlignVCenter)
+        percent=label('',10,400,'text',row,control_type=TransferPercentLabel);percent.setAlignment(Qt.AlignRight|Qt.AlignVCenter)
         percent.setFixedWidth(percent.fontMetrics().horizontalAdvance('100%')+2)
         progress=QProgressBar(row);progress.setFixedSize(42,3);progress.setTextVisible(False)
-        css(progress,'QProgressBar{background:#343438;border:0;} QProgressBar::chunk{background:#64D2FF;}',
-            'QProgressBar{background:#E0E0E0;border:0;} QProgressBar::chunk{background:#0A84FF;}')
+        css(progress,'QProgressBar{background:#343438;border:0;} QProgressBar::chunk{background:@fd_action@;}',
+            'QProgressBar{background:#E0E0E0;border:0;} QProgressBar::chunk{background:@fd_action@;}')
         line.addWidget(name,1);line.addWidget(view.strip_more);line.addWidget(percent);progress.hide();strip.addWidget(row);view.strip_rows.append((row,name,percent,progress))
     # Keep capacity, clipboard and transfer progress on one fixed-height row.
     from clipboard_preview import ClipboardButton
@@ -1080,7 +1106,7 @@ def build_preview(view,elided_type,image_type,media_type,content_type):
     view.content_scroll.setWidget(content);content.setAutoFillBackground(False)
     view.transfer_row=QWidget(content);transfer=QHBoxLayout(view.transfer_row);transfer.setContentsMargins(0,0,0,0)
     view.transfer_progress=QProgressBar(view.transfer_row);view.transfer_progress.setTextVisible(False);view.transfer_progress.setFixedHeight(5)
-    css(view.transfer_progress,*[f"QProgressBar{{background:{colors(t)['control']};border:0;}} QProgressBar::chunk{{background:{colors(t)['action']};}}" for t in ('dark','light')])
+    css(view.transfer_progress,*[f"QProgressBar{{background:{colors(t)['control']};border:0;}} QProgressBar::chunk{{background:@fd_action@;}}" for t in ('dark','light')])
     view.transfer_meta=label('',10,400,'link',view.transfer_row);view.cancel_transfer=button('取消上传',parent=view.transfer_row);view.cancel_transfer.clicked.connect(lambda:view.shelf.cancel_transfer(view.current_path))
     view.cancel_transfer.setFixedHeight(26)
     cancel_styles=[style+f' QPushButton{{font-size:{12 if sys.platform=="win32" else 11}px;padding:2px 5px;}}' for style in view.cancel_transfer._reference_style]

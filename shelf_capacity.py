@@ -192,7 +192,7 @@ class ShelfCapacityButton(QAbstractButton):
         p.setBrush(Qt.NoBrush);p.setPen(QPen(QColor('#3A3A3A' if ui_theme.current_theme()=='dark' else '#D8D8D8'),2.5))
         p.drawEllipse(arc)
         fraction=self.storage['remaining_bytes']/CLOUD_SHELF_BYTES if self.storage else 0
-        pen=QPen(QColor('#0A84FF'),2.5);pen.setCapStyle(Qt.RoundCap);p.setPen(pen)
+        pen=QPen(QColor(colors(ui_theme.current_theme())['action']),2.5);pen.setCapStyle(Qt.RoundCap);p.setPen(pen)
         if fraction:p.drawArc(arc,90*16,-round(fraction*360*16))
         if self.show_value:
             text=self._label_text();p.setFont(self._label_font())

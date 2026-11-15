@@ -66,16 +66,18 @@ class DisplayTests(unittest.TestCase):
             with self.subTest(field=field),self.assertRaises(ValueError):validate_profiles({display_id(self.second):dict(draft[display_id(self.second)],**{field:value})})
 
     def test_settings_save_cancel_and_toggle_blank_area(self):
+        from test_live_settings_v1838 import settle_preferences
         view=SettingsDialog(self.store);view.select_category('外观与交互');view.show();flush()
         try:
             control=view.keep_empty_handle_checkbox;before=control.isChecked();holder=control.parentWidget()
             QTest.mouseClick(holder,Qt.LeftButton,pos=QPoint(10,holder.height()//2));flush();self.assertEqual(control.isChecked(),before)
             QTest.mouseClick(control,Qt.LeftButton,pos=QPoint(20,16));flush();self.assertNotEqual(control.isChecked(),before)
             row=view.display_trigger_editor.rows[display_id(self.second)];row.toggle.setChecked(True);row.controls['length'].setValue(256)
-            self.assertFalse(self.store.display_triggers);view.cancel_button.click();flush();view.load_values();view.show();flush()
-            row=view.display_trigger_editor.rows[display_id(self.second)];self.assertFalse(row.toggle.isChecked())
-            row.toggle.setChecked(True);row.controls['length'].setValue(256);view.save();flush()
-            self.assertEqual(SettingsStore(Path(self.temp.name)).display_triggers[display_id(self.second)]['length'],256)
+            settle_preferences(view);view.close();flush();view.load_values();view.show();flush()
+            row=view.display_trigger_editor.rows[display_id(self.second)];self.assertTrue(row.toggle.isChecked())
+            self.assertEqual(row.controls['length'].value(),256)
+            row.controls['length'].setValue(257);settle_preferences(view)
+            self.assertEqual(SettingsStore(Path(self.temp.name)).display_triggers[display_id(self.second)]['length'],257)
         finally:view.hide();view.deleteLater();flush()
 
     def test_interrupted_expansion_fits_sections_and_wrapped_text_without_tail(self):

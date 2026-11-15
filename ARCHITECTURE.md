@@ -62,9 +62,13 @@ retention limits. Diagnostic export contains no clipboard body. Paint arrivals
 are explicitly not measurements of displayed GPU frames.
 
 `theme_accent.py` owns the validated user accent and cached contrasting action
-tokens. Settings keep a local draft until Save; Cancel never changes the global
-palette. The default black theme retains inverse actions in dark appearance.
-Transfer progress, local blue and cloud green remain semantic status colors.
+tokens. Settings apply validated edits automatically through `settings_live.py`. A
+single disk lane coalesces repeated slider changes, commits the existing atomic
+JSON transaction, and announces changes back on the GUI thread. Text paths and
+shortcuts apply when editing finishes; a cancelled color picker keeps its prior
+selection. There are no Save/Cancel buttons in the settings footer. The default black theme retains inverse actions in dark appearance.
+All progress bars and capacity rings use the accent; local blue and cloud green
+remain semantic file-presence colors.
 Reference primary-button styles resolve semantic tokens when refreshed, so an
 existing split button does not retain its previous accent after a settings save.
 

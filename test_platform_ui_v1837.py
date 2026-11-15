@@ -35,7 +35,7 @@ class PlatformUiTests(unittest.TestCase):
                 control=switches[0]
                 with QSignalBlocker(control):control.setChecked(not control.isChecked())
                 self.assertEqual(control._thumb_position,float(control.isChecked()))
-            finally:dialog.close();dialog.deleteLater();APP.processEvents()
+            finally:dialog._preference_writer.close();dialog.close();dialog.deleteLater();APP.processEvents()
 
     def test_switch_animation_finishes_on_click(self):
         with patch.dict(os.environ,FLICKDOCK_REDUCE_MOTION='0'):
@@ -65,7 +65,7 @@ class PlatformUiTests(unittest.TestCase):
                 if nav.motion.state()==nav.motion.Running:nav.motion.setCurrentTime(nav.motion.duration())
                 self.assertEqual(dialog.category_list.currentRow(),2)
                 self.assertEqual(nav.anchor[0],2)
-            finally:dialog.close();dialog.deleteLater();APP.processEvents()
+            finally:dialog._preference_writer.close();dialog.close();dialog.deleteLater();APP.processEvents()
 
     def test_other_scroll_area_mouse_wheel_glides_and_can_reverse(self):
         with patch.dict(os.environ,FLICKDOCK_REDUCE_MOTION='0'):
@@ -181,7 +181,7 @@ class PlatformUiTests(unittest.TestCase):
                 segments[1].click();APP.processEvents()
                 self.assertEqual(dialog.theme_combo.currentData(),'dark')
                 self.assertTrue(all(button.property('referenceTheme')=='dark' for button in segments))
-            finally:dialog.close();dialog.deleteLater();APP.processEvents()
+            finally:dialog._preference_writer.close();dialog.close();dialog.deleteLater();APP.processEvents()
 
     def test_link_detection_has_a_visible_chain_icon(self):
         self.assertTrue(clipboard_is_link(('text',{'text':'https://example.com/path'})))
@@ -200,7 +200,7 @@ class PlatformUiTests(unittest.TestCase):
                     for switch in (dialog.trigger_visible_checkbox,dialog.keep_empty_handle_checkbox):
                         option=switch.parentWidget();image=option.grab().toImage()
                         self.assertEqual(image.pixelColor(8,image.height()//2),QColor(colors(theme)['control']))
-            finally:dialog.close();dialog.deleteLater();APP.processEvents()
+            finally:dialog._preference_writer.close();dialog.close();dialog.deleteLater();APP.processEvents()
 
     def test_segment_icons_align_with_the_visible_text_in_both_themes(self):
         with tempfile.TemporaryDirectory() as temp,patch('app_settings._startup_runtime_allowed',return_value=False),patch.dict(os.environ,FLICKDOCK_REDUCE_MOTION='1'):
@@ -225,7 +225,7 @@ class PlatformUiTests(unittest.TestCase):
                         icon_center=ink_range(x,x+size.width())
                         text_center=ink_range(x+size.width()+gap,button.width()-4)
                         self.assertLessEqual(abs(icon_center-text_center),1.,(theme,button.text(),icon_center,text_center))
-            finally:dialog.close();dialog.deleteLater();APP.processEvents()
+            finally:dialog._preference_writer.close();dialog.close();dialog.deleteLater();APP.processEvents()
 
     def test_border_geometry_snaps_at_common_display_scales(self):
         for dpr in (1.,1.25,1.5,2.):

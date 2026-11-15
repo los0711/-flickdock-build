@@ -118,7 +118,7 @@ def apply_application(app, font_family):
     palette = QPalette()
     roles = {'Window':'surface','Base':'surface','AlternateBase':'canvas',
              'WindowText':'text','Text':'text','ButtonText':'text','Button':'button',
-             'ToolTipBase':'surface','ToolTipText':'text','Highlight':'selected','HighlightedText':'text',
+             'ToolTipBase':'surface','ToolTipText':'text','Highlight':'accent','HighlightedText':'on_action',
              'PlaceholderText':'secondary'}
     for role, key in roles.items():
         palette.setColor(getattr(QPalette.ColorRole, role), QColor(color(key)))

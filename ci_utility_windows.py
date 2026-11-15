@@ -15,6 +15,8 @@ def main():
     from lan_panel import LanDialog
     from window_chrome import dock_window_state
     app=QApplication.instance() or QApplication([]);app.setQuitOnLastWindowClosed(False)
+    from shelf_ui_common import load_font,FONT_FAMILY
+    load_font(app)
     def wait(predicate):
         until=time.monotonic()+5
         while not predicate() and time.monotonic()<until:app.processEvents();time.sleep(.01)
@@ -61,6 +63,35 @@ def main():
             assert window.size()==initial,(window.size(),initial)
             window.close();wait(lambda:not window.isVisible())
             report['windows'].append(dict(title=window.windowTitle(),resize=True,minimize=True,close=True,reopen_default=True))
+        import theme_accent,ui_theme
+        from PySide6.QtGui import QColor,QPalette
+        from PySide6.QtWidgets import QLabel,QPushButton
+        from native_ui_common import colors
+        def apply_preferences():
+            theme_accent.set_color(store.accent_color);ui_theme.set_theme(store.theme)
+            ui_theme.apply_application(app,FONT_FAMILY);settings.apply_theme(store.theme);transfer.apply_theme(store.theme)
+        store.changed.connect(apply_preferences)
+        settings.show();wait(settings.isVisible)
+        assert not any(b.text() in ('取消','保存设置') for b in settings.footer_frame.findChildren(QPushButton))
+        report['automatic_preferences']=[]
+        for theme in ('light','dark'):
+            settings.theme_combo.setCurrentIndex(1 if theme=='dark' else 0)
+            settings._preference_writer.flush();wait(lambda:not settings._preference_writer.busy);app.processEvents()
+            apply_preferences();settings.choose_accent_color();app.processEvents()
+            picker=settings._accent_picker
+            assert picker.isVisible()
+            c=colors(theme);pixel=picker.grab().toImage().pixelColor(8,8)
+            assert pixel.name().upper()==c['card'].upper(),(theme,pixel.name(),c['card'])
+            labels=[label for label in picker.findChildren(QLabel) if label.isVisible() and label.text()]
+            assert labels and all(label.palette().color(QPalette.WindowText)==QColor(c['text']) for label in labels)
+            picker.grab().save('native-chooser-'+theme+'.png')
+            picker.setCurrentColor(QColor('#FFFF00' if theme=='light' else '#7C3AED'));picker.accept()
+            settings._preference_writer.flush();wait(lambda:not settings._preference_writer.busy);app.processEvents()
+            assert store.accent_color==('#FFFF00' if theme=='light' else '#7C3AED')
+            settings.close();wait(lambda:not settings.isVisible());settings.show();wait(settings.isVisible)
+            assert settings._draft_accent==store.accent_color
+            report['automatic_preferences'].append(dict(theme=theme,chooser_readable=True,applied_first_selection=True,persisted_after_reopen=True))
+        settings.close();wait(lambda:not settings.isVisible())
         from types import SimpleNamespace
         from intake_notice import ClipboardNotice,COMPACT_SIDE_PX
         opened=[];notice_manager=SimpleNamespace(settings=store,shelf=transfer,show_video_dialog=opened.append)
@@ -159,6 +190,7 @@ Path(sys.argv[1]).write_text('ready');app.exec()
                 clock.stop();reader.close();producer.kill();producer.wait(timeout=5)
                 wait(lambda:reader.process is None and not reader.jobs);reader.deleteLater()
         report['ok']=True
+        settings._preference_writer.close()
         for window in (settings,transfer):window.deleteLater()
         app.processEvents()
     print(json.dumps(report),flush=True)

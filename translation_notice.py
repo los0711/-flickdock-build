@@ -444,7 +444,7 @@ class TranslationNotice(CapsuleNotice):
         ring = QRectF(bar.right()-38, bar.center().y()-16, 32, 32)
         state = self.controller
         if state.phase == 'loading':
-            draw_ring(painter, ring, dict(received=0, total=0))
+            draw_ring(painter, ring, dict(received=0, total=0),color=c['action'])
         else:
             painter.setPen(Qt.NoPen)
             painter.setBrush(QColor(c['green'] if state.phase == 'copied' else c['action']))

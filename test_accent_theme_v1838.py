@@ -9,6 +9,7 @@ from reference_widgets import button,refresh_tree,split_send_button
 from shelf_ui_common import FONT_FAMILY
 import theme_accent,ui_theme
 from test_html_native_workspace import APP,flush,contrast_colors
+from test_live_settings_v1838 import settle_preferences
 
 
 class AccentTests(unittest.TestCase):
@@ -29,19 +30,20 @@ class AccentTests(unittest.TestCase):
                 with self.assertRaises(ValueError):store.update(accent_color=invalid)
             self.assertEqual(store.accent_color,'#7C3AED')
 
-    def test_draft_cancel_save_and_reset_do_not_mutate_the_global_theme(self):
+    def test_live_color_persists_on_close_and_reset_needs_no_save(self):
         with tempfile.TemporaryDirectory() as folder:
             store=SettingsStore(Path(folder));dialog=SettingsDialog(store)
             try:
                 dialog._set_accent_color('#0066D6')
                 self.assertEqual(dialog.draft()['accent_color'],'#0066D6')
-                self.assertEqual(store.accent_color,'#000000');self.assertEqual(theme_accent.current(),'#000000')
-                dialog.reject();dialog.load_values();self.assertEqual(dialog._draft_accent,'#000000')
-                dialog._set_accent_color('#7C3AED');dialog.save()
+                settle_preferences(dialog)
+                self.assertEqual(store.accent_color,'#0066D6')
+                dialog.reject();dialog.load_values();self.assertEqual(dialog._draft_accent,'#0066D6')
+                dialog._set_accent_color('#7C3AED');settle_preferences(dialog)
                 self.assertEqual(store.accent_color,'#7C3AED')
-                dialog.load_values();dialog.accent_reset_button.click();dialog.save()
+                dialog.load_values();dialog.accent_reset_button.click();settle_preferences(dialog)
                 self.assertEqual(store.accent_color,'#000000')
-            finally:dialog.hide();dialog.deleteLater();flush()
+            finally:dialog._preference_writer.close();dialog.hide();dialog.deleteLater();flush()
 
     def test_picker_is_single_nonblocking_and_applies_only_on_accept(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -54,7 +56,7 @@ class AccentTests(unittest.TestCase):
                 dialog.choose_accent_color();picker=dialog._accent_picker
                 picker.setCurrentColor(QColor('#22C55E'));picker.accept();flush()
                 self.assertEqual(dialog._draft_accent,'#22C55E')
-            finally:dialog.hide();dialog.deleteLater();flush()
+            finally:dialog._preference_writer.close();dialog.hide();dialog.deleteLater();flush()
 
     def test_existing_primary_and_split_buttons_refresh_without_stale_tokens(self):
         primary=button('test',variant='primary');frame,send,arrow=split_send_button(None,32)

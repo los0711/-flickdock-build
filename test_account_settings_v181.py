@@ -46,6 +46,7 @@ class SettingsAccountTests(unittest.TestCase):
         self.service=Service();self.panel=AccountPanel(self.service,email_binding=False)
         self.dialog.set_account_panel(self.panel);self.dialog.select_category('账号与设备');self.dialog.resize(892,632);self.dialog.show();APP.processEvents()
     def tearDown(self):
+        self.dialog._preference_writer.close()
         self.dialog.close();self.dialog.deleteLater();APP.processEvents()
         self.runtime.stop();self.screen.stop();self.temp.cleanup()
     def click(self,button):QTest.mouseClick(button,Qt.MouseButton.LeftButton);APP.processEvents()
@@ -116,7 +117,7 @@ class SettingsAccountTests(unittest.TestCase):
                 for widget in controls:
                     self.dialog.scroll.ensureWidgetVisible(widget);APP.processEvents()
                     if focused:widget.setFocus()
-                    else:self.dialog.save_button.setFocus()
+                    else:self.dialog.close_button.setFocus()
                     before=widget.currentIndex() if isinstance(widget,QComboBox) else widget.value()
                     self.wheel(widget)
                     after=widget.currentIndex() if isinstance(widget,QComboBox) else widget.value()
@@ -153,7 +154,7 @@ class SettingsAccountTests(unittest.TestCase):
         APP.processEvents()
         startup_bottom=self.dialog.startup_checkbox.mapTo(
             self.dialog,QPoint(0,self.dialog.startup_checkbox.height())).y()
-        footer_top=self.dialog.save_button.mapTo(self.dialog,QPoint()).y()
+        footer_top=self.dialog.footer_frame.mapTo(self.dialog,QPoint()).y()
         self.assertLess(startup_bottom,footer_top)
     @patch('native_ui_common.reduced_motion',return_value=False)
     def test_inline_update_animation_and_real_download_progress(self,_reduced_motion):

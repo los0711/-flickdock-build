@@ -73,11 +73,14 @@ class StartupSettings(unittest.TestCase):
         with patch.object(subject,'_startup_runtime_allowed',return_value=True), \
              patch.object(subject,'_startup_manager',return_value=manager):
             dialog=subject.SettingsDialog(self.store);dialog.show();APP.processEvents()
-            dialog.save();APP.processEvents()
+            from test_live_settings_v1838 import settle_preferences
+            dialog.startup_checkbox.setChecked(False);settle_preferences(dialog)
+            before=self.store.path.read_bytes()
+            dialog.startup_checkbox.setChecked(True);settle_preferences(dialog)
             self.assertTrue(dialog.isVisible());self.assertTrue(dialog.error_label.isVisible())
             self.assertEqual(self.store.path.read_bytes(),before)
             self.assertFalse(self.store.startup_status().enabled)
-            dialog.reject();dialog.deleteLater();APP.processEvents()
+            dialog._preference_writer.close();dialog.reject();dialog.deleteLater();APP.processEvents()
 
     def test_json_failure_rolls_back_run_and_approval(self):
         self.approval=(b'\x03'+b'\0'*11,3);original=self.approval
