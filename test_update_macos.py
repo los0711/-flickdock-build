@@ -13,6 +13,7 @@ import zipfile
 
 import test_update_client_v170 as https_fixture
 import update_client as subject
+from PySide6.QtCore import QTimer
 app = https_fixture.app
 
 def wait_until(predicate):
@@ -116,20 +117,46 @@ class MacHTTPS(unittest.TestCase):
 
     def test_mac_download_cancel_and_insecure_redirect_no_late_file(self):
         client, state = self.client()
+        self.routes['/mac.zip'] = dict(body=self.payload, ranges=True, chunk_delay=.004)
         client.check()
         wait_until(lambda: state['update_available'])
-        client.progress.connect(lambda received,total:client.cancel() if received>0 else None)
+        cancel_on_progress=lambda received,total:client.cancel() if received>0 else None
+        client.progress.connect(cancel_on_progress)
         client.download(self.manifest)
+        task=client._download_task
         wait_until(lambda: state['cancelled'])
         self.assertTrue(state['cancelled'])
+        self.assertFalse(client.busy)
+        self.assertTrue(task.stopped)
         self.assertFalse(state['verified_file'])
-        wait_until(lambda:not list(client.updates_dir.rglob('*.part')))
-        self.assertFalse(list(client.updates_dir.rglob('*.part')))
+        # Cancellation preserves resumable bytes (the v1821 download contract).
+        # The old assertion depended on cancelling before the first body write.
+        partial=task.part.read_bytes()
+        self.assertGreater(len(partial),0)
+        self.assertLess(len(partial),len(self.payload))
+        settled=[];QTimer.singleShot(150,app,lambda:settled.append(True))
+        wait_until(lambda:settled)
+        self.assertEqual(task.part.read_bytes(),partial,'Cancelled replies must not write late bytes')
+        self.assertFalse(list(client.updates_dir.rglob('update.zip')))
+        client.progress.disconnect(cancel_on_progress)
         self.routes['/mac.zip'] = dict(status=302, location='http://127.0.0.1/insecure.zip')
         client.download(self.manifest)
         wait_until(lambda: state['failed'])
         self.assertFalse(state['verified_file'])
         self.assertFalse(list(client.updates_dir.rglob('update.zip')))
+        self.assertEqual(task.part.read_bytes(),partial)
+        self.assertFalse(any(path=='/insecure.zip' for path,_ in self.requests))
+        # A later explicit retry resumes the same bytes and publishes only after
+        # the original complete-package hash and Mac format checks succeed.
+        self.routes['/mac.zip'] = dict(body=self.payload,ranges=True)
+        self.requests.clear();state['failed'].clear()
+        client.download(self.manifest)
+        wait_until(lambda:state['verified_file'] or state['failed'])
+        self.assertFalse(state['failed'],state['failed'])
+        headers=next(headers for path,headers in self.requests if path=='/mac.zip')
+        self.assertEqual(headers.get('Range'),f'bytes={len(partial)}-')
+        self.assertEqual(Path(state['verified_file'][0][0]).read_bytes(),self.payload)
+        self.assertFalse(list(client.updates_dir.rglob('*.part')))
 
 
 if __name__ == '__main__': unittest.main(verbosity=2)
