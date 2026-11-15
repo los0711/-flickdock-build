@@ -36,7 +36,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-mac-video-compat-') as direct
     ):
         source=root/(name+extension)
         subprocess.run([str(ffmpeg),'-hide_banner','-loglevel','error','-f','lavfi','-i','testsrc=size=128x72:rate=10',
-                        '-f','lavfi','-i','sine=frequency=440','-t','.6','-c:v',encoder,*extra,'-c:a',audio,
+                        '-f','lavfi','-i','sine=frequency=440','-t','0.6','-c:v',encoder,*extra,'-c:a',audio,
                         '-y',str(source)],check=True,timeout=60)
         with patch('video_worker.emit'):
             output=_mac_compatible_video(source,ffmpeg.parent)
