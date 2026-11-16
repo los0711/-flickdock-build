@@ -57,6 +57,7 @@ RUNTIME_SOURCES=(
     
 )
 MAINTAINED_TESTS=(
+    'test_release_signing_ci.py',
     'test_bulk_cloud_v1837.py','test_virtual_files_v1837.py','test_slider_click_v1837.py','test_neutral_shadows_v1837.py',
     'test_shelf_actions_v1837.py',
     'test_scroll_motion_v1837.py', 'test_tooltips_v1837.py', 'test_upload_badge_v1837.py', 'test_upload_responsiveness_v1837.py', 'test_transfer_suggestion_v1837.py',
@@ -125,6 +126,7 @@ MAINTAINED_TESTS=(
     'test_remote_transfer_actions_v1812.py',
 )
 SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
+    'build_windows_release.py','.github/workflows/release-windows.yml',
     'assets/fonts/Inter-Regular.ttf','assets/fonts/Inter-Medium.ttf','assets/fonts/Inter-SemiBold.ttf',
     'assets/fonts/JetBrainsMono-Regular.ttf','assets/fonts/JetBrainsMono-Medium.ttf',
     'licenses/Inter-OFL.txt','licenses/JetBrainsMono-OFL.txt',
