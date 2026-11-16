@@ -12,7 +12,7 @@ _import_profile = tempfile.TemporaryDirectory(prefix='flickdock-trigger-import-'
 os.environ['APPDATA'] = _import_profile.name
 
 from PySide6.QtCore import QMimeData, QPoint, Qt, QUrl
-from PySide6.QtGui import QDragEnterEvent
+from PySide6.QtGui import QDragEnterEvent, QDesktopServices
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
@@ -223,6 +223,71 @@ class TriggerReliabilityTests(unittest.TestCase):
         self.assertEqual(shelf.presentation._targets['alpha'],0)
         from test_html_native_workspace import until
         until(lambda:not shelf.isVisible())
+        self.assertTrue(manager.edge.isVisible())
+
+    def test_opened_file_can_hide_before_close_finishes_without_losing_edge(self):
+        manager=self.manager;shelf=manager.shelf
+        manager.settings.update(capture_mode='reference',keep_empty_handle=True)
+        manager.motion=True;shelf.presentation.motion=True;shelf.pinned=False
+        path=Path(self.profile.name)/'document.txt';path.write_text('fixture',encoding='utf-8')
+        shelf.add_paths('permanent',[str(path)])
+        manager.show_overview();shelf.geometry_morph.complete();APP.processEvents()
+        # Offscreen screens can choose the compact overview layout.
+        shelf.popup._narrow_preview=True
+        shelf.popup.select_item(shelf.files['permanent'][0]);APP.processEvents()
+        self.assertTrue(shelf.popup.preview.open_button.isEnabled())
+        with patch.object(QDesktopServices,'openUrl',return_value=True) as opened:
+            shelf.popup.preview.open_button.click()
+        opened.assert_called_once()
+        manager._app_was_active=True
+        outside=QPoint(shelf.visual_geometry().left()-100,shelf.visual_geometry().top()-100)
+        with patch.object(QApplication,'applicationState',return_value=Qt.ApplicationState.ApplicationInactive), \
+             patch.object(flickdock.QCursor,'pos',return_value=outside), \
+             patch.object(flickdock,'mouse_buttons_mask',return_value=0), \
+             patch.object(flickdock,'native_input_available',return_value=False):
+            manager.poll()
+            self.assertEqual(shelf.visible_state,'hiding')
+            self.assertFalse(manager.edge.isVisible())
+            # The native host may already be hidden while its close deadline
+            # is still outstanding after focus moves to another application.
+            shelf.windowHandle().hide()
+            QTest.qWait(600);APP.processEvents()
+            self.assertEqual(shelf.visible_state,'hidden')
+            self.assertTrue(manager.edge.isVisible())
+            manager.poll()
+        with patch.object(flickdock.QCursor,'pos',return_value=manager.edge.activation_region().center()), \
+             patch.object(flickdock,'mouse_buttons_mask',return_value=0), \
+             patch.object(flickdock,'native_input_available',return_value=False):manager.poll()
+        self.assertTrue(shelf.isVisible())
+        self.assertEqual(shelf.presentation_kind,'dock')
+
+    def test_opened_file_hidden_before_deactivation_restores_edge_and_tray(self):
+        manager=self.manager;shelf=manager.shelf
+        manager.settings.update(capture_mode='reference',keep_empty_handle=True)
+        shelf.pinned=False
+        path=Path(self.profile.name)/'document.txt';path.write_text('fixture',encoding='utf-8')
+        shelf.add_paths('permanent',[str(path)])
+        manager.show_overview();shelf.geometry_morph.complete();APP.processEvents()
+        shelf.popup._narrow_preview=True
+        shelf.popup.select_item(shelf.files['permanent'][0]);APP.processEvents()
+        with patch.object(QDesktopServices,'openUrl',side_effect=lambda _url:(shelf.windowHandle().hide() or True)) as opened:
+            shelf.popup.preview.open_button.click()
+        opened.assert_called_once()
+        self.assertFalse(shelf.isVisible())
+        self.assertFalse(manager.edge.isVisible())
+        manager._app_was_active=True
+        outside=QPoint(shelf.visual_geometry().left()-100,shelf.visual_geometry().top()-100)
+        with patch.object(QApplication,'applicationState',return_value=Qt.ApplicationState.ApplicationInactive), \
+             patch.object(flickdock.QCursor,'pos',return_value=outside), \
+             patch.object(flickdock,'mouse_buttons_mask',return_value=0), \
+             patch.object(flickdock,'native_input_available',return_value=False):manager.poll()
+        self.assertEqual(shelf.visible_state,'hidden')
+        self.assertTrue(manager.edge.isVisible())
+        manager.tray_activated(QSystemTrayIcon.ActivationReason.Trigger)
+        self.assertTrue(shelf.isVisible())
+        shelf.hide_animated(explicit=True)
+        QTest.qWait(600);APP.processEvents()
+        self.assertEqual(shelf.visible_state,'hidden')
         self.assertTrue(manager.edge.isVisible())
 
     def test_edge_reveal_works_while_lan_is_open_and_after_it_closes(self):

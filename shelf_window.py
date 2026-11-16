@@ -1466,7 +1466,10 @@ class ShelfWindow(QWidget):
         self._hide_fallback.start(450)
 
     def _complete_hide(self):
-        if not self.isVisible() or self.visible_state != "hiding":
+        # Native visibility can change independently while an external app
+        # takes focus. The pending hide still owns cleanup and the edge handoff
+        # even when the host has already disappeared from the screen.
+        if self.visible_state != "hiding":
             return
         self.hide_immediately()
         self.manager.update_handles()

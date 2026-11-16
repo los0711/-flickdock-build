@@ -1176,7 +1176,13 @@ class ShelfManager:
             if retired:self.update_handles()
         if self.edge.isVisible() and self.edge.activation_region().contains(pos) and not self.edge_suppressed and not self.shelf.isVisible(): self.show_docked()
         for shelf in self.shelves:
-            if not shelf.isVisible(): continue
+            if not shelf.isVisible():
+                # A tool window can disappear independently while another
+                # application opens. Reconcile its state and restore the edge
+                # rather than leaving a hidden host owning the trigger.
+                if shelf.visible_state!='hidden':
+                    shelf.hide_immediately();self.update_handles()
+                continue
             modal=QApplication.activeModalWidget(); popup=QApplication.activePopupWidget()
             blocked=shelf.picker_hold_active(now) or shelf._menu_open or shelf.rename_edit.isVisible() or modal is not None or popup is not None or confirmation_active(shelf)
             press_blocked=shelf.picker_hold_active(now) or modal is not None or shelf.rename_edit.isVisible() or (popup is not None and popup.frameGeometry().contains(pos)) or confirmation_active(shelf)
