@@ -68,14 +68,37 @@ class _Probe(QRunnable):
         self.signals.done.emit(result)
 
 
+NETWORK_POLL_MS = 10000
+
+
 class NetworkEnvironment(QObject):
     changed=Signal(dict)
     def __init__(self,parent=None,*,enabled=True,detect=None):
         super().__init__(parent);self.state=dict(vpn='unknown',proxy='unknown');self.closed=False;self.job=None
         self.detect=detect or (lambda:dict(vpn=vpn_status(),proxy=proxy_status()))
         self.pool=QThreadPool(self);self.pool.setMaxThreadCount(1)
-        self.timer=QTimer(self);self.timer.setInterval(5000);self.timer.timeout.connect(self.check)
+        # vpn_status() starts a PowerShell process, so polling it every five
+        # seconds was a steady idle cost. Follow Qt's network information for
+        # real changes and keep a slow fallback probe instead.
+        self.timer=QTimer(self);self.timer.setInterval(NETWORK_POLL_MS);self.timer.timeout.connect(self.check)
+        self._info=None;self._watch_network()
         if enabled:self.timer.start();QTimer.singleShot(0,self,self.check)
+
+    def _watch_network(self):
+        try:
+            from PySide6.QtNetwork import QNetworkInformation
+            loader=getattr(QNetworkInformation,'loadDefaultBackend',None)
+            if loader is not None:loader()
+            info=QNetworkInformation.instance()
+        except (ImportError,RuntimeError,TypeError,AttributeError):
+            info=None
+        if info is None:return
+        self._info=info
+        for name in ('reachabilityChanged','transportMediumChanged'):
+            signal=getattr(info,name,None)
+            if signal is None:continue
+            try:signal.connect(lambda *_:self.check())
+            except (RuntimeError,TypeError):pass
 
     def check(self):
         if self.closed or self.job is not None:return
@@ -87,4 +110,12 @@ class NetworkEnvironment(QObject):
         if self.closed:return
         if value!=self.state:self.state=dict(value);self.changed.emit(dict(value))
 
-    def close(self):self.closed=True;self.timer.stop()
+    def close(self):
+        self.closed=True;self.timer.stop()
+        if self._info is not None:
+            for name in ('reachabilityChanged','transportMediumChanged'):
+                signal=getattr(self._info,name,None)
+                if signal is None:continue
+                try:signal.disconnect()
+                except (RuntimeError,TypeError):pass
+            self._info=None

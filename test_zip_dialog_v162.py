@@ -42,7 +42,9 @@ with tempfile.TemporaryDirectory(prefix='flickdock-zip-dialog-') as tmp:
                 assert isinstance(dialog,QFileDialog) and dialog.isVisible()
                 assert not dialog.testOption(QFileDialog.Option.DontUseNativeDialog)
                 assert dialog.parentWidget() is shelf
-                assert not dialog.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
+                # The shelf is always-on-top; a modal picker that is not
+                # explicitly on top can open behind it and block every click.
+                assert dialog.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
                 if save:
                     dialog.setDirectory(str(destination.parent))
                     name=dialog.findChild(QLineEdit,'fileNameEdit')

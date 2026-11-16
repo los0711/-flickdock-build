@@ -66,7 +66,7 @@ class CrashDiagnostics(QObject):
         self._watchdog_timeout=0.;self._watchdog_beat=time.monotonic();self._watchdog_dumped=False
         self.stack_stream=None;self.stall_stream=None;self.directory=None
         self._previous_exception=sys.excepthook;self._previous_thread=threading.excepthook
-        self._previous_qt=None;self._installed=False
+        self._previous_qt=None;self._installed=False;self._owns_faulthandler=False
         self.environment=dict(version=version,python=sys.version.split()[0],qt=qVersion(),platform=sys.platform,
             qt_platform=app.platformName(),screens=[dict(dpi=round(s.logicalDotsPerInch(),2),scale=s.devicePixelRatio(),
                 width=s.geometry().width(),height=s.geometry().height()) for s in app.screens()])
@@ -93,7 +93,16 @@ class CrashDiagnostics(QObject):
 
     def _install(self):
         if self._closing or self.stack_stream is None:return
-        faulthandler.enable(self.stack_stream,all_threads=True)
+        if sys.platform=='win32':
+            # CPython 3.12 treats handled Shell/COM first-chance exceptions as
+            # fatal and can crash while concurrently walking Python threads.
+            # Let Windows Error Reporting handle real native faults; Python
+            # exceptions and the independent GUI-stall watchdog remain active.
+            self.environment['native_crash_capture']='windows_error_reporting'
+        else:
+            faulthandler.enable(self.stack_stream,all_threads=True)
+            self._owns_faulthandler=True
+            self.environment['native_crash_capture']='faulthandler'
         sys.excepthook=self._exception;threading.excepthook=self._thread_exception
         self._previous_qt=qInstallMessageHandler(self._qt_message);self._installed=True
         self.note('diagnostics.ready')
@@ -272,7 +281,9 @@ class CrashDiagnostics(QObject):
         self.note('application.quit');self._closing=True;self.app.removeEventFilter(self)
         if self._installed:
             qInstallMessageHandler(self._previous_qt);sys.excepthook=self._previous_exception
-            threading.excepthook=self._previous_thread;faulthandler.disable();self._installed=False
+            threading.excepthook=self._previous_thread
+            if self._owns_faulthandler:faulthandler.disable();self._owns_faulthandler=False
+            self._installed=False
         faulthandler.cancel_dump_traceback_later()
         self._stop.set();self._wake.set()
         # The worker writes only bounded diagnostic snapshots and owns no UI.

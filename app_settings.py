@@ -33,7 +33,7 @@ from platform_startup import (StartupManager, CallbackBackend,
                               write_startup_value as _platform_write_startup)
 from platform_native import remove_host_window_shadow
 from surface_morph import paint_surface_shadow
-from native_ui_common import (reference_font, font_css_stack, rounded_popup, colors as ui_colors,
+from native_ui_common import (reference_font, font_css_stack, rounded_popup, screen_for_widget, colors as ui_colors,
                               paint_rounded_surface, qss_color, RADIUS_CARD_PX, RADIUS_SUBCONTROL_PX,
                               RoundedSurfaceFrame, RoundedPopupBackdrop, RoundedScrollBar)
 
@@ -1149,7 +1149,7 @@ class ReferenceModalDialog(QDialog):
 
     def _available_geometry(self):
         owner=self.parentWidget().window() if self.parentWidget() else None
-        screen=owner.screen() if owner else QGuiApplication.primaryScreen()
+        screen=screen_for_widget(owner) if owner else QGuiApplication.primaryScreen()
         return screen.availableGeometry() if screen else QRect(0,0,1024,768)
 
     def sizeHint(self):
@@ -1204,7 +1204,7 @@ class ReferenceModalDialog(QDialog):
                 self.windowHandle().setTransientParent(owner.windowHandle())
             center=owner.frameGeometry().center()
             target=center-QPoint(self.width()//2,self.height()//2)
-            screen=owner.screen()
+            screen=screen_for_widget(owner)
             if screen is not None:
                 available=screen.availableGeometry()
                 target.setX(max(available.left(),min(target.x(),available.right()-self.width()+1)))

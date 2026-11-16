@@ -24,6 +24,8 @@ class ShelfRaiseTests(unittest.TestCase):
     def test_reveal_paths_order_shelf_without_making_it_permanently_topmost(self):
         with tempfile.TemporaryDirectory(prefix='flickdock-shelf-raise-') as folder, \
              patch.dict(os.environ, {'APPDATA': str(Path(folder) / 'profile')}), \
+             patch.object(flickdock, 'BASE', Path(folder) / 'profile' / 'FlickDock'), \
+             patch.object(flickdock, 'STATE_FILE', Path(folder) / 'profile' / 'FlickDock' / 'shelves.json'), \
              patch.object(flickdock, 'motion_enabled', return_value=False), \
              patch.object(QSystemTrayIcon, 'show'), patch.object(QSystemTrayIcon, 'hide'), \
              patch.object(app_settings, '_read_startup_value'), \

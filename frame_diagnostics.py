@@ -104,7 +104,8 @@ class FrameTrace:
         self.phase='other';self._last_update=None;self._frames=0;self._dispatched=0;self._capped=False
         self._intervals=[];self._paint=[];self._frame_paint=[]
         self._closed=False
-        self.set_screen(window.screen())
+        from native_ui_common import screen_for_widget
+        self.set_screen(screen_for_widget(window))
 
     def bind_handle(self,handle):
         if handle is self._handle:return
@@ -113,7 +114,9 @@ class FrameTrace:
         self._handle=handle
         if handle is not None:
             handle.screenChanged.connect(self.set_screen)
-            self.set_screen(handle.screen())
+            from native_ui_common import screen_for_widget
+            window=self._window()
+            self.set_screen(screen_for_widget(window) if window is not None else None)
 
     def set_screen(self,screen):
         if screen is self._screen:

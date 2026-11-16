@@ -128,9 +128,8 @@ MAINTAINED_TESTS=(
 SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
     'build_windows_release.py','release_archives.py','release_pipeline.py','release_source_sync.py','CENTRAL_RELEASE.md',
     '.github/workflows/release-windows.yml','.github/workflows/central-release.yml',
-    'assets/fonts/Inter-Regular.ttf','assets/fonts/Inter-Medium.ttf','assets/fonts/Inter-SemiBold.ttf',
     'assets/fonts/JetBrainsMono-Regular.ttf','assets/fonts/JetBrainsMono-Medium.ttf',
-    'licenses/Inter-OFL.txt','licenses/JetBrainsMono-OFL.txt',
+    'licenses/JetBrainsMono-OFL.txt',
     'cloud/test/translation-route.mjs','assets/models/lid.176.ftz',
     'assets/flags/cn.svg', 'assets/flags/cz.svg', 'assets/flags/de.svg', 'assets/flags/dk.svg', 'assets/flags/es.svg', 'assets/flags/fi.svg', 'assets/flags/fr.svg', 'assets/flags/gr.svg', 'assets/flags/id.svg', 'assets/flags/il.svg', 'assets/flags/in.svg', 'assets/flags/it.svg', 'assets/flags/jp.svg', 'assets/flags/kr.svg', 'assets/flags/manifest.json', 'assets/flags/my.svg', 'assets/flags/nl.svg', 'assets/flags/no.svg', 'assets/flags/ph.svg', 'assets/flags/pl.svg', 'assets/flags/pt.svg', 'assets/flags/ro.svg', 'assets/flags/ru.svg', 'assets/flags/sa.svg', 'assets/flags/se.svg', 'assets/flags/th.svg', 'assets/flags/tr.svg', 'assets/flags/tw.svg', 'assets/flags/ua.svg', 'assets/flags/us.svg', 'assets/flags/vn.svg', 'licenses/Flag-Icons-LICENSE.txt', 'licenses/FASTTEXT-LICENSE.txt', 'licenses/FASTTEXT-MODEL-ATTRIBUTION.txt', 'licenses/Paper-Notice-Motion-LICENSE.txt', 'cloud/src/translation.ts', 'cloud/test/translation.mjs', 'TRANSLATION.md',
     'ci_cross_device.py','ci_upload_profile.py','ci_vpn.py','ci_mac_video_compat.py','ci_mac_video_compositor.py','ci_media_preview_legacy.py',

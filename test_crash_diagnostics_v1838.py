@@ -1,5 +1,5 @@
 """Diagnostic persistence, bounded history and safe lifetime guards."""
-import json,os,sys,tempfile,unittest,zipfile
+import json,os,subprocess,sys,tempfile,unittest,zipfile
 from pathlib import Path
 from unittest.mock import patch
 os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
@@ -17,7 +17,77 @@ def until(predicate,timeout=3000):
         QTest.qWait(5)
     raise AssertionError('Diagnostic work did not finish')
 
+def _windows_seh_probe(mode):
+    """Raise a caught first-chance COM error in an isolated Windows process."""
+    import ctypes,faulthandler,threading,time
+    from ctypes import wintypes
+    class Record(ctypes.Structure):
+        _fields_=[('code',wintypes.DWORD),('flags',wintypes.DWORD),('next',ctypes.c_void_p),
+                  ('address',ctypes.c_void_p),('count',wintypes.DWORD),('info',ctypes.c_size_t*15)]
+    class Pointers(ctypes.Structure):
+        _fields_=[('record',ctypes.POINTER(Record)),('context',ctypes.c_void_p)]
+    handler_type=ctypes.WINFUNCTYPE(ctypes.c_long,ctypes.POINTER(Pointers));seen=[]
+    @handler_type
+    def handler(pointer):
+        if pointer.contents.record.contents.code==0x8001010e:
+            seen.append(True);return -1  # EXCEPTION_CONTINUE_EXECUTION
+        return 0
+    kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+    kernel.AddVectoredExceptionHandler.argtypes=(wintypes.ULONG,handler_type)
+    kernel.AddVectoredExceptionHandler.restype=ctypes.c_void_p
+    kernel.RemoveVectoredExceptionHandler.argtypes=(ctypes.c_void_p,)
+    kernel.RaiseException.argtypes=(wintypes.DWORD,wintypes.DWORD,wintypes.DWORD,ctypes.POINTER(ctypes.c_size_t))
+    with tempfile.TemporaryDirectory(prefix='flickdock-handled-seh-') as folder:
+        diagnostics=CrashDiagnostics(APP,folder,'probe')
+        try:
+            until(lambda:diagnostics._installed)
+            if mode=='legacy':faulthandler.enable(diagnostics.stack_stream,all_threads=True)
+            registration=kernel.AddVectoredExceptionHandler(0,handler)
+            if not registration:raise ctypes.WinError(ctypes.get_last_error())
+            beats=[];timer=QTimer();timer.setInterval(10);timer.timeout.connect(lambda:beats.append(True))
+            try:
+                if mode=='stress':
+                    stop=threading.Event()
+                    def raise_many():
+                        for _ in range(80):
+                            if stop.is_set():return
+                            kernel.RaiseException(0x8001010e,0,0,None);time.sleep(.002)
+                    workers=[threading.Thread(target=raise_many) for _ in range(4)]
+                    timer.start()
+                    for worker in workers:worker.start()
+                    deadline=time.monotonic()+8
+                    while any(worker.is_alive() for worker in workers) and time.monotonic()<deadline:QTest.qWait(5)
+                    stalled=any(worker.is_alive() for worker in workers)
+                    if stalled:stop.set()
+                    for worker in workers:worker.join()
+                    if stalled:raise RuntimeError('Handled exceptions stalled the UI')
+                else:kernel.RaiseException(0x8001010e,0,0,None)
+            finally:kernel.RemoveVectoredExceptionHandler(registration)
+            timer.stop()
+            if mode=='legacy':faulthandler.disable()
+            diagnostics.wait_closed()
+            text=(diagnostics.directory/'python-stack.txt').read_text(encoding='utf8',errors='replace')
+            print(json.dumps(dict(handled=len(seen),beats=len(beats),false_fatal='Windows fatal exception' in text,
+                                  native=diagnostics.environment.get('native_crash_capture'))))
+        finally:diagnostics.wait_closed()
+
 class DiagnosticsTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform=='win32','Windows first-chance exception semantics')
+    def test_handled_windows_com_exception_is_not_reported_as_a_fatal_crash(self):
+        with tempfile.TemporaryDirectory(prefix='flickdock-seh-profile-') as profile:
+            env=dict(os.environ,QT_QPA_PLATFORM='offscreen',APPDATA=profile,LOCALAPPDATA=profile)
+            env.pop('PYTHONFAULTHANDLER',None)
+            for mode,expected in (('legacy',True),('safe',False),('stress',False)):
+                with self.subTest(mode=mode):
+                    result=subprocess.run([sys.executable,str(Path(__file__).resolve()),'--seh-probe',mode],
+                                          env=env,text=True,capture_output=True,timeout=25)
+                    self.assertEqual(result.returncode,0,result.stderr)
+                    report=json.loads(result.stdout.strip().splitlines()[-1])
+                    self.assertEqual(report['handled'],320 if mode=='stress' else 1)
+                    if mode=='stress':self.assertGreater(report['beats'],0)
+                    self.assertEqual(report['false_fatal'],expected)
+                    self.assertEqual(report['native'],'windows_error_reporting')
+
     def test_watchdog_observes_diagnostics_that_became_ready_during_construction(self):
         import io
         from gui_watchdog import GuiWatchdog
@@ -214,4 +284,6 @@ class DiagnosticsTests(unittest.TestCase):
             guard(owner,lambda host:(_ for _ in ()).throw(RuntimeError('live callback')))()
         owner.deleteLater()
 
-if __name__=='__main__':unittest.main(verbosity=2)
+if __name__=='__main__':
+    if len(sys.argv)==3 and sys.argv[1]=='--seh-probe':_windows_seh_probe(sys.argv[2])
+    else:unittest.main(verbosity=2)

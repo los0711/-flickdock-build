@@ -88,6 +88,9 @@ STATE_FILE = BASE / "shelves.json"
 
 OLD_STATE_FILE = Path(os.getenv("APPDATA", str(Path.home()))) / "DoudouShelf" / "shelves.json"
 
+# A press this soon after the picker closes is the click that closed it.
+PICKER_DISMISS_CLICK_SECONDS = 0.15
+
 
 class ShelfManager:
     def __init__(self, app, *, cocoa_smoke=False):
@@ -638,6 +641,25 @@ class ShelfManager:
         if self._dock_preview_values is not None:self._dock_preview_values['trigger_visible']=target
         self._refresh_trigger_region_action();self._position_edges();self.update_handles()
 
+    def warm_heavy_ui(self):
+        """Pay import and icon costs on an idle turn instead of the first click."""
+        try:
+            import importlib
+            for name in ('video_dialog','lan_panel','account_panel','transfer_workbench',
+                         'media_preview','settings_navigation','clipboard_preview'):
+                try:importlib.import_module(name)
+                except Exception:pass
+        except Exception:pass
+        try:
+            from native_ui_common import colors,icon
+            for name in ('settings','pin','pin-filled','close','menu','expand','video',
+                         'lan','nearby','cloud','folder','zip','download','upload','trash',
+                         'search','chevron-down','web','transferring'):
+                for theme in ('dark','light'):
+                    try:icon(name,colors(theme)['text'])
+                    except Exception:pass
+        except Exception:pass
+
     def show_settings(self,*,category=None):
         self._note_ui('settings.open')
         if self.update_notice is not None:
@@ -676,6 +698,9 @@ class ShelfManager:
         self.settings_dialog.show()
         self.update_handles()
         QTimer.singleShot(0,self.settings_dialog,lambda:self.settings_dialog.select_category(category or '常规'))
+        # Reopening settings starts at the top instead of the section the
+        # previous visit left scrolled to.
+        QTimer.singleShot(0,self.settings_dialog,lambda:self.settings_dialog.scroll.verticalScrollBar().setValue(0))
         problem = self.shortcut_error or self.startup_error
         if problem:
             self.settings_dialog.error_label.setText(problem)
@@ -902,9 +927,22 @@ class ShelfManager:
             ui_theme.apply_application(self.app, shelf_ui_common.FONT_FAMILY)
             self.shelf.refresh()
             if self.shelf.popup:self.shelf.popup.preview.media.apply_theme()
-            if self.settings_dialog:self.settings_dialog.apply_theme(self.settings.theme)
-            if self.lan_dialog:self.lan_dialog.apply_theme(self.settings.theme)
-            if self.wan_dialog:self.wan_dialog.apply_theme(self.settings.theme)
+            # Re-theming a big form repaints hundreds of children. Paint the
+            # windows the user is looking at first, then spend the hidden ones
+            # on an idle turn so the visible switch lands immediately.
+            themed=[self.settings_dialog,self.lan_dialog,self.wan_dialog]
+            def restyle(dialog):
+                if dialog is None:return
+                try:
+                    dialog.setUpdatesEnabled(False);dialog.apply_theme(self.settings.theme)
+                except RuntimeError:return
+                finally:
+                    try:dialog.setUpdatesEnabled(True)
+                    except RuntimeError:pass
+            for dialog in themed:
+                if dialog is not None and dialog.isVisible():restyle(dialog)
+            QTimer.singleShot(90,self,lambda:[restyle(dialog) for dialog in themed
+                                              if dialog is not None and not dialog.isVisible()])
             if self.video_dialog:self.video_dialog.refresh()
             self.updates.apply_theme(self.settings.theme)
             if self.update_notice is not None:self.update_notice.apply_theme(self.settings.theme)
@@ -1169,6 +1207,7 @@ class ShelfManager:
             for shelf in self.shelves:
                 if (shelf.isVisible() and not shelf.pinned and not shelf.dragging
                         and not shelf.incoming_drop and not shelf._archive_choosing and not shelf.picker_hold_active(now)
+                        and not shelf.rename_edit.isVisible()
                         and not confirmation_active(shelf) and not self.outgoing_drag
                         and not (self.clipboard_preview_dialog is not None and self.clipboard_preview_dialog.isVisible()
                                  and self.clipboard_preview_dialog.frameGeometry().contains(pos))):
@@ -1176,10 +1215,20 @@ class ShelfManager:
             if retired:self.update_handles()
         if self.edge.isVisible() and self.edge.activation_region().contains(pos) and not self.edge_suppressed and not self.shelf.isVisible(): self.show_docked()
         for shelf in self.shelves:
-            if not shelf.isVisible(): continue
+            if not shelf.isVisible():
+                # A tool window can disappear independently while another
+                # application opens. Reconcile its state and restore the edge
+                # rather than leaving a hidden host owning the trigger.
+                if shelf.visible_state!='hidden':
+                    shelf.hide_immediately();self.update_handles()
+                continue
             modal=QApplication.activeModalWidget(); popup=QApplication.activePopupWidget()
-            blocked=shelf.picker_hold_active(now) or shelf._menu_open or shelf.rename_edit.isVisible() or modal is not None or popup is not None or confirmation_active(shelf)
-            press_blocked=shelf.picker_hold_active(now) or modal is not None or shelf.rename_edit.isVisible() or (popup is not None and popup.frameGeometry().contains(pos)) or confirmation_active(shelf)
+            # A fresh press is a deliberate click. The grace after a native
+            # picker only exists to swallow the click that dismissed it, so the
+            # next real press must never be eaten as well.
+            if new_press:shelf._picker_return_until=0.0
+            blocked=shelf._archive_choosing or shelf.picker_hold_active(now) or shelf._menu_open or shelf.rename_edit.isVisible() or modal is not None or popup is not None or confirmation_active(shelf)
+            press_blocked=shelf._archive_choosing or shelf.picker_hold_active(now) or modal is not None or shelf.rename_edit.isVisible() or (popup is not None and popup.frameGeometry().contains(pos)) or confirmation_active(shelf)
             in_settings=app_active and self.settings_dialog is not None and self.settings_dialog.isVisible() and self.settings_dialog.frameGeometry().contains(pos)
             in_settings=in_settings or bool(app_active and self.lan_dialog and self.lan_dialog.isVisible() and self.lan_dialog.frameGeometry().contains(pos))
             in_settings=in_settings or bool(app_active and self.wan_dialog and self.wan_dialog.isVisible() and self.wan_dialog.frameGeometry().contains(pos))
@@ -1367,6 +1416,7 @@ def main():
                       and mac_icon.is_file() else app_icon())
     manager = ShelfManager(app, cocoa_smoke=cocoa_smoke)
     guard.activated.connect(manager.show_first)
+    QTimer.singleShot(2200, manager.warm_heavy_ui)
     if cocoa_smoke:
         index = sys.argv.index('--verify-cocoa-startup')
         if index + 1 >= len(sys.argv):

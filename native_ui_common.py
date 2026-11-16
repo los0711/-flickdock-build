@@ -23,10 +23,9 @@ from PySide6.QtWidgets import QApplication, QAbstractButton, QFrame, QHBoxLayout
 
 FONT_WEIGHT_AXIS=QFont.Tag('wght')
 FONT_TABULAR_NUMBERS=QFont.Tag('tnum')
-UI_FONT_FAMILY='Inter'
+UI_FONT_FAMILY='JetBrains Mono'
 TECHNICAL_FONT_FAMILY='JetBrains Mono'
-BUNDLED_FONT_FILES=('Inter-Regular.ttf','Inter-Medium.ttf','Inter-SemiBold.ttf',
-                    'JetBrainsMono-Regular.ttf','JetBrainsMono-Medium.ttf')
+BUNDLED_FONT_FILES=('JetBrainsMono-Regular.ttf','JetBrainsMono-Medium.ttf')
 RADIUS_SMALL_PX = 4
 RADIUS_SUBCONTROL_PX = 6
 RADIUS_CONTROL_PX = 8
@@ -142,14 +141,34 @@ def rounded_popup(popup):
     if not popup.mask().isEmpty():popup.clearMask()
 
 
+def screen_for_widget(widget):
+    """Resolve a widget's display without transferring its wrapper to a window.
+
+    PySide 6.12 gives QWidget.screen()/QWindow.screen() a wrapper parent of
+    the calling window. Closing a transient window then invalidates the same
+    QScreen wrapper held by other windows, although Qt's screen is still live.
+    The application-owned screen lookup avoids that lifetime coupling.
+    """
+    geometry=widget.window().frameGeometry()
+    screen=QGuiApplication.screenAt(geometry.center())
+    if screen is not None:return screen
+    screens=QGuiApplication.screens()
+    if not screens:return None
+    def overlap(candidate):
+        intersection=geometry.intersected(candidate.geometry())
+        return max(0,intersection.width())*max(0,intersection.height())
+    nearest=max(screens,key=overlap)
+    return nearest if overlap(nearest)>0 else QGuiApplication.primaryScreen() or screens[0]
+
+
 def toggle_window_zoom(window):
     """Zoom a frameless utility window in its current work area, then restore."""
     previous=getattr(window,'_flickdock_zoom_restore',None)
     if previous is not None:
         window.setGeometry(previous);window._flickdock_zoom_restore=None
-    elif window.screen() is not None:
+    elif (screen:=screen_for_widget(window)) is not None:
         window._flickdock_zoom_restore=window.geometry()
-        window.setGeometry(window.screen().availableGeometry())
+        window.setGeometry(screen.availableGeometry())
 
 def readable_size(value):
     value=int(value)

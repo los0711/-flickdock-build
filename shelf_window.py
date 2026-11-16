@@ -91,6 +91,7 @@ import time
 import ui_theme
 
 WINDOW_OPACITY_STEP = .06
+PICKER_RETURN_GRACE_SECONDS = 1.5
 
 
 class _ShelfSurface(RoundedSurfaceFrame):
@@ -143,6 +144,13 @@ class ShelfWindow(QWidget):
         self._archive_choosing=False
         self._archive_refs=()
         self._archive_epoch=0
+        # A native Save dialog is modal. If it opens behind this frameless
+        # always-on-top window it is invisible yet swallows every click, and
+        # _archive_choosing then keeps the edge trigger suppressed forever.
+        self._zip_dialog=None
+        self._zip_picker_started=0.0
+        self._zip_watchdog=QTimer(self);self._zip_watchdog.setInterval(500)
+        self._zip_watchdog.timeout.connect(self._watch_zip_picker)
         self.copy_jobs=set()
         self._directory_jobs={};self._directory_sizes={}
         self._copy_pending={};self._delete_jobs=set()
@@ -1466,7 +1474,10 @@ class ShelfWindow(QWidget):
         self._hide_fallback.start(450)
 
     def _complete_hide(self):
-        if not self.isVisible() or self.visible_state != "hiding":
+        # Native visibility can change independently while an external app
+        # takes focus. The pending hide still owns cleanup and the edge handoff
+        # even when the host has already disappeared from the screen.
+        if self.visible_state != "hiding":
             return
         self.hide_immediately()
         self.manager.update_handles()
@@ -1609,7 +1620,8 @@ class ShelfWindow(QWidget):
             # Native pickers can deactivate Qt and deliver the final pointer
             # event after their nested loop returns. Keep the existing mode
             # and allow a comfortable move back to either shelf surface.
-            self._file_choosing=False;self._picker_return_until=time.monotonic()+1.5
+            self._file_choosing=False;self._picker_return_until=time.monotonic()+PICKER_RETURN_GRACE_SECONDS
+            self._picker_return_at=time.monotonic()
             self.touch()
 
     def paste_clipboard(self, mode):
@@ -1710,6 +1722,27 @@ class ShelfWindow(QWidget):
         refs=self.popup.chosen_refs() if self.expanded and self.popup else []
         self.compress_refs(refs or self.files[mode])
 
+    def _close_rename_dialog(self):
+        """Hide the rename sheet and its editor so no modal window survives."""
+        self.rename_edit.hide()
+        dialog=getattr(self,'_rename_dialog',None)
+        if dialog is not None and dialog.isVisible():
+            try:dialog.reject()
+            except RuntimeError:pass
+
+    def _watch_zip_picker(self):
+        """Release the archive flags when the native picker never appears."""
+        if not self._archive_choosing:
+            self._zip_watchdog.stop();return
+        dialog=self._zip_dialog
+        if dialog is not None and dialog.isVisible():return
+        if self._zip_picker_started and time.monotonic()-self._zip_picker_started>5.0:
+            self._archive_choosing=False;self._zip_watchdog.stop()
+            if dialog is not None:
+                try:dialog.reject()
+                except RuntimeError:pass
+            if self.popup:self.popup.update_selection_actions()
+
     def choose_zip_path(self):
         directory=self.manager.settings.capture_dir
         try:directory.mkdir(parents=True,exist_ok=True)
@@ -1723,14 +1756,30 @@ class ShelfWindow(QWidget):
         dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
         dialog.setNameFilter('ZIP 文件 (*.zip)');dialog.setDefaultSuffix('zip')
         dialog.setWindowModality(Qt.WindowModality.WindowModal)
-        try:return dialog.selectedFiles()[0] if dialog.exec() and dialog.selectedFiles() else ''
-        finally:dialog.deleteLater()
+        # Keep the picker above its always-on-top owner; a modal window that
+        # ends up behind it makes the whole shelf look frozen.
+        dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint,True)
+        self._zip_dialog=dialog;self._zip_picker_started=time.monotonic()
+        try:
+            dialog.show();dialog.raise_();dialog.activateWindow()
+            dialog.move(self.visual_geometry().center()-QPoint(dialog.width()//2,dialog.height()//2))
+            return dialog.selectedFiles()[0] if dialog.exec() and dialog.selectedFiles() else ''
+        finally:
+            self._zip_dialog=None;self._zip_picker_started=0.0
+            dialog.deleteLater()
 
     def compress_refs(self,refs):
         refs=[ref for ref in refs if not self.content.is_pending(ref) and self.content.exists(ref)]
         if not refs or self.archive_job is not None or self._archive_choosing:return False
+        # Never stack two modal windows: a visible rename sheet already blocks
+        # this shelf, and a second modal on top cannot be dismissed.
+        rename=getattr(self,'_rename_dialog',None)
+        if rename is not None and rename.isVisible():
+            try:rename.reject()
+            except RuntimeError:pass
         self.geometry_morph.complete()
         self._archive_choosing=True
+        self._zip_watchdog.start()
         if self.popup:
             self.popup.zip_button.setToolTip('选择保存位置…')
             self.popup.zip_button.setAccessibleName('选择保存位置…')
@@ -1738,6 +1787,12 @@ class ShelfWindow(QWidget):
         try:chosen=self.choose_zip_path()
         finally:
             self._archive_choosing=False
+            self._zip_watchdog.stop()
+            # A native picker can return before its final mouse-up reaches the
+            # application; do not treat that click as an outside dismissal.
+            self._picker_return_until=time.monotonic()+PICKER_RETURN_GRACE_SECONDS
+            self._picker_return_at=time.monotonic()
+            self.touch()
             if self.popup:self.popup.update_selection_actions()
         if not chosen:return False
         paths=[ref for ref in refs if not self.content.is_text(ref)]
@@ -1746,6 +1801,7 @@ class ShelfWindow(QWidget):
         self._archive_refs=tuple(refs)
         self._archive_epoch+=1;epoch=self._archive_epoch
         def done(path='',error=''):
+            self._zip_watchdog.stop()
             self.archive_job=None
             self._archive_refs=()
             published=path and not self.manager._quitting and epoch==self._archive_epoch
@@ -1829,7 +1885,7 @@ class ShelfWindow(QWidget):
         src = Path(ref)
         target = src.with_name(new_name)
         if target == src:
-            self.rename_edit.hide();return True
+            self._close_rename_dialog();return True
         if target.exists() and not (src.name.casefold()==target.name.casefold() and os.path.samefile(src,target)):
             QMessageBox.warning(self, APP_NAME, "目标文件名已经存在")
             return False
@@ -1838,7 +1894,7 @@ class ShelfWindow(QWidget):
             src.rename(target)
         except OSError as ex:
             QMessageBox.warning(self,APP_NAME,f'重命名失败：{ex}');return False
-        self.rename_edit.hide()
+        self._close_rename_dialog()
         self.files['permanent']=[str(target) if old==ref else old for old in self.files['permanent']]
         if ref in self.content.metadata:self.content.metadata[str(target)]=self.content.metadata.pop(ref)
         self.image_cache.forget(ref);self.preview_cache.pop(ref,None)
@@ -1847,6 +1903,10 @@ class ShelfWindow(QWidget):
             if self.popup.primary_selection==ref:self.popup.primary_selection=str(target)
             self.popup.preview.current_path=None
         self.refresh()
+        sync=getattr(self.manager,'sync',None)
+        if sync is not None:
+            try:sync.rename_local_ref(ref,str(target))
+            except Exception:pass
         self.manager.save()
         return True
 

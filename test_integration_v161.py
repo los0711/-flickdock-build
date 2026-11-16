@@ -154,7 +154,7 @@ with tempfile.TemporaryDirectory(prefix="flickdock-v161-integration-") as tempor
             dialog.dock_position_spin.setValue(35); dialog.dock_length_spin.setValue(160); dialog.dock_thickness_spin.setValue(12)
             dialog.trigger_visible_checkbox.setChecked(False); dialog.dock_opacity_spin.setValue(56)
             dialog._set_dock_color("#c24f71")
-            dialog.save_button.click()
+            dialog.close_button.click()
             assert not dialog.isVisible() and manager._dock_preview_values is None and not manager.dock_preview.isVisible()
             assert manager.settings.dock_edge == "bottom" and manager.settings.dock_color == "#c24f71"
             assert manager.settings.dock_opacity == 56 and not manager.settings.trigger_visible

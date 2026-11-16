@@ -29,7 +29,12 @@ def _probe(scale):
     from test_html_native_lan import APP,FakeLan
     import shelf_ui_common,ui_theme
 
-    output=Path(os.environ.get('TEMP',r'E:\Codex\Temp'))/'flickdock-rounded-pages'/'transfer'/scale
+    import tempfile
+    try:
+        root=Path(tempfile.mkdtemp(prefix='flickdock-rounded-'))
+    except OSError:
+        root=Path(__file__).with_name('diagnostics')/'rounded-pages'
+    output=root/'transfer'/scale
     output.mkdir(parents=True,exist_ok=True);APP.setQuitOnLastWindowClosed(False)
     def verify(image,dialog,widget,edge,theme):
         assert widget is not None and widget.isVisible(),(theme,scale,widget)

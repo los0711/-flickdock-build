@@ -5,7 +5,7 @@ from pathlib import Path
 from PySide6.QtCore import QCoreApplication,QObject,QEvent,QPoint,QRect,QRectF,QSize,Qt,QTimer
 from PySide6.QtGui import QColor,QCursor,QGuiApplication,QPainter,QPen
 from PySide6.QtWidgets import QApplication,QPushButton,QWidget
-from native_ui_common import RADIUS_CONTROL_PX,paint_rounded_surface
+from native_ui_common import RADIUS_CONTROL_PX,paint_rounded_surface,screen_for_widget
 from platform_native import native_input_available
 from shiboken6 import isValid
 
@@ -149,7 +149,7 @@ class WindowChrome(QObject):
         if not hasattr(window,'_window_fade'):window._window_fade=WindowFade(window)
 
     def _available(self):
-        screen=QGuiApplication.screenAt(QCursor.pos()) or self.window.screen() or QGuiApplication.primaryScreen()
+        screen=QGuiApplication.screenAt(QCursor.pos()) or screen_for_widget(self.window) or QGuiApplication.primaryScreen()
         return screen.availableGeometry() if screen else QRect(0,0,1024,768)
 
     def prepare_open(self):

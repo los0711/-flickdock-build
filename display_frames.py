@@ -158,19 +158,24 @@ class WindowFrames(QObject):
         return 'other'
 
     def _release_screen(self,*_):
-        if self._screen is not None and isValid(self._screen):
-            self._screen.refreshRateChanged.disconnect(self._screen_rate_changed)
+        if self._screen is not None and isValid(self._screen) and hasattr(self._screen,'refreshRateChanged'):
+            try:self._screen.refreshRateChanged.disconnect(self._screen_rate_changed)
+            except (RuntimeError,TypeError):pass
         self._screen=None
         self._cancel_stall_timer();self._cancel_cadence_timer()
 
     def _screen_changed(self,screen):
         if screen is not self._screen:
             self._release_screen();self._screen=screen
-            if screen is not None:screen.refreshRateChanged.connect(self._screen_rate_changed)
+            # refreshRateChanged exists from Qt 6.12; older bindings only have
+            # the property, and display_period re-reads it every frame anyway.
+            if screen is not None and hasattr(screen,'refreshRateChanged'):
+                try:screen.refreshRateChanged.connect(self._screen_rate_changed)
+                except (RuntimeError,TypeError):pass
         self._screen_rate_changed()
 
     def _screen_rate_changed(self,*_):
-        self.refresh_hz=normalize_refresh_rate(self._screen.refreshRate()) if self._screen is not None and isValid(self._screen) else None
+        self.refresh_hz=normalize_refresh_rate(self._screen.refreshRate()) if self._screen is not None and isValid(self._screen) and hasattr(self._screen,'refreshRate') else None
         self.gate.reset();self._last_dispatch=0.0;self._next_frame_at=0.0;self._cancel_cadence_timer()
         # The old cadence was cancelled above; keep an active animation alive
         # when the window moves to a screen with a different refresh rate.
@@ -283,7 +288,8 @@ class WindowFrames(QObject):
             self.handle = handle
             handle.installEventFilter(self)
             handle.screenChanged.connect(self._screen_changed)
-            self._screen_changed(handle.screen())
+            from native_ui_common import screen_for_widget
+            self._screen_changed(screen_for_widget(self.window))
             if self.trace is not None:self.trace.bind_handle(handle)
         return handle
 

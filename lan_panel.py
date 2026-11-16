@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog, QF
 
 from flickdock_icons import draw_glyph
 from platform_native import remove_host_window_shadow
-from native_ui_common import (colors as ui_colors, icon as ui_icon, reference_font, reduced_motion, set_ui_weight,
+from native_ui_common import (colors as ui_colors, icon as ui_icon, reference_font, reduced_motion, set_ui_weight, screen_for_widget,
     font_css_stack, paint_rounded_surface, qss_color, RoundedSurfaceFrame, RoundedScrollBar,RoundedProgressBar,
     RADIUS_SMALL_PX, RADIUS_CONTROL_PX, RADIUS_CARD_PX, RADIUS_PANEL_PX)
 from async_images import ImageCache
@@ -427,10 +427,13 @@ class _DevicesCombo(QComboBox):
         required=max(count*max(0,row_height),last.bottom()+1 if last.isValid() else 0)
         missing=max(0,required-view.viewport().height())
         if missing:
-            screen=self.screen();available=screen.availableGeometry().height() if screen is not None else popup.height()+missing
+            screen=screen_for_widget(self);available=screen.availableGeometry().height() if screen is not None else popup.height()+missing
             popup.resize(popup.width(),min(available,popup.height()+missing))
             if popup.layout() is not None:popup.layout().activate()
-        anchor=self.mapToGlobal(QPoint(0,0));screen=self.screen()
+        # Prefer the combo's own screen: a popup must follow the monitor its
+        # anchor lives on, and the application-owned lookup can pick another
+        # display for a frameless transient window.
+        anchor=self.mapToGlobal(QPoint(0,0));screen=self.screen() or screen_for_widget(self)
         if screen is not None:
             area=screen.availableGeometry();below=anchor.y()+self.height()+DEVICE_POPUP_GAP_PX
             above=anchor.y()-popup.height()-DEVICE_POPUP_GAP_PX

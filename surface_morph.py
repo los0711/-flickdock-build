@@ -278,7 +278,11 @@ class SurfaceSnapshot(QWidget):
         from ui_transitions import SURFACE_SOURCE_FADE_END,SURFACE_TARGET_FADE_END
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        # Bilinear filtering a full-window pixmap is the most expensive step of
+        # a transition frame. At 1:1 the blit is pixel-exact without it.
+        frame_logical=target_size if target_size is not None else self.target.deviceIndependentSize()
+        frame_scale=rect.width()/max(1.0,frame_logical.width())
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform,abs(frame_scale-1.0)>0.02)
         painter.setClipPath(surface_clip(rect))
         # One stationary-radius backing owns opacity for the entire transition.
         import ui_theme

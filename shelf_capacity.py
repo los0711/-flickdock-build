@@ -9,7 +9,7 @@ from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen,QCursor,QGuiAppli
 from PySide6.QtWidgets import QAbstractButton, QHBoxLayout, QLabel, QPushButton,QFrame,QVBoxLayout
 from shelf_intake_limit import TransferSuggestion
 import ui_theme
-from native_ui_common import (colors, rounded_popup, keyboard_focus_visible, set_ui_weight,paint_rounded_surface,qss_color,
+from native_ui_common import (colors, rounded_popup, keyboard_focus_visible, set_ui_weight,paint_rounded_surface,qss_color,screen_for_widget,
     RADIUS_SUBCONTROL_PX,RADIUS_CONTROL_PX,RADIUS_CARD_PX)
 
 CLOUD_SHELF_BYTES = 1024**3
@@ -163,7 +163,7 @@ class ShelfCapacityButton(QAbstractButton):
         dark=ui_theme.current_theme()=='dark';c=colors('dark' if dark else 'light')
         self.popover.setStyleSheet(f"QFrame{{background:transparent;border:0;}} QLabel{{color:{c['text']};font-size:{CAPACITY_POPOVER_TEXT_SIZE_PX}px;background:transparent;border:0;}} QLabel#capacityRule{{color:{c['secondary']};font-size:{CAPACITY_RULE_SIZE_PX}px;}} QLabel#capacityCountdown{{color:{'#000000' if dark else '#FFFFFF'};background:transparent;border:0;padding:8px;}}")
         self._tick();self.popover.adjustSize();point=self.mapToGlobal(QPoint(0,-self.popover.height()-6))
-        screen=self.screen() or QGuiApplication.primaryScreen();area=screen.availableGeometry()
+        screen=screen_for_widget(self) or QGuiApplication.primaryScreen();area=screen.availableGeometry()
         self.popover.move(max(area.left(),min(point.x(),area.right()-self.popover.width())),max(area.top(),min(point.y(),area.bottom()-self.popover.height())))
         self.popover.show();self.clock.start();self.hide_delay.start(200)
 

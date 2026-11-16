@@ -89,7 +89,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-missing-media-') as temporary
             player = viewer.player
             image = QImage(64, 40, QImage.Format.Format_RGB32);image.fill(0xff2694c6)
             viewer.video_sink.videoFrameChanged.emit(QVideoFrame(image))
-            assert not viewer.surface.image.isNull()
+            wait_until(lambda: not viewer.surface.image.isNull())
             plays, positions = player.plays, player.positions
             path.unlink()
             if operation == 'toggle':viewer.toggle_playback()

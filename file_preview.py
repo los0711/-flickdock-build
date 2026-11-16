@@ -56,7 +56,7 @@ class ElidedLabel(QLabel):
 
 
 class MetadataLabel(ElidedLabel):
-    """Keep the file description in Inter and its timestamp in the mono face."""
+    """Keep the file description and its timestamp in the bundled mono face."""
     def __init__(self,parent=None):
         self._description='';self._timestamp='';self._draw_description='';self._draw_timestamp=''
         self._font_key=None;self._mono_font=None;self._normal_metrics=None;self._mono_metrics=None

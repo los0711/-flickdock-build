@@ -6,7 +6,7 @@ from PySide6.QtGui import QColor, QCursor, QFontMetricsF, QIcon, QPainter, QPain
 from PySide6.QtWidgets import QApplication, QAbstractItemView, QFrame, QListWidget, QListWidgetItem, QMenu, QPlainTextEdit, QPushButton, QWidgetAction
 from PySide6.QtSvg import QSvgRenderer
 from intake_notice import CapsuleNotice, COMPACT_SIDE_PX, PILL_HEIGHT_PX, NOTICE_ACTION_COLOR
-from native_ui_common import colors, icon, rounded_popup, RADIUS_CARD_PX, RADIUS_SUBCONTROL_PX
+from native_ui_common import colors, icon, rounded_popup, screen_for_widget, RADIUS_CARD_PX, RADIUS_SUBCONTROL_PX
 from translation_languages import LANGUAGES, TARGETS
 from transfer_visuals import draw_ring
 import notice_cluster
@@ -362,7 +362,7 @@ class TranslationNotice(CapsuleNotice):
             item = QListWidgetItem(QIcon(self._flag(region)), label + ('  ✓' if code == self.manager.settings.translation_target else ''), languages)
             item.setData(Qt.UserRole, code)
             item.setSizeHint(QSize(LANGUAGE_MENU_WIDTH_PX, LANGUAGE_ROW_HEIGHT_PX))
-        area = self.screen().availableGeometry()
+        area = screen_for_widget(self).availableGeometry()
         languages.setFixedSize(min(LANGUAGE_MENU_WIDTH_PX,area.width()-28), min(LANGUAGE_VISIBLE_ROWS*LANGUAGE_ROW_HEIGHT_PX,area.height()-40))
         action = QWidgetAction(menu)
         action.setDefaultWidget(languages)

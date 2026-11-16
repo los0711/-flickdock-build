@@ -760,6 +760,27 @@ class ShelfSync(QObject):
                 and self.state and self.state.get('entries',{}).get(entry['id']) is entry):return entry
         return None
 
+    def rename_local_ref(self,old_ref,new_ref):
+        """Carry one cloud item across a local rename without re-uploading.
+
+        The identity, content hash and version stay untouched; only the name
+        changes. The next sync reserves the same object, so a server that
+        already holds the bytes answers with instant reuse.
+        """
+        entry=self._ref_index.get(old_ref)
+        if entry is None or entry.get('deleted'):return False
+        if not self.state or self.state.get('entries',{}).get(entry.get('id')) is not entry:return False
+        self._ref_index.pop(old_ref,None)
+        entry['ref']=new_ref
+        entry['name']=Path(new_ref).name[:255]
+        # Keep the previous fingerprint, so the rename shows up as one pending
+        # name update instead of a delete plus a brand new upload.
+        entry['dirty']=True
+        self._ref_index[new_ref]=entry
+        self._persist()
+        if self.running:self.tick()
+        return True
+
     def _remove_entry(self,identity):
         entry=self.state['entries'].pop(identity,None)
         if entry and self._ref_index.get(entry.get('ref')) is entry:

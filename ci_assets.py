@@ -4,12 +4,11 @@ from pathlib import Path
 
 def main():
     root = Path(__file__).resolve().parent
-    fonts=('Inter-Regular.ttf','Inter-Medium.ttf','Inter-SemiBold.ttf',
-           'JetBrainsMono-Regular.ttf','JetBrainsMono-Medium.ttf')
+    fonts=(           'JetBrainsMono-Regular.ttf','JetBrainsMono-Medium.ttf')
     for name in fonts:
         if not (root/'assets'/'fonts'/name).is_file():
             raise RuntimeError('Missing bundled font: '+name)
-    for name in ('Inter-OFL.txt','JetBrainsMono-OFL.txt'):
+    for name in ('JetBrainsMono-OFL.txt',):
         if not (root/'licenses'/name).is_file():
             raise RuntimeError('Missing font license: '+name)
     for name in ('FlickDock.spec', 'FlickDock-mac.spec'):

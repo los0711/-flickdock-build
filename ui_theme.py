@@ -4,12 +4,15 @@ import math
 import re
 import time
 import weakref
-from PySide6.QtCore import QEvent,QObject,QTimer,Qt
+from PySide6.QtCore import QEasingCurve,QEvent,QObject,QPoint,QPropertyAnimation,QTimer,Qt
 from PySide6.QtGui import QColor,QPalette
 from PySide6.QtWidgets import QAbstractButton,QApplication,QMessageBox,QToolTip
 from shiboken6 import isValid
 
 _theme = 'light'
+TOOLTIP_DELAY_SECONDS = 0.35
+TOOLTIP_GAP_PX = 6
+TOOLTIP_FADE_MS = 90
 # Legacy painter aliases resolve through the one semantic palette in
 # native_ui_common.colors; keep the Qt color strings valid for QColor.
 _PALETTES = ('light', 'dark')
@@ -19,7 +22,7 @@ def _style_tooltip(widget):
     from native_ui_common import colors
     c=colors(_theme)
     if widget.property('flickdockTooltipTheme')!=_theme:widget.setProperty('flickdockTooltipTheme',_theme)
-    tip=f"QTipLabel{{background:{c['popup_surface']};color:{c['text']};border:1px solid {c['input_border']};border-radius:0px;}}"
+    tip=f"QTipLabel{{background:{c['popup_surface']};color:{c['text']};border:1px solid {c['input_border']};border-radius:10px;padding:6px 9px;}}"
     if widget.styleSheet()!=tip:widget.setStyleSheet(tip)
 
 
@@ -51,8 +54,18 @@ class _TooltipCorners(QObject):
 
     def _show_button_tip(self):
         button=self._current_button()
-        if button is not None and button.isVisible() and button.underMouse() and button.toolTip():
-            QToolTip.showText(self._position,button.toolTip(),button)
+        if button is None or not button.isVisible() or not button.underMouse() or not button.toolTip():return
+        # One anchor rule for every button: centred below, flipped above only
+        # when the tip would leave the screen, so neighbours never disagree.
+        top=button.mapToGlobal(QPoint(0,0));width=button.width()
+        height=button.palette().fontMetrics().height()+18
+        area=button.screen().availableGeometry() if button.screen() is not None else None
+        x=top.x()+width//2-60
+        below=top.y()+button.height()+TOOLTIP_GAP_PX
+        above=top.y()-height-TOOLTIP_GAP_PX
+        y=below if area is None or below+height<=area.bottom()+1 else max(area.top(),above)
+        if area is not None:x=max(area.left(),min(x,area.right()-120))
+        QToolTip.showText(QPoint(x,y),button.toolTip(),button)
 
     def eventFilter(self,watched,event):
         if getattr(self,'_updating',False):return False
@@ -65,7 +78,7 @@ class _TooltipCorners(QObject):
                 if watched is not self._current_button():
                     self._button=weakref.ref(watched);self._entered_at=time.monotonic()
                 self._position=event.globalPos()
-                remaining=max(0.,1.-(time.monotonic()-self._entered_at))
+                remaining=max(0.,TOOLTIP_DELAY_SECONDS-(time.monotonic()-self._entered_at))
                 self._timer.start(math.ceil(remaining*1000))
                 event.accept();return True
         if event.type() in (QEvent.Polish,QEvent.Show,QEvent.Resize) and watched.metaObject().className()=='QTipLabel':
@@ -81,6 +94,13 @@ class _TooltipCorners(QObject):
                     # Replacing QApplication's stylesheet on every theme
                     # change repolishes the entire widget tree synchronously.
                     _style_tooltip(watched)
+                    if event.type()==QEvent.Show:
+                        watched.setWindowOpacity(0.0)
+                        fade=QPropertyAnimation(watched,b'windowOpacity',watched)
+                        fade.setDuration(TOOLTIP_FADE_MS);fade.setStartValue(0.0)
+                        fade.setEndValue(1.0);fade.setEasingCurve(QEasingCurve.OutCubic)
+                        fade.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)
+                        watched._flickdock_tip_fade=fade
                     if watched.margin()!=0:watched.setMargin(0);watched.adjustSize()
                     if not watched.windowFlags() & Qt.NoDropShadowWindowHint:
                         watched.setWindowFlag(Qt.NoDropShadowWindowHint,True)
@@ -155,7 +175,7 @@ def apply_application(app, font_family):
     # individual dialogs and QToolTip.showText().  Keep any existing app QSS.
     c=colors(_theme)
     if not hasattr(app,'_flickdock_tooltip_base'):app._flickdock_tooltip_base=app.styleSheet()
-    tooltip=(f"QToolTip{{border-radius:0px;"
+    tooltip=(f"QToolTip{{border-radius:10px;"
              f"padding:4px 8px;font:400 12px {font_css_stack()};}}")
     # Keep both themed rules installed once, avoiding an application-wide
     # repolish when the active theme changes.

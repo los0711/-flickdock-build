@@ -16,7 +16,7 @@ from release_manifest import validate_versions
 ROOT = Path(__file__).resolve().parent
 OUTPUT = ROOT.parent / 'outputs'
 TESTS = (
-    'test_release_signing_ci', 'test_display_frames', 'test_ui_feedback_v1815',
+    'test_release_signing_ci', 'test_trigger_reliability_v1810', 'test_crash_diagnostics_v1838', 'test_display_frames', 'test_ui_feedback_v1815',
     'test_feedback_v1818', 'test_surface_source_cache', 'test_lan_transfer_v181',
     'test_wan_transfer_v1816', 'test_sync_priority_v1823', 'test_transfer_ui_v181',
     'test_architecture',

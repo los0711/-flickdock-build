@@ -328,27 +328,42 @@ def fade_hide(window):
     if fade is None or not fade.defer_done(None,lambda _:window.hide()):window.hide()
 
 
-class _WindowZoom(QGraphicsEffect):
-    """Transform one captured surface without resizing its native window."""
-    captured=Signal()
-    def __init__(self,parent):
-        super().__init__(parent);self.scale=1.;self.opacity=1.;self.snapshot=QPixmap();self.notify_capture=False;self.setEnabled(False)
+WINDOW_FADE_ANIMATION = False
 
-    def reset(self):self.snapshot=QPixmap();self.scale=1.;self.opacity=1.;self.setEnabled(False)
 
-    def sourceChanged(self,flags):
-        self.snapshot=QPixmap();super().sourceChanged(flags)
+class _WindowZoomOverlay(QWidget):
+    """Scale one captured surface over the window without an effect pipeline.
 
-    def draw(self,painter):
-        if self.snapshot.isNull():
-            self.offset=QPoint()
-            self.snapshot=self.sourcePixmap(Qt.LogicalCoordinates,self.offset,QGraphicsEffect.NoPad)
-        bounds=self.sourceBoundingRect(Qt.LogicalCoordinates);center=bounds.center()
-        painter.save();painter.setRenderHint(QPainter.SmoothPixmapTransform);painter.setOpacity(self.opacity)
-        painter.translate(center);painter.scale(self.scale,self.scale);painter.translate(-center)
-        painter.drawPixmap(QPointF(self.offset),self.snapshot);painter.restore()
-        if self.notify_capture:
-            self.notify_capture=False;self.captured.emit()
+    A QGraphicsEffect forces every frame through an offscreen window render.
+    Painting the cached snapshot in a transparent child keeps the frame cost
+    to one scaled blit, which is what makes large dialogs open smoothly.
+    """
+    def __init__(self,window):
+        super().__init__(window)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+        self.setAutoFillBackground(False)
+        self.snapshot=QPixmap();self.scale=1.;self.opacity=1.;self.hide()
+
+    def clear(self):
+        self.snapshot=QPixmap();self.scale=1.;self.opacity=1.;self.hide()
+
+    def capture(self,window):
+        self.setGeometry(window.rect())
+        pixmap=window.grab()
+        if pixmap.isNull():return False
+        pixmap.setDevicePixelRatio(1.0)
+        self.snapshot=pixmap
+        return True
+
+    def paintEvent(self,event):
+        if self.snapshot.isNull():return
+        painter=QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform,abs(self.scale-1.)>0.004)
+        painter.setOpacity(max(0.,min(1.,self.opacity)))
+        width=self.width()*self.scale;height=self.height()*self.scale
+        target=QRectF((self.width()-width)/2,(self.height()-height)/2,width,height)
+        painter.drawPixmap(target,self.snapshot,QRectF(self.snapshot.rect()))
 
 
 class WindowFade(QObject):
@@ -365,7 +380,11 @@ class WindowFade(QObject):
         self._capture_deadline.timeout.connect(self._capture_expired)
 
     def enabled(self):
-        return self.motion and QGuiApplication.platformName() not in ('offscreen','minimal') and motion_allowed()
+        # Dialogs open and close instantly: the snapshot entrance added a
+        # capture step before the first visible frame, which reads as a stall.
+        return (WINDOW_FADE_ANIMATION and self.motion
+                and QGuiApplication.platformName() not in ('offscreen','minimal')
+                and motion_allowed())
 
     def _frame(self,value):
         # Blend and scale the same captured surface. Changing native window
@@ -378,37 +397,41 @@ class WindowFade(QObject):
         self._capture_deadline.stop()
         self._awaiting_capture=False
         self.scale=1.;self.opacity=1.
-        if self.zoom is not None:self.zoom.reset()
+        if self.zoom is not None:self.zoom.clear()
+        if isValid(self.window):self.window.setWindowOpacity(1.0)
 
     def eventFilter(self,watched,event):
         if QCoreApplication.closingDown() or not isValid(self.window):return False
         if event.type()==QEvent.Show and not self.window.isMinimized():
             self.pending=None;self.animation.stop()
             if self.enabled() and not event.spontaneous():
+                # The snapshot arrives one event-loop turn later. Hide the live
+                # window for that turn so it cannot flash at full size first.
+                self.window.setWindowOpacity(0.0)
                 self.scale=WINDOW_MIN_SCALE;self.opacity=WINDOW_OPEN_OPACITY;self._start(1.0)
             else:self._reset_zoom();self.window.setWindowOpacity(1.0)
         elif event.type()==QEvent.Hide:
             self.animation.stop();self.pending=None;self._reset_zoom();self.window.setWindowOpacity(1.0)
+        elif event.type()==QEvent.Resize and self.zoom is not None and self.zoom.isVisible():
+            self.zoom.capture(self.window);self.zoom.update()
         elif event.type()==QEvent.WindowStateChange:
             self.animation.stop();self.pending=None;self._reset_zoom();self.window.setWindowOpacity(1.0)
         return super().eventFilter(watched,event)
 
     def _start(self,target):
         self.animation.stop()
-        if self.zoom is None:
-            self.zoom=_WindowZoom(self.window);self.window.setGraphicsEffect(self.zoom)
-            self.zoom.captured.connect(self._captured,Qt.QueuedConnection)
-        self.zoom.setEnabled(True);self.zoom.scale=self.scale;self.zoom.opacity=self.opacity
-        self.animation.setStartValue(QPointF(self.opacity,self.scale))
-        self.animation.setEndValue(QPointF(target,1. if target else WINDOW_MIN_SCALE))
-        self._awaiting_capture=target!=0 and self.zoom.snapshot.isNull()
-        self.zoom.notify_capture=self._awaiting_capture
-        if self._awaiting_capture:
-            # Layout/font rendering can cost tens of milliseconds on first
-            # open. Start time only after that first image has been painted.
-            self.zoom.update()
-            self._capture_deadline.start(250)
-        else:self.animation.start()
+        if self.zoom is None:self.zoom=_WindowZoomOverlay(self.window)
+        if target==0 and self.zoom.snapshot.isNull():self.zoom.capture(self.window)
+        self.zoom.setGeometry(self.window.rect())
+        self.zoom.scale=self.scale;self.zoom.opacity=self.opacity
+        self.animation.setStartValue(QPointF(self.opacity,1. if not target else self.scale))
+        self.animation.setEndValue(QPointF(target,1.))
+        self._awaiting_capture=False
+        if self.zoom.snapshot.isNull() and not self.zoom.capture(self.window):
+            self._capture_expired();return
+        self.zoom.scale=self.scale;self.zoom.opacity=self.opacity
+        self.zoom.show();self.zoom.raise_();self.zoom.update()
+        self.animation.start()
 
     def _capture_expired(self):
         # An occluded/restored native window may never paint the requested
@@ -443,6 +466,7 @@ class WindowFade(QObject):
             self.completing=True
             try:callback()
             finally:self.completing=False
+            if not isValid(self.window) or not self.window.isVisible():self._reset_zoom()
         else:self._reset_zoom()
 
 

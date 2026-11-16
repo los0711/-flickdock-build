@@ -44,6 +44,8 @@ class EventStreamWiringTests(unittest.TestCase):
     def test_connected_and_disconnected_reach_the_shared_push_scheduler(self):
         with tempfile.TemporaryDirectory(prefix='flickdock-events-') as folder, \
              patch.dict(os.environ, {'APPDATA': str(Path(folder) / 'profile')}), \
+             patch.object(flickdock, 'BASE', Path(folder) / 'profile' / 'FlickDock'), \
+             patch.object(flickdock, 'STATE_FILE', Path(folder) / 'profile' / 'FlickDock' / 'shelves.json'), \
              patch.object(QSystemTrayIcon, 'show'), patch.object(QSystemTrayIcon, 'hide'), \
              patch.object(app_settings, '_read_startup_value'), \
              patch.object(app_settings, '_write_startup_value'):

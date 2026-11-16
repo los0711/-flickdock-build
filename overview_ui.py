@@ -1,5 +1,8 @@
 """Overview navigation, file rows, selection and incremental layout."""
 from __future__ import annotations
+import os
+import sys
+import time
 from collections import Counter
 
 from PySide6.QtCore import QEvent
@@ -8,7 +11,7 @@ from PySide6.QtCore import QPointF
 from PySide6.QtCore import QRectF
 from PySide6.QtCore import QTimer
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QPixmap, QColor
 from PySide6.QtGui import QPainter
 from PySide6.QtGui import QPen
 from PySide6.QtGui import QRegion
@@ -98,6 +101,21 @@ class OverviewOutline(QWidget):
         paint_rounded_surface(painter,self.rect(),radius,QColor(Qt.transparent),tint);painter.end()
 
 
+_SCROLL_PROFILE = os.environ.get('FLICKDOCK_PROFILE_SCROLL') == '1'
+_SCROLL_SAMPLES = []
+
+
+def _record_row_paint(seconds):
+    _SCROLL_SAMPLES.append(seconds * 1000)
+    if len(_SCROLL_SAMPLES) % 120:
+        return
+    ordered = sorted(_SCROLL_SAMPLES)
+    print('scroll-paint rows=%d p50=%.2fms p95=%.2fms' % (
+        len(ordered), ordered[len(ordered) // 2], ordered[int(len(ordered) * .95)]),
+        file=sys.stderr, flush=True)
+    _SCROLL_SAMPLES.clear()
+
+
 class FileRow(QFrame):
     def __init__(self,popup,path):
         super().__init__(popup.rows_body)
@@ -165,6 +183,14 @@ class FileRow(QFrame):
     def paintEvent(self,event):
         from reference_widgets import palette,ink,outside_content_view
         from native_ui_common import paint_rounded_surface
+        if _SCROLL_PROFILE:
+            started=time.perf_counter()
+            try:return self._paint_row(event,palette,ink,outside_content_view,paint_rounded_surface)
+            finally:_record_row_paint(time.perf_counter()-started)
+        if outside_content_view(self):return
+        self._paint_row(event,palette,ink,outside_content_view,paint_rounded_surface)
+
+    def _paint_row(self,event,palette,ink,outside_content_view,paint_rounded_surface):
         if outside_content_view(self):return
         c=palette();chosen=self.path in self.popup.selected
         self.selection_check.blockSignals(True);self.selection_check.setChecked(chosen);self.selection_check.blockSignals(False)
@@ -277,7 +303,7 @@ class ContentsPopup(QFrame):
         from reference_widgets import build_overview
         build_overview(self,PreviewPane)
         self.scroll.verticalScrollBar().valueChanged.connect(self._queue_visible_rows)
-        self.sidebar._selection_animation.setDuration(160)
+        self.sidebar._selection_animation.setDuration(110)
         self.window_outline=OverviewOutline(self);self.window_outline.setGeometry(self.rect())
         self.window_outline.show();self.window_outline.raise_()
         from ui_transitions import PreviewWidthTransition
@@ -647,7 +673,12 @@ class ContentsPopup(QFrame):
             self.transfer_strip.setVisible(bool(self.shelf.content.transfers))
             self.selected.intersection_update(self.visible_refs())
             if self.primary_selection not in self.selected: self.primary_selection=None
-            self.rebuild();self.update_transfer_status();self.shelf.touch()
+            # One paint for the whole swap: rebuilding row by row with updates
+            # enabled is what made large categories feel like a stall.
+            self.setUpdatesEnabled(False)
+            try:self.rebuild();self.update_transfer_status()
+            finally:self.setUpdatesEnabled(True)
+            self.update();self.shelf.touch()
         finally:
             self._category_snapshot=previous
             QTimer.singleShot(0,self,self._resume_deferred_work)

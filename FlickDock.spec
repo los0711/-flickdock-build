@@ -17,13 +17,13 @@ yt_datas += collect_data_files('certifi')
 
 license_names=['Python-LICENSE.txt',
                'FFmpeg-LICENSE.txt','LGPL-3.0.txt','GPL-3.0.txt','PyInstaller-COPYING.txt',
-               'OpenSSL-LICENSE.txt','Cloud-Client-LICENSES.txt','Lucide-LICENSE.txt','Release-Crypto-LICENSES.txt','Video-LICENSES.txt','WebRTC-LICENSES.txt','Flag-Icons-LICENSE.txt','FASTTEXT-LICENSE.txt','FASTTEXT-MODEL-ATTRIBUTION.txt','Paper-Notice-Motion-LICENSE.txt','Inter-OFL.txt','JetBrainsMono-OFL.txt']
+               'OpenSSL-LICENSE.txt','Cloud-Client-LICENSES.txt','Lucide-LICENSE.txt','Release-Crypto-LICENSES.txt','Video-LICENSES.txt','WebRTC-LICENSES.txt','Flag-Icons-LICENSE.txt','FASTTEXT-LICENSE.txt','FASTTEXT-MODEL-ATTRIBUTION.txt','Paper-Notice-Motion-LICENSE.txt','JetBrainsMono-OFL.txt']
 asset_files=[(root/'licenses'/name,'licenses') for name in license_names]
 asset_files += [(root/'THIRD_PARTY_NOTICES.md','.')]
 asset_files += [(root/'assets/ui/qtbase_zh_CN.qm','assets/ui')]
 asset_files += [(root/'assets/models/lid.176.ftz','assets/models')]
 asset_files += [(root/'assets/fonts'/name,'assets/fonts') for name in
-                ('Inter-Regular.ttf','Inter-Medium.ttf','Inter-SemiBold.ttf','JetBrainsMono-Regular.ttf','JetBrainsMono-Medium.ttf')]
+                ('JetBrainsMono-Regular.ttf','JetBrainsMono-Medium.ttf')]
 asset_files += [(path,'assets/flags') for path in (root/'assets/flags').glob('*.svg')]
 asset_files += [(root/'windows-network.ps1','.')]
 # This build runtime's SSLContext loads an auxiliary public CA policy file

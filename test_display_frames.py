@@ -23,6 +23,22 @@ def flush():
     QCoreApplication.sendPostedEvents(None,QEvent.DeferredDelete)
 
 class DisplayFramesTests(unittest.TestCase):
+    def test_closing_animated_popup_does_not_invalidate_shared_screen(self):
+        from shelf_ui_common import AnimatedMenu
+        from frame_diagnostics import normalize_refresh_rate
+        screen=APP.primaryScreen()
+        menu=AnimatedMenu(self.window);menu.addAction('Test')
+        menu.aboutToHide.connect(menu.deleteLater)
+        with patch('native_ui_common.reduced_motion',return_value=False):
+            menu.popup(self.window.mapToGlobal(QPoint(30,30)))
+            QTest.qWait(80);flush()
+            clock=menu.fade._frames.clock
+            self.assertIsNotNone(clock)
+            self.assertEqual(clock.refresh_hz,normalize_refresh_rate(screen.refreshRate()))
+            menu.close();QTest.qWait(80);flush()
+        self.assertTrue(isValid(screen),'Closing a popup invalidated the shared screen wrapper')
+        self.assertIs(screen,APP.primaryScreen())
+
     def test_drop_targets_share_native_clock_stop_when_hidden_and_respect_reduced_motion(self):
         from native_ui_common import DropBorderMotion
         targets=[QWidget(self.window) for _ in range(3)]

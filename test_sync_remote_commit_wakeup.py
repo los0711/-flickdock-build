@@ -191,6 +191,7 @@ def test_all_bytes_sent_is_waiting_for_cloud_receipt():
                       'resumable_uploads':{IDENTITY:{'upload_id':str(uuid4()),
                           'size':len(PAYLOAD), 'part_count':1, 'chunk_size':len(PAYLOAD),
                           'next_part':0, '_sent_bytes':len(PAYLOAD)}}}
+        engine._ref_index={'local.bin':engine.state['entries'][IDENTITY]}
         engine._notify_transfers()
         assert seen[-1][0]['phase']=='verifying'
         assert seen[-1][0]['received']==len(PAYLOAD)

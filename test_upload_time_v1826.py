@@ -1,4 +1,5 @@
 """Upload metadata ownership, request coalescing and account/source fences."""
+import time
 import tempfile
 import unittest
 from pathlib import Path
@@ -47,6 +48,12 @@ class UploadTimeTests(unittest.TestCase):
         self.entry['version']=2
         self.assertEqual(self.engine.upload_time_for_ref('local-ref'),self.result['uploaded_at'])
         self.assertEqual(len(self.service.calls),1)
+        # The journal writes on its own worker; the upload time is durable once
+        # the journal reports the revision, not synchronously inside the reply.
+        deadline = time.monotonic() + 5
+        while not self.engine._profile('metadata-account').is_file() and time.monotonic() < deadline:
+            self.engine._journal.flush(0.05)
+            flush(); time.sleep(.01)
         self.assertTrue(self.engine._profile('metadata-account').is_file())
 
     def test_different_content_and_account_epoch_discard_old_response(self):

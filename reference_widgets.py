@@ -1,3 +1,4 @@
+import weakref
 """Qt artwork and controls transcribed from the supplied FlickDock HTML.
 
 Only presentation lives here. Content, drag MIME, disk work and network services
@@ -513,6 +514,31 @@ class SortButton(IconTextButton):
                 if opacity<=0:continue
                 svg=f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="{tint}" d="{path}"/></svg>'
                 p.save();p.setOpacity(opacity);cached_svg_renderer(svg).render(p,rect);p.restore()
+
+
+class _SidebarHitBridge(QObject):
+    """Clicks that land between nav rows choose the nearest row."""
+    def __init__(self, view):
+        super().__init__(view)
+        self._view = weakref.ref(view)
+
+    def eventFilter(self, watched, event):
+        if event.type() != QEvent.MouseButtonPress or event.button() != Qt.MouseButton.LeftButton:
+            return False
+        view = self._view()
+        if view is None:
+            return False
+        point = event.position().toPoint()
+        rows = [control for control in view.sidebar.findChildren(QPushButton) if control.isVisible()]
+        if not rows:
+            return False
+        best = min(rows, key=lambda control: abs(control.geometry().center().y() - point.y()))
+        if best.geometry().contains(point):
+            return False
+        if abs(best.geometry().center().y() - point.y()) <= 3:
+            best.click()
+            return True
+        return False
 
 
 class SegmentedControl(SelectionSurface):
@@ -1361,6 +1387,7 @@ def build_overview(view,preview_type):
         count=label('',11,400,'muted',control,control_type=RoundedBadge);count.setAlignment(Qt.AlignCenter);count.setGeometry(145,7,28,20);count.setAttribute(Qt.WA_TransparentForMouseEvents)
         view.nav_counts[key]=count;view.category_buttons[key]=control;view.sidebar_buttons[key]=control
     view.transfer_badge=view.nav_counts['uploading']
+    view.sidebar.installEventFilter(_SidebarHitBridge(view))
     side.addStretch(1)
     view.wan_nav=button('远程传输','web','secondary',view.sidebar);view.wan_nav.hide()
     view.video_nav=button('视频解析','video',variant='text',parent=view.sidebar);view.video_nav.setFixedHeight(34);view.video_nav.clicked.connect(lambda:view.shelf.manager.show_video_dialog());side.addWidget(view.video_nav)
