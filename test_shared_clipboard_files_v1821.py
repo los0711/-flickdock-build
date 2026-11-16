@@ -10,6 +10,7 @@ from uuid import uuid4
 from unittest.mock import patch
 os.environ['QT_QPA_PLATFORM']='offscreen'
 from PySide6.QtCore import QObject,QTimer,QMimeData,QUrl,Signal
+from PySide6.QtTest import QTest
 from test_html_native_workspace import APP,until,flush
 from test_clipboard_sync_v1819 import Clipboard,Events
 from test_small_upload_lane import Adapter
@@ -188,6 +189,30 @@ class SharedFilesTests(unittest.TestCase):
         self.assertEqual(len(self.peer.puts),1);self.assertEqual(self.peer.payload_bytes,path.stat().st_size)
         self.assertEqual(len(self.peer.objects),1);self.assertEqual(self.peer.objects[identity]['bytes'],path.read_bytes())
 
+    def test_cloud_removed_item_never_relinks_shared_clipboard(self):
+        path=self.source();identity=self.copy(path);until(lambda:identity in self.peer.held)
+        entry=self.add(path);until(lambda:entry.get('shared_clipboard')==identity)
+        entry['manual_upload_only']=True;entry.pop('paused_upload',None)
+        self.engine.clipboard_bridge.reconcile();flush()
+        self.assertNotIn('shared_clipboard',entry)
+        with patch.object(self.engine,'_request') as request:
+            self.engine.clipboard_bridge._link(entry,self.client.file_jobs.tasks[identity])
+            request.assert_not_called()
+        self.peer.finish(identity);until(lambda:self.client._pending is None)
+        QTimer.singleShot(1,self.engine.clipboard_bridge.reconcile);QTest.qWait(100);flush()
+        self.assertNotIn(entry['id'],self.peer.items)
+        self.assertTrue(entry['dirty'])
+
+    def test_late_clipboard_claim_cannot_override_manual_only(self):
+        path=self.source();identity=self.copy(path);until(lambda:identity in self.peer.held)
+        callbacks=[];bridge=self.engine.clipboard_bridge
+        with patch.object(bridge.files,'claim',side_effect=lambda ref,item,done:callbacks.append(done) or True):
+            entry=self.add(path)
+            self.assertTrue(callbacks)
+            entry['manual_upload_only']=True;entry.pop('paused_upload',None)
+            callbacks[0](self.client.file_jobs.tasks[identity]);flush()
+            self.assertNotIn('shared_clipboard',entry)
+            self.assertNotIn(entry['id'],bridge.linking)
     def test_completed_copy_links_without_second_payload_and_survives_clipboard_replace(self):
         path=self.source();identity=self.copy(path);until(lambda:identity in self.peer.held)
         self.peer.finish(identity);until(lambda:self.client._pending is None)

@@ -58,6 +58,34 @@ class BatchCloudTests(unittest.TestCase):
         self.callbacks[0][1](True);self.sync.retry_upload.assert_not_called()
         self.assertEqual(self.notices,[(self.refs[0],)])
 
+    def test_cloud_delete_first_click_updates_badge_and_clears_focus(self):
+        ref=self.refs[1];self.popup.select_item(ref);w.flush()
+        preview=self.popup.preview;button=preview.cloud_action
+        self.assertEqual(button.glyph,'cloud-remove')
+        def removing(value):
+            self.busy.add(value);self.popup._upload_metadata_changed(value)
+        self.sync.delete_cloud_copy.side_effect=removing
+        button.setFocus(Qt.TabFocusReason);w.flush()
+        QTest.mouseClick(button,Qt.LeftButton);w.flush()
+        self.sync.delete_cloud_copy.assert_called_once_with(ref)
+        self.assertFalse(button.isEnabled())
+        self.assertFalse(preview.copy_button.hasFocus() and preview.copy_button._keyboard_focus)
+        self.status[ref]='local';self.busy.clear()
+        self.popup._upload_metadata_changed(ref);w.flush()
+        self.assertEqual(preview.status_value.text(),'仅保存在本机')
+        self.assertEqual(button.glyph,'cloud-upload')
+        self.sync.retry_upload.assert_not_called()
+
+    def test_stale_remove_button_does_not_trigger_upload(self):
+        ref=self.refs[1];self.popup.select_item(ref);w.flush()
+        preview=self.popup.preview
+        self.assertEqual(preview.cloud_action.glyph,'cloud-remove')
+        self.status[ref]='local'
+        self.manager.check_cloud_capacity_for_upload=Mock()
+        QTest.mouseClick(preview.cloud_action,Qt.LeftButton);w.flush()
+        self.sync.retry_upload.assert_not_called()
+        self.manager.check_cloud_capacity_for_upload.assert_not_called()
+
     def test_pending_upload_click_cannot_override_later_cloud_removal(self):
         revisions={ref:0 for ref in self.refs}
         self.sync.cloud_copy_revision=lambda ref:revisions[ref]

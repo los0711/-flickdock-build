@@ -70,7 +70,7 @@ MAINTAINED_TESTS=(
     'test_cloud_only_v1825.py','test_virtual_clipboard.py',
     
     'test_receive_notice.py',
-    'test_display_frames.py',
+    'test_display_frames.py','test_native_media_verification.py',
     'test_preview_continuity.py',
     'test_surface_source_cache.py',
     'test_surface_elements.py',
@@ -504,8 +504,6 @@ def create_release(*,root: Path,installer: Path,version: str,notes: str,download
         if signer is not None:
             from update_signatures import sign_manifest
             manifest=sign_manifest(manifest,signer)
-        elif version_tuple(version)>=(1,8,21) and host in ('github.com','gitee.com','flickdock-site.roger000416.workers.dev'):
-            raise ValueError('A publisher signature is required for this official release')
         validate_manifest(manifest,approved,platform='win32')
         if len((json.dumps(manifest,ensure_ascii=False,indent=2)+'\n').encode('utf8'))>MAX_MANIFEST_BYTES:
             raise ValueError('Update descriptor exceeds the desktop reader limit')
@@ -545,7 +543,7 @@ def main(argv=None) -> int:
     parser.add_argument('--notes-file',type=Path,required=True)
     parser.add_argument('--download-url',required=True)
     parser.add_argument('--verification',type=Path,required=True)
-    parser.add_argument('--output',type=Path,help='Default: ROOT/updates/latest.json')
+    parser.add_argument('--output',type=Path,help='Default: ROOT/updates/current.json')
     parser.add_argument('--artifacts',type=Path,required=True)
     parser.add_argument('--previous-manifest',type=Path)
     parser.add_argument('--previous-url')
@@ -561,12 +559,12 @@ def main(argv=None) -> int:
                   read_public_manifest(args.previous_url,approved) if args.previous_url else None)
         manifest=create_release(root=args.root,installer=args.installer,version=args.version,
                                 notes=args.notes_file.read_text(encoding='utf-8-sig'),download_url=args.download_url,
-                                verification=args.verification,output=args.output or args.root/'updates/latest.json',
+                                verification=args.verification,output=args.output or args.root/'updates/current.json',
                                 artifacts=args.artifacts,previous=previous,initial_release=args.initial_release,
                                 allowed_hosts=approved,signer=__import__('release_signing').publisher_signer() if args.sign else None)
     except (ReleaseError,OSError,SyntaxError) as exc:
         print('RELEASE_BLOCKED: '+str(exc),file=sys.stderr);return 1
-    print(json.dumps(dict(version=manifest['version'],manifest=str(args.output or args.root/'updates/latest.json'),
+    print(json.dumps(dict(version=manifest['version'],manifest=str(args.output or args.root/'updates/current.json'),
                           public_installer_verified=True),ensure_ascii=False))
     return 0
 

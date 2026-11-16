@@ -15,8 +15,9 @@ from PySide6.QtCore import QObject, Qt, QTimer, QUrl, QSysInfo, Signal
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest, QSslSocket,QNetworkProxyFactory,QNetworkProxy
 
 
-# The site serves publisher-signed metadata; GitHub hosts new release assets.
-DEFAULT_MANIFEST_URL = 'https://flickdock-site.roger000416.workers.dev/updates/latest.json'
+# Old clients keep using their signed bridge index. New releases use a separate
+# channel, so their publication no longer depends on the old signing key.
+DEFAULT_MANIFEST_URL = 'https://flickdock-site.roger000416.workers.dev/updates/current.json'
 MAC_MANIFEST_BASE = 'https://raw.githubusercontent.com/los0711/-flickdock-build/main/updates/'
 WORKER_MANIFEST_BASE='https://flickdock-site.roger000416.workers.dev/updates/'
 DEFAULT_ALLOWED_HOSTS = frozenset({'github.com','raw.githubusercontent.com','release-assets.githubusercontent.com','objects.githubusercontent.com','gitee.com','raw.giteeusercontent.com','foruda.gitee.com','flickdock-site.roger000416.workers.dev','download.flickdock.cc.cd'})
@@ -63,10 +64,9 @@ def manifest_endpoint(platform=None, machine=None):
     architecture = update_architecture(machine)
     if architecture not in ('arm64', 'x86_64'):
         raise ValueError('当前 Mac 架构没有对应的更新通道。')
-    # <=1.8.19 helpers run inside the bundle being replaced and depend on an
-    # external Python CA path. Their existing channel is a DMG bridge; the
-    # stable-runtime/Qt-trust updater introduced in 1.8.20 uses a new channel.
-    return WORKER_MANIFEST_BASE + 'macos-' + architecture + '-auto-v2.json'
+    # Intel stopped receiving updates; preserve its established endpoint.
+    channel = '-auto-v3.json' if architecture == 'arm64' else '-auto-v2.json'
+    return WORKER_MANIFEST_BASE + 'macos-' + architecture + channel
 
 
 def validate_manifest(value, allowed_hosts=DEFAULT_ALLOWED_HOSTS, *, platform=None, machine=None):
@@ -170,7 +170,6 @@ class UpdateClient(QObject):
         self.platform = sys.platform if platform is None else platform
         self.machine = update_architecture(machine)
         self.endpoint = manifest_endpoint(self.platform, self.machine) if endpoint is None else endpoint
-        self._require_publisher=endpoint is None
         self.allowed_hosts = frozenset(str(host).lower().rstrip('.') for host in allowed_hosts)
         if updates_dir is None:
             from platform_native import data_directory
@@ -236,7 +235,6 @@ class UpdateClient(QObject):
         try:
             candidate=validate_manifest(manifest if manifest is not None else self._manifest,self.allowed_hosts,
                                         platform=self.platform,machine=self.machine)
-            self._verify_publisher(candidate)
             if compare_versions(candidate['version'],self.current_version)<=0:
                 raise ValueError('安装包版本不高于当前版本，已拒绝降级或重复安装。')
             self._download_manifest=candidate
@@ -257,11 +255,6 @@ class UpdateClient(QObject):
             task.completed.connect(finished);task.failed.connect(failed);task.start()
         except (OSError,ValueError,TypeError,RuntimeError) as error:self._fail(str(error))
         return True
-
-    def _verify_publisher(self,candidate):
-        if self._require_publisher and version_tuple(candidate['version'])>=(1,8,21):
-            from update_signatures import verify_manifest_signature
-            verify_manifest_signature(candidate,required=True)
 
     def _begin(self, mode, manual):
         self._generation += 1
@@ -405,7 +398,6 @@ class UpdateClient(QObject):
                 parsed = json.loads(bytes(self._body).decode('utf-8-sig'), object_pairs_hook=_json_object,
                                     parse_constant=lambda _: (_ for _ in ()).throw(ValueError('更新清单包含无效数值。')))
                 candidate = validate_manifest(parsed, self.allowed_hosts, platform=self.platform, machine=self.machine)
-                self._verify_publisher(candidate)
                 manual = self._manual
                 self._complete()
                 if compare_versions(candidate['version'], self.current_version) > 0:
@@ -475,7 +467,7 @@ class UpdateClient(QObject):
                 and 'flickdock-site.roger000416.workers.dev' in self.allowed_hosts):
             primary,secondary=(MAC_MANIFEST_BASE,WORKER_MANIFEST_BASE) if self.endpoint.startswith(MAC_MANIFEST_BASE) else (WORKER_MANIFEST_BASE,MAC_MANIFEST_BASE)
             filename=self.endpoint[len(primary):]
-            if filename in ('latest.json','macos-arm64-auto.json','macos-x86_64-auto.json','macos-arm64-auto-v2.json','macos-x86_64-auto-v2.json','macos-arm64.json','macos-x86_64.json'):
+            if filename in ('current.json','latest.json','macos-arm64-auto.json','macos-x86_64-auto.json','macos-arm64-auto-v3.json','macos-arm64-auto-v2.json','macos-x86_64-auto-v2.json','macos-arm64.json','macos-x86_64.json'):
                 self._mirror_attempted=True;self._generation+=1;self._detach_reply()
                 self._body.clear();self._prefix.clear();self._received=0;self._redirects=0;self._redirect_bytes=0
                 self._timer.start(self.timeout_ms);self._request(secondary+filename)

@@ -618,6 +618,74 @@ def _signed_receipt_manifest(prepared):
     return manifest
 
 
+def _fetch_official_update_manifest(url, current_version, architecture, updates_dir):
+    """Read immutable release metadata independently in the elevated process."""
+    from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
+    from update_client import UpdateClient
+
+    application = QCoreApplication.instance() or QCoreApplication(['FlickDock-update-helper'])
+    loop = QEventLoop()
+    client = UpdateClient(current_version, updates_dir, endpoint=url,
+                          allowed_hosts={'flickdock-site.roger000416.workers.dev'},
+                          platform='darwin', machine=architecture, timeout_ms=30000)
+    result = {}
+
+    def available(manifest, _manual):
+        result['manifest'] = manifest
+        loop.quit()
+
+    def failed(message, _manual):
+        result['error'] = message
+        loop.quit()
+
+    def up_to_date(_manual):
+        result['error'] = '官方更新版本无效。'
+        loop.quit()
+
+    client.update_available.connect(available)
+    client.failed.connect(failed)
+    client.up_to_date.connect(up_to_date)
+    timer = QTimer()
+    timer.setSingleShot(True)
+    timer.timeout.connect(lambda: failed('读取官方更新信息超时。', False))
+    timer.start(35000)
+    QTimer.singleShot(0, lambda: client.check(True))
+    try:
+        loop.exec()
+    finally:
+        timer.stop()
+        client.close()
+    if 'error' in result:
+        raise ValueError('无法验证官方更新信息：' + result['error'])
+    return result['manifest']
+
+
+def _official_receipt_manifest(prepared, *, fetcher=None):
+    """Do not authorize privileged installation using a user-writable receipt."""
+    from update_client import WORKER_MANIFEST_BASE
+    version_tuple(prepared.version)
+    architecture = update_architecture()
+    if architecture != 'arm64':
+        raise ValueError('此 Mac 架构没有可用的新更新通道。')
+    url = WORKER_MANIFEST_BASE + f'releases/{prepared.version}/macos-{architecture}-auto-v3.json'
+    fetch = fetcher or _fetch_official_update_manifest
+    value = fetch(url, prepared.current_version, architecture, prepared.stage.parent)
+    manifest = validate_manifest(value, {'flickdock-site.roger000416.workers.dev'},
+                                 platform='darwin', machine=architecture)
+    if (manifest['version'] != prepared.version
+            or not manifest['installer']['url'].lower().split('?', 1)[0].endswith('.zip')):
+        raise ValueError('官方更新清单与本次安装版本或格式不一致。')
+    return manifest
+
+
+def _trusted_receipt_manifest(prepared):
+    # Existing signed releases remain verifiable offline. New unsigned releases
+    # are checked against the immutable official HTTPS index by the root helper.
+    if isinstance(prepared.manifest, dict) and 'publisher_signature' in prepared.manifest:
+        return _signed_receipt_manifest(prepared)
+    return _official_receipt_manifest(prepared)
+
+
 def _root_runtime_parent():
     # /Applications can be renamed by an administrator group member. Keep
     # privileged executable paths under root's non-user-writable ancestry.
@@ -767,7 +835,7 @@ def run_elevated_update_helper(receipt_path, *, timeout=30, test_only=False,
             raise TimeoutError('等待 FlickDock 退出超时；原应用未替换。')
         time.sleep(0.1)
     if not test_only:_ensure_stable_root_runtime(prepared)
-    manifest = trusted_manifest if trusted_manifest is not None else _signed_receipt_manifest(prepared)
+    manifest = trusted_manifest if trusted_manifest is not None else _trusted_receipt_manifest(prepared)
     if (manifest.get('version') != prepared.version or
             manifest.get('installer', {}).get('sha256') is None):
         raise ValueError('官方更新清单与下载版本不一致。')

@@ -96,7 +96,7 @@ class UploadLanes:
                 and entry['id'] != (owner.transfer or {}).get('id')
                 and not (bridge and bridge.waiting(entry))
                 and not entry.get('deleted') and entry.get('dirty')
-                and not entry.get('paused_upload')
+                and not entry.get('paused_upload') and not entry.get('manual_upload_only')
                 and entry.get('blocked_fingerprint') != entry.get('fingerprint')
                 and self.retry_at.get(entry['id'], 0) <= time.monotonic())
 

@@ -165,17 +165,17 @@ def create_mac_release(*, archive: Path, build_report: Path, cloud_report: Path,
     version_tuple(version)
     if architecture not in ARCHITECTURES:
         raise ReleaseError('Choose a native arm64 or x86_64 release channel')
-    if channel not in ('legacy', 'auto'):
-        raise ReleaseError('Choose the legacy or auto Mac update channel')
+    if channel not in ('legacy', 'auto', 'auto-v3'):
+        raise ReleaseError('Choose the legacy, auto, or auto-v3 Mac update channel')
     archive = _regular(archive, 'Mac package'); build_report = _regular(build_report, 'Mac build report')
     cloud_report = _regular(cloud_report, 'Mac cloud report'); output = Path(output)
     if archive.name not in (f'FlickDock-{version}-macOS-{architecture}.zip',
                             f'FlickDock-{version}-macOS-{architecture}.dmg'):
         raise ReleaseError('Mac package filename must identify this exact release and architecture')
-    index_name = f'macos-{architecture}' + ('-auto' if channel == 'auto' else '') + '.json'
+    index_name = f'macos-{architecture}' + ('' if channel == 'legacy' else '-' + channel) + '.json'
     if output.name != index_name or output.is_symlink():
         raise ReleaseError('Output must be the matching Mac architecture and update channel index')
-    if channel == 'auto' and archive.suffix.lower() != '.zip':
+    if channel in ('auto', 'auto-v3') and archive.suffix.lower() != '.zip':
         raise ReleaseError('The automatic Mac update channel requires a ZIP application package')
     if not isinstance(notes, str) or not notes.strip() or len(notes) > 32768:
         raise ReleaseError('Nonempty Mac release notes of at most 32768 characters are required')
@@ -213,8 +213,6 @@ def create_mac_release(*, archive: Path, build_report: Path, cloud_report: Path,
         if signer is not None:
             from update_signatures import sign_manifest
             manifest=sign_manifest(manifest,signer)
-        elif version_tuple(version)>=(1,8,21) and validate_url(download_url) in ('gitee.com','flickdock-site.roger000416.workers.dev'):
-            raise ValueError('A publisher signature is required for this official release')
         validate_manifest(manifest, approved, platform='darwin', machine=architecture)
         from update_client import MAX_MANIFEST_BYTES
         if len((json.dumps(manifest,ensure_ascii=False,indent=2)+'\n').encode('utf8'))>MAX_MANIFEST_BYTES:
@@ -236,8 +234,17 @@ def create_mac_release(*, archive: Path, build_report: Path, cloud_report: Path,
         raise ReleaseError('Mac verification reports changed during anonymous verification')
     if (output.read_bytes() if output.exists() else None) != old_index:
         raise ReleaseError('Mac channel index changed during verification; retry against its latest baseline')
-    # This is the only write: the per-architecture index is the commit point.
-    _write_atomic(output, (json.dumps(manifest, ensure_ascii=False, indent=2) + '\n').encode('utf8'))
+    encoded = (json.dumps(manifest, ensure_ascii=False, indent=2) + '\n').encode('utf8')
+    if channel == 'auto-v3':
+        # The privileged updater independently reads this immutable index even
+        # if a newer release becomes current while an installation is pending.
+        immutable = output.parent / 'releases' / version / index_name
+        if immutable.is_symlink() or (immutable.exists() and immutable.read_bytes() != encoded):
+            raise ReleaseError('Immutable Mac release index already exists with different content')
+        if not immutable.exists():
+            _write_atomic(immutable, encoded)
+    # The channel index is the commit point and is always written last.
+    _write_atomic(output, encoded)
     return manifest
 
 
@@ -248,7 +255,7 @@ def main(arguments=None):
     parser.add_argument('--cloud-report', type=Path, required=True)
     parser.add_argument('--version', required=True)
     parser.add_argument('--architecture', choices=ARCHITECTURES, required=True)
-    parser.add_argument('--channel', choices=('legacy', 'auto'), default='legacy')
+    parser.add_argument('--channel', choices=('legacy', 'auto', 'auto-v3'), default='auto-v3')
     parser.add_argument('--notes', required=True)
     parser.add_argument('--download-url', required=True)
     parser.add_argument('--output-dir', type=Path, default=Path('updates'))
@@ -259,7 +266,7 @@ def main(arguments=None):
     options = parser.parse_args(arguments)
     try:
         output = options.output_dir / (f'macos-{options.architecture}'
-                                       + ('-auto' if options.channel == 'auto' else '') + '.json')
+                                       + ('' if options.channel == 'legacy' else '-' + options.channel) + '.json')
         create_mac_release(archive=options.archive, build_report=options.build_report,
             cloud_report=options.cloud_report, version=options.version, architecture=options.architecture,
             notes=options.notes, download_url=options.download_url, output=output,

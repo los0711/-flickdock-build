@@ -182,7 +182,7 @@ class MacUpdateTests(unittest.TestCase):
               patch.object(update.os, 'geteuid', return_value=0, create=True),
               patch.object(update, '_privileged_receipt', return_value=self.target),
               patch.object(update, '_ensure_stable_root_runtime'),
-              patch.object(update, '_signed_receipt_manifest', return_value=self.manifest),
+              patch.object(update, '_trusted_receipt_manifest', return_value=self.manifest),
               patch.object(update, '_pid_alive', side_effect=lambda pid: pid == os.getpid()),
               patch.object(update, '_write_privileged_marker'),
               patch.object(update, '_wait_for_ready'),
@@ -231,6 +231,37 @@ class MacUpdateTests(unittest.TestCase):
                     with self.assertRaises(ValueError):update._signed_receipt_manifest(prepared)
                 prepared.manifest=copy.deepcopy(signed);prepared.manifest.pop('publisher_signature')
                 with self.assertRaisesRegex(ValueError,'签名'):update._signed_receipt_manifest(prepared)
+
+    def test_unsigned_privileged_update_uses_independently_fetched_immutable_index(self):
+        prepared=self.prepare()
+        official=dict(schema_version=1,version='1.7.1',platform='darwin',architecture='arm64',
+            published_at='2026-11-16T00:00:00Z',notes='fixture',
+            installer=dict(url='https://flickdock-site.roger000416.workers.dev/downloads/update.zip',
+                           size=self.manifest['installer']['size'],sha256=self.manifest['installer']['sha256']))
+        calls=[]
+        def fetch(url,current,architecture,directory):
+            calls.append((url,current,architecture,directory))
+            return official
+        # The user-writable receipt cannot select the official URL or checksum.
+        prepared.manifest={'installer':{'sha256':'0'*64},'url':'https://evil.invalid/'}
+        with patch.object(update,'update_architecture',return_value='arm64'):
+            result=update._official_receipt_manifest(prepared,fetcher=fetch)
+        self.assertEqual(result['installer']['sha256'],self.manifest['installer']['sha256'])
+        self.assertEqual(calls[0][0], 'https://flickdock-site.roger000416.workers.dev/'
+                         'updates/releases/1.7.1/macos-arm64-auto-v3.json')
+
+    def test_unsigned_privileged_update_rejects_untrusted_or_wrong_version_index(self):
+        prepared=self.prepare()
+        official=dict(schema_version=1,version='1.7.1',platform='darwin',architecture='arm64',
+            published_at='2026-11-16T00:00:00Z',notes='fixture',
+            installer=dict(url='https://evil.invalid/update.zip',size=123,sha256='a'*64))
+        with patch.object(update,'update_architecture',return_value='arm64'):
+            with self.assertRaises(ValueError):
+                update._official_receipt_manifest(prepared,fetcher=lambda *args:official)
+            official['installer']['url']='https://flickdock-site.roger000416.workers.dev/downloads/update.zip'
+            official['version']='1.7.2'
+            with self.assertRaises(ValueError):
+                update._official_receipt_manifest(prepared,fetcher=lambda *args:official)
 
     @unittest.skipUnless(os.name == 'posix', 'Directory descriptor markers require POSIX')
     def test_privileged_replacement_marker_is_readable_by_owner(self):

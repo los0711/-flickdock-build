@@ -40,6 +40,30 @@ class OverviewControlsTests(unittest.TestCase):
         self.assertLess(popup.sort_segment.width(),180)
         self.assertEqual(set(popup.sort_buttons),{'time','size'})
 
+    def test_sort_returns_to_unselected_background_after_third_click(self):
+        popup=self.overview()
+        for theme in ('dark','light'):
+            ui_theme.set_theme(theme);self.settings.update(theme=theme)
+            for key in ('time','size'):
+                popup.reset_sort();fixture.flush()
+                for _ in range(3):
+                    QTest.mouseClick(popup.sort_buttons[key],Qt.LeftButton)
+                    fixture.flush()
+                self.assertEqual((popup.sort_key,popup.sort_direction),(None,0))
+                self.assertFalse(any(button.isChecked() for button in popup.sort_buttons.values()))
+                self.assertIsNone(popup.sort_segment._selection_button)
+                self.assertTrue(popup.sort_segment._selection_rect.isEmpty())
+
+    def test_mac_top_edge_first_expansion_keeps_anchor(self):
+        from types import SimpleNamespace
+        import shelf_window
+        area=fixture.Screen().availableGeometry()
+        compact=QRect(area.right()-359,area.top(),360,345)
+        with patch.object(shelf_window,'sys',SimpleNamespace(platform='darwin')):
+            expanded=self.shelf._expansion_rect(compact)
+        self.assertEqual(expanded.top(),compact.top())
+        self.assertTrue(area.contains(expanded))
+
     def test_list_row_press_scales_and_rebounds_without_moving_layout(self):
         from overview_ui import _RowPressEffect
         popup=self.overview();row=popup._item_widgets[self.paths[0]]

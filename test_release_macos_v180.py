@@ -126,6 +126,17 @@ class MacReleaseTests(unittest.TestCase):
             self.publish(channel='auto')
         self.assertFalse(self.output.exists())
 
+    def test_v3_channel_writes_immutable_version_index_and_never_replaces_it(self):
+        self.output = self.root / 'updates' / 'macos-arm64-auto-v3.json'
+        manifest = self.publish(channel='auto-v3')
+        immutable = self.root / 'updates' / 'releases' / self.version / self.output.name
+        self.assertEqual(json.loads(immutable.read_text(encoding='utf8')), manifest)
+        immutable.write_text('different', encoding='utf8')
+        previous = self.output.read_bytes()
+        with self.assertRaisesRegex(release.ReleaseError, 'Immutable'):
+            self.publish(channel='auto-v3')
+        self.assertEqual(self.output.read_bytes(), previous)
+
     def test_verified_dmg_can_be_published_only_after_native_mount_check(self):
         self.archive=self.archive.with_suffix('.dmg')
         self.archive.write_bytes(b'FlickDock image'+bytes(2048)+b'koly'+bytes(508))
