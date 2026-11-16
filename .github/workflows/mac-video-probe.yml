@@ -1,4 +1,4 @@
-name: Build and verify final Mac video test package
+name: Verify and build Mac interaction fixes
 on:
   push:
     branches: [mac-video-diagnostics]
@@ -39,12 +39,19 @@ jobs:
           import ast,json,subprocess
           from pathlib import Path
           from release_manifest import RUNTIME_SOURCES
-          changes=subprocess.check_output(['git','diff','--name-only','418615af948102f2172631ea7ffddbc5e346827e','HEAD'],text=True).splitlines()
+          changes=subprocess.check_output(['git','diff','--name-only','08640dcbedb8bd7daab54a40cd8a5c023905052e','HEAD'],text=True).splitlines()
           runtime=sorted(set(changes)&set(RUNTIME_SOURCES))
-          assert runtime==['offscreen_verify.py'],runtime
-          Path('ci-runtime-scope.json').write_text(json.dumps(dict(ok=True,previous_application_commit='418615af948102f2172631ea7ffddbc5e346827e',
-              runtime_changes=runtime,all_sync_transport_sources_unchanged=True,prior_regression_run=43722092773),indent=2))
+          assert runtime==['file_preview.py','media_preview.py','overview_ui.py','shelf_sync.py','shelf_window.py','ui_transitions.py','upload_lanes.py'],runtime
+          Path('ci-runtime-scope.json').write_text(json.dumps(dict(ok=True,previous_application_commit='08640dcbedb8bd7daab54a40cd8a5c023905052e',
+              runtime_changes=runtime,sync_changes='cloud-copy upload eligibility and status only'),indent=2))
           PY
+      - name: Verify cloud-copy, sorting, geometry and media regressions
+        run: |
+          profile="$(mktemp -d)"
+          export APPDATA="$profile" HOME="$profile" XDG_CONFIG_HOME="$profile" TMPDIR="$profile"
+          python -m unittest test_overview_controls_v1823.OverviewControlsTests.test_sort_returns_to_unselected_background_after_third_click test_overview_controls_v1823.OverviewControlsTests.test_mac_top_edge_first_expansion_keeps_anchor test_bulk_cloud_v1837.BatchCloudTests.test_cloud_delete_first_click_updates_badge_and_clears_focus test_bulk_cloud_v1837.BatchCloudTests.test_stale_remove_button_does_not_trigger_upload
+          python test_media_preview.py
+          python test_shelf_sync_v180.py
       - name: Verify asynchronous overview selection before freezing
         run: |
           profile="$(mktemp -d)"
@@ -89,6 +96,7 @@ jobs:
           native=json.loads(Path('ci-native-final/worker-result.json').read_text())
           supervisor=json.loads(Path('ci-native-final/supervisor-result.json').read_text())
           assert native['ok'] and supervisor['ok'] and native['snapshot_finished'] and native['selected_after_reopen']
+          assert abs(native['first_expand_top_shift'])<=1 and native['video_initially_muted']
           (output/'mac-video-compositor-arm64.json').write_text(json.dumps(dict(ok=True,native=native,supervisor=supervisor),indent=2))
           PY
       - name: Package and verify native installers

@@ -346,6 +346,12 @@ class MediaPreview(QWidget):
             self._resume_position = 0
             self._set_duration(0)
         self._video = Path(value).suffix.lower() in VIDEO_SUFFIXES
+        if not same:
+            # Selecting a new video starts muted; a user can unmute it for the
+            # rest of this selection, including pause/resume. Audio retains
+            # its normal unmuted starting behavior.
+            self._muted = self._video
+            self._volume_changed(self.volume_slider.value())
         if self._video and self.surface.image.isNull() and poster is not None and not poster.isNull():
             self.surface.image = QImage(poster)
         # A format icon between selection and the first frame looks like a
