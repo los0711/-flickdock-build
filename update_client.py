@@ -17,10 +17,10 @@ from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequ
 
 # Old clients keep using their signed bridge index. New releases use a separate
 # channel, so their publication no longer depends on the old signing key.
-DEFAULT_MANIFEST_URL = 'https://flickdock-site.roger000416.workers.dev/updates/current.json'
+DEFAULT_MANIFEST_URL = 'https://flickdock.cc.cd/updates/current.json'
 MAC_MANIFEST_BASE = 'https://raw.githubusercontent.com/los0711/-flickdock-build/main/updates/'
-WORKER_MANIFEST_BASE='https://flickdock-site.roger000416.workers.dev/updates/'
-DEFAULT_ALLOWED_HOSTS = frozenset({'github.com','raw.githubusercontent.com','release-assets.githubusercontent.com','objects.githubusercontent.com','gitee.com','raw.giteeusercontent.com','foruda.gitee.com','flickdock-site.roger000416.workers.dev','download.flickdock.cc.cd'})
+WORKER_MANIFEST_BASE='https://flickdock.cc.cd/updates/'
+DEFAULT_ALLOWED_HOSTS = frozenset({'github.com','raw.githubusercontent.com','release-assets.githubusercontent.com','objects.githubusercontent.com','gitee.com','raw.giteeusercontent.com','foruda.gitee.com','flickdock-site.roger000416.workers.dev','flickdock.cc.cd','download.flickdock.cc.cd'})
 MAX_MANIFEST_BYTES = 128 * 1024
 MAX_INSTALLER_BYTES = 1024 * 1024 * 1024
 MAX_REDIRECTS = 5
@@ -464,7 +464,7 @@ class UpdateClient(QObject):
         record_event(self.updates_dir.parent,'update',self._mode,'REQUEST_FAILED')
         if (retry_mirror and self._mode=='check' and not self._mirror_attempted
                 and self.endpoint.startswith((MAC_MANIFEST_BASE,WORKER_MANIFEST_BASE))
-                and 'flickdock-site.roger000416.workers.dev' in self.allowed_hosts):
+                and 'flickdock.cc.cd' in self.allowed_hosts):
             primary,secondary=(MAC_MANIFEST_BASE,WORKER_MANIFEST_BASE) if self.endpoint.startswith(MAC_MANIFEST_BASE) else (WORKER_MANIFEST_BASE,MAC_MANIFEST_BASE)
             filename=self.endpoint[len(primary):]
             if filename in ('current.json','latest.json','macos-arm64-auto.json','macos-x86_64-auto.json','macos-arm64-auto-v3.json','macos-arm64-auto-v2.json','macos-x86_64-auto-v2.json','macos-arm64.json','macos-x86_64.json'):

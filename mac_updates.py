@@ -626,7 +626,7 @@ def _fetch_official_update_manifest(url, current_version, architecture, updates_
     application = QCoreApplication.instance() or QCoreApplication(['FlickDock-update-helper'])
     loop = QEventLoop()
     client = UpdateClient(current_version, updates_dir, endpoint=url,
-                          allowed_hosts={'flickdock-site.roger000416.workers.dev'},
+                          allowed_hosts={'flickdock.cc.cd'},
                           platform='darwin', machine=architecture, timeout_ms=30000)
     result = {}
 
@@ -670,7 +670,7 @@ def _official_receipt_manifest(prepared, *, fetcher=None):
     url = WORKER_MANIFEST_BASE + f'releases/{prepared.version}/macos-{architecture}-auto-v3.json'
     fetch = fetcher or _fetch_official_update_manifest
     value = fetch(url, prepared.current_version, architecture, prepared.stage.parent)
-    manifest = validate_manifest(value, {'flickdock-site.roger000416.workers.dev'},
+    manifest = validate_manifest(value, {'flickdock.cc.cd'},
                                  platform='darwin', machine=architecture)
     if (manifest['version'] != prepared.version
             or not manifest['installer']['url'].lower().split('?', 1)[0].endswith('.zip')):

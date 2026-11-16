@@ -1,4 +1,4 @@
-"""Validate a built release and write latest.json only after anonymous download.
+"""Validate a built release and write its channel index only after anonymous download.
 
 This tool does not build, upload, tag, install, or call a hosting provider API.
 Run it after uploading the immutable installer. See PUBLISHING.md.
@@ -530,7 +530,7 @@ def create_release(*,root: Path,installer: Path,version: str,notes: str,download
     _write_atomic(artifacts/inventory_name,inventory)
     _write_atomic(artifacts/f'FlickDock-{version}-SHA256SUMS.txt',sums.encode('utf8'))
     _write_atomic(artifacts/f'FlickDock-{version}-release-record.json',(json.dumps(record,ensure_ascii=False,indent=2)+'\n').encode('utf8'))
-    # latest.json is the commit point and is always written last.
+    # The channel index is the commit point and is always written last.
     _write_atomic(output,(json.dumps(manifest,ensure_ascii=False,indent=2)+'\n').encode('utf8'))
     return manifest
 

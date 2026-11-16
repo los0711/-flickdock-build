@@ -1,5 +1,13 @@
 # FlickDock 发布与在线更新
 
+## 1.8.37 之后的更新通道
+
+1.8.36 及更早版本使用的 `updates/latest.json`、`updates/macos-arm64-auto-v2.json` 保留为指向 1.8.37 的已签名过渡清单，不得在后续版本覆盖；旧用户可以先升级到 1.8.37。Intel 通道继续停留在 1.8.22。
+
+1.8.37 及以后，Windows 使用 `updates/current.json`，Apple 芯片 Mac 使用 `updates/macos-arm64-auto-v3.json`。这些清单不再要求发布签名密钥；HTTPS、受信任下载主机、文件大小和 SHA-256 校验仍然生效。移除发布者签名后，不再提供独立于 HTTPS 的发布者身份验证。
+
+Mac 的 v3 发布还必须先写入并长期保留不可覆盖的 `updates/releases/<版本>/macos-arm64-auto-v3.json`，再提交当前通道清单。管理员更新进程会独立通过官方 HTTPS 读取该版本清单，再校验安装包；用户可写的更新收据不能单独授权系统应用替换。`release_macos.py --channel auto-v3` 会在公开下载验证通过后生成这两份清单。
+
 源码仓库保持私有。公开仓库 `rooogerluo/flick-dock-releases` 仅承载安装包附件、`updates/latest.json` 和公开说明。源码 ZIP、源码清单、构建验证报告和用户素材不能加入公开仓库。
 
 ## 发布顺序
@@ -7,7 +15,7 @@
 1. 为新版本设置唯一版本号。`app_version.py` 是运行时版本来源，`flickdock.py` 从它导入；`FlickDock.iss` 和 `version_info.txt` 中的显式构建版本必须一致。
 2. 在隔离配置和离屏 Qt 下运行相关回归，构建程序与安装包，并验证冻结程序。生成验证记录，其 `version` 对应本次版本，`checks` 非空且每项 `exit_code` 为 0，`frozen.ok`、`frozen.frozen` 为 true，`setup` 记录本次安装包的 `name`、`bytes`、`sha256`。
 3. 将安装包上传到公开发行位置，取得实际、稳定、无需登录的 HTTPS 下载地址。下载地址来自已核实的发行页面或服务文档，不能猜测 Gitee API 或附件路径。
-4. 运行下面的发布校验工具。它匿名完整下载远程安装包，核对 PE 文件头、大小及 SHA256，成功后才在最后写入 `updates/latest.json`。
+4. 运行下面的发布校验工具。它匿名完整下载远程安装包，核对 PE 文件头、大小及 SHA256，成功后才在最后写入 `updates/current.json`。
 5. 把已生成的更新索引作为公开仓库的最后一次发布提交。再匿名读取公开索引，确认它指向已可下载的正确安装包。源码提交或单独打 tag 均不等于完成在线更新发布。
 
 安装包一旦发布不可替换。同版本更换字节、降低版本、缺少通过的构建验证文件、缺少源码白名单文件，工具都会拒绝。相同版本及完全相同内容可重复执行。
@@ -28,7 +36,7 @@ python release_manifest.py `
   --download-url $PublicInstallerUrl `
   --previous-url $PublicManifestUrl `
   --artifacts $PrivateArtifacts `
-  --output "$PublicRepo/updates/latest.json"
+  --output "$PublicRepo/updates/current.json"
 ```
 
 首次建立更新索引时，用 `--initial-release` 代替 `--previous-url`。后续版本必须读取当前公开索引，或使用刚从公开位置取得的 `--previous-manifest` 文件；目标输出已存在时也会自动检查它。

@@ -11,7 +11,7 @@ npm run check
 npm run dev
 ```
 
-发布前必须确认公开安装包可匿名下载且 SHA-256 与构建产物一致，将发行工具生成并签名的七份更新索引放入 `public/updates/`，再运行 `npm run deploy`。不要手写签名、覆盖已发布版本的安装包，或将官网部署到 `flickdock-cloud`。部署后同时检查正式域名和现有 `workers.dev` 更新地址，验证客户端仍可获取签名索引。
+发布前必须确认公开安装包可匿名下载且 SHA-256 与构建产物一致。保留旧版签名过渡索引和 Intel 1.8.22 索引；新 Windows 与 Mac 通道分别使用 `current.json` 和 `macos-arm64-auto-v3.json`。Mac 每个版本还须保留 `releases/<版本>/macos-arm64-auto-v3.json`，由管理员更新进程独立核对。不要覆盖已发布版本的安装包或不可变版本索引，也不要将官网部署到 `flickdock-cloud`。按根目录 `PUBLISHING.md` 的顺序发布并检查两个域名。
 
 底部保留三个下载入口：Windows x64 最新版 Setup、Mac Apple 芯片最新版 PKG、Mac Intel 1.8.22 PKG（已停止更新）。顶部原有下载控件复用这些链接。Mac 包未经过 Apple Developer ID 签名或公证。Intel 更新索引保持 1.8.22，不再构建新版本。
 

@@ -236,7 +236,7 @@ class MacUpdateTests(unittest.TestCase):
         prepared=self.prepare()
         official=dict(schema_version=1,version='1.7.1',platform='darwin',architecture='arm64',
             published_at='2026-11-16T00:00:00Z',notes='fixture',
-            installer=dict(url='https://flickdock-site.roger000416.workers.dev/downloads/update.zip',
+            installer=dict(url='https://flickdock.cc.cd/downloads/update.zip',
                            size=self.manifest['installer']['size'],sha256=self.manifest['installer']['sha256']))
         calls=[]
         def fetch(url,current,architecture,directory):
@@ -247,7 +247,7 @@ class MacUpdateTests(unittest.TestCase):
         with patch.object(update,'update_architecture',return_value='arm64'):
             result=update._official_receipt_manifest(prepared,fetcher=fetch)
         self.assertEqual(result['installer']['sha256'],self.manifest['installer']['sha256'])
-        self.assertEqual(calls[0][0], 'https://flickdock-site.roger000416.workers.dev/'
+        self.assertEqual(calls[0][0], 'https://flickdock.cc.cd/'
                          'updates/releases/1.7.1/macos-arm64-auto-v3.json')
 
     def test_unsigned_privileged_update_rejects_untrusted_or_wrong_version_index(self):
@@ -258,7 +258,7 @@ class MacUpdateTests(unittest.TestCase):
         with patch.object(update,'update_architecture',return_value='arm64'):
             with self.assertRaises(ValueError):
                 update._official_receipt_manifest(prepared,fetcher=lambda *args:official)
-            official['installer']['url']='https://flickdock-site.roger000416.workers.dev/downloads/update.zip'
+            official['installer']['url']='https://flickdock.cc.cd/downloads/update.zip'
             official['version']='1.7.2'
             with self.assertRaises(ValueError):
                 update._official_receipt_manifest(prepared,fetcher=lambda *args:official)
