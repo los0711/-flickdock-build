@@ -158,7 +158,7 @@ class UpdateTests(unittest.TestCase):
         self.routes['/primary/latest.json']=dict(status=503,body=b'unavailable')
         self.routes['/mirror/latest.json']=self.routes['/manifest']
         client,state=self.client('/primary/latest.json')
-        client.allowed_hosts=client.allowed_hosts|{'flickdock-site.roger000416.workers.dev'}
+        client.allowed_hosts=client.allowed_hosts|{'flickdock.cc.cd'}
         with patch.object(subject,'MAC_MANIFEST_BASE',self.origin+'/primary/'),patch.object(subject,'WORKER_MANIFEST_BASE',self.origin+'/mirror/'):
             client.check();wait_until(lambda:state['update_available'] or state['failed'])
             self.assertFalse(state['failed'],state['failed']);self.assertTrue(state['update_available'])
@@ -170,7 +170,7 @@ class UpdateTests(unittest.TestCase):
     def test_invalid_manifest_and_failed_download_do_not_use_mirror(self):
         self.routes['/primary/latest.json']=dict(type='application/json',body=b'{}')
         client,state=self.client('/primary/latest.json')
-        client.allowed_hosts=client.allowed_hosts|{'flickdock-site.roger000416.workers.dev'}
+        client.allowed_hosts=client.allowed_hosts|{'flickdock.cc.cd'}
         with patch.object(subject,'MAC_MANIFEST_BASE',self.origin+'/primary/'),patch.object(subject,'WORKER_MANIFEST_BASE',self.origin+'/mirror/'):
             self.requests.clear();client.check();wait_until(lambda:state['failed'])
             self.assertEqual([path for path,_ in self.requests],['/primary/latest.json'])
