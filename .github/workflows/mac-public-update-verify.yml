@@ -1,0 +1,26 @@
+name: Verify released Mac update
+on:
+  push:
+    branches: [mac-public-update-verify-20261116]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: macos-15
+    timeout-minutes: 12
+    steps:
+      - name: Download and verify released Mac application
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/flickdock-check"
+          curl --fail --location --silent --show-error --retry 2 --max-time 180 \
+            -o "$RUNNER_TEMP/flickdock-check/application.zip" \
+            'https://flickdock-site.roger000416.workers.dev/downloads/FlickDock-1.8.37-macOS-arm64.zip'
+          echo "67fb82385a2c97b57bec5cc2f0c1d82cbc01efcbc372d4bb991a2cd407bed8b1  $RUNNER_TEMP/flickdock-check/application.zip" | shasum -a 256 -c -
+          ditto -x -k "$RUNNER_TEMP/flickdock-check/application.zip" "$RUNNER_TEMP/flickdock-check"
+          export QT_QPA_PLATFORM=offscreen
+          export TMPDIR="$RUNNER_TEMP/flickdock-check"
+          "$RUNNER_TEMP/flickdock-check/FlickDock.app/Contents/MacOS/FlickDock" \
+            --verify-update --verify-current 1.8.36 --verify-output "$RUNNER_TEMP/flickdock-check/update.json"
+          python3 -c "import json,os; from pathlib import Path; p=Path(os.environ['RUNNER_TEMP'])/'flickdock-check/update.json'; d=json.loads(p.read_text()); assert d['ok'] and d['frozen'] and d['verified_download'] and not d['installer_executed'] and d['latest_version']=='1.8.37' and d['download_sha256']=='67fb82385a2c97b57bec5cc2f0c1d82cbc01efcbc372d4bb991a2cd407bed8b1',d; print('Verified public Mac update end-to-end:', d['latest_version'])"
