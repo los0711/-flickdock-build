@@ -115,7 +115,7 @@ def preflight(*, publish):
     return old,raw
 
 
-def credentials(*, signing_only=False):
+def credentials(*, signing_only=False, gitee_only=False):
     context()
     signer = publisher_signer()
     sample = b'FlickDock release authorization verification'
@@ -125,14 +125,19 @@ def credentials(*, signing_only=False):
         return
     token = os.environ.get('GITEE_RELEASE_TOKEN','')
     cloud = os.environ.get('CLOUDFLARE_API_TOKEN','')
-    if not token or not cloud:
-        raise ValueError('Gitee and Cloudflare release credentials are required.')
+    if not token:
+        raise ValueError('The Gitee release credential is required.')
     user = requests.get('https://gitee.com/api/v5/user',headers={'Authorization':'Bearer ' + token},timeout=30)
     source = requests.get('https://gitee.com/api/v5/repos/rooogerluo/flick-dock',
                           headers={'Authorization':'Bearer ' + token},timeout=30)
     if (user.status_code != 200 or user.json().get('login') != 'rooogerluo'
             or source.status_code != 200 or source.json().get('private') is not True):
         raise ValueError('Gitee authorization or private source repository is unavailable.')
+    if gitee_only:
+        print('Verified the publisher key and private Gitee source access.',flush=True)
+        return
+    if not cloud:
+        raise ValueError('The Cloudflare release credential is required.')
     verify = requests.get('https://api.cloudflare.com/client/v4/user/tokens/verify',
                           headers={'Authorization':'Bearer ' + cloud},timeout=30)
     if verify.status_code != 200 or (verify.json().get('result') or {}).get('status') != 'active':
@@ -304,10 +309,11 @@ def verify():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('phase',choices=('preflight','verify-signing','verify-credentials','stage','sign','verify'))
+    parser.add_argument('phase',choices=('preflight','verify-signing','verify-gitee','verify-credentials','stage','sign','verify'))
     args = parser.parse_args()
     if args.phase == 'preflight':preflight(publish=True)
     elif args.phase == 'verify-signing':credentials(signing_only=True)
+    elif args.phase == 'verify-gitee':credentials(gitee_only=True)
     elif args.phase == 'verify-credentials':credentials()
     elif args.phase == 'stage':stage()
     elif args.phase == 'sign':sign()

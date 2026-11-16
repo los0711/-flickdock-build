@@ -64,6 +64,17 @@ class ReleasePipelineTests(unittest.TestCase):
                 pipeline._public_document('https://elsewhere.invalid/updates/latest.json')
         get.assert_not_called()
 
+    def test_private_source_access_can_be_verified_without_cloud_credentials(self):
+        user = MagicMock(status_code=200)
+        user.json.return_value = {'login':'rooogerluo'}
+        source = MagicMock(status_code=200)
+        source.json.return_value = {'private':True}
+        with patch.dict(os.environ,{'GITEE_RELEASE_TOKEN':'fixture'},clear=True), \
+             patch.object(pipeline,'context'), patch.object(pipeline,'publisher_signer'), \
+             patch.object(pipeline.requests,'get',side_effect=[user,source]) as get:
+            pipeline.credentials(gitee_only=True)
+        self.assertEqual(get.call_count,2)
+
     def test_staging_keeps_current_indices_until_signing(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
