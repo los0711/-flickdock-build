@@ -135,7 +135,7 @@ class LanHigLayoutTests(unittest.TestCase):
         class FolderMenu(QMenu):
             def exec(self,_point):self.actions()[1].trigger()
         with patch('lan_panel.QFileDialog.getExistingDirectory',return_value=str(folder)) as picker, \
-             patch('lan_panel.QMenu',FolderMenu):
+             patch('shelf_ui_common.RoundedMenu',FolderMenu):
             point=self.panel.drop_zone.rect().center()
             event=QContextMenuEvent(QContextMenuEvent.Reason.Mouse,point,
                 self.panel.drop_zone.mapToGlobal(point))
@@ -149,6 +149,9 @@ class LanHigLayoutTests(unittest.TestCase):
         self.assertEqual(len(panel.queue_rows),10)
         self.assertTrue(all(row.height()==44 for row in panel.queue_rows))
         self.assertGreater(panel.queue_scroll.verticalScrollBar().maximum(),0)
+        bar=panel.queue_scroll.verticalScrollBar();bar.setValue(0)
+        QTest.mouseClick(bar,Qt.LeftButton,pos=QPoint(bar.width()//2,bar.height()-4));self.settle()
+        self.assertGreater(bar.value(),0)
         panel.queue_scroll.ensureWidgetVisible(panel.queue_rows[-1]);self.settle()
         self.assertTrue(panel.queue_scroll.viewport().rect().intersects(
             panel.queue_rows[-1].rect().translated(panel.queue_rows[-1].mapTo(panel.queue_scroll.viewport(),QPoint(0,0)))))

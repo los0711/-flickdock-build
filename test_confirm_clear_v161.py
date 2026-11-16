@@ -103,7 +103,8 @@ try:
                 assert_layout(dialog, compact)
                 assert dialog.cancel_button.isDefault() and not dialog.delete_button.isDefault()
                 assert dialog.cancel_button.text() == "取消" and dialog.delete_button.text() == "清空"
-                assert ("#0a0a0a" if theme == "dark" else "#ffffff") in dialog.panel.styleSheet().lower()
+                image=dialog.panel.grab().toImage();scale=image.devicePixelRatioF()
+                assert image.pixelColor(round(8*scale),image.height()//2).name()==("#0a0a0a" if theme == "dark" else "#ffffff")
                 dialog.cancel_button.click()
             assert execute(dialog, cancel_visible) is False
             assert results == [False]

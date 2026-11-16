@@ -119,6 +119,36 @@ class WorkspaceTests(unittest.TestCase):
     def bounds(self,widget,owner):
         return QRect(widget.mapTo(owner,QPoint()),widget.size())
 
+    def test_copy_path_and_feedback_fit_the_icon_button(self):
+        from reference_widgets import refresh_tree
+        popup=self.overview();popup.select_item(self.paths[0]);flush()
+        control=popup.preview.copy_path_button
+        for theme in ('dark','light'):
+            self.settings.update(theme=theme);ui_theme.set_theme(theme);ui_theme.apply_application(APP,shelf_ui_common.FONT_FAMILY)
+            refresh_tree(self.shelf);flush()
+            for label in ('复制路径','已复制'):
+                control.setText(label);flush()
+                gap,reserved=control._icon_text_spacing()
+                available=control.width()-reserved-control.iconSize().width()-gap
+                self.assertGreaterEqual(available,control.fontMetrics().horizontalAdvance(label),
+                                        (theme,label,control.width(),available))
+
+    def test_file_metadata_uses_latin_and_technical_faces(self):
+        from PySide6.QtGui import QTextLayout
+        from native_ui_common import technical_font
+        popup=self.overview();popup.select_item(self.paths[0]);flush()
+        row=next(item for item in popup.rows_body.children() if getattr(item,'path',None)==self.paths[0])
+        self.assertEqual(row.name_label.font().family(),'Inter')
+        self.assertEqual(row.detail_label.font().family(),'Inter')
+        self.assertTrue(row.detail_label._draw_timestamp)
+        self.assertEqual(popup.preview.upload_time.font().family(),'JetBrains Mono')
+        self.assertEqual(popup.preview.path_label.font().family(),'JetBrains Mono')
+        for font,expected in ((row.detail_label.font(),'Inter'),
+                              (technical_font(row.detail_label.font()),'JetBrains Mono'),
+                              (popup.preview.path_label.font(),'JetBrains Mono')):
+            layout=QTextLayout('A0123',font);layout.beginLayout();layout.createLine();layout.endLayout()
+            self.assertEqual({run.rawFont().familyName() for run in layout.glyphRuns()},{expected})
+
     def test_morph_finalization_retires_snapshot_when_effect_cleanup_raises(self):
         from surface_morph import SurfaceSnapshot
         shelf=self.shelf
@@ -367,7 +397,7 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(int(title.font().weight()),600)
         self.assertEqual(title.font().pixelSize(),15 if sys.platform=='win32' else 14)
         self.assertEqual(title.font().letterSpacing(),0)
-        if sys.platform=='win32':self.assertEqual(title.font().family(),'Microsoft YaHei')
+        self.assertEqual(title.font().family(),'Inter')
         ink=QFontMetricsF(title.font()).tightBoundingRect(title.text())
         text_y=title.y()+optical_text_baseline(title.font(),title.text(),title.height())+ink.center().y()
         self.assertLessEqual(abs(text_y-(logo.y()+logo.height()/2)),.5)
@@ -643,6 +673,14 @@ class WorkspaceTests(unittest.TestCase):
         self.shelf.files['permanent'].clear();self.shelf.refresh();popup.rebuild();flush()
         self.assertTrue(popup.empty_state.isVisible())
         self.assertFalse(popup.zip_button.isEnabled());self.assertFalse(popup.zip_all_button.isEnabled());self.assertFalse(popup.clear_button.isEnabled())
+
+    def test_search_accepts_keyboard_input_and_clears_results(self):
+        popup=self.overview();edit=popup.search_edit
+        edit.setFocus();QTest.keyClicks(edit,'report');flush()
+        self.assertEqual(edit.text(),'report');self.assertEqual(popup.visible_refs(),[self.paths[0]])
+        self.assertTrue(edit.isClearButtonEnabled())
+        QTest.keyClick(edit,Qt.Key_A,Qt.ControlModifier);QTest.keyClick(edit,Qt.Key_Backspace);flush()
+        self.assertEqual(edit.text(),'');self.assertEqual(len(popup.visible_refs()),3)
 
     def test_multiselect_preview_keeps_divider_white_surface_and_compact_actions(self):
         popup=self.overview()

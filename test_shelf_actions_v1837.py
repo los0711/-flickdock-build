@@ -33,7 +33,7 @@ class ShelfActionsTests(unittest.TestCase):
             self.shelf.show_menu();fixture.flush()
             menu=self.shelf._more_menu
             self.assertTrue(menu.isVisible());self.assertTrue(self.shelf.menu_button.isDown())
-            self.assertTrue(menu._rounded_popup_clip.antialiased)
+            self.assertTrue(menu.testAttribute(Qt.WA_TranslucentBackground));self.assertTrue(menu.mask().isEmpty())
             self.shelf.show_menu();fixture.flush()
             self.assertIsNone(self.shelf._more_menu)
             self.assertFalse(self.shelf._menu_open);self.assertFalse(self.shelf.menu_button.isDown())
@@ -44,7 +44,7 @@ class ShelfActionsTests(unittest.TestCase):
         previous=ui_theme.current_theme()
         try:
             for theme in ('light','dark'):
-                ui_theme.set_theme(theme);menu=AnimatedMenu();style_menu(menu,antialiased=True);menu.addAction('添加文件…')
+                ui_theme.set_theme(theme);menu=AnimatedMenu();style_menu(menu);menu.addAction('添加文件…')
                 menu.popup(QPoint(20,20));fixture.flush()
                 self.assertTrue(menu.testAttribute(Qt.WA_TranslucentBackground))
                 self.assertTrue(menu.mask().isEmpty())
@@ -139,7 +139,7 @@ class ShelfActionsTests(unittest.TestCase):
         self.manager.send_to_account_device=Mock()
         popup=self.workspace.overview();ref=self.workspace.paths[0];popup.select_item(ref);preview=popup.preview
         self.assertEqual(preview.send_menu_button.accessibleName(),'选择同账号设备')
-        self.assertTrue(preview.send_button.icon().isNull())
+        self.assertFalse(preview.send_button.icon().isNull())
         self.assertFalse(preview.send_menu_button.icon().isNull())
         self.assertIs(preview.send_button.parentWidget(),preview.send_control)
         self.assertGreater(preview.send_menu_button.geometry().left(),preview.send_button.geometry().left())

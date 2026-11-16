@@ -6,6 +6,7 @@ from flickdock_icons import content_color, device_pixel_ratio, document_pixmap
 from flickdock_motion import ContentTile,Spring
 from ui_transitions import STACK_LANDING_DURATION_MS,STACK_PULSE_TIMEOUT_MS
 from display_frames import DisplayAnimation
+from native_ui_common import paint_rounded_surface,RADIUS_CONTROL_PX
 
 FAN_PIVOT_X_PX=74.24
 FAN_PIVOT_Y_PX=57.6
@@ -53,11 +54,8 @@ def stack_pixmap(repository, refs, size=110, *, dpr=None, preview_cache=None, ar
             p.translate(0,-18*(1-arrival));p.translate(card.center())
             p.rotate(7*(1-arrival));p.scale(.94+.06*arrival,.94+.06*arrival);p.translate(-card.center())
             p.setOpacity(max(0,min(1,.35+.65*arrival)))
-        p.setPen(Qt.PenStyle.NoPen);p.setBrush(QColor(16,30,50,24))
-        p.drawRoundedRect(card.translated(0,2),8,8)
-        p.setBrush(QColor(colors[index]));p.drawRoundedRect(card,8,8)
-        p.setBrush(Qt.BrushStyle.NoBrush);p.setPen(QPen(QColor(255,255,255,45),.7))
-        p.drawRoundedRect(card.adjusted(.4,.4,-.4,-.4),8,8)
+        paint_rounded_surface(p,card.translated(0,2),RADIUS_CONTROL_PX,QColor(16,30,50,24))
+        paint_rounded_surface(p,card,RADIUS_CONTROL_PX,QColor(colors[index]),QColor(255,255,255,45))
         if depth==0:
             kind=repository.category(ref)
             cached=(preview_cache or {}).get(ref)

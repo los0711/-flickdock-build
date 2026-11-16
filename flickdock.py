@@ -95,6 +95,8 @@ class ShelfManager:
         self.cocoa_smoke = bool(cocoa_smoke)
         self.motion = motion_enabled()
         self.settings = SettingsStore(BASE)
+        from display_frames import configure_power_monitor
+        configure_power_monitor(app)
         recorder=getattr(app,'_crash_diagnostics',None)
         if recorder is not None:recorder.configure(theme=self.settings.theme,motion=self.motion)
         if not self.cocoa_smoke and app.platformName() not in ('offscreen','minimal'):
@@ -1083,9 +1085,26 @@ class ShelfManager:
             return
         self._content_gesture_at=None
         shelf = self.active_shelf or self.shelves[0]
-        if shelf.expanded:shelf.hide_immediately()
+        # A surface that is still fading out (or stranded in that state) must
+        # be gone before the drag reveal lands; otherwise the new popup is
+        # layered over an unclosable window and the drop target is ambiguous.
+        if shelf.isVisible():shelf.hide_immediately()
         shelf.show_transient(position,reason='drag',velocity=self.shake_detector.trigger_velocity)
         self.auto_shown = shelf
+
+    def _drag_reveal_ready(self):
+        """True when a shake may summon the drop popup on this surface.
+
+        A visible shelf owns the pointer, but one that is already fading out
+        no longer owns anything: finish that hide immediately instead of
+        swallowing the gesture and leaving an unclosable window behind.
+        """
+        if not self.shelf.isVisible():
+            return True
+        if self.shelf.visible_state=='hiding':
+            self.shelf._complete_hide()
+            return True
+        return False
 
     def _content_type_ready(self,position):
         if (self.outgoing_drag or self.shelf.isVisible() and self.shelf.visible_state != 'hiding'
@@ -1144,6 +1163,7 @@ class ShelfManager:
         mask=mouse_buttons_mask()
         down=bool(mask&1); new_press=bool(mask&~self._button_mask); self._button_mask=mask
         if self.edge_suppressed and not self.edge.activation_region().contains(pos): self.edge_suppressed=False
+        retired_shelves=set()
         if app_deactivated:
             retired=False
             for shelf in self.shelves:
@@ -1152,7 +1172,7 @@ class ShelfManager:
                         and not confirmation_active(shelf) and not self.outgoing_drag
                         and not (self.clipboard_preview_dialog is not None and self.clipboard_preview_dialog.isVisible()
                                  and self.clipboard_preview_dialog.frameGeometry().contains(pos))):
-                    shelf.hide_animated(explicit=True);retired=True
+                    shelf.hide_animated(explicit=True);retired=True;retired_shelves.add(shelf)
             if retired:self.update_handles()
         if self.edge.isVisible() and self.edge.activation_region().contains(pos) and not self.edge_suppressed and not self.shelf.isVisible(): self.show_docked()
         for shelf in self.shelves:
@@ -1169,7 +1189,9 @@ class ShelfManager:
             inside=shelf.hover_region_contains(pos)
             if new_press and in_settings:shelf._release_reveal_level()
             if new_press and not inside and not in_settings and not press_blocked and not shelf.pinned and not self.outgoing_drag:
-                shelf.hide_animated(explicit=True)
+                # Deactivation and the outside press may be the same event.
+                # Do not mistake it for a second explicit close of a hiding shelf.
+                if shelf not in retired_shelves:shelf.hide_animated(explicit=True)
                 continue
             if shelf.dragging or shelf.incoming_drop or shelf.pinned: continue
             if shelf.presentation_kind=='dock' and not blocked and not self.outgoing_drag:
@@ -1197,11 +1219,13 @@ class ShelfManager:
                                                button_down=down,window_moving=moving,blocked=blocked)
         probe_shake=(not self._drag_content_ready and self._drag_probe_detector.update(
             pos.x(),pos.y(),sample_time,button_down=down,window_moving=moving,blocked=blocked))
-        if full_shake and self.auto_shown is None and not self.shelf.isVisible() and now-self.just_dropped>.4:
+        if (full_shake and self.auto_shown is None and now-self.just_dropped>.4
+                and self._drag_reveal_ready()):
             self._content_gesture_at=sample_time
             if self._drag_content_ready:self._content_drag_validated(pos)
             else:self.drag_gate.sustain_for_shake(pos)
-        if probe_shake and self.auto_shown is None and not self.shelf.isVisible() and now-self.just_dropped>.4:
+        if (probe_shake and self.auto_shown is None and now-self.just_dropped>.4
+                and self._drag_reveal_ready()):
             self.drag_gate.sustain_for_shake(pos)
         if self.drag_gate.active: self.drag_gate.track_position(pos)
         if not down and self.was_down:

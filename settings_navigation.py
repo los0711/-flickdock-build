@@ -4,6 +4,7 @@ from PySide6.QtGui import QColor,QPainter
 from PySide6.QtWidgets import QApplication,QAbstractItemView,QAbstractScrollArea,QListWidget,QStyledItemDelegate,QStyle,QWidget
 from display_frames import DisplayAnimation
 from ui_transitions import motion_allowed
+from native_ui_common import paint_rounded_surface,RADIUS_CONTROL_PX
 
 ANCHOR_TOP_INSET_PX = 20
 TRACKING_INSET_PX = 28
@@ -190,12 +191,11 @@ class _CategoryDelegate(QStyledItemDelegate):
     def paint(self,painter,option,index):
         owner=self.parent();c=owner._colors();rect=QRectF(option.rect).adjusted(0,0,0,-4)
         painter.save();painter.setRenderHint(QPainter.Antialiasing);painter.setClipRect(option.rect)
-        painter.setPen(Qt.NoPen)
         if option.state & QStyle.State_MouseOver:
-            painter.setBrush(QColor(c['hover']));painter.drawRoundedRect(rect,8,8)
+            paint_rounded_surface(painter,rect,RADIUS_CONTROL_PX,QColor(c['hover']))
         if not owner._marker_rect.isEmpty():
-            painter.save();painter.setOpacity(owner._marker_opacity);painter.setBrush(QColor(c['action']))
-            painter.drawRoundedRect(owner._marker_rect,8,8);painter.restore()
+            painter.save();painter.setOpacity(owner._marker_opacity)
+            paint_rounded_surface(painter,owner._marker_rect,RADIUS_CONTROL_PX,QColor(c['action']));painter.restore()
         point=rect.center()
         active=owner._marker_rect.contains(point) and owner._marker_opacity>.55
         painter.setPen(QColor(c['on_action'] if active else c['secondary']));painter.setFont(option.font)

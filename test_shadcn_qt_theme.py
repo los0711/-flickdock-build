@@ -79,10 +79,13 @@ class NeutralThemeTests(unittest.TestCase):
                     dialog.apply_theme(theme);APP.processEvents()
                     self.assertEqual(dialog.translation_language.dark,theme=='dark')
                     dialog.translation_language.showPopup();APP.processEvents()
-                    self.assertIn(colors(theme)['card'].lower(),dialog.translation_language.view().window().styleSheet().lower())
+                    popup=dialog.translation_language.view().window();image=popup.grab().toImage()
+                    self.assertEqual(popup._settings_backdrop.fill.lower(),colors(theme)['popup_surface'].lower())
+                    self.assertTrue(popup.mask().isEmpty());self.assertEqual(image.pixelColor(0,0).alpha(),0)
+                    self.assertGreater(image.pixelColor(image.width()//2,image.height()//2).alpha(),200)
                     dialog.translation_language.hidePopup()
             finally:
-                dialog.close();dialog.deleteLater();APP.processEvents()
+                dialog.close();dialog._preference_writer.close();dialog.deleteLater();APP.processEvents()
 
 
 if __name__=='__main__':unittest.main(verbosity=2)

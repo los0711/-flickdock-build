@@ -3,10 +3,11 @@ from collections import OrderedDict
 import math
 import sys
 import time
-from PySide6.QtCore import QObject, QPoint, QPointF, QRect, QRectF, Qt, QEasingCurve, QTimer, QVariantAnimation
+from PySide6.QtCore import QObject, QPoint, QPointF, QRect, QRectF, Qt, QEasingCurve, QElapsedTimer, QTimer, QVariantAnimation
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPixmap, QTransform, QRegion
 from PySide6.QtWidgets import QWidget
 from display_frames import FramePulse
+from frame_diagnostics import for_window as frame_trace_for
 
 
 def neutral_shadow_color(color):
@@ -99,6 +100,7 @@ class SurfaceSnapshot(QWidget):
     def __init__(self,owner):
         super().__init__(owner)
         self.owner=owner
+        self._frame_trace=frame_trace_for(owner)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.active=False
@@ -266,6 +268,13 @@ class SurfaceSnapshot(QWidget):
         file is drawn once. Unmatched layout chrome fades at natural size;
         the native host and the entire live widget tree remain fixed.
         """
+        if self._frame_trace is None:
+            return self._paint_frame(painter,rect,live_draw,target_size)
+        elapsed=QElapsedTimer();elapsed.start()
+        try:return self._paint_frame(painter,rect,live_draw,target_size)
+        finally:self._frame_trace.paint('frame',elapsed.nsecsElapsed()/1_000_000)
+
+    def _paint_frame(self,painter,rect,live_draw=None,target_size=None):
         from ui_transitions import SURFACE_SOURCE_FADE_END,SURFACE_TARGET_FADE_END
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -305,17 +314,23 @@ class SurfaceSnapshot(QWidget):
 
     def paintEvent(self,event):
         if not self.active:return
+        elapsed=QElapsedTimer() if self._frame_trace is not None else None
+        if elapsed is not None:elapsed.start()
         p=QPainter(self)
-        rect=self.content_rect()
-        p.setTransform(self.presentation_transform())
-        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        self._paint_shadow(p,rect)
-        self._paint_content(p,rect)
-        p.end()
+        try:
+            rect=self.content_rect()
+            p.setTransform(self.presentation_transform())
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            self._paint_shadow(p,rect)
+            self._paint_content(p,rect)
+        finally:
+            p.end()
+            if elapsed is not None:self._frame_trace.paint('snapshot',elapsed.nsecsElapsed()/1_000_000)
 
 class SurfaceMorph(QObject):
     def __init__(self, parent, rect, update, motion=True, prepare=None, settle=None):
         super().__init__(parent)
+        self._frame_trace=frame_trace_for(parent) if isinstance(parent,QWidget) else None
         self.current = QRect(rect)
         self.update = update
         self.motion = motion
@@ -342,11 +357,13 @@ class SurfaceMorph(QObject):
         self.active=False
 
     def stop(self, settle=True):
+        was_active=self.active
         self._frames.stop()
         self._completion.stop()
         self.animation.stop()
         self._done = None
         self.active=False
+        if was_active and self._frame_trace is not None:self._frame_trace.end_phase()
         if settle and self.settle:
             self.settle(QRect(self.current))
 
@@ -363,6 +380,9 @@ class SurfaceMorph(QObject):
         self._to = QRect(rect)
         self._done = finished
         self.active=True; self.progress=0.0;self.clock=0.0
+        if self._frame_trace is not None:
+            before=self._from.width()*self._from.height();after=self._to.width()*self._to.height()
+            self._frame_trace.begin_phase('expand' if after>before else 'collapse' if after<before else 'other')
         from native_ui_common import reduced_motion
         if not self.motion or reduced_motion() or self._from == self._to:
             self.current = QRect(self._to)
@@ -425,6 +445,7 @@ class SurfaceMorph(QObject):
         self.update(QRect(self.current))
         if self.settle:
             self.settle(QRect(self.current))
+        if self._frame_trace is not None:self._frame_trace.end_phase()
         callback, self._done = self._done, None
         if callback:
             callback()

@@ -6,7 +6,7 @@ import time
 import weakref
 from PySide6.QtCore import QEvent,QObject,QTimer,Qt
 from PySide6.QtGui import QColor,QPalette
-from PySide6.QtWidgets import QAbstractButton,QApplication,QToolTip
+from PySide6.QtWidgets import QAbstractButton,QApplication,QMessageBox,QToolTip
 from shiboken6 import isValid
 
 _theme = 'light'
@@ -19,12 +19,26 @@ def _style_tooltip(widget):
     from native_ui_common import colors
     c=colors(_theme)
     if widget.property('flickdockTooltipTheme')!=_theme:widget.setProperty('flickdockTooltipTheme',_theme)
-    tip=f"QTipLabel{{background:{c['card']};color:{c['text']};border:1px solid {c['input_border']};}}"
+    tip=f"QTipLabel{{background:{c['popup_surface']};color:{c['text']};border:1px solid {c['input_border']};border-radius:0px;}}"
     if widget.styleSheet()!=tip:widget.setStyleSheet(tip)
 
 
+def _style_message_box(widget):
+    from native_ui_common import colors
+    palette=widget.palette();desired=QColor(colors(_theme)['dialog_surface'])
+    if palette.color(QPalette.Window)!=desired:
+        palette.setColor(QPalette.Window,desired);widget.setPalette(palette)
+
+
+class _DialogPalette(QObject):
+    def eventFilter(self,watched,event):
+        if isinstance(watched,QMessageBox) and event.type() in (QEvent.Polish,QEvent.Show):
+            _style_message_box(watched)
+        return False
+
+
 class _TooltipCorners(QObject):
-    """Keep tooltip surfaces rounded and delay button hints until deliberate hover."""
+    """Style tooltip surfaces and delay button hints until deliberate hover."""
     def __init__(self,parent):
         super().__init__(parent)
         self._button=None;self._entered_at=0.;self._position=None
@@ -109,11 +123,11 @@ _DARK.update({'#fff':'#0a0a0a','#ffffff':'#0a0a0a','#fefeff':'#171717',
               '#1d1d1f':'#fafafa','#282d35':'#fafafa','#313741':'#fafafa',
               '#7c8796':'#a3a3a3','#8490a0':'#a3a3a3','#a3a3a3':'#737373'})
 
-def qss(source, font_family):
+def qss(source, font_family, *, for_button=False):
     from native_ui_common import readable_qss,font_css_stack
     from PySide6.QtWidgets import QApplication
     app=QApplication.instance()
-    stack=font_css_stack() if app is not None and getattr(app,'_flickdock_fonts_loaded',False) else f"'{font_family}'"
+    stack=font_css_stack(for_button=for_button) if app is not None and getattr(app,'_flickdock_fonts_loaded',False) else f"'{font_family}'"
     result = source.replace("'PingFang SC'", stack).replace("'FlickDock UI'", stack)
     if _theme == 'dark':
         result = re.sub(r'#[0-9a-fA-F]{3,8}\b', lambda m: _DARK.get(m.group(0).lower(), m.group(0)), result)
@@ -122,10 +136,10 @@ def qss(source, font_family):
 
 def style_widget(widget, source, font_family):
     widget._flickdock_style = source
-    widget.setStyleSheet(qss(source, font_family))
+    widget.setStyleSheet(qss(source, font_family,for_button=isinstance(widget,QAbstractButton)))
 
 def apply_application(app, font_family):
-    from native_ui_common import colors,font_css_stack,RADIUS_SUBCONTROL_PX,UiButton,icon
+    from native_ui_common import colors,font_css_stack,UiButton,icon
     from theme_accent import resolve_qss
     palette = QPalette()
     roles = {'Window':'surface','Base':'surface','AlternateBase':'canvas',
@@ -135,17 +149,19 @@ def apply_application(app, font_family):
     for role, key in roles.items():
         palette.setColor(getattr(QPalette.ColorRole, role), QColor(color(key)))
     app.setPalette(palette)
+    if not getattr(app,'_flickdock_dialog_palette',None):
+        app._flickdock_dialog_palette=_DialogPalette(app);app.installEventFilter(app._flickdock_dialog_palette)
     # One application-level tooltip style also covers icon buttons created by
     # individual dialogs and QToolTip.showText().  Keep any existing app QSS.
     c=colors(_theme)
     if not hasattr(app,'_flickdock_tooltip_base'):app._flickdock_tooltip_base=app.styleSheet()
-    tooltip=(f"QToolTip{{border-radius:{RADIUS_SUBCONTROL_PX}px;"
+    tooltip=(f"QToolTip{{border-radius:0px;"
              f"padding:4px 8px;font:400 12px {font_css_stack()};}}")
     # Keep both themed rules installed once, avoiding an application-wide
     # repolish when the active theme changes.
     for name in ('light','dark'):
         tip_colors=colors(name)
-        tooltip+=f"QToolTip[flickdockTooltipTheme=\"{name}\"]{{background:{tip_colors['card']};color:{tip_colors['text']};border:1px solid {tip_colors['input_border']};}}"
+        tooltip+=f"QToolTip[flickdockTooltipTheme=\"{name}\"]{{background:{tip_colors['popup_surface']};color:{tip_colors['text']};border:1px solid {tip_colors['input_border']};}}"
     stylesheet=(app._flickdock_tooltip_base+'\n'+tooltip).strip()
     if app.styleSheet()!=stylesheet:app.setStyleSheet(stylesheet)
     if not getattr(app,'_flickdock_tooltip_corners',None):
@@ -154,6 +170,7 @@ def apply_application(app, font_family):
         app._flickdock_tooltip_corners=_TooltipCorners(app);app.installEventFilter(app._flickdock_tooltip_corners)
     for widget in app.allWidgets():
         if widget.metaObject().className()=='QTipLabel':_style_tooltip(widget)
+        if isinstance(widget,QMessageBox):_style_message_box(widget)
         if isinstance(widget,UiButton):widget.refresh_style()
         reference=getattr(widget,'_reference_style',None)
         if reference:
@@ -164,6 +181,6 @@ def apply_application(app, font_family):
             name,tint=named_icon;widget.setIcon(icon(name,c.get(tint,tint)))
         source = getattr(widget, '_flickdock_style', None)
         if source is not None:
-            resolved=qss(source, font_family)
+            resolved=qss(source, font_family,for_button=isinstance(widget,QAbstractButton))
             if widget.styleSheet()!=resolved:widget.setStyleSheet(resolved)
         widget.update()

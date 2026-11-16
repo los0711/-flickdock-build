@@ -304,7 +304,7 @@ class TranslationNotice(CapsuleNotice):
         if changed:
             self._translation_position=result_position
             self._locate_translation_pending=result_position is not None
-        self.editor.setStyleSheet(f'QPlainTextEdit{{background:{c["surface"]};color:{c["text"]};border:0;font-size:13px;selection-background-color:{c["action"]};selection-color:{c["on_action"]};}} QScrollBar:vertical{{background:transparent;width:6px;margin:0;}} QScrollBar::handle:vertical{{background:#55555C;border-radius:3px;min-height:24px;}} QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{{height:0;}} QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{{background:transparent;}}')
+        self.editor.setStyleSheet(f'QPlainTextEdit{{background:{c["dialog_surface"]};color:{c["text"]};border:0;font-size:13px;selection-background-color:{c["action"]};selection-color:{c["on_action"]};}} QScrollBar:vertical{{background:transparent;width:6px;margin:0;}} QScrollBar::handle:vertical{{background:#55555C;border-radius:3px;min-height:24px;}} QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{{height:0;}} QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{{background:transparent;}}')
         width = min(EXPANDED_WIDTH_PX, self.width() - 4)
         self._measure.setTextWidth(width-2*CONTENT_SIDE_INSET_PX)
         self._measure.setPlainText(document)
@@ -344,12 +344,13 @@ class TranslationNotice(CapsuleNotice):
             return
         self.timer.stop()
         self.focus_timer.stop()
-        menu = QMenu(self)
+        from shelf_ui_common import RoundedMenu
+        menu = RoundedMenu(self);menu.surface_theme='dark'
         self.language_menu = menu
         menu.installEventFilter(self)
-        rounded_popup(menu, RADIUS_CARD_PX)
+        rounded_popup(menu)
         c = colors('dark')
-        menu.setStyleSheet(f'QMenu{{background:{c["card"]};color:{c["text"]};border:1px solid {c["border"]};border-radius:{RADIUS_CARD_PX}px;padding:6px;}}')
+        menu.setStyleSheet(f'QMenu{{background:transparent;color:{c["text"]};border:0;padding:7px;}}')
         languages = LanguageList(menu)
         languages.setAccessibleName('目标语言')
         languages.setFrameShape(QFrame.NoFrame)
@@ -416,7 +417,7 @@ class TranslationNotice(CapsuleNotice):
         rect = self.capsule_rect()
         c = colors('dark')
         painter.setPen(QPen(QColor(c['qt_border']), 1))
-        painter.setBrush(QColor(c['surface']))
+        painter.setBrush(QColor(c['dialog_surface']))
         background=QPainterPath();background.addRoundedRect(rect.adjusted(.5,.5,-.5,-.5),21.5,21.5)
         painter.drawPath(notice_cluster.shape(self,background))
         bar = QRectF(rect.left(), rect.bottom()-PILL_HEIGHT_PX, rect.width(), PILL_HEIGHT_PX)

@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSizePolicy, QSl
 
 from flickdock_icons import document_pixmap, file_pixmap
 from flickdock_motion import Spring
+from native_ui_common import paint_rounded_surface,RADIUS_CONTROL_PX,RADIUS_CARD_PX
 import ui_theme
 
 
@@ -28,7 +29,21 @@ POSTER_TIMEOUT_MS = 10000
 SEEK_COALESCE_MS = 80
 
 
-class _SeekSlider(QSlider):
+class _MediaSlider(QSlider):
+    def paintEvent(self,event):
+        option=QStyleOptionSlider();self.initStyleOption(option)
+        groove=QRectF(self.style().subControlRect(QStyle.CC_Slider,option,QStyle.SC_SliderGroove,self))
+        handle=QRectF(self.style().subControlRect(QStyle.CC_Slider,option,QStyle.SC_SliderHandle,self))
+        p=QPainter(self);track=QColor(ui_theme.color('media_track'));accent=QColor(ui_theme.color('accent'))
+        paint_rounded_surface(p,groove,groove.height()/2,track)
+        start,end=(handle.center().x(),groove.right()) if option.upsideDown else (groove.left(),handle.center().x())
+        chunk=QRectF(start,groove.top(),max(0.,end-start),groove.height())
+        if not chunk.isEmpty():paint_rounded_surface(p,chunk,groove.height()/2,accent)
+        paint_rounded_surface(p,handle,min(handle.width(),handle.height())/2,QColor(ui_theme.color('text')),
+                              accent if self.hasFocus() else None)
+
+
+class _SeekSlider(_MediaSlider):
     """Use the styled groove's absolute position for both clicks and drags."""
     def _move_to(self, point):
         option = QStyleOptionSlider()
@@ -126,14 +141,11 @@ class _MediaButton(QPushButton):
         p.translate(-center)
         background = QColor(ui_theme.color("button"))
         background.setAlphaF(.65 + .35 * self.spring.values["hover"])
-        p.setBrush(background)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 10, 10)
+        paint_rounded_surface(p,QRectF(self.rect()).adjusted(1,1,-1,-1),RADIUS_CONTROL_PX,background)
         from native_ui_common import keyboard_focus_visible
         if keyboard_focus_visible(self):
-            p.setPen(QPen(QColor(ui_theme.color("accent")), 1.4))
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawRoundedRect(QRectF(self.rect()).adjusted(1.6, 1.6, -1.6, -1.6), 9, 9)
+            paint_rounded_surface(p,QRectF(self.rect()).adjusted(1,1,-1,-1),RADIUS_CONTROL_PX,
+                                  QColor(Qt.transparent),QColor(ui_theme.color('accent')))
         if not self.isEnabled():
             p.setOpacity(.4)
         color = QColor(ui_theme.color("icon"))
@@ -197,10 +209,12 @@ class _VideoSurface(QWidget):
         p = QPainter(self)
         p.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.SmoothPixmapTransform)
         bounds = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        paint_rounded_surface(p,bounds,RADIUS_CARD_PX,QColor('#11161e'))
         clipping = QPainterPath()
-        clipping.addRoundedRect(bounds, 12, 12)
+        scale=abs(p.deviceTransform().m11()) or 1
+        radius=round(RADIUS_CARD_PX*scale)/scale
+        clipping.addRoundedRect(bounds,radius,radius)
         p.setClipPath(clipping)
-        p.fillRect(bounds, QColor("#11161e"))
         if not self.image.isNull():
             size = self.image.size().scaled(self.size(), Qt.AspectRatioMode.KeepAspectRatio)
             target = QRectF((self.width() - size.width()) / 2, (self.height() - size.height()) / 2,
@@ -275,7 +289,7 @@ class MediaPreview(QWidget):
         self.mute_button = _MediaButton("volume", "静音", self, motion)
         self.mute_button.clicked.connect(self.toggle_mute)
         controls.addWidget(self.mute_button)
-        self.volume_slider = QSlider(Qt.Orientation.Horizontal, self)
+        self.volume_slider = _MediaSlider(Qt.Orientation.Horizontal, self)
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(70)
         self.volume_slider.setFixedWidth(58)
@@ -310,11 +324,9 @@ class MediaPreview(QWidget):
         self.setStyleSheet(f"""
             QWidget#mediaPreview {{background:transparent;}}
             QWidget#mediaPreview QLabel {{background:transparent;color:{secondary};font-size:12px;}}
-            QWidget#mediaPreview QSlider::groove:horizontal {{height:4px;background:{track};border-radius:2px;}}
-            QWidget#mediaPreview QSlider::add-page:horizontal {{background:{track};border-radius:2px;}}
-            QWidget#mediaPreview QSlider::sub-page:horizontal {{background:{accent};border-radius:2px;}}
-            QWidget#mediaPreview QSlider::handle:horizontal {{width:11px;margin:-4px 0;border-radius:5px;background:{ink};}}
-            QWidget#mediaPreview QSlider::handle:horizontal:focus {{border:1px solid {accent};}}
+            QWidget#mediaPreview QSlider::groove:horizontal {{height:4px;background:transparent;border:0;}}
+            QWidget#mediaPreview QSlider::add-page:horizontal,QWidget#mediaPreview QSlider::sub-page:horizontal {{background:transparent;}}
+            QWidget#mediaPreview QSlider::handle:horizontal {{width:11px;margin:-4px 0;background:transparent;border:0;}}
         """)
         self.update()
 
@@ -346,6 +358,12 @@ class MediaPreview(QWidget):
             self._resume_position = 0
             self._set_duration(0)
         self._video = Path(value).suffix.lower() in VIDEO_SUFFIXES
+        if not same:
+            # Selecting a new video starts muted; a user can unmute it for the
+            # rest of this selection, including pause/resume. Audio retains
+            # its normal unmuted starting behavior.
+            self._muted = self._video
+            self._volume_changed(self.volume_slider.value())
         if self._video and self.surface.image.isNull() and poster is not None and not poster.isNull():
             self.surface.image = QImage(poster)
         # A format icon between selection and the first frame looks like a

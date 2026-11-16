@@ -18,10 +18,12 @@ yt_datas += collect_data_files('certifi')
 
 assets = [(root / 'assets/ui/qtbase_zh_CN.qm', 'assets/ui')]
 assets += [(root / 'assets/models/lid.176.ftz', 'assets/models')]
+assets += [(root/'assets/fonts'/name,'assets/fonts') for name in
+           ('Inter-Regular.ttf','Inter-Medium.ttf','Inter-SemiBold.ttf','JetBrainsMono-Regular.ttf','JetBrainsMono-Medium.ttf')]
 assets += [(root / 'licenses' / name, 'licenses') for name in (
     'Python-LICENSE.txt', 'FFmpeg-LICENSE.txt','LGPL-3.0.txt',
     'GPL-3.0.txt', 'PyInstaller-COPYING.txt','OpenSSL-LICENSE.txt','Cloud-Client-LICENSES.txt',
-    'Lucide-LICENSE.txt','Release-Crypto-LICENSES.txt','Video-LICENSES.txt','WebRTC-LICENSES.txt','Flag-Icons-LICENSE.txt','FASTTEXT-LICENSE.txt','FASTTEXT-MODEL-ATTRIBUTION.txt','Paper-Notice-Motion-LICENSE.txt')]
+    'Lucide-LICENSE.txt','Release-Crypto-LICENSES.txt','Video-LICENSES.txt','WebRTC-LICENSES.txt','Flag-Icons-LICENSE.txt','FASTTEXT-LICENSE.txt','FASTTEXT-MODEL-ATTRIBUTION.txt','Paper-Notice-Motion-LICENSE.txt','Inter-OFL.txt','JetBrainsMono-OFL.txt')]
 assets += [(root / 'THIRD_PARTY_NOTICES.md', '.')]
 assets += [(path,'assets/flags') for path in (root/'assets/flags').glob('*.svg')]
 for path, destination in assets:

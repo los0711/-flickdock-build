@@ -27,6 +27,7 @@ from content_grid import GRID_COLUMN_WIDTH_PX
 from content_grid import IconItem
 from drop_routing import OverviewDropRouter
 from file_preview import ElidedLabel
+from file_preview import MetadataLabel
 from file_preview import PreviewPane
 from flickdock_icons import glyph_pixmap
 from flickdock_motion import Spring
@@ -90,13 +91,11 @@ class OverviewOutline(QWidget):
             self.setMask(QRegion(rect).subtracted(QRegion(inner)) if not inner.isEmpty() else QRegion(rect))
 
     def paintEvent(self,event):
-        from native_ui_common import pixel_aligned_border
+        from native_ui_common import paint_rounded_surface
         painter=QPainter(self);painter.setRenderHint(QPainter.Antialiasing)
-        rect,width=pixel_aligned_border(painter,QRectF(self.rect()))
         tint=QColor(255,255,255,20) if ui_theme.current_theme()=='dark' else QColor(0,0,0,23)
-        painter.setPen(QPen(tint,width));painter.setBrush(Qt.NoBrush)
         radius=16 if sys.platform=='darwin' else 10
-        painter.drawRoundedRect(rect,radius,radius);painter.end()
+        paint_rounded_surface(painter,self.rect(),radius,QColor(Qt.transparent),tint);painter.end()
 
 
 class FileRow(QFrame):
@@ -115,14 +114,12 @@ class FileRow(QFrame):
         self.selection_check.setAccessibleName('选择 '+popup.shelf.content.title(path))
         self.selection_check.clicked.connect(lambda _:popup.select_item(self.path,toggle=True))
         from reference_widgets import css
-        css(self.selection_check,'QCheckBox::indicator{width:14px;height:14px;border:1px solid #45454B;border-radius:4px;background:transparent;} QCheckBox::indicator:checked{background:#0A84FF;border-color:#0A84FF;}',
-            'QCheckBox::indicator{width:14px;height:14px;border:1px solid #CCCCCC;border-radius:4px;background:transparent;} QCheckBox::indicator:checked{background:#0A84FF;border-color:#0A84FF;}')
         row.addWidget(self.selection_check)
         self.icon_label=ThumbnailLabel(popup.shelf,path,self);self.icon_label.setAttribute(Qt.WA_TransparentForMouseEvents);row.addWidget(self.icon_label)
         names=QVBoxLayout();names.setSpacing(0)
         self.name_label=ElidedLabel(self);self.name_label.setText(popup.shelf.content.title(path));self.name_label.setAttribute(Qt.WA_TransparentForMouseEvents)
         css(self.name_label,"color:#F5F5F7;background:transparent;border:0;font:600 12px 'FlickDock UI';","color:#1D1D1F;background:transparent;border:0;font:600 12px 'FlickDock UI';")
-        self.detail_label=ElidedLabel(self);self.detail_label.setFixedHeight(17)
+        self.detail_label=MetadataLabel(self);self.detail_label.setFixedHeight(17)
         from native_ui_common import colors
         css(self.detail_label,*[f"color:{colors(t)['file_description']};background:transparent;border:0;font:9px 'FlickDock UI';" for t in ('dark','light')])
         self.detail_label.setAttribute(Qt.WA_TransparentForMouseEvents)
@@ -163,20 +160,18 @@ class FileRow(QFrame):
 
     def refresh_upload_time(self):
         from reference_widgets import item_detail
-        self.detail_label.setText(item_detail(self.popup.shelf,self.path)+' · '+self.popup.upload_caption(self.path))
+        self.detail_label.set_parts(item_detail(self.popup.shelf,self.path),self.popup.upload_caption(self.path))
 
     def paintEvent(self,event):
         from reference_widgets import palette,ink,outside_content_view
-        from native_ui_common import pixel_aligned_border
+        from native_ui_common import paint_rounded_surface
         if outside_content_view(self):return
         c=palette();chosen=self.path in self.popup.selected
         self.selection_check.blockSignals(True);self.selection_check.setChecked(chosen);self.selection_check.blockSignals(False)
         p=QPainter(self);p.setRenderHint(QPainter.Antialiasing)
         focused=self.hasFocus() and self._keyboard_focus
-        p.setBrush(ink(c['file_card_selected_focus'] if chosen and focused else c['file_card_selected'] if chosen else c['file_card_hover'] if self.motion.values['highlight']>.3 or focused else c['file_card']))
-        border,stroke=pixel_aligned_border(p,QRectF(self.rect()))
-        p.setPen(QPen(ink(c['selected_border'] if chosen else c['border']),stroke))
-        p.drawRoundedRect(border,c['card_radius'],c['card_radius'])
+        fill=ink(c['file_card_selected_focus'] if chosen and focused else c['file_card_selected'] if chosen else c['file_card_hover'] if self.motion.values['highlight']>.3 or focused else c['file_card'])
+        paint_rounded_surface(p,self.rect(),c['card_radius'],fill,ink(c['selected_border'] if chosen else c['border']))
         p.end()
 
     def enterEvent(self, event):
@@ -758,7 +753,8 @@ class ContentsPopup(QFrame):
             self.nav_counts[key].setVisible(bool(count))
             selected=key==self.category
             background='transparent' if selected else palette()['control'] if key=='uploading' and count else 'transparent'
-            css(self.nav_counts[key],f"background:{background};border:0;border-radius:10px;font:10px 'FlickDock UI';color:"+(palette()['on_action'] if selected else palette()['link'] if key=='uploading' else palette()['muted'])+';')
+            self.nav_counts[key].set_background(background)
+            css(self.nav_counts[key],"background:transparent;border:0;font:10px 'FlickDock UI';color:"+(palette()['on_action'] if selected else palette()['link'] if key=='uploading' else palette()['muted'])+';')
             glyph=button._reference_icon[0]
             button._reference_icon=(glyph,'on_action' if selected else 'secondary');button.setIcon(icon(glyph,palette()['on_action'] if selected else palette()['secondary']))
             button.setChecked(key==self.category)
@@ -1041,11 +1037,12 @@ class ContentsPopup(QFrame):
             control.setText('时间' if key=='time' else '大小');control.set_direction(direction)
             control.setChecked(bool(direction))
             control.setToolTip(('正序' if direction==1 else '倒序' if direction==2 else '默认：最新添加在前')+' · 点击切换')
+        if not self.sort_direction:self.sort_segment.clear_selection()
         visible=self.visible_refs()
         self.select_all_button.setText('弃选' if visible and all(ref in self.selected for ref in visible) else '全选')
         from reference_widgets import css,colors
         deselect=bool(visible and all(ref in self.selected for ref in visible))
-        css(self.select_all_button,*[f"QPushButton{{background:transparent;border:1px solid transparent;border-radius:8px;padding:4px 6px;font:12px 'FlickDock UI';color:{colors(t)['red'] if deselect else colors(t)['secondary']};}} QPushButton:hover{{background:{colors(t)['hover']};}} QPushButton[keyboardFocus=\"true\"]{{border-color:{colors(t)['link']};}}" for t in ('dark','light')])
+        css(self.select_all_button,*[f"QPushButton{{background:transparent;border:0;padding:5px 7px;font:12px 'FlickDock UI';color:{colors(t)['red'] if deselect else colors(t)['secondary']};}}" for t in ('dark','light')])
 
     def change_view_mode(self,key):
         if key not in ('list','icons'):return
@@ -1149,8 +1146,14 @@ class ContentsPopup(QFrame):
     def _upload_metadata_changed(self,ref):
         sync=getattr(self.shelf.manager,'sync',None);batch=getattr(sync,'upload_metadata_for_refs',None)
         if callable(batch):self._upload_metadata.update(batch((ref,)))
+        # A cloud-copy operation changes the status as well as metadata.
+        # Keep this O(1) per ref: a stale icon must never turn a delete click
+        # into an upload through the action handler.
+        if ref in self._cloud_statuses:
+            self._cloud_statuses[ref]=cloud_status_for_ref(self.shelf,ref)
         item=self._item_widgets.get(ref)
-        if item is not None:item.refresh_upload_time()
+        if item is not None:
+            item.refresh_upload_time();item.refresh_cloud_status()
         if self.preview.current_path==ref:self.preview.refresh_cloud_status()
         elif ref in getattr(self.preview,'_group_refs',()):self.preview.update_action_states()
 

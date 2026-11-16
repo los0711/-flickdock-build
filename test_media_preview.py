@@ -151,7 +151,10 @@ with tempfile.TemporaryDirectory(prefix="flickdock-media-") as temporary, \
     print("PASS visible video reads a muted first frame then pauses; poster extraction never reports playback")
 
     preview.toggle_playback()
-    assert events == [True] and not preview.audio_output.muted
+    assert events == [True] and preview.audio_output.muted
+    assert preview.mute_button.accessibleName() == "取消静音"
+    preview.toggle_mute()
+    assert not preview.audio_output.muted
     preview.toggle_playback()
     assert events == [True, False]
     preview.seek_slider.setValue(5000)
@@ -203,6 +206,7 @@ with tempfile.TemporaryDirectory(prefix="flickdock-media-") as temporary, \
 
     stale_player, stale_sink = preview.player, preview.video_sink
     preview.set_source(second)
+    assert preview._muted and preview.mute_button.accessibleName() == "取消静音"
     assert stale_player.stop_calls >= 1 and preview.surface.image.isNull() and preview.surface.fallback is None
     deliver_frame(stale_sink,QVideoFrame(red))
     assert preview.surface.image.isNull() and len(frames) == 1

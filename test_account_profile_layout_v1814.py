@@ -147,8 +147,8 @@ class AccountProfileLayoutTests(unittest.TestCase):
             layout=QTextLayout(label.text(),font);layout.beginLayout();layout.createLine();layout.endLayout()
             self.assertTrue(layout.glyphRuns())
             if sys.platform=='win32':
-                self.assertEqual(QFontInfo(font).family(),'Microsoft YaHei')
-                self.assertEqual({run.rawFont().familyName() for run in layout.glyphRuns()},{'Microsoft YaHei'})
+                self.assertEqual(QFontInfo(font).family(),'Inter')
+                self.assertTrue({run.rawFont().familyName() for run in layout.glyphRuns()} <= {'Inter','Microsoft YaHei UI','Microsoft YaHei'})
 
     def test_identical_device_push_keeps_rows_and_avoids_rebuilding(self):
         self.settle();rows=dict(self.panel._rows_by_id)

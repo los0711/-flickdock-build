@@ -6,9 +6,9 @@ from pathlib import Path
 import unittest
 
 from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtGui import QFont, QFontDatabase
+from PySide6.QtGui import QColor, QFont, QFontDatabase
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QFrame, QLineEdit, QWidget
+from PySide6.QtWidgets import QApplication, QFrame, QLineEdit, QMessageBox, QWidget
 
 from confirm_clear import ClearConfirmOverlay, confirmation_active
 from update_dialog import UpdateDialog
@@ -30,6 +30,45 @@ class FakeClient(QObject):
 
 
 class HtmlNativeDialogs(unittest.TestCase):
+    def test_dialog_surfaces_brighten_in_dark_mode_without_changing_light_mode(self):
+        from app_settings import ReferenceModalDialog,SettingsSurface
+        from native_ui_common import colors
+        from reference_widgets import _RenameSurface
+        from lan_panel import _TransferDialogSurface
+        import ui_theme
+        for theme in ('dark','light'):
+            with self.subTest(theme=theme):
+                ui_theme.set_theme(theme);palette=colors(theme)
+                owner=QWidget();owner._theme=theme
+                rename=_RenameSurface(owner);rename.resize(200,90)
+                settings=SettingsSurface(owner);settings.dark=theme=='dark';settings.resize(200,90)
+                transfer=_TransferDialogSurface(owner);transfer.resize(200,90)
+                for surface,expected in ((rename,palette['dialog_surface'] if theme=='dark' else '#F6F6F6'),
+                                         (settings,palette['dialog_surface']),
+                                         (transfer,palette['dialog_surface'])):
+                    surface.show();APP.processEvents();image=surface.grab().toImage()
+                    actual=image.pixelColor(image.width()//2,image.height()//2)
+                    self.assertEqual(actual.name().lower(),QColor(expected).name().lower())
+                modal=ReferenceModalDialog(surface_width=280,animate=False);modal.set_surface_theme(theme)
+                modal.show();APP.processEvents()
+                image=modal.grab().toImage();rect=modal.surface.geometry()
+                actual=image.pixelColor(rect.center().x(),rect.top()+5)
+                self.assertEqual(actual.name().lower(),QColor(palette['dialog_surface']).name().lower())
+                modal.close();owner.close();modal.deleteLater();owner.deleteLater();APP.processEvents()
+        self.assertGreater(QColor(colors('dark')['dialog_surface']).lightness(),QColor(colors('dark')['surface']).lightness())
+        self.assertGreater(QColor(colors('dark')['popup_surface']).lightness(),QColor(colors('dark')['card']).lightness())
+
+    def test_native_qt_message_box_uses_popup_surface_in_both_themes(self):
+        import ui_theme
+        from native_ui_common import colors
+        for theme in ('dark','light'):
+            ui_theme.set_theme(theme);ui_theme.apply_application(APP,APP.font().family())
+            box=QMessageBox();box.setText('测试提示');box.show();APP.processEvents()
+            try:
+                image=box.grab().toImage()
+                self.assertEqual(image.pixelColor(image.width()//2,5).name(),colors(theme)['dialog_surface'].lower())
+            finally:box.close();box.deleteLater();APP.processEvents()
+
     def test_clear_buttons_scope_and_keyboard_cancel_still_match_original_flow(self):
         host=QWidget();host.resize(1040,600)
         card=QFrame(host);card.setGeometry(host.rect())

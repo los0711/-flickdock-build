@@ -1,10 +1,10 @@
 """Selected-file preview and its six existing file actions."""
 from __future__ import annotations
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QEvent, QPointF, QTimer
 from PySide6.QtCore import QUrl
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QImage
+from PySide6.QtGui import QFontMetricsF, QImage, QPainter, QPalette
 from PySide6.QtWidgets import QApplication
 from PySide6.QtWidgets import QFrame
 from PySide6.QtWidgets import QLabel
@@ -55,10 +55,62 @@ class ElidedLabel(QLabel):
         super().resizeEvent(event)
 
 
+class MetadataLabel(ElidedLabel):
+    """Keep the file description in Inter and its timestamp in the mono face."""
+    def __init__(self,parent=None):
+        self._description='';self._timestamp='';self._draw_description='';self._draw_timestamp=''
+        self._font_key=None;self._mono_font=None;self._normal_metrics=None;self._mono_metrics=None
+        super().__init__(parent)
+
+    def _metrics(self):
+        from native_ui_common import technical_font
+        font=self.font();key=font.key()
+        if key!=self._font_key:
+            self._font_key=key;self._mono_font=technical_font(font)
+            self._normal_metrics=QFontMetricsF(font);self._mono_metrics=QFontMetricsF(self._mono_font)
+        return self._normal_metrics,self._mono_metrics
+
+    def set_parts(self,description,timestamp):
+        self._description=str(description).replace('\n',' ').replace('\r','')
+        self._timestamp=str(timestamp).replace('\n',' ').replace('\r','')
+        self.full_text=self._description+(' · '+self._timestamp if self._timestamp else '')
+        self.setAccessibleName(self.full_text);self._elide()
+
+    def setText(self,text):
+        self.set_parts(text,'')
+
+    def _elide(self):
+        width=max(1,self.width());normal,mono=self._metrics()
+        prefix=self._description+(' · ' if self._timestamp else '')
+        if normal.horizontalAdvance(prefix)>=width:
+            self._draw_description=normal.elidedText(self._description,Qt.ElideRight,width)
+            self._draw_timestamp=''
+        else:
+            self._draw_description=prefix
+            self._draw_timestamp=mono.elidedText(self._timestamp,Qt.ElideRight,max(0,round(width-normal.horizontalAdvance(prefix))))
+        QLabel.setText(self,self._draw_description+self._draw_timestamp)
+        self.update()
+
+    def changeEvent(self,event):
+        super().changeEvent(event)
+        if event.type() in (QEvent.FontChange,QEvent.StyleChange):self._elide()
+
+    def paintEvent(self,event):
+        if not self._timestamp:
+            super().paintEvent(event);return
+        painter=QPainter(self);painter.setPen(self.palette().color(QPalette.WindowText))
+        normal,mono=self._metrics()
+        height=max(normal.height(),mono.height());baseline=(self.height()-height)/2+max(normal.ascent(),mono.ascent())
+        painter.setFont(self.font());painter.drawText(QPointF(0,baseline),self._draw_description)
+        painter.setFont(self._mono_font);painter.drawText(QPointF(normal.horizontalAdvance(self._draw_description),baseline),self._draw_timestamp)
+        painter.end()
+
+
 class PreviewPane(QFrame):
     def __init__(self,parent=None):
         super().__init__(parent)
         self.shelf=parent.shelf;self.popup=parent;self.current_path=None
+        self._cloud_action_ref=None;self._cloud_action_mode=None
         self._cloud_batch_checks=set()
         from text_preview import TextPreviewLoader
         self._text_loader=TextPreviewLoader(self);self._text_loader.ready.connect(self._text_ready)
@@ -75,14 +127,9 @@ class PreviewPane(QFrame):
 
     def _set_empty_state(self,empty):
         """Show only a calm prompt until an item is selected."""
-        from reference_widgets import css,colors
         for part in (self.preview_head,self.status_card,self.size_card,self.path_card,self.action_footer):
             part.setVisible(not empty)
-        if empty:
-            css(self.stack,'QStackedWidget{background:transparent;border:0;}')
-        else:
-            from native_ui_common import RADIUS_CARD_PX
-            css(self.stack,*[f"QStackedWidget{{background:{colors(t)['card']};border:1px solid {colors(t)['border']};border-radius:{RADIUS_CARD_PX}px;}}" for t in ('dark','light')])
+        self.stack.set_surface_enabled(not empty)
         self.empty_icon.update()
 
     def _playing_changed(self, playing):
@@ -102,25 +149,37 @@ class PreviewPane(QFrame):
             sync=getattr(self.shelf.manager,'sync',None)
             self.cloud_badge.set_status(status)
             synced=status=='synced'
+            self._cloud_action_ref=self.current_path
+            self._cloud_action_mode='remove' if synced else 'upload'
             self.cloud_action.set_glyph('cloud-remove' if synced else 'cloud-upload')
             self.cloud_action.set_glyph_tint(colors(self.shelf.manager.settings.theme)['red'] if synced else '#0A84FF')
             action='删除云端副本' if synced else '上传云端'
             self.cloud_action.setAccessibleName(action);self.cloud_action.setToolTip(action)
             busy_lookup=getattr(sync,'cloud_copy_busy_for_ref',None)
             busy=bool(callable(busy_lookup) and busy_lookup(self.current_path))
-            self.cloud_action.setEnabled(bool(sync and sync.service.signed_in and not busy and status not in ('uploading','pending') and not self.shelf.content.is_pending(self.current_path)))
+            enabled=bool(sync and sync.service.signed_in and not busy and status not in ('uploading','pending') and not self.shelf.content.is_pending(self.current_path))
+            # Disabling the focused control otherwise transfers keyboard focus
+            # to the adjacent copy button and leaves a misleading focus frame.
+            if not enabled and self.cloud_action.isEnabled() and self.cloud_action.hasFocus():
+                self.cloud_action.clearFocus()
+            self.cloud_action.setEnabled(enabled)
             from shelf_content import shelf_time_info
             label,stamp=shelf_time_info(self.shelf.content,self.current_path)
             self.upload_time.setText(label+'：'+stamp)
-        else:self.status_value.clear();self.upload_time.clear()
+        else:
+            self._cloud_action_ref=None;self._cloud_action_mode=None
+            self.status_value.clear();self.upload_time.clear()
         update=getattr(self,'update_action_states',None)
         if getattr(self,'_group_refs',()) and callable(update):update()
 
     def toggle_cloud_copy(self):
         ref=self.current_path;sync=getattr(self.shelf.manager,'sync',None)
         if not sync or ref not in self.shelf.files['permanent'] or self.shelf.content.is_pending(ref):return
-        if sync.sync_status_for_ref(ref)=='synced':sync.delete_cloud_copy(ref)
-        else:
+        # Execute the operation actually represented by the pressed icon.
+        # A newer journal state can never reinterpret a remove click as upload.
+        if self._cloud_action_ref!=ref:return
+        if self._cloud_action_mode=='remove':sync.delete_cloud_copy(ref)
+        elif self._cloud_action_mode=='upload' and sync.sync_status_for_ref(ref)!='synced':
             manager=self.shelf.manager
             revision=getattr(sync,'cloud_copy_revision',None)
             intent=revision(ref) if callable(revision) else None
@@ -132,7 +191,9 @@ class PreviewPane(QFrame):
                 if ref in self.shelf.files['permanent'] and not self.shelf.content.is_pending(ref) and not busy(ref):
                     sync.retry_upload(ref)
             manager.check_cloud_capacity_for_upload(ref,checked)
-        self.refresh_cloud_status()
+        refresh=getattr(self.popup,'_upload_metadata_changed',None)
+        if callable(refresh):refresh(ref)
+        else:self.refresh_cloud_status()
 
     def update_action_states(self):
         for control in (self.remove_button,self.group_remove):
@@ -252,7 +313,7 @@ class PreviewPane(QFrame):
         else:message='同账号设备'
         heading=menu.addAction(message);heading.setEnabled(False)
         from PySide6.QtWidgets import QPushButton,QWidgetAction
-        from reference_widgets import css,colors
+        from reference_widgets import css,colors,MenuChoiceButton
         device_buttons={}
         for peer in peers:
             identifier=peer.get('id')
@@ -261,10 +322,10 @@ class PreviewPane(QFrame):
             available=bool(nearby) or peer.get('online') is not False
             label=str(peer.get('name') or '未命名设备')+(' · 离线' if not available else '')
             action=QWidgetAction(menu);action.setText(label)
-            control=QPushButton(label,menu);control.setMinimumWidth(190);control.setFixedHeight(32)
+            control=MenuChoiceButton(label,menu);control.setMinimumWidth(190);control.setFixedHeight(32)
             control.setCursor(Qt.PointingHandCursor if available else Qt.ArrowCursor)
             control.setAccessibleName(label);control.setAccessibleDescription('在线' if available else '离线')
-            css(control,*[f"QPushButton{{background:transparent;color:{colors(t)['green'] if available else ('#737373' if t=='dark' else '#A3A3A3')};border:0;border-radius:6px;padding:6px 12px;text-align:left;font:400 12px 'FlickDock UI';}} QPushButton:disabled{{color:{'#737373' if t=='dark' else '#A3A3A3'};}} QPushButton:hover:enabled,QPushButton[menuSelected=\"true\"]:enabled{{background:{colors(t)['hover']};}}" for t in ('dark','light')])
+            css(control,*[f"QPushButton{{background:transparent;color:{colors(t)['green'] if available else ('#737373' if t=='dark' else '#A3A3A3')};border:0;padding:6px 12px;text-align:left;font:400 12px 'FlickDock UI';}} QPushButton:disabled{{color:{'#737373' if t=='dark' else '#A3A3A3'};}}" for t in ('dark','light')])
             action.setDefaultWidget(control);action.setEnabled(available);menu.addAction(action);device_buttons[action]=control
             action.triggered.connect(lambda _checked=False,target=identifier:self._send_to_device(refs,target))
             control.clicked.connect(lambda _checked=False,item=action:(item.trigger(),menu.close()))

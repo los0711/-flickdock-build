@@ -6,20 +6,27 @@ specified by that document.
 """
 from __future__ import annotations
 import re
+import math
 
 import sys
 import os
 import threading
+import time
 from collections import OrderedDict
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QEasingCurve, QEvent, QObject, QPointF, QRectF, QSize, Qt, QVariantAnimation, QTranslator
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QIconEngine, QPainter, QPainterPath, QPen, QPixmap, QRegion, QGuiApplication
+from PySide6.QtGui import QBrush, QColor, QFont, QFontDatabase, QIcon, QIconEngine, QPainter, QPainterPath, QPen, QPixmap, QGuiApplication
 from PySide6.QtSvg import QSvgRenderer
-from PySide6.QtWidgets import QApplication, QAbstractButton, QHBoxLayout, QLabel, QPushButton, QWidget
+from PySide6.QtWidgets import QApplication, QAbstractButton, QFrame, QHBoxLayout, QLabel, QProgressBar, QPushButton, QScrollBar, QWidget
 
 
 FONT_WEIGHT_AXIS=QFont.Tag('wght')
+FONT_TABULAR_NUMBERS=QFont.Tag('tnum')
+UI_FONT_FAMILY='Inter'
+TECHNICAL_FONT_FAMILY='JetBrains Mono'
+BUNDLED_FONT_FILES=('Inter-Regular.ttf','Inter-Medium.ttf','Inter-SemiBold.ttf',
+                    'JetBrainsMono-Regular.ttf','JetBrainsMono-Medium.ttf')
 RADIUS_SMALL_PX = 4
 RADIUS_SUBCONTROL_PX = 6
 RADIUS_CONTROL_PX = 8
@@ -68,7 +75,11 @@ class DropBorderMotion(QObject):
     def color(self,first,last):
         return QColor.fromRgbF(*(a+(b-a)*self.progress for a,b in zip(QColor(first).getRgbF(),QColor(last).getRgbF())))
 
-    def paint(self,painter,path,*,dark,width=1.2,idle_fill=None):
+    def paint(self,painter,path,*,dark,radius,width=1.,idle_fill=None):
+        scale=abs(painter.deviceTransform().m11()) or 1.
+        rect,width=pixel_aligned_border(painter,path.boundingRect(),width/scale)
+        radius=min(round(radius*scale)/scale,rect.width()/2,rect.height()/2)
+        aligned=QPainterPath();aligned.addRoundedRect(rect,radius,radius);path=aligned
         active=QColor(colors('dark' if dark else 'light')['action'])
         idle=QColor(idle_fill) if idle_fill is not None else QColor(0,0,0,0)
         active_fill=QColor(active);active_fill.setAlpha(DROP_HOVER_FILL_ALPHA)
@@ -111,38 +122,24 @@ class PopupChevronMotion(QObject):
         return False
 
 
-class _RoundedPopupClip(QObject):
-    """Clip the opaque popup host too, including Cocoa's square backing."""
-    def __init__(self, popup, radius, antialiased=False):
-        super().__init__(popup)
-        self.radius = radius;self.antialiased=antialiased
-
-    def update_clip(self, popup):
-        if self.antialiased:
-            if not popup.mask().isEmpty():popup.clearMask()
-            return
-        path = QPainterPath()
-        path.addRoundedRect(QRectF(popup.rect()), self.radius, self.radius)
-        popup.setMask(QRegion(path.toFillPolygon().toPolygon()))
-
+class _TranslucentPopup(QObject):
+    """Ensure native popup recreation never reinstates an opaque mask."""
     def eventFilter(self, watched, event):
         if event.type() in (QEvent.Type.Resize, QEvent.Type.Show):
-            self.update_clip(watched)
+            if not watched.mask().isEmpty():watched.clearMask()
         return False
 
 
-def rounded_popup(popup, radius=10,*,antialiased=False):
-    """Retain Qt popup/keyboard behavior, without native glass outside corners."""
-    if not hasattr(popup, '_rounded_popup_clip'):
-        popup.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, antialiased)
+def rounded_popup(popup):
+    """Keep native popup behavior while its surface paints antialiased alpha."""
+    if not hasattr(popup, '_translucent_popup'):
+        popup.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground,True)
         popup.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint, True)
-        # Windows requires a frameless native popup for translucent corners;
-        # otherwise the compositor can expose a black rectangular backing.
-        if antialiased:popup.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
-        popup.setAutoFillBackground(not antialiased)
-        popup._rounded_popup_clip = _RoundedPopupClip(popup, radius, antialiased)
-        popup.installEventFilter(popup._rounded_popup_clip)
-    popup._rounded_popup_clip.update_clip(popup)
+        popup.setWindowFlag(Qt.WindowType.FramelessWindowHint,True)
+        popup.setAutoFillBackground(False)
+        popup._translucent_popup=_TranslucentPopup(popup)
+        popup.installEventFilter(popup._translucent_popup)
+    if not popup.mask().isEmpty():popup.clearMask()
 
 
 def toggle_window_zoom(window):
@@ -180,7 +177,7 @@ def readable_qss(source):
     if 'flickdock-readable-type' in source:return source
     def weight(match):
         value=match[2].lower()
-        return match[1]+str(500 if value=='bold' or value.isdigit() and int(value)>=550 else 400)
+        return match[1]+str(_ui_weight(700 if value=='bold' else 400 if value=='normal' else int(value)))
     source=re.sub(r'(font-weight\s*:\s*)([1-9]00|bold|normal)\b',weight,source,flags=re.I)
     source=re.sub(r'(font\s*:\s*)([1-9]00)(?=\s+\d+px)',weight,source,flags=re.I)
     if sys.platform == 'win32':
@@ -214,6 +211,17 @@ def keyboard_focus_visible(widget):
     return bool(widget.hasFocus() and widget.property('keyboardFocus'))
 
 
+def qss_color(value):
+    """Convert the palette's Qt CSS colors into QColor without losing alpha."""
+    if isinstance(value,str) and value.startswith('rgba('):
+        values=[int(float(part)) for part in re.findall(r'[\d.]+',value)]
+        if len(values)!=4:raise ValueError('Invalid rgba color: '+value)
+        result=QColor(*values)
+    else:result=QColor(value)
+    if not result.isValid():raise ValueError('Invalid color: '+str(value))
+    return result
+
+
 def pixel_aligned_border(painter, rect, width=1.0):
     """Align a rounded-rectangle stroke to whole device pixels at rest.
 
@@ -224,12 +232,149 @@ def pixel_aligned_border(painter, rect, width=1.0):
     if sx<=0 or sy<=0 or abs(t.m12())>1e-6 or abs(t.m21())>1e-6 or abs(sx-sy)>1e-6:
         return r.adjusted(width/2,width/2,-width/2,-width/2),float(width)
     pixels=max(1,round(float(width)*sx));logical=pixels/sx;half=pixels/2
-    left=(round(r.left()*sx+t.dx())+half-t.dx())/sx
-    right=(round(r.right()*sx+t.dx())-half-t.dx())/sx
-    top=(round(r.top()*sy+t.dy())+half-t.dy())/sy
-    bottom=(round(r.bottom()*sy+t.dy())-half-t.dy())/sy
+    # A widget whose native origin lies between device pixels is clipped to
+    # the inside pixel by Qt's backing store. Rounding outward can place its
+    # entire top/left stroke outside that clip, even though grab() on the
+    # widget alone looks correct. Snap both edges inward instead.
+    epsilon=1e-7
+    left=(math.ceil(r.left()*sx+t.dx()-epsilon)+half-t.dx())/sx
+    right=(math.floor(r.right()*sx+t.dx()+epsilon)-half-t.dx())/sx
+    top=(math.ceil(r.top()*sy+t.dy()-epsilon)+half-t.dy())/sy
+    bottom=(math.floor(r.bottom()*sy+t.dy()+epsilon)-half-t.dy())/sy
     if right<=left or bottom<=top:return r.adjusted(logical/2,logical/2,-logical/2,-logical/2),logical
     return QRectF(left,top,right-left,bottom-top),logical
+
+
+def paint_rounded_surface(painter, rect, radius_logical, fill, stroke=None, stroke_px=1):
+    """Paint one shared AA path with its outline aligned to device pixels.
+
+    The public stroke width is in physical pixels; layout and radius remain in
+    logical pixels. The painter state belongs to the caller and is restored.
+    """
+    if stroke is not None and stroke_px<=0:raise ValueError('stroke_px must be positive')
+    bounds=QRectF(rect)
+    if bounds.isEmpty():return
+    transform=painter.deviceTransform()
+    scale=abs(transform.m11()) or 1.
+    width=0.
+    if stroke is not None:bounds,width=pixel_aligned_border(painter,bounds,float(stroke_px)/scale)
+    radius=max(0.,round(float(radius_logical)*scale)/scale)
+    radius=min(radius,bounds.width()/2,bounds.height()/2)
+    path=QPainterPath();path.addRoundedRect(bounds,radius,radius)
+    painter.save()
+    try:
+        painter.setRenderHint(QPainter.Antialiasing,True)
+        painter.fillPath(path,QBrush(fill))
+        if stroke is not None:
+            painter.setPen(QPen(QBrush(stroke),width));painter.setBrush(Qt.NoBrush)
+            painter.drawPath(path)
+    finally:painter.restore()
+
+
+class RoundedSurfaceFrame(QFrame):
+    """A reusable frame whose surface is painted separately from its layout."""
+    def __init__(self,parent=None,*,content_inset=1):
+        super().__init__(parent);self.setFrameShape(QFrame.NoFrame)
+        self.setContentsMargins(content_inset,content_inset,content_inset,content_inset)
+
+    def surface_style(self):
+        """Return (fill, stroke, logical radius), or None for a clear frame."""
+        raise NotImplementedError
+
+    def paintEvent(self,event):
+        style=self.surface_style()
+        if style is None:return
+        fill,stroke,radius=style;painter=QPainter(self)
+        paint_rounded_surface(painter,self.rect(),radius,qss_color(fill),
+                              None if stroke is None else qss_color(stroke))
+        painter.end()
+
+
+class RoundedPopupBackdrop(QWidget):
+    """Antialiased backing for native popup containers and their child views."""
+    def __init__(self,popup,radius=RADIUS_CARD_PX):
+        super().__init__(popup);self.radius=radius;self.fill='#FFFFFF';self.stroke='#D8D8D8'
+        self.setAttribute(Qt.WA_TransparentForMouseEvents);self.setAttribute(Qt.WA_NoSystemBackground)
+        popup.installEventFilter(self);self.setGeometry(popup.rect());self.lower()
+
+    def eventFilter(self,watched,event):
+        if watched is self.parentWidget() and event.type() in (QEvent.Resize,QEvent.Show):
+            self.setGeometry(watched.rect());self.lower()
+        return False
+
+    def paintEvent(self,event):
+        painter=QPainter(self)
+        painter.setCompositionMode(QPainter.CompositionMode_Source)
+        painter.fillRect(self.rect(),Qt.transparent)
+        painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+        paint_rounded_surface(painter,self.rect(),self.radius,qss_color(self.fill),
+                              None if self.stroke is None else qss_color(self.stroke))
+        painter.end()
+
+
+class RoundedScrollBar(QScrollBar):
+    """Use Qt's native scroll behavior with a device-aligned AA thumb."""
+    def __init__(self,orientation,parent=None,*,thumb_color=None):
+        super().__init__(orientation,parent);self._thumb_color=thumb_color
+
+    def thumb_color(self):
+        if self._thumb_color is not None:
+            return self._thumb_color() if callable(self._thumb_color) else self._thumb_color
+        import ui_theme
+        return colors(ui_theme.current_theme())['input_border']
+
+    def paintEvent(self,event):
+        from PySide6.QtWidgets import QStyle,QStyleOptionSlider
+        option=QStyleOptionSlider();self.initStyleOption(option)
+        thumb=self.style().subControlRect(QStyle.CC_ScrollBar,option,QStyle.SC_ScrollBarSlider,self)
+        if thumb.isEmpty():return
+        painter=QPainter(self);radius=min(RADIUS_SMALL_PX,min(thumb.width(),thumb.height())/2)
+        paint_rounded_surface(painter,thumb,radius,qss_color(self.thumb_color()))
+        painter.end()
+
+
+class RoundedProgressBar(QProgressBar):
+    """AA track with a native-frame-clock busy state and no idle timer."""
+    def __init__(self,parent=None):
+        super().__init__(parent)
+        from display_frames import FramePulse
+        self._frames=FramePulse(self);self._frames.timeout.connect(self.update)
+        self.setTextVisible(False)
+
+    def surface_colors(self):
+        import ui_theme
+        return colors(ui_theme.current_theme())
+
+    def _sync_animation(self):
+        if self.isVisible() and self.minimum()==self.maximum()==0 and not reduced_motion():
+            if not self._frames.isActive():self._frames.start()
+        else:self._frames.stop()
+        self.update()
+
+    def setRange(self,minimum,maximum):
+        super().setRange(minimum,maximum)
+        if hasattr(self,'_frames'):self._sync_animation()
+
+    def showEvent(self,event):super().showEvent(event);self._sync_animation()
+    def hideEvent(self,event):self._frames.stop();super().hideEvent(event)
+
+    def paintEvent(self,event):
+        c=self.surface_colors();painter=QPainter(self);rect=QRectF(self.rect())
+        radius=min(RADIUS_SMALL_PX,rect.height()/2)
+        paint_rounded_surface(painter,rect,radius,qss_color(c['control']))
+        minimum,maximum=self.minimum(),self.maximum()
+        if minimum==maximum==0:
+            phase=.5 if reduced_motion() else (time.monotonic()%1.4)/1.4
+            length=rect.width()*.25;left=(rect.width()+length)*phase-length
+            chunk=QRectF(left,0,length,rect.height())
+        else:
+            fraction=max(0.,min(1.,(self.value()-minimum)/max(1,maximum-minimum)))
+            chunk=QRectF(0,0,rect.width()*fraction,rect.height())
+        if not chunk.isEmpty():
+            path=QPainterPath();path.addRoundedRect(rect,radius,radius)
+            painter.setRenderHint(QPainter.Antialiasing);painter.setClipPath(path)
+            paint_rounded_surface(painter,chunk,radius,qss_color(c['action']))
+        painter.end()
 
 
 def button_style_option(button):
@@ -270,9 +415,14 @@ def reference_font():
     return QFont(QApplication.font()) if QApplication.instance() else QFont()
 
 
+def _ui_weight(weight):
+    value=int(weight)
+    return 600 if value>=550 else 500 if value>=450 else 400
+
+
 def set_ui_weight(font,weight):
-    """Use regular text and one lighter level of emphasis throughout the UI."""
-    value=500 if int(weight)>=500 else 400
+    """Choose one of the bundled regular, medium and semibold faces."""
+    value=_ui_weight(weight)
     font.setWeight(QFont.Weight(value));font.setVariableAxis(FONT_WEIGHT_AXIS,float(value))
     return font
 
@@ -280,17 +430,25 @@ def set_ui_weight(font,weight):
 class _FontWeightNormalizer(QObject):
     def __init__(self,parent):
         super().__init__(parent);self._updating=False
+        # YaHei UI uses the same glyph widths with vertical metrics intended
+        # for controls; limit it to Windows buttons and keep other text alone.
+        self._button_family=('Microsoft YaHei UI' if sys.platform=='win32'
+                             and 'Microsoft YaHei UI' in QFontDatabase.families() else None)
 
     def eventFilter(self,watched,event):
         if self._updating or event.type() not in (QEvent.FontChange,QEvent.Polish,QEvent.StyleChange) or not isinstance(watched,QWidget):
             return False
         font=watched.font();special=watched.property('flickdockFontWeight')
-        value=int(special) if special is not None else 500 if int(font.weight())>=500 else 400
-        if int(font.weight())!=value or font.variableAxisValue(FONT_WEIGHT_AXIS)!=value:
+        value=int(special) if special is not None else _ui_weight(font.weight())
+        families=font.families()
+        button_font=(self._button_family is not None and isinstance(watched,QAbstractButton)
+                     and 'Microsoft YaHei' in families)
+        if int(font.weight())!=value or font.variableAxisValue(FONT_WEIGHT_AXIS)!=value or button_font:
             self._updating=True
             try:
                 if special is None:set_ui_weight(font,value)
                 else:font.setWeight(QFont.Weight(value));font.setVariableAxis(FONT_WEIGHT_AXIS,float(value))
+                if button_font:font.setFamilies([self._button_family if name=='Microsoft YaHei' else name for name in families])
                 watched.setFont(font)
             finally:self._updating=False
         return False
@@ -317,14 +475,30 @@ def apply_widget_theme_style(widget,style):
         for child in [widget,*widget.findChildren(QWidget)]:normalizer.eventFilter(child,event)
 
 
-def font_css_stack():
+def font_css_stack(*,for_button=False,technical=False):
     """Keep the script fallback when a stylesheet specifies a font."""
-    families=QApplication.font().families() if QApplication.instance() else []
+    app=QApplication.instance()
+    families=QApplication.font().families() if app else []
+    normalizer=getattr(app,'_flickdock_font_weights',None) if app else None
+    if for_button and sys.platform=='win32' and normalizer and normalizer._button_family:
+        families=[normalizer._button_family if name=='Microsoft YaHei' else name for name in families]
+    if technical:
+        families=[TECHNICAL_FONT_FAMILY]+[name for name in families if name not in (UI_FONT_FAMILY,TECHNICAL_FONT_FAMILY)]
+    families=list(dict.fromkeys(families))
     return ', '.join("'"+name.replace("'",'')+"'" for name in families) or "'sans-serif'"
 
 
+def technical_font(base=None):
+    """Use monospaced Latin metadata and the platform's Chinese fallback."""
+    font=QFont(base) if base is not None else reference_font()
+    families=QApplication.font().families() if QApplication.instance() else []
+    font.setFamilies([TECHNICAL_FONT_FAMILY]+[name for name in families if name not in (UI_FONT_FAMILY,TECHNICAL_FONT_FAMILY)])
+    font.setFeature(FONT_TABULAR_NUMBERS,1)
+    return font
+
+
 def configure_reference_font(app):
-    """Use Windows YaHei or the native Apple system face, without font bundles."""
+    """Use bundled Latin faces with the operating system's Chinese font."""
     # Our fully styled controls use the same layout metrics on both backends.
     # Native file dialogs still come from the platform dialog helper.
     # Replacing the application style while existing proxy styles and windows
@@ -332,6 +506,12 @@ def configure_reference_font(app):
     if not getattr(app,'_flickdock_fusion_installed',False):
         app.setStyle('Fusion');app._flickdock_fusion_installed=True
     root=Path(getattr(sys,'_MEIPASS',Path(__file__).parent))
+    if not getattr(app,'_flickdock_fonts_loaded',False):
+        for name in BUNDLED_FONT_FILES:
+            path=root/'assets'/'fonts'/name
+            if not path.is_file() or QFontDatabase.addApplicationFont(str(path))<0:
+                raise RuntimeError('Unable to load required bundled font: '+str(path))
+        app._flickdock_fonts_loaded=True
     translation=root/'assets/ui/qtbase_zh_CN.qm'
     if not getattr(app,'_flickdock_translation',None) and translation.is_file():
         translator=QTranslator(app)
@@ -344,16 +524,14 @@ def configure_reference_font(app):
         for name in ('msyh.ttc','msyhbd.ttc'):
             path=font_dir/name
             if path.is_file():QFontDatabase.addApplicationFont(str(path))
-    app._flickdock_fonts_loaded=True
     system=QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont).family()
-    preferred=['Microsoft YaHei'] if sys.platform=='win32' else [system,'PingFang SC'] if sys.platform=='darwin' else [system]
+    preferred=[UI_FONT_FAMILY,'Microsoft YaHei UI','Microsoft YaHei'] if sys.platform=='win32' else [UI_FONT_FAMILY,'PingFang SC',system] if sys.platform=='darwin' else [UI_FONT_FAMILY,system]
     families=list(dict.fromkeys(name for name in preferred if name))
     font=QFont();font.setFamilies(families);set_ui_weight(font,400)
-    # Preserve fractional horizontal advances, as Chromium does; full glyph
-    # hinting rounds every character and makes the same 13px title ~10px wider.
     font.setStyleHint(QFont.StyleHint.SansSerif)
     font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias|QFont.StyleStrategy.PreferQuality)
-    font.setHintingPreference(QFont.HintingPreference.PreferFullHinting if sys.platform=='win32' else QFont.HintingPreference.PreferVerticalHinting)
+    font.setHintingPreference(QFont.HintingPreference.PreferVerticalHinting)
+    font.setFeature(FONT_TABULAR_NUMBERS,1)
     font.setPointSize(10 if sys.platform=='win32' else 11);app.setFont(font)
     if not getattr(app,'_flickdock_font_weights',None):
         app._flickdock_font_weights=_FontWeightNormalizer(app)
@@ -368,6 +546,7 @@ def configure_reference_font(app):
 
 _DARK = {
     'background': '#0A0A0A', 'surface': '#0A0A0A',
+    'dialog_surface': '#121212', 'popup_surface': '#202020',
     'sidebar': '#171717', 'preview': '#0A0A0A',
     'glass_border': 'rgba(255,255,255,26)', 'divider': 'rgba(255,255,255,20)',
     'highlight': 'rgba(255,255,255,36)', 'card': '#171717',
@@ -390,6 +569,7 @@ _DARK = {
 }
 _LIGHT = {
     'background': '#FFFFFF', 'surface': '#FFFFFF',
+    'dialog_surface': '#FFFFFF', 'popup_surface': '#FFFFFF',
     'sidebar': '#FAFAFA', 'preview': '#FFFFFF',
     'glass_border': '#E5E5E5', 'divider': '#EDEDED',
     'highlight': '#FFFFFF', 'card': '#FFFFFF',
@@ -483,6 +663,8 @@ _SVG_BODY = {
     'close': '<path d="m6 6 12 12M18 6 6 18"/>',
     'trash': '<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/>',
     'package': '<path d="m12 3 9 5-9 5-9-5 9-5ZM3 8v10l9 5 9-5V8M12 13v10M7.5 5.5l9 5"/>',
+    'open-external': '<path d="M13 5h6v6M19 5l-9 9"/><path d="M18 14v5H5V6h5"/>',
+    'rename': '<path d="m4 20 4-1 11-11a2.1 2.1 0 0 0-3-3L5 16z"/><path d="m14.5 6.5 3 3"/>',
     'package-selected': '<path d="m10 2 8 4.5-8 4.5-8-4.5L10 2ZM2 6.5v9L10 20M10 11v9M6 4.2l8 4.5"/><rect x="13" y="13" width="10" height="10" rx="2"/><path d="m15.5 18 1.8 1.8 3.7-4"/>',
     'copy': '<rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h3"/>',
     'user': '<circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/>',
@@ -793,14 +975,14 @@ def style_color_dialog(dialog,theme):
     from PySide6.QtGui import QPalette
     c=colors(theme);dialog.setObjectName('flickdockColorPicker')
     palette=QPalette(dialog.palette())
-    for role,key in (('Window','card'),('Base','input'),('Button','control'),
+    for role,key in (('Window','popup_surface'),('Base','input'),('Button','control'),
                      ('WindowText','text'),('Text','text'),('ButtonText','text'),
                      ('Highlight','action'),('HighlightedText','on_action')):
         palette.setColor(getattr(QPalette,role),QColor(c[key]))
     dialog.setPalette(palette)
     dialog.setFont(reference_font())
     dialog.setStyleSheet(f'''
-        QColorDialog#flickdockColorPicker {{background:{c['card']};color:{c['text']};}}
+        QColorDialog#flickdockColorPicker {{background:{c['popup_surface']};color:{c['text']};}}
         QColorDialog#flickdockColorPicker QLabel {{background:transparent;color:{c['text']};border:0;}}
         QColorDialog#flickdockColorPicker QLineEdit, QColorDialog#flickdockColorPicker QSpinBox {{
             background:{c['input']};color:{c['text']};border:1px solid {c['input_border']};

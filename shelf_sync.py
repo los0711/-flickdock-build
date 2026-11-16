@@ -230,7 +230,7 @@ class ShelfSync(QObject):
         entries=self.state.get('entries',{})
         for identity,token in tuple(self._upload_tokens.items()):
             entry=entries.get(identity)
-            if identity not in live and (not entry or not entry.get('dirty') or entry.get('deleted') or entry.get('paused_upload')):
+            if identity not in live and (not entry or not entry.get('dirty') or entry.get('deleted') or entry.get('paused_upload') or entry.get('manual_upload_only')):
                 token.set();self._upload_tokens.pop(identity,None)
         self.state['view'] = self.adapter.snapshot()
         owner=self.account_id;path=self._profile(owner)
@@ -378,7 +378,7 @@ class ShelfSync(QObject):
         if announced is None:self._intake_announced=announced=set()
         rows=[]
         for entry in self.state.get('entries',{}).values():
-            if (not entry.get('dirty') or entry.get('deleted') or entry.get('paused_upload')
+            if (not entry.get('dirty') or entry.get('deleted') or entry.get('paused_upload') or entry.get('manual_upload_only')
                 or entry.get('blocked_fingerprint')==entry.get('fingerprint')):continue
             if not entry.get('intake_id'):
                 entry.update(intake_id=str(uuid4()),intake_seq=entry['seq'])
@@ -575,7 +575,7 @@ class ShelfSync(QObject):
         if self.state is None:return
         transfers=[];known=set()
         for identity,entry in (self.state.get('entries',{}).items() if self.upload_enabled else ()):
-            if entry.get('deleted') or not entry.get('dirty') or entry.get('paused_upload'):continue
+            if entry.get('deleted') or not entry.get('dirty') or entry.get('paused_upload') or entry.get('manual_upload_only'):continue
             if entry.get('blocked_fingerprint')==entry.get('fingerprint'):continue
             resume=self.state.get('resumable_uploads',{}).get(identity,{})
             size=resume.get('size',0);received=min(size,resume.get('next_part',0)*resume.get('chunk_size',0)+resume.get('_sent_bytes',0))
@@ -1182,7 +1182,7 @@ class ShelfSync(QObject):
 
     def _resume_matches(self, transfer):
         entry = self.state['entries'].get(transfer.get('id'))
-        if not entry or entry.get('deleted') or not entry.get('dirty') or entry.get('paused_upload'): return False
+        if not entry or entry.get('deleted') or not entry.get('dirty') or entry.get('paused_upload') or entry.get('manual_upload_only'): return False
         if any(entry.get(key) != transfer.get(key) for key in ('id','ref','seq','fingerprint','name','kind','version')):
             return False
         if (transfer.get('upload_id') and (entry.get('pending_hash') != transfer.get('sha256')
@@ -1453,7 +1453,9 @@ class ShelfSync(QObject):
             entry.update(version=record['version'],sha256=record['sha256'],dirty=False)
             self._forget_resume(identity,completed=True)
             entry.pop('pending_hash',None); entry.pop('pending_seq',None)
-            entry.pop('cancelled_hash',None);entry.pop('cancelled_seq',None);entry.pop('paused_upload',None)
+            entry.pop('cancelled_hash',None);entry.pop('cancelled_seq',None)
+            if entry.get('manual_upload_only'):entry['paused_upload']=True
+            else:entry.pop('paused_upload',None)
             entry.pop('cancelled_fingerprint',None);entry.pop('cancelled_upload_id',None)
             self._persist(); callback(); return
         if entry and not entry.get('dirty') and entry.get('sha256') == record['sha256']:
@@ -1825,7 +1827,7 @@ class ShelfSync(QObject):
         active = {x.get('upload_id') for x in resumes.values()}
         self._retire_item_removals()
         lane_ids=set(self.upload_lanes.active)
-        pending = next((e for e in self.state['entries'].values() if e['id'] not in lane_ids and not self.upload_lanes.blocked(e['id']) and (not self.clipboard_bridge or not self.clipboard_bridge.waiting(e)) and self.upload_lanes.retry_at.get(e['id'],0)<=time.monotonic() and e.get('dirty') and not e.get('paused_upload') and
+        pending = next((e for e in self.state['entries'].values() if e['id'] not in lane_ids and not self.upload_lanes.blocked(e['id']) and (not self.clipboard_bridge or not self.clipboard_bridge.waiting(e)) and self.upload_lanes.retry_at.get(e['id'],0)<=time.monotonic() and e.get('dirty') and not e.get('paused_upload') and (e.get('deleted') or not e.get('manual_upload_only')) and
                         ((e.get('deleted') and e.get('version',0)==0 and not self.state.get('pending_uploads')) or (not e.get('deleted') and
                         e.get('blocked_fingerprint') != e.get('fingerprint')))),None)
         if pending is None:

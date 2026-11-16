@@ -1,8 +1,8 @@
 """Shared shelf geometry, fonts, menus and motion preference."""
 from __future__ import annotations
 
-from PySide6.QtCore import QEasingCurve
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QEasingCurve,Qt,QRectF
+from PySide6.QtGui import QColor,QPainter
 from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import QMenu
 import ctypes
@@ -61,7 +61,30 @@ def motion_enabled() -> bool:
         return True
 
 
-class AnimatedMenu(QMenu):
+class RoundedMenu(QMenu):
+    """Retain native menu actions and hit testing on a translucent AA host."""
+    def __init__(self,parent=None):
+        super().__init__(parent)
+        self.surface_theme=None
+        self.selection_inset=(6,1)
+
+    def paintEvent(self,event):
+        from native_ui_common import colors,paint_rounded_surface,qss_color,RADIUS_CARD_PX,RADIUS_SUBCONTROL_PX
+        c=colors(self.surface_theme or ui_theme.current_theme())
+        painter=QPainter(self)
+        painter.setCompositionMode(QPainter.CompositionMode_Source)
+        painter.fillRect(self.rect(),Qt.transparent)
+        painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+        paint_rounded_surface(painter,self.rect(),RADIUS_CARD_PX,qss_color(c['popup_surface']),qss_color(c['border']))
+        active=self.activeAction()
+        if active is not None and active.isEnabled() and not active.isSeparator():
+            dx,dy=self.selection_inset
+            rect=QRectF(self.actionGeometry(active)).adjusted(dx,dy,-dx,-dy)
+            paint_rounded_surface(painter,rect,RADIUS_SUBCONTROL_PX,qss_color(c['hover']))
+        painter.end();super().paintEvent(event)
+
+
+class AnimatedMenu(RoundedMenu):
     def __init__(self, parent=None):
         super().__init__(parent)
         from display_frames import DisplayAnimation
@@ -85,11 +108,9 @@ class AnimatedMenu(QMenu):
         self.fade.stop();self.setWindowOpacity(1);super().hideEvent(event)
 
 
-def style_menu(menu: QMenu, *, antialiased=False) -> None:
-    from native_ui_common import rounded_popup,RADIUS_CARD_PX,RADIUS_SUBCONTROL_PX
-    # A binary QRegion mask makes small rounded corners visibly stair-stepped.
-    # Let Qt composite the translucent frameless popup's antialiased edge.
-    rounded_popup(menu, RADIUS_CARD_PX, antialiased=antialiased)
+def style_menu(menu: RoundedMenu) -> None:
+    from native_ui_common import rounded_popup
+    rounded_popup(menu)
     palette = menu.palette()
     palette.setColor(QPalette.ColorRole.Window, QColor(ui_theme.color("surface")))
     palette.setColor(QPalette.ColorRole.Base, QColor(ui_theme.color("surface")))
@@ -100,9 +121,9 @@ def style_menu(menu: QMenu, *, antialiased=False) -> None:
     sources=[]
     for theme in ('dark','light'):
         c=colors(theme)
-        sources.append(f"QMenu{{background:{c['card']};color:{c['text']};border:1px solid {c['border']};border-radius:{RADIUS_CARD_PX}px;padding:6px 0;font:12px 'FlickDock UI';}}"
-                       f"QMenu::item{{background:transparent;color:{c['text']};padding:7px 12px;margin:1px 6px;min-width:178px;border:0;border-radius:{RADIUS_SUBCONTROL_PX}px;}}"
-                       f"QMenu::item:selected{{background:{c['hover']};color:{c['text']};}}"
+        sources.append(f"QMenu{{background:transparent;color:{c['text']};border:0;padding:7px 1px;font:12px 'FlickDock UI';}}"
+                       f"QMenu::item{{background:transparent;color:{c['text']};padding:7px 12px;margin:1px 6px;min-width:178px;border:0;}}"
+                       f"QMenu::item:selected{{background:transparent;color:{c['text']};}}"
                        f"QMenu::item:disabled{{color:{c['muted']};}} QMenu::separator{{height:1px;background:{c['divider']};margin:5px 10px;}}")
     css(menu,*sources)
 

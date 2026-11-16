@@ -1,4 +1,4 @@
-"""Frozen release smoke check. Explicit offscreen mode is mandatory."""
+"""Frozen release checks with explicit offscreen or isolated Cocoa CI modes."""
 import ctypes
 import hashlib
 import json
@@ -81,8 +81,8 @@ def run_notices(argv,load_font):
 
 def run_overview(argv,load_font):
     """Exercise the shipped UI with disposable files and no native services."""
-    if os.environ.get('QT_QPA_PLATFORM')!='offscreen':
-        raise RuntimeError('Overview verification requires QT_QPA_PLATFORM=offscreen')
+    if not verification_platform_allowed():
+        raise RuntimeError('Overview verification requires offscreen or explicit isolated Cocoa CI mode')
     import time
     import traceback
     from types import SimpleNamespace
@@ -101,7 +101,9 @@ def run_overview(argv,load_font):
     shelf=None
     try:
         with tempfile.TemporaryDirectory(prefix='flickdock-overview-') as directory:
-            base=Path(directory);settings=SettingsStore(base/'profile')
+            # Cocoa resolves /var through /private/var when references enter
+            # the shelf. Keep the generated fixture's selection key canonical.
+            base=Path(directory).resolve();settings=SettingsStore(base/'profile')
             settings.update(theme='dark',view_mode='list',capture_mode='reference',capture_dir=str(base/'saved'))
             ui_theme.set_theme('dark');ui_theme.apply_application(app,app.font().family());queued=[]
             manager=SimpleNamespace(motion=False,settings=settings,save=lambda:None,update_handles=lambda:None,
@@ -126,12 +128,19 @@ def run_overview(argv,load_font):
             report['selection_required_preview']=True
             popup.select_item(str(archive));app.processEvents()
             preview=popup.preview
+            report['preview_layout']=dict(width=popup.width(),narrow=popup._narrow_layout,
+                                          selected=preview.current_path is not None)
             assert len(preview.action_buttons)==6
             assert all(button.isVisible() for button in preview.action_buttons)
             top=lambda widget:widget.mapTo(preview,QPoint()).y()
-            assert top(preview.open_button)==top(preview.send_button)
-            assert top(preview.rename_button)==top(preview.zip_button)==top(preview.remove_button)
-            assert top(preview.copy_path_button)<top(preview.open_button)<top(preview.rename_button)
+            left=lambda widget:widget.mapTo(preview,QPoint()).x()
+            actions=(preview.remove_button,preview.zip_button,preview.rename_button,
+                     preview.open_button,preview.send_button)
+            assert top(preview.copy_path_button)<top(preview.open_button)
+            assert len({top(button) for button in actions})==1
+            assert len({button.height() for button in actions})==1
+            assert all(left(first)<left(second) for first,second in zip(actions,actions[1:]))
+            assert all(button.width()==button.height() for button in actions[:3])
             report['preview_actions']=[button.text() for button in preview.action_buttons]
             def capture_card(path):
                 shot=shelf.grab();ratio=shot.devicePixelRatioF();rect=shelf.card.geometry()
@@ -231,9 +240,17 @@ def run_update(argv, load_font):
         return app.exec()
 
 
+def verification_platform_allowed():
+    """AVFoundation needs Cocoa; native checks are limited to disposable CI."""
+    mode=os.environ.get('QT_QPA_PLATFORM')
+    return mode=='offscreen' or (sys.platform=='darwin' and mode=='cocoa'
+        and os.environ.get('GITHUB_ACTIONS')=='true'
+        and os.environ.get('FLICKDOCK_VERIFY_NATIVE_UI')=='1')
+
+
 def run(argv, load_font):
-    if os.environ.get("QT_QPA_PLATFORM") != "offscreen":
-        raise RuntimeError("Release verification requires QT_QPA_PLATFORM=offscreen")
+    if not verification_platform_allowed():
+        raise RuntimeError('Media verification requires offscreen mode or explicit isolated Cocoa CI mode')
     from PySide6.QtCore import QTimer, QPointF, Qt, QEvent, QCoreApplication
     from PySide6.QtGui import QMouseEvent
     from PySide6.QtNetwork import QSslSocket

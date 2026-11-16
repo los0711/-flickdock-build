@@ -23,6 +23,95 @@ class PresentationTests(unittest.TestCase):
         self.manager.edge_suppressed=False;self.shelf.pinned=False
     def tearDown(self):self.fixture.tearDown()
 
+    def test_hide_deadline_and_second_explicit_close(self):
+        self.manager.motion=True;self.shelf.presentation.motion=True
+        handle=self.shelf.windowHandle()
+        with patch.object(handle,'isExposed',return_value=False):
+            self.shelf.hide_animated(explicit=False)
+            self.assertEqual(self.shelf.visible_state,'hiding')
+            self.assertEqual(self.shelf._hide_fallback.interval(),450)
+            self.assertTrue(self.shelf._hide_fallback.isActive())
+            QTest.qWait(600);flush()
+            self.assertFalse(self.shelf.isVisible())
+            self.assertEqual(self.shelf.visible_state,'hidden')
+            self.shelf._show_at(QPoint(60,60),'manual',QPoint())
+            self.shelf.hide_animated(explicit=False)
+            self.shelf.hide_animated(explicit=True)
+            self.assertFalse(self.shelf.isVisible())
+            self.assertEqual(self.shelf.visible_state,'hidden')
+            self.assertFalse(self.shelf._hide_fallback.isActive())
+
+    def test_reopening_cancels_stale_hide_deadline(self):
+        self.manager.motion=True;self.shelf.presentation.motion=True
+        self.shelf.hide_animated(explicit=False)
+        self.assertTrue(self.shelf._hide_fallback.isActive())
+        self.shelf._show_at(QPoint(60,60),'manual',QPoint())
+        self.assertFalse(self.shelf._hide_fallback.isActive())
+        QTest.qWait(550);flush()
+        self.assertTrue(self.shelf.isVisible())
+        self.assertEqual(self.shelf.visible_state,'floating')
+
+    def test_drag_preview_becomes_manual_through_overview_and_collapse(self):
+        self.shelf.show_transient(QPoint(300,220),reason='drag');flush()
+        controls=(self.shelf.pin_button,self.shelf.expand_button,self.shelf.menu_button,self.shelf.close_button)
+        self.assertEqual(self.shelf.presentation_kind,'drag')
+        self.assertTrue(all(not control.isVisible() for control in controls))
+        self.shelf.show_contents(animate=False);flush()
+        self.assertTrue(self.shelf.expanded)
+        self.assertEqual(self.shelf.presentation_kind,'manual')
+        self.shelf.collapse_contents();until(lambda:not self.shelf.geometry_morph.active);flush()
+        self.assertFalse(self.shelf.expanded)
+        self.assertEqual(self.shelf.presentation_kind,'manual')
+        self.assertTrue(all(control.isVisible() for control in controls))
+
+    def test_edge_preview_and_hide_complete_when_native_frames_stall(self):
+        self.manager.motion=True;self.shelf.presentation.motion=True
+        self.shelf.hide_immediately();handle=self.shelf.windowHandle()
+        with patch.object(handle,'isExposed',return_value=False):
+            self.shelf.reveal_from_dock()
+            QTest.qWait(1100);flush()
+            self.assertEqual(self.shelf.visible_state,'floating')
+            self.assertEqual(self.shelf.presentation.values['alpha'],1.)
+            controls=(self.shelf.pin_button,self.shelf.expand_button,self.shelf.menu_button,self.shelf.close_button)
+            self.assertTrue(all(control.isVisible() for control in controls))
+            self.assertTrue(all(getattr(control,'_entry_alpha',1.)==1. for control in controls))
+            for control in controls:
+                image=control.grab().toImage()
+                self.assertTrue(any(image.pixelColor(x,y).alpha()>0 and max(image.pixelColor(x,y).getRgb()[:3])>80
+                                    for y in range(image.height()) for x in range(image.width())))
+            self.shelf.hide_animated(explicit=False)
+            QTest.qWait(750);flush()
+            self.assertEqual(self.shelf.visible_state,'hidden')
+            self.assertFalse(self.shelf.isVisible())
+            self.assertFalse(self.shelf.presentation._timer.isActive())
+            self.assertFalse(self.shelf.presentation._deadline.isActive())
+
+    def test_interrupted_frame_stall_finishes_only_latest_presentation(self):
+        from flickdock_motion import Spring
+        completed=[];samples=[]
+        spring=Spring(self.shelf,{'x':0},samples.append)
+        spring.animate({'x':1},lambda:completed.append('old'));spring._timer.stop()
+        QTest.qWait(300)
+        spring.animate({'x':2},lambda:completed.append('new'));spring._timer.stop()
+        QTest.qWait(400);self.assertEqual(completed,[])
+        QTest.qWait(600)
+        self.assertEqual(completed,['new']);self.assertEqual(samples[-1]['x'],2.)
+        self.assertFalse(spring._deadline.isActive())
+        spring.deleteLater()
+
+    def test_windows_opacity_updates_are_coalesced_and_endpoints_are_exact(self):
+        values=dict(sx=1.,sy=1.,dx=0.,dy=0.,alpha=0.)
+        self.shelf._applied_window_opacity=None
+        with patch('shelf_window.sys.platform','win32'),patch.object(self.shelf,'setWindowOpacity') as write:
+            for alpha in (0.,.02,.05,.061,.08,.999,1.,1.):
+                self.shelf._apply_presentation(dict(values,alpha=alpha))
+            self.assertEqual([call.args[0] for call in write.call_args_list],[0.,.061,.999,1.])
+        self.shelf._applied_window_opacity=None
+        with patch('shelf_window.sys.platform','darwin'),patch.object(self.shelf,'setWindowOpacity') as write:
+            for alpha in (0.,.02,.05,1.):self.shelf._apply_presentation(dict(values,alpha=alpha))
+            self.assertEqual(write.call_count,4)
+        self.shelf._applied_window_opacity=None
+
     def test_macos_reserved_canvas_pixel_alignment_stays_inside_work_area(self):
         area=QRect(0,25,1920,1055)
         screen=SimpleNamespace(availableGeometry=lambda:area)

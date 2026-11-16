@@ -1,4 +1,4 @@
-"""Application-wide rounded tooltips in both themes, with native trigger."""
+"""Application-wide square tooltips in both themes, with native trigger."""
 import os,unittest
 from unittest.mock import patch
 os.environ['QT_QPA_PLATFORM']='offscreen'
@@ -38,7 +38,7 @@ class TooltipTests(unittest.TestCase):
             self.assertFalse(APP.isEffectEnabled(Qt.UI_AnimateTooltip));self.assertFalse(APP.isEffectEnabled(Qt.UI_FadeTooltip))
         finally:control.hide();control.deleteLater();QToolTip.hideText();APP.processEvents()
 
-    def test_buttons_share_theme_font_rounded_mask_and_native_tooltip_text(self):
+    def test_buttons_share_theme_font_square_surface_and_native_tooltip_text(self):
         host=QWidget();host.resize(320,180)
         controls=[QPushButton('普通按钮',host),button('','download',parent=host)]
         for i,control in enumerate(controls):control.move(20+i*90,30);control.setToolTip('打开所在文件夹')
@@ -46,8 +46,8 @@ class TooltipTests(unittest.TestCase):
         try:
             for theme in ('light','dark'):
                 ui_theme.set_theme(theme);ui_theme.apply_application(APP,'Microsoft YaHei')
-                self.assertIn('QToolTip{',APP.styleSheet());self.assertIn('border-radius:6px',APP.styleSheet())
-                self.assertIn('background:'+native_ui_common.colors(theme)['card'],APP.styleSheet())
+                self.assertIn('QToolTip{',APP.styleSheet());self.assertIn('border-radius:0px',APP.styleSheet())
+                self.assertIn('background:'+native_ui_common.colors(theme)['popup_surface'],APP.styleSheet())
                 for control in controls:
                     QToolTip.showText(QPoint(50,50),control.toolTip(),control);QTest.qWait(20)
                     tip=next(w for w in APP.topLevelWidgets() if w.metaObject().className()=='QTipLabel' and w.isVisible())
@@ -55,14 +55,11 @@ class TooltipTests(unittest.TestCase):
                     self.assertTrue(tip.mask().isEmpty())
                     self.assertTrue(tip.testAttribute(Qt.WA_TranslucentBackground))
                     image=tip.grab().toImage()
-                    self.assertEqual(image.pixelColor(0,0).alpha(),0)
-                    self.assertTrue(any(0<image.pixelColor(x,y).alpha()<255
-                                        for x in range(min(10,image.width())) for y in range(min(10,image.height()))),
-                                    'rounded frame should contain antialiased edge pixels')
-                    self.assertEqual(image.pixelColor(image.width()//2,image.height()-6).name(),native_ui_common.colors(theme)['card'].lower())
+                    self.assertGreater(image.pixelColor(0,0).alpha(),0,'tooltip corners should be square')
+                    self.assertEqual(image.pixelColor(image.width()//2,image.height()-6).name(),native_ui_common.colors(theme)['popup_surface'].lower())
                     self.assertGreaterEqual(tip.width(),control.fontMetrics().horizontalAdvance(tip.text()))
                     self.assertLessEqual(tip.height(),tip.fontMetrics().height()+14)
-                    if os.name=='nt':self.assertEqual(tip.font().family(),'Microsoft YaHei')
+                    if os.name=='nt':self.assertEqual(tip.font().family(),'Inter')
                     QToolTip.hideText();QTest.qWait(20)
         finally:
             QToolTip.hideText();host.hide();host.deleteLater();ui_theme.set_theme(original);ui_theme.apply_application(APP,'Microsoft YaHei');APP.processEvents()

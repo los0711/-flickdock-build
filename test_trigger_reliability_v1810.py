@@ -137,6 +137,50 @@ class TriggerReliabilityTests(unittest.TestCase):
         self.assertEqual(shelf.visual_geometry().topLeft(),shelf._dock_target_rect().topLeft())
         self.assertEqual(shelf.files['permanent'],before);self.assertEqual(source.read_bytes(),b'original file')
 
+    def test_edge_preview_recovers_controls_and_hides_after_pointer_leaves(self):
+        manager=self.manager;manager.motion=True;manager.settings.update(trigger_view='compact')
+        shelf=manager.shelf;shelf.pinned=False;shelf.presentation.motion=True
+        shelf.winId();handle=shelf.windowHandle();manager.edge_suppressed=False
+        with patch.object(handle,'isExposed',return_value=False),\
+             patch('native_ui_common.reduced_motion',return_value=False),\
+             patch.object(flickdock,'native_input_available',return_value=False),\
+             patch.object(flickdock,'mouse_buttons_mask',return_value=0):
+            manager.show_docked();QTest.qWait(750);APP.processEvents()
+            self.assertEqual(shelf.presentation_kind,'dock')
+            controls=(shelf.pin_button,shelf.expand_button,shelf.menu_button,shelf.close_button)
+            self.assertTrue(all(control.isVisible() and getattr(control,'_entry_alpha',1.)==1. for control in controls))
+            outside=QPoint(shelf.visual_geometry().left()-300,shelf.visual_geometry().top()-300)
+            with patch.object(flickdock.QCursor,'pos',return_value=outside):manager.poll()
+            self.assertEqual(shelf.visible_state,'hiding')
+            QTest.qWait(750);APP.processEvents()
+            self.assertFalse(shelf.isVisible());self.assertEqual(shelf.visible_state,'hidden')
+
+    def test_shake_then_edge_restores_controls(self):
+        manager=self.manager;manager.motion=True;manager.settings.update(trigger_view='compact')
+        shelf=manager.shelf;shelf.pinned=False;shelf.presentation.motion=True
+        shelf.show_transient(QPoint(160,180),reason='drag');manager.auto_shown=shelf
+        controls=(shelf.pin_button,shelf.expand_button,shelf.menu_button,shelf.close_button)
+        self.assertTrue(all(not control.isVisible() for control in controls))
+        shelf.reveal_from_dock();QTest.qWait(750);APP.processEvents()
+        self.assertEqual(shelf.presentation_kind,'dock');self.assertIsNone(manager.auto_shown)
+        self.assertTrue(all(control.isVisible() and getattr(control,'_entry_alpha',1.)==1. for control in controls))
+
+    def test_shake_preview_hides_after_pointer_is_outside(self):
+        manager=self.manager;manager.motion=True
+        shelf=manager.shelf;shelf.pinned=False;shelf.presentation.motion=True
+        shelf.winId();handle=shelf.windowHandle()
+        with patch.object(handle,'isExposed',return_value=False),\
+             patch('native_ui_common.reduced_motion',return_value=False),\
+             patch.object(flickdock,'native_input_available',return_value=False),\
+             patch.object(flickdock,'mouse_buttons_mask',return_value=0):
+            shelf.show_transient(QPoint(160,180),reason='drag');manager.auto_shown=shelf
+            shelf._shake_outside_since=time.monotonic()-4
+            outside=QPoint(shelf.visual_geometry().right()+200,shelf.visual_geometry().bottom()+200)
+            with patch.object(flickdock.QCursor,'pos',return_value=outside):manager.poll()
+            self.assertEqual(shelf.visible_state,'hiding')
+            QTest.qWait(750);APP.processEvents()
+            self.assertFalse(shelf.isVisible());self.assertIsNone(manager.auto_shown)
+
     def test_external_browser_press_retires_obscured_shelf_with_lan_still_open(self):
         manager = self.manager
         manager.shelf.show_transient(QPoint(160, 180))
@@ -155,10 +199,9 @@ class TriggerReliabilityTests(unittest.TestCase):
              patch.object(manager._drag_probe_detector, 'update', return_value=False), \
              patch.object(manager.drag_gate, 'sustain_for_shake') as probe:
             manager.poll()
-            self.assertEqual(manager.shelf.visible_state,'hiding')
-            from test_html_native_workspace import until
-            until(lambda:not manager.shelf.isVisible())
-            manager.poll()
+            # A genuine shake while the shelf is closing lands that hide
+            # immediately so the drag reveal can be prepared in the same poll.
+            self.assertEqual(manager.shelf.visible_state,'hidden')
         self.assertFalse(manager.shelf.isVisible(), 'an obscured shelf must release the edge immediately')
         self.assertTrue(manager.edge.isVisible())
         self.assertTrue(manager.lan_dialog.isVisible(), 'LAN transfer remains independently usable')

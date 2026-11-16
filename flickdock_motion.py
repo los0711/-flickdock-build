@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QGraphicsDropShadowEffect, QGraphicsEffect, QPushB
 from flickdock_icons import document_pixmap, draw_glyph
 from surface_morph import paint_surface_shadow, surface_clip, neutral_shadow_color
 from display_frames import FramePulse
+from native_ui_common import paint_rounded_surface,RADIUS_CONTROL_PX
 import ui_theme
 
 
@@ -39,6 +40,14 @@ class Spring(QObject):
         self._started_at = self._last_tick
         self._timer = FramePulse(self)
         self._timer.timeout.connect(self._tick)
+        # A spring is a value transition, not a promise that the compositor
+        # keeps delivering frames. If the native clock stalls (occluded window,
+        # minimized surface, busy GUI thread) this single deadline still lands
+        # the motion and runs its completion callback, so dependent UI state
+        # (a pending hide, an intake tuck) can never remain half-applied.
+        self._deadline = QTimer(self)
+        self._deadline.setSingleShot(True)
+        self._deadline.timeout.connect(self._expire)
 
     def animate(self, target: dict[str, float], finished: Callable[[], None] | None = None,
                 response: float = .24, damping: float = .70) -> None:
@@ -55,6 +64,7 @@ class Spring(QObject):
         self._finished = finished
         self._started_at = time.perf_counter()
         self._start()
+        self._arm_deadline()
 
     def jump(self, values: dict[str, float]) -> None:
         self.stop()
@@ -71,15 +81,34 @@ class Spring(QObject):
                 self._targets.setdefault(key, self.values[key])
                 self._velocities[key] = self._velocities.get(key, 0.0) + float(velocity)
         self._start()
+        self._arm_deadline()
 
     def stop(self) -> None:
         self._timer.stop()
+        self._deadline.stop()
         self._finished = None
 
     def _start(self) -> None:
         if not self._timer.isActive():
             self._last_tick = time.perf_counter()
             self._timer.start()
+
+    def _arm_deadline(self) -> None:
+        # Normal settling is capped at .65 s inside _tick; this only fires when
+        # frames stop arriving, and never shortens an ordinary transition.
+        self._deadline.start(max(900, round(self.response * 2200)))
+
+    def _expire(self) -> None:
+        if not self._timer.isActive() and self._finished is None:
+            return
+        self._timer.stop()
+        self._deadline.stop()
+        self.values.update(self._targets)
+        self._velocities = {k: 0.0 for k in self.values}
+        callback,self._finished=self._finished,None
+        self._on_update(dict(self.values))
+        self.settled.emit()
+        if callback:callback()
 
     def _tick(self) -> None:
         now = time.perf_counter()
@@ -107,6 +136,7 @@ class Spring(QObject):
             self.values.update(self._targets)
             self._velocities = {k: 0.0 for k in self.values}
             self._timer.stop()
+            self._deadline.stop()
         callback=None
         if settled:callback,self._finished=self._finished,None
         self._on_update(dict(self.values))
@@ -352,19 +382,13 @@ class FeedbackButton(QPushButton):
         bg.setAlphaF(min(1, (.70 * v["hover"] + .45 * v["down"]
                             + (.56 if self.isChecked() else 0)) if flat_toolbar
                          else (.72 + .20 * v["hover"] + .08 * v["down"])))
-        p.setBrush(bg)
-        p.setPen(Qt.PenStyle.NoPen)
         background_rect = QRectF(self.rect()).adjusted(1.5, 1.5, -1.5, -1.5)
-        p.drawRoundedRect(background_rect, 9 if flat_toolbar else self.height() / 2,
-                          9 if flat_toolbar else self.height() / 2)
+        paint_rounded_surface(p,background_rect,RADIUS_CONTROL_PX if flat_toolbar else self.height()/2,bg)
         if self.hasFocus() and self._keyboard_focus:
             focus = QColor(ui_theme.color("accent"))
             focus.setAlpha(180)
-            p.setPen(QPen(focus, 1.5))
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawRoundedRect(QRectF(self.rect()).adjusted(2, 2, -2, -2),
-                              8 if flat_toolbar else self.height() / 2,
-                              8 if flat_toolbar else self.height() / 2)
+            paint_rounded_surface(p,QRectF(self.rect()).adjusted(2,2,-2,-2),
+                                  RADIUS_CONTROL_PX if flat_toolbar else self.height()/2,QColor(Qt.transparent),focus)
         glyph_size = min(24, self.width() - 8)*(.82 if self.glyph=='copy' else .875)*self.glyph_scale
         if not self.isEnabled():
             p.setOpacity(.45)
@@ -529,9 +553,7 @@ class ContentTile(QWidget):
         p.translate(-center.x(), -center.y())
         r = QRectF(self.rect()).adjusted(8, 7, -8, -9)
         if self._kind in ("image", "text"):
-            p.setBrush(QColor(ui_theme.color("surface")))
-            p.setPen(QPen(QColor(ui_theme.color("border")), .8))
-            p.drawRoundedRect(r, 10, 10)
+            paint_rounded_surface(p,r,RADIUS_CONTROL_PX,QColor(ui_theme.color('surface')),QColor(ui_theme.color('border')))
         if self._kind == "image" and not self._pixmap.isNull():
             r = r.adjusted(4, 4, -4, -4)
             image = self._pixmap

@@ -24,16 +24,16 @@ class FeedbackTests(unittest.TestCase):
     def test_windows_font_and_size_step_preserve_already_small_labels(self):
         with patch.object(native_ui_common.sys,'platform','win32'):
             font=native_ui_common.configure_reference_font(APP)
-            self.assertEqual(font.family(),'Microsoft YaHei')
+            self.assertEqual(font.family(),'Inter')
             from PySide6.QtGui import QTextLayout
             for weight in (400,600):
                 native_ui_common.set_ui_weight(font,weight)
-                self.assertEqual(font.variableAxisValue(native_ui_common.FONT_WEIGHT_AXIS),500 if weight==600 else 400)
+                self.assertEqual(font.variableAxisValue(native_ui_common.FONT_WEIGHT_AXIS),weight)
                 sample='FlickDock 0123456789 中文测试'
                 layout=QTextLayout(sample,font);layout.beginLayout();layout.createLine();layout.endLayout()
                 for index,char in enumerate(sample):
                     if char==' ':continue
-                    family='Microsoft YaHei'
+                    family='Microsoft YaHei UI' if '\u4e00'<=char<='\u9fff' else 'Inter'
                     runs=layout.glyphRuns(index,1)
                     self.assertEqual({run.rawFont().familyName() for run in runs},{family},(char,weight))
             qss=native_ui_common.readable_qss('a{font-size:12px;} b{font-size:10px;}')
@@ -56,7 +56,9 @@ class FeedbackTests(unittest.TestCase):
         confirm=ClearConfirmOverlay(self.shelf.card,3,font_family=APP.font().family(),theme='dark')
         try:
             for widget in (dialog.title_bar.findChild(QLabel,'lanDialogTitle'),dialog.back_button,confirm.title):
-                font=widget.font();self.assertEqual(font.family(),APP.font().family())
+                font=widget.font()
+                expected=APP.font().family()
+                self.assertEqual(font.family(),expected)
                 layout=QTextLayout('A7中',font);layout.beginLayout();layout.createLine();layout.endLayout()
                 self.assertTrue(all(layout.glyphRuns(i,1) for i in range(3)))
         finally:confirm.deleteLater();dialog.close();dialog.deleteLater();flush()
@@ -212,7 +214,6 @@ class FeedbackTests(unittest.TestCase):
         self.assertNotIn('#0A84FF',zone.styleSheet())
 
     def test_rounded_combo_and_menu_preserve_keyboard_selection_and_close(self):
-        from PySide6.QtWidgets import QMenu
         from PySide6.QtCore import QPoint
         combo=app_settings.SettingsComboBox();combo.addItems(['右侧','左侧','顶部'])
         combo.resize(160,32);combo.show();flush()
@@ -220,17 +221,20 @@ class FeedbackTests(unittest.TestCase):
             for _ in range(2):
                 combo.showPopup();flush();popup=combo.view().window()
                 self.assertTrue(popup.isVisible())
-                self.assertFalse(popup.mask().contains(QPoint(0,0)))
-                self.assertTrue(popup.mask().contains(popup.rect().center()))
+                image=popup.grab().toImage()
+                self.assertTrue(popup.mask().isEmpty())
+                self.assertEqual(image.pixelColor(0,0).alpha(),0)
+                self.assertGreater(image.pixelColor(image.width()//2,image.height()//2).alpha(),200)
                 QTest.keyClick(combo.view(),Qt.Key_Down);QTest.keyClick(combo.view(),Qt.Key_Return);flush()
                 self.assertFalse(popup.isVisible())
             self.assertEqual(combo.currentIndex(),2)
         finally:combo.close();combo.deleteLater();flush()
-        menu=QMenu();menu.addAction('云同步');menu.addAction('设置')
+        menu=shelf_ui_common.RoundedMenu();menu.addAction('云同步');menu.addAction('设置')
         shelf_ui_common.style_menu(menu);menu.popup(QPoint(30,30));flush()
         try:
-            self.assertFalse(menu.mask().contains(QPoint(0,0)))
-            self.assertTrue(menu.mask().contains(menu.rect().center()))
+            image=menu.grab().toImage();self.assertTrue(menu.mask().isEmpty())
+            self.assertEqual(image.pixelColor(0,0).alpha(),0)
+            self.assertGreater(image.pixelColor(image.width()//2,image.height()//2).alpha(),200)
             QTest.keyClick(menu,Qt.Key_Escape);flush();self.assertFalse(menu.isVisible())
         finally:menu.close();menu.deleteLater();flush()
 

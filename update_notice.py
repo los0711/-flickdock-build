@@ -95,7 +95,7 @@ class UpdateNotice(QWidget):
         c=ui_colors(theme)
         family=font_css_stack()
         self.setStyleSheet(f"""
-            QFrame#updateNoticeSurface {{ background:{c['surface']}; border:1px solid {c['glass_border']}; border-radius:{c['radius']}px; }}
+            QFrame#updateNoticeSurface {{ background:{c['dialog_surface']}; border:1px solid {c['glass_border']}; border-radius:{c['radius']}px; }}
             QLabel#updateNoticeTitle {{ color:{c['text']}; border:0; background:transparent;
                 font-family:{family}; font-size:14px; font-weight:600; }}
             QLabel#updateNoticeVersion {{ color:{c['secondary']}; border:0; background:transparent;

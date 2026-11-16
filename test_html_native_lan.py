@@ -66,6 +66,18 @@ class NativeLanTests(unittest.TestCase):
         self.assertTrue(row['heading'].isVisible());self.assertFalse(card.isVisible())
         row['cancel'].click();self.assertEqual(self.service.calls[-1],('cancel','incoming'))
 
+    def test_busy_progress_returns_to_determinate_and_stops_its_frame_pulse(self):
+        panel=self.dialog.panel
+        with patch('native_ui_common.reduced_motion',return_value=False):
+            panel._progress(dict(id='job',peer='Mac',direction='send',state='connecting'))
+            APP.processEvents();bar=panel._rows['job']['bar']
+            self.assertEqual((bar.minimum(),bar.maximum()),(0,0));self.assertTrue(bar._frames.isActive())
+            panel._progress(dict(id='job',peer='Mac',direction='send',state='transferring',received=512,total=1024))
+            APP.processEvents();self.assertEqual((bar.minimum(),bar.maximum(),bar.value()),(0,1000,500))
+            self.assertFalse(bar._frames.isActive())
+            panel._progress(dict(id='job',peer='Mac',direction='send',state='complete'))
+            APP.processEvents();self.assertTrue(bar.isHidden());self.assertFalse(bar._frames.isActive())
+
     def test_device_popup_has_visible_antialiased_rounded_frame_in_both_themes(self):
         combo=self.dialog.panel.devices
         for theme in ('light','dark'):

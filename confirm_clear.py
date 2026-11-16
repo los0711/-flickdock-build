@@ -6,12 +6,14 @@ those presentation caches from capturing confirmation pixels.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QEventLoop, QPoint, QRect, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QPainter
+from collections import OrderedDict
+from PySide6.QtCore import QEvent, QEventLoop, QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath
 from PySide6.QtWidgets import (QApplication, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel,
                                QPushButton, QSizePolicy, QVBoxLayout, QWidget)
 from shiboken6 import isValid
-from native_ui_common import colors as ui_colors, set_ui_weight
+from native_ui_common import (colors as ui_colors, set_ui_weight,paint_rounded_surface,qss_color,
+                              RoundedSurfaceFrame,RADIUS_CONTROL_PX,RADIUS_PANEL_PX)
 from flickdock_icons import draw_glyph
 
 
@@ -51,7 +53,30 @@ class _SingleLineLabel(QLabel):
         self.setText(self.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, width))
 
 
-class _PointerConfirmButton(QPushButton):
+def _confirm_colors(widget):
+    owner=widget.parentWidget()
+    while owner is not None and not isinstance(owner,ClearConfirmOverlay):owner=owner.parentWidget()
+    if owner is None:raise RuntimeError('Confirmation control has no overlay owner')
+    return ui_colors(owner._theme)
+
+
+class _ConfirmButton(QPushButton):
+    def __init__(self,text,parent=None,*,danger=False):
+        super().__init__(text,parent);self.danger=danger
+
+    def paintEvent(self,event):
+        from PySide6.QtWidgets import QStyle,QStylePainter
+        from native_ui_common import button_style_option
+        c=_confirm_colors(self)
+        fill=('#991B1B' if self.isDown() else '#B91C1C' if self.underMouse() else '#DC2626') if self.danger else (c['selected'] if self.isDown() else c['hover'] if self.underMouse() else c['control'])
+        if not self.isEnabled():fill=c['control']
+        edge=c['ring'] if self.isEnabled() and self.property('keyboardFocus') else None
+        p=QStylePainter(self);paint_rounded_surface(p,self.rect(),RADIUS_CONTROL_PX,qss_color(fill),None if edge is None else qss_color(edge))
+        option=button_style_option(self);option.rect=self.style().subElementRect(QStyle.SE_PushButtonContents,option,self)
+        p.drawControl(QStyle.CE_PushButtonLabel,option);p.end()
+
+
+class _PointerConfirmButton(_ConfirmButton):
     """Keyboard defaults cannot accidentally activate the destructive action."""
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Enter, Qt.Key.Key_Return):
@@ -69,9 +94,14 @@ class _PointerConfirmButton(QPushButton):
 class _TrashMark(QLabel):
     """Vector equivalent of the reference's trash emoji on Qt font backends."""
     def paintEvent(self,event):
-        super().paintEvent(event)
         painter=QPainter(self);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        paint_rounded_surface(painter,self.rect(),RADIUS_PANEL_PX,qss_color(_confirm_colors(self)['control']))
         draw_glyph(painter,'trash',self.rect().adjusted(12,12,-12,-12),getattr(self,'glyph_color','#171717'),1.8)
+
+
+class _ConfirmPanel(RoundedSurfaceFrame):
+    def surface_style(self):
+        c=_confirm_colors(self);return c['dialog_surface'],c['glass_border'],c['radius']
 
 
 class ClearConfirmOverlay(QWidget):
@@ -117,14 +147,9 @@ class ClearConfirmOverlay(QWidget):
                 if name not in families:families.append(name)
             family.setFamilies(families)
 
-        self.panel = QFrame(self)
+        self._shadow_cache=OrderedDict()
+        self.panel = _ConfirmPanel(self)
         self.panel.setObjectName("clearConfirmPanel")
-        shadow = QGraphicsDropShadowEffect(self.panel)
-        shadow.setBlurRadius(20)
-        shadow.setOffset(0, 6)
-        from surface_morph import neutral_shadow_color
-        shadow.setColor(neutral_shadow_color(QColor(10, 23, 42, 82)))
-        self.panel.setGraphicsEffect(shadow)
         layout = QVBoxLayout(self.panel)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(16)
@@ -156,13 +181,13 @@ class ClearConfirmOverlay(QWidget):
         buttons = QHBoxLayout()
         buttons.setContentsMargins(0, 0, 0, 0)
         buttons.setSpacing(10)
-        self.cancel_button = QPushButton("取消", self.panel)
+        self.cancel_button = _ConfirmButton("取消", self.panel)
         self.cancel_button.setObjectName("clearCancelButton")
         self.cancel_button.setAccessibleName("取消清空")
         self.cancel_button.setDefault(True)
         self.cancel_button.setAutoDefault(False)
         self.cancel_button.clicked.connect(self.cancel)
-        self.delete_button = _PointerConfirmButton("清空", self.panel)
+        self.delete_button = _PointerConfirmButton("清空", self.panel,danger=True)
         self.delete_button.setObjectName("clearDeleteButton")
         self.delete_button.setAccessibleName("删除全部搁架内容")
         self.delete_button.setDefault(False)
@@ -193,19 +218,15 @@ class ClearConfirmOverlay(QWidget):
         self._theme = "dark" if theme == "dark" else "light"
         c=ui_colors(self._theme)
         text,secondary=c['text'],c['secondary']
-        self.panel.setStyleSheet(f"QFrame#clearConfirmPanel {{background:{c['surface']};border:1px solid {c['glass_border']};border-radius:{c['radius']}px;}}")
-        self.symbol.glyph_color=c['text'];self.symbol.setStyleSheet(f"background:{c['control']};color:{c['text']};border:0;border-radius:16px;font-size:20px;");self.symbol.update()
+        self.panel.setStyleSheet('QFrame#clearConfirmPanel{background:transparent;border:0;}')
+        self.symbol.glyph_color=c['text'];self.symbol.setStyleSheet(f"background:transparent;color:{c['text']};border:0;font-size:20px;");self.symbol.update()
         self.title.setStyleSheet(f"color:{text};background:transparent;border:0;")
         self.description.setStyleSheet(f"color:{secondary};background:transparent;border:0;")
         self.cancel_button.setStyleSheet(
-            f"QPushButton {{background:{c['control']};color:{text};border:1px solid transparent;border-radius:{c['radius_control']}px;padding:0 12px;}}"
-            f"QPushButton:hover {{background:{c['hover']};}} QPushButton:pressed {{background:{c['selected']};}}")
+            f"QPushButton {{background:transparent;color:{text};border:0;padding:1px 13px;}}")
         self.delete_button.setStyleSheet(
-            f"QPushButton {{background:#DC2626;color:#FFFFFF;border:1px solid transparent;border-radius:{c['radius_control']}px;padding:0 12px;font-weight:400;}}"
-            f"QPushButton:hover {{background:#B91C1C;}} QPushButton:pressed {{background:#991B1B;}}"
-            f"QPushButton[keyboardFocus=\"true\"] {{border-color:{c['ring']};}}")
-        self.panel.graphicsEffect().setBlurRadius(32)
-        self.panel.graphicsEffect().setColor(QColor(0,0,0,140 if self._theme=='dark' else 41))
+            "QPushButton {background:transparent;color:#FFFFFF;border:0;padding:1px 13px;font-weight:400;}")
+        self.panel.update();self.cancel_button.update();self.delete_button.update()
         self.update()
 
     def _layout_overlay(self):
@@ -222,11 +243,15 @@ class ClearConfirmOverlay(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(0,0,0,128))
         radius=ui_colors(self._theme)['radius']
-        painter.drawRoundedRect(self.rect(), radius, radius)
+        paint_rounded_surface(painter,self.rect(),radius,QColor(0,0,0,128))
+        from surface_morph import paint_surface_shadow
+        outside=QPainterPath();outside.addRect(QRectF(self.rect()))
+        inner=QPainterPath();inner.addRoundedRect(QRectF(self.panel.geometry()),radius,radius)
+        painter.save();painter.setClipPath(outside.subtracted(inner))
+        paint_surface_shadow(painter,QRectF(self.panel.geometry()),self._shadow_cache,blur=32,
+                             offset=QPoint(0,6),color=QColor(0,0,0,140 if self._theme=='dark' else 41),radius=radius)
+        painter.restore()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

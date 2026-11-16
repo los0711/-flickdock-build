@@ -217,7 +217,6 @@ class VideoMatrixTests(unittest.TestCase):
                 self.settings.update(theme=theme);self.dialog.refresh();APP.processEvents()
                 for control in (card.download,card.folder,card.shelf):
                     self.assertEqual(control.property('referenceTheme'),theme)
-                    self.assertIn('background:'+colors(theme)['control'],control.styleSheet())
                     image=control.grab().toImage();pixel=image.pixelColor(6,6)
                     self.assertEqual(pixel.name(),QColor(colors(theme)['control']).name(),(theme,pixel.name()))
         finally:ui_theme.set_theme(original)
@@ -270,7 +269,7 @@ class VideoMatrixTests(unittest.TestCase):
         audio.update(status='queued',progress=None)
         for theme in ('light','dark'):
             self.settings.update(theme=theme);self.dialog.refresh();APP.processEvents()
-            self.assertEqual(int(result.source_tabs['video'].font().weight()),400)
+            self.assertEqual(int(result.source_tabs['video'].font().weight()),500)
             title_font,count_font=result.source_tabs['video'].text_fonts()
             from PySide6.QtGui import QFontMetricsF
             self.assertLess(QFontMetricsF(count_font).height(),QFontMetricsF(title_font).height())
@@ -382,8 +381,15 @@ class VideoMatrixTests(unittest.TestCase):
         row=self.entry['sources'][0];row['option']['extension']='webm'
         card=self.dialog.cards[row['key']];self.dialog.refresh();APP.processEvents()
         self.assertEqual(card.kind.accessibleName(),'H.265 格式');webm=card.kind.pixmap().toImage()
+        from flickdock_icons import document_pixmap
+        with patch('flickdock_icons.document_pixmap',wraps=document_pixmap) as render:
+            card._format_icon_key=None;card.refresh('dark')
+            self.assertEqual(render.call_args.kwargs['display_text'],'265')
         path=self.root/'downloads'/'movie.mp4';path.parent.mkdir(exist_ok=True);path.write_bytes(b'fixture')
-        row.update(path=str(path),status='complete',received=path.stat().st_size,actual_video_codec='h264');self.dialog.refresh();APP.processEvents()
+        row.update(path=str(path),status='complete',received=path.stat().st_size,actual_video_codec='h264')
+        with patch('flickdock_icons.document_pixmap',wraps=document_pixmap) as render:
+            card.refresh('dark');self.assertEqual(render.call_args.kwargs['display_text'],'264')
+        self.dialog.refresh();APP.processEvents()
         self.assertEqual(card.kind.accessibleName(),'H.264 格式');self.assertNotEqual(webm,card.kind.pixmap().toImage())
         with patch('video_controller.QDesktopServices.openUrl',return_value=True) as opened:
             QTest.mouseDClick(card,Qt.LeftButton)

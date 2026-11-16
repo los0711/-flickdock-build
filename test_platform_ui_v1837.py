@@ -1,5 +1,5 @@
 """Offscreen regressions for real switch input, platform fonts and crisp UI."""
-import os,sys,tempfile,unittest
+import os,sys,tempfile,time,unittest
 from pathlib import Path
 from unittest.mock import patch
 os.environ['QT_QPA_PLATFORM']='offscreen'
@@ -40,7 +40,9 @@ class PlatformUiTests(unittest.TestCase):
     def test_switch_animation_finishes_on_click(self):
         with patch.dict(os.environ,FLICKDOCK_REDUCE_MOTION='0'):
             control=SettingsToggleSwitch('test');control.setFixedSize(44,32);control.show();APP.processEvents()
-            QTest.mouseClick(control,Qt.LeftButton,Qt.NoModifier,QPoint(19,16));QTest.qWait(220)
+            QTest.mouseClick(control,Qt.LeftButton,Qt.NoModifier,QPoint(19,16))
+            deadline=time.monotonic()+1
+            while control._thumb_position<.99 and time.monotonic()<deadline:QTest.qWait(20)
             self.assertTrue(control.isChecked());self.assertAlmostEqual(control._thumb_position,1.,places=2)
             control.close()
 
@@ -135,42 +137,67 @@ class PlatformUiTests(unittest.TestCase):
 
     def test_system_font_has_real_latin_and_chinese_glyphs(self):
         font=configure_reference_font(APP)
-        if sys.platform=='win32':
-            self.assertEqual(font.family(),'Microsoft YaHei')
-            self.assertEqual(QFontInfo(font).family(),'Microsoft YaHei')
+        self.assertEqual(font.family(),'Inter')
+        self.assertEqual(QFontInfo(font).family(),'Inter')
+        self.assertEqual(font.hintingPreference(),QFont.HintingPreference.PreferVerticalHinting)
+        from native_ui_common import FONT_TABULAR_NUMBERS,technical_font
+        self.assertTrue(font.isFeatureSet(FONT_TABULAR_NUMBERS))
         for character in ('A','7','中'):
             layout=QTextLayout(character,font);layout.beginLayout();layout.createLine();layout.endLayout()
             runs=layout.glyphRuns();self.assertTrue(runs)
             self.assertTrue(all(run.rawFont().isValid() and all(glyph!=0 for glyph in run.glyphIndexes()) for run in runs))
+            if character in ('A','7'):self.assertEqual({run.rawFont().familyName() for run in runs},{'Inter'})
+            elif sys.platform=='win32':self.assertTrue({run.rawFont().familyName() for run in runs} <= {'Microsoft YaHei UI','Microsoft YaHei'})
+        mono=technical_font(font)
+        layout=QTextLayout('123',mono);layout.beginLayout();layout.createLine();layout.endLayout()
+        self.assertEqual({run.rawFont().familyName() for run in layout.glyphRuns()},{'JetBrains Mono'})
+        for weight,style in ((400,'Regular'),(500,'Medium'),(600,'SemiBold')):
+            sample=QFont(font);set_ui_weight(sample,weight)
+            layout=QTextLayout('A',sample);layout.beginLayout();layout.createLine();layout.endLayout()
+            self.assertEqual(layout.glyphRuns()[0].rawFont().styleName(),style)
 
-    @unittest.skipUnless(sys.platform=='win32','Windows SVG glyph rendering')
-    def test_svg_file_type_labels_inherit_actual_microsoft_yahei(self):
+    @unittest.skipUnless(sys.platform=='win32','Windows control font')
+    def test_button_font_uses_windows_ui_metrics_without_changing_label_font(self):
+        from types import SimpleNamespace
+        import native_ui_common
+        from reference_widgets import button,label
+        if 'Microsoft YaHei UI' not in QFontDatabase.families():self.skipTest('System UI font is unavailable')
+        control=button('发送文件','send');caption=label('普通文字')
+        try:
+            control.ensurePolished();caption.ensurePolished();APP.processEvents()
+            self.assertEqual(QFontInfo(control.font()).family(),'Inter')
+            self.assertEqual(QFontInfo(caption.font()).family(),'Inter')
+            self.assertTrue(native_ui_common.font_css_stack(for_button=True).startswith("'Inter', 'Microsoft YaHei UI'"))
+            with patch.object(native_ui_common,'sys',SimpleNamespace(platform='darwin')):
+                self.assertEqual(native_ui_common.font_css_stack(for_button=True),native_ui_common.font_css_stack())
+            standard=QFont('Microsoft YaHei');standard.setPixelSize(13)
+            ui=QFont('Microsoft YaHei UI');ui.setPixelSize(13)
+            self.assertEqual(QFontMetricsF(standard).horizontalAdvance('发送文件'),
+                             QFontMetricsF(ui).horizontalAdvance('发送文件'))
+        finally:control.deleteLater();caption.deleteLater();APP.processEvents()
+
+    def test_svg_file_type_labels_use_bundled_monospace_font(self):
         from flickdock_icons import document_svg,_render_svg
         source=document_svg('.zip')
         self.assertIn('>ZIP</text>',source)
-        self.assertNotIn('font-family=',source)
-        explicit=source.replace('<text x=', '<text font-family="Microsoft YaHei" x=',1)
+        self.assertIn('font-family="JetBrains Mono"',source)
         actual=_render_svg(source,128,1).toImage()
-        yahei=_render_svg(explicit,128,1).toImage()
-        self.assertEqual(bytes(actual.constBits()),bytes(yahei.constBits()))
-        arial=Path(os.environ.get('SystemRoot',r'C:\Windows'))/'Fonts'/'arial.ttf'
-        if arial.is_file() and QFontDatabase.addApplicationFont(str(arial))>=0:
-            other=_render_svg(explicit.replace('Microsoft YaHei','Arial'),128,1).toImage()
-            self.assertNotEqual(bytes(actual.constBits()),bytes(other.constBits()))
+        other=_render_svg(source.replace('JetBrains Mono','Inter'),128,1).toImage()
+        self.assertNotEqual(bytes(actual.constBits()),bytes(other.constBits()))
 
     def test_emphasis_is_lighter_and_reapplying_styles_does_not_reduce_it_again(self):
         style=readable_qss('QLabel{font-weight:600;} QPushButton{font-weight:500;}')
         self.assertIn('font-weight:500',style)
-        self.assertIn('font-weight:400',style)
+        self.assertIn('font-weight:600',style)
         self.assertEqual(readable_qss(style),style)
-        font=QFont(APP.font());set_ui_weight(font,600);self.assertEqual(int(font.weight()),500)
+        font=QFont(APP.font());set_ui_weight(font,600);self.assertEqual(int(font.weight()),600)
         set_ui_weight(font,400);self.assertEqual(int(font.weight()),400)
         with tempfile.TemporaryDirectory() as temp,patch('app_settings._startup_runtime_allowed',return_value=False):
             dialog=SettingsDialog(SettingsStore(Path(temp)/'profile'));dialog.show();APP.processEvents()
             try:
                 titles=dialog.findChildren(QLabel,'settingsSection')
                 self.assertTrue(titles)
-                self.assertTrue(all(int(title.font().weight())<=500 for title in titles))
+                self.assertTrue(all(int(title.font().weight())<=600 for title in titles))
                 from reference_widgets import IconTextButton
                 segments=[b for b in dialog.findChildren(QPushButton,'settingsSegmentButton') if b.property('segmentGlyph')]
                 self.assertEqual(len(segments),4)
@@ -178,7 +205,11 @@ class PlatformUiTests(unittest.TestCase):
                 for button in segments:
                     self.assertEqual(int(button.font().weight()),400)
                     self.assertGreaterEqual(button.height(),button.fontMetrics().height())
-                segments[1].click();APP.processEvents()
+                segments[1].click()
+                # Theme selection commits after the existing selection motion.
+                for _ in range(60):
+                    if dialog.theme_combo.currentData()=='dark':break
+                    QTest.qWait(20)
                 self.assertEqual(dialog.theme_combo.currentData(),'dark')
                 self.assertTrue(all(button.property('referenceTheme')=='dark' for button in segments))
             finally:dialog._preference_writer.close();dialog.close();dialog.deleteLater();APP.processEvents()

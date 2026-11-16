@@ -5,13 +5,13 @@ os.environ['QT_QPA_PLATFORM']='offscreen'
 import unittest
 import time
 from math import ceil
-from unittest.mock import patch
+from unittest.mock import Mock,patch
 from PySide6.QtCore import QAbstractAnimation,QCoreApplication,QEvent,QPoint,QRect,QRectF,QTimer,Qt
 from PySide6.QtGui import QImage,QPainter,QPainterPath
 from PySide6.QtWidgets import QApplication,QWidget
 from PySide6.QtTest import QTest
 from shiboken6 import isValid
-from display_frames import FramePulse,DisplayAnimation
+from display_frames import FramePulse,DisplayAnimation,FrameRateGate,_set_on_battery
 from flickdock_motion import Spring
 from surface_morph import SurfaceMorph
 
@@ -42,7 +42,7 @@ class DisplayFramesTests(unittest.TestCase):
                 border.animation.setCurrentTime(at)
                 image=QImage(120,80,QImage.Format_ARGB32_Premultiplied);image.fill(Qt.transparent)
                 painter=QPainter(image)
-                border.paint(painter,path,dark=True);self.assertEqual(painter.pen().dashOffset(),0)
+                border.paint(painter,path,dark=True,radius=12);self.assertEqual(painter.pen().dashOffset(),0)
                 painter.end();frames.append(image)
             self.assertNotEqual(frames[0],frames[1]);self.assertNotEqual(frames[1],frames[2])
             self.assertLess(frames[1].pixelColor(60,40).alpha(),13);self.assertEqual(frames[2].pixelColor(60,40).alpha(),13)
@@ -64,7 +64,10 @@ class DisplayFramesTests(unittest.TestCase):
         first,second=FramePulse(self.window),FramePulse(self.window)
         first.start();second.start();flush();clock=first.clock
         self.assertIs(clock,second.clock)
-        self.assertFalse(clock.findChildren(QTimer))
+        # The only timer is the one-shot display-cadence timer; there is no
+        # repeating animation polling timer.
+        cadence=clock.findChildren(QTimer)
+        self.assertTrue(all(timer.isSingleShot() for timer in cadence),cadence)
         samples=[0,0]
         first.timeout.connect(lambda:samples.__setitem__(0,samples[0]+1))
         second.timeout.connect(lambda:samples.__setitem__(1,samples[1]+1))
@@ -76,6 +79,27 @@ class DisplayFramesTests(unittest.TestCase):
         self.assertEqual(samples,[1,1])
         first.stop();second.stop();flush();self.assertFalse(clock.pulses)
 
+    def test_display_paced_clock_ignores_update_requests_and_steps_per_period(self):
+        delivered=[];pulse=FramePulse(self.window);pulse.timeout.connect(lambda:delivered.append(True))
+        pulse.start();flush();clock=pulse.clock;clock._display_paced=True
+        clock._cancel_stall_timer();clock.pending=False;clock.queued=False
+        now=[100.]
+        try:
+            with patch('display_frames.time.perf_counter',side_effect=lambda:now[0]), \
+                 patch.object(clock.handle,'isExposed',return_value=True):
+                for hz in (60,75,120,144,240):
+                    clock.refresh_hz=hz;clock._next_frame_at=now[0]
+                    before=len(delivered);clock._cadence_fired()
+                    self.assertEqual(len(delivered),before+1,hz)
+                    self.assertAlmostEqual(clock._next_frame_at,now[0]+1/hz,places=7)
+                    clock.eventFilter(clock.handle,QEvent(QEvent.UpdateRequest))
+                    now[0]+=.5/hz;clock._cadence_fired()
+                    self.assertEqual(len(delivered),before+1,hz)
+                    now[0]+=.5/hz;clock._cadence_fired()
+                    self.assertEqual(len(delivered),before+2,hz)
+                    now[0]+=1.
+        finally:pulse.stop()
+
     def test_hidden_window_has_no_frame_loop_and_show_resumes_it(self):
         delivered=[];pulse=FramePulse(self.window);pulse.timeout.connect(lambda:delivered.append(True))
         pulse.start();flush();clock=pulse.clock
@@ -86,6 +110,88 @@ class DisplayFramesTests(unittest.TestCase):
         while len(delivered)==before and time.monotonic()<deadline:QTest.qWait(10)
         self.assertTrue(pulse.isActive());self.assertGreater(len(delivered),before)
         pulse.stop()
+
+    def test_display_rate_change_keeps_an_active_paced_clock_scheduled(self):
+        pulse=FramePulse(self.window);pulse.start();flush();clock=pulse.clock
+        try:
+            clock._display_paced=True;clock.pending=False;clock.queued=False
+            clock._arm_cadence_timer(.1)
+            self.assertTrue(clock._cadence.isActive())
+            clock._screen_rate_changed()
+            self.assertTrue(clock._cadence.isActive())
+        finally:pulse.stop()
+
+    def test_display_paced_dispatch_preserves_frame_diagnostics(self):
+        pulse=FramePulse(self.window);pulse.start();flush();clock=pulse.clock
+        clock._display_paced=True;clock._reduced_motion=False;clock.refresh_hz=75
+        trace=Mock()
+        try:
+            with patch.object(clock,'trace',trace), \
+                 patch.object(clock.handle,'isExposed',return_value=True), \
+                 patch('display_frames.time.perf_counter',return_value=100.):
+                clock._next_frame_at=100.;clock._cadence_fired()
+                trace.update_request.assert_called_once_with('other',capped=False)
+                trace.dispatched.assert_called_once_with()
+        finally:pulse.stop()
+
+    def test_minimized_and_unexposed_windows_do_not_request_frames(self):
+        delivered=[];pulse=FramePulse(self.window);pulse.timeout.connect(lambda:delivered.append(True))
+        pulse.start();flush();clock=pulse.clock;handle=clock.handle
+        try:
+            with patch.object(self.window,'isMinimized',return_value=True),patch.object(handle,'requestUpdate') as request:
+                clock.pending=False;clock.request_next();self.assertEqual(request.call_count,0)
+                before=len(delivered);clock.eventFilter(handle,QEvent(QEvent.UpdateRequest))
+                self.assertEqual(len(delivered),before)
+            with patch.object(handle,'isExposed',return_value=False),patch.object(handle,'requestUpdate') as request:
+                clock.pending=False;clock.request_next();self.assertEqual(request.call_count,0)
+                before=len(delivered);clock.eventFilter(handle,QEvent(QEvent.UpdateRequest))
+                self.assertEqual(len(delivered),before)
+            with patch.object(handle,'isExposed',return_value=True),patch.object(clock,'schedule') as schedule:
+                clock.eventFilter(handle,QEvent(QEvent.Expose));schedule.assert_called_once()
+        finally:pulse.stop()
+
+    def test_capped_pulses_follow_native_frames_without_extending_time(self):
+        for hz in (60,75,90,120,144,165,240):
+            gate=FrameRateGate()
+            samples=[frame for frame in range(hz) if gate.allows(frame/hz,True)]
+            self.assertLessEqual(abs(len(samples)-60),1,(hz,len(samples)))
+            self.assertTrue(all(a<b for a,b in zip(samples,samples[1:])))
+        gate=FrameRateGate();self.assertTrue(gate.allows(1.,True))
+        self.assertFalse(gate.allows(1.005,True));gate.reset()
+        self.assertTrue(gate.allows(1.005,True))
+
+    def test_battery_changes_apply_to_the_next_native_frame(self):
+        delivered=[];pulse=FramePulse(self.window);pulse.timeout.connect(lambda:delivered.append(True))
+        with patch('native_ui_common.reduced_motion',return_value=False):pulse.start();flush()
+        clock=pulse.clock;now=[100.]
+        try:
+            delivered.clear()
+            with patch('display_frames.time.perf_counter',side_effect=lambda:now[0]):
+                clock.eventFilter(clock.handle,QEvent(QEvent.UpdateRequest))
+                now[0]+=.005;clock.eventFilter(clock.handle,QEvent(QEvent.UpdateRequest))
+                now[0]+=.012;clock.eventFilter(clock.handle,QEvent(QEvent.UpdateRequest))
+                self.assertEqual(len(delivered),3)
+                _set_on_battery(True);now[0]+=.001
+                clock.eventFilter(clock.handle,QEvent(QEvent.UpdateRequest))
+                now[0]+=.005;clock.eventFilter(clock.handle,QEvent(QEvent.UpdateRequest))
+                self.assertEqual(len(delivered),4)
+                _set_on_battery(False);now[0]+=.001
+                clock.eventFilter(clock.handle,QEvent(QEvent.UpdateRequest))
+                self.assertEqual(len(delivered),5)
+            clock._screen_changed(None);self.assertIsNone(clock.refresh_hz)
+            clock._screen_changed(APP.primaryScreen());self.assertIsNotNone(clock.refresh_hz)
+        finally:
+            _set_on_battery(False);pulse.stop()
+
+    def test_windows_power_notification_changes_battery_policy(self):
+        import ctypes
+        from ctypes import wintypes
+        from PySide6.QtCore import QByteArray
+        from display_frames import _PowerEvents
+        message=wintypes.MSG();message.message=0x0218;message.wParam=0x000A
+        with patch('display_frames._query_on_battery',return_value=True),patch('display_frames._set_on_battery') as update:
+            self.assertEqual(_PowerEvents().nativeEventFilter(QByteArray(b'windows_generic_MSG'),ctypes.addressof(message)),(False,0))
+            update.assert_called_once_with(True)
 
     def test_reparented_surface_leaves_the_previous_native_clock(self):
         child=QWidget(self.window);pulse=FramePulse(child);pulse.start();flush();old=pulse.clock

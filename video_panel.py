@@ -8,7 +8,7 @@ from PySide6.QtCore import QEvent,QPointF,QRect,QRectF,QSize,Qt,QTimer
 from PySide6.QtGui import QFont,QFontMetricsF,QPainter,QColor,QLinearGradient,QPen
 from PySide6.QtWidgets import QButtonGroup,QCheckBox,QFrame,QGridLayout,QHBoxLayout,QLabel,QLineEdit,QPushButton,QSizePolicy,QStackedWidget,QStyle,QStyleOptionButton,QStylePainter,QVBoxLayout,QWidget
 from app_settings import ReferenceModalDialog,SettingsCloseButton,SettingsToggleSwitch
-from native_ui_common import colors,keyboard_focus_visible,set_ui_weight,RADIUS_CARD_PX,RADIUS_CONTROL_PX
+from native_ui_common import colors,font_css_stack,keyboard_focus_visible,set_ui_weight,RADIUS_CARD_PX,RADIUS_CONTROL_PX
 from reference_widgets import IconTextButton,button,css,refresh_tree,icon
 from image_preview import ImagePreview
 from media_preview import MediaPreview
@@ -205,7 +205,8 @@ class VideoSourceCard(QFrame):
         icon_key=(extension,label,self.devicePixelRatioF())
         if getattr(self,'_format_icon_key',None)!=icon_key:
             from flickdock_icons import document_pixmap
-            self.kind.setPixmap(document_pixmap(extension,36,dpr=icon_key[2],display_text=label));self.kind.setAccessibleName(label+' 格式')
+            icon_text=label[2:] if label in ('H.264','H.265') else label
+            self.kind.setPixmap(document_pixmap(extension,36,dpr=icon_key[2],display_text=icon_text));self.kind.setAccessibleName(label+' 格式')
             self._format_icon_key=icon_key
         if self.property('downloadComplete')!=bool(complete):
             self.setProperty('downloadComplete',bool(complete));self.style().unpolish(self);self.style().polish(self)
@@ -442,7 +443,7 @@ class VideoDialog(ReferenceModalDialog):
         self.prompt=SettingsToggleSwitch('',footer);self.prompt.setFixedWidth(PROMPT_SWITCH_WIDTH_PX)
         self.prompt.setAccessibleName('复制视频链接时提示解析');self.prompt_label.setBuddy(self.prompt)
         self.prompt.toggled.connect(self._prompt_changed);foot.addWidget(self.prompt,0,Qt.AlignLeft)
-        self.folder=plain_label('',footer);self.folder.setMinimumWidth(0);self.folder.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Preferred);self.folder.setAlignment(Qt.AlignRight|Qt.AlignVCenter);foot.addWidget(self.folder,1)
+        self.folder=plain_label('',footer,'videoFolder');self.folder.setMinimumWidth(0);self.folder.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Preferred);self.folder.setAlignment(Qt.AlignRight|Qt.AlignVCenter);foot.addWidget(self.folder,1)
         change=button('更改位置',variant='secondary',parent=footer);change.setMinimumWidth(76)
         change.setAccessibleName('更改视频保存位置');change.clicked.connect(self._choose_folder);foot.addWidget(change);self.folder_button=change
         self.surface.layout().addWidget(footer)
@@ -529,10 +530,10 @@ class VideoDialog(ReferenceModalDialog):
         if self._theme!=theme or getattr(self,'_accent',None)!=accent:
             self._accent=accent
             self._theme=theme;self.set_surface_theme(theme);self.close_button.dark=dark;c=colors(theme)
-            self.setStyleSheet(f'QLabel{{color:{c["text"]};background:transparent;font-size:12px;}} QLabel#videoTitle{{font-size:15px;font-weight:600;}} QLabel#videoSourceTitle{{font-size:12px;font-weight:600;}} QLabel#videoMeta{{font-size:11px;color:{c["secondary"]};}} QLabel#videoSuccess{{font-size:11px;color:{c["green"]};}} QWidget#videoFooter{{background:{c["background"]};border:0;}} QFrame#videoSourceCard{{background:{c["card"]};border:1px solid {c["border"]};border-radius:{RADIUS_CARD_PX}px;}} QFrame#videoSourceCard:hover{{background:{c["hover"]};}} QLineEdit{{background:{c["input"]};color:{c["text"]};border:1px solid {c["input_border"]};border-radius:{RADIUS_CONTROL_PX}px;padding:10px 12px;}} QLineEdit:focus{{border-color:{c["ring"]};}} QProgressBar{{background:{c["control"]};border:0;border-radius:3px;}} QProgressBar::chunk{{background:{c["action"]};border-radius:3px;}}')
+            self.setStyleSheet(f'QLabel{{color:{c["text"]};background:transparent;font-size:12px;}} QLabel#videoTitle{{font-size:15px;font-weight:600;}} QLabel#videoSourceTitle{{font-size:12px;font-weight:600;}} QLabel#videoMeta{{font-size:11px;color:{c["secondary"]};}} QLabel#videoSuccess{{font-size:11px;color:{c["green"]};}} QWidget#videoFooter{{background:{c["dialog_surface"]};border:0;}} QFrame#videoSourceCard{{background:{c["card"]};border:1px solid {c["border"]};border-radius:{RADIUS_CARD_PX}px;}} QFrame#videoSourceCard:hover{{background:{c["hover"]};}} QLineEdit{{background:{c["input"]};color:{c["text"]};border:1px solid {c["input_border"]};border-radius:{RADIUS_CONTROL_PX}px;padding:10px 12px;}} QLineEdit:focus{{border-color:{c["ring"]};}} QProgressBar{{background:{c["control"]};border:0;border-radius:3px;}} QProgressBar::chunk{{background:{c["action"]};border-radius:3px;}}')
             refresh_tree(self,theme)
             self.prompt.dark=dark
-            self.setStyleSheet(self.styleSheet()+f'QCheckBox{{font-size:12px;color:{c["text"]};}} QFrame#videoSourceCard[downloadComplete="true"]{{background:{c["selected"]};}}')
+            self.setStyleSheet(self.styleSheet()+f'QCheckBox{{font-size:12px;color:{c["text"]};}} QLabel#videoFolder{{font-size:11px;color:{c["secondary"]};font-family:{font_css_stack(technical=True)};}} QFrame#videoSourceCard[downloadComplete="true"]{{background:{c["selected"]};}}')
         blocked=self.prompt.blockSignals(True);self.prompt.setChecked(self.manager.settings.video_link_prompt);self.prompt.blockSignals(blocked)
         self._refresh_folder_label()
         busy=self.controller.extracting is not None;self.parse_button.setEnabled(not busy);self.parse_button.setText('解析中…' if busy else '解析');self.stop_button.setVisible(busy)

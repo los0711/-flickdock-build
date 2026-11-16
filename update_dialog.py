@@ -455,7 +455,7 @@ class UpdateDialog(QDialog):
         self.close_button.dark=dark;self.close_button.update()
         self.setStyleSheet(f"""
             QDialog#flickdockUpdate {{background:transparent;color:{c['text']};}}
-            QFrame#updateSurface {{background:{c['surface']};border:1px solid {c['glass_border']};border-radius:{c['radius']}px;}}
+            QFrame#updateSurface {{background:{c['dialog_surface']};border:1px solid {c['glass_border']};border-radius:{c['radius']}px;}}
             QWidget#settingsTitleBar {{background:transparent;border:0;border-bottom:1px solid {c['divider']};}}
             QDialog#flickdockUpdate QLabel {{background:transparent;color:{c['text']};font-size:12px;border:0;}}
             QDialog#flickdockUpdate QLabel#updateSymbol {{background:{c['control']};color:{c['text']};border-radius:12px;font-size:20px;font-weight:700;}}
@@ -465,7 +465,7 @@ class UpdateDialog(QDialog):
             QDialog#flickdockUpdate QLabel#updateStatus {{font-size:12px;font-weight:700;}}
             QDialog#flickdockUpdate QLabel#updateProgressLabel {{font-size:11px;color:{c['link']};font-family:{font_css_stack()};}}
             QDialog#flickdockUpdate QLabel#updateMessage {{color:{c['secondary']};font-size:12px;}}
-            QDialog#flickdockUpdate QLabel#updateSha {{color:{c['muted']};font-size:11px;font-family:{font_css_stack()};}}
+            QDialog#flickdockUpdate QLabel#updateSha {{color:{c['muted']};font-size:11px;font-family:{font_css_stack(technical=True)};}}
             QFrame#updateNotesCard {{background:{c['card']};border:0;border-radius:{c['radius_card']}px;}}
             QPlainTextEdit#updateNotes {{background:transparent;color:{c['secondary']};border:0;padding:0;font-size:12px;selection-background-color:{c['action']};selection-color:{c['on_action']};}}
             QProgressBar#updateProgress {{background:{c['control']};border:0;border-radius:3px;}}

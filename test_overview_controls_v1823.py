@@ -40,6 +40,30 @@ class OverviewControlsTests(unittest.TestCase):
         self.assertLess(popup.sort_segment.width(),180)
         self.assertEqual(set(popup.sort_buttons),{'time','size'})
 
+    def test_sort_returns_to_unselected_background_after_third_click(self):
+        popup=self.overview()
+        for theme in ('dark','light'):
+            ui_theme.set_theme(theme);self.settings.update(theme=theme)
+            for key in ('time','size'):
+                popup.reset_sort();fixture.flush()
+                for _ in range(3):
+                    QTest.mouseClick(popup.sort_buttons[key],Qt.LeftButton)
+                    fixture.flush()
+                self.assertEqual((popup.sort_key,popup.sort_direction),(None,0))
+                self.assertFalse(any(button.isChecked() for button in popup.sort_buttons.values()))
+                self.assertIsNone(popup.sort_segment._selection_button)
+                self.assertTrue(popup.sort_segment._selection_rect.isEmpty())
+
+    def test_mac_top_edge_first_expansion_keeps_anchor(self):
+        from types import SimpleNamespace
+        import shelf_window
+        area=fixture.Screen().availableGeometry()
+        compact=QRect(area.right()-359,area.top(),360,345)
+        with patch.object(shelf_window,'sys',SimpleNamespace(platform='darwin')):
+            expanded=self.shelf._expansion_rect(compact)
+        self.assertEqual(expanded.top(),compact.top())
+        self.assertTrue(area.contains(expanded))
+
     def test_list_row_press_scales_and_rebounds_without_moving_layout(self):
         from overview_ui import _RowPressEffect
         popup=self.overview();row=popup._item_widgets[self.paths[0]]
@@ -103,6 +127,43 @@ class OverviewControlsTests(unittest.TestCase):
         self.assertEqual(dialog.windowModality(),Qt.WindowModal)
         self.assertTrue(self.shelf.rename_edit.hasFocus())
         dialog.reject();fixture.flush();self.assertEqual(self.shelf.files['permanent'],self.paths)
+
+    def test_rename_field_wraps_grows_scrolls_and_preserves_the_extension(self):
+        from PySide6.QtCore import QMimeData
+        from PySide6.QtGui import QInputMethodEvent
+        from reference_widgets import RENAME_EDIT_MAX_LINES,RENAME_EDIT_MIN_HEIGHT_PX,RENAME_EDIT_PADDING_Y_PX,RENAME_EDIT_BORDER_PX
+        self.overview()
+        source=self.base/('图像😀测试_'+'abcde'*15+'.png');source.write_bytes(b'original')
+        self.shelf.add_paths('permanent',[str(source)])
+        self.shelf.rename_ref(str(source))
+        dialog=self.shelf._rename_dialog;edit=self.shelf.rename_edit
+        initial_height=dialog.height();self.assertGreater(initial_height,252)
+        QTest.qWait(60);fixture.flush();self.assertEqual(dialog.height(),initial_height)
+        self.assertEqual(edit.textCursor().selectedText(),source.stem)
+        self.assertEqual(edit.toPlainText(),source.name)
+        edit.setPlainText('short.png');QTest.qWait(60);fixture.flush()
+        original_height=dialog.height()
+        edit.setPlainText('a'*80+'.png');QTest.qWait(60);fixture.flush()
+        self.assertGreater(edit.height(),RENAME_EDIT_MIN_HEIGHT_PX)
+        self.assertEqual(edit.verticalScrollBar().maximum(),0)
+        self.assertGreater(dialog.height(),original_height)
+        text='图'*250+'.png';edit.setPlainText(text);QTest.qWait(60);fixture.flush()
+        limit=edit.fontMetrics().lineSpacing()*RENAME_EDIT_MAX_LINES+2*(RENAME_EDIT_PADDING_Y_PX+RENAME_EDIT_BORDER_PX)
+        self.assertLessEqual(edit.height(),limit)
+        self.assertGreater(edit.verticalScrollBar().maximum(),0)
+        self.assertEqual(edit.toPlainText(),text)
+        edit.setPlainText('');mime=QMimeData();mime.setText('name\r\nmore\u2028text')
+        edit.insertFromMimeData(mime);self.assertEqual(edit.toPlainText(),'name more text')
+        QApplication.sendEvent(edit,QInputMethodEvent('测试',[]))
+        QTest.keyClick(edit,Qt.Key_Return);fixture.flush()
+        self.assertTrue(dialog.isVisible());self.assertTrue(source.exists())
+        QApplication.sendEvent(edit,QInputMethodEvent('',[]))
+        edit.setPlainText('图像😀_renamed.webp');QTest.qWait(60);fixture.flush()
+        self.assertEqual(edit.height(),RENAME_EDIT_MIN_HEIGHT_PX)
+        QTest.keyClick(edit,Qt.Key_Return);fixture.flush()
+        target=source.with_name('图像😀_renamed.webp')
+        self.assertEqual(target.read_bytes(),b'original');self.assertFalse(source.exists())
+        self.assertFalse(dialog.isVisible())
 
     def test_remaining_toolbar_offsets_match_compact_header(self):
         compact={key:self.shelf.card.geometry().right()-self.bounds(control,self.shelf).right()
@@ -220,23 +281,47 @@ class OverviewControlsTests(unittest.TestCase):
 
     def test_preview_actions_follow_reference_and_remain_reachable_when_short(self):
         popup=self.overview();preview=popup.preview
-        self.assertEqual([button.text() for button in preview.action_buttons],
-                         ['打开文件','重命名','复制路径','打包 ZIP','发送文件','长按移出'])
-        buttons=preview.action_buttons
-        self.assertEqual(preview.open_button.y(),preview.send_control.y())
-        self.assertEqual(preview.rename_button.y(),preview.zip_button.y())
-        self.assertEqual(preview.zip_button.y(),preview.remove_button.y())
+        popup.select_item(self.paths[0]);fixture.flush()
+        self.assertEqual([button.accessibleName() for button in preview.action_buttons],
+                         ['打开文件','重命名','复制路径','打包 ZIP','发送文件','长按移出搁架'])
+        self.assertEqual(preview.open_button.text(),'打开')
+        self.assertEqual(preview.send_button.text(),'发送文件')
+        for control in (preview.rename_button,preview.zip_button,preview.remove_button):
+            self.assertEqual(control.text(),'');self.assertEqual(control.width(),control.height())
+            self.assertTrue(control.toolTip())
         self.assertEqual(preview.status_card.layout().contentsMargins().bottom(),5)
         self.assertEqual(preview.size_card.layout().contentsMargins().bottom(),5)
-        self.assertLess(preview.open_button.geometry().right(),preview.send_control.x())
+        fixed_sizes=None;measurements=[]
         for width,height in ((1040,600),(800,560),(600,520),(420,500)):
             popup.resize(width,height);fixture.flush();popup._apply_responsive_layout();fixture.flush()
             if popup._narrow_layout:popup.toggle_narrow_preview();fixture.flush()
             preview.content_scroll.ensureWidgetVisible(preview.copy_path_button,0,0);fixture.flush()
             self.assertTrue(preview.content_scroll.viewport().rect().contains(self.bounds(preview.copy_path_button,preview.content_scroll.viewport())))
-            for button in (preview.open_button,preview.send_button,preview.rename_button,preview.zip_button,preview.remove_button):
-                self.assertTrue(preview.rect().contains(self.bounds(button,preview)),(width,button.text()))
+            controls=(preview.remove_button,preview.zip_button,preview.rename_button,preview.open_button,preview.send_control)
+            bounds=[self.bounds(control,preview.action_footer) for control in controls]
+            for control,rect in zip(controls,bounds):
+                self.assertTrue(preview.action_footer.rect().contains(rect),(width,control.accessibleName(),rect))
+                self.assertEqual(rect.height(),bounds[0].height())
+            self.assertTrue(all(a.right()<b.left() for a,b in zip(bounds,bounds[1:])))
+            self.assertEqual(bounds[0].left(),16)
+            self.assertEqual(preview.action_footer.width()-bounds[-1].right()-1,16)
+            self.assertEqual(bounds[3].left()-bounds[2].right()-1,6)
+            self.assertEqual(bounds[4].left()-bounds[3].right()-1,6)
+            self.assertEqual(bounds[3].width(),68)
+            self.assertEqual(bounds[4].height(),popup.clipboard_button.height())
+            self.assertEqual(bounds[4].height(),popup.capacity_button.height())
+            if width==1040:
+                card=self.bounds(preview.path_card,preview)
+                footer=self.bounds(preview.action_footer,preview)
+                self.assertEqual(footer.left()+bounds[0].left(),card.left())
+                self.assertEqual(footer.left()+bounds[-1].right(),card.right())
+            sizes=tuple((rect.width(),rect.height()) for rect in bounds[:-1])
+            if fixed_sizes is None:fixed_sizes=sizes
+            self.assertEqual(sizes,fixed_sizes,'Only the send control may resize')
+            measurements.append((preview.action_footer.width(),bounds[-1].width()))
             if popup._narrow_layout:popup.toggle_narrow_preview();fixture.flush()
+        for previous,current in zip(sorted(measurements),sorted(measurements)[1:]):
+            if previous[0]<current[0]:self.assertLess(previous[1],current[1])
 
     def test_preview_copy_path_send_and_remove_use_current_item_only(self):
         popup=self.overview();preview=popup.preview;ref=self.paths[1]
@@ -255,10 +340,10 @@ class OverviewControlsTests(unittest.TestCase):
     def test_removal_requires_continuous_750ms_hold(self):
         popup=self.overview();preview=popup.preview;ref=self.paths[1]
         popup.select_item(ref);button=preview.remove_button;self.assertTrue(button.isVisible())
-        QTest.mousePress(button,Qt.LeftButton);self.assertEqual(button.text(),'松手取消')
+        QTest.mousePress(button,Qt.LeftButton);self.assertTrue(button.isDown());self.assertEqual(button.text(),'')
         QTest.qWait(250);self.assertIn(ref,self.shelf.files['permanent'])
         QTest.mouseRelease(button,Qt.LeftButton);QTest.qWait(550)
-        self.assertIn(ref,self.shelf.files['permanent']);self.assertEqual(button.text(),'长按移出')
+        self.assertIn(ref,self.shelf.files['permanent']);self.assertFalse(button.isDown());self.assertEqual(button.text(),'')
         QTest.mousePress(button,Qt.LeftButton);QTest.qWait(700)
         self.assertIn(ref,self.shelf.files['permanent'])
         QTest.qWait(80);fixture.flush()
@@ -282,6 +367,36 @@ class OverviewControlsTests(unittest.TestCase):
             for y in (.25,.75):self.assertEqual(sample(.15,y),red)
             self.assertNotEqual(sample(.85,.25),red)
         finally:QTest.mouseRelease(button,Qt.LeftButton)
+
+    def test_remove_hover_and_hold_show_red_and_contrasting_icon(self):
+        popup=self.overview();popup.select_item(self.paths[0]);button=popup.preview.remove_button
+        for theme in ('dark','light'):
+            ui_theme.set_theme(theme);self.settings.update(theme=theme)
+            refresh_tree(self.shelf);fixture.flush()
+            button.setAttribute(Qt.WA_UnderMouse,False);button.update();fixture.flush()
+            group=button.parentWidget()
+            def sample():
+                image=group.grab().toImage();ratio=image.devicePixelRatio()
+                return image.pixelColor(round((button.x()+5)*ratio),round((button.y()+button.height()/2)*ratio))
+            normal=sample()
+            button.setAttribute(Qt.WA_UnderMouse,True);button.update();fixture.flush()
+            hovered=sample()
+            self.assertGreater(hovered.red(),normal.red())
+            self.assertGreater(hovered.red(),hovered.green())
+            button._begin_hold()
+            try:
+                with patch('reference_widgets.time.monotonic',return_value=button._hold_started+.43):
+                    image=button.grab().toImage()
+                ratio=image.devicePixelRatio();mid=round(button.width()*.57*ratio)
+                white=red=0
+                for y in range(round(8*ratio),round(24*ratio)):
+                    for x in range(round(8*ratio),round(24*ratio)):
+                        color=image.pixelColor(x,y)
+                        if x<mid and min(color.red(),color.green(),color.blue())>220:white+=1
+                        if x>=mid and color.red()>200 and color.green()<120 and color.blue()<120:red+=1
+                self.assertGreater(white,0);self.assertGreater(red,0)
+            finally:
+                button.cancel_hold();button.setAttribute(Qt.WA_UnderMouse,False)
 
     def test_keyboard_hold_supports_cancel_and_confirmation(self):
         popup=self.overview();popup.select_item(self.paths[0]);button=popup.preview.remove_button

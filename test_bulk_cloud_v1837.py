@@ -2,7 +2,7 @@
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
-from PySide6.QtCore import QAbstractAnimation,Qt
+from PySide6.QtCore import QAbstractAnimation,QPoint,Qt
 from PySide6.QtTest import QTest
 import test_html_native_workspace as w
 import ui_theme,shelf_ui_common
@@ -57,6 +57,87 @@ class BatchCloudTests(unittest.TestCase):
         preview.group_cloud_upload.click();self.assertEqual([x[0] for x in self.callbacks],[self.refs[0]])
         self.callbacks[0][1](True);self.sync.retry_upload.assert_not_called()
         self.assertEqual(self.notices,[(self.refs[0],)])
+
+    def test_cloud_delete_first_click_updates_badge_and_clears_focus(self):
+        ref=self.refs[1];self.popup.select_item(ref);w.flush()
+        preview=self.popup.preview;button=preview.cloud_action
+        self.assertEqual(button.glyph,'cloud-remove')
+        def removing(value):
+            self.busy.add(value);self.popup._upload_metadata_changed(value)
+        self.sync.delete_cloud_copy.side_effect=removing
+        button.setFocus(Qt.TabFocusReason);w.flush()
+        QTest.mouseClick(button,Qt.LeftButton);w.flush()
+        self.sync.delete_cloud_copy.assert_called_once_with(ref)
+        self.assertFalse(button.isEnabled())
+        self.assertFalse(preview.copy_button.hasFocus() and preview.copy_button._keyboard_focus)
+        self.status[ref]='local';self.busy.clear()
+        self.popup._upload_metadata_changed(ref);w.flush()
+        self.assertEqual(preview.status_value.text(),'仅保存在本机')
+        self.assertEqual(button.glyph,'cloud-upload')
+        self.sync.retry_upload.assert_not_called()
+
+    def test_cloud_action_reveals_over_the_status_card_and_remains_keyboard_accessible(self):
+        self.popup.select_item(self.refs[1]);w.flush()
+        preview=self.popup.preview;card=preview.status_card;action=preview.cloud_action
+        self.assertIs(action.parentWidget(),card)
+        self.assertTrue(card.rect().contains(action.geometry()))
+        self.assertEqual(action.y(),4)
+        self.assertEqual(card.width()-action.geometry().right()-1,8)
+        self.assertEqual(action.property('glyphSize'),14)
+        self.assertEqual(card.height(),preview.size_card.height())
+        self.assertEqual(preview.name.width(),preview.preview_head.width()-32-16-32-32)
+
+        def red_pixels():
+            image=card.grab().toImage();ratio=image.devicePixelRatio();rect=action.geometry()
+            return sum(1 for y in range(round(rect.top()*ratio),round((rect.bottom()+1)*ratio))
+                       for x in range(round(rect.left()*ratio),round((rect.right()+1)*ratio))
+                       if (lambda color:color.red()>140 and color.red()>color.green()*1.5
+                           and color.red()>color.blue()*1.5)(image.pixelColor(x,y)))
+
+        preview.copy_button.setFocus(Qt.TabFocusReason)
+        QTest.mouseMove(preview.action_footer,QPoint(3,3));w.flush()
+        self.assertFalse(action._card_hovered)
+        self.assertTrue(action.testAttribute(Qt.WA_TransparentForMouseEvents))
+        self.assertEqual(red_pixels(),0)
+        action.setFocus(Qt.TabFocusReason);w.flush()
+        self.assertTrue(action.hasFocus())
+        self.assertGreater(red_pixels(),0)
+        preview.copy_button.setFocus(Qt.TabFocusReason);w.flush()
+        self.assertEqual(red_pixels(),0)
+        original_size=card.size()
+        QTest.mouseMove(card,QPoint(8,8));w.flush()
+        self.assertTrue(action._card_hovered)
+        self.assertFalse(action.testAttribute(Qt.WA_TransparentForMouseEvents))
+        self.assertGreater(red_pixels(),0)
+        self.assertEqual(card.size(),original_size)
+        QTest.mouseMove(action,action.rect().center());w.flush()
+        self.assertTrue(action.underMouse())
+        QTest.mouseClick(action,Qt.LeftButton);w.flush()
+        self.sync.delete_cloud_copy.assert_called_once_with(self.refs[1])
+        QTest.mouseMove(preview.action_footer,QPoint(3,3));w.flush()
+        self.assertFalse(action._card_hovered)
+
+    def test_stale_remove_button_does_not_trigger_upload(self):
+        ref=self.refs[1];self.popup.select_item(ref);w.flush()
+        preview=self.popup.preview
+        self.assertEqual(preview.cloud_action.glyph,'cloud-remove')
+        self.status[ref]='local'
+        self.manager.check_cloud_capacity_for_upload=Mock()
+        QTest.mouseClick(preview.cloud_action,Qt.LeftButton);w.flush()
+        self.sync.retry_upload.assert_not_called()
+        self.manager.check_cloud_capacity_for_upload.assert_not_called()
+
+    def test_hover_card_upload_keeps_capacity_check(self):
+        ref=self.refs[0];self.popup.select_item(ref);w.flush()
+        preview=self.popup.preview;action=preview.cloud_action
+        self.assertEqual(action.glyph,'cloud-upload')
+        self.manager.check_cloud_capacity_for_upload=Mock(side_effect=lambda current,done:done())
+        QTest.mouseMove(preview.status_card,QPoint(8,8));w.flush()
+        QTest.mouseMove(action,action.rect().center());w.flush()
+        self.assertTrue(action.underMouse())
+        QTest.mouseClick(action,Qt.LeftButton);w.flush()
+        self.manager.check_cloud_capacity_for_upload.assert_called_once()
+        self.sync.retry_upload.assert_called_once_with(ref)
 
     def test_pending_upload_click_cannot_override_later_cloud_removal(self):
         revisions={ref:0 for ref in self.refs}

@@ -8,15 +8,16 @@ from collections import OrderedDict
 import sys
 import re
 import time
+import math
 
 from PySide6.QtCore import QObject, QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QVariantAnimation, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetricsF, QIcon, QPalette, QImage, QPainter, QPainterPath, QPen, QPixmap, QTransform
-from PySide6.QtWidgets import (QLabel, QPushButton, QWidget, QFrame, QHBoxLayout,
+from PySide6.QtGui import QColor, QFont, QFontMetricsF, QIcon, QPalette, QImage, QPainter, QPainterPath, QPen, QPixmap, QTextDocument, QTextOption, QTransform
+from PySide6.QtWidgets import (QAbstractButton, QLabel, QPushButton, QWidget, QFrame, QHBoxLayout,
     QVBoxLayout, QScrollArea, QLineEdit, QProgressBar, QButtonGroup, QSizePolicy, QGridLayout,
-    QStackedWidget, QPlainTextEdit, QCheckBox, QApplication, QDialog, QRubberBand)
+    QStackedWidget, QPlainTextEdit, QTextEdit, QCheckBox, QApplication, QDialog, QRubberBand)
 
 import ui_theme
-from native_ui_common import (colors, icon, keyboard_focus_visible, readable_qss, set_ui_weight, reference_font,
+from native_ui_common import (colors, icon, keyboard_focus_visible, paint_rounded_surface, qss_color, readable_qss, set_ui_weight, reference_font, RoundedSurfaceFrame, RoundedScrollBar, RoundedProgressBar,
     RADIUS_SMALL_PX,RADIUS_SUBCONTROL_PX,RADIUS_CONTROL_PX,RADIUS_CARD_PX,RADIUS_PANEL_PX,
     SHELF_HEADER_BUTTON_SIZE_PX, SHELF_HEADER_BUTTON_GAP_PX, SHELF_HEADER_RIGHT_MARGIN_PX,
     SHELF_OVERVIEW_HEADER_HEIGHT_PX)
@@ -35,6 +36,10 @@ SEGMENT_BUTTON_HEIGHT_PX = 26
 SEGMENT_TEXT_PADDING_PX = 8
 SORT_TEXT_PADDING_PX = 4
 SEGMENT_BORDER_PX = 1
+ICON_TEXT_GAP_PX = 6
+ICON_TEXT_SIDE_RESERVE_PX = 16
+ICON_TEXT_LEFT_RESERVE_PX = 56
+ICON_TEXT_MEASURE_SAFETY_PX = 2
 PROFILE_TEXT_RISE_PX = 1
 EMPTY_DROP_RADIUS_PX = RADIUS_PANEL_PX
 PREVIEW_INFO_HORIZONTAL_PADDING_PX = 12
@@ -43,6 +48,24 @@ PREVIEW_INFO_BOTTOM_PADDING_PX = 5
 PREVIEW_INFO_TITLE_HEIGHT_PX = 16
 PREVIEW_INFO_VALUE_HEIGHT_PX = 28
 PREVIEW_INFO_ROW_GAP_PX = 4
+PREVIEW_STATUS_ACTION_SIZE_PX = 24
+PREVIEW_STATUS_ACTION_GLYPH_SIZE_PX = 14
+PREVIEW_STATUS_ACTION_TOP_INSET_PX = 4
+PREVIEW_STATUS_ACTION_RIGHT_INSET_PX = 8
+PREVIEW_HEADER_RESERVED_ACTION_WIDTH_PX = 32
+PREVIEW_ACTION_HEIGHT_PX = 32
+PREVIEW_ACTION_ICON_SIZE_PX = 14
+PREVIEW_ACTION_OPEN_WIDTH_PX = 68
+PREVIEW_ACTION_MENU_WIDTH_PX = 24
+PREVIEW_ACTION_SPACING_PX = 6
+PREVIEW_ACTION_SIDE_MARGIN_PX = 16
+PREVIEW_ACTION_ICON_TEXT_GAP_PX = 4
+RENAME_EDIT_MIN_HEIGHT_PX = 34
+RENAME_EDIT_MAX_LINES = 4
+RENAME_EDIT_PADDING_X_PX = 10
+RENAME_EDIT_PADDING_Y_PX = 7
+RENAME_EDIT_BORDER_PX = 1
+RENAME_DIALOG_BASE_HEIGHT_PX = 252
 
 
 class OverviewEmptyDropZone(_DropZone):
@@ -55,6 +78,8 @@ class OverviewEmptyDropZone(_DropZone):
         radius=min(EMPTY_DROP_RADIUS_PX,rect.width()/2,rect.height()/2)
         path=QPainterPath();path.addRoundedRect(rect,radius,radius)
         return path
+
+    def border_radius(self):return EMPTY_DROP_RADIUS_PX
 
     def set_transfer_choice_active(self,active):
         self._transfer_choice_active=bool(active)
@@ -78,21 +103,29 @@ class EmptyPreviewIcon(QWidget):
         icon('file',palette()['secondary']).paint(painter,2,2,24,24)
 
 
+class RoundedSearchEdit(QLineEdit):
+    """Keep Qt's text input while painting its frame at device-pixel precision."""
+    def paintEvent(self,event):
+        c=palette();p=QPainter(self)
+        fill=c['input'] if self.isEnabled() else c['control']
+        edge=c['ring'] if self.hasFocus() and self.isEnabled() else c['input_border']
+        paint_rounded_surface(p,self.rect(),RADIUS_CONTROL_PX,ink(fill),ink(edge))
+        p.end();super().paintEvent(event)
+
+
 def palette():
     return colors(ui_theme.current_theme())
 
 
 def ink(value):
-    if str(value).startswith('rgba('):
-        return QColor(*[int(float(x)) for x in re.findall(r'[\d.]+',str(value))])
-    return QColor(value)
+    return qss_color(value)
 
 
 def css(widget, dark, light=None):
     # Resolve the source's real 400/500/600/700 weights in the selected OS face.
     if QApplication.instance():
         from native_ui_common import font_css_stack
-        family=font_css_stack()
+        family=font_css_stack(for_button=isinstance(widget,QAbstractButton),technical=bool(widget.property('flickdockTechnicalFont')))
         dark=dark.replace("'FlickDock UI'",family)
         if light is not None:light=light.replace("'FlickDock UI'",family)
     widget._reference_style=(readable_qss(dark), readable_qss(light if light is not None else dark))
@@ -130,6 +163,42 @@ class OpticalLabel(QLabel):
         p.drawText(QPointF(x,optical_text_baseline(p.font(),text,self.height())),text);p.end()
 
 
+class RoundedBadge(QLabel):
+    def __init__(self,text='',parent=None):
+        super().__init__(text,parent);self._badge_fill='transparent';self._badge_colors=None
+
+    def set_background(self,value):self._badge_fill=value;self.update()
+    def set_theme_backgrounds(self,dark,light):self._badge_colors=(dark,light);self.update()
+
+    def paintEvent(self,event):
+        fill=(self._badge_colors[ui_theme.current_theme()=='light'] if self._badge_colors is not None else self._badge_fill)
+        if fill!='transparent':
+            p=QPainter(self);paint_rounded_surface(p,self.rect(),min(self.height()/2,RADIUS_CARD_PX),ink(fill));p.end()
+        super().paintEvent(event)
+
+
+class RoundedPreviewText(QPlainTextEdit):
+    def __init__(self,parent=None):
+        super().__init__(parent)
+        self.setVerticalScrollBar(RoundedScrollBar(Qt.Vertical,self,thumb_color=lambda:palette()['input_border']))
+
+    def event(self,event):
+        if event.type()==QEvent.Paint:
+            p=QPainter(self);paint_rounded_surface(p,self.rect(),RADIUS_CARD_PX,ink(palette()['card']));p.end()
+        return super().event(event)
+
+
+class MenuChoiceButton(QPushButton):
+    def paintEvent(self,event):
+        from PySide6.QtWidgets import QStyle,QStylePainter
+        from native_ui_common import button_style_option
+        p=QStylePainter(self)
+        if self.isEnabled() and (self.underMouse() or self.property('menuSelected')):
+            paint_rounded_surface(p,self.rect(),RADIUS_SUBCONTROL_PX,ink(palette()['hover']))
+        option=button_style_option(self);option.rect=self.style().subElementRect(QStyle.SE_PushButtonContents,option,self)
+        p.drawControl(QStyle.CE_PushButtonLabel,option);p.end()
+
+
 def label(value='',size=12,weight=400,tint='text',parent=None,*,control_type=QLabel):
     widget=control_type(value,parent)
     dark=colors('dark');light=colors('light')
@@ -141,6 +210,69 @@ def label(value='',size=12,weight=400,tint='text',parent=None,*,control_type=QLa
 
 class IconTextButton(QPushButton):
     """Use one logical icon/text group on both Qt platform styles."""
+    def _icon_text_spacing(self):
+        gap=self.property('iconTextGap')
+        gap=gap if isinstance(gap,int) else ICON_TEXT_GAP_PX
+        reserved=self.property('iconTextReservedWidth')
+        reserved=reserved if isinstance(reserved,int) else (ICON_TEXT_LEFT_RESERVE_PX if self.property('leftAligned') else ICON_TEXT_SIDE_RESERVE_PX)
+        return gap,reserved
+
+    def sizeHint(self):
+        hint=super().sizeHint()
+        if self.text() and not self.icon().isNull():
+            gap,reserved=self._icon_text_spacing()
+            width=self.fontMetrics().horizontalAdvance(self.text())+self.iconSize().width()+gap+reserved+ICON_TEXT_MEASURE_SAFETY_PX
+            hint.setWidth(max(hint.width(),width))
+        return hint
+
+    def minimumSizeHint(self):
+        hint=super().minimumSizeHint()
+        hint.setWidth(max(hint.width(),self.sizeHint().width()))
+        return hint
+
+    def _surface_radius(self):
+        parent=self.parentWidget()
+        if self.property('previewCopyPath') or isinstance(parent,SelectionSurface) and not parent._selection_vertical:
+            return RADIUS_SUBCONTROL_PX
+        return RADIUS_CONTROL_PX
+
+    def _paint_surface(self,painter):
+        theme=self.property('referenceTheme');theme=theme if theme in ('dark','light') else ui_theme.current_theme()
+        c=colors(theme);variant=self.property('referenceVariant') or 'quiet'
+        enabled=self.isEnabled();down=enabled and self.isDown();hover=enabled and self.underMouse()
+        parent=self.parentWidget();name=parent.objectName() if parent else ''
+        edge=None;radius=self._surface_radius()
+        if name=='splitSendControl':
+            fill=c['control'] if not enabled else c['action_pressed'] if down else c['action_hover'] if hover else c['action']
+            path=QPainterPath();path.addRoundedRect(QRectF(-self.x(),-self.y(),parent.width(),parent.height()),radius,radius)
+            painter.save();painter.setRenderHint(QPainter.Antialiasing);painter.setClipPath(path)
+            painter.fillRect(self.rect(),ink(fill));painter.restore()
+            if enabled and self.property('keyboardFocus'):
+                paint_rounded_surface(painter,QRectF(self.rect()).adjusted(1,1,-1,-1),radius,QColor(Qt.transparent),ink(c['ring']))
+            return
+        if name=='previewIconActions':
+            if not enabled:fill='transparent'
+            elif variant=='danger':fill='rgba(255,69,58,58)' if down else 'rgba(255,69,58,30)' if hover else 'transparent'
+            else:fill=('#38383d' if theme=='dark' else '#cdcdcf') if down else ('#29292d' if theme=='dark' else '#dddddf') if hover else 'transparent'
+        elif self.property('previewOpen'):
+            fill=(('#38383d' if theme=='dark' else '#d4d4d7') if down else
+                  ('#2c2c31' if theme=='dark' else '#e1e1e3') if hover else
+                  ('#1d1d21' if theme=='dark' else '#eeeeef')) if enabled else c['control']
+        elif isinstance(parent,SelectionSurface):
+            fill=(c['control_pressed'] if down else c['control_hover'] if hover else 'transparent') if enabled and not self.isChecked() else 'transparent'
+        elif not enabled:
+            fill='transparent' if self.property('iconOnly') else c['control']
+        elif self.isChecked():fill=c['selected']
+        elif variant=='primary':fill=c['action_pressed'] if down else c['action_hover'] if hover else c['action']
+        elif variant=='danger':fill='rgba(255,69,58,78)' if down else 'rgba(255,69,58,58)' if hover else 'rgba(255,69,58,30)'
+        elif variant in ('secondary','secondary_blue'):
+            fill=c['control_pressed'] if down else c['control_hover'] if hover else c['control']
+            if self.property('previewCopyPath') and not down and not hover and theme=='dark':fill='#333333'
+            if variant=='secondary':edge=c['border']
+        else:fill=c['selected'] if down else c['hover'] if hover else 'transparent'
+        if enabled and self.property('keyboardFocus'):edge=c['ring']
+        paint_rounded_surface(painter,self.rect(),radius,ink(fill),None if edge is None else ink(edge))
+
     def _retarget_icon(self,*,hover=None,pressed=None):
         target=getattr(self,'_icon_target',QPointF())
         target=QPointF(target.x() if hover is None else float(hover),target.y() if pressed is None else float(pressed))
@@ -177,14 +309,20 @@ class IconTextButton(QPushButton):
 
     def hitButton(self,position):return self.rect().contains(position)
     def paintEvent(self,event):
-        if self.icon().isNull():return super().paintEvent(event)
         from PySide6.QtWidgets import QStyleOptionButton, QStyle, QStylePainter
         from native_ui_common import button_style_option
         option=button_style_option(self)
+        if self.icon().isNull():
+            painter=QStylePainter(self);self._paint_surface(painter)
+            option.rect=self.style().subElementRect(QStyle.SE_PushButtonContents,option,self)
+            painter.drawControl(QStyle.CE_PushButtonLabel,option);painter.end();return
         art,words=QIcon(option.icon),str(option.text);option.icon=QIcon();option.text=''
         theme=self.property('referenceTheme')
         c=colors(theme) if theme in ('light','dark') else palette()
         variant=self.property('referenceVariant');left=bool(self.property('leftAligned'))
+        if variant=='primary' and self.property('previewAccentInk'):
+            from theme_accent import action_tokens
+            c.update(action_tokens(theme if theme in ('light','dark') else ui_theme.current_theme()))
         surface=self.parentWidget()
         navigation=isinstance(surface,SelectionSurface) and surface._selection_vertical and left
         navigation_ink=c['text'] if self.property('sidebarUtility') else c['secondary']
@@ -194,7 +332,7 @@ class IconTextButton(QPushButton):
             icon_tint=(c['on_action'] if active or variant=='primary'
                        else navigation_ink if navigation else c['red'] if variant=='danger' else c.get(named_icon[1],named_icon[1]))
             art=icon(named_icon[0],icon_tint if self.isEnabled() else c['muted'])
-        painter=QStylePainter(self);painter.drawControl(QStyle.CE_PushButton,option)
+        painter=QStylePainter(self);self._paint_surface(painter)
         painter.setFont(self.font())
         if self.property('splitDivider'):
             divider=QColor(c['on_action']);divider.setAlpha(32 if self.isEnabled() else 20)
@@ -214,8 +352,9 @@ class IconTextButton(QPushButton):
             painter.translate(-center)
             art.paint(painter,rect,Qt.AlignCenter,QIcon.Normal if self.isEnabled() else QIcon.Disabled)
             painter.restore();return
-        size=self.iconSize();gap=6
-        space=self.width()-(56 if left else 16)-size.width()-gap
+        size=self.iconSize()
+        gap,reserved=self._icon_text_spacing()
+        space=self.width()-reserved-size.width()-gap
         text=painter.fontMetrics().elidedText(words,Qt.ElideRight,max(1,space))
         width=painter.fontMetrics().horizontalAdvance(text)+size.width()+gap
         x=12 if left else (self.width()-width)/2
@@ -259,7 +398,9 @@ class HoldRemoveButton(IconTextButton):
     def _begin_hold(self):
         if self._hold_started is not None or not self.isEnabled():return
         self._hold_identity=self.identity();self._hold_started=time.monotonic()
-        self.setDown(True);self.setText('松手取消');self._hold_timer.start(self.HOLD_MS)
+        self.setDown(True)
+        if not self.property('iconOnlyHold'):self.setText('松手取消')
+        self._hold_timer.start(self.HOLD_MS)
         self._hold_frames.start();self.update()
 
     def cancel_hold(self):
@@ -307,17 +448,24 @@ class HoldRemoveButton(IconTextButton):
         from PySide6.QtWidgets import QStyle,QStylePainter
         from native_ui_common import button_style_option
         option=button_style_option(self);option.text='';option.icon=QIcon()
-        p=QStylePainter(self);p.drawControl(QStyle.CE_PushButton,option)
+        p=QStylePainter(self);self._paint_surface(p)
         rect=QRectF(self.rect()).adjusted(1,1,-1,-1)
         fraction=max(0.,min(1.,(time.monotonic()-self._hold_started)*1000/self.HOLD_MS))
         bar=QRectF(rect.left(),rect.top(),rect.width()*fraction,rect.height())
         shape=QPainterPath();shape.addRoundedRect(rect,RADIUS_CONTROL_PX,RADIUS_CONTROL_PX)
         p.save();p.setRenderHint(QPainter.Antialiasing);p.setClipPath(shape)
         p.fillRect(bar,QColor(palette()['red']));p.restore()
-        p.setFont(self.font());p.setPen(QColor(palette()['red']))
-        p.drawText(QRectF(self.rect()),Qt.AlignCenter,self.text())
-        p.save();p.setClipRect(bar);p.setPen(QColor('white'))
-        p.drawText(QRectF(self.rect()),Qt.AlignCenter,self.text());p.restore();p.end()
+        if self.property('iconOnlyHold'):
+            size=self.iconSize()
+            target=QRect((self.width()-size.width())//2,(self.height()-size.height())//2,size.width(),size.height())
+            icon('trash',palette()['red']).paint(p,target)
+            p.save();p.setClipRect(bar);icon('trash','#ffffff').paint(p,target);p.restore()
+        else:
+            p.setFont(self.font());p.setPen(QColor(palette()['red']))
+            p.drawText(QRectF(self.rect()),Qt.AlignCenter,self.text())
+            p.save();p.setClipRect(bar);p.setPen(QColor('white'))
+            p.drawText(QRectF(self.rect()),Qt.AlignCenter,self.text());p.restore()
+        p.end()
 
 
 class SortButton(IconTextButton):
@@ -351,7 +499,7 @@ class SortButton(IconTextButton):
         from PySide6.QtCore import QByteArray
         from native_ui_common import button_style_option
         option=button_style_option(self);option.text='';option.icon=QIcon()
-        p=QStylePainter(self);p.drawControl(QStyle.CE_PushButton,option);p.setFont(self.font())
+        p=QStylePainter(self);self._paint_surface(p);p.setFont(self.font())
         text_width=p.fontMetrics().horizontalAdvance(self.text())
         x=(self.width()-text_width-SORT_ARROW_GAP_PX-SORT_ARROW_SIZE_PX)/2
         c=palette();tint=c['text'] if self.isChecked() else c['secondary']
@@ -374,8 +522,8 @@ class SegmentedControl(SelectionSurface):
         self.setFixedHeight(SEGMENT_HEIGHT_PX)
         self.setSizePolicy(QSizePolicy.Fixed,QSizePolicy.Fixed)
         self.setObjectName('segmentedControl')
-        css(self,f'QFrame#segmentedControl{{background:rgba(255,255,255,10);border:0;border-radius:{RADIUS_CONTROL_PX}px;}}',
-            f'QFrame#segmentedControl{{background:rgba(0,0,0,10);border:0;border-radius:{RADIUS_CONTROL_PX}px;}}')
+        css(self,'QFrame#segmentedControl{background:transparent;border:0;}')
+        self.set_surface_background('rgba(255,255,255,10)','rgba(0,0,0,10)',RADIUS_CONTROL_PX)
         layout=QHBoxLayout(self);layout.setContentsMargins(2,2,2,2);layout.setSpacing(0)
 
     def add_button(self,control,width=None):
@@ -384,7 +532,7 @@ class SegmentedControl(SelectionSurface):
         sources=[]
         for theme in ('dark','light'):
             c=colors(theme);selected=c['card']
-            sources.append(f"QPushButton{{background:transparent;border:1px solid transparent;border-radius:{RADIUS_SUBCONTROL_PX}px;color:{c['secondary']};padding:0 {padding}px;font:12px 'FlickDock UI';}} QPushButton:hover{{background:{c['control_hover']};}} QPushButton:checked,QPushButton:checked:hover,QPushButton:checked:pressed{{background:transparent;border-color:transparent;color:{c['text']};}} QPushButton:pressed:!checked{{background:{c['control_pressed']};}} QPushButton:disabled{{color:{c['muted']};}} QPushButton[keyboardFocus=\"true\"]{{border-color:{c['ring']};}}")
+            sources.append(f"QPushButton{{background:transparent;border:0;color:{c['secondary']};padding:0 {padding+1}px;font:12px 'FlickDock UI';}} QPushButton:checked,QPushButton:checked:hover,QPushButton:checked:pressed{{color:{c['text']};}} QPushButton:disabled{{color:{c['muted']};}}")
         css(control,*sources);control.ensurePolished()
         if width is None:
             width=control.fontMetrics().horizontalAdvance(control.text())+2*(padding+SEGMENT_BORDER_PX)+2
@@ -403,17 +551,8 @@ def button(value='',glyph='',variant='quiet',parent=None,*,control_type=IconText
     for theme in ('dark','light'):
         c=colors(theme)
         if variant=='primary':c.update({key:'@fd_'+key+'@' for key in ('action','on_action','action_hover','action_pressed')})
-        background=c['control'] if variant in ('secondary','secondary_blue') else c['action'] if variant=='primary' else 'rgba(255,69,58,30)' if variant=='danger' else 'transparent'
         ink=c['on_action'] if variant=='primary' else c['red'] if variant=='danger' else c['link'] if variant in ('link','secondary_blue') else c['secondary'] if variant=='quiet' else c['text']
-        border=c['border'] if variant=='secondary' else 'transparent'
-        if variant=='primary':
-            hover=c['action_hover'];pressed=c['action_pressed']
-        elif variant=='danger':
-            hover='rgba(255,69,58,58)';pressed='rgba(255,69,58,78)'
-        elif variant in ('secondary','secondary_blue'):
-            hover=c['control_hover'];pressed=c['control_pressed']
-        else:hover=c['hover'];pressed=c['selected']
-        sources.append(f"QPushButton{{background:{background};color:{ink};border:1px solid {border};border-radius:{RADIUS_CONTROL_PX}px;padding:4px 11px;font:500 12px 'FlickDock UI';}} QPushButton:hover:enabled{{background:{hover};}} QPushButton:pressed:enabled{{background:{pressed};}} QPushButton:checked{{background:{c['selected']};color:{c['text']};}} QPushButton:disabled{{color:{c['muted']};background:{c['control']};border-color:transparent;}} QPushButton[keyboardFocus=\"true\"]{{border:1px solid {c['ring']};}}")
+        sources.append(f"QPushButton{{background:transparent;color:{ink};border:0;padding:5px 12px;font:500 12px 'FlickDock UI';}} QPushButton:checked{{color:{c['text']};}} QPushButton:disabled{{color:{c['muted']};}}")
     css(widget,*sources)
     if glyph:
         widget._reference_icon=(glyph,'secondary')
@@ -421,29 +560,42 @@ def button(value='',glyph='',variant='quiet',parent=None,*,control_type=IconText
     return widget
 
 
-def split_send_button(parent,height):
+class _SplitSendSurface(RoundedSurfaceFrame):
+    def __init__(self,parent=None):super().__init__(parent,content_inset=0)
+    def surface_style(self):
+        c=palette();return c['action'] if self.isEnabled() else c['control'],None,RADIUS_CONTROL_PX
+
+
+class _PreviewActionSurface(RoundedSurfaceFrame):
+    def __init__(self,parent=None):super().__init__(parent,content_inset=0)
+    def surface_style(self):
+        return ('#141417' if ui_theme.current_theme()=='dark' else '#ededee'),None,RADIUS_CONTROL_PX
+
+
+def split_send_button(parent,height,*,preview=False):
     """One primary action with a separate keyboard-accessible device menu."""
-    frame=QFrame(parent);frame.setObjectName('splitSendControl');frame.setFixedHeight(height)
+    frame=_SplitSendSurface(parent);frame.setObjectName('splitSendControl');frame.setFixedHeight(height)
     frame.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
-    css(frame,*[f"QFrame#splitSendControl{{background:@fd_action@;border:0;border-radius:8px;}} "
-                 f"QFrame#splitSendControl:disabled{{background:{colors(t)['control']};}}" for t in ('dark','light')])
+    css(frame,'QFrame#splitSendControl{background:transparent;border:0;}')
     layout=QHBoxLayout(frame);layout.setContentsMargins(0,0,0,0);layout.setSpacing(0)
-    primary=button('发送文件',variant='primary',parent=frame);primary.setFixedHeight(height)
-    arrow=button('','chevron-down',variant='primary',parent=frame);arrow.setFixedSize(36,height)
-    arrow.setIconSize(QSize(14,14));arrow.setProperty('splitDivider',True)
+    primary=button('发送文件','send' if preview else '',variant='primary',parent=frame);primary.setFixedHeight(height)
+    arrow=button('','chevron-down',variant='primary',parent=frame)
+    arrow.setFixedSize(PREVIEW_ACTION_MENU_WIDTH_PX if preview else 36,height)
+    arrow.setIconSize(QSize(12 if preview else 14,12 if preview else 14));arrow.setProperty('splitDivider',True)
+    if preview:
+        primary.setMinimumWidth(0);primary.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Fixed)
+        primary.setIconSize(QSize(PREVIEW_ACTION_ICON_SIZE_PX,PREVIEW_ACTION_ICON_SIZE_PX))
+        primary.setProperty('iconTextGap',PREVIEW_ACTION_ICON_TEXT_GAP_PX)
+        primary.setProperty('iconTextReservedWidth',4)
+        primary.setProperty('previewAccentInk',True);arrow.setProperty('previewAccentInk',True)
     arrow.setToolTip('选择同账号设备');arrow.setAccessibleName('选择同账号设备')
     for widget,right in ((primary,False),(arrow,True)):
         styles=[]
         for theme in ('dark','light'):
             c=colors(theme)
             c.update({key:'@fd_'+key+'@' for key in ('action','on_action','action_hover','action_pressed')})
-            corners=('border-top-left-radius:0;border-bottom-left-radius:0;border-top-right-radius:8px;border-bottom-right-radius:8px;'
-                     if right else 'border-top-left-radius:8px;border-bottom-left-radius:8px;border-top-right-radius:0;border-bottom-right-radius:0;')
-            styles.append(f"QPushButton{{background:{c['action']};color:{c['on_action']};border:1px solid transparent;"
-                          f"{corners}padding:4px 8px;font:400 12px 'FlickDock UI';}}"
-                          f"QPushButton:hover:enabled{{background:{c['action_hover']};}} QPushButton:pressed:enabled{{background:{c['action_pressed']};}}"
-                          f"QPushButton:disabled{{background:{c['control']};color:{c['muted']};}}"
-                          f"QPushButton[keyboardFocus=\"true\"]{{border:1px solid {c['ring']};}}")
+            styles.append(f"QPushButton{{background:transparent;color:{c['on_action']};border:0;padding:5px 9px;font:400 12px 'FlickDock UI';}}"
+                          f"QPushButton:disabled{{color:{c['muted']};}}")
         css(widget,*styles)
     layout.addWidget(primary,1);layout.addWidget(arrow)
     return frame,primary,arrow
@@ -459,7 +611,7 @@ class ToolbarButton(FeedbackButton):
         if self.isEnabled() and (self.isChecked() or v['hover']>.01 or v['down']>.01 or self.isDown()):
             fill=QColor(255,255,255,38) if self.property('inverseOnSelection') else ink(c['control_pressed'] if self.isDown() or v['down']>.1 else c['selected'] if self.isChecked() else c['control_hover'])
             if not self.isChecked():fill.setAlphaF(fill.alphaF()*min(1,max(v['hover']+v['down'],1. if self.isDown() else 0.)))
-            p.setPen(Qt.NoPen);p.setBrush(fill);p.drawRoundedRect(QRectF(self.rect()).adjusted(1,1,-1,-1),8,8)
+            paint_rounded_surface(p,QRectF(self.rect()).adjusted(1,1,-1,-1),RADIUS_CONTROL_PX,fill)
         if not self.isEnabled():p.setOpacity(float(self.property('disabledOpacity') or .4))
         name={'pin-filled':'pin','check':'check'}.get(self.glyph,self.glyph)
         tint=self._glyph_tint or (c['action'] if self.isChecked() and name=='pin' else c['blue'] if self.isChecked() else c['secondary'])
@@ -470,12 +622,89 @@ class ToolbarButton(FeedbackButton):
         elif name in ('expand','collapse'):
             p.translate(center);p.rotate(6*hover if name=='expand' else -6*hover);p.translate(-center)
         elif name=='dock':p.translate(hover,0)
-        icon(name,tint).paint(p,QRect((self.width()-16)//2,(self.height()-16)//2,16,16))
+        glyph_size=self.property('glyphSize')
+        glyph_size=glyph_size if isinstance(glyph_size,int) and glyph_size>0 else 16
+        icon(name,tint).paint(p,QRect((self.width()-glyph_size)//2,(self.height()-glyph_size)//2,glyph_size,glyph_size))
         p.restore()
         if self.hasFocus() and self._keyboard_focus:
-            p.setPen(QPen(QColor('#FAFAFA' if self.property('inverseOnSelection') else c['link']),1.5));p.setBrush(Qt.NoBrush)
-            p.drawRoundedRect(QRectF(self.rect()).adjusted(2,2,-2,-2),7,7)
+            paint_rounded_surface(p,QRectF(self.rect()).adjusted(2,2,-2,-2),RADIUS_SUBCONTROL_PX,
+                                  QColor(Qt.transparent),QColor('#FAFAFA' if self.property('inverseOnSelection') else c['link']))
         p.end()
+
+
+class StatusCardAction(ToolbarButton):
+    """Reveal the action on card hover, while retaining keyboard access."""
+    def __init__(self,glyph,parent=None,*,motion=True):
+        super().__init__(glyph,parent,motion=motion)
+        self._card_hovered=False
+        self.setAttribute(Qt.WA_TransparentForMouseEvents,True)
+
+    def set_card_hovered(self,hovered):
+        hovered=bool(hovered)
+        if hovered==self._card_hovered:return
+        self._card_hovered=hovered
+        self.setAttribute(Qt.WA_TransparentForMouseEvents,not hovered)
+        self.update()
+
+    def paintEvent(self,event):
+        if self._card_hovered or (self.hasFocus() and self._keyboard_focus):super().paintEvent(event)
+
+
+class PreviewSurfaceFrame(RoundedSurfaceFrame):
+    """Preview surface with one device-pixel AA outline at every DPR."""
+    def surface_style(self):
+        c=palette();return c['card'],c['border'],RADIUS_CARD_PX
+
+
+class PreviewSurfaceStack(QStackedWidget):
+    """Keep the empty state transparent and the selected surface outlined."""
+    def __init__(self,parent=None):
+        super().__init__(parent);self._surface_enabled=True
+        self.setFrameShape(QFrame.NoFrame);self.setContentsMargins(1,1,1,1)
+
+    def set_surface_enabled(self,enabled):
+        enabled=bool(enabled)
+        if self._surface_enabled==enabled:return
+        self._surface_enabled=enabled
+        inset=1 if enabled else 0;self.setContentsMargins(inset,inset,inset,inset)
+        self.update()
+
+    def paintEvent(self,event):
+        if not self._surface_enabled:return
+        p=QPainter(self);c=palette()
+        paint_rounded_surface(p,self.rect(),RADIUS_CARD_PX,ink(c['card']),ink(c['border']))
+        p.end()
+
+
+class PreviewStatusCard(PreviewSurfaceFrame):
+    """Keep the hover action anchored without shifting the status layout."""
+    def __init__(self,parent=None):
+        super().__init__(parent);self._hover_action=None
+
+    def set_hover_action(self,action):
+        self._hover_action=action
+        action.set_card_hovered(self.underMouse())
+        self._position_action();action.raise_()
+
+    def _position_action(self):
+        if self._hover_action is not None:
+            self._hover_action.move(self.width()-self._hover_action.width()-PREVIEW_STATUS_ACTION_RIGHT_INSET_PX,
+                                    PREVIEW_STATUS_ACTION_TOP_INSET_PX)
+
+    def enterEvent(self,event):
+        if self._hover_action is not None:self._hover_action.set_card_hovered(True)
+        super().enterEvent(event)
+
+    def leaveEvent(self,event):
+        if self._hover_action is not None:self._hover_action.set_card_hovered(False)
+        super().leaveEvent(event)
+
+    def resizeEvent(self,event):
+        super().resizeEvent(event);self._position_action()
+
+    def hideEvent(self,event):
+        if self._hover_action is not None:self._hover_action.set_card_hovered(False)
+        super().hideEvent(event)
 
 
 class LanButton(ToolbarButton):
@@ -483,12 +712,12 @@ class LanButton(ToolbarButton):
     def paintEvent(self,event):
         p=QPainter(self);p.setRenderHint(QPainter.Antialiasing);c=palette()
         if self.isEnabled() and (self.underMouse() or self.isDown()):
-            p.setPen(Qt.NoPen);p.setBrush(ink(c['selected'] if self.isDown() else c['hover']));p.drawRoundedRect(QRectF(self.rect()).adjusted(1,1,-1,-1),8,8)
+            paint_rounded_surface(p,QRectF(self.rect()).adjusted(1,1,-1,-1),RADIUS_CONTROL_PX,ink(c['selected'] if self.isDown() else c['hover']))
         icon('nearby',c['link']).paint(p,QRect(7,(self.height()-16)//2,16,16))
         f=self.font();f.setPixelSize(13 if sys.platform=='win32' else 12);p.setFont(f);p.setPen(QColor(c['text']))
         p.drawText(QRectF(29,0,self.width()-33,self.height()),Qt.AlignLeft|Qt.AlignVCenter,'文件互传')
         if keyboard_focus_visible(self):
-            p.setPen(QPen(QColor(c['link']),1.5));p.setBrush(Qt.NoBrush);p.drawRoundedRect(QRectF(self.rect()).adjusted(2,2,-2,-2),7,7)
+            paint_rounded_surface(p,QRectF(self.rect()).adjusted(2,2,-2,-2),RADIUS_SUBCONTROL_PX,QColor(Qt.transparent),QColor(c['link']))
         p.end()
 
 
@@ -497,14 +726,13 @@ class AvatarButton(ToolbarButton):
         p=QPainter(self);p.setRenderHint(QPainter.Antialiasing)
         c=palette();initial=getattr(self,'initial','')
         if self.isEnabled() and (self.underMouse() or self.isDown()):
-            p.setPen(Qt.NoPen);p.setBrush(ink(c['selected'] if self.isDown() else c['hover']))
-            p.drawRoundedRect(QRectF(self.rect()).adjusted(1,1,-1,-1),8,8)
+            paint_rounded_surface(p,QRectF(self.rect()).adjusted(1,1,-1,-1),RADIUS_CONTROL_PX,ink(c['selected'] if self.isDown() else c['hover']))
         p.setPen(Qt.NoPen);p.setBrush(QColor(c['action']) if initial else ink(c['control']));p.drawEllipse(QRectF(4,4,self.width()-8,self.height()-8))
         if initial:
             p.setPen(QColor(c['on_action']));f=p.font();f.setPixelSize(11);set_ui_weight(f,600);p.setFont(f);p.drawText(self.rect(),Qt.AlignCenter,initial)
         else:icon('user',c['secondary']).paint(p,QRect((self.width()-16)//2,(self.height()-16)//2,16,16))
         if self.hasFocus() and self._keyboard_focus:
-            p.setPen(QPen(QColor(c['link']),1.5));p.setBrush(Qt.NoBrush);p.drawRoundedRect(QRectF(self.rect()).adjusted(2,2,-2,-2),7,7)
+            paint_rounded_surface(p,QRectF(self.rect()).adjusted(2,2,-2,-2),RADIUS_SUBCONTROL_PX,QColor(Qt.transparent),QColor(c['link']))
         p.end()
 
 
@@ -522,8 +750,7 @@ class ProfileButton(QPushButton):
         p=QPainter(self);p.setRenderHint(QPainter.Antialiasing);c=palette()
         if self.isDown():fill=QColor(255,255,255,40) if ui_theme.current_theme()=='dark' else QColor(0,0,0,34)
         else:fill=ink(c['hover'] if self.underMouse() else c['control'])
-        p.setPen(QPen(ink(c['border']),1));p.setBrush(fill)
-        p.drawRoundedRect(QRectF(self.rect()).adjusted(.5,1.5,-.5,-1.5),RADIUS_CARD_PX,RADIUS_CARD_PX)
+        paint_rounded_surface(p,QRectF(self.rect()).adjusted(0,1,0,-1),RADIUS_CARD_PX,fill,ink(c['border']))
         avatar=QRectF(8,(self.height()-28)/2,28,28)
         p.setBrush(QColor(c['action']) if self.connected else ink(c['control']));p.setPen(Qt.NoPen);p.drawEllipse(avatar)
         f=p.font();f.setPixelSize(14 if sys.platform=='win32' else 12);set_ui_weight(f,600);p.setFont(f);p.setPen(QColor(c['on_action']))
@@ -542,7 +769,7 @@ class ProfileButton(QPushButton):
             p.setFont(status_font);p.setPen(QColor(c['secondary']));p.drawText(QRectF(46,top+name_height+gap,self.width()-68,status_height),Qt.AlignVCenter,p.fontMetrics().elidedText(self.status,Qt.ElideRight,self.width()-68))
         icon('right',c['muted']).paint(p,QRect(self.width()-20,(self.height()-12)//2,12,12))
         if keyboard_focus_visible(self):
-            p.setPen(QPen(QColor(c['link']),1.5));p.setBrush(Qt.NoBrush);p.drawRoundedRect(QRectF(self.rect()).adjusted(2,2,-2,-2),8,8)
+            paint_rounded_surface(p,QRectF(self.rect()).adjusted(2,2,-2,-2),RADIUS_CONTROL_PX,QColor(Qt.transparent),QColor(c['link']))
         p.end()
 
 
@@ -566,16 +793,12 @@ class SelectionCheck(QCheckBox):
         c=palette()
         if not self.isEnabled():p.setOpacity(.5)
         fill=QColor(c['action']) if self.isChecked() else QColor(c['hover'] if self.underMouse() or self.isDown() else c['card'])
-        p.setBrush(fill)
-        from native_ui_common import pixel_aligned_border
-        border,stroke=pixel_aligned_border(p,QRectF(0,0,15,15))
-        p.setPen(QPen(QColor(c['action']) if self.isChecked() else ink(c['ring'] if self.underMouse() else c['input_border']),stroke))
-        p.drawRoundedRect(border,RADIUS_SMALL_PX,RADIUS_SMALL_PX)
+        paint_rounded_surface(p,QRectF(0,0,15,15),RADIUS_SMALL_PX,fill,
+                              QColor(c['action']) if self.isChecked() else ink(c['ring'] if self.underMouse() else c['input_border']))
         if self.isChecked():
             p.setPen(QPen(QColor(c['on_action']),1.5,Qt.SolidLine,Qt.RoundCap,Qt.RoundJoin));p.drawLine(QPointF(4,7),QPointF(6,10));p.drawLine(QPointF(6,10),QPointF(11,4.5))
         if keyboard_focus_visible(self):
-            p.setPen(QPen(QColor(c['ring']),1));p.setBrush(Qt.NoBrush)
-            p.drawRoundedRect(QRectF(-1,-1,17,17),RADIUS_SMALL_PX+1,RADIUS_SMALL_PX+1)
+            paint_rounded_surface(p,QRectF(-1,-1,17,17),RADIUS_SMALL_PX,QColor(Qt.transparent),QColor(c['ring']))
         p.end()
 
 
@@ -726,11 +949,102 @@ class OpticalTextButton(IconTextButton):
         from PySide6.QtWidgets import QStyle,QStylePainter
         from native_ui_common import button_style_option
         option=button_style_option(self);option.text=''
-        p=QStylePainter(self);p.drawControl(QStyle.CE_PushButton,option)
+        p=QStylePainter(self);self._paint_surface(p)
         p.setFont(self.font());p.setPen(self.palette().color(QPalette.ButtonText))
         text=p.fontMetrics().elidedText(self.text(),Qt.ElideRight,max(0,self.width()-8))
         x=(self.width()-p.fontMetrics().horizontalAdvance(text))/2
         p.drawText(QPointF(x,optical_text_baseline(p.font(),text,self.height())),text);p.end()
+
+
+class FilenameEdit(QTextEdit):
+    """Wrap one filename without accepting hard line breaks."""
+    submitted=Signal()
+    height_changed=Signal(int)
+
+    def __init__(self,parent=None):
+        super().__init__(parent)
+        self._preediting=False
+        self._measure_document=QTextDocument(self)
+        self._measure_document.setDocumentMargin(0)
+        option=QTextOption();option.setWrapMode(QTextOption.WrapAnywhere)
+        self._measure_document.setDefaultTextOption(option)
+        self._measure_timer=QTimer(self);self._measure_timer.setSingleShot(True)
+        self._measure_timer.timeout.connect(self._update_height)
+        self.setAcceptRichText(False);self.setAcceptDrops(False);self.setTabChangesFocus(True)
+        self.setVerticalScrollBar(RoundedScrollBar(Qt.Vertical,self,thumb_color=lambda:palette()['secondary']))
+        self.setAccessibleName('文件名')
+        self.setWordWrapMode(QTextOption.WrapAnywhere)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.document().setDocumentMargin(0)
+        self.setFixedHeight(RENAME_EDIT_MIN_HEIGHT_PX)
+        self.textChanged.connect(self._schedule_measure)
+
+    def event(self,event):
+        if event.type()==QEvent.Paint:
+            c=palette();p=QPainter(self)
+            paint_rounded_surface(p,self.rect(),RADIUS_CONTROL_PX,ink(c['input']),
+                                  ink(c['ring'] if self.hasFocus() else c['input_border']))
+            p.end()
+        return super().event(event)
+
+    def set_filename(self,name):
+        self.setPlainText(name)
+        self._measure_timer.stop();self._update_height()
+
+    def _schedule_measure(self,*_):
+        if not self._measure_timer.isActive():self._measure_timer.start(0)
+
+    def _update_height(self):
+        horizontal=2*(RENAME_EDIT_PADDING_X_PX+RENAME_EDIT_BORDER_PX)
+        vertical=2*(RENAME_EDIT_PADDING_Y_PX+RENAME_EDIT_BORDER_PX)
+        self._measure_document.setDefaultFont(self.font())
+        self._measure_document.setTextWidth(max(1,self.width()-horizontal))
+        self._measure_document.setPlainText(self.toPlainText())
+        natural=math.ceil(self._measure_document.size().height())+vertical
+        maximum=max(RENAME_EDIT_MIN_HEIGHT_PX,self.fontMetrics().lineSpacing()*RENAME_EDIT_MAX_LINES+vertical)
+        height=max(RENAME_EDIT_MIN_HEIGHT_PX,min(natural,maximum))
+        if height!=self.height():
+            self.setFixedHeight(height);self.height_changed.emit(height)
+
+    def resizeEvent(self,event):
+        super().resizeEvent(event)
+        if hasattr(self,'_measure_timer'):self._schedule_measure()
+
+    def changeEvent(self,event):
+        super().changeEvent(event)
+        if event.type() in (QEvent.FontChange,QEvent.StyleChange) and hasattr(self,'_measure_timer'):
+            self._schedule_measure()
+
+    def inputMethodEvent(self,event):
+        self._preediting=bool(event.preeditString())
+        super().inputMethodEvent(event)
+
+    def focusOutEvent(self,event):
+        super().focusOutEvent(event);self._preediting=False;self.update()
+
+    def focusInEvent(self,event):
+        super().focusInEvent(event);self.update()
+
+    def keyPressEvent(self,event):
+        if event.key() in (Qt.Key_Return,Qt.Key_Enter):
+            if self._preediting:
+                from PySide6.QtGui import QGuiApplication
+                QGuiApplication.inputMethod().commit()
+            else:self.submitted.emit()
+            event.accept();return
+        super().keyPressEvent(event)
+
+    def insertFromMimeData(self,source):
+        if not source.hasText():return
+        text=re.sub(r'[\r\n\u2028\u2029]+',' ',source.text())
+        cursor=self.textCursor();cursor.insertText(text);self.setTextCursor(cursor)
+
+
+class _RenameSurface(RoundedSurfaceFrame):
+    def surface_style(self):
+        dark=ui_theme.current_theme()=='dark';c=palette()
+        return c['dialog_surface'] if dark else '#F6F6F6', 'rgba(255,255,255,20)' if dark else 'rgba(0,0,0,23)',c['radius']
 
 
 class RenameDialog(QDialog):
@@ -740,32 +1054,38 @@ class RenameDialog(QDialog):
         from collections import OrderedDict
         self.shelf=shelf;self._shadow_cache=OrderedDict()
         self.setAttribute(Qt.WA_TranslucentBackground);self.setWindowModality(Qt.WindowModal)
-        self.setWindowTitle('重命名文件');self.setFixedSize(420,252)
+        self.setWindowTitle('重命名文件');self.setFixedSize(420,RENAME_DIALOG_BASE_HEIGHT_PX)
         layout=QVBoxLayout(self);layout.setContentsMargins(20,20,20,20)
-        self.card=QFrame(self);self.card.setObjectName('renameSheet')
-        c=palette();css(self.card,f"QFrame#renameSheet{{background:{colors('dark')['surface']};border:1px solid rgba(255,255,255,20);border-radius:{c['radius']}px;}}",
-            f"QFrame#renameSheet{{background:#F6F6F6;border:1px solid rgba(0,0,0,23);border-radius:{c['radius']}px;}}")
+        self.card=_RenameSurface(self);self.card.setObjectName('renameSheet')
+        css(self.card,'QFrame#renameSheet{background:transparent;border:0;}')
         form=QVBoxLayout(self.card);form.setContentsMargins(20,20,20,20);form.setSpacing(16)
         header=QHBoxLayout();header.addWidget(label('重命名文件',14,600,parent=self.card),1)
         close=ToolbarButton('close',self.card,motion=shelf.manager.motion);close.setFixedSize(32,32);close.setAutoDefault(False);close.clicked.connect(self.reject);header.addWidget(close);form.addLayout(header)
         form.addWidget(label('修改扩展名可能导致文件不可用',12,400,'secondary',self.card))
-        edit=shelf.rename_edit;edit.setParent(self.card);edit.setFixedHeight(34)
-        css(edit,*[f"QLineEdit{{background:{colors(t)['input']};color:{colors(t)['text']};border:1px solid {colors(t)['input_border']};border-radius:8px;padding:7px 10px;font:12px 'FlickDock UI';}} QLineEdit:focus{{border-color:{colors(t)['ring']};}}" for t in ('dark','light')])
+        edit=shelf.rename_edit;edit.setParent(self.card)
+        css(edit,*[f"QTextEdit{{background:transparent;color:{colors(t)['text']};border:0;padding:{RENAME_EDIT_PADDING_Y_PX+1}px {RENAME_EDIT_PADDING_X_PX+1}px;font:12px 'FlickDock UI';}} "
+                   f"QScrollBar:vertical{{width:6px;background:transparent;margin:2px 0;}} "
+                   f"QScrollBar::handle:vertical{{background:transparent;min-height:20px;}} "
+                   "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}" for t in ('dark','light')])
         form.addWidget(edit);actions=QHBoxLayout();actions.addStretch(1)
         cancel=button('取消',variant='secondary',parent=self.card);cancel.setAutoDefault(False);cancel.clicked.connect(self.reject)
         self.confirm=button('确定',variant='primary',parent=self.card);self.confirm.clicked.connect(self._commit)
         self.confirm.setAutoDefault(True);self.confirm.setDefault(True)
         actions.addWidget(cancel);actions.addWidget(self.confirm);form.addLayout(actions);layout.addWidget(self.card)
-        edit.editingFinished.disconnect(shelf.commit_rename)
-        edit.returnPressed.disconnect(shelf.commit_rename)
+        edit.submitted.connect(self._commit)
+        edit.height_changed.connect(self._resize_for_editor)
         self.rejected.connect(edit.hide)
+
+    def _resize_for_editor(self,height):
+        self.setFixedHeight(RENAME_DIALOG_BASE_HEIGHT_PX+height-RENAME_EDIT_MIN_HEIGHT_PX)
 
     def _commit(self):
         if self.shelf.commit_rename():self.accept()
 
     def paintEvent(self,event):
         from surface_morph import paint_surface_shadow
-        p=QPainter(self);paint_surface_shadow(p,QRectF(self.card.geometry()),self._shadow_cache)
+        p=QPainter(self);p.setCompositionMode(QPainter.CompositionMode_Source);p.fillRect(self.rect(),Qt.transparent)
+        p.setCompositionMode(QPainter.CompositionMode_SourceOver);paint_surface_shadow(p,QRectF(self.card.geometry()),self._shadow_cache)
         p.end()
 
 
@@ -819,25 +1139,26 @@ def invalidate_thumbnail(shelf,ref):
             if key[0]==ref:cache.pop(key,None)
 
 
-def thumbnail(shelf,ref,size=40):
+def thumbnail(shelf,ref,size=40,dpr=None):
     # Artwork is static across scroll frames. Status badges remain live.
     store=getattr(shelf,'_reference_thumbnail_cache',None)
     if store is None:store=shelf._reference_thumbnail_cache=OrderedDict()
-    key=(ref,int(size),ui_theme.current_theme())
+    ratio=float(dpr or shelf.devicePixelRatioF() or 1.)
+    key=(ref,int(size),ui_theme.current_theme(),ratio)
     if key in store:
         store.move_to_end(key);return store[key]
-    pm=QPixmap(size*2,size*2);pm.setDevicePixelRatio(2);pm.fill(Qt.transparent)
+    pm=QPixmap(round(size*ratio),round(size*ratio));pm.setDevicePixelRatio(ratio);pm.fill(Qt.transparent)
     p=QPainter(pm);p.setRenderHints(QPainter.Antialiasing|QPainter.SmoothPixmapTransform)
     rect=QRectF(.5,.5,size-1,size-1);category=shelf.content.category(ref)
     backgrounds={'images':'#26364A','video':'#202344','audio':'#7E22CE','text':'#4A3D28','links':'#164354'}
     ext=Path(shelf.content.title(ref)).suffix.lower()
     bg=backgrounds.get(category,'#3B3B3F' if ext=='.zip' else '#593140' if ext=='.pdf' else '#263A55')
-    p.setPen(QPen(QColor(255,255,255,38),1));p.setBrush(QColor(bg));p.drawRoundedRect(rect,size*.25,size*.25)
+    paint_rounded_surface(p,QRectF(0,0,size,size),size*.25,QColor(bg),QColor(255,255,255,38))
     cached=getattr(shelf,'preview_cache',{}).get(ref)
     actual=category=='images' or ext in ('.lnk','.exe','.app') or cached is not None and not cached.isNull()
     if actual:
         provider=getattr(shelf,'item_pixmap',shelf.content.item_pixmap)
-        art=provider(ref,round(size),dpr=2)
+        art=provider(ref,round(size),dpr=ratio)
         cache=getattr(shelf,'image_cache',None)
         decoded=cache.image(ref,128) if cache and category=='images' else cached
         if decoded is not None and not decoded.isNull():
@@ -879,7 +1200,7 @@ class ThumbnailLabel(TransferIconLabel):
     def paintEvent(self,event):
         if outside_content_view(self):return
         p=QPainter(self);p.setRenderHint(QPainter.Antialiasing)
-        size=min(self.width(),self.height());art=thumbnail(self.shelf,self.ref,size)
+        size=min(self.width(),self.height());art=thumbnail(self.shelf,self.ref,size,self.devicePixelRatioF())
         p.drawPixmap(0,0,art)
         draw_status(p,QRectF(size-18,size-18,18,18),self.cloud_status,self.repository.transfers.get(self.ref))
         p.end()
@@ -928,9 +1249,9 @@ class MiniStack(StackTile):
     def _render_card(self,ref,ratio,depth):
         result=QPixmap(round(192*ratio),round(128*ratio));result.setDevicePixelRatio(ratio);result.fill(Qt.transparent)
         p=QPainter(result);p.setRenderHints(QPainter.Antialiasing|QPainter.SmoothPixmapTransform);c=palette()
-        p.setPen(QPen(QColor(255,255,255,38) if ui_theme.current_theme()=='dark' else QColor('#D4D4D4'),1))
-        p.setBrush(QColor(c['stack_cards'][depth]));p.drawRoundedRect(QRectF(.5,.5,191,127),RADIUS_PANEL_PX,RADIUS_PANEL_PX)
-        p.drawPixmap(14,14,thumbnail(self.shelf,ref,46))
+        edge=QColor(255,255,255,38) if ui_theme.current_theme()=='dark' else QColor('#D4D4D4')
+        paint_rounded_surface(p,QRectF(0,0,192,128),RADIUS_PANEL_PX,QColor(c['stack_cards'][depth]),edge)
+        p.drawPixmap(14,14,thumbnail(self.shelf,ref,46,ratio))
         title=self.shelf.content.title(ref);f=QFont(self.font());f.setPixelSize(13 if sys.platform=='win32' else 11);set_ui_weight(f,600);p.setFont(f);p.setPen(QColor(c['text']))
         p.drawText(QRectF(14,77,164,20),Qt.AlignVCenter,p.fontMetrics().elidedText(title,Qt.ElideRight,164))
         f.setPixelSize(11 if sys.platform=='win32' else 9);set_ui_weight(f,400);p.setFont(f);p.setPen(QColor(c['file_description']));p.drawText(QRectF(14,99,164,18),Qt.AlignVCenter,item_detail(self.shelf,ref).split(' · ')[0])
@@ -967,7 +1288,7 @@ class MiniStack(StackTile):
         if not self.refs:
             r=QRectF((self.width()-176)/2,28,176,128)
             path=QPainterPath();path.addRoundedRect(r,EMPTY_DROP_RADIUS_PX,EMPTY_DROP_RADIUS_PX)
-            self.border_motion.paint(p,path,dark=ui_theme.current_theme()=='dark',idle_fill=ink(palette()['card']))
+            self.border_motion.paint(p,path,dark=ui_theme.current_theme()=='dark',radius=EMPTY_DROP_RADIUS_PX,idle_fill=ink(palette()['card']))
             icon('upload',palette()['secondary']).paint(p,QRect(round(r.center().x()-12),round(r.center().y()-31),24,24))
             f=p.font()
             f.setPixelSize(13);p.setFont(f);p.setPen(QColor(palette()['text']));p.drawText(r.adjusted(0,34,0,0),Qt.AlignCenter,'点击选择文件');p.end();return
@@ -999,16 +1320,17 @@ def build_overview(view,preview_type):
     view.title._reference_style=tuple(style+'\nfont-weight:600;' for style in view.title._reference_style)
     view.title.setStyleSheet(view.title._reference_style[ui_theme.current_theme()=='light'])
     brand.addWidget(view.title)
-    view.count_label=label('',10,600,'secondary',view.header);view.count_label.setAlignment(Qt.AlignCenter)
-    css(view.count_label,"color:#D4D4D8;background:rgba(255,255,255,28);border:0;border-radius:10px;padding:1px 9px;font:600 10px 'FlickDock UI';",
-        "color:#515154;background:rgba(0,0,0,18);border:0;border-radius:10px;padding:1px 9px;font:600 10px 'FlickDock UI';")
+    view.count_label=label('',10,600,'secondary',view.header,control_type=RoundedBadge);view.count_label.setAlignment(Qt.AlignCenter)
+    view.count_label.set_theme_backgrounds('rgba(255,255,255,28)','rgba(0,0,0,18)')
+    css(view.count_label,"color:#D4D4D8;background:transparent;border:0;padding:1px 9px;font:600 10px 'FlickDock UI';",
+        "color:#515154;background:transparent;border:0;padding:1px 9px;font:600 10px 'FlickDock UI';")
     view.count_label.setFixedHeight(20);brand.addWidget(view.count_label);brand.addStretch();head.addWidget(view.header_brand)
     view.header_tools=QWidget(view.header)
     tools=QHBoxLayout(view.header_tools);tools.setContentsMargins(16,10,12,10);tools.setSpacing(9);tools.addStretch()
-    view.search_edit=QLineEdit(view.header);view.search_edit.setPlaceholderText('搜索...');view.search_edit.setFixedSize(176,32)
+    view.search_edit=RoundedSearchEdit(view.header);view.search_edit.setPlaceholderText('搜索...');view.search_edit.setFixedSize(176,32)
     view.search_edit.setClearButtonEnabled(True)
     view.search_edit.setAccessibleName('搜索搁架内容');view.search_edit.textChanged.connect(lambda _:view.rebuild())
-    css(view.search_edit,*[f"QLineEdit{{background:{colors(t)['input']};color:{colors(t)['text']};border:1px solid {colors(t)['input_border']};border-radius:8px;padding:4px 10px;font:12px 'FlickDock UI';}} QLineEdit:focus{{border-color:{colors(t)['ring']};}} QLineEdit:disabled{{color:{colors(t)['muted']};background:{colors(t)['control']};}}" for t in ('dark','light')])
+    css(view.search_edit,*[f"QLineEdit{{background:transparent;color:{colors(t)['text']};border:0;padding:5px 11px;font:12px 'FlickDock UI';}} QLineEdit:disabled{{color:{colors(t)['muted']};}}" for t in ('dark','light')])
     tools.addWidget(view.search_edit)
     view.view_segment=SegmentedControl(view.header_tools)
     view.view_list=button('','list',parent=view.view_segment);view.view_grid=button('','grid',parent=view.view_segment)
@@ -1034,9 +1356,9 @@ def build_overview(view,preview_type):
     for key,title in view.CATEGORIES:
         control=button(title,glyphs[key],parent=view.sidebar);control.setCheckable(True);control.setFixedHeight(34)
         control.setProperty('leftAligned',True)
-        css(control,*[f"QPushButton{{background:transparent;color:{colors(t)['secondary']};border:1px solid transparent;border-radius:{RADIUS_CONTROL_PX}px;text-align:left;padding:6px 12px;font:400 12px 'FlickDock UI';}} QPushButton:hover{{background:{colors(t)['hover']};}} QPushButton:checked,QPushButton:checked:hover{{background:transparent;color:@fd_on_action@;font-weight:400;}} QPushButton[keyboardFocus=\"true\"]{{border-color:{colors(t)['ring']};}}" for t in ('dark','light')])
+        css(control,*[f"QPushButton{{background:transparent;color:{colors(t)['secondary']};border:0;text-align:left;padding:7px 13px;font:400 12px 'FlickDock UI';}} QPushButton:checked,QPushButton:checked:hover{{color:@fd_on_action@;font-weight:400;}}" for t in ('dark','light')])
         control.clicked.connect(lambda checked=False,key=key:view.set_category(key));view.category_group.addButton(control);side.addWidget(control);view.sidebar.add_selection_button(control)
-        count=label('',11,400,'muted',control);count.setAlignment(Qt.AlignCenter);count.setGeometry(145,7,28,20);count.setAttribute(Qt.WA_TransparentForMouseEvents)
+        count=label('',11,400,'muted',control,control_type=RoundedBadge);count.setAlignment(Qt.AlignCenter);count.setGeometry(145,7,28,20);count.setAttribute(Qt.WA_TransparentForMouseEvents)
         view.nav_counts[key]=count;view.category_buttons[key]=control;view.sidebar_buttons[key]=control
     view.transfer_badge=view.nav_counts['uploading']
     side.addStretch(1)
@@ -1085,12 +1407,12 @@ def build_overview(view,preview_type):
     mid.addWidget(view.selection_bar)
     view.transfer_summary=QWidget(view.middle);summary=QHBoxLayout(view.transfer_summary);summary.setContentsMargins(16,10,16,10)
     view.transfer_count=label('',12,600,parent=view.transfer_summary);view.transfer_eta=label('',11,400,'link',view.transfer_summary)
-    view.transfer_bar=QProgressBar(view.transfer_summary);view.transfer_bar.setTextVisible(False);view.transfer_bar.setFixedHeight(6)
-    css(view.transfer_bar,*[f"QProgressBar{{border:0;background:{colors(t)['control']};border-radius:3px;}} QProgressBar::chunk{{background:@fd_action@;border-radius:3px;}}" for t in ('dark','light')])
+    view.transfer_bar=RoundedProgressBar(view.transfer_summary);view.transfer_bar.setFixedHeight(6)
+    css(view.transfer_bar,'QProgressBar{border:0;background:transparent;}')
     summary.addWidget(view.transfer_count);summary.addWidget(view.transfer_bar,1);summary.addWidget(view.transfer_eta);mid.addWidget(view.transfer_summary);view.transfer_summary.hide()
     view.scroll=QScrollArea(view.middle);view.scroll.setWidgetResizable(True);view.scroll.setFrameShape(QFrame.NoFrame);view.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-    css(view.scroll,'QScrollArea{background:transparent;border:0;} QScrollBar:vertical{width:6px;background:transparent;} QScrollBar::handle:vertical{background:#49494E;border-radius:3px;min-height:24px;} QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}',
-        'QScrollArea{background:transparent;border:0;} QScrollBar:vertical{width:6px;background:transparent;} QScrollBar::handle:vertical{background:#C8C8C8;border-radius:3px;min-height:24px;} QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}')
+    view.scroll.setVerticalScrollBar(RoundedScrollBar(Qt.Vertical,view.scroll,thumb_color=lambda:'#49494E' if ui_theme.current_theme()=='dark' else '#C8C8C8'))
+    css(view.scroll,'QScrollArea{background:transparent;border:0;} QScrollBar:vertical{width:6px;background:transparent;} QScrollBar::handle:vertical{background:transparent;min-height:24px;} QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}')
     view.rows_body=QWidget();view.rows_layout=QVBoxLayout(view.rows_body);view.rows_layout.setContentsMargins(12,12,12,12);view.rows_layout.setSpacing(6);view.scroll.setWidget(view.rows_body)
     # QScrollArea enables autoFillBackground on setWidget; its inherited
     # transparent palette otherwise clears a hole in transition snapshots.
@@ -1168,21 +1490,20 @@ def build_preview(view,elided_type,image_type,media_type,content_type):
     header=QHBoxLayout(head);header.setContentsMargins(16,8,16,8);header.setSpacing(8)
     names=QVBoxLayout();names.setSpacing(0)
     view.name=elided_type(view);view.info=elided_type(view);view.upload_time=elided_type(view)
-    for item,size,weight,tint in ((view.name,13,600,'text'),(view.upload_time,9,400,'secondary')):
+    view.upload_time.setProperty('flickdockTechnicalFont',True)
+    for item,size,weight,tint in ((view.name,12,600,'text'),(view.upload_time,9,400,'secondary')):
         css(item,f"color:{colors('dark')[tint]};border:0;background:transparent;font:{weight} {size}px 'FlickDock UI';",
             f"color:{colors('light')[tint]};border:0;background:transparent;font:{weight} {size}px 'FlickDock UI';")
         names.addWidget(item)
     view.name.setFixedHeight(20);view.upload_time.setFixedHeight(16)
     header.addLayout(names,1)
-    view.cloud_action=ToolbarButton('cloud-upload',head,motion=view.shelf.manager.motion)
-    view.cloud_action.setProperty('disabledOpacity',.72)
-    view.cloud_action.setFixedSize(32,32);view.cloud_action.clicked.connect(view.toggle_cloud_copy)
-    header.addWidget(view.cloud_action)
+    reserved=QWidget(head);reserved.setFixedSize(PREVIEW_HEADER_RESERVED_ACTION_WIDTH_PX,32)
+    reserved.setAttribute(Qt.WA_TransparentForMouseEvents);header.addWidget(reserved)
     view.copy_button=ToolbarButton('copy',view,motion=view.shelf.manager.motion);view.copy_button.setFixedSize(32,32);view.copy_button.clicked.connect(view.copy_current);header.addWidget(view.copy_button);root.addWidget(head)
     view.content_scroll=QScrollArea(view);view.content_scroll.setWidgetResizable(True);view.content_scroll.setFrameShape(QFrame.NoFrame)
+    view.content_scroll.setVerticalScrollBar(RoundedScrollBar(Qt.Vertical,view.content_scroll,thumb_color=lambda:'#49494E' if ui_theme.current_theme()=='dark' else '#C8C8C8'))
     view.content_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-    css(view.content_scroll,'QScrollArea{background:transparent;border:0;} QScrollBar:vertical{width:6px;background:transparent;} QScrollBar::handle:vertical{background:#49494E;border-radius:3px;min-height:24px;} QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}',
-        'QScrollArea{background:transparent;border:0;} QScrollBar:vertical{width:6px;background:transparent;} QScrollBar::handle:vertical{background:#C8C8C8;border-radius:3px;min-height:24px;} QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}')
+    css(view.content_scroll,'QScrollArea{background:transparent;border:0;} QScrollBar:vertical{width:6px;background:transparent;} QScrollBar::handle:vertical{background:transparent;min-height:24px;} QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}')
     content=QWidget(view.content_scroll);body=QVBoxLayout(content);body.setContentsMargins(16,16,16,16);body.setSpacing(12)
     view.content_scroll.setWidget(content);content.setAutoFillBackground(False)
     view.transfer_row=QWidget(content);transfer=QHBoxLayout(view.transfer_row);transfer.setContentsMargins(0,0,0,0)
@@ -1193,12 +1514,11 @@ def build_preview(view,elided_type,image_type,media_type,content_type):
     cancel_styles=[style+f' QPushButton{{font-size:{12 if sys.platform=="win32" else 11}px;padding:2px 5px;}}' for style in view.cancel_transfer._reference_style]
     css(view.cancel_transfer,*cancel_styles)
     transfer.addWidget(view.transfer_progress,1);transfer.addWidget(view.transfer_meta);transfer.addWidget(view.cancel_transfer);body.addWidget(view.transfer_row);view.transfer_row.hide()
-    view.stack=QStackedWidget(content);view.stack.setMinimumHeight(176);view.stack.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Expanding)
-    css(view.stack,*[f"QStackedWidget{{background:{colors(t)['card']};border:1px solid {colors(t)['border']};border-radius:{RADIUS_CARD_PX}px;}}" for t in ('dark','light')])
+    view.stack=PreviewSurfaceStack(content);view.stack.setMinimumHeight(176);view.stack.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Expanding)
     view.icon=content_type(view,motion=view.shelf.manager.motion)
-    view.text=QPlainTextEdit(view);view.text.setReadOnly(True);view.text.setAcceptDrops(False);view.text.viewport().setAcceptDrops(False)
-    css(view.text,f"QPlainTextEdit{{background:{colors('dark')['card']};color:#F5F5F7;border:0;border-radius:{RADIUS_CARD_PX}px;padding:14px;font:13px 'FlickDock UI';}}",
-        "QPlainTextEdit{background:#FFFFFF;color:#1D1D1F;border:0;border-radius:12px;padding:14px;font:13px 'FlickDock UI';}")
+    view.text=RoundedPreviewText(view);view.text.setReadOnly(True);view.text.setAcceptDrops(False);view.text.viewport().setAcceptDrops(False)
+    css(view.text,"QPlainTextEdit{background:transparent;color:#F5F5F7;border:0;padding:14px;font:13px 'FlickDock UI';}",
+        "QPlainTextEdit{background:transparent;color:#1D1D1F;border:0;padding:14px;font:13px 'FlickDock UI';}")
     view.image=image_type(view);view.image.set_loader(view.shelf.image_cache);view.image.source_ready.connect(view._image_source_ready)
     view.media=media_type(view,motion=view.shelf.manager.motion);view.media.frame_ready.connect(view._poster_ready);view.media.playing_changed.connect(view._playing_changed)
     view.empty_preview=QWidget(view.stack)
@@ -1211,10 +1531,13 @@ def build_preview(view,elided_type,image_type,media_type,content_type):
     view.stack.setCurrentWidget(view.empty_preview)
     body.addWidget(view.stack,1)
     cards=QHBoxLayout();cards.setSpacing(8)
-    status=QFrame(content);view.status_card=status;status.setObjectName('referenceStatus');status.setMinimumWidth(0)
-    size_card=QFrame(content);view.size_card=size_card;size_card.setObjectName('referenceSize');size_card.setMinimumWidth(0)
-    for card in (status,size_card):
-        css(card,*[f"QFrame#{card.objectName()}{{background:{colors(t)['card']};border:1px solid {colors(t)['border']};border-radius:{RADIUS_CARD_PX}px;}}" for t in ('dark','light')])
+    status=PreviewStatusCard(content);view.status_card=status;status.setObjectName('referenceStatus');status.setMinimumWidth(0)
+    size_card=PreviewSurfaceFrame(content);view.size_card=size_card;size_card.setObjectName('referenceSize');size_card.setMinimumWidth(0)
+    view.cloud_action=StatusCardAction('cloud-upload',status,motion=view.shelf.manager.motion)
+    view.cloud_action.setProperty('disabledOpacity',.72)
+    view.cloud_action.setProperty('glyphSize',PREVIEW_STATUS_ACTION_GLYPH_SIZE_PX)
+    view.cloud_action.setFixedSize(PREVIEW_STATUS_ACTION_SIZE_PX,PREVIEW_STATUS_ACTION_SIZE_PX)
+    view.cloud_action.clicked.connect(view.toggle_cloud_copy)
     box=QVBoxLayout(status);box.setContentsMargins(PREVIEW_INFO_HORIZONTAL_PADDING_PX,PREVIEW_INFO_VERTICAL_PADDING_PX,PREVIEW_INFO_HORIZONTAL_PADDING_PX,PREVIEW_INFO_BOTTOM_PADDING_PX);box.setSpacing(PREVIEW_INFO_ROW_GAP_PX)
     from transfer_visuals import CloudStatusBadge
     status_title=label('同步状态',10,400,'muted',status);status_title.setFixedHeight(PREVIEW_INFO_TITLE_HEIGHT_PX);box.addWidget(status_title)
@@ -1222,47 +1545,85 @@ def build_preview(view,elided_type,image_type,media_type,content_type):
     view.cloud_badge=CloudStatusBadge(status,file_presence=True);view.cloud_badge.hide()
     view.status_value=label('',10,400,'green',status);view.status_value.setWordWrap(True)
     view.status_value.setMinimumWidth(0);view.status_value.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Preferred)
-    line.addWidget(view.status_value,1);box.addLayout(line)
+    line.addWidget(view.status_value,1);box.addLayout(line);status.set_hover_action(view.cloud_action)
     size_box=QVBoxLayout(size_card);size_box.setContentsMargins(PREVIEW_INFO_HORIZONTAL_PADDING_PX,PREVIEW_INFO_VERTICAL_PADDING_PX,PREVIEW_INFO_HORIZONTAL_PADDING_PX,PREVIEW_INFO_BOTTOM_PADDING_PX);size_box.setSpacing(PREVIEW_INFO_ROW_GAP_PX)
     size_title=label('文件大小与类型',10,400,'muted',size_card);size_title.setFixedHeight(PREVIEW_INFO_TITLE_HEIGHT_PX);size_box.addWidget(size_title)
     view.info.setParent(size_card);view.info.setFixedHeight(PREVIEW_INFO_VALUE_HEIGHT_PX);view.info.setAlignment(Qt.AlignLeft|Qt.AlignVCenter)
     css(view.info,"color:#F5F5F7;border:0;background:transparent;font:400 10px 'FlickDock UI';",
         "color:#1D1D1F;border:0;background:transparent;font:400 10px 'FlickDock UI';")
     size_box.addWidget(view.info);cards.addWidget(status,1);cards.addWidget(size_card,1);body.addLayout(cards)
-    path_card=QFrame(content);view.path_card=path_card;path_card.setObjectName('referencePath')
-    css(path_card,*[f"QFrame#referencePath{{background:{colors(t)['card']};border:1px solid {colors(t)['border']};border-radius:{RADIUS_CARD_PX}px;}}" for t in ('dark','light')])
+    path_card=PreviewSurfaceFrame(content);view.path_card=path_card;path_card.setObjectName('referencePath')
     path_box=QVBoxLayout(path_card);path_box.setContentsMargins(12,8,12,10);path_box.setSpacing(4)
     path_head=QHBoxLayout();path_head.addWidget(label('来源路径',10,400,'muted',path_card),1)
     view.copy_path_button=button('复制路径','copy',variant='secondary',parent=path_card);view.copy_path_button.setFixedHeight(26)
+    view.copy_path_button.setProperty('previewCopyPath',True)
     view.copy_path_button.setIconSize(QSize(12,12));view.copy_path_button.clicked.connect(view.copy_path)
-    path_styles=[style.replace(f'border-radius:{RADIUS_CONTROL_PX}px',f'border-radius:{RADIUS_SUBCONTROL_PX}px') for style in view.copy_path_button._reference_style]
-    path_styles[0]=path_styles[0].replace('background:#272727','background:#333333',1)
+    path_styles=list(view.copy_path_button._reference_style)
     path_styles=[style+f' QPushButton{{font-size:{12 if sys.platform=="win32" else 11}px;padding:2px 8px;}}' for style in path_styles]
     css(view.copy_path_button,*path_styles)
     path_head.addWidget(view.copy_path_button);path_box.addLayout(path_head)
-    view.path_label=elided_type(path_card);view.path_label.setFixedHeight(18);view.path_label.setAccessibleName('内容来源路径')
+    view.path_label=elided_type(path_card);view.path_label.setProperty('flickdockTechnicalFont',True);view.path_label.setFixedHeight(18);view.path_label.setAccessibleName('内容来源路径')
     css(view.path_label,"color:#A1A1AA;background:transparent;border:0;font:10px 'FlickDock UI';",
         "color:#636366;background:transparent;border:0;font:10px 'FlickDock UI';")
     path_box.addWidget(view.path_label);body.addWidget(path_card)
     root.addWidget(view.content_scroll,1)
     footer=QFrame(view);view.action_footer=footer;footer.setObjectName('referencePreviewActions')
     css(footer,*[f"QFrame#referencePreviewActions{{background:{colors(t)['preview']};border:0;border-top:1px solid {colors(t)['divider']};}}" for t in ('dark','light')])
-    actions=QVBoxLayout(footer);actions.setContentsMargins(16,8,16,12);actions.setSpacing(8)
-    primary=QHBoxLayout();primary.setSpacing(8);secondary=QHBoxLayout();secondary.setSpacing(8)
-    view.open_button=button('打开文件',variant='secondary',parent=footer);view.rename_button=button('重命名',variant='secondary',parent=footer)
-    view.open_button.clicked.connect(lambda:view.current_path and view.shelf.open_path(view.current_path));view.rename_button.clicked.connect(lambda:view.current_path and view.shelf.rename_ref(view.current_path))
-    view.zip_button=button('打包 ZIP',variant='secondary',parent=footer);view.zip_button.clicked.connect(view.zip_current)
-    view.send_control,view.send_button,view.send_menu_button=split_send_button(footer,36)
+    actions=QHBoxLayout(footer)
+    actions.setContentsMargins(PREVIEW_ACTION_SIDE_MARGIN_PX,8,PREVIEW_ACTION_SIDE_MARGIN_PX,12)
+    actions.setSpacing(0)
+    view.send_control,view.send_button,view.send_menu_button=split_send_button(footer,PREVIEW_ACTION_HEIGHT_PX,preview=True)
+    view.send_control.setMinimumWidth(0)
     view.send_button.clicked.connect(view.send_current)
     view.send_menu_button.clicked.connect(lambda:view.open_send_menu([view.current_path],view.send_menu_button))
-    view.remove_button=button('长按移出',variant='danger',parent=footer,control_type=HoldRemoveButton)
+
+    view.open_button=button('打开','open-external',variant='secondary',parent=footer)
+    view.open_button.setProperty('previewOpen',True)
+    view.open_button.setFixedSize(PREVIEW_ACTION_OPEN_WIDTH_PX,PREVIEW_ACTION_HEIGHT_PX)
+    view.open_button.setIconSize(QSize(PREVIEW_ACTION_ICON_SIZE_PX,PREVIEW_ACTION_ICON_SIZE_PX))
+    view.open_button.setProperty('iconTextGap',PREVIEW_ACTION_ICON_TEXT_GAP_PX)
+    view.open_button.setProperty('iconTextReservedWidth',8)
+    view.open_button._reference_icon=('open-external','text')
+    view.open_button.setIcon(icon('open-external',palette()['text']))
+    open_styles=[]
+    for theme in ('dark','light'):
+        c=colors(theme)
+        open_styles.append(f"QPushButton{{background:transparent;color:{c['text']};border:0;padding:0;font:500 12px 'FlickDock UI';}} "
+                           f"QPushButton:disabled{{color:{c['muted']};}}")
+    css(view.open_button,*open_styles)
+
+    icon_group=_PreviewActionSurface(footer);view.action_icon_group=icon_group;icon_group.setObjectName('previewIconActions')
+    icon_group.setFixedSize(PREVIEW_ACTION_HEIGHT_PX*3,PREVIEW_ACTION_HEIGHT_PX)
+    css(icon_group,'QFrame#previewIconActions{background:transparent;border:0;}')
+    icons=QHBoxLayout(icon_group);icons.setContentsMargins(0,0,0,0);icons.setSpacing(0)
+    view.rename_button=button('','rename',parent=icon_group)
+    view.open_button.clicked.connect(lambda:view.current_path and view.shelf.open_path(view.current_path));view.rename_button.clicked.connect(lambda:view.current_path and view.shelf.rename_ref(view.current_path))
+    view.zip_button=button('','package',parent=icon_group);view.zip_button.clicked.connect(view.zip_current)
+    view.remove_button=button('','trash',variant='danger',parent=icon_group,control_type=HoldRemoveButton)
+    view.remove_button.setProperty('iconOnlyHold',True)
     view.remove_button.identity=lambda:view.current_path
     view.remove_button.confirmed.connect(view.remove_current)
+    for control,title in ((view.remove_button,'长按移出搁架'),(view.zip_button,'打包 ZIP'),(view.rename_button,'重命名')):
+        control.setFixedSize(PREVIEW_ACTION_HEIGHT_PX,PREVIEW_ACTION_HEIGHT_PX)
+        control.setIconSize(QSize(PREVIEW_ACTION_ICON_SIZE_PX,PREVIEW_ACTION_ICON_SIZE_PX))
+        control.setToolTip(title);control.setAccessibleName(title)
+        styles=[]
+        for theme in ('dark','light'):
+            c=colors(theme)
+            styles.append(f"QPushButton{{background:transparent;border:0;padding:0;color:{c['text']};}} QPushButton:disabled{{color:{c['muted']};}}")
+        css(control,*styles);icons.addWidget(control)
+    actions.addWidget(icon_group)
+    actions.addSpacing(PREVIEW_ACTION_SPACING_PX)
+    actions.addWidget(view.open_button)
+    actions.addSpacing(PREVIEW_ACTION_SPACING_PX)
+    actions.addWidget(view.send_control,1)
+    for previous,current in zip((view.remove_button,view.zip_button,view.rename_button,view.open_button,view.send_button),
+                                (view.zip_button,view.rename_button,view.open_button,view.send_button,view.send_menu_button)):
+        QWidget.setTabOrder(previous,current)
     view.action_buttons=(view.open_button,view.rename_button,view.copy_path_button,view.zip_button,view.send_button,view.remove_button)
-    for item in view.action_buttons:item.setAccessibleName(item.text())
-    view.open_button.setFixedHeight(36);primary.addWidget(view.open_button,1);primary.addWidget(view.send_control,1)
-    for item in (view.rename_button,view.zip_button,view.remove_button):item.setFixedHeight(32);secondary.addWidget(item,1)
-    actions.addLayout(primary);actions.addLayout(secondary);root.addWidget(footer)
+    for control,title in ((view.open_button,'打开文件'),(view.copy_path_button,'复制路径'),(view.send_button,'发送文件')):
+        control.setAccessibleName(title)
+    root.addWidget(footer)
     view.transfer_overlay=TransferOverlay(view.stack,lambda:view.shelf.content.transfers.get(view.current_path))
     view.group_view=QFrame(view);view.group_view.setObjectName('referenceGroupPreview')
     css(view.group_view,f"QFrame#referenceGroupPreview{{background:{colors('dark')['background']};border:0;}}",

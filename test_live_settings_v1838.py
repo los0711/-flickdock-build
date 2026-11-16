@@ -2,7 +2,8 @@
 import json,tempfile,threading,unittest
 from pathlib import Path
 from unittest.mock import patch
-from PySide6.QtCore import QThread,QTimer
+from PySide6.QtCore import QPoint,QThread,QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtGui import QColor,QPalette
 from PySide6.QtWidgets import QLabel,QPushButton,QWidget,QProgressBar
@@ -52,6 +53,14 @@ class LiveSettingsTests(unittest.TestCase):
             self.assertEqual(getattr(loaded,key),value,key)
         self.assertTrue(self.threads);self.assertTrue(all(t==APP.thread() for t in self.threads))
         dialog.close();flush();self.assertEqual(SettingsStore(self.store.base).accent_color,'#FFFF00')
+
+    def test_shortcut_editor_records_and_persists_real_keyboard_input(self):
+        self.dialog.show();flush();editor=self.dialog.shelf_shortcut_edit
+        editor.setFocus();QTest.keyClick(editor,Qt.Key_K,Qt.ControlModifier|Qt.AltModifier)
+        self.assertEqual(editor.keySequence().toString(),'Ctrl+Alt+K')
+        QTest.qWait(1100);self.dialog.overview_shortcut_edit.setFocus();flush()
+        settle_preferences(self.dialog)
+        self.assertEqual(SettingsStore(self.store.base).shelf_shortcut,'Ctrl+Alt+K')
 
     def test_slow_disk_does_not_block_ui_and_rapid_reversal_keeps_latest_value(self):
         entered=threading.Event();release=threading.Event();beats=[]
@@ -108,6 +117,7 @@ class LiveSettingsTests(unittest.TestCase):
 
     def test_chooser_surface_labels_and_first_change_button_and_progress_contrast(self):
         primary=button('测试',variant='primary');progress=QProgressBar()
+        primary.resize(100,32);primary.show();QTest.mouseMove(primary,QPoint(-20,-20));flush()
         css(progress,'QProgressBar::chunk{background:@fd_action@;}')
         try:
             for theme in ('dark','light'):
@@ -115,7 +125,10 @@ class LiveSettingsTests(unittest.TestCase):
                 for color in ('#7C3AED','#FFFF00','#FFFFFF','#000000'):
                     self.dialog._set_accent_color(color);settle_preferences(self.dialog)
                     c=colors(theme)
-                    self.assertIn(c['action'],primary.styleSheet());self.assertIn(c['on_action'],primary.styleSheet())
+                    primary.setAttribute(Qt.WA_UnderMouse,False)
+                    image=primary.grab().toImage();dpr=image.devicePixelRatioF()
+                    self.assertEqual(image.pixelColor(round(5*dpr),image.height()//2).name().upper(),c['action'].upper())
+                    self.assertEqual(primary.palette().color(QPalette.ButtonText).name().upper(),c['on_action'].upper())
                     self.assertIn(c['action'],progress.styleSheet())
                     self.assertEqual(c['transfer_progress_fill'],c['action'])
                     self.assertGreaterEqual(contrast_colors(QColor(c['action']),QColor(c['on_action'])),4.5)
@@ -127,7 +140,7 @@ class LiveSettingsTests(unittest.TestCase):
                 for label in labels:
                     self.assertGreaterEqual(contrast_colors(label.palette().color(QPalette.WindowText),QColor(c['card'])),4.5,label.text())
                 picker.reject();flush()
-        finally:primary.deleteLater();progress.deleteLater();flush()
+        finally:primary.close();primary.deleteLater();progress.deleteLater();flush()
 
     def test_dark_capsule_progress_stays_visible_in_light_application(self):
         from types import SimpleNamespace

@@ -237,14 +237,11 @@ def document_svg(value: str = '', stack: int = 1, *, display_text: str | None = 
     body = back + f'<defs><linearGradient id="paper" x1="0" y1="0" x2="1" y2="1"><stop stop-color="{top}"/><stop offset="1" stop-color="{color}"/></linearGradient></defs><rect x="13" y="5" width="43" height="51" rx="7" fill="url(#paper)"/><path d="M41 5h8a7 7 0 0 1 7 7v8z" fill="#ffffff" fill-opacity=".23"/><rect x="13.5" y="5.5" width="42" height="50" rx="6.5" fill="none" stroke="#ffffff" stroke-opacity=".18"/>'
     symbol = _CATEGORY_SYMBOLS[category].format(c='#ffffff')
     body += f'<g transform="translate(0,-11)" opacity=".3" fill="none" stroke="#ffffff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">{symbol}</g>'
-    # Qt SVG treats a comma-separated font-family list as one family name,
-    # silently falling back for Latin characters. Inherit the app's actual
-    # platform font from the painter instead.
     # Keep short format labels legible at shelf-icon sizes while leaving
     # enough horizontal space for longer codec names such as H.264 / H.265.
     length=len(label)
     font_size=16 if length<=3 else 14 if length==4 else 13 if length==5 else 11 if length==6 else 9
-    body += f'<text x="34.5" y="44" text-anchor="middle" font-size="{font_size}" font-weight="700" fill="#ffffff">{escape(label)}</text>'
+    body += f'<text x="34.5" y="44" text-anchor="middle" font-family="JetBrains Mono" font-size="{font_size}" font-weight="500" fill="#ffffff">{escape(label)}</text>'
     return _svg(body,'0 0 64 64')
 
 

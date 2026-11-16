@@ -5,7 +5,7 @@ from pathlib import Path
 from PySide6.QtCore import QCoreApplication,QObject,QEvent,QPoint,QRect,QRectF,QSize,Qt,QTimer
 from PySide6.QtGui import QColor,QCursor,QGuiApplication,QPainter,QPen
 from PySide6.QtWidgets import QApplication,QPushButton,QWidget
-from native_ui_common import RADIUS_CONTROL_PX
+from native_ui_common import RADIUS_CONTROL_PX,paint_rounded_surface
 from platform_native import native_input_available
 from shiboken6 import isValid
 
@@ -84,7 +84,7 @@ class _WindowButton(QPushButton):
         self._keyboard_focus=False
         self.setFixedSize(44,32);self.setAutoDefault(False);self.setDefault(False)
         self.setAccessibleName({'min':'最小化','max':'最大化或还原','close':'关闭窗口'}[role])
-        self.setStyleSheet(f'QPushButton{{border:0;border-radius:{WINDOW_CONTROL_RADIUS_PX}px;background:transparent;padding:0;}}')
+        self.setStyleSheet('QPushButton{border:0;background:transparent;padding:0;}')
         self.clicked.connect(self._activate)
     @property
     def glyph_rect(self):
@@ -108,8 +108,7 @@ class _WindowButton(QPushButton):
         active=self.underMouse() or self.isDown()
         if active:
             fill=('#B50D1B' if self.isDown() else '#E81123') if self.role=='close' else c['selected'] if self.isDown() else c['hover']
-            p.setPen(Qt.NoPen);p.setBrush(ink(fill))
-            p.drawRoundedRect(QRectF(self.rect()).adjusted(2,2,-2,-2),WINDOW_CONTROL_RADIUS_PX,WINDOW_CONTROL_RADIUS_PX)
+            paint_rounded_surface(p,QRectF(self.rect()).adjusted(2,2,-2,-2),WINDOW_CONTROL_RADIUS_PX,ink(fill))
         p.setPen(QPen(QColor('white' if self.role=='close' and active else c['secondary']),1.2))
         x,y=self.width()//2,self.height()//2
         if self.role=='min':p.drawLine(x-5,y+2,x+5,y+2)
@@ -117,8 +116,8 @@ class _WindowButton(QPushButton):
         elif self.owner.isMaximized():p.drawRect(x-3,y-5,8,8);p.fillRect(x-5,y-3,8,8,QColor(c['surface']));p.drawRect(x-5,y-3,8,8)
         else:p.drawRect(x-5,y-5,10,10)
         if self.hasFocus() and self._keyboard_focus:
-            p.setPen(QPen(QColor(c['blue']),1.5));p.setBrush(Qt.NoBrush)
-            p.drawRoundedRect(QRectF(self.rect()).adjusted(2,2,-2,-2),WINDOW_CONTROL_RADIUS_PX,WINDOW_CONTROL_RADIUS_PX)
+            paint_rounded_surface(p,QRectF(self.rect()).adjusted(2,2,-2,-2),WINDOW_CONTROL_RADIUS_PX,
+                                  QColor(Qt.transparent),QColor(c['blue']))
         p.end()
 
 

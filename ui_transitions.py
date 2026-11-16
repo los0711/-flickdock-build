@@ -51,6 +51,7 @@ class SelectionSurface(QFrame):
         super().__init__(parent)
         self._selection_buttons=[];self._selection_button=None;self._selection_rect=QRectF()
         self._selection_target=QRectF();self._selection_theme=None
+        self._surface_background=None
         self._selection_opacity=1.;self._selection_start_opacity=1.;self._selection_warp=False
         self._selection_vertical=vertical;self._selection_color_role=color_role
         self._selection_border_role=border_role;self._selection_radius=radius;self._selection_motion=motion
@@ -64,11 +65,22 @@ class SelectionSurface(QFrame):
     def set_selection_theme(self,theme):
         self._selection_theme=theme;self.update()
 
+    def set_surface_background(self,dark,light,radius,*,stroke_role=None):
+        self._surface_background=(dark,light,float(radius),stroke_role);self.update()
+
     def add_selection_button(self,button):
         if button in self._selection_buttons:return
         self._selection_buttons.append(button);button.installEventFilter(self)
         button.toggled.connect(lambda checked,b=button:self._choose(b) if checked else None)
         if button.isChecked():self._choose(button)
+
+    def clear_selection(self):
+        """Clear both the selected button and its painted moving surface."""
+        self._selection_animation.stop()
+        self._selection_button=None
+        self._selection_rect=QRectF();self._selection_target=QRectF()
+        self._selection_opacity=1.;self._selection_start_opacity=1.;self._selection_warp=False
+        self.update()
 
     def _enabled_motion(self):
         enabled=self._selection_motion() if callable(self._selection_motion) else self._selection_motion
@@ -134,11 +146,14 @@ class SelectionSurface(QFrame):
 
     def paintEvent(self,event):
         super().paintEvent(event)
-        if self._selection_rect.isEmpty() or self._selection_button is None:return
         import ui_theme
-        from native_ui_common import colors,pixel_aligned_border
-        from PySide6.QtGui import QColor,QPen
-        c=colors(self._selection_theme or ui_theme.current_theme())
+        from native_ui_common import colors,paint_rounded_surface,qss_color
+        theme=self._selection_theme or ui_theme.current_theme();c=colors(theme)
+        if self._surface_background is not None:
+            dark,light,radius,stroke_role=self._surface_background;fill=dark if theme=='dark' else light
+            p=QPainter(self);paint_rounded_surface(p,self.rect(),radius,qss_color(c.get(fill,fill)),
+                                                    qss_color(c[stroke_role]) if stroke_role else None);p.end()
+        if self._selection_rect.isEmpty() or self._selection_button is None:return
         role=self._selection_color_role
         border_role=self._selection_border_role
         button=self._selection_button
@@ -149,11 +164,9 @@ class SelectionSurface(QFrame):
             elif button.isDown():role='control_pressed'
             elif button.underMouse():role='control_hover'
         p=QPainter(self);p.setRenderHint(QPainter.Antialiasing);p.setOpacity(self._selection_opacity)
-        border,width=pixel_aligned_border(p,self._selection_rect,1)
-        def qcolor(value):
-            return QColor(*(int(float(part.strip())) for part in value[5:-1].split(','))) if value.startswith('rgba(') else QColor(value)
-        p.setBrush(qcolor(c[role]));p.setPen(QPen(qcolor(c[border_role]),width) if border_role else Qt.NoPen)
-        p.drawRoundedRect(border,self._selection_radius,self._selection_radius);p.end()
+        paint_rounded_surface(p,self._selection_rect,self._selection_radius,qss_color(c[role]),
+                              qss_color(c[border_role]) if border_role else None)
+        p.end()
 
 
 class PreviewWidthTransition(QObject):

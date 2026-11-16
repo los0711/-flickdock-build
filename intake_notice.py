@@ -307,7 +307,7 @@ class CapsuleNotice(QWidget):
         p.setRenderHints(QPainter.Antialiasing|QPainter.SmoothPixmapTransform);p.setOpacity(max(0.,min(1.,self._alpha)))
         rect=self.capsule_rect();path=QPainterPath();path.addRoundedRect(rect,rect.height()/2,rect.height()/2)
         shape=notice_cluster.shape(self,path)
-        p.setPen(Qt.NoPen);p.setBrush(QColor(getattr(self,'_surface_color',c['surface'])));p.drawPath(shape)
+        p.setPen(Qt.NoPen);p.setBrush(QColor(getattr(self,'_surface_color',c['dialog_surface'])));p.drawPath(shape)
         if self._pressed:
             p.setBrush(QColor(255,255,255,18));p.drawPath(shape)
         p.setClipPath(path)

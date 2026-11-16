@@ -8,7 +8,8 @@ from pathlib import Path
 import sys
 from account_service import valid_new_password
 from native_ui_common import (reference_font, set_ui_weight, icon as ui_icon, colors as ui_colors,
-    RADIUS_CONTROL_PX, RADIUS_CARD_PX, RADIUS_PANEL_PX)
+    RADIUS_CONTROL_PX, RADIUS_CARD_PX, RADIUS_PANEL_PX, RADIUS_SUBCONTROL_PX,
+    RoundedSurfaceFrame, RoundedScrollBar, paint_rounded_surface, qss_color)
 
 from PySide6.QtCore import QByteArray, QEvent, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter
@@ -29,7 +30,25 @@ def _label(text='', parent=None, *, muted=False):
     return label
 
 
-class PasswordEdit(QLineEdit):
+def _account_theme(widget):
+    owner=widget
+    while owner is not None:
+        if owner.objectName()=='accountPanel':
+            return 'dark' if owner._dark else 'light'
+        owner=owner.parentWidget()
+    return 'light'
+
+
+class AccountLineEdit(QLineEdit):
+    """Keep the native editor, caret and input method over one painted frame."""
+    def paintEvent(self,event):
+        c=ui_colors(_account_theme(self));painter=QPainter(self)
+        paint_rounded_surface(painter,self.rect(),RADIUS_CONTROL_PX,qss_color(c['input']),
+                              qss_color(c['ring'] if self.hasFocus() else c['input_border']))
+        painter.end();super().paintEvent(event)
+
+
+class PasswordEdit(AccountLineEdit):
     """One native trailing action; no duplicated password value or logging."""
     def __init__(self,parent=None):
         super().__init__(parent)
@@ -63,10 +82,20 @@ class PasswordEdit(QLineEdit):
             button.setAccessibleName(title);button.setCursor(Qt.PointingHandCursor)
 
     def set_visibility_theme(self,theme):
-        self._visibility_theme=theme;c=ui_colors(theme)
+        self._visibility_theme=theme
         for button in self.findChildren(QToolButton):
-            button.setStyleSheet(f"QToolButton{{background:transparent;border:0;border-radius:5px;padding:3px;}} QToolButton:hover{{background:{c['hover']};}} QToolButton:pressed{{background:{c['selected']};}}")
+            button.setStyleSheet('QToolButton{background:transparent;border:0;padding:3px;}')
+            button.installEventFilter(self)
         self._refresh_eye()
+
+    def eventFilter(self,watched,event):
+        if isinstance(watched,QToolButton) and event.type()==QEvent.Paint and watched.isEnabled():
+            if watched.underMouse() or watched.isDown():
+                c=ui_colors(self._visibility_theme);painter=QPainter(watched)
+                paint_rounded_surface(painter,watched.rect(),RADIUS_SUBCONTROL_PX,
+                                      qss_color(c['selected'] if watched.isDown() else c['hover']))
+                painter.end()
+        return super().eventFilter(watched,event)
 
 
 class AuthStatusLabel(QLabel):
@@ -146,11 +175,36 @@ class AccountNameLabel(QLabel):
 
 
 def _button(text, parent=None, *, name=''):
-    button=QPushButton(text,parent)
+    button=AccountButton(text,parent)
     button.setAutoDefault(False);button.setDefault(False)
     button.setMinimumHeight(34)
     if name:button.setObjectName(name)
     return button
+
+
+class AccountButton(QPushButton):
+    def paintEvent(self,event):
+        from PySide6.QtWidgets import QStyle, QStylePainter
+        from native_ui_common import button_style_option
+        c=ui_colors(_account_theme(self));role=self.objectName()
+        hovered=self.underMouse() and self.isEnabled();pressed=self.isDown() and self.isEnabled()
+        fill=c['control'];stroke=None;radius=RADIUS_CONTROL_PX
+        if role=='accountTab':
+            fill='transparent'
+        elif role=='accountPrimary':
+            fill=c['action_pressed'] if pressed else c['action_hover'] if hovered else c['action']
+        elif role=='accountDanger':
+            fill='rgba(255,69,58,78)' if pressed else 'rgba(255,69,58,58)' if hovered else 'rgba(255,69,58,38)'
+        elif role=='accountUnsignedProfile':
+            fill=c['selected'] if pressed else c['hover'] if hovered else c['card']
+            stroke=c['border'];radius=RADIUS_CARD_PX
+        else:
+            fill=c['selected'] if pressed else c['hover'] if hovered else fill
+        if not self.isEnabled():fill=c['control']
+        if self.property('keyboardFocus') and self.isEnabled():stroke=c['ring']
+        painter=QStylePainter(self)
+        paint_rounded_surface(painter,self.rect(),radius,qss_color(fill),None if stroke is None else qss_color(stroke))
+        painter.drawControl(QStyle.CE_PushButtonLabel,button_style_option(self));painter.end()
 
 
 class RemoveDeviceButton(QPushButton):
@@ -165,11 +219,18 @@ class RemoveDeviceButton(QPushButton):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
     def paintEvent(self,event):
-        from PySide6.QtWidgets import QStyle, QStylePainter
-        from native_ui_common import button_style_option
-        painter=QStylePainter(self);painter.drawControl(QStyle.CE_PushButton,button_style_option(self));painter.end()
-        if self.text():return
         c=ui_colors('dark' if self.dark else 'light')
+        painter=QPainter(self)
+        if self.isEnabled() and (self.underMouse() or self.isDown()):
+            fill=('rgba(10,132,255,45)' if self.isDown() else 'rgba(10,132,255,20)') if self.rename else ('rgba(255,69,58,45)' if self.isDown() else 'rgba(255,69,58,20)')
+            paint_rounded_surface(painter,self.rect(),RADIUS_SUBCONTROL_PX,qss_color(fill))
+        if self.property('keyboardFocus') and self.isEnabled():
+            paint_rounded_surface(painter,self.rect(),RADIUS_SUBCONTROL_PX,Qt.transparent,qss_color(c['ring']))
+        painter.end()
+        if self.text():
+            from PySide6.QtWidgets import QStyle,QStylePainter
+            from native_ui_common import button_style_option
+            painter=QStylePainter(self);painter.drawControl(QStyle.CE_PushButtonLabel,button_style_option(self));painter.end();return
         color=c['link'] if self.rename else c['red']
         path=('m11.5 3.5 3 3M3 15l3.4-.7L15 5.7a1.1 1.1 0 0 0 0-1.5l-1.2-1.3a1.1 1.1 0 0 0-1.6 0L3.7 11.5 3 15' if self.rename
               else 'M7 3H3v12h4M10 5l4 4-4 4M6 9h8')
@@ -179,12 +240,22 @@ class RemoveDeviceButton(QPushButton):
         QSvgRenderer(QByteArray(svg.encode('utf8'))).render(painter,QRectF((self.width()-18)/2,(self.height()-18)/2,18,18))
 
 
-class AccountDeviceCard(QFrame):
+class AccountDeviceCard(RoundedSurfaceFrame):
     """Reveal device actions on hover or keyboard focus without moving text."""
     def __init__(self,parent=None):
         super().__init__(parent)
         self._actions=None;self._pointer_inside=False
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+
+    def surface_style(self):
+        c=ui_colors(_account_theme(self))
+        return c['control'],c['ring'] if self.hasFocus() else c['border'],RADIUS_CARD_PX
+
+    def focusInEvent(self,event):
+        super().focusInEvent(event);self.update();self._refresh_actions()
+
+    def focusOutEvent(self,event):
+        super().focusOutEvent(event);self.update();QTimer.singleShot(0,self._refresh_actions)
 
     def set_actions(self,actions):
         self._actions=actions
@@ -203,12 +274,6 @@ class AccountDeviceCard(QFrame):
 
     def leaveEvent(self,event):
         self._pointer_inside=False;self._refresh_actions();super().leaveEvent(event)
-
-    def focusInEvent(self,event):
-        super().focusInEvent(event);self._refresh_actions()
-
-    def focusOutEvent(self,event):
-        super().focusOutEvent(event);QTimer.singleShot(0,self._refresh_actions)
 
     def eventFilter(self,watched,event):
         if event.type()==QEvent.Type.FocusIn:self._refresh_actions()
@@ -242,9 +307,28 @@ class AccountGlyph(QWidget):
             painter,(self.width()-size)//2,(self.height()-size)//2,size,size)
 
 
-class AccountPanel(QFrame):
+class _AccountFrame(RoundedSurfaceFrame):
+    def surface_style(self):
+        c=ui_colors(_account_theme(self))
+        return c['input'],c['border'],RADIUS_CONTROL_PX
+
+
+class _AccountStateLabel(QLabel):
+    def paintEvent(self,event):
+        dark=_account_theme(self)=='dark';online=bool(self.property('online'))
+        c=ui_colors('dark' if dark else 'light')
+        fill='rgba(48,209,88,51)' if online else c['control']
+        painter=QPainter(self);paint_rounded_surface(painter,self.rect(),RADIUS_SUBCONTROL_PX,qss_color(fill));painter.end()
+        super().paintEvent(event)
+
+
+class AccountPanel(RoundedSurfaceFrame):
     """AccountService presentation, embedded in SettingsDialog's account slot."""
     height_changed=Signal()
+    def surface_style(self):
+        c=ui_colors('dark' if self._dark else 'light')
+        return c['card'],c['border'],RADIUS_CARD_PX
+
     def hasHeightForWidth(self):return True
 
     def heightForWidth(self,width):
@@ -292,7 +376,8 @@ class AccountPanel(QFrame):
         heading=QHBoxLayout()
         title=_label('账号与同步',self);title.setObjectName('accountTitle')
         heading.addWidget(title,1)
-        self.account_state_label=_label('未登录',self,muted=True)
+        self.account_state_label=_AccountStateLabel('未登录',self)
+        self.account_state_label.setTextFormat(Qt.TextFormat.PlainText)
         self.account_state_label.setObjectName('accountState')
         self.account_state_label.setSizePolicy(QSizePolicy.Policy.Preferred,QSizePolicy.Policy.Preferred)
         heading.addWidget(self.account_state_label)
@@ -307,7 +392,7 @@ class AccountPanel(QFrame):
         self.login_tab.clicked.connect(lambda:self.set_auth_mode('login'))
         self.register_tab.clicked.connect(lambda:self.set_auth_mode('register'))
         auth.addWidget(_label('账号',self.auth_page))
-        self.username_edit=QLineEdit(self.auth_page);self.username_edit.setPlaceholderText('请输入账号')
+        self.username_edit=AccountLineEdit(self.auth_page);self.username_edit.setPlaceholderText('请输入账号')
         self.username_edit.setAccessibleName('账号');self.username_edit.setMaxLength(128)
         auth.addWidget(self.username_edit)
         auth.addWidget(_label('密码',self.auth_page))
@@ -333,7 +418,7 @@ class AccountPanel(QFrame):
         self.username_label=AccountNameLabel(self.signed_in_page)
         self.username_label.setObjectName('accountUsername')
         identity_text.addWidget(self.username_label)
-        self.login_alias_edit=QLineEdit(self.signed_in_page)
+        self.login_alias_edit=AccountLineEdit(self.signed_in_page)
         self.login_alias_edit.setReadOnly(True);self.login_alias_edit.setMaxLength(128)
         self.login_alias_edit.setAccessibleName('重名账号登录 ID')
         self.login_alias_edit.hide();identity_text.addWidget(self.login_alias_edit)
@@ -393,7 +478,7 @@ class AccountPanel(QFrame):
         self.devices_layout=QVBoxLayout(self.devices_body)
         self.devices_layout.setContentsMargins(4,4,4,4);self.devices_layout.setSpacing(0)
         signed.addWidget(self.devices_body)
-        self.confirm_frame=QFrame(self.signed_in_page);self.confirm_frame.setObjectName('accountConfirm')
+        self.confirm_frame=_AccountFrame(self.signed_in_page);self.confirm_frame.setObjectName('accountConfirm')
         confirmation=QVBoxLayout(self.confirm_frame);confirmation.setContentsMargins(12,10,12,10);confirmation.setSpacing(8)
         self.confirm_label=_label('',self.confirm_frame);confirmation.addWidget(self.confirm_label)
         confirm_buttons=QHBoxLayout();confirm_buttons.addStretch()
@@ -490,7 +575,8 @@ class AccountPanel(QFrame):
         self.devices_scroll.setWidgetResizable(True)
         self.devices_scroll.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Ignored)
         self.devices_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.devices_scroll.setStyleSheet('QScrollArea{background:transparent;border:0;} QScrollArea>QWidget>QWidget{background:transparent;} QScrollBar:vertical{width:6px;background:transparent;} QScrollBar::handle:vertical{background:rgba(142,142,147,90);border-radius:3px;min-height:24px;} QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;} QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{background:transparent;}')
+        self.devices_scroll.setVerticalScrollBar(RoundedScrollBar(Qt.Vertical,self.devices_scroll,thumb_color='rgba(142,142,147,90)'))
+        self.devices_scroll.setStyleSheet('QScrollArea{background:transparent;border:0;} QScrollArea>QWidget>QWidget{background:transparent;} QScrollBar:vertical{width:6px;background:transparent;} QScrollBar::handle:vertical{background:transparent;min-height:24px;} QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;} QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{background:transparent;}')
         self.devices_scroll.setWidget(self.devices_body)
         signed.addWidget(self.devices_scroll,1);self.devices_body.show()
         root.removeWidget(self.status_label)
@@ -519,6 +605,7 @@ class AccountPanel(QFrame):
         auth.setSizeConstraints(QLayout.SetNoConstraint,QLayout.SetMinimumSize)
         from ui_transitions import SelectionSurface
         tabs_frame=SelectionSurface(self.auth_page,radius=8);tabs_frame.setObjectName('accountAuthTabs');self.auth_tabs=tabs_frame
+        tabs_frame.set_surface_background('rgba(0,0,0,64)','#EEEEEE',RADIUS_CARD_PX,stroke_role='border')
         tabs=QHBoxLayout(tabs_frame);tabs.setContentsMargins(4,4,4,4);tabs.setSpacing(4)
         self.register_tab.setText('注册新账号')
         for button in (self.login_tab,self.register_tab):
@@ -580,15 +667,19 @@ class AccountPanel(QFrame):
         self.password_edit.clear();fade_hide(self.auth_dialog)
 
     def _profile_menu(self, point):
-        menu=QMenu(self.profile_frame)
+        from shelf_ui_common import RoundedMenu
+        menu=RoundedMenu(self.profile_frame)
         self._style_menu(menu)
         refresh=menu.addAction('刷新已登录设备',self.refresh_devices)
         refresh.setEnabled(self.service.signed_in and not self._busy)
         menu.exec(self.profile_frame.mapToGlobal(point))
 
     def _style_menu(self, menu):
+        from native_ui_common import rounded_popup
         c=ui_colors('dark' if self._dark else 'light')
-        menu.setStyleSheet(f"QMenu{{background:{c['card']};color:{c['text']};border:1px solid {c['border']};border-radius:10px;padding:6px 0;font-size:12px;min-width:208px;}} QMenu::item{{padding:6px 14px;border:0;}} QMenu::item:selected{{background:{c['hover']};color:{c['text']};}} QMenu::item:disabled{{color:{c['muted']};}}")
+        menu.surface_theme='dark' if self._dark else 'light';menu.selection_inset=(0,0)
+        rounded_popup(menu)
+        menu.setStyleSheet(f"QMenu{{background:transparent;color:{c['text']};border:0;padding:7px 1px;font-size:12px;min-width:208px;}} QMenu::item{{padding:6px 14px;border:0;background:transparent;}} QMenu::item:selected{{background:transparent;color:{c['text']};}} QMenu::item:disabled{{color:{c['muted']};}}")
 
     def set_auth_mode(self,mode):
         if mode not in ('login','register'):raise ValueError('Unknown account form mode')
@@ -888,7 +979,8 @@ class AccountPanel(QFrame):
                     self.device_buttons[key]=button;action_layout.addWidget(button)
                     row.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
                     def show_device_menu(point,key=key,row=row):
-                        menu=QMenu(row);self._style_menu(menu);menu.addAction('修改设备名称',partial(self._edit_device_name,key));menu.exec(row.mapToGlobal(point))
+                        from shelf_ui_common import RoundedMenu
+                        menu=RoundedMenu(row);self._style_menu(menu);menu.addAction('修改设备名称',partial(self._edit_device_name,key));menu.exec(row.mapToGlobal(point))
                     row.customContextMenuRequested.connect(show_device_menu)
                 if not current:action_layout.insertSpacing(0,18)
                 actions.setFixedWidth(85 if not current else 32)
@@ -900,7 +992,7 @@ class AccountPanel(QFrame):
                 rename_form.set_surface_theme('dark' if self._dark else 'light');rename_form.setStyleSheet(self.styleSheet())
                 rename_form.body_layout.addWidget(_label('修改设备名称',rename_form.body))
                 rename_layout=QHBoxLayout();rename_layout.setSpacing(6)
-                edit=QLineEdit(rename_form.body);edit.setText(str(device.get('name') or ''))
+                edit=AccountLineEdit(rename_form.body);edit.setText(str(device.get('name') or ''))
                 edit.setMaxLength(80);edit.setMinimumWidth(0);edit.setMinimumHeight(34)
                 edit.setAccessibleName('新的设备名称')
                 cancel=_button('取消',rename_form)
@@ -1180,6 +1272,13 @@ class AccountPanel(QFrame):
             QFrame#accountPanel QPushButton#accountUnsignedProfile {{background:{semantic['card']};border:1px solid {semantic['border']};border-radius:12px;padding:0;}}
             QFrame#accountPanel QPushButton#accountUnsignedProfile:hover {{background:{semantic['hover']};}}
             QFrame#accountPanel QPushButton#accountUnsignedProfile:pressed {{background:{semantic['selected']};}}
+            QFrame#accountPanel,QFrame#accountDevice,QFrame#accountConfirm,QFrame#accountAuthTabs {{background:transparent;border:0;}}
+            QFrame#accountPanel QLabel#accountState,QFrame#accountPanel QLabel#accountState[online="true"] {{background:transparent;border:0;}}
+            QFrame#accountPanel QLineEdit,QDialog#accountModal QLineEdit {{background:transparent;border:0;}}
+            QFrame#accountPanel QLineEdit:focus,QDialog#accountModal QLineEdit:focus {{background:transparent;border:0;}}
+            QFrame#accountPanel QPushButton,QDialog#accountModal QPushButton {{background:transparent;border:0;}}
+            QFrame#accountPanel QPushButton:hover,QFrame#accountPanel QPushButton:pressed,
+            QDialog#accountModal QPushButton:hover,QDialog#accountModal QPushButton:pressed {{background:transparent;border:0;}}
         '''
         for button in [*self.device_buttons.values(),*self.device_rename_buttons.values()]:button.dark=self._dark;button.update()
         from native_ui_common import readable_qss

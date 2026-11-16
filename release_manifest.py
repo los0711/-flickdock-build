@@ -41,7 +41,7 @@ RUNTIME_SOURCES=(
     'flickdock.py','app_settings.py','async_images.py','capture_files.py',
     'download_writer.py','file_metadata.py','transfer_entry.py','receive_notice.py','gui_watchdog.py',
     'confirm_clear.py','content_grid.py','content_resolver.py','content_stack.py',
-    'dock_geometry.py','dock_preview.py','display_frames.py','drag_artwork.py','drag_probe.py',
+    'dock_geometry.py','dock_preview.py','display_frames.py','frame_diagnostics.py','drag_artwork.py','drag_probe.py',
     'drop_routing.py','drop_bridge.py','flickdock_icons.py','flickdock_motion.py','global_hotkeys.py',
     'image_preview.py','instance_guard.py','media_preview.py','offscreen_verify.py','mac_install.py',
     'runtime_media.py','selection_archive.py','shake_detector.py','shelf_content.py',
@@ -70,7 +70,7 @@ MAINTAINED_TESTS=(
     'test_cloud_only_v1825.py','test_virtual_clipboard.py',
     
     'test_receive_notice.py',
-    'test_display_frames.py',
+    'test_display_frames.py','test_frame_diagnostics.py','test_rounded_surfaces.py','test_rounded_menus.py','test_rounded_lan.py','test_native_media_verification.py',
     'test_preview_continuity.py',
     'test_surface_source_cache.py',
     'test_surface_elements.py',
@@ -125,6 +125,9 @@ MAINTAINED_TESTS=(
     'test_remote_transfer_actions_v1812.py',
 )
 SOURCE_FILES=RUNTIME_SOURCES+MAINTAINED_TESTS+(
+    'assets/fonts/Inter-Regular.ttf','assets/fonts/Inter-Medium.ttf','assets/fonts/Inter-SemiBold.ttf',
+    'assets/fonts/JetBrainsMono-Regular.ttf','assets/fonts/JetBrainsMono-Medium.ttf',
+    'licenses/Inter-OFL.txt','licenses/JetBrainsMono-OFL.txt',
     'cloud/test/translation-route.mjs','assets/models/lid.176.ftz',
     'assets/flags/cn.svg', 'assets/flags/cz.svg', 'assets/flags/de.svg', 'assets/flags/dk.svg', 'assets/flags/es.svg', 'assets/flags/fi.svg', 'assets/flags/fr.svg', 'assets/flags/gr.svg', 'assets/flags/id.svg', 'assets/flags/il.svg', 'assets/flags/in.svg', 'assets/flags/it.svg', 'assets/flags/jp.svg', 'assets/flags/kr.svg', 'assets/flags/manifest.json', 'assets/flags/my.svg', 'assets/flags/nl.svg', 'assets/flags/no.svg', 'assets/flags/ph.svg', 'assets/flags/pl.svg', 'assets/flags/pt.svg', 'assets/flags/ro.svg', 'assets/flags/ru.svg', 'assets/flags/sa.svg', 'assets/flags/se.svg', 'assets/flags/th.svg', 'assets/flags/tr.svg', 'assets/flags/tw.svg', 'assets/flags/ua.svg', 'assets/flags/us.svg', 'assets/flags/vn.svg', 'licenses/Flag-Icons-LICENSE.txt', 'licenses/FASTTEXT-LICENSE.txt', 'licenses/FASTTEXT-MODEL-ATTRIBUTION.txt', 'licenses/Paper-Notice-Motion-LICENSE.txt', 'cloud/src/translation.ts', 'cloud/test/translation.mjs', 'TRANSLATION.md',
     'ci_cross_device.py','ci_upload_profile.py','ci_vpn.py','ci_mac_video_compat.py','ci_mac_video_compositor.py','ci_media_preview_legacy.py',

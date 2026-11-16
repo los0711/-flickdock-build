@@ -14,13 +14,13 @@ from PySide6.QtGui import QDrag
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtGui import QPainter
 from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QTextCursor
 from PySide6.QtGui import QTransform
 from PySide6.QtWidgets import QApplication
 from PySide6.QtWidgets import QFileDialog
 from PySide6.QtWidgets import QFrame
 from PySide6.QtWidgets import QHBoxLayout
 from PySide6.QtWidgets import QLabel
-from PySide6.QtWidgets import QLineEdit
 from PySide6.QtWidgets import QMessageBox
 from PySide6.QtWidgets import QPushButton
 from PySide6.QtWidgets import QWidget
@@ -47,6 +47,7 @@ from native_ui_common import SHELF_HEADER_BUTTON_GAP_PX
 from native_ui_common import SHELF_HEADER_BUTTON_SIZE_PX
 from native_ui_common import SHELF_HEADER_RIGHT_MARGIN_PX
 from native_ui_common import SHELF_COMPACT_HEADER_HEIGHT_PX
+from native_ui_common import RoundedSurfaceFrame
 from native_ui_common import colors as ui_colors
 from overview_ui import ContentsPopup
 from owned_files import delete_owned_copy
@@ -57,6 +58,7 @@ from platform_native import raise_shelf_for_reveal
 from platform_native import remove_host_window_shadow
 from platform_native import shelf_window_flags
 from reference_widgets import ToolbarButton
+from reference_widgets import FilenameEdit
 from selection_archive import ZipArchiveJob
 from shelf_content import ContentRepository
 from shelf_drop_zone import DropZone
@@ -87,6 +89,17 @@ import subprocess
 import sys
 import time
 import ui_theme
+
+WINDOW_OPACITY_STEP = .06
+
+
+class _ShelfSurface(RoundedSurfaceFrame):
+    """The existing shelf host, with a device-aligned outer frame."""
+    def surface_style(self):
+        dark=ui_theme.current_theme()=='dark'
+        c=ui_colors('dark' if dark else 'light')
+        edge='rgba(255,255,255,20)' if dark else 'rgba(0,0,0,23)'
+        return c['surface'],edge,16 if sys.platform=='darwin' else 10
 
 
 class ShelfWindow(QWidget):
@@ -176,10 +189,10 @@ class ShelfWindow(QWidget):
         self.expanded = False
         self.opened_at = 0.0
         self._dock_target = QPoint()
-        self.card = QFrame(self)
+        self.card = _ShelfSurface(self)
         self.card.setObjectName("shelfCard")
         self.card.setGeometry(14, 7, CARD_W, CARD_H)
-        set_ui_style(self.card, "QFrame#shelfCard {background:#ffffff;border:0;border-radius:24px;}")
+        set_ui_style(self.card, "QFrame#shelfCard {background:transparent;border:0;}")
         # The native host remains transparent; this is the card's rounded
         # shadow, confined to the reserved animation surface margins.
         self.surface_effect = MotionShadow(self.card, alpha=42,
@@ -193,6 +206,11 @@ class ShelfWindow(QWidget):
         self.geometry_morph=SurfaceMorph(self,self.geometry(),self._apply_geometry,motion=self.manager.motion,prepare=self._prepare_morph,settle=self._settle_morph)
         self._explicit_hiding = False
         self._native_revealed = False
+        # The fade is an animation, but closing the surface must not depend on
+        # the compositor still delivering frames. This bounded fallback lands
+        # the hide even if the presentation callback is lost or delayed.
+        self._hide_fallback=QTimer(self);self._hide_fallback.setSingleShot(True)
+        self._hide_fallback.timeout.connect(self._complete_hide)
         logo = QLabel(self.card)
         self.brand_logo=logo
         logo.setGeometry(16, 10, 28, 28)
@@ -241,10 +259,7 @@ class ShelfWindow(QWidget):
         self.status_label.setGeometry(30, 242, CARD_W - 60, 18)
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         set_ui_style(self.status_label, "color:#8490a0;font:11px 'FlickDock UI';background:transparent;")
-        self.rename_edit = QLineEdit(self.card)
-        set_ui_style(self.rename_edit, "QLineEdit {background:white;color:#313741;border:1px solid #A3A3A3;border-radius:8px;padding:3px 6px;font:11px 'FlickDock UI';}")
-        self.rename_edit.returnPressed.connect(self.commit_rename)
-        self.rename_edit.editingFinished.connect(self.commit_rename)
+        self.rename_edit = FilenameEdit(self.card)
         self.rename_edit.hide()
         for button in (self.pin_button,self.expand_button,self.menu_button,self.close_button):
             button.setProperty('flatToolbar',True)
@@ -253,11 +268,7 @@ class ShelfWindow(QWidget):
             button.setProperty('flatToolbar',True)
             button.setParent(self)
         from reference_widgets import css,label,button
-        css(self.card,f"QFrame#shelfCard{{background:{ui_colors('dark')['surface']};border:1px solid rgba(255,255,255,20);border-radius:10px;}}",
-            f"QFrame#shelfCard{{background:{ui_colors('light')['surface']};border:1px solid rgba(0,0,0,23);border-radius:10px;}}")
-        if sys.platform=='darwin':
-            css(self.card,f"QFrame#shelfCard{{background:{ui_colors('dark')['surface']};border:1px solid rgba(255,255,255,20);border-radius:16px;}}",
-                f"QFrame#shelfCard{{background:{ui_colors('light')['surface']};border:1px solid rgba(0,0,0,23);border-radius:16px;}}")
+        css(self.card,'QFrame#shelfCard{background:transparent;border:0;}')
         self.header_line=QFrame(self.card);self.header_line.setGeometry(1,48,CARD_W-2,1)
         self.footer_line=QFrame(self.card);self.footer_line.setGeometry(1,269,CARD_W-2,1)
         for line in (self.header_line,self.footer_line):css(line,'background:rgba(255,255,255,15);border:0;','background:rgba(0,0,0,15);border:0;')
@@ -289,17 +300,17 @@ class ShelfWindow(QWidget):
         self._header_offset_px=round((SHELF_COMPACT_HEADER_HEIGHT_PX-SHELF_HEADER_BUTTON_SIZE_PX)/2)
         for item in (self.pin_button,self.expand_button,self.menu_button,self.close_button):
             if item not in buttons:item.hide()
+        scale=(effect.sx,effect.sy)
         for index,item in enumerate(buttons):
             size=SHELF_HEADER_BUTTON_SIZE_PX;gap=SHELF_HEADER_BUTTON_GAP_PX
             x=width-SHELF_HEADER_RIGHT_MARGIN_PX-len(buttons)*(size+gap)+index*(size+gap)+gap
             point=transform.map(QRectF(self.card.x()+x,self.card.y()+self._header_offset_px,size,size).center())
-            item.setFixedSize(size,size);item.move(round(point.x()-size/2),round(point.y()-size/2));item.set_presentation_scale(effect.sx,effect.sy)
-            item.show();item.raise_()
+            self._place_header_control(item,round(point.x()-size/2),round(point.y()-size/2),size,size,scale)
         self.account_button.hide()
         item=self.lan_button
         point=transform.map(QRectF(self.card.x()+10,self.card.y()+CARD_H-39,112,32).center())
-        item.setFixedSize(112,32);item.move(round(point.x()-56),round(point.y()-16));item.set_presentation_scale(effect.sx,effect.sy)
-        item.setVisible(not expanded);item.raise_()
+        self._place_header_control(item,round(point.x()-56),round(point.y()-16),112,32,scale,
+                                   visible=not expanded)
         for attr in ('account_caption','lan_caption','header_line','footer_line','traffic_controls'):
             item=getattr(self,attr,None)
             if item is not None:item.setVisible(not expanded and attr in ('header_line','footer_line'))
@@ -310,6 +321,29 @@ class ShelfWindow(QWidget):
             zone.clipboard_button.move(x-42,y);zone.clipboard_button.setVisible(not expanded)
             zone.capacity_button.move(x-78,y);zone.capacity_button.setVisible(not expanded)
             zone.hint.move(40,185)
+
+    def _place_header_control(self,item,x,y,width,height,scale,*,visible=True):
+        """Move a header sibling only when its painted target actually changed.
+
+        The presentation spring runs once per displayed frame; re-setting a
+        fixed size and raising an unchanged child on every tick invalidates
+        layout and forces extra compositing work for no visual difference.
+        """
+        state=(x,y,width,height,visible,round(scale[0],4),round(scale[1],4))
+        if getattr(item,'_header_placement',None)==state:
+            if visible and not item.isVisible():item.show()
+            return
+        previous=getattr(item,'_header_placement',None)
+        resized=previous is None or previous[2:4]!=(width,height)
+        item._header_placement=state
+        if resized:item.setFixedSize(width,height)
+        if item.x()!=x or item.y()!=y:item.move(x,y)
+        item.set_presentation_scale(*scale)
+        if visible:
+            if not item.isVisible():item.show()
+            if resized:item.raise_()
+        else:
+            item.hide()
 
     def show_cloud_menu(self):
         if confirmation_active(self):
@@ -379,7 +413,10 @@ class ShelfWindow(QWidget):
         width,height=min(EXPANDED_W,area.width()-38),min(EXPANDED_H,area.height()-38)
         right=current.x()+current.width()
         x=max(area.left()+4,min(right-width-28,area.right()-width-20))
-        y=max(area.top()+4,min(current.y(),area.bottom()-height-30))
+        # A compact shelf revealed against the macOS work-area edge is
+        # already correctly positioned. Do not shift its top on first expand.
+        top=area.top() if sys.platform=='darwin' else area.top()+4
+        y=max(top,min(current.y(),area.bottom()-height-30))
         return QRect(x,y,width+28,height+27)
 
     def _reserved_surface_rect(self,origin,target=None):
@@ -524,13 +561,17 @@ class ShelfWindow(QWidget):
         for index,button in enumerate(buttons):
             x=width-16-len(buttons)*(size+6)+index*(size+6)+6
             center=transform.map(QRectF(rect.x()+14+x-self.x(),rect.y()+7+self._header_offset_px-self.y(),size,size).center())
-            button.move(round(center.x()-size/2),round(center.y()-size/2))
+            left,top=round(center.x()-size/2),round(center.y()-size/2)
+            if button.x()!=left or button.y()!=top:button.move(left,top)
+            button._header_placement=None
             button.set_presentation_scale(self.surface_effect.sx,self.surface_effect.sy)
             button.raise_()
         if not self.expanded:
             button=self.lan_button
             center=transform.map(QRectF(rect.x()+24-self.x(),rect.y()+7+CARD_H-39-self.y(),112,32).center())
-            button.move(round(center.x()-56),round(center.y()-16))
+            left,top=round(center.x()-56),round(center.y()-16)
+            if button.x()!=left or button.y()!=top:button.move(left,top)
+            button._header_placement=None
             button.set_presentation_scale(self.surface_effect.sx,self.surface_effect.sy);button.raise_()
 
     def _capture_morph_source(self):
@@ -660,7 +701,12 @@ class ShelfWindow(QWidget):
         elif hasattr(self,'pin_button'):self._layout_header(self.card.width())
         confirmation=getattr(self,'_clear_confirmation',None)
         if confirmation is not None and confirmation.isVisible():confirmation.raise_()
-        self.setWindowOpacity(max(0.0, min(1.0, values["alpha"])))
+        alpha=max(0.0,min(1.0,values['alpha']))
+        previous=getattr(self,'_applied_window_opacity',None)
+        endpoint=alpha in (0.0,1.0)
+        if (sys.platform!='win32' or previous is None or abs(alpha-previous)>=WINDOW_OPACITY_STEP
+                or (endpoint and alpha!=previous)):
+            self.setWindowOpacity(alpha);self._applied_window_opacity=alpha
 
     def toggle_contents(self):
         if self.property('flickdockConfirmationActive'): return
@@ -1214,8 +1260,15 @@ class ShelfWindow(QWidget):
         self._intake_stage='idle';self._intake_timer.stop()
         # Completing a drop commits the tuck just like the hide control. The
         # pointer is still over the drop zone and must leave before reopening.
-        if not self.pinned and self.presentation_kind!='dock' and not self._intake_preserve_view:self.hide_animated(explicit=True)
-        else:self.touch()
+        if not self.pinned and self.presentation_kind!='dock' and not self._intake_preserve_view:
+            self.hide_animated(explicit=True)
+        else:
+            # A pinned or preserved surface stays; it is no longer a transient
+            # drag target, so its window controls must be reachable again.
+            if self.presentation_kind=='drag':
+                self.presentation_kind='manual'
+                self._layout_header(self.card.width())
+            self.touch()
         self._intake_preserve_view=False
 
     def drag_files(self, mode, paths):
@@ -1262,6 +1315,7 @@ class ShelfWindow(QWidget):
     def _show_at(self, target, kind, offset, reserve=None):
         was_visible = self.isVisible()
         was_hiding=self.visible_state=='hiding'
+        self._hide_fallback.stop()
         self.manager.activate_shelf(self)
         self.presentation_kind = kind
         self.visible_state = "floating"
@@ -1370,8 +1424,17 @@ class ShelfWindow(QWidget):
             self._show_at(rect.topLeft(),'dock',offsets[self._dock_edge()],reserve=compact if expanded else None)
 
     def hide_animated(self, explicit=True):
-        if not self.isVisible() or self.visible_state == "hiding" or (self.pinned and not explicit):
+        if not self.isVisible():
             return
+        if self.visible_state == "hiding":
+            # An explicit close is idempotent. If the fade never landed (lost
+            # frames, occluded host, interrupted callback) a second click must
+            # still close the surface instead of being swallowed forever.
+            if explicit:self._complete_hide()
+            return
+        if self.pinned and not explicit:
+            return
+        self._hide_fallback.stop()
         self._dismiss_clipboard_preview()
         self._cancel_intake()
         self._explicit_hiding = explicit
@@ -1398,8 +1461,19 @@ class ShelfWindow(QWidget):
                                    "dy": offset.y() if self.manager.motion else 0,
                                    "sx": .96 if self.manager.motion else 1, "sy": .92 if self.manager.motion else 1, "alpha": 0},
                                   finish, response=.17, damping=.84)
+        # A fade is bounded even when no display frame is delivered; this also
+        # covers a pending completion callback being replaced by a later show.
+        self._hide_fallback.start(450)
+
+    def _complete_hide(self):
+        if not self.isVisible() or self.visible_state != "hiding":
+            return
+        self.hide_immediately()
+        self.manager.update_handles()
+        self.manager.save()
 
     def hide_immediately(self):
+        self._hide_fallback.stop()
         self._dismiss_clipboard_preview()
         self._cancel_intake()
         self.presentation.stop()
@@ -1452,6 +1526,12 @@ class ShelfWindow(QWidget):
 
     def _show_contents(self,mode,target,*,animate=True):
         if self.property('flickdockConfirmationActive'): return
+        self._hide_fallback.stop()
+        # Opening the overview from a transient drag reveal converts this
+        # surface into a normal floating preview. Keeping the 'drag' kind here
+        # would hide all four header controls again after collapsing and leave
+        # the compact preview with no visible way to close it.
+        if self.presentation_kind=='drag':self.presentation_kind='manual'
         if not self.expanded:self._dismiss_clipboard_preview()
         if self.popup is not None:self.popup.preview.clear_preview()
         if animate:self._capture_morph_source()
@@ -1490,6 +1570,9 @@ class ShelfWindow(QWidget):
         if self.property('flickdockConfirmationActive'): return
         if not self.expanded:
             return
+        # Collapsing settles the surface back into a normal compact preview.
+        # A lingering transient kind would keep the header controls hidden.
+        if self.presentation_kind=='drag':self.presentation_kind='manual'
         self._dismiss_clipboard_preview()
         self.popup.preview.media.stop()
         self._capture_morph_source()
@@ -1554,7 +1637,7 @@ class ShelfWindow(QWidget):
         if button_menu and self._more_menu_just_closed:return
         self.touch()
         menu = AnimatedMenu(self)
-        style_menu(menu,antialiased=True)
+        style_menu(menu)
         # The shared rounded-popup style suppresses the platform shadow;
         # this menu intentionally uses the native neutral popup shadow.
         menu.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint,False)
@@ -1724,20 +1807,23 @@ class ShelfWindow(QWidget):
         dialog=self._rename_dialog
         from reference_widgets import refresh_tree
         refresh_tree(dialog)
-        dialog.move(self.visual_geometry().center()-QPoint(dialog.width()//2,dialog.height()//2))
-        self.rename_edit.setText(Path(ref).name)
-        dialog.show();dialog.raise_();dialog.activateWindow()
         self.rename_edit.show()
+        dialog.layout().activate();dialog.card.layout().activate()
+        self.rename_edit.set_filename(Path(ref).name)
+        dialog.move(self.visual_geometry().center()-QPoint(dialog.width()//2,dialog.height()//2))
+        dialog.show();dialog.raise_();dialog.activateWindow()
         self.rename_edit.raise_()
         self.rename_edit.setFocus()
-        self.rename_edit.setSelection(0,len(Path(ref).stem))
+        cursor=self.rename_edit.textCursor();cursor.setPosition(0)
+        cursor.setPosition(len(Path(ref).stem.encode('utf-16-le','surrogatepass'))//2,QTextCursor.KeepAnchor)
+        self.rename_edit.setTextCursor(cursor)
         self.touch()
 
     def commit_rename(self):
         ref=getattr(self,'_rename_ref',None)
         if not self.rename_edit.isVisible() or ref not in self.files['permanent']:
             return False
-        new_name = self.rename_edit.text().strip()
+        new_name = self.rename_edit.toPlainText().strip()
         if not new_name or new_name in ('.','..') or new_name.endswith('.') or any(c in new_name for c in '<>:"/\\|?*') or any(ord(c)<32 for c in new_name):
             QMessageBox.warning(self,APP_NAME,'请输入有效的完整文件名。');return False
         src = Path(ref)

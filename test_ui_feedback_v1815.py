@@ -60,18 +60,21 @@ class FeedbackTests(unittest.TestCase):
             self.assertEqual(not badge.isHidden(),bool(badge.text()),key)
 
     def test_same_height_sidebar_entries_use_the_same_corner_radius(self):
-        import re
+        from native_ui_common import RADIUS_CONTROL_PX
+        import ui_theme
         view=self.fixture.overview()
         controls=[*view.category_buttons.values(),view.video_nav,view.lan_nav,view.settings_nav]
         self.assertEqual({control.height() for control in controls},{34})
         for theme in ('dark','light'):
-            radii={int(re.search(r'border-radius:(\d+)px',control._reference_style[theme=='light']).group(1)) for control in controls}
-            self.assertEqual(len(radii),1,(theme,radii))
+            ui_theme.set_theme(theme);flush()
+            self.assertEqual({control._surface_radius() for control in controls},{RADIUS_CONTROL_PX})
 
     def test_preview_actions_use_the_requested_color_roles(self):
         preview=self.fixture.overview().preview
-        for control in (preview.open_button,preview.rename_button,preview.copy_path_button,preview.zip_button):
+        for control in (preview.open_button,preview.copy_path_button):
             self.assertEqual(control.property('referenceVariant'),'secondary')
+        for control in (preview.rename_button,preview.zip_button):
+            self.assertEqual(control.property('referenceVariant'),'quiet')
         self.assertEqual(preview.send_button.property('referenceVariant'),'primary')
         self.assertEqual(preview.remove_button.property('referenceVariant'),'danger')
 

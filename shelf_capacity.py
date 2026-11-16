@@ -9,7 +9,7 @@ from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen,QCursor,QGuiAppli
 from PySide6.QtWidgets import QAbstractButton, QHBoxLayout, QLabel, QPushButton,QFrame,QVBoxLayout
 from shelf_intake_limit import TransferSuggestion
 import ui_theme
-from native_ui_common import (colors, rounded_popup, keyboard_focus_visible, set_ui_weight,
+from native_ui_common import (colors, rounded_popup, keyboard_focus_visible, set_ui_weight,paint_rounded_surface,qss_color,
     RADIUS_SUBCONTROL_PX,RADIUS_CONTROL_PX,RADIUS_CARD_PX)
 
 CLOUD_SHELF_BYTES = 1024**3
@@ -68,6 +68,25 @@ def byte_label(value):
     return f'{value} B'
 
 
+class _CapacityPopover(QFrame):
+    def __init__(self,parent):
+        super().__init__(parent,Qt.ToolTip|Qt.FramelessWindowHint)
+        self.setContentsMargins(1,1,1,1)
+
+    def paintEvent(self,event):
+        c=colors(ui_theme.current_theme());p=QPainter(self)
+        p.setCompositionMode(QPainter.CompositionMode_Source);p.fillRect(self.rect(),Qt.transparent)
+        p.setCompositionMode(QPainter.CompositionMode_SourceOver)
+        paint_rounded_surface(p,self.rect(),RADIUS_CARD_PX,qss_color(c['popup_surface']),qss_color(c['border']))
+
+
+class _CapacityCountdown(QLabel):
+    def paintEvent(self,event):
+        dark=ui_theme.current_theme()=='dark';p=QPainter(self)
+        paint_rounded_surface(p,self.rect(),RADIUS_SUBCONTROL_PX,QColor('#FFFFFF' if dark else '#000000'))
+        p.end();super().paintEvent(event)
+
+
 class ShelfCapacityButton(QAbstractButton):
     reset_due=Signal()
     def __init__(self, parent=None, *, show_value=False):
@@ -75,9 +94,9 @@ class ShelfCapacityButton(QAbstractButton):
         self.show_value=bool(show_value)
         self.storage = None
         self._sync=None;self._reset_requested=None;self._deadline=None;self._reading=False
-        self.popover=QFrame(self,Qt.ToolTip|Qt.FramelessWindowHint)
+        self.popover=_CapacityPopover(self)
         self.popover.setAttribute(Qt.WA_ShowWithoutActivating)
-        rounded_popup(self.popover,RADIUS_CARD_PX)
+        rounded_popup(self.popover)
         self.popover.setFixedWidth(270)
         box=QVBoxLayout(self.popover);box.setContentsMargins(16,12,16,12);box.setSpacing(8)
         title=QLabel('云端搁架容量',self.popover);box.addWidget(title)
@@ -85,7 +104,7 @@ class ShelfCapacityButton(QAbstractButton):
         for key,name in (('used','已使用'),('remaining','剩余容量'),('total','总容量')):
             row=QHBoxLayout();row.addWidget(QLabel(name,self.popover));value=QLabel(self.popover)
             value.setAlignment(Qt.AlignRight|Qt.AlignVCenter);row.addWidget(value,1);box.addLayout(row);self.values[key]=value
-        self.countdown=QLabel(self.popover);self.countdown.setObjectName('capacityCountdown');box.addWidget(self.countdown)
+        self.countdown=_CapacityCountdown(self.popover);self.countdown.setObjectName('capacityCountdown');box.addWidget(self.countdown)
         self.rule=QLabel(RESET_NOTICE,self.popover);self.rule.setObjectName('capacityRule');self.rule.setWordWrap(True);box.addWidget(self.rule)
         self.clock=QTimer(self);self.clock.setInterval(1000);self.clock.timeout.connect(self._tick)
         self.hide_delay=QTimer(self);self.hide_delay.setSingleShot(True);self.hide_delay.timeout.connect(self._hide_outside)
@@ -142,7 +161,7 @@ class ShelfCapacityButton(QAbstractButton):
     def show_popover(self):
         if self.storage is None:self._refresh_capacity()
         dark=ui_theme.current_theme()=='dark';c=colors('dark' if dark else 'light')
-        self.popover.setStyleSheet(f"QFrame{{background:{c['card']};border:1px solid {c['border']};border-radius:{RADIUS_CARD_PX}px;}} QLabel{{color:{c['text']};font-size:{CAPACITY_POPOVER_TEXT_SIZE_PX}px;background:transparent;border:0;}} QLabel#capacityRule{{color:{c['secondary']};font-size:{CAPACITY_RULE_SIZE_PX}px;}} QLabel#capacityCountdown{{color:{'#000000' if dark else '#FFFFFF'};background:{'#FFFFFF' if dark else '#000000'};border:0;border-radius:{RADIUS_SUBCONTROL_PX}px;padding:8px;}}")
+        self.popover.setStyleSheet(f"QFrame{{background:transparent;border:0;}} QLabel{{color:{c['text']};font-size:{CAPACITY_POPOVER_TEXT_SIZE_PX}px;background:transparent;border:0;}} QLabel#capacityRule{{color:{c['secondary']};font-size:{CAPACITY_RULE_SIZE_PX}px;}} QLabel#capacityCountdown{{color:{'#000000' if dark else '#FFFFFF'};background:transparent;border:0;padding:8px;}}")
         self._tick();self.popover.adjustSize();point=self.mapToGlobal(QPoint(0,-self.popover.height()-6))
         screen=self.screen() or QGuiApplication.primaryScreen();area=screen.availableGeometry()
         self.popover.move(max(area.left(),min(point.x(),area.right()-self.popover.width())),max(area.top(),min(point.y(),area.bottom()-self.popover.height())))
@@ -183,11 +202,10 @@ class ShelfCapacityButton(QAbstractButton):
             from reference_widgets import ink
             palette=colors(ui_theme.current_theme())
             fill=ink(palette['control_pressed'] if self.isDown() else palette['control_hover'] if self.underMouse() else palette['control'])
-            p.setPen(Qt.NoPen);p.setBrush(fill)
-            p.drawRoundedRect(QRectF(self.rect()).adjusted(.5,.5,-.5,-.5),RADIUS_CONTROL_PX,RADIUS_CONTROL_PX)
+            paint_rounded_surface(p,QRectF(self.rect()).adjusted(.5,.5,-.5,-.5),RADIUS_CONTROL_PX,fill)
         if keyboard_focus_visible(self):
-            p.setBrush(Qt.NoBrush);p.setPen(QPen(QColor(colors(ui_theme.current_theme())['ring']),1))
-            p.drawRoundedRect(QRectF(self.rect()).adjusted(1,1,-1,-1),RADIUS_CONTROL_PX,RADIUS_CONTROL_PX)
+            paint_rounded_surface(p,QRectF(self.rect()).adjusted(1,1,-1,-1),RADIUS_CONTROL_PX,
+                                  QColor(Qt.transparent),QColor(colors(ui_theme.current_theme())['ring']))
         arc=QRectF(CAPACITY_INSET_PX if self.show_value else 5,7,CAPACITY_RING_SIZE_PX,CAPACITY_RING_SIZE_PX)
         p.setBrush(Qt.NoBrush);p.setPen(QPen(QColor('#3A3A3A' if ui_theme.current_theme()=='dark' else '#D8D8D8'),2.5))
         p.drawEllipse(arc)

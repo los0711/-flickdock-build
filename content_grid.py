@@ -214,8 +214,10 @@ class IconItem(QWidget):
     def contextMenuEvent(self, event):
         if hasattr(self.popup,'show_item_menu'):
             self.popup.show_item_menu(self.ref,event.globalPos());event.accept();return
-        menu = QMenu(self)
-        menu.setStyleSheet(f"QMenu {{background:{color('surface')};color:{color('text')};border:1px solid {color('border')};border-radius:10px;padding:5px;}} QMenu::item {{padding:8px 16px;border-radius:6px;}} QMenu::item:selected {{background:{color('hover')};}}")
+        from shelf_ui_common import RoundedMenu
+        from native_ui_common import rounded_popup,RADIUS_CARD_PX
+        menu = RoundedMenu(self);menu.selection_inset=(0,0);rounded_popup(menu)
+        menu.setStyleSheet(f"QMenu {{background:transparent;color:{color('text')};border:0;padding:6px;}} QMenu::item {{padding:8px 16px;background:transparent;border:0;}} QMenu::item:selected {{background:transparent;}}")
         menu.addAction("复制文字" if self.popup.shelf.content.is_text(self.ref) else "复制文件",
                        lambda: self.popup.shelf.copy_items(self._chosen()))
         menu.addAction("从搁架移除", lambda: self.popup.remove_path(self.ref))
@@ -243,7 +245,7 @@ class IconItem(QWidget):
         viewport=getattr(getattr(self.popup,'scroll',None),'viewport',lambda:None)()
         if viewport is not None and not QRectF(self.mapTo(viewport,QPoint()),self.size()).intersects(QRectF(viewport.rect())):return
         from reference_widgets import palette,ink,thumbnail,draw_status
-        from native_ui_common import pixel_aligned_border
+        from native_ui_common import paint_rounded_surface
         actual = self.ref in self.popup.selected
         if actual != self._selected:
             self.set_selected(actual)
@@ -256,17 +258,15 @@ class IconItem(QWidget):
         painter.scale(scale, scale)
         painter.translate(-center.x(), -center.y())
         focused=self.hasFocus() and self._keyboard_focus
-        painter.setBrush(ink(c['grid_selected'] if actual else c['file_card_hover'] if v['hover']>.3 or focused else c['file_card']))
-        border,stroke=pixel_aligned_border(painter,QRectF(self.rect()),1.5 if focused else 1)
-        painter.setPen(QPen(ink(c['grid_selected_border'] if actual else c['border']),stroke))
-        painter.drawRoundedRect(border,c['card_radius'],c['card_radius'])
+        fill=ink(c['grid_selected'] if actual else c['file_card_hover'] if v['hover']>.3 or focused else c['file_card'])
+        paint_rounded_surface(painter,self.rect(),c['card_radius'],fill,ink(c['grid_selected_border'] if actual else c['border']))
         checkbox_border=c['grid_unchecked_hover_border'] if v['hover']>.3 or v['down']>.1 else c['grid_unchecked_border']
-        painter.setPen(QPen(ink(checkbox_border),1) if not actual else Qt.NoPen)
-        painter.setBrush(QColor(c['action']) if actual else Qt.NoBrush)
-        painter.drawRoundedRect(QRectF(12.5,12.5,14,14),4,4)
+        paint_rounded_surface(painter,QRectF(12.5,12.5,14,14),4,
+                              QColor(c['action']) if actual else QColor(Qt.transparent),
+                              None if actual else ink(checkbox_border))
         if actual:
             painter.setPen(QPen(QColor(c['on_action']),1.8,Qt.SolidLine,Qt.RoundCap,Qt.RoundJoin));painter.drawLine(QPointF(16,19),QPointF(18,22));painter.drawLine(QPointF(18,22),QPointF(23,16))
-        art=thumbnail(self.popup.shelf,self.ref,44);x=(self.width()-44)//2
+        art=thumbnail(self.popup.shelf,self.ref,44,self.devicePixelRatioF());x=(self.width()-44)//2
         lift=2*getattr(getattr(self,'_dwell_hint',None),'value',0.)
         state=getattr(self.popup.shelf.content,'transfers',{}).get(self.ref)
         painter.drawPixmap(QPointF(x,13-lift),art);draw_status(painter,QRectF(x+26,39-lift,18,18),self.cloud_status,state)
@@ -276,5 +276,7 @@ class IconItem(QWidget):
         painter.drawText(QRectF(12,68,self.width()-24,18),Qt.AlignCenter,painter.fontMetrics().elidedText(self.title.replace('\n',' '),Qt.ElideRight,self.width()-24))
         font.setPixelSize(10);set_ui_weight(font,400);painter.setFont(font);painter.setPen(QColor(c['file_description']))
         painter.drawText(QRectF(10,90,self.width()-20,16),Qt.AlignCenter,painter.fontMetrics().elidedText(self._detail_text,Qt.ElideRight,self.width()-20))
+        from native_ui_common import technical_font
+        painter.setFont(technical_font(font))
         painter.drawText(QRectF(10,108,self.width()-20,16),Qt.AlignCenter,painter.fontMetrics().elidedText(self._upload_text,Qt.ElideRight,self.width()-20))
         painter.end()

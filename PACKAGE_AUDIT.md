@@ -1,6 +1,6 @@
 # FlickDock 1.8.26 Windows bundle audit
 
-The 1.8.37 repair uses the platform fonts: Microsoft YaHei on Windows and the Apple system font with PingFang SC for Chinese on macOS. Inter and OPPO Sans are no longer bundled. The remaining dependency notes below describe the original 1.8.26 audit and should be rechecked against each new build.
+The 1.8.37 repair bundles Inter and JetBrains Mono for Latin text and technical metadata. Chinese glyphs use Microsoft YaHei UI on Windows and PingFang SC on macOS; Chinese system fonts are not bundled. The remaining dependency notes below describe the original 1.8.26 audit and should be rechecked against each new build.
 
 The bundle uses PySide6 / Qt 6.12, Qt FFmpeg 9.0.1, Qt Network/Schannel, OpenSSL and the existing native WebRTC runtime.
 

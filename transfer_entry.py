@@ -3,7 +3,7 @@ from PySide6.QtCore import QObject,QEvent,QPoint,QRect,QRectF,Qt,QTimer,QEasingC
 from PySide6.QtGui import QColor,QPainter,QPainterPath
 from PySide6.QtWidgets import QApplication,QWidget
 from shiboken6 import isValid
-from native_ui_common import reduced_motion,icon
+from native_ui_common import reduced_motion,icon,paint_rounded_surface,RADIUS_CONTROL_PX
 from display_frames import DisplayAnimation
 
 TRANSFER_DROP_FEEDBACK_MS=160
@@ -39,10 +39,10 @@ class TransferDropSurface(QWidget):
             selected=self.active==mode
             rect=QRectF(3,3+i*52,self.width()-6,48)
             if selected and self.press:rect=rect.adjusted(self.press*3,self.press*2,-self.press*3,-self.press*2)
-            p.setBrush(QColor(c['surface']));p.setPen(Qt.NoPen);p.drawRoundedRect(rect,8,8)
+            paint_rounded_surface(p,rect,RADIUS_CONTROL_PX,QColor(c['surface']))
             path=QPainterPath();path.addRoundedRect(rect.adjusted(1,1,-1,-1),7,7)
             from ui_theme import current_theme
-            self.border_motions[mode].paint(p,path,dark=current_theme()=='dark')
+            self.border_motions[mode].paint(p,path,dark=current_theme()=='dark',radius=7)
             motion=self.border_motions[mode]
             icon(glyph,motion.color(c['secondary'],c['link']).name()).paint(p,QRect(16,19+i*52,16,16))
             p.setPen(motion.color(c['secondary'],c['text']))

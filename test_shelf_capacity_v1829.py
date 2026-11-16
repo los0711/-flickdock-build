@@ -117,9 +117,12 @@ class PresentationTests(unittest.TestCase):
         button.show()
         for theme,background,foreground in (('light','#000000','#FFFFFF'),('dark','#FFFFFF','#000000')):
             ui_theme.set_theme(theme);button.show_popover();flush()
-            style=button.popover.styleSheet()
-            self.assertIn('background:'+background,style)
-            self.assertIn('color:'+foreground,style)
+            from PySide6.QtGui import QColor
+            image=button.countdown.grab().toImage()
+            self.assertEqual(image.pixelColor(4,image.height()//2).name().upper(),background)
+            self.assertEqual(button.countdown.palette().color(button.countdown.foregroundRole()).name().upper(),foreground)
+            popup=button.popover.grab().toImage();self.assertTrue(button.popover.mask().isEmpty())
+            self.assertEqual(popup.pixelColor(0,0).alpha(),0)
             from PySide6.QtWidgets import QLabel
             for label in button.popover.findChildren(QLabel):
                 self.assertEqual(label.font().pixelSize(),12 if label is button.rule else 13)
