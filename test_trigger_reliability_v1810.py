@@ -1,6 +1,7 @@
 """Offscreen regressions for drag validation and the screen-edge handoff."""
 import shelf_window
 import os
+from itertools import product
 from pathlib import Path
 import tempfile
 import time
@@ -289,6 +290,47 @@ class TriggerReliabilityTests(unittest.TestCase):
         QTest.qWait(600);APP.processEvents()
         self.assertEqual(shelf.visible_state,'hidden')
         self.assertTrue(manager.edge.isVisible())
+
+    def test_overview_button_interactions_can_close_and_restore_edge(self):
+        manager=self.manager;shelf=manager.shelf
+        manager.settings.update(capture_mode='reference',keep_empty_handle=True)
+        manager.motion=True;shelf.presentation.motion=True;shelf.pinned=False
+        path=Path(self.profile.name)/'document.txt';path.write_text('fixture',encoding='utf-8')
+        shelf.add_paths('permanent',[str(path)])
+        names=('sort','grid','list','select-all','copy-path','open','category','pin')
+        for name,native_hide in product(names,(False,True)):
+            with self.subTest(action=name,native_hide=native_hide):
+                manager.edge_suppressed=False
+                shelf.pinned=False;shelf.pin_button.setChecked(False)
+                manager.show_overview();shelf.geometry_morph.complete();APP.processEvents()
+                shelf.popup._narrow_preview=True
+                shelf.popup.select_item(shelf.files['permanent'][0]);APP.processEvents()
+                controls={'sort':shelf.popup.sort_buttons['time'],'grid':shelf.popup.view_grid,
+                          'list':shelf.popup.view_list,'select-all':shelf.popup.select_all_button,
+                          'copy-path':shelf.popup.preview.copy_path_button,'open':shelf.popup.preview.open_button,
+                          'category':shelf.popup.sidebar_buttons['images'],'pin':shelf.pin_button}
+                control=controls[name]
+                self.assertTrue(control.isEnabled(),name)
+                with patch.object(QDesktopServices,'openUrl',return_value=True):
+                    QTest.mouseClick(control,Qt.LeftButton);APP.processEvents()
+                # Close immediately while the clicked control can still be
+                # animating; the edge handoff must not depend on that effect.
+                QTest.mouseClick(shelf.close_button,Qt.LeftButton)
+                if native_hide:
+                    self.assertEqual(shelf.visible_state,'hiding',name)
+                    shelf.windowHandle().hide()
+                QTest.qWait(600);APP.processEvents()
+                self.assertEqual(shelf.visible_state,'hidden',name)
+                self.assertFalse(shelf.isVisible(),name)
+                self.assertTrue(manager.edge.isVisible(),name)
+                with patch.object(flickdock.QCursor,'pos',return_value=QPoint(10,10)), \
+                     patch.object(flickdock,'mouse_buttons_mask',return_value=0), \
+                     patch.object(flickdock,'native_input_available',return_value=False):manager.poll()
+                with patch.object(flickdock.QCursor,'pos',return_value=manager.edge.activation_region().center()), \
+                     patch.object(flickdock,'mouse_buttons_mask',return_value=0), \
+                     patch.object(flickdock,'native_input_available',return_value=False):manager.poll()
+                self.assertTrue(shelf.isVisible(),name)
+                self.assertEqual(shelf.presentation_kind,'dock',name)
 
     def test_edge_reveal_works_while_lan_is_open_and_after_it_closes(self):
         manager = self.manager
