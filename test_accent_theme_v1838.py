@@ -1,6 +1,7 @@
 """Persisted accent drafts, reversible dialogs and existing control recoloring."""
 import json,tempfile,unittest
 from pathlib import Path
+from unittest.mock import patch
 from PySide6.QtCore import QPoint
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QDialog,QToolTip
@@ -61,6 +62,7 @@ class AccentTests(unittest.TestCase):
 
     def test_existing_primary_and_split_buttons_refresh_without_stale_tokens(self):
         primary=button('test',variant='primary');frame,send,arrow=split_send_button(None,32)
+        primary.resize(120,32);frame.resize(160,32);primary.show();frame.show();flush()
         try:
             for theme in ('light','dark'):
                 ui_theme.set_theme(theme)
@@ -70,7 +72,11 @@ class AccentTests(unittest.TestCase):
                     for state in ('action','action_hover','action_pressed'):
                         self.assertGreaterEqual(contrast_colors(QColor(tokens[state]),QColor(tokens['on_action'])),4.5,(value,theme,state))
                     for control in (primary,send,arrow):
-                        self.assertIn(tokens['action'],control.styleSheet());self.assertNotIn('@fd_',control.styleSheet())
+                        self.assertNotIn('@fd_',control.styleSheet())
+                        with patch.object(control,'underMouse',return_value=False),patch.object(control,'isDown',return_value=False):
+                            image=control.grab().toImage();scale=image.devicePixelRatio()
+                        pixel=image.pixelColor(round(5*scale),round(control.height()/2*scale))
+                        self.assertEqual(pixel.name().upper(),tokens['action'].upper(),(theme,value,control.text()))
                     self.assertEqual(tokens['blue'],'#0A84FF')
         finally:
             primary.deleteLater();frame.deleteLater();flush()
@@ -84,7 +90,7 @@ class AccentTests(unittest.TestCase):
                 QToolTip.hideText();QToolTip.showText(QPoint(30,30),'测试提示');flush()
                 tip=next(w for w in APP.topLevelWidgets() if w.metaObject().className()=='QTipLabel' and w.isVisible())
                 c=colors(theme)
-                self.assertIn(c['card'].lower(),tip.styleSheet().lower())
+                self.assertIn(c['popup_surface'].lower(),tip.styleSheet().lower())
                 self.assertIn(c['text'].lower(),tip.styleSheet().lower())
             self.assertEqual(sheets[0],sheets[1])
         finally:QToolTip.hideText();flush()

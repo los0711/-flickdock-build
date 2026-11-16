@@ -208,7 +208,9 @@ class LanHigLayoutTests(unittest.TestCase):
         from PySide6.QtGui import QColor
         combo=self.panel.devices
         for index in range(3):combo.addItem('同账号 · 设备 '+str(index),'fixture-'+str(index))
-        for theme,background in (('dark','#171717'),('light','#FFFFFF')):
+        from native_ui_common import colors
+        for theme in ('dark','light'):
+            background=colors(theme)['popup_surface']
             self.dialog.apply_theme(theme);combo.setCurrentIndex(0);combo.showPopup();self.settle()
             view=combo.view();popup=view.window();image=popup.grab().toImage()
             self.assertEqual(popup.objectName(),'lanDevicePopup')

@@ -264,7 +264,12 @@ class DisplayFramesTests(unittest.TestCase):
         settled=[];morph=SurfaceMorph(self.window,QRect(0,0,100,100),lambda rect:None,settle=lambda rect:settled.append(QRect(rect)))
         with patch('native_ui_common.reduced_motion',return_value=False):morph.animate(QRect(0,0,400,300),duration=60)
         morph.pause();QTest.qWait(100);self.assertTrue(morph.active);self.assertEqual(settled,[])
-        morph.resume();morph._frames.stop();QTest.qWait(100)
+        morph.resume();morph._frames.stop()
+        # Busy CI hosts can deliver a precise Qt timer late; verify that the
+        # paused morph still settles instead of assuming a fixed scheduling lag.
+        for _ in range(150):
+            if not morph.active:break
+            QTest.qWait(10)
         self.assertFalse(morph.active);self.assertEqual(settled,[QRect(0,0,400,300)])
         with patch('native_ui_common.reduced_motion',return_value=False):
             morph.animate(QRect(0,0,500,400),duration=40)

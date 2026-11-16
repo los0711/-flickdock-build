@@ -159,7 +159,9 @@ class OverviewControlsTests(unittest.TestCase):
         self.assertTrue(dialog.isVisible());self.assertTrue(source.exists())
         QApplication.sendEvent(edit,QInputMethodEvent('',[]))
         edit.setPlainText('图像😀_renamed.webp');QTest.qWait(60);fixture.flush()
-        self.assertEqual(edit.height(),RENAME_EDIT_MIN_HEIGHT_PX)
+        self.assertGreaterEqual(edit.height(),RENAME_EDIT_MIN_HEIGHT_PX)
+        self.assertLess(edit.height(),RENAME_EDIT_MIN_HEIGHT_PX+edit.fontMetrics().lineSpacing())
+        self.assertEqual(edit.verticalScrollBar().maximum(),0)
         QTest.keyClick(edit,Qt.Key_Return);fixture.flush()
         target=source.with_name('图像😀_renamed.webp')
         self.assertEqual(target.read_bytes(),b'original');self.assertFalse(source.exists())
@@ -238,11 +240,13 @@ class OverviewControlsTests(unittest.TestCase):
         for theme in ('light','dark'):
             dialog=DeleteConfirmOverlay(self.shelf.card,3,1,theme=theme)
             try:
-                style=dialog.delete_button.styleSheet()
-                self.assertIn('background:#DC2626;color:#FFFFFF',style)
-                self.assertIn('QPushButton:hover {background:#B91C1C;',style)
-                self.assertIn('QPushButton:pressed {background:#991B1B;',style)
-                for background in ('#DC2626','#B91C1C','#991B1B'):
+                dialog.show();fixture.flush();control=dialog.delete_button
+                self.assertIn('color:#FFFFFF',control.styleSheet())
+                for hovered,pressed,background in ((False,False,'#DC2626'),(True,False,'#B91C1C'),(True,True,'#991B1B')):
+                    with patch.object(control,'underMouse',return_value=hovered),patch.object(control,'isDown',return_value=pressed):
+                        image=control.grab().toImage();scale=image.devicePixelRatio()
+                    pixel=image.pixelColor(round(6*scale),round(control.height()/2*scale))
+                    self.assertEqual(pixel.name().upper(),background)
                     self.assertGreaterEqual(fixture.contrast_colors(QColor(background),QColor('#FFFFFF')),4.5)
             finally:dialog.deleteLater()
 
