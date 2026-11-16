@@ -1,0 +1,51 @@
+name: Stage Mac 1.8.38 archives
+on:
+  workflow_dispatch:
+permissions:
+  actions: read
+  contents: write
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: flickdock-release
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - run: python -m pip install requests==2.34.2
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: FlickDock-Mac-1.8.38-user-tested-ac6de707331c66e9ffef398895d2d01067007c78
+          run-id: 43907948362
+          github-token: ${{ github.token }}
+          path: mac-release
+      - name: Archive supplied Mac packages
+        env:
+          GITEE_RELEASE_TOKEN: ${{ secrets.GITEE_RELEASE_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib,json,os
+          from release_archives import publish_archives
+          root=Path('mac-release')
+          report=json.loads((root/'mac-build-1.8.38-arm64.json').read_text(encoding='utf8'))
+          if report.get('version')!='1.8.38' or report.get('architecture')!='arm64' or report.get('pkg_payload_verified') is not True:
+              raise ValueError('Mac packaging report is inconsistent')
+          paths=[root/('FlickDock-1.8.38-macOS-arm64.'+ext) for ext in ('zip','dmg','pkg')]
+          for path in paths:
+              records=[row for row in report['artifacts'] if row['name']==path.name]
+              if len(records)!=1:raise ValueError('Mac package absent from report')
+              with path.open('rb') as stream:digest=hashlib.file_digest(stream,'sha256').hexdigest()
+              if path.stat().st_size!=records[0]['bytes'] or digest!=records[0]['sha256']:raise ValueError('Mac package hash mismatch')
+          assets=publish_archives(paths,'1.8.38',os.environ['GITHUB_SHA'],'优化稳定性与交互体验。',gitee_token=os.environ['GITEE_RELEASE_TOKEN'],github_token=os.environ['GITHUB_TOKEN'])
+          Path('mac-assets.json').write_text(json.dumps(assets,ensure_ascii=False,indent=2),encoding='utf8')
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: FlickDock-1.8.38-Mac-archive-metadata
+          path: mac-assets.json
+          if-no-files-found: error
+          retention-days: 3
