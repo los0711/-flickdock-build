@@ -11,7 +11,7 @@
 在仓库 Settings → Environments → `flickdock-release` 配置：
 
 * `FLICKDOCK_RELEASE_SIGNING_KEY`：旧客户端已经信任的 Ed25519 原始私钥，Base64 编码。
-* `GITEE_RELEASE_TOKEN`：有私有源码仓库和公开安装包归档仓库所需权限的专用令牌。
+* `GITEE_RELEASE_TOKEN`：能访问私有源码仓库和公开安装包归档仓库的令牌；优先使用权限受限的专用令牌。
 * `CLOUDFLARE_API_TOKEN`：受限于 FlickDock 账号和 `flickdock.cc.cd` 的 Workers/R2 发布令牌。
 
 这些值由 GitHub 加密保存。不要在多台发布电脑分发签名私钥。轮换签名密钥时，
