@@ -91,7 +91,7 @@ def main():
             picker=settings._accent_picker
             assert picker.isVisible()
             c=colors(theme);pixel=picker.grab().toImage().pixelColor(8,8)
-            assert pixel.name().upper()==c['card'].upper(),(theme,pixel.name(),c['card'])
+            assert pixel.name().upper()==c['popup_surface'].upper(),(theme,pixel.name(),c['popup_surface'])
             labels=[label for label in picker.findChildren(QLabel) if label.isVisible() and label.text()]
             assert labels and all(label.palette().color(QPalette.WindowText)==QColor(c['text']) for label in labels)
             picker.grab().save('native-chooser-'+theme+'.png')

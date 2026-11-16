@@ -134,7 +134,7 @@ class LiveSettingsTests(unittest.TestCase):
                     self.assertGreaterEqual(contrast_colors(QColor(c['action']),QColor(c['on_action'])),4.5)
                 self.dialog.choose_accent_color();picker=self.dialog._accent_picker;flush()
                 pixel=picker.grab().toImage().pixelColor(8,8)
-                self.assertEqual(pixel.name().upper(),c['card'].upper())
+                self.assertEqual(pixel.name().upper(),c['popup_surface'].upper())
                 labels=[label for label in picker.findChildren(QLabel) if label.isVisible() and label.text()]
                 self.assertTrue(labels)
                 for label in labels:
