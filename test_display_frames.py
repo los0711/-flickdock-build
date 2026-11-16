@@ -81,11 +81,12 @@ class DisplayFramesTests(unittest.TestCase):
 
     def test_display_paced_clock_ignores_update_requests_and_steps_per_period(self):
         delivered=[];pulse=FramePulse(self.window);pulse.timeout.connect(lambda:delivered.append(True))
-        pulse.start();flush();clock=pulse.clock;clock._display_paced=True
+        pulse.start();flush();clock=pulse.clock;clock._display_paced=True;clock._reduced_motion=False
         clock._cancel_stall_timer();clock.pending=False;clock.queued=False
         now=[100.]
         try:
-            with patch('display_frames.time.perf_counter',side_effect=lambda:now[0]), \
+            with patch('display_frames._on_battery',False), \
+                 patch('display_frames.time.perf_counter',side_effect=lambda:now[0]), \
                  patch.object(clock.handle,'isExposed',return_value=True):
                 for hz in (60,75,120,144,240):
                     clock.refresh_hz=hz;clock._next_frame_at=now[0]
@@ -126,7 +127,8 @@ class DisplayFramesTests(unittest.TestCase):
         clock._display_paced=True;clock._reduced_motion=False;clock.refresh_hz=75
         trace=Mock()
         try:
-            with patch.object(clock,'trace',trace), \
+            with patch('display_frames._on_battery',False), \
+                 patch.object(clock,'trace',trace), \
                  patch.object(clock.handle,'isExposed',return_value=True), \
                  patch('display_frames.time.perf_counter',return_value=100.):
                 clock._next_frame_at=100.;clock._cadence_fired()
