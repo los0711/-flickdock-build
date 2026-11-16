@@ -1,12 +1,12 @@
 name: Package supplied Mac source without unit tests
 on:
   push:
-    branches: [user-1838-mac-package]
+    branches: [user-1838-mac14-package]
 permissions:
   contents: read
 jobs:
   package:
-    runs-on: macos-15
+    runs-on: macos-14
     timeout-minutes: 40
     env:
       QT_QPA_PLATFORM: offscreen
