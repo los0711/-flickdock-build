@@ -1,0 +1,22 @@
+name: Mac grid diagnostic
+on:
+  push:
+    branches: [mac-grid-probe-20261116]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: macos-15
+    timeout-minutes: 12
+    env:
+      PYTHONUTF8: '1'
+      QT_QPA_PLATFORM: offscreen
+      QT_MEDIA_BACKEND: darwin
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          architecture: arm64
+      - run: python -m pip install 'PySide6==6.12.0' 'PyInstaller==6.22.3' 'pyobjc-framework-Quartz>=11,<13' 'keyring==25.7.0' 'fasttext-predict-v2==1.1.0' 'yt-dlp[default]==2026.10.26' 'cryptography==50.0.2'
+      - run: python ci_grid_diagnostic.py
