@@ -41,7 +41,7 @@ jobs:
           from release_manifest import RUNTIME_SOURCES
           changes=subprocess.check_output(['git','diff','--name-only','08640dcbedb8bd7daab54a40cd8a5c023905052e','HEAD'],text=True).splitlines()
           runtime=sorted(set(changes)&set(RUNTIME_SOURCES))
-          assert runtime==['file_preview.py','media_preview.py','overview_ui.py','shelf_sync.py','shelf_window.py','ui_transitions.py','upload_lanes.py'],runtime
+          assert runtime==['file_preview.py','media_preview.py','overview_ui.py','shared_clipboard_files.py','shelf_sync.py','shelf_window.py','ui_transitions.py','upload_lanes.py'],runtime
           Path('ci-runtime-scope.json').write_text(json.dumps(dict(ok=True,previous_application_commit='08640dcbedb8bd7daab54a40cd8a5c023905052e',
               runtime_changes=runtime,sync_changes='cloud-copy upload eligibility and status only'),indent=2))
           PY
@@ -52,6 +52,7 @@ jobs:
           python -m unittest test_overview_controls_v1823.OverviewControlsTests.test_sort_returns_to_unselected_background_after_third_click test_overview_controls_v1823.OverviewControlsTests.test_mac_top_edge_first_expansion_keeps_anchor test_bulk_cloud_v1837.BatchCloudTests.test_cloud_delete_first_click_updates_badge_and_clears_focus test_bulk_cloud_v1837.BatchCloudTests.test_stale_remove_button_does_not_trigger_upload
           python test_media_preview.py
           python test_shelf_sync_v180.py
+          python -m unittest test_shared_clipboard_files_v1821
       - name: Verify asynchronous overview selection before freezing
         run: |
           profile="$(mktemp -d)"
