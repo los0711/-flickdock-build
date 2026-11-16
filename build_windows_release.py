@@ -56,9 +56,17 @@ def main():
     checks = []
     env = dict(os.environ, QT_QPA_PLATFORM='offscreen', PYTHONUTF8='1')
     for name, command, timeout in (
-        ('unit', [sys.executable, '-m', 'unittest', *TESTS, '-q'], 900),
         ('assets', [sys.executable, 'ci_assets.py'], 120),
         ('webrtc assets', [sys.executable, 'p2p_assets.py'], 600),
+    ):
+        run(command, env=env, timeout=timeout)
+        checks.append(dict(name=name, exit_code=0))
+    # Qt tests own application state, exception hooks and native threads.
+    # Separate processes keep one suite's lifecycle from affecting another.
+    for module in TESTS:
+        run([sys.executable, '-m', 'unittest', module, '-q'], env=env, timeout=600)
+        checks.append(dict(name=module, exit_code=0))
+    for name, command, timeout in (
         ('frozen build', [sys.executable, '-m', 'PyInstaller', '--noconfirm', '--clean', 'FlickDock.spec'], 900),
         ('installer build', [compiler, ROOT / 'FlickDock.iss'], 600),
     ):
