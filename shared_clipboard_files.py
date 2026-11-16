@@ -313,7 +313,7 @@ class ShelfClipboardBridge(QObject):
         self.linking={identity:epoch for identity,epoch in self.linking.items() if epoch==owner.epoch}
         for entry in tuple(entries.values()):
             identity=entry['id'];shared=entry.get('shared_clipboard')
-            if entry.get('deleted') or entry.get('paused_upload') or not entry.get('dirty'):
+            if entry.get('deleted') or entry.get('paused_upload') or entry.get('manual_upload_only') or not entry.get('dirty'):
                 self.misses.pop(identity,None)
                 if identity in self.probing:
                     self.probing.discard(identity)
@@ -335,7 +335,8 @@ class ShelfClipboardBridge(QObject):
             def claimed(task,entry=entry,identity=identity,seq=seq,state=state,match_key=match_key):
                 self.probing.discard(identity)
                 valid=(self._active() and owner.state is state and state['entries'].get(identity) is entry
-                       and entry['seq']==seq and not entry.get('deleted') and not entry.get('paused_upload'))
+                       and entry['seq']==seq and not entry.get('deleted') and not entry.get('paused_upload')
+                       and not entry.get('manual_upload_only'))
                 if task and valid:entry['shared_clipboard']=task['id'];owner._persist()
                 elif task:self.files.release(task['id'],identity)
                 elif valid:self.misses[identity]=match_key
@@ -356,6 +357,7 @@ class ShelfClipboardBridge(QObject):
 
     def _link(self,entry,task):
         identity=entry['id'];owner=self.owner
+        if entry.get('deleted') or entry.get('paused_upload') or entry.get('manual_upload_only') or not entry.get('dirty'):return
         if identity in self.linking or self.retry_at.get(identity,0)>time.monotonic():return
         raw=(task.get('package') or {}).get('raw_file')
         if not raw:return

@@ -1041,6 +1041,7 @@ class ContentsPopup(QFrame):
             control.setText('时间' if key=='time' else '大小');control.set_direction(direction)
             control.setChecked(bool(direction))
             control.setToolTip(('正序' if direction==1 else '倒序' if direction==2 else '默认：最新添加在前')+' · 点击切换')
+        if not self.sort_direction:self.sort_segment.clear_selection()
         visible=self.visible_refs()
         self.select_all_button.setText('弃选' if visible and all(ref in self.selected for ref in visible) else '全选')
         from reference_widgets import css,colors
@@ -1149,8 +1150,14 @@ class ContentsPopup(QFrame):
     def _upload_metadata_changed(self,ref):
         sync=getattr(self.shelf.manager,'sync',None);batch=getattr(sync,'upload_metadata_for_refs',None)
         if callable(batch):self._upload_metadata.update(batch((ref,)))
+        # A cloud-copy operation changes the status as well as metadata.
+        # Keep this O(1) per ref: a stale icon must never turn a delete click
+        # into an upload through the action handler.
+        if ref in self._cloud_statuses:
+            self._cloud_statuses[ref]=cloud_status_for_ref(self.shelf,ref)
         item=self._item_widgets.get(ref)
-        if item is not None:item.refresh_upload_time()
+        if item is not None:
+            item.refresh_upload_time();item.refresh_cloud_status()
         if self.preview.current_path==ref:self.preview.refresh_cloud_status()
         elif ref in getattr(self.preview,'_group_refs',()):self.preview.update_action_states()
 

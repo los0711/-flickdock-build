@@ -379,7 +379,10 @@ class ShelfWindow(QWidget):
         width,height=min(EXPANDED_W,area.width()-38),min(EXPANDED_H,area.height()-38)
         right=current.x()+current.width()
         x=max(area.left()+4,min(right-width-28,area.right()-width-20))
-        y=max(area.top()+4,min(current.y(),area.bottom()-height-30))
+        # A compact shelf revealed against the macOS work-area edge is
+        # already correctly positioned. Do not shift its top on first expand.
+        top=area.top() if sys.platform=='darwin' else area.top()+4
+        y=max(top,min(current.y(),area.bottom()-height-30))
         return QRect(x,y,width+28,height+27)
 
     def _reserved_surface_rect(self,origin,target=None):

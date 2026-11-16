@@ -605,6 +605,19 @@ with tempfile.TemporaryDirectory(prefix='flickdock-manual-cloud-removal-') as fo
     assert entry.get('manual_upload_only') and entry.get('paused_upload')
     assert engine.sync_status_for_ref(ref)=='local' and not engine.upload_lanes.eligible(entry)
     assert sum(m=='POST' and p=='/v1/uploads' for _,m,p in server.calls)==before
+    # The durable manual-only intent remains authoritative if an older or
+    # late callback clears the pause marker, including after another restart.
+    entry.pop('paused_upload',None)
+    assert not engine.upload_lanes.eligible(entry)
+    engine._persist();engine.tick();until(lambda:not engine.running)
+    assert sum(m=='POST' and p=='/v1/uploads' for _,m,p in server.calls)==before
+    engine.close()
+    engine=ShelfSync(root/'profile',service,adapter);service.signin('manual-account')
+    until(lambda:not engine.running)
+    entry=engine._entry_for_ref(ref)
+    assert entry.get('manual_upload_only') and not entry.get('paused_upload')
+    assert engine.sync_status_for_ref(ref)=='local' and not engine.upload_lanes.eligible(entry)
+    assert sum(m=='POST' and p=='/v1/uploads' for _,m,p in server.calls)==before
     assert engine.retry_upload(ref)
     until(lambda:not engine.running and not server.account('manual-account')['items'][identity]['record']['deleted'])
     assert server.account('manual-account')['items'][identity]['data']==path.read_bytes()

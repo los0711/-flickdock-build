@@ -44,12 +44,13 @@ def worker(args):
         print(value, file=sys.stderr, flush=True)
 
     sys.excepthook = exception
-    from PySide6.QtCore import Qt, qInstallMessageHandler
-    from PySide6.QtGui import QColor, QImage
+    from PySide6.QtCore import QPoint, Qt, qInstallMessageHandler
+    from PySide6.QtGui import QColor, QGuiApplication, QImage
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QWidget
     app = QApplication([])
     app.setQuitOnLastWindowClosed(False)
+    real_screen = app.primaryScreen()
     qInstallMessageHandler(lambda kind, context, message: qt_log.write(str(message) + '\n'))
     if args.renderer == 'legacy':
         import importlib.util
@@ -90,9 +91,25 @@ def worker(args):
         shelf.geometry_morph.motion = True
         shelf.add_paths('permanent', [str(mp4), str(mov), str(image)])
         workspace.flush()
-        note('overview.open')
-        shelf.show_contents()
-        workspace.until(lambda: not shelf.geometry_morph.active, seconds=8)
+        # Exercise the real Cocoa screen rather than the fixture's 1920x1080
+        # synthetic screen: the first compact reveal can touch the top edge.
+        from unittest.mock import patch
+        with patch.object(QGuiApplication,'screenAt',return_value=real_screen), \
+             patch.object(QGuiApplication,'primaryScreen',return_value=real_screen):
+            area=real_screen.availableGeometry()
+            shelf.hide_immediately()
+            shelf._show_at(QPoint(area.right()-359,area.top()),'manual',QPoint())
+            workspace.until(lambda:not shelf.presentation._timer.isActive(),seconds=8)
+            compact_top=shelf.card.mapToGlobal(QPoint()).y()
+            canvas=shelf.geometry()
+            note('overview.open')
+            shelf.show_contents()
+            workspace.until(lambda:not shelf.geometry_morph.active,seconds=8)
+            expanded_top=shelf.card.mapToGlobal(QPoint()).y()
+            if abs(expanded_top-compact_top)>1:
+                raise AssertionError(f'First Cocoa expansion shifted the top edge: {compact_top} -> {expanded_top}')
+            if shelf.geometry()!=canvas:
+                raise AssertionError('First Cocoa expansion rebased the native animation host')
         popup = shelf.popup
         popup.resume_content()
         workspace.until(lambda: popup._build_cursor == len(popup.visible_refs()), seconds=10)
@@ -111,6 +128,8 @@ def worker(args):
         media.video_sink.videoFrameChanged.connect(lambda frame: observed.append(frame.startTime()) if frame.isValid() else None)
         note('video.play')
         media.toggle_playback()
+        if not media.audio_output.isMuted():
+            raise AssertionError('A newly selected video did not start muted')
         workspace.until(lambda: len(observed) >= 5 or media._failed, seconds=8)
         if media._failed or len(observed) < 5:
             raise AssertionError('Video did not continue playing')
@@ -185,6 +204,7 @@ def worker(args):
         atomic_json(output / 'worker-result.json', dict(ok=True, qt_platform='cocoa',
                     media_backend='darwin', source=str(args.source), modes=modes, playback=playback,
                     renderer=args.renderer, snapshot_finished=True, selected_after_reopen=True,
+                    first_expand_top_shift=expanded_top-compact_top, video_initially_muted=True,
                     gil_held_diagnostics=watchdog is not None,
                     video_collapse_reopen='single-window'))
         note('test.complete')

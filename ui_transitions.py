@@ -70,6 +70,14 @@ class SelectionSurface(QFrame):
         button.toggled.connect(lambda checked,b=button:self._choose(b) if checked else None)
         if button.isChecked():self._choose(button)
 
+    def clear_selection(self):
+        """Clear both the selected button and its painted moving surface."""
+        self._selection_animation.stop()
+        self._selection_button=None
+        self._selection_rect=QRectF();self._selection_target=QRectF()
+        self._selection_opacity=1.;self._selection_start_opacity=1.;self._selection_warp=False
+        self.update()
+
     def _enabled_motion(self):
         enabled=self._selection_motion() if callable(self._selection_motion) else self._selection_motion
         return bool(enabled and motion_allowed() and self.isVisible())

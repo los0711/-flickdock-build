@@ -189,7 +189,9 @@ def main() -> int:
                 raise AssertionError('Cocoa input mismatch for '+button.accessibleName()+': '+str(type(hit)))
         try:
             with patch('native_ui_common.reduced_motion',return_value=False):
-                shelf._show_at(QPoint(area.right()-359,area.top()+4),'manual',QPoint());settle_shelf()
+                # First reveal at the work-area top, where the compact shelf
+                # is allowed to touch the menu-bar boundary.
+                shelf._show_at(QPoint(area.right()-359,area.top()),'manual',QPoint());settle_shelf()
                 number=shelf_window().windowNumber();canvas=shelf.geometry()
                 compact_top=shelf.card.mapToGlobal(QPoint()).y()
                 hit_target(shelf.expand_button)

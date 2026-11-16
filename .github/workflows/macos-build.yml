@@ -126,6 +126,8 @@ jobs:
           PY
       - name: Verify composited video and diagnostic cleanup
         run: |
+          build/macos-venv/bin/python -m pip install --no-deps 'imageio-ffmpeg==0.6.0'
+          build/macos-venv/bin/python -c "import imageio_ffmpeg; print('Verified generated-video fixture tool:', imageio_ffmpeg.get_ffmpeg_exe())"
           build/macos-venv/bin/python -m unittest test_crash_diagnostics_v1838 test_architecture -q
           build/macos-venv/bin/python ci_mac_video_compositor.py --source "$PWD" --renderer composited --clicks 50 --timeout 120 --output ci-native-compositor
           build/macos-venv/bin/python - <<'PY'
@@ -143,7 +145,8 @@ jobs:
                               '-f','lavfi','-i','sine=frequency=440:sample_rate=44100','-t','4','-c:v','libx264','-pix_fmt','yuv420p',
                               '-c:a','aac','-shortest','-y',str(video)],check=True,capture_output=True,timeout=30)
               report=(target/'mac-media-compositor-${{ matrix.arch }}.json').resolve()
-              env=dict(os.environ,HOME=profile,APPDATA=profile,XDG_CONFIG_HOME=profile,QT_QPA_PLATFORM='offscreen')
+              env=dict(os.environ,HOME=profile,APPDATA=profile,XDG_CONFIG_HOME=profile,
+                       QT_QPA_PLATFORM='cocoa',FLICKDOCK_VERIFY_NATIVE_UI='1')
               subprocess.run([str(source/'dist/FlickDock.app/Contents/MacOS/FlickDock'),'--verify-media',str(video),'--verify-output',str(report)],
                              env=env,check=True,timeout=90)
               frozen=json.loads(report.read_text())

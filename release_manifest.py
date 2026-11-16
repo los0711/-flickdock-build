@@ -70,7 +70,7 @@ MAINTAINED_TESTS=(
     'test_cloud_only_v1825.py','test_virtual_clipboard.py',
     
     'test_receive_notice.py',
-    'test_display_frames.py',
+    'test_display_frames.py','test_native_media_verification.py',
     'test_preview_continuity.py',
     'test_surface_source_cache.py',
     'test_surface_elements.py',

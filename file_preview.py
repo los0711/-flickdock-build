@@ -59,6 +59,7 @@ class PreviewPane(QFrame):
     def __init__(self,parent=None):
         super().__init__(parent)
         self.shelf=parent.shelf;self.popup=parent;self.current_path=None
+        self._cloud_action_ref=None;self._cloud_action_mode=None
         self._cloud_batch_checks=set()
         from text_preview import TextPreviewLoader
         self._text_loader=TextPreviewLoader(self);self._text_loader.ready.connect(self._text_ready)
@@ -102,25 +103,37 @@ class PreviewPane(QFrame):
             sync=getattr(self.shelf.manager,'sync',None)
             self.cloud_badge.set_status(status)
             synced=status=='synced'
+            self._cloud_action_ref=self.current_path
+            self._cloud_action_mode='remove' if synced else 'upload'
             self.cloud_action.set_glyph('cloud-remove' if synced else 'cloud-upload')
             self.cloud_action.set_glyph_tint(colors(self.shelf.manager.settings.theme)['red'] if synced else '#0A84FF')
             action='删除云端副本' if synced else '上传云端'
             self.cloud_action.setAccessibleName(action);self.cloud_action.setToolTip(action)
             busy_lookup=getattr(sync,'cloud_copy_busy_for_ref',None)
             busy=bool(callable(busy_lookup) and busy_lookup(self.current_path))
-            self.cloud_action.setEnabled(bool(sync and sync.service.signed_in and not busy and status not in ('uploading','pending') and not self.shelf.content.is_pending(self.current_path)))
+            enabled=bool(sync and sync.service.signed_in and not busy and status not in ('uploading','pending') and not self.shelf.content.is_pending(self.current_path))
+            # Disabling the focused control otherwise transfers keyboard focus
+            # to the adjacent copy button and leaves a misleading focus frame.
+            if not enabled and self.cloud_action.isEnabled() and self.cloud_action.hasFocus():
+                self.cloud_action.clearFocus()
+            self.cloud_action.setEnabled(enabled)
             from shelf_content import shelf_time_info
             label,stamp=shelf_time_info(self.shelf.content,self.current_path)
             self.upload_time.setText(label+'：'+stamp)
-        else:self.status_value.clear();self.upload_time.clear()
+        else:
+            self._cloud_action_ref=None;self._cloud_action_mode=None
+            self.status_value.clear();self.upload_time.clear()
         update=getattr(self,'update_action_states',None)
         if getattr(self,'_group_refs',()) and callable(update):update()
 
     def toggle_cloud_copy(self):
         ref=self.current_path;sync=getattr(self.shelf.manager,'sync',None)
         if not sync or ref not in self.shelf.files['permanent'] or self.shelf.content.is_pending(ref):return
-        if sync.sync_status_for_ref(ref)=='synced':sync.delete_cloud_copy(ref)
-        else:
+        # Execute the operation actually represented by the pressed icon.
+        # A newer journal state can never reinterpret a remove click as upload.
+        if self._cloud_action_ref!=ref:return
+        if self._cloud_action_mode=='remove':sync.delete_cloud_copy(ref)
+        elif self._cloud_action_mode=='upload' and sync.sync_status_for_ref(ref)!='synced':
             manager=self.shelf.manager
             revision=getattr(sync,'cloud_copy_revision',None)
             intent=revision(ref) if callable(revision) else None
@@ -132,7 +145,9 @@ class PreviewPane(QFrame):
                 if ref in self.shelf.files['permanent'] and not self.shelf.content.is_pending(ref) and not busy(ref):
                     sync.retry_upload(ref)
             manager.check_cloud_capacity_for_upload(ref,checked)
-        self.refresh_cloud_status()
+        refresh=getattr(self.popup,'_upload_metadata_changed',None)
+        if callable(refresh):refresh(ref)
+        else:self.refresh_cloud_status()
 
     def update_action_states(self):
         for control in (self.remove_button,self.group_remove):
