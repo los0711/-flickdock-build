@@ -23,13 +23,12 @@ jobs:
           path: mac-release
       - name: Archive supplied Mac packages
         env:
-          GITEE_RELEASE_TOKEN: ${{ secrets.GITEE_RELEASE_TOKEN }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           python - <<'PY'
           from pathlib import Path
           import hashlib,json,os
-          from release_archives import publish_archives
+          from release_archives import _github_asset,_session,file_metadata
           root=Path('mac-release')
           report=json.loads((root/'mac-build-1.8.38-arm64.json').read_text(encoding='utf8'))
           if report.get('version')!='1.8.38' or report.get('architecture')!='arm64' or report.get('pkg_payload_verified') is not True:
@@ -40,7 +39,12 @@ jobs:
               if len(records)!=1:raise ValueError('Mac package absent from report')
               with path.open('rb') as stream:digest=hashlib.file_digest(stream,'sha256').hexdigest()
               if path.stat().st_size!=records[0]['bytes'] or digest!=records[0]['sha256']:raise ValueError('Mac package hash mismatch')
-          assets=publish_archives(paths,'1.8.38',os.environ['GITHUB_SHA'],'优化稳定性与交互体验。',gitee_token=os.environ['GITEE_RELEASE_TOKEN'],github_token=os.environ['GITHUB_TOKEN'])
+          client=_session(os.environ['GITHUB_TOKEN'])
+          assets=[]
+          for path in paths:
+              metadata=file_metadata(path)
+              url=_github_asset(client,path,metadata,'1.8.38',os.environ['GITHUB_SHA'],'优化稳定性与交互体验。')
+              assets.append(dict(metadata,url=url,originKey='v1.8.38/sha256-'+metadata['sha256']+'/'+metadata['name']))
           Path('mac-assets.json').write_text(json.dumps(assets,ensure_ascii=False,indent=2),encoding='utf8')
           PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
