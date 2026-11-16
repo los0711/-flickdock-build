@@ -1,6 +1,11 @@
 name: macOS build mirror
 
 on:
+  workflow_call:
+    inputs:
+      test_build:
+        type: boolean
+        default: true
   workflow_dispatch:
     inputs:
       test_build:
