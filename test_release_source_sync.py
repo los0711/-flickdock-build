@@ -45,6 +45,15 @@ class SourceSyncTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'duplicates'):
                 sync.verify_baseline(tmp,value)
 
+    def test_new_private_file_cannot_be_overwritten(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'new.py'
+            path.write_bytes(b'another computer')
+            with self.assertRaisesRegex(ValueError,'newly added'):
+                sync.verify_new_source_paths(tmp,set(),[('new.py',b'release')])
+            self.assertEqual(path.read_bytes(),b'another computer')
+            sync.verify_new_source_paths(tmp,set(),[('new.py',b'another computer')])
+
     def test_git_receives_only_the_dedicated_scoped_header(self):
         with patch.dict(os.environ,{'GITHUB_TOKEN':'do-not-forward','GIT_TRACE':'1',
                                     'FLICKDOCK_RELEASE_SIGNING_KEY':'do-not-forward'},clear=True):

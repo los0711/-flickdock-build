@@ -63,6 +63,15 @@ def verify_baseline(root, manifest):
     return seen
 
 
+def verify_new_source_paths(root, baseline_paths, selected):
+    for name,data in selected:
+        if name in baseline_paths:
+            continue
+        path = _checked_path(root,name)
+        if path.exists() and (not path.is_file() or path.read_bytes() != data):
+            raise ValueError('Private Gitee has a different newly added source: ' + name)
+
+
 def _git_environment(token):
     if not token:
         raise ValueError('Gitee release authorization is missing.')
@@ -130,7 +139,8 @@ def synchronize():
     with tempfile.TemporaryDirectory(prefix='flickdock-source-',dir=os.environ['RUNNER_TEMP']) as parent:
         root = Path(parent)/'source'
         _git(['clone','--quiet','--branch','master',GITEE_URL,str(root)],cwd=parent,env=env)
-        verify_baseline(root,baseline)
+        baseline_paths = verify_baseline(root,baseline)
+        verify_new_source_paths(root,baseline_paths,selected)
         tag = 'v' + APP_VERSION
         existing = _git(['ls-remote','--exit-code','--tags','origin','refs/tags/' + tag],
                         cwd=root,env=env,allow_absent=True)
