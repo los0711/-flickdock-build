@@ -90,7 +90,7 @@
           "archive": "https://github.com/los0711/-flickdock-build/releases/download/v1.8.34/FlickDock-1.8.34-macOS-arm64.dmg"
         }
       ],
-      "r2Removed": false
+      "r2Removed": true
     },
     {
       "version": "1.8.35",
