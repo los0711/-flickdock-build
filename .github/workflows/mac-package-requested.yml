@@ -1,0 +1,46 @@
+name: Package supplied Mac source without unit tests
+on:
+  push:
+    branches: [user-1838-mac-package]
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: macos-15
+    timeout-minutes: 40
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          architecture: arm64
+      - name: Build supplied source and verify archive integrity
+        run: |
+          python ci_assets.py
+          python - <<'PY'
+          import build_macos
+          original = build_macos.run
+          def selected(arguments, *, env=None):
+              values = [str(value) for value in arguments]
+              if ('-m' in values and 'unittest' in values) or any(value.endswith(('/test_update_resume_v1821.py','/test_update_macos.py')) or value in ('test_update_resume_v1821.py','test_update_macos.py') for value in values):
+                  print('Unit test omitted at user request:', ' '.join(values), flush=True)
+                  return
+              return original(arguments, env=env)
+          build_macos.run = selected
+          raise SystemExit(build_macos.main(['--target-arch','arm64','--skip-public-update-check']))
+          PY
+      - name: Gather untested Mac build
+        run: |
+          mkdir ci-output
+          cp ../outputs/FlickDock-1.8.38-macOS-arm64.{zip,dmg,pkg} ci-output/
+          cp ../outputs/mac-build-1.8.38-arm64.json ci-output/
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: FlickDock-Mac-1.8.38-user-tested-${{ github.sha }}
+          path: ci-output/*
+          if-no-files-found: error
+          retention-days: 3
