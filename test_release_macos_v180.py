@@ -84,6 +84,11 @@ class MacReleaseTests(unittest.TestCase):
         with self.assertRaises(release.ReleaseError): self.publish(**overrides)
         self.assertFalse(self.output.exists())
 
+    def test_oversized_history_never_publishes_an_unreadable_index(self):
+        from unittest.mock import patch
+        with patch('release_history.release_entries',return_value=[dict(version=self.version,notes='文'*23000)]),patch('release_history.manifest_notes',return_value='文'*23000):
+            self.blocked(notes='文'*23000)
+
     def test_native_arm64_manifest_is_committed_after_whole_anonymous_stream_validation(self):
         self.server.on_request = lambda: self.assertFalse(self.output.exists())
         manifest = self.publish()
@@ -102,6 +107,37 @@ class MacReleaseTests(unittest.TestCase):
         self.assertEqual(self.publish()['architecture'], 'x86_64')
         self.assertFalse((self.output.parent / 'macos-arm64.json').exists())
 
+    def test_auto_channel_is_separate_and_requires_zip(self):
+        self.output = self.root / 'updates' / 'macos-arm64-auto.json'
+        manifest = self.publish(channel='auto')
+        self.assertEqual(json.loads(self.output.read_text()), manifest)
+        self.assertFalse((self.output.parent / 'macos-arm64.json').exists())
+        with self.assertRaisesRegex(release.ReleaseError, 'channel index'):
+            self.publish(channel='legacy')
+        self.output.unlink()
+        self.archive = self.archive.with_suffix('.dmg')
+        self.archive.write_bytes(b'FlickDock image'+bytes(2048)+b'koly'+bytes(508))
+        self.url = 'https://releases.example.org/' + self.archive.name
+        self.write_reports()
+        self.build['dmg_verified'] = True
+        self.save_reports()
+        self.server = Server(self.url, self.archive.read_bytes())
+        with self.assertRaisesRegex(release.ReleaseError, 'requires a ZIP'):
+            self.publish(channel='auto')
+        self.assertFalse(self.output.exists())
+
+    def test_verified_dmg_can_be_published_only_after_native_mount_check(self):
+        self.archive=self.archive.with_suffix('.dmg')
+        self.archive.write_bytes(b'FlickDock image'+bytes(2048)+b'koly'+bytes(508))
+        self.url='https://releases.example.org/'+self.archive.name
+        self.write_reports()
+        self.server=Server(self.url,self.archive.read_bytes())
+        self.blocked()
+        self.build['dmg_verified']=True;self.save_reports()
+        manifest=self.publish()
+        self.assertTrue(manifest['installer']['filename'].endswith('.dmg'))
+        self.assertEqual(json.loads(self.output.read_text()),manifest)
+
     def test_reports_require_real_native_frozen_mac_and_exact_zip_bytes(self):
         original_build, original_cloud = copy.deepcopy(self.build), copy.deepcopy(self.cloud)
         changes = [('build', 'ok', False), ('build', 'version', '1.7.0'), ('build', 'architecture', 'x86_64'),
@@ -119,6 +155,28 @@ class MacReleaseTests(unittest.TestCase):
             self.build, self.cloud = copy.deepcopy(original_build), copy.deepcopy(original_cloud)
             self.build['artifacts'][0][key] = value; self.save_reports(); self.blocked()
         self.assertFalse(self.server.requests)
+
+    def test_1813_requires_a_real_cocoa_startup_without_native_side_effects(self):
+        self.build['version'] = self.cloud['version'] = self.build['frozen']['version'] = '1.8.13'
+        self.save_reports()
+        with self.assertRaisesRegex(release.ReleaseError, 'Cocoa shelf startup'):
+            release.validate_reports(self.build_report, self.cloud_report, self.archive,
+                                     '1.8.13', self.arch, self.archive.stat().st_size,
+                                     release.sha256_file(self.archive))
+        self.build['frozen']['cocoa_startup'] = dict(
+            ok=True, version='1.8.13', qt_platform='cocoa', shelf_constructed=True,
+            native_hotkeys=False, lan_listener=False, cloud_session=False,
+            startup_mutation=False)
+        self.save_reports()
+        release.validate_reports(self.build_report, self.cloud_report, self.archive,
+                                 '1.8.13', self.arch, self.archive.stat().st_size,
+                                 release.sha256_file(self.archive))
+        self.build['frozen']['cocoa_startup']['lan_listener'] = True
+        self.save_reports()
+        with self.assertRaisesRegex(release.ReleaseError, 'Cocoa shelf startup'):
+            release.validate_reports(self.build_report, self.cloud_report, self.archive,
+                                     '1.8.13', self.arch, self.archive.stat().st_size,
+                                     release.sha256_file(self.archive))
 
     def test_embedded_bundle_version_and_native_architecture_must_match(self):
         for options in [dict(version='1.7.0'), dict(architecture='x86_64')]:

@@ -21,17 +21,16 @@ PLUGIN_ALLOWLIST = {
     'iconengines': {'qsvgicon.dll'},
     'tls': {'qcertonlybackend.dll', 'qschannelbackend.dll'},
     'networkinformation': {'qnetworklistmanager.dll'},
-    'multimedia': {'windowsmediaplugin.dll'},
+    'multimedia': {'ffmpegmediaplugin.dll'},
 }
 UNUSED_DATA_PARTS = {'qml', 'translations', 'resources', 'typesystems', 'include', 'glue'}
-FONT_KEEP = {'harmonyos_sans_sc_regular.ttf'}
 # This unrelated Poppler library shadows Windows' own ICU API. Core.dll's
 # unversioned ICU imports are satisfied by the OS, not by Poppler ICU 78.
 SYSTEM_ONLY = {'icuuc.dll'}
 RUNTIME_ROOTS = {'python3.dll', 'python312.dll'}
 REQUIRED_DYNAMIC_ROOTS = {
-    'qt6core.dll','qt6gui.dll','qt6widgets.dll','qt6network.dll','qt6svg.dll','qt6multimedia.dll',
-    'qwindows.dll','qoffscreen.dll','qsvgicon.dll','windowsmediaplugin.dll',
+    'qt6core.dll','qt6gui.dll','qt6widgets.dll','qt6network.dll','qt6websockets.dll','qt6svg.dll','qt6multimedia.dll','qt6multimediawidgets.dll',
+    'qwindows.dll','qoffscreen.dll','qsvgicon.dll','ffmpegmediaplugin.dll',
     'qcertonlybackend.dll','qschannelbackend.dll','qnetworklistmanager.dll',
     'qgif.dll','qico.dll','qjpeg.dll','qsvg.dll','qtiff.dll','qwebp.dll',
 }
@@ -60,8 +59,8 @@ def _policy_reason(destination, source):
             return f'unused Qt plugin entry point: {group}/{name}'
     if 'pyside6' in parts and any(part in UNUSED_DATA_PARTS for part in parts):
         return 'unused Qt QML/resources/translations/development data'
-    if dest.startswith('fonts/') and name not in FONT_KEEP:
-        return 'only the unmodified Regular font is needed; Qt synthesizes weights'
+    if dest.startswith('fonts/'):
+        return 'UI uses installed system fonts; no bundled font files are needed'
     return None
 
 
@@ -104,7 +103,7 @@ def filter_bundle(binaries,datas):
                   'kind':kind}
         if reason:
             removed.append(dict(record,reason=reason))
-        elif Path(source).suffix.lower() in {'.dll','.pyd','.exe'}:
+        elif Path(source).suffix.lower() in {'.dll','.pyd','.exe','.node'}:
             candidates.append((kind,entry,record))
         else:
             non_pe.append((kind,entry,record))
@@ -118,6 +117,10 @@ def filter_bundle(binaries,datas):
             roots.add(index);root_reasons[index]='Python runtime or analysed extension module'
         elif '/plugins/' in '/'+_normal(entry[0]):
             roots.add(index);root_reasons[index]='selected runtime-loaded Qt plugin'
+        elif _normal(entry[0])=='p2p/runtime/node.exe' and name=='node.exe':
+            roots.add(index);root_reasons[index]='original JavaScript runtime for video parsing'
+        elif name.endswith('.node') and _normal(entry[0]).startswith('p2p/node_modules/'):
+            roots.add(index);root_reasons[index]='original native WebRTC module'
     keep,queue,dependencies,unbundled = set(roots),list(roots),{},set()
     while queue:
         index = queue.pop()
@@ -150,7 +153,7 @@ def filter_bundle(binaries,datas):
     unresolved=sorted(name for name in unbundled if not _system_import_exists(name))
     before = sum(r['bytes'] for _,_,r in candidates+non_pe)+sum(r['bytes'] for r in removed if not r['reason'].startswith('not reachable'))
     report = {
-        'policy_version':'1.6.0','method':'Qt plugin allowlist followed by direct/delayed/forwarded PE import closure',
+        'policy_version':'1.8.23','method':'Qt plugin allowlist followed by direct/delayed/forwarded PE import closure',
         'before_bytes':before,'after_bytes':sum(r['bytes'] for _,_,r in retained),
         'removed_bytes':sum(r['bytes'] for r in removed),
         'required_dynamic_roots_missing':sorted(REQUIRED_DYNAMIC_ROOTS-found),
@@ -159,7 +162,7 @@ def filter_bundle(binaries,datas):
         'unresolved_non_system_imports':unresolved,
         'retained':[r for _,_,r in retained],
         'removed':sorted(removed,key=lambda r:r['bytes'],reverse=True),
-        'runtime_note':'Qt Multimedia uses Windows Media Foundation; no FFmpeg backend or software OpenGL fallback is packaged.',
+        'runtime_note':'Qt Multimedia uses the Qt FFmpeg backend with QVideoWidget; FFmpeg shared libraries are retained by PE dependency closure. The unused Media Foundation plugin is excluded.',
     }
     return result_binaries,result_datas,report
 

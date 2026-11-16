@@ -11,7 +11,9 @@ from PySide6.QtGui import QColor, QFontMetricsF, QPainter, QPainterPath, QPen, Q
 from PySide6.QtWidgets import QGraphicsDropShadowEffect, QGraphicsEffect, QPushButton, QWidget
 
 from flickdock_icons import document_pixmap, draw_glyph
-from surface_morph import paint_surface_shadow, surface_clip
+from surface_morph import paint_surface_shadow, surface_clip, neutral_shadow_color
+from display_frames import FramePulse
+from native_ui_common import paint_rounded_surface,RADIUS_CONTROL_PX
 import ui_theme
 
 
@@ -36,22 +38,33 @@ class Spring(QObject):
         self._finished: Callable[[], None] | None = None
         self._last_tick = time.perf_counter()
         self._started_at = self._last_tick
-        self._timer = QTimer(self)
-        self._timer.setTimerType(Qt.TimerType.PreciseTimer)
-        self._timer.setInterval(16)
+        self._timer = FramePulse(self)
         self._timer.timeout.connect(self._tick)
+        # A spring is a value transition, not a promise that the compositor
+        # keeps delivering frames. If the native clock stalls (occluded window,
+        # minimized surface, busy GUI thread) this single deadline still lands
+        # the motion and runs its completion callback, so dependent UI state
+        # (a pending hide, an intake tuck) can never remain half-applied.
+        self._deadline = QTimer(self)
+        self._deadline.setSingleShot(True)
+        self._deadline.timeout.connect(self._expire)
 
     def animate(self, target: dict[str, float], finished: Callable[[], None] | None = None,
                 response: float = .24, damping: float = .70) -> None:
+        from native_ui_common import reduced_motion
+        motion=self.motion and not reduced_motion()
         for key, value in target.items():
             self.values.setdefault(key, float(value))
             self._velocities.setdefault(key, 0.0)
             self._targets[key] = float(value)
-        self.response = max(.06, float(response)) if self.motion else .13
-        self.damping = max(.25, float(damping)) if self.motion else 1.0
+            if not motion and key in ('x','y','sx','sy','dx','dy','w','h','width','height'):
+                self.values[key]=float(value);self._velocities[key]=0.0
+        self.response = max(.06, float(response)) if motion else .13
+        self.damping = max(.25, float(damping)) if motion else 1.0
         self._finished = finished
         self._started_at = time.perf_counter()
         self._start()
+        self._arm_deadline()
 
     def jump(self, values: dict[str, float]) -> None:
         self.stop()
@@ -61,21 +74,41 @@ class Spring(QObject):
         self._on_update(dict(self.values))
 
     def kick(self, velocities: dict[str, float]) -> None:
-        if self.motion:
+        from native_ui_common import reduced_motion
+        if self.motion and not reduced_motion():
             for key, velocity in velocities.items():
                 self.values.setdefault(key, 0.0)
                 self._targets.setdefault(key, self.values[key])
                 self._velocities[key] = self._velocities.get(key, 0.0) + float(velocity)
         self._start()
+        self._arm_deadline()
 
     def stop(self) -> None:
         self._timer.stop()
+        self._deadline.stop()
         self._finished = None
 
     def _start(self) -> None:
         if not self._timer.isActive():
             self._last_tick = time.perf_counter()
             self._timer.start()
+
+    def _arm_deadline(self) -> None:
+        # Normal settling is capped at .65 s inside _tick; this only fires when
+        # frames stop arriving, and never shortens an ordinary transition.
+        self._deadline.start(max(900, round(self.response * 2200)))
+
+    def _expire(self) -> None:
+        if not self._timer.isActive() and self._finished is None:
+            return
+        self._timer.stop()
+        self._deadline.stop()
+        self.values.update(self._targets)
+        self._velocities = {k: 0.0 for k in self.values}
+        callback,self._finished=self._finished,None
+        self._on_update(dict(self.values))
+        self.settled.emit()
+        if callback:callback()
 
     def _tick(self) -> None:
         now = time.perf_counter()
@@ -103,6 +136,7 @@ class Spring(QObject):
             self.values.update(self._targets)
             self._velocities = {k: 0.0 for k in self.values}
             self._timer.stop()
+            self._deadline.stop()
         callback=None
         if settled:callback,self._finished=self._finished,None
         self._on_update(dict(self.values))
@@ -116,15 +150,20 @@ class MotionShadow(QGraphicsDropShadowEffect):
     The widget's hit bounds stay stable. Only its painted presentation moves,
     so pointer interaction and layout don't jitter as the surface springs.
     """
-    def __init__(self, widget: QWidget, alpha: int = 45):
+    def __init__(self, widget: QWidget, alpha: int = 45, *, cache_while=None):
         super().__init__(widget)
         self.sx = self.sy = 1.0
         self.dx = self.dy = 0.0
         self._shadow_cache=OrderedDict()
         self._surface_snapshot=None
+        self._source_cache=QPixmap()
+        self._source_offset=QPoint()
+        self._source_bounds=QRectF()
+        self._source_dpr=0.
+        self._cache_while=cache_while
         self.setBlurRadius(28)
         self.setOffset(0, 7)
-        self.setColor(QColor(18, 31, 53, alpha))
+        self.setColor(neutral_shadow_color(QColor(18, 31, 53, alpha)))
 
     def set_motion(self, sx: float = 1, sy: float = 1, dx: float = 0, dy: float = 0) -> None:
         self.sx = max(.05, min(1.3, float(sx)))
@@ -133,14 +172,26 @@ class MotionShadow(QGraphicsDropShadowEffect):
         self.updateBoundingRect()
         self.update()
 
+    def sourceChanged(self,flags):
+        self.invalidate_source()
+        super().sourceChanged(flags)
+
+    def invalidate_source(self):
+        # QWidget sourcePixmap is not cached by Qt. Reuse only for a finite
+        # transition: its controller invalidates on data changes, and every
+        # resting frame returns to Qt's live subtree (including native video).
+        self._source_cache=QPixmap()
+
     def begin_surface_morph(self,snapshot) -> None:
         """Keep this effect as the sole compositor throughout the resize."""
         self._surface_snapshot=snapshot
+        self._source_cache=QPixmap()
         self.updateBoundingRect()
         self.update()
 
     def end_surface_morph(self) -> None:
         self._surface_snapshot=None
+        self._source_cache=QPixmap()
         self.updateBoundingRect()
         self.update()
 
@@ -172,17 +223,29 @@ class MotionShadow(QGraphicsDropShadowEffect):
 
     def draw(self, painter: QPainter) -> None:
         bounds = self.sourceBoundingRect(Qt.CoordinateSystem.LogicalCoordinates)
+        snapshot=self._surface_snapshot
+        active=snapshot is not None and snapshot.active
         # QWidget drawSource() can restore its own painter state and bypass
         # the caller's scale/clip. Always composite its cached pixmap ourselves,
         # at rest as well as in motion, so intermediate and final frames share
         # exactly one transform-respecting path.
         offset=QPoint()
-        source=self.sourcePixmap(Qt.CoordinateSystem.LogicalCoordinates,offset,
-                                 QGraphicsEffect.PixmapPadMode.NoPad)
+        if active and snapshot.mix<1:
+            # The endpoint was rendered once at the final layout size. Asking
+            # Qt for the live source on every blend tick repaints the entire
+            # overview; use that endpoint until the final live-source handoff.
+            source=snapshot.target
+        else:
+            ratio=self.parent().devicePixelRatioF()
+            if self._cache_while is None or not self._cache_while():self.invalidate_source()
+            if self._source_cache.isNull() or self._source_bounds!=bounds or self._source_dpr!=ratio:
+                self._source_cache=self.sourcePixmap(Qt.CoordinateSystem.LogicalCoordinates,self._source_offset,
+                                                     QGraphicsEffect.PixmapPadMode.NoPad)
+                self._source_bounds=QRectF(bounds);self._source_dpr=ratio
+            source=self._source_cache;offset=self._source_offset
         def draw_live(target):
-            target.drawPixmap(QPointF(offset),source)
-        snapshot=self._surface_snapshot
-        active=snapshot is not None and snapshot.active
+            if active and snapshot.mix<1:snapshot.draw_target(target,QRectF(QPointF(),bounds.size()))
+            else:target.drawPixmap(QPointF(offset),source)
         rect=self._surface_rect(snapshot) if active else bounds
         center = rect.center()
         painter.save()
@@ -196,22 +259,26 @@ class MotionShadow(QGraphicsDropShadowEffect):
         else:
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             painter.setClipPath(surface_clip(rect))
+            painter.fillRect(rect,QColor(ui_theme.color('surface')))
             draw_live(painter)
         painter.restore()
 
 
 class FeedbackButton(QPushButton):
     """Painted icon button with pointer-down feedback and a soft release."""
+    glyph_scale = 1.0
     _NAMES = {"more": "更多操作", "close": "移除", "check": "已复制", "plus": "添加文件",
               "pin": "永久区域", "temporary": "临时区域", "trash": "移除",
               "copy": "复制", "chevron": "展开", "shelf": "文件搁架",
               "expand": "展开详情", "collapse": "收起详情",
               "chevron-up": "收起", "chevron-down": "展开",
-              "dock": "收起到屏幕边缘", "hide-to-edge": "收起到屏幕边缘"}
+              "dock": "收起到屏幕边缘", "hide-to-edge": "收起到屏幕边缘",
+              "nearby": "局域网互传", "cloud": "云同步"}
 
     def __init__(self, glyph: str, parent: QWidget | None = None, motion: bool = True):
         super().__init__(parent)
         self.glyph = glyph
+        self._glyph_tint = None
         self.motion = motion
         self._hovered = False
         self._pressed = False
@@ -224,6 +291,7 @@ class FeedbackButton(QPushButton):
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_MacShowFocusRect, False)
         self.setToolTip(self._NAMES.get(glyph, glyph))
         self.setAccessibleName(self._NAMES.get(glyph, glyph))
         self.spring = Spring(self, {"scale": 1, "hover": 0, "down": 0},
@@ -234,6 +302,15 @@ class FeedbackButton(QPushButton):
         self.setToolTip(self._NAMES.get(name, name))
         self.setAccessibleName(self._NAMES.get(name, name))
         self.update()
+
+    def set_glyph_tint(self, color: str | None) -> None:
+        self._glyph_tint = color
+        self.update()
+
+    def hitButton(self,position):
+        # Native styles reserve content insets that do not match this painted
+        # toolbar. Feedback and activation use the same complete target.
+        return self.rect().contains(position)
 
     def set_presentation_scale(self,sx=1.0,sy=1.0):
         self._presentation_scale=(sx,sy)
@@ -300,23 +377,25 @@ class FeedbackButton(QPushButton):
         p.translate(c.x(), c.y())
         p.scale(v["scale"]*self._presentation_scale[0], v["scale"]*self._presentation_scale[1])
         p.translate(-c.x(), -c.y())
-        bg = QColor(ui_theme.color("button"))
-        bg.setAlphaF(min(1, .72 + .20 * v["hover"] + .08 * v["down"]))
-        p.setBrush(bg)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.drawRoundedRect(QRectF(self.rect()).adjusted(.8, .8, -.8, -.8), self.height() / 2, self.height() / 2)
+        flat_toolbar = bool(self.property('flatToolbar'))
+        bg = QColor(ui_theme.color("hover" if flat_toolbar else "button"))
+        bg.setAlphaF(min(1, (.70 * v["hover"] + .45 * v["down"]
+                            + (.56 if self.isChecked() else 0)) if flat_toolbar
+                         else (.72 + .20 * v["hover"] + .08 * v["down"])))
+        background_rect = QRectF(self.rect()).adjusted(1.5, 1.5, -1.5, -1.5)
+        paint_rounded_surface(p,background_rect,RADIUS_CONTROL_PX if flat_toolbar else self.height()/2,bg)
         if self.hasFocus() and self._keyboard_focus:
             focus = QColor(ui_theme.color("accent"))
             focus.setAlpha(180)
-            p.setPen(QPen(focus, 1.5))
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawRoundedRect(QRectF(self.rect()).adjusted(1.6, 1.6, -1.6, -1.6), self.height() / 2, self.height() / 2)
-        glyph_size = min(24, self.width() - 8)*(.82 if self.glyph=='copy' else .875)
+            paint_rounded_surface(p,QRectF(self.rect()).adjusted(2,2,-2,-2),
+                                  RADIUS_CONTROL_PX if flat_toolbar else self.height()/2,QColor(Qt.transparent),focus)
+        glyph_size = min(24, self.width() - 8)*(.82 if self.glyph=='copy' else .875)*self.glyph_scale
         if not self.isEnabled():
             p.setOpacity(.45)
+        glyph_color = (self._glyph_tint or (ui_theme.color("accent") if self.glyph == "nearby"
+                       else ui_theme.color("icon"))) if self.isEnabled() else ui_theme.color("secondary")
         draw_glyph(p, self.glyph, QRectF((self.width()-glyph_size)/2, (self.height()-glyph_size)/2,
-                                       glyph_size, glyph_size),
-                   ui_theme.color("icon") if self.isEnabled() else ui_theme.color("secondary"), 1.8)
+                                       glyph_size, glyph_size), glyph_color, 1.8)
         p.end()
 
 
@@ -326,6 +405,8 @@ class ContentTile(QWidget):
     Content replacement clears both text and pixmap state, preventing old drag
     images from remaining as an orphaned label. No effect objects are replaced.
     """
+    pulse_timeout_ms=650
+
     def __init__(self, parent: QWidget | None = None, motion: bool = True):
         super().__init__(parent)
         self.motion = motion
@@ -421,7 +502,7 @@ class ContentTile(QWidget):
         self._pulse_completion=self._try_complete_pulse
         # Hover retargets can keep a Spring busy. Intake completion has its own
         # bounded lifetime and does not belong to Spring.animate's callback.
-        self._pulse_deadline.start(650 if self.motion else 180)
+        self._pulse_deadline.start(self.pulse_timeout_ms if self.motion else 180)
         if self.motion:
             self.spring.kick({"sx": 2.8 if success else -2.2,
                               "sy": -3.5 if success else 2.7,
@@ -472,9 +553,7 @@ class ContentTile(QWidget):
         p.translate(-center.x(), -center.y())
         r = QRectF(self.rect()).adjusted(8, 7, -8, -9)
         if self._kind in ("image", "text"):
-            p.setBrush(QColor(ui_theme.color("surface")))
-            p.setPen(QPen(QColor(ui_theme.color("border")), .8))
-            p.drawRoundedRect(r, 10, 10)
+            paint_rounded_surface(p,r,RADIUS_CONTROL_PX,QColor(ui_theme.color('surface')),QColor(ui_theme.color('border')))
         if self._kind == "image" and not self._pixmap.isNull():
             r = r.adjusted(4, 4, -4, -4)
             image = self._pixmap

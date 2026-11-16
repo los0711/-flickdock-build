@@ -13,7 +13,13 @@ class OverviewDropRouter(QObject):
         kind=event.type()
         if kind not in (QEvent.Type.DragEnter,QEvent.Type.DragMove,QEvent.Type.DragLeave,QEvent.Type.Drop):return False
         if not isinstance(watched,QWidget) or not (watched is self.popup or self.popup.isAncestorOf(watched)):return False
+        entry=getattr(self.popup,'transfer_entry',None)
+        if entry is not None and entry.eventFilter(watched,event):return True
         shelf=self.popup.shelf
+        target=getattr(self.popup,'empty_drop',None)
+        if target is not None and target.isVisible():
+            target.set_drag_active(kind in (QEvent.Type.DragEnter,QEvent.Type.DragMove)
+                                   and shelf.accepts_content_drop(event))
         if kind==QEvent.Type.DragEnter:shelf.dragEnterEvent(event)
         elif kind==QEvent.Type.DragMove:shelf.dragMoveEvent(event)
         elif kind==QEvent.Type.DragLeave:shelf.dragLeaveEvent(event)

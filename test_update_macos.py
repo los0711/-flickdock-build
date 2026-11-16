@@ -13,7 +13,14 @@ import zipfile
 
 import test_update_client_v170 as https_fixture
 import update_client as subject
-wait_until, app = https_fixture.wait_until, https_fixture.app
+from PySide6.QtCore import QTimer
+app = https_fixture.app
+
+def wait_until(predicate):
+    # Native TLS/backend startup on hosted Intel Macs can exceed one second.
+    # These cases verify validation/cancellation; dedicated timeout tests keep
+    # their short deadlines in test_update_client_v170.
+    return https_fixture.wait_until(predicate, timeout=8000)
 
 
 class MacHTTPS(unittest.TestCase):
@@ -44,7 +51,7 @@ class MacHTTPS(unittest.TestCase):
     def client(self):
         network = self.Network()
         client = subject.UpdateClient('1.9.0', Path(self.folder.name) / 'updates', endpoint=self.origin + '/mac-manifest',
-                    allowed_hosts={'127.0.0.1'}, network=network, platform='darwin', machine='arm64', timeout_ms=1000)
+                    allowed_hosts={'127.0.0.1'}, network=network, platform='darwin', machine='arm64', timeout_ms=5000)
         client._test_network = network
         self.clients.append(client)
         state = {key: [] for key in ('update_available', 'failed', 'progress', 'verified_file', 'cancelled')}
@@ -53,8 +60,8 @@ class MacHTTPS(unittest.TestCase):
 
     def test_architecture_endpoints_and_cross_platform_manifest_guards(self):
         self.assertEqual(subject.manifest_endpoint('win32', 'AMD64'), subject.DEFAULT_MANIFEST_URL)
-        self.assertTrue(subject.manifest_endpoint('darwin', 'aarch64').endswith('/macos-arm64.json'))
-        self.assertTrue(subject.manifest_endpoint('darwin', 'x86_64').endswith('/macos-x86_64.json'))
+        self.assertTrue(subject.manifest_endpoint('darwin', 'aarch64').endswith('/macos-arm64-auto-v2.json'))
+        self.assertTrue(subject.manifest_endpoint('darwin', 'x86_64').endswith('/macos-x86_64-auto-v2.json'))
         self.assertEqual(subject.validate_manifest(self.manifest, {'127.0.0.1'}, platform='darwin', machine='arm64')['architecture'], 'arm64')
         with self.assertRaises(ValueError): subject.validate_manifest(self.manifest, {'127.0.0.1'}, platform='darwin', machine='x86_64')
         with self.assertRaises(ValueError): subject.validate_manifest(self.manifest, {'127.0.0.1'}, platform='win32')
@@ -78,7 +85,8 @@ class MacHTTPS(unittest.TestCase):
         self.assertEqual(path.name, 'update.zip')
         self.assertEqual(path.read_bytes(), self.payload)
         self.assertTrue(path.read_bytes().startswith(b'PK\x03\x04'))
-        self.assertGreater(len(state['progress']), 2)
+        self.assertGreaterEqual(len(state['progress']), 2)
+        self.assertEqual(state['progress'][-1],(len(self.payload),len(self.payload)))
         self.assertFalse(list(path.parent.glob('*.part')))
         self.assertFalse((path.parent / 'setup.exe').exists())
 
@@ -98,6 +106,8 @@ class MacHTTPS(unittest.TestCase):
                 client.check(True)
                 wait_until(lambda: state['update_available'] or state['failed'])
                 if mode != 'arch':
+                    self.assertFalse(state['failed'],state['failed'])
+                    self.assertTrue(state['update_available'],'Valid manifest must precede the corrupt payload')
                     client.download(state['update_available'][0][0])
                     wait_until(lambda: state['failed'])
                 self.assertTrue(state['failed'])
@@ -107,19 +117,46 @@ class MacHTTPS(unittest.TestCase):
 
     def test_mac_download_cancel_and_insecure_redirect_no_late_file(self):
         client, state = self.client()
+        self.routes['/mac.zip'] = dict(body=self.payload, ranges=True, chunk_delay=.004)
         client.check()
         wait_until(lambda: state['update_available'])
+        cancel_on_progress=lambda received,total:client.cancel() if received>0 else None
+        client.progress.connect(cancel_on_progress)
         client.download(self.manifest)
-        wait_until(lambda: any(received > 0 for received, total in state['progress']))
-        client.cancel()
+        task=client._download_task
+        wait_until(lambda: state['cancelled'])
         self.assertTrue(state['cancelled'])
+        self.assertFalse(client.busy)
+        self.assertTrue(task.stopped)
         self.assertFalse(state['verified_file'])
-        self.assertFalse(list(client.updates_dir.rglob('*.part')))
+        # Cancellation preserves resumable bytes (the v1821 download contract).
+        # The old assertion depended on cancelling before the first body write.
+        partial=task.part.read_bytes()
+        self.assertGreater(len(partial),0)
+        self.assertLess(len(partial),len(self.payload))
+        settled=[];QTimer.singleShot(150,app,lambda:settled.append(True))
+        wait_until(lambda:settled)
+        self.assertEqual(task.part.read_bytes(),partial,'Cancelled replies must not write late bytes')
+        self.assertFalse(list(client.updates_dir.rglob('update.zip')))
+        client.progress.disconnect(cancel_on_progress)
         self.routes['/mac.zip'] = dict(status=302, location='http://127.0.0.1/insecure.zip')
         client.download(self.manifest)
         wait_until(lambda: state['failed'])
         self.assertFalse(state['verified_file'])
         self.assertFalse(list(client.updates_dir.rglob('update.zip')))
+        self.assertEqual(task.part.read_bytes(),partial)
+        self.assertFalse(any(path=='/insecure.zip' for path,_ in self.requests))
+        # A later explicit retry resumes the same bytes and publishes only after
+        # the original complete-package hash and Mac format checks succeed.
+        self.routes['/mac.zip'] = dict(body=self.payload,ranges=True)
+        self.requests.clear();state['failed'].clear()
+        client.download(self.manifest)
+        wait_until(lambda:state['verified_file'] or state['failed'])
+        self.assertFalse(state['failed'],state['failed'])
+        headers=next(headers for path,headers in self.requests if path=='/mac.zip')
+        self.assertEqual(headers.get('Range'),f'bytes={len(partial)}-')
+        self.assertEqual(Path(state['verified_file'][0][0]).read_bytes(),self.payload)
+        self.assertFalse(list(client.updates_dir.rglob('*.part')))
 
 
 if __name__ == '__main__': unittest.main(verbosity=2)

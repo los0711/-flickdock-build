@@ -7,23 +7,43 @@ import json
 import os
 from pathlib import Path
 import platform
+import plistlib
 import shutil
 import subprocess
 import sys
 import tempfile
+import copy
+import stat
+import time
 import venv
+import zipfile
 
 ROOT = Path(__file__).resolve().parent
+MAX_RELEASE_ASSET_BYTES = 2 * 1024 ** 3
 
 
 def run(arguments, *, env=None):
-    subprocess.run([str(value) for value in arguments], cwd=ROOT, env=env, check=True)
+    values=[str(value) for value in arguments]
+    try:
+        subprocess.run(values, cwd=ROOT, env=env, check=True)
+    except subprocess.CalledProcessError:
+        # Disposable CI must retain the real failure before TemporaryDirectory
+        # removes its report. Windowed bundles keep import errors in this log.
+        if os.environ.get('GITHUB_ACTIONS')=='true':
+            diagnostics=[]
+            if '--verify-output' in values:
+                diagnostics.append(Path(values[values.index('--verify-output')+1]))
+            diagnostics.append(Path.home()/'Library/Logs/FlickDock/startup-last-error.log')
+            for path in diagnostics:
+                if path.is_file():
+                    print('FAILED VERIFICATION:',path.name,path.read_text(encoding='utf8')[-32768:],flush=True)
+        raise
 
 
 def make_icon(destination):
     # Offscreen SVG rendering uses the same original mark as the Windows app.
     os.environ['QT_QPA_PLATFORM'] = 'offscreen'
-    from PySide6.QtCore import QByteArray, Qt
+    from PySide6.QtCore import QByteArray, QRectF, Qt
     from PySide6.QtGui import QImage, QPainter
     from PySide6.QtSvg import QSvgRenderer
     from PySide6.QtWidgets import QApplication
@@ -38,7 +58,8 @@ def make_icon(destination):
             image = QImage(pixels, pixels, QImage.Format.Format_ARGB32_Premultiplied)
             image.fill(Qt.GlobalColor.transparent)
             painter = QPainter(image)
-            renderer.render(painter)
+            inset=pixels*.04
+            renderer.render(painter,QRectF(inset,inset,pixels-2*inset,pixels-2*inset))
             painter.end()
             name = f'icon_{size}x{size}' + ('@2x' if scale == 2 else '') + '.png'
             if not image.save(str(iconset / name)):
@@ -54,6 +75,108 @@ def _checksum(path):
     return digest.hexdigest()
 
 
+def _bundle_inventory(app):
+    records={}
+    for path in [app,*app.rglob('*')]:
+        key=path.relative_to(app).as_posix()
+        mode=stat.S_IMODE(path.lstat().st_mode)
+        records[key]=('link',os.readlink(path),mode) if path.is_symlink() else (
+            ('directory',mode) if path.is_dir() else ('file',_checksum(path),mode))
+    return records
+
+
+def _create_zip(app,archive,*,python,env):
+    # Retain ditto's symlink and permission metadata. LZMA compresses the
+    # bundled runtime without removing payload. Shipped 1.8.15 clients contain
+    # _lzma and use mac_updates._extract, rather than ditto, for automatic ZIPs.
+    with tempfile.TemporaryDirectory(prefix='flickdock-zip-') as directory:
+        folder=Path(directory);original=folder/'original.zip'
+        run(['/usr/bin/ditto','-c','-k','--keepParent','--zlibCompressionLevel','9',app,original])
+        with zipfile.ZipFile(original) as source,zipfile.ZipFile(archive,'x') as target:
+            target.comment=source.comment
+            for member in source.infolist():
+                info=copy.copy(member)
+                compression=zipfile.ZIP_LZMA if member.file_size>=4096 else zipfile.ZIP_DEFLATED
+                target.writestr(info,source.read(member),compress_type=compression,compresslevel=9)
+        extracted=folder/'extracted'
+        run([python,'-c',
+             'import sys,zipfile;from pathlib import Path;from mac_updates import _extract;'
+             'from build_macos import _bundle_inventory;'
+             'archive,app,stage=map(Path,sys.argv[1:]);'
+             'z=zipfile.ZipFile(archive);bundle=_extract(z,stage,None);z.close();'
+             'assert _bundle_inventory(app)==_bundle_inventory(bundle),'
+             '"Automatic ZIP round trip changed bundle bytes, symlinks or permissions"',
+             archive,app,extracted],env=env)
+
+
+def _create_dmg(staging,dmg):
+    arguments=['/usr/bin/hdiutil','create','-volname','FlickDock','-srcfolder',str(staging),
+               '-ov','-format','ULMO',str(dmg)]
+    for attempt in range(3):
+        result=subprocess.run(arguments,cwd=ROOT,capture_output=True,text=True,
+                              env=dict(os.environ,LC_ALL='C'))
+        if result.stdout:print(result.stdout,flush=True)
+        if result.stderr:print(result.stderr,file=sys.stderr,flush=True)
+        if result.returncode==0:return
+        if attempt==2 or 'resource busy' not in (result.stdout+result.stderr).lower():
+            raise subprocess.CalledProcessError(result.returncode,arguments)
+        # Only this unpublished destination may exist after a failed create.
+        if dmg.exists():dmg.unlink()
+        time.sleep(2*(attempt+1))
+
+
+from mac_install import INSTALL_CLOSE_JXA
+
+PKG_PREINSTALL='''#!/bin/sh
+set -eu
+console_user=$(/usr/bin/stat -f %Su /dev/console)
+case "$console_user" in root|loginwindow|'') echo '请登录桌面后安装 FlickDock。' >&2; exit 1;; esac
+console_uid=$(/usr/bin/id -u "$console_user")
+/bin/launchctl asuser "$console_uid" /usr/bin/sudo -u "$console_user" /usr/bin/osascript -l JavaScript - 0 <<'FLICKDOCK_INSTALL_CLOSE'
+'''+INSTALL_CLOSE_JXA+'''
+FLICKDOCK_INSTALL_CLOSE
+exit 0
+'''
+
+PKG_POSTINSTALL='''#!/bin/sh
+set -eu
+volume=${3:-/}
+case "$volume" in /*) ;; *) echo '安装目标无效。' >&2; exit 1;; esac
+app="${volume%/}/Applications/FlickDock.app"
+if [ ! -x "$app/Contents/MacOS/FlickDock" ] || [ ! -f "$app/Contents/Info.plist" ]; then
+    echo '应用已安装，但找不到可启动的 FlickDock。' >&2; exit 1
+fi
+identity=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")
+if [ "$identity" != 'com.flickdock.app' ]; then
+    echo '应用身份不匹配，未自动启动。' >&2; exit 1
+fi
+console_user=$(/usr/bin/stat -f %Su /dev/console)
+case "$console_user" in root|loginwindow|'') echo '应用已安装，请登录后打开 FlickDock。' >&2; exit 1;; esac
+console_uid=$(/usr/bin/id -u "$console_user")
+if ! /bin/launchctl asuser "$console_uid" /usr/bin/sudo -u "$console_user" /usr/bin/open -n "$app"; then
+    echo '应用已安装，但自动启动失败；请手动打开 FlickDock。' >&2; exit 1
+fi
+'''
+
+
+def _create_pkg(app,installer,version):
+    with tempfile.TemporaryDirectory(prefix='flickdock-pkg-') as directory:
+        folder=Path(directory);payload=folder/'payload';payload.mkdir()
+        shutil.copytree(app,payload/app.name,symlinks=True)
+        components=folder/'components.plist'
+        components.write_bytes(plistlib.dumps([dict(RootRelativeBundlePath=app.name,
+            BundleIsRelocatable=False,BundleHasStrictIdentifier=True,
+            BundleIsVersionChecked=True,BundleOverwriteAction='upgrade')]))
+        scripts=folder/'scripts';scripts.mkdir();preinstall=scripts/'preinstall';postinstall=scripts/'postinstall'
+        preinstall.write_text(PKG_PREINSTALL,encoding='utf8');preinstall.chmod(0o755)
+        postinstall.write_text(PKG_POSTINSTALL,encoding='utf8');postinstall.chmod(0o755)
+        for script in (preinstall,postinstall):run(['/bin/sh','-n',script])
+        run(['/usr/bin/pkgbuild','--root',payload,'--component-plist',components,
+             '--install-location', '/Applications','--scripts',scripts,
+             '--identifier','com.flickdock.installer','--version',version,
+             '--compression','latest','--min-os-version','14.4',installer])
+
+
 def main(arguments=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--target-arch', choices=('arm64', 'x86_64', 'universal2'), default=platform.machine())
@@ -61,6 +184,8 @@ def main(arguments=None):
     parser.add_argument('--notary-profile', default='')
     parser.add_argument('--entitlements', type=Path)
     parser.add_argument('--use-current-python', action='store_true')
+    parser.add_argument('--skip-public-update-check',action='store_true',
+                        help='Build an unpublished test package without downloading an older public installer')
     parser.add_argument('--icon-only', type=Path, help=argparse.SUPPRESS)
     options = parser.parse_args(arguments)
     if sys.platform != 'darwin':
@@ -81,20 +206,65 @@ def main(arguments=None):
         if not python.is_file():
             venv.EnvBuilder(with_pip=True).create(environment)
         run([python, '-m', 'pip', 'install', 'PySide6==6.12.0', 'PyInstaller==6.22.3',
-             'pyobjc-framework-Quartz>=11,<13', 'keyring==25.7.0', 'cryptography>=42'])
-    env = dict(os.environ, QT_QPA_PLATFORM='offscreen', QT_MEDIA_BACKEND='darwin',
+             'pyobjc-framework-Quartz>=11,<13', 'keyring==25.7.0', 'fasttext-predict-v2==1.1.0','yt-dlp[default]==2026.10.26'])
+        if options.target_arch=='x86_64':
+            # Intel currently builds this dependency from source. Dynamic
+            # Homebrew OpenSSL can collide with Python's same-named dylibs
+            # when frozen; use cryptography's documented static build mode.
+            run([python,'-m','pip','install','--force-reinstall','--no-cache-dir',
+                 '--no-binary=cryptography','cryptography==50.0.2'],
+                env=dict(os.environ,OPENSSL_STATIC='1'))
+            run([python,'-c',
+                 "from cryptography.hazmat.bindings import _rust; import subprocess; "
+                 "links=subprocess.check_output(['/usr/bin/otool','-L',_rust.__file__],text=True); "
+                 "assert not any(name in links for name in ('libssl.','libcrypto.')),links; "
+                 "print('Verified static Intel cryptography OpenSSL binding')"])
+        else:
+            run([python,'-m','pip','install','cryptography==50.0.2'])
+    env = dict(os.environ, QT_QPA_PLATFORM='offscreen', QT_MEDIA_BACKEND='darwin',PYTHONFAULTHANDLER='1',
                FLICKDOCK_TARGET_ARCH=options.target_arch)
     # This workspace may contain Windows wheel files in py/. Never import them
     # into the macOS interpreter or reuse a Windows virtual environment.
     env.pop('PYTHONPATH', None)
+    # Exercise the actual automatic updater before running the longer gates.
+    with tempfile.TemporaryDirectory(prefix='flickdock-codec-probe-') as directory:
+        folder=Path(directory);probe=folder/'FlickDock.app'
+        executable=probe/'Contents/MacOS/FlickDock';executable.parent.mkdir(parents=True)
+        executable.write_bytes(b'\xcf\xfa\xed\xfe'+bytes(range(256))*64);executable.chmod(0o755)
+        (probe/'alias').symlink_to('Contents/MacOS/FlickDock')
+        _create_zip(probe,folder/'probe.zip',python=python,env=env)
+    with tempfile.TemporaryDirectory(prefix='flickdock-cocoa-preflight-') as directory:
+        run([python,ROOT/'test_mac_cocoa_spaces.py','--output',Path(directory)/'cocoa.json'],
+            env=dict(env,HOME=directory,QT_QPA_PLATFORM='cocoa',FLICKDOCK_CI_COCOA_SMOKE='1'))
+        cocoa_preflight=json.loads((Path(directory)/'cocoa.json').read_text(encoding='utf8'))
+    run([python,ROOT/'p2p_assets.py'],env=env)
+    run([python,ROOT/'video_assets.py'],env=env)
     if options.sign_identity:
         env['FLICKDOCK_CODESIGN_IDENTITY'] = options.sign_identity
     if options.entitlements:
         env['FLICKDOCK_ENTITLEMENTS'] = str(options.entitlements.resolve())
-    run([python, '-m', 'unittest', 'test_platform_startup', 'test_platform_native', 'test_mac_updates',
+    # These suites own process-wide exception hooks and native frame clocks.
+    # Preserve every assertion, with a fresh Qt process for each suite.
+    run([python,'-m','unittest','test_crash_diagnostics_v1838','-v'],env=env)
+    run([python,'-m','unittest','test_display_frames','-v'],env=env)
+    run([python, '-m', 'unittest', 'test_accent_theme_v1838','test_live_settings_v1838','test_text_preview_v1838','test_translation','test_architecture','test_video_tls','test_startup_resources','test_sync_scheduler','test_cloud_events_v1825','test_cloud_only_v1825','test_window_zoom_v1824', 'test_surface_source_cache', 'test_surface_elements', 'test_mac_install', 'test_preview_continuity', 'test_overview_controls_v1823', 'test_video_matrix', 'test_receive_notice', 'test_copy_notice_v1824', 'test_virtual_clipboard', 'test_platform_startup', 'test_platform_native', 'test_mac_window_order_v1810', 'test_mac_updates',
          'test_macos_native_entry', 'test_update_macos_controller', 'test_mac_build',
          'test_shelf_sync_v180', 'test_sync_review_v180', 'test_account_security_v180',
-         'test_lan_transfer_v181', 'test_shelf_transfers_v181', '-v'], env=env)
+         'test_lan_transfer_v181', 'test_lan_dialog_v183', 'test_lan_account_v1825', 'test_shelf_transfers_v181',
+         'test_account_profile_layout_v1814', 'test_account_settings_v181', 'test_lan_hig_layout_v1814',
+         'test_html_native_lan', 'test_html_native_dialogs',
+         'test_ui_feedback_v1815', 'test_directory_sync_v1815', 'test_feedback_v1816','test_feedback_v1818',
+         'test_shelf_raise_v1810', 'test_intake_first_frame_v1810',
+         'test_sync_remote_commit_wakeup', 'test_cloud_file_status_v1810',
+         'test_trigger_reliability_v1810', 'test_event_stream_wiring_v1810',
+         'test_pointer_paste_v1819','test_presentation_v1819','test_clipboard_sync_v1819','test_wan_account_v1819','test_update_notice_v1813','test_small_upload_lane','test_feedback_v1820',
+         'test_display_groups_v1821','test_transfer_layout_v1821','test_interaction_scope_v1821','test_shared_clipboard_files_v1821','test_download_ranges_v1821','test_remote_handoff_v1821','test_mac_permissions_v1821','test_shelf_live_v1821','test_release_notes_v1821','test_clipboard_fast_v1821','test_clipboard_preview_v1821','test_utility_windows_v1821','test_update_signatures_v1821','-v'], env=env)
+    run([python,'test_update_resume_v1821.py','-v'],env=env)
+    # Exercise the original direct TLS and native WebRTC file streams.
+    run([python,'-m','unittest','test_original_transfer','test_wan_transfer_v1816','test_utility_feedback_v1828','test_manual_network_v1829','test_shelf_capacity_v1829','-v'],env=env)
+    run([python,'-m','unittest','test_wan_signaling_v1818','-v'],env=env)
+    run([python,'-m','unittest','test_cloud_failover_v1818','-v'],env=env)
+    run([python,'-m','unittest','test_stream_upload_v1816','-v'],env=env)
     run([python, ROOT / 'test_update_macos.py'], env=env)
     run([python, ROOT / 'build_macos.py', '--icon-only', build / 'FlickDock.icns'], env=env)
     run([python, '-m', 'PyInstaller', '--noconfirm', '--clean', ROOT / 'FlickDock-mac.spec'], env=env)
@@ -108,6 +278,9 @@ def main(arguments=None):
     from app_version import APP_VERSION
     report = ROOT.parent / 'outputs' / f'mac-build-{APP_VERSION}-{options.target_arch}.json'
     report.parent.mkdir(parents=True, exist_ok=True)
+    update_runtime_path=report.parent/f'mac-update-runtime-{options.target_arch}.json'
+    if os.environ.get('GITHUB_ACTIONS')=='true':
+        run([python,ROOT/'ci_mac_update_runtime.py',binary,update_runtime_path],env=env)
     with tempfile.TemporaryDirectory(prefix='flickdock-mac-verify-') as profile:
         smoke = Path(profile) / 'platform.json'
         run([binary, '--verify-platform', smoke], env=dict(env, XDG_CONFIG_HOME=profile, APPDATA=profile))
@@ -120,18 +293,85 @@ def main(arguments=None):
         if not transfers.get('ok') or not transfers.get('frozen') or transfers.get('version') != APP_VERSION:
             raise RuntimeError('Frozen macOS original-file/TLS/cancellation verification failed')
         frozen['lan_transfers'] = transfers
+        if options.skip_public_update_check:
+            frozen['public_updates']=dict(skipped=True,reason='Unpublished test package; current public installer download is outside this verification')
+        else:
+            update_path=Path(profile)/'public-update.json'
+            run([binary,'--verify-update','--verify-current','1.8.14','--verify-output',update_path],env=dict(env,XDG_CONFIG_HOME=profile,APPDATA=profile))
+            update=json.loads(update_path.read_text(encoding='utf8'))
+            if not update.get('ok') or not update.get('frozen') or not update.get('verified_download') or update.get('installer_executed'):
+                raise RuntimeError('Frozen Mac public update check/download failed')
+            frozen['public_updates']=update
+        frozen['wan_transfers']={}
+        import queue,threading
+        worker=subprocess.Popen([str(ROOT/'p2p/runtime/node'),str(ROOT/'cloud/test/qa-server.mjs')],cwd=ROOT,env=env,
+                                stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+        ready=queue.Queue()
+        def read_origin():
+            for line in worker.stdout:
+                if line.startswith(b'http://127.0.0.1:'):ready.put(line.decode().strip());return
+        threading.Thread(target=read_origin,daemon=True).start()
+        try:
+            origin=ready.get(timeout=75);wan_path=Path(profile)/'wan-native.json'
+            run([binary,'--verify-wan','--verify-output',wan_path],env=dict(env,XDG_CONFIG_HOME=profile,APPDATA=profile,FLICKDOCK_QA_WAN_ORIGIN=origin))
+            wan=json.loads(wan_path.read_text(encoding='utf8'))
+            if not wan.get('ok') or not wan.get('frozen') or wan.get('route_source')!='native-selected-candidate-pair':
+                raise RuntimeError('Frozen Mac original WebRTC transfer failed')
+            frozen['wan_transfers']['original_webrtc_loopback']=wan
+        finally:
+            worker.communicate(b'stop',timeout=20)
+    # Run the real Cocoa plugin and construct the shelf on the hosted Mac,
+    # but with a disposable HOME and native/network side effects disabled.
+    # This catches launch exits that an offscreen import check cannot see.
+    with tempfile.TemporaryDirectory(prefix='flickdock-cocoa-smoke-') as profile:
+        smoke_path = Path(profile) / 'cocoa.json'
+        cocoa_env = dict(env, HOME=profile, QT_QPA_PLATFORM='cocoa',
+                         FLICKDOCK_CI_COCOA_SMOKE='1')
+        try:
+            # Stage the exact native flag reported on macOS 27. Hosted Macs
+            # may choose different Qt defaults, so launch success alone does
+            # not verify that edge/shelf native ordering avoids the conflict.
+            spaces_path = Path(profile) / 'cocoa-spaces.json'
+            run([python, ROOT / 'test_mac_cocoa_spaces.py', '--output', spaces_path],
+                env=cocoa_env)
+            spaces = json.loads(spaces_path.read_text(encoding='utf-8'))
+            if (not spaces.get('ok') or spaces.get('qt_platform') != 'cocoa'
+                    or {case.get('window') for case in spaces.get('cases', [])} != {'edge', 'shelf'}):
+                raise RuntimeError('Native macOS Spaces collection behavior verification failed')
+            frozen['cocoa_window_order'] = spaces
+            # Hosted Intel Cocoa event dispatch can spend >20s in a native
+            # readiness call. Keep the assertions intact with a bounded guard.
+            subprocess.run([str(binary), '--verify-cocoa-startup', str(smoke_path)],
+                           cwd=ROOT, env=cocoa_env, check=True, timeout=120)
+            cocoa = json.loads(smoke_path.read_text(encoding='utf-8'))
+            if (not cocoa.get('ok') or cocoa.get('version') != APP_VERSION
+                    or cocoa.get('qt_platform') != 'cocoa'
+                    or not cocoa.get('shelf_constructed')
+                    or not cocoa.get('native_window_order', {}).get('ok')
+                    or not cocoa.get('native_window_order', {}).get('passive_drag_probe')
+                    or not cocoa.get('native_window_order', {}).get('stable_native_canvas')
+                    or {case.get('window') for case in cocoa.get('native_window_order', {}).get('cases', [])} != {'edge', 'shelf'}
+                    or any(cocoa.get(name) for name in ('native_hotkeys', 'lan_listener',
+                                                       'cloud_session', 'startup_mutation'))):
+                raise RuntimeError('Frozen macOS Cocoa shelf startup verification failed')
+            frozen['cocoa_startup'] = cocoa
+        except BaseException:
+            startup_log = Path(profile) / 'Library/Logs/FlickDock/startup-last-error.log'
+            if startup_log.is_file():
+                shutil.copy2(startup_log, report.parent / f'mac-startup-error-{options.target_arch}.log')
+            raise
     if options.sign_identity:
         run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)])
     name = f'FlickDock-{APP_VERSION}-macOS-{options.target_arch}'
     archive = report.parent / (name + '.zip')
     if archive.exists():
         raise FileExistsError('Refusing to overwrite an existing versioned macOS release ZIP')
-    run(['/usr/bin/ditto', '-c', '-k', '--keepParent', app, archive])
+    _create_zip(app,archive,python=python,env=env)
     if options.notary_profile:
         run(['/usr/bin/xcrun', 'notarytool', 'submit', archive, '--keychain-profile', options.notary_profile, '--wait'])
         run(['/usr/bin/xcrun', 'stapler', 'staple', app])
         archive.unlink()
-        run(['/usr/bin/ditto', '-c', '-k', '--keepParent', app, archive])
+        _create_zip(app,archive,python=python,env=env)
     dmg = report.parent / (name + '.dmg')
     if dmg.exists():
         raise FileExistsError('Refusing to overwrite an existing versioned macOS DMG')
@@ -139,17 +379,49 @@ def main(arguments=None):
         staging = Path(folder)
         shutil.copytree(app, staging / 'FlickDock.app', symlinks=True)
         (staging / 'Applications').symlink_to('/Applications', target_is_directory=True)
-        run(['/usr/bin/hdiutil', 'create', '-volname', 'FlickDock', '-srcfolder', staging,
-             '-ov', '-format', 'UDZO', dmg])
+        _create_dmg(staging,dmg)
     if options.sign_identity:
         run(['/usr/bin/codesign', '--sign', options.sign_identity, '--timestamp', dmg])
     if options.notary_profile:
         run(['/usr/bin/xcrun', 'notarytool', 'submit', dmg, '--keychain-profile', options.notary_profile, '--wait'])
         run(['/usr/bin/xcrun', 'stapler', 'staple', dmg])
-    artifacts = [dict(name=item.name, bytes=item.stat().st_size, sha256=_checksum(item)) for item in (archive, dmg)]
+    run(['/usr/bin/hdiutil', 'verify', dmg])
+    with tempfile.TemporaryDirectory(prefix='flickdock-dmg-verify-') as folder:
+        mount = Path(folder) / 'mounted'; mount.mkdir()
+        run(['/usr/bin/hdiutil', 'attach', '-readonly', '-nobrowse', '-mountpoint', mount, dmg])
+        try:
+            mounted_app = mount / 'FlickDock.app'
+            metadata = plistlib.loads((mounted_app / 'Contents/Info.plist').read_bytes())
+            if (metadata.get('CFBundleIdentifier') != 'com.flickdock.app'
+                    or metadata.get('CFBundleShortVersionString') != APP_VERSION
+                    or not (mounted_app / 'Contents/MacOS/FlickDock').is_file()
+                    or (mount / 'Applications').resolve() != Path('/Applications')):
+                raise RuntimeError('DMG payload identity, version or install destination is invalid')
+        finally:
+            run(['/usr/bin/hdiutil', 'detach', mount])
+    installer = report.parent / (name + '.pkg')
+    if installer.exists():
+        raise FileExistsError('Refusing to overwrite an existing versioned macOS installer')
+    _create_pkg(app,installer,APP_VERSION)
+    # Check the package payload and metadata without installing on this Mac.
+    with tempfile.TemporaryDirectory(prefix='flickdock-pkg-verify-') as directory:
+        expanded = Path(directory) / 'expanded'
+        run(['/usr/sbin/pkgutil', '--expand-full', installer, expanded])
+        package_info = (expanded / 'PackageInfo').read_text(encoding='utf-8')
+        if 'com.flickdock.installer' not in package_info or APP_VERSION not in package_info:
+            raise RuntimeError('macOS installer metadata does not match this build')
+        if _bundle_inventory(app)!=_bundle_inventory(expanded/'Payload'/app.name):
+            raise RuntimeError('Native PKG round trip changed bundle bytes, symlinks or permissions')
+    if any(item.stat().st_size>=MAX_RELEASE_ASSET_BYTES for item in (archive,dmg,installer)):
+        raise RuntimeError('Native package exceeds the release host 2 GiB attachment limit')
+    artifacts = [dict(name=item.name, bytes=item.stat().st_size, sha256=_checksum(item))
+                 for item in (archive, dmg, installer)]
     report.write_text(json.dumps(dict(ok=True, host=platform.platform(), version=APP_VERSION,
-          architecture=options.target_arch, signed=bool(options.sign_identity),
-          notarized=bool(options.notary_profile), frozen=frozen, artifacts=artifacts),
+          architecture=options.target_arch, signed=bool(options.sign_identity), dmg_verified=True,
+          notarized=bool(options.notary_profile),zip_roundtrip_verified=True,pkg_payload_verified=True,
+          frozen=frozen, artifacts=artifacts,
+          native_source_cocoa=cocoa_preflight,
+          native_update_runtime=(json.loads(update_runtime_path.read_text()) if update_runtime_path.is_file() else None)),
           ensure_ascii=False, indent=2), encoding='utf-8')
     print(report)
     return 0

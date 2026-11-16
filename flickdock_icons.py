@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from xml.sax.saxutils import escape
+from html import escape
 
 from PySide6.QtCore import QByteArray, QFileInfo, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QGuiApplication, QIcon, QIconEngine, QImage, QPainter, QPainterPath, QPixmap
 from PySide6.QtSvg import QSvgRenderer
-from PySide6.QtWidgets import QFileIconProvider
+from PySide6.QtWidgets import QApplication,QFileIconProvider
 
 _provider: QFileIconProvider | None = None
 _IMAGE_EXTENSIONS = {'.png','.jpg','.jpeg','.webp','.gif','.bmp','.ico','.tif','.tiff','.heic','.heif','.avif','.svg','.svgz'}
@@ -48,6 +48,15 @@ _GLYPHS = {
     'dock':'<path d="M20 4v16M3.5 12h12m-5-5 5 5-5 5"/>',
     'check':'<path d="m5 12 5 5L19 7"/>',
     'folder':'<path d="M3 8V6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8z"/>',
+    # Lucide monitor-smartphone, file-up and cloud, ISC; see THIRD_PARTY_NOTICES.md.
+    'nearby':'<path d="M18 8V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h8"/><path d="M10 19v-3.96 3.15"/><path d="M7 19h5"/><rect width="6" height="10" x="16" y="12" rx="2"/>',
+    'file-up':'<path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M12 12v6"/><path d="m15 15-3-3-3 3"/>',
+    'cloud':'<path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>',
+    'user':'<circle cx="12" cy="8" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/>',
+    'search':'<circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/>',
+    'list':'<path d="M9 6h12M9 12h12M9 18h12M3 6h1M3 12h1M3 18h1"/>',
+    'grid':'<rect x="3" y="3" width="7" height="7" rx="1.2"/><rect x="14" y="3" width="7" height="7" rx="1.2"/><rect x="3" y="14" width="7" height="7" rx="1.2"/><rect x="14" y="14" width="7" height="7" rx="1.2"/>',
+    'receive':'<rect x="3" y="11" width="18" height="9" rx="2.5"/><path d="M12 3v11m-4-4 4 4 4-4M7 16h2"/>',
     'file':'<path d="M7 3h7l5 5v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V5a2 2 0 0 1 2-2zm7 0v5h5"/>',
     'text':'<path d="M7 3h7l5 5v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V5a2 2 0 0 1 2-2zm7 0v5h5M8 11h7.5M8 14h7.5M8 17h4"/>',
     'image':'<rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="8" cy="9" r="1.5"/><path d="m4 18 5-5 3 3 4-5 5 6"/>',
@@ -125,6 +134,7 @@ def _render_svg(svg: str, logical_size: int | QSize, dpr: float | None = None) -
     pm.setDevicePixelRatio(ratio)
     pm.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pm)
+    if QApplication.instance() is not None:painter.setFont(QApplication.font())
     renderer = QSvgRenderer(QByteArray(svg.encode('utf-8')))
     renderer.render(painter, QRectF(0, 0, size.width(), size.height()))
     painter.end()
@@ -190,6 +200,12 @@ def tray_icon(size: int = 32, color: str = '#147fe9', dpr: float | None = None) 
     return QIcon(_SvgIconEngine(_svg(_mark_svg(color),'0 0 64 64')))
 
 
+def menu_bar_icon() -> QIcon:
+    value=QIcon(_SvgIconEngine(_svg(_mark_svg('#000000'),'8 7 48 48')))
+    value.setIsMask(True)
+    return value
+
+
 def _category(value: str) -> str:
     value = value.lower().strip()
     if value in _CATEGORY_SYMBOLS or value == 'folder':
@@ -203,7 +219,7 @@ def _category(value: str) -> str:
     return 'generic'
 
 
-def document_svg(value: str = '', stack: int = 1) -> str:
+def document_svg(value: str = '', stack: int = 1, *, display_text: str | None = None) -> str:
     category = _category(value)
     if category == 'folder':
         return _svg('<path d="M8 21v-6a4 4 0 0 1 4-4h14l6 6h19a5 5 0 0 1 5 5v27a5 5 0 0 1-5 5H13a5 5 0 0 1-5-5V21z" fill="#d9a238"/><path d="M8 23h48" stroke="#ffe0a3" stroke-width="1.5"/>','0 0 64 64')
@@ -217,16 +233,21 @@ def document_svg(value: str = '', stack: int = 1) -> str:
     labels = {'generic':'FILE','text':'TEXT','document':'DOC','sheet':'XLS','presentation':'PPT',
               'audio':'AUDIO','video':'VIDEO','image':'IMG','archive':'ZIP','code':'CODE','font':'FONT','link':'WEB'}
     label = suffix.upper() if suffix not in _CATEGORY_SYMBOLS and 1 <= len(suffix) <= 4 else labels.get(category,category.upper())
+    if display_text is not None:label=str(display_text)[:8]
     body = back + f'<defs><linearGradient id="paper" x1="0" y1="0" x2="1" y2="1"><stop stop-color="{top}"/><stop offset="1" stop-color="{color}"/></linearGradient></defs><rect x="13" y="5" width="43" height="51" rx="7" fill="url(#paper)"/><path d="M41 5h8a7 7 0 0 1 7 7v8z" fill="#ffffff" fill-opacity=".23"/><rect x="13.5" y="5.5" width="42" height="50" rx="6.5" fill="none" stroke="#ffffff" stroke-opacity=".18"/>'
     symbol = _CATEGORY_SYMBOLS[category].format(c='#ffffff')
     body += f'<g transform="translate(0,-11)" opacity=".3" fill="none" stroke="#ffffff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">{symbol}</g>'
-    body += f'<text x="34.5" y="44" text-anchor="middle" font-family="HarmonyOS Sans SC,Arial,sans-serif" font-size="{12 if len(label)>3 else 14}" font-weight="600" fill="#ffffff">{escape(label)}</text>'
+    # Keep short format labels legible at shelf-icon sizes while leaving
+    # enough horizontal space for longer codec names such as H.264 / H.265.
+    length=len(label)
+    font_size=16 if length<=3 else 14 if length==4 else 13 if length==5 else 11 if length==6 else 9
+    body += f'<text x="34.5" y="44" text-anchor="middle" font-family="JetBrains Mono" font-size="{font_size}" font-weight="500" fill="#ffffff">{escape(label)}</text>'
     return _svg(body,'0 0 64 64')
 
 
-def document_pixmap(text: str = '', size: int = 90, stack: int = 1, dpr: float | None = None) -> QPixmap:
+def document_pixmap(text: str = '', size: int = 90, stack: int = 1, dpr: float | None = None, *, display_text: str | None = None) -> QPixmap:
     """Return exactly ``size`` logical pixels; artwork has a consistent inset."""
-    return _render_svg(document_svg(text,stack), size, dpr)
+    return _render_svg(document_svg(text,stack,display_text=display_text), size, dpr)
 
 
 def _alpha_bounds(pm: QPixmap) -> QRectF | None:
@@ -313,7 +334,8 @@ def export_svg_family(directory: str | Path) -> None:
     """Write the actual original vector sources for design review/source delivery."""
     directory = Path(directory); directory.mkdir(parents=True,exist_ok=True)
     for name in _GLYPHS:
-        (directory/f'control-{name}.svg').write_text(glyph_svg(name),encoding='utf-8')
+        accent = '#1876db' if name in ('nearby','file-up','cloud') else '#6e7078'
+        (directory/f'control-{name}.svg').write_text(glyph_svg(name,accent),encoding='utf-8')
     for name in (*_CATEGORY_SYMBOLS,'folder'):
         (directory/f'content-{name}.svg').write_text(document_svg(name),encoding='utf-8')
     for name in _FORMAT_COLORS:

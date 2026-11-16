@@ -17,8 +17,8 @@ from PySide6.QtWidgets import QApplication
 import app_settings as subject
 
 app = QApplication([])
-assert QFontDatabase.addApplicationFont(str(Path(__file__).with_name('fonts')/'HarmonyOS_Sans_SC_Regular.ttf')) >= 0
-app.setFont(QFont('HarmonyOS Sans SC', 11))
+from native_ui_common import configure_reference_font
+configure_reference_font(app)
 
 
 def flush():
@@ -27,7 +27,8 @@ def flush():
 
 
 def assert_centered_cross(button, dark):
-    assert button.size().width() == button.size().height() == 40
+    if getattr(button,'role',None)=='close':assert button.size().toTuple()==(44,32)
+    else:assert button.size().width() == button.size().height() == 28
     assert button.glyph_rect.size().width() == button.glyph_rect.size().height() == 14
     assert button.glyph_rect.center() == QRectF(button.rect()).center()
     image = button.grab().toImage()
@@ -48,6 +49,14 @@ def assert_centered_cross(button, dark):
     assert 9*ratio <= bottom-top+1 <= 14*ratio+1
 
 
+def keyboard_focus_pixels(button):
+    image = button.grab().toImage()
+    return sum(image.pixelColor(x, y).alpha()>30 and
+               image.pixelColor(x, y).blue()-image.pixelColor(x, y).red()>40 and
+               image.pixelColor(x, y).blue()-image.pixelColor(x, y).green()>20
+               for y in range(image.height()) for x in range(image.width()))
+
+
 with tempfile.TemporaryDirectory(prefix='flickdock-settings-chrome-v164-') as temporary, \
      patch.object(subject, '_read_startup_value') as read_registry, \
      patch.object(subject, '_write_startup_value') as write_registry, \
@@ -61,7 +70,10 @@ with tempfile.TemporaryDirectory(prefix='flickdock-settings-chrome-v164-') as te
     assert flags & Qt.WindowType.FramelessWindowHint
     assert not flags & Qt.WindowType.WindowCloseButtonHint
     assert not flags & Qt.WindowType.WindowTitleHint
-    assert flags & Qt.WindowType.Tool
+    assert flags & Qt.WindowType.WindowType_Mask == Qt.WindowType.Dialog
+    assert not flags & Qt.WindowType.WindowStaysOnTopHint
+    assert dialog.theme_combo.view().sizeHintForRow(0) >= 38
+    assert not dialog.close_button.testAttribute(Qt.WidgetAttribute.WA_MacShowFocusRect)
     assert dialog.windowTitle() == 'FlickDock 设置' and not dialog.isModal()
     assert dialog.close_button.accessibleName() == '关闭设置'
     assert not dialog.close_button.autoDefault() and not dialog.close_button.isDefault()
@@ -70,20 +82,47 @@ with tempfile.TemporaryDirectory(prefix='flickdock-settings-chrome-v164-') as te
     render_dir = os.getenv('FLICKDOCK_SETTINGS_CHROME_RENDER_DIR')
     if render_dir: Path(render_dir).mkdir(parents=True, exist_ok=True)
     for theme in ('light', 'dark'):
-        for height in (520, 680):
-            dialog.show(); dialog.resize(560, height); flush()
+        for height in (632, 712):
+            dialog.show(); dialog.resize(892, height); flush()
             dialog.theme_combo.setCurrentIndex(dialog.theme_combo.findData(theme))
             dialog.save_button.setFocus(); flush()
-            assert dialog.title_bar.height() == 40
+            assert dialog.title_bar.height() == 55
             assert dialog.title_bar.rect().contains(dialog.close_button.geometry())
             assert dialog.rect().contains(dialog.save_button.geometry())
             assert dialog.rect().contains(dialog.cancel_button.geometry())
             assert dialog.scroll.verticalScrollBar().maximum()>0
             assert dialog.scroll.y() >= dialog.title_bar.geometry().bottom()
             assert_centered_cross(dialog.close_button, theme=='dark')
-            if render_dir and height==680:
+            first_card = dialog.body_layout.itemAt(0).widget()
+            assert first_card.geometry().left() >= 3
+            assert first_card.geometry().right() <= dialog.body.width()-4
+            # Appearance is a source segmented control. Exercise the actual
+            # visible storage-mode dropdown, which retains native option UI.
+            combo=dialog.capture_mode_combo
+            dialog.scroll.ensureWidgetVisible(combo);flush()
+            combo.showPopup(); flush()
+            option_view = combo.view()
+            assert option_view.isVisible()
+            for row in range(combo.count()):
+                item_rect = option_view.visualRect(combo.model().index(row, 0))
+                assert option_view.viewport().rect().contains(item_rect), (theme, row, item_rect)
+            if theme == 'dark':
+                popup_image = option_view.window().grab().toImage()
+                middle = popup_image.width()//2
+                inset = max(3, round(4*popup_image.devicePixelRatio()))
+                for y in (inset, popup_image.height()-inset-1):
+                    pixel = popup_image.pixelColor(middle, y)
+                    assert max(pixel.red(), pixel.green(), pixel.blue()) < 130, (y, pixel)
+            if render_dir and height==712:
+                option_view.window().grab().save(str(Path(render_dir)/f'appearance-options-{theme}-{os.environ["QT_SCALE_FACTOR"]}.png'))
+            combo.hidePopup(); flush()
+            if render_dir and height==712:
                 dialog.grab().save(str(Path(render_dir)/f'settings-chrome-{theme}-{os.environ["QT_SCALE_FACTOR"]}.png'))
             # The target's corner is clickable, independently of the cross ink.
+            unfocused_blue = keyboard_focus_pixels(dialog.close_button)
+            dialog.close_button.setFocus(Qt.FocusReason.TabFocusReason); flush()
+            assert dialog.close_button._keyboard_focus
+            assert keyboard_focus_pixels(dialog.close_button) > unfocused_blue + 12
             dialog.dock_position_spin.setValue(61)
             dialog.capture_mode_combo.setCurrentIndex(dialog.capture_mode_combo.findData('copy'))
             dialog.keep_empty_handle_checkbox.setChecked(True)
@@ -91,6 +130,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-settings-chrome-v164-') as te
             assert previews[-1]['dock_position']==61
             QTest.mouseClick(dialog.close_button, Qt.MouseButton.LeftButton, pos=QPoint(2, 2))
             flush()
+            assert not dialog.close_button._keyboard_focus
             assert not dialog.isVisible() and dialog.result()==dialog.DialogCode.Rejected
             assert previews[-1] is None and store.path.read_bytes()==saved
             dialog.show(); flush()
@@ -99,7 +139,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-settings-chrome-v164-') as te
             assert not dialog.keep_empty_handle_checkbox.isChecked()
             assert dialog.shake_sensitivity_spin.value()==50
             dialog.reject(); flush()
-    print('PASS light/dark centered 14px SVG in 40px target, frameless flags, scrolling and close rollback at DPI', os.environ['QT_SCALE_FACTOR'])
+    print('PASS light/dark centered 14px SVG in source 28px target, frameless flags, scrolling and close rollback at DPI', os.environ['QT_SCALE_FACTOR'])
 
     dialog.show(); flush()
     before = QPoint(dialog.pos())
@@ -145,12 +185,17 @@ with tempfile.TemporaryDirectory(prefix='flickdock-settings-chrome-v164-') as te
     assert loaded.dock_position==49 and previews[-1] is None
     assert json.loads(store.path.read_text(encoding='utf8'))['dock_position']==49
 
-    for other in (subject.AuthorDialog(dialog), subject.ThirdPartyDialog(dialog)):
-        assert other.windowFlags() & Qt.WindowType.WindowCloseButtonHint
-        assert not other.windowFlags() & Qt.WindowType.FramelessWindowHint
-        other.deleteLater()
+    author=subject.AuthorDialog(dialog)
+    assert author.windowFlags() & Qt.WindowType.FramelessWindowHint
+    assert author.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    assert author.surface.width()==400
+    author.deleteLater()
+    licenses=subject.ThirdPartyDialog(dialog)
+    assert licenses.windowFlags() & Qt.WindowType.WindowCloseButtonHint
+    assert not licenses.windowFlags() & Qt.WindowType.FramelessWindowHint
+    licenses.deleteLater()
     read_registry.assert_not_called(); write_registry.assert_not_called()
     dialog.deleteLater(); flush()
-    print('PASS Save retains all v1.6.3 fields; Author/licenses retain native window chrome; no registry I/O')
+    print('PASS Save retains all v1.6.3 fields; rounded source About and native license reader remain accessible; no registry I/O')
 
 print('SETTINGS_CHROME_V164_OK')

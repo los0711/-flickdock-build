@@ -59,7 +59,7 @@ class MacNativeEntry(unittest.TestCase):
             with patch.object(runtime_media.sys,'platform','darwin'):importlib.reload(runtime_media)
             self.assertEqual(os.environ['QT_MEDIA_BACKEND'],'darwin')
             with patch.object(runtime_media.sys,'platform','win32'):importlib.reload(runtime_media)
-            self.assertEqual(os.environ['QT_MEDIA_BACKEND'],'windows')
+            self.assertEqual(os.environ['QT_MEDIA_BACKEND'],'ffmpeg')
 
 
 if __name__=='__main__':unittest.main(verbosity=2)

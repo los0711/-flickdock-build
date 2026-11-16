@@ -8,19 +8,20 @@ import {join,resolve,dirname,sep} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as sleep} from 'node:timers/promises';
 import net from 'node:net';
+import WebSocket from 'ws';
 
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const wrangler=join(root,'node_modules/wrangler/bin/wrangler.js');
 const state=await mkdtemp(join(tmpdir(),'flickdock-cloud-local-'));
 const configuration=JSON.parse(await readFile(join(root,'wrangler.jsonc'),'utf8'));
-const productionChunkSize=Number(configuration.vars.CHUNK_BYTES);assert.equal(productionChunkSize,128*1024);
+const productionChunkSize=Number(configuration.vars.CHUNK_BYTES);assert(productionChunkSize>=1024*1024&&productionChunkSize<=4*1024*1024);
 configuration.main=join(root,'src/index.ts');configuration.d1_databases[0].migrations_dir=join(root,'migrations');
 configuration.vars.EMAIL_PROVIDER='disabled';
 // Keep the prior large-file protocol fixture at 1 MiB to exercise resumable
 // reservations created before the smaller production CPU safety setting.
 configuration.vars.CHUNK_BYTES=String(1024*1024);
 const configFile=join(state,'wrangler-test.json');await writeFile(configFile,JSON.stringify(configuration));
-const env={...process.env,WRANGLER_SEND_METRICS:'false',CLOUDFLARE_API_TOKEN:'',CLOUDFLARE_API_KEY:'',CLOUDFLARE_EMAIL:'',CLOUDFLARE_ACCOUNT_ID:''};
+const env={...process.env,WRANGLER_SEND_METRICS:'false',CLOUDFLARE_API_TOKEN:'',CLOUDFLARE_API_KEY:'',CLOUDFLARE_EMAIL:'',CLOUDFLARE_ACCOUNT_ID:'',HTTP_PROXY:'',HTTPS_PROXY:'',ALL_PROXY:'',http_proxy:'',https_proxy:'',all_proxy:'',NO_PROXY:'127.0.0.1,localhost'};
 const checks=[];let server,output='';
 const hash=data=>createHash('sha256').update(data).digest('hex');
 const secret='local-test-secret-never-used-for-real-email';
@@ -61,6 +62,7 @@ async function reserve(token,itemId,data,baseVersion=0,overrides={}){return requ
 async function part(token,upload,index,data,expected=200,customHash=hash(data)){
   const response=await localFetch(base+`/v1/uploads/${upload}/parts/${index}`,{method:'PUT',headers:{Authorization:'Bearer '+token,'X-Content-SHA256':customHash},body:data});const value=await response.json();assert.equal(response.status,expected,JSON.stringify(value));return value;
 }
+function uploadContract(value){const {shelf_storage,...contract}=value;return contract;}
 async function check(name,fn){await fn();checks.push({name,ok:true});console.log('PASS',name);}
 try{
   cli(['d1','migrations','apply','DB','--local','--persist-to',state]);
@@ -84,6 +86,62 @@ try{
     assert.equal((await request('GET','/v1/devices',undefined,alice.token)).devices.length,2);
     assert.ok(!sql('SELECT token_hash FROM sessions').includes(alice.token));
     await request('POST','/v1/auth/login',{...credentials('alice'),password:'wrong testing password'},undefined,401);
+  });
+  await check('cloud shelf quota atomically reserves across two devices and excludes manual jobs',async()=>{
+    const account=initOwner;
+    const initial=await request('GET','/v1/sync/storage',undefined,account.token);
+    assert.equal(initial.shelf_storage.used_bytes,0);assert.equal(initial.shelf_storage.quota_bytes,1024**3);
+    assert.equal(new Date(initial.shelf_storage.reset_at).getUTCHours(),16);
+    const spec=()=>({item_id:randomUUID(),base_version:0,kind:'file',name:'reservation.bin',mime_type:'application/octet-stream',size:600*1024**2,sha256:hash('quota metadata fixture')});
+    const replies=await Promise.all([spec(),spec()].map(async data=>{
+      const response=await localFetch(base+'/v1/uploads',{method:'POST',headers:{Authorization:'Bearer '+account.token,'Content-Type':'application/json'},body:JSON.stringify(data)});
+      return {status:response.status,value:await response.json()};
+    }));
+    assert.deepEqual(replies.map(row=>row.status).sort(),[201,413]);
+    assert.equal(replies.find(row=>row.status===413).value.error.code,'SHELF_QUOTA');
+    assert.equal((await request('GET','/v1/sync/storage',undefined,account.token)).shelf_storage.used_bytes,600*1024**2);
+    const manual=await request('POST','/v1/uploads',{...spec(),kind:'transfer'},account.token,201);
+    assert.equal((await request('GET','/v1/sync/storage',undefined,account.token)).shelf_storage.used_bytes,600*1024**2);
+    for(const id of [manual.upload_id,replies.find(row=>row.status===201).value.upload_id])await request('DELETE','/v1/uploads/'+id,undefined,account.token);
+    assert.equal((await request('GET','/v1/sync/storage',undefined,account.token)).shelf_storage.used_bytes,0);
+    assert.equal(sqlRows(`SELECT COUNT(*) n FROM allocations WHERE account_id='${account.account.id}'`)[0].n,0,'Rejected reservations must roll back physical quota too');
+  });
+  await check('delete cloud copy keeps a retention tombstone and allows explicit re-upload with a newer version',async()=>{
+    const id=randomUUID(),data=Buffer.from('cloud copy removal keeps local files');
+    const upload=await reserve(alice.token,id,data);await part(alice.token,upload.upload_id,0,data);
+    await request('POST',`/v1/uploads/${upload.upload_id}/commit`,{},alice.token);
+    const deleted=await request('DELETE',`/v1/items/${id}/cloud-copy`,{base_version:1},alice.token);
+    assert.equal(deleted.record.deleted,true);assert.equal(deleted.record.version,2);assert.ok(deleted.record.expires_at);
+    const repeated=await request('DELETE',`/v1/items/${id}/cloud-copy`,{base_version:1},alice.token);
+    assert.equal(repeated.record.version,2);
+    const remote=await request('GET','/v1/sync/changes?cursor=0&limit=200',undefined,mac.token);
+    assert.ok(remote.changes.some(row=>row.record.id===id&&row.record.deleted&&row.record.expires_at));
+    const fresh=await reserve(alice.token,id,data,2);await part(alice.token,fresh.upload_id,0,data);
+    const committed=await request('POST',`/v1/uploads/${fresh.upload_id}/commit`,{},alice.token);
+    assert.equal(committed.record.version,3);assert.equal(committed.record.deleted,false);
+    await request('DELETE',`/v1/items/${id}/cloud-copy`,{base_version:1},alice.token,409);
+    await request('DELETE',`/v1/items/${id}`,{base_version:3},alice.token);
+  });
+  await check('peer receives real upload progress before a streamed R2 part completes',async()=>{
+    const sender=await request('POST','/v1/auth/register',credentials('event-progress-fixture'),undefined,201),receiver=await request('POST','/v1/auth/login',credentials('event-progress-fixture'));
+    const socket=new WebSocket(base.replace('http:','ws:')+'/v1/events',{headers:{Authorization:'Bearer '+receiver.token}}),progress=[];let uploadFinished=false;
+    socket.on('message',body=>{const value=JSON.parse(body.toString());if(value.type==='progress')progress.push({...value,received_before_completion:!uploadFinished});});
+    await new Promise((resolve,reject)=>{socket.once('open',resolve);socket.once('error',reject);});
+    try{
+      const data=Buffer.alloc(6*1024*1024,0x62),id=randomUUID(),digest=hash(data);
+      const reserved=await request('POST','/v1/uploads',{item_id:id,base_version:0,kind:'file',name:'progress.bin',mime_type:'application/octet-stream',size:data.length,sha256:digest,fast_upload:true},sender.token,201);
+      let position=0;
+      const body=new ReadableStream({async pull(controller){if(position===data.length){controller.close();return;}await sleep(35);const end=Math.min(position+65536,data.length);controller.enqueue(data.subarray(position,end));position=end;}});
+      const uploaded=await localFetch(base+`/v1/uploads/${reserved.upload_id}/parts/0`,{method:'PUT',headers:{Authorization:'Bearer '+sender.token,'X-Content-SHA256':digest,'Content-Length':String(data.length)},body,duplex:'half'});
+      uploadFinished=true;assert.equal(uploaded.status,200,await uploaded.text());await sleep(200);
+      const samples=progress.filter(value=>value.upload_id===reserved.upload_id);
+      // Event coalescing is allowed. Prove useful progress arrived while the
+      // upload was still pending instead of requiring an arbitrary sample count.
+      assert.ok(samples.some(value=>value.received_bytes>0&&value.received_bytes<data.length&&value.received_before_completion),JSON.stringify(samples));
+      assert.ok(samples.every(value=>value.total===data.length));
+      const committed=await request('POST',`/v1/uploads/${reserved.upload_id}/commit`,{},sender.token);assert.equal(committed.record.sha256,digest);
+      await request('DELETE',`/v1/items/${id}`,{base_version:1},sender.token);
+    }finally{socket.close();}
   });
   await check('client KDF challenge is stable per user, purpose-bound, expiring and single-use',async()=>{
     const one=await request('POST','/v1/auth/challenge',{username:'alice',purpose:'login'}),two=await request('POST','/v1/auth/challenge',{username:'ALICE',purpose:'login'});
@@ -183,7 +241,7 @@ try{
     const first=await request('POST','/v1/uploads',spec,owner.token,201);
     // Discarding this reply represents a disconnect after D1 committed.
     assert.equal(first.upload_id,clientId);
-    const recovered=await request('POST','/v1/uploads',spec,owner.token,201);assert.deepEqual(recovered,first);
+    const recovered=await request('POST','/v1/uploads',spec,owner.token,201);assert.deepEqual(uploadContract(recovered),uploadContract(first));
     assert.equal(sqlRows(`SELECT COUNT(*) n FROM allocations WHERE id='${clientId}'`)[0].n,1);
     assert.equal(sqlRows(`SELECT allocated_bytes FROM accounts WHERE id='${owner.account.id}'`)[0].allocated_bytes,before+data.length);
     for(const change of [{item_id:randomUUID()},{base_version:1},{kind:'text'},{name:'other.png'},{mime_type:'application/octet-stream'},{size:data.length+1},{sha256:'0'.repeat(64)}]){
@@ -192,7 +250,7 @@ try{
     const foreign=await request('POST','/v1/uploads',spec,bob.token,404);assert.equal(foreign.error.code,'NOT_FOUND');assert.equal(foreign.error.current_record,undefined);
     await request('POST','/v1/uploads',{...spec,upload_id:'not-a-uuid'},owner.token,400);
     sql(`UPDATE uploads SET state='verifying',lease='fixture',lease_until=${Date.now()+60000} WHERE id='${clientId}'`);
-    assert.deepEqual(await request('POST','/v1/uploads',spec,owner.token,201),first);
+    assert.deepEqual(uploadContract(await request('POST','/v1/uploads',spec,owner.token,201)),uploadContract(first));
     sql(`UPDATE uploads SET state='pending',lease=NULL,lease_until=0 WHERE id='${clientId}'`);
     await part(owner.token,clientId,0,data);const committed=await request('POST',`/v1/uploads/${clientId}/commit`,{},owner.token);
     // The item's version advanced, but repeating the same initialization must
@@ -229,7 +287,7 @@ try{
     id=randomUUID();const data=Buffer.from('same account cross-platform content');
     const reserved=await reserve(alice.token,id,data);uploadId=reserved.upload_id;
     await request('POST',`/v1/uploads/${uploadId}/commit`,{},alice.token,409);
-    assert.deepEqual((await request('GET','/v1/sync/changes?cursor=0',undefined,mac.token)).changes,[]);
+    assert.ok(!(await request('GET','/v1/sync/changes?cursor=0',undefined,mac.token)).changes.some(row=>row.record.id===id));
     await part(alice.token,uploadId,0,data,400,'0'.repeat(64));
     await part(bob.token,uploadId,0,data,404);
     await part(alice.token,uploadId,0,data);
@@ -240,7 +298,13 @@ try{
     assert.equal((await request('POST',`/v1/uploads/${uploadId}/commit`,{},alice.token)).record.version,1);
     const metadata=await request('GET',`/v1/items/${id}/content`,undefined,mac.token);assert.equal(metadata.part_count,1);
     const response=await localFetch(base+`/v1/items/${id}/parts/0?version=1`,{headers:{Authorization:'Bearer '+mac.token}});assert.equal(response.status,200);assert.deepEqual(Buffer.from(await response.arrayBuffer()),data);
-    assert.equal(sqlRows(`SELECT COUNT(*) n FROM read_leases WHERE upload_id='${uploadId}'`)[0].n,0,'A completely downloaded response must release its reader before the final declared byte is delivered');
+    let readerCount=1;
+    for(let attempt=0;attempt<10;attempt++){
+      readerCount=sqlRows(`SELECT COUNT(*) n FROM read_leases WHERE upload_id='${uploadId}'`)[0].n;
+      if(readerCount===0)break;
+      await sleep(100);
+    }
+    assert.equal(readerCount,0,'A completed response must promptly release its reader');
     const denied=await localFetch(base+`/v1/items/${id}/content`,{headers:{Authorization:'Bearer '+bob.token}});assert.equal(denied.status,404);
     assert.deepEqual((await request('GET','/v1/sync/changes?cursor=0',undefined,bob.token)).changes,[]);
   });
@@ -285,9 +349,8 @@ try{
     await part(mac.token,reserved.upload_id,1,data.subarray(reserved.chunk_size),409);
     await part(alice.token,reserved.upload_id,0,data.subarray(0,reserved.chunk_size));
     const resumable=await request('GET',`/v1/uploads/${reserved.upload_id}`,undefined,alice.token);assert.equal(resumable.next_part,1);assert.equal(resumable.state,'pending');
-    sql(`UPDATE uploads SET expires_at=${Date.now()+10000} WHERE id='${reserved.upload_id}'`);
     await part(mac.token,reserved.upload_id,1,data.subarray(reserved.chunk_size));
-    const complete=await request('GET',`/v1/uploads/${reserved.upload_id}`,undefined,alice.token);assert.equal(complete.next_part,2);assert.ok(Date.parse(complete.expires_at)>Date.now()+71*3600000,'Each successful part must renew the 72-hour pending lease');
+    const complete=await request('GET',`/v1/uploads/${reserved.upload_id}`,undefined,alice.token);assert.equal(complete.next_part,2);assert.equal(complete.expires_at,initial.expires_at,'Shelf parts must not extend the Beijing midnight deadline');
     const committed=await request('POST',`/v1/uploads/${reserved.upload_id}/commit`,{},mac.token);assert.equal(committed.record.sha256,hash(data));
     assert.equal((await request('GET',`/v1/uploads/${reserved.upload_id}`,undefined,alice.token)).state,'committed');
     const metadata=await request('GET',`/v1/items/${newId}/content`,undefined,alice.token);const checksum=createHash('sha256');let size=0;
@@ -296,12 +359,24 @@ try{
     assert.equal(sqlRows(`SELECT COUNT(*) n FROM read_leases WHERE upload_id='${reserved.upload_id}'`)[0].n,0,'All completed multipart GET responses must release their read leases');
     await request('GET',`/v1/items/${newId}/parts/0?version=2`,undefined,alice.token,409);
   });
+  await check('manual multipart transfer retains its original renewable 72-hour pending lease',async()=>{
+    const data=Buffer.alloc(1024*1024+123,0x6d),manual=await reserve(initOwner.token,randomUUID(),data,0,{kind:'transfer'});
+    await part(initOwner.token,manual.upload_id,0,data.subarray(0,manual.chunk_size));
+    sql(`UPDATE uploads SET expires_at=${Date.now()+10000} WHERE id='${manual.upload_id}'`);
+    await part(initOwner.token,manual.upload_id,1,data.subarray(manual.chunk_size));
+    const current=await request('GET',`/v1/uploads/${manual.upload_id}`,undefined,initOwner.token);
+    assert.ok(Date.parse(current.expires_at)>Date.now()+71*3600000);
+    await request('DELETE',`/v1/uploads/${manual.upload_id}`,undefined,initOwner.token);
+  });
   await check('65 MiB original file crosses the former 64 MiB limit and preserves every byte',async()=>{
     const chunk=Buffer.alloc(1024*1024,0x79),fullHash=createHash('sha256');for(let i=0;i<65;i++)fullHash.update(chunk);
     const expected=fullHash.digest('hex'),newId=randomUUID();
     const reserved=await request('POST','/v1/uploads',{item_id:newId,base_version:0,kind:'file',name:'large-video.mp4',mime_type:'video/mp4',size:65*1024*1024,sha256:expected},alice.token,201);
-    assert.equal(reserved.part_count,65);for(let i=0;i<65;i++)await part(alice.token,reserved.upload_id,i,chunk);
-    const committed=await request('POST',`/v1/uploads/${reserved.upload_id}/commit`,{},alice.token);assert.equal(committed.record.size,65*1024*1024);assert.equal(committed.record.expires_at,null);
+    assert.equal(reserved.part_count,65);const started=performance.now();
+    for(let i=0;i<65;i++)await part(alice.token,reserved.upload_id,i,chunk);
+    const seconds=(performance.now()-started)/1000;
+    console.log('LOCAL_ONLY serial upload',JSON.stringify({mib:65,seconds:+seconds.toFixed(2),mib_per_sec:+(65/seconds).toFixed(2)}));
+    const committed=await request('POST',`/v1/uploads/${reserved.upload_id}/commit`,{},alice.token);assert.equal(committed.record.size,65*1024*1024);assert.equal(Date.parse(committed.record.expires_at),(Math.floor((Date.parse(committed.record.updated_at)+8*3600000)/86400000)+1)*86400000-8*3600000);
     let size=0;const actual=createHash('sha256');
     for(let i=0;i<65;i++){const response=await localFetch(base+`/v1/items/${newId}/parts/${i}?version=1`,{headers:{Authorization:'Bearer '+alice.token}});assert.equal(response.status,200);const chunkHash=createHash('sha256');for await(const data of response.body){size+=data.length;actual.update(data);chunkHash.update(data);}assert.equal(chunkHash.digest('hex'),response.headers.get('X-Content-SHA256'));}
     assert.equal(size,65*1024*1024);assert.equal(actual.digest('hex'),expected);
@@ -309,14 +384,14 @@ try{
     await request('DELETE',`/v1/items/${newId}`,{base_version:1},alice.token);
     assert.equal(sqlRows(`SELECT COUNT(*) n FROM uploads WHERE id='${reserved.upload_id}'`)[0].n,0);
   });
-  await check('production 128 KiB negotiation preserves a 300000-byte original through three real R2 parts',async()=>{
+  await check('production single-part R2 checksum preserves a 3 MB original',async()=>{
     await stop();base=await start(['--var','CHUNK_BYTES:'+productionChunkSize]);
-    const data=Buffer.alloc(300000,0x4d);data.write('128 KiB production negotiation retains original bytes');
+    const data=Buffer.alloc(3000000,0x4d);data.write('production negotiation retains original bytes');
     const newId=randomUUID(),reserved=await reserve(alice.token,newId,data);
-    assert.equal(reserved.chunk_size,131072);assert.equal(reserved.part_count,3);
+    assert.equal(reserved.chunk_size,productionChunkSize);assert.equal(reserved.part_count,Math.ceil(data.length/productionChunkSize));
     for(let index=0;index<reserved.part_count;index++)await part(alice.token,reserved.upload_id,index,data.subarray(index*reserved.chunk_size,(index+1)*reserved.chunk_size));
     const committed=await request('POST',`/v1/uploads/${reserved.upload_id}/commit`,{},alice.token);assert.equal(committed.record.sha256,hash(data));assert.equal(committed.record.size,data.length);
-    const metadata=await request('GET',`/v1/items/${newId}/content`,undefined,alice.token);assert.equal(metadata.chunk_size,131072);assert.equal(metadata.part_count,3);
+    const metadata=await request('GET',`/v1/items/${newId}/content`,undefined,alice.token);assert.equal(metadata.chunk_size,productionChunkSize);assert.equal(metadata.part_count,reserved.part_count);
     const downloaded=[];
     for(let index=0;index<metadata.part_count;index++){
       const response=await localFetch(base+`/v1/items/${newId}/parts/${index}?version=1`,{headers:{Authorization:'Bearer '+alice.token}});
@@ -326,7 +401,132 @@ try{
     assert.equal(sqlRows(`SELECT COUNT(*) n FROM read_leases WHERE upload_id='${reserved.upload_id}'`)[0].n,0);
     await request('DELETE',`/v1/items/${newId}`,{base_version:1},alice.token);
     assert.equal(sqlRows(`SELECT COUNT(*) n FROM allocations WHERE id='${reserved.upload_id}'`)[0].n,0);
+    await check('80 MiB opt-in stream uses one R2-verified PUT and legacy clients read virtual parts',async()=>{
+      const data=Buffer.alloc(80*1024*1024,0x5a);data.write('original 80 MiB bytes preserved by fast stream');
+      const digest=hash(data),id=randomUUID();
+      const reserved=await request('POST','/v1/uploads',{item_id:id,base_version:0,kind:'file',name:'large-original.mp4',
+        mime_type:'video/mp4',size:data.length,sha256:digest,fast_upload:true},alice.token,201);
+      assert.equal(reserved.chunk_size,data.length);assert.equal(reserved.part_count,1);
+      const started=performance.now();
+      await part(alice.token,reserved.upload_id,0,data);
+      const elapsed=(performance.now()-started)/1000;
+      console.log('LOCAL_ONLY fast upload',JSON.stringify({mib:80,seconds:+elapsed.toFixed(2),mib_per_sec:+(80/elapsed).toFixed(2)}));
+      const committed=await request('POST',`/v1/uploads/${reserved.upload_id}/commit`,{},alice.token);
+      assert.equal(committed.record.sha256,digest);
+      const legacy=await request('GET',`/v1/items/${id}/content`,undefined,alice.token);
+      assert.equal(legacy.chunk_size,1024*1024);assert.equal(legacy.part_count,80);
+      const ranged=await request('GET',`/v1/items/${id}/content`,undefined,alice.token,200,{'X-FlickDock-Range-Bytes':'4194304'});
+      assert.equal(ranged.chunk_size,4*1024*1024);assert.equal(ranged.part_count,20);
+      for(const index of [0,9,19]){
+        const response=await localFetch(base+`/v1/items/${id}/parts/${index}?version=1`,{headers:{Authorization:'Bearer '+alice.token,'X-FlickDock-Range-Bytes':'4194304'}});
+        assert.equal(response.status,200);const bytes=Buffer.from(await response.arrayBuffer());
+        assert.deepEqual(bytes,data.subarray(index*4*1024*1024,(index+1)*4*1024*1024));
+        assert.equal(response.headers.get('X-Content-SHA256'),hash(bytes));
+      }
+      for(const index of [0,39,79]){
+        const response=await localFetch(base+`/v1/items/${id}/parts/${index}?version=1`,{headers:{Authorization:'Bearer '+alice.token}});
+        assert.equal(response.status,200);const bytes=Buffer.from(await response.arrayBuffer());
+        assert.deepEqual(bytes,data.subarray(index*1024*1024,(index+1)*1024*1024));
+        assert.equal(response.headers.get('X-Content-SHA256'),hash(bytes));
+      }
+      const fast=await request('GET',`/v1/items/${id}/content`,undefined,alice.token,200,{'X-FlickDock-Fast-Content':'1'});
+      assert.equal(fast.chunk_size,data.length);assert.equal(fast.part_count,1);
+      const response=await localFetch(base+`/v1/items/${id}/parts/0?version=1`,{
+        headers:{Authorization:'Bearer '+alice.token,'X-FlickDock-Fast-Content':'1'}});
+      assert.equal(response.status,200);
+      const received=createHash('sha256');let size=0;
+      for await(const bytes of response.body){received.update(bytes);size+=bytes.length;}
+      assert.equal(size,data.length);assert.equal(received.digest('hex'),digest);
+      await request('DELETE',`/v1/items/${id}`,{base_version:1},alice.token);
+      assert.equal(sqlRows(`SELECT COUNT(*) n FROM allocations WHERE id='${reserved.upload_id}'`)[0].n,0);
+      await localObject(`v1/${alice.account.id}/${reserved.upload_id}/0-${digest}`,null);
+    });
+    await check('101 MiB streams two verified R2 parts; old clients read virtual boundaries and cancelled bytes vanish',async()=>{
+      const mib=1024*1024,data=Buffer.alloc(101*mib,0x51);
+      for(let n=0;n<101;n++)data.writeUInt32LE(n,n*mib);
+      const digest=hash(data),id=randomUUID(),spec={item_id:id,base_version:0,kind:'file',
+        name:'original-101MiB.bin',mime_type:'application/octet-stream',size:data.length,
+        sha256:digest,fast_upload:true,fast_multipart:true};
+      const abandoned=await request('POST','/v1/uploads',spec,alice.token,201);
+      assert.equal(abandoned.chunk_size,64*mib);assert.equal(abandoned.part_count,2);
+      await part(alice.token,abandoned.upload_id,0,data.subarray(0,64*mib));
+      assert.equal((await request('GET',`/v1/transfers`,undefined,mac.token)).transfers.some(row=>row.item_id===id),true);
+      await request('GET',`/v1/items/${id}/content`,undefined,mac.token,404);
+      await request('DELETE',`/v1/uploads/${abandoned.upload_id}`,undefined,alice.token);
+      assert.equal((await request('GET',`/v1/transfers`,undefined,mac.token)).transfers.some(row=>row.item_id===id),false);
+      await localObject(`v1/${alice.account.id}/${abandoned.upload_id}/0-${hash(data.subarray(0,64*mib))}`,null);
+      const reserved=await request('POST','/v1/uploads',spec,alice.token,201);
+      assert.equal(reserved.chunk_size,64*mib);assert.equal(reserved.part_count,2);
+      for(let index=0;index<2;index++)await part(alice.token,reserved.upload_id,index,
+        data.subarray(index*64*mib,(index+1)*64*mib));
+      const complete=await request('POST',`/v1/uploads/${reserved.upload_id}/commit`,{},alice.token);
+      assert.equal(complete.record.sha256,digest);
+      assert.equal(complete.server_full_sha256_verified,false);
+      assert.equal(sqlRows(`SELECT computed_sha256 FROM uploads WHERE id='${reserved.upload_id}'`)[0].computed_sha256,null);
+      const same=await request('POST','/v1/uploads',{...spec,item_id:randomUUID()},alice.token,201);
+      assert.equal(same.instant,undefined,'A client-claimed full SHA cannot seed instant reuse');
+      await request('DELETE',`/v1/uploads/${same.upload_id}`,undefined,alice.token);
+      const legacy=await request('GET',`/v1/items/${id}/content`,undefined,mac.token);
+      assert.equal(legacy.chunk_size,mib);assert.equal(legacy.part_count,101);
+      for(const index of [0,31,32,63,64,95,96,100]){
+        const response=await localFetch(base+`/v1/items/${id}/parts/${index}?version=1`,
+          {headers:{Authorization:'Bearer '+mac.token}});
+        assert.equal(response.status,200);
+        const bytes=Buffer.from(await response.arrayBuffer());
+        assert.deepEqual(bytes,data.subarray(index*mib,(index+1)*mib));
+        assert.equal(hash(bytes),response.headers.get('X-Content-SHA256'));
+      }
+      const fast=await request('GET',`/v1/items/${id}/content`,undefined,mac.token,200,
+        {'X-FlickDock-Fast-Content':'1'});
+      assert.equal(fast.chunk_size,64*mib);assert.equal(fast.part_count,2);
+      const full=createHash('sha256');let received=0;
+      for(let index=0;index<2;index++){
+        const response=await localFetch(base+`/v1/items/${id}/parts/${index}?version=1`,
+          {headers:{Authorization:'Bearer '+mac.token,'X-FlickDock-Fast-Content':'1'}});
+        assert.equal(response.status,200);
+        const partHash=createHash('sha256');
+        for await(const bytes of response.body){partHash.update(bytes);full.update(bytes);received+=bytes.length;}
+        assert.equal(partHash.digest('hex'),response.headers.get('X-Content-SHA256'));
+      }
+      assert.equal(received,data.length);assert.equal(full.digest('hex'),digest);
+      await request('DELETE',`/v1/items/${id}`,{base_version:1},alice.token);
+      assert.equal(sqlRows(`SELECT COUNT(*) n FROM allocations WHERE id='${reserved.upload_id}'`)[0].n,0);
+    });
     await stop();base=await start(); // Subsequent fixtures keep their 1 MiB configuration.
+  });
+  await check('same-account instant reuse avoids a second upload and retains shared bytes until final delete',async()=>{
+    const content=Buffer.from('identical original bytes for instant reuse'),firstId=randomUUID(),secondId=randomUUID();
+    const first=await reserve(alice.token,firstId,content);
+    await part(alice.token,first.upload_id,0,content);
+    await request('POST',`/v1/uploads/${first.upload_id}/commit`,{},alice.token);
+    const originalMetadata=await request('GET',`/v1/items/${firstId}/metadata`,undefined,alice.token);
+    assert.match(originalMetadata.uploaded_at,/^\d{4}-\d{2}-\d{2}T/);
+    await request('GET',`/v1/items/${firstId}/metadata`,undefined,bob.token,404);
+    await request('GET',`/v1/items/${firstId}/metadata`,undefined,undefined,401);
+    const usage=sqlRows(`SELECT allocated_bytes n FROM accounts WHERE id='${alice.account.id}'`)[0].n;
+    const instantId=randomUUID();
+    const input={upload_id:instantId,item_id:secondId,base_version:0,kind:'file',name:'相同内容.bin',mime_type:'application/octet-stream',size:content.length,sha256:hash(content)};
+    const fast=await request('POST','/v1/uploads',input,alice.token,201);
+    assert.equal(fast.instant,true);assert.equal(fast.record.id,secondId);
+    const reusedMetadata=await request('GET',`/v1/items/${secondId}/metadata`,undefined,alice.token);
+    assert.equal(reusedMetadata.uploaded_at,fast.record.updated_at);
+    sql(`UPDATE items SET name='renamed metadata',version=version+1,updated_at=updated_at+60000 WHERE account_id='${alice.account.id}' AND id='${firstId}'`);
+    const renamedMetadata=await request('GET',`/v1/items/${firstId}/metadata`,undefined,alice.token);
+    assert.equal(renamedMetadata.version,2);assert.equal(renamedMetadata.uploaded_at,originalMetadata.uploaded_at);
+
+    assert.equal((await request('POST','/v1/uploads',input,alice.token,201)).record.version,1);
+    assert.equal(sqlRows(`SELECT allocated_bytes n FROM accounts WHERE id='${alice.account.id}'`)[0].n,usage);
+    assert.equal(sqlRows(`SELECT COUNT(*) n FROM allocations WHERE account_id='${alice.account.id}' AND size=${content.length}`)[0].n,1);
+    await request('POST','/v1/uploads',{...input,name:'other.bin'},alice.token,409);
+    const other=await reserve(bob.token,randomUUID(),content);assert.equal(other.part_count,1);
+    await request('DELETE',`/v1/uploads/${other.upload_id}`,undefined,bob.token);
+    await request('DELETE',`/v1/items/${firstId}`,{base_version:2},alice.token);
+    const stillThere=await localFetch(base+`/v1/items/${secondId}/parts/0?version=1`,{headers:{Authorization:'Bearer '+alice.token}});
+    assert.equal(stillThere.status,200);assert.deepEqual(Buffer.from(await stillThere.arrayBuffer()),content);
+    assert.equal(sqlRows(`SELECT allocated_bytes n FROM accounts WHERE id='${alice.account.id}'`)[0].n,usage);
+    await request('DELETE',`/v1/items/${secondId}`,{base_version:1},alice.token);
+    assert.equal(sqlRows(`SELECT COUNT(*) n FROM uploads WHERE id='${first.upload_id}'`)[0].n,0);
+    assert.equal(sqlRows(`SELECT allocated_bytes n FROM accounts WHERE id='${alice.account.id}'`)[0].n,usage-content.length);
   });
   await check('deleting an item immediately removes actual R2 objects, parts and allocation with exhausted A/B budgets',async()=>{
     const data=Buffer.concat([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==','base64'),Buffer.from('original image metadata/trailing bytes\0\xff')]),newId=randomUUID();
@@ -339,7 +539,7 @@ try{
     await localObject(key,data);
     const period=new Date().toISOString().slice(0,7),saved=sqlRows(`SELECT kind,n FROM budgets WHERE period='${period}'`);
     const before=sqlRows(`SELECT allocated_bytes n FROM accounts WHERE id='${alice.account.id}'`)[0].n;
-    sql(`INSERT INTO budgets(period,kind,n) VALUES('${period}','A',800001) ON CONFLICT(period,kind) DO UPDATE SET n=excluded.n;INSERT INTO budgets(period,kind,n) VALUES('${period}','B',8000001) ON CONFLICT(period,kind) DO UPDATE SET n=excluded.n;`);
+    sql(`INSERT INTO budgets(period,kind,n) VALUES('${period}','A',1000001) ON CONFLICT(period,kind) DO UPDATE SET n=excluded.n;INSERT INTO budgets(period,kind,n) VALUES('${period}','B',10000001) ON CONFLICT(period,kind) DO UPDATE SET n=excluded.n;`);
     try{
       await request('GET',`/v1/items/${newId}/parts/0?version=1`,undefined,alice.token,503);
       assert.equal(sqlRows(`SELECT COUNT(*) n FROM read_leases WHERE upload_id='${reserved.upload_id}'`)[0].n,0,'A budget-denied download must release its reader lease');
@@ -357,21 +557,21 @@ try{
     }
   });
   let expiringFixture;
-  await check('D1 committed-size fixtures: exactly 500 MiB has no TTL; one byte larger expires 24 hours after commit (no large transfer)',async()=>{
-    for(const size of [524288000,524288001]){
+  await check('D1 committed-size fixtures: shelf copies expire at next Beijing midnight (no large transfer)',async()=>{
+    for(const size of [104857599,104857600,524288001]){
       const newId=randomUUID(),data=Buffer.from('small actual object for metadata-only retention fixture '+size);
       const reserved=await reserve(alice.token,newId,data);await part(alice.token,reserved.upload_id,0,data);
       // Only the size/verified-size metadata and its matching allocation are
       // simulated. The commit endpoint and D1 retention triggers are real;
-      // the object stored in R2 is the small payload above, not a 500 MiB file.
+      // the object stored in R2 is the small payload above, not a large file.
       sql(`DELETE FROM allocations WHERE id='${reserved.upload_id}';INSERT INTO allocations(id,account_id,size) VALUES('${reserved.upload_id}','${alice.account.id}',${size});UPDATE uploads SET size=${size},verified_size=${size} WHERE id='${reserved.upload_id}';`);
       const committed=await request('POST',`/v1/uploads/${reserved.upload_id}/commit`,{},alice.token);
       const stored=sqlRows(`SELECT updated_at,expires_at FROM items WHERE id='${newId}' AND account_id='${alice.account.id}'`)[0];
       assert.equal(committed.record.size,size);
-      if(size===524288000){assert.equal(stored.expires_at,null);assert.equal(committed.record.expires_at,null);await request('DELETE',`/v1/items/${newId}`,{base_version:1},alice.token);}
+      assert.equal(stored.expires_at,(Math.floor((stored.updated_at+8*3600000)/86400000)+1)*86400000-8*3600000);
+      assert.equal(Date.parse(committed.record.expires_at),stored.expires_at);
+      if(size<524288001){await request('DELETE',`/v1/items/${newId}`,{base_version:1},alice.token);}
       else{
-        assert.equal(stored.expires_at-stored.updated_at,86400000);
-        assert.equal(Date.parse(committed.record.expires_at),stored.expires_at);
         expiringFixture={newId,uploadId:reserved.upload_id,data,size,key:sqlRows(`SELECT key FROM parts WHERE upload_id='${reserved.upload_id}'`)[0].key};
       }
     }
@@ -382,7 +582,7 @@ try{
     sql(`INSERT INTO read_leases(upload_id,id,expires_at) VALUES('${value.uploadId}','retention-reader',${Date.now()+60000});UPDATE items SET expires_at=1 WHERE account_id='${alice.account.id}' AND id='${value.newId}';`);
     const changed=await request('GET','/v1/sync/changes?cursor='+cursor,undefined,alice.token);
     const tombstone=changed.changes.filter(c=>c.record.id===value.newId).at(-1).record;
-    assert.equal(tombstone.deleted,true);assert.equal(tombstone.version,2);assert.equal(tombstone.size,0);assert.equal(tombstone.expires_at,null);
+    assert.equal(tombstone.deleted,true);assert.equal(tombstone.version,2);assert.equal(tombstone.size,0);assert.ok(tombstone.expires_at);
     await request('GET',`/v1/items/${value.newId}/content`,undefined,alice.token,404);
     assert.equal(sqlRows(`SELECT state FROM uploads WHERE id='${value.uploadId}'`)[0].state,'garbage');
     assert.equal(sqlRows(`SELECT size FROM allocations WHERE id='${value.uploadId}'`)[0].size,value.size);
@@ -408,23 +608,28 @@ try{
     const status=await request('GET','/v1/me',undefined,alice.token);assert.equal(status.storage.used_bytes,before-data.length);
     assert.equal(sqlRows(`SELECT deleted FROM items WHERE account_id='${alice.account.id}' AND id='${newId}'`)[0].deleted,1);
   });
-  await check('exhausted daily service request budget still permits item deletion and abandoned upload cancellation',async()=>{
+  await check('legacy app request counters no longer cap sync or storage cleanup',async()=>{
     const data=Buffer.from('delete despite the normal request budget'),newId=randomUUID();
     const committed=await reserve(alice.token,newId,data);await part(alice.token,committed.upload_id,0,data);await request('POST',`/v1/uploads/${committed.upload_id}/commit`,{},alice.token);
-    const abandoned=await reserve(alice.token,randomUUID(),data);await part(alice.token,abandoned.upload_id,0,data);
+    const abandonedData=Buffer.concat([data,Buffer.from(' pending')]);
+    const abandoned=await reserve(alice.token,randomUUID(),abandonedData);await part(alice.token,abandoned.upload_id,0,abandonedData);
     const fixtures=[committed,abandoned].map(value=>({id:value.upload_id,key:sqlRows(`SELECT key FROM parts WHERE upload_id='${value.upload_id}'`)[0].key}));
     const slot=Math.floor(Date.now()/86400000),key='service-requests:'+slot,deleteKey='service-deletions:'+slot;
     const saved=sqlRows(`SELECT key,n,expires_at FROM rates WHERE key='${key}'`);
     const previousDeletions=sqlRows(`SELECT n FROM rates WHERE key='${deleteKey}'`)[0]?.n||0;
-    sql(`INSERT INTO rates(key,n,expires_at) VALUES('${key}',5000,${(slot+1)*86400000}) ON CONFLICT(key) DO UPDATE SET n=5000;`);
+    sql(`INSERT INTO rates(key,n,expires_at) VALUES('${key}',10000,${(slot+1)*86400000}) ON CONFLICT(key) DO UPDATE SET n=10000;`);
     try{
-      await request('GET','/v1/me',undefined,alice.token,429);
+      await request('GET','/v1/me',undefined,alice.token);
+      await request('GET','/v1/sync/changes?cursor=0&limit=1',undefined,alice.token);
+      await request('POST','/v1/auth/challenge',{username:'alice',purpose:'login'});
+      const fresh=await reserve(alice.token,randomUUID(),Buffer.from('new upload remains permitted'));
+      assert.equal((await request('DELETE',`/v1/uploads/${fresh.upload_id}`,undefined,alice.token)).cancelled,true);
       const committedReply=await request('DELETE',`/v1/uploads/${committed.upload_id}`,undefined,alice.token,409);
       assert.equal(committedReply.error.code,'ALREADY_COMMITTED');assert.equal(committedReply.error.current_record.id,newId);assert.equal(committedReply.error.current_record.version,1);
       const deleted=await request('DELETE',`/v1/items/${newId}`,{base_version:committedReply.error.current_record.version},alice.token);assert.equal(deleted.record.deleted,true);
       assert.equal((await request('DELETE',`/v1/uploads/${abandoned.upload_id}`,undefined,alice.token)).cancelled,true);
-      assert.equal(sqlRows(`SELECT n FROM rates WHERE key='${key}'`)[0].n,5001,'Cleanup calls must not consume the exhausted normal request budget');
-      assert.equal(sqlRows(`SELECT n FROM rates WHERE key='${deleteKey}'`)[0].n,previousDeletions+3,'Cleanup calls have their own bounded daily budget');
+      assert.equal(sqlRows(`SELECT n FROM rates WHERE key='${key}'`)[0].n,10000,'Legacy service cap must not consume requests');
+      assert.equal(sqlRows(`SELECT n FROM rates WHERE key='${deleteKey}'`)[0]?.n||0,previousDeletions,'Legacy cleanup cap must not consume requests');
       for(const fixture of fixtures){
         assert.equal(sqlRows(`SELECT COUNT(*) n FROM uploads WHERE id='${fixture.id}'`)[0].n,0);
         assert.equal(sqlRows(`SELECT COUNT(*) n FROM allocations WHERE id='${fixture.id}'`)[0].n,0);

@@ -33,7 +33,7 @@ class AccountActions(unittest.TestCase):
             self.assertNotEqual(threading.current_thread(),threading.main_thread())
             secrets.append(password);return bytearray(salt[0:1]*32)
         with patch.object(account_service,'derive_auth_key',derive):
-            self.assertTrue(self.service.change_password(PASSWORD,'next fixture password','next fixture password'))
+            self.assertTrue(self.service.change_password(PASSWORD,'next-fixture-password','next-fixture-password'))
             first=self.api.last();self.assertEqual(first['path'],'/v1/auth/password/challenge');self.assertEqual(first['options']['data'],{})
             self.password_challenge();self.assertTrue(wait(lambda:any(r['path']=='/v1/auth/password' for r in self.api.requests)))
         request=self.api.last('/v1/auth/password');data=request['options']['data']
@@ -44,10 +44,10 @@ class AccountActions(unittest.TestCase):
         self.assertIsNone(self.store.value);self.assertFalse(self.service.busy);self.assertEqual(self.api.last()['path'],'/v1/devices')
 
     def test_confirmation_and_untrusted_new_salt_do_not_schedule_password_work(self):
-        self.assertFalse(self.service.change_password(PASSWORD,'next fixture password','different'))
+        self.assertFalse(self.service.change_password(PASSWORD,'next-fixture-password','different'))
         self.assertFalse(self.service.change_password(PASSWORD,PASSWORD,PASSWORD));self.assertEqual(self.api.requests,[])
         for new_salt in ['01'*16,'invalid',None]:
-            self.service.change_password(PASSWORD,'next fixture password')
+            self.service.change_password(PASSWORD,'next-fixture-password')
             data=challenge();data['new_salt']=new_salt
             self.api.finish(self.api.last('/v1/auth/password/challenge'),data)
             self.assertFalse(self.service.busy);self.assertFalse(self.service._auth_jobs)
@@ -58,7 +58,7 @@ class AccountActions(unittest.TestCase):
         def derive(password,salt):
             secrets.append(password);entered.set();release.wait(3);return bytearray(b'x'*32)
         with patch.object(account_service,'derive_auth_key',derive):
-            self.service.change_password(PASSWORD,'next fixture password');self.password_challenge()
+            self.service.change_password(PASSWORD,'next-fixture-password');self.password_challenge()
             self.assertTrue(wait(entered.is_set));self.service.cancel_auth();release.set()
             self.assertTrue(wait(lambda:not self.service._auth_jobs))
         self.assertEqual(len(secrets),1);self.assertFalse(any(secrets[0]))
@@ -67,7 +67,7 @@ class AccountActions(unittest.TestCase):
 
     def test_incorrect_password_leaves_current_session_and_only_success_closes_form(self):
         with patch.object(account_service,'derive_auth_key',return_value=bytearray(b'x'*32)):
-            self.service.change_password(PASSWORD,'next fixture password');self.password_challenge()
+            self.service.change_password(PASSWORD,'next-fixture-password');self.password_challenge()
             self.assertTrue(wait(lambda:any(r['path']=='/v1/auth/password' for r in self.api.requests)))
         self.api.finish(self.api.last('/v1/auth/password'),error=CloudError('hidden provider detail',403,'INVALID_OLD_PASSWORD'))
         self.assertEqual(self.api.token,'unchanged-current-session');self.assertFalse(self.changed);self.assertFalse(self.service.busy)

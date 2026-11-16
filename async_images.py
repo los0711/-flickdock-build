@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 import threading
 
-from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QObject, QRunnable, QSize, QThreadPool, Qt, Signal, Slot
+from PySide6.QtCore import QByteArray, QBuffer, QFile, QIODevice, QObject, QRunnable, QSize, QThreadPool, Qt, Signal, Slot
 from PySide6.QtGui import QImage, QImageReader, QPainter, QPainterPath, QPixmap
 
 from flickdock_icons import device_pixel_ratio, document_pixmap
@@ -34,38 +34,35 @@ def _side(value):
 
 
 def _decode(path, side, cancelled):
-    """Close DELETE-sharing source before decoding from a memory buffer."""
-    if cancelled.is_set():
-        return QImage()
+    """Decode from the delete-sharing file descriptor; no full encoded copy."""
+    if cancelled.is_set():return QImage()
     try:
-        chunks = []
         with _source_reader(Path(path)) as incoming:
-            while not cancelled.is_set():
-                block = incoming.read(256 * 1024)
-                if not block:
-                    break
-                chunks.append(block)
-        if cancelled.is_set():
-            return QImage()
-        data = QByteArray(b''.join(chunks))
-        buffer = QBuffer(data)
-        buffer.open(QIODevice.OpenModeFlag.ReadOnly)
-        reader = QImageReader(buffer)
-        reader.setAutoTransform(True)
-        natural = reader.size()
-        if natural.isValid() and max(natural.width(), natural.height()) > side:
-            reader.setScaledSize(natural.scaled(QSize(side, side), Qt.AspectRatioMode.KeepAspectRatio))
-        image = reader.read()
-        buffer.close()
-        if cancelled.is_set():
-            return QImage()
-        # Some plugins ignore scaledSize; keep cache memory bounded regardless.
-        if not image.isNull() and max(image.width(), image.height()) > side:
-            image = image.scaled(side, side, Qt.AspectRatioMode.KeepAspectRatio,
-                                 Qt.TransformationMode.SmoothTransformation)
+            device=QFile()
+            try:opened=device.open(incoming.fileno(),QIODevice.ReadOnly,QFile.DontCloseHandle)
+            except (OSError,AttributeError):opened=False
+            if not opened:
+                # Injected/in-memory readers have no descriptor. Keep one Qt
+                # byte array, not chunks + joined Python bytes + another copy.
+                data=QByteArray()
+                while not cancelled.is_set():
+                    block=incoming.read(256*1024)
+                    if not block:break
+                    data.append(block)
+                device=QBuffer(data);device.open(QIODevice.ReadOnly)
+            try:
+                if cancelled.is_set():return QImage()
+                reader=QImageReader(device);reader.setAutoTransform(True)
+                natural=reader.size()
+                if natural.isValid() and max(natural.width(),natural.height())>side:
+                    reader.setScaledSize(natural.scaled(QSize(side,side),Qt.KeepAspectRatio))
+                image=reader.read()
+            finally:device.close()
+        if cancelled.is_set():return QImage()
+        if not image.isNull() and max(image.width(),image.height())>side:
+            image=image.scaled(side,side,Qt.KeepAspectRatio,Qt.SmoothTransformation)
         return image
-    except (OSError, ValueError, RuntimeError):
-        return QImage()
+    except (OSError,ValueError,RuntimeError):return QImage()
 
 
 class _Signals(QObject):
@@ -80,9 +77,10 @@ class _DecodeJob(QRunnable):
         self.signals = _Signals()
 
     def run(self):
-        image = _decode(self.path, self.side, self.cancelled)
-        if not self.cancelled.is_set():
-            self.signals.done.emit(self.path, self.key, self.side, self.generation, image)
+        image = QImage() if self.cancelled.is_set() else _decode(self.path, self.side, self.cancelled)
+        # Completion also retires cancelled jobs from _pending. The generation
+        # guard discards their images without retaining the runnable forever.
+        self.signals.done.emit(self.path, self.key, self.side, self.generation, image)
 
 
 class ImageCache(QObject):
@@ -102,9 +100,10 @@ class ImageCache(QObject):
         self._closed = False
         self._images = OrderedDict()
         self._pixmaps = OrderedDict()
-        self._placeholders = {}
+        self._placeholders = OrderedDict()
         self._pending = {}
         self._generations = {}
+        self._next_generation=0
         self._image_bytes = 0
         self._budget = 96 * 1024 * 1024
 
@@ -130,11 +129,13 @@ class ImageCache(QObject):
         key, side = _path_key(value), _side(max_side)
         if self.image(value, side) is not None:
             return True
-        generation = self._generations.get(key, 0)
+        generation = self._generations.get(key)
+        if generation is None:
+            self._next_generation+=1;generation=self._next_generation;self._generations[key]=generation
         task_key = (key, side, generation)
         if task_key in self._pending:
             return True
-        job = _DecodeJob(value, key, side, generation, self._cancelled)
+        job = _DecodeJob(value, key, side, generation, threading.Event())
         job.signals.done.connect(self._completed, Qt.ConnectionType.QueuedConnection)
         self._pending[task_key] = job
         self._pool.start(job, -1)
@@ -168,12 +169,18 @@ class ImageCache(QObject):
             self._pixmaps[key] = pixmap
             while len(self._pixmaps) > 256:
                 self._pixmaps.popitem(last=False)
+            while len(self._pixmaps)>1 and sum(p.width()*p.height()*4 for p in self._pixmaps.values())>32*1024*1024:
+                self._pixmaps.popitem(last=False)
             return pixmap
         if image is None:
             self.request(path, math.ceil(size * .84 * ratio))
         placeholder_key = (Path(path).suffix.lower(), size, ratio)
         if placeholder_key not in self._placeholders:
             self._placeholders[placeholder_key] = document_pixmap(Path(path).suffix, size, dpr=ratio)
+        self._placeholders.move_to_end(placeholder_key)
+        while len(self._placeholders)>1 and (len(self._placeholders)>128 or
+                sum(p.width()*p.height()*4 for p in self._placeholders.values())>16*1024*1024):
+            self._placeholders.popitem(last=False)
         return self._placeholders[placeholder_key]
 
     @Slot(str, str, int, int, QImage)
@@ -193,13 +200,20 @@ class ImageCache(QObject):
         # Larger previews can also improve a small thumbnail cached earlier.
         for pixmap_key in [candidate for candidate in self._pixmaps if candidate[0] == key]:
             del self._pixmaps[pixmap_key]
+        live={candidate[0] for candidate in self._images}|{candidate[0] for candidate in self._pending}
+        for retired in self._generations.keys()-live:self._generations.pop(retired,None)
         self.ready.emit(path)
 
     def forget(self, path):
         if not path:
             return
         key = _path_key(path)
-        self._generations[key] = self._generations.get(key, 0) + 1
+        # Jobs always carry a positive monotonically unique generation. Missing
+        # keys reject stale results, so removed paths need no permanent tombstone.
+        self._generations.pop(key,None)
+        for task_key,job in tuple(self._pending.items()):
+            if task_key[0]==key:
+                job.cancelled.set()
         for image_key in [candidate for candidate in self._images if candidate[0] == key]:
             self._image_bytes -= self._images.pop(image_key).sizeInBytes()
         for pixmap_key in [candidate for candidate in self._pixmaps if candidate[0] == key]:
@@ -214,9 +228,8 @@ class ImageCache(QObject):
 
     def clear(self):
         """Forget everything without waiting; later requests remain usable."""
-        keys = {key[0] for key in self._pending} | {key[0] for key in self._images}
-        for key in keys:
-            self._generations[key] = self._generations.get(key, 0) + 1
+        for job in self._pending.values():job.cancelled.set()
+        self._generations.clear()
         self._pool.clear()
         self._images.clear()
         self._pixmaps.clear()

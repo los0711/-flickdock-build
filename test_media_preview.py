@@ -6,12 +6,14 @@ from pathlib import Path
 import tempfile
 from unittest.mock import patch
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QPoint, Qt, Signal
+from PySide6.QtTest import QTest
 from PySide6.QtGui import QFont, QFontDatabase, QImage
 from PySide6.QtMultimedia import QMediaPlayer as NativePlayer, QVideoFrame
 from PySide6.QtWidgets import QApplication
 
 import media_preview as subject
+import PySide6.QtMultimedia as multimedia
 
 
 class FakePlayer(QObject):
@@ -86,13 +88,26 @@ class FakeAudio(QObject):
 class FakeSink(QObject):
     videoFrameChanged = Signal(object)
 
+    def __init__(self,parent):
+        super().__init__(parent)
+        self.frame=QVideoFrame()
+
     def setVideoFrame(self, frame):
+        self.frame=frame
         self.videoFrameChanged.emit(frame)
+
+    def videoFrame(self):
+        return self.frame
 
 
 app = QApplication([])
-font_id = QFontDatabase.addApplicationFont(str(Path(__file__).parent / "fonts" / "HarmonyOS_Sans_SC_Regular.ttf"))
-app.setFont(QFont(QFontDatabase.applicationFontFamilies(font_id)[0], 11))
+from native_ui_common import configure_reference_font
+configure_reference_font(app)
+
+def deliver_frame(sink,frame):
+    sink.setVideoFrame(frame)
+    app.processEvents()
+
 assert subject.MediaPreview.can_preview("example.MP4")
 assert subject.MediaPreview.can_preview(Path("example.flac"))
 assert not subject.MediaPreview.can_preview("example.pdf")
@@ -100,9 +115,9 @@ assert not subject.MediaPreview.can_preview(None)
 assert subject._clock(7203000) == "2:00:03"
 
 with tempfile.TemporaryDirectory(prefix="flickdock-media-") as temporary, \
-     patch.object(subject, "QMediaPlayer", FakePlayer), \
-     patch.object(subject, "QAudioOutput", FakeAudio), \
-     patch.object(subject, "QVideoSink", FakeSink), \
+     patch.object(multimedia, "QMediaPlayer", FakePlayer), \
+     patch.object(multimedia, "QAudioOutput", FakeAudio), \
+     patch.object(multimedia, "QVideoSink", FakeSink), \
      patch.object(subject.QDesktopServices, "openUrl") as open_url:
     video = Path(temporary) / "first.mp4"
     second = Path(temporary) / "second.mp4"
@@ -125,33 +140,77 @@ with tempfile.TemporaryDirectory(prefix="flickdock-media-") as temporary, \
     preview.frame_ready.connect(lambda path, image: frames.append((path, image.copy())))
     preview.set_source(video)
     assert preview.player.play_calls == 1 and preview.audio_output.muted
+    assert preview.surface.image.isNull() and preview.surface.fallback is None
     assert not events
     image = QImage(64, 40, QImage.Format.Format_ARGB32)
     image.fill(0xff2584ed)
-    preview.video_sink.videoFrameChanged.emit(QVideoFrame(image))
+    deliver_frame(preview.video_sink,QVideoFrame(image))
     assert preview.player.playbackState() == NativePlayer.PlaybackState.PausedState
     assert len(frames) == 1 and frames[0][0] == str(video.resolve()) and frames[0][1].size() == image.size()
     assert not events and not preview.surface.image.isNull()
     print("PASS visible video reads a muted first frame then pauses; poster extraction never reports playback")
 
     preview.toggle_playback()
-    assert events == [True] and not preview.audio_output.muted
+    assert events == [True] and preview.audio_output.muted
+    assert preview.mute_button.accessibleName() == "取消静音"
+    preview.toggle_mute()
+    assert not preview.audio_output.muted
     preview.toggle_playback()
     assert events == [True, False]
     preview.seek_slider.setValue(5000)
     assert preview.player.position() == 5000 and preview.duration_label.text() == "0:05 / 0:12"
     red = QImage(image)
     red.fill(0xffed483b)
-    preview.video_sink.videoFrameChanged.emit(QVideoFrame(red))
+    deliver_frame(preview.video_sink,QVideoFrame(red))
     assert preview.surface.image.pixelColor(0, 0).name() == "#ed483b" and len(frames) == 1
     print("PASS play/pause is explicit, keyboard/timeline seek updates a paused video frame and duration")
 
+    app.processEvents()
+    with patch.object(preview.player,'setPosition',wraps=preview.player.setPosition) as seek:
+        QTest.mouseClick(preview.seek_slider,Qt.LeftButton,pos=QPoint(round(preview.seek_slider.width()*.75),preview.seek_slider.height()//2))
+        assert 8500 <= preview.player.position() <= 9500
+        assert seek.call_count == 1 and not preview._seek_timer.isActive()
+        QTest.mousePress(preview.seek_slider,Qt.LeftButton,pos=QPoint(10,preview.seek_slider.height()//2))
+        for x in range(20,preview.seek_slider.width()-10,5):
+            QTest.mouseMove(preview.seek_slider,QPoint(x,preview.seek_slider.height()//2))
+        QTest.mouseRelease(preview.seek_slider,Qt.LeftButton,pos=QPoint(preview.seek_slider.width()-10,preview.seek_slider.height()//2))
+        assert seek.call_count == 2 and not preview._seek_timer.isActive()
+    # The new compositor contract intentionally reads playing frames back:
+    # every visible frame must be paintable without a native video child.
+    preview.toggle_playback()
+    green=QImage(image);green.fill(0xff25ad50)
+    preview._seek_frame_pending=False
+    deliver_frame(preview.video_sink,QVideoFrame(green))
+    assert preview.surface.image.pixelColor(0,0).name()=='#25ad50'
+    deliver_frame(preview.video_sink,QVideoFrame(red))
+    assert preview.surface.image.pixelColor(0,0).name()=='#ed483b'
+    assert preview.surface.native is None
+    assert not any(child.metaObject().className()=='QVideoWidget' for child in preview.findChildren(subject.QWidget))
+    app.processEvents()
+    painted=preview.surface.grab().toImage()
+    assert painted.pixelColor(painted.width()//2,painted.height()//2).name()=='#ed483b'
+    with patch.object(preview,'_frame_image',wraps=preview._frame_image) as conversion:
+        preview.video_sink.setVideoFrame(QVideoFrame(red))
+        preview.video_sink.setVideoFrame(QVideoFrame(green))
+        assert conversion.call_count==0
+        app.processEvents()
+        assert conversion.call_count==1 and preview._pending_frame is None
+        assert preview.surface.image.pixelColor(0,0).name()=='#25ad50'
+    large=QImage(4096,2160,QImage.Format.Format_RGB32);large.fill(0xff2584ed)
+    deliver_frame(preview.video_sink,QVideoFrame(large))
+    assert max(preview.surface.image.width(),preview.surface.image.height())<=1280
+    assert preview.surface.image.pixelColor(0,0).name()=='#2584ed'
+    deliver_frame(preview.video_sink,QVideoFrame(red))
+    preview.toggle_playback()
+    print('PASS absolute timeline clicks, coalesced drag seeks and changing video frames without a native child')
+
     stale_player, stale_sink = preview.player, preview.video_sink
     preview.set_source(second)
-    assert stale_player.stop_calls >= 1 and preview.surface.image.isNull()
-    stale_sink.videoFrameChanged.emit(QVideoFrame(red))
+    assert preview._muted and preview.mute_button.accessibleName() == "取消静音"
+    assert stale_player.stop_calls >= 1 and preview.surface.image.isNull() and preview.surface.fallback is None
+    deliver_frame(stale_sink,QVideoFrame(red))
     assert preview.surface.image.isNull() and len(frames) == 1
-    preview.video_sink.videoFrameChanged.emit(QVideoFrame(image))
+    deliver_frame(preview.video_sink,QVideoFrame(image))
     assert len(frames) == 2 and frames[-1][0] == str(second.resolve())
     stopped_player, stopped_audio = preview.player, preview.audio_output
     saved_poster = preview.surface.image.copy()
@@ -166,9 +225,31 @@ with tempfile.TemporaryDirectory(prefix="flickdock-media-") as temporary, \
     assert events[-1] is True
     preview.release_source()
     assert preview.path == "" and preview.player is None and not preview.play_button.isEnabled()
+    preview.set_source(video,poster=image,defer=True)
+    assert preview.player is None and preview.surface.image==image and preview.surface.fallback is None
+    assert not preview.play_button.isEnabled()
+    preview.set_source(video,poster=image)
+    assert preview.surface.image==image and preview.player.play_calls==1
+    deliver_frame(preview.video_sink,QVideoFrame(red))
+    assert preview.surface.image.pixelColor(0,0).name()=='#ed483b'
+    preview.release_source()
     preview.hide(); preview.show(); preview.toggle_playback()
     assert preview.player is None
     print("PASS changing/hiding releases native source; a remembered poster replays lazily and removed refs never reopen")
+
+    # Exercise the real layout across asynchronous loading and first-frame
+    # visibility changes, rather than checking only the decoder's state.
+    def delayed_source(player,url):player.source=url
+    with patch.object(FakePlayer,'setSource',delayed_source):
+        preview.set_source(video);app.processEvents();loading_bounds=preview.surface.geometry()
+        preview.player.mediaStatusChanged.emit(NativePlayer.MediaStatus.LoadedMedia);app.processEvents()
+        assert preview.surface.geometry()==loading_bounds
+        deliver_frame(preview.video_sink,QVideoFrame(image));app.processEvents()
+        assert preview.surface.geometry()==loading_bounds
+        preview.player.errorOccurred.emit(NativePlayer.Error.FormatError,'fixture error');app.processEvents()
+        assert preview.surface.geometry()==loading_bounds
+    preview.release_source()
+    print('PASS loading, first frame and error messages never resize the video viewport')
 
     preview.show()
     preview.set_source(audio)

@@ -10,6 +10,43 @@ from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QCursor, QGuiApplication
 
 
+def foreground_fullscreen(screen_rect):
+    """Read the foreground bounds only; never activate or mutate a window."""
+    if QGuiApplication.platformName() in ('offscreen','minimal'):return False
+    try:
+        if sys.platform=='win32':
+            from ctypes import wintypes
+            class MonitorInfo(ctypes.Structure):
+                _fields_=[('size',wintypes.DWORD),('monitor',wintypes.RECT),('work',wintypes.RECT),('flags',wintypes.DWORD)]
+            user32=ctypes.windll.user32
+            user32.GetForegroundWindow.restype=wintypes.HWND
+            user32.MonitorFromWindow.argtypes=[wintypes.HWND,wintypes.DWORD]
+            user32.MonitorFromWindow.restype=wintypes.HANDLE
+            user32.GetMonitorInfoW.argtypes=[wintypes.HANDLE,ctypes.POINTER(MonitorInfo)]
+            user32.GetWindowRect.argtypes=[wintypes.HWND,ctypes.POINTER(wintypes.RECT)]
+            window=user32.GetForegroundWindow();bounds=wintypes.RECT();info=MonitorInfo();info.size=ctypes.sizeof(info)
+            if window and user32.GetWindowRect(window,ctypes.byref(bounds)) and user32.GetMonitorInfoW(user32.MonitorFromWindow(window,2),ctypes.byref(info)):
+                return all(abs(a-b)<=2 for a,b in zip((bounds.left,bounds.top,bounds.right,bounds.bottom),(info.monitor.left,info.monitor.top,info.monitor.right,info.monitor.bottom)))
+        elif sys.platform=='darwin':
+            import Quartz,AppKit
+            pid=AppKit.NSWorkspace.sharedWorkspace().frontmostApplication().processIdentifier()
+            for window in Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionOnScreenOnly|Quartz.kCGWindowListExcludeDesktopElements,Quartz.kCGNullWindowID) or []:
+                if window.get(Quartz.kCGWindowOwnerPID)!=pid or window.get(Quartz.kCGWindowLayer)!=0:continue
+                rect=window.get(Quartz.kCGWindowBounds,{})
+                return all(abs(a-b)<=2 for a,b in zip((rect.get('X',0),rect.get('Y',0),rect.get('Width',0),rect.get('Height',0)),screen_rect.getRect()))
+    except (OSError,RuntimeError,AttributeError,ImportError,TypeError):pass
+    return False
+
+
+def configure_menu_bar_application(*,platform=None,appkit=None):
+    """An accessory app may activate its windows without acquiring a Dock tile."""
+    if (platform or sys.platform)!='darwin':return False
+    if appkit is None:
+        if QGuiApplication.platformName()!='cocoa':return False
+        import AppKit as appkit
+    return bool(appkit.NSApplication.sharedApplication().setActivationPolicy_(appkit.NSApplicationActivationPolicyAccessory))
+
+
 def data_directory(app_name='FlickDock', *, platform=None, home=None, environ=None):
     platform = sys.platform if platform is None else platform
     environ = os.environ if environ is None else environ
@@ -36,6 +73,245 @@ def native_input_available(*, platform=None, qt_platform=None):
         qt_platform = application.platformName() if application else ''
     return ((platform == 'win32' and str(qt_platform).lower() == 'windows')
             or (platform == 'darwin' and str(qt_platform).lower() == 'cocoa'))
+
+
+def copy_activity():
+    """Coarse input identity and clipboard-owner relation, without key contents.
+
+    A remote clipboard writer can advance the pasteboard sequence without any
+    local Copy action. These read-only counters qualify repeat feedback only;
+    they never prevent content synchronization or install an input hook.
+    """
+    if not native_input_available():return None
+    if sys.platform=='win32':
+        from ctypes import wintypes
+        class LastInput(ctypes.Structure):_fields_=[('size',wintypes.UINT),('tick',wintypes.DWORD)]
+        user=ctypes.windll.user32;kernel=ctypes.windll.kernel32
+        user.GetLastInputInfo.argtypes=[ctypes.POINTER(LastInput)];user.GetLastInputInfo.restype=wintypes.BOOL
+        user.GetClipboardOwner.restype=wintypes.HWND;user.GetForegroundWindow.restype=wintypes.HWND
+        user.GetWindowThreadProcessId.argtypes=[wintypes.HWND,ctypes.POINTER(wintypes.DWORD)]
+        user.GetWindowThreadProcessId.restype=wintypes.DWORD;kernel.GetTickCount.restype=wintypes.DWORD
+        value=LastInput();value.size=ctypes.sizeof(value)
+        if not user.GetLastInputInfo(ctypes.byref(value)):raise ctypes.WinError()
+        owner,front=user.GetClipboardOwner(),user.GetForegroundWindow();same=None
+        if owner and front:
+            source,target=wintypes.DWORD(),wintypes.DWORD()
+            if user.GetWindowThreadProcessId(owner,ctypes.byref(source)) and user.GetWindowThreadProcessId(front,ctypes.byref(target)):
+                same=source.value==target.value
+        return value.tick,(kernel.GetTickCount()-value.tick)&0xffffffff,same
+    import Quartz
+    state=Quartz.kCGEventSourceStateCombinedSessionState
+    types=(Quartz.kCGEventKeyDown,Quartz.kCGEventLeftMouseDown,Quartz.kCGEventRightMouseDown)
+    stamp=tuple(int(Quartz.CGEventSourceCounterForEventType(state,kind)) for kind in types)
+    age=min(Quartz.CGEventSourceSecondsSinceLastEventType(state,kind) for kind in types)*1000
+    return stamp,age,None
+
+
+def shelf_window_flags(*, platform=None):
+    """Keep the shelf in the ordinary app layer, without a Windows taskbar entry.
+
+    Qt.Tool is a floating NSPanel on macOS even without the stay-on-top hint,
+    so a normal NSWindow is needed there to let the active app cover the shelf.
+    The separate edge trigger remains a topmost, nonactivating tool window.
+    """
+    platform = sys.platform if platform is None else platform
+    kind = Qt.WindowType.Window if platform == 'darwin' else Qt.WindowType.Tool
+    return kind | Qt.WindowType.FramelessWindowHint
+
+
+def keep_tool_visible_when_inactive(widget, *, platform=None):
+    """Keep the macOS Qt.Tool edge strip visible when the app deactivates.
+
+    Cocoa-backed Qt.Tool windows are NSPanel instances. Qt hides them when the
+    application deactivates unless this attribute is set before first show.
+    """
+    platform = sys.platform if platform is None else platform
+    if platform != 'darwin':
+        return False
+    widget.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow, True)
+    return True
+
+
+def _fullscreen_collection_behavior(window, appkit):
+    # Qt may set MoveToActiveSpace before we raise its native window. Cocoa
+    # rejects that flag together with CanJoinAllSpaces. Keep unrelated Qt
+    # behavior bits, and do not add optional Stage Manager flags here.
+    behavior = int(window.collectionBehavior())
+    behavior &= ~int(getattr(appkit, 'NSWindowCollectionBehaviorMoveToActiveSpace', 0))
+    return (behavior | appkit.NSWindowCollectionBehaviorCanJoinAllSpaces
+            | appkit.NSWindowCollectionBehaviorFullScreenAuxiliary)
+
+
+def _recoverable_native_window_error(error):
+    if isinstance(error, (ImportError, AttributeError, OSError, RuntimeError, TypeError, ValueError)):
+        return True
+    cocoa_error = getattr(sys.modules.get('objc'), 'error', None)
+    return isinstance(cocoa_error, type) and isinstance(error, cocoa_error)
+
+
+def _restore_native_window_order(window, original):
+    try:
+        window.setLevel_(original[0])
+    except Exception:
+        pass
+    try:
+        window.setCollectionBehavior_(original[1])
+    except Exception:
+        pass
+
+
+def raise_shelf_for_reveal(widget, *, platform=None):
+    """Temporarily order a summoned shelf over a full-screen drag source.
+
+    Qt's raise_() only orders reliably within our application. The temporary
+    native level is removed when the shelf hides or another FlickDock panel
+    takes focus; the shelf's Qt window flags remain ordinary and nonactivating.
+    """
+    platform = sys.platform if platform is None else platform
+    if platform not in ('win32', 'darwin') or not native_input_available():
+        return False
+    if platform == 'win32':
+        try:
+            from ctypes import wintypes
+
+            user32 = ctypes.WinDLL('user32', use_last_error=True)
+            set_window_pos = user32.SetWindowPos
+            set_window_pos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int,
+                                       ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+            set_window_pos.restype = wintypes.BOOL
+            # HWND_TOPMOST, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE |
+            # SWP_NOOWNERZORDER. A normal HWND_TOP can stay underneath a
+            # full-screen browser, making the edge strip vanish on hover.
+            return bool(set_window_pos(int(widget.winId()), -1, 0, 0, 0, 0, 0x0213))
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            return False
+    window = original = None
+    try:
+        import AppKit
+        import objc
+        view = objc.objc_object(c_void_p=ctypes.c_void_p(int(widget.winId())))
+        window = view.window()
+        if window is None:
+            return False
+        original = getattr(widget, '_flickdock_native_order', None)
+        if original is None:
+            original = (window.level(), window.collectionBehavior())
+            widget._flickdock_native_order = original
+        window.setCollectionBehavior_(_fullscreen_collection_behavior(window, AppKit))
+        window.setLevel_(AppKit.NSFloatingWindowLevel)
+        window.orderFrontRegardless()
+    except Exception as error:
+        if window is not None and original is not None:
+            _restore_native_window_order(window, original)
+            widget._flickdock_native_order = None
+        if _recoverable_native_window_error(error):
+            return False
+        raise
+    return True
+
+
+def lower_shelf_after_reveal(widget, *, platform=None):
+    """Restore ordinary window ordering as soon as the reveal ends."""
+    platform = sys.platform if platform is None else platform
+    if platform not in ('win32', 'darwin') or not native_input_available():
+        return False
+    if platform == 'win32':
+        try:
+            from ctypes import wintypes
+
+            user32 = ctypes.WinDLL('user32', use_last_error=True)
+            set_window_pos = user32.SetWindowPos
+            set_window_pos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int,
+                                       ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+            set_window_pos.restype = wintypes.BOOL
+            return bool(set_window_pos(int(widget.winId()), -2, 0, 0, 0, 0, 0x0213))
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            return False
+    original = getattr(widget, '_flickdock_native_order', None)
+    if original is None:
+        return False
+    try:
+        import objc
+        view = objc.objc_object(c_void_p=ctypes.c_void_p(int(widget.winId())))
+        window = view.window()
+        if window is None:
+            return False
+        window.setLevel_(original[0])
+        window.setCollectionBehavior_(original[1])
+    except Exception as error:
+        # PyObjC framework exceptions are objc.error rather than RuntimeError.
+        # Keep the saved order available if Cocoa temporarily refuses restore.
+        if _recoverable_native_window_error(error):
+            return False
+        raise
+    widget._flickdock_native_order = None
+    return True
+
+
+def raise_edge_target(widget, *, platform=None, above=None):
+    """Keep the nonactivating edge sensor reachable in full-screen spaces."""
+    platform = sys.platform if platform is None else platform
+    if platform not in ('win32', 'darwin') or not native_input_available():
+        return False
+    if platform == 'win32':
+        try:
+            from ctypes import wintypes
+
+            user32 = ctypes.WinDLL('user32', use_last_error=True)
+            set_window_pos = user32.SetWindowPos
+            set_window_pos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int,
+                                       ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+            set_window_pos.restype = wintypes.BOOL
+            return bool(set_window_pos(int(widget.winId()), -1, 0, 0, 0, 0, 0x0213))
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            return False
+    window = original = None
+    try:
+        import AppKit
+        import objc
+        view = objc.objc_object(c_void_p=ctypes.c_void_p(int(widget.winId())))
+        window = view.window()
+        if window is None:
+            return False
+        original = (window.level(), window.collectionBehavior())
+        window.setCollectionBehavior_(_fullscreen_collection_behavior(window, AppKit))
+        level=AppKit.NSFloatingWindowLevel
+        if above is not None and above.isVisible():
+            other=objc.objc_object(c_void_p=ctypes.c_void_p(int(above.winId()))).window()
+            if other is not None:level=max(level,other.level()+1)
+        window.setLevel_(level)
+        window.orderFrontRegardless()
+    except Exception as error:
+        if window is not None and original is not None:
+            _restore_native_window_order(window, original)
+        if _recoverable_native_window_error(error):
+            return False
+        raise
+    return True
+
+
+def remove_host_window_shadow(widget):
+    """Keep the translucent shelf host from casting a rectangular Cocoa shadow.
+
+    The rounded card paints its own shadow; its larger native host is only a
+    transparent animation canvas. Cocoa otherwise shadows that entire canvas.
+    """
+    if sys.platform != 'darwin' or not native_input_available():
+        return False
+    try:
+        import objc
+        view = objc.objc_object(c_void_p=ctypes.c_void_p(int(widget.winId())))
+        window = view.window()
+        if window is None:
+            return False
+        window.setHasShadow_(False)
+    except Exception as error:
+        # A cosmetic host shadow must not prevent the application from
+        # launching if AppKit temporarily refuses a native-window operation.
+        if _recoverable_native_window_error(error):
+            return False
+        raise
+    return True
 
 
 def _qt_mask():
@@ -145,9 +421,12 @@ def window_move_active():
 def configure_media_backend(*, platform=None):
     platform = sys.platform if platform is None else platform
     if platform == 'win32':
-        os.environ['QT_MEDIA_BACKEND'] = 'windows'
+        os.environ['QT_MEDIA_BACKEND'] = 'ffmpeg'
     elif platform == 'darwin':
         os.environ['QT_MEDIA_BACKEND'] = 'darwin'
+        # QCocoaWindow::raise defaults to activateIgnoringOtherApps:YES.
+        # Passive shelf/edge reveals must leave the frontmost app selected.
+        os.environ['QT_MAC_SET_RAISE_PROCESS'] = '0'
 
 
 class _EventType(ctypes.Structure):

@@ -22,6 +22,7 @@ class WidgetRetirementQueue(QObject):
         self._pending = deque()
         self._queued_ids = set()
         self._owner_alive = True
+        self._paused = False
         self._batch_size = max(1, int(batch_size))
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
@@ -51,14 +52,26 @@ class WidgetRetirementQueue(QObject):
             return False
         self._pending.append(widget)
         self._queued_ids.add(key)
-        if not self._timer.isActive():
+        if not self._paused and not self._timer.isActive():
             self._timer.start()
         return True
+
+    def pause(self):
+        """Keep hidden rows alive until an interactive animation has landed."""
+        self._paused = True
+        self._timer.stop()
+
+    def resume(self):
+        self._paused = False
+        if self._pending and not self._timer.isActive():
+            self._timer.start()
 
     def retire_many(self, widgets: Iterable[QWidget]) -> int:
         return sum(self.retire(widget) for widget in widgets)
 
     def _drain(self):
+        if self._paused:
+            return
         for _ in range(min(self._batch_size, len(self._pending))):
             widget = self._pending.popleft()
             self._queued_ids.discard(id(widget))

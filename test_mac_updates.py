@@ -3,6 +3,8 @@ import os
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 
 import hashlib
+from io import BytesIO
+import json
 from pathlib import Path
 import plistlib
 import stat
@@ -12,6 +14,7 @@ import time
 import unittest
 from unittest.mock import patch
 import zipfile
+from urllib.request import Request
 
 from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication
@@ -90,6 +93,164 @@ class MacUpdateTests(unittest.TestCase):
         self.assertEqual(update.bundle_metadata(self.target)['CFBundleShortVersionString'], '1.7.1')
         self.assertFalse(prepared.stage.exists())
         self.assertFalse(list(self.target.parent.glob('.FlickDock.rollback-*')))
+
+    def test_user_owned_staging_can_replace_system_application_after_authorization(self):
+        prepared = update.prepare_update(self.zip, self.manifest, current_version='1.7.0',
+                    installed_app=self.target, staging_parent=self.zip.parent)
+        self.prepared.append(prepared)
+        self.assertEqual(prepared.stage.parent, self.zip.parent)
+        self.assert_old()
+        steps = []
+        update.install_prepared(prepared, test_only=True,
+            replacement_ready=lambda: steps.append('replaced'),
+            await_readiness=lambda: steps.append('ready'))
+        self.assertEqual(steps, ['replaced', 'ready'])
+        self.assertEqual(update.bundle_metadata(self.target)['CFBundleShortVersionString'], '1.7.1')
+        self.assertFalse(prepared.stage.exists())
+        self.assertFalse(list(self.target.parent.glob('.flickdock-update-*')))
+
+    def test_failed_new_app_readiness_restores_original_after_cross_directory_swap(self):
+        prepared = update.prepare_update(self.zip, self.manifest, current_version='1.7.0',
+                    installed_app=self.target, staging_parent=self.zip.parent)
+        self.prepared.append(prepared)
+        events = []
+        def fail_readiness():
+            events.append('readiness checked')
+            raise TimeoutError('injected startup failure')
+        with self.assertRaisesRegex(TimeoutError, 'injected startup failure'):
+            update.install_prepared(prepared, test_only=True,
+                replacement_ready=lambda: events.append('replacement signalled'),
+                await_readiness=fail_readiness)
+        self.assertEqual(events, ['replacement signalled', 'readiness checked'])
+        self.assert_old()
+        self.assertTrue(prepared.app_path.exists())
+        self.assertFalse(list(self.target.parent.glob('.FlickDock.rollback-*')))
+        self.assertFalse(list(self.target.parent.glob('.flickdock-update-*')))
+
+    def test_admin_command_quotes_untrusted_path_without_running_a_shell_here(self):
+        prepared = update.prepare_update(self.zip, self.manifest, current_version='1.7.0',
+                    installed_app=self.target, staging_parent=self.zip.parent)
+        self.prepared.append(prepared)
+        script = update._administrator_script(prepared,
+                     self.target / 'Contents' / 'MacOS' / 'FlickDock')
+        self.assertTrue(script.startswith('do shell script "'))
+        self.assertIn('with administrator privileges', script)
+        self.assertIn('--elevated-mac-update', script)
+        self.assertIn('update-receipt.json', script)
+
+    def test_privileged_helper_ignores_tampered_user_stage_and_installs_sealed_zip(self):
+        prepared = update.prepare_update(self.zip, self.manifest, current_version='1.7.0',
+                    installed_app=self.target, staging_parent=self.zip.parent)
+        self.prepared.append(prepared)
+        update.launch_update_helper(prepared,
+                    executable=self.target / 'Contents/MacOS/FlickDock',
+                    popen=lambda *args, **kwargs: object(), quit_callback=lambda: None)
+        (prepared.app_path / 'Contents/MacOS/FlickDock').write_bytes(b'\xcf\xfa\xed\xfeTAMPERED')
+        marker = prepared.stage / 'replacement-ready'
+        def acknowledge():
+            deadline = time.monotonic() + 3
+            while not marker.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            (prepared.stage / 'launch-ready').write_text(prepared.ready_token, encoding='ascii')
+        thread = threading.Thread(target=acknowledge)
+        thread.start()
+        try:
+            update.run_elevated_update_helper(prepared.stage / 'update-receipt.json',
+                    test_only=True, pid_alive=lambda pid: False,
+                    trusted_manifest=self.manifest)
+        finally:
+            thread.join(timeout=3)
+        self.assertEqual((self.target / 'Contents/MacOS/FlickDock').read_bytes(),
+                         b'\xcf\xfa\xed\xfeNEW-FIXTURE')
+
+    def test_privileged_real_install_waits_for_original_gui_not_its_own_pid(self):
+        prepared = update.prepare_update(self.zip, self.manifest, current_version='1.7.0',
+                    installed_app=self.target, staging_parent=self.zip.parent)
+        self.prepared.append(prepared)
+        # The original GUI has exited; the elevated helper is still alive.
+        prepared.owner_pid = 2147483647
+        update.launch_update_helper(prepared,
+                    executable=self.target / 'Contents/MacOS/FlickDock',
+                    popen=lambda *args, **kwargs: object(), quit_callback=lambda: None)
+        original_install = update.install_prepared
+        installed_owner_pids = []
+        def install_with_real_guard(fresh, **kwargs):
+            installed_owner_pids.append(fresh.owner_pid)
+            return original_install(fresh, **kwargs)
+        with (patch.object(update.sys, 'platform', 'darwin'),
+              patch.object(update.sys, 'frozen', True, create=True),
+              patch.object(update.os, 'geteuid', return_value=0, create=True),
+              patch.object(update, '_privileged_receipt', return_value=self.target),
+              patch.object(update, '_ensure_stable_root_runtime'),
+              patch.object(update, '_signed_receipt_manifest', return_value=self.manifest),
+              patch.object(update, '_pid_alive', side_effect=lambda pid: pid == os.getpid()),
+              patch.object(update, '_write_privileged_marker'),
+              patch.object(update, '_wait_for_ready'),
+              patch.object(update, 'install_prepared', side_effect=install_with_real_guard)):
+            result = update.run_elevated_update_helper(prepared.stage / 'update-receipt.json',
+                         pid_alive=lambda pid: False)
+        self.assertEqual(result, self.target)
+        self.assertEqual(installed_owner_pids, [prepared.owner_pid])
+        self.assertEqual(update.bundle_metadata(self.target)['CFBundleShortVersionString'], '1.7.1')
+
+    def test_privileged_helper_rejects_archive_changed_after_user_preparation(self):
+        prepared = update.prepare_update(self.zip, self.manifest, current_version='1.7.0',
+                    installed_app=self.target, staging_parent=self.zip.parent)
+        self.prepared.append(prepared)
+        update.launch_update_helper(prepared,
+                    executable=self.target / 'Contents/MacOS/FlickDock',
+                    popen=lambda *args, **kwargs: object(), quit_callback=lambda: None)
+        self.zip.write_bytes(self.zip.read_bytes() + b'TAMPER')
+        with self.assertRaisesRegex(ValueError, '官方索引'):
+            update.run_elevated_update_helper(prepared.stage / 'update-receipt.json',
+                    test_only=True, pid_alive=lambda pid: False,
+                    trusted_manifest=self.manifest)
+        self.assert_old()
+        self.assertFalse(list(self.target.parent.glob('.flickdock-update-*')))
+
+    def test_privileged_manifest_is_verified_offline_and_rejects_tampering(self):
+        import copy
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from cryptography.hazmat.primitives import serialization
+        from update_signatures import TRUSTED_PUBLISHERS,sign_manifest
+        key=Ed25519PrivateKey.generate()
+        public=key.public_key().public_bytes(serialization.Encoding.Raw,serialization.PublicFormat.Raw).hex()
+        published=dict(schema_version=1,version='1.7.1',platform='darwin',architecture='arm64',
+            published_at='2026-11-11T00:00:00Z',notes='fixture',
+            installer=dict(url='https://gitee.com/release/update.zip',size=self.manifest['installer']['size'],
+                           sha256=self.manifest['installer']['sha256']))
+        with patch.dict(TRUSTED_PUBLISHERS,{'fixture':public}):
+            signed=sign_manifest(published,key,'fixture')
+            prepared=update.prepare_update(self.zip,signed,current_version='1.7.0',
+                installed_app=self.target,staging_parent=self.zip.parent)
+            self.prepared.append(prepared)
+            with patch.object(update,'update_architecture',return_value='arm64'):
+                self.assertEqual(update._signed_receipt_manifest(prepared),signed)
+                for field,value in [('version','1.7.2'),('notes','tampered')]:
+                    prepared.manifest=copy.deepcopy(signed);prepared.manifest[field]=value
+                    with self.assertRaises(ValueError):update._signed_receipt_manifest(prepared)
+                prepared.manifest=copy.deepcopy(signed);prepared.manifest.pop('publisher_signature')
+                with self.assertRaisesRegex(ValueError,'签名'):update._signed_receipt_manifest(prepared)
+
+    @unittest.skipUnless(os.name == 'posix', 'Directory descriptor markers require POSIX')
+    def test_privileged_replacement_marker_is_readable_by_owner(self):
+        prepared = update.prepare_update(self.zip, self.manifest, current_version='1.7.0',
+                    installed_app=self.target, staging_parent=self.zip.parent)
+        self.prepared.append(prepared)
+        update._write_privileged_marker(prepared, 'replacement-ready')
+        marker = prepared.stage / 'replacement-ready'
+        self.assertEqual(marker.read_text(encoding='ascii'), prepared.ready_token)
+        self.assertEqual(stat.S_IMODE(marker.stat().st_mode), 0o644)
+        with self.assertRaises(FileExistsError):
+            update._write_privileged_marker(prepared, 'replacement-ready')
+
+    def test_failed_mac_handoff_is_reported_once_to_restarted_app(self):
+        prepared = self.prepare()
+        profile = self.base / 'FlickDock'
+        prepared.source_archive = profile / 'updates' / prepared.version / 'update.zip'
+        update._record_update_failure(prepared, '管理员授权已取消')
+        self.assertEqual(update.consume_update_failure(profile), '管理员授权已取消')
+        self.assertEqual(update.consume_update_failure(profile), '')
 
     def test_hash_size_version_identity_and_macho_fail_without_changes(self):
         for case in ('hash', 'size', 'version', 'identity', 'macho', 'downgrade'):
@@ -178,7 +339,7 @@ class MacUpdateTests(unittest.TestCase):
             update.launch_update_helper(prepared, executable=executable, popen=popen,
                                          quit_callback=lambda: events.append(('quit',)))
         self.assertEqual([item[0] for item in events], ['spawn', 'quit'])
-        self.assertEqual(events[0][1][:2], [str(executable), '--apply-mac-update'])
+        self.assertEqual(events[0][1][:2], [str(prepared.helper_app/'Contents/MacOS/FlickDock'), '--apply-mac-update'])
         self.assert_old()
         receipt = Path(events[0][1][2])
         with self.assertRaises(TimeoutError):

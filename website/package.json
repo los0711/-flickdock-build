@@ -1,0 +1,14 @@
+{
+  "name": "flickdock-site",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "node scripts/publish.mjs",
+    "check": "node test/check-site.mjs && node test/check-gateway.mjs",
+    "build:retiehe": "node scripts/build-retiehe.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "4.153.0"
+  }
+}

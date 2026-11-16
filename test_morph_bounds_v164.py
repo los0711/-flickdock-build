@@ -3,6 +3,8 @@
 QT offscreen only; a zero-difference last frame does not establish that the
 intermediate frames obey their geometry. No native input, hotkeys or registry.
 """
+import shelf_ui_common
+import shelf_window
 import json
 import math
 import os
@@ -14,7 +16,7 @@ from unittest.mock import patch
 
 os.environ['QT_QPA_PLATFORM']='offscreen'
 os.environ['QT_SCALE_FACTOR']=os.environ.get('FLICKDOCK_TEST_DPR','1.25')
-from PySide6.QtCore import QEvent,QPoint,QPointF,QRect,Qt
+from PySide6.QtCore import QEvent,QPoint,QPointF,QRect,QRectF,Qt
 from PySide6.QtGui import QEnterEvent,QPainter
 from PySide6.QtWidgets import QApplication
 
@@ -31,7 +33,18 @@ def legacy_draw(effect,painter):
     painter.translate(center.x()+effect.dx,center.y()+effect.dy)
     painter.scale(effect.sx,effect.sy);painter.translate(-center.x(),-center.y())
     paint_surface_shadow(painter,rect,effect._shadow_cache,effect.blurRadius(),effect.offset(),effect.color())
-    if active:snapshot.paint_frame(painter,rect,live_draw=effect.drawSource,target_size=bounds.size())
+    if active:
+        # Freeze the historical direct-draw composition as well. Calling
+        # today's alpha-layer compositor here would repair the legacy path
+        # being deliberately exercised by this negative control.
+        painter.save();painter.setClipPath(surface_clip(rect))
+        painter.save();painter.translate(rect.x(),rect.y())
+        painter.scale(rect.width()/max(1,bounds.width()),rect.height()/max(1,bounds.height()))
+        effect.drawSource(painter);painter.restore()
+        if not snapshot.source.isNull() and snapshot.mix<1:
+            painter.setOpacity(1-snapshot.mix)
+            painter.drawPixmap(rect,snapshot.source,QRectF(snapshot.source.rect()))
+        painter.restore()
     else:effect.drawSource(painter)
     painter.restore()
 
@@ -42,8 +55,10 @@ def sample(shelf,progress):
     image=shelf.grab().toImage();ratio=image.devicePixelRatioF()
     rect=shelf._surface_snapshot.content_rect()
     center_x=round(rect.center().x()*ratio);center_y=round(rect.center().y()*ratio)
-    xs=[x for x in range(image.width()) if image.pixelColor(x,center_y).alpha()>=200]
-    ys=[y for y in range(image.height()) if image.pixelColor(center_x,y).alpha()>=200]
+    # Trace the half-coverage silhouette of the new translucent card. A 200
+    # threshold inspected the opaque interior, not its antialiased boundary.
+    xs=[x for x in range(image.width()) if image.pixelColor(x,center_y).alpha()>=128]
+    ys=[y for y in range(image.height()) if image.pixelColor(center_x,y).alpha()>=128]
     assert xs and ys,'surface disappeared'
     actual=[min(xs),min(ys),max(xs),max(ys)]
     expected=[math.floor(rect.left()*ratio),math.floor(rect.top()*ratio),
@@ -60,20 +75,20 @@ with tempfile.TemporaryDirectory(prefix='flickdock-bounds-v164-') as profile:
     import flickdock as subject
     from app_settings import SettingsStore
     from flickdock_motion import MotionShadow
-    from surface_morph import paint_surface_shadow
-    app=QApplication([]);subject.load_font(app)
+    from surface_morph import paint_surface_shadow,surface_clip
+    app=QApplication([]);shelf_ui_common.load_font(app)
     assert app.platformName()=='offscreen'
     manager=SimpleNamespace(motion=True,settings=SettingsStore(Path(profile)),save=lambda:None,
                             update_handles=lambda:None,activate_shelf=lambda _:None,
                             _quitting=False,outgoing_drag=False)
-    shelf=subject.ShelfWindow(manager,1);shelf.pinned=True
+    shelf=shelf_window.ShelfWindow(manager,1);shelf.pinned=True
     shelf.files['permanent']=[shelf.content.add_text('Readable content')];shelf.refresh()
     shelf._show_at(QPoint(1400,160),'manual',QPoint())
     shelf.presentation.jump(dict(sx=1,sy=1,dx=0,dy=0,alpha=1));app.processEvents()
     screen=SimpleNamespace(availableGeometry=lambda:QRect(0,0,1920,1080))
     with patch.object(subject.QGuiApplication,'screenAt',return_value=screen):shelf.show_contents()
     shelf.presentation.jump(dict(sx=1,sy=1,dx=0,dy=0,alpha=1))
-    shelf.geometry_morph.animation.pause()
+    shelf.geometry_morph.pause()
     # The same assertion must reject the controlled old presentation path.
     class LegacyMotionShadow(MotionShadow):
         def draw(self,painter):legacy_draw(self,painter)
@@ -99,7 +114,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-bounds-v164-') as profile:
         assert frame['alpha_beyond_shadow_below']<=2,frame
     shelf.geometry_morph.complete();shelf.collapse_contents()
     shelf.presentation.jump(dict(sx=1,sy=1,dx=0,dy=0,alpha=1))
-    shelf.geometry_morph.animation.pause()
+    shelf.geometry_morph.pause()
     collapse=[sample(shelf,p) for p in (0,.1,.3,.5,.9,1)]
     for frame in collapse:
         assert frame['max_bound_error_physical_px']<=2,frame
@@ -115,12 +130,12 @@ with tempfile.TemporaryDirectory(prefix='flickdock-bounds-v164-') as profile:
     for progress in (.1,.5,.9):
         with patch.object(subject.QGuiApplication,'screenAt',return_value=screen):shelf.show_contents()
         shelf.presentation.jump(dict(sx=1,sy=1,dx=0,dy=0,alpha=1))
-        shelf.geometry_morph.animation.pause()
+        shelf.geometry_morph.pause()
         previous=sample(shelf,progress);visual=QRect(shelf.visual_geometry())
         ratio=shelf.devicePixelRatioF()
         global_before=[value+round((shelf.x() if i%2==0 else shelf.y())*ratio)
                        for i,value in enumerate(previous['actual_physical_bounds'])]
-        shelf.collapse_contents();shelf.presentation.stop();shelf.geometry_morph.animation.pause()
+        shelf.collapse_contents();shelf.presentation.stop();shelf.geometry_morph.pause()
         after=sample(shelf,0)
         global_after=[value+round((shelf.x() if i%2==0 else shelf.y())*ratio)
                       for i,value in enumerate(after['actual_physical_bounds'])]

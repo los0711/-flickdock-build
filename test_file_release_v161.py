@@ -1,7 +1,7 @@
 """Prove native media handles release, with no desktop window or sound."""
 import os
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
-os.environ["QT_MEDIA_BACKEND"] = "windows"
+os.environ["QT_MEDIA_BACKEND"] = "ffmpeg"
 
 import argparse
 import ctypes
@@ -106,7 +106,8 @@ with tempfile.TemporaryDirectory(prefix="flickdock-media-release-") as temporary
         print("PASS selecting a new source releases the previous file")
 
         hidden = load("card-hide")
-        poster = viewer.surface.image.copy()
+        # The native renderer owns the displayed frame; the CPU image is a cached poster.
+        poster = viewer.video_sink.videoFrame().toImage()
         card.hide()  # Mirrors the shelf card's temporary morph hide.
         assert viewer.player is None and viewer.path == str(hidden)
         assert wait_until(app, lambda: exclusive_error(hidden) == 0)

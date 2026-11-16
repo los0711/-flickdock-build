@@ -3,6 +3,7 @@
 ## Delivery
 
 - Source repository: `https://gitee.com/rooogerluo/flick-dock`; keep it private.
+- The user subsequently explicitly authorized the existing GitHub build mirror `https://github.com/los0711/-flickdock-build` to be public. This is an exception for the reviewed source manifest used by macOS CI; it does not authorize publishing credentials, user data, workspace outputs, or a source ZIP. Do not change repository visibility or enable paid build overages.
 - Public release repository: `https://gitee.com/rooogerluo/flick-dock-releases`; only public release notes, installers and the update index belong there.
 - In this project, a request to upload source or publish a changed version includes completing the release: inspect current remote state, bump the version when application code changes, run relevant regressions, build and verify the frozen application and installer, push the selected sources and immutable version tag to the private repository, publish the public installer, verify its anonymous download, and publish `updates/latest.json` last. Read it back and test with the shipped updater. Follow `PUBLISHING.md` and `release_manifest.py`.
 - Do not report online update as completed after only a source push. On failure, preserve the previous working index and report the specific unfinished step. Never replace bytes under an existing version or move a published version tag.
@@ -15,4 +16,4 @@
 - Preserve the single permanent shelf, native text drag payloads, reference/copy modes, hover preview restoration, native Save As and file-handle cleanup.
 - Preserve preallocated native animation host geometry, surface transactions and the source-pixmap compositor. Changing native window dimensions during the expand/collapse animation reintroduces flicker.
 - Shake sensitivity controls actual acceleration, speed and reversal counts. Keep high-resolution `perf_counter` timestamps and the separation between MIME probe and configured gesture detection.
-- UI uses bundled HarmonyOS Sans, consistent original SVG glyphs, clear Chinese labels and restrained feedback. No default tooltip with the full text content.
+- UI uses Microsoft YaHei on Windows and the Apple system font / PingFang SC on macOS, without distributing system font files. Use normal button text, consistent SVG glyphs with attribution, clear Chinese labels and restrained feedback. No default tooltip with the full text content.

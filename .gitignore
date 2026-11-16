@@ -3,6 +3,11 @@ __pycache__/
 .venv/
 venv/
 py/
+node_modules/
+p2p/runtime/
+p2p/asset-manifest.json
+syncthing/runtime/
+.wrangler/
 build/
 dist/
 outputs/

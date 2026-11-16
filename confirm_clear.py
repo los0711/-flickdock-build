@@ -6,11 +6,15 @@ those presentation caches from capturing confirmation pixels.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QEventLoop, QPoint, QRect, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QPainter
-from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel,
+from collections import OrderedDict
+from PySide6.QtCore import QEvent, QEventLoop, QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath
+from PySide6.QtWidgets import (QApplication, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel,
                                QPushButton, QSizePolicy, QVBoxLayout, QWidget)
 from shiboken6 import isValid
+from native_ui_common import (colors as ui_colors, set_ui_weight,paint_rounded_surface,qss_color,
+                              RoundedSurfaceFrame,RADIUS_CONTROL_PX,RADIUS_PANEL_PX)
+from flickdock_icons import draw_glyph
 
 
 MODAL_PROPERTY = "flickdockConfirmationActive"
@@ -49,7 +53,30 @@ class _SingleLineLabel(QLabel):
         self.setText(self.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, width))
 
 
-class _PointerConfirmButton(QPushButton):
+def _confirm_colors(widget):
+    owner=widget.parentWidget()
+    while owner is not None and not isinstance(owner,ClearConfirmOverlay):owner=owner.parentWidget()
+    if owner is None:raise RuntimeError('Confirmation control has no overlay owner')
+    return ui_colors(owner._theme)
+
+
+class _ConfirmButton(QPushButton):
+    def __init__(self,text,parent=None,*,danger=False):
+        super().__init__(text,parent);self.danger=danger
+
+    def paintEvent(self,event):
+        from PySide6.QtWidgets import QStyle,QStylePainter
+        from native_ui_common import button_style_option
+        c=_confirm_colors(self)
+        fill=('#991B1B' if self.isDown() else '#B91C1C' if self.underMouse() else '#DC2626') if self.danger else (c['selected'] if self.isDown() else c['hover'] if self.underMouse() else c['control'])
+        if not self.isEnabled():fill=c['control']
+        edge=c['ring'] if self.isEnabled() and self.property('keyboardFocus') else None
+        p=QStylePainter(self);paint_rounded_surface(p,self.rect(),RADIUS_CONTROL_PX,qss_color(fill),None if edge is None else qss_color(edge))
+        option=button_style_option(self);option.rect=self.style().subElementRect(QStyle.SE_PushButtonContents,option,self)
+        p.drawControl(QStyle.CE_PushButtonLabel,option);p.end()
+
+
+class _PointerConfirmButton(_ConfirmButton):
     """Keyboard defaults cannot accidentally activate the destructive action."""
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Enter, Qt.Key.Key_Return):
@@ -62,6 +89,19 @@ class _PointerConfirmButton(QPushButton):
             event.accept()
             return
         super().keyReleaseEvent(event)
+
+
+class _TrashMark(QLabel):
+    """Vector equivalent of the reference's trash emoji on Qt font backends."""
+    def paintEvent(self,event):
+        painter=QPainter(self);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        paint_rounded_surface(painter,self.rect(),RADIUS_PANEL_PX,qss_color(_confirm_colors(self)['control']))
+        draw_glyph(painter,'trash',self.rect().adjusted(12,12,-12,-12),getattr(self,'glyph_color','#171717'),1.8)
+
+
+class _ConfirmPanel(RoundedSurfaceFrame):
+    def surface_style(self):
+        c=_confirm_colors(self);return c['dialog_surface'],c['glass_border'],c['radius']
 
 
 class ClearConfirmOverlay(QWidget):
@@ -100,56 +140,69 @@ class ClearConfirmOverlay(QWidget):
         self._previous_focus = None
         self._scope_owned = False
         self._theme = "dark" if theme == "dark" else "light"
-        family = font_family or card.font().family()
+        family = QFont(card.font())
+        if font_family:
+            families=[font_family]
+            for name in (*family.families(),*QApplication.font().families()):
+                if name not in families:families.append(name)
+            family.setFamilies(families)
 
-        self.panel = QFrame(self)
+        self._shadow_cache=OrderedDict()
+        self.panel = _ConfirmPanel(self)
         self.panel.setObjectName("clearConfirmPanel")
         layout = QVBoxLayout(self.panel)
-        layout.setContentsMargins(28, 25, 28, 24)
-        layout.setSpacing(14)
-        self.title = QLabel("清空全部内容？", self.panel)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(16)
+        self.symbol=_TrashMark('',self.panel)
+        self.symbol.setObjectName('clearConfirmSymbol')
+        self.symbol.setFixedSize(44,44);self.symbol.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.symbol,0,Qt.AlignmentFlag.AlignHCenter)
+        text_group=QWidget(self.panel)
+        text_layout=QVBoxLayout(text_group);text_layout.setContentsMargins(0,0,0,0);text_layout.setSpacing(4)
+        self.title = QLabel(f"清空全部 {self.count} 个项目？", text_group)
+        self.title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.title.setTextFormat(Qt.TextFormat.PlainText)
         font = QFont(family)
-        font.setPixelSize(18)
-        font.setWeight(QFont.Weight.DemiBold)
+        font.setPixelSize(14)
+        set_ui_weight(font,600)
         self.title.setFont(font)
-        layout.addWidget(self.title)
+        text_layout.addWidget(self.title)
 
         self.description = _SingleLineLabel(
-            f"将移除搁架中的 {self.count} 个条目，磁盘上的原文件会保留。", self.panel,
-            compact_text=f"将移除 {self.count} 项，原文件保留。")
+            "外部原文件将保留，仅移除搁架记录与受管副本。", text_group,
+            compact_text="原文件保留，仅移除记录与受管副本。")
         body_font = QFont(family)
-        body_font.setPixelSize(13)
+        body_font.setPixelSize(12)
         self.description.setFont(body_font)
-        layout.addWidget(self.description)
-        layout.addSpacing(7)
+        self.description.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        text_layout.addWidget(self.description)
+        layout.addWidget(text_group)
 
         buttons = QHBoxLayout()
         buttons.setContentsMargins(0, 0, 0, 0)
-        buttons.setSpacing(12)
-        buttons.addStretch(1)
-        self.cancel_button = QPushButton("取消", self.panel)
+        buttons.setSpacing(10)
+        self.cancel_button = _ConfirmButton("取消", self.panel)
         self.cancel_button.setObjectName("clearCancelButton")
         self.cancel_button.setAccessibleName("取消清空")
         self.cancel_button.setDefault(True)
         self.cancel_button.setAutoDefault(False)
         self.cancel_button.clicked.connect(self.cancel)
-        self.delete_button = _PointerConfirmButton("删除", self.panel)
+        self.delete_button = _PointerConfirmButton("清空", self.panel,danger=True)
         self.delete_button.setObjectName("clearDeleteButton")
         self.delete_button.setAccessibleName("删除全部搁架内容")
         self.delete_button.setDefault(False)
         self.delete_button.setAutoDefault(False)
         self.delete_button.clicked.connect(lambda: self._finish(True))
         button_font = QFont(family)
-        button_font.setPixelSize(13)
-        button_font.setWeight(QFont.Weight.Medium)
+        button_font.setPixelSize(12)
+        set_ui_weight(button_font,400)
         for button in (self.cancel_button, self.delete_button):
             button.setFont(button_font)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
-            button.setMinimumSize(max(112, button.fontMetrics().horizontalAdvance(button.text()) + 40),
-                                  max(42, button.fontMetrics().height() + 20))
-            button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-            buttons.addWidget(button)
+            button.setMinimumSize(button.fontMetrics().horizontalAdvance(button.text()) + 32,32)
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            button.setFixedHeight(32)
+            buttons.addWidget(button,1)
         layout.addLayout(buttons)
         QWidget.setTabOrder(self.cancel_button, self.delete_button)
         QWidget.setTabOrder(self.delete_button, self.cancel_button)
@@ -159,27 +212,21 @@ class ClearConfirmOverlay(QWidget):
 
     @property
     def minimum_host_size(self):
-        width = max(440, self.description.fontMetrics().horizontalAdvance(self.description.full_text) + 104)
-        return QSize(width, self.panel.layout().sizeHint().height() + 32)
+        return QSize(376, self.panel.layout().sizeHint().height() + 32)
 
     def apply_theme(self, theme: str):
         self._theme = "dark" if theme == "dark" else "light"
-        dark = self._theme == "dark"
-        surface, border = ("#252b35", "#465266") if dark else ("#ffffff", "#dce3ed")
-        text, secondary = ("#edf2fa", "#b5c3d8") if dark else ("#263344", "#637186")
-        button, hover, pressed = ("#394555", "#46556b", "#51627b") if dark else ("#edf1f6", "#e2eaf4", "#d5e0ef")
-        accent = "#8bbfff" if dark else "#1876db"
-        self.panel.setStyleSheet(f"QFrame#clearConfirmPanel {{background:{surface};border:1px solid {border};border-radius:18px;}}")
+        c=ui_colors(self._theme)
+        text,secondary=c['text'],c['secondary']
+        self.panel.setStyleSheet('QFrame#clearConfirmPanel{background:transparent;border:0;}')
+        self.symbol.glyph_color=c['text'];self.symbol.setStyleSheet(f"background:transparent;color:{c['text']};border:0;font-size:20px;");self.symbol.update()
         self.title.setStyleSheet(f"color:{text};background:transparent;border:0;")
         self.description.setStyleSheet(f"color:{secondary};background:transparent;border:0;")
         self.cancel_button.setStyleSheet(
-            f"QPushButton {{background:{button};color:{text};border:1px solid {border};border-radius:10px;padding:0 18px;}}"
-            f"QPushButton:hover {{background:{hover};}} QPushButton:pressed {{background:{pressed};}}"
-            f"QPushButton:focus {{border:2px solid {accent};}}")
+            f"QPushButton {{background:transparent;color:{text};border:0;padding:1px 13px;}}")
         self.delete_button.setStyleSheet(
-            "QPushButton {background:#c83e49;color:#ffffff;border:1px solid #b72f3b;border-radius:10px;padding:0 18px;}"
-            "QPushButton:hover {background:#bb3440;} QPushButton:pressed {background:#a72b36;}"
-            f"QPushButton:focus {{border:2px solid {accent};}}")
+            "QPushButton {background:transparent;color:#FFFFFF;border:0;padding:1px 13px;font-weight:400;}")
+        self.panel.update();self.cancel_button.update();self.delete_button.update()
         self.update()
 
     def _layout_overlay(self):
@@ -187,7 +234,7 @@ class ClearConfirmOverlay(QWidget):
             return
         self.setGeometry(QRect(self.card.mapTo(self.owner, QPoint()), self.card.size()))
         hint = self.panel.layout().sizeHint()
-        preferred = max(480, self.description.fontMetrics().horizontalAdvance(self.description.full_text) + 56)
+        preferred = 340
         width = min(preferred, max(1, self.width() - 36))
         height = min(hint.height(), max(1, self.height() - 24))
         self.panel.setGeometry((self.width() - width) // 2, (self.height() - height) // 2, width, height)
@@ -196,10 +243,15 @@ class ClearConfirmOverlay(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(5, 12, 24, 112 if self._theme == "dark" else 48))
-        painter.drawRoundedRect(self.rect(), 24, 24)
+        radius=ui_colors(self._theme)['radius']
+        paint_rounded_surface(painter,self.rect(),radius,QColor(0,0,0,128))
+        from surface_morph import paint_surface_shadow
+        outside=QPainterPath();outside.addRect(QRectF(self.rect()))
+        inner=QPainterPath();inner.addRoundedRect(QRectF(self.panel.geometry()),radius,radius)
+        painter.save();painter.setClipPath(outside.subtracted(inner))
+        paint_surface_shadow(painter,QRectF(self.panel.geometry()),self._shadow_cache,blur=32,
+                             offset=QPoint(0,6),color=QColor(0,0,0,140 if self._theme=='dark' else 41),radius=radius)
+        painter.restore()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -326,3 +378,50 @@ class ClearConfirmOverlay(QWidget):
     def closeEvent(self, event):
         self.cancel()
         event.accept()
+
+
+class DeleteConfirmOverlay(ClearConfirmOverlay):
+    """Choose a deletion scope while retaining the shelf's modal lifecycle."""
+    def __init__(self,card,count,selected_count,**kwargs):
+        super().__init__(card,count,**kwargs)
+        self.scope=None
+        self.setAccessibleName('删除搁架项目')
+        self.title.setText('删除搁架项目？')
+        self.selected_button=_PointerConfirmButton('删除已选',self.panel)
+        self.selected_button.setAccessibleName(f'删除已选的 {selected_count} 个项目')
+        self.selected_button.setEnabled(selected_count>0)
+        self.selected_button.setFont(self.delete_button.font())
+        self.selected_button.setCursor(Qt.PointingHandCursor)
+        self.selected_button.setMinimumSize(self.selected_button.fontMetrics().horizontalAdvance('删除已选')+32,32)
+        self.selected_button.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
+        self.selected_button.setFixedHeight(32)
+        self.selected_button.clicked.connect(lambda:self._choose('selected'))
+        self.delete_button.setText('删除全部')
+        self.delete_button.setMinimumWidth(self.delete_button.fontMetrics().horizontalAdvance('删除全部')+32)
+        self.delete_button.clicked.disconnect()
+        self.delete_button.clicked.connect(lambda:self._choose('all'))
+        buttons=self.panel.layout().itemAt(self.panel.layout().count()-1).layout()
+        buttons.removeWidget(self.cancel_button);buttons.removeWidget(self.delete_button)
+        for control in (self.selected_button,self.delete_button,self.cancel_button):buttons.addWidget(control,1)
+        QWidget.setTabOrder(self.cancel_button,self.selected_button)
+        QWidget.setTabOrder(self.selected_button,self.delete_button)
+        QWidget.setTabOrder(self.delete_button,self.cancel_button)
+        self.apply_theme(self._theme);self._layout_overlay()
+
+    def apply_theme(self,theme):
+        super().apply_theme(theme)
+        if hasattr(self,'selected_button'):
+            c=ui_colors(self._theme)
+            self.selected_button.setStyleSheet(self.cancel_button.styleSheet()+
+                f"QPushButton{{color:{c['red']};}} QPushButton:disabled{{color:{c['muted']};background:{c['control']};}}")
+
+    def open(self):
+        self.scope=None
+        return super().open()
+
+    def _choose(self,scope):
+        self.scope=scope;self._finish(True)
+
+    def _finish(self,accepted):
+        if not accepted:self.scope=None
+        super()._finish(accepted)

@@ -1,11 +1,15 @@
 """Public shelf entry checks, with isolated data and offscreen Qt only."""
+import overview_ui
+import shelf_ui_common
+import shelf_window
 import os
 from pathlib import Path
 import tempfile
 import time
+from types import SimpleNamespace
 from unittest.mock import patch
 os.environ['QT_QPA_PLATFORM']='offscreen'
-from PySide6.QtCore import QPoint,Qt,QEvent,QPointF
+from PySide6.QtCore import QPoint,QRect,Qt,QEvent,QPointF
 from PySide6.QtGui import QContextMenuEvent,QMouseEvent,QEnterEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication,QSystemTrayIcon
@@ -19,15 +23,16 @@ with tempfile.TemporaryDirectory(prefix='flickdock-interactions-v163-') as tmp:
     os.environ['APPDATA']=str(Path(tmp)/'profile')
     import flickdock as subject,app_settings
     from content_grid import IconItem
-    app=QApplication([]);subject.load_font(app)
-    with patch.object(subject,'motion_enabled',return_value=False),patch.object(QSystemTrayIcon,'show'),patch.object(QSystemTrayIcon,'hide'),patch.object(app_settings,'_read_startup_value') as reg_read,patch.object(app_settings,'_write_startup_value') as reg_write:
+    app=QApplication([]);shelf_ui_common.load_font(app)
+    screen=SimpleNamespace(availableGeometry=lambda:QRect(0,0,1920,1080))
+    with patch.object(subject.QGuiApplication,'screenAt',return_value=screen),patch.object(subject.QGuiApplication,'primaryScreen',return_value=screen),patch.object(subject,'motion_enabled',return_value=False),patch.object(QSystemTrayIcon,'show'),patch.object(QSystemTrayIcon,'hide'),patch.object(app_settings,'_read_startup_value') as reg_read,patch.object(app_settings,'_write_startup_value') as reg_write:
         manager=subject.ShelfManager(app);manager.timer.stop();shelf=manager.shelf
         refs=[]
         for i in range(3):
             path=Path(tmp)/f'original-{i}.txt';path.write_text(str(i),encoding='utf8');refs.append(str(path))
         shelf.add_paths('permanent',refs)
         shelf.show_transient(QPoint(400,350));shelf.show_contents();popup=shelf.popup
-        for mode,kind in (('list',subject.FileRow),('icons',IconItem)):
+        for mode,kind in (('list',overview_ui.FileRow),('icons',IconItem)):
             manager.settings.update(view_mode=mode)
             until(lambda:popup._build_cursor==len(popup.visible_refs()) and popup.retirement.is_idle)
             app.processEvents()
@@ -50,10 +55,11 @@ with tempfile.TemporaryDirectory(prefix='flickdock-interactions-v163-') as tmp:
             chosen=set(popup.selected);exports=[]
             def drag(drag,*args):
                 exports.append({str(Path(url.toLocalFile()).resolve()) for url in drag.mimeData().urls()});return Qt.DropAction.CopyAction
-            QTest.mousePress(item,Qt.MouseButton.LeftButton,pos=QPoint(15,25))
-            move=QMouseEvent(QEvent.Type.MouseMove,QPointF(40,25),QPointF(item.mapToGlobal(QPoint(40,25))),Qt.MouseButton.NoButton,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier)
+            # Drag the card body; the reference adds a checkbox at (12,12).
+            QTest.mousePress(item,Qt.MouseButton.LeftButton,pos=QPoint(38,50))
+            move=QMouseEvent(QEvent.Type.MouseMove,QPointF(65,50),QPointF(item.mapToGlobal(QPoint(65,50))),Qt.MouseButton.NoButton,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier)
             with patch.object(subject.QDrag,'exec',drag):QApplication.sendEvent(item,move)
-            QTest.mouseRelease(item,Qt.MouseButton.LeftButton,pos=QPoint(40,25))
+            QTest.mouseRelease(item,Qt.MouseButton.LeftButton,pos=QPoint(65,50))
             assert exports==[chosen] and popup.selected==chosen,(mode,exports,chosen,popup.selected)
         packed=[]
         with patch.object(shelf,'compress_refs',side_effect=lambda paths:packed.append(list(paths))):
@@ -62,7 +68,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-interactions-v163-') as tmp:
         popup.set_category('all')
         menus=[]
         def read_menu(menu,*args):menus.append([action.text() for action in menu.actions()])
-        with patch.object(subject.AnimatedMenu,'exec',read_menu):
+        with patch.object(shelf_ui_common.AnimatedMenu,'exec',read_menu):
             shelf.show_menu(pos=QPoint(200,100))
             popup.selected.clear();popup.show_item_menu(refs[0],QPoint(200,100))
         assert not any('重命名' in label or label=='打开文件' or '移动' in label for label in menus[0])
@@ -74,7 +80,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-interactions-v163-') as tmp:
         assert shelf.files['permanent']==[renamed,*refs[1:]]
         assert popup.primary_selection==renamed
         moved=Path(tmp)/'moved';moved.mkdir()
-        with patch.object(subject.QFileDialog,'getExistingDirectory',return_value=str(moved)):
+        with patch.object(shelf_window.QFileDialog,'getExistingDirectory',return_value=str(moved)):
             shelf.move_files('permanent',[renamed])
         assert (moved/'renamed.txt').read_text()=='0' and not Path(renamed).exists()
         assert all(Path(ref).is_file() for ref in refs[1:])
@@ -84,10 +90,24 @@ with tempfile.TemporaryDirectory(prefix='flickdock-interactions-v163-') as tmp:
         assert shelf.expanded and shelf.presentation_kind=='dock'
         shelf.hide_immediately();manager.auto_shown=None
         manager._content_drag_validated(QPoint(300,300))
-        assert shelf.expanded and shelf.presentation_kind=='drag'
+        assert not shelf.expanded and shelf.presentation_kind=='drag'
         assert all(button.isHidden() for button in (shelf.pin_button,shelf.expand_button,shelf.menu_button,shelf.close_button))
         shelf.hide_immediately();manager.auto_shown=None;manager.settings.update(trigger_view='compact')
         manager._content_drag_validated(QPoint(300,300));assert not shelf.expanded
+        shelf.hide_immediately();shelf.reveal_from_dock()
+        settled=shelf._dock_target_rect()
+        assert shelf.surface_effect.color().alpha()>0
+        app.processEvents()
+        image=shelf.grab().toImage()
+        outside=shelf.card.geometry().topLeft()-QPoint(5,0)
+        assert image.pixelColor(outside).alpha()==0
+        with patch.object(shelf,'visual_geometry',return_value=QRect(-500,-500,1,1)):
+            assert shelf.hover_region_contains(settled.center())
+        shelf.hide_immediately()
+        with patch.object(shelf,'add_paths') as imported:
+            manager.show_lan_dialog()
+            manager.lan_dialog.panel.received_paths.emit([refs[0]])
+            imported.assert_not_called()
         shelf.remove_all('permanent');shelf.hide_immediately()
         manager.update_handles()
         assert manager.settings.keep_empty_handle and manager.edge.isVisible()
@@ -99,6 +119,24 @@ with tempfile.TemporaryDirectory(prefix='flickdock-interactions-v163-') as tmp:
         assert manager.shake_detector.config.minimum_peak_speed<750
         manager.settings.update(shake_sensitivity=1)
         assert manager.shake_detector.config.minimum_peak_speed>750
+        assert not hasattr(shelf,'cloud_button')
+        with patch.object(shelf_ui_common.AnimatedMenu,'exec',lambda menu,*args:menu.actions()[0].trigger()):
+            shelf.show_cloud_menu()
+        assert not manager.settings.sync_upload_enabled and manager.settings.sync_receive_enabled
+        assert not manager.sync.upload_enabled and manager.sync.receive_enabled
+        assert not hasattr(shelf,'network_status')
+        manager.show_settings()
+        dialog=manager.settings_dialog
+        assert not dialog.sync_upload_checkbox.isChecked() and dialog.sync_receive_checkbox.isChecked()
+        dialog.sync_receive_checkbox.setChecked(False)
+        assert not manager.settings.sync_receive_enabled and not manager.sync.receive_enabled
+        dialog.sync_upload_checkbox.setChecked(True)
+        dialog.sync_receive_checkbox.setChecked(True)
+        assert manager.sync.upload_enabled and manager.sync.receive_enabled
+        assert not hasattr(shelf,'cloud_button')
+        reloaded=app_settings.SettingsStore(manager.settings.base)
+        assert reloaded.sync_upload_enabled and reloaded.sync_receive_enabled
+        dialog.hide()
         reg_read.assert_not_called();reg_write.assert_not_called()
         manager.quit();app.processEvents()
         print('INTERACTIONS_V163_OK')

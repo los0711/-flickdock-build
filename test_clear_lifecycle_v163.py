@@ -3,6 +3,7 @@
 Use --baseline before the fix to save/read the old cache-containment evidence.
 All native input, tray, registry and resolver operations remain mocked.
 """
+import shelf_ui_common
 import contextlib
 import json
 import os
@@ -67,7 +68,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-clear-lifecycle-v163-') as te
     import flickdock as subject
     import app_settings
     app = QApplication([])
-    subject.load_font(app)
+    shelf_ui_common.load_font(app)
     with contextlib.ExitStack() as patches:
         for owner, name, value in [
             (subject, 'motion_enabled', lambda: True),
@@ -75,7 +76,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-clear-lifecycle-v163-') as te
             (subject.QCursor, 'pos', lambda *args: QPoint(1400, 350)),
             (subject.QGuiApplication, 'screenAt', lambda *args: Screen()),
             (subject.QGuiApplication, 'primaryScreen', lambda *args: Screen()),
-            (subject.ctypes.windll.user32, 'GetAsyncKeyState', lambda key: 0),
+            (shelf_ui_common.ctypes.windll.user32, 'GetAsyncKeyState', lambda key: 0),
             (subject, 'native_window_move_active', lambda: False),
             (app_settings, '_read_startup_value', lambda: None),
             (app_settings, '_write_startup_value', lambda *args: None),
@@ -102,7 +103,13 @@ with tempfile.TemporaryDirectory(prefix='flickdock-clear-lifecycle-v163-') as te
                 'sy': .90 if name=='appearing_spring' else 1, 'alpha': 1, 'dx': 0, 'dy': 0})
             if name=='appearing_spring':
                 shelf.presentation.animate({'sx': 1, 'sy': 1}, response=.4, damping=.7)
-            result = {'case': name, 'count': count}
+            # The reference UI has a red clear action in the underlying card.
+            # Confirmation must add no pixels to the card snapshot; compare
+            # against that real baseline instead of assuming a red-free UI.
+            probe=SurfaceSnapshot(shelf)
+            baseline_red=red_pixels(probe.capture_live(shelf.card,(shelf.pin_button,shelf.expand_button,shelf.menu_button,shelf.close_button)))
+            probe.deleteLater()
+            result = {'case': name, 'count': count, 'baseline_card_red_pixels':baseline_red}
             errors = []
             overlay_seen = []
             outer = QEventLoop()
@@ -126,7 +133,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-clear-lifecycle-v163-') as te
                     if not baseline:
                         assert overlay.parentWidget() is shelf
                         assert not result['overlay_in_card_subtree']
-                        assert result['active_card_snapshot_red_pixels'] == 0, result
+                        assert result['active_card_snapshot_red_pixels'] == result['baseline_card_red_pixels'], result
                     overlay.delete_button.click()
                     assert not overlay.active and not overlay.isVisible()
                     if not baseline:

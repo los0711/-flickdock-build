@@ -18,9 +18,8 @@ import app_settings as subject
 
 
 app = QApplication([])
-font_path = Path(__file__).with_name('fonts')/'HarmonyOS_Sans_SC_Regular.ttf'
-assert QFontDatabase.addApplicationFont(str(font_path)) >= 0
-app.setFont(QFont('HarmonyOS Sans SC', 11))
+from native_ui_common import configure_reference_font
+configure_reference_font(app)
 
 
 def flush():
@@ -46,9 +45,9 @@ def assert_tick_visible(checkbox):
     colors = [image.pixelColor(x, y)
               for y in range(round(rect.top()*ratio), round((rect.bottom()+1)*ratio))
               for x in range(round(rect.left()*ratio), round((rect.right()+1)*ratio))]
-    white = sum(min(c.red(), c.green(), c.blue()) >= 254 for c in colors)
-    blue = sum(c.blue()>175 and c.red()<100 and c.green()<180 for c in colors)
-    assert white >= 5 and blue >= 15, (checkbox.text(), white, blue, ratio)
+    light = sum(min(c.red(), c.green(), c.blue()) >= 180 for c in colors)
+    dark = sum(max(c.red(), c.green(), c.blue()) <= 90 for c in colors)
+    assert light >= 5 and dark >= 5, (checkbox.text(), light, dark, ratio)
     before = checkbox.isChecked()
     QTest.mouseClick(checkbox, Qt.MouseButton.LeftButton, pos=checkbox.indicator_rect().center())
     assert checkbox.isChecked() != before
@@ -62,6 +61,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-settings-v163-') as temporary
     store = subject.SettingsStore(root/'profile')
     assert store.capture_mode == 'reference' and store.keep_empty_handle
     assert store.trigger_view == 'compact' and store.shake_sensitivity == 50
+    assert store.sync_upload_enabled and store.sync_receive_enabled
     assert store.autostart and not store.path.exists()
     assert not store.reconcile_startup()
     changes = []
@@ -76,6 +76,12 @@ with tempfile.TemporaryDirectory(prefix='flickdock-settings-v163-') as temporary
     for value in ('move', '', False): assert_rejected(store, capture_mode=value)
     for value in ('overview', '', False): assert_rejected(store, trigger_view=value)
     for value in (1, 'false'): assert_rejected(store, keep_empty_handle=value)
+    for value in (0, 'false'): assert_rejected(store, sync_upload_enabled=value)
+    for value in (1, 'true'): assert_rejected(store, sync_receive_enabled=value)
+    assert store.update(sync_upload_enabled=False, sync_receive_enabled=False)
+    disabled = subject.SettingsStore(store.base)
+    assert not disabled.sync_upload_enabled and not disabled.sync_receive_enabled
+    assert store.update(sync_upload_enabled=True, sync_receive_enabled=True)
     assert store.update(shake_sensitivity=1)
     assert store.update(shake_sensitivity=50)
     print('PASS defaults, persistent new settings, strict validation and sensitivity boundaries')
@@ -133,13 +139,26 @@ with tempfile.TemporaryDirectory(prefix='flickdock-settings-v163-') as temporary
         assert dialog.shake_sensitivity_reset_button.dark == (theme == 'dark')
         for checkbox in dialog.findChildren(QCheckBox):
             assert isinstance(checkbox, subject.SettingsCheckBox)
-            assert_tick_visible(checkbox)
+            if isinstance(checkbox, subject.SettingsToggleSwitch):
+                checkbox.setChecked(True)
+                QTest.qWait(260)
+                image=checkbox.grab().toImage();ratio=image.devicePixelRatio()
+                left=image.pixelColor(round((checkbox.width()-40)*ratio),round(checkbox.height()*ratio/2))
+                knob=image.pixelColor(round((checkbox.width()-17)*ratio),round(checkbox.height()*ratio/2))
+                assert abs(left.lightness()-knob.lightness())>100,(theme,left.name(),knob.name())
+                before=checkbox.isChecked()
+                dialog.scroll.ensureWidgetVisible(checkbox,8,8);flush()
+                QTest.mouseClick(checkbox,Qt.MouseButton.LeftButton,
+                                 pos=QPoint(checkbox.width()-18,checkbox.height()//2))
+                assert checkbox.isChecked()!=before,(checkbox.text(),checkbox.accessibleName(),checkbox.isVisible(),checkbox.isEnabled())
+            else:
+                assert_tick_visible(checkbox)
             checkbox.setChecked(True)
         dialog.scroll.ensureWidgetVisible(dialog.shake_sensitivity_reset_button)
         flush()
         spin = dialog.shake_sensitivity_spin
         assert spin.width() >= spin.fontMetrics().horizontalAdvance('100')+30
-        assert dialog.capture_mode_combo.font().family() == 'HarmonyOS Sans SC'
+        assert dialog.capture_mode_combo.font().family() == app.font().family()
         if render_dir: dialog.grab().save(str(Path(render_dir)/f'settings-{theme}-{os.environ["QT_SCALE_FACTOR"]}.png'))
     print('PASS light/dark vector checkbox ticks, Harmony font, reset SVG and scrollable form at DPI', os.environ['QT_SCALE_FACTOR'])
 

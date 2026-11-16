@@ -1,4 +1,4 @@
-"""Native shelf content, including text which never becomes a disk document.
+"""Native shelf content, optionally with an owned TXT backing for pasted text.
 
 File references remain paths. Text references are opaque IDs backed by the
 state's JSON mapping. A native text-only drag exposes only text/plain, so an
@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import os
 import re
+import math
+import time
+from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -20,6 +23,40 @@ TEXT_PREFIX = "flickdock:text:"
 _CAPTURED_TEXT_NAME = re.compile(r"^拖入的文字(?: \(\d+\))?\.txt$", re.IGNORECASE)
 
 
+def _format_shelf_timestamp(stamp, compact=False):
+    if isinstance(stamp,bool) or not isinstance(stamp,(int,float)) or stamp<=0:
+        return None
+    try:
+        if not math.isfinite(stamp):return None
+        return datetime.fromtimestamp(stamp).strftime('%m-%d %H:%M:%S' if compact else '%Y-%m-%d %H:%M:%S')
+    except (OSError,OverflowError,ValueError):return None
+
+
+def shelf_added_time(content, ref, *, compact=False):
+    """Return the recorded intake/sync time, without inferring file dates."""
+    stamp=getattr(content,'metadata',{}).get(ref,{}).get('added_at')
+    if stamp is None:stamp=getattr(content,'pending',{}).get(ref,{}).get('added_at')
+    return _format_shelf_timestamp(stamp,compact)
+
+
+def ensure_observed_times(metadata, refs, *, now=None):
+    """Record when legacy entries were first observed, not a fabricated intake."""
+    now=time.time() if now is None else now
+    for ref in refs:
+        item=metadata.setdefault(ref,{})
+        if not _format_shelf_timestamp(item.get('added_at')) and not _format_shelf_timestamp(item.get('observed_at')):
+            item['observed_at']=now
+
+
+def shelf_time_info(content, ref, *, compact=False):
+    item=getattr(content,'metadata',{}).get(ref,{})
+    pending=getattr(content,'pending',{}).get(ref,{})
+    stamp=shelf_added_time(content,ref,compact=compact)
+    if stamp:return ('同步时间' if item.get('added_at_source')=='sync' else '放入时间',stamp)
+    observed=item.get('observed_at',pending.get('observed_at',getattr(content,'observed_at',None)))
+    return ('记录时间',_format_shelf_timestamp(observed,compact) or _format_shelf_timestamp(time.time(),compact))
+
+
 def _decode_text(data: bytes) -> str:
     try:
         return data.decode("utf-8-sig")
@@ -27,17 +64,18 @@ def _decode_text(data: bytes) -> str:
         return data.decode("gb18030", errors="replace")
 
 
-def _unique_image_path(directory: Path) -> Path:
-    candidate = directory / "拖入的图片.png"
+def _unique_image_path(directory: Path, suffix='.png') -> Path:
+    candidate = directory / ('拖入的图片'+suffix)
     if not candidate.exists():
         return candidate
     # UUID fallback has no fixed collection-size limit and avoids races with
     # another capture using the same human-readable file name.
-    return directory / f"拖入的图片-{uuid4().hex[:12]}.png"
+    return directory / f"拖入的图片-{uuid4().hex[:12]}{suffix}"
 
 
 class ContentRepository:
     def __init__(self, texts: dict[str, str] | None = None, metadata: dict | None = None):
+        self.observed_at=time.time()
         self.thumbnail_provider = None
         self.pending = {}
         self.transfers = {}
@@ -64,8 +102,11 @@ class ContentRepository:
             return ref in self.texts
         return isinstance(ref, str) and bool(ref) and Path(ref).exists()
 
-    def title(self, ref: str) -> str:
+    def title(self, ref: str, *, live=True) -> str:
         if self.is_pending(ref): return str(self.pending.get(ref,{}).get('name','正在接收'))[:160]
+        transfer=self.transfers.get(ref,{})
+        if live and transfer.get('remote') and isinstance(transfer.get('name'),str) and transfer['name'].strip():
+            return transfer['name'].strip().splitlines()[0][:160]
         title = self.metadata.get(ref, {}).get('title')
         if isinstance(title, str) and title.strip():
             return title.strip().splitlines()[0][:160]
@@ -96,6 +137,25 @@ class ContentRepository:
             return dict(self.texts)
         return {ref: self.texts[ref] for ref in refs if ref in self.texts}
 
+    def materialize_pasted_text(self,ref,capture_dir):
+        """Keep the text identity/MIME while giving a clipboard item a TXT file."""
+        raw=self.text(ref)
+        if raw is None:return None
+        from owned_files import owned_copy_spec
+        meta=self.metadata.get(ref,{})
+        existing=meta.get('text_file')
+        if existing and owned_copy_spec(existing,meta,capture_dir) and Path(existing).is_file():return str(existing)
+        root=Path(capture_dir).absolute();batch=root/'imports'/('capture-text-'+uuid4().hex)
+        batch.mkdir(parents=True,exist_ok=False)
+        path=batch/'粘贴的文字.txt'
+        try:
+            with path.open('xb') as stream:stream.write(raw.encode('utf8'))
+        except Exception:
+            path.unlink(missing_ok=True);batch.rmdir();raise
+        self.metadata.setdefault(ref,{}).update(text_file=str(path),title=path.name,
+            capture_mode='copy',owned_root=str(root),pasted_text=True)
+        return str(path)
+
     def prune(self, refs: list[str]) -> None:
         keep = set(refs)
         self.texts = {ref: text for ref, text in self.texts.items() if ref in keep}
@@ -113,6 +173,11 @@ class ContentRepository:
         if suffix in {'.png','.jpg','.jpeg','.webp','.gif','.bmp','.ico','.tif','.tiff','.svg','.svgz','.avif','.heic','.heif'}:
             return 'images'
         if suffix == '.ts':
+            cache=getattr(self,'file_metadata',None)
+            if cache is not None:
+                # Classification is eventually corrected by the metadata
+                # worker; never read file bytes on an interactive frame.
+                return cache.ts_category(ref) or 'files'
             try:
                 with Path(ref).open('rb') as stream: probe=stream.read(376)
                 return 'video' if len(probe)>188 and probe[0]==0x47 and probe[188]==0x47 else 'files'
@@ -151,6 +216,23 @@ class ContentRepository:
         local = [u.toLocalFile() for u in mime.urls() if u.isLocalFile() and u.toLocalFile()]
         if local:
             return [str(Path(path).resolve()) for path in local]
+        # A cloud image or encoded original is already lossless. Preserve its
+        # exact bytes rather than converting every photo to a new PNG.
+        for format in ('image/png','image/jpeg','image/webp','image/bmp','image/tiff'):
+            if not mime.hasFormat(format):continue
+            raw=bytes(mime.data(format))
+            if not raw:continue
+            from PySide6.QtCore import QBuffer,QByteArray,QIODevice
+            from PySide6.QtGui import QImageReader
+            buffer=QBuffer();buffer.setData(QByteArray(raw));buffer.open(QIODevice.ReadOnly)
+            reader=QImageReader(buffer);actual=bytes(reader.format()).decode('ascii',errors='ignore').lower()
+            suffix={'png':'.png','jpeg':'.jpg','jpg':'.jpg','webp':'.webp','bmp':'.bmp','tiff':'.tiff'}.get(actual)
+            valid=bool(suffix and reader.canRead());buffer.close()
+            if valid:
+                directory=Path(capture_dir);directory.mkdir(parents=True,exist_ok=True)
+                path=_unique_image_path(directory,suffix)
+                with path.open('xb') as stream:stream.write(raw)
+                return [str(path.resolve())]
         if mime.hasImage():
             image = mime.imageData()
             if isinstance(image, QPixmap):
@@ -174,6 +256,10 @@ class ContentRepository:
             name=self.title(ref)
             return document_pixmap(Path(name).suffix or ('TEXT' if self.pending.get(ref,{}).get('kind') in ('text','url') else 'FILE'),size,stack,dpr=dpr)
         provider = self.thumbnail_provider
+        cover=self.metadata.get(ref,{}).get('preview_image')
+        if (not self.is_text(ref) and provider is not None and isinstance(cover,str)
+                and Path(cover).suffix.lower() in RASTER_SUFFIXES and Path(cover).is_file()):
+            return provider(cover,size,dpr=dpr)
         if self.is_text(ref):
             cover = self.metadata.get(ref, {}).get('preview_image')
             if provider is not None and isinstance(cover, str) and Path(cover).suffix.lower() in RASTER_SUFFIXES:

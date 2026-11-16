@@ -1,0 +1,18 @@
+fastText lid.176.ftz language identification model
+
+The unmodified compressed model is distributed by Facebook AI Research.
+Source and model documentation: https://fasttext.cc/docs/en/language-identification.html
+Original model: https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.ftz
+SHA-256: 8f3472cfe8738a7b6099e8e999c3cbfae0dcd15696aac7d7738a8039db603e83
+
+The model is licensed under Creative Commons Attribution-ShareAlike 3.0:
+https://creativecommons.org/licenses/by-sa/3.0/
+Full legal code: https://creativecommons.org/licenses/by-sa/3.0/legalcode
+
+Please cite:
+Armand Joulin, Edouard Grave, Piotr Bojanowski, Tomas Mikolov,
+"Bag of Tricks for Efficient Text Classification", 2016,
+https://arxiv.org/abs/1607.01759
+Armand Joulin, Edouard Grave, Piotr Bojanowski, Matthijs Douze, Herve Jegou,
+Tomas Mikolov, "FastText.zip: Compressing text classification models", 2016,
+https://arxiv.org/abs/1612.03651

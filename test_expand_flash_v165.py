@@ -3,6 +3,8 @@
 The controlled case forces the native geometry flush window synchronously.
 It demonstrates a vulnerable Qt state, not a Windows DWM reproduction.
 """
+import shelf_ui_common
+import shelf_window
 import json
 import math
 import os
@@ -61,14 +63,14 @@ with tempfile.TemporaryDirectory(prefix='flickdock-expand-flash-v165-') as profi
     from app_settings import SettingsStore
     from surface_morph import SurfaceSnapshot
     from flickdock_motion import Spring
-    app=App([]);subject.load_font(app)
+    app=App([]);shelf_ui_common.load_font(app)
     assert app.platformName()=='offscreen'
     screen=SimpleNamespace(availableGeometry=lambda:QRect(0,0,1920,1080))
     results=[]
-    original_prepare=subject.ShelfWindow._prepare_morph
+    original_prepare=shelf_window.ShelfWindow._prepare_morph
     original_capture=SurfaceSnapshot.capture_live
-    original_source=subject.ShelfWindow._capture_morph_source
-    original_show_contents=subject.ShelfWindow.show_contents
+    original_source=shelf_window.ShelfWindow._capture_morph_source
+    original_show_contents=shelf_window.ShelfWindow.show_contents
 
     def prepare(owner,*args,**kwargs):
         previous=state.phase;state.phase='prepare';state.inside_prepare+=1
@@ -91,9 +93,9 @@ with tempfile.TemporaryDirectory(prefix='flickdock-expand-flash-v165-') as profi
         try:return original_show_contents(owner,*args,**kwargs)
         finally:owner.setUpdatesEnabled(enabled)
 
-    with patch.object(subject.ShelfWindow,'_prepare_morph',prepare), \
-         patch.object(subject.ShelfWindow,'_capture_morph_source',source), \
-         patch.object(subject.ShelfWindow,'show_contents',show_contents), \
+    with patch.object(shelf_window.ShelfWindow,'_prepare_morph',prepare), \
+         patch.object(shelf_window.ShelfWindow,'_capture_morph_source',source), \
+         patch.object(shelf_window.ShelfWindow,'show_contents',show_contents), \
          patch.object(SurfaceSnapshot,'capture_live',capture), \
          patch.object(subject.QGuiApplication,'screenAt',return_value=screen):
         for controlled in (False,True):
@@ -102,7 +104,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-expand-flash-v165-') as profi
             manager=SimpleNamespace(motion=True,settings=settings,save=lambda:None,
                                     update_handles=lambda:None,activate_shelf=lambda _:None,
                                     _quitting=False,outgoing_drag=False)
-            shelf=subject.ShelfWindow(manager,1);state.owner=shelf;shelf.pinned=True
+            shelf=shelf_window.ShelfWindow(manager,1);state.owner=shelf;shelf.pinned=True
             shelf.files['permanent']=[shelf.content.add_text('A visible compact preview')];shelf.refresh()
             original_show=shelf.show
             def first_show():
@@ -110,7 +112,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-expand-flash-v165-') as profi
                     # Model the proposed reservation while the window is
                     # still hidden, before its first native visible frame.
                     visual=shelf.visual_geometry();area=screen.availableGeometry()
-                    width=min(subject.EXPANDED_W,area.width()-38);height=min(subject.EXPANDED_H,area.height()-38)
+                    width=min(shelf_ui_common.EXPANDED_W,area.width()-38);height=min(shelf_ui_common.EXPANDED_H,area.height()-38)
                     right=visual.x()+visual.width()
                     x=max(area.left()+4,min(right-width-28,area.right()-width-20))
                     y=max(area.top()+4,min(visual.y(),area.bottom()-height-30))
@@ -124,7 +126,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-expand-flash-v165-') as profi
                 return original_show()
             with patch.object(shelf,'show',first_show):shelf._show_at(QPoint(1400,160),'manual',QPoint())
             shelf.presentation.jump(dict(sx=1,sy=1,dx=0,dy=0,alpha=1))
-            shelf.zones['permanent'].icon.landing.setCurrentTime(260)
+            shelf.zones['permanent'].icon.landing.setCurrentTime(shelf.zones['permanent'].icon.landing.duration())
             app.processEvents()
             original_geometry=shelf.setGeometry
             original_card_geometry=shelf.card.setGeometry
@@ -169,7 +171,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-expand-flash-v165-') as profi
             result=dict(controlled_native_flush=controlled,events=list(state.events),faults=list(state.faults),
                         source_alpha=source_alpha,target_alpha=target_alpha)
             results.append(result)
-            shelf.geometry_morph.animation.pause()
+            shelf.geometry_morph.pause()
             shelf.geometry_morph.complete()
             for spring in shelf.findChildren(Spring):spring.stop()
             shelf.image_cache.close();shelf.resolver.close();shelf.hide();state.owner=None

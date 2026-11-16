@@ -1,4 +1,6 @@
 """Real manager/drop intake lifecycle; no desktop, registry or native input."""
+import shelf_ui_common
+import shelf_window
 import contextlib
 import json
 import os
@@ -73,7 +75,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-intake-entry-v164-') as tempo
     import flickdock as subject
     from global_hotkeys import _NoopBackend
     app = QApplication([])
-    subject.load_font(app)
+    shelf_ui_common.load_font(app)
     with contextlib.ExitStack() as mocks:
         for owner, name, value in [
             (subject, 'motion_enabled', lambda: True),
@@ -81,7 +83,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-intake-entry-v164-') as tempo
             (subject.QCursor, 'pos', lambda *args: QPoint(500, 400)),
             (subject.QGuiApplication, 'screenAt', lambda *args: Screen()),
             (subject.QGuiApplication, 'primaryScreen', lambda *args: Screen()),
-            (subject.ctypes.windll.user32, 'GetAsyncKeyState', lambda key: 0),
+            (shelf_ui_common.ctypes.windll.user32, 'GetAsyncKeyState', lambda key: 0),
             (subject, 'native_window_move_active', lambda: False),
             (app_settings, '_read_startup_value', lambda: None),
             (app_settings, '_write_startup_value', lambda *args: None),
@@ -89,7 +91,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-intake-entry-v164-') as tempo
             (QSystemTrayIcon, 'hide', lambda self: None),
         ]: mocks.enter_context(patch.object(owner, name, value))
         for name in ('RegisterHotKey', 'UnregisterHotKey'):
-            mocks.enter_context(patch.object(subject.ctypes.windll.user32, name,
+            mocks.enter_context(patch.object(shelf_ui_common.ctypes.windll.user32, name,
                 side_effect=AssertionError('Native hotkey registration is forbidden')))
         manager = subject.ShelfManager(app)
         manager.timer.stop()
@@ -158,7 +160,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-intake-entry-v164-') as tempo
             original = source(f'{entry}-{mode}')
             pulses, hides = [], []
             zone = shelf.zones['permanent']
-            original_pulse = subject.StackTile.pulse
+            original_pulse = shelf_window.StackTile.pulse
             original_hide = shelf.hide_animated
             def pulse(tile, kind='drop', finished=None):
                 if kind=='drop' and tile in (zone.icon, getattr(shelf, '_intake_tile', None)):
@@ -167,7 +169,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-intake-entry-v164-') as tempo
             def hide(explicit=True):
                 hides.append((len(shelf.copy_jobs), shelf.incoming_drop))
                 return original_hide(explicit)
-            with patch.object(subject.StackTile, 'pulse', pulse), patch.object(shelf, 'hide_animated', side_effect=hide):
+            with patch.object(shelf_window.StackTile, 'pulse', pulse), patch.object(shelf, 'hide_animated', side_effect=hide):
                 if mode=='copy':
                     release, entered = threading.Event(), threading.Event()
                     copy_file = capture_files._copy_file
@@ -185,7 +187,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-intake-entry-v164-') as tempo
                         finally: release.set()
                         until(lambda: not shelf.copy_jobs)
                 else: drop(entry, original)
-                if pinned:
+                if pinned or entry=='overview':
                     until(lambda: not shelf.incoming_drop)
                     assert shelf.isVisible() and shelf.visible_state!='hiding' and not hides
                     assert shelf.expanded == (entry=='overview')
@@ -193,13 +195,22 @@ with tempfile.TemporaryDirectory(prefix='flickdock-intake-entry-v164-') as tempo
                         assert shelf.popup.primary_selection == selected_before
                         assert shelf.popup.preview.current_path == selected_before
                         assert shelf.popup.selected == {selected_before}
+                elif entry=='dock':
+                    until(lambda:not shelf.incoming_drop)
+                    assert shelf.isVisible() and not hides, 'edge preview stays while pointer is inside'
+                    with patch.object(subject.QCursor,'pos',return_value=QPoint(10,10)):
+                        manager.poll()
+                        # Keep the pointer outside through the tuck. Returning
+                        # inside mid-animation correctly reverses an edge hide.
+                        until(lambda:not shelf.isVisible())
+                    assert hides and all(jobs==0 for jobs,_ in hides)
                 else:
                     until(lambda: not shelf.isVisible())
                     assert hides and all(jobs==0 for jobs, _ in hides)
                 manager.timer.stop()
                 assert len(pulses)==1, pulses
                 if entry=='overview' and not pinned:
-                    assert pulses[0][:2] == (False, False), pulses
+                    assert pulses[0][:2] == (True, False), pulses
                 assert len(shelf.files['permanent'])==(2 if pinned else 1)
                 stored = Path(shelf.files['permanent'][-1])
                 assert stored.read_bytes()==original.read_bytes()
@@ -252,8 +263,8 @@ with tempfile.TemporaryDirectory(prefix='flickdock-intake-entry-v164-') as tempo
             reset('reference')
             show('overview')
             drop('overview', source('interrupted-fold'))
-            assert not shelf.expanded and shelf.geometry_morph.active
-            # The user opens overview again while the intake fold is active.
+            assert shelf.expanded and not shelf.geometry_morph.active
+            # Opening the already visible overview during intake is idempotent.
             manager.show_overview()
             run_for(1300)
             assert not shelf.incoming_drop, ('Fold retarget lost intake completion', shelf.expanded,
@@ -295,6 +306,47 @@ with tempfile.TemporaryDirectory(prefix='flickdock-intake-entry-v164-') as tempo
             assert tile.spring.values['check'] < .005, ('Cancelled intake retained green success badge on empty tile',
                 tile.spring.values['check'], tile._kind)
         check('cancelled feedback cannot leave a success badge on the empty shelf', cancelled_feedback)
+
+        def released_before_drop(mode):
+            # A native mouse-up sample can beat the OLE DropEvent by one poll.
+            # The shake-opened shelf is still visible but already hiding.
+            reset(mode)
+            show('drag')
+            manager.auto_shown = None
+            shelf.hide_animated(explicit=False)
+            assert shelf.isVisible() and shelf.visible_state=='hiding'
+            original=source('released-before-drop-'+mode)
+            if mode=='copy':
+                release,entered=threading.Event(),threading.Event()
+                copy_file=capture_files._copy_file
+                def held(*args):
+                    entered.set();assert release.wait(4)
+                    return copy_file(*args)
+                with patch.object(capture_files,'_copy_file',side_effect=held):
+                    try:
+                        drop('dock',original)
+                        until(entered.is_set)
+                        run_for(250)
+                        assert shelf.isVisible() and shelf.visible_state=='floating', (
+                            'Accepted drop disappeared while copying',shelf.visible_state)
+                    finally:release.set()
+                    until(lambda:not shelf.copy_jobs)
+            else:drop('dock',original)
+            assert shelf.visible_state=='floating' and shelf.incoming_drop, (
+                'Accepted drop kept the stale hiding animation',shelf.visible_state)
+            tile=shelf.zones['permanent'].icon
+            assert tile._pulse_active and tile.landing.state().name=='Running', (
+                'Accepted drop lost its visible landing',tile._pulse_active,tile.landing.state())
+            frames=[]
+            tile.landing.valueChanged.connect(lambda value:frames.append(float(value)))
+            run_for(80)
+            assert shelf.isVisible() and shelf.windowOpacity()>.1 and any(.01<value<1.2 for value in frames), (
+                'Landing did not produce visible intermediate frames',shelf.windowOpacity(),frames)
+            until(lambda:not shelf.isVisible())
+            assert len(shelf.files['permanent'])==1
+        for mode in ('reference','copy'):
+            check(f'{mode}/drag: mouse-up before OLE drop preserves visible landing',
+                  lambda mode=mode:released_before_drop(mode))
 
         reset()
         manager.quit()

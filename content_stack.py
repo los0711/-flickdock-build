@@ -1,10 +1,21 @@
 """Latest-first, five-card content artwork shared by compact and drag previews."""
 from pathlib import Path
-from PySide6.QtCore import QRectF, Qt, QVariantAnimation, QEasingCurve, QAbstractAnimation
+from PySide6.QtCore import QRectF, Qt, QEasingCurve, QAbstractAnimation
 from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap
 from flickdock_icons import content_color, device_pixel_ratio, document_pixmap
-from flickdock_motion import ContentTile
-from transfer_visuals import draw_ring
+from flickdock_motion import ContentTile,Spring
+from ui_transitions import STACK_LANDING_DURATION_MS,STACK_PULSE_TIMEOUT_MS
+from display_frames import DisplayAnimation
+from native_ui_common import paint_rounded_surface,RADIUS_CONTROL_PX
+
+FAN_PIVOT_X_PX=74.24
+FAN_PIVOT_Y_PX=57.6
+FAN_FRONT_ANGLE_DEGREES=5.
+FAN_LAYER_ANGLE_DEGREES=3.6
+FAN_LAYER_OFFSET_X_PX=3.6
+MINI_FAN_LAYER_OFFSET_Y_PX=3.
+STACK_ARRIVAL_OFFSET_PX=18.
+from transfer_visuals import draw_progress_badge,thumbnail_transfer_progress_visible
 
 
 def stack_refs(refs):
@@ -12,7 +23,7 @@ def stack_refs(refs):
     return tuple(refs)[-5:]
 
 
-def stack_pixmap(repository, refs, size=110, *, dpr=None, preview_cache=None, arrival=1.0,front_art=None):
+def stack_pixmap(repository, refs, size=110, *, dpr=None, preview_cache=None, arrival=1.0,front_art=None,layer_ref=None):
     selected=stack_refs(refs)
     ratio=device_pixel_ratio(dpr)
     pm=QPixmap(round(size*ratio),round(size*ratio))
@@ -25,13 +36,17 @@ def stack_pixmap(repository, refs, size=110, *, dpr=None, preview_cache=None, ar
     for ref in selected:
         kind=repository.category(ref)
         name=repository.title(ref) if getattr(repository,'is_pending',lambda r:False)(ref) else ref
-        value=('link' if kind=='links' else 'TEXT') if repository.is_text(ref) else Path(name).suffix or ('folder' if Path(ref).is_dir() else 'generic')
+        metadata=getattr(repository,'file_metadata',None)
+        info=metadata.request(ref) if metadata is not None and not repository.is_text(ref) else None
+        folder=info['is_dir'] if info else Path(ref).is_dir() if metadata is None else False
+        value=('link' if kind=='links' else 'TEXT') if repository.is_text(ref) else Path(name).suffix or ('folder' if folder else 'generic')
         variant=0;color=content_color(value)
         while color in colors:
             variant+=1;color=content_color(value,variant)
         colors.append(color)
     front=QRectF(27,8,62,74)
     for index,ref in enumerate(selected):
+        if layer_ref is not None and ref!=layer_ref:continue
         depth=len(selected)-1-index
         p.save();p.translate(front.center());p.rotate(-depth*3.2);p.translate(-front.center())
         card=front.translated(-depth*2.2,depth*2.5)
@@ -39,11 +54,8 @@ def stack_pixmap(repository, refs, size=110, *, dpr=None, preview_cache=None, ar
             p.translate(0,-18*(1-arrival));p.translate(card.center())
             p.rotate(7*(1-arrival));p.scale(.94+.06*arrival,.94+.06*arrival);p.translate(-card.center())
             p.setOpacity(max(0,min(1,.35+.65*arrival)))
-        p.setPen(Qt.PenStyle.NoPen);p.setBrush(QColor(16,30,50,24))
-        p.drawRoundedRect(card.translated(0,2),8,8)
-        p.setBrush(QColor(colors[index]));p.drawRoundedRect(card,8,8)
-        p.setBrush(Qt.BrushStyle.NoBrush);p.setPen(QPen(QColor(255,255,255,45),.7))
-        p.drawRoundedRect(card.adjusted(.4,.4,-.4,-.4),8,8)
+        paint_rounded_surface(p,card.translated(0,2),RADIUS_CONTROL_PX,QColor(16,30,50,24))
+        paint_rounded_surface(p,card,RADIUS_CONTROL_PX,QColor(colors[index]),QColor(255,255,255,45))
         if depth==0:
             kind=repository.category(ref)
             cached=(preview_cache or {}).get(ref)
@@ -71,19 +83,112 @@ def stack_pixmap(repository, refs, size=110, *, dpr=None, preview_cache=None, ar
 
 class StackTile(ContentTile):
     """Cached stack with an interruptible, short incoming-card landing."""
+    pulse_timeout_ms=STACK_PULSE_TIMEOUT_MS
     def __init__(self,parent=None,motion=True):
         super().__init__(parent,motion)
         self.repository=None;self.refs=();self.preview_cache={};self.arrival=1.0
         self._stack_cache=QPixmap();self._stack_dpr=0
         self._front_art=None
-        self.landing=QVariantAnimation(self)
-        self.landing.setDuration(260)
+        self._seen_cloud_arrivals={}
+        self._quiet_anchor=None;self._quiet_keys=set();self._all_keys=set()
+        self._layers={};self._exit_from={};self._exit_to={};self._exit_order=()
+        self._exit_depths={};self._exit_progress=1.0
+        self.removal=DisplayAnimation(self);self.removal.setDuration(200)
+        curve=QEasingCurve(QEasingCurve.Type.BezierSpline)
+        from PySide6.QtCore import QPointF
+        curve.addCubicBezierSegment(QPointF(.23,1),QPointF(.32,1),QPointF(1,1))
+        self.removal.setEasingCurve(curve)
+        self.removal.valueChanged.connect(self._remove_frame)
+        self.removal.finished.connect(self._remove_finished)
+        self.landing=DisplayAnimation(self)
+        self.landing.setDuration(STACK_LANDING_DURATION_MS)
         self.landing.setEasingCurve(QEasingCurve.Type.OutBack)
         self.landing.valueChanged.connect(self._arrive)
         self.landing.finished.connect(self._landing_finished)
+        self.spread=Spring(self,{'spread':0},lambda _:self.update(),motion)
+
+    def set_hover(self,value):
+        if bool(value)==self._hovered:return
+        super().set_hover(value)
+        self._retarget_spread()
+
+    def _retarget_spread(self):
+        from native_ui_common import reduced_motion
+        from ui_transitions import STACK_SPREAD_RESPONSE_SECONDS,STACK_SPREAD_DAMPING
+        if not self.motion or reduced_motion():self.spread.jump({'spread':0});return
+        if self._hovered and self.refs and set(self._layers)!=set(self.refs):
+            self._layers={ref:stack_pixmap(self.repository,self.refs,128,dpr=self.devicePixelRatioF(),
+                preview_cache=self.preview_cache,front_art=self._front_art,layer_ref=ref) for ref in self.refs}
+        target=float(bool(self._hovered and self.refs))
+        self.spread.animate({'spread':target},response=STACK_SPREAD_RESPONSE_SECONDS,damping=STACK_SPREAD_DAMPING)
+
+    def hideEvent(self,event):
+        self._hovered=False;self.spread.jump({'spread':0})
+        self.removal.stop();self._remove_finished()
+        super().hideEvent(event)
+
+    def _spread_pixmap(self,value):
+        ratio=self.devicePixelRatioF();result=QPixmap(round(128*ratio),round(128*ratio));result.setDevicePixelRatio(ratio);result.fill(Qt.transparent)
+        painter=QPainter(result);painter.setRenderHints(QPainter.Antialiasing|QPainter.SmoothPixmapTransform)
+        for index,ref in enumerate(self.refs):
+            layer=self._layers.get(ref)
+            if layer is None:continue
+            depth=len(self.refs)-1-index;painter.save();painter.translate(FAN_PIVOT_X_PX,FAN_PIVOT_Y_PX)
+            painter.rotate(value*(FAN_FRONT_ANGLE_DEGREES if depth==0 else -depth*FAN_LAYER_ANGLE_DEGREES));painter.translate(-FAN_PIVOT_X_PX,-FAN_PIVOT_Y_PX)
+            painter.translate(-depth*FAN_LAYER_OFFSET_X_PX*value,depth*value);painter.drawPixmap(0,0,layer);painter.restore()
+        painter.end();return result
 
     def _arrive(self,value):
         self.arrival=float(value);self.update()
+
+    def _arrival_pixmap(self):
+        ratio=self.devicePixelRatioF();result=QPixmap(round(128*ratio),round(128*ratio));result.setDevicePixelRatio(ratio);result.fill(Qt.transparent)
+        painter=QPainter(result);painter.setRenderHints(QPainter.Antialiasing|QPainter.SmoothPixmapTransform)
+        for ref in self.refs:
+            layer=self._layers.get(ref)
+            if layer is None:continue
+            painter.save()
+            if ref==self.refs[-1]:
+                value=self.arrival;painter.translate(0,-STACK_ARRIVAL_OFFSET_PX*128/100*(1-value));painter.translate(FAN_PIVOT_X_PX,FAN_PIVOT_Y_PX)
+                painter.rotate(7*(1-value));painter.scale(.94+.06*value,.94+.06*value);painter.translate(-FAN_PIVOT_X_PX,-FAN_PIVOT_Y_PX)
+                painter.setOpacity(max(0,min(1,.35+.65*value)))
+            painter.drawPixmap(0,0,layer);painter.restore()
+        painter.end();return result
+
+    def _remove_frame(self,value):
+        self._exit_progress=float(value);self.update()
+
+    def _remove_finished(self):
+        self._exit_from={};self._exit_to={};self._exit_order=();self._exit_depths={}
+        self._exit_progress=1.0;self.update()
+
+    def _exit_layers(self):
+        """Small cached artwork layers only; no file reads during animation."""
+        frames={};progress=self._exit_progress
+        for ref in self._exit_order:
+            old=self._exit_from.get(ref);new=self._exit_to.get(ref)
+            sample=new if new is not None else old
+            if sample is None:continue
+            result=QPixmap(sample.size());result.setDevicePixelRatio(sample.devicePixelRatioF());result.fill(Qt.transparent)
+            painter=QPainter(result);painter.setRenderHint(QPainter.SmoothPixmapTransform)
+            delta=self._exit_depths.get(ref,0)
+            if old is not None and new is None:
+                painter.setOpacity(1-progress)
+                painter.drawPixmap(QRectF(-2.2*delta*progress*1.28,2.5*delta*progress*1.28,128,128),old,QRectF(old.rect()))
+            if new is not None:
+                # A surviving card is one opaque layer translated to its new
+                # depth, never two translucent copies that darken its centre.
+                painter.setOpacity(1.0 if old is not None else progress)
+                painter.drawPixmap(QRectF(2.2*delta*(1-progress)*1.28,-2.5*delta*(1-progress)*1.28,128,128),new,QRectF(new.rect()))
+            painter.end();frames[ref]=result
+        return frames
+
+    def _exit_pixmap(self):
+        ratio=self.devicePixelRatioF()
+        result=QPixmap(round(128*ratio),round(128*ratio));result.setDevicePixelRatio(ratio);result.fill(Qt.transparent)
+        painter=QPainter(result)
+        for layer in self._exit_layers().values():painter.drawPixmap(0,0,layer)
+        painter.end();return result
 
     def _landing_finished(self):
         self._arrive(1.0)
@@ -98,15 +203,65 @@ class StackTile(ContentTile):
 
     def replay_landing(self):
         """Show the committed incoming card after an expanded view folds."""
-        if not self.motion or not self.refs:return
+        from native_ui_common import reduced_motion
+        if not self.motion or reduced_motion() or not self.refs:return
         self.landing.stop()
         self._arrive(0.0)
         self.landing.setStartValue(0.0);self.landing.setEndValue(1.0)
         self.landing.start()
 
     def set_stack(self,repository,refs,preview_cache=None):
-        new_refs=stack_refs(refs)
-        incoming=bool(self.refs and new_refs and self.refs[-1]!=new_refs[-1]) or bool(not self.refs and new_refs)
+        from native_ui_common import reduced_motion
+        animate=self.motion and not reduced_motion()
+        if not animate:
+            self.removal.stop();self._remove_finished()
+        all_refs=tuple(refs)
+        def key(ref):
+            identity=(ref.removeprefix('flickdock:transfer:') if ref.startswith('flickdock:transfer:')
+                      else repository.metadata.get(ref,{}).get('_cloud_item_id'))
+            return ('cloud',identity) if identity else ('local',ref)
+        keys={key(ref):ref for ref in all_refs}
+        quiet=bool(getattr(repository,'quiet_cloud_refresh',False))
+        new_local=any(value[0]=='local' and value not in self._all_keys for value in keys)
+        if quiet:
+            if self._quiet_anchor is None and self.refs:self._quiet_anchor=key(self.refs[-1])
+            self._quiet_keys.update(keys)
+        elif self._quiet_anchor is not None and any(value not in self._quiet_keys for value in keys):
+            self._quiet_anchor=None;self._quiet_keys.clear()
+        if new_local and self._all_keys:
+            self._quiet_anchor=None
+        if self._quiet_anchor not in keys:self._quiet_anchor=None
+        # Preserve the card already under the pointer while old files catch
+        # up. Only the artwork order changes; the shelf's real order and the
+        # overview selection/scroll remain untouched. A fresh live item or a
+        # local drop releases this visual anchor immediately.
+        display=all_refs
+        if self._quiet_anchor is not None:
+            anchor=keys[self._quiet_anchor]
+            display=tuple(ref for ref in all_refs if ref!=anchor)+(anchor,)
+        self._all_keys=set(keys)
+        self._quiet_keys.intersection_update(keys)
+        new_refs=stack_refs(display)
+        previous=self.refs
+        # Removing the front reveals an existing card, never a new arrival.
+        incoming=bool(new_refs and new_refs[-1] not in previous)
+        if quiet and not new_local:
+            incoming=False;self.landing.stop();self.arrival=1.0
+        old_layers=self._exit_layers() if self.removal.state()==QAbstractAnimation.Running else self._layers
+        identities={ref:(ref.removeprefix('flickdock:transfer:') if ref.startswith('flickdock:transfer:')
+            else repository.metadata.get(ref,{}).get('_cloud_item_id')) for ref in new_refs}
+        new_identities={value for value in identities.values() if value}
+        removed=any(ref not in all_refs and
+            getattr(self,'_identities',{}).get(ref) not in new_identities for ref in previous)
+        self._identities=identities
+        if new_refs:
+            ref=new_refs[-1]
+            identity=(ref.removeprefix('flickdock:transfer:') if ref.startswith('flickdock:transfer:')
+                      else repository.metadata.get(ref,{}).get('_cloud_item_id'))
+            if identity:
+                incoming=incoming and identity not in self._seen_cloud_arrivals
+                self._seen_cloud_arrivals[identity]=None
+                while len(self._seen_cloud_arrivals)>512:self._seen_cloud_arrivals.pop(next(iter(self._seen_cloud_arrivals)))
         self.repository=repository;self.refs=new_refs;self.preview_cache=preview_cache or {}
         ratio=self.devicePixelRatioF()
         self._front_art=None
@@ -119,32 +274,45 @@ class StackTile(ContentTile):
                 self._front_art=document_pixmap(value,100,dpr=ratio)
         self._stack_cache=stack_pixmap(repository,new_refs,128,dpr=ratio,preview_cache=self.preview_cache,front_art=self._front_art)
         self._stack_dpr=ratio
+        if animate:
+            self._layers={ref:stack_pixmap(repository,new_refs,128,dpr=ratio,preview_cache=self.preview_cache,
+                front_art=self._front_art,layer_ref=ref) for ref in new_refs}
+            if previous!=new_refs and self.isVisible() and (removed or self.removal.state()==QAbstractAnimation.Running):
+                self.removal.stop();self.landing.stop();self.arrival=1.0
+                self._exit_from=old_layers;self._exit_to=self._layers
+                self._exit_order=tuple(dict.fromkeys((*old_layers,*new_refs)))
+                self._exit_depths={ref:(len(new_refs)-1-new_refs.index(ref))-(len(previous)-1-previous.index(ref))
+                    for ref in new_refs if ref in previous}
+                self._exit_progress=0.0
+                self.removal.setStartValue(0.0);self.removal.setEndValue(1.0);self.removal.start()
         self.set_content('file',pixmap=self._stack_cache)
-        if incoming and self.motion:
+        if incoming and animate and self.removal.state()!=QAbstractAnimation.Running:
             start=self.arrival if self.landing.state()==QAbstractAnimation.State.Running else 0.0
             self.landing.stop();self.landing.setStartValue(min(.8,start));self.landing.setEndValue(1.0);self.landing.start()
         elif not new_refs:
             self.landing.stop();self.arrival=1
+        if previous!=new_refs:self._retarget_spread()
 
     def paintEvent(self,event):
-        if self.repository is not None and self.refs:
+        original_kind=self._kind
+        if self.removal.state()==QAbstractAnimation.Running:
+            # Even the last card fades over the immediate empty state.
+            self._pixmap=self._exit_pixmap();self._kind='file'
+        elif self.repository is not None and self.refs:
             ratio=self.devicePixelRatioF()
             if self.landing.state()==QAbstractAnimation.State.Running:
-                self._pixmap=stack_pixmap(self.repository,self.refs,128,dpr=ratio,preview_cache=self.preview_cache,arrival=self.arrival,front_art=self._front_art)
+                self._pixmap=self._arrival_pixmap()
+            elif self.spread.values['spread']>.001 and set(self._layers)==set(self.refs):
+                self._pixmap=self._spread_pixmap(self.spread.values['spread'])
             else:
                 if ratio!=self._stack_dpr:
                     self._stack_cache=stack_pixmap(self.repository,self.refs,128,dpr=ratio,preview_cache=self.preview_cache)
                     self._stack_dpr=ratio
                 self._pixmap=self._stack_cache
-        state=getattr(self.repository,'transfers',{}).get(self.refs[-1]) if self.refs else None
-        if state and not self._pixmap.isNull():
-            original=self._pixmap
-            dim=QPixmap(original.size());dim.setDevicePixelRatio(original.devicePixelRatioF());dim.fill(Qt.GlobalColor.transparent)
-            painter=QPainter(dim);painter.setOpacity(.38);painter.drawPixmap(0,0,original);painter.end()
-            self._pixmap=dim
+        states=getattr(self.repository,'transfers',{})
+        state=next((states[ref] for ref in reversed(self.refs) if ref in states),None)
         super().paintEvent(event)
-        if state:
-            self._pixmap=original
+        self._kind=original_kind
+        if thumbnail_transfer_progress_visible(state):
             painter=QPainter(self)
-            side=min(82,self.width()*.55,self.height()*.7)
-            draw_ring(painter,QRectF((self.width()-side)/2,(self.height()-side)/2,side,side),state)
+            draw_progress_badge(painter,QRectF(self.width()-41,self.height()-39,24,24),state)

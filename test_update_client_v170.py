@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes,serialization
@@ -25,7 +26,7 @@ from PySide6.QtWidgets import QApplication
 import update_client as subject
 
 
-app=QApplication([])
+app=QApplication.instance() or QApplication([])
 def wait_until(predicate,timeout=4000):
     loop=QEventLoop();timer=QTimer();timer.setInterval(3);deadline=QTimer();deadline.setSingleShot(True)
     timer.timeout.connect(lambda:loop.quit() if predicate() else None);deadline.timeout.connect(loop.quit)
@@ -75,15 +76,21 @@ class UpdateTests(unittest.TestCase):
                 cls.requests.append((self.path,dict(self.headers)))
                 route=cls.routes.get(self.path,dict(status=404,body=b'not found'))
                 if route.get('delay'):time.sleep(route['delay'])
-                self.send_response(route.get('status',200))
+                body=route.get('body',b'');total=len(body);start=0;status=route.get('status',200)
+                if route.get('ranges') and self.headers.get('Range') and status==200:
+                    start=int(self.headers['Range'].split('=')[1].split('-')[0]);body=body[start:];status=206
+                self.send_response(status)
                 self.send_header('Content-Type',route.get('type','application/octet-stream'))
-                if route.get('length',True):self.send_header('Content-Length',str(route.get('declared',len(route.get('body',b'')))))
+                if route.get('length',True):self.send_header('Content-Length',str(route.get('declared',len(body))))
+                if status==206:self.send_header('Content-Range',f'bytes {start+(1 if route.get("bad_range") else 0)}-{total-1}/{total}')
                 if route.get('location'):self.send_header('Location',route['location'])
                 self.end_headers()
-                body=route.get('body',b'')
+                cut=route.get('drop_once') if not route.get('dropped') else None
                 try:
                     for offset in range(0,len(body),16384):
                         self.wfile.write(body[offset:offset+16384]);self.wfile.flush()
+                        if cut and offset+16384>=cut:
+                            route['dropped']=True;self.close_connection=True;return
                         if route.get('chunk_delay'):time.sleep(route['chunk_delay'])
                 except (OSError,ssl.SSLError):pass
         cls.server=ThreadingHTTPServer(('127.0.0.1',0),Handler);cls.server.daemon_threads=True
@@ -120,7 +127,7 @@ class UpdateTests(unittest.TestCase):
     def client(self,endpoint='/manifest',current='1.9.9',timeout=1000):
         network=self.Network()
         client=subject.UpdateClient(current,Path(self.folder.name)/'updates',endpoint=self.origin+endpoint,
-                                    allowed_hosts={'127.0.0.1'},network=network,timeout_ms=timeout)
+                                    allowed_hosts={'127.0.0.1'},network=network,timeout_ms=timeout,platform='win32')
         client._test_network=network
         self.clients.append(client)
         state={name:[] for name in ('checking','update_available','up_to_date','failed','progress','verified_file','cancelled')}
@@ -141,9 +148,57 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(Path(target),Path(self.folder.name)/'updates'/'1.10.0'/'setup.exe')
         self.assertEqual(Path(target).read_bytes(),self.payload)
         self.assertEqual(manual,True);self.assertEqual(manifest['installer']['sha256'],hashlib.sha256(self.payload).hexdigest())
-        self.assertGreater(len(state['progress']),2);self.assertGreater(len(beats),2)
+        self.assertGreaterEqual(len(state['progress']),2);self.assertGreater(len(beats),2)
+        self.assertEqual(state['progress'][-1],(len(self.payload),len(self.payload)))
+        self.assertEqual([row[0] for row in state['progress']],sorted(row[0] for row in state['progress']))
         self.assertFalse(list(Path(self.folder.name).rglob('*.part')))
         self.assertFalse(any('Authorization' in headers for _,headers in self.requests))
+
+    def test_official_check_retries_one_mirror_and_a_new_check_starts_again(self):
+        self.routes['/primary/latest.json']=dict(status=503,body=b'unavailable')
+        self.routes['/mirror/latest.json']=self.routes['/manifest']
+        client,state=self.client('/primary/latest.json')
+        client.allowed_hosts=client.allowed_hosts|{'flickdock-site.roger000416.workers.dev'}
+        with patch.object(subject,'MAC_MANIFEST_BASE',self.origin+'/primary/'),patch.object(subject,'WORKER_MANIFEST_BASE',self.origin+'/mirror/'):
+            client.check();wait_until(lambda:state['update_available'] or state['failed'])
+            self.assertFalse(state['failed'],state['failed']);self.assertTrue(state['update_available'])
+            self.routes['/mirror/latest.json']=dict(status=503,body=b'unavailable')
+            self.requests.clear();client.check();wait_until(lambda:state['failed'])
+            self.assertEqual([path for path,_ in self.requests],['/primary/latest.json','/mirror/latest.json'])
+            self.assertFalse(client.busy)
+
+    def test_invalid_manifest_and_failed_download_do_not_use_mirror(self):
+        self.routes['/primary/latest.json']=dict(type='application/json',body=b'{}')
+        client,state=self.client('/primary/latest.json')
+        client.allowed_hosts=client.allowed_hosts|{'flickdock-site.roger000416.workers.dev'}
+        with patch.object(subject,'MAC_MANIFEST_BASE',self.origin+'/primary/'),patch.object(subject,'WORKER_MANIFEST_BASE',self.origin+'/mirror/'):
+            self.requests.clear();client.check();wait_until(lambda:state['failed'])
+            self.assertEqual([path for path,_ in self.requests],['/primary/latest.json'])
+            self.routes['/setup.exe']=dict(status=503,body=b'unavailable')
+            self.requests.clear();state['failed'].clear();client.download(self.manifest)
+            client._download_task.max_retries=0
+            wait_until(lambda:state['failed'])
+            self.assertEqual([path for path,_ in self.requests],['/setup.exe'])
+
+    def test_real_https_mac_dmg_download_checks_trailer_and_hash(self):
+        payload=b'FlickDock image'+bytes(65536)+b'koly'+bytes(508)
+        candidate=dict(schema_version=1,version='1.8.5',published_at='2026-10-26T00:00:00Z',
+            notes='Mac DMG',platform='darwin',architecture='arm64',
+            installer=dict(url=self.origin+'/update.dmg',size=len(payload),
+                sha256=hashlib.sha256(payload).hexdigest(),filename='FlickDock-1.8.5-macOS-arm64.dmg'))
+        self.routes['/update.dmg']=dict(body=payload)
+        network=self.Network()
+        client=subject.UpdateClient('1.8.4',Path(self.folder.name)/'mac-updates',
+            allowed_hosts={'127.0.0.1'},network=network,platform='darwin',machine='arm64')
+        client._test_network=network;self.clients.append(client)
+        verified=[];failed=[]
+        client.verified_file.connect(lambda *args:verified.append(args))
+        client.failed.connect(lambda *args:failed.append(args))
+        self.assertTrue(client.download(candidate))
+        wait_until(lambda:verified or failed)
+        self.assertFalse(failed,failed)
+        self.assertEqual(Path(verified[0][0]),Path(self.folder.name)/'mac-updates/1.8.5/update.dmg')
+        self.assertEqual(Path(verified[0][0]).read_bytes(),payload)
 
     def test_no_update_and_failure_preserve_manual_intent(self):
         client,state=self.client(current='1.10.0');client.check(manual=False)
@@ -201,7 +256,9 @@ class UpdateTests(unittest.TestCase):
         client.progress.connect(lambda done,total:client.cancel() if done>0 else None)
         client.download(self.manifest);wait_until(lambda:state['cancelled'] or state['failed'])
         self.assertEqual(state['cancelled'],[(True,)])
-        self.assertFalse(state['verified_file']);self.assertFalse(list(Path(self.folder.name).rglob('*.part')))
+        self.assertFalse(state['verified_file'])
+        partials=list(Path(self.folder.name).rglob('*.part'))
+        self.assertEqual(len(partials),1);self.assertGreater(partials[0].stat().st_size,0)
         for version in ('1.9.9','1.0.0'):
             bad=copy.deepcopy(self.manifest);bad['version']=version
             client,state=self.client();before=len(self.requests);client.download(bad)

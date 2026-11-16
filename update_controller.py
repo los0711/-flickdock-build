@@ -16,7 +16,6 @@ from PySide6.QtWidgets import QApplication
 from update_client import (DEFAULT_ALLOWED_HOSTS, DEFAULT_MANIFEST_URL, UpdateClient,
                            compare_versions, validate_manifest, version_tuple)
 from platform_native import app_bundle
-from mac_updates import PrepareMacUpdateJob, launch_update_helper
 
 
 def _identity(value):
@@ -41,6 +40,48 @@ def _installer_path(path, updates_dir, version):
     if not stat.S_ISREG(canonical.stat().st_mode):
         raise ValueError('安装包不是普通文件。')
     return canonical
+
+
+def verify_mac_dmg(path, manifest, *, current_version, updates_dir,
+                   allowed_hosts=DEFAULT_ALLOWED_HOSTS, machine=None, cancelled=None):
+    """Validate a downloaded image before handing it to macOS DiskImageMounter."""
+    candidate = validate_manifest(manifest, allowed_hosts, platform='darwin', machine=machine)
+    if not candidate['installer']['url'].lower().split('?', 1)[0].endswith('.dmg'):
+        raise ValueError('Mac 更新需要 DMG 安装镜像。')
+    if compare_versions(candidate['version'], current_version) <= 0:
+        raise ValueError('更新版本必须高于当前版本。')
+    root = Path(updates_dir).absolute()
+    image = Path(path).absolute()
+    expected = root / candidate['version'] / 'update.dmg'
+    if image != expected or image.resolve(strict=True) != root.resolve(strict=True) / candidate['version'] / 'update.dmg':
+        raise ValueError('Mac 更新包必须位于本程序 updates/版本号/update.dmg。')
+    for item in (expected.parent, expected):
+        info = item.lstat()
+        if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+            raise ValueError('Mac 更新路径不能使用链接。')
+    digest = hashlib.sha256(); size = 0; trailer = b''
+    with image.open('rb') as reader:
+        before = os.fstat(reader.fileno())
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError('Mac 更新包不是普通文件。')
+        while chunk := reader.read(1024 * 1024):
+            if cancelled is not None and cancelled.is_set():
+                raise InterruptedError('安装校验已取消。')
+            size += len(chunk); digest.update(chunk)
+            trailer = (trailer + chunk)[-512:]
+        if _identity(before) != _identity(os.fstat(reader.fileno())):
+            raise ValueError('Mac 安装镜像在校验时发生变化。')
+    if (size != candidate['installer']['size'] or digest.hexdigest() != candidate['installer']['sha256']
+            or len(trailer) != 512 or trailer[:4] != b'koly'):
+        raise ValueError('Mac 安装镜像校验失败，请重新下载。')
+    if cancelled is not None and cancelled.is_set():
+        raise InterruptedError('安装校验已取消。')
+    if sys.platform == 'darwin':
+        checked = subprocess.run(['/usr/bin/hdiutil', 'verify', str(image)],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=120, check=False)
+        if checked.returncode:
+            raise ValueError('macOS 无法验证安装镜像。')
+    return image
 
 
 def _locked_reader(path):
@@ -120,7 +161,7 @@ def verify_installer(path, manifest, *, current_version, updates_dir,
 
 
 def launch_installer(verified, *, installed_exe, quit_callback, popen=None,
-                     parent_pid=None):
+                     parent_pid=None, quiet=False):
     """Spawn only a still-valid lease; quit only after successful process creation."""
     if not isinstance(verified, VerifiedInstaller) or verified.reader is None:
         raise ValueError('安装包尚未通过校验。')
@@ -139,9 +180,8 @@ def launch_installer(verified, *, installed_exe, quit_callback, popen=None,
     if (_identity(path.stat()) != verified.identity
             or _identity(os.fstat(verified.reader.fileno())) != verified.identity):
         raise ValueError('安装包在校验后已变化，请重新下载。')
-    # Keep the native installer's real progress visible after the application
-    # exits. /SILENT skips setup choices while preserving its progress window.
-    arguments = [str(path), '/SILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-',
+    # Explicit updates keep native progress; automatic updates have no wizard.
+    arguments = [str(path), '/VERYSILENT' if quiet else '/SILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-',
                  '/CLOSEAPPLICATIONS', '/DIR=' + str(executable.parent),
                  '/FDOnlineUpdate=1', '/FDParentPid=' + str(os.getpid() if parent_pid is None else int(parent_pid)),
                  '/LOG=' + str(path.parent / 'install.log')]
@@ -191,6 +231,18 @@ class _Verification(QRunnable):
         self.signals.finished.emit(self.generation, result, error)
 
 
+class _MacDmgVerification(_Verification):
+    def run(self):
+        result, error = None, ''
+        try:
+            result = verify_mac_dmg(self.path, self.manifest, cancelled=self.cancelled, **self.options)
+        except InterruptedError:
+            error = '安装校验已取消。'
+        except (OSError, ValueError, TypeError, subprocess.TimeoutExpired) as problem:
+            error = str(problem)
+        self.signals.finished.emit(self.generation, result, error)
+
+
 class _DisposeMacPrepared(QRunnable):
     def __init__(self, prepared):
         super().__init__()
@@ -221,9 +273,13 @@ class UpdateController(QObject):
         self._is_busy, self._popen = is_busy or (lambda: False), popen
         self._closed, self._generation = False, 0
         self._installing = self._authorized = False
+        self._background_download=False
+        self._background_install=False
+        self._silent_install=False
         self._jobs, self._notified = {}, set()
         self._pending_manifest = None
         self._pending_check = False
+        self._refreshing_before_install = False
         self._manifest, self._verified_path = None, ''
         self._operation, self._retry_operation = 'check', 'check'
         self._state = 'idle'
@@ -242,6 +298,8 @@ class UpdateController(QObject):
                 ('progress', self._progress), ('verified_file', self._download_verified),
                 ('cancelled', self._cancelled)):
             getattr(self.client, name).connect(handler)
+        if hasattr(self.client,'download_status'):self.client.download_status.connect(self._download_status)
+        self._download_metrics={};self._download_phase='downloading'
         if settings is not None and hasattr(settings, 'changed'):
             settings.changed.connect(self._settings_changed)
 
@@ -262,24 +320,36 @@ class UpdateController(QObject):
         return bool(self._installing or self.client.busy)
 
     @property
+    def verified_path(self):return self._verified_path
+
+    @property
+    def retry_operation(self):return self._retry_operation
+
+    @property
     def can_start_update(self):
         if self._closed or self.busy or self._manifest is None:
             return False
-        return (self._state in ('available', 'ready', 'cancelled')
+        return (self._state in ('available', 'ready', 'cancelled', 'paused')
                 or self._state == 'error' and self._retry_operation in ('download', 'install'))
 
-    def _set_state(self, state, *, version=None, received=0, total=0, error=''):
+    def _set_state(self, state, *, version=None, received=0, total=0, error='',speed=0,eta=None,detail=''):
         if self._closed:
             return
         if version is None:
             version = self._manifest.get('version', '') if self._manifest else ''
         self._state = state
         self._payload = dict(version=version, received=max(0, int(received)),
-                             total=max(0, int(total)), error=str(error))
+                             total=max(0, int(total)), error=str(error),speed=speed,eta=eta,detail=detail)
         self.state_changed.emit(state, dict(self._payload))
 
     def _settings_changed(self):
         self.apply_theme(getattr(self.settings, 'theme', self._theme))
+        if not getattr(self.settings,'automatic_updates',True):
+            self._background_install=False
+            self._pending_check=False;self._pending_manifest=None;self._timer.stop()
+            if self._background_download and self.client.busy:
+                self.pause() if hasattr(self.client,'pause') else self.cancel()
+            self._background_download=False
 
     def apply_theme(self, theme):
         self._theme = 'dark' if theme == 'dark' else 'light'
@@ -295,6 +365,10 @@ class UpdateController(QObject):
 
     def activate(self):
         """The settings button checks, updates, or retries its current action."""
+        self._silent_install=False
+        if self._state=='ready' and self._verified_path and self.can_start_update:
+            self._authorized=True
+            return self._start_verification()
         return self.start_update() if self.can_start_update else self.open(manual=True)
 
     def open(self, manual=True):
@@ -305,12 +379,15 @@ class UpdateController(QObject):
             return False
         if self.busy:
             return True
+        self._refreshing_before_install = False
         self._pending_manifest, self._pending_check = None, False
         self._timer.stop()
         self._operation = 'check'
         return self.client.check(manual=True)
 
     def check_automatically(self):
+        if not getattr(self.settings,'automatic_updates',True):return False
+        if self._state=='ready' and self._verified_path:return True
         if self._closed or self._installing:
             return False
         if self._busy() or self.client.busy:
@@ -324,7 +401,8 @@ class UpdateController(QObject):
     def _checking(self, manual=False):
         if self._closed:
             return
-        self._authorized = False
+        if not self._refreshing_before_install:
+            self._authorized = False
         self._manifest, self._verified_path = None, ''
         self._operation = self._retry_operation = 'check'
         self._set_state('checking')
@@ -332,10 +410,17 @@ class UpdateController(QObject):
     def _available(self, manifest, manual=False):
         if self._closed:
             return
+        install_requested = self._refreshing_before_install
+        self._refreshing_before_install = False
         self._manifest, self._verified_path = copy.deepcopy(manifest), ''
-        self._authorized = False
+        self._background_download=bool(not manual and getattr(self.settings,'automatic_updates',False))
+        self._authorized = install_requested or self._background_download
         self._set_state('available')
-        if not manual:
+        if install_requested:
+            self._download_current_manifest()
+        elif self._background_download:
+            self._download_current_manifest()
+        elif not manual:
             self._pending_manifest = copy.deepcopy(manifest)
             self._resume_automatic()
 
@@ -344,6 +429,13 @@ class UpdateController(QObject):
             return
         if self._busy() or self.busy:
             self._timer.start(self._defer_ms)
+            return
+        if self._background_install:
+            self._background_install=False
+            if getattr(self.settings,'automatic_updates',False) and self._state=='ready' and self._verified_path:
+                self._authorized=True
+                self._silent_install=True
+                self._start_verification()
             return
         if self._pending_manifest is not None:
             manifest, self._pending_manifest = self._pending_manifest, None
@@ -360,6 +452,7 @@ class UpdateController(QObject):
     def _latest(self, manual=False):
         if self._closed:
             return
+        self._refreshing_before_install = False
         self._authorized = False
         self._manifest, self._verified_path = None, ''
         self._set_state('latest')
@@ -367,6 +460,7 @@ class UpdateController(QObject):
     def _failed(self, message, manual=False):
         if self._closed:
             return
+        self._refreshing_before_install = False
         self._authorized = False
         self._retry_operation = self._operation
         self._set_state('error', error=message)
@@ -376,16 +470,31 @@ class UpdateController(QObject):
         self._failed(message, True)
 
     def start_update(self):
-        """One explicit click authorizes this download, verification and handoff."""
+        """Recheck the live index before downloading, even after a recent check."""
         if not self.can_start_update:
             return False
+        self._silent_install=False
         self._authorized = True
+        self._refreshing_before_install = True
         self._pending_manifest, self._pending_check = None, False
         self._timer.stop()
-        if self._verified_path:
-            return self._start_verification()
+        self._operation = 'check'
+        try:
+            if self.client.check(manual=True) is False:
+                self._failed('正在处理更新，请稍后再试。', True)
+                return False
+        except (OSError, ValueError, RuntimeError) as problem:
+            self._failed(str(problem), True)
+            return False
+        return True
+
+    def _download_current_manifest(self):
+        """Continue the same authorized action with the newly fetched index."""
+        if not self._authorized or self._closed or self._manifest is None:
+            return False
         self._operation = 'download'
-        self._set_state('downloading')
+        self._download_phase='connecting' if hasattr(self.client,'download_status') else 'downloading';self._download_metrics={}
+        self._set_state(self._download_phase)
         if not self._authorized or self._closed:
             return False
         try:
@@ -399,7 +508,14 @@ class UpdateController(QObject):
 
     def _progress(self, received, total):
         if not self._closed and self._authorized and self._operation == 'download':
-            self._set_state('downloading', received=received, total=total)
+            self._set_state(self._download_phase, received=received, total=total,**self._download_metrics)
+
+    def _download_status(self,phase,payload):
+        if self._closed or not self._authorized or self._operation!='download':return
+        if phase not in ('connecting','downloading','reconnecting','paused','verifying'):return
+        self._download_phase=phase
+        self._download_metrics={key:payload.get(key,0 if key=='speed' else None if key=='eta' else '') for key in ('speed','eta','detail')}
+        self._set_state(phase,received=payload.get('received',0),total=payload.get('total',0),**self._download_metrics)
 
     def _download_verified(self, path, manifest, manual=False):
         if self._closed or not self._authorized or self._operation != 'download':
@@ -407,8 +523,11 @@ class UpdateController(QObject):
         self._manifest, self._verified_path = copy.deepcopy(manifest), str(path)
         self._set_state('ready', received=manifest['installer']['size'],
                         total=manifest['installer']['size'])
-        if self._authorized and not self._closed:
-            self._start_verification()
+        self._authorized=False
+        if self._background_download:
+            self._background_download=False
+            self._background_install=True
+            self._resume_automatic()
 
     def _start_verification(self):
         if self._closed or self._installing or not self._authorized:
@@ -432,6 +551,15 @@ class UpdateController(QObject):
         try:
             manifest = validate_manifest(self._manifest, self.allowed_hosts,
                                           platform='darwin', machine=self.machine)
+            if manifest['installer']['url'].lower().split('?', 1)[0].endswith('.dmg'):
+                job = _MacDmgVerification(generation, self._verified_path, copy.deepcopy(manifest),
+                    dict(current_version=self.app_version, updates_dir=self.updates_dir,
+                         allowed_hosts=self.allowed_hosts, machine=self.machine))
+                self._jobs[generation] = job
+                job.signals.finished.connect(self._mac_dmg_verified, Qt.ConnectionType.QueuedConnection)
+                self._set_state('verifying')
+                QThreadPool.globalInstance().start(job)
+                return True
             path = Path(self._verified_path).absolute()
             root = self.updates_dir.resolve(strict=True)
             expected = self.updates_dir / manifest['version'] / 'update.zip'
@@ -443,6 +571,7 @@ class UpdateController(QObject):
             bundle = app_bundle(self._installed_exe)
             if bundle is None:
                 raise ValueError('Mac 在线更新需要已安装的 FlickDock.app。')
+            from mac_updates import PrepareMacUpdateJob
             job = PrepareMacUpdateJob(path, manifest, self, current_version=self.app_version,
                                       installed_app=bundle)
             self._jobs[generation] = job
@@ -457,6 +586,38 @@ class UpdateController(QObject):
         except (OSError, ValueError, TypeError) as error:
             self._mac_verified(generation, None, str(error))
             return False
+
+    def _mac_dmg_verified(self, generation, image, error):
+        self._jobs.pop(generation, None)
+        if self._closed or generation != self._generation or not self._authorized:
+            return
+        self._installing = False
+        if error:
+            self._authorized = False
+            self._verified_path = ''
+            self._retry_operation = 'download'
+            self._set_state('error', error=error)
+            self.installation_failed.emit(error)
+            return
+        try:
+            self._set_state('installing')
+            if self._closed or generation != self._generation or not self._authorized:
+                return
+            if self._popen is None or self._popen is subprocess.Popen:
+                if sys.platform != 'darwin' or not getattr(sys, 'frozen', False):
+                    raise ValueError('仅已安装的 Mac 正式版可以打开在线安装镜像。')
+                launcher = subprocess.Popen
+            else:
+                launcher = self._popen
+            launcher(['/usr/bin/open', str(image)], shell=False)
+            self._authorized = False
+            self._set_state('handoff')
+            self.installation_started.emit(str(image))
+        except (OSError, ValueError, TypeError) as problem:
+            self._authorized = False
+            self._retry_operation = 'install'
+            self._set_state('error', error=str(problem))
+            self.installation_failed.emit(str(problem))
 
     def _mac_cancelled(self, generation):
         job = self._jobs.pop(generation, None)
@@ -491,6 +652,9 @@ class UpdateController(QObject):
                 self._authorized = False
                 self.installation_started.emit(str(prepared.installed_app))
                 self._quit()
+            from mac_updates import launch_update_helper
+            from update_completion import record_update
+            record_update(self.data_dir,self.app_version,self._manifest)
             launch_update_helper(prepared, executable=self._installed_exe,
                                  popen=self._popen, quit_callback=quit_after_spawn)
             handed_off = True
@@ -526,8 +690,11 @@ class UpdateController(QObject):
                 self._authorized = False
                 self.installation_started.emit(path)
                 self._quit()
+            from update_completion import record_update
+            record_update(self.data_dir,self.app_version,self._manifest)
             launch_installer(result, installed_exe=self._installed_exe,
-                              quit_callback=quit_after_spawn, popen=self._popen)
+                              quit_callback=quit_after_spawn, popen=self._popen,
+                              quiet=self._silent_install)
         except (OSError, ValueError, TypeError) as problem:
             self._authorized = False
             self._retry_operation = 'install'
@@ -541,11 +708,19 @@ class UpdateController(QObject):
         if not self._closed:
             self._set_state('cancelled')
 
+    def pause(self):
+        if self._closed or not hasattr(self.client,'pause'):return False
+        paused=self.client.pause()
+        if paused:self._authorized=False
+        return paused
+
     def cancel(self):
         if self._closed:
             return False
-        active = self.busy or self._authorized
+        paused=self._state=='paused'
+        active = self.busy or self._authorized or paused
         self._authorized = False
+        self._refreshing_before_install = False
         self._generation += 1
         self._installing = False
         self._timer.stop()
@@ -555,7 +730,7 @@ class UpdateController(QObject):
                 job.cancelled.set()
             else:
                 job.cancel()
-        if self.client.busy:
+        if self.client.busy or paused:
             self.client.cancel()
         if active:
             self._set_state('cancelled')
@@ -564,6 +739,17 @@ class UpdateController(QObject):
     def close(self):
         if self._closed:
             return
-        self.cancel()
+        # Shutdown keeps both verified packages and partially received bytes.
         self._closed = True
+        self._authorized = False
+        self._generation += 1
+        self._installing = False
+        self._refreshing_before_install = False
+        self._timer.stop()
+        self._pending_manifest, self._pending_check = None, False
+        for job in self._jobs.values():
+            if isinstance(job, _Verification):
+                job.cancelled.set()
+            else:
+                job.cancel()
         self.client.close()

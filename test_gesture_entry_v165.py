@@ -4,6 +4,7 @@ The actual Qt platform stays offscreen. Only poll's native branch is selected;
 Win32 inputs, registration, native drop-target positioning and registry are
 mocked. No cursor is moved and no desktop or native hook is created.
 """
+import shelf_ui_common
 from contextlib import ExitStack
 import json
 import math
@@ -30,7 +31,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-gesture-entry-v165-') as temp
     os.environ['APPDATA']=temporary
     import app_settings,drag_probe,flickdock as subject
     from global_hotkeys import _NoopBackend
-    app=QApplication([]);actual_platform=app.platformName;subject.load_font(app)
+    app=QApplication([]);actual_platform=app.platformName;shelf_ui_common.load_font(app)
     assert actual_platform()=='offscreen'
     pointer={'down':False,'pos':QPoint(600,350)}
     with ExitStack() as patches:
@@ -39,9 +40,9 @@ with tempfile.TemporaryDirectory(prefix='flickdock-gesture-entry-v165-') as temp
             (QSystemTrayIcon,'show',{}),(QSystemTrayIcon,'hide',{}),
             (app_settings,'_read_startup_value',{}),(app_settings,'_write_startup_value',{}),
             (subject.QCursor,'pos',dict(side_effect=lambda:QPoint(pointer['pos']))),
-            (subject.ctypes.windll.user32,'GetAsyncKeyState',dict(side_effect=lambda key:0x8000 if key==1 and pointer['down'] else 0)),
-            (subject.ctypes.windll.user32,'RegisterHotKey',dict(side_effect=AssertionError('Real hotkey registration'))),
-            (subject.ctypes.windll.user32,'UnregisterHotKey',dict(side_effect=AssertionError('Real hotkey unregistration'))),
+            (shelf_ui_common.ctypes.windll.user32,'GetAsyncKeyState',dict(side_effect=lambda key:0x8000 if key==1 and pointer['down'] else 0)),
+            (shelf_ui_common.ctypes.windll.user32,'RegisterHotKey',dict(side_effect=AssertionError('Real hotkey registration'))),
+            (shelf_ui_common.ctypes.windll.user32,'UnregisterHotKey',dict(side_effect=AssertionError('Real hotkey unregistration'))),
             (subject,'native_window_move_active',dict(return_value=False)),
             (drag_probe,'native_window_move_active',dict(return_value=False)),
             (drag_probe,'_native_windows_enabled',dict(return_value=False))):
@@ -89,16 +90,17 @@ with tempfile.TemporaryDirectory(prefix='flickdock-gesture-entry-v165-') as temp
                 now=time.perf_counter()
                 if begin[0] is None:begin[0]=now;state['begin']=now
                 elapsed=now-begin[0]
-                pointer['pos']=QPoint(round(600+190*math.sin(2*math.pi*2.5*elapsed)),350)
+                motion_elapsed=min(elapsed,1.4) if mode=='late_after_stop' else elapsed
+                pointer['pos']=QPoint(round(600+190*math.sin(2*math.pi*2.5*motion_elapsed)),350)
                 pointer['down']=True;state['polls'].append(elapsed)
                 manager.poll()
                 if shelf.isVisible():state.setdefault('shown',time.perf_counter()-state['begin'])
             manager.timer.timeout.connect(tick)
             with patch.object(app,'platformName',return_value='windows'):
-                if mode=='late':
+                if mode in ('late','late_after_stop'):
                     delayed=QTimer();delayed.setSingleShot(True)
                     delayed.timeout.connect(lambda:manager.drag_gate._content_entered(QPoint(pointer['pos'])) if manager.drag_gate._accepts(mime) else None)
-                    delayed.start(1300)
+                    delayed.start(2200 if mode=='late_after_stop' else 1300)
                 manager.timer.start(20)
                 try:spin_until(lambda:'shown' in state)
                 except AssertionError:
@@ -118,7 +120,13 @@ with tempfile.TemporaryDirectory(prefix='flickdock-gesture-entry-v165-') as temp
         low,high=run(1,'immediate'),run(100,'immediate')
         assert low['shown']>high['shown']+.4,(low,high)
         delayed_low,delayed_high=run(1,'late'),run(100,'late')
-        assert delayed_low['shown']>delayed_high['shown']+.4,(delayed_low,delayed_high)
+        # Recording can delay the OLE MIME callback until after a complete
+        # shake. The already-observed gesture must reveal immediately once
+        # real content is validated, without requiring a second shake.
+        assert 0<=delayed_low['shown']-delayed_low['type_ready']<.24,delayed_low
+        assert 0<=delayed_high['shown']-delayed_high['type_ready']<.24,delayed_high
+        delayed_after_stop=run(1,'late_after_stop')
+        assert 0<=delayed_after_stop['shown']-delayed_after_stop['type_ready']<.24,delayed_after_stop
 
         # A coarse wall/idle clock must no longer quantise gesture derivatives.
         original_monotonic=time.monotonic

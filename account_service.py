@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import hashlib
 import platform
+from queue import Queue
 import re
 import sys
 import threading
@@ -13,7 +14,7 @@ from PySide6.QtWidgets import QApplication
 
 from account_store import SessionStore
 from cloud_api import CloudApi
-from cloud_config import DEFAULT_CLOUD_URL
+from cloud_config import DEFAULT_CLOUD_URL,SESSION_REALM
 
 
 AUTH_KDF = {'name':'scrypt','N':16384,'r':8,'p':5,'dkLen':32}
@@ -50,6 +51,11 @@ def validate_auth_challenge(value):
 def derive_auth_key(password,salt):
     """Called only on a worker; parameters never come from untrusted JSON."""
     return bytearray(hashlib.scrypt(password,salt=salt,n=16384,r=8,p=5,dklen=32,maxmem=32*1024*1024))
+
+
+def valid_new_password(value):
+    """New credentials have no character-class requirements or trimming."""
+    return isinstance(value,str) and len(value)>=6 and not any(char.isspace() for char in value)
 
 
 class _AuthSignals(QObject):
@@ -99,6 +105,11 @@ class _PasswordWorker(_AuthWorker):
         self.signals.finished.emit(self.epoch,self.proof,error)
 
 
+class _SessionSignals(QObject):
+    finished=Signal(int,str,bool)
+    restored=Signal(int,object,str)
+
+
 class AccountService(QObject):
     account_changed = Signal(object)
     status_changed = Signal(str)
@@ -112,14 +123,22 @@ class AccountService(QObject):
         application = QApplication.instance()
         native = application is not None and application.platformName() not in ('offscreen','minimal')
         self.api = api or CloudApi(origin, self)
-        self.store = store or SessionStore(base, origin, enabled=native)
+        self.store = store or SessionStore(base,SESSION_REALM if origin==DEFAULT_CLOUD_URL else origin,enabled=native)
         self.account, self.device_id = None, ''
         self.busy, self.epoch = False, 0
         self._closed=False
         self._auth_state=None;self._auth_request_key=None;self._auth_jobs={}
+        # A serial daemon handles Keychain authorization without holding up the
+        # UI or preventing app exit if the system credential sheet never returns.
+        self._session_queue=Queue();self._session_thread=None
+        self._session_signals=_SessionSignals(self)
+        self._session_signals.finished.connect(self._session_done,Qt.ConnectionType.QueuedConnection)
+        self._session_signals.restored.connect(self._session_restored,Qt.ConnectionType.QueuedConnection)
         self.platform = {'win32':'windows','darwin':'macos'}.get(sys.platform,'linux')
         self.device_name = platform.node()[:80] or ('Mac' if self.platform=='macos' else 'Windows PC')
-        self._restored = self.store.load() if native or store is not None else None
+        self._restore_async = self.platform == 'macos' and (native or store is not None)
+        self._resume_started = False
+        self._restored = self.store.load() if not self._restore_async and (native or store is not None) else None
         self.api.unauthorized.connect(self._expired)
 
     @property
@@ -129,7 +148,23 @@ class AccountService(QObject):
         self.busy = bool(value); self.busy_changed.emit(self.busy)
 
     def resume(self):
+        if self._closed or self._resume_started:
+            return
+        self._resume_started = True
+        if self._restore_async:
+            # A Keychain sheet can wait indefinitely for the user. It must not
+            # hold the first Cocoa event loop or the updater's launch receipt.
+            self._queue_session('load')
+            return
         session, self._restored = self._restored, None
+        self._session_restored(self.epoch, session, '')
+
+    def _session_restored(self, epoch, session, error):
+        # Login/logout/close revoke a restore which was waiting for Keychain.
+        if self._closed or epoch != self.epoch or self.signed_in:
+            return
+        if error:
+            self.status_changed.emit('无法读取本机登录凭据，请重新登录。')
         if not session:
             self.account_changed.emit(None); return
         self.api.token = session['token']; self.device_id = session.get('device_id','')
@@ -145,8 +180,8 @@ class AccountService(QObject):
         if self._closed or not self.signed_in or self.busy:return False
         if not isinstance(old_password,str) or not old_password:
             self.status_changed.emit('请输入原密码。');return False
-        if not isinstance(new_password,str) or not 10<=len(new_password)<=128 or len(old_password)>128:
-            self.status_changed.emit('新密码需要 10–128 个字符。');return False
+        if not valid_new_password(new_password):
+            self.status_changed.emit('新密码至少需要 6 个字符，不能包含空白。');return False
         if confirm_password is not None and new_password!=confirm_password:
             self.status_changed.emit('两次输入的新密码不一致。');return False
         if old_password==new_password:
@@ -169,8 +204,10 @@ class AccountService(QObject):
         if self._closed or self.busy: return False
         if not isinstance(username,str) or not username.strip() or not isinstance(password,str) or not password:
             self.status_changed.emit('请输入账号和密码。'); return False
-        if not 10<=len(password)<=128:
-            self._busy(False);self.status_changed.emit('密码需要 10–128 个字符。');return False
+        # Existing accounts may use an older password policy. Only creating or
+        # changing a password applies the current policy; never trim a secret.
+        if action=='register' and not valid_new_password(password):
+            self.status_changed.emit('密码至少需要 6 个字符，不能包含空白。');return False
         try:secret=bytearray(password.encode('utf8'))
         except UnicodeError:
             self._busy(False);self.status_changed.emit('密码格式无效，请重新输入。');return False
@@ -198,6 +235,7 @@ class AccountService(QObject):
         # Server error text must never echo a password, proof, or provider data.
         return {'INVALID_CREDENTIALS':'账号或密码不正确。','USERNAME_TAKEN':'这个账号已被使用。',
                 'INVALID_CHALLENGE':'登录验证已过期，请重试。','AUTH_NOT_CONFIGURED':'账号服务暂未开放，请稍后重试。',
+                'USERNAME_MIGRATION_REQUIRED':'账号索引正在更新，请稍后重试。',
                 'INVALID_OLD_PASSWORD':'原密码不正确，请重新输入。',
                 'PASSWORD_CHANGED':'密码已在其他设备更改，请重新验证原密码。',
                 'DEVICE_LIMIT':'账号已登录 20 台设备，请先移除其他设备后再登录。',
@@ -266,16 +304,60 @@ class AccountService(QObject):
         if (not isinstance(account,dict) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',str(account.get('id','')))
                 or not isinstance(result.get('token'),str) or not result['token']):
             self._auth_error(epoch,'账号服务返回了无效登录状态。');return
-        account={key:account.get(key) for key in ('id','username','email','email_verified_at')}
+        account={key:account.get(key) for key in ('id','username','email','email_verified_at','login_alias')}
         session={key:result[key] for key in ('token','device_id','expires_at') if key in result}
         session['account']=account
         self.api.token=result['token'];self.account=account;self.device_id=result.get('device_id','')
         self._drop_auth_state();self._busy(False)
         if self._closed or epoch!=self.epoch:return
-        notice='登录成功，正在同步搁架。'
-        try:self.store.save(session)
-        except Exception:notice='已登录，本机无法安全保存凭据，重启后需重新登录。'
-        self.account_changed.emit(dict(account));self.status_changed.emit(notice);self.list_devices()
+        if self.platform=='macos':
+            # Schedule before UI signals, which can themselves trigger logout.
+            # A following clear is then guaranteed to run after this save.
+            self._queue_session('save',session,epoch)
+        self.account_changed.emit(dict(account))
+        self.status_changed.emit('登录成功，正在同步搁架。')
+        self.list_devices()
+        if self.platform!='macos':
+            try:self.store.save(session)
+            except Exception:self.status_changed.emit('已登录，本机无法安全保存凭据，重启后需重新登录。')
+
+    def _queue_session(self,operation,session=None,epoch=None):
+        if self._session_thread is None:
+            self._session_thread=threading.Thread(target=self._session_loop,name='FlickDock Keychain',daemon=True)
+            self._session_thread.start()
+        generation=self.store.generation() if operation=='save' and hasattr(self.store,'generation') else None
+        self._session_queue.put((self.epoch if epoch is None else epoch,operation,session,generation))
+
+    def _session_loop(self):
+        while True:
+            item=self._session_queue.get()
+            if item is None:return
+            epoch,operation,session,generation=item
+            failed=False
+            restore_error=''
+            try:
+                if operation=='load':
+                    session=self.store.load()
+                elif operation=='save':
+                    if generation is None:self.store.save(session)
+                    else:self.store.save(session,generation=generation)
+                elif hasattr(self.store,'clear_credentials'):self.store.clear_credentials()
+                else:self.store.clear()
+            except Exception as error:
+                failed=True
+                restore_error=type(error).__name__
+            finally:
+                if not self._closed:
+                    if operation=='load':self._session_signals.restored.emit(epoch,session if not failed else None,restore_error)
+                    else:self._session_signals.finished.emit(epoch,operation,failed)
+                session=None
+
+    def _session_done(self,epoch,operation,failed):
+        if self._closed or epoch!=self.epoch:return
+        if failed and operation=='save' and self.signed_in:
+            self.status_changed.emit('已登录，本机无法安全保存凭据，重启后需重新登录。')
+        elif failed and operation=='clear' and not self.signed_in:
+            self.status_changed.emit('已退出登录，但系统凭据暂时无法清除。')
 
     def _drop_auth_state(self):
         state,self._auth_state=self._auth_state,None
@@ -383,11 +465,19 @@ class AccountService(QObject):
         self.cancel_auth()
         self.api.token = ''; self.account = None; self.device_id = ''
         self.api.cancel_all()
-        try:self.store.clear()
-        except OSError:pass
+        if self.platform=='macos':
+            # Invalidate the local metadata immediately. A queued save cannot
+            # resurrect a session after logout; the serial clear runs last.
+            try:self.store.invalidate()
+            except (AttributeError,OSError):pass
+            self._queue_session('clear')
+        else:
+            try:self.store.clear()
+            except OSError:pass
         self._busy(False)
         self.account_changed.emit(None); self.devices_changed.emit([]); self.status_changed.emit(message)
 
     def close(self):
         if self._closed:return
         self._closed=True;self.cancel_auth();self.api.close()
+        if self._session_thread is not None:self._session_queue.put(None)

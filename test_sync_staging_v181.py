@@ -1,5 +1,7 @@
 """Original-byte staging, bounded cancellation and adaptive directory transfer."""
 import hashlib
+import io
+import os
 from pathlib import Path
 import tempfile
 import threading
@@ -10,6 +12,13 @@ import sync_files
 
 
 class StagingTests(unittest.TestCase):
+    def test_unknown_incompressible_binary_skips_deflate_without_changing_bytes(self):
+        source=self.root/'binary';source.mkdir();data=os.urandom(2*1024*1024)
+        (source/'capture.rawdata').write_bytes(data)
+        staged=sync_files.stage_item(str(source),None,'binary',self.outbox,self.cancel)
+        with zipfile.ZipFile(staged['path']) as archive:
+            self.assertEqual(archive.getinfo('capture.rawdata').compress_type,zipfile.ZIP_STORED)
+            self.assertEqual(archive.read('capture.rawdata'),data)
     def setUp(self):
         self.temporary=tempfile.TemporaryDirectory(prefix='flickdock-stage-review-')
         self.root=Path(self.temporary.name);self.outbox=self.root/'outbox';self.cancel=threading.Event()
@@ -61,6 +70,38 @@ class StagingTests(unittest.TestCase):
         self.cancel.set()
         with self.assertRaises(InterruptedError):sync_files.stage_item(str(source),None,'source.bin',self.outbox,self.cancel)
         self.assertEqual(list(self.outbox.iterdir()),[]);self.assertEqual(source.read_bytes(),data)
+
+    def test_single_verified_download_is_renamed_without_second_full_copy(self):
+        data=bytes(range(256))*32768
+        source=self.root/'.download.chunk-0';target=self.root/'download.bin'
+        source.write_bytes(data)
+        expected={'size':len(data),'sha256':hashlib.sha256(data).hexdigest()}
+        original_open=Path.open
+        def deny_new_write(path,mode='r',*args,**kwargs):
+            if 'x' in mode and path.parent==self.root:
+                raise AssertionError('Single verified part must not be recopied to a second file')
+            return original_open(path,mode,*args,**kwargs)
+        with patch.object(Path,'open',deny_new_write):
+            self.assertEqual(sync_files.assemble_parts([source],target,expected,self.cancel),target)
+        self.assertFalse(source.exists());self.assertEqual(target.read_bytes(),data)
+        corrupt=self.root/'.corrupt.chunk-0';corrupt.write_bytes(data[:-1])
+        with self.assertRaises(ValueError):sync_files.assemble_parts([corrupt],target,expected,self.cancel)
+        self.assertFalse(corrupt.exists());self.assertEqual(target.read_bytes(),data)
+
+    def test_large_part_reader_checks_cancel_between_disk_blocks(self):
+        data=b'z'*(5*1024*1024)
+        class InterruptingReader(io.BytesIO):
+            def read(inner,size=-1):
+                value=super().read(size)
+                self.cancel.set()
+                return value
+        with patch.object(sync_files,'_source_reader',lambda _:InterruptingReader(data)):
+            with self.assertRaises(InterruptedError):
+                sync_files.read_part(self.root/'unused',0,len(data),self.cancel)
+        self.cancel.clear()
+        source=self.root/'actual.bin';source.write_bytes(data)
+        actual,digest=sync_files.read_part(source,0,len(data),self.cancel)
+        self.assertEqual(actual,data);self.assertEqual(digest,hashlib.sha256(data).hexdigest())
 
 
 if __name__=='__main__':unittest.main(verbosity=2)

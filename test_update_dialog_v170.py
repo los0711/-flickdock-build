@@ -41,8 +41,8 @@ class FakeClient(QObject):
 
 
 app = QApplication([])
-assert QFontDatabase.addApplicationFont(str(Path(__file__).with_name('fonts')/'HarmonyOS_Sans_SC_Regular.ttf'))>=0
-app.setFont(QFont('HarmonyOS Sans SC', 11))
+from native_ui_common import configure_reference_font
+configure_reference_font(app)
 
 
 def flush():
@@ -63,7 +63,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-update-ui-v170-') as temporar
     assert not dialog.windowFlags() & Qt.WindowType.WindowCloseButtonHint
     assert not dialog.isVisible() and not dialog.isModal()
     assert dialog.current_version=='1.7.0' and dialog.state=='idle'
-    assert dialog.font().family()=='HarmonyOS Sans SC'
+    assert dialog.font().family()==app.font().family()
     installed, downloads, checks, dismissals, skipped = [], [], [], [], []
     dialog.request_install.connect(lambda: installed.append(dialog.verified_path))
     dialog.request_download.connect(lambda: downloads.append(dialog.latest_version))
@@ -82,10 +82,11 @@ with tempfile.TemporaryDirectory(prefix='flickdock-update-ui-v170-') as temporar
     client.checking.emit(False)
     client.update_available.emit(manifest, False)
     assert dialog.state=='available' and not dialog.isVisible() and not installed
-    assert dialog.release_notes.toPlainText()==manifest['notes']
+    assert not dialog.notes_card.isVisible() and not dialog.release_notes.toPlainText()
+    assert dialog._notes==manifest['notes']
     assert dialog.current_version_label.text()=='1.7.0'
     assert dialog.latest_version_label.text()=='1.7.1'
-    print('PASS automatic latest/error/available signals never show UI or install; versions and release notes are plain text')
+    print('PASS automatic latest/error/available signals never show UI or install; versions are plain text; notes are reserved for overview')
 
     dialog.set_state('idle')
     dialog.show(); flush()
@@ -93,7 +94,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-update-ui-v170-') as temporar
     assert dialog.state=='checking' and len(client.check_calls)==len(checks)==1
     assert client.check_calls[-1] is True and not dialog.primary_button.isEnabled()
     client.update_available.emit(manifest, True)
-    assert dialog.state=='available' and dialog.primary_button.text()=='下载并更新'
+    assert dialog.state=='available' and dialog.primary_button.text()=='立即下载并更新'
     QTest.mouseClick(dialog.primary_button, Qt.MouseButton.LeftButton)
     assert dialog.state=='downloading' and len(client.download_calls)==len(downloads)==1
     assert client.download_calls[-1]==(manifest, True) and not installed
@@ -106,7 +107,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-update-ui-v170-') as temporar
     client.verified_file.emit(str(installer), manifest, True)
     assert dialog.state=='ready' and dialog.verified_path==str(installer)
     assert dialog.progress_bar.value()==100 and not installed
-    assert dialog.primary_button.text()=='立即安装'
+    assert dialog.primary_button.text()=='重启并安装'
     QTest.mouseClick(dialog.primary_button, Qt.MouseButton.LeftButton)
     assert installed==[str(installer)] and not dialog.primary_button.isEnabled()
     QTest.mouseClick(dialog.primary_button, Qt.MouseButton.LeftButton)
@@ -169,7 +170,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-update-ui-v170-') as temporar
                 dialog.grab().save(str(Path(render_dir)/f'update-{theme}-{state}-{os.environ["QT_SCALE_FACTOR"]}.png'))
         dialog.set_state('latest')
         dialog.reject(); flush()
-    print('PASS light/dark layouts, footer visibility, Harmony typography and centered close target at DPI', os.environ['QT_SCALE_FACTOR'])
+    print('PASS light/dark layouts, footer visibility, bundled typography and centered close target at DPI', os.environ['QT_SCALE_FACTOR'])
 
     newer = FakeClient()
     dialog.bind_client(newer)

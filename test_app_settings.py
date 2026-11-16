@@ -15,12 +15,8 @@ import app_settings as subject
 
 
 app = QApplication([])
-font_path = Path(__file__).parent / "fonts" / "HarmonyOS_Sans_SC_Regular.ttf"
-if font_path.exists():
-    font_id = QFontDatabase.addApplicationFont(str(font_path))
-    names = QFontDatabase.applicationFontFamilies(font_id)
-    if names:
-        app.setFont(QFont(names[0], 11))
+from native_ui_common import configure_reference_font
+configure_reference_font(app)
 with tempfile.TemporaryDirectory(prefix="flickdock-settings-") as temporary:
     base = Path(temporary) / "profile"
     writes = []
@@ -151,18 +147,24 @@ with tempfile.TemporaryDirectory(prefix="flickdock-settings-") as temporary:
     app.processEvents()
     assert previews and previews[-1] == dialog._dock_values()
     body = dialog.findChild(subject.QWidget, "settingsBody")
-    assert body.layout().itemAt(0).widget() is dialog.trigger_visible_checkbox.parentWidget()
-    assert set(previews[-1]) == {"dock_edge", "dock_position", "dock_length", "dock_thickness", "trigger_visible", "dock_color", "dock_opacity"}
+    assert body.layout().itemAt(0).widget() is dialog.setting_categories[0][1][0]
+    assert body.isAncestorOf(dialog.account_slot)
+    assert dialog.dock_card.isAncestorOf(dialog.trigger_visible_checkbox)
+    assert dialog.surface.size().width() == min(892,dialog.chrome._available().width()-16)-32 and dialog.surface.size().height() == min(632,dialog.chrome._available().height()-16)-32
+    assert set(previews[-1]) == {"dock_edge", "dock_position", "dock_length", "dock_thickness", "trigger_visible", "dock_color", "dock_opacity", "display_triggers"}
     dialog.theme_combo.setCurrentIndex(0)
     dialog.folder_edit.setText(str(invalid))
     dialog.save()
+    from test_live_settings_v1838 import settle_preferences
+    settle_preferences(dialog)
     assert dialog.error_label.isVisible() and dialog.isVisible()
     assert store.theme == "dark"
     dialog.load_values()
     assert dialog.view_combo.currentData() == "icons"
     assert dialog.dock_edge_combo.currentData() == "right" and dialog.dock_position_spin.value() == 0
     assert dialog.dock_length_spin.value() == 32 and dialog.dock_thickness_spin.value() == 2
-    for field in (dialog.dock_position_spin, dialog.dock_length_spin, dialog.dock_thickness_spin, dialog.dock_opacity_spin):
+    app.processEvents()  # Finish the source form's theme/NoButtons layout pass.
+    for field in next(iter(dialog.display_trigger_editor.rows.values())).controls.values():
         editor = field.findChild(QLineEdit)
         assert editor.isVisible() and editor.width() >= 60 and editor.height() >= 18
     assert not hasattr(dialog, "font_notice") and dialog.author_button.text() == "Author @Roger"
@@ -179,8 +181,10 @@ with tempfile.TemporaryDirectory(prefix="flickdock-settings-") as temporary:
     dialog.dock_opacity_slider.setValue(37)
     dialog._set_dock_color("#aa44cc")
     assert previews[-1] == {"dock_edge": "bottom", "dock_position": 58, "dock_length": 240,
-                            "dock_thickness": 12, "trigger_visible": False, "dock_color": "#aa44cc", "dock_opacity": 37}
-    assert store.path.read_bytes() == draft_before and store.trigger_visible and store.dock_opacity == 100
+                            "dock_thickness": 12, "trigger_visible": False, "dock_color": "#aa44cc", "dock_opacity": 37, "display_triggers": {}}
+    dialog._queue_dock_preferences();settle_preferences(dialog)
+    assert store.path.read_bytes() != draft_before and not store.trigger_visible and store.dock_opacity == 37
+    draft_before=store.path.read_bytes()
     def cancel_color(picker):
         picker.setCurrentColor(QColor("#123456"))
         assert previews[-1]["dock_color"] == "#123456"
@@ -192,22 +196,25 @@ with tempfile.TemporaryDirectory(prefix="flickdock-settings-") as temporary:
     assert subject.normalize_shortcut(dialog.shelf_shortcut_edit.keySequence()) == store.shelf_shortcut
     dialog.grab().save(str(Path(__file__).parent / "v16-settings-dark.png"))
     dialog.theme_combo.setCurrentIndex(0)
-    app.processEvents()
+    settle_preferences(dialog)
     dialog.grab().save(str(Path(__file__).parent / "v16-settings-light.png"))
     before = store.path.read_bytes()
     received = []
     dialog.shortcut_validator = lambda values: received.append(values) or "这个快捷键已被其他程序使用。"
+    dialog.shelf_shortcut_edit.setKeySequence(subject.QKeySequence('Ctrl+Alt+P'))
     dialog.save()
     assert dialog.error_label.isVisible() and "快捷键" in dialog.error_label.text()
     assert store.path.read_bytes() == before and dialog.isVisible()
-    assert received[0]["shelf_shortcut"] == "Ctrl+Alt+O"
+    assert received[0]["shelf_shortcut"] == "Ctrl+Alt+P"
     dialog.shortcut_validator = None
     with patch.object(subject, "_read_startup_value", return_value=None) as read, \
          patch.object(subject, "_write_startup_value") as write:
         dialog.save()
+        settle_preferences(dialog)
         read.assert_not_called()
         write.assert_not_called()
-    assert store.theme == "light" and not dialog.isVisible()
+    assert store.theme == "light" and dialog.isVisible()
+    dialog.close();app.processEvents()
     assert previews[-1] is None
     assert not store.trigger_visible and store.dock_color == "#aa44cc" and store.dock_opacity == 37
     assert (store.dock_edge, store.dock_position, store.dock_length, store.dock_thickness) == ("bottom", 58, 240, 12)
@@ -217,19 +224,18 @@ with tempfile.TemporaryDirectory(prefix="flickdock-settings-") as temporary:
     author_dialog = dialog.author_dialog
     assert author_dialog.isVisible() and not author_dialog.isModal()
     assert author_dialog.author_label.text() == "Author @Roger"
-    assert author_dialog.font_notice.parent() is author_dialog and author_dialog.license_dialog is None
+    assert not hasattr(author_dialog, 'font_notice') and author_dialog.license_dialog is None
     author_dialog.licenses_button.click()
     license_dialog = author_dialog.license_dialog
     app.processEvents()
     assert license_dialog.isVisible() and not license_dialog.isModal()
-    assert license_dialog.font_notice.parent() is license_dialog
-    assert "HarmonyOS Sans" in license_dialog.font_notice.text()
+    assert not hasattr(license_dialog, 'font_notice')
     for index in range(license_dialog.document_combo.count()):
         license_dialog.document_combo.setCurrentIndex(index)
         assert len(license_dialog.license_text.toPlainText()) > 150
         assert "缺少" not in license_dialog.license_text.toPlainText()
     license_dialog.document_combo.setCurrentIndex(1)
-    assert "HarmonyOS Sans Fonts License Agreement" in license_dialog.license_text.toPlainText()
+    assert "GNU LESSER GENERAL PUBLIC LICENSE" in license_dialog.license_text.toPlainText()
     dialog.apply_theme("dark")
     assert license_dialog.document_combo.dark
     author_dialog.grab().save(str(Path(__file__).parent / "v16-author-about.png"))
@@ -247,12 +253,15 @@ with tempfile.TemporaryDirectory(prefix="flickdock-settings-") as temporary:
         dialog.dock_opacity_spin.setValue(0)
         assert previews[-1]["dock_length"] == 490 and store.path.read_bytes() == saved_before
         action(); app.processEvents()
-        assert previews[-1] is None and store.path.read_bytes() == saved_before
-        assert store.dock_length == 240 and store.dock_opacity == 37
+        settle_preferences(dialog)
+        assert previews[-1] is None
+        assert store.dock_length == 490 and store.dock_opacity == 0
+        assert subject.SettingsStore(base).dock_position==84
     print("PASS nonmodal dialog validates inline, previews themes and saves without unnecessary registry access")
     print("PASS shortcut availability validator blocks save before persistence")
     print("PASS Author @Roger opens author information first; separate attribution and offline license reader remain accessible")
-    print("PASS full dock drafts preview immediately without persistence; color cancel and Save/Cancel/X/Escape end preview correctly")
+    dialog._preference_writer.close()
+    print("PASS dock changes apply automatically; color-picker cancel restores its preview; X/Escape retain applied settings")
 
 with tempfile.TemporaryDirectory(prefix="flickdock-settings-legacy-") as temporary:
     base = Path(temporary)

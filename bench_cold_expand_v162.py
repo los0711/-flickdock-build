@@ -2,6 +2,10 @@
 
 Results describe GUI-thread timing, never Windows compositor frame rate.
 """
+import file_preview
+import overview_ui
+import shelf_ui_common
+import shelf_window
 import os
 os.environ['QT_QPA_PLATFORM']='offscreen'
 os.environ['QT_SCALE_FACTOR']='1.25'
@@ -60,20 +64,20 @@ with tempfile.TemporaryDirectory(prefix='flickdock-cold-audit-') as tmp:
     import flickdock as mod, app_settings, surface_morph as surf, media_preview as media, flickdock_motion as motion, shelf_content
     app=App([])
     sys._MEIPASS=str(ROOT)
-    font0=time.perf_counter();mod.load_font(app);font_ms=(time.perf_counter()-font0)*1000
-    for cls,name in ((mod.ShelfWindow,'show_contents'),(mod.ShelfWindow,'_prepare_morph'),(mod.ShelfWindow,'_settle_morph'),
-                     (mod.ContentsPopup,'__init__'),(mod.ContentsPopup,'rebuild'),(mod.IconItem,'__init__'),
-                     (mod.PreviewPane,'show_path'),(mod.PreviewPane,'hideEvent'),(mod.ShelfWindow,'item_pixmap'),
+    font0=time.perf_counter();shelf_ui_common.load_font(app);font_ms=(time.perf_counter()-font0)*1000
+    for cls,name in ((shelf_window.ShelfWindow,'show_contents'),(shelf_window.ShelfWindow,'_prepare_morph'),(shelf_window.ShelfWindow,'_settle_morph'),
+                     (overview_ui.ContentsPopup,'__init__'),(overview_ui.ContentsPopup,'rebuild'),(overview_ui.IconItem,'__init__'),
+                     (file_preview.PreviewPane,'show_path'),(file_preview.PreviewPane,'hideEvent'),(shelf_window.ShelfWindow,'item_pixmap'),
                      (surf.SurfaceSnapshot,'capture_live'),(surf.SurfaceSnapshot,'_shadow'),(surf.SurfaceSnapshot,'paintEvent'),
                      (media.MediaPreview,'set_source'),(media.MediaPreview,'_load_player'),(media.MediaPreview,'_dispose_player'),
                      (media.MediaPreview,'_frame_changed'),(media.MediaPreview,'showEvent'),(media.MediaPreview,'hideEvent'),
-                     (mod.ImagePreview,'set_source'),(motion.MotionShadow,'draw')):
+                     (file_preview.ImagePreview,'set_source'),(motion.MotionShadow,'draw')):
         instrument(cls,name)
     with ExitStack() as stack:
         for obj,name,kw in ((mod,'motion_enabled',{'return_value':True}),(QSystemTrayIcon,'show',{}),(QSystemTrayIcon,'hide',{}),
                             (app_settings,'_read_startup_value',{}),(app_settings,'_write_startup_value',{}),
                             (mod.QGuiApplication,'screenAt',{'return_value':Screen()}),(mod.QGuiApplication,'primaryScreen',{'return_value':Screen()}),
-                            (mod.ctypes.windll.user32,'GetAsyncKeyState',{'return_value':0}),(mod,'native_window_move_active',{'return_value':False}),
+                            (shelf_ui_common.ctypes.windll.user32,'GetAsyncKeyState',{'return_value':0}),(mod,'native_window_move_active',{'return_value':False}),
                             (mod.QCursor,'pos',{'return_value':QPoint(0,0)})):
             stack.enter_context(patch.object(obj,name,**kw))
         manager=mod.ShelfManager(app);manager.timer.stop();shelf=manager.shelf;shelf.pinned=True
@@ -94,7 +98,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-cold-audit-') as tmp:
         shelf.add_paths('permanent',refs)
         shelf._show_at(QPoint(1400,160),'manual',QPoint());run(750)
         if disable_shadow:
-            surf.SurfaceSnapshot._shadow=lambda self,w,h,dpr: mod.QPixmap()
+            surf.SurfaceSnapshot._shadow=lambda self,w,h,dpr: shelf_window.QPixmap()
         if disable_thumbnails:
             original_file=shelf_content.file_pixmap
             def fast_file(path,size=90,stack=1,dpr=None):
@@ -117,12 +121,12 @@ with tempfile.TemporaryDirectory(prefix='flickdock-cold-audit-') as tmp:
         for repeat in range(3):
             phase=f'expand-{repeat}';begin=time.perf_counter();shelf.show_contents();call_ms=(time.perf_counter()-begin)*1000
             run(1100)
-            first_items=len(shelf.popup.rows_body.findChildren(mod.IconItem))
+            first_items=len(shelf.popup.rows_body.findChildren(overview_ui.IconItem))
             for _ in range(20):
                 if shelf.popup._build_cursor==len(refs):break
                 run(100)
             assert shelf.popup._build_cursor==len(refs),'Remaining items did not become accessible'
-            measure[phase]={'call_ms':round(call_ms,3),'items_after_1100ms':first_items,'items':len(shelf.popup.rows_body.findChildren(mod.IconItem)),
+            measure[phase]={'call_ms':round(call_ms,3),'items_after_1100ms':first_items,'items':len(shelf.popup.rows_body.findChildren(overview_ui.IconItem)),
                             'media_player':shelf.popup.preview.media.player is not None,
                             'poster_empty':shelf.popup.preview.media.surface.image.isNull()}
             phase=None;shelf.collapse_contents();run(450)

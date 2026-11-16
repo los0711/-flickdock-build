@@ -82,7 +82,7 @@ def run(argv, load_font):
             code = next(row['code'] for row in a_states if row['state'] == 'waiting')
             if offers[0]['code'] != code: raise AssertionError('TLS channel authentication codes differ')
             report['tls_channel_code_matched'] = True
-            b.accept(identifier, destination); wait(lambda: received and sent, timeout=30)
+            b.accept(identifier, destination, confirmation=code); wait(lambda: received and sent, timeout=30)
             target = Path(received[0]['paths'][0])
             digest = hashlib.sha256(target.read_bytes()).hexdigest()
             if digest != expected or target.stat().st_size != len(payload): raise AssertionError('Original bytes changed')
@@ -102,7 +102,7 @@ def run(argv, load_font):
             _send_json(stream, dict(protocol=PROTOCOL, id=partial_id, token=token, sender='QA partial sender',
                                    entries=[dict(path='incomplete.bin', kind='file', size=BLOCK_BYTES * 4)]))
             wait(lambda: any(row['id'] == partial_id for row in offers))
-            b.accept(partial_id, destination)
+            b.accept(partial_id, destination, confirmation=next(row['code'] for row in offers if row['id']==partial_id))
             ready = _read_json(stream, threading.Event())
             if ready.get('state') != 'ready': raise AssertionError('Receiver did not accept partial transfer')
             stream.sendall(b'\x7f' * BLOCK_BYTES)

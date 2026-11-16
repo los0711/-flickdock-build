@@ -1,4 +1,5 @@
 """Hotkey while dragging -> overview child surfaces import files/content."""
+import shelf_ui_common
 import os
 from pathlib import Path
 import tempfile
@@ -20,7 +21,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-overview-drop-') as tmp:
     os.environ['APPDATA']=str(Path(tmp)/'profile')
     import flickdock as subject,app_settings,capture_files
     from shake_detector import ShakeDetector,config_for_sensitivity
-    app=QApplication([]);subject.load_font(app)
+    app=QApplication([]);shelf_ui_common.load_font(app)
     with patch.object(subject,'motion_enabled',return_value=False),patch.object(QSystemTrayIcon,'show'),patch.object(QSystemTrayIcon,'hide'),patch.object(app_settings,'_read_startup_value'),patch.object(app_settings,'_write_startup_value'):
         manager=subject.ShelfManager(app);manager.timer.stop();shelf=manager.shelf;shelf.pinned=True
         def overview():
@@ -28,7 +29,8 @@ with tempfile.TemporaryDirectory(prefix='flickdock-overview-drop-') as tmp:
                 manager.show_overview();activate.assert_not_called();focus.assert_not_called()
             assert shelf.expanded and shelf.isVisible()
         overview();popup=shelf.popup
-        targets=[popup,popup.scroll.viewport(),popup.rows_body,popup.preview,popup.preview.text.viewport(),popup.preview.image,popup.preview.media.surface]
+        targets=[popup,popup.empty_state,popup.empty_drop,popup.header,popup.search_edit,popup.scroll.viewport(),popup.rows_body,
+                 popup.preview,popup.preview.text.viewport(),popup.preview.image,popup.preview.media.surface]
         for index,target in enumerate(targets):
             path=Path(tmp)/f'file-{index}.txt';path.write_text(str(index),encoding='utf8')
             mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(path))])

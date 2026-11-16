@@ -5,6 +5,7 @@ from PySide6.QtCore import QByteArray, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QImageReader, QPainter, QPainterPath
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QWidget
+from native_ui_common import paint_rounded_surface,RADIUS_CARD_PX
 import ui_theme
 
 
@@ -66,6 +67,9 @@ class ImagePreview(QWidget):
                 self.image = None if image.isNull() else image
                 self.update()
                 return self.image is not None
+            thumbnail = self._loader.image(path, 128)
+            if thumbnail is not None and not thumbnail.isNull():
+                self.image = thumbnail
             self._loading = self._loader.request(path, 2048)
             self.update()
             return self._loading
@@ -96,17 +100,17 @@ class ImagePreview(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.SmoothPixmapTransform)
-        bounds = QRectF(self.rect()).adjusted(4, 4, -4, -4)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(ui_theme.color('surface')))
-        painter.drawRoundedRect(bounds, 10, 10)
-        available = bounds.adjusted(10, 10, -10, -10)
+        bounds = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        paint_rounded_surface(painter,bounds,RADIUS_CARD_PX,QColor('#242426' if ui_theme.current_theme()=='dark' else '#FFFFFF'))
+        available = bounds
         natural = self.renderer.viewBoxF().size() if self.renderer else self.image.size() if self.image is not None else None
         if natural is not None and natural.width() > 0 and natural.height() > 0:
             factor = min(available.width()/natural.width(), available.height()/natural.height())
             width, height = natural.width()*factor, natural.height()*factor
             target = QRectF(available.center().x()-width/2, available.center().y()-height/2, width, height)
-            clip = QPainterPath(); clip.addRoundedRect(available, 6, 6); painter.setClipPath(clip)
+            scale=abs(painter.deviceTransform().m11()) or 1
+            radius=round(RADIUS_CARD_PX*scale)/scale
+            clip = QPainterPath(); clip.addRoundedRect(available,radius,radius); painter.setClipPath(clip)
             if self.renderer: self.renderer.render(painter, target)
             else: painter.drawImage(target, self.image)
         painter.end()

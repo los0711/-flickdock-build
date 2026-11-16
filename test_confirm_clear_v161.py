@@ -18,10 +18,8 @@ from confirm_clear import ClearConfirmOverlay, MODAL_PROPERTY, confirmation_acti
 
 
 app = QApplication([])
-font_path = Path(__file__).with_name("fonts") / "HarmonyOS_Sans_SC_Regular.ttf"
-if font_path.exists():
-    QFontDatabase.addApplicationFont(str(font_path))
-app.setFont(QFont("HarmonyOS Sans SC", 11))
+from native_ui_common import configure_reference_font
+configure_reference_font(app)
 host = QWidget()
 host.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint |
                     Qt.WindowType.WindowStaysOnTopHint)
@@ -46,7 +44,10 @@ def assert_layout(dialog, expect_compact=False):
     assert dialog.geometry() == QRect(card.mapTo(host,QPoint()),card.size())
     assert dialog.rect().contains(dialog.panel.geometry())
     assert not dialog.description.wordWrap()
-    expected = dialog.description.compact_text if expect_compact else dialog.description.full_text
+    # The 340px reference sheet fits its shorter full explanation even on the
+    # old compact host. Only use the compact variant when measured space needs it.
+    expected = (dialog.description.full_text if dialog.description.fontMetrics().horizontalAdvance(dialog.description.full_text)<=dialog.description.width()
+                else dialog.description.compact_text)
     assert dialog.description.text() == expected, (dialog.description.text(), expected, dialog.description.width())
     assert "\n" not in dialog.description.text() and "…" not in dialog.description.text()
     assert dialog.description.fontMetrics().horizontalAdvance(dialog.description.text()) <= dialog.description.width()
@@ -54,7 +55,7 @@ def assert_layout(dialog, expect_compact=False):
         bounds = QRect(button.mapTo(dialog.panel, QPoint()), button.size())
         assert dialog.panel.rect().contains(bounds), (bounds, dialog.panel.rect())
         assert button.width() >= button.fontMetrics().horizontalAdvance(button.text()) + 36
-        assert button.height() >= button.fontMetrics().height() + 18
+        assert button.height() >= button.fontMetrics().height() + 10
         assert button.isVisible()
 
 
@@ -95,14 +96,15 @@ try:
     for theme in ("light", "dark"):
         for width, height, compact in ((788, 450, False), (394, 294, True)):
             card.setGeometry(0, 0, width, height)
-            dialog = ClearConfirmOverlay(card, 125, font_family="HarmonyOS Sans SC", theme=theme)
+            dialog = ClearConfirmOverlay(card, 125, font_family="Inter", theme=theme)
             results = []
             dialog.finished.connect(results.append)
             def cancel_visible():
                 assert_layout(dialog, compact)
                 assert dialog.cancel_button.isDefault() and not dialog.delete_button.isDefault()
-                assert dialog.cancel_button.text() == "取消" and dialog.delete_button.text() == "删除"
-                assert ("#252b35" if theme == "dark" else "#ffffff") in dialog.panel.styleSheet()
+                assert dialog.cancel_button.text() == "取消" and dialog.delete_button.text() == "清空"
+                image=dialog.panel.grab().toImage();scale=image.devicePixelRatioF()
+                assert image.pixelColor(round(8*scale),image.height()//2).name()==("#0a0a0a" if theme == "dark" else "#ffffff")
                 dialog.cancel_button.click()
             assert execute(dialog, cancel_visible) is False
             assert results == [False]

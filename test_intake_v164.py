@@ -1,4 +1,6 @@
 """Intake callback/landing regressions; isolated files and offscreen Qt only."""
+import shelf_ui_common
+import shelf_window
 import json
 import os
 from pathlib import Path
@@ -28,7 +30,7 @@ with tempfile.TemporaryDirectory(prefix='flickdock-intake-v164-') as temporary:
     from content_stack import StackTile
     from flickdock_motion import ContentTile
     from shelf_content import ContentRepository
-    app=QApplication([]);subject.load_font(app)
+    app=QApplication([]);shelf_ui_common.load_font(app)
     assert app.platformName()=='offscreen'
     evidence={}
 
@@ -103,12 +105,12 @@ with tempfile.TemporaryDirectory(prefix='flickdock-intake-v164-') as temporary:
                             update_handles=lambda:None,activate_shelf=lambda _:None,
                             _quitting=False,outgoing_drag=False,just_dropped=0,
                             edge=SimpleNamespace(geometry=lambda:QRect(1910,100,10,160)))
-    shelf=subject.ShelfWindow(manager,1)
+    shelf=shelf_window.ShelfWindow(manager,1)
     shelf._show_at(QPoint(1400,160),'manual',QPoint())
     shelf.presentation.jump(dict(sx=1,sy=1,dx=0,dy=0,alpha=1))
     source=Path(temporary)/'incoming.txt';source.write_text('accepted copy fixture',encoding='utf8')
     mime=QMimeData();mime.setUrls([QUrl.fromLocalFile(str(source))])
-    with patch.object(subject,'CopyFilesJob',ControlledCopy):
+    with patch.object(shelf_window,'CopyFilesJob',ControlledCopy):
         assert shelf.receive_mime('permanent',mime)
         job=ControlledCopy.jobs[-1]
         copied=Path(temporary)/'captured'/'owned-incoming.txt';copied.parent.mkdir(parents=True,exist_ok=True)

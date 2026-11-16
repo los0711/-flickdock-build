@@ -3,6 +3,9 @@
 Real child confirmation/color event loops and real asynchronous ZIP jobs run.
 Only native input, registry, tray and the external drag transport are mocked.
 """
+import overview_ui
+import shelf_ui_common
+import shelf_window
 import json
 import os
 from pathlib import Path
@@ -10,11 +13,12 @@ import tempfile
 import time
 import traceback
 from unittest.mock import patch
+from types import SimpleNamespace
 import zipfile
 
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
-from PySide6.QtCore import QCoreApplication, QEvent, QMimeData, QObject, QPoint, QPointF, Qt, QTimer
+from PySide6.QtCore import QCoreApplication, QEvent, QMimeData, QObject, QPoint, QPointF, QRect, Qt, QTimer
 from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QEnterEvent, QImage, QKeyEvent, QMouseEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QColorDialog, QPushButton, QSystemTrayIcon
@@ -77,11 +81,14 @@ with tempfile.TemporaryDirectory(prefix="flickdock-v161-integration-") as tempor
     from global_hotkeys import _NoopBackend
 
     app = QApplication([])
-    subject.load_font(app)
-    with patch.object(subject, "motion_enabled", return_value=False), \
-         patch.object(subject, "ContentResolver", LocalResolver), \
+    shelf_ui_common.load_font(app)
+    wide_screen=SimpleNamespace(availableGeometry=lambda:QRect(0,0,1920,1080))
+    with patch.object(subject.QGuiApplication,'screenAt',return_value=wide_screen), \
+         patch.object(subject.QGuiApplication,'primaryScreen',return_value=wide_screen), \
+         patch.object(subject, "motion_enabled", return_value=False), \
+         patch.object(shelf_window, "ContentResolver", LocalResolver), \
          patch.object(QSystemTrayIcon, "show"), patch.object(QSystemTrayIcon, "hide"), \
-         patch.object(subject.ctypes.windll.user32, "GetAsyncKeyState", return_value=0), \
+         patch.object(shelf_ui_common.ctypes.windll.user32, "GetAsyncKeyState", return_value=0), \
          patch.object(subject, "native_window_move_active", return_value=False), \
          patch.object(app_settings, "_read_startup_value") as read_registry, \
          patch.object(app_settings, "_write_startup_value") as write_registry:
@@ -107,14 +114,14 @@ with tempfile.TemporaryDirectory(prefix="flickdock-v161-integration-") as tempor
             manager.show_settings()
             dialog = manager.settings_dialog
             flush(app)
-            assert manager.dock_preview.isVisible() and shelf.isVisible() and not manager.edge.isVisible()
-            assert manager.dock_preview.target_rect == manager.edge.geometry()
+            assert not manager.dock_preview.isVisible() and not shelf.isVisible() and manager.edge.isVisible()
+            assert manager.edge.geometry() == trigger_rect(manager.edge.screen_area(), **dict(edge=manager.dock_values()["dock_edge"],position=manager.dock_values()["dock_position"],length=manager.dock_values()["dock_length"],thickness=manager.dock_values()["dock_thickness"]))
             before = manager.settings.path.read_bytes() if manager.settings.path.exists() else None
             original_values = dict(manager.dock_values())
             for widget, value in ((dialog.dock_position_slider, 69), (dialog.dock_length_spin, 220),
                                   (dialog.dock_thickness_spin, 16), (dialog.dock_opacity_slider, 43)):
                 widget.setValue(value)
-                assert manager.dock_preview.target_rect == manager.edge.geometry()
+                assert manager.edge.geometry() == trigger_rect(manager.edge.screen_area(), **dict(edge=manager.dock_values()["dock_edge"],position=manager.dock_values()["dock_position"],length=manager.dock_values()["dock_length"],thickness=manager.dock_values()["dock_thickness"]))
             dialog.dock_edge_combo.setCurrentIndex(dialog.dock_edge_combo.findData("left"))
             dialog.trigger_visible_checkbox.setChecked(False)
             picker_errors = []
@@ -123,7 +130,7 @@ with tempfile.TemporaryDirectory(prefix="flickdock-v161-integration-") as tempor
                 try:
                     assert picker is not None
                     picker.setCurrentColor(QColor("#2a9b6f"))
-                    assert manager.dock_preview.values["dock_color"] == "#2a9b6f"
+                    assert manager.dock_values()["dock_color"] == "#2a9b6f"
                 except Exception as error:
                     picker_errors.append(error)
                 finally:
@@ -135,7 +142,7 @@ with tempfile.TemporaryDirectory(prefix="flickdock-v161-integration-") as tempor
             assert draft == {"dock_edge": "left", "dock_position": 69, "dock_length": 220,
                              "dock_thickness": 16, "dock_opacity": 43, "trigger_visible": False, "dock_color": "#2a9b6f"}
             assert manager.edge.geometry() == trigger_rect(manager.edge.screen_area(), "left", 69, 220, 16)
-            assert manager.dock_preview.values == draft
+            assert not manager.dock_preview.isVisible()
             assert not manager.settings.path.exists() if before is None else manager.settings.path.read_bytes() == before
             dialog.cancel_button.click()
             assert manager._dock_preview_values is None and not manager.dock_preview.isVisible()
@@ -189,13 +196,16 @@ with tempfile.TemporaryDirectory(prefix="flickdock-v161-integration-") as tempor
             until(app, lambda: not shelf.isVisible())
             popup = show()
             assert popup.category == "all" and popup.visible_refs()[0] == newest
-            assert all(button.isVisible() for button in (shelf.pin_button, shelf.expand_button, shelf.menu_button, shelf.close_button))
+            assert all(button.isVisible() for button in (shelf.pin_button, shelf.expand_button, shelf.close_button))
+            # Expanded reference toolbar keeps the essential controls; page
+            # actions remain available through the real context/sidebar menus.
+            assert shelf.popup.lan_nav.isVisible() and shelf.popup.settings_nav.isVisible()
         check("compact uses latest five with newest front/count only; drag header is clear and expanding resets all/newest-first", compact_and_order)
 
         def rows_for(popup):
             until(app,lambda: popup._build_cursor==len(popup.visible_refs()))
             flush(app)
-            return {row.path: row for row in popup.rows_body.findChildren(subject.FileRow) if row.isVisible()}
+            return {row.path: row for row in popup.rows_body.findChildren(overview_ui.FileRow) if row.isVisible()}
 
         def multi_drag_zip():
             manager.settings.update(view_mode="list")
@@ -212,7 +222,7 @@ with tempfile.TemporaryDirectory(prefix="flickdock-v161-integration-") as tempor
             assert tuple(popup.preview._group_refs) == tuple(popup.chosen_refs())
             row = rows[refs[3]]
             QApplication.sendEvent(row, QEnterEvent(QPointF(2, 2), QPointF(2, 2), QPointF(2, 2)))
-            assert popup.preview.current_path == row.path and not popup.preview._group_refs
+            assert tuple(popup.preview._group_refs) == tuple(popup.chosen_refs())
             QApplication.sendEvent(row, QEvent(QEvent.Type.Leave)); flush(app)
             assert tuple(popup.preview._group_refs) == tuple(popup.chosen_refs())
             exported = []
