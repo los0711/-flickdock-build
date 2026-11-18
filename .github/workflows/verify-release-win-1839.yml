@@ -1,0 +1,9 @@
+name: Verify FlickDock 1.8.39 Windows
+on:
+  push:
+    branches: [release-1.8.39-windows]
+permissions:
+  contents: read
+jobs:
+  windows:
+    uses: ./.github/workflows/release-windows.yml
