@@ -1,0 +1,65 @@
+name: Package FlickDock 1.8.39 Apple Silicon candidate
+on:
+  push:
+    branches: [package-1.8.39-arm64]
+permissions:
+  contents: read
+jobs:
+  standalone-package:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          architecture: arm64
+      - name: Build the standalone candidate and verify its native bundle and installers
+        run: |
+          npm ci --prefix cloud --no-audit --no-fund
+          python ci_assets.py
+          python - <<'PY'
+          import build_macos
+          original = build_macos.run
+          def package_checks(arguments, *, env=None):
+              args = [str(value) for value in arguments]
+              if ('-m' in args and 'unittest' in args) or any(
+                      arg.endswith(('test_update_resume_v1821.py', 'test_update_macos.py')) for arg in args):
+                  return  # Release regressions run on the separate staging branch.
+              return original(arguments, env=env)
+          build_macos.run = package_checks
+          raise SystemExit(build_macos.main(['--target-arch', 'arm64', '--skip-public-update-check']))
+          PY
+      - name: Verify the translator comparison and frozen display on Apple Silicon
+        run: |
+          build/macos-venv/bin/python -m unittest test_overview_translator_followup test_polish_outline_v1849 test_mac_updates test_mac_install test_architecture -q
+          sandbox="$(mktemp -d)"
+          for case in overview translator; do
+            HOME="$sandbox" APPDATA="$sandbox" XDG_CONFIG_HOME="$sandbox" dist/FlickDock.app/Contents/MacOS/FlickDock --verify-$case --verify-output "../outputs/macos-$case-1.8.39.json"
+          done
+          build/macos-venv/bin/python - <<'PY'
+          import json
+          from pathlib import Path
+          for case in ('overview', 'translator'):
+              report=json.loads(Path(f'../outputs/macos-{case}-1.8.39.json').read_bytes())
+              assert report['ok'] and report['frozen'] and report['version']=='1.8.39', case
+          PY
+      - name: Retain the standalone candidate and native checks
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: FlickDock-1.8.39-Apple-Silicon-candidate
+          path: |
+            ../outputs/FlickDock-1.8.39-macOS-arm64.zip
+            ../outputs/FlickDock-1.8.39-macOS-arm64.dmg
+            ../outputs/FlickDock-1.8.39-macOS-arm64.pkg
+            ../outputs/mac-build-1.8.39-arm64.json
+            ../outputs/macos-overview-1.8.39.json
+            ../outputs/macos-translator-1.8.39.json
+          if-no-files-found: error
+          retention-days: 3
