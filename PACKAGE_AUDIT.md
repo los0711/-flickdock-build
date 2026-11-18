@@ -1,6 +1,6 @@
 # FlickDock 1.8.26 Windows bundle audit
 
-The 1.8.37 repair bundles Inter and JetBrains Mono for Latin text and technical metadata. Chinese glyphs use Microsoft YaHei UI on Windows and PingFang SC on macOS; Chinese system fonts are not bundled. The remaining dependency notes below describe the original 1.8.26 audit and should be rechecked against each new build.
+FlickDock 1.8.39 bundles JetBrains Mono for timestamps and technical values. Interface text uses system fonts on Windows and macOS. The remaining dependency notes below describe the original 1.8.26 audit and should be rechecked against each new build.
 
 The bundle uses PySide6 / Qt 6.12, Qt FFmpeg 9.0.1, Qt Network/Schannel, OpenSSL and the existing native WebRTC runtime.
 

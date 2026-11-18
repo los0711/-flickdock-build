@@ -1426,7 +1426,7 @@ class LanPanel(QFrame):
             QFrame#lanPanel QPushButton {{ color:{color}; background:transparent; border:0; padding:5px 13px; font-size:12px; }}
             QFrame#lanPanel QPushButton#lanTextButton {{ color:{muted}; background:transparent; border:0; padding:2px 4px; min-height:18px; }}
             QFrame#lanPanel QPushButton#lanTextButton:hover {{ color:{accent}; }}
-            QFrame#lanPanel QPushButton#lanPrimary {{ color:{c['on_action']}; font-weight:400; font-family:{font_css_stack(for_button=True)}; }}
+            QFrame#lanPanel QPushButton#lanPrimary {{ color:{c['on_action']}; font-weight:400; font-family:{font_css_stack()}; }}
             QFrame#lanPanel QPushButton#lanPrimary:disabled {{ color:{c['muted']}; }}
             QFrame#lanPanel QPushButton[accessibleName="取消传输"] {{ color:{c['red']}; background:transparent; border:0; padding:0; }}
             QFrame#lanPanel QPushButton:disabled {{ color:{c['muted']}; }}
@@ -2103,7 +2103,7 @@ class LanDialog(QDialog):
         self.setProperty('uiTheme', theme)
         c=ui_colors(theme)
         font_family=font_css_stack()
-        button_font_family=font_css_stack(for_button=True)
+        button_font_family=font_css_stack()
         ink,hover=c['text'],c['hover']
         self.mode_segment.set_selection_theme(theme)
         self.back_button.setIcon(ui_icon('left',c['secondary']))

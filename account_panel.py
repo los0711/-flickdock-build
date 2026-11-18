@@ -210,6 +210,7 @@ class AccountButton(QPushButton):
 class RemoveDeviceButton(QPushButton):
     def __init__(self,parent=None,*,rename=False):
         super().__init__(parent)
+        self.setProperty('flickdockIconOnly',True)
         self.dark=False
         self.rename=rename
         self.setObjectName('accountRemoveDevice')

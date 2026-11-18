@@ -1,7 +1,7 @@
 """Selected-file preview and its six existing file actions."""
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QPointF, QTimer
+from PySide6.QtCore import QEvent, QPointF, QThreadPool, QTimer
 from PySide6.QtCore import QUrl
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFontMetricsF, QImage, QPainter, QPalette
@@ -23,6 +23,17 @@ from transfer_visuals import file_presence_label
 from transfer_visuals import transfer_fraction
 from transfer_visuals import transfer_phase_label
 import os
+import sys
+
+
+def _reveal_reference(ref,cancel):
+    if cancel.is_set():return None
+    if sys.platform in ('win32','darwin'):
+        from transfer_workbench import reveal_file
+        # Availability is already represented by the shelf's metadata cache.
+        # Never synchronously stat a UNC/offline volume just to open Explorer.
+        reveal_file(ref,check_exists=False);return (ref,None)
+    return (ref,str(Path(ref).parent))
 
 
 def _note_preview_event(name):
@@ -56,7 +67,7 @@ class ElidedLabel(QLabel):
 
 
 class MetadataLabel(ElidedLabel):
-    """Keep the file description and its timestamp in the bundled mono face."""
+    """Draw the description in the UI face and its timestamp in the mono face."""
     def __init__(self,parent=None):
         self._description='';self._timestamp='';self._draw_description='';self._draw_timestamp=''
         self._font_key=None;self._mono_font=None;self._normal_metrics=None;self._mono_metrics=None
@@ -122,6 +133,12 @@ class PreviewPane(QFrame):
         self._path_copy_feedback=QTimer(self);self._path_copy_feedback.setSingleShot(True)
         self._path_copy_feedback.timeout.connect(lambda:self.copy_path_button.setText('复制路径'))
         self.copy_button.setEnabled(False)
+        self._reveal_pool=None;self._reveal_job=None
+        self._path_hit_parts=(self.path_card,*self.path_card.findChildren(QLabel))
+        for part in self._path_hit_parts:part.installEventFilter(self);part.setCursor(Qt.PointingHandCursor)
+        self.path_card.setToolTip('双击在文件夹中显示')
+        app=QApplication.instance()
+        if app:app.aboutToQuit.connect(self._close_reveal)
         self.update_action_states()
         self._set_empty_state(True)
 
@@ -277,6 +294,34 @@ class PreviewPane(QFrame):
         if path is None:return
         QApplication.clipboard().setText(path)
         self.copy_path_button.setText('已复制');self._path_copy_feedback.start(850);self.shelf.touch()
+
+    def eventFilter(self,watched,event):
+        if (watched in getattr(self,'_path_hit_parts',()) and event.type()==QEvent.MouseButtonDblClick
+                and event.button()==Qt.LeftButton):
+            self.reveal_source();event.accept();return True
+        return super().eventFilter(watched,event)
+
+    def reveal_source(self):
+        ref=self.current_path
+        if self._reveal_job is not None or not ref or self.shelf.content.is_pending(ref):return
+        if self.shelf.content.is_text(ref):return
+        from sync_files import DiskWork
+        if self._reveal_pool is None:self._reveal_pool=QThreadPool(self);self._reveal_pool.setMaxThreadCount(1)
+        self._reveal_ref=ref
+        self._reveal_job=DiskWork(lambda cancel:_reveal_reference(ref,cancel))
+        self._reveal_job.signals.done.connect(self._revealed,Qt.QueuedConnection);self._reveal_pool.start(self._reveal_job);self.shelf.touch()
+
+    def _revealed(self,value,error):
+        self._reveal_job=None
+        if self.current_path!=self._reveal_ref or not self.isVisible():return
+        if error:self.info.setText('无法在文件夹中显示，请检查文件是否已移动。');return
+        if value and value[1]:
+            from PySide6.QtGui import QDesktopServices
+            if not QDesktopServices.openUrl(QUrl.fromLocalFile(value[1])):self.info.setText('无法打开文件所在的文件夹。')
+
+    def _close_reveal(self):
+        if self._reveal_job:self._reveal_job.cancel.set()
+        if self._reveal_pool:self._reveal_pool.clear();self._reveal_pool.waitForDone(1500)
 
     def zip_current(self):
         if self.current_path in self.shelf.files['permanent']:

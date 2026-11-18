@@ -1,21 +1,22 @@
-"""Confirm bundled Latin faces and their licenses are present in both builds."""
+"""Verify the bundled technical fonts and license for both builds."""
+import re
 from pathlib import Path
 
 
 def main():
     root = Path(__file__).resolve().parent
-    fonts=(           'JetBrainsMono-Regular.ttf','JetBrainsMono-Medium.ttf')
-    for name in fonts:
-        if not (root/'assets'/'fonts'/name).is_file():
-            raise RuntimeError('Missing bundled font: '+name)
-    for name in ('JetBrainsMono-OFL.txt',):
-        if not (root/'licenses'/name).is_file():
-            raise RuntimeError('Missing font license: '+name)
+    fonts={'JetBrainsMono-Regular.ttf','JetBrainsMono-Medium.ttf'}
+    font_dir=root/'assets'/'fonts'
+    if {path.name for path in font_dir.iterdir() if path.suffix.lower() in ('.ttf','.otf','.ttc')}!=fonts:
+        raise RuntimeError('Unexpected bundled font files')
+    license_name='JetBrainsMono-OFL.txt'
+    if not (root/'licenses'/license_name).is_file():
+        raise RuntimeError('Missing font license: '+license_name)
     for name in ('FlickDock.spec', 'FlickDock-mac.spec'):
         spec = (root / name).read_text(encoding='utf8')
-        if 'OPPOSans4.ttf' in spec or any(font not in spec for font in fonts):
+        if set(re.findall(r"'([^']+\.(?:ttf|otf|ttc))'",spec))!=fonts or license_name not in spec:
             raise RuntimeError('Unexpected font bundle in '+name)
-    print('Bundled Latin fonts and system Chinese font configuration verified')
+    print('Bundled technical fonts and license verified')
 
 
 if __name__ == '__main__':

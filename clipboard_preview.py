@@ -111,6 +111,7 @@ class ClipboardPresenter(QObject):
 class ClipboardButton(QPushButton):
     def __init__(self,manager,parent=None):
         super().__init__(parent);self.manager=manager;self.presenter=None
+        self.setProperty('flickdockIconOnly',True)
         self.setFixedSize(32,32);self.setAutoDefault(False);self.setCursor(Qt.PointingHandCursor)
         self.setAccessibleName('打开或关闭剪贴板预览');self.clicked.connect(self._open);self.refresh()
 

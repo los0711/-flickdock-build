@@ -94,6 +94,7 @@ def _clock(milliseconds):
 class _MediaButton(QPushButton):
     def __init__(self, symbol, label, parent, motion=True):
         super().__init__(parent)
+        self.setProperty('flickdockIconOnly',True)
         self.symbol = symbol
         self._hovered = self._pressed = False
         self.setFixedSize(32, 32)

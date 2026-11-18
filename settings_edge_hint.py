@@ -36,6 +36,8 @@ class SettingsEdgeHint(QWidget):
         if self.card.styleSheet()!=style:self.card.setStyleSheet(style)
 
     def show_hint(self):
+        from display_triggers import trigger_active
+        if not trigger_active(self.manager.edge.values()):self.hide();return
         self._apply_theme()
         self.adjustSize();edge=self.manager.edge.geometry();area=self.manager.edge.screen_area();side=self.manager.settings.dock_edge
         if side=='right':point=QPoint(edge.left()-self.width()-8,edge.center().y()-self.height()//2)
@@ -48,4 +50,5 @@ class SettingsEdgeHint(QWidget):
     def contains_pointer(self,point):
         # Include the short bridge so moving from the strip to the button
         # cannot dismiss the affordance halfway through the pointer's journey.
-        return self.isVisible() and self.geometry().united(self.manager.edge.geometry()).adjusted(-6,-6,6,6).contains(point)
+        from display_triggers import trigger_active
+        return trigger_active(self.manager.edge.values()) and self.isVisible() and self.geometry().united(self.manager.edge.geometry()).adjusted(-6,-6,6,6).contains(point)

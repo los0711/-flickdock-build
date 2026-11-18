@@ -170,6 +170,8 @@ class ItemTransitions(QObject):
             self.timer.stop();self.settled.emit()
 
     def finish(self,*_):
+        self.generation+=1
+        self.layout_pending=False
         running=self.timer.isActive() or self.entry_pending or self.entry_started is not None or bool(self.moves or self.ghosts)
         for widget,origin,target,started in self.moves.values():
             if isValid(widget):widget.move(target)

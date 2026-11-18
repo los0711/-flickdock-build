@@ -94,7 +94,7 @@ class TranslationNotice(CapsuleNotice):
         self.expanded = False
         self._close_languages()
         self.editor.hide()
-        self._text = self.controller.source + ' / ' + TARGETS[self.manager.settings.translation_target][0]
+        self._text = self._invitation_text()
         screen = self.manager.app.screenAt(QCursor.pos()) or self.manager.app.primaryScreen()
         self._begin_presentation(screen.availableGeometry())
         self.refresh()
@@ -171,7 +171,13 @@ class TranslationNotice(CapsuleNotice):
         self._locate_translation_pending=False
 
     def toggle_content(self):
-        self._set_expanded(not self.expanded)
+        self.controller.open_translator()
+
+    @property
+    def target(self):return getattr(self.controller,'target',self.manager.settings.translation_target)
+
+    def _invitation_text(self):
+        return '是否翻译成' + TARGETS[self.target][0]
 
     def _set_expanded(self, expanded):
         if self.expanded == expanded:
@@ -269,8 +275,15 @@ class TranslationNotice(CapsuleNotice):
 
     def refresh(self):
         state = self.controller
-        self._text = state.source + ' / ' + TARGETS[self.manager.settings.translation_target][0]
-        self._description = state.error or ('翻译完成，点击右侧复制完整译文' if state.result else '点击右侧翻译，点击文字展开内容')
+        self._text = self._invitation_text()
+        if state.result:
+            self._text = '已翻译成' + TARGETS[self.target][0]
+        self.middle_button.setAccessibleName(self._text + '，点击打开翻译器')
+        compact_width = self._content_width()
+        if self.isVisible() and not self.expanded and not self._hiding and compact_width != self._full_width:
+            self._full_width = compact_width
+            self._animate_shape(compact_width)
+        self._description = state.error or ('翻译完成，点击右侧复制完整译文' if state.result else '点击右侧翻译，点击文字打开翻译器')
         self.action_button.setAccessibleName('复制完整译文' if state.result else '翻译这段文字')
         self.action_button.setEnabled(state.phase != 'loading')
         self.setToolTip(state.error)
@@ -281,11 +294,11 @@ class TranslationNotice(CapsuleNotice):
             self.timer.stop()
         elif state.phase in ('ready', 'error', 'copied') and not self.expanded:
             self._start_idle_timeout()
-        document = '原文 · ' + state.source + '\n\n' + state.text
+        document = '原文\n\n' + state.text
         result_position = None
         if state.result:
             result_position=len((document+'\n\n').encode('utf-16-le'))//2
-            document += '\n\n译文 · ' + TARGETS[self.manager.settings.translation_target][0] + '\n\n' + state.result
+            document += '\n\n译文 · ' + TARGETS[self.target][0] + '\n\n' + state.result
         elif state.error:
             document += '\n\n' + state.error
         changed=document != self._document
@@ -326,6 +339,9 @@ class TranslationNotice(CapsuleNotice):
 
     def _flag(self, region):
         if region not in self._flags:
+            if not region:
+                self._flags[region] = icon('web', colors('dark')['secondary']).pixmap(64,64)
+                return self._flags[region]
             path = Path(__file__).resolve().parent / 'assets' / 'flags' / (region + '.svg')
             renderer = QSvgRenderer(str(path))
             if not renderer.isValid():
@@ -357,11 +373,15 @@ class TranslationNotice(CapsuleNotice):
         languages.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         languages.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         languages.setIconSize(QSize(22, 22))
-        languages.setStyleSheet(f'QListWidget{{background:transparent;color:{c["text"]};border:0;outline:0;}} QListWidget::item{{padding:0 8px;border:0;outline:0;border-radius:{RADIUS_SUBCONTROL_PX}px;}} QListWidget::item:hover,QListWidget::item:selected{{background:#363636;color:{c["text"]};}} QScrollBar:vertical{{width:6px;background:transparent;}} QScrollBar::handle:vertical{{background:{c["secondary"]};border-radius:3px;min-height:24px;}} QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{{height:0;}} QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{{background:transparent;}}')
+        languages.setSpacing(2)
+        languages.setStyleSheet(f'QListWidget{{background:transparent;color:{c["text"]};border:0;outline:0;}} QListWidget::item{{padding:0 8px;border:0;outline:0;border-radius:{RADIUS_SUBCONTROL_PX}px;}} QListWidget::item:hover{{background:{c["control_hover"]};}} QListWidget::item:selected{{background:{c["action"]};color:{c["on_action"]};}} QScrollBar:vertical{{width:6px;background:transparent;}} QScrollBar::handle:vertical{{background:{c["secondary"]};border-radius:3px;min-height:24px;}} QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{{height:0;}} QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{{background:transparent;}}')
+        selected=None
         for code, label, region in LANGUAGES:
-            item = QListWidgetItem(QIcon(self._flag(region)), label + ('  ✓' if code == self.manager.settings.translation_target else ''), languages)
+            item = QListWidgetItem(QIcon(self._flag(region)), label, languages)
+            item.setTextAlignment(Qt.AlignLeft|Qt.AlignVCenter)
             item.setData(Qt.UserRole, code)
             item.setSizeHint(QSize(LANGUAGE_MENU_WIDTH_PX, LANGUAGE_ROW_HEIGHT_PX))
+            if code==self.target:selected=item
         area = screen_for_widget(self).availableGeometry()
         languages.setFixedSize(min(LANGUAGE_MENU_WIDTH_PX,area.width()-28), min(LANGUAGE_VISIBLE_ROWS*LANGUAGE_ROW_HEIGHT_PX,area.height()-40))
         action = QWidgetAction(menu)
@@ -375,8 +395,9 @@ class TranslationNotice(CapsuleNotice):
         menu.aboutToHide.connect(self._languages_hidden)
         origin = self.mapToGlobal(self.flag_button.geometry().topLeft())
         menu.popup(QPoint(origin.x(), max(area.top()+8, origin.y()-min(menu.sizeHint().height(), area.height()-40)-8)))
-        languages.setCurrentRow(0)
-        languages.scrollToTop()
+        if selected is not None:
+            languages.setCurrentItem(selected)
+            languages.scrollToItem(selected)
         languages.setFocus(Qt.PopupFocusReason)
 
     def _languages_hidden(self):
@@ -433,7 +454,7 @@ class TranslationNotice(CapsuleNotice):
             clip = QPainterPath()
             clip.addEllipse(flag)
             painter.setClipPath(clip, Qt.IntersectClip)
-            painter.drawPixmap(flag, self._flag(TARGETS[self.manager.settings.translation_target][1]), QRectF(0, 0, 64, 64))
+            painter.drawPixmap(flag, self._flag(TARGETS[self.target][1]), QRectF(0, 0, 64, 64))
             painter.restore()
             painter.save()
             painter.setClipRect(self._middle_rect(bar).adjusted(MIDDLE_TEXT_PADDING_PX,0,-MIDDLE_TEXT_PADDING_PX,0),Qt.IntersectClip)

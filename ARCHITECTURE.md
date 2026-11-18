@@ -71,6 +71,34 @@ All progress bars and capacity rings use the accent; local blue and cloud green
 remain semantic file-presence colors.
 Reference primary-button styles resolve semantic tokens when refreshed, so an
 existing split button does not retain its previous accent after a settings save.
+`accent_presets.py` provides seven native swatches using the same live accent
+pipeline; it does not create a separate palette or settings transaction.
+
+## Native edge magnetic field
+
+The previous full-screen effect was replaced in 1.8.39. `edge_magnetic_model.py`
+contains the bounded, delta-time particle state and all visual configuration.
+`edge_absorb.py` draws a small input-transparent field, clipped to the current
+screen in logical coordinates, using the existing display-paced `FramePulse`.
+`magnetic_settings.py` validates independent per-screen, per-edge input regions.
+The defaults enable left/right, at 80 DIP wide and half the edge length; an edge
+can cover the full screen length. `monitor_diagram.py` is a storage-independent
+shared editor preview for `magnetic_editor.py` and the existing display trigger
+editor. The latter retains one shelf trigger per display and its legacy pixel
+configuration while supporting full-edge percentage length.
+`edge_file_drag.py` owns fixed native destinations on the enabled regions of the
+display. It prepares them before the visual trigger band, retains the
+first pointer movement, and requires fresh file MIME proof after native Leave.
+The configured strip is a valid file drop region; the existing shelf intake
+still owns the files. `edge_drop_animation.py` draws an accepted file's visual
+copy, first at a safe resting distance and then through a bounded affine Genie
+mesh. `edge_native_icons.py` obtains the actual per-file system icon in an isolated
+windowless helper and delivers a bounded cached QImage through a queued signal.
+No shell or media IO is performed on the GUI paint/drop path. Late results are
+fenced by the current drop and owner lifetime. These independent
+windows do not participate in shelf surface morphs.
+Idle, cancellation, drop, display changes and shutdown retire their animation
+and input targets. See `EDGE_MAGNETIC.md` for verification and native limits.
 
 ## Verification
 
@@ -82,3 +110,19 @@ account-switch, selection and animation regressions continue to exercise their
 real entry points. Compare the same light/dark compact and overview scenes against
 the published source to detect visual changes. Native macOS window behavior still
 requires verification on a Mac; offscreen Windows tests do not substitute for it.
+
+## 1.8.42 visual and input policy
+
+Window surfaces, shadow masks and animation endpoint clips share
+`RADIUS_WINDOW_PX=22`; all five existing internal control/card radius tokens are
+unchanged. `DESKTOP_MAGNETIC_CONFIG` is injected by `ShelfManager`, independently
+of trigger-band dimensions. File stacks prefetch at most four system icons,
+compose once, and reuse one mesh for any number of accepted files.
+
+`EdgeFileDrag` accepts optional preview policy callbacks. Production supplies
+visible compact-window regions, confirms only fresh native file MIME, excludes
+those regions from the edge input targets, and dispatches a preview-position
+Drop to the existing preview intake before considering edge absorption. The
+same commit/reentrancy fence covers both paths. Shelf and DropZone native
+move events sustain the field while the pointer is over the preview. Protocol,
+synchronization and animation host geometry do not participate in this policy.

@@ -23,16 +23,32 @@ LANGUAGES = (
     ('el', '希腊语', 'gr'), ('cs', '捷克语', 'cz'), ('he', '希伯来语', 'il'),
     ('uk', '乌克兰语', 'ua'), ('ro', '罗马尼亚语', 'ro'),
     ('ms', '马来语', 'my'), ('fil', '菲律宾语', 'ph'),
+    ('yue', '粤语', ''), ('af', '南非荷兰语', ''), ('am', '阿姆哈拉语', ''),
+    ('az', '阿塞拜疆语', ''), ('be', '白俄罗斯语', ''), ('bg', '保加利亚语', ''),
+    ('bn', '孟加拉语', ''), ('bs', '波斯尼亚语', ''), ('ca', '加泰罗尼亚语', ''),
+    ('cy', '威尔士语', ''), ('et', '爱沙尼亚语', ''), ('eu', '巴斯克语', ''),
+    ('fa', '波斯语', ''), ('ga', '爱尔兰语', ''), ('gl', '加利西亚语', ''),
+    ('gu', '古吉拉特语', ''), ('hr', '克罗地亚语', ''), ('hu', '匈牙利语', ''),
+    ('hy', '亚美尼亚语', ''), ('is', '冰岛语', ''), ('ka', '格鲁吉亚语', ''),
+    ('kk', '哈萨克语', ''), ('km', '高棉语', ''), ('kn', '卡纳达语', ''),
+    ('ku', '库尔德语', ''), ('lo', '老挝语', ''), ('lt', '立陶宛语', ''),
+    ('lv', '拉脱维亚语', ''), ('mk', '马其顿语', ''), ('ml', '马拉雅拉姆语', ''),
+    ('mn', '蒙古语', ''), ('mr', '马拉地语', ''), ('my', '缅甸语', ''),
+    ('ne', '尼泊尔语', ''), ('or', '奥里亚语', ''), ('pa', '旁遮普语', ''),
+    ('si', '僧伽罗语', ''), ('sk', '斯洛伐克语', ''), ('sl', '斯洛文尼亚语', ''),
+    ('sq', '阿尔巴尼亚语', ''), ('sr', '塞尔维亚语', ''), ('sw', '斯瓦希里语', ''),
+    ('ta', '泰米尔语', ''), ('te', '泰卢固语', ''), ('ur', '乌尔都语', ''),
+    ('uz', '乌兹别克语', ''), ('yo', '约鲁巴语', ''), ('zu', '祖鲁语', ''),
 )
 TARGETS = {code: (label, flag) for code, label, flag in LANGUAGES}
+# Match the desktop-facing codes accepted by the BreezeBlue proxy, including
+# its zh-Hant / nb / fil aliases. Text translation has a broader catalog.
+SPEECH_LANGUAGES = frozenset(
+    'af ar bg bn bs ca cs da de el en es et eu fa fi fr gl he hi hu id is it ja kn ko lt mr ms '
+    'ne nl nb pl pt ro ru sk sl sq sv sw ta te th fil tr uk ur vi zh zh-Hant'.split()
+)
 SOURCE_NAMES = {code: label for code, label, _ in LANGUAGES}
 SOURCE_NAMES.update(zh='中文', no='挪威语', tl='菲律宾语')
-SOURCE_NAMES.update({'am':'阿姆哈拉语','az':'阿塞拜疆语','be':'白俄罗斯语','bg':'保加利亚语','bn':'孟加拉语',
-    'ca':'加泰罗尼亚语','et':'爱沙尼亚语','eu':'巴斯克语','fa':'波斯语','gu':'古吉拉特语','hr':'克罗地亚语',
-    'hu':'匈牙利语','hy':'亚美尼亚语','is':'冰岛语','ka':'格鲁吉亚语','kn':'卡纳达语','ku':'库尔德语',
-    'lo':'老挝语','lt':'立陶宛语','lv':'拉脱维亚语','ml':'马拉雅拉姆语','mr':'马拉地语','or':'奥里亚语',
-    'pa':'旁遮普语','sk':'斯洛伐克语','sl':'斯洛文尼亚语','sq':'阿尔巴尼亚语','sr':'塞尔维亚语',
-    'ta':'泰米尔语','te':'泰卢固语','ur':'乌尔都语','yo':'约鲁巴语'})
 URI_SCHEME = re.compile(r'^[A-Za-z][A-Za-z0-9+.-]*:')
 BARE_DOMAIN = re.compile(r'^(?:[\w-]+\.)+[A-Za-z\u0080-\uffff]{2,63}(?::\d{1,5})?(?:[/?#].*)?$', re.UNICODE)
 

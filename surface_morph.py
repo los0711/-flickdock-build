@@ -8,6 +8,7 @@ from PySide6.QtGui import QColor, QPainter, QPainterPath, QPixmap, QTransform, Q
 from PySide6.QtWidgets import QWidget
 from display_frames import FramePulse
 from frame_diagnostics import for_window as frame_trace_for
+from native_ui_common import RADIUS_WINDOW_PX
 
 
 def neutral_shadow_color(color):
@@ -24,7 +25,7 @@ def paint_surface_shadow(painter,rect,cache,blur=28.0,offset=None,color=None,*,r
     if color.alpha() == 0:
         return
     dpr=painter.device().devicePixelRatioF()
-    if radius is None:radius=16.0 if sys.platform=='darwin' else 10.0
+    if radius is None:radius=float(RADIUS_WINDOW_PX)
     spread=blur*.65
     margin=round(blur+max(abs(offset.x()),abs(offset.y()))+3)
     inset_x=math.ceil(radius+spread+abs(offset.x())+2)
@@ -66,7 +67,7 @@ def paint_surface_shadow(painter,rect,cache,blur=28.0,offset=None,color=None,*,r
 
 
 def surface_clip(rect):
-    radius=16 if sys.platform=='darwin' else 10
+    radius=RADIUS_WINDOW_PX
     path=QPainterPath(); path.addRoundedRect(rect,radius,radius)
     return path
 

@@ -24,7 +24,7 @@ class DropZone(QFrame):
         self.setAccessibleName('搁架，拖入内容或打开总览')
         self.symbol=QLabel(self);self.symbol.hide();self.title=QLabel(self);self.title.hide();self.description=QLabel(self);self.description.hide()
         self.icon=MiniStack(shelf,self,motion=shelf.manager.motion);self.icon.setGeometry(45,18,240,170)
-        self.hint=label('拖入文件、文字或链接',12,400,'secondary',self);self.hint.setGeometry(40,194,250,18);self.hint.setAlignment(Qt.AlignCenter)
+        self.hint=label('',12,400,'secondary',self);self.hint.hide()
         self.caption=QLabel(self);self.caption.setGeometry(131,230,60,32);self.caption.setAlignment(Qt.AlignCenter);self.caption.setAttribute(Qt.WA_TransparentForMouseEvents)
         self.count_arrow=QLabel(self);self.count_arrow.setGeometry(180,240,12,12);self.count_arrow.setAttribute(Qt.WA_TransparentForMouseEvents)
         self.count_arrow.hide()
@@ -91,6 +91,7 @@ class DropZone(QFrame):
     def dragEnterEvent(self, event):
         self._click_armed=False
         if self.shelf.accepts_content_drop(event):
+            self.shelf.observe_edge_file_move(event,entering=True,origin=self)
             self._pill_hovered = False
             self._pill_timer.stop()
             self._style_caption(False)
@@ -106,6 +107,7 @@ class DropZone(QFrame):
 
     def dragMoveEvent(self, event):
         if self.shelf.accepts_content_drop(event):
+            self.shelf.observe_edge_file_move(event,origin=self)
             self.shelf.touch()
             event.setDropAction(Qt.DropAction.CopyAction)
             event.accept()
@@ -120,7 +122,7 @@ class DropZone(QFrame):
     def dropEvent(self, event):
         self.drop_highlight = False
         self._set_card_hover(False)
-        if self.shelf.accepts_content_drop(event) and self.shelf.receive_mime(self.mode, event.mimeData()):
+        if self.shelf.accepts_content_drop(event) and self.shelf.receive_drop_event(event,self.mode,origin=self):
             event.setDropAction(Qt.DropAction.CopyAction)
             event.accept()
         else:

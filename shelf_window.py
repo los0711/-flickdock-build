@@ -9,7 +9,7 @@ from PySide6.QtCore import QThreadPool
 from PySide6.QtCore import QTimer
 from PySide6.QtCore import QUrl
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QCursor
+from PySide6.QtGui import QColor,QCursor
 from PySide6.QtGui import QDrag
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtGui import QPainter
@@ -95,12 +95,15 @@ PICKER_RETURN_GRACE_SECONDS = 1.5
 
 
 class _ShelfSurface(RoundedSurfaceFrame):
-    """The existing shelf host, with a device-aligned outer frame."""
+    """The existing shelf host. MotionShadow paints its final outline."""
     def surface_style(self):
-        dark=ui_theme.current_theme()=='dark'
-        c=ui_colors('dark' if dark else 'light')
-        edge='rgba(255,255,255,20)' if dark else 'rgba(0,0,0,23)'
-        return c['surface'],edge,16 if sys.platform=='darwin' else 10
+        c=ui_colors(ui_theme.current_theme())
+        return c['surface'],None,c['radius']
+
+    def surface_outline(self):
+        overview=self.parentWidget().expanded
+        if ui_theme.current_theme()=='dark':return QColor(255,255,255,38 if overview else 20)
+        return QColor(0,0,0,32 if overview else 23)
 
 
 class ShelfWindow(QWidget):
@@ -504,7 +507,7 @@ class ShelfWindow(QWidget):
         if self.expanded and self.popup:
             # Remote metadata or a new drop may have completed while the live
             # tree was hidden behind its transition image.
-            self.popup.rebuild()
+            self.popup.rebuild(animate_items=False)
             # Transfer notifications arriving during the morph intentionally
             # skip layout work. Reconcile the bottom strip at the settled frame
             # so the All view does not require a category round trip.
@@ -1108,7 +1111,7 @@ class ShelfWindow(QWidget):
         self.manager.save()
         self.manager.update_handles()
 
-    def receive_mime(self, mode, mime, *, source='drop'):
+    def receive_mime(self, mode, mime, *, source='drop', reveal=True):
         if (self.manager.outgoing_drag or self.dragging or confirmation_active(self)
                 or getattr(self.manager,'settings_open',lambda:False)()):
             return False
@@ -1140,7 +1143,8 @@ class ShelfWindow(QWidget):
         self._intake_preserve_view=source=='paste' or self.expanded
         self.incoming_drop = True
         self.manager.just_dropped = time.monotonic()
-        if self.visible_state=='hiding' or not self.isVisible():
+        self._silent_intake = not reveal
+        if reveal and (self.visible_state=='hiding' or not self.isVisible()):
             # On some native drags the mouse-up poll precedes OLE DropEvent.
             # That poll starts the transient shelf's hide animation. Retarget
             # it as soon as this real content drop is accepted, before a copy
@@ -1168,7 +1172,7 @@ class ShelfWindow(QWidget):
     def _committed_intake(self,mode,epoch):
         """One accepted drop: commit, visible landing, then tuck once."""
         if epoch!=self._intake_epoch or not self.incoming_drop:return
-        if not self.isVisible():
+        if not self.isVisible() and not getattr(self,'_silent_intake',False):
             self._show_at(self._dock_target,self.presentation_kind,QPoint())
         self._intake_mode=mode
         if self.expanded and not self.pinned and not self._intake_preserve_view:
@@ -1227,6 +1231,7 @@ class ShelfWindow(QWidget):
 
     def dragEnterEvent(self, event):
         if self.accepts_content_drop(event):
+            self.observe_edge_file_move(event,entering=True)
             self.active_mode = "permanent"
             self._highlight_content_drop(True)
             self.touch()
@@ -1237,6 +1242,7 @@ class ShelfWindow(QWidget):
 
     def dragMoveEvent(self, event):
         if self.accepts_content_drop(event):
+            self.observe_edge_file_move(event)
             self._highlight_content_drop(True)
             self.touch()
             event.setDropAction(Qt.DropAction.CopyAction)
@@ -1250,11 +1256,22 @@ class ShelfWindow(QWidget):
 
     def dropEvent(self, event):
         self._highlight_content_drop(False)
-        if self.accepts_content_drop(event) and self.receive_mime("permanent", event.mimeData()):
+        if self.accepts_content_drop(event) and self.receive_drop_event(event,"permanent"):
             event.setDropAction(Qt.DropAction.CopyAction)
             event.accept()
         else:
             event.ignore()
+
+    def observe_edge_file_move(self,event,*,entering=False,origin=None):
+        gate=getattr(self.manager,'edge_file_drag',None)
+        if gate is not None:gate.observe_native_move(event,(origin or self).mapToGlobal(event.position().toPoint()),entering=entering)
+
+    def receive_drop_event(self,event,mode,*,origin=None):
+        gate=getattr(self.manager,'edge_file_drag',None)
+        if gate is not None:
+            handled=gate.drop_on_preview(event,(origin or self).mapToGlobal(event.position().toPoint()))
+            if handled is not None:return handled
+        return self.receive_mime(mode,event.mimeData())
 
     def _finish_intake(self,epoch=None):
         if not self.incoming_drop or (epoch is not None and epoch!=self._intake_epoch):
